@@ -650,9 +650,10 @@ func TestIsMIGCapable(t *testing.T) {
 		{"10de", "20f1"}, // A100 PCIe 40GB
 		{"10de", "20f3"}, // A100 PCIe 80GB
 		{"10de", "2233"}, // A30
-		{"10de", "2331"}, // H100 SXM
-		{"10de", "2330"}, // H100 PCIe
+		{"10de", "2330"}, // H100 SXM
+		{"10de", "2331"}, // H100 PCIe
 		{"10de", "233a"}, // H100 NVL
+		{"10de", "2335"}, // H200 SXM
 		{"10de", "2bb5"}, // RTX Pro 6000 Blackwell Server Edition
 	}
 	for _, ids := range capable {

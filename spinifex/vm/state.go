@@ -23,8 +23,7 @@ type EC2StateInfo struct {
 }
 
 // EC2StateCodes maps each InstanceState to its EC2 API code and name.
-// Note: StateError and StateProvisioning are Spinifex-specific states with no direct
-// AWS EC2 equivalent. Their Code/Name values are best-effort mappings.
+// StateError and StateProvisioning have no AWS equivalent; their mappings are best-effort.
 var EC2StateCodes = map[InstanceState]EC2StateInfo{
 	StateProvisioning: {Code: 0, Name: "pending"},
 	StatePending:      {Code: 0, Name: "pending"},
@@ -36,8 +35,19 @@ var EC2StateCodes = map[InstanceState]EC2StateInfo{
 	StateError:        {Code: 0, Name: "error"},
 }
 
-// ValidTransitions defines the allowed state transitions for an instance.
-// StateTerminated is intentionally absent — it is a terminal state with no valid transitions.
+// EC2APIState returns the AWS-API state for status. StateError maps to "stopped"
+// because AWS InstanceStateName is a closed enum and StateError instances can be
+// started or terminated like stopped ones. ok is false for unmapped statuses.
+func EC2APIState(status InstanceState) (EC2StateInfo, bool) {
+	if status == StateError {
+		return EC2StateCodes[StateStopped], true
+	}
+	info, ok := EC2StateCodes[status]
+	return info, ok
+}
+
+// ValidTransitions defines allowed state transitions. StateTerminated is absent
+// as it is a terminal state.
 var ValidTransitions = map[InstanceState][]InstanceState{
 	StateProvisioning: {StateRunning, StateError, StateShuttingDown},
 	StatePending:      {StateRunning, StateError, StateShuttingDown},

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -12,16 +13,13 @@ import (
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 )
 
-// GenerateEKSErrorResponse exposes the EKS REST-JSON error envelope to the
-// shared gateway plumbing (writeClusterUnavailable, writeThrottleError,
-// ErrorHandler). The body is JSON: {"__type":"<code>Exception","message":"<msg>"}.
+// GenerateEKSErrorResponse returns a JSON {"__type":"<code>Exception","message":"<msg>"} body
+// for use by writeClusterUnavailable, writeThrottleError, and ErrorHandler.
 func GenerateEKSErrorResponse(code, message, _ string) []byte {
 	return gateway_eks.GenerateEKSErrorResponse(code, message)
 }
 
-// eksRoute encodes one HTTP method + path-regex → AWS action dispatch.
-// Path params are captured by the regex and passed to the per-route handler
-// via the params slice (named-capture index order, not by name).
+// eksRoute maps one HTTP method + path regex to an AWS action and handler.
 type eksRoute struct {
 	method  string
 	pattern *regexp.Regexp
@@ -29,19 +27,12 @@ type eksRoute struct {
 	handler eksRouteHandler
 }
 
-// eksRouteHandler invokes the per-action gateway function. It receives the
-// path-capture values in declaration order, the request body, the parent
-// gateway config (NATS conn + ServiceURL), the caller's accountID, and the
-// caller's resolved IAM principal ARN (used by CreateCluster for the
-// bootstrap-creator-admin AccessEntry; ignored by the rest). It returns the
-// response payload object (already a typed *eks.<X>Output) or an error whose
-// Error() is an awserrors code.
+// eksRouteHandler invokes a per-action EKS gateway function. callerARN is used
+// by CreateCluster for the bootstrap-creator-admin AccessEntry; ignored by others.
 type eksRouteHandler func(gw *GatewayConfig, accountID, callerARN string, params []string, body []byte) (any, error)
 
-// eksRoutes is the dispatch table. Order matters: more-specific paths must
-// come before less-specific ones with the same prefix (e.g. the
-// /access-policies leaf under /clusters/{name}/access-entries/{arn}/...
-// before the bare /clusters/{name}/access-entries/{arn} entry).
+// eksRoutes is the dispatch table. More-specific paths must precede less-specific
+// ones with the same prefix so the regex matcher picks the deeper route first.
 var eksRoutes = []eksRoute{
 	// Cluster
 	{"POST", regexp.MustCompile(`^/clusters$`), "CreateCluster",
@@ -59,6 +50,27 @@ var eksRoutes = []eksRoute{
 	{"POST", regexp.MustCompile(`^/clusters/([^/]+)/update-version$`), "UpdateClusterVersion",
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.UpdateClusterVersion(gw.NATSConn, acct, p[0], b)
+		}},
+	// Control-plane VM broker: relays bootstrap/state POSTs onto eks.bus.*/eks.state.* NATS subjects.
+	// acct and callerARN are ignored; cluster account comes from the body.
+	{"POST", regexp.MustCompile(`^/clusters/([^/]+)/internal-publish$`), "PublishInternal",
+		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
+			return gateway_eks.PublishInternal(gw.NATSConn, p[0], b)
+		}},
+	// Token review broker: the eks-token-webhook POSTs bearer tokens here;
+	// the gateway resolves them host-side (STS verify + AccessEntry lookup).
+	{"POST", regexp.MustCompile(`^/clusters/([^/]+)/token-review$`), "WebhookTokenReview",
+		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
+			return gateway_eks.WebhookTokenReview(gw.NATSConn, p[0], b)
+		}},
+	// Control-plane VM add-on delivery: the on-VM addon-sync agent GETs the set
+	// of staged add-on manifests for its cluster (system SigV4 creds) to render
+	// the baked bundles into the K3s auto-deploy dir. acct (system account) is
+	// ignored — the cluster account is the {accountId} path segment, since a GET
+	// carries no body to hold it (cf. PublishInternal).
+	{"GET", regexp.MustCompile(`^/clusters/([^/]+)/internal-addons/([^/]+)$`), "ListInternalAddons",
+		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
+			return gateway_eks.ListInternalAddons(gw.NATSConn, p[0], p[1])
 		}},
 
 	// Nodegroup
@@ -130,9 +142,9 @@ var eksRoutes = []eksRoute{
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.DescribeAddonVersions(gw.NATSConn, acct)
 		}},
-	{"GET", regexp.MustCompile(`^/addons$`), "ListAddons",
+	{"GET", regexp.MustCompile(`^/clusters/([^/]+)/addons$`), "ListAddons",
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListAddons(gw.NATSConn, acct)
+			return gateway_eks.ListAddons(gw.NATSConn, acct, p[0])
 		}},
 	{"POST", regexp.MustCompile(`^/clusters/([^/]+)/addons$`), "CreateAddon",
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
@@ -169,9 +181,7 @@ var eksRoutes = []eksRoute{
 			return gateway_eks.ListIdentityProviderConfigs(gw.NATSConn, acct, p[0])
 		}},
 
-	// Cluster CRUD on a specific name — listed after the more-specific
-	// /clusters/{name}/... routes so the regexp matcher prefers the deeper
-	// matches first when iterating in declaration order.
+	// Cluster CRUD — listed after more-specific /clusters/{name}/... routes.
 	{"GET", regexp.MustCompile(`^/clusters/([^/]+)$`), "DescribeCluster",
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.DescribeCluster(gw.NATSConn, acct, p[0])
@@ -196,15 +206,11 @@ var eksRoutes = []eksRoute{
 		}},
 }
 
-// lookupEKSAction walks eksRoutes in declaration order, returning the matched
-// route's action name + path params, or ("", nil, false) when nothing matches.
-// Used by EKS_Request and unit tests to verify routing.
-//
-// path must be the *escaped* request path (r.URL.EscapedPath()): IAM principal
-// ARNs are passed as a path segment and the CLI percent-encodes the embedded
-// `/` (`user%2Fadmin`). Matching the decoded path would split that ARN across
-// the `([^/]+)` capture and no route would match. Captured params are
-// PathUnescape'd here so handlers receive the real value.
+// lookupEKSAction matches method+path against eksRoutes, returning the action,
+// path params, and handler, or ("", nil, nil, false) on no match.
+// path must be r.URL.EscapedPath(): ARNs in path segments are percent-encoded
+// by the CLI (e.g. user%2Fadmin), and matching the decoded path would break
+// the [^/]+ capture. Captured params are PathUnescape'd before returning.
 func lookupEKSAction(method, path string) (string, []string, eksRouteHandler, bool) {
 	for _, route := range eksRoutes {
 		if route.method != method {
@@ -231,11 +237,8 @@ func lookupEKSAction(method, path string) (string, []string, eksRouteHandler, bo
 	return "", nil, nil, false
 }
 
-// EKS_Request is the chi catch-all dispatcher for EKS REST-JSON requests.
-// It parses method+path, resolves to an AWS action, reads the body, invokes
-// the per-action handler, and serialises the typed output as JSON. Errors
-// are returned as plain awserrors codes; the caller (gateway.Request) routes
-// them through the shared ErrorHandler, which now emits EKS REST-JSON.
+// EKS_Request dispatches EKS REST-JSON requests: resolves method+path to an
+// action, reads the body, calls the handler, and serialises the output as JSON.
 func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) error {
 	action, params, handler, ok := lookupEKSAction(r.Method, r.URL.EscapedPath())
 	if !ok {
@@ -263,8 +266,21 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	// Resolve the caller's IAM principal ARN best-effort; only CreateCluster
-	// consumes it (bootstrap-creator-admin) and it degrades gracefully to "".
+	// Some REST-JSON actions carry their non-path inputs as query params with
+	// an empty body (e.g. UntagResource's tagKeys arrive as
+	// DELETE /tags/{arn}?tagKeys=k1&tagKeys=k2). url.Values is map[string][]string,
+	// so it marshals straight to the JSON the per-action unmarshal expects
+	// ({"tagKeys":["k1","k2"]}). Only folds when the body is empty so it never
+	// shadows a real payload.
+	if len(body) == 0 {
+		if q := r.URL.Query(); len(q) > 0 {
+			if qb, err := json.Marshal(map[string][]string(q)); err == nil {
+				body = qb
+			}
+		}
+	}
+
+	// Best-effort caller ARN; only CreateCluster consumes it, degrades to "".
 	callerARN := eksCallerPrincipalARN(r)
 
 	output, err := handler(gw, accountID, callerARN, params, body)
@@ -277,9 +293,8 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 }
 
 // eksCallerPrincipalARN resolves the caller's IAM principal ARN from the SigV4
-// auth context, best-effort. Returns "" when the context is incomplete or the
-// ARN can't be composed — CreateCluster then skips the creator-admin entry
-// rather than failing the request.
+// auth context. Returns "" when the ARN can't be composed; CreateCluster then
+// skips the creator-admin AccessEntry rather than failing.
 func eksCallerPrincipalARN(r *http.Request) string {
 	ctx := r.Context()
 	accountID, _ := ctx.Value(ctxAccountID).(string)

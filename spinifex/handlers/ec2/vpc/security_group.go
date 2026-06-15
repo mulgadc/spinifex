@@ -27,12 +27,9 @@ var sgIDRegex = regexp.MustCompile(`^sg-[0-9a-f]{17}$`)
 // re-implementing the format check.
 var SGRuleIDRegex = regexp.MustCompile(`^sgr-[0-9a-f]{17}$`)
 
-// validateSGRule rejects values that could break out of an OVN ACL match-expression token.
-// CidrIp must be IPv4 and round-trip to canonical form (so "10.0.0.5/8" with host bits set is
-// rejected, as is anything containing operators/whitespace that net.ParseCIDR would not accept).
-// IPv6 is rejected because the ACL builder in vpcd/acl.go is IPv4-only — accepting an IPv6 CIDR
-// would persist a rule that OVN can never program.
-// SourceSG must match the spinifex SG-ID format. At least one source must be specified.
+// validateSGRule rejects CidrIp values that are non-canonical or IPv6 (OVN ACL
+// builder is IPv4-only), and SourceSG values not matching the sg-ID format.
+// At least one source must be specified.
 func validateSGRule(r SGRule) error {
 	if r.CidrIp == "" && r.SourceSG == "" {
 		return errors.New("rule must specify CidrIp or SourceSG")
@@ -71,11 +68,8 @@ const (
 )
 
 // SGRule represents a single ingress or egress rule in a security group.
-//
-// RuleId is the persistent AWS-style identifier returned by
-// DescribeSecurityGroupRules. It is assigned at insert by Authorize* and by
-// the v1→v2 migration for pre-existing rules; sgRuleKey deliberately excludes
-// it so duplicate-content rules are still rejected regardless of ID.
+// RuleId is assigned on Authorize and excluded from sgRuleKey so
+// duplicate-content rules are rejected regardless of ID.
 type SGRule struct {
 	RuleId     string `json:"rule_id"`     // sgr-<17 hex>; assigned on Authorize, backfilled by migration
 	IpProtocol string `json:"ip_protocol"` // "tcp", "udp", "icmp", "-1" (all)
@@ -262,11 +256,9 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput
 	return &ec2.DeleteSecurityGroupOutput{}, nil
 }
 
-// validateSGRuleReferences ensures every SourceSG named in `rules` resolves to
-// an SG in the caller's account that lives in the same VPC as the rule-owning
-// SG. Cross-VPC and missing references both return InvalidGroup.NotFound,
-// matching AWS (peering not supported; AWS uses the same code for "doesn't
-// exist" and "exists in another VPC").
+// validateSGRuleReferences returns InvalidGroup.NotFound if any SourceSG in
+// rules is missing or belongs to a different VPC (cross-VPC refs not
+// supported; AWS uses the same error for both cases).
 func (s *VPCServiceImpl) validateSGRuleReferences(accountID, ownerVpcId string, rules []SGRule) error {
 	for _, r := range rules {
 		if r.SourceSG == "" {
@@ -492,10 +484,8 @@ var describeSecurityGroupRulesValidFilters = map[string]bool{
 }
 
 // DescribeSecurityGroupRules returns a flat list of SecurityGroupRule objects
-// across every security group in the caller's account, optionally narrowed by
-// SecurityGroupRuleIds or filters (group-id, security-group-rule-id, tag:*,
-// tag-key). MaxResults and NextToken are accepted but ignored — matches the
-// existing Describe* precedent in spinifex.
+// for the caller's account, optionally narrowed by SecurityGroupRuleIds or
+// filters. MaxResults and NextToken are accepted but ignored.
 func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityGroupRulesInput, accountID string) (*ec2.DescribeSecurityGroupRulesOutput, error) {
 	requested := make(map[string]bool)
 	if input != nil {
@@ -579,9 +569,8 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityG
 }
 
 // sgRuleMatchesFilters applies the DescribeSecurityGroupRules filter set to a
-// single rule within its parent record. Rule-level tags are not yet persisted,
-// so tag:* and tag-key filters always fail to match (consistent with returning
-// the empty set for tag queries until per-rule tagging lands).
+// single rule. Rule-level tags are not yet persisted, so tag:* and tag-key
+// filters always return false.
 func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -601,11 +590,8 @@ func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[
 			// rule.Tags is not yet populated; tag-key excludes every rule.
 			return false
 		default:
-			// Unreachable today because ParseFilters rejects anything not in
-			// describeSecurityGroupRulesValidFilters or starting with "tag:".
-			// If a future change adds a name to that map without adding a case
-			// here, this Error gives a Sentry breadcrumb instead of silently
-			// returning an empty result set for a documented filter.
+			// Unreachable: ParseFilters rejects names not in the valid set.
+			// Logs an error if a future map entry lacks a matching case.
 			slog.Error("sgRuleMatchesFilters: filter accepted by ParseFilters but no case", "filter", name)
 			return false
 		}
@@ -614,10 +600,8 @@ func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[
 }
 
 // sgRuleToSecurityGroupRule flattens a stored SGRule into the AWS API shape.
-// accountID supplies GroupOwnerId and (for SG-source rules) the
-// ReferencedGroupInfo.UserId. VpcId is derived from the parent record —
-// spinifex enforces same-VPC SG references at security_group.go:validateSGRuleReferences,
-// so the referenced SG's VpcId always equals the parent's.
+// accountID supplies GroupOwnerId and ReferencedGroupInfo.UserId; VpcId is
+// derived from the parent record (same-VPC references are enforced on write).
 func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgress bool, accountID string) *ec2.SecurityGroupRule {
 	out := &ec2.SecurityGroupRule{
 		SecurityGroupRuleId: aws.String(rule.RuleId),
@@ -913,11 +897,8 @@ func (s *VPCServiceImpl) sgRecordToEC2(record *SecurityGroupRecord, accountID st
 }
 
 // sgParseMode selects how ipPermissionsToSGRules handles IPv6 sources.
-// Spinifex stores IPv4-only rules (the OVN ACL builder in vpcd/acl.go cannot
-// program IPv6), so Ipv6Ranges are unrepresentable. Authorize must reject
-// them; Revoke must tolerate them silently because the Terraform AWS provider
-// auto-revokes the default ::/0 IPv6 egress on every aws_security_group it
-// creates and would otherwise abort every apply that touches an SG.
+// Authorize rejects IPv6; Revoke silently skips it (Terraform auto-revokes
+// ::/0 IPv6 egress and must not abort on no-op).
 type sgParseMode int
 
 const (
@@ -925,15 +906,9 @@ const (
 	sgParseRevoke
 )
 
-// ipPermissionsToSGRules converts AWS IpPermission slice to SGRule slice, validating
-// every tenant-supplied CidrIp/SourceSG. This is the only path that constructs SGRule
-// from external input — validating here makes it impossible for a future handler to
-// bypass the check.
-//
-// Permissions whose only source is Ipv6Ranges contribute no rules. In
-// sgParseAuthorize they cause an error; in sgParseRevoke they are skipped.
-// Mixed v4+v6 permissions keep their v4/SG entries and silently drop the v6
-// part on revoke (no stored rule can match v6 anyway).
+// ipPermissionsToSGRules converts AWS IpPermission slice to SGRule slice,
+// validating every tenant-supplied CidrIp/SourceSG. IPv6-only permissions
+// error in Authorize mode and are silently skipped in Revoke mode.
 func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRule, error) {
 	var rules []SGRule
 	for _, perm := range perms {
@@ -1049,11 +1024,9 @@ func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
 	return result
 }
 
-// assertRulesPresent returns InvalidPermission.NotFound on the first revoke
-// rule that does not match an existing rule. AWS rejects revoke of a
-// non-existent rule rather than treating it as a no-op; matching that
-// behaviour lets Terraform / SDK consumers distinguish "already gone" from
-// "operator typo".
+// assertRulesPresent returns InvalidPermission.NotFound if any rule in
+// toRevoke is absent from existing, matching AWS's non-idempotent revoke
+// behavior.
 func assertRulesPresent(existing, toRevoke []SGRule) error {
 	if len(toRevoke) == 0 {
 		return nil
@@ -1091,23 +1064,17 @@ func sgRuleKey(r SGRule) string {
 	return fmt.Sprintf("%s:%d:%d:%s:%s", r.IpProtocol, r.FromPort, r.ToPort, r.CidrIp, r.SourceSG)
 }
 
-// vpcdSGEventTimeout bounds the synchronous handler↔vpcd round-trip for SG
-// events (vpc.create-sg, vpc.delete-sg, vpc.update-sg, vpc.update-port-sgs).
-// On timeout the caller surfaces the error to the API client; the periodic
-// reconciler is the safety net that converges any drift afterwards.
+// vpcdSGEventTimeout bounds the synchronous vpcd round-trip for SG events.
 const vpcdSGEventTimeout = 5 * time.Second
 
 // requestSGEvent sends a security group lifecycle event to vpcd via
-// request-reply and waits for vpcd's success/error response. Used by the
-// public SG API surface so vpcd-side ACL/port-group failures are visible to
-// the caller instead of swallowed.
+// request-reply and surfaces vpcd-side failures to the API caller.
 func (s *VPCServiceImpl) requestSGEvent(topic string, evt SGEvent) error {
 	return utils.RequestEvent(s.natsConn, topic, evt, vpcdSGEventTimeout)
 }
 
 // createDefaultSecurityGroupInternal provisions the per-VPC default SG with
-// AWS-equivalent rules: allow all inbound from self, allow all outbound to
-// 0.0.0.0/0. Bypasses the public-API "default" reserved-name guard. Used by
+// AWS-equivalent rules, bypassing the public-API reserved-name guard. Used by
 // CreateVpc and EnsureDefaultVPC.
 func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId string) (string, error) {
 	groupId := utils.GenerateResourceID("sg")

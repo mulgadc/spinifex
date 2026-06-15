@@ -8,22 +8,16 @@ import (
 )
 
 const (
-	// KVBucketIMDSSubnetVeth is the canonical record that a subnet has an IMDS
-	// localport installed. Keyed by subnetID, the value carries the localport
-	// spec the BindManager replays to materialise host-side state on every chassis.
+	// KVBucketIMDSSubnetVeth records per-subnet IMDS localport state replayed on each chassis.
 	KVBucketIMDSSubnetVeth        = "spinifex-network-imds-subnet-veth"
 	KVBucketIMDSSubnetVethVersion = 1
 
-	// KVBucketENIByVPCIP is a pure reverse index (vpcID/ip → eniID) so the IMDS
-	// handler can resolve a request's datapath-attested source IP to an ENI in
-	// one KV read instead of an O(N) scan of the ENI bucket.
+	// KVBucketENIByVPCIP is a reverse index (vpcID/ip → eniID) for O(1) source-IP resolution.
 	KVBucketENIByVPCIP        = "spinifex-network-eni-by-vpc-ip"
 	KVBucketENIByVPCIPVersion = 1
 )
 
-// InitBuckets opens (or creates) both IMDS KV buckets and runs any pending
-// migrations. History is fixed at 1: both are write-once-per-key, so retained
-// revisions only waste storage and lengthen tombstone lifetime.
+// InitBuckets opens or creates both IMDS KV buckets and runs pending migrations.
 func InitBuckets(js nats.JetStreamContext, replicas int) (subnetVeth, eniByIP nats.KeyValue, err error) {
 	subnetVeth, err = initIMDSBucket(js, KVBucketIMDSSubnetVeth, KVBucketIMDSSubnetVethVersion, replicas)
 	if err != nil {
@@ -38,15 +32,12 @@ func InitBuckets(js nats.JetStreamContext, replicas int) (subnetVeth, eniByIP na
 	return subnetVeth, eniByIP, nil
 }
 
-// InitENIByIPBucket opens (or creates) just the eni-by-vpc-ip reverse-index
-// bucket, for the ENI controller (in the daemon), which may start before the
-// IMDS service and so needs an init path independent of InitBuckets. Idempotent.
+// InitENIByIPBucket opens or creates the eni-by-vpc-ip bucket independently of InitBuckets.
 func InitENIByIPBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
 	return initIMDSBucket(js, KVBucketENIByVPCIP, KVBucketENIByVPCIPVersion, replicas)
 }
 
-// initIMDSBucket opens (or creates) a single IMDS KV bucket and runs any
-// pending migrations.
+// initIMDSBucket opens or creates a single IMDS KV bucket and runs pending migrations.
 func initIMDSBucket(js nats.JetStreamContext, bucket string, version, replicas int) (nats.KeyValue, error) {
 	if replicas < 1 {
 		replicas = 1

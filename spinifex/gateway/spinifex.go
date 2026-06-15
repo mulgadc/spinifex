@@ -28,7 +28,6 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 
 	action := queryArgs["Action"]
 	if action == "" {
-		// Also check query string for GET-style requests
 		action = r.URL.Query().Get("Action")
 	}
 	if action == "" {
@@ -39,15 +38,12 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		return err
 	}
 
-	// Extract identity from auth context
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("Spinifex_Request: no account ID in auth context")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	identity, _ := r.Context().Value(ctxIdentity).(string)
 
-	// Enforce admin-only on restricted actions
 	if spinifexAdminActions[action] && accountID != admin.DefaultAccountID() {
 		slog.Info("Spinifex_Request: non-admin access denied", "action", action, "accountID", accountID)
 		return errors.New(awserrors.ErrorAccessDenied)
@@ -55,8 +51,6 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 
 	var output any
 	switch action {
-	case "GetCallerIdentity":
-		output, err = gateway_spx.GetCallerIdentity(accountID, identity)
 	case "GetVersion":
 		output, err = gateway_spx.GetVersion(gw.Version, gw.Commit)
 	case "GetNodes":

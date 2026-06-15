@@ -12,9 +12,7 @@ import (
 )
 
 // ArtifactDir returns the per-test artifact directory and registers a Cleanup
-// that prunes the directory if the test passed (to avoid filling disk on CI).
-// Call once per test. Safe to call from subtests — uses t.Name() which is
-// unique per subtest.
+// that prunes it on test pass. Safe to call from subtests.
 func ArtifactDir(t *testing.T, env *Env) string {
 	t.Helper()
 	safeName := strings.ReplaceAll(t.Name(), "/", "_")

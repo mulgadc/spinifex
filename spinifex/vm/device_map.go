@@ -18,23 +18,12 @@ import (
 var pciAddrRegexp = regexp.MustCompile(`device\[(\d+)\]`)
 
 // hotplugPortRegexp extracts the EBS hot-plug port number from a QDev path.
-// Example: "/machine/peripheral/vdisk-vol-xxx/hotplug-ebs3/virtio-backend" or
-//
-//	"/machine/peripheral/vdisk-vol-xxx/virtio-backend" (bus assigned by QEMU)
-//
-// The chassis number from the QEMU command line determines PCI slot order.
-// ENI hot-plug ports (`hotplug-eni{N}`) are explicitly excluded — virtio-net
-// devices are not surfaced through query-block, but the explicit suffix
-// guards against future query callers conflating the two pools.
+// Example: "/machine/peripheral/vdisk-vol-xxx/hotplug-ebs3/virtio-backend" → 3
+// ENI ports (hotplug-eni{N}) are excluded to avoid conflating the two pools.
 var hotplugPortRegexp = regexp.MustCompile(`hotplug-ebs(\d+)`)
 
-// queryGuestDeviceMap uses QMP query-block to build a map from QEMU device ID
-// (e.g. "os", "cloudinit", "vdisk-vol-xxx") to the guest device path
-// (e.g. "/dev/vda", "/dev/vdb", "/dev/vdc").
-//
-// The mapping is derived from PCI address order: virtio-blk-pci devices are
-// enumerated by the guest kernel in PCI bus order, which corresponds to the
-// device index in the QDev path.
+// queryGuestDeviceMap builds a map from QEMU device ID to guest device path via
+// QMP query-block. Ordering follows PCI bus order (QDev device index).
 func queryGuestDeviceMap(qmpClient *qmp.QMPClient, instanceID string) (map[string]string, error) {
 	resp, err := sendQMPCommand(qmpClient, qmp.QMPCommand{Execute: "query-block"}, instanceID)
 	if err != nil {
@@ -49,14 +38,11 @@ func queryGuestDeviceMap(qmpClient *qmp.QMPClient, instanceID string) (map[strin
 	return buildDeviceMap(devices), nil
 }
 
-// deviceMapRetrySleep is the sleep seam used by queryGuestDeviceMapWait.
-// Tests override it to drive the retry cadence without burning real
-// wall-clock time on each iteration.
+// deviceMapRetrySleep is a var so tests can drive retry cadence without real sleeps.
 var deviceMapRetrySleep = time.Sleep
 
 // queryGuestDeviceMapWait retries queryGuestDeviceMap until expectedDevice
-// appears in the result. This handles the race where query-block is called
-// immediately after device_add, before QEMU has registered the new device.
+// appears, handling the race between device_add and QEMU registration.
 func queryGuestDeviceMapWait(qmpClient *qmp.QMPClient, instanceID, expectedDevice string) (map[string]string, error) {
 	const maxAttempts = 5
 	const retryDelay = 200 * time.Millisecond
@@ -80,14 +66,8 @@ func queryGuestDeviceMapWait(qmpClient *qmp.QMPClient, instanceID, expectedDevic
 	return queryGuestDeviceMap(qmpClient, instanceID)
 }
 
-// buildDeviceMap takes a list of BlockDevices from QMP and returns a map
-// from QEMU device ID to guest /dev/vdX path, sorted by PCI address.
-//
-// Two QDev path formats exist:
-//   - Boot-time:  /machine/peripheral-anon/device[N]/virtio-backend
-//     device field contains the ID (e.g. "os", "cloudinit")
-//   - Hot-plugged: /machine/peripheral/<device-id>/virtio-backend
-//     device field is empty; ID is extracted from the QDev path
+// buildDeviceMap maps QEMU device ID → /dev/vdX sorted by PCI address.
+// Boot-time devices use device[N] paths; hot-plugged use peripheral/<id> paths.
 func buildDeviceMap(devices []qmp.BlockDevice) map[string]string {
 	type deviceEntry struct {
 		name     string

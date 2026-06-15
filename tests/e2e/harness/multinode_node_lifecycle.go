@@ -9,16 +9,12 @@ import (
 	"time"
 )
 
-// StopNode stops every spinifex unit on a remote node via
-// `sudo systemctl stop spinifex.target`. Used by phase 8 (node failure).
-// Bash issues the same command and tolerates a non-zero exit because the
-// cluster shutdown sequence racily kills the SSH connection — we mirror
-// that lenience by logging instead of fatal-ing.
+// StopNode stops every spinifex unit on a remote node via systemctl. Non-fatal:
+// the cluster shutdown sequence can racily kill the SSH connection.
 func StopNode(t *testing.T, node Node) {
 	t.Helper()
 	ssh := NewPeerSSH()
-	// spinifex.target has 6+ units (predastore, NATS, awsgw, vpcd, daemon, ui).
-	// stop takes 30-60s in practice; budget 3min to cover slow shutdowns.
+	// 3min covers slow 6+ unit shutdowns (predastore, NATS, awsgw, vpcd, daemon, ui).
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if _, err := ssh.Run(ctx, node.Addr, "sudo systemctl stop spinifex.target"); err != nil {
@@ -26,16 +22,12 @@ func StopNode(t *testing.T, node Node) {
 	}
 }
 
-// StartNode brings the spinifex.target back up on a remote node. Used by
-// phase 9 (recovery) and as a t.Cleanup safety net in phase 8 so a
-// cancelled run doesn't leave the cluster degraded for the next suite.
+// StartNode brings spinifex.target back up on a remote node. Also used as a
+// t.Cleanup safety net so a cancelled run doesn't leave the cluster degraded.
 func StartNode(t *testing.T, node Node) {
 	t.Helper()
 	ssh := NewPeerSSH()
-	// systemctl start on spinifex.target blocks until every dependent unit
-	// is Active=active — predastore + NATS + awsgw + vpcd + daemon + ui can
-	// take 60-90s combined. 30s was too tight and produced "signal: killed"
-	// SSH terminations under context cancel; bump to 5min.
+	// 5min: systemctl blocks until all units are Active; 6 units can take 60-90s.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if _, err := ssh.Run(ctx, node.Addr, "sudo systemctl start spinifex.target"); err != nil {

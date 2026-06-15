@@ -1,19 +1,11 @@
-// Package handlers_eks provides the EKS (Amazon Elastic Kubernetes Service)
-// control-plane API surface for Spinifex. The interface declared here is the
-// stable contract every gateway and daemon caller binds to; the NATS wrapper
-// and concrete service implementation both satisfy it.
+// Package handlers_eks implements the EKS control-plane API surface for Spinifex.
 package handlers_eks
 
 import "github.com/aws/aws-sdk-go/service/eks"
 
-// EKSService is the AWS EKS control-plane contract exposed to spinifex
-// gateway and daemon callers. Every method maps 1:1 to an AWS EKS API action
-// (PascalCase). Signatures use the aws-sdk-go input/output types verbatim so
-// downstream callers can pass straight through from generated SDK code.
+// EKSService is the EKS control-plane contract; one method per AWS EKS API action.
 type EKSService interface {
-	// Cluster. CreateCluster also takes the caller's resolved IAM principal ARN
-	// (from the X-Principal-ARN header) so it can mint the bootstrap
-	// cluster-creator-admin AccessEntry; "" skips that step.
+	// Cluster. callerPrincipalARN is the IAM principal for the bootstrap AccessEntry; "" skips it.
 	CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error)
 	DescribeCluster(input *eks.DescribeClusterInput, accountID string) (*eks.DescribeClusterOutput, error)
 	ListClusters(input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error)
@@ -47,9 +39,12 @@ type EKSService interface {
 	DeleteAddon(input *eks.DeleteAddonInput, accountID string) (*eks.DeleteAddonOutput, error)
 	DescribeAddon(input *eks.DescribeAddonInput, accountID string) (*eks.DescribeAddonOutput, error)
 	UpdateAddon(input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error)
+	// ListStagedAddonManifests is an internal control-plane method (not an
+	// AWS-SDK action): the on-VM addon-sync agent fetches staged manifests for a
+	// cluster via the internal-addons gateway route.
+	ListStagedAddonManifests(input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error)
 
-	// OIDC identity-provider configs (control-plane API only; the anonymous
-	// OIDC issuer routes live with the awsgw IRSA wiring).
+	// OIDC identity-provider configs.
 	AssociateIdentityProviderConfig(input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error)
 	DescribeIdentityProviderConfig(input *eks.DescribeIdentityProviderConfigInput, accountID string) (*eks.DescribeIdentityProviderConfigOutput, error)
 	ListIdentityProviderConfigs(input *eks.ListIdentityProviderConfigsInput, accountID string) (*eks.ListIdentityProviderConfigsOutput, error)

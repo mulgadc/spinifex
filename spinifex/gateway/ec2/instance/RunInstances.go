@@ -2,6 +2,7 @@ package gateway_ec2_instance
 
 import (
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -14,10 +15,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// PassRoleChecker enforces iam:PassRole on the role inside an instance profile
-// the caller is trying to attach. Implemented by the gateway via
-// checkPolicyResource, defined as a callback to avoid an import cycle with
-// the gateway package.
+// PassRoleChecker enforces iam:PassRole on the role inside an instance profile.
+// Defined as a callback to avoid an import cycle with the gateway package.
 type PassRoleChecker func(roleARN string) error
 
 type RunInstancesResponse struct {
@@ -45,7 +44,6 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	// Additional validation from EC2 spec
 	if *input.MinCount > *input.MaxCount {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -69,33 +67,43 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 	return err
 }
 
-// RunInstances dispatches an EC2 RunInstances request after validating the
-// input, resolving any supplied IAM instance profile, and enforcing
-// iam:PassRole on the role inside that profile. The resolved profile ARN
-// is normalised onto input.IamInstanceProfile.Arn before NATS dispatch so
-// the daemon sees a single canonical reference. The returned reservation
-// is enriched with the InstanceProfileID so callers see {Arn, Id} per the
-// AWS contract.
-//
-// iamSvc may be nil only in pre-IAM compatibility paths; if input carries an
-// IamInstanceProfile reference, iamSvc must be set or the call fails.
-// passRoleCheck may be nil to skip the iam:PassRole enforcement (used by
-// unit tests that don't exercise the policy path).
+// RunInstances validates input, resolves any IAM instance profile (normalising
+// to ARN for daemons), enforces iam:PassRole, then dispatches via NATS.
+// When ClientToken is set, wraps the launch in idempotency via the KV store.
+// iamSvc may be nil only when no IamInstanceProfile is supplied.
+// passRoleCheck may be nil to skip PassRole enforcement.
 func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (reservation ec2.Reservation, err error) {
-	// Validate input
-	err = ValidateRunInstancesInput(input)
-
-	if err != nil {
+	if err = ValidateRunInstancesInput(input); err != nil {
 		return reservation, err
 	}
 
+	token := aws.StringValue(input.ClientToken)
+	if token == "" {
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
+	}
+
+	// ClientToken set: dedup concurrent/retried launches; store failure is fatal
+	// to avoid a double launch on retry.
+	store, serr := getClientTokenStore(natsConn)
+	if serr != nil {
+		slog.Error("RunInstances: client-token store unavailable", "err", serr)
+		return reservation, errors.New(awserrors.ErrorServerInternal)
+	}
+	// Hash before any mutation so the same token+params always matches.
+	paramHash := clientTokenParamHash(input)
+	return runInstancesWithClientToken(store, accountID, token, paramHash, func() (ec2.Reservation, error) {
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
+	})
+}
+
+// runInstancesInner performs the actual launch: profile resolution, placement
+// routing, and capacity-aware distribution. Wrapped by RunInstances for idempotency.
+func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (reservation ec2.Reservation, err error) {
 	resolvedProfile, err := resolveAndAuthorizeInstanceProfile(input, iamSvc, accountID, passRoleCheck)
 	if err != nil {
 		return reservation, err
 	}
 
-	// Placement group routing: when a placement group is specified, validate it
-	// and route based on its strategy (spread or cluster).
 	groupName := placementGroupName(input)
 	if groupName != "" {
 		strategy, err := lookupPlacementGroupStrategy(natsConn, accountID, groupName)
@@ -123,14 +131,9 @@ func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc hand
 		}
 	}
 
-	// Capacity-aware routing: query all nodes for capacity and distribute
-	// instances across nodes with best-effort spread. This applies to both
-	// single-instance (count=1) and batch (count>1) launches, ensuring fair
-	// distribution across the cluster.
 	reservationPtr, err := distributeInstances(input, natsConn, accountID)
 	if err != nil {
-		// When no nodes have capacity, distinguish between "unknown instance type"
-		// and "all nodes full" by checking DescribeInstanceTypes.
+		// Distinguish "unknown type" from "no capacity" via DescribeInstanceTypes.
 		if err.Error() == awserrors.ErrorInsufficientInstanceCapacity {
 			if !isKnownInstanceType(natsConn, *input.InstanceType) {
 				return reservation, errors.New(awserrors.ErrorInvalidInstanceType)
@@ -142,10 +145,8 @@ func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc hand
 	return *reservationPtr, nil
 }
 
-// resolveAndAuthorizeInstanceProfile resolves and authorizes the optional
-// instance profile in RunInstancesInput, normalising the input so the daemon
-// sees only the canonical ARN (clearing Name avoids double-resolution if the
-// profile is renamed between gateway resolution and daemon launch).
+// resolveAndAuthorizeInstanceProfile resolves an optional instance profile,
+// enforces PassRole, and normalises input to the canonical ARN only.
 func resolveAndAuthorizeInstanceProfile(input *ec2.RunInstancesInput, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*handlers_iam.InstanceProfile, error) {
 	if input.IamInstanceProfile == nil {
 		return nil, nil
@@ -158,8 +159,7 @@ func resolveAndAuthorizeInstanceProfile(input *ec2.RunInstancesInput, iamSvc han
 	return profile, nil
 }
 
-// profileNameOrARN extracts whichever field of IamInstanceProfileSpecification
-// was set by the caller. AWS accepts either Name or Arn (not both).
+// profileNameOrARN returns the ARN or Name from the spec (AWS accepts either).
 func profileNameOrARN(spec *ec2.IamInstanceProfileSpecification) string {
 	if spec == nil {
 		return ""
@@ -170,10 +170,8 @@ func profileNameOrARN(spec *ec2.IamInstanceProfileSpecification) string {
 	return aws.StringValue(spec.Name)
 }
 
-// enrichReservationWithProfileID fills in Instance.IamInstanceProfile.Id on
-// every instance in the reservation when a profile was resolved at the
-// gateway. Daemons emit only Arn (they have no IAM access); the gateway
-// adds Id from the already-resolved profile to match the AWS response shape.
+// enrichReservationWithProfileID fills IamInstanceProfile.Id on every instance.
+// Daemons emit Arn only (no IAM access); the gateway adds Id from the resolved profile.
 func enrichReservationWithProfileID(reservation *ec2.Reservation, profile *handlers_iam.InstanceProfile) {
 	if reservation == nil || profile == nil {
 		return
@@ -200,7 +198,7 @@ func placementGroupName(input *ec2.RunInstancesInput) string {
 	return ""
 }
 
-// lookupPlacementGroupStrategy validates that a placement group exists and returns its strategy.
+// lookupPlacementGroupStrategy returns the strategy of a placement group, or an error if absent/unavailable.
 func lookupPlacementGroupStrategy(natsConn *nats.Conn, accountID, groupName string) (string, error) {
 	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
 	out, err := pgSvc.DescribePlacementGroups(&ec2.DescribePlacementGroupsInput{

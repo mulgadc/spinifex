@@ -22,6 +22,7 @@ type IAMService interface {
 	CreatePolicy(accountID string, input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error)
 	GetPolicy(accountID string, input *iam.GetPolicyInput) (*iam.GetPolicyOutput, error)
 	GetPolicyVersion(accountID string, input *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error)
+	ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error)
 	ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error)
 	DeletePolicy(accountID string, input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error)
 
@@ -54,6 +55,14 @@ type IAMService interface {
 	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
 	RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error)
 
+	// OIDC identity-provider registry — account-scoped. Registers a cluster
+	// issuer as a trusted federated IdP so STS AssumeRoleWithWebIdentity will
+	// honour tokens it signs (IRSA).
+	CreateOpenIDConnectProvider(accountID string, input *iam.CreateOpenIDConnectProviderInput) (*iam.CreateOpenIDConnectProviderOutput, error)
+	GetOpenIDConnectProvider(accountID string, input *iam.GetOpenIDConnectProviderInput) (*iam.GetOpenIDConnectProviderOutput, error)
+	ListOpenIDConnectProviders(accountID string, input *iam.ListOpenIDConnectProvidersInput) (*iam.ListOpenIDConnectProvidersOutput, error)
+	DeleteOpenIDConnectProvider(accountID string, input *iam.DeleteOpenIDConnectProviderInput) (*iam.DeleteOpenIDConnectProviderOutput, error)
+
 	// ResolveInstanceProfile dereferences a RunInstancesInput.IamInstanceProfile
 	// reference (name or ARN) to the canonical InstanceProfile record. Used by
 	// EC2 paths only. Cross-account ARNs are rejected as a defence-in-depth
@@ -62,6 +71,10 @@ type IAMService interface {
 
 	// Policy evaluation (internal — used by gateway enforcement)
 	GetUserPolicies(accountID, userName string) ([]PolicyDocument, error)
+	// GetRolePolicies resolves an assumed-role session's permission policies for
+	// gateway enforcement. Managed policies only; inline policies are not yet
+	// supported.
+	GetRolePolicies(accountID, roleName string) ([]PolicyDocument, error)
 
 	// Auth (internal — used by SigV4 middleware and bootstrap, not exposed via gateway)
 	LookupAccessKey(accessKeyID string) (*AccessKey, error)

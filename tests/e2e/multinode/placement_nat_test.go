@@ -16,29 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Spread placement + NAT GW (the largest section of run-multinode-e2e.sh,
-// originally phase 11) runs as one top-level Test with 6 t.Run sub-tests
-// sharing the VPC + bastion + private trio + NAT GW graph. Setup happens
-// once in the outer scope; sub-tests carry the assertions. The 8 bash
-// sub-steps map as:
-//
-//	bash step 1 (VPC + subnets + IGW + SGs + route)   -> sub-test "VPCSetup"
-//	bash step 2 (bastion launch + SSH + scp key)      -> sub-test "BastionSSH"
-//	bash steps 3+4 (spread PG + 3 priv VMs + assert)  -> sub-test "SpreadPlacement"
-//	bash step 5 (ping pre-NAT, expect fail)           -> sub-test "PreNATIsolation"
-//	bash steps 6+7 (NAT GW + ping post-NAT)           -> sub-test "NATGatewayInternet"
-//	bash step 8 (explicit teardown ordering)          -> sub-test "NATCleanupOrdering"
-//
-// Earlier mulga-siv-127 iterations split this into 6 separate top-level Tests
-// each rebuilding the full graph — that ballooned phase-11 runtime to ~60min
-// (6 × ~10min setups). The shared-setup layout keeps sub-test granularity in
-// JUnit while restoring the ~15min monolithic budget. Outer Test stays
-// sequential (no t.Parallel) — owns VPC CIDR 10.100.0.0/16 + EIP pool.
+// Spread placement + NAT GW runs as one top-level Test with 6 sub-tests sharing
+// one VPC + bastion + private trio + NAT GW graph. Shared setup avoids rebuilding
+// the full graph per sub-test. Outer Test is sequential (owns CIDR 10.100.0.0/16 + EIP pool).
 
-// runSpread is the Go port of the spread-placement + NAT GW section from
-// run-multinode-e2e.sh:1255-1594. See file-level doc for the sub-test map.
-// Wrapper TestMultinodeSpread lives in tests_test.go so source-order
-// controls execution position relative to the rest of the suite.
+// runSpread drives the spread-placement + NAT GW suite.
+// Wrapper TestMultinodeSpread in tests_test.go controls execution order.
 func runSpread(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Spread Placement + NAT Gateway")
 	c := fix.AWS
@@ -46,9 +29,7 @@ func runSpread(t *testing.T, fix *Fixture) {
 	v := spreadSetupVPC(t, fix)
 
 	t.Run("VPCSetup", func(t *testing.T) {
-		// Setup helper required the CreateRoute call so the test would
-		// already fatal on error; the DescribeRouteTables read here is the
-		// explicit oracle matching this sub-test's name.
+		// DescribeRouteTables is the explicit oracle for this sub-test; setup already fataled on create errors.
 		out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
 			RouteTableIds: []*string{aws.String(v.MainRTBID)},
 		})
@@ -68,9 +49,7 @@ func runSpread(t *testing.T, fix *Fixture) {
 	b := spreadSetupBastion(t, fix, v)
 
 	t.Run("BastionSSH", func(t *testing.T) {
-		// spreadSetupBastion already waited for SSH + scp'd the key. The
-		// sub-test is the JUnit marker recording that those steps passed
-		// for this run.
+		// JUnit marker: SSH + scp completed in spreadSetupBastion.
 		t.Logf("bastion %s SSH+scp ok at %s", b.ID, b.PublicIP)
 	})
 
@@ -168,9 +147,8 @@ type spreadVPC struct {
 	MainRTBID    string
 }
 
-// spreadSetupVPC creates the phase-11 VPC graph (VPC + subnets + IGW + main
-// RT route + SGs) and registers LIFO cleanup against t. Fatals on any AWS
-// error. Mirrors run-multinode-e2e.sh phase 11 step 1.
+// spreadSetupVPC creates the VPC graph (VPC + subnets + IGW + main RT route + SGs)
+// and registers LIFO cleanup against t.
 func spreadSetupVPC(t *testing.T, fix *Fixture) spreadVPC {
 	t.Helper()
 	c := fix.AWS
@@ -332,10 +310,8 @@ type spreadBastion struct {
 	KeyPath  string
 }
 
-// spreadSetupBastion launches the bastion in the public subnet, waits for SSH,
-// and copies the test PEM to /tmp/key.pem so the bastion can re-key into
-// private VMs. Registers terminate + diagnostic-on-failure cleanup. Mirrors
-// run-multinode-e2e.sh phase 11 step 2.
+// spreadSetupBastion launches the bastion in the public subnet, waits for SSH, and copies
+// the test PEM to /tmp/key.pem so the bastion can re-key into private VMs.
 func spreadSetupBastion(t *testing.T, fix *Fixture, v spreadVPC) spreadBastion {
 	t.Helper()
 	c := fix.AWS
@@ -372,10 +348,7 @@ func spreadSetupBastion(t *testing.T, fix *Fixture, v spreadVPC) spreadBastion {
 		"bastion %s has no PublicIpAddress (pool mode required for phase 11)", bastionID)
 	harness.Detail(t, "bastion", bastionID, "bastion_pub_ip", bastionPubIP)
 
-	// veth bridge mode (run 26198221557 journal) routes EIP ingress through
-	// the priority-20 gateway-chassis; with a 3-node cluster the gw chassis
-	// is the same node as the bastion only ~33% of the time, so ARP +
-	// geneve traversal need observing to localise SYN drops on failure.
+	// Dump datapath diagnostics on failure to help localise ARP/geneve SYN drops.
 	t.Cleanup(func() {
 		if t.Failed() {
 			dumpPlacementNATDiag(t, fix, bastionPubIP, bastionID)
@@ -405,8 +378,7 @@ type spreadPrivate struct {
 }
 
 // spreadSetupPrivateTrio creates the spread placement group + 3 private VMs,
-// waits for SSH-via-bastion, and resolves each instance's hosting node and
-// private IP. Mirrors run-multinode-e2e.sh phase 11 step 3.
+// waits for SSH-via-bastion, and resolves each instance's hosting node and private IP.
 func spreadSetupPrivateTrio(t *testing.T, fix *Fixture, b spreadBastion) spreadPrivate {
 	t.Helper()
 	c := fix.AWS
@@ -502,10 +474,8 @@ func spreadSetupPrivateTrio(t *testing.T, fix *Fixture, b spreadBastion) spreadP
 	}
 }
 
-// spreadNAT carries the NAT GW + private RT IDs. The *bool fields are the
-// "already torn down" latches used by TestMultinodePhase11Cleanup to flip
-// the deferred cleanup closures into no-ops as each explicit teardown step
-// succeeds.
+// spreadNAT carries the NAT GW + private RT IDs. The *bool fields are already-torn-down
+// latches so deferred cleanup skips explicit teardown steps that already ran.
 type spreadNAT struct {
 	Private       spreadPrivate
 	NatGWID       string
@@ -520,10 +490,8 @@ type spreadNAT struct {
 	RouteDeleted  *bool
 }
 
-// spreadSetupNATGW allocates an EIP, creates the NAT GW in the public subnet,
-// builds the private RT + association + 0.0.0.0/0 -> NAT GW route, and waits
-// for the NAT GW to reach `available`. Mirrors run-multinode-e2e.sh phase 11
-// step 6.
+// spreadSetupNATGW allocates an EIP, creates the NAT GW in the public subnet, builds the
+// private RT + route, and waits for the NAT GW to reach `available`.
 func spreadSetupNATGW(t *testing.T, fix *Fixture, p spreadPrivate) spreadNAT {
 	t.Helper()
 	c := fix.AWS
@@ -628,9 +596,7 @@ func spreadSetupNATGW(t *testing.T, fix *Fixture, p spreadPrivate) spreadNAT {
 
 // --- helpers --------------------------------------------------------------
 
-// uniqueCount returns the number of distinct non-empty / non-"unknown"
-// strings in xs. Matches the bash `sort -u | wc -l` line that gates the
-// spread-placement pass.
+// uniqueCount returns the number of distinct non-empty, non-"unknown" strings in xs.
 func uniqueCount(xs []string) int {
 	seen := map[string]bool{}
 	for _, x := range xs {
@@ -642,18 +608,9 @@ func uniqueCount(xs []string) int {
 	return len(seen)
 }
 
-// waitForBastionSSH polls SSH `true` until the handshake completes. Bash
-// equivalent: phase 11 Step 2's 30-attempt 5s loop = 150s budget. Go port
-// uses a wider 5min budget because a brand-new VPC's OVN flow install on
-// the external switch lags the instance's "running" state on the tofu
-// cluster (mulga-siv-90 runs 26195522455, 26197248656, 26198221557 — SSH
-// timed out at exactly 150s even after the dnat_and_snat race fix
-// mulga-siv-124 landed). 5min covers both cloud-init + OVN warm-up.
-//
-// Logs a single ICMP probe per iteration before the SSH dial so a future
-// failure log distinguishes "datapath down" (ping fails) from "sshd not
-// up yet" (ping ok, ssh refused/timeout) — the smoking-gun split per
-// the RCA agent's fix candidate 3.
+// waitForBastionSSH polls SSH until the handshake completes. Uses a 5min budget to cover
+// both cloud-init and OVN flow install on the external switch lagging instance "running".
+// Logs an ICMP probe each iteration to distinguish "datapath down" from "sshd not up yet".
 func waitForBastionSSH(t *testing.T, host, keyPath string, timeout time.Duration) {
 	t.Helper()
 	harness.Step(t, "wait bastion SSH %s", host)
@@ -706,7 +663,7 @@ func scpKeyToBastion(t *testing.T, keyPath, host string) {
 	if out, err := exec.CommandContext(ctx, "scp", scpArgs...).CombinedOutput(); err != nil {
 		t.Fatalf("scp %s -> %s:/tmp/key.pem: %v\n%s", keyPath, host, err, string(out))
 	}
-	// chmod 600 — sshd refuses keys with loose perms.
+	// chmod 600: sshd refuses keys with loose permissions.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel2()
 	sshArgs := []string{
@@ -750,9 +707,7 @@ func sshViaBastion(keyPath, bastionHost, privIP, cmd string) (string, error) {
 	return string(out), err
 }
 
-// waitForSSHViaBastion polls hostname-through-bastion until cloud-init on
-// the private VM has finished bringing sshd up. label is a triage tag for
-// the log line; bash uses a similar attempt loop with 30 tries x 5s.
+// waitForSSHViaBastion polls hostname-through-bastion until sshd is up on the private VM.
 func waitForSSHViaBastion(t *testing.T, keyPath, bastionHost, privIP, label string) {
 	t.Helper()
 	harness.EventuallyErr(t, func() error {
@@ -773,8 +728,7 @@ func pingViaBastion(keyPath, bastionHost, privIP string) (string, error) {
 	return sshViaBastion(keyPath, bastionHost, privIP, "ping -c 1 -W 3 8.8.8.8")
 }
 
-// --- NAT GW state pollers (multinode-local; phase 8d single-node has its
-// own copies — promote to harness/poll.go once a third consumer lands).
+// --- NAT GW state pollers (promote to harness/poll.go when a third consumer appears)
 
 func waitForNATGatewayStateFatal(t *testing.T, c *harness.AWSClient, id, target string) {
 	t.Helper()
@@ -824,21 +778,9 @@ func waitForNATGatewayStateBest(c *harness.AWSClient, id, target string, timeout
 	}
 }
 
-// dumpPlacementNATDiag fans out a fixed shortlist of datapath probes to
-// every cluster node and writes results to <Artifacts>/diag-<node>-<probe>.log.
-// Triggered only on test failure (via t.Cleanup wrapper) so a green run
-// leaves no extra files. Best-effort: per-node SSH errors are logged but
-// never re-fail the test.
-//
-// Probe set targets the centralized-NAT EIP datapath:
-//   - arp -an              : did ARP for the EIP resolve on this node?
-//   - ip route get <eip>   : kernel routing decision for outbound to EIP
-//   - ovs-vsctl show       : bridges + ports (br-int, br-ex)
-//   - ovs-vsctl get ... ovn-bridge-mappings : physnet binding
-//   - ovn-sbctl list chassis              : encap IPs + gateway hostnames
-//   - ovn-nbctl list nat                  : dnat_and_snat rule state
-//   - ovn-nbctl list gateway_chassis      : priority election state
-//   - ovn-nbctl find logical_router_port  : DGP gateway chassis attachment
+// dumpPlacementNATDiag fans out datapath probes (ARP, xfrm, OVS/OVN state) to every
+// cluster node on failure and writes results under Artifacts. Best-effort: SSH errors
+// are logged but never re-fail the test.
 func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID string) {
 	t.Helper()
 	if fix.Artifacts == "" {
@@ -906,8 +848,7 @@ func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID st
 	}
 }
 
-// waitForInstanceStateBest is the cleanup-time analogue of
-// harness.WaitForInstanceState — no t.Fatal, just polls + returns.
+// waitForInstanceStateBest is the cleanup-safe analogue of harness.WaitForInstanceState: polls without t.Fatal.
 func waitForInstanceStateBest(c *harness.AWSClient, id, target string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {

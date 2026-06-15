@@ -38,10 +38,8 @@ func newProxyTransport(caCertPath string) (*http.Transport, error) {
 	}, nil
 }
 
-// newReverseProxy creates a reverse proxy that forwards requests to the given
-// backend host:port after stripping the pathPrefix from the request path.
-// The proxy sets req.Host to the backend address so SigV4 signature verification
-// succeeds (the gateway uses r.Host for the canonical host header).
+// newReverseProxy forwards requests to backendHost after stripping pathPrefix.
+// Sets req.Host to the backend so SigV4 canonical-host verification passes.
 func newReverseProxy(backendHost, pathPrefix string, transport *http.Transport) http.Handler {
 	target := &url.URL{
 		Scheme: "https",

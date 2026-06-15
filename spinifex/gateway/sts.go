@@ -29,9 +29,8 @@ type stsCaller struct {
 // STSHandler processes parsed query args and returns XML response bytes.
 type STSHandler func(action string, q map[string]string, gw *GatewayConfig, c stsCaller) ([]byte, error)
 
-// stsHandler creates a type-safe STSHandler that allocates the typed input
-// struct, parses query params into it, dispatches to the inner handler, and
-// marshals the output to XML. Mirrors iamHandler in iam.go.
+// stsHandler creates a type-safe STSHandler: allocates the input struct, parses
+// query params, dispatches to the inner handler, and marshals output to XML.
 func stsHandler[In any](handler func(c stsCaller, input *In, gw *GatewayConfig) (any, error)) STSHandler {
 	return func(action string, q map[string]string, gw *GatewayConfig, c stsCaller) ([]byte, error) {
 		input := new(In)
@@ -58,31 +57,36 @@ var stsActions = map[string]STSHandler{
 	"AssumeRole": stsHandler(func(c stsCaller, input *sts.AssumeRoleInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.AssumeRole(c.accountID, c.arn, c.identity, input, gw.STSService)
 	}),
-	// TODO: AssumeRoleWithWebIdentity is anonymous on AWS — the caller is
-	// authenticated by the JWT body, not by a SigV4 envelope. The current
-	// dispatch path runs SigV4 first, then enters this handler with a synthetic
-	// stsCaller. That works for in-cluster callers that already hold SigV4
-	// credentials but rejects the true anonymous code path (no AWS creds, only
-	// a projected ServiceAccount token). The AWS gateway mux needs a pre-auth
-	// route for this action so the JWT can be the sole authenticator.
+	// AssumeRoleWithWebIdentity is anonymous — authenticated by JWT, not SigV4.
+	// anonymousSTSInterceptor routes it ahead of auth with a zero stsCaller.
 	"AssumeRoleWithWebIdentity": stsHandler(func(_ stsCaller, input *sts.AssumeRoleWithWebIdentityInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.AssumeRoleWithWebIdentity(input, gw.STSService)
 	}),
 	"GetCallerIdentity": stsHandler(func(c stsCaller, input *sts.GetCallerIdentityInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.GetCallerIdentity(c.accountID, c.arn, c.principalType, c.identity, c.assumedRoleID, input, gw.IAMService, gw.STSService)
 	}),
+	"GetSessionToken": stsHandler(func(c stsCaller, input *sts.GetSessionTokenInput, gw *GatewayConfig) (any, error) {
+		return gateway_sts.GetSessionToken(c.accountID, c.identity, c.principalType, c.accessKey, input, gw.STSService)
+	}),
 }
 
-// stsSkipPolicyCheck lists the actions whose authorization is NOT gated by an
-// IAM policy check on the caller. AssumeRole is gated by the target role's
-// trust policy (evaluated inside the handler); GetCallerIdentity is always
-// allowed per AWS so SDK init flows do not break;
-// AssumeRoleWithWebIdentity is anonymous — caller is identified by the JWT,
-// not by SigV4 — and trust-policy-gated inside the handler.
+// stsSkipPolicyCheck lists actions not gated by IAM policy on the caller.
+// AssumeRole is gated by the role's trust policy in the handler.
+// GetCallerIdentity is always allowed per AWS (SDK init flows must not break).
+// AssumeRoleWithWebIdentity is anonymous; trust-policy-gated in the handler.
+// GetSessionToken is allowed for any authenticated caller; assumed-role and
+// session (ASIA) callers are rejected inside the handler.
 var stsSkipPolicyCheck = map[string]bool{
 	"AssumeRole":                true,
 	"AssumeRoleWithWebIdentity": true,
 	"GetCallerIdentity":         true,
+	"GetSessionToken":           true,
+}
+
+// anonymousSTSActions lists STS actions that carry no SigV4; authenticated by
+// a web-identity JWT instead. anonymousSTSInterceptor routes these before auth.
+var anonymousSTSActions = map[string]bool{
+	"AssumeRoleWithWebIdentity": true,
 }
 
 func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) error {
@@ -113,9 +117,13 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 		}
 	}
 
-	caller, err := gw.resolveSTSCaller(r)
-	if err != nil {
-		return err
+	// Anonymous actions carry no SigV4 envelope; handler ignores the zero caller.
+	var caller stsCaller
+	if !anonymousSTSActions[action] {
+		caller, err = gw.resolveSTSCaller(r)
+		if err != nil {
+			return err
+		}
 	}
 
 	xmlOutput, err := handler(action, queryArgs, gw, caller)
@@ -132,9 +140,6 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 }
 
 // resolveSTSCaller assembles the caller fields from the SigV4 request context.
-// Pulls the principal-type set by auth.go's prefix-first dispatch (user vs.
-// assumed-role) and constructs the caller ARN — including the chained-assume
-// case where the ARN is already the AssumedRoleARN.
 func (gw *GatewayConfig) resolveSTSCaller(r *http.Request) (stsCaller, error) {
 	ctx := r.Context()
 	accountID, _ := ctx.Value(ctxAccountID).(string)
@@ -163,13 +168,8 @@ func (gw *GatewayConfig) resolveSTSCaller(r *http.Request) (stsCaller, error) {
 	}, nil
 }
 
-// buildCallerARN composes the caller ARN per AWS conventions:
-//
-//   - assumed-role → ctxAssumedRoleARN (the arn:aws:sts::A:assumed-role/R/S
-//     form set by the SigV4 verifier).
-//   - root         → arn:aws:iam::{aid}:root (matches AWS where the root
-//     principal does not use the user/ subpath).
-//   - user         → arn:aws:iam::{aid}:user/{identity}.
+// buildCallerARN composes the caller ARN: assumed-role uses ctxAssumedRoleARN,
+// root uses arn:aws:iam::{aid}:root, user uses arn:aws:iam::{aid}:user/{identity}.
 func buildCallerARN(accountID, identity, principalType, assumedRoleARN string) (string, error) {
 	switch principalType {
 	case principalTypeAssumedRole:

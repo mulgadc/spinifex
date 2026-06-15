@@ -5,38 +5,13 @@ package single
 import "testing"
 
 // Top-level Test* entry points. Each delegates to a runX function in the
-// matching <name>_test.go file. Names are number-free (TestX) so isolated
-// runs via `go test -run TestKeyPairs` are stable.
+// matching <name>_test.go file. Every run* self-bootstraps prerequisites so
+// `go test -run TestX` works in isolation.
 //
-// Every run* function self-bootstraps prerequisites via harness.Discover* /
-// harness.Ensure* (or the package-local need* / iamEnsure* helpers), so a
-// targeted `go test -run TestX` invocation works in isolation without
-// relying on a sibling Test* having stashed state.
-//
-// Parallelism (mulga-siv-128):
-//
-// Bucket #1 (parallel): read-only or own-everything Tests below call
-// t.Parallel(). They share the package fixture but never mutate the
-// singleton EC2 instance, default VPC, or default SG.
-//
-// Sequential (no t.Parallel — would race the singleton VM or shared state):
-//   - TestClusterStatsCLI                 : asserts baseline cluster state
-//     (0/ CPU, "No VMs found"); must run before any launches.
-//   - TestInstanceLaunch                  : first sequential — boots singleton.
-//   - TestInstanceClusterStats / Metadata
-//     / SSHProbe / ConsoleOutput          : read singleton.
-//   - TestVolumeLifecycle / VolumeStatus  : attach to singleton.
-//   - TestSnapshotLifecycle /
-//     SnapshotBackedLaunch / CreateImage  : snapshot singleton.
-//   - TestSecurityGroupEgress             : mutates default SG.
-//   - TestStopStart / AttachToStoppedError
-//     / ModifyInstanceAttribute /
-//     RebootInstance / RunInstancesMultiCount : mutate singleton state.
-//   - TestNegativeErrorPaths              : sub-tests already parallel inside.
-//   - TestNATGateway / TestSGToSGDatapath : share EIP pool.
-//   - All TestIAM*                        : share IAM policy state via the
-//     package-scoped IAM fixture; sub-tests inside each already parallel.
-//   - TestFinalClusterStats               : final sanity gate.
+// Parallel bucket (t.Parallel): read-only or own-everything tests that never
+// mutate the singleton instance, default VPC, or default SG.
+// Sequential: tests that boot, mutate, or snapshot the singleton VM; IAM tests
+// that share package-scoped IAM state; TestFinalClusterStats (last gate).
 
 // --- Bucket #1: parallel-safe ---
 
@@ -87,17 +62,13 @@ func TestRouteTableValidation(t *testing.T) {
 
 // --- Sequential: singleton VM lifecycle ---
 
-// TestClusterStatsCLI runs before TestInstanceLaunch because it asserts
-// baseline cluster state (0/ CPU used, "No VMs found") that doesn't hold
-// once the singleton instance is up.
+// TestClusterStatsCLI asserts 0-VM baseline state before any instance launches.
 func TestClusterStatsCLI(t *testing.T) {
 	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
 
-// Fresh-install reachability baselines run right after the 0-VM cluster-stats
-// gate and before the singleton launch. They own all mutable resources
-// (dedicated SG / subnet / self-cleaning instance) and never mutate the
-// default SG, subnet, or route table.
+// TestDefaultSGReachabilityBaseline, TestNewVPCEgressBaseline, and TestSameSGComms
+// own all mutable resources and run before the singleton launch.
 func TestDefaultSGReachabilityBaseline(t *testing.T) {
 	runDefaultSGReachabilityBaseline(t, requireSingleNodeFixture(t))
 }
@@ -218,42 +189,39 @@ func TestIAMCleanup(t *testing.T) {
 	runIAMCleanup(t, requireSingleNodeFixture(t))
 }
 
-// TestIAMRolesAndProfiles + TestIAMInstanceProfileAssociation form the
-// companion-plan suite (docs/development/archive/feature/iam-roles-v1.md and
-// docs/development/feature/iam-roles-v1-ec2.md). Sequential: the second test
-// recreates the same role/profile names the first tore down, so concurrent
-// runs would race the EntityAlreadyExists / NoSuchEntity boundaries.
+// TestIAMRolesAndProfiles + TestIAMInstanceProfileAssociation are sequential:
+// the second recreates role/profile names the first tore down.
 func TestIAMRolesAndProfiles(t *testing.T) {
 	runIAMRolesAndProfiles(t, requireSingleNodeFixture(t))
 }
 
-// TestIAMInstanceProfileAssociation also briefly mutates the singleton VM
-// (Associate/Disassociate), so it can't share the parallel bucket with
-// instance-mutation tests.
+// TestIAMInstanceProfileAssociation mutates the singleton VM, so it cannot
+// share the parallel bucket.
 func TestIAMInstanceProfileAssociation(t *testing.T) {
 	runIAMInstanceProfileAssociation(t, requireSingleNodeFixture(t))
 }
 
-// TestSTSAssumeRoleAndGetCallerIdentity exercises the STS v1 surface. Owns
-// its own role, so safe alongside the IAM Roles tests above, but sequential
-// so trust-policy mutations don't race a parallel AssumeRole.
+// TestSTSAssumeRoleAndGetCallerIdentity is sequential to avoid racing trust-policy
+// mutations against a parallel AssumeRole.
 func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	runSTS(t, requireSingleNodeFixture(t))
 }
 
-// TestIMDS exercises the host-served IMDSv2 surface end-to-end: token
-// issuance, the v2-only stance, the metadata surface, the
-// instance-role credential path + wire round-trip, the per-subnet L2 localport
-// datapath (ovn-trace round-trip), and cross-VPC source-IP isolation. Owns its
-// own role/profile + a second VPC, but sequential: it launches profile-bound VMs
-// and a fresh VPC, so it must not race the singleton-mutation tests above.
+// TestAssumedRoleControlPlaneEnforcement verifies a zero-policy assumed-role
+// is denied and permitted once a policy is attached. Sequential to avoid
+// racing the mid-test grant.
+func TestAssumedRoleControlPlaneEnforcement(t *testing.T) {
+	runAssumedRoleControlPlaneEnforcement(t, requireSingleNodeFixture(t))
+}
+
+// TestIMDS exercises IMDSv2 end-to-end: token issuance, metadata surface,
+// instance-role credentials, OVN datapath, and cross-VPC isolation. Sequential
+// because it launches profile-bound VMs and creates a fresh VPC.
 func TestIMDS(t *testing.T) {
 	runIMDS(t, requireSingleNodeFixture(t))
 }
 
-// TestFinalClusterStats runs as the last sequential test (parallel bucket
-// runs afterwards, but those Tests are read-only / own-everything so a
-// later cluster-stats snapshot would still be valid).
+// TestFinalClusterStats runs as the last sequential test.
 func TestFinalClusterStats(t *testing.T) {
 	runFinalClusterStats(t, requireSingleNodeFixture(t))
 }

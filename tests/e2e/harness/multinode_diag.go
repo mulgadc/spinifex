@@ -33,13 +33,10 @@ func DumpAllNodeLogs(t *testing.T, c *Cluster, artifactsDir string) {
 	}
 }
 
-// SpxGetNodesAcrossCluster runs `spx get nodes` best-effort and returns the
-// raw output stripped of trailing whitespace. Bash phase 9 (run-multinode-e2e
-// .sh:1018) appends `|| echo ""` to swallow a non-zero spx exit — the CLI ↔
-// NATS dial races the cluster join right after node restart and can return
-// "no servers available for connection" even though the data path is healthy
-// (gateway+daemon already verified). Mirror that lenience so phase 9 doesn't
-// fail on a known-flaky CLI dial.
+// SpxGetNodesAcrossCluster runs `spx get nodes` best-effort and returns trimmed
+// output. CLI ↔ NATS dial can race the cluster join after a node restart and
+// return "no servers available" even when the data path is healthy; errors are
+// swallowed intentionally.
 func SpxGetNodesAcrossCluster(t *testing.T) string {
 	t.Helper()
 	return strings.TrimSpace(SpxRunBestEffort(t, "get", "nodes", "--timeout", "5s"))

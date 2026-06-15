@@ -9,11 +9,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DescribeTags handles the ELBv2 DescribeTags API call. Returns the tags for
-// each ELBv2 resource (load balancer, target group, listener) named in the
-// input ResourceArns. Untagged resources still produce a TagDescription with
-// an empty Tags slice — this matches AWS behaviour and is what the Terraform
-// AWS provider expects during post-create refresh.
+// DescribeTags returns tags for the ELBv2 resources named in ResourceArns.
+// Untagged resources produce a TagDescription with an empty Tags slice, as
+// the Terraform AWS provider expects during post-create refresh.
 func DescribeTags(input *elbv2.DescribeTagsInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTagsOutput, error) {
 	var output elbv2.DescribeTagsOutput
 

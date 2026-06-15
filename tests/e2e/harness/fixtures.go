@@ -2,21 +2,10 @@
 
 // Memoized, cleanup-aware resource fixtures for the e2e harness.
 //
-// Background: the bash phase scripts (single-node, multinode) and their first
-// Go ports bundle two distinct concerns — provisioning (CreateImage, CreateVpc,
-// RunInstances) and assertion (lifecycle checks). Downstream phases inherit
-// state via a single shared Fixture struct, so a vpcd-only diff still re-runs
-// the AMI + instance chain.
-//
-// Ensure* helpers separate the two. Each helper is idempotent: first call
-// creates the resource and registers teardown; subsequent calls (within the
-// same Fixture) return the cached ID. Concurrent callers see one create via
-// singleflight. Cleanup is registered on the Fixture's parent test so memoized
-// resources survive child-subtest lifetimes.
-//
-// Bead 2 (e2e-fixtures-harness) of
-// docs/development/improvements/e2e-targeted-suite-selection.md. Wired into
-// real tests by Bead 3 (e2e-single-fixture-migration).
+// Ensure* helpers are idempotent: the first call creates the resource and
+// registers teardown; subsequent calls return the cached ID. Concurrent callers
+// share one create via singleflight. Cleanup routes to the Fixture's parent test
+// so memoized resources outlive child-subtest lifetimes.
 package harness
 
 import (
@@ -67,6 +56,11 @@ type Fixture struct {
 	// namespace-flat).
 	scratch string
 
+	// runID is the cross-process run id (SPINIFEX_E2E_RUN_ID). When set,
+	// Ensure* stamps the e2e:run=<runID> tag on every resource it creates so
+	// the teardown sweep can reclaim them by id. Empty disables tagging.
+	runID string
+
 	mu       sync.Mutex
 	memo     map[string]string
 	cleanups map[string]struct{}
@@ -78,8 +72,7 @@ type Fixture struct {
 	processCleanups []func()
 }
 
-// Compile-time interface checks — the real SDK clients must satisfy the
-// subset the Fixture stores (CLAUDE.md project standard).
+// Compile-time interface checks.
 var (
 	_ ec2iface.EC2API     = (*ec2.EC2)(nil)
 	_ elbv2iface.ELBV2API = (*elbv2.ELBV2)(nil)
@@ -113,6 +106,7 @@ func NewProcessFixture(aws *AWSClient) (*Fixture, error) {
 		EC2:      aws.EC2,
 		ELBv2:    aws.ELBv2,
 		scratch:  scratch,
+		runID:    os.Getenv(RunIDEnv),
 		memo:     map[string]string{},
 		cleanups: map[string]struct{}{},
 	}, nil
@@ -132,6 +126,7 @@ func newFixture(t *testing.T, ec2c ec2iface.EC2API, elbc elbv2iface.ELBV2API) *F
 		EC2:      ec2c,
 		ELBv2:    elbc,
 		scratch:  scratch,
+		runID:    os.Getenv(RunIDEnv),
 		memo:     map[string]string{},
 		cleanups: map[string]struct{}{},
 	}
@@ -190,15 +185,9 @@ func (f *Fixture) RegisterCleanup(fn func()) {
 	f.registerCleanup(fn)
 }
 
-// ensureOnce is the shared backbone of every Ensure*. It:
-//  1. Returns the cached resource ID if one exists for key.
-//  2. Otherwise enters singleflight, calls create exactly once across
-//     concurrent callers, registers cleanup against fx.parent, and caches
-//     the result.
-//
-// create returns (id, cleanupFn). cleanupFn runs once at parent teardown.
-// If create fails, no cleanup is registered and the cache is untouched, so
-// a retry triggers a fresh create.
+// ensureOnce returns the cached resource ID for key, or calls create exactly
+// once (via singleflight) and caches the result. On failure no cleanup is
+// registered and the cache is untouched, so a retry triggers a fresh create.
 func (f *Fixture) ensureOnce(t *testing.T, key string, create func() (string, func() error, error)) (string, error) {
 	t.Helper()
 
@@ -253,11 +242,8 @@ func (f *Fixture) resourceName(prefix string) string {
 	return fmt.Sprintf("%s-%s", prefix, f.scratch)
 }
 
-// pollUntil is the local readiness poller used by Ensure*. Re-implements
-// the (timeout, interval, cond) loop on top of the interface-typed EC2
-// client so unit-test fakes can drive it deterministically. Caller-side
-// reuse of harness.WaitFor* (which takes a concrete *AWSClient) is
-// deliberately avoided here.
+// pollUntil polls cond at interval until it returns true or timeout elapses.
+// Uses the interface-typed EC2 client so unit-test fakes can drive it.
 func pollUntil(t *testing.T, timeout, interval time.Duration, cond func() (bool, error)) error {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -311,6 +297,7 @@ func EnsureKeyPair(t *testing.T, fx *Fixture, artifactsDir string) (string, stri
 		if err := os.WriteFile(pemPath, []byte(aws.StringValue(out.KeyMaterial)), 0o600); err != nil {
 			return "", nil, fmt.Errorf("write pem %s: %w", pemPath, err)
 		}
+		fx.tagRunResources(aws.StringValue(out.KeyPairId))
 		return aws.StringValue(out.KeyName), func() error {
 			_, derr := fx.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(name)})
 			return derr
@@ -326,9 +313,8 @@ func EnsureKeyPair(t *testing.T, fx *Fixture, artifactsDir string) (string, stri
 // EnsureAMI
 // ----------------------------------------------------------------------------
 
-// AMISource describes how to materialise an AMI. Exactly one of Existing or
-// CreateFrom must be set: Existing pins a pre-baked image; CreateFrom drives
-// CreateImage against a snapshotable source instance.
+// AMISource describes how to materialise an AMI. Set exactly one of Existing
+// (pre-baked image ID) or CreateFrom (drives CreateImage from a source instance).
 type AMISource struct {
 	// Existing is a pre-baked AMI ID to verify + return as-is.
 	Existing string
@@ -341,9 +327,8 @@ type AMICreateSpec struct {
 	Name             string
 	Description      string
 	Architecture     string
-	// NoReboot mirrors CreateImage's NoReboot flag. Set true when the
-	// source instance must keep running across the AMI bake (e.g. Phase 5e
-	// hands the instance off to Phase 6/7 lifecycle assertions).
+	// NoReboot mirrors CreateImage's NoReboot flag. Set true when the source
+	// instance must stay running across the bake.
 	NoReboot bool
 }
 
@@ -378,6 +363,7 @@ func EnsureAMI(t *testing.T, fx *Fixture, src AMISource) string {
 				return "", nil, fmt.Errorf("CreateImage: %w", err)
 			}
 			imageID = aws.StringValue(out.ImageId)
+			fx.tagRunResources(imageID)
 		}
 
 		if err := pollUntil(t, 10*time.Minute, 2*time.Second, func() (bool, error) {
@@ -525,6 +511,7 @@ func EnsureSubnet(t *testing.T, fx *Fixture, vpcID, cidr, az string) string {
 			return "", nil, fmt.Errorf("CreateSubnet %s: %w", cidr, err)
 		}
 		subnetID := aws.StringValue(out.Subnet.SubnetId)
+		fx.tagRunResources(subnetID)
 		return subnetID, func() error {
 			_, derr := fx.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{
 				SubnetId: aws.String(subnetID),
@@ -557,6 +544,7 @@ func EnsureSG(t *testing.T, fx *Fixture, vpcID, namePrefix string) string {
 			return "", nil, fmt.Errorf("CreateSecurityGroup %s: %w", name, err)
 		}
 		sgID := aws.StringValue(out.GroupId)
+		fx.tagRunResources(sgID)
 		return sgID, func() error {
 			_, derr := fx.EC2.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
 				GroupId: aws.String(sgID),
@@ -621,6 +609,7 @@ func EnsureInstance(t *testing.T, fx *Fixture, spec InstanceSpec) string {
 			return "", nil, fmt.Errorf("RunInstances returned 0 instances")
 		}
 		instID := aws.StringValue(out.Instances[0].InstanceId)
+		fx.tagRunResources(instID)
 
 		if err := pollUntil(t, 5*time.Minute, 2*time.Second, func() (bool, error) {
 			d, derr := fx.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
@@ -672,6 +661,7 @@ func EnsureVolume(t *testing.T, fx *Fixture, az string, sizeGiB int64) string {
 			return "", nil, fmt.Errorf("CreateVolume: %w", err)
 		}
 		volID := aws.StringValue(out.VolumeId)
+		fx.tagRunResources(volID)
 
 		if err := pollUntil(t, 5*time.Minute, 2*time.Second, func() (bool, error) {
 			d, derr := fx.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
@@ -738,6 +728,7 @@ func EnsureSnapshot(t *testing.T, fx *Fixture, spec SnapshotSpec) string {
 			return "", nil, fmt.Errorf("CreateSnapshot: %w", err)
 		}
 		snapID := aws.StringValue(out.SnapshotId)
+		fx.tagRunResources(snapID)
 
 		if err := pollUntil(t, 10*time.Minute, 2*time.Second, func() (bool, error) {
 			d, derr := fx.EC2.DescribeSnapshots(&ec2.DescribeSnapshotsInput{
@@ -795,6 +786,7 @@ func EnsureNATGateway(t *testing.T, fx *Fixture, subnetID, allocationID string) 
 			return "", nil, fmt.Errorf("CreateNatGateway: %w", err)
 		}
 		ngwID := aws.StringValue(out.NatGateway.NatGatewayId)
+		fx.tagRunResources(ngwID)
 
 		if err := pollUntil(t, 5*time.Minute, 5*time.Second, func() (bool, error) {
 			d, derr := fx.EC2.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
@@ -869,6 +861,7 @@ func EnsureLoadBalancer(t *testing.T, fx *Fixture, spec LoadBalancerSpec) string
 			return "", nil, fmt.Errorf("CreateLoadBalancer returned 0 LBs")
 		}
 		lbARN := aws.StringValue(out.LoadBalancers[0].LoadBalancerArn)
+		fx.tagRunELB(lbARN)
 
 		if err := pollUntil(t, 10*time.Minute, 5*time.Second, func() (bool, error) {
 			d, derr := fx.ELBv2.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{

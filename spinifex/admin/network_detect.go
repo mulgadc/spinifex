@@ -54,7 +54,6 @@ func DetectNetwork() (*DetectedNetwork, error) {
 		return nil, fmt.Errorf("could not parse default route: %s", defaultRoute)
 	}
 
-	// Get all routes to find interfaces and their subnets
 	allRoutes, err := exec.Command("ip", "-4", "route", "show", "scope", "link").Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get routes: %w", err)
@@ -149,7 +148,6 @@ func SuggestPoolRange(wan *DetectedInterface) (start, end string) {
 		return "", ""
 	}
 
-	// Calculate broadcast address
 	ip := ipNet.IP.To4()
 	mask := ipNet.Mask
 	broadcast := make(net.IP, 4)
@@ -182,13 +180,9 @@ func SuggestPoolRange(wan *DetectedInterface) (start, end string) {
 	return startIP.String(), endIP.String()
 }
 
-// isVirtualInterface returns true for interfaces that shouldn't be
-// considered as physical NICs. The defaultRouteDev parameter is the
-// interface carrying the default route — it's always considered physical
-// even if its name matches a virtual prefix (e.g., br-wan).
+// isVirtualInterface returns true for interfaces that shouldn't be considered
+// physical NICs. defaultRouteDev is always treated as physical.
 func isVirtualInterface(name string, defaultRouteDev string) bool {
-	// The default route interface is always considered physical — it's the
-	// WAN uplink, even if it's a bridge (br-wan, br-external, etc.).
 	if defaultRouteDev != "" && name == defaultRouteDev {
 		return false
 	}

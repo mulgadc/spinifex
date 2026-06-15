@@ -1,6 +1,5 @@
-// Package spx implements the spinifex platform service handlers for the AWS gateway.
-// These provide platform-level operations (identity, version, cluster status) distinct
-// from AWS-compatible APIs.
+// Package spx implements spinifex platform-level gateway handlers (version,
+// node status, VM inventory) that are distinct from the AWS-compatible APIs.
 package spx
 
 import (
@@ -13,20 +12,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
-
-// CallerIdentityOutput is the response for GetCallerIdentity.
-type CallerIdentityOutput struct {
-	AccountID string `json:"account_id"`
-	UserName  string `json:"user_name"`
-}
-
-// GetCallerIdentity returns the caller's identity from the SigV4 auth context.
-func GetCallerIdentity(accountID, userName string) (*CallerIdentityOutput, error) {
-	return &CallerIdentityOutput{
-		AccountID: accountID,
-		UserName:  userName,
-	}, nil
-}
 
 // VersionOutput is the response for GetVersion.
 type VersionOutput struct {

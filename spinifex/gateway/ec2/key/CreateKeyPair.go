@@ -23,14 +23,12 @@ func ValidateCreateKeyPairInput(input *ec2.CreateKeyPairInput) (err error) {
 }
 
 func CreateKeyPair(input *ec2.CreateKeyPairInput, natsConn *nats.Conn, accountID string) (output ec2.CreateKeyPairOutput, err error) {
-	// Validate input
 	err = ValidateCreateKeyPairInput(input)
 
 	if err != nil {
 		return output, err
 	}
 
-	// Create NATS key service and call CreateKeyPair
 	keyService := handlers_ec2_key.NewNATSKeyService(natsConn)
 	result, err := keyService.CreateKeyPair(input, accountID)
 
@@ -39,7 +37,6 @@ func CreateKeyPair(input *ec2.CreateKeyPairInput, natsConn *nats.Conn, accountID
 		return output, err
 	}
 
-	// Return the result
 	output = *result
 	return output, nil
 }

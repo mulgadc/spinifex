@@ -12,10 +12,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// JWK is one entry of an RFC 7517 JSON Web Key Set. EKS publishes EC P-256
-// keys (kty=EC, crv=P-256, alg=ES256); the optional RSA fields are kept so a
-// future cluster published with a different alg still round-trips without
-// breaking the decoder.
+// JWK is one entry of an RFC 7517 JSON Web Key Set. EKS publishes EC P-256 keys;
+// RSA fields are kept for future compatibility.
 type JWK struct {
 	Kty string `json:"kty"`
 	Kid string `json:"kid"`
@@ -60,22 +58,12 @@ const (
 	eksIssuerSegCluster   = 4
 )
 
-// ParseEKSIssuerURL extracts the (accountID, clusterName) pair encoded in a
-// spinifex EKS OIDC issuer URL of the form:
+// ParseEKSIssuerURL extracts (accountID, clusterName) from a spinifex EKS OIDC issuer URL:
 //
 //	https://{gateway-host}/oidc/eks/{region}/{accountID}/{clusterName}
 //
-// This matches the URL ClusterOIDCIssuer (handlers/eks) emits and that awsgw
-// serves /.well-known/openid-configuration + /keys under. The host is the
-// awsgw gateway (an IP:port on bare-metal/on-prem, not an `oidc.eks.*` vhost),
-// so host trust is established by the IAM OIDC-provider registration — the full
-// issuer string is the registry key in verifyOIDCProviderRegistered — and by
-// the JWKS signature check, not by a host name pattern.
-//
-// Returns an error for any URL that does not match this exact 5-segment path
-// structure: defensive parsing pins accountID and clusterName at fixed
-// positions so a maliciously crafted `iss` claim cannot steer the JWKS lookup
-// at a different cluster bucket.
+// Strict 5-segment path parsing pins accountID and clusterName at fixed positions so a
+// crafted `iss` claim cannot steer the JWKS lookup to a different cluster bucket.
 func ParseEKSIssuerURL(issuer string) (accountID, clusterName string, err error) {
 	u, err := url.Parse(issuer)
 	if err != nil {
@@ -98,14 +86,8 @@ func ParseEKSIssuerURL(issuer string) (accountID, clusterName string, err error)
 	return segments[eksIssuerSegAccountID], segments[eksIssuerSegCluster], nil
 }
 
-// FetchClusterJWKS reads the JWKS document for an EKS cluster from the
-// per-account EKS KV bucket. The lookup is keyed by `{accountID, clusterName}`
-// extracted from the IRSA token's `iss` claim and resolved via the EKS store
-// helpers (single source of truth for bucket + key naming).
-//
-// Returns (nil, nil) when the cluster has no JWKS published yet — callers
-// translate that miss to InvalidIdentityToken so unverified tokens always
-// fail closed without leaking cluster-existence information.
+// FetchClusterJWKS reads the JWKS for an EKS cluster from the per-account EKS KV bucket.
+// Returns (nil, nil) when the cluster has no JWKS published; callers map that to InvalidIdentityToken.
 func FetchClusterJWKS(js nats.JetStreamContext, accountID, clusterName string) (*JWKS, error) {
 	if js == nil {
 		return nil, errors.New("nil JetStream context")

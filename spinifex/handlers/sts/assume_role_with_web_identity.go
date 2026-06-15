@@ -15,35 +15,21 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
 
-// webIdentityClaims is the RegisteredClaims subset the IRSA flow consumes.
-// The wider set of K8s ServiceAccount-token claims (kubernetes.io/*) is
-// ignored: STS only needs iss/sub/aud/exp to authorise the role assumption.
+// webIdentityClaims is the RegisteredClaims subset the IRSA flow consumes (iss/sub/aud/exp).
 type webIdentityClaims struct {
 	jwt.RegisteredClaims
 }
 
-// AssumeRoleWithWebIdentity exchanges an OIDC ID token (typically a projected
-// Kubernetes ServiceAccount token signed by an EKS cluster's per-cluster
-// ECDSA-P256 signing key) for short-lived AWS credentials bound to the target
-// IAM role.
-//
-// Verification order (each step fails closed on any error):
-//
-//  1. Validate input shape.
-//  2. Parse JWT with ES256 keyfunc that resolves issuer → registered OIDC
-//     provider → cluster JWKS → JWK by kid → *ecdsa.PublicKey.
-//  3. Validate `aud` contains `sts.amazonaws.com` (IRSA convention).
-//  4. Resolve and look up the target role.
-//  5. Evaluate the role's trust policy under web-identity semantics.
-//  6. Mint a session credential bound to the role.
-//
-// Anonymous action — caller identity is the JWT, not SigV4. The gateway
-// dispatcher does not gate this action with checkPolicy.
+// AssumeRoleWithWebIdentity exchanges an OIDC ID token (typically a K8s ServiceAccount
+// token) for short-lived credentials bound to the target IAM role. Validates input,
+// verifies the JWT (ES256, registered OIDC provider, aud must contain sts.amazonaws.com),
+// evaluates the trust policy, and mints a session. Anonymous — identity is the JWT, not SigV4.
 func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -61,7 +47,7 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 		return nil, errors.New(awserrors.ErrorPackedPolicyTooLarge)
 	}
 
-	roleAccountID, roleName, err := parseRoleARN(roleARN)
+	roleAccountID, roleName, err := auth.ParseRoleARN(roleARN)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
@@ -70,10 +56,8 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 	parser := jwt.NewParser(
 		jwt.WithValidMethods([]string{"ES256"}),
 		jwt.WithExpirationRequired(),
-		// Audience is validated explicitly below — the IRSA contract requires
-		// sts.amazonaws.com membership, and the jwt/v5 default audience check
-		// is a string-equality match on a configurable expected value that
-		// does not capture set-membership semantics on multi-aud tokens.
+		// Audience validated explicitly below; jwt/v5 default check is
+		// string-equality, which misses set-membership semantics on multi-aud tokens.
 	)
 	_, err = parser.ParseWithClaims(rawToken, claims, s.webIdentityKeyFunc(roleAccountID))
 	if err != nil {
@@ -93,9 +77,7 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 
 	roleOut, err := s.iamSvc.GetRole(roleAccountID, &iam.GetRoleInput{RoleName: aws.String(roleName)})
 	if err != nil {
-		// Cross-account miss → AccessDenied (per the AssumeRole pattern —
-		// prevents cross-account role enumeration). Same-account NoSuchEntity
-		// surfaces as-is.
+		// All misses → AccessDenied to prevent cross-account role enumeration.
 		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
 			return nil, errors.New(awserrors.ErrorAccessDenied)
 		}
@@ -130,7 +112,8 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 		return nil, err
 	}
 
-	cred, plainSecret, plainToken, err := s.mintSessionCredential(role, roleAccountID, sessionName, claims.Subject, duration)
+	env := assumedRoleEnvelope(role, roleAccountID, sessionName, claims.Subject)
+	cred, plainSecret, plainToken, err := s.mintSession(env, duration)
 	if err != nil {
 		return nil, err
 	}
@@ -167,18 +150,9 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 	}, nil
 }
 
-// webIdentityKeyFunc returns a jwt.Keyfunc bound to the role's account. The
-// `iss` claim drives JWKS discovery, but the OIDC-provider registry is read
-// from the role-account's IAM bucket (per Q4 — cross-account IRSA against an
-// issuer registered in a different account is not supported v1).
-//
-// Resolution path: iss → ParseEKSIssuerURL → (issuerAccountID, clusterName)
-// → registered-provider check in iam-account-{roleAccountID} → FetchClusterJWKS
-// from eks-account-{issuerAccountID} → JWK by kid → *ecdsa.PublicKey.
-//
-// Failures surface as plain errors to the parser; the caller maps them all
-// to ErrorInvalidIdentityToken so the token is rejected with a single
-// auditable error code regardless of which step failed.
+// webIdentityKeyFunc returns a jwt.Keyfunc that resolves iss → OIDC provider registry
+// (role account) → JWKS (issuer account) → JWK by kid → *ecdsa.PublicKey.
+// All failures map to ErrorInvalidIdentityToken at the call site.
 func (s *STSServiceImpl) webIdentityKeyFunc(roleAccountID string) jwt.Keyfunc {
 	return func(t *jwt.Token) (any, error) {
 		kid, _ := t.Header["kid"].(string)
@@ -215,12 +189,9 @@ func (s *STSServiceImpl) webIdentityKeyFunc(roleAccountID string) jwt.Keyfunc {
 	}
 }
 
-// verifyOIDCProviderRegistered looks up the issuer in the role-account's IAM
-// OIDC-provider registry. Bucket-not-found is treated identically to
-// key-not-found: the account has no providers registered yet, so no token
-// from any issuer can succeed. The error message intentionally does not
-// distinguish the two — leaking "your bucket exists" leaks account
-// activation status to anonymous callers.
+// verifyOIDCProviderRegistered checks the issuer in the role-account's OIDC-provider
+// registry. Bucket-not-found and key-not-found return the same error to avoid leaking
+// account activation status to anonymous callers.
 func (s *STSServiceImpl) verifyOIDCProviderRegistered(roleAccountID, issuer string) error {
 	bucketName := handlers_iam.IAMAccountBucketName(roleAccountID)
 	kv, err := s.js.KeyValue(bucketName)
@@ -240,10 +211,8 @@ func (s *STSServiceImpl) verifyOIDCProviderRegistered(roleAccountID, issuer stri
 	return nil
 }
 
-// jwkToECDSAPublicKey decodes a JWK (RFC 7517) EC entry into an
-// *ecdsa.PublicKey. Only ES256 / P-256 is supported v1 — matches the per-
-// cluster signing key generated at CreateCluster (eks-v1.md Q8). Any other
-// shape fails closed.
+// jwkToECDSAPublicKey decodes a JWK EC entry (RFC 7517) into an *ecdsa.PublicKey.
+// Only ES256 / P-256 is supported; any other shape fails closed.
 func jwkToECDSAPublicKey(jwk *JWK) (*ecdsa.PublicKey, error) {
 	if jwk == nil {
 		return nil, errors.New("nil JWK")
@@ -274,18 +243,13 @@ func jwkToECDSAPublicKey(jwk *JWK) (*ecdsa.PublicKey, error) {
 	return pub, nil
 }
 
-// claimAudienceContains is a constant-time membership test on the JWT `aud`
-// claim. jwt/v5 already canonicalises string-or-array into ClaimStrings;
-// this just iterates.
+// claimAudienceContains tests membership of want in the JWT aud claim.
 func claimAudienceContains(aud jwt.ClaimStrings, want string) bool {
 	return slices.Contains(aud, want)
 }
 
-// stripIssuerScheme drops the `https://` prefix from an issuer URL to produce
-// the form AWS uses as the suffix of `arn:aws:iam::{accountID}:oidc-provider/...`.
-// Returns the input unchanged if the prefix is absent (defensive — upstream
-// ParseEKSIssuerURL already enforces https, but stripping a non-match would
-// produce an empty path).
+// stripIssuerScheme drops the https:// prefix to produce the scheme-less form
+// AWS uses in oidc-provider ARN suffixes.
 func stripIssuerScheme(issuer string) string {
 	return strings.TrimPrefix(issuer, "https://")
 }

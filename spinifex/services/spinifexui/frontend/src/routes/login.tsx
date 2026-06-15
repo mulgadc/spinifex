@@ -1,6 +1,9 @@
-import { DescribeInstancesCommand } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { createFileRoute, redirect } from "@tanstack/react-router"
+import {
+  createFileRoute,
+  redirect,
+  type SearchSchemaInput,
+} from "@tanstack/react-router"
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 
@@ -19,15 +22,18 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
-  type AwsCredentials,
+  type AwsCredentialsInput,
   awsCredentialsSchema,
-  clearCredentials,
   getCredentials,
-  setCredentials,
+  setSessionCredentials,
 } from "@/lib/auth"
-import { clearClients, getEc2Client } from "@/lib/awsClient"
+import { clearClients } from "@/lib/awsClient"
+import { exchangeForSession } from "@/lib/sts"
 
 export const Route = createFileRoute("/login")({
+  validateSearch: (search: { reason?: string } & SearchSchemaInput) => ({
+    reason: search.reason === "expired" ? ("expired" as const) : undefined,
+  }),
   beforeLoad: () => {
     if (getCredentials()) {
       throw redirect({ to: "/" })
@@ -37,6 +43,7 @@ export const Route = createFileRoute("/login")({
 })
 
 function LoginPage() {
+  const { reason } = Route.useSearch()
   const [authError, setAuthError] = useState<string | null>(null)
   const {
     register,
@@ -46,17 +53,18 @@ function LoginPage() {
     resolver: zodResolver(awsCredentialsSchema),
   })
 
-  async function onSubmit(data: AwsCredentials) {
+  async function onSubmit(data: AwsCredentialsInput) {
     setAuthError(null)
-    // Clear cached clients so the new creds are picked up
-    clearClients()
-    setCredentials(data)
     try {
-      await getEc2Client().send(new DescribeInstancesCommand({}))
+      // Exchange the long-lived creds for short-lived session creds; this both
+      // validates them and yields the session token. The long-lived secret is
+      // never persisted.
+      const session = await exchangeForSession(data)
+      setSessionCredentials(session)
+      // Drop cached clients so they rebuild with the new session creds.
+      clearClients()
       window.location.href = "/"
     } catch {
-      clearCredentials()
-      clearClients()
       setAuthError(
         "Invalid credentials. Please check your Access Key ID and Secret Access Key.",
       )
@@ -71,6 +79,11 @@ function LoginPage() {
             <CardTitle>AWS Credentials</CardTitle>
           </CardHeader>
           <CardContent>
+            {reason === "expired" && !authError && (
+              <p className="mb-4 rounded-md bg-muted p-3 text-sm text-muted-foreground">
+                Your session is no longer valid — please sign in again.
+              </p>
+            )}
             {authError && (
               <p className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
                 {authError}

@@ -12,6 +12,7 @@ vi.mock("@/lib/awsClient", () => ({
 import type { CreateVpcWizardFormData } from "@/types/ec2"
 
 import {
+  useAssociateIamInstanceProfile,
   useAttachVolume,
   useAuthorizeSecurityGroupEgress,
   useAuthorizeSecurityGroupIngress,
@@ -27,6 +28,7 @@ import {
   useCreateVpc,
   useCreateVpcWizard,
   useDeleteKeyPair,
+  useDisassociateIamInstanceProfile,
   useDeletePlacementGroup,
   useDeleteSecurityGroup,
   useDeleteSnapshot,
@@ -634,6 +636,40 @@ describe("useCreateSubnet", () => {
       AvailabilityZone: "us-east-1a",
     })
   })
+
+  it("calls ModifySubnetAttribute when mapPublicIpOnLaunch is set", async () => {
+    createQueryClient()
+    mockSend.mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-abc" } })
+    const { result } = renderHook(() => useCreateSubnet(), { wrapper })
+
+    result.current.mutate({
+      vpcId: "vpc-123",
+      cidrBlock: "10.0.1.0/24",
+      mapPublicIpOnLaunch: true,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend).toHaveBeenCalledTimes(2)
+    expect(mockSend.mock.calls[1]?.[0].input).toStrictEqual({
+      SubnetId: "subnet-abc",
+      MapPublicIpOnLaunch: { Value: true },
+    })
+  })
+
+  it("skips ModifySubnetAttribute when mapPublicIpOnLaunch is false", async () => {
+    createQueryClient()
+    mockSend.mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-abc" } })
+    const { result } = renderHook(() => useCreateSubnet(), { wrapper })
+
+    result.current.mutate({
+      vpcId: "vpc-123",
+      cidrBlock: "10.0.1.0/24",
+      mapPublicIpOnLaunch: false,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend).toHaveBeenCalledOnce()
+  })
 })
 
 describe("useDeleteSubnet", () => {
@@ -878,6 +914,34 @@ describe("useRevokeSecurityGroupIngress", () => {
     })
   })
 
+  it("uses UserIdGroupPairs when sourceGroupId is given", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useRevokeSecurityGroupIngress(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      groupId: "sg-123",
+      ipProtocol: "-1",
+      fromPort: 0,
+      toPort: 0,
+      sourceGroupId: "sg-123",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupId: "sg-123",
+      IpPermissions: [
+        {
+          IpProtocol: "-1",
+          FromPort: 0,
+          ToPort: 0,
+          UserIdGroupPairs: [{ GroupId: "sg-123" }],
+        },
+      ],
+    })
+  })
+
   it("invalidates securityGroups queries on success", async () => {
     createQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
@@ -989,6 +1053,8 @@ describe("useCreateVpcWizard", () => {
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-pub-1" } })
+      // ModifySubnetAttribute (MapPublicIpOnLaunch) for the public subnet
+      .mockResolvedValueOnce({})
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-priv-1" } })
       .mockResolvedValueOnce({
         InternetGateway: { InternetGatewayId: "igw-111" },
@@ -1018,9 +1084,53 @@ describe("useCreateVpcWizard", () => {
     })
 
     await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
-    expect(mockSend).toHaveBeenCalledTimes(10)
+    expect(mockSend).toHaveBeenCalledTimes(11)
     expect(result.current.data?.vpcId).toBe("vpc-111")
     expect(result.current.data?.created).toHaveLength(6)
+    expect(result.current.data?.error).toBeUndefined()
+  })
+
+  it("provisions a NAT gateway when natGateway is single", async () => {
+    createQueryClient()
+    mockSend
+      .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
+      .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-pub-1" } })
+      // ModifySubnetAttribute (public)
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-priv-1" } })
+      .mockResolvedValueOnce({
+        InternetGateway: { InternetGatewayId: "igw-111" },
+      })
+      // AttachInternetGateway
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ RouteTable: { RouteTableId: "rtb-pub-1" } })
+      // CreateRoute (igw) + AssociateRouteTable (public)
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ RouteTable: { RouteTableId: "rtb-priv-1" } })
+      // AssociateRouteTable (private)
+      .mockResolvedValueOnce({})
+      // AllocateAddress -> CreateNatGateway -> CreateRoute (nat)
+      .mockResolvedValueOnce({ AllocationId: "eipalloc-1" })
+      .mockResolvedValueOnce({ NatGateway: { NatGatewayId: "nat-1" } })
+      .mockResolvedValueOnce({})
+
+    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+
+    result.current.mutate({
+      ...baseParams,
+      mode: "vpc-and-more",
+      publicSubnetCount: 1,
+      privateSubnetCount: 1,
+      natGateway: "single",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend).toHaveBeenCalledTimes(14)
+    const types = result.current.data?.created.map((r) => r.type)
+    expect(types).toContain("Elastic IP")
+    expect(types).toContain("NAT Gateway")
+    expect(result.current.data?.created).toHaveLength(8)
     expect(result.current.data?.error).toBeUndefined()
   })
 
@@ -1056,6 +1166,8 @@ describe("useCreateVpcWizard", () => {
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-pub-1" } })
+      // ModifySubnetAttribute (MapPublicIpOnLaunch) for the public subnet
+      .mockResolvedValueOnce({})
       .mockRejectedValueOnce(new Error("CIDR conflict"))
 
     const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
@@ -1137,5 +1249,63 @@ describe("useCreateVpcWizard", () => {
     await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     const tags = mockSend.mock.calls[0]?.[0].input.TagSpecifications?.[0]?.Tags
     expect(tags).toContainEqual({ Key: "Env", Value: "prod" })
+  })
+})
+
+describe("useAssociateIamInstanceProfile", () => {
+  it("sends AssociateIamInstanceProfileCommand with instance and profile", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useAssociateIamInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      instanceId: "i-abc123",
+      instanceProfileName: "my-profile",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      InstanceId: "i-abc123",
+      IamInstanceProfile: { Name: "my-profile" },
+    })
+  })
+
+  it("invalidates associations and instances on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useAssociateIamInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      instanceId: "i-abc123",
+      instanceProfileName: "my-profile",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["ec2", "iam-instance-profile-associations", "i-abc123"],
+    })
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["ec2", "instances"] })
+  })
+})
+
+describe("useDisassociateIamInstanceProfile", () => {
+  it("sends DisassociateIamInstanceProfileCommand with associationId", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDisassociateIamInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      associationId: "iip-assoc-1",
+      instanceId: "i-abc123",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      AssociationId: "iip-assoc-1",
+    })
   })
 })

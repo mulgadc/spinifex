@@ -75,13 +75,6 @@ func (cfg *NBDKitConfig) buildArgs() ([]string, error) {
 }
 
 func (cfg *NBDKitConfig) Execute() (*exec.Cmd, error) {
-	// TODO: Consider setting threads to X% of the host availability (preference for VMs)
-	/*
-			--threads=THREADS
-		           Set the number of threads to be used per connection, which in turn controls the number of outstanding requests  that  can
-		           be  processed  at  once.   Only  matters  for  plugins  with  thread_model=parallel  (where it defaults to 16).  To force
-		           serialized behavior (useful if the client is not prepared for out-of-order responses), set this to 1.
-	*/
 	args, err := cfg.buildArgs()
 	if err != nil {
 		return nil, err

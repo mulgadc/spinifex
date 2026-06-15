@@ -5,10 +5,9 @@ import (
 	"net/netip"
 )
 
-// AllocateRequest carries the per-allocation identity used by both static
-// and DHCP-backed allocators. PoolName picks the pool; the AWS identity
-// (AllocationID / ENIID / InstanceID) is recorded on the IPAM entry for
-// static pools and used as the DHCP client-ID for DHCP pools.
+// AllocateRequest carries the allocation identity for static and DHCP allocators.
+// PoolName selects the pool; AWS identity is recorded on the IPAM entry (static)
+// or used as the DHCP client-ID.
 type AllocateRequest struct {
 	PoolName     string
 	Purpose      string

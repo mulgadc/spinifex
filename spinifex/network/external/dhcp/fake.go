@@ -8,10 +8,8 @@ import (
 	"time"
 )
 
-// Fake is a configurable in-memory Client for unit tests. It mimics the
-// DORA / RENEW / RELEASE lifecycle well enough to exercise DHCPManager
-// (Q3) and DHCPPoolAllocator (Q4) without opening real sockets. Hooks
-// let tests inject errors or custom responses at each step.
+// Fake is a configurable in-memory Client for unit tests. Hooks let tests
+// inject errors or custom responses without opening real sockets.
 type Fake struct {
 	mu sync.Mutex
 

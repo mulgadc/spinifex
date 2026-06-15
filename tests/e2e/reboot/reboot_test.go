@@ -1,17 +1,8 @@
 //go:build e2e
 
-// Package reboot ports run-reboot-e2e.sh — the single-node host-reboot
-// resilience driver (cell #18).
-//
-// Unlike the cert/lb/single suites which ship their compiled .test binary to
-// the spinifex VM and run in-VM, this suite MUST run on the GitHub Actions
-// runner (or any host outside the cluster). `sudo systemctl reboot` kills any
-// in-VM process mid-step, so the driver has to live somewhere the reboot
-// can't touch.
-//
-// All AWS API traffic crosses the WAN to https://WAN_IP:9999 via the SDK;
-// SSH-level ops (reboot, ovn-nbctl, journalctl, file mutations) hop via
-// harness.PeerSSH.
+// Package reboot is the single-node host-reboot resilience suite. It MUST run outside
+// the cluster (on the CI runner) because systemctl reboot kills any in-VM process.
+// AWS API traffic crosses the WAN via the SDK; SSH ops use harness.PeerSSH.
 package reboot
 
 import (
@@ -50,10 +41,8 @@ const (
 	rebootDoctype = "reboot-e2e"
 )
 
-// appUserData provisions a systemd-managed HTTP responder on the guest VM.
-// Installed as a unit rather than nohup-from-cloud-init so the responder
-// survives the guest's own restart after the host reboot — cloud-init's
-// per-instance semaphore only fires once.
+// appUserData provisions a systemd-managed HTTP responder. Using a unit (not nohup) ensures
+// the responder survives the guest's own restart after host reboot.
 const appUserData = `#!/bin/bash
 set -e
 INSTANCE_ID=$(hostname)
@@ -131,12 +120,8 @@ type timeouts struct {
 	lbRecover       time.Duration
 }
 
-// TestRebootResilience is the Go port of run-reboot-e2e.sh.
-//
-// Phases run sequentially in one top-level test rather than parallel subtests
-// — the reboot itself is a global event and later phases assume earlier
-// phases succeeded. Each phase emits a Phase banner so failures localise
-// cleanly in JUnit XML.
+// TestRebootResilience runs the 8-phase reboot resilience sequence.
+// Phases are sequential: the reboot is a global event and each phase depends on the prior.
 func TestRebootResilience(t *testing.T) {
 	env := harness.LoadEnv(t)
 	requireRunnerMode(t, env)
@@ -150,18 +135,9 @@ func TestRebootResilience(t *testing.T) {
 			rebootWait:      durationEnv("REBOOT_WAIT_SECS", 300*time.Second),
 			daemonReady:     durationEnv("DAEMON_READY_SECS", 180*time.Second),
 			instanceRunning: durationEnv("INSTANCE_RUNNING_SECS", 120*time.Second),
-			// 5min, not bash's 180s. Pre-reboot the test creates the LB
-			// AFTER the apps are already running, so by the time HAProxy
-			// starts probing the app responders are already serving — ~75s
-			// to healthy. Post-reboot the daemon's recovery scan relaunches
-			// app VMs and the ALB sys.micro VM simultaneously, so HC starts
-			// probing within seconds of app boot beginning. Both targets
-			// honestly report unhealthy until the app's responder unit
-			// finishes starting (cloud-init's per-instance semaphore means
-			// no shortcut path on relaunch). The bash driver masked this by
-			// reading stale "healthy" from the daemon's pre-reboot TG cache
-			// (now fixed via ResetTargetHealthOnStartup — mulga-siv-119);
-			// the honest wait surfaces the real recovery window.
+			// 5min budget: post-reboot the daemon relaunches app VMs and the ALB sys.micro
+			// simultaneously; HC probing starts immediately but targets honestly report
+			// unhealthy until the responder unit finishes starting (no cloud-init shortcut).
 			lbRecover: durationEnv("LB_RECOVER_SECS", 300*time.Second),
 		},
 	}
@@ -216,10 +192,7 @@ func TestRebootResilience(t *testing.T) {
 
 // --- Setup helpers -------------------------------------------------------
 
-// requireRunnerMode bails early if the env doesn't look runner-resident.
-// WAN_IP empty would still work but signals a config mistake — better to fail
-// fast than walk through 30s of AWS-endpoint timeouts before the operator
-// notices.
+// requireRunnerMode bails early if the env isn't runner-resident (SPINIFEX_WAN_IP or endpoint missing).
 func requireRunnerMode(t *testing.T, env *harness.Env) {
 	t.Helper()
 	if env.WANHost == "" {
@@ -233,12 +206,8 @@ func requireRunnerMode(t *testing.T, env *harness.Env) {
 	}
 }
 
-// resolveTrust attempts to SCP the spinifex CA off the VM to a tmp file so
-// the AWS SDK uses real TLS verification. On any failure (no SSH key, scp
-// non-zero exit, file empty) it logs the reason and flips
-// SPINIFEX_AWS_INSECURE=1 so the SDK skips verification. CA trust isn't what
-// the reboot suite is testing — the cert suite already validates trust — so
-// the fallback is intentional rather than a quiet degradation.
+// resolveTrust SCPs the spinifex CA to a tmp file for real TLS verification.
+// Falls back to SPINIFEX_AWS_INSECURE=1 on any error; CA trust is the cert suite's concern.
 func resolveTrust(t *testing.T, fix *fixture) {
 	t.Helper()
 	if os.Getenv("SPINIFEX_AWS_INSECURE") == "1" {
@@ -294,8 +263,7 @@ func phase0Prereqs(t *testing.T, fix *fixture) {
 	fix.amiID = discoverAMI(t, fix.aws)
 	harness.Detail(t, "ami", fix.amiID)
 
-	// Key pair — capture KeyMaterial so post-reboot diagnostics can SSH into
-	// guest VMs via the host's QEMU hostfwd port when health probes fail.
+	// Capture KeyMaterial so post-reboot diagnostics can SSH into guest VMs.
 	_, _ = fix.aws.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(keyName)})
 	kpOut, err := fix.aws.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(keyName)})
 	require.NoErrorf(t, err, "create-key-pair %s", keyName)
@@ -344,8 +312,7 @@ func phase1Network(t *testing.T, fix *fixture) {
 	require.NoError(t, err, "create-security-group")
 	fix.sgID = aws.StringValue(sgOut.GroupId)
 
-	// Structured IpPermissions form — vpcd ignores the top-level shortcut
-	// (mulga-siv-79) so port 80 ingress must use IpPermissions to land in OVN.
+	// Use IpPermissions form — vpcd ignores the top-level shorthand field.
 	// tcp/22 is opened so on-failure diagnostics can SSH into app guests.
 	_, err = fix.aws.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(fix.sgID),
@@ -492,6 +459,14 @@ func phase5Snapshot(t *testing.T, fix *fixture) {
 	fix.preSwitches, fix.prePorts = countOVN(string(out))
 	harness.Detail(t, "pre_switches", fix.preSwitches, "pre_ports", fix.prePorts)
 	harness.DumpFile(t, fix.artifacts, "ovn-pre.txt", out)
+
+	// Capture OVN chassis identity pre-reboot so the post-reboot dump can be diffed;
+	// SB Chassis _uuid churn across reboot orphans every Port_Binding claim.
+	cstate, err := fix.ssh.Run(ctx, fix.env.WANHost, ovnChassisStateBundle)
+	if err != nil {
+		t.Logf("ovn chassis pre-snapshot: %v (non-fatal)", err)
+	}
+	harness.DumpFile(t, fix.artifacts, "ovn-pre-chassis.txt", cstate)
 }
 
 func phase6Reboot(t *testing.T, fix *fixture) {
@@ -501,14 +476,12 @@ func phase6Reboot(t *testing.T, fix *fixture) {
 	fix.mu.Unlock()
 	harness.Step(t, "issuing reboot via ssh (connection will drop)")
 
-	// Best-effort: the ssh process is expected to die mid-command when the
-	// host starts shutting down. Don't fail on it.
+	// SSH dies mid-command when the host shuts down; ignore the error.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, _ = fix.ssh.Run(ctx, fix.env.WANHost, "sudo systemctl reboot")
 
-	// Let the host start shutting down before we begin polling so we don't
-	// accept the pre-reboot SSH window as "back".
+	// Wait for shutdown to begin so the pre-reboot SSH window isn't mistaken for "back up".
 	time.Sleep(5 * time.Second)
 
 	harness.Step(t, "polling TCP/22 (timeout %s)", fix.timeouts.rebootWait)
@@ -595,19 +568,22 @@ func phase8Asserts(t *testing.T, fix *fixture) {
 	// 8.4 ALB active
 	harness.WaitForLBActive(t, fix.aws, fix.albArn, "ALB post-reboot", fix.timeouts.lbRecover)
 
-	// 8.5 targets healthy
-	harness.WaitForTargetsHealthy(t, fix.aws, fix.tgArn, 2, "ALB post-reboot", fix.timeouts.lbRecover)
+	// 8.5 targets healthy — capture diagnostics before failing so a timeout can be
+	// pinned to network-level drop vs. app/gateway stall.
+	if !pollTargetsHealthy(fix.aws, fix.tgArn, 2, fix.timeouts.lbRecover) {
+		harness.Step(t, "ALB post-reboot: targets NOT healthy — capturing diagnostics")
+		dctx, dcancel := context.WithTimeout(context.Background(), 120*time.Second)
+		dumpHeartbeatDiagnostics(dctx, t, fix)
+		dumpOVNDataplane(dctx, t, fix)
+		dumpOVNClaimState(dctx, t, fix)
+		dumpAppDiagnostics(t, fix)
+		dcancel()
+		t.Fatalf("ALB post-reboot: targets not healthy within %s (see diag-heartbeat.txt / diag-ovn-flows.txt / diag-ovn-claim.txt / diag-host-net.txt)", fix.timeouts.lbRecover)
+	}
+	harness.Step(t, "ALB post-reboot: 2 targets healthy")
 
-	// 8.6 ALB actually serves traffic from BOTH backends.
-	// WaitForTargetsHealthy reads cached state from spinifex's TG store —
-	// post-reboot the cache may still show pre-reboot "healthy" until the
-	// lb-agent inside the ALB system VM sends a fresh report. A naive
-	// "ANY response" probe lets the burst fire when only one backend is
-	// up (the second is still bringing HAProxy/responder online), and the
-	// burst then lands 20/0 instead of 10/10. Probe until both backends'
-	// instance_ids each appear at least once — confirms the recovery path
-	// has actually reached both before we assert round-robin. Refs the
-	// daemon-side TG cache invalidation bug tracked separately.
+	// 8.6 Probe until both backends' instance_ids are seen before asserting round-robin:
+	// healthy-cache state may show stale "healthy" until both responders are actually up.
 	harness.Step(t, "waiting for ALB to serve HTTP from both backends")
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer probeCancel()
@@ -628,10 +604,7 @@ func phase8Asserts(t *testing.T, fix *fixture) {
 
 	runHTTPBurst(t, fix, "ALB post-reboot")
 
-	// 8.6.5 ALWAYS-RUN guest probe — captures in-guest responder state even
-	// when the test passes, so we can confirm whether the responder is genuinely
-	// running on the relaunched VMs vs. some upstream cache satisfying HC.
-	// Refs investigation into "tcp/22 SG ingress fixes post-reboot HTTP".
+	// 8.6.5 Always capture in-guest responder state (pass or fail) to confirm genuine liveness.
 	dumpAppDiagnostics(t, fix)
 
 	// 8.7 ovn-nbctl drift check
@@ -867,11 +840,8 @@ func dumpDiagnostics(t *testing.T, fix *fixture, since time.Time) {
 	}
 }
 
-// dumpAppDiagnostics probes each app instance's IGW-NAT'd public IP from the
-// host VM. App VMs use pure OVN tap interfaces (no QEMU hostfwd), so SSH from
-// host is impossible — public-IP probes are the only no-cost path. Localises
-// post-reboot failures to one of: VM not running, OVN DNAT missing, responder
-// down, or responder up but reachable only from sys.micro (path asymmetry).
+// dumpAppDiagnostics probes each app instance's public IP from the host.
+// App VMs have no QEMU hostfwd, so public-IP probes are the only available path.
 func dumpAppDiagnostics(t *testing.T, fix *fixture) {
 	t.Helper()
 	if len(fix.appInstanceIDs) == 0 {
@@ -896,9 +866,7 @@ func dumpAppDiagnostics(t *testing.T, fix *fixture) {
 	}
 }
 
-// dumpHostNetState captures post-reboot OVN/OVS/route state on the spinifex
-// host so failures show whether the gateway router, ext bridge, and host
-// routing table all came back as expected. Single round-trip.
+// dumpHostNetState captures OVN/OVS/route state on the host in a single round-trip.
 func dumpHostNetState(ctx context.Context, t *testing.T, fix *fixture) {
 	t.Helper()
 	bundle := `set +e
@@ -921,6 +889,166 @@ sudo ovs-vsctl list-ports br-int 2>&1
 	harness.DumpFile(t, fix.artifacts, "diag-host-net.txt", out)
 	if err != nil {
 		harness.Detail(t, "host-net", fmt.Sprintf("dump err: %v", err))
+	}
+}
+
+// pollTargetsHealthy is the non-fatal twin of harness.WaitForTargetsHealthy:
+// returns true on healthy, false on timeout, so the caller can capture diagnostics before aborting.
+func pollTargetsHealthy(c *harness.AWSClient, tgArn string, expected int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := c.ELBv2.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+			TargetGroupArn: aws.String(tgArn),
+		})
+		if err == nil {
+			healthy := 0
+			for _, th := range out.TargetHealthDescriptions {
+				if aws.StringValue(th.TargetHealth.State) == "healthy" {
+					healthy++
+				}
+			}
+			if healthy >= expected {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// dumpHeartbeatDiagnostics captures whether the lb-agent's heartbeat to the gateway is
+// failing at the network layer or the app/gateway layer. Tcpdumps both the gateway port
+// (any iface) and the br-wan north-south path; also pulls lb-agent console and awsgw journal.
+func dumpHeartbeatDiagnostics(ctx context.Context, t *testing.T, fix *fixture) {
+	t.Helper()
+	if fix.albPublicIP == "" {
+		harness.Detail(t, "heartbeat", "no ALB public IP captured")
+		return
+	}
+	bundle := fmt.Sprintf(`set +e
+echo "=== tcpdump ANY iface, gateway port :%[2]d (real heartbeat path), 14s ==="
+sudo timeout 14 tcpdump -ni any -c 80 "tcp port %[2]d" 2>&1
+echo "=== tcpdump br-wan ALB floating IP %[1]s + ARP (north-south), 8s ==="
+sudo timeout 8 tcpdump -ni br-wan -c 40 "host %[1]s or (arp and host %[1]s)" 2>&1
+echo "=== neigh for ALB floating IP %[1]s ==="
+ip neigh show %[1]s 2>&1 || ip neigh show 2>&1 | grep -F %[1]s
+echo "=== conntrack for gateway port %[2]d ==="
+sudo conntrack -L 2>/dev/null | grep -E "dport=%[2]d|sport=%[2]d" | head || echo "(no conntrack entries / tool absent)"
+echo "=== lb-agent console: Heartbeat / Config / Agent lines ==="
+sudo grep -aE "Heartbeat|Config (hash|applied)|Agent started" /run/spinifex/console-*.log 2>/dev/null | tail -25
+echo "=== awsgw journal: did the gateway RECEIVE heartbeats? ==="
+sudo journalctl -u spinifex-awsgw --no-pager --since "3 min ago" 2>/dev/null | grep -iE "heartbeat|lb-agent|/lb/|target.?health" | tail -20
+`, fix.albPublicIP, fix.env.AWSGWPort)
+
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
+	harness.DumpFile(t, fix.artifacts, "diag-heartbeat.txt", out)
+	if err != nil {
+		harness.Detail(t, "heartbeat", fmt.Sprintf("dump err: %v", err))
+		return
+	}
+	body := string(out)
+	// Detect any L4 packet on the gateway port.
+	sawGatewayL4 := strings.Contains(body, fmt.Sprintf(".%d:", fix.env.AWSGWPort)) ||
+		strings.Contains(body, fmt.Sprintf(".%d >", fix.env.AWSGWPort)) ||
+		strings.Contains(body, fmt.Sprintf("> %s.%d", fix.env.WANHost, fix.env.AWSGWPort))
+	switch {
+	case sawGatewayL4:
+		harness.Detail(t, "heartbeat", "gateway-port PACKETS FLOW — network path healthy; failure is app/gateway-layer (TLS/HTTP/gateway state)")
+	default:
+		harness.Detail(t, "heartbeat", "NO packets on gateway port — network-level drop; check diag-ovn-flows.txt for br-int forwarding")
+	}
+}
+
+// dumpOVNDataplane captures OVN/OVS dataplane state at failure time: topology, br-int flows,
+// Port_Bindings, NAT rows, neigh table, and ALB floating-IP reachability from the host.
+func dumpOVNDataplane(ctx context.Context, t *testing.T, fix *fixture) {
+	t.Helper()
+	bundle := fmt.Sprintf(`set +e
+echo "=== ovs-vsctl show (bridges + ports) ==="
+sudo ovs-vsctl show 2>&1 | head -120
+echo "=== ovs-ofctl dump-flows br-int (forwarding flows) ==="
+sudo ovs-ofctl dump-flows br-int 2>&1 | head -200
+echo "=== ovn-sbctl chassis + port bindings ==="
+sudo ovn-sbctl --no-leader-only show 2>&1 | head -80
+echo "=== ovn-sbctl Port_Binding (chassis assignment) ==="
+sudo ovn-sbctl --no-leader-only list Port_Binding 2>&1 | grep -E "logical_port|chassis|mac|type " | head -80
+echo "=== ovn-nbctl dnat_and_snat NAT rows ==="
+sudo ovn-nbctl --no-leader-only list NAT 2>&1 | grep -E "external_ip|logical_ip|external_mac|type " | head -60
+echo "=== host neigh (all floating IPs) ==="
+ip neigh show 2>&1 | grep -E "br-wan|br-int" | head -40
+echo "=== host->ALB floating IP %[1]s reachability ==="
+ping -c 2 -W 2 %[1]s 2>&1
+sudo ovs-appctl ofproto/trace br-int "in_port=LOCAL,ip,nw_dst=%[1]s" 2>&1 | tail -20 || echo "(ofproto/trace unavailable)"
+`, fix.albPublicIP)
+
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
+	harness.DumpFile(t, fix.artifacts, "diag-ovn-flows.txt", out)
+	if err != nil {
+		harness.Detail(t, "ovn", fmt.Sprintf("dump err: %v", err))
+		return
+	}
+	body := string(out)
+	reachable := strings.Contains(body, " 0% packet loss")
+	hasFlows := strings.Contains(body, "cookie=") && strings.Contains(body, "table=")
+	switch {
+	case reachable:
+		harness.Detail(t, "ovn", "ALB floating IP reachable from host — forwarding OK, failure is elsewhere")
+	case hasFlows:
+		harness.Detail(t, "ovn", "br-int has flows but floating IP unreachable — flow/forwarding mismatch (inspect dump-flows + ofproto/trace)")
+	default:
+		harness.Detail(t, "ovn", "br-int flows MISSING and floating IP unreachable — dataplane flow-restore gap post-reboot")
+	}
+}
+
+// ovnChassisStateBundle captures OVN chassis identity + SB records for pre/post diff.
+// _uuid churn across reboot orphans every Port_Binding claim.
+const ovnChassisStateBundle = `set +e
+echo "=== OVS system-id (chassis identity; must be stable across reboot) ==="
+sudo cat /etc/openvswitch/system-id.conf 2>&1
+sudo ovs-vsctl get Open_vSwitch . external_ids:system-id 2>&1
+echo "=== ovn-sbctl list Chassis (name/_uuid/hostname/encaps) ==="
+sudo ovn-sbctl --no-leader-only list Chassis 2>&1 | grep -E "_uuid|name|hostname|ip " | head -40
+echo "=== ovn-sbctl list Chassis_Private (claimed-by + nb_cfg) ==="
+sudo ovn-sbctl --no-leader-only list Chassis_Private 2>&1 | grep -E "_uuid|name|chassis|nb_cfg" | head -40
+echo "=== ovn get-connection (did set-connection persist?) ==="
+sudo ovn-nbctl get-connection 2>&1
+sudo ovn-sbctl get-connection 2>&1
+`
+
+// dumpOVNClaimState captures evidence for why ovn-controller is not claiming Port_Bindings.
+// Pulls /var/log/ovn directly (not journald), SB connection state, and boot ordering
+// to distinguish chassis-identity churn from an SB/NB startup-ordering race.
+func dumpOVNClaimState(ctx context.Context, t *testing.T, fix *fixture) {
+	t.Helper()
+	bundle := ovnChassisStateBundle + `echo "=== ovn-controller SB connection-status ==="
+sudo env OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-controller connection-status 2>&1
+echo "=== ovn-controller debug/status ==="
+sudo env OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-controller debug/status 2>&1 | head -20
+echo "=== gw/eni Port_Binding claim detail (chassis/up/requested_chassis) ==="
+sudo ovn-sbctl --no-leader-only --columns=logical_port,type,chassis,up,requested_chassis find Port_Binding 2>&1 | grep -A4 -E "gw-vpc|port-eni" | head -60
+echo "=== ovn-central vs ovn-controller boot ordering ==="
+systemctl show ovn-central ovn-controller openvswitch-switch -p Id -p ActiveEnterTimestamp -p ExecMainStartTimestamp 2>&1
+echo "=== tail /var/log/ovn/ovn-controller.log ==="
+sudo tail -n 60 /var/log/ovn/ovn-controller.log 2>&1
+echo "=== tail /var/log/ovn/ovn-northd.log ==="
+sudo tail -n 40 /var/log/ovn/ovn-northd.log 2>&1
+`
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
+	harness.DumpFile(t, fix.artifacts, "diag-ovn-claim.txt", out)
+	if err != nil {
+		harness.Detail(t, "ovn-claim", fmt.Sprintf("dump err: %v", err))
+		return
+	}
+	body := string(out)
+	switch {
+	case strings.Contains(body, "not connected"):
+		harness.Detail(t, "ovn-claim", "ovn-controller NOT connected to SB — claim failure is an SB-connection/ordering issue")
+	case strings.Contains(body, "chassis             : []"), strings.Contains(body, "chassis : []"):
+		harness.Detail(t, "ovn-claim", "gw/eni Port_Binding unclaimed (chassis empty) — diff ovn-pre-chassis.txt vs this for identity churn")
+	default:
+		harness.Detail(t, "ovn-claim", "see diag-ovn-claim.txt — compare Chassis _uuid against ovn-pre-chassis.txt")
 	}
 }
 
@@ -978,9 +1106,7 @@ func diagnoseAppInstance(ctx context.Context, t *testing.T, fix *fixture, id str
 		harness.Detail(t, id, "qemu running")
 	}
 
-	// Serial console — captures cloud-init, kernel oops, systemd boot, anything
-	// the guest emitted to ttyS0. Tail to cap size; the full log lives on the
-	// host until cleanup.
+	// Serial console (ttyS0) — cloud-init, kernel oops, systemd boot events.
 	consoleOut, _ := fix.ssh.Run(ctx, fix.env.WANHost,
 		fmt.Sprintf("sudo tail -c 262144 /run/spinifex/console-%s.log 2>/dev/null || true", id))
 	harness.DumpFile(t, fix.artifacts, fmt.Sprintf("diag-%s-console.log", id), consoleOut)
@@ -1024,16 +1150,12 @@ rm -f /tmp/diag-body-%[2]s
 		harness.Detail(t, id, "probe inconclusive — see artifact")
 	}
 
-	// Try SSH-in via the IGW path. tcp/22 SG ingress is wired in phase1.
-	// On success this dumps the responder unit + cloud-init state, which is
-	// the only path to root-cause a "tcp open but responder silent" failure.
+	// SSH-in via IGW; dumps responder unit + cloud-init state inside the guest.
 	sshIntoApp(ctx, t, fix, id, pub)
 }
 
-// sshIntoApp uploads the key pair private key to the host, then SSHes from
-// the host to the app guest at its IGW public IP and dumps responder /
-// cloud-init / network state. Best-effort: silently no-ops if key wasn't
-// captured or SSH fails.
+// sshIntoApp uploads the key to the host then SSHes into the app guest to dump
+// responder, cloud-init, and network state. Best-effort: no-ops if key unavailable or SSH fails.
 func sshIntoApp(ctx context.Context, t *testing.T, fix *fixture, id, pub string) {
 	t.Helper()
 	if fix.privateKeyPath == "" {
@@ -1097,8 +1219,7 @@ ls -l /var/lib/cloud/instances/ 2>&1
 echo "=== /var/lib/cloud/instances/*/sem ==="
 ls -l /var/lib/cloud/instances/*/sem/ 2>&1
 `
-	// Outer ssh ships one cmd; inside, write the key, then ssh again to guest
-	// with a heredoc. Single round trip from runner.
+	// Single outer SSH: write the key then hop into the guest. One round trip.
 	outerCmd := fmt.Sprintf(`set +e
 umask 077 && printf '%%s' '%s' | base64 -d > %s && chmod 600 %s
 ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -1120,9 +1241,8 @@ rm -f %s
 
 // --- Cleanup -------------------------------------------------------------
 
-// cleanup runs t.Cleanup logic — LIFO ordering of the bash cleanup() trap.
-// SG deletion runs LAST because it can't be deleted while instance/ALB ENIs
-// still reference it.
+// cleanup tears down all test resources; SG is deleted last as it can't be removed
+// while instance or ALB ENIs still reference it.
 func cleanup(t *testing.T, fix *fixture) {
 	t.Helper()
 	harness.Phase(t, "Cleanup")
@@ -1189,8 +1309,7 @@ func durationEnv(key string, def time.Duration) time.Duration {
 	if v == "" {
 		return def
 	}
-	// Accept either a bare integer (seconds, per the bash defaults) or any
-	// time.ParseDuration string (e.g. "5m"). Bash sets REBOOT_WAIT_SECS=300.
+	// Accept a bare integer (treated as seconds) or a time.ParseDuration string.
 	if d, err := time.ParseDuration(v); err == nil {
 		return d
 	}

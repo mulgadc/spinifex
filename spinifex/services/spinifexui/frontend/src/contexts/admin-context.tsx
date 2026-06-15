@@ -1,13 +1,21 @@
+import { GetCallerIdentityCommand } from "@aws-sdk/client-sts"
 import { createContext, useContext, useEffect, useState } from "react"
 
 import { getCredentials } from "@/lib/auth"
 import { signedFetch } from "@/lib/signed-fetch"
+import { getStsClient } from "@/lib/sts"
 
 const ADMIN_ACCOUNT_ID = "000000000001"
 
-interface CallerIdentity {
-  account_id: string
-  user_name: string
+// userNameFromArn pulls the user name out of an IAM user ARN
+// (arn:aws:iam::<acct>:user/<name>); returns null for other ARN shapes.
+function userNameFromArn(arn: string | undefined): string | null {
+  const marker = ":user/"
+  const index = arn?.indexOf(marker) ?? -1
+  if (index === -1 || arn === undefined) {
+    return null
+  }
+  return arn.slice(index + marker.length) || null
 }
 
 interface VersionInfo {
@@ -48,12 +56,12 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const identity = await signedFetch<CallerIdentity>({
-          action: "GetCallerIdentity",
-          credentials,
-        })
+        const identity = await getStsClient().send(
+          new GetCallerIdentityCommand({}),
+        )
 
-        const isAdmin = identity.account_id === ADMIN_ACCOUNT_ID
+        const accountId = identity.Account ?? null
+        const isAdmin = accountId === ADMIN_ACCOUNT_ID
         let version: VersionInfo | null = null
 
         if (isAdmin) {
@@ -69,8 +77,8 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
 
         setState({
           isAdmin,
-          accountId: identity.account_id,
-          userName: identity.user_name,
+          accountId,
+          userName: userNameFromArn(identity.Arn),
           version,
           license: version?.license ?? null,
           loading: false,

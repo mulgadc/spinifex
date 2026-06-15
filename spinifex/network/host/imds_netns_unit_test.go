@@ -8,9 +8,8 @@ import (
 	"testing"
 )
 
-// repoRoot resolves the spinifex submodule root from this test file's location
-// (spinifex/network/host/ → three levels up) so the systemd-unit invariants can
-// read build/ artifacts regardless of the test's working directory.
+// repoRoot resolves the spinifex module root from this file's location
+// so systemd-unit invariant tests can read build/ artifacts.
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -33,24 +32,16 @@ func readUnit(t *testing.T, root, rel string) string {
 	return string(b)
 }
 
-// TestIMDS_NetnsHostMountNSInvariant pins the host-mount-namespace contract for
-// per-VPC IMDS netns (see spinifex-vpcd.service + bead js-133): vpcd creates the
-// netns via `ip netns add` and binds the listener via in-process setns, so the
-// /run/netns/<vpc> bind-mount must live in the HOST mount namespace — host-visible
-// for diagnostics and durable across a vpcd restart. Any filesystem-sandbox
-// directive forks a PRIVATE mount ns that traps the bind-mount inside vpcd, so the
-// host sees only a stale handle that fails setns(2) EINVAL (CI runs 26920490454,
-// 26922587471). The earlier MountFlags=shared + spinifex-netns.service shared-mount
-// workaround was proven insufficient and removed; vpcd now simply shares the host
-// mount ns. Guard that shape: re-adding any mount-ns directive reintroduces the bug.
+// TestIMDS_NetnsHostMountNSInvariant pins the host-mount-namespace contract: vpcd
+// creates netns via `ip netns add` into the HOST mount namespace. A sandbox
+// directive forks a private mount ns, trapping the bind-mount (setns EINVAL).
 func TestIMDS_NetnsHostMountNSInvariant(t *testing.T) {
 	root := repoRoot(t)
 
 	vpcd := readUnit(t, root, "build/systemd/spinifex-vpcd.service")
 	target := readUnit(t, root, "build/systemd/spinifex.target")
 
-	// No filesystem-sandbox directive may be set on vpcd: each forks a private
-	// mount namespace and re-traps the netns bind-mount.
+	// No filesystem-sandbox directive: each forks a private mount ns and traps the bind-mount.
 	for _, banned := range []string{
 		"ProtectSystem", "ProtectHome", "PrivateTmp", "ProtectKernelTunables",
 		"ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups",

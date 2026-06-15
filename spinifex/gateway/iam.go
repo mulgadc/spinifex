@@ -16,10 +16,8 @@ import (
 // IAMHandler processes parsed query args and returns XML response bytes.
 type IAMHandler func(action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error)
 
-// iamHandler creates a type-safe IAMHandler that allocates the typed input
-// struct, parses query params into it, calls the handler with the full gateway
-// config (for the rare handler that needs more than gw.IAMService), and
-// marshals the output to XML. Mirrors ec2Handler in ec2.go.
+// iamHandler creates a type-safe IAMHandler: allocates the input struct,
+// parses query params, calls the handler, and marshals output to XML.
 func iamHandler[In any](handler func(string, *In, *GatewayConfig) (any, error)) IAMHandler {
 	return func(action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error) {
 		input := new(In)
@@ -78,6 +76,9 @@ var iamActions = map[string]IAMHandler{
 	"GetPolicyVersion": iamHandler(func(accountID string, input *iam.GetPolicyVersionInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.GetPolicyVersion(accountID, input, gw.IAMService)
 	}),
+	"ListPolicyVersions": iamHandler(func(accountID string, input *iam.ListPolicyVersionsInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListPolicyVersions(accountID, input, gw.IAMService)
+	}),
 	"ListPolicies": iamHandler(func(accountID string, input *iam.ListPoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListPolicies(accountID, input, gw.IAMService)
 	}),
@@ -126,6 +127,9 @@ var iamActions = map[string]IAMHandler{
 	"ListAttachedRolePolicies": iamHandler(func(accountID string, input *iam.ListAttachedRolePoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListAttachedRolePolicies(accountID, input, gw.IAMService)
 	}),
+	"ListRolePolicies": iamHandler(func(accountID string, input *iam.ListRolePoliciesInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListRolePolicies(accountID, input, gw.IAMService)
+	}),
 
 	// Instance profile CRUD
 	"CreateInstanceProfile": iamHandler(func(accountID string, input *iam.CreateInstanceProfileInput, gw *GatewayConfig) (any, error) {
@@ -153,6 +157,20 @@ var iamActions = map[string]IAMHandler{
 	}),
 	"RemoveRoleFromInstanceProfile": iamHandler(func(accountID string, input *iam.RemoveRoleFromInstanceProfileInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.RemoveRoleFromInstanceProfile(accountID, input, gw.IAMService)
+	}),
+
+	// OIDC identity-provider registry (IRSA)
+	"CreateOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.CreateOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.CreateOpenIDConnectProvider(accountID, input, gw.IAMService)
+	}),
+	"GetOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.GetOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetOpenIDConnectProvider(accountID, input, gw.IAMService)
+	}),
+	"ListOpenIDConnectProviders": iamHandler(func(accountID string, input *iam.ListOpenIDConnectProvidersInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListOpenIDConnectProviders(accountID, input, gw.IAMService)
+	}),
+	"DeleteOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.DeleteOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeleteOpenIDConnectProvider(accountID, input, gw.IAMService)
 	}),
 }
 
@@ -182,7 +200,6 @@ func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	// Extract account ID from auth context
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("IAM_Request: no account ID in auth context")

@@ -40,11 +40,8 @@ const (
 
 	maxAccessKeysPerUser = 2
 
-	// LongLivedAccessKeyIDPrefix is the AWS-defined prefix for long-lived
-	// IAM access keys. The access-keys bucket rejects writes whose key does
-	// not start with it — a record under any other prefix in this bucket
-	// would be resolved by the SigV4 AKIA path without the X-Amz-Security-Token
-	// check that the ASIA path enforces, a silent privilege upgrade.
+	// LongLivedAccessKeyIDPrefix is the AWS-defined prefix for long-lived IAM access keys.
+	// The access-keys bucket rejects writes with any other prefix to prevent silent privilege escalation.
 	LongLivedAccessKeyIDPrefix = "AKIA"
 )
 
@@ -87,14 +84,14 @@ type IAMServiceImpl struct {
 	instanceProfilesBucket nats.KeyValue
 	masterKey              []byte
 	decrypter              *Decrypter
+	// replicas is the JetStream replication factor for lazily-created per-account buckets.
+	replicas int
 }
 
 var _ IAMService = (*IAMServiceImpl)(nil)
 
 // NewIAMServiceImpl creates a new IAM service backed by NATS JetStream KV.
-// clusterSize sets the JetStream replication factor for KV buckets. For
-// multi-node clusters this must match the number of NATS servers so that
-// buckets survive node failures. Pass 1 for single-node or test setups.
+// clusterSize sets the replication factor; pass 1 for single-node or test setups.
 func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (*IAMServiceImpl, error) {
 	if len(masterKey) != 32 {
 		return nil, fmt.Errorf("master key must be 32 bytes, got %d", len(masterKey))
@@ -189,6 +186,7 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		instanceProfilesBucket: instanceProfilesBucket,
 		masterKey:              masterKey,
 		decrypter:              decrypter,
+		replicas:               replicas,
 	}, nil
 }
 
@@ -436,7 +434,6 @@ func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAcce
 		return nil, fmt.Errorf("store access key: %w", err)
 	}
 
-	// Update user's access key list
 	user.AccessKeys = append(user.AccessKeys, accessKeyID)
 	userData, err := json.Marshal(user)
 	if err != nil {
@@ -516,7 +513,6 @@ func (s *IAMServiceImpl) DeleteAccessKey(accountID string, input *iam.DeleteAcce
 		return nil, err
 	}
 
-	// Find and remove the access key reference from the user
 	found := false
 	remaining := make([]string, 0, len(user.AccessKeys))
 	for _, keyID := range user.AccessKeys {
@@ -531,8 +527,7 @@ func (s *IAMServiceImpl) DeleteAccessKey(accountID string, input *iam.DeleteAcce
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 
-	// Update user record first, then delete the key. This avoids orphaning the
-	// reference if a crash occurs between the two operations.
+	// Update user record first to avoid orphaning the reference on crash.
 	user.AccessKeys = remaining
 	userData, err := json.Marshal(user)
 	if err != nil {
@@ -618,13 +613,8 @@ func (s *IAMServiceImpl) DecryptSecret(ciphertext string) (string, error) {
 	return s.decrypter.Decrypt(ciphertext)
 }
 
-// SeedBootstrap consumes bootstrap data to create the system root IAM user and
-// (optionally) the default admin account in NATS KV. Uses conditional create
-// (put-if-not-exists) for multi-node race safety — the first node wins; others
-// skip silently. Also creates the system account record (000000000000).
-// If data.Admin is non-nil, it also seeds the admin account, user, access key,
-// AdministratorAccess policy, and sets the account counter so subsequent
-// CreateAccount calls start at 000000000002.
+// SeedBootstrap seeds the system root user and optional admin account into NATS KV.
+// Uses conditional create for multi-node safety; first node wins, others skip silently.
 func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	// --- Seed system account (000000000000) ---
 	systemAccount := Account{
@@ -839,8 +829,7 @@ func (s *IAMServiceImpl) IsEmpty() (bool, error) {
 // Account Operations
 // ---------------------------------------------------------------------------
 
-// CreateAccount creates a new account with a sequentially assigned 12-digit ID.
-// Uses a CAS loop on the counter bucket for safe concurrent ID assignment.
+// CreateAccount creates a new account with a sequentially assigned 12-digit ID using a CAS loop.
 func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
@@ -848,10 +837,9 @@ func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 
 	var accountID string
 	for {
-		// Read current counter value
 		entry, err := s.accountCounterBucket.Get("next_id")
 		if errors.Is(err, nats.ErrKeyNotFound) {
-			// First account ever — start at 1 (000000000000 is the global account)
+			// First account ever; 000000000000 is the global account.
 			accountID = fmt.Sprintf("%012d", 1)
 			if _, err := s.accountCounterBucket.Create("next_id", []byte("2")); err != nil {
 				if errors.Is(err, nats.ErrKeyExists) {
@@ -871,7 +859,6 @@ func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 		}
 		accountID = fmt.Sprintf("%012d", nextID)
 
-		// CAS update: increment counter, fail if revision changed
 		newVal := []byte(strconv.FormatInt(nextID+1, 10))
 		if _, err := s.accountCounterBucket.Update("next_id", newVal, entry.Revision()); err != nil {
 			if errors.Is(err, nats.ErrKeyExists) {
@@ -1084,6 +1071,24 @@ func (s *IAMServiceImpl) GetPolicyVersion(accountID string, input *iam.GetPolicy
 	}, nil
 }
 
+func (s *IAMServiceImpl) ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+
+	// Every policy has exactly one immutable version (v1); Document is omitted per AWS convention.
+	createdAt := parseCreatedAt(policy.CreatedAt)
+	return &iam.ListPolicyVersionsOutput{
+		Versions: []*iam.PolicyVersion{{
+			VersionId:        aws.String(policy.DefaultVersion),
+			IsDefaultVersion: aws.Bool(true),
+			CreateDate:       aws.Time(createdAt),
+		}},
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
 func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	keys, err := s.policiesBucket.Keys()
 	if err != nil {
@@ -1096,7 +1101,6 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 		return nil, fmt.Errorf("list policy keys: %w", err)
 	}
 
-	// Build attachment counts once for the whole account instead of per-policy.
 	attachCounts, err := s.buildAttachmentCounts(accountID)
 	if err != nil {
 		return nil, fmt.Errorf("build attachment counts: %w", err)
@@ -1179,7 +1183,6 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 	policyARN := *input.PolicyArn
 	userKVKey := accountID + "." + userName
 
-	// Verify policy exists
 	if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
 		return nil, err
 	}
@@ -1189,8 +1192,7 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 		return nil, err
 	}
 
-	// Idempotent — if already attached, succeed silently
-	if slices.Contains(user.AttachedPolicies, policyARN) {
+	if slices.Contains(user.AttachedPolicies, policyARN) { // idempotent
 		return &iam.AttachUserPolicyOutput{}, nil
 	}
 
@@ -1281,19 +1283,14 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 
 	var docs []PolicyDocument
 	for _, arn := range user.AttachedPolicies {
-		policy, err := s.getPolicyByARN(accountID, arn)
+		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
 		if err != nil {
-			// Fail closed: if we can't resolve a policy, we can't make a safe
-			// access decision. Return an error so the caller denies access.
-			return nil, fmt.Errorf("resolve policy %s: %w", arn, err)
+			// Fail closed: unresolvable policy means we cannot make a safe access decision.
+			return nil, err
 		}
-
-		// policy already validated at creation, so we skip validating again
-		var doc PolicyDocument
-		if err := json.Unmarshal([]byte(policy.PolicyDocument), &doc); err != nil {
-			return nil, fmt.Errorf("parse policy %s: %w", policy.PolicyName, err)
+		if include {
+			docs = append(docs, doc)
 		}
-		docs = append(docs, doc)
 	}
 
 	return docs, nil
@@ -1304,12 +1301,10 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) getPolicyByARN(accountID, policyARN string) (*Policy, error) {
-	// Extract policy name from ARN: arn:aws:iam::000000000000:policy/path/PolicyName
 	parts := strings.SplitN(policyARN, ":policy", 2)
 	if len(parts) != 2 || parts[1] == "" {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
-	// The name is the last segment after the final /
 	segments := strings.Split(parts[1], "/")
 	policyName := segments[len(segments)-1]
 	if policyName == "" {
@@ -1330,7 +1325,6 @@ func (s *IAMServiceImpl) getPolicyByARN(accountID, policyARN string) (*Policy, e
 		return nil, fmt.Errorf("unmarshal policy: %w", err)
 	}
 
-	// Verify the full ARN matches (path may differ)
 	if policy.ARN != policyARN {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}

@@ -16,9 +16,8 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// Package-scoped singleton fixture. Mirrors single/main_test.go. Built
-// lazily by the first call to requireMultiNodeFixture so a test run with
-// SPINIFEX_E2E unset stays cheap (no AWS dial, no temp dir).
+// Package-scoped singleton fixture, built lazily by requireMultiNodeFixture.
+// A run with SPINIFEX_E2E unset stays cheap (no AWS dial, no temp dir).
 var (
 	pkgFixOnce sync.Once
 	pkgFix     *Fixture
@@ -26,8 +25,6 @@ var (
 )
 
 // TestMain owns process-level lifecycle for the singleton fixture.
-// harness.Fixture.Close drains every cleanup at process exit, regardless
-// of which Test* created it.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if pkgFix != nil {
@@ -41,10 +38,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// requireMultiNodeFixture returns the package-scoped Fixture singleton,
-// building it on first call. Skips the calling test if SPINIFEX_E2E is
-// unset or the cluster mode is not multinode. Fails the test if init
-// itself errors (AWS client construction, cluster build).
+// requireMultiNodeFixture returns the package-scoped Fixture singleton, building
+// it on first call. Skips if SPINIFEX_E2E is unset or mode is not multinode.
 func requireMultiNodeFixture(t *testing.T) *Fixture {
 	t.Helper()
 	pkgFixOnce.Do(func() {
@@ -89,10 +84,8 @@ func requireMultiNodeFixture(t *testing.T) *Fixture {
 	return pkgFix
 }
 
-// Fixture carries the per-process state shared across every Test* in this
-// package. Only environment-level slots — every per-phase resource ID is
-// memoized on Harness (harness.Fixture) and surfaced via the package-local
-// need* helpers / harness.Ensure* + harness.Discover*.
+// Fixture carries the per-process state shared across every Test* in this package.
+// Per-phase resource IDs are memoized on Harness via need* / harness.Ensure* helpers.
 type Fixture struct {
 	Env       *harness.Env
 	AWS       *harness.AWSClient

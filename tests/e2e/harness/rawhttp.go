@@ -27,18 +27,16 @@ import (
 func PostAWSAction(t *testing.T, env *Env, c *AWSClient, action string, params map[string]string) (status int, body []byte, awsCode string) {
 	t.Helper()
 
-	endpoint := c.EC2.Endpoint
+	endpoint := c.EC2Conf.Endpoint
 	if endpoint == "" {
 		t.Fatalf("PostAWSAction: EC2 endpoint not configured")
 	}
-	region := aws.StringValue(c.EC2.Config.Region)
+	region := aws.StringValue(c.EC2Conf.Config.Region)
 
 	form := url.Values{}
 	form.Set("Action", action)
 	if _, ok := params["Version"]; !ok {
-		// EC2 query API version — same value the SDK injects on every call.
-		// Hard-coded here because we are bypassing the SDK entirely.
-		form.Set("Version", "2016-11-15")
+		form.Set("Version", "2016-11-15") // EC2 query API version; bypassing SDK.
 	}
 	for k, v := range params {
 		form.Set(k, v)
@@ -51,20 +49,17 @@ func PostAWSAction(t *testing.T, env *Env, c *AWSClient, action string, params m
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
 
-	creds := c.EC2.Config.Credentials
+	creds := c.EC2Conf.Config.Credentials
 	if creds == nil {
 		t.Fatalf("PostAWSAction: no credentials on client")
 	}
 	signer := v4.NewSigner(creds)
-	// SignedReader keeps the body intact for replay; v4.Sign reads-then-resets.
 	if _, err := signer.Sign(req, bytes.NewReader(bodyBytes), "ec2", region, time.Now()); err != nil {
 		t.Fatalf("PostAWSAction: sign: %v", err)
 	}
 
-	// Reuse the EC2 client's HTTP transport so TLS trust matches the rest of
-	// the suite. Fall back to a CA-loaded transport if the embedded client
-	// is using the SDK default.
-	httpClient := c.EC2.Config.HTTPClient
+	// Reuse the EC2 client's transport so TLS trust is consistent.
+	httpClient := c.EC2Conf.Config.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{}},
@@ -89,9 +84,8 @@ func PostAWSAction(t *testing.T, env *Env, c *AWSClient, action string, params m
 	return status, body, awsCode
 }
 
-// EC2 returns either <Response><Errors><Error><Code>…</Code> or the SDK-style
-// <ErrorResponse><Error><Code>…</Code> envelope. Try both shapes; the
-// gateway has shipped one then the other across releases.
+// EC2 error envelopes come in two shapes; the gateway has returned both.
+// ec2ErrorResponse covers <Response><Errors>, sdkErrorResponse covers <ErrorResponse>.
 type ec2ErrorResponse struct {
 	XMLName xml.Name `xml:"Response"`
 	Errors  struct {

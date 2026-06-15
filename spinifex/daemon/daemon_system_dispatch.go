@@ -4,12 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
+
+// nodeSystemLaunchTimeout caps a node-targeted system.LaunchInstance round
+// trip. Sized for a full-AMI control-plane VM boot (clone root + cloud-init
+// seed + QEMU start) on a remote host, well above the local microVM path.
+const nodeSystemLaunchTimeout = 5 * time.Minute
 
 // systemInstanceLaunchEnvelope is the wire format for
 // system.LaunchInstance.{type}[.{nodeID}] replies. Either Output or Error
@@ -25,13 +31,24 @@ type systemInstanceTerminateEnvelope struct {
 	Error string `json:"error,omitempty"`
 }
 
-// handleSystemLaunchInstance is the NATS subscriber for
-// system.LaunchInstance.{type}[.{nodeID}] requests. The owning daemon (the
-// one whose queue-group subscription wins, or the one whose nodeID-targeted
-// subscription is hit) runs LaunchSystemInstance locally and the resulting
-// VM stays bound to this node — see handleSystemTerminateInstance for the
-// matching teardown path.
+// handleSystemLaunchInstance is the NATS subscriber for system.LaunchInstance.
+// The launch runs in its own goroutine so a multi-minute VM boot cannot
+// head-of-line block concurrent launches to the same node.
 func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) {
+	d.systemDispatchWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("system.LaunchInstance: handler panic", "subject", msg.Subject, "panic", r)
+				respondWithSystemLaunchError(msg, awserrors.ErrorServerInternal)
+			}
+		}()
+		d.serveSystemLaunchInstance(msg)
+	})
+}
+
+// serveSystemLaunchInstance is the synchronous body of handleSystemLaunchInstance,
+// run on a per-request goroutine.
+func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) {
 	input := new(handlers_elbv2.SystemInstanceInput)
 	if err := json.Unmarshal(msg.Data, input); err != nil {
 		slog.Error("system.LaunchInstance: invalid JSON payload", "subject", msg.Subject, "err", err)
@@ -58,6 +75,44 @@ func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) {
 	respondWithSystemLaunchOutput(msg, output)
 }
 
+// LaunchSystemInstanceOnNode launches a system VM on a specific host.
+// An empty nodeID or the local node runs in-process; any other node is
+// reached via system.LaunchInstance.{type}.{nodeID} — the VM stays on that node.
+func (d *Daemon) LaunchSystemInstanceOnNode(nodeID string, input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
+	if nodeID == "" || nodeID == d.node {
+		return d.LaunchSystemInstance(input)
+	}
+	if d.natsConn == nil {
+		return nil, fmt.Errorf("system instance: cannot target node %s without a NATS connection", nodeID)
+	}
+	if input == nil || input.InstanceType == "" {
+		return nil, fmt.Errorf("system instance input missing InstanceType")
+	}
+
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("marshal SystemInstanceInput: %w", err)
+	}
+
+	subject := fmt.Sprintf("system.LaunchInstance.%s.%s", input.InstanceType, nodeID)
+	reply, err := d.natsConn.Request(subject, payload, nodeSystemLaunchTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("nats request %s: %w", subject, err)
+	}
+
+	var env systemInstanceLaunchEnvelope
+	if err := json.Unmarshal(reply.Data, &env); err != nil {
+		return nil, fmt.Errorf("decode launch reply: %w", err)
+	}
+	if env.Error != "" {
+		return nil, fmt.Errorf("%s", env.Error)
+	}
+	if env.Output == nil {
+		return nil, fmt.Errorf("launch reply missing output payload")
+	}
+	return env.Output, nil
+}
+
 // subscribeSystemTerminate registers an owning-node subscription for
 // system.TerminateInstance.{instanceID}. Idempotent — calling for an
 // already-bound subscription is a no-op.
@@ -67,6 +122,15 @@ func (d *Daemon) subscribeSystemTerminate(instanceID string) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.subscribeSystemTerminateLocked(instanceID)
+}
+
+// subscribeSystemTerminateLocked is the body of subscribeSystemTerminate for
+// callers that already hold d.mu (e.g. onInstanceUpHook). Idempotent.
+func (d *Daemon) subscribeSystemTerminateLocked(instanceID string) error {
+	if d.natsConn == nil {
+		return nil
+	}
 	subject := fmt.Sprintf("system.TerminateInstance.%s", instanceID)
 	if _, exists := d.natsSubscriptions[subject]; exists {
 		return nil
@@ -80,9 +144,23 @@ func (d *Daemon) subscribeSystemTerminate(instanceID string) error {
 }
 
 // handleSystemTerminateInstance is the NATS subscriber for
-// system.TerminateInstance.{instanceID}. Only the daemon that owns the VM
-// has a subscription on this subject — other daemons never see the request.
+// system.TerminateInstance.{instanceID}. Only the owning daemon subscribes.
+// Teardown runs in its own goroutine to avoid head-of-line blocking.
 func (d *Daemon) handleSystemTerminateInstance(msg *nats.Msg) {
+	d.systemDispatchWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("system.TerminateInstance: handler panic", "subject", msg.Subject, "panic", r)
+				respondWithSystemTerminateError(msg, awserrors.ErrorServerInternal)
+			}
+		}()
+		d.serveSystemTerminateInstance(msg)
+	})
+}
+
+// serveSystemTerminateInstance is the synchronous body of
+// handleSystemTerminateInstance, run on a per-request goroutine.
+func (d *Daemon) serveSystemTerminateInstance(msg *nats.Msg) {
 	// Subject suffix is the instance ID; payload is unused but reserved for
 	// future flags. Tolerate empty payloads.
 	parts := splitSubjectTail(msg.Subject, "system.TerminateInstance.")

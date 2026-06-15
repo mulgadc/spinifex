@@ -4,14 +4,8 @@ package harness
 
 import "testing"
 
-// AWSClientForGateway returns an AWSClient pointed at the named node's
-// gateway endpoint instead of env.ServiceIPs[0]. Used by multinode phases
-// 6 and 7 (cross-node gateway access + cross-node operations) where the
-// test issues describe/stop/start against every node in turn.
-//
-// Bash equivalent: aws_via in run-multinode-e2e.sh — sets AWS_ENDPOINT_URL
-// per call. Here we clone the *Env so the swap is scoped to one call site
-// and concurrent callers can each address a different node safely.
+// AWSClientForGateway returns an AWSClient scoped to a single node's gateway
+// endpoint. Clones the Env so concurrent callers can safely address different nodes.
 func AWSClientForGateway(t *testing.T, env *Env, node Node) *AWSClient {
 	t.Helper()
 	if env == nil {

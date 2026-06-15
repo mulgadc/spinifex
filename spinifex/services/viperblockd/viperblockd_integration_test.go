@@ -1,16 +1,8 @@
 package viperblockd
 
-// Integration tests for viperblockd service using embedded NATS server
-//
-// These tests verify the service's behavior with real NATS messaging while mocking
-// external dependencies (S3, nbdkit). Each test starts a goroutine running launchService()
-// which blocks waiting for SIGTERM. The goroutines are cleaned up when the test process exits.
-//
-// IMPORTANT: Run these tests with a timeout flag to prevent hanging:
+// Integration tests for viperblockd using an embedded NATS server. Run with:
 //   go test ./spinifex/services/viperblockd/... -timeout 40s
-//
-// To skip integration tests and run only unit tests:
-//   go test -short ./spinifex/services/viperblockd/...
+//   go test -short ./spinifex/services/viperblockd/...  # unit tests only
 
 import (
 	"encoding/json"

@@ -12,8 +12,6 @@ For this tutorial download UTM.app on Mac to simplify the VM installation.
 
 * UTM - [https://mac.getutm.app](https://mac.getutm.app)
 
-
-
 ## Download Debian ISO
 
 Next, download the Debian ISO (ARM64, Apple Silicon)
@@ -28,7 +26,7 @@ Using the VM console, login using the `spinifex` user and your specified passwor
 
 For a minimal Debian install additional dependencies are required prior to the Spinifex installation:
 
-```
+```bash
 su root
 apt update
 apt install sudo curl bridge-utils
@@ -38,7 +36,7 @@ apt install sudo curl bridge-utils
 
 Enable sudo for `spinifex` user as the root user:
 
-```
+```bash
 su root
 echo "spinifex ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/spinifex
 ```

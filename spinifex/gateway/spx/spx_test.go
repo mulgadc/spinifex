@@ -12,20 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGetCallerIdentity(t *testing.T) {
-	out, err := GetCallerIdentity("000000000001", "admin")
-	require.NoError(t, err)
-	assert.Equal(t, "000000000001", out.AccountID)
-	assert.Equal(t, "admin", out.UserName)
-}
-
-func TestGetCallerIdentity_NonAdmin(t *testing.T) {
-	out, err := GetCallerIdentity("000000000002", "alice")
-	require.NoError(t, err)
-	assert.Equal(t, "000000000002", out.AccountID)
-	assert.Equal(t, "alice", out.UserName)
-}
-
 func TestGetVersion_OpenSource(t *testing.T) {
 	out, err := GetVersion("v0.5.0-43-gae1deb5", "ae1deb5")
 	require.NoError(t, err)

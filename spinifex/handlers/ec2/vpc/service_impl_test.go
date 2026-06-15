@@ -33,10 +33,8 @@ func setupTestVPCService(t *testing.T) *VPCServiceImpl {
 }
 
 // setupTestVPCServiceWithFailingVpcd creates a VPC service whose vpcd stub
-// always returns success=false. Used by Phase 7 propagation tests to assert
-// vpcd-side errors surface to the API caller. The default-VPC bootstrap is
-// not needed here — these tests CreateVpc themselves once they have working
-// stubs swapped in.
+// always returns success=false. Used to assert vpcd-side errors surface to the
+// API caller.
 func setupTestVPCServiceWithFailingVpcd(t *testing.T, errMsg string) (*VPCServiceImpl, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -597,11 +595,8 @@ func TestEnsureDefaultVPC_SkipsWhenDefaultExists(t *testing.T) {
 }
 
 // TestCreateMainRouteTable_Idempotent asserts a second createMainRouteTable
-// call for the same VPC is a no-op. Without this guard, concurrent multi-node
-// EnsureDefaultVPC calls (admin account, bootstrap-pinned VpcId) each Put a
-// random rtb-ID with IsMain=true, and the resulting duplicate causes
-// CreateRoute's post-write gate recompute to resolve effective RT to the
-// orphan (route-less) record and publish vpc.gate-subnet-egress.
+// call for the same VPC is a no-op. Concurrent calls otherwise create duplicate
+// IsMain=true records, corrupting route-table resolution.
 func TestCreateMainRouteTable_Idempotent(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.99.0.0/16") // CreateVpc auto-calls createMainRouteTable
@@ -649,11 +644,8 @@ func countMainRouteTablesForVPC(t *testing.T, svc *VPCServiceImpl, vpcID string)
 }
 
 // TestEnsureDefaultVPC_NoVpcdResponder simulates the daemon-startup race where
-// EnsureDefaultVPC runs before vpcd has subscribed to vpc.create-sg. Without
-// the fix, the synchronous SG round-trip errors out and EnsureDefaultVPC
-// returns early, leaving the VPC without a default subnet or main route table.
-// After the fix the SG step is best-effort, so subnet + RTB still land in KV
-// and vpcd's reconcile-sgs loop converges the OVN port group asynchronously.
+// EnsureDefaultVPC runs before vpcd has subscribed. The SG step is best-effort,
+// so subnet and RTB must still land in KV when vpcd is absent.
 func TestEnsureDefaultVPC_NoVpcdResponder(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc, err := NewVPCServiceImplWithNATS(nil, nc)

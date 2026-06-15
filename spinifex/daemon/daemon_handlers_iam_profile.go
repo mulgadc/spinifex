@@ -11,10 +11,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// handleAssociateIamInstanceProfile services the per-instance Associate path
-// dispatched from handleEC2Events. The gateway has already resolved the
-// profile reference and enforced iam:PassRole; instance ownership has been
-// verified by checkInstanceOwnership before this point.
+// handleAssociateIamInstanceProfile services the per-instance Associate path.
+// Gateway pre-validates the profile reference and iam:PassRole; ownership is
+// checked by checkInstanceOwnership before dispatch.
 func (d *Daemon) handleAssociateIamInstanceProfile(msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
 	result, err := d.instanceService.AssociateIamInstanceProfile(instance, command)
 	if err != nil {
@@ -24,13 +23,9 @@ func (d *Daemon) handleAssociateIamInstanceProfile(msg *nats.Msg, command types.
 	respondWithJSON(msg, result)
 }
 
-// handleIamProfileDisassociate services the ec2.IamProfileAssociation.disassociate
-// fan-out subject. Every daemon responds: the owner with the populated
-// association after mutating vm.VM, non-owners (or daemons whose VM has a
-// different account) with JSON null so the gateway's expectedNodes collector
-// can exit before the timeout. Errors short-circuit the fan-out — only the
-// owner can produce a meaningful error (e.g. persistence failure) since
-// non-owners NoOp.
+// handleIamProfileDisassociate services the disassociate fan-out. The owning
+// daemon responds with the mutated association; non-owners respond with JSON
+// null so the gateway's expectedNodes collector can exit early.
 func (d *Daemon) handleIamProfileDisassociate(msg *nats.Msg) {
 	accountID := utils.AccountIDFromMsg(msg)
 	input := &ec2.DisassociateIamInstanceProfileInput{}
@@ -49,10 +44,9 @@ func (d *Daemon) handleIamProfileDisassociate(msg *nats.Msg) {
 	respondWithJSON(msg, result)
 }
 
-// handleIamProfileReplace services the ec2.IamProfileAssociation.replace
-// fan-out subject. Same response contract as handleIamProfileDisassociate:
-// every daemon always responds (JSON null on non-owners) so the gateway
-// collector exits early when the cluster is healthy.
+// handleIamProfileReplace services the replace fan-out. Same contract as
+// handleIamProfileDisassociate: every daemon responds (JSON null on
+// non-owners) so the gateway collector can exit early.
 func (d *Daemon) handleIamProfileReplace(msg *nats.Msg) {
 	accountID := utils.AccountIDFromMsg(msg)
 	input := &ec2.ReplaceIamInstanceProfileAssociationInput{}
@@ -71,11 +65,9 @@ func (d *Daemon) handleIamProfileReplace(msg *nats.Msg) {
 	respondWithJSON(msg, result)
 }
 
-// handleIamProfileDescribe services the ec2.IamProfileAssociation.describe
-// fan-out subject. Empty IamInstanceProfileAssociations slice is a valid
-// response (no matches on this daemon) and counts toward the gateway's
-// expectedNodes early-exit collector. The gateway concatenates per-daemon
-// slices.
+// handleIamProfileDescribe services the describe fan-out. An empty slice is a
+// valid response (no matches on this daemon) and counts toward the gateway's
+// expectedNodes collector; the gateway concatenates per-daemon slices.
 func (d *Daemon) handleIamProfileDescribe(msg *nats.Msg) {
 	accountID := utils.AccountIDFromMsg(msg)
 	input := &ec2.DescribeIamInstanceProfileAssociationsInput{}

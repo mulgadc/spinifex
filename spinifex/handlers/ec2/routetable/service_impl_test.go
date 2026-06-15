@@ -491,10 +491,8 @@ func receiveNatGWEvent(t *testing.T, sub *nats.Subscription, wantCidr string) (n
 	return evt.NatGatewayId, evt.PublicIp
 }
 
-// TestAssociateRouteTable_PublishesNatGatewayEvent covers the terraform flow:
-// CreateRouteTable → CreateRoute(NAT GW) → AssociateRouteTable(subnet). CreateRoute
-// runs against an empty-association table so no event fires there; Associate must
-// emit the event so vpcd installs the SNAT rule for the joining subnet.
+// TestAssociateRouteTable_PublishesNatGatewayEvent covers the terraform flow where
+// AssociateRouteTable must emit a NAT GW event so vpcd installs the SNAT rule.
 func TestAssociateRouteTable_PublishesNatGatewayEvent(t *testing.T) {
 	svc := setupTestService(t)
 	sub, err := svc.natsConn.SubscribeSync("vpc.add-nat-gateway")
@@ -577,10 +575,8 @@ func TestDisassociateRouteTable_PublishesNatGatewayDeleteEvent(t *testing.T) {
 	assert.Equal(t, "nat-test1", natgwID)
 }
 
-// TestDeleteRoute_NATGW_PublishesDeleteForAssociatedSubnets covers DeleteRoute
-// on a NATGW route: every subnet associated with the table receives a
-// vpc.delete-nat-gateway event so the subscriber tears down both the SNAT rule
-// and the per-subnet egress policy (mirror of the IGW DeleteRoute path).
+// TestDeleteRoute_NATGW_PublishesDeleteForAssociatedSubnets verifies that every
+// associated subnet receives a vpc.delete-nat-gateway event when a NATGW route is removed.
 func TestDeleteRoute_NATGW_PublishesDeleteForAssociatedSubnets(t *testing.T) {
 	svc := setupTestService(t)
 	addSub, err := svc.natsConn.SubscribeSync("vpc.add-nat-gateway")
@@ -707,10 +703,8 @@ func TestCreateRoute_IGW_PublishesAddIGWRouteForAssociatedSubnets(t *testing.T) 
 	assert.Equal(t, "igw-test1", igwID)
 }
 
-// TestAssociateRouteTable_PublishesAddIGWRouteForExistingRoute covers the
-// terraform ordering: CreateRoute(IGW) → AssociateRouteTable. CreateRoute runs
-// against an empty-association table so no event fires; Associate must emit
-// the event so the subscriber installs the policy for the joining subnet.
+// TestAssociateRouteTable_PublishesAddIGWRouteForExistingRoute covers the terraform
+// ordering: AssociateRouteTable must emit an IGW route event for the joining subnet.
 func TestAssociateRouteTable_PublishesAddIGWRouteForExistingRoute(t *testing.T) {
 	svc := setupTestService(t)
 	sub, err := svc.natsConn.SubscribeSync("vpc.add-igw-route")
@@ -825,10 +819,8 @@ func drainIGWSubnets(t *testing.T, sub *nats.Subscription, count int) map[string
 	return got
 }
 
-// TestCreateRoute_IGW_OnMainRT_FansOutToImplicitSubnets covers the primary
-// publish-gap fixed in this change: CreateRoute(IGW) on a VPC's main RT must
-// emit one vpc.add-igw-route event per subnet that has no explicit non-main
-// RT association (AWS implicit-main semantics).
+// TestCreateRoute_IGW_OnMainRT_FansOutToImplicitSubnets verifies CreateRoute(IGW) on
+// the main RT emits one vpc.add-igw-route per implicit-main subnet.
 func TestCreateRoute_IGW_OnMainRT_FansOutToImplicitSubnets(t *testing.T) {
 	svc := setupTestService(t)
 	sub, err := svc.natsConn.SubscribeSync("vpc.add-igw-route")
@@ -882,10 +874,8 @@ func TestCreateRoute_IGW_OnMainRT_SkipsExplicitlyAssociatedSubnets(t *testing.T)
 	assert.False(t, got["subnet-priv1"], "explicitly-associated subnet must NOT receive main-RT event")
 }
 
-// TestAssociateRouteTable_RemovesMainRTRoutesForJoiningSubnet covers the
-// symmetric fix: when a subnet leaves implicit main-RT membership for an
-// explicit non-main RT, the main RT's per-subnet rules must be torn down so
-// state matches AWS effective-route semantics.
+// TestAssociateRouteTable_RemovesMainRTRoutesForJoiningSubnet verifies that the main
+// RT's per-subnet rules are torn down when a subnet joins an explicit non-main RT.
 func TestAssociateRouteTable_RemovesMainRTRoutesForJoiningSubnet(t *testing.T) {
 	svc := setupTestService(t)
 	delSub, err := svc.natsConn.SubscribeSync("vpc.delete-igw-route")
@@ -913,13 +903,8 @@ func TestAssociateRouteTable_RemovesMainRTRoutesForJoiningSubnet(t *testing.T) {
 	assert.Len(t, got, 1)
 }
 
-// TestDisassociateRouteTable_RestoresMainRTRoutesForDepartingSubnet covers
-// the symmetric add-back: when a subnet leaves an explicit RT and falls back
-// to implicit main-RT membership, the main RT's per-subnet rules must be
-// re-installed.
-// receiveGateEvent reads one message from sub and returns the (subnet,
-// destCidr) it carried. Used for both vpc.gate-subnet-egress and
-// vpc.ungate-subnet-egress since the payload shape is identical.
+// receiveGateEvent reads one gate/ungate message from sub and returns the
+// (subnet, destCidr) it carried.
 func receiveGateEvent(t *testing.T, sub *nats.Subscription) (subnetID, destCidr string) {
 	t.Helper()
 	msg, err := sub.NextMsg(time.Second)
@@ -951,10 +936,8 @@ func drainGateSubnets(t *testing.T, sub *nats.Subscription, limit int) map[strin
 	return got
 }
 
-// TestCreateRoute_IGW_PublishesUngateForAssociatedSubnets: when a subnet is
-// already associated to a route table and an IGW default route is added,
-// the gate decision flips to "egress allowed" so the subscriber must remove
-// any previously-installed drop policy.
+// TestCreateRoute_IGW_PublishesUngateForAssociatedSubnets: adding an IGW default route
+// to a table must flip associated subnets to "egress allowed" (ungate).
 func TestCreateRoute_IGW_PublishesUngateForAssociatedSubnets(t *testing.T) {
 	svc := setupTestService(t)
 	ungate, err := svc.natsConn.SubscribeSync("vpc.ungate-subnet-egress")
@@ -1269,13 +1252,9 @@ func TestPublishGateDecisionsForVPC_UngatesSubnetWithIGWRoute(t *testing.T) {
 	assert.Len(t, gateGot, 1)
 }
 
-// TestEffectiveRouteTable_DeterministicWithDuplicateMain seeds two
-// IsMain=true RTs for the same VPC (the bootstrap-race symptom) and asserts
-// effectiveRouteTable picks the one with more routes — the "real" RT carries
-// any user-added 0.0.0.0/0 entry, while the orphan only has the implicit
-// local route. Non-deterministic selection produced the run 26699045536
-// guest-SSH timeout: CreateRoute's post-write gate recompute happened to
-// resolve to the orphan and published vpc.gate-subnet-egress.
+// TestEffectiveRouteTable_DeterministicWithDuplicateMain seeds two IsMain=true RTs
+// for the same VPC and asserts effectiveRouteTable deterministically picks the one
+// with more routes (the "real" RT) over the orphan with only the implicit local route.
 func TestEffectiveRouteTable_DeterministicWithDuplicateMain(t *testing.T) {
 	svc := setupTestService(t)
 	now := time.Now()

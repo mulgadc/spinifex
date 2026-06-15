@@ -9,11 +9,8 @@ import (
 )
 
 // TestPromiscRefCount verifies the bridge stays in IFF_PROMISC across
-// overlapping DORAs: first caller flips on, intermediate callers piggy-back
-// without touching the flag, last caller flips off. Catches the regression
-// where nightly cell 1 timed out on "no matching response packet received"
-// because chaddr-derived 02:xx unicast OFFERs never reach AF_PACKET on a
-// non-promisc Linux bridge.
+// overlapping DORAs (first caller flips on, last flips off). Regression
+// guard: unicast OFFERs to a derived chaddr are dropped on non-promisc bridges.
 func TestPromiscRefCount(t *testing.T) {
 	defer resetPromiscState()
 	var (

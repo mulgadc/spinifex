@@ -6,17 +6,12 @@ ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
   GO_ARCH := amd64
   AWS_ARCH := x86_64
-  # On x86, we can run ARM VMs via emulation
-  QEMU_PACKAGES := qemu-system-x86 qemu-system-arm
 else ifeq ($(ARCH),aarch64)
   GO_ARCH := arm64
   AWS_ARCH := aarch64
-  # On ARM, we can run x86 VMs via emulation
-  QEMU_PACKAGES := qemu-system-aarch64 qemu-system-x86
 else ifeq ($(ARCH),arm64)
   GO_ARCH := arm64
   AWS_ARCH := aarch64
-  QEMU_PACKAGES := qemu-system-aarch64 qemu-system-x86
 else
   $(error Unsupported architecture: $(ARCH). Only x86_64 and aarch64/arm64 are supported.)
 endif
@@ -92,6 +87,9 @@ build-eks-node-image: ## Build the unified eks-node AMI (K3s server+agent; role 
 import-eks-node-image: ## Build + register the eks-node AMI (requires a running cluster)
 	$(MAKE) build-system-image IMAGE=eks-node IMPORT=1
 
+publish-eks-node-image: ## Build + publish the eks-node AMI to Cloudflare R2 (needs R2_ENDPOINT + AWS_* env)
+	./scripts/publish-system-image.sh scripts/images/eks-node/manifest.conf --build
+
 MICROVM_OUT_DIR := build/microvm
 MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
 MICROVM_INPUTS := scripts/build-microvm-image.sh $(MICROVM_OUT_DIR)/init.sh $(MICROVM_OUT_DIR)/inittab bin/lb-agent
@@ -112,14 +110,10 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/vmlinuz
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/initramfs.cpio.gz
 
-go_run:
-	@echo -e "\n....Running $(GO_PROJECT_NAME)...."
-	$(GOPATH)/bin/$(GO_PROJECT_NAME)
-
 # Preflight — runs the same checks as GitHub Actions (lint + vuln + tests).
 # Use this before committing to catch CI failures locally.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 manifest-check lint govulncheck test-cover diff-coverage test-race test-harness
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
@@ -135,6 +129,17 @@ test-harness:
 manifest-check:
 	@echo -e "\n....Checking service-interfaces.yaml...."
 	@go run ./tests/e2e/manifest-check/cmd/manifest-check -repo-root . -manifest docs/service-interfaces.yaml
+
+# Drift guards (Bead 5): direct-create fixture lint + NATS subject lint,
+# ratcheted against tests/e2e/manifest-lint/baseline.txt. Fails only on NEW
+# drift beyond the baseline.
+manifest-lint:
+	@echo -e "\n....Linting manifest drift (fixtures + subjects)...."
+	@go run ./tests/e2e/manifest-lint/cmd/manifest-lint -repo-root .
+
+# Accept current drift into the baseline. Run after an intentional change.
+manifest-lint-update:
+	@go run ./tests/e2e/manifest-lint/cmd/manifest-lint -repo-root . -update
 
 # Run unit tests
 test:
@@ -165,12 +170,7 @@ diff-coverage: test-cover
 
 bench:
 	@echo -e "\n....Running benchmarks for $(GO_PROJECT_NAME)...."
-	$(MAKE) easyjson
 	LOG_IGNORE=1 go test -benchmem -run=. -bench=. ./...
-
-run:
-	$(MAKE) go_build
-	$(MAKE) go_run
 
 # Fast iteration: build + install binary + restart all services.
 # Microvm artifacts are reinstalled when they already exist on disk — the rule's
@@ -198,11 +198,10 @@ clean:
 
 install-system:
 	@echo -e "\n....Installing system dependencies for $(ARCH)...."
-	@echo "QEMU packages: $(QEMU_PACKAGES)"
 	sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
 		-o Dpkg::Options::="--force-confdef" \
 		-o Dpkg::Options::="--force-confold" \
-		nbdkit nbdkit-plugin-dev pkg-config $(QEMU_PACKAGES) qemu-utils qemu-kvm \
+		nbdkit nbdkit-plugin-dev pkg-config qemu-system-x86 qemu-system-arm qemu-utils qemu-kvm \
 		ovmf qemu-efi-aarch64 \
 		libvirt-daemon-system libvirt-clients libvirt-dev make gcc jq curl \
 		iproute2 netcat-openbsd openssh-client wget git unzip sudo xz-utils file \
@@ -231,19 +230,15 @@ install-aws:
 quickinstall: install-system install-go install-aws
 	@echo -e "\n✅ Quickinstall complete for $(ARCH)."
 	@echo "   Please ensure /usr/local/go/bin is in your PATH."
-	@echo "   Installed: Go ($(GO_ARCH)), AWS CLI ($(AWS_ARCH)), QEMU ($(QEMU_PACKAGES))"
 
-# Lint all Go code via golangci-lint (replaces check-format, vet, gosec, staticcheck)
 lint:
 	@echo "Running golangci-lint..."
 	$(_Q)golangci-lint run ./...
 	@echo "  golangci-lint ok"
 
-# Auto-fix all linter issues that have fixers
 fix:
 	golangci-lint run --fix ./...
 
-# Govulncheck — dependency vulnerability scanning (not covered by golangci-lint)
 govulncheck:
 	@echo "Running govulncheck..."
 	$(_Q)go tool govulncheck ./...
@@ -292,65 +287,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-# Ansible dev lifecycle (experimental, parallel to dev-*.sh / reset-dev-env.sh).
-# See scripts/ansible/README.md and docs/development/improvements/ansible-dev-lifecycle.md.
-#
-# Variable overrides: pass EXTRA_VARS="key=val key2=val2" to forward as
-# `--extra-vars` to ansible-playbook. Plain `-e` on the make command line is
-# make's own flag and does NOT reach ansible.
-#   make ansible-dev-install EXTRA_VARS="spinifex_external_pool_start=192.168.1.90 spinifex_external_pool_end=192.168.1.99"
-EXTRA_VARS ?=
-_ANSIBLE_EXTRA = $(if $(strip $(EXTRA_VARS)),--extra-vars "$(EXTRA_VARS)",)
-
-ansible-dev-preflight:
-	cd scripts/ansible && ansible-playbook playbooks/dev-preflight.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-teardown:
-	cd scripts/ansible && ansible-playbook playbooks/dev-teardown.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-install:
-	cd scripts/ansible && ansible-playbook playbooks/dev-install.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-reset:
-	cd scripts/ansible && ansible-playbook playbooks/dev-reset.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-deploy:
-	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-status:
-	cd scripts/ansible && ansible-playbook playbooks/dev-status.yml
-
-ansible-dev-logs:
-	cd scripts/ansible && ansible-playbook playbooks/dev-logs.yml
-
-# Snapshot / restore require an explicit -e snapshot_name=<name>. The
-# wrapper passes ANSIBLE_EXTRA through so devs can run
-# `make ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=before-merge'`.
-ansible-dev-snapshot:
-	cd scripts/ansible && ansible-playbook playbooks/dev-snapshot.yml $(ANSIBLE_EXTRA)
-
-ansible-dev-restore:
-	cd scripts/ansible && ansible-playbook playbooks/dev-restore.yml $(ANSIBLE_EXTRA)
-
-ansible-dev-version:
-	cd scripts/ansible && ansible-playbook playbooks/dev-version.yml
-
-ansible-dev-vpc:
-	cd scripts/ansible && ansible-playbook playbooks/dev-vpc.yml $(ANSIBLE_EXTRA)
-
-# Multi-node cluster bootstrap against a tofu env (env1, env2, bryn, etc).
-# Inventory is generated from scripts/tofu-cluster/envs/<env>.tfvars.
-#   make ansible-cluster-bootstrap ENV=env1 POOL=192.168.1.150-192.168.1.159
-ENV ?=
-POOL ?=
-ansible-cluster-bootstrap:
-	@test -n "$(ENV)" || { echo "ENV=<env> required (e.g. env1, env2)"; exit 64; }
-	cd scripts/ansible && CLUSTER_ENV=$(ENV) ansible-playbook -i inventory/tofu.py playbooks/cluster-bootstrap.yml \
-		-e cluster_env=$(ENV) \
-		$(if $(POOL),-e cluster_external_pool=$(POOL),) \
-		$(_ANSIBLE_EXTRA)
-
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-node-image import-eks-node-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run test-actions test-harness manifest-check diff-coverage bench run \
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

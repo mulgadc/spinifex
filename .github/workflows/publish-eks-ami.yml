@@ -1,0 +1,96 @@
+name: Publish EKS node AMI
+
+# Builds the eks-node system AMI (libguestfs, on the runner) and publishes the
+# compressed qcow2 + .sha256 sidecar to the Cloudflare R2 bucket that backs
+# iso.mulgadc.com/system-ami/. Operators then install it on any cluster with:
+#   spx admin images import --name spinifex-eks-node
+#
+# Manual-only: publishing overwrites the mirror artifact, so it is a deliberate
+# action, not something every push should trigger.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + convert only; skip the R2 upload"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-eks-ami
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build + publish eks-node AMI
+    runs-on: [ self-hosted, ci-single ]
+
+    steps:
+      - name: Checkout Spinifex
+        uses: actions/checkout@v6
+        with:
+          path: spinifex
+
+      - name: Checkout Viperblock
+        uses: actions/checkout@v6
+        with:
+          repository: mulgadc/viperblock
+          ref: dev
+          path: viperblock
+
+      - name: Checkout Predastore
+        uses: actions/checkout@v6
+        with:
+          repository: mulgadc/predastore
+          ref: dev
+          path: predastore
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "spinifex/go.mod"
+          # Self-hosted runner: the Go module + build cache already persists on
+          # local disk between runs. setup-go's cache-save ("Post Setup Go")
+          # otherwise re-uploads hundreds of MB to the Actions cache backend,
+          # taking longer than the build itself.
+          cache: false
+
+      - name: Setup Go Workspace
+        run: go work init ./spinifex ./viperblock ./predastore
+
+      - name: Install build + upload tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          if ! command -v aws &>/dev/null; then
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp/aws-install
+            sudo /tmp/aws-install/aws/install
+            rm -rf /tmp/awscliv2.zip /tmp/aws-install
+          fi
+
+      - name: Build + publish to R2
+        working-directory: spinifex
+        env:
+          # Map the repo's R2 secrets onto the names publish-system-image.sh reads.
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT_URL }}
+          R2_BUCKET: spinifex-iso
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # libguestfs needs to read a host kernel; Ubuntu ships it mode 0600.
+          # direct backend = no libvirt on the runner.
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          FLAGS=(--build)
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            FLAGS+=(--dry-run)
+          fi
+          ./scripts/publish-system-image.sh \
+            scripts/images/eks-node/manifest.conf "${FLAGS[@]}"

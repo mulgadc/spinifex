@@ -40,7 +40,7 @@ func TestGenerateHAProxyConfigWithCerts_HTTPSRendersSslCrt(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	wantPath := filepath.Join(lbagent.CertDir, "lb-lb-abc123-lst-https.pem")
+	wantPath := filepath.Join(lbagent.CertDir, "lb-abc123-lst-https.pem")
 	assert.Contains(t, config, "bind *:443 ssl crt "+wantPath)
 	require.Len(t, certFiles, 1)
 	assert.Equal(t, certPEM, certFiles[wantPath])

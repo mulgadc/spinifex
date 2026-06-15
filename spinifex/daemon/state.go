@@ -8,12 +8,8 @@ import (
 )
 
 // TransitionState validates and applies a state transition on the given instance.
-// It sets instance.Status, persists via WriteState, and logs.
-// On validation failure, the instance status is unchanged and a wrapped
-// vm.ErrInvalidTransition is returned so callers can map it to the AWS
-// IncorrectInstanceState error code via errors.Is.
-// If WriteState fails, the in-memory status retains the new value (the VM has
-// physically changed state regardless) and an error is returned.
+// Returns vm.ErrInvalidTransition on bad transitions; WriteState failure is also
+// returned but in-memory status is kept since the VM has already changed state.
 func (d *Daemon) TransitionState(instance *vm.VM, target vm.InstanceState) error {
 	var (
 		current vm.InstanceState

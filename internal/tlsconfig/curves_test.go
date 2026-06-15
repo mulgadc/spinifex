@@ -46,11 +46,9 @@ func TestCurves_ExcludesWeakPrimitives(t *testing.T) {
 	}
 }
 
-// TestIntegration_NegotiatesPQHybrid spins up an httptest TLS server
-// configured with Curves + TLS 1.3 minimum, dials it, and asserts a PQ
-// hybrid is negotiated at TLS 1.3. Per Go 1.26 stdlib filter behavior the
-// winner is X25519MLKEM768; the assertion checks for any approved hybrid
-// to remain stable across stdlib reorderings of our 4 entries.
+// TestIntegration_NegotiatesPQHybrid verifies that a Curves-configured server
+// negotiates a PQ hybrid at TLS 1.3; checks for any approved hybrid to stay
+// stable across Go stdlib reorderings.
 func TestIntegration_NegotiatesPQHybrid(t *testing.T) {
 	cert := selfSignedCert(t)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -95,10 +93,8 @@ func TestIntegration_NegotiatesPQHybrid(t *testing.T) {
 	}
 }
 
-// TestIntegration_TLS12ClientRejected confirms MinVersion: tls.VersionTLS13
-// is enforced — a TLS 1.2-pinned client gets a handshake error rather than
-// silently downgrading. This is the negative test that closes the HNDL gap
-// on external surfaces.
+// TestIntegration_TLS12ClientRejected confirms MinVersion TLS 1.3 is enforced:
+// a TLS 1.2-pinned client must get a handshake error, not a silent downgrade.
 func TestIntegration_TLS12ClientRejected(t *testing.T) {
 	cert := selfSignedCert(t)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

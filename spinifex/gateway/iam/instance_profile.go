@@ -10,10 +10,8 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
-// LiveAssociationCounter reports how many live EC2 instance-profile
-// associations currently reference the given profile ARN. Implementations
-// broadcast on ec2.IamProfileAssociation.describe and filter by ARN.
-// DeleteInstanceProfile uses it to refuse delete-while-in-use.
+// LiveAssociationCounter reports how many live EC2 instances reference the
+// given profile ARN. DeleteInstanceProfile uses it to refuse delete-while-in-use.
 type LiveAssociationCounter func(profileARN string) (int, error)
 
 func CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput, svc handlers_iam.IAMService) (*iam.CreateInstanceProfileOutput, error) {
@@ -34,16 +32,10 @@ func ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput
 	return svc.ListInstanceProfiles(accountID, input)
 }
 
-// DeleteInstanceProfile refuses to delete a profile that any live VM still
-// references. The gateway resolves the profile ARN via svc.GetInstanceProfile,
-// then countLive fans out to every daemon to count active associations; a
-// non-zero count maps to DeleteConflict. The existing RoleName-attached guard
-// runs inside svc.DeleteInstanceProfile after both checks pass.
-//
-// Race window between the live-instance scan and the bucket delete is
-// accepted: same pattern as DeletePolicy (no CAS, eventual consistency).
-// countLive may be nil — primarily in unit tests that don't exercise the
-// fan-out path; in production the gateway always supplies it.
+// DeleteInstanceProfile refuses to delete a profile still referenced by a live
+// VM. countLive fans out to all daemons; a non-zero count returns DeleteConflict.
+// The RoleName-attached guard runs inside svc.DeleteInstanceProfile afterward.
+// countLive may be nil (e.g. in unit tests); the live-instance check is skipped.
 func DeleteInstanceProfile(accountID string, input *iam.DeleteInstanceProfileInput, svc handlers_iam.IAMService, countLive LiveAssociationCounter) (*iam.DeleteInstanceProfileOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

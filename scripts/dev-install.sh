@@ -44,9 +44,9 @@ sudo systemctl stop spinifex.target 2>/dev/null || true
 sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
 
 # Remove stale files owned by the dev user in production paths.
-# Previous dev-mode installs (admin init without sudo, start-dev.sh) leave
-# files owned by tf-user that service users (spinifex-nats, etc.) can't read
-# under systemd's ProtectSystem=strict sandboxing.
+# A prior admin init run without sudo can leave files owned by tf-user that
+# service users (spinifex-nats, etc.) can't read under systemd's
+# ProtectSystem=strict sandboxing.
 for dir in /var/lib/spinifex /var/log/spinifex /etc/spinifex; do
     if [ -d "$dir" ]; then
         # Remove PID files, stale logs, and the legacy ~/spinifex/config symlink

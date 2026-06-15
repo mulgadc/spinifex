@@ -16,17 +16,14 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DescribeInstances queries all spinifex nodes for their instances via NATS
-// and aggregates the results into a single response
+// DescribeInstances fans out to all nodes via NATS and aggregates the results.
 func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeInstancesOutput, error) {
-	// Marshal input to JSON
 	jsonData, err := json.Marshal(input)
 	if err != nil {
 		slog.Error("DescribeInstances: Failed to marshal input", "err", err)
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	// Create an inbox for collecting responses from all nodes
 	inbox := nats.NewInbox()
 	sub, err := natsConn.SubscribeSync(inbox)
 	if err != nil {
@@ -35,7 +32,6 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 	}
 	defer sub.Unsubscribe()
 
-	// Publish request to all nodes with account ID header
 	pubMsg := nats.NewMsg("ec2.DescribeInstances")
 	pubMsg.Reply = inbox
 	pubMsg.Data = jsonData
@@ -46,18 +42,14 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 		return nil, fmt.Errorf("failed to publish request: %w", err)
 	}
 
-	// Collect responses from all nodes
-	// Timeout serves as a safety mechanism in case some nodes don't respond
-	timeout := 3 * time.Second
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(3 * time.Second)
 
 	var allReservations []*ec2.Reservation
-	var clientError string // first client error code from any node (e.g. InvalidParameterValue)
+	var clientError string // first deterministic 4xx error code
 	responsesReceived := 0
 
-	// If expectedNodes is not configured (0), fall back to timeout-based collection
 	if expectedNodes <= 0 {
-		expectedNodes = -1 // Disable early exit
+		expectedNodes = -1
 		slog.Warn("DescribeInstances: ExpectedNodes not configured, using timeout-only collection")
 	}
 
@@ -68,36 +60,28 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 			break
 		}
 
-		// Calculate remaining timeout
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
-
-		// Wait for next message with remaining timeout
 		msg, err := sub.NextMsg(remaining)
 		if err != nil {
 			if err == nats.ErrTimeout {
-				// Timeout reached, no more messages
 				break
 			}
 			slog.Error("DescribeInstances: Error receiving message", "err", err)
 			break
 		}
 
-		// Increment response counter (even for errors, as we heard from the node)
 		responsesReceived++
 
-		// Check if response is an error
 		responseError, err := utils.ValidateErrorPayload(msg.Data)
 		if err != nil {
 			code := ""
 			if responseError.Code != nil {
 				code = *responseError.Code
 			}
-			// Capture the first client error (e.g. InvalidParameterValue). Client errors
-			// are deterministic — all nodes return the same error for the same invalid
-			// request — so we propagate them to the caller after collection completes.
+			// Capture the first deterministic 4xx; propagated only if no data collected.
 			if clientError == "" && code != "" {
 				if info, known := awserrors.ErrorLookup[code]; known && info.HTTPCode >= 400 && info.HTTPCode < 500 {
 					clientError = code
@@ -107,7 +91,6 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 			continue
 		}
 
-		// Parse the DescribeInstancesOutput from this node
 		var nodeOutput ec2.DescribeInstancesOutput
 		err = json.Unmarshal(msg.Data, &nodeOutput)
 		if err != nil {
@@ -115,14 +98,13 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 			continue
 		}
 
-		// Aggregate reservations from this node
 		if nodeOutput.Reservations != nil {
 			allReservations = append(allReservations, nodeOutput.Reservations...)
 			slog.Info("DescribeInstances: Collected reservations from node", "count", len(nodeOutput.Reservations), "responses_received", responsesReceived)
 		}
 	}
 
-	// Query stopped and terminated instances in parallel (both use queue groups — single responder each)
+	// Both topics use queue groups (single responder each); query in parallel.
 	var kvMu sync.Mutex
 	var kvWg sync.WaitGroup
 	for _, topic := range []string{"ec2.DescribeStoppedInstances", "ec2.DescribeTerminatedInstances"} {
@@ -139,13 +121,10 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 	}
 	kvWg.Wait()
 
-	// If every node returned a client error and we collected no data, propagate
-	// the error to the caller so the HTTP response carries the correct status.
 	if clientError != "" && len(allReservations) == 0 {
 		return nil, errors.New(clientError)
 	}
 
-	// Build final aggregated response
 	output := &ec2.DescribeInstancesOutput{
 		Reservations: allReservations,
 	}
@@ -154,19 +133,15 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 	return output, nil
 }
 
-// EnrichInstanceProfileIDs fills Instance.IamInstanceProfile.Id for every
-// instance whose daemon-side payload carried only the profile ARN. Daemons
-// have no IAM access, so they emit Arn only; the gateway resolves Id via
-// IAMService per unique ARN (cached to avoid one RPC per instance). Misses
-// are warn-logged and leave Id empty per the AWS contract — this happens
-// when an instance still references a deleted profile (graceful degradation).
-//
+// EnrichInstanceProfileIDs resolves IamInstanceProfile.Id for every instance
+// that carries only an ARN. Results are cached per ARN to avoid repeated RPCs.
+// Misses are warn-logged and leave Id empty (graceful degradation for deleted profiles).
 // Safe to call with a nil output or nil IAMService (no-op).
 func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc handlers_iam.IAMService, accountID string) {
 	if out == nil || iamSvc == nil {
 		return
 	}
-	cache := map[string]string{} // ARN → InstanceProfileID; "" means miss
+	cache := map[string]string{} // ARN → ID; "" = miss
 	for _, res := range out.Reservations {
 		if res == nil {
 			continue
@@ -198,7 +173,7 @@ func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc handlers_
 	}
 }
 
-// queryInstanceBucket sends a NATS request to a describe topic and returns the reservations.
+// queryInstanceBucket queries a single describe topic and returns its reservations.
 func queryInstanceBucket(natsConn *nats.Conn, topic string, jsonData []byte, accountID string) []*ec2.Reservation {
 	reqMsg := nats.NewMsg(topic)
 	reqMsg.Data = jsonData

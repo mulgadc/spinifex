@@ -5,55 +5,39 @@ import (
 )
 
 // STSService defines the interface for AWS STS operations exposed by spinifex.
-//
-// The implementation lives only in awsgw: STS shares the IAM at-rest envelope
-// key and resolves roles via the in-process IAMService, so a daemon-side
-// instance would need access to the master key — the very thing the awsgw /
-// daemon trust boundary keeps separated.
+// Implementation lives only in awsgw because STS shares the IAM master key,
+// which must not cross the awsgw/daemon trust boundary.
 type STSService interface {
-	// AssumeRole mints short-lived temporary credentials bound to the target
-	// role after evaluating the role's trust policy against the caller. The
-	// caller identity is resolved by the gateway and passed in as plain
-	// strings to keep the handler unit-testable.
+	// AssumeRole mints temporary credentials after evaluating the role's trust policy.
+	// Caller identity is resolved by the gateway and passed as plain strings.
 	AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 
-	// AssumeRoleForInstance mints role-bound temporary credentials for an EC2 instance.
-	// It is the in-process IMDS entry point, NOT reachable over HTTPS: the caller is the
-	// synthesised EC2 service principal (trust must allow Service ec2.amazonaws.com).
+	// AssumeRoleForInstance mints instance-role credentials via the IMDS in-process path.
+	// Not reachable over HTTPS; trust policy must allow Service ec2.amazonaws.com.
 	AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error)
 
-	// AssumeRoleWithWebIdentity exchanges an OIDC ID token (typically a
-	// projected K8s ServiceAccount token signed by an EKS cluster's
-	// per-cluster signing key) for short-lived AWS credentials bound to the
-	// target IAM role. Called anonymously — the caller is identified by the
-	// iss/sub/aud claims of the supplied JWT, not by SigV4.
+	// AssumeRoleWithWebIdentity exchanges an OIDC ID token for short-lived credentials
+	// bound to the target role. Anonymous — caller identity comes from JWT claims, not SigV4.
 	AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error)
 
-	// GetCallerIdentity returns the authenticated principal's account / ARN /
-	// UserId. AWS allows every authenticated principal to call this; the
-	// gateway does not gate it with checkPolicy.
+	// GetCallerIdentity returns the authenticated principal's account, ARN, and UserId.
+	// Allowed for every authenticated caller; not gated by checkPolicy.
 	GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
 
-	// VerifyPresignedGetCallerIdentity validates a SigV4-presigned URL for
-	// the sts:GetCallerIdentity action — the token shape produced by `aws
-	// eks get-token` — and resolves the calling principal. The EKS token
-	// webhook calls this over NATS as part of TokenReview processing.
-	// expectedClusterName is constant-time-compared against the signed
-	// X-K8s-Aws-Id header value to prevent cross-cluster replay.
+	// GetSessionToken exchanges a long-lived user credential for short-lived ASIA credentials
+	// that still resolve to the same user identity. Only long-lived users (not sessions) may call it.
+	GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
+
+	// VerifyPresignedGetCallerIdentity validates a SigV4-presigned GetCallerIdentity URL
+	// (the `aws eks get-token` shape) and resolves the calling principal.
+	// expectedClusterName is constant-time-compared against X-K8s-Aws-Id to prevent cross-cluster replay.
 	VerifyPresignedGetCallerIdentity(presignedURL, expectedClusterName string) (*PresignedCallerIdentity, error)
 
-	// LookupSessionCredential resolves an access-key ID to its stored
-	// SessionCredential record. Used by the SigV4 middleware to verify
-	// requests that carry an X-Amz-Security-Token. Returns (nil, nil) when
-	// the AKID is not a session credential — neither an ASIA-prefixed AKID
-	// nor a hit in the session-credentials bucket. The caller decides how to
-	// translate that miss (the SigV4 verifier maps it to InvalidClientTokenId
-	// on the ASIA path).
+	// LookupSessionCredential resolves an AKID to its stored SessionCredential.
+	// Returns (nil, nil) when the AKID is not a session credential or has no stored record.
 	LookupSessionCredential(accessKeyID string) (*SessionCredential, error)
 
-	// VerifySessionToken constant-time-compares the wire-form session token
-	// (the X-Amz-Security-Token header) against the HMAC stored on cred.
-	// Returns true on match. Encapsulating the HMAC in STSService keeps the
-	// master key inside the service and off the gateway surface.
+	// VerifySessionToken constant-time-compares the wire token against the stored HMAC.
+	// Keeping the HMAC inside STSService prevents the master key from crossing the gateway surface.
 	VerifySessionToken(cred *SessionCredential, wireToken string) bool
 }

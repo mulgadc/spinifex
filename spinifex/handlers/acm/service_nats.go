@@ -10,8 +10,7 @@ import (
 
 const defaultTimeout = 30 * time.Second
 
-// NATSACMService is the gateway-side client that forwards ACM operations to
-// the daemon over NATS request/response.
+// NATSACMService forwards ACM operations to the daemon over NATS request/response.
 type NATSACMService struct {
 	natsConn *nats.Conn
 }

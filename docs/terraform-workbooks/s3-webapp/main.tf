@@ -8,13 +8,25 @@
 # Architecture:
 #
 #   Browser ──HTTP──▶ EC2 Instance (Flask webapp, port 80)
-#                         │
-#                         ▼ S3 API (boto3)
+#                         │  ▲ IMDS: short-lived STS creds (ASIA + token)
+#                         │  └──── 169.254.169.254
+#                         ▼ S3 API (boto3, SigV4 with session token)
 #                     Predastore (port 8443)
+#
+# Credentials:
+#   The Terraform run uses the operator's admin keys (s3_access_key /
+#   s3_secret_key) to create the bucket, IAM role, instance profile, and
+#   instance. The INSTANCE receives no long-lived secret — boto3's default
+#   credential chain pulls short-lived STS credentials from IMDS
+#   (169.254.169.254), resolved via the attached instance profile -> role.
 #
 # Prerequisites:
 #   - Spinifex services running (gateway on port 9999)
 #   - Predastore running (S3 API on port 8443)
+#   - The operator identity (AWS_PROFILE=spinifex) must be allowed
+#     iam:CreateRole / iam:CreatePolicy / iam:AttachRolePolicy /
+#     iam:CreateInstanceProfile / iam:AddRoleToInstanceProfile and
+#     iam:PassRole on the new role.
 #   - The EC2 instance must be able to reach the Predastore endpoint.
 #     Set `predastore_host` to the IP reachable from inside the VPC
 #     (e.g. the host's br-wan IP, NOT localhost).
@@ -80,13 +92,13 @@ variable "predastore_host" {
 
 variable "s3_access_key" {
   type        = string
-  description = "S3 access key for Predastore"
+  description = "Operator S3 access key for the Terraform run (creates the bucket on Predastore); the instance uses IMDS, not this key"
 }
 
 variable "s3_secret_key" {
   type        = string
   sensitive   = true
-  description = "S3 secret key for Predastore"
+  description = "Operator S3 secret key for the Terraform run; the instance uses IMDS, not this key"
 }
 
 variable "bucket_name" {
@@ -152,6 +164,55 @@ data "aws_ami" "ubuntu" {
 
 resource "aws_s3_bucket" "uploads" {
   bucket = var.bucket_name
+}
+
+# ---------------------------------------------------------------------------
+# IAM Instance Role — least-privilege S3 access fetched at runtime via IMDS
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "webapp" {
+  name = "s3-webapp-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_policy" "webapp_s3" {
+  name = "s3-webapp-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ListBucket"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = ["arn:aws:s3:::${var.bucket_name}"]
+      },
+      {
+        Sid      = "ObjectRW"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = ["arn:aws:s3:::${var.bucket_name}/*"]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "webapp" {
+  role       = aws_iam_role.webapp.name
+  policy_arn = aws_iam_policy.webapp_s3.arn
+}
+
+resource "aws_iam_instance_profile" "webapp" {
+  name = "s3-webapp-profile"
+  role = aws_iam_role.webapp.name
 }
 
 # ---------------------------------------------------------------------------
@@ -273,8 +334,13 @@ resource "aws_instance" "webapp" {
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.webapp.id]
   key_name               = aws_key_pair.webapp.key_name
+  iam_instance_profile   = aws_iam_instance_profile.webapp.name
 
   associate_public_ip_address = true
+
+  # The role's permissions must exist before the instance boots and makes its
+  # first IMDS-credentialed S3 call
+  depends_on = [aws_iam_role_policy_attachment.webapp]
 
   user_data_base64 = base64encode(<<-USERDATA
     #!/bin/bash
@@ -293,8 +359,6 @@ resource "aws_instance" "webapp" {
     cat > /opt/webapp/.env <<'ENVFILE'
     S3_ENDPOINT=https://${var.predastore_host}
     S3_BUCKET=${var.bucket_name}
-    S3_ACCESS_KEY=${var.s3_access_key}
-    S3_SECRET_KEY=${var.s3_secret_key}
     S3_REGION=${var.region}
     ENVFILE
 
@@ -321,8 +385,6 @@ resource "aws_instance" "webapp" {
     s3 = boto3.client(
         "s3",
         endpoint_url=env["S3_ENDPOINT"],
-        aws_access_key_id=env["S3_ACCESS_KEY"],
-        aws_secret_access_key=env["S3_SECRET_KEY"],
         region_name=env["S3_REGION"],
         verify=False,
         config=Config(s3={"addressing_style": "path"}),

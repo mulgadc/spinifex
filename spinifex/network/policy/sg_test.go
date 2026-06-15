@@ -95,12 +95,8 @@ func TestSGManager_EnsureSG_MissingPortGroup_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "port group")
 }
 
-// TestSGManager_UpdateSG_AtomicReplace asserts EnsureSG / UpdateSG route
-// through ovn.Client.ReplaceACLs (single OVSDB transaction) and never call
-// ClearACLs. ClearACLs+AddACLs leaves the port group with zero ACLs between
-// transactions, defaulting tenant LSP traffic to drop on connectionless
-// flows (ICMP) and on TCP SYNs that miss conntrack — the symptom behind
-// TestSecurityGroupEgress flakes.
+// TestSGManager_UpdateSG_AtomicReplace asserts EnsureSG/UpdateSG use
+// ReplaceACLs (single OVSDB transaction) and never call ClearACLs.
 func TestSGManager_UpdateSG_AtomicReplace(t *testing.T) {
 	ctx := context.Background()
 	m, pg := newSGMockWithPG(t, "sg-web")

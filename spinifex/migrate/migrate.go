@@ -107,17 +107,8 @@ func (r *Registry) RunKVWithJetStream(bucket string, kv nats.KeyValue, js nats.J
 	return r.runKV(bucket, kv, js, targetVersion)
 }
 
-// RunKV executes all pending migrations for a KV bucket up to targetVersion.
-// It reads the current version via utils.ReadVersion, runs each migration in
-// order, and stamps the version via utils.WriteVersion after each step.
-//
-// When no migrations are registered for a bucket, RunKV stamps targetVersion
-// directly — equivalent to a bare utils.WriteVersion. This is the common case
-// for buckets that have not yet needed a schema change.
-//
-// If targetVersion is ahead of the registered migration chain, RunKV returns
-// an error — migration authors must register migrations before bumping version
-// constants.
+// RunKV applies pending KV migrations up to targetVersion. Stamps directly when
+// no migrations are registered (fresh bucket). Errors if the chain is incomplete.
 func (r *Registry) RunKV(bucket string, kv nats.KeyValue, targetVersion int) error {
 	return r.runKV(bucket, kv, nil, targetVersion)
 }
@@ -134,28 +125,17 @@ func (r *Registry) runKV(bucket string, kv nats.KeyValue, js nats.JetStreamConte
 
 	all := r.kvMigrations[bucket]
 
-	// Fresh bucket with no registered migrations — stamp directly. This is
-	// the common first-init path for buckets that have not yet needed a
-	// schema change. Equivalent to the pre-framework utils.WriteVersion call.
-	// Note: we do NOT stamp directly for a non-fresh bucket with no migrations
-	// (e.g. someone bumped a BucketVersion constant from 1 to 2 without adding
-	// a migration) — that case falls through and errors with "no migrations
-	// registered" to force the author to add the migration.
+	// Fresh bucket, no migrations: stamp directly (common first-init path).
 	if current == 0 && len(all) == 0 {
 		return utils.WriteVersion(kv, targetVersion)
 	}
 
-	// Fresh bucket with migrations registered: there is no v0 schema by
-	// convention (BucketVersion constants start at 1). Treat the bucket as
-	// being at the bottom of the registered chain so the chain validation
-	// below accepts the first migration. Without this, every first-ever
-	// KV migration would trip the "chain gap" error on fresh deployments.
+	// Fresh bucket with migrations: no v0 schema by convention; start at chain bottom.
 	if current == 0 {
 		current = all[0].FromVersion // sorted ascending by FromVersion
 	}
 
-	// Migrations are registered (or an existing bucket has a missing chain) —
-	// require a complete chain from current to target.
+	// Require a complete chain from current to target.
 	var pending []KVMigration
 	for _, m := range all {
 		if m.FromVersion >= current && m.ToVersion <= targetVersion {

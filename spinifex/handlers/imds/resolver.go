@@ -9,20 +9,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// kvBucketENIs is the ENI source-of-truth bucket (handlers_ec2_vpc.KVBucketENIs),
-// duplicated as a literal rather than imported because importing handlers/ec2/vpc
-// back would close an import cycle (the veth_store record type does likewise).
+// kvBucketENIs and kvBucketSecurityGroups are duplicated as literals to avoid an import cycle.
 const kvBucketENIs = "spinifex-vpc-enis"
-
-// kvBucketSecurityGroups is the security-group source-of-truth bucket
-// (handlers_ec2_vpc.KVBucketSecurityGroups). Duplicated as a literal for the
-// same import-cycle reason as kvBucketENIs.
 const kvBucketSecurityGroups = "spinifex-vpc-security-groups"
 
-// eniFacts is the subset of an ENIRecord the IMDS metadata surface serves
-// directly, plus the account ID recovered from the ENI bucket key. Everything
-// here is read live off the ENI record, so a change (e.g. a re-associated EIP)
-// is reflected on the next request.
+// eniFacts is the ENI fields served by the IMDS metadata surface, read live from the ENI record.
 type eniFacts struct {
 	eniID            string
 	accountID        string
@@ -36,42 +27,32 @@ type eniFacts struct {
 	securityGroupIDs []string
 }
 
-// instanceFacts carries the four metadata fields not present on the ENI record.
-// They live in the daemon's in-memory instance manager, so they are fetched via
-// the account-scoped DescribeInstances fan-out behind instanceLookup.
+// instanceFacts carries metadata fields not present on the ENI record, fetched via instanceLookup.
 type instanceFacts struct {
 	instanceType          string
 	imageID               string
 	iamInstanceProfileArn string
+	keyName               string
 	userData              []byte
 }
 
-// instanceLookup resolves the instance-only metadata fields by instance ID. It
-// is an interface so the metadata handlers stay unit-testable without a live
-// NATS cluster; the production implementation (natsInstanceLookup) fans out
-// DescribeInstances + DescribeInstanceAttribute.
+// instanceLookup resolves instance-only metadata fields by instance ID.
 type instanceLookup interface {
 	describe(accountID, instanceID string) (*instanceFacts, error)
 }
 
-// eniIndexValue mirrors the stored shape of a spinifex-network-eni-by-vpc-ip
-// row (handlers_ec2_vpc.eniByIPValue). Duplicated for the same cycle reason as
-// kvBucketENIs. Both fields are the ENI's immutable identity; everything mutable
-// is read live off the ENI record.
+// eniIndexValue mirrors the eni-by-vpc-ip row shape, duplicated to avoid an import cycle.
 type eniIndexValue struct {
 	ENIId     string `json:"eni_id"`
 	AccountID string `json:"account_id"`
 }
 
-// sgNameRecord is the slice of handlers_ec2_vpc.SecurityGroupRecord the metadata
-// surface needs: the human-readable group name AWS serves at
-// /latest/meta-data/security-groups (not the sg-* ID).
+// sgNameRecord holds the human-readable group name for the /security-groups path.
 type sgNameRecord struct {
 	GroupName string `json:"group_name"`
 }
 
-// eniRecord is the subset of handlers_ec2_vpc.ENIRecord the resolver reads. The
-// full record is owned by the ENI controller; only these fields feed IMDS.
+// eniRecord is the ENI record subset the resolver reads from the ENI bucket.
 type eniRecord struct {
 	NetworkInterfaceId string   `json:"network_interface_id"`
 	SubnetId           string   `json:"subnet_id"`
@@ -84,15 +65,8 @@ type eniRecord struct {
 	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
 }
 
-// metadataResolver maps a datapath-attested (vpcID, srcIP) to the ENI + instance
-// facts the metadata surface serves. The chain is:
-//
-//	(vpcID, ip) → {eniID, accountID}   via the eni-by-vpc-ip reverse index
-//	(account, eniID) → ENIRecord       via a direct KV Get
-//	(account, instanceID) → facts      via the account-scoped DescribeInstances fan-out
-//
-// The index carries the ENI's immutable identity so the account resolves in one
-// Get; every mutable field is read live off the record, so there's no staleness.
+// metadataResolver maps a datapath-attested (vpcID, srcIP) to ENI + instance facts.
+// Resolution chain: (vpcID,ip)→eniID via reverse index → ENIRecord → instanceFacts.
 type metadataResolver struct {
 	index  nats.KeyValue // spinifex-network-eni-by-vpc-ip
 	eniKV  nats.KeyValue // spinifex-vpc-enis
@@ -102,10 +76,7 @@ type metadataResolver struct {
 
 var _ eniResolver = (*metadataResolver)(nil)
 
-// resolveENI returns the ENI facts for a request's (vpcID, srcIP), or (nil, nil)
-// when no mapping exists — the caller maps a miss to 404, matching AWS's
-// "eventually available during boot" posture. A non-nil error is reserved for
-// genuine backend failures.
+// resolveENI returns ENI facts for (vpcID, srcIP), or (nil, nil) on miss.
 func (r *metadataResolver) resolveENI(vpcID, srcIP string) (*eniFacts, error) {
 	entry, err := r.index.Get(vpcID + "/" + srcIP)
 	if err != nil {
@@ -150,8 +121,7 @@ func (r *metadataResolver) resolveENI(vpcID, srcIP string) (*eniFacts, error) {
 	}, nil
 }
 
-// resolveInstance fetches the instance-only metadata fields for an ENI's
-// attached instance. Returns (nil, nil) when the ENI has no attached instance.
+// resolveInstance fetches instance-only fields for an ENI's attached instance, or (nil, nil) if unattached.
 func (r *metadataResolver) resolveInstance(eni *eniFacts) (*instanceFacts, error) {
 	if eni.instanceID == "" {
 		return nil, nil
@@ -159,9 +129,7 @@ func (r *metadataResolver) resolveInstance(eni *eniFacts) (*instanceFacts, error
 	return r.lookup.describe(eni.accountID, eni.instanceID)
 }
 
-// resolveSGNames maps security-group IDs to the group names AWS serves at
-// /latest/meta-data/security-groups. Best-effort and order-preserving: a missing
-// record or nil sgKV falls back to the raw ID rather than failing the request.
+// resolveSGNames maps SG IDs to group names for /security-groups. Best-effort; falls back to IDs.
 func (r *metadataResolver) resolveSGNames(accountID string, sgIDs []string) []string {
 	names := make([]string, len(sgIDs))
 	for i, id := range sgIDs {

@@ -1,10 +1,13 @@
 import {
+  DescribeAddressesCommand,
   DescribeAvailabilityZonesCommand,
+  DescribeIamInstanceProfileAssociationsCommand,
   DescribeImagesCommand,
   DescribeInstancesCommand,
   DescribeInstanceTypesCommand,
   DescribeInternetGatewaysCommand,
   DescribeKeyPairsCommand,
+  DescribeNatGatewaysCommand,
   DescribePlacementGroupsCommand,
   DescribeRegionsCommand,
   DescribeRouteTablesCommand,
@@ -42,6 +45,20 @@ export const ec2InstanceQueryOptions = (instanceId: string) =>
     queryFn: async () => {
       const command = new DescribeInstancesCommand({
         InstanceIds: [instanceId],
+      })
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2IamInstanceProfileAssociationsQueryOptions = (
+  instanceId: string,
+) =>
+  queryOptions({
+    queryKey: ["ec2", "iam-instance-profile-associations", instanceId],
+    queryFn: async () => {
+      const command = new DescribeIamInstanceProfileAssociationsCommand({
+        Filters: [{ Name: "instance-id", Values: [instanceId] }],
       })
       return await getEc2Client().send(command)
     },
@@ -160,7 +177,20 @@ export const ec2InternetGatewaysQueryOptions = queryOptions({
     const command = new DescribeInternetGatewaysCommand({})
     return await getEc2Client().send(command)
   },
+  refetchInterval: 5000,
 })
+
+export const ec2InternetGatewayQueryOptions = (internetGatewayId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "internetGateways", internetGatewayId],
+    queryFn: async () => {
+      const command = new DescribeInternetGatewaysCommand({
+        InternetGatewayIds: [internetGatewayId],
+      })
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
 
 export const ec2RouteTablesQueryOptions = queryOptions({
   queryKey: ["ec2", "routeTables"],
@@ -168,7 +198,20 @@ export const ec2RouteTablesQueryOptions = queryOptions({
     const command = new DescribeRouteTablesCommand({})
     return await getEc2Client().send(command)
   },
+  refetchInterval: 5000,
 })
+
+export const ec2RouteTableQueryOptions = (routeTableId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "routeTables", routeTableId],
+    queryFn: async () => {
+      const command = new DescribeRouteTablesCommand({
+        RouteTableIds: [routeTableId],
+      })
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
 
 export const ec2VpcsQueryOptions = queryOptions({
   queryKey: ["ec2", "vpcs"],
@@ -225,6 +268,48 @@ export const ec2SecurityGroupQueryOptions = (groupId: string) =>
       })
       return await getEc2Client().send(command)
     },
+  })
+
+export const ec2AddressesQueryOptions = queryOptions({
+  queryKey: ["ec2", "addresses"],
+  queryFn: async () => {
+    const command = new DescribeAddressesCommand({})
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2AddressQueryOptions = (allocationId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "addresses", allocationId],
+    queryFn: async () => {
+      const command = new DescribeAddressesCommand({
+        AllocationIds: [allocationId],
+      })
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2NatGatewaysQueryOptions = queryOptions({
+  queryKey: ["ec2", "natGateways"],
+  queryFn: async () => {
+    const command = new DescribeNatGatewaysCommand({})
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2NatGatewayQueryOptions = (natGatewayId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "natGateways", natGatewayId],
+    queryFn: async () => {
+      const command = new DescribeNatGatewaysCommand({
+        NatGatewayIds: [natGatewayId],
+      })
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
   })
 
 export const ec2VolumesQueryOptions = queryOptions({

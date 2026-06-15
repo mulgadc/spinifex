@@ -52,6 +52,9 @@ type PoolRecord struct {
 	GwLrpRangeStart string                          `json:"gw_lrp_range_start,omitempty"`
 	GwLrpRangeEnd   string                          `json:"gw_lrp_range_end,omitempty"`
 	Allocated       map[string]ExternalIPAllocation `json:"allocated"`
+	// Cursor is the last address handed out; allocation resumes just past it,
+	// wrapping at RangeEnd so a released IP is not immediately reused.
+	Cursor string `json:"cursor,omitempty"`
 }
 
 // StaticPoolAllocator implements Allocator backed by a NATS JetStream KV
@@ -114,6 +117,7 @@ func (a *StaticPoolAllocator) Allocate(_ context.Context, req AllocateRequest) (
 			ENIId:        req.ENIID,
 			InstanceId:   req.InstanceID,
 		}
+		record.Cursor = ip
 
 		data, err := json.Marshal(record)
 		if err != nil {
@@ -273,9 +277,8 @@ func (a *StaticPoolAllocator) getRecord(poolName string) (*PoolRecord, uint64, e
 	return &record, entry.Revision(), nil
 }
 
-// nextAvailableIP picks the next unallocated address in the pool's range,
-// skipping addresses inside [GwLrpRangeStart, GwLrpRangeEnd]. Carved from
-// the pre-Q1 handlers/ec2/vpc.nextAvailableExternalIP.
+// nextAvailableIP picks the next unallocated address, skipping [GwLrpRangeStart,
+// GwLrpRangeEnd]. Resumes one past Cursor, wrapping at RangeEnd.
 func nextAvailableIP(record *PoolRecord) (string, error) {
 	startIP := net.ParseIP(record.RangeStart).To4()
 	endIP := net.ParseIP(record.RangeEnd).To4()
@@ -297,16 +300,28 @@ func nextAvailableIP(record *PoolRecord) (string, error) {
 
 	startInt := ipv4ToUint32(startIP)
 	endInt := ipv4ToUint32(endIP)
+	if endInt < startInt {
+		return "", fmt.Errorf("invalid IP range: %s - %s", record.RangeStart, record.RangeEnd)
+	}
+	total := endInt - startInt + 1
 
-	for i := startInt; ; i++ {
-		if !hasGwLrp || i < gwLrpStart || i > gwLrpEnd {
-			candidate := uint32ToIPv4(i).String()
-			if _, taken := record.Allocated[candidate]; !taken {
-				return candidate, nil
-			}
+	// Empty or out-of-range cursor starts at RangeStart.
+	offset := uint32(0)
+	if c := net.ParseIP(record.Cursor).To4(); c != nil {
+		ci := ipv4ToUint32(c)
+		if ci >= startInt && ci <= endInt {
+			offset = ((ci - startInt) + 1) % total
 		}
-		if i == endInt {
-			break
+	}
+
+	for k := range total {
+		i := startInt + (offset+k)%total
+		if hasGwLrp && i >= gwLrpStart && i <= gwLrpEnd {
+			continue
+		}
+		candidate := uint32ToIPv4(i).String()
+		if _, taken := record.Allocated[candidate]; !taken {
+			return candidate, nil
 		}
 	}
 

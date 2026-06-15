@@ -232,15 +232,30 @@ assert_nginx_webserver() {
 }
 
 assert_s3_webapp() {
-    # aws s3 goes to predastore on :8443, not the awsgw on :9999 the default
-    # profile points at — the workbook's provider sets s3 = predastore_endpoint
-    # but the CLI doesn't inherit that.
-    local bucket sentinel endpoint
-    bucket=$(tofu output -raw bucket_name)
-    endpoint="https://${WAN_IP}:8443"
+    # Prove the INSTANCE wrote to S3 with IMDS-sourced STS creds: upload a file
+    # through the app (PutObject), then read it back from the listing (ListBucket
+    # + GetObject link). This exercises the full IMDS -> STS -> IAM ->
+    # predastore-authz path and fails closed if any link regresses — a
+    # harness-side CLI upload would still pass with IMDS broken.
+    local ip sentinel tmp
+    ip=$(tofu output -raw public_ip)
     sentinel="spinifex-nightly-$(date +%s).txt"
-    echo "nightly-smoke" | aws s3 cp --endpoint-url "$endpoint" - "s3://${bucket}/${sentinel}" >/dev/null
-    aws s3 ls --endpoint-url "$endpoint" "s3://${bucket}/" | grep -q "$sentinel"
+
+    wait_for_http_200 "http://${ip}/" || {
+        log "  s3-webapp: webapp not reachable on http://${ip}/"
+        return 1
+    }
+
+    tmp=$(mktemp)
+    echo "nightly-smoke" > "$tmp"
+    if ! curl -sf -F "file=@${tmp};filename=${sentinel}" "http://${ip}/upload" >/dev/null; then
+        rm -f "$tmp"
+        log "  s3-webapp: upload via app failed (IMDS -> STS -> S3 PutObject?)"
+        return 1
+    fi
+    rm -f "$tmp"
+
+    curl -sf "http://${ip}/" | grep -q "$sentinel"
 }
 
 # Pick an instance type available on this cluster. Workbooks default to
@@ -284,8 +299,9 @@ run_workbook() {
         "-var=instance_type=${INSTANCE_TYPE}"
     )
 
-    # s3-webapp has three required-no-default vars; creds come from
-    # AWS_PROFILE=spinifex so the workbook's boto3 client authenticates.
+    # s3-webapp has three required-no-default vars. The s3_access/secret keys are
+    # the operator creds the provider uses to create the bucket + IAM role on
+    # predastore; the instance authenticates to S3 via IMDS, not these keys.
     if [ "$example" = "s3-webapp" ]; then
         local access_key secret_key
         access_key=$(aws configure get aws_access_key_id --profile spinifex)
@@ -338,12 +354,33 @@ if [ -z "$INSTANCE_TYPE" ] || [ "$INSTANCE_TYPE" = "None" ]; then
 fi
 log "Using instance_type=${INSTANCE_TYPE}"
 
+# Each workbook is emitted as a top-level `go test -v` testcase
+# (=== RUN / --- PASS|FAIL / package trailer) so go-junit-report converts the
+# tee'd log into junit-tofu.xml and the e2e-analyze action produces the same
+# RCA bundle the Go suites do (nightly cell 17). The per-workbook log() output
+# between RUN and the result line is captured as the failure diagnostics.
+SUITE_RC=0
 for workbook in nginx-alb bastion-private-subnet nginx-webserver s3-webapp; do
-    if ! run_workbook "$workbook"; then
+    tname="TestTofuWorkbook_${workbook//-/_}"
+    wb_start=$SECONDS
+    echo "=== RUN   ${tname}"
+    if run_workbook "$workbook"; then
+        printf -- '--- PASS: %s (%d.00s)\n' "$tname" "$((SECONDS - wb_start))"
+    else
+        printf -- '--- FAIL: %s (%d.00s)\n' "$tname" "$((SECONDS - wb_start))"
         log "FAIL ${workbook} — aborting remaining workbooks"
-        exit 1
+        SUITE_RC=1
+        break
     fi
 done
 
 CURRENT_WORKBOOK=""
-log "All workbooks passed"
+if [ "$SUITE_RC" -eq 0 ]; then
+    log "All workbooks passed"
+    echo "PASS"
+    printf 'ok  \ttofu-examples\t%d.000s\n' "$SECONDS"
+else
+    echo "FAIL"
+    printf 'FAIL\ttofu-examples\t%d.000s\n' "$SECONDS"
+fi
+exit "$SUITE_RC"

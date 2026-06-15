@@ -159,8 +159,8 @@ func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
 	}
 }
 
-// ReconcileApplyOnly must not prune managed sg_* PGs when intent is empty
-// (startup race vs. peer subscribers); full Reconcile must still prune.
+// ReconcileApplyOnly must not prune sg_* PGs on empty intent (startup race);
+// full Reconcile must still prune.
 func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
@@ -253,6 +253,60 @@ func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 	if m.SetGatewayChassisCalls <= setCallsBefore {
 		t.Errorf("expected SetGatewayChassis to fire on existing IGW for chassis rebind; calls before=%d after=%d",
 			setCallsBefore, m.SetGatewayChassisCalls)
+	}
+}
+
+// TestReconcile_GatewayClaimChecksChassisRedirectPort pins the verifier to the
+// cr- Port_Binding. The LRP binding is chassis-less; checking it caused infinite
+// recomputes and churned the EIP datapath.
+func TestReconcile_GatewayClaimChecksChassisRedirectPort(t *testing.T) {
+	withFastClaimBounds(t)
+	m := mock.New()
+	sg := policy.NewSecurityGroupManager(m)
+	nat, _ := policy.NewNATManager(m, policy.NATModeDistributed)
+	routes := policy.NewRouteManager(m)
+	igw, _ := external.NewIGWManager(external.IGWManagerConfig{
+		OVN: m, Routes: routes, NAT: nat,
+		Allocator: external.LinkLocalAllocator{},
+		NATMode:   policy.NATModeDistributed,
+	})
+	topo := topology.NewLiveManager(m)
+	claim := &fakeClaimVerifier{claimedAfter: 0} // reports claimed immediately
+	rec, err := New(Config{
+		OVN: m, SG: sg, NAT: nat, Routes: routes, IGW: igw, Topology: topo,
+		LocalAZ: "us-east-1a", NodeHostname: "test-host",
+		Chassis: []string{"chassis-1"}, GatewayClaim: claim,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	intent := IntentState{
+		VPCs: map[string]topology.VPCSpec{
+			"vpc-a": {VPCID: "vpc-a", CIDR: netip.MustParsePrefix("10.0.0.0/16"), VNI: 100},
+		},
+		Subnets: map[string]topology.SubnetSpec{},
+		Ports:   map[string]topology.PortSpec{},
+		SGs:     map[string]policy.SGSpec{},
+		IGWs:    map[string]external.IGWSpec{"vpc-a": {VPCID: "vpc-a", InternetGatewayID: "igw-a"}},
+		EIPs:    map[string]policy.EIPSpec{},
+		NATGWs:  map[string]policy.NATGWSpec{},
+	}
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if claim.checks == 0 {
+		t.Fatal("gateway claim verifier never queried; rebind path did not run")
+	}
+	want := topology.GatewayChassisRedirectPort("vpc-a")
+	if claim.lastPort != want {
+		t.Errorf("claim verifier checked %q, want chassisredirect port %q (the LRP %q is always chassis-less)",
+			claim.lastPort, want, topology.GatewayRouterPort("vpc-a"))
+	}
+	if claim.nudges != 0 {
+		t.Errorf("claimed redirect port nudged %d recompute(s), want 0", claim.nudges)
 	}
 }
 

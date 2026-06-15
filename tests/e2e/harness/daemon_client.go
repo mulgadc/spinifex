@@ -17,12 +17,8 @@ import (
 )
 
 // WaitForMode polls the daemon's /local/status until it reports the expected
-// mode or timeout expires. Poll interval is 1s — fast enough that a
-// 30-second timeout sees ~30 attempts, slow enough not to flood a recovering
-// daemon.
-//
-// Depends on daemon-local-autonomy §1b. Until that endpoint ships, this
-// function will time out; callers gate on t.Skip.
+// mode or timeout expires (1s poll interval).
+// Requires the /local/status endpoint; callers gate on t.Skip until it ships.
 func WaitForMode(ctx context.Context, dc *DaemonClient, node Node, want DaemonMode, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	const interval = 1 * time.Second
@@ -55,17 +51,11 @@ func WaitForMode(ctx context.Context, dc *DaemonClient, node Node, want DaemonMo
 	}
 }
 
-// daemonPort is the cluster-manager HTTPS port the daemon binds for /health
-// and /local/* (see spinifex/daemon/daemon.go ClusterManager, configured via
-// [nodes.<id>.daemon].host). 4432 is the deployed default; 8443 is predastore.
+// daemonPort is the HTTPS port for /health and /local/* (deployed default; 8443 is predastore).
 const daemonPort = 4432
 
 // DaemonMode mirrors the daemon's operating mode reported by /local/status.
-//
-// The typed enum avoids stringly-typed assertions in scenarios. The concrete
-// endpoint and JSON schema land with daemon-local-autonomy §1b; this file
-// predates that PR and its types will be swapped for the daemon's own when
-// it merges.
+// The typed enum avoids stringly-typed assertions.
 type DaemonMode string
 
 const (
@@ -75,11 +65,7 @@ const (
 )
 
 // LocalStatus is the response shape from GET /local/status.
-//
-// Placeholder fields only — the authoritative struct ships with
-// daemon-local-autonomy §1b. Scenarios that depend on these fields remain
-// t.Skip until that epic replaces this definition with an import from the
-// daemon package.
+// Placeholder — scenarios that depend on these fields gate on t.Skip.
 type LocalStatus struct {
 	Node     string     `json:"node"`
 	Mode     DaemonMode `json:"mode"`
@@ -87,24 +73,20 @@ type LocalStatus struct {
 	NATS     string     `json:"nats"` // "connected" | "disconnected"
 }
 
-// LocalInstance is one row of GET /local/instances. Placeholder — see
-// LocalStatus.
+// LocalInstance is one row of GET /local/instances. Placeholder.
 type LocalInstance struct {
 	InstanceID string `json:"instance_id"`
 	State      string `json:"state"`
 	PID        int    `json:"pid,omitempty"`
 }
 
-// DaemonClient is a thin HTTPS client targeting a single daemon's local
-// endpoints. It uses one *http.Client per node so connection reuse works
-// across calls within a scenario.
+// DaemonClient is a thin HTTPS client for a single daemon's local endpoints.
 type DaemonClient struct {
 	http *http.Client
 }
 
 // NewDaemonClient returns a DaemonClient with TLS verification disabled
-// (the tofu-cluster uses self-signed per-node certs). Timeouts are set to
-// 5s so a wedged daemon fails fast enough for scenario retry logic.
+// (self-signed per-node certs) and a 5s timeout.
 func NewDaemonClient() *DaemonClient {
 	return &DaemonClient{
 		http: &http.Client{
@@ -143,9 +125,7 @@ func (d *DaemonClient) getJSON(ctx context.Context, node Node, path string, out 
 }
 
 // Status returns the daemon's self-reported local status.
-//
-// Depends on daemon-local-autonomy §1b. Until that lands, the daemon will
-// return 404 and callers should t.Skip.
+// Returns 404 until the /local/status endpoint ships; callers should t.Skip.
 func (d *DaemonClient) Status(ctx context.Context, node Node) (LocalStatus, error) {
 	var s LocalStatus
 	if err := d.getJSON(ctx, node, "/local/status", &s); err != nil {
@@ -155,9 +135,7 @@ func (d *DaemonClient) Status(ctx context.Context, node Node) (LocalStatus, erro
 }
 
 // Instances returns the daemon's locally-known instance list.
-//
-// Depends on daemon-local-autonomy §1a. Until that lands, the daemon will
-// return 404 and callers should t.Skip.
+// Returns 404 until the /local/instances endpoint ships; callers should t.Skip.
 func (d *DaemonClient) Instances(ctx context.Context, node Node) ([]LocalInstance, error) {
 	var xs []LocalInstance
 	if err := d.getJSON(ctx, node, "/local/instances", &xs); err != nil {
@@ -166,9 +144,7 @@ func (d *DaemonClient) Instances(ctx context.Context, node Node) ([]LocalInstanc
 	return xs, nil
 }
 
-// Health hits the daemon's existing /health endpoint. Useful during
-// scaffolding validation before the /local/* endpoints exist — confirms
-// the harness can reach the daemon at all.
+// Health hits the daemon's /health endpoint to confirm basic reachability.
 func (d *DaemonClient) Health(ctx context.Context, node Node) (types.NodeHealthResponse, error) {
 	var h types.NodeHealthResponse
 	if err := d.getJSON(ctx, node, "/health", &h); err != nil {

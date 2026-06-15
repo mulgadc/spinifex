@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -546,10 +547,8 @@ func TestCloudInitMetaTemplateRendering(t *testing.T) {
 	assert.Contains(t, rendered, "local-hostname:")
 }
 
-// TestCloudInitVolumeNamePerInstance verifies that AMI-based launches produce
-// unique root volume IDs, which in turn produce unique cloud-init volume names.
-// This prevents the bug where a cached cloud-init ISO (keyed by AMI) would
-// serve stale SSH keys or hostnames to subsequent instances.
+// TestCloudInitVolumeNamePerInstance verifies that each launch produces a unique
+// root volume ID so cloud-init ISOs are not shared across instances.
 func TestRunInstance_NoImageId(t *testing.T) {
 	instanceTypes := map[string]*ec2.InstanceTypeInfo{
 		"t3.micro": {InstanceType: aws.String("t3.micro")},
@@ -662,7 +661,7 @@ func TestParseVolumeParams_PartialEbs(t *testing.T) {
 
 func TestCloudInitNetworkConfigWildcard(t *testing.T) {
 	// No MACs → wildcard config (non-VPC or VPC without DEV_NETWORKING)
-	cfg := generateNetworkConfig("", "", "", "", nil)
+	cfg := generateNetworkConfig("", "", "", "", nil, true)
 	assert.Contains(t, cfg, "version: 2")
 	assert.Contains(t, cfg, "dhcp4: true")
 	assert.Contains(t, cfg, "dhcp-identifier: mac")
@@ -674,7 +673,7 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 	eniMAC := "02:00:00:61:ef:c2"
 	devMAC := "02:de:00:60:83:0d"
 
-	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil)
+	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil, true)
 
 	// Both MACs present in config
 	assert.Contains(t, cfg, eniMAC)
@@ -694,12 +693,12 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 
 func TestCloudInitNetworkConfigPartialMAC(t *testing.T) {
 	// Only ENI MAC (VPC without dev) → per-interface config with VPC NIC only
-	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil)
+	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil, true)
 	assert.Contains(t, cfg, "vpc0:")
 	assert.NotContains(t, cfg, "dev0:")
 
 	// Only dev MAC (shouldn't happen, but defensive) → wildcard
-	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil)
+	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil, true)
 	assert.Contains(t, cfg, `name: "e*"`)
 	assert.NotContains(t, cfg, "use-routes")
 }
@@ -710,7 +709,7 @@ func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
 		"02:00:00:bb:bb:bb",
 		"02:00:00:cc:cc:cc",
 	}
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras)
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras, true)
 
 	assert.Contains(t, cfg, "vpc0:")
 	assert.Contains(t, cfg, "vpc1:")
@@ -729,7 +728,7 @@ func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
 func TestCloudInitNetworkConfigEmptyExtraMACSkipped(t *testing.T) {
 	// Empty strings inside the extras slice are ignored rather than producing
 	// a malformed ethernets block.
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""})
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""}, true)
 	assert.Contains(t, cfg, "vpc0:")
 	assert.NotContains(t, cfg, "vpc1:")
 }
@@ -856,7 +855,7 @@ func TestCloudInitVolumeNamePerInstance(t *testing.T) {
 	}
 }
 
-// --- 1b-pre Describe* coverage (siv-22 parts) ------------------------------
+// --- Describe* coverage -----------------------------------------------------
 
 type fakeResourceCapacityProvider struct {
 	types          []*ec2.InstanceTypeInfo
@@ -1079,6 +1078,70 @@ func TestDescribeInstances_AccountFilteringHidesOtherTenant(t *testing.T) {
 	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, "111122223333")
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations)
+}
+
+// EKS control-plane VMs are owned by the customer account (their ENI lives in
+// the customer VPC) but are platform-managed system instances, so they must be
+// hidden from the owning customer's DescribeInstances the same way LB VMs are.
+func TestDescribeInstances_HidesManagedSystemVMFromCustomer(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-ekscp",
+		AccountID: owner,
+		ManagedBy: tags.ManagedByEKS,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-ekscp"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-ekscp")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "managed system VM must not appear in customer listing")
+}
+
+// Root/operator callers still see managed system VMs.
+func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
+	v := &vm.VM{
+		ID:        "i-lb",
+		AccountID: utils.GlobalAccountID,
+		ManagedBy: tags.ManagedByELBv2,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-lb"),
+			OwnerId:       aws.String(utils.GlobalAccountID),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-lb")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-lb", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+// A customer's own unmanaged instance (no ManagedBy) stays visible — confirms
+// the exclusion keys on ManagedBy, not on account scope. Future EKS worker
+// nodes (customer-owned, no ManagedBy tag) follow this path.
+func TestDescribeInstances_CustomerWorkloadStaysVisible(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-worker",
+		AccountID: owner,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-worker"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-worker")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-worker", *out.Reservations[0].Instances[0].InstanceId)
 }
 
 func TestDescribeInstances_MalformedID(t *testing.T) {
@@ -2173,7 +2236,7 @@ func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
 	assert.Empty(t, store.deletedStopped, "stopped-KV entry must remain on rollback")
 }
 
-// --- PrepareRunInstances / ec2.cmd dispatch tests (1b-pre phase 2d) ---------
+// --- PrepareRunInstances / ec2.cmd dispatch tests ---------------------------
 
 type fakeAMILoader struct {
 	byID map[string]viperblock.AMIMetadata
@@ -2662,12 +2725,9 @@ func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
 	}
 }
 
-// TestPrepareRunInstances_NATFailureRollsBackPublicIP regresses the silent
-// corruption where vpc.add-nat NACKs (or vpcd is offline) but the launch
-// returned an ec2.Instance carrying the unreachable IP, the ENI record was
-// updated with that IP, and the IPAM pool entry stayed allocated. With the
-// fix in place, NAT failure must drop the instance from the response, clear
-// the ENI public IP, release the IPAM lease, and deallocate capacity.
+// TestPrepareRunInstances_NATFailureRollsBackPublicIP verifies that a vpc.add-nat
+// failure drops the instance, clears the ENI public IP, releases the IPAM
+// lease, and deallocates capacity.
 func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	eni := &fakeENICreator{
 		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
@@ -2759,6 +2819,48 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	}
 }
 
+// TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch verifies that a
+// failed public-IP allocation aborts the launch: detaches and deletes the ENI,
+// deallocates capacity, and returns InsufficientAddressCapacity.
+func TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-pubip-fail"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:02"),
+				PrivateIpAddress:   aws.String("10.0.0.50"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	ipam := &fakeIPAllocator{err: errors.New("InsufficientAddressCapacity: pool wan exhausted")}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, ipam)
+	svc.eniDeleter = deleter
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, err.Error(),
+		"pool exhaustion must surface as InsufficientAddressCapacity, not a silent IP-less boot")
+	assert.Empty(t, instances, "instance with no public IP must not be returned")
+
+	// The ENI is attached with a primary IP; rollback must detach before
+	// delete (in-use ENIs reject deletion) so no eniKV record leaks.
+	assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
+	assert.Equal(t, []string{"eni-pubip-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+	assert.Equal(t, 0, eni.updateCalls, "no public IP was allocated, so the ENI must never be updated with one")
+
+	require.Len(t, prov.deallocated, 1, "public-IP allocation failure must trigger Deallocate")
+}
+
 // natWirePayload mirrors utils.natEvent for test-side decoding.
 type natWirePayload struct {
 	VpcId      string `json:"vpc_id"`
@@ -2786,16 +2888,9 @@ func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
 	require.Len(t, prov.deallocated, 1, "ENI failure must trigger deallocate")
 }
 
-// TestPrepareRunInstances_ENIAttachFailureRollsBack regresses the silent
-// corruption where AttachENI failure was logged-and-ignored, leaving the
-// auto-created ENI unattached in vpcService. Later RegisterTargets with
-// TargetType=instance enumerates ENIs by attachment.instance-id, finds
-// none, and drops the target — the customer's ALB has 0 healthy targets
-// with no log line connecting the two events. The dangling ENI also leaks
-// its auto-assigned EIP on terminate because DeleteNetworkInterface
-// cannot resolve the instance link. With the fix, AttachENI failure must
-// delete the auto-created ENI, deallocate capacity, and drop the instance
-// from the reservation.
+// TestPrepareRunInstances_ENIAttachFailureRollsBack verifies that an AttachENI
+// failure deletes the auto-created ENI, deallocates capacity, and drops the
+// instance from the reservation.
 func TestPrepareRunInstances_ENIAttachFailureRollsBack(t *testing.T) {
 	eni := &fakeENICreator{
 		attachErr: errors.New("vpc attach refused"),
@@ -2928,6 +3023,25 @@ func TestStartInstance_AllocateFails(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
 
+// TestStartInstance_ErrorStateStartable verifies a StateError instance passes
+// the startability guard and reaches resource allocation.
+func TestStartInstance_ErrorStateStartable(t *testing.T) {
+	id := "i-err"
+	mgr := mgrWith(map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateError, InstanceType: "t3.micro"},
+	})
+	v, _ := mgr.Get(id)
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		allocateErr:   errors.New("no capacity"),
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgr, resourceMgr: prov}
+	err := svc.StartInstance(v, spxtypes.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
 func TestRebootInstance_NotFound(t *testing.T) {
 	id := "i-missing"
 	mgr := mgrWith(nil)
@@ -2937,12 +3051,8 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
-// TestStartInstance_NotFound verifies that when vmMgr.Start cannot find the
-// instance (e.g. it was terminated between the daemon's pre-dispatch lookup
-// and the manager call), the service returns InvalidInstanceID.NotFound
-// rather than collapsing to a generic Server.InternalError. The AWS SDK
-// retries 500s, so the prior behaviour produced duplicate Start attempts
-// before the client surfaced the failure.
+// TestStartInstance_NotFound verifies that a missing instance returns
+// InvalidInstanceID.NotFound rather than a generic internal error.
 func TestStartInstance_NotFound(t *testing.T) {
 	id := "i-missing"
 	mgr := mgrWith(nil)

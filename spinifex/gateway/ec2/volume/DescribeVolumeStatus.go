@@ -15,7 +15,6 @@ func ValidateDescribeVolumeStatusInput(input *ec2.DescribeVolumeStatusInput) err
 		return nil
 	}
 
-	// Validate VolumeId format if provided
 	for _, volumeId := range input.VolumeIds {
 		if volumeId != nil && !strings.HasPrefix(*volumeId, "vol-") {
 			return errors.New(awserrors.ErrorInvalidVolumeIDMalformed)

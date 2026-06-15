@@ -416,6 +416,14 @@ TMPEOF
     $SUDO chown "spinifex-gw:$SPINIFEX_GROUP" /etc/spinifex/awsgw
     $SUDO chmod 0750 /etc/spinifex/awsgw
 
+    # Viperblock's at-rest encryption key dir. 0750 group-traversable; the key
+    # itself is set to root:spinifex 0640 by SetServiceOwnership because both
+    # viperblockd (spinifex-viperblock) and the awsgw handlers (spinifex-gw)
+    # load it.
+    $SUDO mkdir -p /etc/spinifex/viperblock
+    $SUDO chown "spinifex-viperblock:$SPINIFEX_GROUP" /etc/spinifex/viperblock
+    $SUDO chmod 0750 /etc/spinifex/viperblock
+
     # Per-service data directories
     $SUDO mkdir -p /var/lib/spinifex/nats
     $SUDO chown "spinifex-nats:$SPINIFEX_GROUP" /var/lib/spinifex/nats
@@ -599,6 +607,20 @@ install_systemd() {
         info "  /etc/systemd/system/$(basename "$unit")"
     done
 
+    # Reserve RAM + CPU priority for system.slice (sshd, journald, the operator)
+    # so a maxed spinifex.slice cannot starve them — the "stay sshable" guarantee.
+    # Generated here rather than shipped as a staged file because the packaging
+    # globs flatten the systemd/ dir and would skip a nested drop-in directory;
+    # this mirrors the sshd-keygen drop-in pattern in build-rootfs.sh. MemoryMin
+    # is a guaranteed-unreclaimable floor, not a cap.
+    $SUDO mkdir -p /etc/systemd/system/system.slice.d
+    $SUDO tee /etc/systemd/system/system.slice.d/spinifex-reserve.conf > /dev/null << 'EOF'
+[Slice]
+MemoryMin=1G
+CPUWeight=300
+EOF
+    info "  /etc/systemd/system/system.slice.d/spinifex-reserve.conf"
+
     # daemon-reload / enable require a running systemd — skip inside the ISO
     # chroot. Unit files are still dropped into place; firstboot enables them.
     if [ "${ISO_BUILD:-0}" = "1" ]; then
@@ -704,6 +726,48 @@ print_summary() {
     echo ""
 }
 
+# --- Configure host swap (mulga-siv-251) ---
+# Provisions an 8G swapfile and lowers vm.swappiness so spinifex.slice
+# (MemorySwapMax=100%) has a backing device for graceful degradation under
+# memory pressure. Reverses the historical swap=0 assumption. Idempotent.
+setup_swap() {
+    stage "configuring host swap"
+
+    # ISO build runs in a chroot — cannot swapon, and baking an 8G file into the
+    # rootfs bloats the image. ISO hosts provision swap at firstboot instead.
+    if [ "${ISO_BUILD:-0}" = "1" ]; then
+        info "Swap setup skipped (ISO_BUILD=1; firstboot provisions swap)"
+        return
+    fi
+
+    local swapfile=/swapfile size_mb=8192
+
+    # Swap is a safety buffer, not a routine path: reclaim page cache first.
+    $SUDO tee /etc/sysctl.d/99-spinifex-swap.conf > /dev/null << 'EOF'
+# Spinifex: minimise swapping; swap backs spinifex.slice graceful degradation.
+vm.swappiness = 10
+EOF
+    $SUDO chmod 0644 /etc/sysctl.d/99-spinifex-swap.conf
+    $SUDO sysctl -q -w vm.swappiness=10 || true
+
+    if swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$swapfile"; then
+        info "Swap already active ($swapfile)"
+        return
+    fi
+
+    if [ ! -f "$swapfile" ]; then
+        info "Creating ${size_mb}MiB $swapfile"
+        $SUDO fallocate -l "${size_mb}M" "$swapfile" 2>/dev/null \
+            || $SUDO dd if=/dev/zero of="$swapfile" bs=1M count="$size_mb" status=none
+        $SUDO chmod 0600 "$swapfile"
+        $SUDO mkswap "$swapfile" > /dev/null
+    fi
+    $SUDO swapon "$swapfile"
+    grep -q "^$swapfile " /etc/fstab 2>/dev/null \
+        || echo "$swapfile none swap sw 0 0" | $SUDO tee -a /etc/fstab > /dev/null
+    info "Swap enabled: $swapfile (${size_mb}MiB), vm.swappiness=10"
+}
+
 # --- Main ---
 main() {
     info "Spinifex installer"
@@ -739,6 +803,7 @@ main() {
     stage_enabled systemd    && install_systemd
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
+    stage_enabled swap       && setup_swap
 
     # Migrations are only safe on a live system (need a running NATS and a
     # persisted config file). Skip under ISO_BUILD and under any explicit

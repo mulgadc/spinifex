@@ -9,8 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// validateAttrArn rejects a nil or empty resource ARN, shared by every
-// attribute Modify/Describe validator.
+// validateAttrArn rejects a nil or empty resource ARN.
 func validateAttrArn(arn *string) error {
 	if arn == nil || *arn == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
@@ -18,9 +17,8 @@ func validateAttrArn(arn *string) error {
 	return nil
 }
 
-// attributeOp validates an attribute request and dispatches it to its NATS
-// service call, returning a zero output on any error. Shared by all four
-// Modify/Describe attribute handlers.
+// attributeOp validates input then dispatches to the NATS service call, shared
+// by all four Modify/Describe attribute handlers.
 func attributeOp[I, O any](input *I, validate func(*I) error, call func(*I) (*O, error)) (O, error) {
 	var output O
 	if err := validate(input); err != nil {

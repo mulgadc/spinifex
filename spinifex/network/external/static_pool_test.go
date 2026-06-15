@@ -62,20 +62,37 @@ func TestStaticPool_GatewayReserved(t *testing.T) {
 	assert.ErrorContains(t, err, "cannot release gateway IP")
 }
 
-func TestStaticPool_Release(t *testing.T) {
+// TestStaticPool_NoInstantReuseAfterRelease pins the round-robin reuse policy:
+// a released IP must not be handed back immediately; only after the cursor
+// cycles the range.
+func TestStaticPool_NoInstantReuseAfterRelease(t *testing.T) {
 	a := newStaticAllocator(t, []ExternalPoolConfig{wanPool()})
 	ctx := context.Background()
 
 	ip1, err := a.Allocate(ctx, AllocateRequest{PoolName: "wan", Purpose: "eni-public", ENIID: "eni-1"})
 	require.NoError(t, err)
+	require.Equal(t, "192.168.1.151", ip1.String())
 	_, err = a.Allocate(ctx, AllocateRequest{PoolName: "wan", Purpose: "eni-public", ENIID: "eni-2"})
 	require.NoError(t, err)
 
+	// Release the first IP; the very next allocation must NOT reuse it.
 	require.NoError(t, a.Release(ctx, "wan", ip1))
-
 	ip3, err := a.Allocate(ctx, AllocateRequest{PoolName: "wan", Purpose: "eni-public", ENIID: "eni-3"})
 	require.NoError(t, err)
-	assert.Equal(t, ip1, ip3)
+	assert.NotEqual(t, ip1, ip3, "released IP must not be reused immediately")
+	assert.Equal(t, "192.168.1.153", ip3.String(), "allocation resumes past the cursor")
+
+	// The released IP becomes reusable only after the cursor wraps the range.
+	var reused bool
+	for range 10 {
+		ip, err := a.Allocate(ctx, AllocateRequest{PoolName: "wan"})
+		require.NoError(t, err)
+		if ip == ip1 {
+			reused = true
+			break
+		}
+	}
+	assert.True(t, reused, "released IP reused only after a full cycle")
 }
 
 func TestStaticPool_Exhaustion(t *testing.T) {

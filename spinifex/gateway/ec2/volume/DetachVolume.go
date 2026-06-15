@@ -38,7 +38,6 @@ func DetachVolume(input *ec2.DetachVolumeInput, natsConn *nats.Conn, accountID s
 
 	volumeID := *input.VolumeId
 
-	// Resolve InstanceId if not provided by looking up volume metadata
 	var instanceID string
 	if input.InstanceId != nil && *input.InstanceId != "" {
 		instanceID = *input.InstanceId

@@ -86,11 +86,9 @@ func TestAttachIGW_Distributed_LinkLocalLRP(t *testing.T) {
 	_, hasGwIP := lrp.ExternalIDs[gatewayIPExtIDKey]
 	assert.False(t, hasGwIP, "link-local LRP must not record a gateway IP")
 
-	// OVN pipeline runs lr_in_ip_routing (table 15) before lr_in_policy
-	// (table 17) — without a router-wide default static route every external
-	// destination drops in routing before EnsureSubnetEgress's reroute policy
-	// gets a chance. AttachIGW installs `0.0.0.0/0 -> pool.Gateway` on the
-	// VPC router so policy lookup can refine per-subnet egress on top.
+	// lr_in_ip_routing runs before lr_in_policy: without a default static route
+	// every external destination drops before the reroute policy fires.
+	// AttachIGW must install 0.0.0.0/0 → pool.Gateway on the VPC router.
 	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
 	require.NoError(t, err)
 	require.NotNil(t, route, "AttachIGW must install the default static route so routing forwards to gw-port")
@@ -272,10 +270,9 @@ func TestAttachIGW_AllocatorFailureUnwindsExtSwitch(t *testing.T) {
 	assert.Error(t, err, "external switch must be unwound on allocator failure")
 }
 
-// TestEnsureNATGatewaySubnetEgress installs an LR policy at the NATGW
-// priority (lower than IGW) reusing the IGW's gateway port + nexthop.
-// Without this policy, NATGW SNAT rewrites the source IP but the packet
-// has no route to leave the LR — private subnets cannot reach the internet.
+// TestEnsureNATGatewaySubnetEgress installs an LR policy at NATGW priority
+// (lower than IGW) reusing the gateway port. Without it, SNAT rewrites the
+// source but the packet has no route out of the LR.
 func TestEnsureNATGatewaySubnetEgress(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
@@ -362,10 +359,9 @@ func TestEnsureNATGatewaySubnetEgress_RequiresAttachedIGW(t *testing.T) {
 	require.Error(t, err, "missing gateway nexthop must surface as an error")
 }
 
-// TestRemoveNATGatewaySubnetEgress_PropagatesDeleteError verifies the manager
-// surfaces an OVN delete error (e.g. router missing). policy.RouteManager.
-// DeleteSubnetEgress targets the VPC router by name; with no router seeded the
-// mock returns "router not found", which must bubble up.
+// TestRemoveNATGatewaySubnetEgress_PropagatesDeleteError verifies that an OVN
+// delete error (e.g. router missing) bubbles up; DeleteSubnetEgress targets the
+// VPC router by name and the mock returns "router not found".
 func TestRemoveNATGatewaySubnetEgress_PropagatesDeleteError(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

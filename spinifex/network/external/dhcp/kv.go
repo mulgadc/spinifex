@@ -113,10 +113,8 @@ func (s *Store) Delete(clientID string) error {
 	return nil
 }
 
-// LookupByIP scans the bucket for an entry whose lease IP matches ip
-// (and pool name, when non-empty). Returns (nil, nats.ErrKeyNotFound)
-// when no match. O(N) over leases — release is the only caller and
-// runs at allocation-lifecycle frequency, not on the hot path.
+// LookupByIP scans the bucket for an entry whose lease IP matches ip (and
+// pool name when non-empty). O(N) is fine — only called on release.
 func (s *Store) LookupByIP(poolName, ip string) (*Entry, error) {
 	if ip == "" {
 		return nil, errors.New("dhcp store lookup: ip required")

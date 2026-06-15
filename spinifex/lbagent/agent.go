@@ -31,16 +31,11 @@ const (
 	DefaultConfigPath = "/etc/haproxy/haproxy.cfg"
 	DefaultPIDPath    = "/run/haproxy.pid"
 
-	// CertDir is the fixed directory holding TLS certificate PEM files for
-	// HTTPS listeners. The daemon renders `ssl crt` paths under this dir; the
-	// agent writes the delivered PEM files here (0600) before reload and
-	// rejects any delivered path that escapes it.
+	// CertDir holds TLS PEM files for HTTPS listeners (0600). Delivered paths
+	// are constrained to this dir to prevent traversal writes.
 	CertDir = "/etc/haproxy/certs"
 
-	// Nginx paths for the NLB (L4) data plane. NLBs render an nginx `stream`
-	// config because HAProxy cannot load-balance UDP; ALBs keep using the
-	// HAProxy paths above. NginxCertDir holds TLS PEM files for TLS listeners
-	// (referenced by both ssl_certificate and ssl_certificate_key).
+	// Nginx paths for the NLB (L4) data plane. ALBs use the HAProxy paths above.
 	NginxConfigPath = "/etc/nginx/nginx.conf"
 	NginxPIDPath    = "/run/nginx.pid"
 	NginxCertDir    = "/etc/nginx/certs"
@@ -49,10 +44,7 @@ const (
 	pollInterval = 5 * time.Second
 )
 
-// Data-plane engines, duplicated from handlers/elbv2 to avoid an import cycle
-// (handlers/elbv2 imports this package for path constants). The agent runs
-// HAProxy for ALBs and nginx `stream` for NLBs, selected by the GetLBConfig
-// response.
+// Data-plane engine names (duplicated from handlers/elbv2 to avoid an import cycle).
 const (
 	EngineHAProxy = "haproxy"
 	EngineNginx   = "nginx"
@@ -121,7 +113,7 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		configPath:    DefaultConfigPath,
 		pidPath:       DefaultPIDPath,
 		certDir:       CertDir,
-		socketPath:    fmt.Sprintf("/tmp/spinifex-haproxy/lb-%s.sock", lbID),
+		socketPath:    fmt.Sprintf("/tmp/spinifex-haproxy/%s.sock", lbID),
 		accessKey:     accessKey,
 		secretKey:     secretKey,
 		client:        client,
@@ -135,7 +127,7 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 
 // Start runs the poll loop. It blocks until Stop is called.
 func (a *Agent) Start() error {
-	slog.Info("Agent started", "lbId", a.lbID, "gateway", a.gatewayURL)
+	slog.Info("Agent started", "lbId", a.lbID, "gateway", a.gatewayURL, "region", a.region)
 
 	// Run first tick immediately.
 	a.tick()
@@ -180,7 +172,10 @@ func (a *Agent) tick() {
 
 	resp, err := a.sendHeartbeat(servers)
 	if err != nil {
-		slog.Error("Heartbeat failed", "err", err)
+		// Include the dial target so the serial console disambiguates a
+		// transport failure (never reached AWSGW — "send request: dial ...")
+		// from an HTTP-level rejection ("gateway returned NNN: ...").
+		slog.Error("Heartbeat failed", "err", err, "gateway", a.gatewayURL, "region", a.region)
 		return
 	}
 
@@ -336,11 +331,8 @@ func (a *Agent) signedPost(params url.Values) ([]byte, error) {
 	return respBody, nil
 }
 
-// writeCertFiles writes each delivered TLS certificate PEM to its path 0600,
-// creating certDir as needed. Every path is constrained to certDir — a
-// delivered path that escapes it (traversal, absolute elsewhere) is rejected
-// rather than written, so a malformed/hostile response can't drop files across
-// the filesystem.
+// writeCertFiles writes each delivered TLS PEM to its path (0600) under certDir.
+// Paths that escape certDir are rejected to prevent traversal writes.
 func (a *Agent) writeCertFiles(certDir string, certs []certFile) error {
 	if len(certs) == 0 {
 		return nil
@@ -395,10 +387,9 @@ func reloadHAProxy(configPath, pidPath string) error {
 
 	var cmd *exec.Cmd
 	if oldPID > 0 {
-		// Graceful reload: new worker starts, old workers finish in-flight requests
+		// Graceful reload: new worker replaces old in-flight requests.
 		cmd = exec.Command("haproxy", "-f", configPath, "-p", pidPath, "-D", "-sf", strconv.Itoa(oldPID))
 	} else {
-		// Fresh start
 		cmd = exec.Command("haproxy", "-f", configPath, "-p", pidPath, "-D")
 	}
 
@@ -410,14 +401,9 @@ func reloadHAProxy(configPath, pidPath string) error {
 }
 
 // reloadNginx validates then starts or reloads nginx for the NLB data plane.
-// `nginx -t` fails closed before any reload, mirroring HAProxy's
-// validate-before-bind guarantee (a bad config never replaces a good one).
+// `nginx -t` fails closed before any reload (a bad config never replaces a good one).
 func reloadNginx(configPath, pidPath string) error {
-	// On a stripped Alpine microvm initramfs the nginx runtime prefix dirs may
-	// be absent, so `nginx -t`/start fails closed on a missing pid dir or temp
-	// path — and the agent never enters nginx mode, never probes, and reports
-	// empty health (NLB targets stuck at 0/N). Pre-create them, mirroring
-	// reloadHAProxy's socket-dir pre-create.
+	// Pre-create runtime dirs; stripped Alpine microvms may not have them.
 	for _, dir := range []string{filepath.Dir(pidPath), "/var/lib/nginx", "/var/lib/nginx/tmp", "/var/log/nginx"} {
 		_ = os.MkdirAll(dir, 0o750)
 	}
@@ -429,15 +415,24 @@ func reloadNginx(configPath, pidPath string) error {
 
 	var cmd *exec.Cmd
 	if readPID(pidPath) > 0 {
-		// Master running: signal a graceful reload.
 		cmd = exec.Command("nginx", "-s", "reload", "-c", configPath)
 	} else {
-		// Fresh start (nginx daemonizes; pid path comes from the config).
 		cmd = exec.Command("nginx", "-c", configPath)
 	}
 
-	out, err := cmd.CombinedOutput()
+	// nginx daemonizes and inherits stderr, so CombinedOutput blocks forever.
+	// Capture to a temp file; Wait returns once the foreground launcher exits.
+	logFile, err := os.CreateTemp("", "nginx-reload-*.log")
 	if err != nil {
+		return fmt.Errorf("create nginx log: %w", err)
+	}
+	defer os.Remove(logFile.Name())
+	defer logFile.Close()
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	if err := cmd.Run(); err != nil {
+		out, _ := os.ReadFile(logFile.Name())
 		return fmt.Errorf("nginx: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil

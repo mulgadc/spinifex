@@ -9,30 +9,19 @@ import (
 )
 
 const (
-	// failureWindow is the sliding window for counting auth failures.
-	failureWindow = 60 * time.Second
-
-	// maxFailures is the number of consecutive failures within the window before lockout.
-	maxFailures = 10
-
-	// initialLockout is the first lockout duration after hitting the threshold.
-	initialLockout = 30 * time.Second
-
-	// backoffMultiplier scales the lockout duration on repeated lockouts.
-	backoffMultiplier = 2
-
-	// maxLockout caps the escalating lockout duration.
-	maxLockout = 5 * time.Minute
-
-	// gcInterval is how often stale entries are evicted.
-	gcInterval = 60 * time.Second
+	failureWindow     = 60 * time.Second // sliding window for auth-failure counting
+	maxFailures       = 10               // failures within window before lockout
+	initialLockout    = 30 * time.Second // first lockout duration
+	backoffMultiplier = 2                // lockout duration multiplier on repeat
+	maxLockout        = 5 * time.Minute  // cap on escalating lockout
+	gcInterval        = 60 * time.Second // stale-entry eviction interval
 )
 
 // ipRecord tracks auth failure state for a single client IP.
 type ipRecord struct {
-	failures    []time.Time // timestamps of recent failures (within window)
-	lockedUntil time.Time   // zero value = not locked
-	lockouts    int         // number of times this IP has been locked out (for backoff)
+	failures    []time.Time // recent failure timestamps (within window)
+	lockedUntil time.Time   // zero = not locked
+	lockouts    int         // lockout count for backoff calculation
 }
 
 // AuthRateLimiter tracks per-IP authentication failure rates and enforces
@@ -67,8 +56,7 @@ func (rl *AuthRateLimiter) Stop() {
 	<-rl.done
 }
 
-// CheckIP returns an empty string if the IP is allowed to proceed, or an error
-// code matching ErrorRequestLimitExceeded if the IP is currently locked out.
+// CheckIP returns "" if the IP may proceed, or ErrorRequestLimitExceeded if locked.
 func (rl *AuthRateLimiter) CheckIP(ip string) string {
 	rl.mu.RLock()
 	defer rl.mu.RUnlock()
@@ -86,9 +74,8 @@ func (rl *AuthRateLimiter) CheckIP(ip string) string {
 	return ""
 }
 
-// RecordFailure records an authentication failure for the given IP. If the
-// failure count within the sliding window reaches the threshold, the IP is
-// locked out with escalating backoff.
+// RecordFailure records an auth failure for the IP, locking it out with
+// escalating backoff when the threshold is reached.
 func (rl *AuthRateLimiter) RecordFailure(ip string) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -101,13 +88,10 @@ func (rl *AuthRateLimiter) RecordFailure(ip string) {
 		rl.records[ip] = rec
 	}
 
-	// Prune failures outside the sliding window.
 	rec.failures = pruneOldFailures(rec.failures, now)
-
 	rec.failures = append(rec.failures, now)
 
 	if len(rec.failures) >= maxFailures && (rec.lockedUntil.IsZero() || now.After(rec.lockedUntil)) {
-		// Calculate lockout duration with escalating backoff.
 		lockout := initialLockout
 		for range rec.lockouts {
 			lockout *= time.Duration(backoffMultiplier)
@@ -118,7 +102,7 @@ func (rl *AuthRateLimiter) RecordFailure(ip string) {
 		}
 		rec.lockedUntil = now.Add(lockout)
 		rec.lockouts++
-		rec.failures = nil // Reset for the next window after lockout.
+		rec.failures = nil
 
 		slog.Warn("Rate limit: IP locked out",
 			"ip", ip,
@@ -128,8 +112,7 @@ func (rl *AuthRateLimiter) RecordFailure(ip string) {
 	}
 }
 
-// RecordSuccess clears all failure state for the given IP, immediately
-// restoring access for legitimate clients.
+// RecordSuccess clears all failure state for the IP.
 func (rl *AuthRateLimiter) RecordSuccess(ip string) {
 	rl.mu.RLock()
 	_, ok := rl.records[ip]
@@ -162,20 +145,16 @@ func (rl *AuthRateLimiter) gcLoop() {
 	}
 }
 
-// cleanup evicts stale entries whose lockout has expired and whose failures
-// are all outside the sliding window.
+// cleanup evicts entries whose lockout has expired and all failures are stale.
 func (rl *AuthRateLimiter) cleanup() {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	now := time.Now()
 	for ip, rec := range rl.records {
-		// Skip if still locked.
 		if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
 			continue
 		}
-
-		// Prune old failures.
 		rec.failures = pruneOldFailures(rec.failures, now)
 
 		if len(rec.failures) == 0 {
@@ -185,7 +164,7 @@ func (rl *AuthRateLimiter) cleanup() {
 	}
 }
 
-// pruneOldFailures returns only the failures within the sliding window.
+// pruneOldFailures returns failures within the sliding window.
 func pruneOldFailures(failures []time.Time, now time.Time) []time.Time {
 	cutoff := now.Add(-failureWindow)
 	n := 0

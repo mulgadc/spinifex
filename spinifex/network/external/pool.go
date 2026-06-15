@@ -10,10 +10,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
-// linkLocalGatewayNetwork is the link-local /30 the IGW gateway LRP carries
-// in distributed-NAT mode. LRP IP never goes on the wire — per-VM dnat_and_snat
-// with external_mac/logical_port handles upstream ARP per chassis.
-// Centralised NAT requires a WAN-subnet IP from gw_lrp_range instead.
+// linkLocalGatewayNetwork is the link-local /30 for the IGW gateway LRP in
+// distributed-NAT mode. Centralised NAT uses a WAN-subnet IP from gw_lrp_range.
 const linkLocalGatewayNetwork = "169.254.0.1/30"
 
 const linkLocalGatewayNexthop = "169.254.0.2"
@@ -44,10 +42,8 @@ func FindPool(pools []ExternalPoolConfig, region, az string) *ExternalPoolConfig
 	return nil
 }
 
-// GatewayIPAllocator resolves the gateway LRP IP for a VPC.
-// ok=false means caller falls back to link-local; error means abort.
-// nexthop is the upstream gateway the VPC's default route should point at;
-// empty means caller falls back to pool.Gateway / link-local.
+// GatewayIPAllocator resolves the gateway LRP IP for a VPC. ok=false falls
+// back to link-local; error aborts. nexthop empty falls back to pool.Gateway.
 type GatewayIPAllocator interface {
 	Allocate(ctx context.Context, vpcID string, pool *ExternalPoolConfig) (ip string, prefixLen int, nexthop string, ok bool, err error)
 	Release(ctx context.Context, vpcID string) error

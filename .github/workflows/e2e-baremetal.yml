@@ -2,6 +2,13 @@ name: E2E Bare-Metal
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "spinifex ref to checkout/test (default: triggering ref)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -12,7 +19,7 @@ env:
 
 jobs:
   e2e_baremetal:
-    name: Bare-Metal Multi-Node E2E
+    name: Bare-Metal Single-Node E2E
     runs-on: [ self-hosted, ci-baremetal ]
     timeout-minutes: 120
     concurrency:
@@ -20,11 +27,17 @@ jobs:
       cancel-in-progress: false
     env:
       BM_ISO_CACHE: /var/cache/spinifex-iso-builder
+      ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-20-${{ github.run_id }}
     steps:
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          sudo umount -R -l "${BM_ISO_CACHE}/rootfs" 2>/dev/null || true
+          if [ ! -c /dev/null ]; then sudo rm -f /dev/null; sudo mknod -m 666 /dev/null c 1 3; fi
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -91,6 +104,8 @@ jobs:
             echo "Ubuntu 26.04 cloud image cached ($(du -h "$UBUNTU_IMG" | cut -f1))"
           fi
 
+      - name: Install go-junit-report on runner
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
 
       - name: Run Bare-Metal E2E
         env:
@@ -100,8 +115,34 @@ jobs:
           BM_UBUNTU_IMAGE: ${{ env.BM_ISO_CACHE }}/ubuntu-26.04-cloudimg-amd64.img
           SPX_EXTERNAL_POOL: ${{ env.SPINIFEX_CI_POOL }}
         run: |
+          mkdir -p "${ARTIFACT_DIR}"
+          set -o pipefail
           sudo -E mulga/scripts/baremetal/run-baremetal-e2e.sh \
             --vmlinuz   "${BM_ISO_CACHE}/vmlinuz" \
             --initrd    "${BM_ISO_CACHE}/initrd.img" \
             --squashfs  "${BM_ISO_CACHE}/spinifex.squashfs" \
-            --tests-tar "${RUNNER_TEMP}/spinifex-tests.tar"
+            --tests-tar "${RUNNER_TEMP}/spinifex-tests.tar" \
+            2>&1 | tee "${ARTIFACT_DIR}/test-baremetal.log"
+
+      - name: Generate JUnit report
+        if: always()
+        run: |
+          LOG="${ARTIFACT_DIR}/test-baremetal.log"
+          [ -f "$LOG" ] || exit 0
+          go-junit-report -in "$LOG" -out "${ARTIFACT_DIR}/junit-baremetal.xml" || true
+
+      - name: Analyze e2e failures
+        if: always()
+        uses: ./.github/actions/e2e-analyze
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          log-dir: ${{ env.ARTIFACT_DIR }}
+          title: "E2E failure analysis (cell 20)"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-artifacts-cell-20-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14

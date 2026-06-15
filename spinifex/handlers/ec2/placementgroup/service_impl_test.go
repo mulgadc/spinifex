@@ -562,12 +562,9 @@ func TestRemoveInstance_Success(t *testing.T) {
 	assert.Equal(t, []string{"i-bbb"}, record.NodeInstances["node-b"])
 }
 
-// TestRemoveInstance_NodeNotFound / _GroupNotFound pin the idempotency
-// contract in service_impl.go:453-497 — RemoveInstance must succeed when the
-// node or group is missing, since callers (instance Terminate) may race with
-// group deletion or have already moved the instance off the node. Production
-// marks both paths with //nolint:nilerr // intentional; without these tests a
-// future cleanup could remove the annotations and silently flip the contract.
+// TestRemoveInstance_NodeNotFound / _GroupNotFound pin the idempotency contract:
+// RemoveInstance must succeed when the node or group is missing (callers may race
+// with group deletion or have already moved the instance off the node).
 
 func TestRemoveInstance_NodeNotFound(t *testing.T) {
 	svc := setupTestService(t)

@@ -19,30 +19,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Fresh-install reachability baselines.
+// Fresh-install reachability baselines. Tests #1 and #2 pin two independent
+// barriers a user hits on a fresh cluster:
 //
-// The rest of the suite calls harness.AuthorizeSSHIngress before every SSH
-// probe, so it never exercises the out-of-box default configuration. These
-// two tests pin the two independent barriers a real user hits when they
-// launch an instance and expect to reach it:
-//
-//  1. SG barrier (runDefaultSGReachabilityBaseline): an instance in the
-//     fully-routed default subnet is NOT reachable from outside until an
-//     ingress rule is added — AWS default-SG semantics admit only same-SG
-//     members. Routes are fine; the SG is the gate.
-//
-//  2. Route/egress barrier (runNewVPCEgressBaseline): a brand-new VPC where
-//     the 0.0.0.0/0 -> IGW route is added to the MAIN route table BEFORE the
-//     public subnet is created. The subnet implicitly joins the main RT, which
-//     already carries the IGW route, but CreateSubnet does not recompute the
-//     per-subnet OVN egress policy — so the subnet's egress LRP is never
-//     installed and the instance has no datapath to the IGW. The default VPC
-//     masks this: its main RT is prebaked with the IGW route at bootstrap and
-//     the vpcd drift loop reconciles any implicit-main subnets, so a subnet
-//     created in it is reachable regardless of the create-time gap.
-//
-// Both own all their resources (dedicated SG + instance; #2 owns a whole VPC)
-// so they don't perturb the singleton VM or the shared default SG.
+//  1. SG barrier: default-SG only admits same-SG members; routes are fine.
+//  2. Route/egress gap: 0.0.0.0/0 added to the main RT before the subnet
+//     exists; CreateSubnet doesn't recompute the per-subnet OVN egress LRP.
 
 // tcpReachable reports whether a TCP connect to host:port succeeds within
 // timeout. An OVN ACL drop yields a dial timeout (no RST); a reject yields
@@ -56,12 +38,9 @@ func tcpReachable(host string, port int, timeout time.Duration) bool {
 	return true
 }
 
-// launchBaselineInstance launches one instance into subnetID with the given
-// SGs and registers a terminate-and-wait cleanup so the VM is gone before the
-// next test runs. Unlike harness.EnsureInstance (which defers teardown to
-// fixture cleanup at suite end), these baselines own their VMs for the test's
-// duration only — they must not perturb cluster-VM-count assertions in
-// sibling tests.
+// launchBaselineInstance launches one instance and registers a terminate-and-wait
+// cleanup so the VM is gone before the next test. Not memoized — each baseline
+// owns its VM for its own duration only.
 func launchBaselineInstance(t *testing.T, fix *Fixture, ami, instType, keyName, subnetID string, sgIDs []string) string {
 	t.Helper()
 	sgs := make([]*string, 0, len(sgIDs))
@@ -124,10 +103,8 @@ func sshCapture(tgt harness.SSHTarget, cmd string) (string, error) {
 	return string(out), err
 }
 
-// instancePublicIP returns the instance's routable public IP. A missing public
-// IP is a hard failure: these baselines must exercise the real OVN datapath,
-// and the qemu-hostfwd shortcut (which would otherwise stand in) is disabled
-// suite-wide because it bypasses SG ACLs / IGW / SNAT and masks regressions.
+// instancePublicIP returns the instance's routable public IP. Missing is fatal:
+// baselines must exercise the real OVN datapath (hostfwd is disabled suite-wide).
 func instancePublicIP(t *testing.T, fix *Fixture, instanceID string) string {
 	t.Helper()
 	out, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
@@ -156,8 +133,7 @@ func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 	keyName, keyPath := needKeyPair(t, fix)
 	ami := needAMI(t, fix)
 
-	// Dedicated SG with NO ingress rules. CreateSecurityGroup seeds allow-all
-	// egress, so the SSH return path is unaffected — ingress is the only gate.
+	// No ingress rules; egress is allow-all by default so only inbound is gated.
 	sgID := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-denysg")
 	harness.Detail(t, "vpc", vpcID, "subnet", subnetID, "sg", sgID)
 
@@ -166,8 +142,7 @@ func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 	pubIP := instancePublicIP(t, fix, instanceID)
 	harness.Detail(t, "instance", instanceID, "public_ip", pubIP)
 
-	// Phase A — default-deny SG: tcp/22 must stay blocked. Poll for a window
-	// so a slow datapath converging to "open" would still be caught.
+	// Poll for 30s so a slow-converging datapath would still be caught.
 	harness.Step(t, "asserting tcp/22 stays blocked under default-deny SG")
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -176,8 +151,6 @@ func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 		time.Sleep(3 * time.Second)
 	}
 
-	// Phase B — authorize tcp/22, then a full handshake must succeed. Proves
-	// the subnet routes to the IGW and only the SG was gating reachability.
 	harness.Step(t, "authorizing tcp/22 ingress, expecting reachability")
 	harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
 	require.Truef(t, trySSHReady(pubIP, 22, keyPath, 3*time.Minute),
@@ -206,22 +179,10 @@ func mainRouteTableID(t *testing.T, c *harness.AWSClient, vpcID string) string {
 	return id
 }
 
-// runNewVPCEgressBaseline stands up a brand-new VPC and reproduces the IGW
-// egress gap that the default-VPC path masks. The bug is order-sensitive: the
-// 0.0.0.0/0 -> IGW route is added to the MAIN route table BEFORE the public
-// subnet exists, so when the subnet is created it implicitly joins a main RT
-// that already carries the route. CreateSubnet does not recompute per-subnet
-// egress, so the subnet's OVN egress LRP is never installed and the instance
-// has no datapath to the IGW. With an open SG, routing is the only remaining
-// barrier, so an unreachable instance pins the gap.
-//
-// runVPCSubnetE2E does NOT catch this: it uses a custom RT, associates the
-// subnet, then CreateRoute — so the route mutation enumerates the already-
-// associated subnet and installs the LRP. The default-VPC path doesn't catch
-// it either (route prebaked at bootstrap + drift-loop reconcile).
-//
-// PoolMode-gated like runVPCSubnetE2E: a fresh VPC needs OVN IPAM to hand the
-// instance a routable public IP, which dev_networking single-node lacks.
+// runNewVPCEgressBaseline reproduces the IGW egress gap when a 0.0.0.0/0 route
+// is added to the main RT before the subnet is created. The subnet implicitly
+// joins the RT but CreateSubnet doesn't install the per-subnet OVN egress LRP,
+// leaving the instance with no datapath to the IGW. Pool-mode gated.
 func runNewVPCEgressBaseline(t *testing.T, fix *Fixture) {
 	if !fix.PoolMode {
 		t.Skip("fresh-VPC egress baseline requires pool-mode networking")
@@ -329,12 +290,9 @@ func runNewVPCEgressBaseline(t *testing.T, fix *Fixture) {
 	assert.Containsf(t, idOut, "ec2-user", "ssh id in fresh-VPC subnet\n%s", idOut)
 }
 
-// runSameSGComms launches two instances in the default SG (plus a dedicated
-// runner-SSH SG so the runner can shell into one) and asserts that one can
-// ICMP-ping the other over the VPC. ICMP between them is permitted only by the
-// default SG's self-reference rule, so success proves that rule is enforced on
-// the OVN datapath — the east-west counterpart to the external-reach baseline.
-// No default resource is mutated (only the dedicated runner SG is authorized).
+// runSameSGComms verifies that two instances in the default SG can ICMP-ping
+// each other (permitted by the default SG's self-reference rule) while a
+// separate runner SG handles tcp/22 from outside. No default resource mutated.
 func runSameSGComms(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Baseline: same default-SG instances communicate")
 
@@ -343,8 +301,6 @@ func runSameSGComms(t *testing.T, fix *Fixture) {
 	keyName, keyPath := needKeyPair(t, fix)
 	ami := needAMI(t, fix)
 
-	// Dedicated SG opens tcp/22 only, so ICMP between guests still depends on
-	// the default SG's self-ingress — keeps the signal unambiguous.
 	runnerSG := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-runnersg")
 	harness.AuthorizeSSHIngress(t, fix.AWS, runnerSG)
 	harness.Detail(t, "vpc", vpcID, "default_sg", defSGID, "runner_sg", runnerSG)

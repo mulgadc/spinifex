@@ -8,19 +8,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// natsSystemInstanceLauncher implements SystemInstanceLauncher by
-// dispatching LaunchSystemInstance / TerminateSystemInstance over NATS so
-// ALB-VMs fan out across the cluster instead of piling on the daemon node
-// that handled the upstream CreateLoadBalancer call.
-//
-// Subjects:
-//   - system.LaunchInstance.{type}     (queue group spinifex-workers)
-//   - system.TerminateInstance.{id}    (single subscriber: the owning daemon)
-//
-// The daemons subscribe with capacity-aware logic in
-// ResourceManager.updateInstanceSubscriptions; only nodes with free
-// vCPU/memory for the requested type carry the launch subscription, so
-// over-full nodes naturally drop out of the queue group.
+// natsSystemInstanceLauncher implements SystemInstanceLauncher over NATS request/reply,
+// fanning ALB-VM launches across the cluster via the spinifex-workers queue group
+// (system.LaunchInstance.{type}); terminate goes directly to the owning daemon.
 type natsSystemInstanceLauncher struct {
 	nc      *nats.Conn
 	timeout time.Duration
@@ -28,10 +18,9 @@ type natsSystemInstanceLauncher struct {
 
 const defaultSystemInstanceTimeout = 60 * time.Second
 
-// NewNATSSystemInstanceLauncher returns a SystemInstanceLauncher that
-// publishes requests over NATS request/reply. timeout caps each round trip;
-// pass 0 to use the default (60s, sized for direct-boot microVM start +
-// EIP allocation latency on a busy cluster).
+// NewNATSSystemInstanceLauncher returns a NATS-based SystemInstanceLauncher.
+// Pass timeout=0 to use the 60 s default (sized for direct-boot microVM
+// start + EIP allocation on a busy cluster).
 func NewNATSSystemInstanceLauncher(nc *nats.Conn, timeout time.Duration) SystemInstanceLauncher {
 	if timeout <= 0 {
 		timeout = defaultSystemInstanceTimeout

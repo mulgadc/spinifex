@@ -61,9 +61,7 @@ func RebootInstances(input *ec2.RebootInstancesInput, natsConn *nats.Conn, accou
 		if err != nil {
 			slog.Error("RebootInstances: Failed to send command", "instance_id", instanceID, "err", err)
 
-			// NATS timeout means no daemon has a subscription for this instance.
-			// Check if the instance exists in the stopped-instances KV bucket —
-			// if so, return IncorrectInstanceState instead of NotFound.
+			// No daemon subscription: check stopped-KV to return IncorrectInstanceState instead of NotFound.
 			describeInput := &ec2.DescribeInstancesInput{
 				InstanceIds: []*string{&instanceID},
 			}
@@ -78,7 +76,6 @@ func RebootInstances(input *ec2.RebootInstancesInput, natsConn *nats.Conn, accou
 			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
 
-		// Check if the daemon returned an error response (e.g. ownership check failure)
 		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
 			slog.Error("RebootInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 			return nil, errors.New(*responseError.Code)

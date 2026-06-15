@@ -12,15 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runVolumeLifecycle is the Go port of volume lifecycle
-// (run-multinode-e2e.sh:731-825). Creates a 10GiB volume, attaches to the
-// first trio instance at /dev/sdf, detaches, deletes. Each step polls a
-// matching state target (in-use/attached → available → 404).
-//
-// Volume is created + torn down inline (not via EnsureVolume) because the
-// test exercises the full CRUD cycle including DeleteVolume — wiring it
-// through Ensure* would have the fixture cleanup race the in-test delete
-// and surface as InvalidVolume.NotFound.
+// runVolumeLifecycle creates a 10GiB volume, attaches it to trio[0] at /dev/sdf,
+// detaches, and deletes. Managed inline (not via EnsureVolume) to exercise the full
+// CRUD cycle — Ensure* cleanup would race the in-test delete.
 func runVolumeLifecycle(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Volume Lifecycle")
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -17,34 +18,36 @@ const (
 	defaultReconcileInterval     = 30 * time.Second
 	defaultHealthzTimeout        = 5 * time.Second
 	// defaultCreateTimeout bounds how long a cluster may sit in CREATING before
-	// the reconciler gives up and marks it FAILED. Measured from meta.CreatedAt
-	// (absolute), so a VM that never boots reaches a terminal state even across
-	// daemon restarts. Plan Risk #1.
+	// being marked FAILED. Measured from meta.CreatedAt so a VM that never boots
+	// reaches a terminal state even across daemon restarts.
 	defaultCreateTimeout = 15 * time.Minute
+	// defaultStateStaleAfter is the maximum age of a CP state report before
+	// health is treated as unknown. CP publishes every ~30s; 3× tolerates a missed tick.
+	defaultStateStaleAfter = 90 * time.Second
 )
 
-// ErrReconcilerLeaseLost is returned by Run when the leader lease was lost
-// mid-loop. Callers can re-Acquire and re-Run if they want to keep driving
-// reconcile from the same node.
+// natsSubscriber is the minimal subscribe surface the reconciler needs; *nats.Conn satisfies it.
+type natsSubscriber interface {
+	Subscribe(subject string, cb nats.MsgHandler) (*nats.Subscription, error)
+}
+
+// ErrReconcilerLeaseLost is returned by Run when the leader lease is lost mid-loop.
 var ErrReconcilerLeaseLost = errors.New("eks: reconciler lease lost")
 
-// ErrReconcilerClusterDeleting is returned by Run when meta.Status is
-// observed as DELETING; the DeleteCluster service-impl path is responsible
-// for teardown, so the reconciler exits without further work.
+// ErrReconcilerClusterDeleting is returned by Run when meta.Status is DELETING;
+// DeleteCluster owns teardown so the reconciler exits.
 var ErrReconcilerClusterDeleting = errors.New("eks: cluster deleting")
 
 // ErrReconcilerClusterFailed is returned by Run when meta.Status is FAILED.
 var ErrReconcilerClusterFailed = errors.New("eks: cluster failed")
 
-// HTTPDoer is the minimum http.Client surface the reconciler needs for
-// /healthz probes; tests stub it without a TLS server.
+// HTTPDoer is the minimal http.Client surface needed for /healthz probes.
 type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// ClusterReconciler drives one cluster's CREATING → ACTIVE → DELETING
-// lifecycle under a leader lease. One instance per (accountID, clusterName);
-// the leader lease arbitrates which spinifex node actually drives reconcile.
+// ClusterReconciler drives one cluster's CREATING → ACTIVE → DELETING lifecycle
+// under a leader lease. One instance per (accountID, clusterName).
 type ClusterReconciler struct {
 	leaderKV    nats.KeyValue
 	acctKV      nats.KeyValue
@@ -58,10 +61,24 @@ type ClusterReconciler struct {
 	healthTimeout time.Duration
 	createTimeout time.Duration
 	httpClient    HTTPDoer
+
+	// When stateSub is non-nil, health is gated on the CP's NATS self-report
+	// rather than the HTTP /healthz probe (apiserver is VPC-only, host-unreachable).
+	stateSub        natsSubscriber
+	stateSubject    string
+	stateStaleAfter time.Duration
+	latest          atomic.Pointer[ServerStateReport]
+
+	// Add-on delivery status source. When addonStatusSub is non-nil the
+	// reconciler subscribes to the per-cluster add-on status subject and CASes
+	// each AddonRecord (CREATING → ACTIVE/DEGRADED) from the on-VM addon-sync
+	// agent's reports. Add-on lifecycle is tracked per-resource (AWS parity), so
+	// this is a sibling of the cluster state-report, not folded into it.
+	addonStatusSub     natsSubscriber
+	addonStatusSubject string
 }
 
-// ReconcilerOption tunes a ClusterReconciler. Tests use the With* helpers to
-// shrink tickers and inject a stub HTTP client.
+// ReconcilerOption tunes a ClusterReconciler.
 type ReconcilerOption func(*ClusterReconciler)
 
 // WithReconcileInterval overrides the default reconcile loop period.
@@ -69,8 +86,7 @@ func WithReconcileInterval(d time.Duration) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.interval = d }
 }
 
-// WithLeaseRefresh overrides the default leader-lease refresh period. Should
-// be less than KVBucketEKSLeaderTTL.
+// WithLeaseRefresh overrides the leader-lease refresh period (should be < KVBucketEKSLeaderTTL).
 func WithLeaseRefresh(d time.Duration) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.leaseRefresh = d }
 }
@@ -80,8 +96,7 @@ func WithHealthzTimeout(d time.Duration) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.healthTimeout = d }
 }
 
-// WithCreateTimeout overrides how long a cluster may remain CREATING before the
-// reconciler marks it FAILED.
+// WithCreateTimeout overrides the CREATING→FAILED timeout.
 func WithCreateTimeout(d time.Duration) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.createTimeout = d }
 }
@@ -89,6 +104,30 @@ func WithCreateTimeout(d time.Duration) ReconcilerOption {
 // WithHTTPClient injects a stub HTTPDoer (tests).
 func WithHTTPClient(c HTTPDoer) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.httpClient = c }
+}
+
+// WithStateSource gates health on the CP's NATS state report instead of an
+// HTTP /healthz probe. The subscription is opened in Run and closed on return.
+func WithStateSource(sub natsSubscriber, subject string) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		r.stateSub = sub
+		r.stateSubject = subject
+	}
+}
+
+// WithStateStaleAfter overrides the maximum age of a state report before health is treated as failing.
+func WithStateStaleAfter(d time.Duration) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.stateStaleAfter = d }
+}
+
+// WithAddonStatusSource configures the reconciler to consume per-add-on delivery
+// status reports (subject) via sub and CAS the matching AddonRecord. The
+// subscription is opened in Run and closed when it returns.
+func WithAddonStatusSource(sub natsSubscriber, subject string) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		r.addonStatusSub = sub
+		r.addonStatusSubject = subject
+	}
 }
 
 // NewClusterReconciler constructs a ClusterReconciler. healthURL is the
@@ -111,16 +150,17 @@ func NewClusterReconciler(leaderKV, acctKV nats.KeyValue, accountID, clusterName
 		return nil, errors.New("eks: NewClusterReconciler empty holderID")
 	}
 	r := &ClusterReconciler{
-		leaderKV:      leaderKV,
-		acctKV:        acctKV,
-		accountID:     accountID,
-		clusterName:   clusterName,
-		holderID:      holderID,
-		healthURL:     healthURL,
-		leaseRefresh:  defaultReconcileLeaseRefresh,
-		interval:      defaultReconcileInterval,
-		healthTimeout: defaultHealthzTimeout,
-		createTimeout: defaultCreateTimeout,
+		leaderKV:        leaderKV,
+		acctKV:          acctKV,
+		accountID:       accountID,
+		clusterName:     clusterName,
+		holderID:        holderID,
+		healthURL:       healthURL,
+		leaseRefresh:    defaultReconcileLeaseRefresh,
+		interval:        defaultReconcileInterval,
+		healthTimeout:   defaultHealthzTimeout,
+		createTimeout:   defaultCreateTimeout,
+		stateStaleAfter: defaultStateStaleAfter,
 		httpClient: &http.Client{
 			Timeout: defaultHealthzTimeout,
 			Transport: &http.Transport{
@@ -141,9 +181,8 @@ func reconcilerLeaderKey(accountID, clusterName string) string {
 }
 
 // AcquireLease attempts a CAS Create on the leader bucket. Returns
-// (release, true) if this caller is now the leader; (nil, false) otherwise.
-// The release closure performs a best-effort kv.Delete; the bucket's 60s
-// TTL reaps stale leases when release does not run (crashed leader).
+// (release, true) on success; (nil, false) otherwise. The bucket TTL reaps
+// stale leases when release does not run.
 func (r *ClusterReconciler) AcquireLease() (func(), bool) {
 	key := reconcilerLeaderKey(r.accountID, r.clusterName)
 	if _, err := r.leaderKV.Create(key, []byte(r.holderID)); err != nil {
@@ -160,8 +199,7 @@ func (r *ClusterReconciler) AcquireLease() (func(), bool) {
 	}, true
 }
 
-// RefreshLease re-asserts ownership via a CAS update on the leader key.
-// Returns false if the key was taken by another holder or the CAS conflicts.
+// RefreshLease re-asserts ownership via a CAS update. Returns false if another holder won.
 func (r *ClusterReconciler) RefreshLease() bool {
 	key := reconcilerLeaderKey(r.accountID, r.clusterName)
 	entry, err := r.leaderKV.Get(key)
@@ -182,10 +220,41 @@ func (r *ClusterReconciler) RefreshLease() bool {
 	return true
 }
 
-// Run drives reconcile until ctx is cancelled, the lease is lost, or the
-// cluster reaches a terminal state. Caller is expected to AcquireLease first;
-// Run does not re-acquire.
+// Run drives reconcile until ctx is cancelled, the lease is lost, or the cluster
+// reaches a terminal state. Caller must AcquireLease first.
 func (r *ClusterReconciler) Run(ctx context.Context) error {
+	if r.stateSub != nil && r.stateSubject != "" {
+		sub, err := r.stateSub.Subscribe(r.stateSubject, func(m *nats.Msg) {
+			report, perr := unmarshalServerStateReport(m.Data)
+			if perr != nil {
+				slog.Warn("ClusterReconciler: bad state report",
+					"cluster", r.clusterName, "subject", m.Subject, "err", perr)
+				return
+			}
+			r.latest.Store(&report)
+		})
+		if err != nil {
+			return fmt.Errorf("subscribe state report %s: %w", r.stateSubject, err)
+		}
+		defer func() { _ = sub.Unsubscribe() }()
+	}
+
+	if r.addonStatusSub != nil && r.addonStatusSubject != "" {
+		sub, err := r.addonStatusSub.Subscribe(r.addonStatusSubject, func(m *nats.Msg) {
+			report, perr := unmarshalAddonStatusReport(m.Data)
+			if perr != nil {
+				slog.Warn("ClusterReconciler: bad addon status report",
+					"cluster", r.clusterName, "subject", m.Subject, "err", perr)
+				return
+			}
+			r.applyAddonStatusReport(report)
+		})
+		if err != nil {
+			return fmt.Errorf("subscribe addon status %s: %w", r.addonStatusSubject, err)
+		}
+		defer func() { _ = sub.Unsubscribe() }()
+	}
+
 	refreshT := time.NewTicker(r.leaseRefresh)
 	defer refreshT.Stop()
 	reconcileT := time.NewTicker(r.interval)
@@ -234,28 +303,38 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 	case ClusterStatusCreating:
 		ready, reason := r.bootstrapReady(meta)
 		if !ready {
-			slog.Debug("ClusterReconciler: bootstrap not ready",
+			// Info, not Debug: this is the per-tick reason a CREATING cluster has
+			// not yet flipped ACTIVE. At Debug it is invisible at the default
+			// level, so a cluster that stalls to the create-timeout FAILED gives
+			// no diagnosable cause. Logged only during the CREATING window.
+			slog.Info("ClusterReconciler: bootstrap not ready",
 				"cluster", r.clusterName, "reason", reason)
 			return r.failIfCreateTimedOut(meta, "bootstrap not ready: "+reason)
 		}
-		if err := r.probeHealthz(ctx); err != nil {
-			slog.Debug("ClusterReconciler: /healthz still failing",
-				"cluster", r.clusterName, "err", err)
-			return r.failIfCreateTimedOut(meta, "healthz not ready: "+err.Error())
+		issue, nodeCount := r.observe(ctx)
+		if issue != "" {
+			slog.Info("ClusterReconciler: health not ready",
+				"cluster", r.clusterName, "issue", issue)
+			return r.failIfCreateTimedOut(meta, "healthz not ready: "+issue)
 		}
 		if err := SetClusterStatus(r.acctKV, r.clusterName, ClusterStatusActive); err != nil {
 			return err
 		}
-		slog.Info("ClusterReconciler: cluster transitioned to ACTIVE",
-			"cluster", r.clusterName)
-	case ClusterStatusActive:
-		issue := ""
-		if err := r.probeHealthz(ctx); err != nil {
-			slog.Warn("ClusterReconciler: /healthz failing for ACTIVE cluster",
-				"cluster", r.clusterName, "err", err)
-			issue = err.Error()
+		if err := SetClusterHealthState(r.acctKV, r.clusterName, "", nodeCount); err != nil {
+			if errors.Is(err, ErrClusterNotFound) {
+				return ErrClusterNotFound
+			}
+			return fmt.Errorf("record cluster health: %w", err)
 		}
-		if err := SetClusterHealth(r.acctKV, r.clusterName, issue); err != nil {
+		slog.Info("ClusterReconciler: cluster transitioned to ACTIVE",
+			"cluster", r.clusterName, "nodes", nodeCount)
+	case ClusterStatusActive:
+		issue, nodeCount := r.observe(ctx)
+		if issue != "" {
+			slog.Warn("ClusterReconciler: health failing for ACTIVE cluster",
+				"cluster", r.clusterName, "issue", issue)
+		}
+		if err := SetClusterHealthState(r.acctKV, r.clusterName, issue, nodeCount); err != nil {
 			if errors.Is(err, ErrClusterNotFound) {
 				return ErrClusterNotFound
 			}
@@ -269,11 +348,32 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 	return nil
 }
 
-// failIfCreateTimedOut transitions a still-CREATING cluster to FAILED once it
-// has exceeded createTimeout since meta.CreatedAt, and returns
-// ErrReconcilerClusterFailed so Run exits the loop. While still within the
-// window it returns nil so the next tick retries. A zero or absent CreatedAt
-// disables the deadline (no false-positive fail on a malformed record).
+// observe returns the health issue ("" = healthy) and node count from the CP's
+// latest NATS self-report, or from the HTTP /healthz probe when no NATS source is set.
+func (r *ClusterReconciler) observe(ctx context.Context) (issue string, nodeCount int) {
+	if r.stateSub != nil && r.stateSubject != "" {
+		report := r.latest.Load()
+		if report == nil {
+			return "no control-plane state report received yet", 0
+		}
+		age := time.Since(time.Unix(report.TS, 0))
+		if age > r.stateStaleAfter {
+			return fmt.Sprintf("control-plane state report stale (%s old)", age.Round(time.Second)), report.NodeCount
+		}
+		if !report.Healthy() {
+			return fmt.Sprintf("apiserver healthz=%q", report.Healthz), report.NodeCount
+		}
+		return "", report.NodeCount
+	}
+	if err := r.probeHealthz(ctx); err != nil {
+		return err.Error(), 0
+	}
+	return "", 0
+}
+
+// failIfCreateTimedOut marks the cluster FAILED once createTimeout has elapsed
+// since meta.CreatedAt. Returns nil while still within the window so the next
+// tick retries. A zero CreatedAt disables the deadline.
 func (r *ClusterReconciler) failIfCreateTimedOut(meta *ClusterMeta, reason string) error {
 	if r.createTimeout <= 0 || meta.CreatedAt.IsZero() {
 		return nil
@@ -293,12 +393,9 @@ func (r *ClusterReconciler) failIfCreateTimedOut(meta *ClusterMeta, reason strin
 	return ErrReconcilerClusterFailed
 }
 
-// bootstrapReady returns true once the four NATS bootstrap KV artifacts are
-// present: node token, admin kubeconfig, the OIDC JWKS verified-marker, and the
-// CA on meta. The JWKS gate is the verified-marker (written only after the VM's
-// published JWKS passes the controller cross-check), NOT the pre-seeded
-// OIDCJWKSKey — so a cluster never transitions to ACTIVE on an unverified or
-// mismatched signing key.
+// bootstrapReady returns true once the four bootstrap KV artifacts are present:
+// node token, admin kubeconfig, OIDC JWKS verified-marker, and CA on meta.
+// Uses the verified-marker (not OIDCJWKSKey) so ACTIVE always implies a verified key.
 func (r *ClusterReconciler) bootstrapReady(meta *ClusterMeta) (bool, string) {
 	if meta.CertificateAuthorityB64 == "" {
 		return false, "CA absent on meta"

@@ -68,7 +68,7 @@ func TestNew_SocketPath(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	expected := "/tmp/spinifex-haproxy/lb-lb-sock123.sock"
+	expected := "/tmp/spinifex-haproxy/lb-sock123.sock"
 	if agent.socketPath != expected {
 		t.Errorf("socketPath = %q, want %q", agent.socketPath, expected)
 	}

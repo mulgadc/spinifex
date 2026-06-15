@@ -60,10 +60,8 @@ func StartTestJetStream(t *testing.T) (*server.Server, *nats.Conn, nats.JetStrea
 	return ns, nc, js
 }
 
-// vpcdStubTopics lists every synchronous vpcd request topic the unit-test
-// stub auto-replies to. CreateSecurityGroup / Authorize / Revoke / Modify /
-// CreateNetworkInterface all block on the 5s vpcd round-trip, so the stub
-// has to cover each one or the tests time out.
+// vpcdStubTopics lists every synchronous vpcd topic the stub auto-replies to.
+// All block on a 5 s round-trip, so missing any one causes test timeouts.
 var vpcdStubTopics = []string{
 	"vpc.create-sg",
 	"vpc.delete-sg",
@@ -72,37 +70,27 @@ var vpcdStubTopics = []string{
 	"vpc.create-port",
 }
 
-// vpcdStubRegistry holds the per-conn response map shared between the
-// subscribers and the OverrideVpcdStubResponse helper. Stored per-conn so
-// concurrent tests with separate NATS conns don't trip on each other.
+// vpcdStubRegistry holds the per-conn response map. Per-conn so concurrent tests with separate conns don't interfere.
 var (
 	vpcdStubMu       sync.RWMutex
 	vpcdStubRegistry = map[*nats.Conn]map[string][]byte{}
 )
 
-// StubVpcdSGResponder stands in for vpcd in unit tests by auto-replying
-// success to the synchronous vpcd request topics. Use
-// OverrideVpcdStubResponse to swap a topic's reply mid-test (negative-path
-// tests) — that updates the same single subscriber rather than layering a
-// second one, which would race the success replier.
+// StubVpcdSGResponder auto-replies success to all synchronous vpcd topics.
+// Use OverrideVpcdStubResponse to swap a reply mid-test without adding a racing second subscriber.
 func StubVpcdSGResponder(t *testing.T, nc *nats.Conn) {
 	t.Helper()
 	registerVpcdStub(t, nc, []byte(`{"success":true}`))
 }
 
-// StubVpcdSGFailingResponder is the negative-path counterpart to
-// StubVpcdSGResponder: every stubbed topic replies success=false so tests
-// can assert the handler propagates vpcd errors instead of swallowing them.
+// StubVpcdSGFailingResponder is the negative-path counterpart: all topics reply success=false.
 func StubVpcdSGFailingResponder(t *testing.T, nc *nats.Conn, errMsg string) {
 	t.Helper()
 	registerVpcdStub(t, nc, []byte(`{"success":false,"error":"`+errMsg+`"}`))
 }
 
-// OverrideVpcdStubResponse changes the stub's reply for one topic on the
-// given conn. The change is in-place on the existing subscriber, so there
-// is exactly one responder per topic — no race with a layered second
-// subscriber. Use to make a single-topic negative-path assertion against
-// an otherwise-success stub.
+// OverrideVpcdStubResponse changes the stub's reply for one topic on the given conn.
+// Updates the existing subscriber in-place — no second responder, no race.
 func OverrideVpcdStubResponse(nc *nats.Conn, topic string, payload []byte) {
 	vpcdStubMu.Lock()
 	defer vpcdStubMu.Unlock()

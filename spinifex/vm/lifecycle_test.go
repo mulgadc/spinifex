@@ -849,3 +849,19 @@ func TestStartupTimeouts(t *testing.T) {
 	assert.Equal(t, 5*time.Second, qemuStartupTimeout)
 	assert.Equal(t, 5*time.Second, nbdReadyTimeout)
 }
+
+// TestRG4_GuestOOMTier asserts the RG-4 OOM ladder: a customer guest QEMU
+// (ManagedBy == "") is scored +500 so the kernel reaps it first under host
+// memory pressure, while a platform-managed system instance (ManagedBy set —
+// ELBv2 LB-VM, EKS control-plane node) is scored 0, ranking above user guests
+// but below the infra tier. Regressing either tier widens the OOM blast radius.
+func TestRG4_GuestOOMTier(t *testing.T) {
+	assert.Equal(t, 500, guestOOMScore(""),
+		"RG-4: user guest (no ManagedBy) must be reaped first (+500)")
+	assert.Equal(t, 0, guestOOMScore("elbv2"),
+		"RG-4: ELBv2 system instance must rank above user guests (0)")
+	assert.Equal(t, 0, guestOOMScore("eks"),
+		"RG-4: EKS control-plane node must rank above user guests (0)")
+	assert.Greater(t, guestOOMScore(""), guestOOMScore("elbv2"),
+		"RG-4: a user guest must always be killed before a system instance")
+}

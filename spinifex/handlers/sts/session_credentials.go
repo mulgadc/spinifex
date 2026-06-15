@@ -21,32 +21,30 @@ const (
 	KVBucketSessionCredentials        = "spinifex-iam-session-credentials"
 	KVBucketSessionCredentialsVersion = 1
 
-	// SessionAccessKeyIDPrefix is the AWS-defined prefix for STS-issued
-	// temporary credentials. Long-lived IAM access keys use AKIA*; the two
-	// namespaces live in disjoint KV buckets so a SigV4 prefix-first
-	// dispatch cannot be confused by a misfiled record.
+	// SessionAccessKeyIDPrefix is the AWS-defined prefix for STS temporary credentials.
+	// Long-lived keys use AKIA; the two namespaces live in separate KV buckets.
 	SessionAccessKeyIDPrefix = "ASIA"
 
-	// janitorInterval is how often the sweep runs. Tight enough that
-	// expired-then-resurrected AKIDs would have to wait < this for cleanup;
-	// loose enough that the iterate-all-keys cost is amortised.
+	// janitorInterval is how often the credential sweep runs.
 	janitorInterval = 5 * time.Minute
 
-	// janitorGracePeriod keeps just-expired records around so a client whose
-	// clock is slightly ahead still gets ExpiredToken (a diagnosable error)
-	// rather than InvalidClientTokenId (which masks the real cause).
+	// janitorGracePeriod keeps just-expired records so a client with a slightly fast
+	// clock gets ExpiredToken (diagnosable) rather than InvalidClientTokenId.
 	janitorGracePeriod = 1 * time.Hour
 )
 
-// SessionCredential is the on-disk record for an STS-issued temporary
-// credential. The raw SessionToken is returned to the client once and never
-// persisted; only an HMAC of it is stored, so a bucket read by a process that
-// lacks the master key cannot recover the token.
+// SessionCredential is the on-disk record for an STS-issued temporary credential.
+// Only the HMAC of the session token is stored; the raw token is returned once and never persisted.
 type SessionCredential struct {
-	AccessKeyID       string    `json:"access_key_id"`
-	SecretEncrypted   string    `json:"secret_encrypted"`
-	SessionTokenHMAC  string    `json:"session_token_hmac"`
-	AccountID         string    `json:"account_id"`
+	AccessKeyID      string `json:"access_key_id"`
+	SecretEncrypted  string `json:"secret_encrypted"`
+	SessionTokenHMAC string `json:"session_token_hmac"`
+	AccountID        string `json:"account_id"`
+
+	// PrincipalType is "assumed-role" or "user" (GetSessionToken). Empty is treated as "assumed-role"
+	// for backward compatibility with in-flight records minted before this field existed.
+	PrincipalType string `json:"principal_type,omitempty"`
+
 	AssumedRoleARN    string    `json:"assumed_role_arn"`
 	UnderlyingRoleARN string    `json:"underlying_role_arn"`
 	RoleID            string    `json:"role_id"`
@@ -57,13 +55,8 @@ type SessionCredential struct {
 	CreatedAt         time.Time `json:"created_at"`
 }
 
-// initSessionCredentialsBucket opens (or creates) the session-credentials KV
-// bucket and runs any pending migrations.
-//
-// History is fixed at 1: session credentials are write-once at mint and
-// delete-once at expiry, never updated, so retained revisions waste storage
-// and lengthen tombstone lifetime with no recovery benefit. This is
-// deliberately lower than the IAM buckets (5-10).
+// initSessionCredentialsBucket opens (or creates) the session-credentials KV bucket.
+// History is fixed at 1: credentials are write-once at mint and delete-once at expiry.
 func initSessionCredentialsBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
 	if replicas < 1 {
 		replicas = 1
@@ -90,13 +83,8 @@ func initSessionCredentialsBucket(js nats.JetStreamContext, replicas int) (nats.
 	return kv, nil
 }
 
-// putSessionCredential persists a SessionCredential via a CAS-safe create.
-// All writes to the session-credentials bucket MUST go through this helper:
-// the ASIA-prefix invariant is enforced here at the writer, and a regression
-// is caught by the bucket-prefix invariants test.
-//
-// Returns nats.ErrKeyExists on AKID collision so callers can retry with a
-// freshly generated AKID.
+// putSessionCredential persists a SessionCredential via CAS create, enforcing the ASIA-prefix
+// invariant. Returns nats.ErrKeyExists on collision so callers can retry.
 func putSessionCredential(bucket nats.KeyValue, cred *SessionCredential) error {
 	if cred == nil {
 		return errors.New("nil session credential")
@@ -115,10 +103,8 @@ func putSessionCredential(bucket nats.KeyValue, cred *SessionCredential) error {
 	return nil
 }
 
-// VerifySessionToken recomputes the HMAC of the wire-form session token under
-// the IAM master key and constant-time-compares it against the stored value on
-// cred. Returns true on match. A bucket-read by any process that lacks the
-// master key cannot recover a usable token: the wire token is never persisted.
+// VerifySessionToken recomputes the HMAC of the wire token and constant-time-compares
+// it against the stored value. Returns true on match.
 func (s *STSServiceImpl) VerifySessionToken(cred *SessionCredential, wireToken string) bool {
 	if cred == nil || wireToken == "" {
 		return false
@@ -131,17 +117,13 @@ func (s *STSServiceImpl) VerifySessionToken(cred *SessionCredential, wireToken s
 	}
 	got, err := base64.StdEncoding.DecodeString(computeTokenHMAC(s.masterKey, wireToken))
 	if err != nil {
-		// computeTokenHMAC always emits valid base64; defence in depth.
-		return false
+		return false // computeTokenHMAC always emits valid base64; defence in depth
 	}
 	return subtle.ConstantTimeCompare(got, expected) == 1
 }
 
-// LookupSessionCredential resolves an access-key ID to its stored
-// SessionCredential. Returns (nil, nil) when the AKID does not start with
-// "ASIA" or when no record exists for it — the SigV4 verifier translates
-// that miss into InvalidClientTokenId on the ASIA path. Any other failure
-// (unmarshal, transport) is returned as an error.
+// LookupSessionCredential resolves an AKID to its stored SessionCredential.
+// Returns (nil, nil) when the AKID lacks the ASIA prefix or has no record.
 func (s *STSServiceImpl) LookupSessionCredential(accessKeyID string) (*SessionCredential, error) {
 	if !strings.HasPrefix(accessKeyID, SessionAccessKeyIDPrefix) {
 		return nil, nil
@@ -160,12 +142,8 @@ func (s *STSServiceImpl) LookupSessionCredential(accessKeyID string) (*SessionCr
 	return &cred, nil
 }
 
-// RunJanitor periodically removes session credentials whose ExpiresAt is
-// further in the past than janitorGracePeriod. The sweep is idempotent —
-// delete-of-already-deleted is a JetStream no-op — so multiple awsgw
-// instances may run independently without coordination.
-//
-// Blocks until ctx is cancelled. Intended to be invoked as `go svc.RunJanitor(ctx)`.
+// RunJanitor periodically removes expired session credentials. Idempotent; multiple
+// awsgw instances may run it concurrently. Blocks until ctx is cancelled.
 func (s *STSServiceImpl) RunJanitor(ctx context.Context) {
 	ticker := time.NewTicker(janitorInterval)
 	defer ticker.Stop()
@@ -185,10 +163,8 @@ func (s *STSServiceImpl) RunJanitor(ctx context.Context) {
 	}
 }
 
-// sweepExpired iterates the session-credentials bucket and deletes every
-// record whose ExpiresAt is older than now - janitorGracePeriod. Per-key
-// errors are logged and skipped — one corrupt record must not stall the
-// sweep. Returns the number of records deleted (exposed for tests).
+// sweepExpired deletes all records whose ExpiresAt is past the grace period.
+// Per-key errors are logged and skipped; returns the delete count.
 func (s *STSServiceImpl) sweepExpired(now time.Time) int {
 	cutoff := now.Add(-janitorGracePeriod)
 

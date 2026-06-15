@@ -62,6 +62,10 @@ func (s *stubIAMService) GetPolicyVersion(_ string, _ *iam.GetPolicyVersionInput
 	return &iam.GetPolicyVersionOutput{}, nil
 }
 
+func (s *stubIAMService) ListPolicyVersions(_ string, _ *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
+	return &iam.ListPolicyVersionsOutput{}, nil
+}
+
 func (s *stubIAMService) ListPolicies(_ string, _ *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	return &iam.ListPoliciesOutput{}, nil
 }
@@ -83,6 +87,10 @@ func (s *stubIAMService) ListAttachedUserPolicies(_ string, _ *iam.ListAttachedU
 }
 
 func (s *stubIAMService) GetUserPolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	return nil, nil
+}
+
+func (s *stubIAMService) GetRolePolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
 	return nil, nil
 }
 
@@ -403,6 +411,30 @@ func TestGetPolicyVersion(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := GetPolicyVersion(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestListPolicyVersions(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.ListPolicyVersionsInput
+		wantErr string
+	}{
+		{"nil PolicyArn", &iam.ListPolicyVersionsInput{}, awserrors.ErrorMissingParameter},
+		{"empty PolicyArn", &iam.ListPolicyVersionsInput{PolicyArn: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.ListPolicyVersionsInput{PolicyArn: aws.String("arn:aws:iam::000000000000:policy/mypolicy")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ListPolicyVersions(testAccountID, tc.input, svc)
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Equal(t, tc.wantErr, err.Error())

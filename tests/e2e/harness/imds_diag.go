@@ -11,29 +11,9 @@ import (
 )
 
 // DumpIMDSDatapathDiagnostics emits a triage bundle for an IMDS reachability
-// failure (guest curl to 169.254.169.254 times out). It captures both halves of
-// the per-subnet L2 datapath so a triager can tell request-path from reply-path:
-//
-//   - OVN realisation: is imds-port-<subnet> bound/up on this chassis, is the
-//     localport LSP defined as expected. There is no VPC-LR static route to check
-//     under L2 — the localport sits directly on the subnet switch, so the request
-//     never enters a router.
-//   - Host realisation (inside the per-subnet netns imds-<short>): the
-//     imds-h-<short> veth's address/route/neighbour state and the listener socket
-//     — the load-bearing question is whether the netns has a real L2 path back to
-//     guestIP. The veth carries 169.254.169.254/30 plus the subnet CIDR on-link, so
-//     a healthy dump shows the IPv4 address, an on-link reply route out the veth
-//     (no .253 gateway hop), and a resolved neighbour entry for guestIP; a broken
-//     dump shows an addressless veth that accepted the SYN but never returned the
-//     SYN-ACK.
-//   - In-flight evidence: conntrack (per-netns) for 169.254.169.254 (a stuck
-//     SYN_RECV is the smoking gun that the host received the SYN and replied but
-//     the ACK never came back) and the br-int flows touching the IMDS / guest
-//     addresses.
-//
-// Non-fatal — runs purely for log/artifact signal so the test's own Fatal still
-// wins. Skips silently when OVN tooling / passwordless sudo aren't available, so
-// it's safe to call from developer laptops.
+// failure. Captures OVN port-binding state, per-subnet netns veth/route/neigh,
+// conntrack, and br-int flows for both request and reply paths.
+// Non-fatal — best-effort diagnostics; skips if OVN tooling or sudo unavailable.
 func DumpIMDSDatapathDiagnostics(t *testing.T, subnetID, guestIP, artifactDir string) {
 	t.Helper()
 	fmt.Printf("\n%s%s── DIAGNOSTICS: IMDS datapath (subnet=%s guest=%s) ──%s\n",

@@ -41,7 +41,7 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 		{"DELETE", "/clusters/alpha/access-entries/arn-user/access-policies", "DisassociateAccessPolicy", []string{"alpha", "arn-user"}},
 		{"GET", "/clusters/alpha/access-entries/arn-user/access-policies", "ListAssociatedAccessPolicies", []string{"alpha", "arn-user"}},
 		{"GET", "/access-policies", "ListAccessPolicies", nil},
-		{"GET", "/addons", "ListAddons", nil},
+		{"GET", "/clusters/alpha/addons", "ListAddons", []string{"alpha"}},
 		{"GET", "/addons/supported-versions", "DescribeAddonVersions", nil},
 		{"POST", "/clusters/alpha/addons", "CreateAddon", []string{"alpha"}},
 		{"GET", "/clusters/alpha/addons/vpc-cni", "DescribeAddon", []string{"alpha", "vpc-cni"}},
@@ -66,10 +66,8 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 	}
 }
 
-// IAM principal ARNs contain a `/` (`user/admin`) and a `:` which the AWS CLI
-// percent-encodes in the request path. lookupEKSAction is fed r.URL.EscapedPath()
-// so `%2F` stays a single `([^/]+)` segment; the captured param is then
-// PathUnescape'd back to the real ARN before reaching the handler.
+// IAM principal ARNs are percent-encoded in the request path; lookupEKSAction is
+// fed EscapedPath() so %2F stays a single segment and is unescaped before the handler.
 func TestLookupEKSAction_EncodedPrincipalARN(t *testing.T) {
 	const (
 		arn     = "arn:aws:iam::000000000001:user/admin"
@@ -97,9 +95,13 @@ func TestLookupEKSAction_EncodedPrincipalARN(t *testing.T) {
 	}
 }
 
-func TestLookupEKSAction_CoversAll34Actions(t *testing.T) {
+func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 	expected := map[string]bool{
-		"CreateCluster":                      false,
+		"CreateCluster": false,
+		// Internal control-plane broker routes, not AWS-SDK EKS actions.
+		"PublishInternal":                    false,
+		"WebhookTokenReview":                 false,
+		"ListInternalAddons":                 false,
 		"DescribeCluster":                    false,
 		"ListClusters":                       false,
 		"UpdateClusterConfig":                false,
@@ -196,12 +198,10 @@ func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
 	assert.Equal(t, "NotImplementedException", env.Type)
 }
 
-// errEKSNotImpl returns the same error a stub EKS handler would surface so the
-// ErrorHandler test mirrors the production code path.
+// errEKSNotImpl returns the error a stub EKS handler would surface.
 func errEKSNotImpl() error { return errAWS(awserrors.ErrorNotImplemented) }
 
-// awsCodeError is a tiny shim so test files can return an awserrors-code-based
-// error without depending on the impl package.
+// awsCodeError lets tests return an awserrors-code error without depending on the impl package.
 type awsCodeError struct{ code string }
 
 func (e *awsCodeError) Error() string { return e.code }

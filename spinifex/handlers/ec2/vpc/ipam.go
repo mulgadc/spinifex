@@ -55,12 +55,8 @@ func NewIPAMWithKV(kv nats.KeyValue) *IPAM {
 	return &IPAM{kv: kv}
 }
 
-// AllocateIP allocates an IP address from the given subnet.
-// It reserves the first 4 and last IP per AWS convention:
-// .0=network, .1=gateway, .2=DNS, .3=reserved, .255=broadcast (for /24).
-// Uses CAS for conflict-free allocation across nodes. purpose is one of the
-// Purpose* constants in purpose.go; ownerID is the ENI / instance / EIP
-// resource ID that owns this allocation.
+// AllocateIP allocates an IP from the subnet, reserving the first 4 and last
+// addresses per AWS convention. Uses CAS for conflict-free multi-node allocation.
 func (m *IPAM) AllocateIP(subnetId, cidrBlock, purpose, ownerID string) (string, error) {
 	for attempt := range 5 {
 		record, revision, err := m.getRecord(subnetId)

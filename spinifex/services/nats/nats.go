@@ -104,12 +104,9 @@ func launchService(config *Config) (err error) {
 		return err
 	}
 
-	// Configure the logger based on the flags.
 	ns.ConfigureLogger()
 
-	// Start things up. Block here until done.
 	if err := server.Run(ns); err != nil {
-		// Will exit() here
 		server.PrintAndDie(err.Error())
 	}
 

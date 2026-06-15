@@ -13,6 +13,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
+func seedGatewayPort(t *testing.T, m *mock.Client, vpcID, mac string) {
+	t.Helper()
+	require.NoError(t, m.CreateLogicalRouterPort(context.Background(),
+		topology.VPCRouter(vpcID),
+		&nbdb.LogicalRouterPort{Name: topology.GatewayRouterPort(vpcID), MAC: mac}))
+}
+
 func seedRouter(t *testing.T, m *mock.Client, vpcID string) string {
 	t.Helper()
 	name := topology.VPCRouter(vpcID)
@@ -88,15 +95,15 @@ func TestNATManager_AddEIP_IdempotentSkip(t *testing.T) {
 	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
 }
 
-func TestNATManager_AddEIP_GARP_FiresDistributed(t *testing.T) {
+func TestNATManager_AddEIP_IdempotentSkip_RePrimesReachability(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
 	seedRouter(t, m, "vpc-1")
-	var got []EIPSpec
-	nm, err := NewNATManager(m, NATModeDistributed, WithGARPEmitter(func(spec EIPSpec) error {
-		got = append(got, spec)
-		return nil
-	}))
+	var primed []EIPSpec
+	var barrierCalls int
+	nm, err := NewNATManager(m, NATModeDistributed,
+		WithFlowsBarrier(func() error { barrierCalls++; return nil }),
+		WithNeighPrimer(func(eip EIPSpec) error { primed = append(primed, eip); return nil }))
 	require.NoError(t, err)
 
 	spec := EIPSpec{
@@ -104,40 +111,112 @@ func TestNATManager_AddEIP_GARP_FiresDistributed(t *testing.T) {
 		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
 	}
 	require.NoError(t, nm.AddEIP(ctx, spec))
-	require.Len(t, got, 1, "GARPEmitter must fire once per AddEIP")
-	assert.Equal(t, spec, got[0], "emitter must receive the full EIPSpec so it can derive the chassisredirect port")
+	// Re-attach same EIP (stop->start): row write is skipped but reachability
+	// must be re-primed or the host neigh goes dark until ARP times out.
+	require.NoError(t, nm.AddEIP(ctx, spec))
+
+	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
+	assert.Equal(t, []EIPSpec{spec, spec}, primed, "neighbour prime must re-fire on the idempotent-skip path")
 }
 
-func TestNATManager_AddEIP_GARP_FiresCentralized(t *testing.T) {
+func TestNATManager_NeighPrime_OnDistributedAttach_FlushOnDetach(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
 	seedRouter(t, m, "vpc-1")
-	var got []EIPSpec
-	nm, err := NewNATManager(m, NATModeCentralized, WithGARPEmitter(func(spec EIPSpec) error {
-		got = append(got, spec)
-		return nil
-	}))
+	var primed []EIPSpec
+	var flushed []string
+	nm, err := NewNATManager(m, NATModeDistributed,
+		WithNeighPrimer(func(eip EIPSpec) error {
+			primed = append(primed, eip)
+			return nil
+		}),
+		WithNeighFlusher(func(externalIP string) error {
+			flushed = append(flushed, externalIP)
+			return nil
+		}))
 	require.NoError(t, err)
 
-	spec := EIPSpec{VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5"}
+	spec := EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
+	}
 	require.NoError(t, nm.AddEIP(ctx, spec))
-	require.Len(t, got, 1, "GARPEmitter must fire in centralized mode too")
-	assert.Empty(t, got[0].PortName, "centralized AddEIP carries no LSP — emitter must derive cr-gw-<vpc> itself")
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"))
+
+	require.Equal(t, []EIPSpec{spec}, primed,
+		"distributed attach must prime the host neighbour with the external_mac, not flush")
+	assert.Equal(t, []string{"1.2.3.4"}, flushed,
+		"detach must still flush the released external IP")
 }
 
-func TestNATManager_AddEIP_GARP_FailureNonFatal(t *testing.T) {
+func TestNATManager_NeighPrime_OnCentralizedAttach(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
 	seedRouter(t, m, "vpc-1")
-	nm, err := NewNATManager(m, NATModeDistributed, WithGARPEmitter(func(EIPSpec) error {
-		return assert.AnError
-	}))
+	seedGatewayPort(t, m, "vpc-1", "02:gw:00:00:00:01")
+	var primed []EIPSpec
+	var flushed []string
+	nm, err := NewNATManager(m, NATModeCentralized,
+		WithNeighPrimer(func(eip EIPSpec) error {
+			primed = append(primed, eip)
+			return nil
+		}),
+		WithNeighFlusher(func(externalIP string) error {
+			flushed = append(flushed, externalIP)
+			return nil
+		}))
 	require.NoError(t, err)
 
 	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
 		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
-	}), "GARP emitter failure must not propagate")
-	assert.NotNil(t, findNAT(m, "dnat_and_snat", "10.0.0.5"), "NAT row must persist despite GARP failure")
+	}))
+	require.Len(t, primed, 1,
+		"centralized attach must prime the host neighbour with the gateway port MAC")
+	assert.Equal(t, "02:gw:00:00:00:01", primed[0].MAC,
+		"centralized prime must use the VPC gateway router-port MAC")
+	assert.Empty(t, flushed, "a successful prime must not also flush")
+}
+
+func TestNATManager_NeighFlush_CentralizedNoGatewayMAC(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1") // no gateway port seeded → MAC unresolvable
+	var primed []EIPSpec
+	var flushed []string
+	nm, err := NewNATManager(m, NATModeCentralized,
+		WithNeighPrimer(func(eip EIPSpec) error {
+			primed = append(primed, eip)
+			return nil
+		}),
+		WithNeighFlusher(func(externalIP string) error {
+			flushed = append(flushed, externalIP)
+			return nil
+		}))
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+	}))
+	assert.Empty(t, primed, "no gateway MAC to prime")
+	assert.Equal(t, []string{"1.2.3.4"}, flushed,
+		"centralized attach must fall back to a neighbour flush when no MAC resolves")
+}
+
+func TestNATManager_NeighHooks_FailureNonFatal(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeDistributed,
+		WithNeighPrimer(func(EIPSpec) error { return assert.AnError }),
+		WithNeighFlusher(func(string) error { return assert.AnError }))
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
+	}), "neigh prime failure must not propagate from AddEIP")
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"),
+		"neigh flush failure must not propagate from DeleteEIP")
 }
 
 func TestNATManager_AddEIP_NoBarrier_Default(t *testing.T) {
@@ -237,7 +316,7 @@ func TestNATManager_DeleteEIP_IdempotentOnMissing(t *testing.T) {
 	nm, _ := NewNATManager(m, NATModeDistributed)
 
 	// No prior AddEIP — delete should still succeed.
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "10.0.0.5"))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"))
 }
 
 func TestNATManager_AddNATGateway_FlowsBarrier_Fires(t *testing.T) {
@@ -284,13 +363,9 @@ func TestNATManager_AddNATGateway_AndDelete(t *testing.T) {
 	require.NoError(t, nm.DeleteNATGateway(ctx, "vpc-1", "10.0.1.0/24"))
 }
 
-// TestNATManager_DeleteNATGateway_CrossRouterIsolation guards against a NAT
-// row owned by router B being mutated/deleted when DeleteNATGateway is called
-// on router A and both routers carry the same subnet CIDR. AWS allows subnet
-// CIDRs to repeat per-VPC, so (snat, logicalIP) is not globally unique. Bug
-// observed in CI Phase 8d: shared 172.31.x CIDRs across VPCs caused
-// DeleteEIP/DeleteNAT to hit the wrong NAT row, leaving orphaned rules that
-// corrupted ARP/conntrack for the surviving NATGW EIP.
+// TestNATManager_DeleteNATGateway_CrossRouterIsolation guards against deleting
+// a NAT row on router B when DeleteNATGateway targets router A. AWS allows
+// overlapping subnet CIDRs across VPCs, so (snat, logicalIP) is not globally unique.
 func TestNATManager_DeleteNATGateway_CrossRouterIsolation(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
@@ -321,10 +396,8 @@ func TestNATManager_DeleteNATGateway_CrossRouterIsolation(t *testing.T) {
 	assert.Equal(t, "nat-b", survived.ExternalIDs["spinifex:nat_gateway_id"])
 }
 
-// TestNATManager_DeleteEIP_CrossRouterIsolation is the dnat_and_snat analogue
-// of the cross-router NATGW isolation test. Two VPCs each with a private VM
-// at 10.0.0.5 (legal — VPC CIDRs may overlap). DeleteEIP on vpc-a must not
-// touch vpc-b's NAT row.
+// TestNATManager_DeleteEIP_CrossRouterIsolation is the dnat_and_snat analogue:
+// two VPCs with overlapping private IPs — DeleteEIP on vpc-a must not touch vpc-b.
 func TestNATManager_DeleteEIP_CrossRouterIsolation(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
@@ -342,7 +415,7 @@ func TestNATManager_DeleteEIP_CrossRouterIsolation(t *testing.T) {
 		PortName: "port-b", MAC: "bb:bb:bb:bb:bb:bb",
 	}))
 
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-a", "10.0.0.5"))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-a", "1.1.1.1", "10.0.0.5"))
 
 	var survived *nbdb.NAT
 	for _, n := range m.NATs {

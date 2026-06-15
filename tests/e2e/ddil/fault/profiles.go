@@ -4,10 +4,7 @@ package fault
 
 import "time"
 
-// LinkProfile describes a tc netem configuration approximating a real-world
-// tactical link. Values are unvalidated approximations derived from public
-// specifications; see docs/development/improvements/ddil-e2e-test-harness.md
-// §2 and spinifex/tests/e2e/TEST_COVERAGE.md for validation tracking.
+// LinkProfile describes a tc netem configuration approximating a real-world tactical link.
 type LinkProfile struct {
 	Name      string
 	Delay     time.Duration
@@ -17,18 +14,14 @@ type LinkProfile struct {
 	Flapping  *FlapSpec
 }
 
-// FlapSpec toggles link up/down for profiles that simulate jammed or
-// intermittent RF. The flap loop itself is not driven by ApplyNetem — it is
-// orchestrated by a higher-level helper (added with the scenarios that use
-// it) so scenarios keep full control over when the flap stops.
+// FlapSpec toggles link up/down for profiles simulating jammed or intermittent RF.
+// The flap loop is driven by a higher-level helper, not by ApplyNetem.
 type FlapSpec struct {
 	Up   time.Duration
 	Down time.Duration
 }
 
-// Authoritative DDIL link profile values. See the §2 table in the design doc
-// for the rationale behind each row. Replace with measured values when
-// real-hardware access is available.
+// Predefined DDIL link profiles. Replace with measured hardware values when available.
 var (
 	LAN = LinkProfile{
 		Name:      "LAN",

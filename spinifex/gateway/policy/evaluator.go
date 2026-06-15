@@ -59,10 +59,8 @@ func EvaluateAccess(identity, action, resource string, policies []handlers_iam.P
 	return Deny
 }
 
-// matchesAny returns true if any pattern in patterns matches the given value
-// with AWS IAM-style wildcard semantics ("*" matches zero or more characters).
-// Case-insensitive — both action names ("ec2:*", "s3:Get*") and resource ARNs
-// ("arn:aws:iam::*:role/app-*") are compared lower-cased.
+// matchesAny reports whether any pattern matches value using AWS IAM wildcard
+// semantics. Comparison is case-insensitive.
 func matchesAny(patterns []string, value string) bool {
 	lv := strings.ToLower(value)
 	for _, p := range patterns {

@@ -61,6 +61,11 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 	// no error, so wantCode is "" (success — assert a non-error payload).
 	notImpl := awserrors.ErrorNotImplemented
 	invalid := awserrors.ErrorInvalidParameterValue
+	// Nodegroup mutators gate on orchestration deps, which the shim service
+	// lacks → ServiceUnavailable. The read paths reach input validation and an
+	// empty body fails with InvalidParameterValue. UpdateNodegroupVersion stays
+	// NotImplemented (v1 doesn't do AMI upgrades).
+	unavailable := awserrors.ErrorServiceUnavailable
 	cases := []struct {
 		subject  string
 		handler  nats.MsgHandler
@@ -68,12 +73,12 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 	}{
 		{"eks.UpdateClusterConfig", d.handleEKSUpdateClusterConfig, notImpl},
 		{"eks.UpdateClusterVersion", d.handleEKSUpdateClusterVersion, notImpl},
-		{"eks.CreateNodegroup", d.handleEKSCreateNodegroup, notImpl},
-		{"eks.DescribeNodegroup", d.handleEKSDescribeNodegroup, notImpl},
-		{"eks.ListNodegroups", d.handleEKSListNodegroups, notImpl},
-		{"eks.UpdateNodegroupConfig", d.handleEKSUpdateNodegroupConfig, notImpl},
+		{"eks.CreateNodegroup", d.handleEKSCreateNodegroup, unavailable},
+		{"eks.DescribeNodegroup", d.handleEKSDescribeNodegroup, invalid},
+		{"eks.ListNodegroups", d.handleEKSListNodegroups, invalid},
+		{"eks.UpdateNodegroupConfig", d.handleEKSUpdateNodegroupConfig, unavailable},
 		{"eks.UpdateNodegroupVersion", d.handleEKSUpdateNodegroupVersion, notImpl},
-		{"eks.DeleteNodegroup", d.handleEKSDeleteNodegroup, notImpl},
+		{"eks.DeleteNodegroup", d.handleEKSDeleteNodegroup, unavailable},
 		{"eks.CreateAccessEntry", d.handleEKSCreateAccessEntry, invalid},
 		{"eks.DescribeAccessEntry", d.handleEKSDescribeAccessEntry, invalid},
 		{"eks.ListAccessEntries", d.handleEKSListAccessEntries, invalid},
@@ -83,12 +88,15 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 		{"eks.DisassociateAccessPolicy", d.handleEKSDisassociateAccessPolicy, invalid},
 		{"eks.ListAssociatedAccessPolicies", d.handleEKSListAssociatedAccessPolicies, invalid},
 		{"eks.ListAccessPolicies", d.handleEKSListAccessPolicies, ""},
-		{"eks.ListAddons", d.handleEKSListAddons, notImpl},
-		{"eks.DescribeAddonVersions", d.handleEKSDescribeAddonVersions, notImpl},
-		{"eks.CreateAddon", d.handleEKSCreateAddon, notImpl},
-		{"eks.DeleteAddon", d.handleEKSDeleteAddon, notImpl},
-		{"eks.DescribeAddon", d.handleEKSDescribeAddon, notImpl},
-		{"eks.UpdateAddon", d.handleEKSUpdateAddon, notImpl},
+		// Addon handlers are implemented (Sprint 6 P1): an empty body fails
+		// cluster validation with InvalidParameterValue, except
+		// DescribeAddonVersions which returns the static catalogue (success).
+		{"eks.ListAddons", d.handleEKSListAddons, invalid},
+		{"eks.DescribeAddonVersions", d.handleEKSDescribeAddonVersions, ""},
+		{"eks.CreateAddon", d.handleEKSCreateAddon, invalid},
+		{"eks.DeleteAddon", d.handleEKSDeleteAddon, invalid},
+		{"eks.DescribeAddon", d.handleEKSDescribeAddon, invalid},
+		{"eks.UpdateAddon", d.handleEKSUpdateAddon, invalid},
 		{"eks.AssociateIdentityProviderConfig", d.handleEKSAssociateIdentityProviderConfig, notImpl},
 		{"eks.DescribeIdentityProviderConfig", d.handleEKSDescribeIdentityProviderConfig, notImpl},
 		{"eks.ListIdentityProviderConfigs", d.handleEKSListIdentityProviderConfigs, notImpl},

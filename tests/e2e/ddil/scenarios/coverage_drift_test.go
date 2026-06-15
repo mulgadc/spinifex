@@ -15,30 +15,16 @@ import (
 	"testing"
 )
 
-// scenarioFuncRe matches the TestScenario<L>_<Name> functions that make
-// up the DDIL suite. The capture group is the single-letter identifier
-// (A..F) used everywhere in the plan, bead, and TEST_COVERAGE.md.
+// scenarioFuncRe matches TestScenario<L>_<Name> functions; capture group is the scenario letter.
 var scenarioFuncRe = regexp.MustCompile(`^TestScenario([A-Z])_[A-Za-z0-9]+$`)
 
-// coverageDocRe matches the scenario-letter column in the DDIL table in
-// TEST_COVERAGE.md (e.g. `| A | ...`). Anchoring on a leading pipe +
-// whitespace keeps the pattern from matching prose mentions of "A" or
-// "B" elsewhere in the doc.
+// coverageDocRe matches the scenario-letter column in the DDIL table (e.g. `| A |`),
+// anchored on a leading pipe to avoid matching prose mentions.
 var coverageDocRe = regexp.MustCompile(`(?m)^\|\s*([A-F])\s*\|`)
 
-// TestCoverageDrift enforces TEST_COVERAGE.md and the scenarios package
-// stay in lock-step. It fails if either:
-//   - A TestScenario<L>_... function exists in the scenarios package but
-//     TEST_COVERAGE.md's DDIL table has no row for letter <L>.
-//   - TEST_COVERAGE.md's DDIL table has a row for letter <L> but no
-//     TestScenario<L>_... function exists.
-//
-// Drift surfaces the most common mistake in rolling out Phase 2/3
-// hardening: flipping a scenario's Skip to a real assertion without
-// updating the coverage table (or vice versa).
-//
-// Runs unconditionally — including under DDIL_DRY_RUN=1 — because it
-// only reads local source and has no cluster dependency.
+// TestCoverageDrift enforces TEST_COVERAGE.md and the scenarios package stay in sync:
+// fails if a TestScenario<L>_... function exists without a matching DDIL table row or
+// vice versa. Runs unconditionally (no cluster dependency).
 func TestCoverageDrift(t *testing.T) {
 	scenarioDir := callerDir(t)
 
@@ -69,10 +55,7 @@ func TestCoverageDrift(t *testing.T) {
 	}
 }
 
-// callerDir returns the directory holding this test file. Used to locate
-// sibling *_test.go files and to compute the relative path to
-// TEST_COVERAGE.md without hard-coding a fragile relative path at the
-// test-binary CWD.
+// callerDir returns the directory of this test file, used to locate siblings and TEST_COVERAGE.md.
 func callerDir(t *testing.T) string {
 	t.Helper()
 	_, self, _, ok := runtime.Caller(0)
@@ -82,10 +65,8 @@ func callerDir(t *testing.T) string {
 	return filepath.Dir(self)
 }
 
-// lettersFromSource AST-parses every *_test.go file in dir (except this
-// file and main_test.go, which hold no scenarios) and returns the
-// deduplicated sorted set of scenario letters declared by top-level
-// TestScenario<L>_... functions.
+// lettersFromSource AST-parses scenario *_test.go files and returns the deduplicated
+// sorted set of letters declared by top-level TestScenario<L>_... functions.
 func lettersFromSource(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -121,10 +102,8 @@ func lettersFromSource(dir string) ([]string, error) {
 	return sortedKeys(seen), nil
 }
 
-// lettersFromDoc reads TEST_COVERAGE.md and returns the deduplicated
-// sorted set of scenario letters its DDIL table declares. Rows are
-// matched by coverageDocRe so prose mentions elsewhere in the file do
-// not trigger false positives.
+// lettersFromDoc reads TEST_COVERAGE.md and returns deduplicated sorted scenario letters
+// from its DDIL table (matched by coverageDocRe, ignoring prose mentions).
 func lettersFromDoc(path string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -146,9 +125,7 @@ func sortedKeys(m map[string]struct{}) []string {
 	return out
 }
 
-// setDiff returns elements in a that are not in b. Both inputs must be
-// sorted (they always are, coming from sortedKeys); the linear merge
-// keeps the drift check O(n+m) rather than O(nm).
+// setDiff returns elements in a that are not in b (both inputs must be sorted).
 func setDiff(a, b []string) []string {
 	var out []string
 	i, j := 0, 0

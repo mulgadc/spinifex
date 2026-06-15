@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -8,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -118,6 +121,51 @@ func TestNATSProfileLookup_PropagatesError(t *testing.T) {
 	lookup := NewNATSProfileLookup(nc)
 	_, err := lookup.ResolveInstanceProfile(imdsTestAccountID, "missing")
 	require.Error(t, err)
+}
+
+const pubKeySubject = "imds.ec2.get_public_key"
+
+func TestNATSPublicKeyLookup_CachesMaterial(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	var gotReq handlers_ec2_key.GetPublicKeyRequest
+	calls := serveCounted(t, nc, pubKeySubject,
+		func(req *handlers_ec2_key.GetPublicKeyRequest) (*handlers_ec2_key.GetPublicKeyResponse, error) {
+			gotReq = *req
+			return &handlers_ec2_key.GetPublicKeyResponse{OpenSSHKey: "ssh-ed25519 AAAA " + req.KeyName}, nil
+		})
+
+	lookup := NewNATSPublicKeyLookup(nc)
+	for range 3 {
+		got, err := lookup.GetPublicKey(imdsTestAccountID, "my-key")
+		require.NoError(t, err)
+		assert.Equal(t, "ssh-ed25519 AAAA my-key", got)
+	}
+	// Three lookups, one round-trip: the TTL cache suppressed the repeats.
+	assert.Equal(t, int32(1), atomic.LoadInt32(calls))
+	assert.Equal(t, handlers_ec2_key.GetPublicKeyRequest{AccountID: imdsTestAccountID, KeyName: "my-key"}, gotReq)
+}
+
+// An error result is never cached: the next call must re-issue the RPC so a
+// transient miss isn't pinned as a permanent absence.
+func TestNATSPublicKeyLookup_DoesNotCacheError(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	calls := serveCounted(t, nc, pubKeySubject,
+		func(_ *handlers_ec2_key.GetPublicKeyRequest) (*handlers_ec2_key.GetPublicKeyResponse, error) {
+			return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+		})
+
+	lookup := NewNATSPublicKeyLookup(nc)
+	for range 2 {
+		_, err := lookup.GetPublicKey(imdsTestAccountID, "missing")
+		require.Error(t, err)
+		// The NotFound code must survive the round-trip verbatim: the IMDS
+		// handler's 404-vs-500 split keys off this exact string, so a future
+		// wrap that collapses it to InternalError flips a deleted key to 500.
+		assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+	}
+	assert.Equal(t, int32(2), atomic.LoadInt32(calls))
 }
 
 func TestTTLCache_ExpiresEntries(t *testing.T) {

@@ -245,8 +245,15 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 	roleName := *input.RoleName
 	policyARN := *input.PolicyArn
 
-	if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
-		return nil, err
+	// AWS-managed policy ARNs (arn:aws:iam::aws:policy/...) are never provisioned
+	// in Spinifex; stock EKS tooling attaches them (AmazonEKSClusterPolicy,
+	// AmazonEKSWorkerNodePolicy, AmazonEKS_CNI_Policy, ...). Store them opaquely
+	// so ListAttachedRolePolicies / DescribeNodegroup round-trip instead of
+	// failing NoSuchEntity. Customer-managed ARNs must still exist.
+	if !isAWSManagedPolicyARN(policyARN) {
+		if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
+			return nil, err
+		}
 	}
 
 	role, err := s.getRole(accountID, roleName)
@@ -314,6 +321,13 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 
 	var attached []*iam.AttachedPolicy
 	for _, arn := range role.AttachedPolicies {
+		if isAWSManagedPolicyARN(arn) {
+			attached = append(attached, &iam.AttachedPolicy{
+				PolicyArn:  aws.String(arn),
+				PolicyName: aws.String(managedPolicyNameFromARN(arn)),
+			})
+			continue
+		}
 		policy, err := s.getPolicyByARN(accountID, arn)
 		if err != nil {
 			slog.Warn("ListAttachedRolePolicies: policy not found for ARN", "arn", arn, "err", err)
@@ -329,6 +343,47 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 		AttachedPolicies: attached,
 		IsTruncated:      aws.Bool(false),
 	}, nil
+}
+
+// GetRolePolicies resolves the managed policy documents attached to a role.
+// Used by the gateway for policy evaluation. Fails closed: any unresolvable
+// policy returns an error so the caller denies access rather than using a partial set.
+func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDocument, error) {
+	role, err := s.getRole(accountID, roleName)
+	if err != nil {
+		return nil, err
+	}
+
+	var docs []PolicyDocument
+	for _, arn := range role.AttachedPolicies {
+		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
+		if err != nil {
+			return nil, err // fail closed
+		}
+		if include {
+			docs = append(docs, doc)
+		}
+	}
+
+	return docs, nil
+}
+
+// isAWSManagedPolicyARN reports whether arn is an AWS-managed policy ARN
+// (arn:aws:iam::aws:policy/...). These are not provisioned in Spinifex but are
+// stored and round-tripped opaquely so stock EKS tooling that attaches them
+// works without a backing policy document.
+func isAWSManagedPolicyARN(arn string) bool {
+	return strings.HasPrefix(arn, "arn:aws:iam::aws:policy/")
+}
+
+// managedPolicyNameFromARN returns the final path segment of an AWS-managed
+// policy ARN, e.g. .../service-role/AmazonEKS_CNI_Policy -> AmazonEKS_CNI_Policy.
+func managedPolicyNameFromARN(arn string) string {
+	name := strings.TrimPrefix(arn, "arn:aws:iam::aws:policy/")
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
 }
 
 func (s *IAMServiceImpl) getRole(accountID, roleName string) (*Role, error) {
@@ -414,30 +469,12 @@ func roleToSDK(r *Role) *iam.Role {
 	return out
 }
 
-// STSActionAssumeRoleWithWebIdentity is the only Action that may carry a
-// Condition block in v1 (IRSA `{iss}:sub` / `{iss}:aud` checks). Lives in
-// this package so the validator and the STS-side evaluator agree on the
-// exact spelling without a cross-package constant chase.
+// STSActionAssumeRoleWithWebIdentity is the only action that may carry a Condition block.
 const STSActionAssumeRoleWithWebIdentity = "sts:AssumeRoleWithWebIdentity"
 
-// ValidateTrustPolicyDocument parses and validates an AssumeRolePolicyDocument
-// JSON string. Trust-policy evaluation (Principal semantics, Action being
-// sts:AssumeRole, etc.) is deferred to STS — this layer only checks the
-// document shape.
-//
-// Categories of fields rejected at write time rather than silently
-// accepted-then-ignored at evaluation time: NotPrincipal and NotAction —
-// each would otherwise let an author write a policy whose runtime behaviour
-// silently diverges from its stated intent (NotPrincipal-Allow grants the
-// universe; NotAction is unimplemented).
-//
-// Condition blocks are accepted only for the narrow IRSA case: the statement
-// Action must be exactly `["sts:AssumeRoleWithWebIdentity"]` (no wildcards,
-// no co-listed actions) and the only operator key allowed is StringEquals.
-// Any wider acceptance would let an author write an ExternalId-protected
-// sts:AssumeRole policy that evalTrustPolicy silently ignores at runtime —
-// the same "loud-fail-here-or-silent-allow-there" trade-off the original
-// blanket rejection guarded.
+// ValidateTrustPolicyDocument parses and validates an AssumeRolePolicyDocument JSON string.
+// Rejects NotPrincipal and NotAction at write time. Condition blocks are accepted only for
+// sts:AssumeRoleWithWebIdentity with StringEquals — any wider shape would be silently ignored at runtime.
 func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 	if len(docJSON) > maxTrustPolicyDocumentSize {
 		return nil, fmt.Errorf("trust policy exceeds maximum size of %d bytes", maxTrustPolicyDocumentSize)
@@ -487,11 +524,8 @@ func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 	return &doc, nil
 }
 
-// validateWebIdentityCondition gates the narrow IRSA Condition allowance:
-// Action must be exactly `["sts:AssumeRoleWithWebIdentity"]` (no other entry,
-// no wildcard) and the Condition operator must be exclusively StringEquals.
-// Any wider shape would re-open the "silently-accepted Condition on
-// sts:AssumeRole" hole the original blanket rejection closed.
+// validateWebIdentityCondition gates Condition blocks to the IRSA case:
+// Action must be exactly sts:AssumeRoleWithWebIdentity and operator must be StringEquals only.
 func validateWebIdentityCondition(i int, stmt TrustStatement) error {
 	if len(stmt.Action) != 1 || stmt.Action[0] != STSActionAssumeRoleWithWebIdentity {
 		return fmt.Errorf("statement %d: trust policy Condition blocks are only supported on statements whose Action is exactly [%q]; v1 does not evaluate conditions for other actions", i, STSActionAssumeRoleWithWebIdentity)
@@ -508,11 +542,8 @@ func validateWebIdentityCondition(i int, stmt TrustStatement) error {
 	return nil
 }
 
-// isRawJSONNonEmpty reports whether a json.RawMessage carries a meaningful
-// value. Whitespace, the JSON null literal, and the empty object/array
-// literals all count as empty — they would otherwise let `Condition: {}`
-// trip the Condition rejection and let `Principal: {}` slip past the
-// Principal-is-required check.
+// isRawJSONNonEmpty reports whether a json.RawMessage carries a meaningful value.
+// Whitespace, null, and empty object/array all count as empty.
 func isRawJSONNonEmpty(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false

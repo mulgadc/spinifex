@@ -128,15 +128,9 @@ func (s *RouteTableServiceImpl) getVPCCidr(accountID, vpcID string) (string, err
 	return vpcRecord.CidrBlock, nil
 }
 
-// mainRouteTable returns the VPC's main route table or (nil, nil) if none
-// exists. Used to enumerate effective routes for subnets that have no
-// explicit RT association (AWS implicit-main semantics).
-//
-// Deterministic across duplicate IsMain=true records: see preferMain. A
-// duplicate is a bootstrap-race symptom — the canonical fix lives in
-// VPCServiceImpl.createMainRouteTable, but the picker stays defensive so a
-// stale dup (e.g. cross-AZ restore, manual KV edit) can't break gate
-// recomputation by selecting the orphan non-deterministically.
+// mainRouteTable returns the VPC's main route table, or (nil, nil) if none exists.
+// Applies AWS implicit-main semantics; deterministic across duplicate IsMain=true
+// records via preferMain.
 func (s *RouteTableServiceImpl) mainRouteTable(accountID, vpcID string) (*RouteTableRecord, error) {
 	rts, err := s.allRouteTablesForVPC(accountID, vpcID)
 	if err != nil {
@@ -205,12 +199,9 @@ func (s *RouteTableServiceImpl) subnetsImplicitlyOnMainRT(accountID, vpcID strin
 	return implicit, nil
 }
 
-// effectiveRouteTable returns the route table whose routes apply to subnetID
-// per AWS semantics: explicit non-main association if one exists, otherwise
-// the VPC's main RT. Returns (nil, nil) when neither is present.
-//
-// Main-RT selection is deterministic across IsMain=true duplicates via
-// preferMain — see mainRouteTable.
+// effectiveRouteTable returns the route table whose routes apply to subnetID per AWS
+// semantics: explicit non-main association if present, otherwise the VPC's main RT.
+// Returns (nil, nil) when neither is present. Main-RT ties broken via preferMain.
 func (s *RouteTableServiceImpl) effectiveRouteTable(accountID, vpcID, subnetID string) (*RouteTableRecord, error) {
 	rts, err := s.allRouteTablesForVPC(accountID, vpcID)
 	if err != nil {
@@ -230,12 +221,9 @@ func (s *RouteTableServiceImpl) effectiveRouteTable(accountID, vpcID, subnetID s
 	return main, nil
 }
 
-// preferMain reports whether candidate should replace current as the chosen
-// main RT. Ordered tiebreakers when two IsMain=true records survive for one
-// VPC: (1) more routes — user-added 0.0.0.0/0 etc. flag the "real" RT vs an
-// orphan that only carries the implicit local route; (2) oldest CreatedAt —
-// the original wins over a late dup; (3) smaller RouteTableId — total order
-// so the same input always produces the same answer across nodes.
+// preferMain reports whether candidate should replace current as the chosen main RT.
+// Tiebreakers: (1) more routes, (2) oldest CreatedAt, (3) smaller RouteTableId —
+// giving a deterministic total order across duplicate IsMain=true records.
 func preferMain(current, candidate *RouteTableRecord) bool {
 	if current == nil {
 		return true
@@ -249,10 +237,8 @@ func preferMain(current, candidate *RouteTableRecord) bool {
 	return candidate.RouteTableId < current.RouteTableId
 }
 
-// subnetHasDefaultEgress reports whether subnetID's effective RT carries a
-// destCidr route pointing at any internet-bound target (IGW or NAT GW). If
-// false, the subnet must be gated with a DROP policy because the VPC LR's
-// router-wide default static route would otherwise let packets egress.
+// subnetHasDefaultEgress reports whether subnetID's effective RT carries a destCidr
+// route pointing at an IGW or NAT GW; false means the subnet must be gated with a DROP policy.
 func (s *RouteTableServiceImpl) subnetHasDefaultEgress(accountID, vpcID, subnetID, destCidr string) (bool, error) {
 	rt, err := s.effectiveRouteTable(accountID, vpcID, subnetID)
 	if err != nil {
@@ -275,12 +261,9 @@ func (s *RouteTableServiceImpl) subnetHasDefaultEgress(accountID, vpcID, subnetI
 	return false, nil
 }
 
-// publishSubnetEgressGateDecision recomputes the gate/ungate decision for one
-// subnet+destCidr pair and emits either vpc.gate-subnet-egress (when the
-// effective RT lacks an internet-bound route) or vpc.ungate-subnet-egress
-// (when one is present). Called after every per-subnet IGW/NATGW event so
-// the drop policy state always matches the AWS RT view. Side-effect only;
-// errors are logged.
+// publishSubnetEgressGateDecision emits vpc.gate-subnet-egress or vpc.ungate-subnet-egress
+// for one subnet+destCidr based on whether the effective RT has an internet-bound route.
+// Side-effect only; errors are logged.
 func (s *RouteTableServiceImpl) publishSubnetEgressGateDecision(accountID, vpcID, subnetID, destCidr string) {
 	if s.natsConn == nil || subnetID == "" || vpcID == "" {
 		return
@@ -320,11 +303,9 @@ func (s *RouteTableServiceImpl) publishSubnetEgressGateDecision(accountID, vpcID
 		"topic", topic, "vpcId", vpcID, "subnetId", subnetID, "destinationCidr", destCidr)
 }
 
-// PublishGateDecisionsForVPC recomputes gate/ungate for every subnet in
-// vpcID against destCidr by enumerating all subnets in the VPC and resolving
-// each one's effective RT. Called from the IGW handler on Attach / Detach so
-// per-subnet OVN DROP policies are reinstated immediately instead of waiting
-// for the reconciler's drift tick. destCidr defaults to 0.0.0.0/0.
+// PublishGateDecisionsForVPC recomputes gate/ungate for every subnet in vpcID against
+// destCidr, resolving each subnet's effective RT. Called on IGW Attach/Detach.
+// destCidr defaults to 0.0.0.0/0.
 func (s *RouteTableServiceImpl) PublishGateDecisionsForVPC(accountID, vpcID, destCidr string) {
 	if s.natsConn == nil || vpcID == "" {
 		return
@@ -661,8 +642,11 @@ func (s *RouteTableServiceImpl) CreateRoute(input *ec2.CreateRouteInput, account
 		if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+		// AWS rejects a route to an internet gateway that is not attached to the
+		// route table's VPC (unattached, or attached to a different VPC) with
+		// Gateway.NotAttached — not a bare InvalidParameterValue.
 		if igwRecord.VpcId != record.VpcId {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, errors.New(awserrors.ErrorGatewayNotAttached)
 		}
 		route = RouteRecord{
 			DestinationCidrBlock: destCidr,
@@ -906,10 +890,8 @@ func (s *RouteTableServiceImpl) AssociateRouteTable(input *ec2.AssociateRouteTab
 		return nil, err
 	}
 
-	// Subnet leaves implicit main-RT membership: tear down per-subnet rules
-	// that came from the main RT's routes before the explicit RT's rules
-	// take effect. Skip if the explicit RT IS the main RT (can't happen via
-	// public API but DescribeRouteTables permits the query).
+	// Subnet leaves implicit main-RT membership: tear down main RT's per-subnet rules
+	// before the explicit RT's rules take effect.
 	if !record.IsMain {
 		if mainRT, err := s.mainRouteTable(accountID, record.VpcId); err != nil {
 			slog.Warn("AssociateRouteTable: main RT lookup failed", "vpcId", record.VpcId, "err", err)
@@ -992,10 +974,7 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(input *ec2.DisassociateRo
 				s.publishNatGatewayEventsForAssociation(accountID, "vpc.delete-nat-gateway", &record, departingSubnetID)
 				s.publishIGWRouteEventsForAssociation(accountID, "vpc.delete-igw-route", &record, departingSubnetID)
 
-				// Subnet falls back to implicit main-RT membership: re-install
-				// per-subnet rules for the main RT's routes (no-op if departing
-				// table WAS the main, which can't happen since DisassociateMain
-				// is rejected above).
+				// Subnet falls back to implicit main-RT membership: re-install main RT's per-subnet rules.
 				if mainRT, err := s.mainRouteTable(accountID, record.VpcId); err != nil {
 					slog.Warn("DisassociateRouteTable: main RT lookup failed", "vpcId", record.VpcId, "err", err)
 				} else if mainRT != nil && mainRT.RouteTableId != record.RouteTableId {
@@ -1244,10 +1223,8 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 	return filterutil.MatchesTags(filters, record.Tags)
 }
 
-// publishNatGatewayEvents publishes vpc.add-nat-gateway events for each subnet
-// associated with this route table, so vpcd creates the SNAT rules. Called by
-// CreateRoute when a NAT GW route is added to a table that may already have
-// subnet associations.
+// publishNatGatewayEvents publishes vpc.add-nat-gateway for each associated subnet
+// so vpcd creates the SNAT rules.
 func (s *RouteTableServiceImpl) publishNatGatewayEvents(accountID string, record *RouteTableRecord, vpcID, natgwID, publicIp, destCidr string) {
 	if s.natsConn == nil {
 		return
@@ -1321,10 +1298,8 @@ func (s *RouteTableServiceImpl) publishNatGatewayDeleteEvents(accountID string, 
 	}
 }
 
-// publishNatGatewayEventsForAssociation emits one NAT GW SNAT event per NAT GW
-// route on the table, scoped to a single subnet. Called when a subnet joins or
-// leaves a route table that already has NAT GW routes so OVN SNAT state tracks
-// association lifecycle (terraform creates the route first, then associates).
+// publishNatGatewayEventsForAssociation emits one NAT GW SNAT event per NAT GW route
+// on the table, scoped to a single subnet joining or leaving the table.
 func (s *RouteTableServiceImpl) publishNatGatewayEventsForAssociation(accountID, topic string, record *RouteTableRecord, subnetID string) {
 	if s.natsConn == nil || subnetID == "" {
 		return
@@ -1395,10 +1370,8 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(accountID, topic
 	slog.Info("NAT GW event published", "topic", topic, "subnetCidr", subnet.CidrBlock, "publicIp", publicIp, "subnetId", subnetID, "destinationCidr", destCidr)
 }
 
-// publishIGWRouteEvents emits one vpc.{add,delete}-igw-route event per subnet
-// associated with the route table. Called by CreateRoute/DeleteRoute when an
-// IGW route is added or removed against a table that may already carry
-// subnet associations.
+// publishIGWRouteEvents emits one vpc.{add,delete}-igw-route event per associated
+// subnet when an IGW route is added or removed from a table.
 func (s *RouteTableServiceImpl) publishIGWRouteEvents(accountID, topic string, record *RouteTableRecord, vpcID, igwID, destCidr string) {
 	if s.natsConn == nil {
 		return
@@ -1427,10 +1400,8 @@ func (s *RouteTableServiceImpl) publishIGWRouteEvents(accountID, topic string, r
 	}
 }
 
-// publishIGWRouteEventsForAssociation emits one IGW route event per IGW route
-// on the table, scoped to a single subnet. Called when a subnet joins or leaves
-// a route table that already has IGW routes so OVN policy state tracks
-// association lifecycle (terraform creates the route first, then associates).
+// publishIGWRouteEventsForAssociation emits one IGW route event per IGW route on the
+// table, scoped to a single subnet joining or leaving the table.
 func (s *RouteTableServiceImpl) publishIGWRouteEventsForAssociation(accountID, topic string, record *RouteTableRecord, subnetID string) {
 	if s.natsConn == nil || subnetID == "" {
 		return
@@ -1443,10 +1414,8 @@ func (s *RouteTableServiceImpl) publishIGWRouteEventsForAssociation(accountID, t
 	}
 }
 
-// publishIGWRouteEventForSubnet publishes a single vpc.{add,delete}-igw-route
-// event. Side-effect only — logs and swallows errors so a publish failure
-// doesn't fail the caller's API response. The subscriber (network/subscribers)
-// resolves the gateway nexthop and installs the OVN Logical_Router_Policy.
+// publishIGWRouteEventForSubnet publishes a single vpc.{add,delete}-igw-route event.
+// Side-effect only — logs and swallows errors so a publish failure doesn't fail the caller.
 func (s *RouteTableServiceImpl) publishIGWRouteEventForSubnet(topic, subnetID, vpcID, igwID, destCidr string) {
 	if s.natsConn == nil {
 		return

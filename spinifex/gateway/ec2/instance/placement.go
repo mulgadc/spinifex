@@ -27,19 +27,14 @@ type nodeAllocation struct {
 	Assigned  int // instances assigned to this node
 }
 
-// distributeInstances implements the best-effort spread algorithm for multi-node
-// instance distribution. It queries cluster capacity, filters eligible nodes,
-// distributes instances across nodes (1 per node first, then pack extras onto
-// nodes with most remaining capacity), launches in parallel, and handles
-// partial failures with rollback.
-//
-// Returns the merged reservation on success or an error.
+// distributeInstances spreads instances across nodes: queries capacity, allocates
+// (1 per node first, then packs extras by remaining capacity), launches in parallel,
+// and rolls back on partial failure.
 func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
 
-	// Step 1: Query capacity from all nodes via fan-out
 	nodes, err := queryNodeCapacity(natsConn, instanceType)
 	if err != nil {
 		return nil, err
@@ -49,7 +44,6 @@ func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, acco
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
-	// Step 2: Calculate total capacity and check feasibility
 	totalCapacity := 0
 	for _, n := range nodes {
 		totalCapacity += n.Available
@@ -58,26 +52,15 @@ func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, acco
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
-	// Step 3: Determine launch count (capped to MaxCount and available capacity)
 	launchCount := min(maxCount, totalCapacity)
-
-	// Step 4: Distribute instances across nodes using best-effort spread
 	allocations := spreadAllocate(nodes, launchCount)
-
-	// Step 5: Launch instances on each node in parallel
 	results := launchOnNodes(allocations, input, natsConn, accountID)
-
-	// Step 6: Aggregate results and handle partial failure
 	return aggregateResults(results, minCount, natsConn, accountID)
 }
 
-// queryNodeCapacity fans out spinifex.node.status to all daemons and returns
-// eligible nodes (those with Available >= 1 for the requested instance type),
-// sorted by available capacity descending with random tiebreaking for fair
-// distribution among equal-capacity nodes.
-//
-// Uses a collection window: after the first response arrives, only waits an
-// additional 200ms for remaining responses (instead of the full 3s timeout).
+// queryNodeCapacity fans out spinifex.node.status and returns eligible nodes
+// (Available >= 1 for instanceType), sorted by capacity desc with random tiebreaking.
+// After the first response, narrows the deadline to 200ms to avoid waiting the full 3s.
 func queryNodeCapacity(natsConn *nats.Conn, instanceType string) ([]nodeAllocation, error) {
 	inbox := nats.NewInbox()
 	sub, err := natsConn.SubscribeSync(inbox)
@@ -126,7 +109,6 @@ func queryNodeCapacity(natsConn *nats.Conn, instanceType string) ([]nodeAllocati
 			continue
 		}
 
-		// Find capacity for the requested instance type on this node
 		for _, cap := range status.InstanceTypes {
 			if cap.Name == instanceType && cap.Available >= 1 {
 				nodes = append(nodes, nodeAllocation{
@@ -137,8 +119,6 @@ func queryNodeCapacity(natsConn *nats.Conn, instanceType string) ([]nodeAllocati
 			}
 		}
 
-		// After the first valid response, tighten the deadline so we don't
-		// wait the full 3s for stragglers.
 		if !gotFirst {
 			gotFirst = true
 			collectDeadline := time.Now().Add(collectWindow)
@@ -148,8 +128,7 @@ func queryNodeCapacity(natsConn *nats.Conn, instanceType string) ([]nodeAllocati
 		}
 	}
 
-	// Shuffle first for random tiebreaking, then stable-sort by capacity
-	// descending. This ensures fair distribution among equal-capacity nodes.
+	// Random shuffle then stable-sort: fair distribution among equal-capacity nodes.
 	rand.Shuffle(len(nodes), func(i, j int) {
 		nodes[i], nodes[j] = nodes[j], nodes[i]
 	})
@@ -160,17 +139,14 @@ func queryNodeCapacity(natsConn *nats.Conn, instanceType string) ([]nodeAllocati
 	return nodes, nil
 }
 
-// spreadAllocate distributes count instances across nodes using best-effort spread:
-//   - Round 1: assign 1 instance to each node (up to count)
-//   - Round 2+: assign remaining to nodes with most remaining capacity
+// spreadAllocate distributes count instances: round 1 assigns 1 per node,
+// subsequent rounds pack remaining instances onto nodes with most remaining capacity.
 func spreadAllocate(nodes []nodeAllocation, count int) []nodeAllocation {
-	// Make a working copy
 	allocs := make([]nodeAllocation, len(nodes))
 	copy(allocs, nodes)
 
 	remaining := count
 
-	// Round 1: 1 instance per node
 	for i := range allocs {
 		if remaining <= 0 {
 			break
@@ -179,9 +155,7 @@ func spreadAllocate(nodes []nodeAllocation, count int) []nodeAllocation {
 		remaining--
 	}
 
-	// Round 2+: pack remaining onto nodes with most remaining capacity.
-	// Ties are broken by preferring the node with fewer assigned instances,
-	// which produces a more balanced spread.
+	// Pack remaining: pick node with most spare capacity; break ties by fewest assigned.
 	for remaining > 0 {
 		bestIdx := -1
 		bestRemaining := 0
@@ -202,7 +176,6 @@ func spreadAllocate(nodes []nodeAllocation, count int) []nodeAllocation {
 		remaining--
 	}
 
-	// Filter out nodes with no assignments
 	result := make([]nodeAllocation, 0, len(allocs))
 	for _, a := range allocs {
 		if a.Assigned > 0 {
@@ -219,8 +192,7 @@ type nodeLaunchResult struct {
 	Err         error
 }
 
-// launchOnNodes sends targeted RunInstances requests to specific nodes in parallel.
-// Each node gets MinCount=MaxCount=assignedCount so the daemon treats it as all-or-nothing.
+// launchOnNodes sends targeted RunInstances to each node in parallel with MinCount=MaxCount=assigned.
 func launchOnNodes(allocations []nodeAllocation, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string) []nodeLaunchResult {
 	instanceType := aws.StringValue(input.InstanceType)
 
@@ -232,7 +204,6 @@ func launchOnNodes(allocations []nodeAllocation, input *ec2.RunInstancesInput, n
 		go func(idx int, a nodeAllocation) {
 			defer wg.Done()
 
-			// Build per-node input with MinCount=MaxCount=assigned
 			nodeInput := *input
 			nodeInput.MinCount = aws.Int64(int64(a.Assigned))
 			nodeInput.MaxCount = aws.Int64(int64(a.Assigned))
@@ -251,9 +222,8 @@ func launchOnNodes(allocations []nodeAllocation, input *ec2.RunInstancesInput, n
 	return results
 }
 
-// aggregateResults merges successful node launches into a single reservation.
-// If total launched instances < minCount, all successfully launched instances
-// are terminated (rollback) and InsufficientInstanceCapacity is returned.
+// aggregateResults merges successful launches; rolls back and returns
+// InsufficientInstanceCapacity when launched < minCount.
 func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.Conn, accountID string) (*ec2.Reservation, error) {
 	var allInstances []*ec2.Instance
 	var reservationID *string
@@ -274,12 +244,10 @@ func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.C
 	totalLaunched := len(allInstances)
 
 	if totalLaunched < minCount {
-		// Rollback: terminate all successfully launched instances
 		if totalLaunched > 0 {
 			rollbackInstances(allInstances, natsConn, accountID)
 		}
-		// Propagate specific client errors (e.g. InvalidAMIID.NotFound) instead
-		// of the generic InsufficientInstanceCapacity.
+		// Propagate specific client errors (e.g. InvalidAMIID.NotFound) over the generic capacity error.
 		if clientErr := extractClientError(results); clientErr != nil {
 			return nil, clientErr
 		}
@@ -292,9 +260,8 @@ func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.C
 	}, nil
 }
 
-// distributeInstancesSpread implements strict 1-per-node spread for placement groups.
-// It queries capacity, reserves unused nodes via CAS, launches 1 instance per node,
-// and finalizes or rolls back the placement group record.
+// distributeInstancesSpread implements strict 1-per-node spread: queries capacity,
+// atomically reserves nodes via CAS, launches 1 per node, then finalizes or rolls back.
 func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
@@ -302,7 +269,6 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 
 	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
 
-	// Step 1: Query capacity from all nodes
 	nodes, err := queryNodeCapacity(natsConn, instanceType)
 	if err != nil {
 		return nil, err
@@ -311,13 +277,11 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
-	// Build list of eligible node IDs
 	eligibleNodeIDs := make([]string, len(nodes))
 	for i, n := range nodes {
 		eligibleNodeIDs[i] = n.NodeID
 	}
 
-	// Step 2: Reserve nodes atomically (CAS-based, handles concurrent launches)
 	reserveOut, err := pgSvc.ReserveSpreadNodes(&handlers_ec2_placementgroup.ReserveSpreadNodesInput{
 		GroupName:     groupName,
 		EligibleNodes: eligibleNodeIDs,
@@ -330,16 +294,13 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 
 	reservedNodes := reserveOut.ReservedNodes
 
-	// Step 3: Build allocations (1 instance per reserved node)
 	allocations := make([]nodeAllocation, len(reservedNodes))
 	for i, nodeID := range reservedNodes {
 		allocations[i] = nodeAllocation{NodeID: nodeID, Assigned: 1}
 	}
 
-	// Step 4: Launch instances on reserved nodes in parallel
 	results := launchOnNodes(allocations, input, natsConn, accountID)
 
-	// Step 5: Collect results
 	var allInstances []*ec2.Instance
 	var reservationID *string
 	nodeInstances := make(map[string][]string)
@@ -367,11 +328,9 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 	totalLaunched := len(allInstances)
 
 	if totalLaunched < minCount {
-		// Rollback: terminate launched instances and release all reserved nodes
 		if totalLaunched > 0 {
 			rollbackInstances(allInstances, natsConn, accountID)
 		}
-		// Release all reserved nodes from the placement group
 		if _, err := pgSvc.ReleaseSpreadNodes(&handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
 			GroupName: groupName,
 			Nodes:     reservedNodes,
@@ -384,16 +343,13 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
-	// Step 6: Finalize — replace placeholders with actual instance IDs.
-	// If finalization fails, the placement group record has stale placeholders;
-	// roll back the launched instances to avoid untracked instances.
+	// Finalize: replace placeholders with instance IDs; roll back on failure.
 	if _, err := pgSvc.FinalizeSpreadInstances(&handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
 		GroupName:     groupName,
 		NodeInstances: nodeInstances,
 	}, accountID); err != nil {
 		slog.Error("distributeInstancesSpread: finalize failed, rolling back instances", "err", err)
 		rollbackInstances(allInstances, natsConn, accountID)
-		// Release all reserved nodes (both succeeded and failed)
 		allReleaseNodes := append(reservedNodes[:0:0], reservedNodes...)
 		if _, releaseErr := pgSvc.ReleaseSpreadNodes(&handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
 			GroupName: groupName,
@@ -404,7 +360,6 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 		return nil, fmt.Errorf("failed to finalize placement group record: %w", err)
 	}
 
-	// Release any failed nodes that didn't launch
 	if len(failedNodes) > 0 {
 		if _, err := pgSvc.ReleaseSpreadNodes(&handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
 			GroupName: groupName,
@@ -420,9 +375,8 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 	}, nil
 }
 
-// distributeInstancesCluster implements cluster placement group routing.
-// All instances are pinned to a single node. If the group already has instances,
-// subsequent launches go to the same node. If empty, picks the node with most capacity.
+// distributeInstancesCluster pins all instances to a single node.
+// Subsequent launches on an existing group reuse the same node; first launch picks highest capacity.
 func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
@@ -430,19 +384,17 @@ func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Con
 
 	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
 
-	// Step 1: Query capacity from all nodes
 	nodes, err := queryNodeCapacity(natsConn, instanceType)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build eligible node IDs (already sorted by capacity desc)
+	// Already sorted by capacity desc.
 	eligibleNodeIDs := make([]string, len(nodes))
 	for i, n := range nodes {
 		eligibleNodeIDs[i] = n.NodeID
 	}
 
-	// Step 2: Reserve the cluster target node (CAS-based for empty groups)
 	reserveOut, err := pgSvc.ReserveClusterNode(&handlers_ec2_placementgroup.ReserveClusterNodeInput{
 		GroupName:     groupName,
 		EligibleNodes: eligibleNodeIDs,
@@ -453,7 +405,6 @@ func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Con
 
 	targetNode := reserveOut.TargetNode
 
-	// Step 3: Check capacity on the target node
 	var targetCapacity int
 	for _, n := range nodes {
 		if n.NodeID == targetNode {
@@ -466,17 +417,14 @@ func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Con
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
-	// Cap launch count to available capacity and MaxCount
 	launchCount := min(maxCount, targetCapacity)
 
-	// Step 4: Targeted launch — all instances to the pinned node
 	allocations := []nodeAllocation{{
 		NodeID:   targetNode,
 		Assigned: launchCount,
 	}}
 	results := launchOnNodes(allocations, input, natsConn, accountID)
 
-	// Step 5: Handle result (single node, no partial failure logic needed)
 	if results[0].Err != nil {
 		if clientErr := extractClientError(results); clientErr != nil {
 			return nil, clientErr
@@ -489,7 +437,6 @@ func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Con
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Step 6: CAS-update record with launched instance IDs
 	nodeInstances := make(map[string][]string)
 	for _, inst := range reservation.Instances {
 		if inst.InstanceId != nil {
@@ -509,9 +456,8 @@ func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Con
 	return reservation, nil
 }
 
-// extractClientError scans node launch results for specific client validation
-// errors (e.g. InvalidAMIID.NotFound) that should be propagated instead of the
-// generic InsufficientInstanceCapacity. Returns the first match, or nil.
+// extractClientError returns the first specific client error from results
+// (e.g. InvalidAMIID.NotFound) to propagate over the generic capacity error.
 func extractClientError(results []nodeLaunchResult) error {
 	for _, r := range results {
 		if r.Err == nil {

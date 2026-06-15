@@ -33,10 +33,8 @@ func AcquireLeader(nc *nats.Conn, holder string) (func(), bool) {
 	)
 	deadline := time.Now().Add(leaderRetryFor)
 	for {
-		// Get-or-create: CreateKeyValue alone returns "stream name already in
-		// use" once the bucket exists, so every reconcile after the first would
-		// hit the deadline and never elect. Attach to the existing bucket first,
-		// create only when it is genuinely absent.
+		// Get-or-create: CreateKeyValue returns "stream name already in use" if
+		// the bucket exists; attach first, create only when genuinely absent.
 		kv, err = js.KeyValue(reconcileLeaderBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			kv, err = js.CreateKeyValue(&nats.KeyValueConfig{

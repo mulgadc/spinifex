@@ -24,8 +24,8 @@ func ValidateStopInstancesInput(input *ec2.StopInstancesInput) error {
 	return nil
 }
 
-// StopInstances sends stop commands to specified instances via NATS
-// Uses system_powerdown with stop_instance attribute to prevent auto-restart on daemon boot
+// StopInstances sends stop commands via NATS using system_powerdown with stop_instance
+// set to prevent auto-restart on daemon boot.
 func StopInstances(input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.StopInstancesOutput, error) {
 	if err := ValidateStopInstancesInput(input); err != nil {
 		return nil, err
@@ -35,7 +35,6 @@ func StopInstances(input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID
 
 	var stateChanges []*ec2.InstanceStateChange
 
-	// Process each instance
 	for _, instanceIDPtr := range input.InstanceIds {
 		if instanceIDPtr == nil {
 			continue
@@ -45,19 +44,17 @@ func StopInstances(input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID
 		command := types.EC2InstanceCommand{
 			ID: instanceID,
 			Attributes: types.EC2CommandAttributes{
-				StopInstance:      true, // Don't auto-restart on daemon boot
+				StopInstance:      true,
 				TerminateInstance: false,
 			},
 		}
 
-		// Marshal the command
 		jsonData, err := json.Marshal(command)
 		if err != nil {
 			slog.Error("StopInstances: Failed to marshal command", "instance_id", instanceID, "err", err)
 			continue
 		}
 
-		// Send NATS request to the specific instance topic with account ID header
 		subject := fmt.Sprintf("ec2.cmd.%s", instanceID)
 		reqMsg := nats.NewMsg(subject)
 		reqMsg.Data = jsonData
@@ -69,7 +66,6 @@ func StopInstances(input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID
 			continue
 		}
 
-		// Check if the daemon returned an error response (e.g. ownership check failure)
 		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
 			slog.Error("StopInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 			return nil, errors.New(*responseError.Code)

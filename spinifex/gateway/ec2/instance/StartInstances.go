@@ -3,11 +3,13 @@ package gateway_ec2_instance
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -27,8 +29,8 @@ func ValidateStartInstancesInput(input *ec2.StartInstancesInput) error {
 	return nil
 }
 
-// StartInstances sends start requests to the ec2.start queue group topic.
-// Any available daemon can pick up the request and launch the stopped instance.
+// StartInstances starts the requested instances via the per-instance ec2.cmd topic,
+// falling back to the ec2.start queue-group path (KV rehydration) on ErrNoResponders.
 func StartInstances(input *ec2.StartInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.StartInstancesOutput, error) {
 	if err := ValidateStartInstancesInput(input); err != nil {
 		return nil, err
@@ -44,33 +46,20 @@ func StartInstances(input *ec2.StartInstancesInput, natsConn *nats.Conn, account
 		}
 		instanceID := *instanceIDPtr
 
-		req := startStoppedInstanceRequest{InstanceID: instanceID}
-		jsonData, err := json.Marshal(req)
+		sc, handled, err := startLiveInstance(natsConn, instanceID, accountID)
 		if err != nil {
-			slog.Error("StartInstances: Failed to marshal request", "instance_id", instanceID, "err", err)
+			return nil, err
+		}
+		if handled {
+			stateChanges = append(stateChanges, sc)
 			continue
 		}
 
-		slog.Info("StartInstances: Sending NATS request", "subject", "ec2.start", "instance_id", instanceID)
-
-		reqMsg := nats.NewMsg("ec2.start")
-		reqMsg.Data = jsonData
-		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-		msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
+		sc, err = startStoppedInstance(natsConn, instanceID, accountID)
 		if err != nil {
-			slog.Error("StartInstances: Failed to send start request", "instance_id", instanceID, "err", err)
-			stateChanges = append(stateChanges, newStateChange(instanceID, 80, "stopped", 80, "stopped"))
-			continue
+			return nil, err
 		}
-
-		// Check if the daemon returned an error response
-		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
-			slog.Error("StartInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
-			return nil, errors.New(*responseError.Code)
-		}
-
-		slog.Info("StartInstances: Command sent successfully", "instance_id", instanceID, "response", string(msg.Data))
-		stateChanges = append(stateChanges, newStateChange(instanceID, 0, "pending", 80, "stopped"))
+		stateChanges = append(stateChanges, sc)
 	}
 
 	output := &ec2.StartInstancesOutput{
@@ -79,4 +68,70 @@ func StartInstances(input *ec2.StartInstancesInput, natsConn *nats.Conn, account
 
 	slog.Info("StartInstances: Completed", "total_instances", len(stateChanges))
 	return output, nil
+}
+
+// startLiveInstance sends StartInstance via ec2.cmd.{id}. Returns handled=false on
+// ErrNoResponders so the caller can fall back to the stopped-KV path.
+func startLiveInstance(natsConn *nats.Conn, instanceID, accountID string) (*ec2.InstanceStateChange, bool, error) {
+	command := types.EC2InstanceCommand{
+		ID:         instanceID,
+		Attributes: types.EC2CommandAttributes{StartInstance: true},
+	}
+	jsonData, err := json.Marshal(command)
+	if err != nil {
+		slog.Error("StartInstances: Failed to marshal cmd", "instance_id", instanceID, "err", err)
+		return nil, false, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	reqMsg := nats.NewMsg(fmt.Sprintf("ec2.cmd.%s", instanceID))
+	reqMsg.Data = jsonData
+	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
+	if err != nil {
+		// No live owner subscribed: fall back to the stopped-KV start path.
+		if errors.Is(err, nats.ErrNoResponders) {
+			return nil, false, nil
+		}
+		slog.Error("StartInstances: cmd request failed", "instance_id", instanceID, "err", err)
+		return nil, false, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+		slog.Error("StartInstances: owner returned error", "instance_id", instanceID, "code", *responseError.Code)
+		return nil, false, errors.New(*responseError.Code)
+	}
+
+	slog.Info("StartInstances: restarted via owner node", "instance_id", instanceID, "response", string(msg.Data))
+	return newStateChange(instanceID, 0, "pending", 80, "stopped"), true, nil
+}
+
+// startStoppedInstance rehydrates a stopped instance from the shared KV via the
+// ec2.start queue-group topic. Any available daemon forwards to the instance's
+// original node.
+func startStoppedInstance(natsConn *nats.Conn, instanceID, accountID string) (*ec2.InstanceStateChange, error) {
+	req := startStoppedInstanceRequest{InstanceID: instanceID}
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		slog.Error("StartInstances: Failed to marshal request", "instance_id", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.Info("StartInstances: Sending NATS request", "subject", "ec2.start", "instance_id", instanceID)
+
+	reqMsg := nats.NewMsg("ec2.start")
+	reqMsg.Data = jsonData
+	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
+	if err != nil {
+		slog.Error("StartInstances: Failed to send start request", "instance_id", instanceID, "err", err)
+		return newStateChange(instanceID, 80, "stopped", 80, "stopped"), nil
+	}
+
+	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+		slog.Error("StartInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
+		return nil, errors.New(*responseError.Code)
+	}
+
+	slog.Info("StartInstances: Command sent successfully", "instance_id", instanceID, "response", string(msg.Data))
+	return newStateChange(instanceID, 0, "pending", 80, "stopped"), nil
 }

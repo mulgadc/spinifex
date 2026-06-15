@@ -19,29 +19,103 @@ const keyNameField = z
 
 export const VOLUME_TYPES = ["gp3"] as const
 
-export const createInstanceSchema = z.object({
-  imageId: z.string("Please select an Image"),
-  instanceType: z.string("Please select an instance type"),
-  keyName: z.string("Please select a key pair").min(1, "Key pair is required"),
-  subnetId: z.string().optional(),
-  placementGroupName: z.string().optional(),
-  count: z
-    .int("Instance count must be a whole number")
-    .min(1, "Instance count must be at least 1"),
-  rootDeviceName: z.string().optional(),
-  rootVolumeSize: z
-    .number()
-    .int("Volume size must be a whole number")
-    .min(1, "Volume size must be at least 1 GiB")
-    .max(16_384, "Volume size must be at most 16384 GiB")
-    .optional(),
-  rootVolumeType: z.enum(VOLUME_TYPES).optional(),
-  rootDeleteOnTermination: z.boolean().optional(),
-})
+// Quick-create inbound rules offered by the launch wizard, mirroring the AWS
+// console's "Allow SSH/HTTP/HTTPS" tick boxes.
+export const LAUNCH_WIZARD_SG_PREFIX = "launch-wizard-"
+
+export const createInstanceSchema = z
+  .object({
+    imageId: z.string("Please select an Image"),
+    instanceType: z.string("Please select an instance type"),
+    keyName: z
+      .string("Please select a key pair")
+      .min(1, "Key pair is required"),
+    subnetId: z.string().optional(),
+    placementGroupName: z.string().optional(),
+    count: z
+      .int("Instance count must be a whole number")
+      .min(1, "Instance count must be at least 1"),
+    rootDeviceName: z.string().optional(),
+    rootVolumeSize: z
+      .number()
+      .int("Volume size must be a whole number")
+      .min(1, "Volume size must be at least 1 GiB")
+      .max(16_384, "Volume size must be at most 16384 GiB")
+      .optional(),
+    rootVolumeType: z.enum(VOLUME_TYPES).optional(),
+    rootDeleteOnTermination: z.boolean().optional(),
+    // Security groups: either create a new launch-wizard SG with tick-box
+    // rules, or attach existing SG(s). Mirrors the AWS launch wizard. All
+    // optional so non-UI callers keep today's no-SG behaviour; the form always
+    // sets a mode, and the mutation only creates an SG when mode === "create".
+    securityGroupMode: z.enum(["create", "existing"]).optional(),
+    securityGroupIds: z.array(z.string()).optional(),
+    newSgName: z.string().optional(),
+    newSgDescription: z.string().optional(),
+    allowSsh: z.boolean().optional(),
+    allowHttp: z.boolean().optional(),
+    allowHttps: z.boolean().optional(),
+    ruleSource: z.enum(["anywhere", "custom"]).optional(),
+    customCidr: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (!data.securityGroupMode) {
+      return
+    }
+    if (data.securityGroupMode === "existing") {
+      if ((data.securityGroupIds ?? []).length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Select at least one security group",
+          path: ["securityGroupIds"],
+        })
+      }
+      return
+    }
+    if (!data.newSgName || data.newSgName.trim().length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Security group name is required",
+        path: ["newSgName"],
+      })
+    }
+    if (
+      data.ruleSource === "custom" &&
+      (!data.customCidr || !isValidCidr(data.customCidr))
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Enter a valid CIDR (e.g. 203.0.113.0/24)",
+        path: ["customCidr"],
+      })
+    }
+  })
 
 export type CreateInstanceFormData = z.infer<typeof createInstanceSchema>
 
-export type CreateInstanceParams = CreateInstanceFormData
+export type CreateInstanceParams = CreateInstanceFormData & {
+  // VPC the chosen subnet belongs to (or the default VPC when none is
+  // selected). Resolved in the form so the mutation can create the SG in the
+  // right VPC.
+  resolvedVpcId?: string
+}
+
+// nextLaunchWizardName returns the next "launch-wizard-N" name not already
+// taken by an existing SG, matching the AWS console's auto-increment.
+export function nextLaunchWizardName(existingNames: string[]): string {
+  let max = 0
+  const re = new RegExp(`^${LAUNCH_WIZARD_SG_PREFIX}(\\d+)$`)
+  for (const name of existingNames) {
+    const m = re.exec(name)
+    if (m) {
+      const n = Number(m[1])
+      if (n > max) {
+        max = n
+      }
+    }
+  }
+  return `${LAUNCH_WIZARD_SG_PREFIX}${max + 1}`
+}
 
 export const createKeyPairSchema = z.object({
   keyName: keyNameField,
@@ -136,9 +210,60 @@ export const createSubnetSchema = z.object({
     .min(1, "CIDR block is required")
     .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 10.0.1.0/24)"),
   availabilityZone: z.string().optional(),
+  // AWS subnet console "Auto-assign public IPv4 address". CreateSubnet
+  // defaults this off; a follow-up ModifySubnetAttribute turns it on.
+  mapPublicIpOnLaunch: z.boolean().optional(),
 })
 
 export type CreateSubnetFormData = z.infer<typeof createSubnetSchema>
+
+export const allocateAddressSchema = z.object({
+  name: z.string().optional(),
+})
+
+export type AllocateAddressFormData = z.infer<typeof allocateAddressSchema>
+
+export const createNatGatewaySchema = z.object({
+  subnetId: z.string().min(1, "Subnet is required"),
+  allocationId: z.string().min(1, "Elastic IP is required"),
+  name: z.string().optional(),
+})
+
+export type CreateNatGatewayFormData = z.infer<typeof createNatGatewaySchema>
+
+export const createInternetGatewaySchema = z.object({
+  name: z.string().optional(),
+})
+
+export type CreateInternetGatewayFormData = z.infer<
+  typeof createInternetGatewaySchema
+>
+
+export const createRouteTableSchema = z.object({
+  vpcId: z.string().min(1, "VPC is required"),
+  name: z.string().optional(),
+})
+
+export type CreateRouteTableFormData = z.infer<typeof createRouteTableSchema>
+
+export const createRouteSchema = z.object({
+  destinationCidrBlock: z
+    .string()
+    .min(1, "Destination is required")
+    .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 0.0.0.0/0)"),
+  targetType: z.enum(["igw", "nat"]),
+  targetId: z.string().min(1, "Target is required"),
+})
+
+export type CreateRouteFormData = z.infer<typeof createRouteSchema>
+
+export const associateRouteTableSchema = z.object({
+  subnetId: z.string().min(1, "Subnet is required"),
+})
+
+export type AssociateRouteTableFormData = z.infer<
+  typeof associateRouteTableSchema
+>
 
 export const createVpcSchema = z.object({
   cidrBlock: z
@@ -171,6 +296,10 @@ export const createVpcWizardSchema = z
         "CIDR has invalid octets or prefix length (must be /16 to /28)",
       ),
     tenancy: z.enum(["default", "dedicated"]),
+    // NAT gateway for private-subnet egress. Optional so existing callers/tests
+    // default to "none"; "single" provisions one NAT GW (+ Elastic IP) in the
+    // first public subnet and routes private 0.0.0.0/0 to it.
+    natGateway: z.enum(["none", "single"]).optional(),
     publicSubnetCount: z.number().int().min(0).max(1),
     privateSubnetCount: z.number().int().min(0).max(2),
     publicSubnetCidrs: z.array(z.string()),

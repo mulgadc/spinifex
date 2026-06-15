@@ -124,12 +124,9 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: finalStatuses}, nil
 }
 
-// queryStoppedInstancesForStatus projects the input to DescribeInstancesInput
-// before forwarding to the stopped-instance KV handler. The handler unmarshals
-// with DisallowUnknownFields, so IncludeAllInstances must be dropped. Filters
-// only valid for DescribeInstanceStatus (availability-zone, instance-state-code)
-// are stripped because the stopped-instance handler would reject them via its
-// own valid-filter map; these are applied gateway-side after transform.
+// queryStoppedInstancesForStatus projects input to DescribeInstancesInput for the stopped-KV handler.
+// IncludeAllInstances and status-specific filters are stripped (the handler rejects them);
+// those filters are re-applied gateway-side on the returned statuses.
 func queryStoppedInstancesForStatus(natsConn *nats.Conn, input *ec2.DescribeInstanceStatusInput, accountID, az string) []*ec2.InstanceStatus {
 	projected := &ec2.DescribeInstancesInput{
 		InstanceIds: input.InstanceIds,

@@ -79,6 +79,9 @@ func (f *fakeIAMService) GetPolicy(string, *iam.GetPolicyInput) (*iam.GetPolicyO
 func (f *fakeIAMService) GetPolicyVersion(string, *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
 	return &iam.GetPolicyVersionOutput{}, nil
 }
+func (f *fakeIAMService) ListPolicyVersions(string, *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
+	return &iam.ListPolicyVersionsOutput{}, nil
+}
 func (f *fakeIAMService) ListPolicies(string, *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	return &iam.ListPoliciesOutput{}, nil
 }
@@ -143,6 +146,9 @@ func (f *fakeIAMService) RemoveRoleFromInstanceProfile(string, *iam.RemoveRoleFr
 	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
 }
 func (f *fakeIAMService) GetUserPolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
+	return nil, nil
+}
+func (f *fakeIAMService) GetRolePolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
 	return nil, nil
 }
 func (f *fakeIAMService) LookupAccessKey(string) (*handlers_iam.AccessKey, error) { return nil, nil }

@@ -96,6 +96,10 @@ func (m *flexMockIAMService) GetPolicyVersion(_ string, _ *iam.GetPolicyVersionI
 	return &iam.GetPolicyVersionOutput{}, nil
 }
 
+func (m *flexMockIAMService) ListPolicyVersions(_ string, _ *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
+	return &iam.ListPolicyVersionsOutput{}, nil
+}
+
 func (m *flexMockIAMService) ListPolicies(_ string, _ *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	return &iam.ListPoliciesOutput{}, nil
 }
@@ -117,6 +121,10 @@ func (m *flexMockIAMService) ListAttachedUserPolicies(_ string, _ *iam.ListAttac
 }
 
 func (m *flexMockIAMService) GetUserPolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	return nil, nil
+}
+
+func (m *flexMockIAMService) GetRolePolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
 	return nil, nil
 }
 
@@ -186,8 +194,7 @@ func (m *flexMockIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.
 	return nil, nil
 }
 
-// setupIAMRequestHandler creates an http.Handler wired for IAM_Request testing.
-// It injects sigv4 context values so individual tests don't need SigV4 auth.
+// setupIAMRequestHandler wires an http.Handler for IAM_Request with injected SigV4 context values.
 func setupIAMRequestHandler(svc handlers_iam.IAMService) http.Handler {
 	gw := &GatewayConfig{
 		DisableLogging: true,
@@ -336,7 +343,6 @@ func TestIAMRequest_MissingAccountID(t *testing.T) {
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "iam")
-		// No ctxAccountID set
 		r = r.WithContext(ctx)
 		if err := gw.IAM_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)
@@ -354,7 +360,6 @@ func TestIAMRequest_MissingAccountID(t *testing.T) {
 }
 
 func TestIAMRequest_ValidationError(t *testing.T) {
-	// CreateUser with missing UserName should return MissingParameter
 	handler := setupIAMRequestHandler(&flexMockIAMService{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser"))

@@ -15,7 +15,6 @@ func ValidateDescribeVolumesInput(input *ec2.DescribeVolumesInput) error {
 		return nil
 	}
 
-	// Validate VolumeId format if provided
 	if input.VolumeIds != nil {
 		for _, volumeId := range input.VolumeIds {
 			if volumeId != nil && !strings.HasPrefix(*volumeId, "vol-") {
@@ -31,21 +30,17 @@ func ValidateDescribeVolumesInput(input *ec2.DescribeVolumesInput) error {
 func DescribeVolumes(input *ec2.DescribeVolumesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVolumesOutput, error) {
 	var output ec2.DescribeVolumesOutput
 
-	// Validate input
 	err := ValidateDescribeVolumesInput(input)
 	if err != nil {
 		return output, err
 	}
 
-	// Create NATS service and call handler
 	volumeService := handlers_ec2_volume.NewNATSVolumeService(natsConn)
 	result, err := volumeService.DescribeVolumes(input, accountID)
-
 	if err != nil {
 		return output, err
 	}
 
-	// Return result
 	output = *result
 	return output, nil
 }

@@ -7,34 +7,33 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
-// sgProvisioner is the subset of handlers_ec2_vpc.VPCService that the cluster
-// SG helpers need. Narrow so tests can fake with hand-rolled recorders without
-// implementing the full VPCService surface.
+// sgProvisioner is the narrow VPC surface needed by cluster SG helpers.
 type sgProvisioner interface {
 	CreateSecurityGroup(input *ec2.CreateSecurityGroupInput, accountID string) (*ec2.CreateSecurityGroupOutput, error)
 	DescribeSecurityGroups(input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error)
 	DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput, accountID string) (*ec2.DeleteSecurityGroupOutput, error)
+	AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, accountID string) (*ec2.AuthorizeSecurityGroupIngressOutput, error)
 }
 
-// clusterEKSClusterTagKey is stamped on every cluster-scoped resource so the
-// DeleteCluster sweep + the UI hide-from-customer filter can group them.
+// clusterEKSClusterTagKey groups all cluster-scoped resources for DeleteCluster sweeps.
 const clusterEKSClusterTagKey = "spinifex:eks-cluster"
 
-// clusterEKSRoleTagKey distinguishes the control-plane SG from the nodegroup
-// SG when both live in the same VPC.
+// clusterEKSRoleTagKey distinguishes the control-plane SG from the nodegroup SG.
 const clusterEKSRoleTagKey = "spinifex:eks-role"
+
+// clusterEKSNodegroupTagKey is stamped on worker instances to identify their nodegroup.
+const clusterEKSNodegroupTagKey = "spinifex:eks-nodegroup"
 
 const (
 	clusterEKSRoleControlPlane = "control-plane"
 	clusterEKSRoleNodegroup    = "nodegroup"
 )
 
-// ClusterControlPlaneSGName returns the deterministic SG name used for the
-// cluster's control-plane SG. Stable so Stage-6 DeleteCluster can locate it
-// from clusterName alone.
+// ClusterControlPlaneSGName returns the deterministic control-plane SG name for a cluster.
 func ClusterControlPlaneSGName(clusterName string) string {
 	return fmt.Sprintf("eks-cluster-%s-control-plane-sg", clusterName)
 }
@@ -45,12 +44,8 @@ func ClusterNodegroupSGName(clusterName string) string {
 	return fmt.Sprintf("eks-cluster-%s-nodegroup-sg", clusterName)
 }
 
-// EnsureClusterSGs creates (or returns existing) control-plane + nodegroup
-// security groups in the customer VPC. Both are tagged
-// spinifex:managed-by=eks + spinifex:eks-cluster=<name>. Idempotent: an SG
-// whose group-name + vpc-id match the expected pair is reused without a
-// second create call. The two creates are independent — a failure on the
-// nodegroup SG does not unwind the control-plane SG (DeleteCluster cleans up).
+// EnsureClusterSGs creates or reuses the control-plane and nodegroup SGs in the customer VPC.
+// Idempotent; the two creates are independent (DeleteCluster handles partial teardown).
 func EnsureClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) (controlPlaneSGID, nodegroupSGID string, err error) {
 	if clusterName == "" {
 		return "", "", errors.New("eks: EnsureClusterSGs empty cluster name")
@@ -78,10 +73,7 @@ func EnsureClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) (
 	return controlPlaneSGID, nodegroupSGID, nil
 }
 
-// DeleteClusterSGs removes both cluster SGs in the customer VPC. Missing SGs
-// are no-ops so DeleteCluster can retry safely. Delete errors are logged and
-// the sweep continues; the first error is returned so the caller surfaces it
-// without halting the broader teardown.
+// DeleteClusterSGs removes both cluster SGs. Missing SGs are no-ops; first error is returned.
 func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) error {
 	if clusterName == "" {
 		return errors.New("eks: DeleteClusterSGs empty cluster name")
@@ -140,6 +132,127 @@ func ensureClusterSG(sgp sgProvisioner, accountID, vpcID, clusterName, name, des
 		return "", fmt.Errorf("eks: CreateSecurityGroup returned empty GroupId for %s", name)
 	}
 	return *out.GroupId, nil
+}
+
+// EnsureNodegroupSGRules authorizes ingress for flannel VXLAN (8472/udp), apiserver
+// (6443/tcp), and kubelet (10250/tcp) between CP and nodegroup SGs. Idempotent.
+func EnsureNodegroupSGRules(sgp sgProvisioner, accountID, clusterName, cpSGID, ngSGID string) error {
+	if cpSGID == "" || ngSGID == "" {
+		return errors.New("eks: EnsureNodegroupSGRules empty SG id")
+	}
+
+	type rule struct {
+		targetSG string
+		sourceSG string
+		proto    string
+		from     int64
+		to       int64
+		desc     string
+	}
+	rules := []rule{
+		{cpSGID, ngSGID, "tcp", 6443, 6443, "EKS agent to apiserver/supervisor"},
+		{cpSGID, ngSGID, "udp", 8472, 8472, "EKS flannel VXLAN node to control-plane"},
+		{ngSGID, cpSGID, "udp", 8472, 8472, "EKS flannel VXLAN control-plane to node"},
+		{ngSGID, ngSGID, "udp", 8472, 8472, "EKS flannel VXLAN node to node"},
+		{ngSGID, cpSGID, "tcp", 10250, 10250, "EKS kubelet control-plane to node"},
+		{ngSGID, ngSGID, "-1", -1, -1, "EKS intra-nodegroup all traffic"},
+	}
+
+	for _, r := range rules {
+		perm := &ec2.IpPermission{
+			IpProtocol: aws.String(r.proto),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{
+				GroupId:     aws.String(r.sourceSG),
+				Description: aws.String(r.desc),
+			}},
+		}
+		if r.proto != "-1" {
+			perm.FromPort = aws.Int64(r.from)
+			perm.ToPort = aws.Int64(r.to)
+		}
+		_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       aws.String(r.targetSG),
+			IpPermissions: []*ec2.IpPermission{perm},
+		}, accountID)
+		if err != nil {
+			if awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+				continue
+			}
+			return fmt.Errorf("authorize %s ingress on %s: %w", r.desc, r.targetSG, err)
+		}
+	}
+	return nil
+}
+
+// EnsureControlPlaneIngress admits the NLB→apiserver hop from the VPC CIDR on k3sAPIServerPort.
+// Public access is gated separately at the NLB front-end. Idempotent.
+func EnsureControlPlaneIngress(sgp sgProvisioner, accountID, cpSGID, vpcCIDR string) error {
+	if cpSGID == "" {
+		return errors.New("eks: EnsureControlPlaneIngress empty control-plane SG id")
+	}
+	if vpcCIDR == "" {
+		return errors.New("eks: EnsureControlPlaneIngress empty vpc cidr")
+	}
+
+	perm := &ec2.IpPermission{
+		IpProtocol: aws.String("tcp"),
+		FromPort:   aws.Int64(k3sAPIServerPort),
+		ToPort:     aws.Int64(k3sAPIServerPort),
+		IpRanges: []*ec2.IpRange{{
+			CidrIp:      aws.String(vpcCIDR),
+			Description: aws.String("EKS NLB to apiserver"),
+		}},
+	}
+	_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId:       aws.String(cpSGID),
+		IpPermissions: []*ec2.IpPermission{perm},
+	}, accountID)
+	if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+		return fmt.Errorf("authorize control-plane apiserver ingress on %s: %w", cpSGID, err)
+	}
+	return nil
+}
+
+// EnsureControlPlaneHAIngress authorizes self-referencing CP SG rules for HA etcd peering:
+// etcd client+peer (2379-2380/tcp) and kubelet (10250/tcp) within cpSG. Idempotent.
+func EnsureControlPlaneHAIngress(sgp sgProvisioner, accountID, cpSGID string) error {
+	if cpSGID == "" {
+		return errors.New("eks: EnsureControlPlaneHAIngress empty control-plane SG id")
+	}
+
+	type rule struct {
+		proto string
+		from  int64
+		to    int64
+		desc  string
+	}
+	rules := []rule{
+		{"tcp", 2379, 2380, "EKS etcd client+peer control-plane to control-plane"},
+		{"tcp", 10250, 10250, "EKS kubelet control-plane to control-plane"},
+	}
+
+	for _, r := range rules {
+		perm := &ec2.IpPermission{
+			IpProtocol: aws.String(r.proto),
+			FromPort:   aws.Int64(r.from),
+			ToPort:     aws.Int64(r.to),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{
+				GroupId:     aws.String(cpSGID),
+				Description: aws.String(r.desc),
+			}},
+		}
+		_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       aws.String(cpSGID),
+			IpPermissions: []*ec2.IpPermission{perm},
+		}, accountID)
+		if err != nil {
+			if awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+				continue
+			}
+			return fmt.Errorf("authorize %s ingress on %s: %w", r.desc, cpSGID, err)
+		}
+	}
+	return nil
 }
 
 func lookupSGByName(sgp sgProvisioner, accountID, vpcID, name string) (string, error) {

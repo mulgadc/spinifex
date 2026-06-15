@@ -11,13 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRLC1_ELBv2DeleteIdempotentOnAbsent enforces Common Resource Lifecycle
-// Contract rule #1 (idempotent delete) across the ELBv2 surface: deleting an
-// absent resource is success, not a NotFound error. This mirrors AWS ELBv2
-// delete semantics and is required for tofu destroy to converge on retry.
-//
-// Every ELBv2 delete endpoint MUST have a case here. When a new delete
-// endpoint lands, add it; a missing case is an idempotency gap.
+// TestRLC1_ELBv2DeleteIdempotentOnAbsent enforces RLC rule #1 (idempotent delete):
+// deleting an absent ELBv2 resource is success, not NotFound. Every delete endpoint
+// must have a case here — a missing case is an idempotency gap.
 func TestRLC1_ELBv2DeleteIdempotentOnAbsent(t *testing.T) {
 	const arnBase = "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
 
@@ -57,10 +53,9 @@ func TestRLC1_ELBv2DeleteIdempotentOnAbsent(t *testing.T) {
 	}
 }
 
-// TestRLC2_ELBv2NoOrphanAfterDeleteLB enforces ADR-0002 §5 no-orphan
-// completeness: after DeleteLoadBalancer, no listener or rule owned by that LB
-// may survive in the store. Uses two listeners (each with a rule) so a
-// single-listener cascade can't pass by accident.
+// TestRLC2_ELBv2NoOrphanAfterDeleteLB enforces ADR-0002 §5 no-orphan completeness:
+// after DeleteLoadBalancer no listener or rule owned by the LB may remain. Two
+// listeners are used so a single-listener cascade can't pass by accident.
 func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -102,13 +97,9 @@ func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
 	require.Emptyf(t, rules, "ADR-0002 §5 no-orphan completeness: no rule owned by a deleted LB may remain")
 }
 
-// TestRLC3_ELBv2DeleteLBDoesNotBypassListenerCascade enforces ADR-0002 §5 no
-// store-bypass cascade: DeleteLoadBalancer must tear listeners (and their
-// rules) down through the shared deleteListenerCascade helper, never by
-// calling store.DeleteListener directly — a direct store delete orphans the
-// listener's rules. The store field is a concrete type with no injection seam,
-// so the contract is enforced structurally against the source rather than with
-// a runtime spy.
+// TestRLC3_ELBv2DeleteLBDoesNotBypassListenerCascade enforces ADR-0002 §5 no-store-bypass
+// cascade: DeleteLoadBalancer must use deleteListenerCascade, not store.DeleteListener
+// directly (a direct call orphans rules). Enforced structurally against source.
 func TestRLC3_ELBv2DeleteLBDoesNotBypassListenerCascade(t *testing.T) {
 	src, err := os.ReadFile("service_impl.go")
 	require.NoError(t, err)
@@ -148,10 +139,9 @@ func stripComments(src string) string {
 	return b.String()
 }
 
-// TestRLC4_ELBv2TGDeletableAfterLBTeardown enforces ADR-0002 §5 TG deletability
-// after LB teardown: create LB+listener+rule→TG, delete the LB, then the target
-// group must delete successfully rather than staying pinned as ResourceInUse by
-// an orphaned rule or stale listener default action.
+// TestRLC4_ELBv2TGDeletableAfterLBTeardown enforces ADR-0002 §5 TG deletability:
+// after LB+listener+rule teardown, the target group must not remain pinned as
+// ResourceInUse by an orphaned rule or stale listener default action.
 func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
 	svc := setupTestService(t)
 

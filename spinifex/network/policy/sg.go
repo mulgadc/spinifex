@@ -24,8 +24,7 @@ type SecurityGroupManager interface {
 	// EnsureSG sets the full ACL set; idempotent.
 	EnsureSG(ctx context.Context, sg SGSpec) error
 
-	// UpdateSG replaces the SG's ACL set. Identical to EnsureSG; kept
-	// distinct to mirror §8.1 of the parent plan.
+	// UpdateSG replaces the SG's ACL set. Semantically identical to EnsureSG.
 	UpdateSG(ctx context.Context, sg SGSpec) error
 
 	// DeleteSG clears every ACL on the SG's port group; the PG itself
@@ -60,11 +59,8 @@ func (m *sgManager) DeleteSG(ctx context.Context, groupID string) error {
 	return nil
 }
 
-// applyACLs atomically replaces the PG's ACL set with infra + tenant ACLs in
-// a single OVSDB transaction. The previous ClearACLs+AddACLs split left the
-// port group with zero ACLs between transactions, defaulting tenant LSP
-// traffic to drop on connectionless flows (ICMP) and on TCP SYNs that
-// don't match an existing conntrack entry.
+// applyACLs atomically replaces infra + tenant ACLs in one OVSDB transaction.
+// ClearACLs+AddACLs split left zero-ACL gaps that defaulted traffic to drop.
 func (m *sgManager) applyACLs(ctx context.Context, sg SGSpec) error {
 	pg := topology.SecurityGroupPortGroup(sg.GroupID)
 	specs := append(InfrastructureACLs(pg), RuleACLSpecs(pg, sg.IngressRules, sg.EgressRules)...)

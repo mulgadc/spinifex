@@ -28,9 +28,6 @@ type Status struct {
 	Running    bool   `json:"running"`
 }
 
-// (QEMU) query-block
-// {"return": [{"io-status": "ok", "device": "os", "locked": false, "removable": false, "inserted": {"iops_rd": 0, "detect_zeroes": "off", "image": {"virtual-size": 4294967296, "filename": "nbd://127.0.0.1:44801", "format": "raw"}, "iops_wr": 0, "ro": false, "node-name": "#block192", "backing_file_depth": 0, "drv": "raw", "iops": 0, "bps_wr": 0, "write_threshold": 0, "encrypted": false, "bps": 0, "bps_rd": 0, "cache": {"no-flush": false, "direct": false, "writeback": true}, "file": "nbd://127.0.0.1:44801"}, "qdev": "/machine/peripheral-anon/device[0]/virtio-backend", "type": "unknown"}, {"io-status": "ok", "device": "cloudinit", "locked": false, "removable": false, "inserted": {"iops_rd": 0, "detect_zeroes": "off", "image": {"virtual-size": 1048576, "filename": "nbd://127.0.0.1:42911", "format": "raw"}, "iops_wr": 0, "ro": true, "node-name": "#block312", "backing_file_depth": 0, "drv": "raw", "iops": 0, "bps_wr": 0, "write_threshold": 0, "encrypted": false, "bps": 0, "bps_rd": 0, "cache": {"no-flush": false, "direct": false, "writeback": true}, "file": "nbd://127.0.0.1:42911"}, "qdev": "/machine/peripheral-anon/device[3]/virtio-backend", "type": "unknown"}, {"io-status": "ok", "device": "ide1-cd0", "locked": false, "removable": true, "qdev": "/machine/unattached/device[24]", "tray_open": false, "type": "unknown"}, {"device": "floppy0", "locked": false, "removable": true, "qdev": "/machine/unattached/device[18]", "type": "unknown"}, {"device": "sd0", "locked": false, "removable": true, "type": "unknown"}]}
-
 type QMPQueryBlockResponse struct {
 	Return []BlockDevice `json:"return"`
 	Error  *QMPError     `json:"error,omitempty"`
@@ -119,7 +116,7 @@ func NewQMPClient(path string) (*QMPClient, error) {
 		return nil, err
 	}
 
-	// Set deadline for greeting — a hung QEMU would block forever without this
+	// Deadline prevents a hung QEMU from blocking forever.
 	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("set read deadline: %w", err)
@@ -143,9 +140,6 @@ func NewQMPClient(path string) (*QMPClient, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("clear read deadline: %w", err)
 	}
-
-	// enable capabilities
-	//client.Send(QMPCommand{Execute: "qmp_capabilities"})
 
 	return client, nil
 }

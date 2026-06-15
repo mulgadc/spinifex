@@ -294,10 +294,9 @@ func TestRevokeSecurityGroupIngress_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestRevokeSecurityGroupIngress_RuleNotFound: revoking a rule that doesn't
-// exist in the SG must return InvalidPermission.NotFound, matching AWS.
-// Terraform / SDK consumers branch on this code to distinguish "already
-// revoked, idempotent" from "operator typo".
+// TestRevokeSecurityGroupIngress_RuleNotFound asserts that revoking a missing
+// rule returns InvalidPermission.NotFound, matching AWS non-idempotent
+// revoke behavior.
 func TestRevokeSecurityGroupIngress_RuleNotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -347,11 +346,9 @@ func TestRevokeSecurityGroupEgress_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestRevokeSecurityGroupEgress_IPv6OnlyIsNoOp guards against regression of
-// the Terraform AWS provider's auto-revoke of the default ::/0 IPv6 egress
-// rule. Spinifex stores no IPv6 rules, so the call must succeed as a no-op
-// instead of returning InvalidParameterValue (which surfaces as bare
-// "UnknownError" to terraform and aborts every aws_security_group apply).
+// TestRevokeSecurityGroupEgress_IPv6OnlyIsNoOp asserts that revoking a
+// IPv6-only permission succeeds as a no-op; Terraform auto-revokes ::/0 IPv6
+// egress and must not abort when spinifex stores no IPv6 rules.
 func TestRevokeSecurityGroupEgress_IPv6OnlyIsNoOp(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -390,9 +387,8 @@ func TestRevokeSecurityGroupIngress_IPv6OnlyIsNoOp(t *testing.T) {
 	require.True(t, aws.BoolValue(out.Return))
 }
 
-// TestAuthorizeSecurityGroupEgress_IPv6Rejected guards the inverse: authorize
-// with IPv6 sources must still fail. Spinifex cannot enforce IPv6 — accepting
-// the call would persist a rule OVN can never program.
+// TestAuthorizeSecurityGroupEgress_IPv6Rejected asserts that authorizing
+// IPv6 sources is rejected; spinifex cannot program IPv6 OVN ACLs.
 func TestAuthorizeSecurityGroupEgress_IPv6Rejected(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -484,9 +480,8 @@ func TestIpPermissionsToSGRules_SourceSG(t *testing.T) {
 	assert.Equal(t, srcSG, rules[0].SourceSG)
 }
 
-// TestIpPermissionsToSGRules_IPv6OnlyAuthorize rejects an authorize call whose
-// only source is Ipv6Ranges. Spinifex's OVN ACL builder is IPv4-only — an IPv6
-// rule would persist as state OVN cannot program.
+// TestIpPermissionsToSGRules_IPv6OnlyAuthorize rejects authorize calls whose
+// only source is Ipv6Ranges (OVN ACL builder is IPv4-only).
 func TestIpPermissionsToSGRules_IPv6OnlyAuthorize(t *testing.T) {
 	allProto := "-1"
 	perms := []*ec2.IpPermission{
@@ -502,9 +497,8 @@ func TestIpPermissionsToSGRules_IPv6OnlyAuthorize(t *testing.T) {
 }
 
 // TestIpPermissionsToSGRules_IPv6OnlyRevoke tolerates IPv6-only permissions on
-// revoke (returns zero rules, no error). The Terraform AWS provider sends
-// exactly this shape when it auto-revokes the default ::/0 IPv6 egress rule
-// after every aws_security_group create.
+// revoke (returns zero rules, no error), matching Terraform's auto-revoke of
+// the default ::/0 IPv6 egress rule.
 func TestIpPermissionsToSGRules_IPv6OnlyRevoke(t *testing.T) {
 	allProto := "-1"
 	perms := []*ec2.IpPermission{
@@ -520,9 +514,7 @@ func TestIpPermissionsToSGRules_IPv6OnlyRevoke(t *testing.T) {
 }
 
 // TestIpPermissionsToSGRules_MixedV4V6Revoke keeps the v4 rule and drops the
-// v6 part on a mixed-source permission. Mixed perms are uncommon from real
-// tooling but worth covering — IPv6 must never silently corrupt the IPv4
-// parse output.
+// v6 part on a mixed-source permission on revoke.
 func TestIpPermissionsToSGRules_MixedV4V6Revoke(t *testing.T) {
 	proto := "tcp"
 	perms := []*ec2.IpPermission{
@@ -957,11 +949,8 @@ func TestDescribeSecurityGroups_FilterNoResults(t *testing.T) {
 
 // --- Phase 3: default SG lifecycle, dependency checks, quotas ---
 
-// findDefaultSGInVPC returns the default-SG ID a CreateVpc call provisions.
-// Walks the SG KV bucket and filters by IsDefault=true so a regression in
-// the discriminator field (rather than the GroupName="default" convention)
-// is caught — production code (FindDefaultSGForVPC, DeleteVpc cascade,
-// DeleteSecurityGroup default guard) keys off IsDefault, not GroupName.
+// findDefaultSGInVPC returns the default-SG ID for a VPC by filtering on
+// IsDefault=true (production code keys off IsDefault, not GroupName).
 func findDefaultSGInVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) string {
 	t.Helper()
 	keys, err := svc.sgKV.Keys()
@@ -1290,10 +1279,8 @@ func TestAuthorizeSecurityGroupEgress_RuleLimit(t *testing.T) {
 func TestCreateSecurityGroup_VpcdError_RecordPersists(t *testing.T) {
 	svc, _ := setupTestVPCServiceWithFailingVpcd(t, "forced-create-sg-error")
 
-	// Bootstrap a VPC with a working stub by swapping in a success responder
-	// for vpc.create-sg only during VPC creation. We do that by short-circuit:
-	// CreateVpc here will fail because it also publishes vpc.create-sg.
-	// Instead seed a VPC record directly so we can isolate the SG path.
+	// CreateVpc also publishes vpc.create-sg and would fail; seed the VPC
+	// record directly to isolate the SG path.
 	seedAvailableVPC(t, svc, "vpc-fail000000000")
 
 	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
@@ -1397,11 +1384,8 @@ func TestRevokeSecurityGroupIngress_VpcdError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "forced-revoke-error")
 }
 
-// TestAuthorizeSecurityGroupEgress_VpcdError_Propagated and the matching
-// Revoke variant lock Phase 7's sync contract on the egress path. Without
-// these, an OVN port-group failure during egress rule provisioning would be
-// silently swallowed — the KV record would gain the rule but OVN would never
-// enforce it.
+// TestAuthorizeSecurityGroupEgress_VpcdError_Propagated asserts that vpcd
+// failures on the egress path are surfaced to the caller.
 func TestAuthorizeSecurityGroupEgress_VpcdError_Propagated(t *testing.T) {
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -1444,9 +1428,8 @@ func TestRevokeSecurityGroupEgress_VpcdError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "forced-egress-revoke-error")
 }
 
-// TestFindDefaultSGForVPC_NoMatch: an account with SGs in vpcA must return ""
-// when asked for the default SG of vpcB. The "" return — not an error —
-// signals "no default exists; create one" to RunInstances' fallback path.
+// TestFindDefaultSGForVPC_NoMatch asserts that a lookup for vpcB's default SG
+// returns "" (not an error) when only vpcA has SGs.
 func TestFindDefaultSGForVPC_NoMatch(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcA := createTestVPC(t, svc, "10.0.0.0/16")
@@ -1457,10 +1440,8 @@ func TestFindDefaultSGForVPC_NoMatch(t *testing.T) {
 	assert.Equal(t, "", got, "no default SG → empty string, not error")
 }
 
-// TestFindDefaultSGForVPC_SkipsMalformedRecord: a corrupt SG entry under the
-// account prefix must be skipped, not crash the scan. Without this guard a
-// single bad write to the SG bucket would brick the default-SG lookup
-// cluster-wide.
+// TestFindDefaultSGForVPC_SkipsMalformedRecord asserts that a corrupt SG entry
+// is skipped rather than aborting the scan.
 func TestFindDefaultSGForVPC_SkipsMalformedRecord(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -1517,9 +1498,7 @@ func TestDeleteSecurityGroup_FailsClosedOnCorruptENI(t *testing.T) {
 
 // --- Helpers ---
 
-// seedAvailableVPC writes a VPC record directly to KV in "available" state,
-// bypassing CreateVpc (which itself depends on a working vpcd stub). Used to
-// isolate non-CreateVpc paths in failing-vpcd tests.
+// seedAvailableVPC writes a VPC record directly to KV, bypassing CreateVpc.
 func seedAvailableVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) {
 	t.Helper()
 	rec := VPCRecord{VpcId: vpcID, CidrBlock: "10.0.0.0/16", State: "available"}
@@ -1529,9 +1508,7 @@ func seedAvailableVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) {
 	require.NoError(t, err)
 }
 
-// failingDeleteResponder layers a failing handler for vpc.delete-sg on top of
-// the default success stubs (NATS picks the responder that subscribes to the
-// queue group; here neither uses a queue, so we drain the success sub first).
+// failingDeleteResponder overrides the vpc.delete-sg stub to return a failure.
 func failingDeleteResponder(t *testing.T, nc *nats.Conn, msg string) {
 	t.Helper()
 	testutil.OverrideVpcdStubResponse(nc, "vpc.delete-sg", []byte(`{"success":false,"error":"`+msg+`"}`))
@@ -1762,11 +1739,8 @@ func TestAuthorizeSecurityGroupIngress_AssignsRuleIDs(t *testing.T) {
 	}
 }
 
-// TestAuthorizeSecurityGroupIngress_RejectsContentDuplicate verifies the
-// key-based dedup still catches duplicate-content rules now that RuleId is in
-// the struct. The old slices.Contains check would have missed this because
-// freshly-generated IDs make two otherwise-identical rules unequal under Go
-// struct equality.
+// TestAuthorizeSecurityGroupIngress_RejectsContentDuplicate verifies key-based
+// dedup catches duplicate-content rules regardless of generated RuleId values.
 func TestAuthorizeSecurityGroupIngress_RejectsContentDuplicate(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")

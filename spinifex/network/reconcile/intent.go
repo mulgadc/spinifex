@@ -37,9 +37,8 @@ type IntentState struct {
 	DropGates   map[string]SubnetEgressIntent // per (subnet, dest=0.0.0.0/0) drop policy
 }
 
-// SubnetEgressIntent is a per-subnet default-route policy installed on the
-// VPC LR. Mirrors the publishIGWRouteEvent fan-out: one entry per (subnet,
-// destCIDR) that the source route table directs at an IGW or NAT gateway.
+// SubnetEgressIntent is a per-subnet default-route policy entry for the VPC LR,
+// keyed by (subnet, destCIDR) pointing at an IGW or NAT gateway.
 type SubnetEgressIntent struct {
 	VPCID    string
 	SubnetID string
@@ -51,9 +50,8 @@ func subnetEgressKey(subnetID string, prefix netip.Prefix) string {
 	return subnetID + "|" + prefix.String()
 }
 
-// LoadIntentFromKV assembles IntentState scoped to localAZ. Missing buckets
-// (first boot) are treated as empty. AZ filter: `vpc.AZ == "" || vpc.AZ ==
-// localAZ`. Children inherit the filter transitively via their parent VPC.
+// LoadIntentFromKV assembles IntentState for localAZ. Missing buckets are empty.
+// AZ filter: `vpc.AZ == "" || vpc.AZ == localAZ`; children inherit it transitively.
 func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ string) (IntentState, error) {
 	intent := IntentState{
 		VPCs:        make(map[string]topology.VPCSpec),
@@ -101,11 +99,8 @@ func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ str
 	return intent, nil
 }
 
-// loadSubnetEgressRoutes fans IGW/NATGW routes out over the subnets that
-// inherit them — explicit non-main associations plus, for the main RT,
-// subnets in the same VPC with no explicit non-main association. Mirrors
-// publishIGWRouteEvents/publishNatGatewayEvents so the reconcile pass
-// reaches the same per-subnet set as the runtime event path.
+// loadSubnetEgressRoutes fans IGW/NATGW routes over associated subnets (explicit
+// non-main + implicit main-RT subnets). Mirrors the runtime event-publisher fan-out.
 func loadSubnetEgressRoutes(
 	localVPCs map[string]struct{},
 	subnets map[string]topology.SubnetSpec,
@@ -184,11 +179,8 @@ func loadSubnetEgressRoutes(
 	}
 }
 
-// loadSubnetDropGates emits one drop intent per subnet whose VPC has an
-// attached IGW but which has no 0.0.0.0/0 reroute path (neither IGWRoutes
-// nor NATGWRoutes carry an entry for it). VPCs without an attached IGW
-// have no router-wide default static route, so lr_in_ip_routing already
-// kills the packet — no drop policy needed.
+// loadSubnetDropGates emits a drop intent for each subnet whose VPC has an IGW
+// but lacks a 0.0.0.0/0 reroute. VPCs without an IGW need no drop policy.
 func loadSubnetDropGates(
 	localVPCs map[string]struct{},
 	subnets map[string]topology.SubnetSpec,
@@ -491,14 +483,14 @@ func loadEIPs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[s
 		if rec.ENIId != "" {
 			spec.PortName = topology.Port(rec.ENIId)
 		}
+		// MAC drives distributed dnat_and_snat; empty falls back to centralised.
+		spec.MAC = rec.MacAddress
 		out[rec.PrivateIp] = spec
 	}
 	return nil
 }
 
-// loadRouteTables snapshots every route table whose VPC is local. Used by
-// loadNATGWs to fan out NATGW SNAT specs over associated subnets — mirrors the
-// event-driven publisher in handlers/ec2/routetable.
+// loadRouteTables snapshots every local-VPC route table.
 func loadRouteTables(js nats.JetStreamContext, localVPCs map[string]struct{}) ([]handlers_ec2_routetable.RouteTableRecord, error) {
 	kv, err := js.KeyValue(handlers_ec2_routetable.KVBucketRouteTables)
 	if err != nil {
@@ -535,17 +527,13 @@ func loadRouteTables(js nats.JetStreamContext, localVPCs map[string]struct{}) ([
 	return out, nil
 }
 
-// natgwSpecKey is the intent-map key for NATGWSpec. The reconciler needs one
-// spec per (natgwID, subnetCIDR) because a NATGW may serve multiple subnets
-// (route-table associations) and OVN stores one snat row per subnet CIDR.
+// natgwSpecKey is the intent-map key for NATGWSpec: one entry per (natgwID, subnetCIDR).
 func natgwSpecKey(natgwID, subnetCIDR string) string {
 	return natgwID + "|" + subnetCIDR
 }
 
-// loadNATGWs emits one NATGWSpec per (NATGW, associated subnet) pair. Mirrors
-// publishNatGatewayEventsForAssociation in handlers/ec2/routetable: a NATGW's
-// SNAT rule rewrites traffic from the *private* subnets routed through it,
-// not from the NATGW's own public subnet.
+// loadNATGWs emits one NATGWSpec per (NATGW, associated private subnet) pair.
+// SNAT rewrites traffic from the private subnets routed through the NATGW, not its home subnet.
 func loadNATGWs(
 	js nats.JetStreamContext,
 	localVPCs map[string]struct{},

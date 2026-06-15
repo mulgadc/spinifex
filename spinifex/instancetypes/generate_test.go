@@ -41,13 +41,19 @@ func TestIsSystemType(t *testing.T) {
 
 func TestGenerateSystemTypes(t *testing.T) {
 	types := generateSystemTypes("x86_64")
-	require.Len(t, types, 1, "should have exactly 1 system type (sys.micro)")
+	require.Len(t, types, 2, "should have 2 system types (sys.micro, sys.medium)")
 
 	sysMicro, ok := types["sys.micro"]
 	require.True(t, ok, "sys.micro must exist")
 	assert.Equal(t, int64(1), *sysMicro.VCpuInfo.DefaultVCpus, "sys.micro should have 1 vCPU")
 	assert.Equal(t, int64(128), *sysMicro.MemoryInfo.SizeInMiB, "sys.micro should have 128 MiB")
 	assert.False(t, *sysMicro.BurstablePerformanceSupported, "sys.micro should not be burstable")
+
+	sysMedium, ok := types["sys.medium"]
+	require.True(t, ok, "sys.medium (EKS control-plane VM) must exist")
+	assert.Equal(t, int64(2), *sysMedium.VCpuInfo.DefaultVCpus, "sys.medium should have 2 vCPU")
+	assert.Equal(t, int64(4096), *sysMedium.MemoryInfo.SizeInMiB, "sys.medium should have 4 GiB")
+	assert.False(t, *sysMedium.BurstablePerformanceSupported, "sys.medium should not be burstable")
 }
 
 func TestDetectAndGenerate_IncludesSystemTypes(t *testing.T) {

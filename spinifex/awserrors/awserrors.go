@@ -221,9 +221,7 @@ var (
 	ErrorInvalidOptionConflict                                 = "InvalidOption.Conflict"
 	ErrorInvalidPaginationToken                                = "InvalidPaginationToken"
 	ErrorInvalidParameter                                      = "InvalidParameter"
-	// ACM (AWS JSON 1.1). Suffix-less; the JSON error envelope appends
-	// "Exception" on the wire (InvalidArnException), matching aws-sdk-go acm
-	// ErrCode* values. Not-found reuses the shared ErrorResourceNotFound.
+	// ACM error: the JSON envelope appends "Exception" on the wire; not-found reuses ErrorResourceNotFound.
 	ErrorACMInvalidArn                                        = "InvalidArn"
 	ErrorInvalidParameterCombination                          = "InvalidParameterCombination"
 	ErrorInvalidParameterDependency                           = "InvalidParameterDependency"
@@ -372,9 +370,7 @@ var (
 	ErrorResourceCountExceeded                                = "ResourceCountExceeded"
 	ErrorResourceCountLimitExceeded                           = "ResourceCountLimitExceeded"
 	ErrorResourceLimitExceeded                                = "ResourceLimitExceeded"
-	// ErrorResourceNotFound ("ResourceNotFound") is the ACM not-found code. EKS
-	// must use ErrorEKSResourceNotFound ("ResourceNotFoundException", below) —
-	// the restjson code the aws eks client expects. Do not cross-wire the two.
+	// ErrorResourceNotFound is the ACM not-found code. EKS must use ErrorEKSResourceNotFound — do not cross-wire.
 	ErrorResourceNotFound                               = "ResourceNotFound"
 	ErrorEKSResourceInUse                               = "ResourceInUseException"
 	ErrorEKSResourceNotFound                            = "ResourceNotFoundException"
@@ -495,11 +491,8 @@ func ValidErrorCode(code string) string {
 	return ErrorServerInternal
 }
 
-// IsErrorCode reports whether err carries the named AWS error code. Service
-// handlers return these codes as plain strings (errors.New(code)), commonly
-// wrapped with %w by orchestration callers, so the match is a substring test
-// against err.Error() rather than equality. Use it to classify a delete error
-// as idempotent (already-gone) or retryable (still-in-use) in teardown paths.
+// IsErrorCode reports whether err carries the named AWS error code.
+// Uses substring matching because handlers return codes as plain strings, sometimes wrapped with %w.
 func IsErrorCode(err error, code string) bool {
 	return err != nil && strings.Contains(err.Error(), code)
 }
@@ -576,7 +569,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInsufficientVolumeCapacity:                            {HTTPCode: 503, Message: "There is not enough capacity to fulfill your EBS volume provision request. You can try to provision a different volume type, EBS volume in a different availability zone, or you can wait for additional capacity to become available."},
 	ErrorInterfaceInUseByTrafficMirrorSession:                  {HTTPCode: 409, Message: "The Traffic Mirror source that you are trying to create uses an interface that is already associated with a session. An interface can only be associated with a session, or with a target, but not both."},
 	ErrorInterfaceInUseByTrafficMirrorTarget:                   {HTTPCode: 409, Message: "The Traffic Mirror source that you are trying to create uses an interface that is already associated with a target. An interface can only be associated with a session, or with a target, but not both. If the interface is associated with a target, it cannot be associated with another target."},
-	ErrorInternalError:                                         {HTTPCode: 500, Message: "An internal error has occurred. Retry your request, but if the problem persists, contact us with details by posting a message on AWS re:Post."},
+	ErrorInternalError:                                         {HTTPCode: 500, Message: "An internal error has occurred. Retry your request, but if the problem persists, contact us with details. "},
 	ErrorInternalFailure:                                       {HTTPCode: 404, Message: "The request processing has failed because of an unknown error, exception, or failure."},
 	ErrorInternetGatewayLimitExceeded:                          {HTTPCode: 400, Message: "You've reached the limit on the number of internet gateways that you can create. For more information, see Amazon VPC quotas."},
 	ErrorInvalidAMIAttributeItemValue:                          {HTTPCode: 400, Message: "The value of an item added to, or removed from, an image attribute is not valid. If you are specifying a userId, check that it is in the form of an AWS account ID, without hyphens."},

@@ -5,9 +5,7 @@ import (
 	"os/exec"
 )
 
-// sudoCommand is the runtime implementation. Kept private so tests in other
-// packages can't reassign it directly — reassign linter rule. Use
-// SetSudoCommandForTest from tests.
+// sudoCommand is the private runtime implementation; use SetSudoCommandForTest in tests.
 var sudoCommand = func(name string, args ...string) *exec.Cmd {
 	if os.Getuid() == 0 {
 		return exec.Command(name, args...)
@@ -22,11 +20,8 @@ func SudoCommand(name string, args ...string) *exec.Cmd {
 	return sudoCommand(name, args...)
 }
 
-// SetSudoCommandForTest swaps the underlying command builder for the duration
-// of a test, returning a restore func that callers pass to t.Cleanup. The
-// indirection prevents cross-package reassignment of an exported var, which
-// the reassign linter flags. Running the live binary against the dev host's
-// OVS would mutate external_ids on the running cluster, so tests must stub.
+// SetSudoCommandForTest swaps the command builder for a test, returning a restore func for t.Cleanup.
+// Tests must stub this — running against real OVS would mutate the live cluster.
 func SetSudoCommandForTest(stub func(name string, args ...string) *exec.Cmd) (restore func()) {
 	orig := sudoCommand
 	sudoCommand = stub

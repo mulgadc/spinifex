@@ -127,12 +127,8 @@ func TestIPSecCertPaths(t *testing.T) {
 	assert.Equal(t, "/etc/spinifex/ipsec/peer.key", keyPath)
 }
 
-// TestInstallCAIntoCharonTrustStore_TriggersRereadCAs locks the fix for the
-// race where openvswitch-ipsec started before admin init's CA install: every
-// IKE_AUTH failed with `no trusted RSA public key found for '<peer>'` because
-// charon had scanned cacerts before the symlink was placed. The trust-store
-// installer must trigger `ipsec rereadcacerts` so an already-running charon
-// picks up the CA without a restart.
+// TestInstallCAIntoCharonTrustStore_TriggersRereadCAs ensures the installer
+// calls `ipsec rereadcacerts` so an already-running charon picks up the CA.
 func TestInstallCAIntoCharonTrustStore_TriggersRereadCAs(t *testing.T) {
 	origTrustDir := charonCATrustDir
 	charonCATrustDir = t.TempDir()
@@ -160,9 +156,7 @@ func TestInstallCAIntoCharonTrustStore_TriggersRereadCAs(t *testing.T) {
 }
 
 // TestInstallCAIntoCharonTrustStore_SwallowsRereadError verifies that a failed
-// rereadcacerts (e.g. charon not running, ipsec binary missing on a fresh
-// install) does not break admin init. The CA symlink must still be in place so
-// a later charon start picks it up via the normal cacerts scan.
+// rereadcacerts (charon not running) doesn't abort admin init.
 func TestInstallCAIntoCharonTrustStore_SwallowsRereadError(t *testing.T) {
 	origTrustDir := charonCATrustDir
 	charonCATrustDir = t.TempDir()

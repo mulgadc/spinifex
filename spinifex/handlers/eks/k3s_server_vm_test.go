@@ -53,6 +53,7 @@ func (f *fakeK3sVPC) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInp
 
 type fakeK3sInst struct {
 	launchCalls    []*sysinstance.SystemInstanceInput
+	launchNodes    []string // TargetNodeID per launch (parallel to launchCalls)
 	terminateCalls []string
 
 	launchOut    *sysinstance.SystemInstanceOutput
@@ -63,7 +64,12 @@ type fakeK3sInst struct {
 var _ k3sInstanceLauncher = (*fakeK3sInst)(nil)
 
 func (f *fakeK3sInst) LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+	return f.LaunchSystemInstanceOnNode("", input)
+}
+
+func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
 	f.launchCalls = append(f.launchCalls, input)
+	f.launchNodes = append(f.launchNodes, nodeID)
 	if f.launchErr != nil {
 		return nil, f.launchErr
 	}
@@ -109,7 +115,8 @@ func (f *fakeK3sAMI) DescribeImages(input *ec2.DescribeImagesInput, _ string) (*
 
 func validK3sInput() K3sServerInput {
 	return K3sServerInput{
-		AccountID:         "111122223333",
+		AccountID:         "000000000000",
+		ClusterAccountID:  "111122223333",
 		ClusterName:       "alpha",
 		Region:            "us-east-1",
 		SubnetID:          "subnet-aaa",
@@ -118,9 +125,11 @@ func validK3sInput() K3sServerInput {
 		OIDCIssuer:        "https://oidc.spinifex.local/clusters/111122223333/alpha",
 		OIDCPrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\nFAKEKEY\n-----END PRIVATE KEY-----\n",
 		OIDCPublicKeyPEM:  "-----BEGIN PUBLIC KEY-----\nFAKEPUB\n-----END PUBLIC KEY-----\n",
-		NATSURL:           "nats://localhost:4222",
-		NATSToken:         "s3cr3t-token",
-		NATSCACert:        "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
+		GatewayURL:        "https://10.15.8.1:9999",
+		AccessKey:         "AKIAEXAMPLE",
+		SecretKey:         "s3cr3t-key",
+		GatewayCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
+		JoinToken:         "clustertok-deadbeef",
 	}
 }
 
@@ -135,6 +144,7 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		in   K3sServerInput
 	}{
 		{"empty AccountID", mk(func(in *K3sServerInput) { in.AccountID = "" })},
+		{"empty ClusterAccountID", mk(func(in *K3sServerInput) { in.ClusterAccountID = "" })},
 		{"empty ClusterName", mk(func(in *K3sServerInput) { in.ClusterName = "" })},
 		{"empty SubnetID", mk(func(in *K3sServerInput) { in.SubnetID = "" })},
 		{"empty ControlPlaneSGID", mk(func(in *K3sServerInput) { in.ControlPlaneSGID = "" })},
@@ -142,9 +152,10 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		{"empty OIDCIssuer", mk(func(in *K3sServerInput) { in.OIDCIssuer = "" })},
 		{"empty OIDCPrivateKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPrivateKeyPEM = "   \n " })},
 		{"empty OIDCPublicKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPublicKeyPEM = "   \n " })},
-		{"empty NATSURL", mk(func(in *K3sServerInput) { in.NATSURL = "" })},
-		{"empty NATSToken", mk(func(in *K3sServerInput) { in.NATSToken = "" })},
-		{"empty NATSCACert", mk(func(in *K3sServerInput) { in.NATSCACert = "  \n" })},
+		{"empty GatewayURL", mk(func(in *K3sServerInput) { in.GatewayURL = "" })},
+		{"empty AccessKey", mk(func(in *K3sServerInput) { in.AccessKey = "" })},
+		{"empty SecretKey", mk(func(in *K3sServerInput) { in.SecretKey = "" })},
+		{"empty GatewayCACert", mk(func(in *K3sServerInput) { in.GatewayCACert = "  \n" })},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -226,7 +237,7 @@ func TestLaunchK3sServerVM_HappyPath(t *testing.T) {
 	assert.Equal(t, tags.ManagedByEKS, runIn.ManagedBy)
 	assert.Equal(t, "ami-eks-server-001", runIn.ImageID)
 	assert.Equal(t, defaultK3sServerInstanceType, runIn.InstanceType)
-	assert.Equal(t, "111122223333", runIn.AccountID)
+	assert.Equal(t, "000000000000", runIn.AccountID, "VM launches under the infra (system) account")
 	assert.Equal(t, "eni-aaa111", runIn.ENIID)
 	assert.Equal(t, "10.0.1.42", runIn.ENIIP)
 
@@ -242,6 +253,38 @@ func TestLaunchK3sServerVM_HonorsCustomInstanceType(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, inst.launchCalls, 1)
 	assert.Equal(t, "t3.large", inst.launchCalls[0].InstanceType)
+}
+
+func TestLaunchK3sServerVM_DefaultsToSystemInstanceType(t *testing.T) {
+	// The control-plane VM defaults to a sys.* type so the daemon registers the
+	// node-targeted system.LaunchInstance subject the HA spread path depends on.
+	assert.Equal(t, "sys.medium", defaultK3sServerInstanceType)
+
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+	assert.Equal(t, "sys.medium", inst.launchCalls[0].InstanceType)
+}
+
+func TestLaunchK3sServerVM_NoTargetNodeLaunchesLocal(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
+	require.NoError(t, err)
+	require.Len(t, inst.launchNodes, 1)
+	assert.Empty(t, inst.launchNodes[0], "empty TargetNodeID launches on the local node")
+}
+
+func TestLaunchK3sServerVM_TargetNodeIDRoutedToLauncher(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+	in := validK3sInput()
+	in.TargetNodeID = "node-c"
+
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.NoError(t, err)
+	require.Len(t, inst.launchNodes, 1)
+	assert.Equal(t, "node-c", inst.launchNodes[0], "TargetNodeID pins placement to a specific host")
 }
 
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
@@ -269,10 +312,17 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// The eks-node-role first-boot selector keys off this to start control-plane
 	// services; without it the unified AMI boots into no role.
 	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server")
-	assert.Contains(t, udata, "SPINIFEX_NATS_URL=nats://localhost:4222")
-	assert.Contains(t, udata, "SPINIFEX_NATS_TOKEN=s3cr3t-token")
-	assert.Contains(t, udata, "SPINIFEX_NATS_CA="+k3sNATSCAPath)
+	assert.Contains(t, udata, "EKS_GATEWAY_URL=https://10.15.8.1:9999")
+	assert.Contains(t, udata, "EKS_GATEWAY_CA="+k3sGatewayCAPath)
+	assert.Contains(t, udata, "EKS_ACCESS_KEY=AKIAEXAMPLE")
+	assert.Contains(t, udata, "EKS_SECRET_KEY=s3cr3t-key")
+	assert.Contains(t, udata, "EKS_REGION=us-east-1")
+	// EKS_ACCOUNT_ID is the cluster-OWNER account (ClusterAccountID), not the
+	// infra account the VM is launched under — the on-VM agents namespace their
+	// bootstrap publish / state report / add-on fetch by it, so it must reach the
+	// customer cluster, not the system account that owns the CP VPC + VM.
 	assert.Contains(t, udata, "EKS_ACCOUNT_ID=111122223333")
+	assert.NotContains(t, udata, "EKS_ACCOUNT_ID=000000000000")
 	assert.Contains(t, udata, "EKS_CLUSTER_NAME=alpha")
 	assert.Contains(t, udata, "EKS_NLB_ENDPOINT=https://eks-alpha-lb-001.us-east-1.elb.spinifex.local:443")
 	assert.Contains(t, udata, "EKS_OIDC_ISSUER=https://oidc.spinifex.local/clusters/111122223333/alpha")
@@ -287,6 +337,17 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "FAKEPUB")
 
 	assert.Contains(t, udata, "path: "+k3sConfigPath)
+	// The control plane is tainted so user workloads never schedule on it (EKS
+	// parity, and it keeps image pulls off the etcd disk).
+	assert.Contains(t, udata, "node-taint:")
+	assert.Contains(t, udata, "  - CriticalAddonsOnly=true:NoExecute")
+	// Parity default (BuiltinIngress=false): K3s' bundled traefik + servicelb are
+	// disabled; Service type=LoadBalancer / Ingress are the AWS LB Controller's job.
+	// With built-in ingress off there is nothing to defer, so EKS_DEFER_TRAEFIK=0.
+	assert.Contains(t, udata, "disable:")
+	assert.Contains(t, udata, "  - traefik")
+	assert.Contains(t, udata, "  - servicelb")
+	assert.Contains(t, udata, "EKS_DEFER_TRAEFIK=0")
 	assert.Contains(t, udata, "tls-san:")
 	assert.Contains(t, udata, "  - eks-alpha-lb-001.us-east-1.elb.spinifex.local")
 	// service-account-key-file must point at the PUBLIC key; the signing key
@@ -297,10 +358,126 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.NotContains(t, udata, "service-account-key-file="+k3sOIDCSigningKeyPath)
 	assert.Contains(t, udata, "service-account-issuer=https://oidc.spinifex.local/clusters/111122223333/alpha")
 	assert.Contains(t, udata, "api-audiences=sts.amazonaws.com")
+	// IAM bearer-token auth: the generated config overrides the AMI skel, so the
+	// token-webhook arg MUST be emitted here or `aws eks get-token` 401s with the
+	// webhook never invoked.
+	assert.Contains(t, udata, "authentication-token-webhook-config-file="+k3sTokenWebhookKubeconfigPath)
 
-	assert.Contains(t, udata, "path: "+k3sNATSCAPath)
+	assert.Contains(t, udata, "path: "+k3sGatewayCAPath)
 	assert.Contains(t, udata, "-----BEGIN CERTIFICATE-----")
 	assert.Contains(t, udata, "FAKECA")
+
+	// IMDS on-link route delivered out-of-band (Alpine's eni renderer can't emit
+	// the gateway-less route in network-config). It rides this payload's own
+	// write_files/runcmd, enabled via the OpenRC local service.
+	assert.Contains(t, udata, "path: /etc/local.d/imds-onlink-route.start")
+	assert.Contains(t, udata, "ip route show default")
+	assert.Contains(t, udata, `ip route replace 169.254.169.254/32 dev "$dev" scope link`)
+	assert.Contains(t, udata, "runcmd:")
+	assert.Contains(t, udata, "[ rc-update, add, local, default ]")
+
+	// Exactly one write_files / runcmd key — a second would collide and silently
+	// drop a block under yaml.safe_load (last key wins).
+	assert.Equal(t, 1, strings.Count(udata, "\nwrite_files:"))
+	assert.Equal(t, 1, strings.Count(udata, "\nruncmd:"))
+}
+
+func TestLaunchK3sServerVM_BuiltinIngressOptInDefersTraefik(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	in := validK3sInput()
+	in.BuiltinIngress = true
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// Opted in: traefik stays ENABLED in config so k3s writes traefik.yaml, but
+	// it is deferred — k3s.initd stages a .skip marker and the state-reporter
+	// removes it once the apiserver is stable, gated by EKS_DEFER_TRAEFIK=1.
+	// Disabling traefik would leave no manifest to un-skip, so the config must
+	// carry no disable block at all. servicelb is lazy and likewise enabled.
+	assert.NotContains(t, udata, "disable:")
+	assert.NotContains(t, udata, "  - traefik")
+	assert.NotContains(t, udata, "  - servicelb")
+	assert.Contains(t, udata, "EKS_DEFER_TRAEFIK=1")
+}
+
+func TestLaunchK3sServerVM_UsesEmbeddedEtcd(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// cluster-init selects the embedded etcd datastore (not SQLite/kine);
+	// etcd-expose-metrics surfaces wal_fsync/backend_commit on 127.0.0.1:2381.
+	assert.Contains(t, udata, "cluster-init: true")
+	assert.Contains(t, udata, "etcd-expose-metrics: true")
+}
+
+func TestLaunchK3sServerVM_FirstServerTokenNoServerURL(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	in := validK3sInput()
+	in.JoinToken = "sharedtok123"
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// First server: cluster-inits the datastore, carries the shared token so
+	// servers 2..N and workers join, and boots the full server role.
+	assert.Contains(t, udata, "cluster-init: true")
+	assert.Contains(t, udata, "token: sharedtok123")
+	assert.NotContains(t, udata, "server: https://")
+	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server\n")
+}
+
+func TestLaunchK3sServerVM_JoinServerRendersServerAndJoinRole(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	in := validK3sInput()
+	in.JoinToken = "sharedtok123"
+	in.ServerURL = "https://10.0.1.7:6443"
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// Join server: registers at the first server's endpoint with the shared
+	// token, WITHOUT cluster-init, and boots the join role (no bootstrap publish).
+	assert.Contains(t, udata, "server: https://10.0.1.7:6443")
+	assert.Contains(t, udata, "token: sharedtok123")
+	assert.NotContains(t, udata, "cluster-init: true")
+	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server-join")
+	assert.NotContains(t, udata, "SPINIFEX_K3S_ROLE=server\n")
+}
+
+func TestLaunchK3sServerVM_JoinServerRequiresToken(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	in := validK3sInput()
+	in.JoinToken = ""
+	in.ServerURL = "https://10.0.1.7:6443" // ServerURL set, token cleared
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JoinToken")
+	assert.Empty(t, inst.launchCalls)
+}
+
+func TestGenerateK3sClusterToken_UniqueHex(t *testing.T) {
+	a, err := GenerateK3sClusterToken()
+	require.NoError(t, err)
+	b, err := GenerateK3sClusterToken()
+	require.NoError(t, err)
+	assert.Len(t, a, 64) // 32 bytes hex
+	assert.NotEqual(t, a, b)
+}
+
+func TestK3sServerJoinURL(t *testing.T) {
+	assert.Equal(t, "https://10.0.1.7:6443", k3sServerJoinURL("10.0.1.7"))
 }
 
 func TestLaunchK3sServerVM_RunInstancesEmptyReservationRollsBack(t *testing.T) {

@@ -1,5 +1,4 @@
-// Package gateway provides the AWS Gateway for the Spinifex platform.
-// It handles the incoming requests from the AWS SDK and delegates to the appropriate gateway functions (which calls the NATS handlers).
+// Package gateway provides the AWS-compatible API gateway for the Spinifex platform.
 package gateway
 
 import (
@@ -30,15 +29,12 @@ import (
 )
 
 // EC2Handler processes parsed query args and returns XML response bytes.
-// The action parameter is the EC2 API action name, passed from the map key.
-// accountID is the caller's AWS account ID extracted from SigV4 auth context.
-// r is the original HTTP request; handlers that need to perform additional
-// resource-scoped policy checks (e.g. iam:PassRole) use it via
-// gw.checkPolicyResource. Most handlers ignore it.
+// r is included for handlers that call gw.checkPolicyResource (e.g. iam:PassRole);
+// most handlers ignore it.
 type EC2Handler func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error)
 
-// ec2Handler creates a type-safe EC2Handler that allocates the typed input struct,
-// parses query params into it, calls the handler, and marshals the output to XML.
+// ec2Handler creates a type-safe EC2Handler: allocates the input struct,
+// parses query params, calls the handler, and marshals output to XML.
 func ec2Handler[In any](handler func(*In, *GatewayConfig, string) (any, error)) EC2Handler {
 	return func(action string, q map[string]string, gw *GatewayConfig, accountID string, _ *http.Request) ([]byte, error) {
 		input := new(In)
@@ -61,9 +57,8 @@ func ec2Handler[In any](handler func(*In, *GatewayConfig, string) (any, error)) 
 	}
 }
 
-// ec2HandlerWithReq is the variant of ec2Handler for handlers that need the
-// original *http.Request — e.g. RunInstances calls gw.checkPolicyResource
-// to enforce iam:PassRole on the role ARN inside the supplied instance profile.
+// ec2HandlerWithReq is ec2Handler for actions that need the original *http.Request,
+// e.g. RunInstances which enforces iam:PassRole on the supplied instance profile ARN.
 func ec2HandlerWithReq[In any](handler func(*In, *GatewayConfig, string, *http.Request) (any, error)) EC2Handler {
 	return func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
 		input := new(In)
@@ -159,7 +154,7 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_key.DescribeKeyPairs(input, gw.NATSConn, accountID)
 	}),
 	"ImportKeyPair": func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
-		// Workaround: parser leaves Base64 padding URL-encoded
+		// Parser leaves Base64 padding URL-encoded; decode it before dispatch.
 		if strings.HasSuffix(q["PublicKeyMaterial"], "%3D%3D") {
 			q["PublicKeyMaterial"] = strings.Replace(q["PublicKeyMaterial"], "%3D%3D", "==", 1)
 		}
@@ -421,7 +416,7 @@ var ec2Actions = map[string]EC2Handler{
 	}),
 }
 
-// ec2LocalActions are actions that don't require a NATS connection.
+// ec2LocalActions are actions that don't require NATS.
 var ec2LocalActions = map[string]bool{
 	"DescribeRegions":           true,
 	"DescribeAvailabilityZones": true,
@@ -452,7 +447,6 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Extract account ID from auth context
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("EC2_Request: no account ID in auth context")

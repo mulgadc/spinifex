@@ -35,11 +35,8 @@ const (
 	KVBucketVNICounterVersion = 1
 )
 
-// VPCRecord represents a stored VPC. AZ stamps the local availability zone
-// at create time; the network/reconcile package filters its intent set by
-// matching `vpc.AZ == localAZ` (with the legacy rule that empty matches
-// every AZ for pre-Phase-2.2 records). New records always populate AZ from
-// the daemon's config.AZ.
+// VPCRecord represents a stored VPC. AZ is stamped at create time; empty AZ
+// is a legacy value that matches every AZ in the reconciler.
 type VPCRecord struct {
 	VpcId                            string            `json:"vpc_id"`
 	CidrBlock                        string            `json:"cidr_block"`
@@ -994,10 +991,8 @@ type BootstrapIDs struct {
 	SubnetId string
 }
 
-// EnsureDefaultVPC creates a default VPC and subnet if none exists for the given account.
-// This matches AWS behavior where a default VPC is present on account creation.
-// Safe to call multiple times — no-ops if a default VPC already exists.
-// Returns the default VPC info (whether newly created or pre-existing).
+// EnsureDefaultVPC creates a default VPC and subnet if none exists for the
+// account. Safe to call multiple times — no-ops if already present.
 func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...BootstrapIDs) (*DefaultVPCInfo, error) {
 	if s.vpcKV == nil {
 		return nil, nil // No persistence, skip
@@ -1136,16 +1131,9 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 	}, nil
 }
 
-// createMainRouteTable writes a main route table record directly to the route table KV bucket.
-// This avoids a circular import (routetable package imports vpc package for validation).
-//
-// Idempotency: when concurrent daemons race EnsureDefaultVPC for the same
-// bootstrap-pinned VPC, both would otherwise mint a fresh random rtb-ID
-// and Put it, leaving the KV with two IsMain=true records for one VPC.
-// effectiveRouteTable then resolves the subnet's RT non-deterministically,
-// and CreateRoute's post-write gate recompute can publish
-// vpc.gate-subnet-egress against the orphan (route-less) main RT, installing
-// a Priority-1100 DROP that kills egress on the default subnet.
+// createMainRouteTable writes a main route table record directly to the route
+// table KV bucket. Avoids a circular import; idempotent via findMainRouteTableID
+// so concurrent EnsureDefaultVPC calls do not mint duplicate main RTs.
 func (s *VPCServiceImpl) createMainRouteTable(accountID, vpcID, vpcCidr string) error {
 	if existing, err := s.findMainRouteTableID(accountID, vpcID); err != nil {
 		return fmt.Errorf("check existing main route table: %w", err)

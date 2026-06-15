@@ -1,41 +1,52 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { AwsCredentials } from "./auth"
+import type { SessionCredentials } from "./auth"
 
-const validCreds: AwsCredentials = {
-  accessKeyId: "AKIAIOSFODNN7EXAMPLE",
-  secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+const STORAGE_KEY = "spinifex:v2:aws-session"
+
+function sessionCreds(
+  overrides: Partial<SessionCredentials> = {},
+): SessionCredentials {
+  return {
+    accessKeyId: "ASIAIOSFODNN7EXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    sessionToken: "FwoGZXIvYXdzEBYaD-session-token",
+    expiration: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    ...overrides,
+  }
 }
 
 let getCredentials: typeof import("./auth").getCredentials
-let setCredentials: typeof import("./auth").setCredentials
+let setSessionCredentials: typeof import("./auth").setSessionCredentials
 let clearCredentials: typeof import("./auth").clearCredentials
 
 async function loadAuth() {
   vi.resetModules()
   const auth = await import("./auth")
   getCredentials = auth.getCredentials
-  setCredentials = auth.setCredentials
+  setSessionCredentials = auth.setSessionCredentials
   clearCredentials = auth.clearCredentials
 }
 
-describe("setCredentials", () => {
+describe("setSessionCredentials", () => {
   beforeEach(loadAuth)
   afterEach(() => {
     localStorage.clear()
   })
 
-  it("stores credentials in localStorage", () => {
-    setCredentials(validCreds)
-    const stored = localStorage.getItem("spinifex:v1:aws-credentials")
-    expect(JSON.parse(stored ?? "")).toStrictEqual(validCreds)
+  it("stores session credentials in localStorage", () => {
+    const creds = sessionCreds()
+    setSessionCredentials(creds)
+    const stored = localStorage.getItem(STORAGE_KEY)
+    expect(JSON.parse(stored ?? "")).toStrictEqual(creds)
   })
 
   it("caches credentials in memory", () => {
-    setCredentials(validCreds)
+    const creds = sessionCreds()
+    setSessionCredentials(creds)
     // Clear localStorage to prove it reads from cache
     localStorage.clear()
-    expect(getCredentials()).toStrictEqual(validCreds)
+    expect(getCredentials()).toStrictEqual(creds)
   })
 })
 
@@ -49,40 +60,49 @@ describe("getCredentials", () => {
     expect(getCredentials()).toBeNull()
   })
 
-  it("reads from localStorage on first call", () => {
-    localStorage.setItem(
-      "spinifex:v1:aws-credentials",
-      JSON.stringify(validCreds),
-    )
-    expect(getCredentials()).toStrictEqual(validCreds)
+  it("round-trips sessionToken and expiration from localStorage", () => {
+    const creds = sessionCreds()
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(creds))
+    expect(getCredentials()).toStrictEqual(creds)
   })
 
   it("returns cached value on subsequent calls", () => {
-    setCredentials(validCreds)
+    const creds = sessionCreds()
+    setSessionCredentials(creds)
     localStorage.clear()
-    // Should still return from cache
-    expect(getCredentials()).toStrictEqual(validCreds)
-    expect(getCredentials()).toStrictEqual(validCreds)
+    expect(getCredentials()).toStrictEqual(creds)
+    expect(getCredentials()).toStrictEqual(creds)
   })
 
   it("returns null for invalid JSON in localStorage", () => {
-    localStorage.setItem("spinifex:v1:aws-credentials", "not-json")
+    localStorage.setItem(STORAGE_KEY, "not-json")
     expect(getCredentials()).toBeNull()
   })
 
-  it("returns null when stored data fails schema validation", () => {
+  it("returns null when the session token is missing", () => {
     localStorage.setItem(
-      "spinifex:v1:aws-credentials",
-      JSON.stringify({ accessKeyId: "short", secretAccessKey: "" }),
+      STORAGE_KEY,
+      JSON.stringify({
+        accessKeyId: "ASIAIOSFODNN7EXAMPLE",
+        secretAccessKey: "secret",
+        expiration: new Date(Date.now() + 60_000).toISOString(),
+      }),
     )
     expect(getCredentials()).toBeNull()
   })
 
-  it("returns null when stored object is missing fields", () => {
-    localStorage.setItem(
-      "spinifex:v1:aws-credentials",
-      JSON.stringify({ accessKeyId: "AKIAIOSFODNN7EXAMPLE" }),
-    )
+  it("returns null and clears storage when the session has expired", () => {
+    const expired = sessionCreds({
+      expiration: new Date(Date.now() - 1000).toISOString(),
+    })
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(expired))
+    expect(getCredentials()).toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
+  })
+
+  it("returns null when the expiration is unparseable", () => {
+    const bad = sessionCreds({ expiration: "not-a-date" })
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(bad))
     expect(getCredentials()).toBeNull()
   })
 })
@@ -94,13 +114,13 @@ describe("clearCredentials", () => {
   })
 
   it("removes credentials from localStorage", () => {
-    setCredentials(validCreds)
+    setSessionCredentials(sessionCreds())
     clearCredentials()
-    expect(localStorage.getItem("spinifex:v1:aws-credentials")).toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
   })
 
   it("clears the in-memory cache", () => {
-    setCredentials(validCreds)
+    setSessionCredentials(sessionCreds())
     clearCredentials()
     expect(getCredentials()).toBeNull()
   })

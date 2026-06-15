@@ -1,0 +1,13 @@
+[Unit]
+Description=Spinifex resource-bounded slice (host ceiling)
+Before=slices.target
+
+[Slice]
+# RG-1: no CPUWeight — slice roots are siblings; capping below the default would
+# let user.slice out-prioritize the VM fleet. Operator CPU priority lives on
+# system.slice (system.slice.d/spinifex-reserve.conf).
+# RG-1/RG-5: throttle+reclaim at High, hard wall at Max (% of physical RAM).
+MemoryHigh=80%
+MemoryMax=90%
+# RG-5: spill to the full swap device before the MemoryMax wall; matched to swap size.
+MemorySwapMax=8G

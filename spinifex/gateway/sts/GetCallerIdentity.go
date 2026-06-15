@@ -12,25 +12,23 @@ import (
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
-// Principal-type values mirror gateway.principalType{User,AssumedRole,Root}.
-// Re-declared here to keep the gateway/sts sub-package free of an import cycle
-// back to the parent gateway package; the dispatcher passes the string through.
+// Principal-type values mirror gateway.principalType{User,AssumedRole,Root},
+// re-declared here to avoid an import cycle back to the parent gateway package.
 const (
 	PrincipalTypeUser        = "user"
 	PrincipalTypeAssumedRole = "assumed-role"
 	PrincipalTypeRoot        = "root"
 )
 
-// GetCallerIdentity resolves the caller's UserId and returns the AWS-shaped
-// {Account, Arn, UserId} triple. Per AWS, every authenticated principal can
-// call this — no policy gating. AWS UserId semantics:
+// GetCallerIdentity returns the AWS {Account, Arn, UserId} triple. No policy
+// gating — every authenticated principal may call this. UserId semantics:
 //
 //   - IAM user      → User.UserId  (AID... prefix)
 //   - Assumed role  → AssumedRoleId ("{RoleID}:{SessionName}")
 //   - Root          → the account ID
 //
-// assumedRoleID is the AssumedRoleId resolved by the SigV4 middleware on the
-// ASIA path and propagated via context; empty for non-session principals.
+// assumedRoleID is resolved by the SigV4 middleware on the ASIA path; empty
+// for non-session principals.
 func GetCallerIdentity(
 	accountID, callerARN, callerPrincipalType, identity, assumedRoleID string,
 	input *sts.GetCallerIdentityInput,
@@ -52,9 +50,7 @@ func resolveCallerUserID(
 	case PrincipalTypeRoot:
 		return accountID, nil
 	case PrincipalTypeUser:
-		// Root is currently encoded as principalType=user + identity="root"
-		// (no separate root path through auth). Match AWS: root's UserId is
-		// the account number.
+		// Root is encoded as principalType=user + identity="root"; UserId is the account ID.
 		if identity == "root" {
 			return accountID, nil
 		}
@@ -73,10 +69,8 @@ func resolveCallerUserID(
 		return aws.StringValue(out.User.UserId), nil
 	case PrincipalTypeAssumedRole:
 		if assumedRoleID == "" {
-			// SigV4 auth populated this from the resolved SessionCredential.
-			// An empty value here means the session vanished between auth and
-			// dispatch (janitor sweep on a just-expired record) — surface as
-			// InvalidClientTokenId rather than leak a 500.
+			// Session vanished between auth and dispatch (expired record); surface as
+			// InvalidClientTokenId rather than a 500.
 			slog.Warn("GetCallerIdentity: assumed-role session vanished between auth and dispatch")
 			return "", errors.New(awserrors.ErrorInvalidClientTokenId)
 		}

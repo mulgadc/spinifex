@@ -10,10 +10,7 @@ import (
 )
 
 // Node identifies a single cluster member addressable over SSH and HTTPS.
-//
-// Index is the 1-based position the node occupies in the SPINIFEX_NODES list;
-// scenarios reference nodes by index (node1, node2, node3) so a fixed
-// ordering is required.
+// Index is 1-based; scenarios reference nodes by index so ordering is fixed.
 type Node struct {
 	Index int    // 1-based position in the cluster
 	Name  string // human-readable tag, e.g. "node1"
@@ -21,10 +18,6 @@ type Node struct {
 }
 
 // Cluster is an ordered set of Nodes plus shared SSH credentials.
-//
-// Scenarios receive a *Cluster from main_test.go and use its Nodes slice to
-// address individual peers. All helpers that mutate node state take a Node
-// (not an index) to keep call sites self-describing.
 type Cluster struct {
 	Nodes      []Node
 	SSHUser    string
@@ -45,11 +38,7 @@ func (c *Cluster) Peers(target Node) []Node {
 }
 
 // ClusterFromEnv builds a Cluster from SPINIFEX_NODES / SPINIFEX_SSH_USER /
-// SPINIFEX_SSH_KEY. Nodes are named node1..nodeN in list order.
-//
-// Returns an error if any required variable is missing or if SPINIFEX_NODES
-// contains no non-empty entries. main_test.go is expected to call this once
-// and pass the result into every scenario.
+// SPINIFEX_SSH_KEY. Returns an error if any required variable is missing.
 func ClusterFromEnv() (*Cluster, error) {
 	nodesRaw := envWithLegacy("SPINIFEX_NODES", "DDIL_NODES")
 	user := envWithLegacy("SPINIFEX_SSH_USER", "DDIL_SSH_USER")
@@ -92,9 +81,7 @@ func ClusterFromEnv() (*Cluster, error) {
 	}, nil
 }
 
-// NodeFromEnv returns the Nth node (1-based) from the cluster defined by
-// SPINIFEX_NODES. Convenience wrapper for single-node helpers; most scenarios
-// should call ClusterFromEnv once and index c.Nodes directly.
+// NodeFromEnv returns the Nth node (1-based) from the cluster in SPINIFEX_NODES.
 func NodeFromEnv(index int) (Node, error) {
 	c, err := ClusterFromEnv()
 	if err != nil {
@@ -107,9 +94,7 @@ func NodeFromEnv(index int) (Node, error) {
 }
 
 // envWithLegacy returns os.Getenv(canonical), falling back to legacy on miss.
-// DDIL_* names are accepted for back-compat; rename to SPINIFEX_* once all
-// CI workflows are migrated. A one-line stderr note flags the deprecation
-// so leftover callers surface in CI logs.
+// A stderr note flags use of the deprecated DDIL_* names.
 func envWithLegacy(canonical, legacy string) string {
 	if v := os.Getenv(canonical); v != "" {
 		return v

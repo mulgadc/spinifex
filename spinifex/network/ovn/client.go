@@ -37,13 +37,8 @@ type Client interface {
 
 	// Logical Switch (subnet)
 	CreateLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) error
-	// EnsureLogicalSwitch atomically creates a logical switch if no row with
-	// the same Name already exists, or returns the existing row. Wraps the
-	// insert in an OVSDB wait-op that asserts "zero rows match Name == ls.Name"
-	// at commit time; concurrent writers across nodes are serialised by
-	// ovsdb-server rather than by the local libovsdb cache (which can be
-	// stale relative to another node's just-committed insert). See
-	// EnsureLogicalRouter for the rationale.
+	// EnsureLogicalSwitch atomically creates a logical switch or returns the existing
+	// row. Uses an OVSDB wait-op (see EnsureLogicalRouter for rationale).
 	EnsureLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, error)
 	DeleteLogicalSwitch(ctx context.Context, name string) error
 	GetLogicalSwitch(ctx context.Context, name string) (*nbdb.LogicalSwitch, error)
@@ -51,14 +46,9 @@ type Client interface {
 
 	// Logical Switch Port (VM/ENI)
 	CreateLogicalSwitchPort(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort) error
-	// CreateLogicalSwitchPortInGroups creates an LSP, adds it to its switch,
-	// and joins it to the named port groups — all in a single OVSDB
-	// transaction. Required for SG enforcement: a non-atomic create-then-join
-	// leaves a window where the LSP exists outside any port group (OVN
-	// default = unrestricted). portGroupNames may be empty (e.g. router/
-	// localnet ports). The per-port-group `_ip4`/`_ip6` Address_Set rows in
-	// SB are auto-derived by ovn-northd from each port group's port
-	// addresses; SG-to-SG match expressions resolve against those.
+	// CreateLogicalSwitchPortInGroups creates an LSP and joins it to port groups in
+	// one transaction — prevents the window where the LSP exists outside any group
+	// (OVN default = unrestricted). portGroupNames may be empty.
 	CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error
 	DeleteLogicalSwitchPort(ctx context.Context, switchName string, portName string) error
 	GetLogicalSwitchPort(ctx context.Context, name string) (*nbdb.LogicalSwitchPort, error)
@@ -66,28 +56,15 @@ type Client interface {
 
 	// Logical Router (VPC router)
 	CreateLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) error
-	// EnsureLogicalRouter atomically creates a logical router if no row with
-	// the same Name already exists, or returns the existing row. The insert
-	// is bundled with an OVSDB wait-op that asserts "zero rows match
-	// Name == lr.Name" at commit time, so two writers (different goroutines
-	// or different nodes) that both observe absence cannot both succeed —
-	// ovsdb-server rejects the second transaction. The returned pointer is
-	// the canonical row: newly created with the supplied fields, or the
-	// pre-existing row when a competing writer raced us.
-	//
-	// Required because OVN NB has no unique constraint on Name. Without the
-	// wait-op, the cross-handler / cross-node race between vpc.create and
-	// vpc.create-subnet's defensive EnsureVPC call produces duplicate routers
-	// per VPC.
+	// EnsureLogicalRouter atomically creates a logical router or returns the existing
+	// row. OVSDB wait-op serialises concurrent writers — NB has no unique-Name
+	// constraint, so without it concurrent vpc.create calls produce duplicates.
 	EnsureLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error)
 	DeleteLogicalRouter(ctx context.Context, name string) error
 	GetLogicalRouter(ctx context.Context, name string) (*nbdb.LogicalRouter, error)
 	ListLogicalRouters(ctx context.Context) ([]nbdb.LogicalRouter, error)
-	// UpdateLogicalRouterExternalIDs rewrites the ExternalIDs map of an
-	// existing logical router. Used by topology.EnsureVPC to backfill the
-	// `spinifex:cidr` / `spinifex:vni` keys when the row was first created by
-	// a defensive EnsureVPC call that did not carry the parent VPC's full
-	// metadata. The whole map is replaced; callers must pass the merged set.
+	// UpdateLogicalRouterExternalIDs replaces the ExternalIDs map on an existing
+	// router. Callers must pass the full merged set.
 	UpdateLogicalRouterExternalIDs(ctx context.Context, name string, externalIDs map[string]string) error
 
 	// Logical Router Port
@@ -126,46 +103,28 @@ type Client interface {
 
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
-	// EnsurePortGroup is the wait-op-protected create-or-get analogue of
-	// CreatePortGroup. Returns the canonical row. See EnsureLogicalRouter for
-	// the wait-op pattern and rationale.
+	// EnsurePortGroup atomically creates a port group or returns the existing row.
+	// See EnsureLogicalRouter for the wait-op rationale.
 	EnsurePortGroup(ctx context.Context, name string, ports []string) (*nbdb.PortGroup, error)
 	DeletePortGroup(ctx context.Context, name string) error
-	// UpdatePortGroupMemberships applies all port-group joins and leaves for a
-	// single LSP in one atomic OVSDB transaction. Required by reconcilePortSGs
-	// so a 5-SG → different-5-SG modify never exposes an intermediate state
-	// with fewer port groups (which would let the OVN default = unrestricted
-	// apply for the gap). The per-port-group `_ip4`/`_ip6` Address_Set rows
-	// in SB are auto-derived by ovn-northd from each port group's port
-	// addresses; no explicit address-set update is required here.
+	// UpdatePortGroupMemberships applies all port-group joins and leaves for an LSP
+	// in one transaction, preventing an intermediate state with fewer groups
+	// (OVN default = unrestricted).
 	UpdatePortGroupMemberships(ctx context.Context, lspName string, addPGs, removePGs []string) error
-	// ListPortGroupsForPort returns the names of every port group whose Ports
-	// set contains the given LSP. Used by reconcilePortSGs to discover current
-	// membership before computing the add/remove diff against desired.
+	// ListPortGroupsForPort returns the names of every port group containing the LSP.
 	ListPortGroupsForPort(ctx context.Context, lspName string) ([]string, error)
-	// GetPortGroup returns the port group with the given name, or an error if
-	// it doesn't exist. Used by the reconciler to detect SGs whose port group
-	// has gone missing in OVN NB.
+	// GetPortGroup returns the port group with the given name, or an error if absent.
 	GetPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error)
-	// ListPortGroups returns every port group in OVN NB. Used by the
-	// reconciler's orphan-PG scan to detect spinifex-managed port groups
-	// (`sg_*`) that no longer have a matching SG record in KV.
+	// ListPortGroups returns every port group in OVN NB.
 	ListPortGroups(ctx context.Context) ([]nbdb.PortGroup, error)
 
-	// ACLs (attached to port groups). AddACLs creates all rows and links
-	// them to the port group in one OVSDB transaction — important when a
-	// single SG can carry up to 60 ingress + 60 egress rules.
+	// ACLs (attached to port groups). AddACLs creates all rows and links them
+	// to the port group in one transaction.
 	AddACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
 	ClearACLs(ctx context.Context, portGroupName string) error
 
-	// ReplaceACLs atomically swaps the port group's ACL set: detach + delete
-	// the existing rows and attach freshly-created rows in ONE OVSDB
-	// transaction. SG mutations must use this instead of ClearACLs followed
-	// by AddACLs — the latter leaves the port group with zero ACLs between
-	// transactions, and a no-ACL port group on a tenant LSP path defaults
-	// to drop, producing observable mid-flight egress drops on connectionless
-	// traffic (ICMP) and on TCP SYNs that don't match an existing conntrack
-	// entry.
+	// ReplaceACLs atomically swaps the port group's ACL set in one transaction.
+	// Use instead of ClearACLs+AddACLs to avoid a zero-ACL window (defaults to drop).
 	ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
 
 	// Gateway Chassis (HA scheduling for gateway router ports)

@@ -772,11 +772,8 @@ func startTestNATSOnPort(t *testing.T, port int) *server.Server {
 	return ns
 }
 
-// TestConnectNATSWithRetry_LogEscalatesPastThreshold drives ConnectNATSWithRetry
-// against a closed port with a tight retry loop until the attempt count exceeds
-// natsRetryEscalateAttempt, then asserts that at least one escalated slog.Error
-// line was emitted with disconnected_for context (rate-limited to once per
-// minute) while earlier attempts stayed at slog.Warn.
+// TestConnectNATSWithRetry_LogEscalatesPastThreshold verifies that log lines escalate from Warn to Error
+// once attempt count exceeds natsRetryEscalateAttempt, while earlier attempts stay at Warn.
 func TestConnectNATSWithRetry_LogEscalatesPastThreshold(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -847,11 +844,8 @@ func TestAddNAT_Success(t *testing.T) {
 	assert.Equal(t, "02:00:00:00:00:01", got.MAC)
 }
 
-// TestAddNAT_NACK is the core regression for the silent-corruption bug: when
-// vpcd reports failure, callers MUST see a non-nil error so they can roll
-// back the IPAM allocation and the ENI public IP record. Before the fix the
-// helper logged a warning and returned nothing, leaving an unreachable
-// public IP surfaced to the AWS client.
+// TestAddNAT_NACK is the regression for the silent-corruption bug: a vpcd failure must return a non-nil error
+// so callers can roll back IPAM and ENI public IP state (previously the helper only logged a warning).
 func TestAddNAT_NACK(t *testing.T) {
 	ns := startTestNATSServer(t)
 	nc, err := nats.Connect(ns.ClientURL())

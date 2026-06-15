@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -17,14 +18,14 @@ const (
 	// imdsRPCTimeout bounds each internal control-plane round-trip to awsgw.
 	imdsRPCTimeout = 10 * time.Second
 
-	// profileCacheTTL memoises profile/role lookups. Both mappings are effectively
-	// static, so a short TTL keeps the iam/* GETs off a NATS round-trip per request.
+	// profileCacheTTL memoises profile/role lookups to avoid per-request NATS round-trips.
 	profileCacheTTL = 5 * time.Minute
+
+	// pubKeyCacheTTL memoises SSH public-key material (immutable for a key's lifetime).
+	pubKeyCacheTTL = 5 * time.Minute
 )
 
-// NATSSTSAssumer is the NATS-backed stsAssumer. It mints instance-role credentials
-// via awsgw's SubjectAssumeRoleForInstance responder, keeping no local cache —
-// credCache already memoises minted credentials, so STS stays off the hot path.
+// NATSSTSAssumer is the NATS-backed stsAssumer for minting instance-role credentials.
 type NATSSTSAssumer struct {
 	nc *nats.Conn
 }
@@ -45,9 +46,7 @@ func (a *NATSSTSAssumer) AssumeRoleForInstance(accountID, roleARN, instanceID st
 	}, imdsRPCTimeout, accountID)
 }
 
-// NATSProfileLookup is the NATS-backed profileLookup. It resolves instance
-// profiles and roles via awsgw's IAM responders, fronted by a short-TTL cache
-// so repeat iam/* GETs don't take a round-trip each.
+// NATSProfileLookup is the NATS-backed profileLookup with a short-TTL cache.
 type NATSProfileLookup struct {
 	nc       *nats.Conn
 	profiles *ttlCache[*handlers_iam.InstanceProfile]
@@ -97,9 +96,39 @@ func (p *NATSProfileLookup) GetRole(accountID string, input *iam.GetRoleInput) (
 	return out, nil
 }
 
-// ttlCache is a minimal concurrency-safe map with per-entry expiry, used to
-// keep effectively-static IAM lookups off the NATS round-trip. now is a field
-// so tests can drive expiry deterministically.
+// NATSPublicKeyLookup is the NATS-backed publicKeyLookup with a success-only TTL cache.
+type NATSPublicKeyLookup struct {
+	nc    *nats.Conn
+	cache *ttlCache[string]
+}
+
+var _ publicKeyLookup = (*NATSPublicKeyLookup)(nil)
+
+// NewNATSPublicKeyLookup constructs a NATSPublicKeyLookup over nc.
+func NewNATSPublicKeyLookup(nc *nats.Conn) *NATSPublicKeyLookup {
+	return &NATSPublicKeyLookup{
+		nc:    nc,
+		cache: newTTLCache[string](pubKeyCacheTTL),
+	}
+}
+
+func (p *NATSPublicKeyLookup) GetPublicKey(accountID, keyName string) (string, error) {
+	key := accountID + "\x00" + keyName
+	if v, ok := p.cache.get(key); ok {
+		return v, nil
+	}
+	out, err := utils.NATSRequest[handlers_ec2_key.GetPublicKeyResponse](p.nc, "imds.ec2.get_public_key", handlers_ec2_key.GetPublicKeyRequest{
+		AccountID: accountID,
+		KeyName:   keyName,
+	}, imdsRPCTimeout, accountID)
+	if err != nil {
+		return "", err // errors not cached: transient miss must not pin key as absent
+	}
+	p.cache.put(key, out.OpenSSHKey)
+	return out.OpenSSHKey, nil
+}
+
+// ttlCache is a concurrency-safe map with per-entry expiry; now is injectable for tests.
 type ttlCache[V any] struct {
 	mu  sync.Mutex
 	ttl time.Duration

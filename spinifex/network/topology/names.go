@@ -28,6 +28,10 @@ func GatewayRouterPort(vpcID string) string { return "gw-" + vpcID }
 // peered with GatewayRouterPort.
 func GatewaySwitchPort(vpcID string) string { return "gw-port-" + vpcID }
 
+// GatewayChassisRedirectPort is the OVN chassisredirect Port_Binding (cr-<LRP>).
+// Only this binding carries the gateway-chassis claim; the LRP binding stays chassis-less.
+func GatewayChassisRedirectPort(vpcID string) string { return "cr-" + GatewayRouterPort(vpcID) }
+
 // ExternalSwitch is the OVN logical switch name for the per-VPC external
 // switch bridging the gateway LRP to the localnet.
 func ExternalSwitch(vpcID string) string { return "ext-" + vpcID }
@@ -36,10 +40,8 @@ func ExternalSwitch(vpcID string) string { return "ext-" + vpcID }
 // external switch onto the host uplink.
 func ExternalLocalnetPort(vpcID string) string { return "ext-port-" + vpcID }
 
-// IMDSPort is the host-owned localport LSP that claims 169.254.169.254 directly
-// on the subnet switch (SubnetSwitch). ovn-controller binds it on every chassis
-// with a matching iface-id OVS port, so each chassis self-serves IMDS for its
-// local VMs over a single L2 hop on the guest's own broadcast domain.
+// IMDSPort is the host-owned localport LSP that claims 169.254.169.254 on the
+// subnet switch. Bound on every chassis; serves IMDS over a single L2 hop.
 func IMDSPort(subnetID string) string { return "imds-port-" + subnetID }
 
 // SecurityGroupPortGroup is the OVN port group name for an SG.

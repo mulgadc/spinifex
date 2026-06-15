@@ -19,29 +19,17 @@ import (
 // gives a 20s budget.
 const blockdevDelMaxAttempts = 20
 
-// AttachVolumeResult carries the device names produced by AttachVolume:
-// the AWS-API name (/dev/sd[f-p], possibly auto-allocated when the
-// caller passed an empty device) and the in-guest path discovered from
-// QMP query-block (/dev/vd*). Daemon handlers echo DeviceName in the
-// AttachVolume response and into volume metadata so AWS-spec round-trips
-// (Volume.Attachments[].Device, the attachment.device filter on
-// DescribeVolumes) match. GuestDevice is retained for diagnostics and
-// for any internal callers that need to map back to the guest's virtio
-// enumeration.
+// AttachVolumeResult carries the AWS-API device name (/dev/sd[f-p]) and the
+// in-guest path (/dev/vd*) discovered via QMP. DeviceName is echoed in the
+// API response and volume metadata; GuestDevice is used for diagnostics.
 type AttachVolumeResult struct {
 	DeviceName  string
 	GuestDevice string
 }
 
-// AttachVolume hot-plugs a volume into a running instance via the
-// three-phase QMP pipeline (mount → blockdev-add → device_add). On
-// failure mid-pipeline, partial state is rolled back. The instance must
-// be in StateRunning. If device is empty, the next free /dev/sd[f-p]
-// slot is allocated.
-//
-// Daemon handlers retain volume-side validation (existence, ownership,
-// availability, AZ) and emit the AWS API response; the manager owns
-// every QMP and persistence side-effect.
+// AttachVolume hot-plugs a volume via the QMP pipeline (mount → blockdev-add →
+// device_add). Partial state is rolled back on failure. If device is empty, the
+// next free /dev/sd[f-p] slot is allocated. Instance must be in StateRunning.
 func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult, error) {
 	instance, ok := m.Get(id)
 	if !ok {
@@ -242,15 +230,9 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	return AttachVolumeResult{DeviceName: device, GuestDevice: guestDevice}, nil
 }
 
-// DetachVolume hot-unplugs a volume from a running instance via the
-// three-phase QMP pipeline (device_del → blockdev-del → object-del →
-// ebs.unmount). Returns the recorded AWS-API device name on success so
-// the daemon handler can echo it in the response.
-//
-// device may be empty (no cross-check) or must equal the recorded
-// DeviceName. force=true tolerates a failing device_del; blockdev-del
-// is always required because tearing down the NBD server underneath a
-// live block node would crash the VM.
+// DetachVolume hot-unplugs a volume via the QMP pipeline (device_del →
+// blockdev-del → object-del → ebs.unmount). Returns the recorded AWS-API device
+// name. force=true tolerates device_del failure; blockdev-del is always required.
 func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string, error) {
 	instance, ok := m.Get(id)
 	if !ok {
@@ -375,11 +357,8 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 	return ebsReq.DeviceName, nil
 }
 
-// tryBlockdevDel issues blockdev-del with bounded retry on "is in use"
-// errors. After device_del, NBD client teardown and any in-flight guest
-// I/O can briefly hold the block node; QEMU surfaces this as a
-// GenericError carrying "Node <name> is in use". Polling at DetachDelay
-// gives the I/O drain enough time without a hardcoded long sleep.
+// tryBlockdevDel issues blockdev-del with bounded retry on "is in use" errors.
+// QEMU surfaces this as GenericError while NBD teardown and in-flight I/O drain.
 func (m *Manager) tryBlockdevDel(instance *VM, nodeName string) error {
 	var lastErr error
 	for attempt := 1; attempt <= blockdevDelMaxAttempts; attempt++ {
@@ -410,9 +389,8 @@ func (m *Manager) tryBlockdevDel(instance *VM, nodeName string) error {
 	return lastErr
 }
 
-// isQMPDeviceNotFound returns true when err is a QMP DeviceNotFound class
-// error from device_del. Used to make device_del idempotent across detach
-// retries.
+// isQMPDeviceNotFound reports whether err is a QMP DeviceNotFound error,
+// making device_del idempotent across retries.
 func isQMPDeviceNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -420,10 +398,8 @@ func isQMPDeviceNotFound(err error) bool {
 	return strings.Contains(err.Error(), "DeviceNotFound")
 }
 
-// isQMPNodeInUse returns true when err is a QMP GenericError reporting a
-// block node still in use. blockdev-del fails this way while NBD client
-// teardown and queued I/O drain after device_del. QEMU phrases this as
-// both "X is in use" and "X is still in use" — match "in use".
+// isQMPNodeInUse reports whether err is a QMP GenericError for a node still in
+// use. Matches both "is in use" and "is still in use" phrasing.
 func isQMPNodeInUse(err error) bool {
 	if err == nil {
 		return false

@@ -15,9 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// needAZ is a package-local shorthand for the discovered default AZ.
-// Memoized on the harness fixture so every Test* gets the same answer
-// regardless of execution order.
+// needAZ returns the discovered default AZ, memoized on the harness fixture.
 func needAZ(t *testing.T, fix *Fixture) string {
 	t.Helper()
 	return harness.DiscoverDefaultAZ(t, fix.Harness)
@@ -37,26 +35,22 @@ func needAMI(t *testing.T, fix *Fixture, arch string) string {
 	return harness.DiscoverUbuntuAMI(t, fix.Harness, arch)
 }
 
-// needKeyPair ensures a test-scoped EC2 key pair and returns its name plus
-// the on-disk PEM path. Memoized on the harness fixture, so every Test*
-// across the package shares the same key (PEM file written once).
+// needKeyPair ensures a test-scoped EC2 key pair and returns its name and PEM path.
+// Memoized on the harness fixture so all tests share one key.
 func needKeyPair(t *testing.T, fix *Fixture) (name, pemPath string) {
 	t.Helper()
 	return harness.EnsureKeyPair(t, fix.Harness, fix.Artifacts)
 }
 
-// Package-scoped trio. runInstanceDistribution launches; runGuestSSH /
-// runCrossNodeGateway / runCrossNodeOps / runVolumeLifecycle reuse the same
-// IDs. Mirrors the iam_helpers_test sync.Once pattern from tests/e2e/single.
+// Package-scoped trio. runInstanceDistribution launches; downstream tests reuse the same IDs.
 var (
 	trioOnce sync.Once
 	trioIDs  []string
 	trioErr  error
 )
 
-// needInstanceTrio returns the package singleton trio of nano instances on
-// the default VPC, launching them once on first call and registering
-// terminate-on-process-exit. Mirrors bash phase 3 which launches 3 stagger.
+// needInstanceTrio returns the package singleton trio of nano instances on the default
+// VPC, launching them once and registering process-exit termination cleanup.
 func needInstanceTrio(t *testing.T, fix *Fixture) []string {
 	t.Helper()
 	trioOnce.Do(func() {
@@ -67,13 +61,9 @@ func needInstanceTrio(t *testing.T, fix *Fixture) []string {
 		require.NotEmpty(t, def.SGID, "default SG required")
 		harness.AuthorizeSSHIngress(t, fix.AWS, def.SGID)
 
-		// Bash phase 3 launches with a 2s stagger between calls. Go port
-		// also retries each launch on InsufficientInstanceCapacity — on a
-		// cold-bootstrapped CI cluster (mulga-siv-90 run 26163994815) the
-		// per-node resourceMgr can briefly report 0 capacity right after
-		// daemon start before its first inventory scan completes, even
-		// though DescribeInstanceTypes already answers. AWS itself surfaces
-		// the same error transiently; treat as retryable.
+		// Each launch is retried on InsufficientInstanceCapacity: the resourceMgr
+		// can briefly report 0 capacity right after daemon start before its first
+		// inventory scan completes. Treat as transiently retryable.
 		input := &ec2.RunInstancesInput{
 			ImageId:          aws.String(amiID),
 			InstanceType:     aws.String(instType),
@@ -132,10 +122,7 @@ func needInstanceTrio(t *testing.T, fix *Fixture) []string {
 	return trioIDs
 }
 
-// readyNodeCount counts the number of "Ready" lines in `spx get nodes`
-// output. Bash phase 2 used `grep -c "Ready"`; we match the same
-// (substring, case-sensitive) so cluster-status string drift surfaces in
-// both tracks identically.
+// readyNodeCount counts "Ready" lines in spx get nodes output (substring, case-sensitive).
 func readyNodeCount(out string) int {
 	n := 0
 	for _, line := range strings.Split(out, "\n") {

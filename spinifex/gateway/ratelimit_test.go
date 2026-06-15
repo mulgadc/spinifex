@@ -63,12 +63,10 @@ func TestCheckIP_RejectsLockedIP(t *testing.T) {
 		rl.RecordFailure(ip)
 	}
 
-	// Should be locked.
 	if errCode := rl.CheckIP(ip); errCode != awserrors.ErrorRequestLimitExceeded {
 		t.Fatalf("expected locked IP to be rejected, got %q", errCode)
 	}
 
-	// Repeated checks should also be rejected.
 	if errCode := rl.CheckIP(ip); errCode != awserrors.ErrorRequestLimitExceeded {
 		t.Fatalf("expected locked IP to still be rejected, got %q", errCode)
 	}
@@ -105,14 +103,12 @@ func TestRecordSuccess_ClearsLockout(t *testing.T) {
 		rl.RecordFailure(ip)
 	}
 
-	// Should be locked.
 	if errCode := rl.CheckIP(ip); errCode == "" {
 		t.Fatal("expected IP to be locked")
 	}
 
 	rl.RecordSuccess(ip)
 
-	// After success, should be unlocked.
 	if errCode := rl.CheckIP(ip); errCode != "" {
 		t.Fatalf("expected IP to be allowed after success, got %q", errCode)
 	}
@@ -312,9 +308,8 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 // setupTestAppWithRateLimiter creates a test HTTP handler with SigV4 auth and
-// the given rate limiter attached. A real NATS test connection is attached so
-// the SigV4 middleware's cluster-unavailable short-circuit (mulga-siv-23) does
-// not fire and mask rate-limit behaviour.
+// the given rate limiter attached. A real NATS connection is used so the
+// cluster-unavailable short-circuit does not mask rate-limit behaviour.
 func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *AuthRateLimiter) http.Handler {
 	t.Helper()
 

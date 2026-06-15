@@ -11,15 +11,10 @@ import (
 	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
 )
 
-// acmHandler invokes a per-action gateway function: it receives the parent
-// gateway config, the caller's accountID, and the raw request body, and
-// returns a typed *acm.<X>Output (as any) or an error whose Error() is an
-// awserrors code.
+// acmHandler invokes a per-action ACM gateway function.
 type acmHandler func(gw *GatewayConfig, accountID string, body []byte) (any, error)
 
-// acmActions maps an ACM action (the suffix of the X-Amz-Target header) to its
-// handler. ACM speaks AWS JSON 1.1: the action is carried in
-// "X-Amz-Target: CertificateManager.<Action>", not the query string.
+// acmActions maps the action suffix of X-Amz-Target (CertificateManager.<Action>) to its handler.
 var acmActions = map[string]acmHandler{
 	"ImportCertificate": func(gw *GatewayConfig, acct string, b []byte) (any, error) {
 		return gateway_acm.ImportCertificate(gw.NATSConn, acct, b)
@@ -35,9 +30,8 @@ var acmActions = map[string]acmHandler{
 	},
 }
 
-// acmActionFromTarget extracts the bare action name from an X-Amz-Target
-// header value of the form "CertificateManager.<Action>". The service prefix
-// is optional/ignored so any "<Prefix>.<Action>" or bare "<Action>" resolves.
+// acmActionFromTarget extracts the action suffix from an X-Amz-Target header.
+// Any "<Prefix>.<Action>" or bare "<Action>" form is accepted.
 func acmActionFromTarget(target string) string {
 	if i := strings.LastIndex(target, "."); i >= 0 {
 		return target[i+1:]
@@ -45,10 +39,8 @@ func acmActionFromTarget(target string) string {
 	return target
 }
 
-// ACM_Request dispatches AWS JSON 1.1 ACM requests. The action is read from
-// the X-Amz-Target header; the body is the JSON-encoded operation input.
-// Errors are returned as plain awserrors codes; the caller (gateway.Request)
-// routes them through ErrorHandler, which emits the JSON error envelope.
+// ACM_Request dispatches AWS JSON 1.1 ACM requests. The action comes from
+// X-Amz-Target; errors are returned as awserrors codes.
 func (gw *GatewayConfig) ACM_Request(w http.ResponseWriter, r *http.Request) error {
 	action := acmActionFromTarget(r.Header.Get("X-Amz-Target"))
 	if action == "" {

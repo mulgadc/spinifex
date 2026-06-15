@@ -216,12 +216,9 @@ func TestResourceManager(t *testing.T) {
 	if instanceType.VCpuInfo != nil && instanceType.VCpuInfo.DefaultVCpus != nil {
 		vCPUs = *instanceType.VCpuInfo.DefaultVCpus
 	}
-	memoryGB := float64(0)
-	if instanceType.MemoryInfo != nil && instanceType.MemoryInfo.SizeInMiB != nil {
-		memoryGB = float64(*instanceType.MemoryInfo.SizeInMiB) / 1024.0
-	}
+	expectedMem := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0 // guest -m + nbdkit (RG-6)
 	assert.Equal(t, int(vCPUs), rm.allocatedVCPU)
-	assert.Equal(t, memoryGB, rm.allocatedMem)
+	assert.Equal(t, expectedMem, rm.allocatedMem)
 
 	// Deallocate
 	rm.deallocate(instanceType)
@@ -233,6 +230,7 @@ func TestResourceManager(t *testing.T) {
 		// Fresh resource manager for predictable testing
 		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
+		rm.readMemAvailableGB = nil // accounting test: decrement must track allocations, not live /proc
 
 		// Find a .micro instance type
 		var microType *ec2.InstanceTypeInfo
@@ -541,16 +539,19 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		capMsgData, err := json.Marshal(capInput)
 		require.NoError(t, err)
 
-		// Pick a 2-vCPU type from the capacity-aware set so we know the
-		// host has room for it — the raw instanceTypes map contains
-		// entries (e.g. r5.large at 16 GiB) that exceed schedulable
-		// memory on small test hosts.
+		// Pick the smallest-memory 2-vCPU type from the capacity-aware set
+		// so it is guaranteed to fit the host. Selecting the first match by
+		// map-iteration order is non-deterministic and intermittently picks a
+		// type near the schedulable-memory boundary that the allocator then
+		// rejects, flaking the test on small hosts.
 		var instanceType2CPU *ec2.InstanceTypeInfo
-		for _, it := range daemon.resourceMgr.GetAvailableInstanceTypeInfos(false) {
-			if it.VCpuInfo != nil && it.VCpuInfo.DefaultVCpus != nil && *it.VCpuInfo.DefaultVCpus == 2 &&
-				it.MemoryInfo != nil && it.MemoryInfo.SizeInMiB != nil {
+		for _, it := range daemon.resourceMgr.GetAvailableInstanceTypeInfos(true) {
+			if it.VCpuInfo == nil || it.VCpuInfo.DefaultVCpus == nil || *it.VCpuInfo.DefaultVCpus != 2 ||
+				it.MemoryInfo == nil || it.MemoryInfo.SizeInMiB == nil {
+				continue
+			}
+			if instanceType2CPU == nil || *it.MemoryInfo.SizeInMiB < *instanceType2CPU.MemoryInfo.SizeInMiB {
 				instanceType2CPU = it
-				break
 			}
 		}
 		require.NotNil(t, instanceType2CPU, "Should find a 2-vCPU type that fits the host")
@@ -631,16 +632,16 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		err = json.Unmarshal(reply.Data, &output)
 		require.NoError(t, err)
 
-		// With 2 vCPUs and 16GB, every type with 2 vCPUs and <=16GB memory should have 1 slot.
-		// Calculate expected by counting fitting types directly.
+		// With 2 vCPUs and 16GB, every type whose full charge (guest -m + nbdkit,
+		// RG-6) fits 2 vCPUs / 16GB should have 1 slot. Calculate expected directly.
 		expectedSlots := 0
 		for name, it := range daemon.resourceMgr.instanceTypes {
 			if instancetypes.IsSystemType(name) {
 				continue
 			}
 			vcpus := *it.VCpuInfo.DefaultVCpus
-			memGB := float64(*it.MemoryInfo.SizeInMiB) / 1024.0
-			if vcpus <= 2 && memGB <= 16.0 {
+			chargeGB := float64(daemon.resourceMgr.instanceMemChargeMiB(it)) / 1024.0
+			if vcpus <= 2 && chargeGB <= 16.0 {
 				expectedSlots++
 			}
 		}
@@ -752,7 +753,7 @@ func TestDaemon_BootAllocation(t *testing.T) {
 	// Verify only i-running was allocated
 	instanceType := daemon.resourceMgr.instanceTypes[vms["i-running"].InstanceType]
 	expectedVCPU := int(*instanceType.VCpuInfo.DefaultVCpus)
-	expectedMem := float64(*instanceType.MemoryInfo.SizeInMiB) / 1024.0
+	expectedMem := float64(daemon.resourceMgr.instanceMemChargeMiB(instanceType)) / 1024.0 // guest -m + nbdkit (RG-6)
 
 	assert.Equal(t, expectedVCPU, daemon.resourceMgr.allocatedVCPU)
 	assert.Equal(t, expectedMem, daemon.resourceMgr.allocatedMem)
@@ -858,6 +859,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 		rm.hostMemGB = 32.0
 		rm.reservedVCPU = 0
 		rm.reservedMem = 0
+		rm.readMemAvailableGB = nil // accounting test: pin to synthetic host, not live /proc
 		rm.mu.Unlock()
 
 		initial := rm.canAllocate(microType, 100)
@@ -963,7 +965,9 @@ func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
 	require.NotNil(t, microType, "test requires a .micro instance type")
 
 	vCPUs := int(instanceTypeVCPUs(microType))
-	memGB := float64(instanceTypeMemoryMiB(microType)) / 1024.0
+	// Size the pool on the full per-instance charge (guest -m + nbdkit, RG-6),
+	// not bare guest -m, so capacityFor slots still fit exactly after RG-6.
+	memGB := float64(rm.instanceMemChargeMiB(microType)) / 1024.0
 	require.Greater(t, vCPUs, 0, "micro type must report vCPU count")
 	require.Greater(t, memGB, float64(0), "micro type must report memory")
 
@@ -976,6 +980,7 @@ func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
 	rm.reservedMem = 0
 	rm.allocatedVCPU = 0
 	rm.allocatedMem = 0
+	rm.readMemAvailableGB = nil // accounting test: pin to synthetic host, not live /proc
 	rm.mu.Unlock()
 
 	require.Equal(t, capacityFor, rm.canAllocate(microType, goroutines),
@@ -1290,6 +1295,20 @@ func TestRunInstances_CountValidation(t *testing.T) {
 	})
 }
 
+// countSubsBySuffix splits a subscription map into (without-suffix, with-suffix)
+// counts. Node-targeted (unicast) topics carry the node ID as a trailing
+// suffix; queue (anycast) topics do not — so this distinguishes the two.
+func countSubsBySuffix(subs map[string]*nats.Subscription, suffix string) (without, with int) {
+	for topic := range subs {
+		if strings.HasSuffix(topic, suffix) {
+			with++
+		} else {
+			without++
+		}
+	}
+	return without, with
+}
+
 // TestInstanceTypeSubscriptions tests dynamic NATS subscription management
 // based on node capacity.
 func TestInstanceTypeSubscriptions(t *testing.T) {
@@ -1351,8 +1370,15 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 
 		rm.updateInstanceSubscriptions()
 
-		assert.Equal(t, 0, len(rm.instanceSubs),
-			"should unsubscribe from all types when node is full")
+		// Queue (anycast) subscriptions drop when the node fills so NATS reroutes
+		// launches to a node with room. Node-targeted (unicast) subscriptions
+		// persist regardless of capacity so a committed placement that names this
+		// node still reaches a responder — capacity is enforced at launch time.
+		queueSubs, nodeSubs := countSubsBySuffix(rm.instanceSubs, ".test-node")
+		assert.Equal(t, 0, queueSubs,
+			"queue subscriptions should drop when the node is full")
+		assert.Greater(t, nodeSubs, 0,
+			"node-targeted subscriptions persist regardless of capacity")
 	})
 
 	t.Run("ResubscribesWhenFreed", func(t *testing.T) {
@@ -1373,7 +1399,9 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		rm.allocatedMem = rm.hostMemGB - rm.reservedMem
 		rm.mu.Unlock()
 		rm.updateInstanceSubscriptions()
-		assert.Equal(t, 0, len(rm.instanceSubs))
+		queueSubs, nodeSubs := countSubsBySuffix(rm.instanceSubs, ".test-node")
+		assert.Equal(t, 0, queueSubs, "queue subscriptions drop when the node is full")
+		assert.Greater(t, nodeSubs, 0, "node-targeted subscriptions persist when full")
 
 		// Free all resources
 		rm.mu.Lock()
@@ -1396,10 +1424,11 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		handler := func(msg *nats.Msg) {}
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
-		// Leave only 2 vCPUs and 1 GB schedulable — enough for nano/micro but not larger types.
+		// Leave only 2 vCPUs and 2.5 GB schedulable — enough for a nano/micro plus
+		// its nbdkit charge (RG-6), but not larger types.
 		rm.mu.Lock()
 		rm.allocatedVCPU = (rm.hostVCPU - rm.reservedVCPU) - 2
-		rm.allocatedMem = (rm.hostMemGB - rm.reservedMem) - 1.0
+		rm.allocatedMem = (rm.hostMemGB - rm.reservedMem) - 2.5
 		rm.mu.Unlock()
 		rm.updateInstanceSubscriptions()
 
@@ -1475,15 +1504,63 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		rm.allocatedMem = rm.hostMemGB - rm.reservedMem
 		rm.mu.Unlock()
 		rm.updateInstanceSubscriptions()
-		assert.Equal(t, 0, len(rm.instanceSubs))
+		queueSubs, _ := countSubsBySuffix(rm.instanceSubs, ".test-node")
+		assert.Equal(t, 0, queueSubs, "queue subscriptions drop when the node is full")
 
-		// Publishing to an instance type topic should get no responders
+		// Publishing to an instance type's queue (anycast) topic should get no
+		// responders — that subject is torn down on capacity so launches reroute.
 		instanceType := getTestInstanceType(t)
 		topic := fmt.Sprintf("ec2.RunInstances.%s", instanceType)
 
 		_, err = nc.Request(topic, []byte("{}"), 500*time.Millisecond)
 		assert.ErrorIs(t, err, nats.ErrNoResponders,
 			"request to a type with no subscribed nodes should return ErrNoResponders")
+	})
+
+	// A full node must still answer a node-targeted (unicast) launch: a committed
+	// placement reservation names this node specifically, so dropping the
+	// subscription would turn a real capacity decision into 'no responders' and
+	// fail the reservation spuriously (e.g. an EKS HA control-plane leg).
+	t.Run("NodeTargetedRespondsWhenFull", func(t *testing.T) {
+		rm, err := NewResourceManager(nil, nil, nil)
+		require.NoError(t, err)
+		nc, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		defer nc.Close()
+
+		handler := func(msg *nats.Msg) {}
+		rm.initSubscriptions(nc, handler, nil, "test-node")
+
+		// Pick a type that fits at init so it gets both a queue and a
+		// node-targeted subscription.
+		var fitType string
+		for key, it := range rm.instanceTypes {
+			if !instancetypes.IsSystemType(key) && rm.canAllocate(it, 1) >= 1 {
+				fitType = key
+				break
+			}
+		}
+		require.NotEmpty(t, fitType, "host must fit at least one instance type")
+		queueTopic := fmt.Sprintf("ec2.RunInstances.%s", fitType)
+		nodeTopic := fmt.Sprintf("ec2.RunInstances.%s.test-node", fitType)
+		require.Contains(t, rm.instanceSubs, queueTopic)
+		require.Contains(t, rm.instanceSubs, nodeTopic)
+
+		// Fill the node completely.
+		rm.mu.Lock()
+		rm.allocatedVCPU = rm.hostVCPU - rm.reservedVCPU
+		rm.allocatedMem = rm.hostMemGB - rm.reservedMem
+		rm.mu.Unlock()
+		rm.updateInstanceSubscriptions()
+
+		// A live entry in instanceSubs is a live NATS subscription on nc, so a
+		// request to that subject reaches a responder. The queue (anycast) subject
+		// drops so launches reroute; the node-targeted (unicast) subject persists
+		// so a committed placement still gets a real capacity decision.
+		assert.NotContains(t, rm.instanceSubs, queueTopic,
+			"queue subject should be unsubscribed when the node is full")
+		assert.Contains(t, rm.instanceSubs, nodeTopic,
+			"node-targeted subject must stay subscribed when the node is full")
 	})
 }
 

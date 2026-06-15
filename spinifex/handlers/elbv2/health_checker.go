@@ -9,13 +9,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
 )
 
-// healthChecker processes target health reports from LB agents. Reports arrive
-// via LBAgentHeartbeat (the agent pushes health data on each heartbeat). This
-// checker maps HAProxy backend server statuses back to registered targets and
-// updates HealthState in the store.
-//
-// This mirrors the AWS model where the LB itself health-checks the targets,
-// rather than the control plane probing them directly.
+// healthChecker processes target health reports from LB agents pushed via
+// LBAgentHeartbeat, mapping backend statuses back to targets in the store.
 type healthChecker struct {
 	store *Store
 
@@ -37,7 +32,6 @@ func newHealthChecker(store *Store) *healthChecker {
 }
 
 // handleHealthReport unmarshals a JSON-encoded health report and processes it.
-// This is the []byte entry point used by tests and any future wire-format callers.
 func (hc *healthChecker) handleHealthReport(data []byte) {
 	var report lbagent.HealthReport
 	if err := json.Unmarshal(data, &report); err != nil {
@@ -48,8 +42,7 @@ func (hc *healthChecker) handleHealthReport(data []byte) {
 	hc.handleHealthReportDirect(report)
 }
 
-// handleHealthReportDirect processes a health report from an lb-agent without
-// an intermediate JSON round-trip. Called directly from LBAgentHeartbeat.
+// handleHealthReportDirect processes a health report without a JSON round-trip.
 func (hc *healthChecker) handleHealthReportDirect(report lbagent.HealthReport) {
 	if len(report.Servers) == 0 {
 		return
@@ -61,8 +54,7 @@ func (hc *healthChecker) handleHealthReportDirect(report lbagent.HealthReport) {
 		serverUp[srv.Server] = srv.Status == "UP"
 	}
 
-	// Look up only the target groups attached to this LB's listeners.
-	// Falls back to scanning all target groups if LBID is missing.
+	// Look up target groups for this LB; fall back to all TGs if LBID is missing.
 	var tgs []*TargetGroupRecord
 	var err error
 	if report.LBID != "" {
@@ -75,8 +67,7 @@ func (hc *healthChecker) handleHealthReportDirect(report lbagent.HealthReport) {
 		return
 	}
 
-	// Collect changed TGs under the lock, then persist outside to avoid
-	// holding the mutex across KV store network I/O.
+	// Collect changed TGs under the lock; persist outside to avoid holding it across KV I/O.
 	hc.mu.Lock()
 	var changedTGs []*TargetGroupRecord
 	for _, tg := range tgs {
@@ -142,9 +133,8 @@ func (hc *healthChecker) handleHealthReportDirect(report lbagent.HealthReport) {
 }
 
 // evaluateHealth applies threshold logic to determine a target's new state.
-// From "initial", a single healthy probe transitions to healthy (fast start,
-// matching AWS behavior for newly registered targets). From "healthy" or
-// "unhealthy", full threshold counts are required.
+// From "initial", one healthy probe transitions to healthy (AWS fast-start);
+// from "healthy"/"unhealthy", full threshold counts are required.
 func evaluateHealth(current string, ctr *targetCounter, cfg HealthCheckConfig) (string, string) {
 	healthyThreshold := cfg.HealthyThreshold
 	if healthyThreshold == 0 {

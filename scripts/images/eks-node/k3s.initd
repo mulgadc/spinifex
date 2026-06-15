@@ -1,21 +1,21 @@
 #!/sbin/openrc-run
-# K3s server control plane. v1 = single-node embedded SQLite (kine) datastore;
-# the per-cluster config.yaml omits cluster-init so k3s uses SQLite, not etcd
-# (etcd's per-commit fsync stalls on the viperblock root volume). Data lives at
-# /var/lib/rancher/k3s; subsequent starts reuse it. Multi-server HA needs etcd
-# and is deferred.
+# K3s server control plane. The per-cluster config.yaml sets cluster-init, so
+# k3s uses the embedded etcd datastore (required for multi-server HA). Data
+# lives at /var/lib/rancher/k3s; subsequent starts reuse it.
 
 description="K3s Kubernetes server (Mulga EKS control plane)"
 command="/usr/local/bin/k3s"
 command_args="server --config /etc/rancher/k3s/config.yaml"
-command_background="yes"
 pidfile="/run/k3s.pid"
+
+# Supervise the apiserver. A transient k3s crash must self-heal: without a
+# supervisor a single exit leaves the control plane permanently dead, the NLB
+# target never recovers, and the cluster wedges ACTIVE-but-unreachable.
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
 output_log="/var/log/k3s.log"
 error_log="/var/log/k3s.log"
-
-# Generous start timeout — K3s bootstraps containerd, initialises the SQLite
-# datastore, pulls system images. First boot can take 2-3 minutes on cold cache.
-start_stop_daemon_args="--wait 5000"
 
 depend() {
     need net cgroups
@@ -31,6 +31,22 @@ start_pre() {
         else
             eerror "no /etc/rancher/k3s/config.yaml and no .skel to derive from"
             return 1
+        fi
+    fi
+
+    # Deferred built-in ingress: when this cluster wants traefik
+    # (EKS_DEFER_TRAEFIK=1) but the control plane has not yet stabilised (no
+    # traefik-enabled sentinel), stage a deploy-controller .skip marker so k3s
+    # writes traefik.yaml/traefik-crd.yaml but does NOT apply them. Staged here,
+    # pre-start, so the marker exists before the deploy controller first scans —
+    # racing it post-start could apply traefik (and crash etcd) anyway.
+    # mulga-eks-state-report removes the marker once the apiserver is healthy.
+    if [ -f /etc/spinifex-eks/first-boot.env ]; then
+        defer=$(. /etc/spinifex-eks/first-boot.env 2>/dev/null; echo "${EKS_DEFER_TRAEFIK:-0}")
+        if [ "${defer}" = "1" ] && [ ! -f /var/lib/spinifex-eks/traefik-enabled ]; then
+            mkdir -p /var/lib/rancher/k3s/server/manifests
+            : > /var/lib/rancher/k3s/server/manifests/traefik.yaml.skip
+            : > /var/lib/rancher/k3s/server/manifests/traefik-crd.yaml.skip
         fi
     fi
 

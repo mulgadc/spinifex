@@ -1,7 +1,9 @@
 package handlers_elbv2
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -9,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -167,6 +170,7 @@ func TestCreateLoadBalancer_MultiSubnet_AllENIsPassedToLauncher(t *testing.T) {
 		Subnets: []*string{aws.String(sub1), aws.String(sub2), aws.String(sub3)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 
 	require.Len(t, mock.launchCalls, 1)
 	launchInput := mock.launchCalls[0]
@@ -287,13 +291,23 @@ func TestCreateLoadBalancer_InternetFacing_AllocatesPublicIP(t *testing.T) {
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
 	require.NoError(t, err)
+	assert.Equal(t, "internet-facing", *out.LoadBalancers[0].Scheme)
 
-	lb := out.LoadBalancers[0]
-	assert.Equal(t, "internet-facing", *lb.Scheme)
+	svc.WaitLaunches()
 
 	// Verify launcher was called with internet-facing scheme
 	require.Len(t, mock.launchCalls, 1)
 	assert.Equal(t, SchemeInternetFacing, mock.launchCalls[0].Scheme)
+
+	// The public IP is attached by the asynchronous launch, so it surfaces on a
+	// describe after the boot completes rather than on the create response (which
+	// returns while the LB is still provisioning — AWS parity).
+	desc, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+		LoadBalancerArns: []*string{out.LoadBalancers[0].LoadBalancerArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.LoadBalancers, 1)
+	lb := desc.LoadBalancers[0]
 
 	// Internet-facing ALB: AZ includes both the public IP and the ENI's private IP.
 	require.Len(t, lb.AvailabilityZones, 1)
@@ -347,6 +361,7 @@ func TestCreateLoadBalancer_Internal_NoPublicIP(t *testing.T) {
 	assert.NotEmpty(t, aws.StringValue(lb.AvailabilityZones[0].LoadBalancerAddresses[0].PrivateIPv4Address))
 
 	// Verify launcher was called with internal scheme
+	svc.WaitLaunches()
 	require.Len(t, mock.launchCalls, 1)
 	assert.Equal(t, SchemeInternal, mock.launchCalls[0].Scheme)
 }
@@ -385,6 +400,7 @@ func TestCreateLoadBalancer_NLB_Internal_NoPublicIP(t *testing.T) {
 	assert.Contains(t, *lb.LoadBalancerArn, "loadbalancer/net/nlb-internal")
 
 	// Verify launcher was called with internal scheme
+	svc.WaitLaunches()
 	require.Len(t, mock.launchCalls, 1)
 	assert.Equal(t, SchemeInternal, mock.launchCalls[0].Scheme)
 
@@ -423,6 +439,7 @@ func TestDeleteLoadBalancer_TerminatesVM_WithPublicIP(t *testing.T) {
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 
 	// Verify ENI exists before delete
 	eniDesc, _ := vpcSvc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
@@ -444,6 +461,64 @@ func TestDeleteLoadBalancer_TerminatesVM_WithPublicIP(t *testing.T) {
 	// Verify ENIs were cleaned up (detach + delete happens in DeleteLoadBalancer)
 	eniDesc, _ = vpcSvc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	assert.Empty(t, eniDesc.NetworkInterfaces)
+}
+
+func TestDeleteLoadBalancer_ReapsFloatingIPNAT(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	subnets, err := vpcSvc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	subnetID := *subnets.Subnets[0].SubnetId
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{
+			InstanceID: "i-alb-nat",
+			PrivateIP:  "10.0.1.9",
+			PublicIP:   "203.0.113.60",
+		},
+		terminateDone: make(chan struct{}),
+	}
+	svc.InstanceLauncher = mock
+	svc.GatewayURL = "https://10.0.0.1:9999"
+	svc.SystemAccessKey = "AKID"
+	svc.SystemSecretKey = "SECRET"
+
+	// Capture the vpc.delete-nat event the teardown must publish.
+	type natEvent struct {
+		VpcId      string `json:"vpc_id"`
+		ExternalIP string `json:"external_ip"`
+		LogicalIP  string `json:"logical_ip"`
+	}
+	gotNAT := make(chan natEvent, 4)
+	sub, err := svc.nc.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		var evt natEvent
+		if json.Unmarshal(msg.Data, &evt) == nil {
+			gotNAT <- evt
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("nat-reap-alb"),
+		Subnets: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	svc.WaitLaunches()
+
+	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	select {
+	case evt := <-gotNAT:
+		assert.Equal(t, "203.0.113.60", evt.ExternalIP, "floating IP reaped as external_ip")
+		assert.Equal(t, "10.0.1.9", evt.LogicalIP, "LB VM VPC IP reaped as logical_ip")
+		assert.NotEmpty(t, evt.VpcId)
+	case <-time.After(3 * time.Second):
+		t.Fatal("DeleteLoadBalancer did not publish vpc.delete-nat for the LB floating IP")
+	}
 }
 
 func TestDescribeLoadBalancers_InternetFacing_IncludesPublicIP(t *testing.T) {
@@ -470,6 +545,7 @@ func TestDescribeLoadBalancers_InternetFacing_IncludesPublicIP(t *testing.T) {
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 
 	// Describe and verify public IP is in the response
 	desc, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
@@ -520,6 +596,7 @@ func TestDescribeLoadBalancers_Internal_NoPublicIP(t *testing.T) {
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 
 	desc, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
 		Names: []*string{aws.String("desc-int-alb")},
@@ -557,9 +634,17 @@ func TestCreateLoadBalancer_LaunchFailure_SetsStateFailed(t *testing.T) {
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
 	require.NoError(t, err)
+	// The create returns provisioning; the launch failure lands on the record
+	// once the background boot attempt fails.
+	assert.Equal(t, StateProvisioning, *out.LoadBalancers[0].State.Code)
 
-	lb := out.LoadBalancers[0]
-	assert.Equal(t, StateFailed, *lb.State.Code)
+	svc.WaitLaunches()
+	desc, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+		LoadBalancerArns: []*string{out.LoadBalancers[0].LoadBalancerArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.LoadBalancers, 1)
+	assert.Equal(t, StateFailed, *desc.LoadBalancers[0].State.Code)
 }
 
 func TestCreateLoadBalancer_MissingCredentials_SetsStateFailed(t *testing.T) {
@@ -583,10 +668,16 @@ func TestCreateLoadBalancer_MissingCredentials_SetsStateFailed(t *testing.T) {
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
 	require.NoError(t, err)
+	assert.Equal(t, StateProvisioning, *out.LoadBalancers[0].State.Code)
 
-	lb := out.LoadBalancers[0]
-	assert.Equal(t, StateFailed, *lb.State.Code)
-	// Verify launcher was never called
+	svc.WaitLaunches()
+	desc, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+		LoadBalancerArns: []*string{out.LoadBalancers[0].LoadBalancerArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.LoadBalancers, 1)
+	assert.Equal(t, StateFailed, *desc.LoadBalancers[0].State.Code)
+	// Verify launcher was never called (missing creds short-circuit the boot)
 	assert.Empty(t, mock.launchCalls)
 }
 
@@ -632,11 +723,9 @@ func TestENI_RequesterManagedFlag(t *testing.T) {
 	}
 }
 
-// TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI verifies that
-// when the caller supplies SecurityGroups on the LB input, the underlying ALB
-// ENI is created with those SGs (not the VPC default SG). Without this the
-// ENI's OVN port-group never gains the user's allow rules and inbound traffic
-// is dropped by the SG enforcement default-deny ACL.
+// TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI verifies caller-supplied
+// SecurityGroups are applied to the ALB ENI; without this the OVN port-group misses
+// the user's allow rules and the default-deny ACL drops all inbound traffic.
 func TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
@@ -713,11 +802,9 @@ func TestCreateLoadBalancer_NoSecurityGroupsFallsBackToDefault(t *testing.T) {
 	assert.Equal(t, defaultSGID, *albENI.Groups[0].GroupId)
 }
 
-// TestRebuildSystemInstanceInput_HappyPath verifies that a recovering ALB
-// VM gets the same SystemInstanceInput shape the launch path produced —
-// otherwise writeFwCfgBlobs would emit a different netcfg/cacert blob than
-// the persisted QEMU command line references, and the relaunch would fail
-// at fw_cfg load time the same way the tmpfs wipe does today.
+// TestRebuildSystemInstanceInput_HappyPath verifies a recovering ALB VM gets the
+// same SystemInstanceInput as the original launch; a mismatch causes writeFwCfgBlobs
+// to emit a different netcfg/cacert blob than the persisted QEMU command line.
 func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
@@ -743,6 +830,7 @@ func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
 		Scheme:  aws.String("internal"),
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	require.Len(t, mock.launchCalls, 1)
 	originalInput := mock.launchCalls[0]
 
@@ -762,10 +850,8 @@ func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
 	assert.Equal(t, originalInput.SubnetID, rebuilt.SubnetID)
 	assert.Equal(t, originalInput.ENIID, rebuilt.ENIID)
 	assert.Equal(t, originalInput.ENIMac, rebuilt.ENIMac)
-	// ENIIP comes from the persisted lb.VPCIP (which the launcher's PrivateIP
-	// return value sets); in production the launcher echoes back the ENI's
-	// private IP, so this matches the original launch input. The test mock
-	// returns a synthetic value, so assert against the mock's PrivateIP.
+	// ENIIP comes from lb.VPCIP (set by the launcher's PrivateIP return value);
+	// the test mock returns a synthetic value, so assert against the mock's IP.
 	assert.Equal(t, "10.0.1.42", rebuilt.ENIIP)
 	assert.Equal(t, originalInput.Scheme, rebuilt.Scheme)
 	assert.Equal(t, originalInput.AccountID, rebuilt.AccountID)
@@ -778,10 +864,9 @@ func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
 	assert.Equal(t, "172.31.0.7/24", rebuilt.NICs[1].CIDR, "mgmt NIC CIDR must come from RecoveryContext")
 }
 
-// TestRebuildSystemInstanceInput_NoLBRecord verifies the error path used by
-// refreshSystemInstanceState to flag the instance recovery_failed when the
-// LB record was wiped from KV but the VM record survived — recovery must
-// not invent a fake input and silently boot the VM into an unowned state.
+// TestRebuildSystemInstanceInput_NoLBRecord verifies the recovery_failed path when
+// the LB record is gone from KV but the VM record survives; recovery must not
+// silently boot the VM into an unowned state.
 func TestRebuildSystemInstanceInput_NoLBRecord(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -793,11 +878,9 @@ func TestRebuildSystemInstanceInput_NoLBRecord(t *testing.T) {
 	assert.Contains(t, err.Error(), "no LB record references instance i-ghost")
 }
 
-// TestRebuildSystemInstanceInput_MultiENI verifies that extras survive the
-// rebuild for multi-subnet ALBs — the create path passes one ExtraENIInput
-// per non-primary subnet, and recovery must produce the same shape so the
-// daemon wires the same set of taps and NICs the persisted QEMU args
-// reference.
+// TestRebuildSystemInstanceInput_MultiENI verifies extras survive the rebuild for
+// multi-subnet ALBs; recovery must produce the same ExtraENIInput shape so the
+// daemon wires the same taps and NICs the persisted QEMU args reference.
 func TestRebuildSystemInstanceInput_MultiENI(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
@@ -819,6 +902,7 @@ func TestRebuildSystemInstanceInput_MultiENI(t *testing.T) {
 		Subnets: []*string{aws.String(sub1), aws.String(sub2)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	require.Len(t, mock.launchCalls, 1)
 	originalInput := mock.launchCalls[0]
 

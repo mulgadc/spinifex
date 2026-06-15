@@ -1,8 +1,6 @@
-// Package reconcile is the network stack's intent-actual reconciliation
-// layer. It loads desired state from the JetStream KV snapshot (scoped to
-// the local AZ) and applies the diff against OVN NB in a single
-// topologically-sorted pass (VPC → Subnet → SG → Port → IGW → EIP →
-// NATGW). Deletes run reverse order. Drift fires every 5 minutes.
+// Package reconcile is the network stack's intent-actual reconciliation layer.
+// It loads desired state from JetStream KV and applies the diff against OVN NB
+// in topological order (VPC→Subnet→SG→Port→IGW→EIP→NATGW). Drift every 5m.
 package reconcile
 
 import (
@@ -27,6 +25,17 @@ type Reconciler interface {
 	ReconcileApplyOnly(ctx context.Context, intent IntentState) error
 }
 
+// GatewayClaimVerifier confirms ovn-controller has claimed the SB chassisredirect
+// Port_Binding and nudges recompute if not. After a reboot the SB binding can be
+// unclaimed while NB intent is correct, making VPC floating IPs unreachable.
+type GatewayClaimVerifier interface {
+	// GatewayPortClaimed reports whether the SB Port_Binding for crPortName (the
+	// chassisredirect port) has a non-empty chassis.
+	GatewayPortClaimed(ctx context.Context, crPortName string) (bool, error)
+	// NudgeRecompute asks the local ovn-controller to re-evaluate logical flows.
+	NudgeRecompute(ctx context.Context) error
+}
+
 // Config is the construction-time bag for the reconciler. All fields except
 // Chassis are required.
 type Config struct {
@@ -36,18 +45,17 @@ type Config struct {
 	Routes   policy.RouteManager
 	IGW      external.IGWManager
 	Topology topology.Manager
-	// IMDS installs per-VPC IMDS OVN topology during the VPC apply pass.
-	// Optional: nil skips IMDS plumbing (focused reconcile tests leave it
-	// unset; production always wires it).
+	// IMDS installs IMDS OVN topology per-VPC. Optional: nil skips IMDS (tests).
 	IMDS    external.IMDSTopologyManager
 	LocalAZ string
 	// NodeHostname is the holder identity for leader-election CAS.
 	NodeHostname string
 	// Chassis is the SBDB-discovered chassis list for gateway LRP rebinding.
 	Chassis []string
-	// DNSServer is the OVN dhcp_options dns_server value ("{a, b}") emitted on
-	// subnet DHCPOptions rows. Empty falls back to the topology default, so the
-	// reconciler and live topology paths emit the same value (no drift).
+	// GatewayClaim verifies/repairs the SB chassis claim after rebinding. Optional.
+	GatewayClaim GatewayClaimVerifier
+	// DNSServer is the OVN dhcp_options dns_server value ("{a, b}"). Empty falls
+	// back to the topology default to keep both code paths in sync.
 	DNSServer string
 }
 
@@ -62,6 +70,7 @@ type reconciler struct {
 	localAZ   string
 	host      string
 	chassis   []string
+	gwClaim   GatewayClaimVerifier
 	dnsServer string
 }
 
@@ -101,15 +110,13 @@ func New(cfg Config) (Reconciler, error) {
 		localAZ:   cfg.LocalAZ,
 		host:      cfg.NodeHostname,
 		chassis:   cfg.Chassis,
+		gwClaim:   cfg.GatewayClaim,
 		dnsServer: dnsServer,
 	}, nil
 }
 
-// Reconcile diffs intent vs. actual OVN state and applies create/delete
-// per-resource: VPC → Subnet → SG → Port → IGW → EIP → NATGW (reverse for
-// deletes). SG precedes Port so ENI LSPs join their PGs atomically via
-// CreateLogicalSwitchPortInGroups. Per-stage errors are logged and the next
-// stage runs; only an actual-state scan failure is returned.
+// Reconcile diffs intent vs. actual OVN state and applies in topological order.
+// Per-stage errors are logged; only a scan failure is returned.
 func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
 	return r.reconcile(ctx, intent, true)
 }

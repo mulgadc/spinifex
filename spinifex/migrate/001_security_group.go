@@ -68,11 +68,8 @@ func init() {
 	})
 }
 
-// backfillSGRuleIDs assigns a fresh sgr- ID to any rule on the record at key
-// whose RuleId is empty. Records with all IDs already populated are skipped
-// (no write, no revision bump) so the migration is idempotent. CAS conflicts
-// are retried up to sgMigrationMaxRetries; on exhaustion the most recent
-// underlying error is wrapped into the returned failure.
+// backfillSGRuleIDs assigns sgr- IDs to any rule missing one. Skips records
+// already fully populated. CAS conflicts retry up to sgMigrationMaxRetries.
 func backfillSGRuleIDs(ctx KVContext, key string) error {
 	var lastErr error
 	for attempt := range sgMigrationMaxRetries {
@@ -112,10 +109,7 @@ func backfillSGRuleIDs(ctx KVContext, key string) error {
 			return fmt.Errorf("marshal %s: %w", key, err)
 		}
 		if _, err := ctx.KV.Update(key, data, entry.Revision()); err != nil {
-			// nats.ErrKeyExists is the sentinel returned by KV.Update on a
-			// revision mismatch: it wraps a JetStream APIError with
-			// ErrorCode JSStreamWrongLastSequence (10071), which APIError.Is
-			// matches on.
+			// nats.ErrKeyExists = revision mismatch (JSStreamWrongLastSequence).
 			if errors.Is(err, nats.ErrKeyExists) {
 				ctx.Logger.Warn("SG migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
 				lastErr = err

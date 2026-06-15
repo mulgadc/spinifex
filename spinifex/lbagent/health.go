@@ -22,15 +22,8 @@ type HealthReport struct {
 	Servers []ServerStatus `json:"servers"`
 }
 
-// queryHAProxyStats connects to the HAProxy stats socket, runs "show stat",
-// and parses the CSV output to extract backend server health status.
-//
-// HAProxy CSV format: pxname,svname,... fields. We need:
-//   - Column 0: pxname (backend name)
-//   - Column 1: svname (server name)
-//   - Column 17: status (UP, DOWN, etc.)
-//
-// Rows where svname is "FRONTEND" or "BACKEND" are aggregates — skip them.
+// queryHAProxyStats reads backend server health from the HAProxy stats socket.
+// Parses CSV "show stat" output; cols 0/1/17 = pxname/svname/status.
 func queryHAProxyStats(socketPath string) ([]ServerStatus, error) {
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {

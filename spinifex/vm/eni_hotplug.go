@@ -32,28 +32,14 @@ var newDeviceController = func(v *VM) DeviceController {
 	return NewQMPDeviceController(v.QMPClient, v.ID)
 }
 
-// HotPlugENIResult carries the slot index assigned to a successful
-// hot-plug. Returned to the daemon handler so the AttachmentId KV record
-// can be annotated with HotPlugSlot before the NATS success event fires.
+// HotPlugENIResult carries the slot index assigned to a successful hot-plug.
 type HotPlugENIResult struct {
 	Slot int
 }
 
-// HotPlugENI runs the 4-step attach pipeline against the live VM:
-//
-//  1. tap device + OVS port   (NetworkPlumber.SetupTap — atomic tap+br-int)
-//  2. QMP netdev_add
-//  3. QMP device_add
-//  4. poll query-pci until materialized
-//
-// On step-N failure, steps 1..N-1 are rolled back in reverse order and
-// the slot is returned to ENIRequests.AvailableSlots. The instance must
-// be running and have a live QMPClient.
-//
-// Caller (daemon handler) owns the KV side-effects: marking
-// AttachmentStatus=attached and publishing the
-// vpc.eni-hotplug.attached.{instanceID} event happens after this returns
-// nil.
+// HotPlugENI runs the 4-step attach pipeline: (1) tap+OVS, (2) netdev_add,
+// (3) device_add, (4) poll query-pci. On failure, prior steps are rolled back
+// and the slot is returned. Instance must be running with a live QMPClient.
 func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult, error) {
 	if instance == nil {
 		return HotPlugENIResult{}, ErrInstanceNotFound
@@ -140,10 +126,8 @@ func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult,
 	return HotPlugENIResult{Slot: slot}, nil
 }
 
-// HotUnplugENI runs the reverse 4-step detach pipeline. force=true
-// shortens the post-device_del poll budget so an unresponsive guest does
-// not block the call — at the cost of leaving the guest with a dangling
-// virtio-net device until reboot if the kernel never releases it.
+// HotUnplugENI runs the reverse 4-step detach pipeline. force=true shortens
+// the poll budget at the cost of potentially leaving a dangling device.
 func (m *Manager) HotUnplugENI(instance *VM, eniID string, force bool) error {
 	if instance == nil {
 		return ErrInstanceNotFound
@@ -211,9 +195,8 @@ func (m *Manager) releaseSlotLocked(instance *VM, eniID string, slot int) {
 	instance.ENIRequests.AvailableSlots = append(instance.ENIRequests.AvailableSlots, slot)
 }
 
-// waitForPCIDevice polls QueryPCI until presence (wantPresent=true) or
-// absence (wantPresent=false) of deviceID is observed. Attach and detach
-// use distinct poll budgets via the package-level eniPipeline settings.
+// waitForPCIDevice polls QueryPCI until deviceID is present or absent.
+// Attach and detach use distinct budgets from the eniPipeline settings.
 func waitForPCIDevice(dc DeviceController, deviceID string, wantPresent bool) error {
 	interval := eniPipeline.AttachPollInterval
 	maxAttempts := eniPipeline.AttachPollMax
@@ -247,13 +230,8 @@ func waitForPCIDevice(dc DeviceController, deviceID string, wantPresent bool) er
 // override it to drive poll cadence without burning wall-clock time.
 var eniPipelineSleep = time.Sleep
 
-// SetHotPlugTestSeams swaps the device-controller factory and the
-// query-pci poll sleep for the duration of a test, returning a restore
-// func that callers pass to t.Cleanup. Mirrors utils.SetSudoCommandForTest:
-// the indirection lets tests in other packages drive the hot-plug
-// pipeline against a StubDeviceController without reassigning
-// unexported vars (which the reassign linter forbids). Pass nil for
-// either argument to leave the corresponding seam untouched.
+// SetHotPlugTestSeams swaps the device-controller factory and poll sleep for a
+// test, returning a restore func for t.Cleanup. Pass nil to leave a seam untouched.
 func SetHotPlugTestSeams(factory func(*VM) DeviceController, sleep func(time.Duration)) (restore func()) {
 	origFactory := newDeviceController
 	origSleep := eniPipelineSleep

@@ -22,6 +22,13 @@ const (
 	KeyPrefixTG       = "tg."
 	KeyPrefixListener = "listener."
 	KeyPrefixRule     = "rule."
+	// KeyPrefixLBName is the per-account LB-name claim key that makes the LB
+	// name an atomically claimable identity, preventing concurrent same-name
+	// creates from both launching a VM.
+	KeyPrefixLBName = "lbname."
+
+	// maxLBNameClaimRetries bounds the crash-orphan CAS-reclaim loop in ClaimLBName.
+	maxLBNameClaimRetries = 5
 )
 
 // Store provides CRUD operations for ELBv2 resources backed by JetStream KV.
@@ -50,6 +57,61 @@ func NewStore(nc *nats.Conn) (*Store, error) {
 }
 
 // --- Load Balancer CRUD ---
+
+// LBNameKey returns the per-account name-claim key for an LB name.
+func LBNameKey(name, accountID string) string {
+	return KeyPrefixLBName + accountID + "." + name
+}
+
+// ClaimLBName atomically claims the LB name; ok=true means this caller owns it,
+// dup=true means a live LB already holds it. An orphaned claim (owner resolves to
+// no record) is reclaimed via CAS. Idempotency barrier for CreateLoadBalancer.
+func (s *Store) ClaimLBName(name, accountID, lbID string) (ok bool, dup bool, err error) {
+	key := LBNameKey(name, accountID)
+	for range maxLBNameClaimRetries {
+		if _, cerr := s.kv.Create(key, []byte(lbID)); cerr == nil {
+			return true, false, nil
+		} else if !errors.Is(cerr, nats.ErrKeyExists) {
+			return false, false, fmt.Errorf("kv create %s: %w", key, cerr)
+		}
+		entry, gerr := s.kv.Get(key)
+		if gerr != nil {
+			if errors.Is(gerr, nats.ErrKeyNotFound) {
+				continue // raced vanish; retry the create
+			}
+			return false, false, fmt.Errorf("kv get %s: %w", key, gerr)
+		}
+		ownerID := string(entry.Value())
+		if ownerID != "" && ownerID != lbID {
+			rec, rerr := s.GetLoadBalancer(ownerID)
+			if rerr != nil {
+				return false, false, fmt.Errorf("resolve LB name owner %s: %w", ownerID, rerr)
+			}
+			if rec != nil {
+				return false, true, nil // live LB holds the name
+			}
+		}
+		// Orphaned (crashed prior create) or already ours: CAS-take the claim.
+		if _, uerr := s.kv.Update(key, []byte(lbID), entry.Revision()); uerr != nil {
+			if errors.Is(uerr, nats.ErrKeyExists) {
+				continue // lost the CAS race; re-read
+			}
+			return false, false, fmt.Errorf("kv update %s: %w", key, uerr)
+		}
+		return true, false, nil
+	}
+	return false, false, fmt.Errorf("elbv2: claim LB name %s exhausted retries", name)
+}
+
+// ReleaseLBName deletes the name claim. A missing key is success (idempotent),
+// so create-rollback paths and DeleteLoadBalancer can call it unconditionally.
+func (s *Store) ReleaseLBName(name, accountID string) error {
+	key := LBNameKey(name, accountID)
+	if err := s.kv.Delete(key); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+		return fmt.Errorf("kv delete %s: %w", key, err)
+	}
+	return nil
+}
 
 // PutLoadBalancer stores a load balancer record.
 func (s *Store) PutLoadBalancer(lb *LoadBalancerRecord) error {
@@ -91,10 +153,9 @@ func (s *Store) ListLoadBalancers() ([]*LoadBalancerRecord, error) {
 	return listByPrefix[LoadBalancerRecord](s.kv, KeyPrefixLB)
 }
 
-// GetLoadBalancerByArn finds a load balancer by its ARN via a direct KV lookup
-// on the short ID embedded in the ARN's final path segment. Returns (nil, nil)
-// if the ARN can't be parsed or no record matches. Terraform hits
-// Describe*Attributes on every plan/refresh so this must be O(1), not O(n).
+// GetLoadBalancerByArn finds a load balancer by the short ID in the ARN's final
+// path segment. Returns (nil, nil) if unparseable or not found. O(1) — Terraform
+// hits Describe*Attributes on every plan/refresh.
 func (s *Store) GetLoadBalancerByArn(arn string) (*LoadBalancerRecord, error) {
 	// ELBv2 LB ARN: arn:aws:elasticloadbalancing:{region}:{account}:loadbalancer/{app,net}/{name}/{lbID}
 	idx := strings.LastIndex(arn, "/")
@@ -109,10 +170,7 @@ func (s *Store) GetLoadBalancerByArn(arn string) (*LoadBalancerRecord, error) {
 	if lb == nil {
 		return nil, nil
 	}
-	// Defence-in-depth: ensure the record actually belongs to this ARN.
-	// Short IDs are random hex, so collisions are effectively impossible, but
-	// a mismatch here would indicate KV corruption and must not be silently
-	// served as a successful lookup.
+	// Defence-in-depth: ARN mismatch indicates KV corruption; never serve it silently.
 	if lb.LoadBalancerArn != arn {
 		slog.Error("load balancer KV record ARN mismatch",
 			"requested_arn", arn, "stored_arn", lb.LoadBalancerArn, "lb_id", lbID)
@@ -177,10 +235,8 @@ func (s *Store) ListTargetGroups() ([]*TargetGroupRecord, error) {
 	return listByPrefix[TargetGroupRecord](s.kv, KeyPrefixTG)
 }
 
-// GetTargetGroupByArn finds a target group by its ARN via a direct KV lookup
-// on the short ID embedded in the ARN's final path segment. See
-// GetLoadBalancerByArn for the motivation — Terraform's per-plan
-// DescribeTargetGroupAttributes storm must be O(1).
+// GetTargetGroupByArn finds a target group by the short ID in the ARN's final
+// path segment. O(1) — see GetLoadBalancerByArn for motivation.
 func (s *Store) GetTargetGroupByArn(arn string) (*TargetGroupRecord, error) {
 	// ELBv2 TG ARN: arn:aws:elasticloadbalancing:{region}:{account}:targetgroup/{name}/{tgID}
 	idx := strings.LastIndex(arn, "/")
@@ -219,10 +275,8 @@ func (s *Store) TargetGroupsForLB(lbID string) ([]*TargetGroupRecord, error) {
 		return nil, fmt.Errorf("list listeners for %s: %w", lbID, err)
 	}
 
-	// Collect unique TG IDs from listener default actions and rule actions.
-	// Rule TGs must be included so the health checker can update their state
-	// when HAProxy reports server status — HAProxy probes every backend it
-	// renders, including rule backends.
+	// Collect unique TG IDs from default actions and rule actions; rule TGs must
+	// be included so the health checker can update state for all probed backends.
 	seen := make(map[string]struct{})
 	collect := func(tgArn string) {
 		if tgArn == "" {
@@ -332,11 +386,8 @@ func (s *Store) ListListenersByLB(lbArn string) ([]*ListenerRecord, error) {
 	return result, nil
 }
 
-// GetListenerByArn finds a listener by its ARN via a direct KV lookup on the
-// short ID embedded in the ARN's final path segment. See GetLoadBalancerByArn
-// for the motivation — Terraform calls DescribeTags on every aws_lb_listener
-// on every plan, and DescribeTags can carry many ARNs per call, so this must
-// be O(1) per ARN, not an O(n) listener-KV scan.
+// GetListenerByArn finds a listener by the short ID in the ARN's final path segment.
+// O(1) per ARN — Terraform calls DescribeTags for every listener on every plan.
 func (s *Store) GetListenerByArn(arn string) (*ListenerRecord, error) {
 	// ELBv2 listener ARN: arn:aws:elasticloadbalancing:{region}:{account}:listener/{app,net}/{name}/{lbID}/{listenerID}
 	idx := strings.LastIndex(arn, "/")
@@ -414,10 +465,8 @@ func (s *Store) ListRulesByListener(listenerArn string) ([]*RuleRecord, error) {
 	return result, nil
 }
 
-// GetRuleByArn finds a rule by its ARN. Falls back to linear scan because the
-// listener-rule ARN structure embeds the rule short ID after several
-// listener-specific segments; parsing it is brittle and rules-per-account is
-// bounded.
+// GetRuleByArn finds a rule by its ARN via linear scan; the rule short ID is
+// embedded after several listener-specific segments, making direct parsing brittle.
 func (s *Store) GetRuleByArn(arn string) (*RuleRecord, error) {
 	rules, err := s.ListRules()
 	if err != nil {

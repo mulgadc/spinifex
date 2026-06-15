@@ -10,14 +10,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// NATSInstanceService handles instance operations via NATS messaging.
-//
-// Note: DescribeInstances and DescribeInstanceTypes subscriptions are
-// fan-out (no queue group); a single NATSRequest only captures one
-// responder. Cluster-wide aggregation is the gateway's job (see
-// spinifex/gateway/ec2/instance). The methods below are kept for symmetry
-// with the InstanceService interface and intentionally fail rather than
-// silently returning a one-node view.
+// NATSInstanceService handles instance operations via NATS. Fan-out methods
+// (DescribeInstances, DescribeInstanceTypes) intentionally error — use the
+// gateway's scatter-gather helper for cluster-wide results.
 type NATSInstanceService struct {
 	natsConn *nats.Conn
 }

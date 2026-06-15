@@ -7,16 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/tests/e2e/harness"
-	ddilh "github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
 	"github.com/mulgadc/spinifex/tests/e2e/ddil/fault"
+	ddilh "github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// TestScenarioA_NATSKill — stop spinifex-nats on a single node without
-// touching spinifex-daemon, verify the daemon stays up in standalone
-// mode, serves its local API, and the surviving 2-node quorum keeps
-// serving cluster-wide requests. See
-// docs/development/improvements/ddil-e2e-test-harness.md §3 Scenario A.
+// TestScenarioA_NATSKill stops spinifex-nats on one node without touching the daemon,
+// verifies the daemon enters standalone mode, and confirms the 2-node quorum keeps serving.
 func TestScenarioA_NATSKill(t *testing.T) {
 	deps := requireLiveCluster(t)
 	c, ssh, dc, w := deps.cluster, deps.ssh, deps.dc, deps.witness
@@ -60,10 +57,7 @@ func TestScenarioA_NATSKill(t *testing.T) {
 			t.Fatalf("%s /local/instances regressed: pre=%d post=%d", node3.Name, len(pre), len(local3))
 		}
 
-		// Surviving 2-node quorum: each majority daemon's HTTPS listener is
-		// reachable and reports healthy. /health is NATS-independent so
-		// this proves the daemons are up; the witness counters below prove
-		// the data plane (gateway → daemon → QEMU) is still progressing.
+		// /health is NATS-independent; witness counters prove the data plane is still progressing.
 		for _, n := range []harness.Node{node1, node2} {
 			if _, err := dc.Health(ctx, n); err != nil {
 				t.Fatalf("majority %s /health: %v", n.Name, err)

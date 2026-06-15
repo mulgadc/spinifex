@@ -16,10 +16,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// Regex guards for rule condition values. Any byte outside these classes is
-// rejected at write time so the HAProxy renderer can interpolate them without
-// re-validating. The renderer still rejects newline/CR/comment/quote
-// defensively (see haproxy.go) in case the store is bypassed.
+// Regex guards for rule condition values — rejected at write time so the renderer
+// can interpolate them safely. The renderer still validates defensively.
 var (
 	ruleHostPathRegex    = regexp.MustCompile(`^[A-Za-z0-9*?._/-]+$`)
 	ruleHeaderValueRegex = regexp.MustCompile(`^[\x20-\x7E]+$`) // printable ASCII, no control bytes
@@ -262,8 +260,7 @@ func (s *ELBv2ServiceImpl) SetRulePriorities(input *elbv2.SetRulePrioritiesInput
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	// Resolve all rules first so duplicate-priority checks can run before any
-	// write hits the store.
+	// Resolve all rules first so duplicate-priority checks run before any write.
 	type pendingUpdate struct {
 		rule        *RuleRecord
 		newPriority int
@@ -304,8 +301,7 @@ func (s *ELBv2ServiceImpl) SetRulePriorities(input *elbv2.SetRulePrioritiesInput
 		seen[p.newPriority] = struct{}{}
 	}
 
-	// Detect collisions with rules on the same listener that are NOT being
-	// renumbered in this call.
+	// Detect collisions with rules not being renumbered in this call.
 	all, err := s.store.ListRulesByListener(listenerArn)
 	if err != nil {
 		slog.Error("SetRulePriorities: failed to list rules", "listenerArn", listenerArn, "err", err)
@@ -493,9 +489,8 @@ func validateCondition(c *elbv2.RuleCondition) (RuleCondition, error) {
 	return out, nil
 }
 
-// extractStringValues pulls the canonical Values slice for host-header /
-// path-pattern conditions, accepting both the flat input.Values and the
-// nested {Host,Path}HeaderConfig.Values shapes the AWS SDK emits.
+// extractStringValues returns the canonical Values for host-header / path-pattern
+// conditions, accepting both flat and nested SDK shapes.
 func extractStringValues(c *elbv2.RuleCondition) ([]string, error) {
 	var vals []string
 	switch *c.Field {
@@ -591,11 +586,8 @@ func (s *ELBv2ServiceImpl) validateAndConvertRuleActions(in []*elbv2.Action, lis
 	return out, nil
 }
 
-// buildRuleArn rewrites a listener ARN into a listener-rule ARN by replacing
-// the leading "listener/" resource segment with "listener-rule/" and appending
-// the rule short ID. AWS format:
-//
-//	arn:aws:elasticloadbalancing:{region}:{account}:listener-rule/{app}/{lbName}/{lbID}/{listenerID}/{ruleID}
+// buildRuleArn rewrites a listener ARN to a listener-rule ARN by replacing "listener/"
+// with "listener-rule/" and appending the rule short ID.
 func buildRuleArn(listenerArn, ruleID string) (string, error) {
 	const old = ":listener/"
 	before, after, ok := strings.Cut(listenerArn, old)

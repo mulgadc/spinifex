@@ -55,6 +55,7 @@ type StatusResponse struct {
 	CACert        string              `json:"ca_cert,omitempty"`
 	CAKey         string              `json:"ca_key,omitempty"`
 	MasterKey     string              `json:"master_key,omitempty"`
+	ViperblockKey string              `json:"viperblock_key,omitempty"`
 	NetworkConfig *NetworkConfig      `json:"network_config,omitempty"`
 }
 
@@ -99,10 +100,9 @@ type SharedCredentials struct {
 	AdminSecretKey string `json:"admin_secret_key,omitempty"`
 }
 
-// FormationServer is a lightweight HTTP server that coordinates cluster formation.
-// Nodes register themselves via POST /formation/join. Once the expected number of
-// nodes have joined, the done channel is closed and full cluster data (credentials,
-// CA, node list) becomes available via GET /formation/status.
+// FormationServer is a lightweight HTTPS server that coordinates cluster formation.
+// Nodes register via POST /formation/join; full cluster data is available via
+// GET /formation/status once the expected count is reached.
 type FormationServer struct {
 	mu            sync.RWMutex
 	expected      int
@@ -111,6 +111,7 @@ type FormationServer struct {
 	caCert        string
 	caKey         string
 	masterKey     string
+	viperblockKey string
 	networkConfig *NetworkConfig
 	joinToken     string
 	tokenExpiry   time.Time
@@ -217,6 +218,16 @@ func (fs *FormationServer) SetMasterKey(key string) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	fs.masterKey = key
+}
+
+// SetViperblockKey sets the base64-encoded cluster-wide viperblock at-rest
+// encryption key for distribution to joining nodes. Unlike the per-node
+// predastore key, this key is shared so a volume sealed on one node can be
+// opened on any other.
+func (fs *FormationServer) SetViperblockKey(key string) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.viperblockKey = key
 }
 
 // Start launches the HTTPS server on the given address (e.g. "10.0.0.1:4432")
@@ -361,6 +372,7 @@ func (fs *FormationServer) handleStatus(w http.ResponseWriter, r *http.Request) 
 		resp.CACert = fs.caCert
 		resp.CAKey = fs.caKey
 		resp.MasterKey = fs.masterKey
+		resp.ViperblockKey = fs.viperblockKey
 		resp.NetworkConfig = fs.networkConfig
 	}
 

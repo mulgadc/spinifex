@@ -10,8 +10,7 @@ import (
 )
 
 // Purpose tags written to the per-AZ lease bucket so operators can
-// distinguish lease classes (mirrors the schema in
-// docs/development/improvements/external-pool-dhcp-source.md).
+// distinguish lease classes.
 const (
 	PurposeGatewayLRP    = "gw-lrp"
 	PurposeEIP           = "eip"
@@ -19,19 +18,13 @@ const (
 	PurposeNATGWExternal = "natgw-external"
 )
 
-// GatewayLRPClientID returns the DHCP client-id used by
-// DHCPGatewayLRPAllocator. Operators see this string in dnsmasq.leases;
-// the "dhcp-" prefix keeps it disjoint from OVN object names (ADR-0006
-// S4 reserves "gw-" for L2-owned OVN identifiers).
+// GatewayLRPClientID returns the DHCP client-id for vpcID. The "dhcp-" prefix
+// keeps it disjoint from OVN object names ("gw-" is L2-owned).
 func GatewayLRPClientID(vpcID string) string { return "dhcp-gw-lrp-" + vpcID }
 
-// DHCPGatewayLRPAllocator obtains the per-VPC gateway LRP IP via DORA
-// against the upstream DHCP server. Idempotent on vpcID — the manager
-// short-circuits to the persisted lease on repeated calls.
-//
-// Used by vpcd's IGWManager when pool.Source == external.SourceDHCP
-// and NAT mode is centralized. Distributed NAT keeps using
-// external.LinkLocalAllocator (LRP IP never goes on wire).
+// DHCPGatewayLRPAllocator obtains the per-VPC gateway LRP IP via DORA.
+// Used when pool.Source == SourceDHCP with centralized NAT; distributed NAT
+// uses LinkLocalAllocator instead (LRP IP never goes on wire).
 type DHCPGatewayLRPAllocator struct {
 	mgr *Manager
 }
@@ -43,12 +36,9 @@ func NewDHCPGatewayLRPAllocator(mgr *Manager) *DHCPGatewayLRPAllocator {
 	return &DHCPGatewayLRPAllocator{mgr: mgr}
 }
 
-// Allocate DORAs once per vpcID. Returns ok=false when pool is nil or
-// not DHCP-sourced so IGWManager can fall back to link-local.
-// Nexthop is the first router from the DHCP ACK; empty Routers is a hard
-// error — silent link-local fallback would yield 169.254.0.2 on the WAN
-// subnet, which is unreachable and was the root cause of the
-// extdhcp-restore-dhcp-source CI failures.
+// Allocate DORAs once per vpcID; returns ok=false for non-DHCP pools.
+// Empty Routers in the ACK is a hard error — fallback to link-local would
+// yield 169.254.0.2 on the WAN subnet, which is unreachable.
 func (a *DHCPGatewayLRPAllocator) Allocate(ctx context.Context, vpcID string, pool *external.ExternalPoolConfig) (string, int, string, bool, error) {
 	if a == nil || a.mgr == nil {
 		return "", 0, "", false, errors.New("dhcp gw-lrp allocator: nil manager")
@@ -91,10 +81,8 @@ func (a *DHCPGatewayLRPAllocator) Allocate(ctx context.Context, vpcID string, po
 	return entry.Lease.IP.String(), prefix, nexthop, true, nil
 }
 
-// firstRouter returns the first non-nil router in routers, or an error
-// when none is present. The OVN default route needs an on-link nexthop;
-// without one the VPC would have to fall back to link-local, which is
-// unreachable on the WAN subnet.
+// firstRouter returns the first non-nil router, or an error if none present.
+// OVN's default route requires an on-link nexthop.
 func firstRouter(routers []net.IP) (string, error) {
 	for _, r := range routers {
 		if r != nil {

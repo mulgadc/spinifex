@@ -2,15 +2,43 @@ import { Sha256 } from "@aws-crypto/sha256-browser"
 import { HttpRequest } from "@smithy/protocol-http"
 import { SignatureV4 } from "@smithy/signature-v4"
 
-import type { AwsCredentials } from "./auth"
+import type { SessionCredentials } from "./auth"
 
 const AWS_REGION = "ap-southeast-2"
 const GATEWAY_PORT = 9999
 
 interface SignedFetchOptions {
   action: string
-  credentials: AwsCredentials
+  credentials: SessionCredentials
   service?: string
+}
+
+// SignedFetchError carries the AWS error code on `name` and the HTTP status, so
+// that isStaleCredentialsError can classify it the same way it classifies SDK
+// errors.
+export class SignedFetchError extends Error {
+  readonly status: number
+
+  constructor(message: string, name: string, status: number) {
+    super(message)
+    // oxlint-disable-next-line unicorn/custom-error-definition -- name carries the AWS error code so isStaleCredentialsError can classify it
+    this.name = name
+    this.status = status
+  }
+}
+
+function parseXmlTag(body: string, tag: string): string | null {
+  const open = `<${tag}>`
+  const close = `</${tag}>`
+  const start = body.indexOf(open)
+  if (start === -1) {
+    return null
+  }
+  const end = body.indexOf(close, start + open.length)
+  if (end === -1) {
+    return null
+  }
+  return body.slice(start + open.length, end)
 }
 
 export async function signedFetch<T>({
@@ -40,6 +68,9 @@ export async function signedFetch<T>({
     credentials: {
       accessKeyId: credentials.accessKeyId,
       secretAccessKey: credentials.secretAccessKey,
+      // SignatureV4 emits the X-Amz-Security-Token header when present; the
+      // gateway's ASIA path verifies it.
+      sessionToken: credentials.sessionToken,
     },
     region: AWS_REGION,
     service,
@@ -66,8 +97,13 @@ export async function signedFetch<T>({
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "")
-    throw new Error(
-      `${action} failed: ${response.status}${detail ? ` - ${detail}` : ""}`,
+    const code = parseXmlTag(detail, "Code")
+    const xmlMessage = parseXmlTag(detail, "Message")
+    const summary = xmlMessage ?? detail
+    throw new SignedFetchError(
+      `${action} failed: ${response.status}${summary ? ` - ${summary}` : ""}`,
+      code ?? "SignedFetchError",
+      response.status,
     )
   }
 

@@ -12,27 +12,9 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// runIPSec verifies OVN native IPsec is live on every node. Three checks:
-//
-//  1. OVS DB on each node carries the cert/key/CA pointers plus
-//     other_config:ipsec_encapsulation=true. This is what
-//     daemon.enableOVNIPSec writes; if any node lost it (rolling restart,
-//     manual ovs-vsctl unset, missing peer cert) the SAs below would
-//     silently drop to plaintext.
-//
-//  2. `ip xfrm state` on each node shows at least one AEAD SA negotiated
-//     in AES-GCM mode. ovs-monitor-ipsec drives strongSwan to bring SAs up
-//     against every peer ovn-controller has a Geneve tunnel to, so on a
-//     3-node mesh we expect 2N SAs per node (in+out per peer) — but the
-//     test only asserts >=1 to stay tolerant of ovs-monitor-ipsec startup
-//     ordering quirks.
-//
-//  3. Best-effort tcpdump for ESP (proto 50) traffic on the underlay.
-//     Logged only — geneve_sys_6081 may be idle during the capture window
-//     if no overlay VMs are running yet.
-//
-// Skips cleanly if the cluster was bootstrapped with --ipsec=false (no
-// other_config:ipsec_encapsulation key on the first node).
+// runIPSec verifies OVN native IPsec is live on every node: OVS DB carries cert/key/CA
+// pointers, xfrm shows AES-GCM SAs, and ESP traffic is observed (best-effort tcpdump).
+// Skips if the cluster was bootstrapped with --ipsec=false.
 func runIPSec(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — OVN Native IPsec")
 
@@ -83,9 +65,7 @@ func runIPSec(t *testing.T, fix *Fixture) {
 			if !strings.Contains(s, "aead") {
 				return fmt.Errorf("%s xfrm has no AEAD SAs:\n%s", n.Name, strings.TrimSpace(s))
 			}
-			// Kernel renders the GCM AEAD as either `rfc4106(gcm(aes))`
-			// (RFC 4106 ESP AES-GCM, what strongSwan negotiates by default)
-			// or the bare `gcm(aes)` template name. Accept either.
+			// Kernel renders GCM AEAD as rfc4106(gcm(aes)) or gcm(aes); accept either.
 			if !strings.Contains(s, "gcm(aes)") {
 				return fmt.Errorf("%s xfrm SAs not AES-GCM:\n%s", n.Name, strings.TrimSpace(s))
 			}

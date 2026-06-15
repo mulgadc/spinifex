@@ -12,28 +12,17 @@ import (
 	"time"
 )
 
-// routezResponse is the subset of the NATS /routez monitoring payload the
-// harness consumes. Only remote_name is required because the harness counts
-// unique peer names (not raw route count — NATS opens multiple TCP routes
-// per peer and num_routes would overcount). The shell suite's
-// verify_nats_cluster helper uses the same predicate.
+// routezResponse is the subset of NATS /routez used to count unique peer names.
+// Raw route count is not used; NATS opens multiple TCP routes per peer.
 type routezResponse struct {
 	Routes []struct {
 		RemoteName string `json:"remote_name"`
 	} `json:"routes"`
 }
 
-// ResetAllNodes returns the cluster to a known clean state: every node has
-// all iptables rules flushed, every tc netem qdisc removed, and both
-// spinifex-nats and spinifex-daemon running. After the per-node reset, it
-// waits for cluster health (every daemon /health returns 200 and each node's
-// NATS monitor reports len(Nodes)-1 unique route peers) before returning.
-//
-// Idempotent — safe against a clean cluster. Three callers:
-//  1. harness.Run, between a failed scenario and its retry.
-//  2. AssertCleanState, when a pre-scenario baseline is dirty.
-//  3. The suite-level signal handler in TestMain, so SIGINT/SIGTERM do not
-//     leave the cluster partitioned or netem-shaped.
+// ResetAllNodes returns the cluster to a known clean state: iptables flushed,
+// tc netem removed, and spinifex-nats + spinifex-daemon running on every node.
+// Idempotent — safe to call on a clean cluster.
 func ResetAllNodes(ctx context.Context, c *Cluster, ssh SSH) error {
 	for _, n := range c.Nodes {
 		if err := resetNode(ctx, ssh, n); err != nil {
@@ -44,17 +33,12 @@ func ResetAllNodes(ctx context.Context, c *Cluster, ssh SSH) error {
 }
 
 func resetNode(ctx context.Context, ssh SSH, n Node) error {
-	// Flush every DDIL-owned firewall rule. iptables -F on the default
-	// (filter) table covers INPUT/OUTPUT DROPs installed by PartitionNode;
-	// iptables -X removes any transient user chains a scenario happens to
-	// leave behind. This matches HealNode's teardown.
+	// -F flushes INPUT/OUTPUT DROP rules from PartitionNode; -X removes stale user chains.
 	if _, err := ssh.Run(ctx, n, "sudo iptables -F && sudo iptables -X"); err != nil {
 		return fmt.Errorf("e2e harness: reset iptables on %s: %w", n.Name, err)
 	}
 
-	// Remove netem qdiscs only on interfaces that actually carry one.
-	// Scenarios may pick different NICs (eth0, ens18, br-mgmt) and a fixed
-	// interface list here would silently miss whichever one was used.
+	// Remove netem qdiscs only from interfaces that carry one; NIC names vary.
 	ifaces, err := netemIfaces(ctx, ssh, n)
 	if err != nil {
 		return err
@@ -73,12 +57,8 @@ func resetNode(ctx context.Context, ssh SSH, n Node) error {
 	return nil
 }
 
-// netemIfaces lists every interface on node whose root qdisc is a netem
-// qdisc. Used by resetNode to decide what to tear down and by
-// AssertCleanState to detect a dirty baseline.
+// netemIfaces lists every interface on node that has a netem root qdisc.
 func netemIfaces(ctx context.Context, ssh SSH, n Node) ([]string, error) {
-	// `tc qdisc show` prints one row per qdisc; `qdisc netem 8003: dev eth0
-	// root ...` → awk $5 yields the interface name.
 	out, err := ssh.Run(ctx, n, "tc qdisc show | awk '/qdisc netem/ {print $5}' | sort -u")
 	if err != nil {
 		return nil, fmt.Errorf("e2e harness: list netem qdiscs on %s: %w", n.Name, err)
@@ -130,9 +110,8 @@ func checkClusterHealthy(ctx context.Context, c *Cluster, ssh SSH, dc *DaemonCli
 	return nil
 }
 
-// natsPeerCount SSHes into node, curls the node-local NATS monitor endpoint
-// (bound to 127.0.0.1:8222 by the spinifex NATS config), and returns the
-// number of unique peer names it reports.
+// natsPeerCount returns the number of unique peer names from the node-local
+// NATS /routez endpoint (127.0.0.1:8222).
 func natsPeerCount(ctx context.Context, ssh SSH, n Node) (int, error) {
 	out, err := ssh.Run(ctx, n, "curl -fsS http://127.0.0.1:8222/routez")
 	if err != nil {
@@ -152,11 +131,9 @@ func natsPeerCount(ctx context.Context, ssh SSH, n Node) (int, error) {
 	return len(seen), nil
 }
 
-// AssertCleanState verifies no node carries a DDIL-owned firewall rule or
-// netem qdisc before a scenario begins. A dirty baseline is not itself a
-// test failure — it usually means a previous scenario's t.Cleanup did not
-// run (panic, SIGKILL, CI runner killed) — so the helper logs details and
-// calls ResetAllNodes to recover. Only a failure of that reset is fatal.
+// AssertCleanState verifies no node has leftover DROP rules or netem qdiscs.
+// A dirty baseline is logged and reset via ResetAllNodes; only a reset failure
+// is fatal.
 func AssertCleanState(ctx context.Context, t *testing.T, c *Cluster, ssh SSH) {
 	t.Helper()
 
@@ -187,12 +164,8 @@ func AssertCleanState(ctx context.Context, t *testing.T, c *Cluster, ssh SSH) {
 	}
 }
 
-// countDropRules reports how many DROP rules are installed in INPUT/OUTPUT
-// on node. `iptables -S` without a chain prints every chain in
-// iptables-save format (`-A INPUT ... -j DROP`); filtering for the two
-// chains we care about keeps the count scoped to PartitionNode's targets.
-// `2>/dev/null` swallows sudo/iptables stderr so a noisy environment does
-// not poison the grep input, and `|| true` covers grep's no-match exit 1.
+// countDropRules counts DROP rules in INPUT/OUTPUT installed by PartitionNode.
+// `|| true` handles grep's no-match exit 1; `2>/dev/null` suppresses sudo noise.
 func countDropRules(ctx context.Context, ssh SSH, n Node) (int, error) {
 	const cmd = `sudo iptables -S 2>/dev/null | grep -E '^-A (INPUT|OUTPUT) ' | grep -c -- '-j DROP' || true`
 	out, err := ssh.Run(ctx, n, cmd)

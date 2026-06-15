@@ -1,0 +1,29 @@
+#!/sbin/openrc-run
+# mulga-eks-state-report — server-role service that publishes K3s health +
+# node_count to the management NATS bus every STATE_REPORT_INTERVAL seconds. The
+# spinifex cluster reconciler consumes this to gate CREATING → ACTIVE and to
+# track nodegroup join/scale, since the apiserver (bound to the VPC node-ip) is
+# unreachable from the host. Enabled on the server role by eks-node-role.sh.
+
+description="Mulga EKS control-plane state reporter"
+command="/usr/local/sbin/mulga-eks-state-report"
+command_background="yes"
+pidfile="/run/mulga-eks-state-report.pid"
+output_log="/var/log/mulga-eks-state-report.log"
+error_log="/var/log/mulga-eks-state-report.log"
+
+# Cadence the report loop sleeps between publishes. 30s is well under the
+# reconciler's 90s stale window, so a missed tick does not flap health.
+export STATE_REPORT_INTERVAL="${STATE_REPORT_INTERVAL:-30}"
+
+depend() {
+    need net
+    after k3s
+}
+
+start_pre() {
+    if [ ! -f /etc/spinifex-eks/first-boot.env ]; then
+        eerror "/etc/spinifex-eks/first-boot.env not present — cloud-init did not seed NATS creds"
+        return 1
+    fi
+}

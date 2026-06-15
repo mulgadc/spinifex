@@ -29,20 +29,16 @@ const (
 	presignedSignedHeader = "x-k8s-aws-id"
 	presignedHostHeader   = "host"
 
-	// presignedMaxExpiresSeconds is the AWS-imposed ceiling on
-	// X-Amz-Expires for SigV4-presigned URLs. The aws eks get-token output
-	// defaults to 900s; rejecting anything beyond the SigV4 ceiling fails
-	// a forged URL that lies about its TTL.
+	// presignedMaxExpiresSeconds is the AWS-imposed ceiling on X-Amz-Expires.
+	// Rejecting beyond this ceiling catches forged URLs that lie about their TTL.
 	presignedMaxExpiresSeconds = 7 * 24 * 60 * 60
 
-	// presignedClockSkew matches the SigV4 wire-protocol skew
-	// allowance (used during X-Amz-Date sanity check).
+	// presignedClockSkew is the SigV4 wire-protocol clock-skew allowance.
 	presignedClockSkew = 5 * time.Minute
 )
 
-// PresignedCallerIdentity is the result of validating a SigV4-presigned
-// `sts:GetCallerIdentity` URL — the token shape produced by `aws eks
-// get-token` and consumed by the EKS token webhook (`eks-token-webhook`).
+// PresignedCallerIdentity is the result of validating a SigV4-presigned GetCallerIdentity
+// URL — the token shape produced by `aws eks get-token`.
 type PresignedCallerIdentity struct {
 	AccountID     string
 	ARN           string
@@ -51,31 +47,12 @@ type PresignedCallerIdentity struct {
 	PrincipalType string
 }
 
-// presignedTimeNow is the time-source seam — tests override it to pin the
-// clock for replay / expiry assertions. Production calls go through here so
-// the wire-protocol skew check is not flaky.
+// presignedTimeNow is the time-source seam; tests override it to pin the clock.
 var presignedTimeNow = func() time.Time { return time.Now().UTC() }
 
-// VerifyPresignedGetCallerIdentity validates a SigV4-presigned URL for the
-// `sts:GetCallerIdentity` action and resolves the calling principal. The EKS
-// token webhook calls this over NATS as part of TokenReview processing.
-//
-// Verification (each step fails closed):
-//
-//  1. Parse and validate envelope query parameters (algorithm, credential,
-//     date, expires, signed-headers, signature).
-//  2. Enforce that x-k8s-aws-id is in X-Amz-SignedHeaders — skipping this is
-//     a cross-cluster auth bypass (eks-v1.md Q10 mandatory check).
-//  3. Validate timestamp and expiry against the wire clock.
-//  4. Resolve the access key to a secret (session via ASIA path, otherwise
-//     long-lived IAM).
-//  5. Reconstruct the canonical request with X-K8s-Aws-Id pinned to
-//     expectedClusterName, recompute the SigV4 signature, constant-time
-//     compare against the wire signature. A mismatch here is the
-//     cross-cluster-replay defence: a token signed under cluster-A's name
-//     produces a different signature when reconstructed under cluster-B's
-//     name.
-//  6. Build a PresignedCallerIdentity from the resolved principal.
+// VerifyPresignedGetCallerIdentity validates a SigV4-presigned GetCallerIdentity URL
+// and resolves the calling principal. Called by the EKS token webhook over NATS.
+// Reconstructs the canonical request with expectedClusterName to prevent cross-cluster replay.
 func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expectedClusterName string) (*PresignedCallerIdentity, error) {
 	if presignedURL == "" || expectedClusterName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -114,19 +91,14 @@ func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expected
 
 	now := presignedTimeNow()
 	if now.Sub(env.signedTime).Abs() > presignedClockSkew+time.Duration(env.expiresSeconds)*time.Second {
-		// Wide allowance — exact expiry is checked below; this guards a
-		// nonsense X-Amz-Date that's months out (signature would still verify
-		// against the wire if we let it through, but the token would be
-		// trivially "expired" and we surface a clearer error code).
+		// Guards a nonsense X-Amz-Date (months out); exact expiry is checked below.
 		return nil, errors.New(awserrors.ErrorExpiredToken)
 	}
 	if now.After(env.signedTime.Add(time.Duration(env.expiresSeconds) * time.Second)) {
 		return nil, errors.New(awserrors.ErrorExpiredToken)
 	}
 	if env.signedTime.UTC().Format(presignedDateFmt) != env.credential.date {
-		// Credential-scope date must match the X-Amz-Date date portion;
-		// AWS-CLI enforces this; mismatch is the classic "signed yesterday
-		// presented today" bug. Fail closed.
+		// Credential-scope date must match the X-Amz-Date date portion.
 		return nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 	}
 
@@ -143,10 +115,7 @@ func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expected
 		canonicalQuery,
 		canonicalHeaders,
 		signedHeadersList,
-		// botocore / aws-sdk presign `sts:GetCallerIdentity` (a non-S3, empty-body
-		// request) with the SHA256 of the empty string as the payload hash.
-		// "UNSIGNED-PAYLOAD" is an S3-only convention and would mismatch every
-		// real `aws eks get-token`.
+		// Non-S3 presigned requests use SHA256("") as the payload hash; "UNSIGNED-PAYLOAD" is S3-only.
 		emptyStringSHA256,
 	}, "\n")
 
@@ -171,9 +140,7 @@ func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expected
 	return principal, nil
 }
 
-// presignedEnvelope is the parsed-and-validated set of envelope facts from
-// a SigV4-presigned URL's query string. The fields are pure parse outputs;
-// signature verification consumes them.
+// presignedEnvelope holds the parsed envelope facts from a SigV4-presigned URL query string.
 type presignedEnvelope struct {
 	credential       presignedCredential
 	amzDate          string // raw X-Amz-Date value (used in StringToSign)
@@ -263,11 +230,8 @@ func parsePresignedEnvelope(q url.Values) (presignedEnvelope, error) {
 	}, nil
 }
 
-// canonicalQueryStringExcludingSignature returns the SigV4 canonical query
-// string with X-Amz-Signature dropped. The remaining parameters are
-// percent-encoded per RFC 3986 and sorted lexicographically by key, then by
-// value for duplicate keys. The aws-sdk-go url.QueryEscape produces the same
-// output for these envelope params (alphanumerics + the safe set).
+// canonicalQueryStringExcludingSignature returns the SigV4 canonical query string
+// with X-Amz-Signature dropped, per-RFC-3986 encoded, sorted by key then value.
 func canonicalQueryStringExcludingSignature(q url.Values) string {
 	type kv struct {
 		k string
@@ -296,10 +260,8 @@ func canonicalQueryStringExcludingSignature(q url.Values) string {
 	return strings.Join(parts, "&")
 }
 
-// awsQueryEscape encodes per SigV4: every byte outside the unreserved set
-// (A-Z, a-z, 0-9, '-', '_', '.', '~') is percent-encoded as uppercase hex.
-// net/url.QueryEscape encodes spaces as '+' and lower-cases hex digits, both
-// of which would diverge from AWS canonicalization.
+// awsQueryEscape encodes per SigV4 (unreserved set, uppercase hex).
+// net/url.QueryEscape encodes spaces as '+' and lower-cases hex, both diverging from AWS.
 func awsQueryEscape(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -322,10 +284,7 @@ func hexByte(b byte) string {
 	return string([]byte{hexDigits[b>>4], hexDigits[b&0x0f]})
 }
 
-// canonicalURI returns the canonical URI per SigV4. For sts.GetCallerIdentity
-// presigned URLs the path is "/" (action lives in the query string); paths
-// beyond root are accepted and pass through unmodified per the canonical
-// rules — empty path normalises to "/".
+// canonicalURI returns the SigV4 canonical URI; empty path normalises to "/".
 func canonicalURI(u *url.URL) string {
 	if u.Path == "" {
 		return "/"
@@ -333,12 +292,8 @@ func canonicalURI(u *url.URL) string {
 	return u.Path
 }
 
-// buildCanonicalHeaders constructs the canonical-headers + signed-headers
-// pair for the presigned-URL request as it would have been canonicalised by
-// the original signer. The wire URL does not carry the header values — they
-// are reconstructed from known inputs: host comes from the URL itself, the
-// X-K8s-Aws-Id value is the expected cluster name (constant-time-bound by
-// the eventual signature compare).
+// buildCanonicalHeaders reconstructs the canonical-headers/signed-headers pair for
+// the presigned URL, using the URL host and expectedClusterName for X-K8s-Aws-Id.
 func buildCanonicalHeaders(host, xK8sAwsID string) (canonicalHeaders, signedHeadersList string) {
 	headers := map[string]string{
 		presignedHostHeader:   host,
@@ -364,8 +319,7 @@ func hexSHA256(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// emptyStringSHA256 is the SigV4 payload hash for an empty body — the value
-// botocore/aws-sdk use when presigning non-S3 requests like GetCallerIdentity.
+// emptyStringSHA256 is the SigV4 payload hash for an empty body.
 var emptyStringSHA256 = hexSHA256("")
 
 func hmacSHA256(key []byte, data string) []byte {
@@ -381,11 +335,8 @@ func deriveSigningKey(secret, date, region, service string) []byte {
 	return hmacSHA256(kService, presignedTerminator)
 }
 
-// resolvePrincipalForVerify resolves an access key to its plaintext secret
-// plus a PresignedCallerIdentity skeleton (X-K8s-Aws-Id field filled in by
-// the caller after signature verification succeeds). Branches on AKID
-// prefix — the same invariant the gateway SigV4 path relies on — so a
-// misfiled record cannot be resolved by the wrong path.
+// resolvePrincipalForVerify resolves an access key to its plaintext secret and a
+// PresignedCallerIdentity skeleton. Branches on AKID prefix (session vs long-lived).
 func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*PresignedCallerIdentity, string, error) {
 	switch {
 	case strings.HasPrefix(accessKeyID, SessionAccessKeyIDPrefix):

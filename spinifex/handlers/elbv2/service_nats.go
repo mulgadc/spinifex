@@ -10,12 +10,9 @@ import (
 
 const (
 	defaultTimeout = 30 * time.Second
-	// longRunningTimeout covers operations that synchronously launch or tear
-	// down ALB frontend VMs (DHCP lease + QEMU boot / QMP shutdown + QEMU exit).
-	// A healthy launch is ~45s on a warm box; shutdown can take tens of seconds
-	// if QMP is slow. Until CreateLoadBalancer is made fully async, we keep a
-	// wide margin so Terraform's AWS provider doesn't retry mid-flight and then
-	// hit DuplicateLoadBalancerName on the second attempt.
+	// longRunningTimeout covers synchronous ALB VM launch/teardown (~45 s on a warm
+	// box). Wide margin prevents Terraform retrying mid-flight and hitting
+	// DuplicateLoadBalancerName before CreateLoadBalancer is made async.
 	longRunningTimeout = 5 * time.Minute
 )
 
@@ -141,6 +138,10 @@ func (s *NATSELBv2Service) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 
 func (s *NATSELBv2Service) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, accountID string) (*elbv2.SetIpAddressTypeOutput, error) {
 	return utils.NATSRequest[elbv2.SetIpAddressTypeOutput](s.natsConn, "elbv2.SetIpAddressType", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) SetSubnets(input *elbv2.SetSubnetsInput, accountID string) (*elbv2.SetSubnetsOutput, error) {
+	return utils.NATSRequest[elbv2.SetSubnetsOutput](s.natsConn, "elbv2.SetSubnets", input, defaultTimeout, accountID)
 }
 
 func (s *NATSELBv2Service) AddListenerCertificates(input *elbv2.AddListenerCertificatesInput, accountID string) (*elbv2.AddListenerCertificatesOutput, error) {

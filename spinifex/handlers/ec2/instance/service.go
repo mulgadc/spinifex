@@ -43,19 +43,9 @@ type TerminateStoppedInstanceOutput struct {
 	InstanceID string `json:"instanceId"`
 }
 
-// ResourceCapacityProvider exposes per-node instance-type availability used by
-// DescribeInstanceTypes. Implemented by daemon.ResourceManager.
-//
-// GetAvailableInstanceTypeInfos reports types gated by free schedulable
-// capacity (one entry per free slot when showCapacity is true). It is used
-// when callers ask "what could you launch right now?" — typically with the
-// capacity=true filter for aggregated cluster-wide accounting.
-//
-// GetSupportedInstanceTypeInfos reports every type this node is configured
-// to run, regardless of current allocation. This is the AWS-compatible
-// answer for plain DescribeInstanceTypes and is what tooling like the
-// Terraform AWS provider expects when it performs a metadata lookup after
-// RunInstances.
+// ResourceCapacityProvider exposes per-node instance-type availability.
+// GetAvailableInstanceTypeInfos gates on free capacity; GetSupportedInstanceTypeInfos
+// returns all configured types regardless of allocation.
 type ResourceCapacityProvider interface {
 	GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo
 	GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo
@@ -129,10 +119,8 @@ type SubnetInfo struct {
 	MapPublicIpOnLaunch bool
 }
 
-// ENIInfo carries the subset of ENI metadata RunInstances needs to attach a
-// pre-created ENI as the primary interface. Translated from
-// handlers/ec2/vpc.ENIRecord by the daemon adapter to avoid a cyclic
-// instance↔vpc import.
+// ENIInfo carries the ENI metadata RunInstances needs for a pre-created primary
+// interface. Translated from handlers/ec2/vpc.ENIRecord to avoid a cyclic import.
 type ENIInfo struct {
 	NetworkInterfaceID string
 	SubnetID           string
@@ -143,14 +131,9 @@ type ENIInfo struct {
 	SecurityGroupIDs   []string
 }
 
-// ENICreator covers the VPC/ENI operations RunInstances performs while
-// auto-attaching a primary interface. Implemented via an adapter over
-// handlers/ec2/vpc.VPCServiceImpl on the daemon. DetachENI lives here (not on
-// ENIDeleter) because the launch-time NAT-rollback path needs to flip the ENI
-// to "available" before ENIDeleter.DeleteNetworkInterface, which rejects
-// in-use ENIs. GetENI supports the pre-created-ENI launch path where the
-// caller passes NetworkInterfaces[0].NetworkInterfaceId and RunInstances
-// attaches the existing ENI instead of creating a new one.
+// ENICreator covers the VPC/ENI operations RunInstances uses to auto-attach a
+// primary interface. DetachENI is here (not ENIDeleter) so the NAT-rollback
+// path can flip the ENI to "available" before deletion.
 type ENICreator interface {
 	GetDefaultSubnet(accountID string) (*SubnetInfo, error)
 	GetSubnet(accountID, subnetID string) (*SubnetInfo, error)

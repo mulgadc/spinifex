@@ -7,13 +7,15 @@ import (
 	"time"
 )
 
-// NATS subjects for daemon ↔ vpcd DHCP RPCs. Plain (non-AZ-prefixed)
-// because the vpcd that owns br-wan is exactly one process per AZ; an
-// AZ-prefixed subject would just push the same constraint into the
-// subject string.
+// NATS subjects for daemon ↔ vpcd DHCP RPCs. Non-AZ-prefixed: the
+// bridge-owning vpcd is exactly one process per AZ.
 const (
 	TopicAcquire = "vpc.dhcp.acquire"
 	TopicRelease = "vpc.dhcp.release"
+	// TopicDrain asks the bridge-owning vpcd to DHCPRELEASE every lease it
+	// currently holds. Invoked on cluster teardown so an env reset returns
+	// its leases to the upstream pool instead of stranding them until TTL.
+	TopicDrain = "vpc.dhcp.drain"
 )
 
 // acquireWireRequest is the JSON payload sent by daemon-side
@@ -37,10 +39,9 @@ type acquireWireReply struct {
 	Lease *wireLease `json:"lease,omitempty"`
 }
 
-// releaseWireRequest carries either a direct ClientID, or a (PoolName, IP)
-// pair the manager uses to reverse-lookup the ClientID from the per-AZ
-// lease store. ExternalIPAM's Allocator.Release signature only has the
-// IP, so the daemon side uses the IP path; in-process callers use ClientID.
+// releaseWireRequest carries either a ClientID or (PoolName, IP) for reverse-
+// lookup. Daemon-side callers use IP (that's all Allocator.Release provides);
+// in-process callers use ClientID.
 type releaseWireRequest struct {
 	ClientID string `json:"client_id,omitempty"`
 	PoolName string `json:"pool_name,omitempty"`
@@ -49,6 +50,14 @@ type releaseWireRequest struct {
 
 type releaseWireReply struct {
 	Error string `json:"error,omitempty"`
+}
+
+// drainWireReply reports how many leases the responding vpcd released. The
+// drain request itself carries no body — the manager drains its entire
+// per-AZ lease store, so there are no parameters.
+type drainWireReply struct {
+	Released int    `json:"released"`
+	Error    string `json:"error,omitempty"`
 }
 
 // wireLease is Lease in JSON-friendly form: dotted-quad IPs, MAC string,

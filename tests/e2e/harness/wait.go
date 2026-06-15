@@ -46,14 +46,8 @@ func EventuallyErr(t *testing.T, cond func() error, timeout, interval time.Durat
 	}
 }
 
-// RetryWithReset runs fn as an "attempt-1" subtest; on failure it calls
-// ResetAllNodes and retries fn as "attempt-2". Both attempts surface in the
-// test output so CI logs preserve the transient-vs-deterministic signal —
-// the retry is a diagnostic aid, not a way to mask flakes.
-//
-// Used by DDIL's quarantine wrapper (ddil/harness.Run) and any other scenario
-// that wants the same retry-after-reset shape without taking on DDIL's
-// quarantine semantics.
+// RetryWithReset runs fn as "attempt-1"; on failure it calls ResetAllNodes and
+// retries as "attempt-2". The retry is a diagnostic aid, not a flake mask.
 func RetryWithReset(t *testing.T, c *Cluster, ssh SSH, label string, fn func(*testing.T)) {
 	t.Helper()
 	if t.Run("attempt-1", fn) {

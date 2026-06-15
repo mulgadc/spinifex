@@ -16,21 +16,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
-// IMDS datapath contract — desk-speed oracle.
-//
-// Every IMDS datapath bug in the v1 grind (the egress-reroute hijack of the
-// /32, the multi-hop reply break) lived inside the VPC logical-router pipeline.
-// The L2 datapath takes IMDS off the router entirely: the localport that claims
-// 169.254.169.254 sits directly on the guest's subnet switch, so the request is
-// answered over a single L2 hop and never enters lr_in_*. This test asserts that
-// structural property — the localport is on the subnet LS and NO IMDS object
-// (LRP, /32 route, dedicated switch) exists on the VPC router — for two VPCs that
-// share the *identical* CIDR (the overlapping-CIDR case per-subnet identity is
-// built for).
-//
-// The LR-pipeline simulator below is retained for TestIMDSDatapathContract_OracleHasTeeth,
-// which proves a broad lr_in_policy reroute WOULD have hijacked IMDS had it ever
-// been routed — documenting exactly why moving IMDS to L2 removes the bug class.
+// IMDS datapath contract: 169.254.169.254 is served by a localport on the
+// subnet switch (one L2 hop, never enters lr_in_*). No IMDS LRP, /32 route,
+// or dedicated switch on the VPC router — the LR pipeline cannot shadow it.
 
 const imdsContractCIDR = "10.211.0.0/16"
 
@@ -72,10 +60,8 @@ func TestIMDSDatapathContract_AnsweredAtL2_OverlappingCIDRs(t *testing.T) {
 }
 
 // TestIMDSDatapathContract_OracleHasTeeth proves the LR-pipeline simulator
-// actually detects the regression it documents: a 0.0.0.0/0 egress reroute that
-// does NOT exclude link-local (the pre-#19 bug) must be reported as diverting
-// IMDS. Under L2 this can no longer reach IMDS — but the simulator keeps the
-// historical hazard legible and the oracle non-vacuous.
+// catches the pre-#19 bug: a 0.0.0.0/0 reroute without link-local exclusion
+// must be detected as diverting IMDS, keeping the oracle non-vacuous.
 func TestIMDSDatapathContract_OracleHasTeeth(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
@@ -101,10 +87,8 @@ func TestIMDSDatapathContract_OracleHasTeeth(t *testing.T) {
 		"simulator must detect a link-local-unaware reroute as hijacking IMDS; if this fails the oracle is blind")
 }
 
-// assertIMDSAnsweredAtL2 is the contract: 169.254.169.254 is claimed by a
-// localport on the guest's subnet switch (so it is answered over one L2 hop),
-// and NO IMDS object exists on the VPC router (so the LR pipeline cannot shadow
-// it — the entire v1 bug class is structurally impossible).
+// assertIMDSAnsweredAtL2 enforces the L2 contract: IMDS localport must exist on
+// the subnet switch, and no IMDS LRP/route may exist on the VPC router.
 func assertIMDSAnsweredAtL2(t *testing.T, m *mock.Client, vpcID, subnetID string) {
 	t.Helper()
 	spec := IMDSSpecForSubnet(subnetID)
@@ -144,11 +128,8 @@ func resolveEgress(t *testing.T, m *mock.Client, vpcID, subnetID, dstIP string) 
 	return resolveEgressFrom(t, m, vpcID, topology.SubnetRouterPort(subnetID), dstIP)
 }
 
-// resolveEgressFrom models OVN's two ingress stages in order:
-//
-//	lr_in_policy      — Logical_Router_Policy, highest Priority first, first
-//	                    applicable wins (reroute => diverted, drop => dropped).
-//	lr_in_ip_routing  — longest-prefix-match over static routes.
+// resolveEgressFrom models OVN lr_in_policy (highest-priority first) then
+// lr_in_ip_routing (longest-prefix-match).
 func resolveEgressFrom(t *testing.T, m *mock.Client, vpcID, inport, dstIP string) egressResult {
 	t.Helper()
 	dst, err := netip.ParseAddr(dstIP)

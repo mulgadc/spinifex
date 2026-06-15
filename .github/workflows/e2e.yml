@@ -18,7 +18,7 @@ on:
         description: "PR head SHA to report status on"
         required: false
       suites:
-        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb')"
+        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks')"
         required: false
         default: "e2e-single e2e-multinode e2e-cert e2e-lb"
       test_run:
@@ -36,14 +36,50 @@ env:
   TEST_RUN: ${{ inputs.test_run || '' }}
 
 jobs:
+  # Shadow-mode suite selector. Computes which suites the diff *would* run and logs it to the job summary.
+  # Does NOT gate or override the real SUITES env yet — it runs alongside the full matrix so we
+  # can compare predicted vs actual before flipping it on.
+  select_suites:
+    name: Select Suites (shadow)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Compute targeted suite selection
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.before }}"
+          HEAD="${{ github.sha }}"
+          # First push to a branch reports an all-zero before-SHA; fall back to
+          # the first parent so the diff is still meaningful.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE="${HEAD}~1"
+          fi
+          echo "## Targeted suite selection (shadow)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "base=$BASE head=$HEAD" >> "$GITHUB_STEP_SUMMARY"
+          go run ./tests/e2e/select-suites/cmd/select-suites \
+            --manifest docs/service-interfaces.yaml \
+            --base-sha "$BASE" --head-sha "$HEAD" --repo-root . \
+            2>>"$GITHUB_STEP_SUMMARY" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Shadow only — actual run uses SUITES='${SUITES}'." >> "$GITHUB_STEP_SUMMARY"
+
   e2e_single:
     name: Single-Node E2E
     # Skip when the dispatch input requests no in-VM suites (e.g.
-    # suites='e2e-reboot' only). Push triggers and the default SUITES list
+    # suites='e2e-multinode' only). Push triggers and the default SUITES list
     # both include single/cert/lb so the inputs.suites null-check keeps the
     # job running on plain PR pushes.
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb')
-    runs-on: [ self-hosted, ci-single ]
+    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks')
+    runs-on: [self-hosted, ci-single]
     timeout-minutes: 45
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
@@ -70,7 +106,10 @@ jobs:
           true
 
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -146,12 +185,90 @@ jobs:
           echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
           echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
 
+      # The eks suite's CreateCluster boots a control-plane VM from the
+      # eks-node AMI, so that AMI must exist in the VM's image store before the
+      # suite runs. build-system-image.sh customizes the image with libguestfs
+      # (an isolated userspace appliance) — it touches no host block device, so
+      # it is safe on the shared runner. The build needs the spinifex source +
+      # network (runner only); the import needs predastore/NATS (VM only), so
+      # build on the runner then ship the raw and import on the VM.
+      - name: Build eks-node AMI (libguestfs, runner)
+        if: contains(env.SUITES, 'e2e-eks')
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          banner "build eks-node AMI (libguestfs — no host devices)"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          # Debian/Ubuntu ship /boot/vmlinuz-* mode 0600; the libguestfs
+          # appliance needs to read a host kernel. direct backend = no libvirt.
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          group_open "make build-eks-node-image"
+          make build-eks-node-image
+          group_close
+          ok "raw: $(du -h /tmp/eks-node-image-build/eks-node-alpine.raw | cut -f1)"
+
+      - name: Import eks-node AMI on VM
+        if: contains(env.SUITES, 'e2e-eks')
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+            spinifex/scripts/images/eks-node/manifest.conf)"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          banner "import eks-node AMI to VM image store"
+          scp "${SSH_OPTS[@]}" \
+            /tmp/eks-node-image-build/eks-node-alpine.raw \
+            "$VM":/tmp/eks-node-alpine.raw
+          # Drop the import progress bar (pterm redraws to stdout — thousands of
+          # lines over the SSH pipe). Errors go to stderr, so they survive; the
+          # exit code still gates the step.
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "spx admin images import --file /tmp/eks-node-alpine.raw \
+               --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null
+          ok "eks-node AMI imported"
+
+      # The eks data-plane subtest (TestEKS/KubectlGetNodes) drives the full
+      # `aws eks get-token` → kubectl → apiserver → token-webhook → gateway
+      # broker → STS verify path. The e2e binaries run ON the VM, so kubectl
+      # must be on the VM's PATH or harness.NewKubectl t.Skips the subtest.
+      # Pin to the k3s server version (setup.sh K3S_VERSION) — kubectl is
+      # ±1-minor skew tolerant; matching is simplest. Checksum-verified.
+      - name: Install kubectl on VM
+        if: contains(env.SUITES, 'e2e-eks')
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          banner "install kubectl on VM (eks data-plane subtest)"
+          ssh "${SSH_OPTS[@]}" "$VM" 'bash -s' <<'EOF'
+          set -euo pipefail
+          KVER=v1.32.5
+          case "$(uname -m)" in
+            x86_64)  ARCH=amd64 ;;
+            aarch64) ARCH=arm64 ;;
+            *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          cd /tmp
+          curl -fsSLO "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl"
+          curl -fsSLO "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c -
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+          EOF
+          ok "kubectl installed on VM"
+
       - name: Build E2E test binaries on runner
         working-directory: spinifex/tests/e2e
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|multinode)$' | tr '\n' ' ')
+          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(multinode)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_BUILD}" | tr -d ' ')" ]; then
             echo "no in-VM suites requested (SUITES=${SUITES}); nothing to build"
             exit 0
@@ -193,7 +310,7 @@ jobs:
         id: e2e
         run: |
           set +e
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|multinode)$' | tr '\n' ' ')
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(multinode)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no in-VM suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"
@@ -358,7 +475,7 @@ jobs:
   e2e_real_multi:
     name: Real Multi-Node E2E
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode')
-    runs-on: [ self-hosted, ci-multi ]
+    runs-on: [self-hosted, ci-multi]
     timeout-minutes: 60
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
@@ -385,7 +502,10 @@ jobs:
           true
 
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -473,7 +593,12 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single)$' | tr '\n' ' ')
+          # eks is excluded on multinode: EKS KV is a clustered (Raft) JetStream
+          # stream and create-cluster needs an elected leader, but multinode
+          # JetStream clustering isn't solid yet (mulga-omq/z2z/5yg). EKS is
+          # validated single-node only for now; re-enable here once clustered
+          # JetStream + multinode EKS are a deliberate target.
+          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_BUILD}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); nothing to build"
             exit 0
@@ -556,7 +681,7 @@ jobs:
         id: e2e
         run: |
           set +e
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single)$' | tr '\n' ' ')
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"
@@ -757,267 +882,10 @@ jobs:
             exit 1
           fi
 
-  e2e_reboot:
-    name: Reboot Resilience E2E
-    # Opt-in: only fires when the SUITES dispatch input lists e2e-reboot.
-    # The reboot test reboots the spinifex VM, so it must run on the runner
-    # (not shipped to the VM like the cert/lb/single suites). Runs in
-    # parallel with e2e_single — both target [self-hosted, ci-single]
-    # and GitHub Actions serialises on the underlying runner allocation,
-    # so no explicit needs: ordering is required.
-    if: contains(github.event.inputs.suites, 'e2e-reboot')
-    runs-on: [ self-hosted, ci-single ]
-    timeout-minutes: 60
-    env:
-      TOFU_LOG: /tmp/e2e-tofu-reboot-${{ github.run_id }}.log
-      ARTIFACT_DIR: /tmp/spinifex-e2e-reboot-artifacts-${{ github.run_id }}
-    steps:
-      - name: Reap Orphan Procs
-        run: |
-          set +e
-          UID_SELF=$(id -u)
-          WS="${GITHUB_WORKSPACE}"
-          reap() {
-            local sig="$1"
-            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
-              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
-              case "$cwd" in
-                "$WS"|"$WS"/*) echo "reap $sig pid=$pid cwd=$cwd"; kill "-$sig" "$pid" 2>/dev/null ;;
-              esac
-            done
-          }
-          reap TERM
-          sleep 3
-          reap KILL
-          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
-          true
-
-      - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
-
-      - uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          client-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          repositories: mulga
-
-      - uses: actions/checkout@v6
-        with:
-          repository: mulgadc/mulga
-          token: ${{ steps.app-token.outputs.token }}
-          sparse-checkout: scripts/tofu-cluster
-          path: mulga
-
-      - uses: actions/checkout@v6
-        with:
-          path: spinifex
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: spinifex/go.mod
-          cache: false
-
-      - name: Re-enable Go toolchain auto-download
-        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
-
-      - name: Prune rootless docker cache
-        run: |
-          docker container prune -f || true
-          docker image prune -af || true
-          docker buildx prune -af --filter "until=24h" || true
-          docker system df || true
-
-      - name: Build Install Artifacts
-        working-directory: mulga/scripts/tofu-cluster
-        run: |
-          ./build-install-artifacts.sh "${GIT_BRANCH}" \
-            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
-            "${RUNNER_TEMP}/setup.sh" \
-            "${RUNNER_TEMP}/spinifex-tests.tar"
-
-      - name: Provision VM
-        working-directory: mulga/scripts/tofu-cluster
-        run: |
-          set -euo pipefail
-          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          export TF_VAR_git_branch="${GIT_BRANCH}"
-          quiet_run "tofu init"                "$TOFU_LOG" tofu init -input=false
-          quiet_run "tofu workspace select"    "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
-          quiet_run "tofu destroy (pre-clean)" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false || true
-          quiet_run "scrub-env (pre-clean)"    "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
-          quiet_run "tofu apply"               "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
-          ok "VM provisioned"
-
-      - name: Bootstrap via Binary Install
-        working-directory: mulga/scripts/tofu-cluster
-        run: |
-          SPX_EXTERNAL_POOL="${SPINIFEX_CI_POOL}" \
-          ./bootstrap-install.sh "${SPINIFEX_CI_ENV}" \
-            "${RUNNER_TEMP}/setup.sh" \
-            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
-            --test-tar "${RUNNER_TEMP}/spinifex-tests.tar"
-
-      - name: Resolve VM SSH details
-        id: vm
-        working-directory: mulga/scripts/tofu-cluster
-        run: |
-          INVENTORY=$(tofu output -json inventory)
-          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
-          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
-          SSH_KEY="${SSH_KEY/#\~/$HOME}"
-          echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
-          echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
-
-      - name: Build reboot.test on runner
-        working-directory: spinifex/tests/e2e
-        run: |
-          set -euo pipefail
-          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          banner "build reboot"
-          group_open "go test -c"
-          make e2e-build SUITES_BUILD="reboot"
-          group_close
-          ok "$(basename _bin/reboot.test) $(stat -c '%s' _bin/reboot.test | numfmt --to=iec)"
-
-      - name: Fetch AWS credentials from VM
-        id: creds
-        run: |
-          set -euo pipefail
-          SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-                    -i "${{ steps.vm.outputs.ssh_key }}")
-          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
-          CREDS=$(ssh "${SSH_OPTS[@]}" "$VM" 'cat ~/.aws/credentials')
-          AWS_AK=$(echo "$CREDS" | awk -F '= *' '/^aws_access_key_id/ {print $2; exit}')
-          AWS_SK=$(echo "$CREDS" | awk -F '= *' '/^aws_secret_access_key/ {print $2; exit}')
-          if [ -z "$AWS_AK" ] || [ -z "$AWS_SK" ]; then
-            echo "::error::Failed to extract spinifex AWS credentials from ${{ steps.vm.outputs.wan_ip }}"
-            exit 1
-          fi
-          echo "::add-mask::${AWS_AK}"
-          echo "::add-mask::${AWS_SK}"
-          echo "ak=${AWS_AK}" >> "$GITHUB_OUTPUT"
-          echo "sk=${AWS_SK}" >> "$GITHUB_OUTPUT"
-
-      - name: Run reboot suite on runner
-        id: e2e
-        run: |
-          set +e
-          mkdir -p "${ARTIFACT_DIR}"
-          date -u +%Y-%m-%dT%H:%M:%SZ > "${ARTIFACT_DIR}/test-reboot.start"
-          R=$'\033[0m'; B=$'\033[1m'; C=$'\033[36m'
-          printf '\n%s%s━━ suite reboot ━━%s\n' "$B" "$C" "$R"
-
-          if [ -n "${TEST_RUN}" ]; then
-            TEST_RUN_FLAG="-test.run=${TEST_RUN}"
-          else
-            TEST_RUN_FLAG=""
-          fi
-          GITHUB_ACTIONS=true FORCE_COLOR=1 \
-            SPINIFEX_E2E=1 SPINIFEX_MODE=single \
-            SPINIFEX_WAN_IP="${{ steps.vm.outputs.wan_ip }}" \
-            SPINIFEX_SSH_KEY="${{ steps.vm.outputs.ssh_key }}" \
-            SPINIFEX_AWS_ENDPOINT="https://${{ steps.vm.outputs.wan_ip }}:9999" \
-            SPINIFEX_AWS_ACCESS_KEY_ID="${{ steps.creds.outputs.ak }}" \
-            SPINIFEX_AWS_SECRET_ACCESS_KEY="${{ steps.creds.outputs.sk }}" \
-            ARTIFACT_DIR="${ARTIFACT_DIR}" \
-            ./spinifex/tests/e2e/_bin/reboot.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
-            2>&1 | tee "${ARTIFACT_DIR}/test-reboot.log" \
-                 | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'
-          rc=${PIPESTATUS[0]}
-          echo "rc=${rc}" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Collect VM journals
-        if: always()
-        run: |
-          set +e
-          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          mkdir -p "${ARTIFACT_DIR}"
-          SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-                    -i "${{ steps.vm.outputs.ssh_key }}")
-          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
-          ssh "${SSH_OPTS[@]}" "$VM" 'sudo journalctl -u "spinifex-*" --no-pager --output=short-iso --since "60 min ago"' \
-            > "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null || true
-          ok "journal: $(wc -l < "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null || echo 0) lines"
-
-      - name: Install go-junit-report
-        if: always()
-        run: |
-          go install github.com/jstemmer/go-junit-report/v2@latest
-          echo "$HOME/go/bin" >> "$GITHUB_PATH"
-
-      - name: Convert test log to JUnit XML
-        if: always()
-        run: |
-          shopt -s nullglob
-          for LOG in "${ARTIFACT_DIR}"/test-*.log; do
-            BASE=$(basename "$LOG" .log)
-            SUITE=${BASE#test-}
-            go-junit-report -in "$LOG" -out "${ARTIFACT_DIR}/junit-${SUITE}.xml" || true
-          done
-
-      - name: Publish test summary
-        if: always()
-        uses: ./spinifex/.github/actions/junit-report
-        with:
-          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
-          title: "E2E reboot results"
-
-      - name: Analyze e2e failures
-        if: always()
-        uses: ./spinifex/.github/actions/e2e-analyze
-        with:
-          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
-          log-dir: ${{ env.ARTIFACT_DIR }}
-          title: "Reboot E2E failure analysis"
-
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: e2e-reboot-artifacts-${{ github.run_id }}
-          path: ${{ env.ARTIFACT_DIR }}
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Teardown
-        if: always()
-        working-directory: mulga/scripts/tofu-cluster
-        run: |
-          set +e
-          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          UID_SELF=$(id -u)
-          WS="${GITHUB_WORKSPACE}"
-          reap() {
-            local sig="$1"
-            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
-              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
-              case "$cwd" in
-                "$WS"|"$WS"/*) kill "-$sig" "$pid" 2>/dev/null ;;
-              esac
-            done
-          }
-          reap TERM
-          sleep 2
-          reap KILL
-          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
-          quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
-          quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
-          quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
-          ok "teardown complete"
-
-      - name: Fail job if reboot suite failed
-        if: always()
-        run: |
-          if [ "${{ steps.e2e.outputs.rc }}" != "0" ]; then
-            echo "::error::Reboot suite failed (rc=${{ steps.e2e.outputs.rc }})"
-            exit 1
-          fi
-
   e2e_status:
     name: Report E2E Status
     if: always()
-    needs: [ e2e_single, e2e_real_multi, e2e_reboot ]
+    needs: [e2e_single, e2e_real_multi]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1030,16 +898,15 @@ jobs:
             echo "::error::no SHA available (inputs.sha and github.sha both empty)"
             exit 1
           fi
-          single_ok=true; multi_ok=true; reboot_ok=true
+          single_ok=true; multi_ok=true
           case "${{ needs.e2e_single.result }}" in success|skipped) ;; *) single_ok=false ;; esac
           case "${{ needs.e2e_real_multi.result }}" in success|skipped) ;; *) multi_ok=false ;; esac
-          case "${{ needs.e2e_reboot.result }}" in success|skipped) ;; *) reboot_ok=false ;; esac
-          if $single_ok && $multi_ok && $reboot_ok; then
+          if $single_ok && $multi_ok; then
             STATE="success"
             DESC="E2E suites passed"
           else
             STATE="failure"
-            DESC="E2E failed: single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_real_multi.result }} reboot=${{ needs.e2e_reboot.result }}"
+            DESC="E2E failed: single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_real_multi.result }}"
           fi
           gh api "repos/${{ github.repository }}/statuses/${REPORT_SHA}" \
             -f state="$STATE" \

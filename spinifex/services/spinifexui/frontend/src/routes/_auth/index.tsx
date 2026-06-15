@@ -1,6 +1,16 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link, createFileRoute } from "@tanstack/react-router"
-import { Box, HardDrive, Key, Network, FolderOpen, Shield } from "lucide-react"
+import {
+  Box,
+  Globe,
+  HardDrive,
+  Key,
+  Network,
+  FolderOpen,
+  Router,
+  Shield,
+  Waypoints,
+} from "lucide-react"
 import { Suspense, type ReactNode } from "react"
 
 import { AdminDashboardPanel } from "@/components/admin-dashboard-panel"
@@ -16,8 +26,11 @@ import {
 } from "@/components/ui/card"
 import { getNameTag } from "@/lib/utils"
 import {
+  ec2AddressesQueryOptions,
   ec2InstancesQueryOptions,
+  ec2InternetGatewaysQueryOptions,
   ec2KeyPairsQueryOptions,
+  ec2NatGatewaysQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2VolumesQueryOptions,
   ec2VpcsQueryOptions,
@@ -35,6 +48,9 @@ export const Route = createFileRoute("/_auth/")({
       context.queryClient.ensureQueryData(ec2KeyPairsQueryOptions),
       context.queryClient.ensureQueryData(s3BucketsQueryOptions),
       context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
+      context.queryClient.ensureQueryData(ec2NatGatewaysQueryOptions),
+      context.queryClient.ensureQueryData(ec2AddressesQueryOptions),
+      context.queryClient.ensureQueryData(ec2InternetGatewaysQueryOptions),
     ])
   },
   head: () => ({
@@ -66,6 +82,15 @@ function Dashboard() {
         </Suspense>
         <Suspense fallback={<CardSkeleton />}>
           <SecurityGroupsCard />
+        </Suspense>
+        <Suspense fallback={<CardSkeleton />}>
+          <NatGatewaysCard />
+        </Suspense>
+        <Suspense fallback={<CardSkeleton />}>
+          <ElasticIpsCard />
+        </Suspense>
+        <Suspense fallback={<CardSkeleton />}>
+          <InternetGatewaysCard />
         </Suspense>
       </div>
     </>
@@ -347,6 +372,97 @@ function SecurityGroupsCard() {
             </ItemRow>
           ))}
           <Overflow total={groups.length} />
+        </div>
+      )}
+    </DashboardCard>
+  )
+}
+
+function NatGatewaysCard() {
+  const { data } = useQuery(ec2NatGatewaysQueryOptions)
+  const natGateways = data?.NatGateways ?? []
+  const display = natGateways.slice(0, MAX_ITEMS)
+
+  return (
+    <DashboardCard
+      title="NAT Gateways"
+      icon={<Waypoints className="size-3.5" />}
+      count={natGateways.length}
+      to="/ec2/describe-nat-gateways"
+    >
+      {natGateways.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No NAT gateways</p>
+      ) : (
+        <div className="space-y-0.5">
+          {display.map((nat) => (
+            <ItemRow key={nat.NatGatewayId}>
+              <span className="font-mono">{nat.NatGatewayId}</span>
+              <span className="text-muted-foreground">{nat.State}</span>
+            </ItemRow>
+          ))}
+          <Overflow total={natGateways.length} />
+        </div>
+      )}
+    </DashboardCard>
+  )
+}
+
+function InternetGatewaysCard() {
+  const { data } = useQuery(ec2InternetGatewaysQueryOptions)
+  const internetGateways = data?.InternetGateways ?? []
+  const display = internetGateways.slice(0, MAX_ITEMS)
+
+  return (
+    <DashboardCard
+      title="Internet Gateways"
+      icon={<Router className="size-3.5" />}
+      count={internetGateways.length}
+      to="/ec2/describe-internet-gateways"
+    >
+      {internetGateways.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No internet gateways</p>
+      ) : (
+        <div className="space-y-0.5">
+          {display.map((igw) => (
+            <ItemRow key={igw.InternetGatewayId}>
+              <span className="font-mono">{igw.InternetGatewayId}</span>
+              <span className="text-muted-foreground">
+                {igw.Attachments?.[0]?.VpcId ? "attached" : "detached"}
+              </span>
+            </ItemRow>
+          ))}
+          <Overflow total={internetGateways.length} />
+        </div>
+      )}
+    </DashboardCard>
+  )
+}
+
+function ElasticIpsCard() {
+  const { data } = useQuery(ec2AddressesQueryOptions)
+  const addresses = data?.Addresses ?? []
+  const display = addresses.slice(0, MAX_ITEMS)
+
+  return (
+    <DashboardCard
+      title="Elastic IPs"
+      icon={<Globe className="size-3.5" />}
+      count={addresses.length}
+      to="/ec2/describe-addresses"
+    >
+      {addresses.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No Elastic IPs</p>
+      ) : (
+        <div className="space-y-0.5">
+          {display.map((addr) => (
+            <ItemRow key={addr.AllocationId}>
+              <span className="font-mono">{addr.PublicIp}</span>
+              <span className="text-muted-foreground">
+                {addr.AssociationId ? "associated" : "available"}
+              </span>
+            </ItemRow>
+          ))}
+          <Overflow total={addresses.length} />
         </div>
       )}
     </DashboardCard>

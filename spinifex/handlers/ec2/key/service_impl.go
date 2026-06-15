@@ -367,6 +367,39 @@ func (s *KeyServiceImpl) ValidateKeyPairExists(accountID, keyName string) error 
 	return err
 }
 
+// GetPublicKeyMaterial returns the stored OpenSSH public key line, trimmed to a single
+// line. NoSuchKey maps to ErrorInvalidKeyPairNotFound; other errors are returned as-is.
+func (s *KeyServiceImpl) GetPublicKeyMaterial(accountID, keyName string) (string, error) {
+	keyPath := fmt.Sprintf("keys/%s/%s", accountID, keyName)
+	result, err := s.store.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(keyPath),
+	})
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) {
+			return "", errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+		}
+		slog.Error("Failed to get public key material", "keyName", keyName, "err", err)
+		return "", fmt.Errorf("get public key %s: %w", keyPath, err)
+	}
+	defer result.Body.Close()
+
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		slog.Error("Failed to read public key material", "keyName", keyName, "err", err)
+		return "", fmt.Errorf("read public key %s: %w", keyPath, err)
+	}
+
+	material := strings.TrimSpace(string(body))
+	if material == "" {
+		// An empty stored object is corruption, not "no key": surface a backend
+		// error (→ 500) rather than claim definitive absence (→ 404 keyless boot).
+		slog.Error("Empty public key material", "keyName", keyName, "path", keyPath)
+		return "", fmt.Errorf("empty public key material at %s", keyPath)
+	}
+	return material, nil
+}
+
 // DeleteKeyPair removes a key pair (both public key and metadata from S3)
 func (s *KeyServiceImpl) DeleteKeyPair(input *ec2.DeleteKeyPairInput, accountID string) (*ec2.DeleteKeyPairOutput, error) {
 	if input == nil {

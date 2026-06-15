@@ -8,11 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
 
-// ParseFilters converts AWS SDK filter types into a map[string][]string for
-// easier matching. validNames defines the set of accepted filter names.
-// Filter names starting with "tag:" are always accepted. Returns an
-// InvalidParameterValue-style error if an unsupported filter name is
-// encountered.
+// ParseFilters converts AWS SDK filter types to map[string][]string.
+// tag: prefixed names are always accepted; other names must be in validNames or an error is returned.
 func ParseFilters(filters []*ec2.Filter, validNames map[string]bool) (map[string][]string, error) {
 	if len(filters) == 0 {
 		return nil, nil
@@ -54,10 +51,8 @@ func MatchesAny(filterValues []string, value string) bool {
 	return false
 }
 
-// MatchesTags checks whether a resource's tags satisfy all tag:Key filters
-// present in the filter map. Each tag:Key filter uses OR logic across its
-// values — the resource must have the tag and its value must match at least
-// one filter value (with wildcard support).
+// MatchesTags checks whether a resource's tags satisfy all tag:Key filters in the map.
+// Each tag:Key filter uses OR logic across its values, with wildcard support.
 func MatchesTags(filters map[string][]string, tags map[string]string) bool {
 	for name, values := range filters {
 		if !strings.HasPrefix(name, "tag:") {
@@ -89,9 +84,8 @@ func EC2TagsToMap(tags []*ec2.Tag) map[string]string {
 	return m
 }
 
-// MatchWildcard matches value against a pattern where * matches zero or more
-// characters. Case-sensitive — callers needing case-insensitive matching
-// (e.g. IAM policy evaluation) should lower-case both inputs before calling.
+// MatchWildcard matches value against a pattern where * matches zero or more characters.
+// Case-sensitive; callers needing case-insensitive matching should lower-case both inputs.
 func MatchWildcard(pattern, value string) bool {
 	if pattern == "*" {
 		return true
@@ -103,7 +97,6 @@ func MatchWildcard(pattern, value string) bool {
 	parts := strings.Split(pattern, "*")
 	last := len(parts) - 1
 
-	// Check that value starts with the first part and ends with the last.
 	if !strings.HasPrefix(value, parts[0]) {
 		return false
 	}
@@ -111,8 +104,7 @@ func MatchWildcard(pattern, value string) bool {
 		return false
 	}
 
-	// Trim prefix and suffix from the search region so middle parts
-	// cannot consume characters reserved for the anchored ends.
+	// Trim anchored ends before scanning middle parts.
 	remaining := value[len(parts[0]):]
 	if len(remaining) < len(parts[last]) {
 		return false

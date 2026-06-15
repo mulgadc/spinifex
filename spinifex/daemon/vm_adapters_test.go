@@ -46,6 +46,45 @@ func TestOnInstanceUpHook_RegistersBothPerInstanceTopics(t *testing.T) {
 	assert.Equal(t, "ec2.i-up-basic.GetConsoleOutput", consoleSub.Subject)
 }
 
+func TestOnInstanceUpHook_ReArmsSystemTerminateForELBv2(t *testing.T) {
+	d, _ := newHookTestDaemon(t)
+	instance := &vm.VM{ID: "i-up-sys", ManagedBy: tags.ManagedByELBv2}
+
+	require.NoError(t, d.onInstanceUpHook()(instance))
+
+	// OnInstanceUp fires on both the relaunch and reconnect recovery paths, so
+	// the terminate subject must be re-bound or the recovered LB VM can never
+	// be torn down (SetSubnets relaunch, DeleteLoadBalancer).
+	sub, ok := d.natsSubscriptions["system.TerminateInstance.i-up-sys"]
+	require.True(t, ok, "system terminate subscription must be re-armed for ELBv2 VMs")
+	assert.Equal(t, "system.TerminateInstance.i-up-sys", sub.Subject)
+}
+
+func TestOnInstanceUpHook_NoSystemTerminateForRegularInstance(t *testing.T) {
+	d, _ := newHookTestDaemon(t)
+	instance := &vm.VM{ID: "i-up-regular"}
+
+	require.NoError(t, d.onInstanceUpHook()(instance))
+
+	_, ok := d.natsSubscriptions["system.TerminateInstance.i-up-regular"]
+	assert.False(t, ok, "regular instances must not register a system terminate subscription")
+}
+
+func TestOnInstanceDownHook_DropsSystemTerminateSubscription(t *testing.T) {
+	d, _ := newHookTestDaemon(t)
+	instance := &vm.VM{ID: "i-down-sys", ManagedBy: tags.ManagedByELBv2}
+
+	require.NoError(t, d.onInstanceUpHook()(instance))
+	termSub := d.natsSubscriptions["system.TerminateInstance.i-down-sys"]
+	require.NotNil(t, termSub)
+
+	d.onInstanceDownHook()(instance.ID)
+
+	_, present := d.natsSubscriptions["system.TerminateInstance.i-down-sys"]
+	assert.False(t, present, "system terminate sub must be deleted from map")
+	assert.False(t, termSub.IsValid(), "system terminate sub must be unsubscribed")
+}
+
 func TestOnInstanceUpHook_ReplacesExistingSubsOnDoubleUp(t *testing.T) {
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-up-twice"}

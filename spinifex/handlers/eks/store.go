@@ -56,9 +56,15 @@ func ClusterMetaKey(name string) string {
 	return fmt.Sprintf("clusters/%s/meta", name)
 }
 
+// NodegroupsPrefix returns the KV key prefix under which all of a cluster's
+// nodegroup records live. Used by ListNodegroups to enumerate.
+func NodegroupsPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/nodegroups/", cluster)
+}
+
 // NodegroupKey returns the KV key for a nodegroup record under a cluster.
 func NodegroupKey(cluster, ng string) string {
-	return fmt.Sprintf("clusters/%s/nodegroups/%s", cluster, ng)
+	return NodegroupsPrefix(cluster) + ng
 }
 
 // AccessEntriesPrefix returns the KV key prefix under which all of a cluster's
@@ -121,6 +127,23 @@ func NodeTokenKey(cluster string) string {
 // EventKey returns the KV key for a cluster-scoped event record.
 func EventKey(cluster, ts string) string {
 	return fmt.Sprintf("clusters/%s/events/%s", cluster, ts)
+}
+
+// AddonsPrefix returns the KV key prefix under which all of a cluster's managed
+// add-on records live. Used by ListAddons to enumerate.
+func AddonsPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/addons/", cluster)
+}
+
+// AddonKey returns the KV key for a managed add-on record under a cluster.
+func AddonKey(cluster, addon string) string {
+	return AddonsPrefix(cluster) + addon
+}
+
+// AddonManifestKey returns the KV key under which the rendered manifest for a
+// managed add-on is staged for the VM-side delivery transport to consume.
+func AddonManifestKey(cluster, addon string) string {
+	return AddonsPrefix(cluster) + addon + "/manifest"
 }
 
 // Store is the per-daemon EKS KV handle. Per-account and leader buckets are

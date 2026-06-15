@@ -43,8 +43,7 @@ var _ Manager = (*liveManager)(nil)
 
 func defaultDNSServer() string { return "{8.8.8.8, 1.1.1.1}" }
 
-// EnsureVPC idempotently creates the OVN logical router for the VPC via the
-// wait-op-protected EnsureLogicalRouter primitive (cross-node race-safe).
+// EnsureVPC idempotently creates the OVN logical router for the VPC.
 // Backfills ExternalIDs if the surviving row was created with empty metadata.
 func (m *liveManager) EnsureVPC(ctx context.Context, spec VPCSpec) error {
 	if m.ovn == nil {
@@ -81,8 +80,8 @@ func (m *liveManager) EnsureVPC(ctx context.Context, spec VPCSpec) error {
 	return nil
 }
 
-// backfillRouterMetadata fills empty ExternalIDs on the existing row from spec
-// so the race-loser's richer metadata isn't lost (EnsureLogicalRouter is single-shot).
+// backfillRouterMetadata fills empty ExternalIDs on the existing row so metadata
+// from the race-loser isn't lost.
 func (m *liveManager) backfillRouterMetadata(ctx context.Context, existing *nbdb.LogicalRouter, spec map[string]string) error {
 	if existing.ExternalIDs == nil {
 		existing.ExternalIDs = map[string]string{}
@@ -270,8 +269,7 @@ func (m *liveManager) DeleteSubnet(ctx context.Context, spec SubnetSpec) error {
 }
 
 // EnsurePort creates the ENI's LSP and joins initial SG port groups atomically.
-// If the LSP exists from a prior crashed attempt, converges SG memberships in
-// place — the gap would leave a port with zero ACLs (OVN default = unrestricted).
+// If the LSP already exists, converges SG memberships to avoid zero-ACL gaps.
 func (m *liveManager) EnsurePort(ctx context.Context, spec PortSpec) error {
 	if m.ovn == nil {
 		return fmt.Errorf("OVN client not connected")
@@ -363,8 +361,8 @@ func (m *liveManager) EnsureSGPortGroup(ctx context.Context, groupID string) err
 	return nil
 }
 
-// DeleteSGPortGroup clears ACLs then removes the port-group row. Idempotent.
-// ClearACLs must precede DeletePortGroup — libovsdb rejects dangling refs.
+// DeleteSGPortGroup clears ACLs then removes the port-group row; idempotent.
+// ClearACLs must run first — libovsdb rejects dangling refs.
 func (m *liveManager) DeleteSGPortGroup(ctx context.Context, groupID string) error {
 	if groupID == "" {
 		return fmt.Errorf("DeleteSGPortGroup: empty groupID")
@@ -409,8 +407,7 @@ func (m *liveManager) SetPortSecurityGroups(ctx context.Context, portID string, 
 	return nil
 }
 
-// reconcilePortSGs applies the SG diff atomically — an N→M modify must never
-// expose an intermediate gap (OVN default = unrestricted). Returns true if changed.
+// reconcilePortSGs applies the SG diff atomically to avoid zero-ACL gaps. Returns true if changed.
 func (m *liveManager) reconcilePortSGs(ctx context.Context, lspName string, desiredSGs []string) (bool, error) {
 	desired := make(map[string]struct{}, len(desiredSGs))
 	for _, sgID := range desiredSGs {

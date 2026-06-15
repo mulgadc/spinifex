@@ -170,11 +170,13 @@ func (s *ImageServiceImpl) DescribeImages(input *ec2.DescribeImagesInput, accoun
 			continue
 		}
 
-		// Parse the viperblock config which contains VolumeConfig with AMIMetadata
+		// Parse the viperblock config which contains VolumeConfig with AMIMetadata.
+		// StateBody unwraps the at-rest encryption envelope (the metadata ships
+		// authenticated-but-plaintext); it is a no-op for unencrypted volumes.
 		var vbConfig struct {
 			VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
 		}
-		if err := json.Unmarshal(body, &vbConfig); err != nil {
+		if err := json.Unmarshal(viperblock.StateBody(body), &vbConfig); err != nil {
 			slog.Debug("Failed to unmarshal config", "key", configKey, "err", err)
 			continue
 		}
@@ -587,8 +589,12 @@ func (s *ImageServiceImpl) getVolumeConfig(volumeID string) (*viperblock.VolumeC
 	}
 	defer result.Body.Close()
 
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		return nil, err
+	}
 	var vbState viperblock.VBState
-	if err := json.NewDecoder(result.Body).Decode(&vbState); err != nil {
+	if err := json.Unmarshal(viperblock.StateBody(body), &vbState); err != nil {
 		return nil, err
 	}
 	return &vbState.VolumeConfig, nil
@@ -623,10 +629,13 @@ func (s *ImageServiceImpl) amiNameExists(name string) (bool, error) {
 			return false, fmt.Errorf("amiNameExists: failed to read %s: %w", configKey, err)
 		}
 
-		var vbState viperblock.VBState
-		decodeErr := json.NewDecoder(result.Body).Decode(&vbState)
+		body, readErr := io.ReadAll(result.Body)
 		_ = result.Body.Close()
-		if decodeErr != nil {
+		if readErr != nil {
+			return false, fmt.Errorf("amiNameExists: failed to read %s: %w", configKey, readErr)
+		}
+		var vbState viperblock.VBState
+		if decodeErr := json.Unmarshal(viperblock.StateBody(body), &vbState); decodeErr != nil {
 			return false, fmt.Errorf("amiNameExists: failed to decode %s: %w", configKey, decodeErr)
 		}
 
@@ -656,8 +665,12 @@ func (s *ImageServiceImpl) GetAMIConfig(imageID string) (viperblock.AMIMetadata,
 	}
 	defer result.Body.Close()
 
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %v", ErrCorruptAMIConfig, configKey, err)
+	}
 	var vbState viperblock.VBState
-	if err := json.NewDecoder(result.Body).Decode(&vbState); err != nil {
+	if err := json.Unmarshal(viperblock.StateBody(body), &vbState); err != nil {
 		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %v", ErrCorruptAMIConfig, configKey, err)
 	}
 	return vbState.VolumeConfig.AMIMetadata, nil
@@ -751,10 +764,9 @@ func (s *ImageServiceImpl) putSnapshotMetadata(snapshotID, volumeID string, volu
 	return handlers_ec2_snapshot.WriteSnapshotConfig(s.store, s.bucketName, snapshotID, &cfg)
 }
 
-// CopyImage clones an AMI same-region, metadata-only: the new snapshot shares
-// the source's VolumeID and a fresh config.json points at it.
-// Source visibility is checked before the O(n) name-uniqueness scan so typos
-// and cross-account sources fast-fail without a full AMI listing.
+// CopyImage clones an AMI same-region, metadata-only: the new snapshot shares the
+// source's VolumeID and a fresh config.json points at it. Source visibility is checked
+// before the name-uniqueness scan so cross-account sources fast-fail.
 func (s *ImageServiceImpl) CopyImage(input *ec2.CopyImageInput, accountID string) (*ec2.CopyImageOutput, error) {
 	if input == nil || input.Name == nil || *input.Name == "" ||
 		input.SourceImageId == nil || *input.SourceImageId == "" {
@@ -786,12 +798,8 @@ func (s *ImageServiceImpl) CopyImage(input *ec2.CopyImageInput, accountID string
 	}
 	srcSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(s.store, s.bucketName, srcMeta.SnapshotID)
 	if err != nil {
-		// Bundled system AMIs (admin-imported via `spx admin images import`)
-		// store blocks under ami-xxx/ with no standalone snap-xxx/metadata.json
-		// — the SnapshotID field is a viperblock-internal snap reference. To
-		// keep copy-image AWS-compatible (copy of a public/shared AMI must
-		// succeed), synthesize a minimal snap view from the AMI itself: the
-		// bundled prefix IS the volume, so VolumeID = sourceImageID.
+		// Bundled system AMIs have no standalone snap-xxx/metadata.json; synthesize
+		// a minimal snap view using VolumeID = sourceImageID so CopyImage succeeds.
 		if objectstore.IsNoSuchKeyError(err) && srcMeta.ImageOwnerAlias != "" && !utils.IsAccountID(srcMeta.ImageOwnerAlias) {
 			srcSnap = &handlers_ec2_snapshot.SnapshotConfig{
 				SnapshotID: srcMeta.SnapshotID,
@@ -950,10 +958,9 @@ func (s *ImageServiceImpl) clusterEncryptionEnabled() bool {
 	return mkey != nil
 }
 
-// synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from
-// AMIMetadata, or nil for non-EBS AMIs. encrypted reflects the cluster-level
-// encryption-at-rest posture (master key configured) since AMI metadata does
-// not carry a per-image encryption flag of its own.
+// synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from AMIMetadata,
+// or nil for non-EBS AMIs. encrypted reflects the cluster-level encryption posture
+// (master key configured); AMI metadata carries no per-image encryption flag.
 func synthesizeRootBlockDeviceMapping(meta viperblock.AMIMetadata, encrypted bool) []*ec2.BlockDeviceMapping {
 	if meta.RootDeviceType != "ebs" {
 		return nil
@@ -1116,10 +1123,8 @@ func (s *ImageServiceImpl) DeregisterImage(input *ec2.DeregisterImageInput, acco
 	return &ec2.DeregisterImageOutput{}, nil
 }
 
-// ModifyImageAttribute writes a modifiable AMI attribute. Gateway normalises
-// into Attribute+Value; only description is writable. Ownership is checked
-// before the attribute switch so cross-account callers always see
-// UnauthorizedOperation.
+// ModifyImageAttribute writes a modifiable AMI attribute; only description is writable.
+// Ownership is checked first so cross-account callers always see UnauthorizedOperation.
 func (s *ImageServiceImpl) ModifyImageAttribute(input *ec2.ModifyImageAttributeInput, accountID string) (*ec2.ModifyImageAttributeOutput, error) {
 	if input == nil || input.ImageId == nil || *input.ImageId == "" ||
 		input.Attribute == nil || *input.Attribute == "" {

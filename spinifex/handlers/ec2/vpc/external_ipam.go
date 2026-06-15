@@ -25,10 +25,8 @@ const (
 	KVBucketExternalIPAMVersion = external.KVBucketStaticPoolVersion
 )
 
-// ExternalPoolConfig is the admin-defined pool from spinifex.toml.
-// Duplicated against network/external.ExternalPoolConfig — the duplicate
-// stays until ExternalIPAM moves into network/external (deferred L5
-// cleanup tracked separately).
+// ExternalPoolConfig is the admin-defined IP pool from spinifex.toml.
+// Duplicated from network/external.ExternalPoolConfig pending consolidation.
 type ExternalPoolConfig struct {
 	Name       string
 	Source     string // "static" (default) or "dhcp"
@@ -47,10 +45,8 @@ type ExternalPoolConfig struct {
 	GwLrpRangeEnd   string
 }
 
-// ExternalIPAM is the AWS-facing entry point for external IP allocation.
-// State + CAS logic lives in external.StaticPoolAllocator for static
-// pools and dhcp.DHCPPoolAllocator (via vpcd RPC) for dhcp-sourced
-// pools; ExternalIPAM dispatches by pool name.
+// ExternalIPAM is the AWS-facing entry point for external IP allocation,
+// dispatching to StaticPoolAllocator or dhcp.DHCPPoolAllocator per pool name.
 type ExternalIPAM struct {
 	kv      nats.KeyValue
 	pools   []ExternalPoolConfig

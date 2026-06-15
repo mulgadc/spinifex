@@ -76,3 +76,27 @@ func TestEC2StateCodes_SpinifexOnlyStatesPresentAsPending(t *testing.T) {
 	assert.Equal(t, int64(0), EC2StateCodes[StateProvisioning].Code)
 	assert.Equal(t, int64(0), EC2StateCodes[StateError].Code)
 }
+
+func TestEC2APIState_ErrorProjectsToStopped(t *testing.T) {
+	// The internal "error" label is not a valid AWS InstanceStateName and breaks
+	// SDK/UI clients. EC2APIState must project StateError onto stopped so the
+	// instance stays renderable and actionable (start/terminate).
+	info, ok := EC2APIState(StateError)
+	assert.True(t, ok)
+	assert.Equal(t, ec2.InstanceStateNameStopped, info.Name)
+	assert.Equal(t, int64(80), info.Code)
+}
+
+func TestEC2APIState_NeverSurfacesNonAWSName(t *testing.T) {
+	// Every mapped state must project to a name in the AWS enum. Codes 0/"pending"
+	// for the provisioning internal state are AWS-understood; "error" must not leak.
+	for _, s := range []InstanceState{
+		StateProvisioning, StatePending, StateRunning, StateStopping,
+		StateStopped, StateShuttingDown, StateTerminated, StateError,
+	} {
+		info, ok := EC2APIState(s)
+		assert.True(t, ok, "EC2APIState(%s) returned no mapping", s)
+		_, valid := awsEC2StateCodes[info.Name]
+		assert.True(t, valid, "EC2APIState(%s) surfaced non-AWS name %q", s, info.Name)
+	}
+}

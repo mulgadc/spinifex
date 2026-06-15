@@ -29,7 +29,6 @@ func ResolveCACert(env *Env) (string, error) {
 		filepath.Join(env.ConfigDir, "ca.pem"),
 		"/etc/spinifex/ca.pem",
 		os.ExpandEnv("$HOME/spinifex/config/ca.pem"),
-		os.ExpandEnv("$HOME/node1/config/ca.pem"),
 	}
 	for _, c := range candidates {
 		if c == "" {
@@ -42,21 +41,16 @@ func ResolveCACert(env *Env) (string, error) {
 	return "", fmt.Errorf("CA cert not found in any candidate location: %v", candidates)
 }
 
-// SystemCAPath is the canonical install location used by bootstrap.sh.
+// SystemCAPath is the canonical install location used by setup.sh.
 const SystemCAPath = "/usr/local/share/ca-certificates/spinifex-ca.crt"
 
 // ServerCertPath returns the local file path for a node's server cert,
 // or empty string if the cert must be fetched over the wire instead.
-func ServerCertPath(env *Env, nodeIP string) string {
-	switch env.Mode {
-	case ModeSingle:
+func ServerCertPath(env *Env) string {
+	if env.Mode == ModeSingle {
 		return filepath.Join(env.ConfigDir, "server.pem")
-	case ModePseudo:
-		octet := nodeIP[strings.LastIndex(nodeIP, ".")+1:]
-		return os.ExpandEnv("$HOME/node" + octet + "/config/server.pem")
-	default:
-		return ""
 	}
+	return ""
 }
 
 // ParseCertFile reads a PEM cert from disk and returns the parsed x509.

@@ -17,15 +17,9 @@ import (
 // IPs must come from 10.200.1.0/24. Compiled once.
 var vpcSubnetCIDR = regexp.MustCompile(`^10\.200\.1\.[0-9]+$`)
 
-// runVPCNetworking is the Go port of VPC networking validation
-// (run-multinode-e2e.sh:1042-1251). Stands up a fresh non-default VPC +
-// subnet, launches 3 instances into the subnet, asserts each gets a unique
-// PrivateIpAddress within 10.200.1.0/24, then stops + restarts all three and
-// re-asserts the same IPs persist.
-//
-// Independent of the package-level trio (which lives on the default VPC) —
-// this test needs full control over subnet allocation, so instances are
-// launched, terminated, and cleaned up locally via t.Cleanup.
+// runVPCNetworking stands up a fresh VPC 10.200.0.0/16 + subnet, launches 3 instances,
+// asserts unique PrivateIpAddresses within 10.200.1.0/24, then stops + restarts and
+// re-asserts IP persistence. Independent of the package-level trio.
 func runVPCNetworking(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — VPC Networking")
 
@@ -63,9 +57,7 @@ func runVPCNetworking(t *testing.T, fix *Fixture) {
 	})
 	harness.Detail(t, "subnet", subnetID, "cidr", "10.200.1.0/24")
 
-	// OVN topology programming is async — bash sleeps 2s after create-subnet
-	// before launching. Mirror that pause to avoid flakes during the first
-	// RunInstances.
+	// OVN topology programming is async; 2s pause avoids first-RunInstances flakes.
 	time.Sleep(2 * time.Second)
 
 	// --- Launch 3 instances ------------------------------------------------
@@ -86,8 +78,7 @@ func runVPCNetworking(t *testing.T, fix *Fixture) {
 		require.NotEmptyf(t, id, "run-instances #%d: empty InstanceId", i+1)
 		instIDs = append(instIDs, id)
 		harness.Detail(t, "instance", id)
-		// Per-instance cleanup — terminate so the subnet/VPC can drop in
-		// later cleanup phases. Best-effort; we're already unwinding.
+		// Terminate so the subnet/VPC can be deleted in later cleanup phases.
 		idCopy := id
 		t.Cleanup(func() {
 			_, _ = c.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
@@ -159,10 +150,8 @@ func runVPCNetworking(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "ips_restarted", restartedIPs)
 }
 
-// describeAndCollectIPs runs DescribeInstances for each id, asserts the
-// Subnet/VPC binding matches expectations, and returns PrivateIpAddress
-// values in the same order as instIDs. Fatal on any missing field — bash
-// also fatals on these.
+// describeAndCollectIPs describes each instance, asserts Subnet/VPC binding, and returns
+// PrivateIpAddress values in instIDs order.
 func describeAndCollectIPs(t *testing.T, c *harness.AWSClient, instIDs []string, wantSubnet, wantVPC string) []string {
 	t.Helper()
 	ips := make([]string, 0, len(instIDs))
@@ -184,8 +173,7 @@ func describeAndCollectIPs(t *testing.T, c *harness.AWSClient, instIDs []string,
 	return ips
 }
 
-// needArch returns the discovered arch for the nano instance type.
-// Convenience wrapper because needAMI takes arch, not (t, fix).
+// needArch returns the architecture for the discovered nano instance type.
 func needArch(t *testing.T, fix *Fixture) string {
 	t.Helper()
 	_, arch := needInstanceTypeArch(t, fix)

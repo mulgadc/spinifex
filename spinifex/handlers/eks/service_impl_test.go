@@ -64,6 +64,17 @@ func TestValidateCreateClusterInput_RejectsConfigMapAuthMode(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorInvalidParameter)
 }
 
+// The API_AND_CONFIG_MAP hybrid still enables the unsupported aws-auth ConfigMap
+// path, so it must be rejected the same as plain CONFIG_MAP — the sibling test
+// only covers the CONFIG_MAP value.
+func TestValidateCreateClusterInput_RejectsAPIAndConfigMapAuthMode(t *testing.T) {
+	in := createInput("alpha")
+	in.AccessConfig = &eks.CreateAccessConfigRequest{
+		AuthenticationMode: aws.String(eks.AuthenticationModeApiAndConfigMap),
+	}
+	require.EqualError(t, validateCreateClusterInput(in), awserrors.ErrorInvalidParameter)
+}
+
 func TestValidateCreateClusterInput_AcceptsAPIAuthMode(t *testing.T) {
 	in := createInput("alpha")
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
@@ -92,6 +103,16 @@ func TestDescribeCluster_NotFoundWithFullDeps(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
 }
 
+// DeleteCluster on an absent cluster must reach the KV lookup with full deps
+// wired (the shim path short-circuits to ServiceUnavailable before the meta
+// read) and surface ResourceNotFoundException, not a teardown of nothing.
+func TestDeleteCluster_NotFoundWithFullDeps(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	_, err := f.svc.DeleteCluster(deleteInput("ghost"), testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
+
 // Security guarantee: the OIDC signing key must be zeroized BEFORE infra
 // teardown, so a teardown failure (which leaves the meta for retry) can never
 // leave recoverable key material behind. Force VM terminate to fail and assert
@@ -111,26 +132,30 @@ func TestDeleteCluster_ZeroizesOIDCKeyBeforeTeardown(t *testing.T) {
 	assert.Equal(t, ClusterStatusDeleting, meta.Status)
 }
 
-func TestEKSServiceImpl_NodegroupMethodsReturnNotImplemented(t *testing.T) {
+// In shim mode (orchestration deps absent) the mutating nodegroup methods
+// short-circuit to ServiceUnavailable, the read methods reach an empty
+// per-account bucket and surface ResourceNotFoundException, and
+// UpdateNodegroupVersion stays NotImplemented (v1 doesn't do AMI upgrades).
+func TestEKSServiceImpl_NodegroupMethodsShimMode(t *testing.T) {
 	svc := setupTestService(t)
 
 	_, err := svc.CreateNodegroup(&eks.CreateNodegroupInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 
 	_, err = svc.DescribeNodegroup(&eks.DescribeNodegroupInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
 
 	_, err = svc.ListNodegroups(&eks.ListNodegroupsInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
 
 	_, err = svc.UpdateNodegroupConfig(&eks.UpdateNodegroupConfigInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 
 	_, err = svc.UpdateNodegroupVersion(&eks.UpdateNodegroupVersionInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
 	_, err = svc.DeleteNodegroup(&eks.DeleteNodegroupInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 }
 
 // seedTestCluster lays down a minimal ACTIVE cluster meta in the per-account
@@ -298,28 +323,6 @@ func TestListAccessPolicies_ReturnsSupportedCatalogue(t *testing.T) {
 	}
 }
 
-func TestEKSServiceImpl_AddonsMethodsReturnNotImplemented(t *testing.T) {
-	svc := setupTestService(t)
-
-	_, err := svc.ListAddons(&eks.ListAddonsInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.CreateAddon(&eks.CreateAddonInput{ClusterName: aws.String("c1"), AddonName: aws.String("vpc-cni")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DeleteAddon(&eks.DeleteAddonInput{ClusterName: aws.String("c1"), AddonName: aws.String("vpc-cni")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DescribeAddon(&eks.DescribeAddonInput{ClusterName: aws.String("c1"), AddonName: aws.String("vpc-cni")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.UpdateAddon(&eks.UpdateAddonInput{ClusterName: aws.String("c1"), AddonName: aws.String("vpc-cni")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-}
-
 func TestEKSServiceImpl_OIDCMethodsReturnNotImplemented(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -336,15 +339,59 @@ func TestEKSServiceImpl_OIDCMethodsReturnNotImplemented(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 }
 
-func TestEKSServiceImpl_TagsMethodsReturnNotImplemented(t *testing.T) {
+func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
+	js, err := svc.deps.NATSConn.JetStream()
+	require.NoError(t, err)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	require.NoError(t, err)
 
-	_, err := svc.TagResource(&eks.TagResourceInput{ResourceArn: aws.String("arn:aws:eks:us-east-1:111122223333:cluster/c1")}, testAccountID)
+	const arn = "arn:aws:eks:us-east-1:111122223333:cluster/c1"
+	require.NoError(t, PutClusterMeta(kv, &ClusterMeta{
+		Name:   "c1",
+		Status: ClusterStatusActive,
+		Tags:   map[string]string{"env": "prod"},
+	}))
+
+	// Create-time tags are echoed (the drift-killing round-trip).
+	lt, err := svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "prod", aws.StringValue(lt.Tags["env"]))
+
+	dc, err := svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("c1")}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "prod", aws.StringValue(dc.Cluster.Tags["env"]))
+
+	// TagResource merges, UntagResource removes — both store-only.
+	_, err = svc.TagResource(&eks.TagResourceInput{
+		ResourceArn: aws.String(arn),
+		Tags:        aws.StringMap(map[string]string{"team": "platform"}),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.UntagResource(&eks.UntagResourceInput{
+		ResourceArn: aws.String(arn),
+		TagKeys:     aws.StringSlice([]string{"env"}),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	lt, err = svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "platform", aws.StringValue(lt.Tags["team"]))
+	_, hasEnv := lt.Tags["env"]
+	require.False(t, hasEnv)
+}
+
+func TestEKSServiceImpl_TagsNonClusterARNNotImplemented(t *testing.T) {
+	svc := setupTestService(t)
+	const ngARN = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"
+
+	_, err := svc.TagResource(&eks.TagResourceInput{ResourceArn: aws.String(ngARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
-	_, err = svc.UntagResource(&eks.UntagResourceInput{ResourceArn: aws.String("arn:aws:eks:us-east-1:111122223333:cluster/c1")}, testAccountID)
+	_, err = svc.UntagResource(&eks.UntagResourceInput{ResourceArn: aws.String(ngARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
-	_, err = svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String("arn:aws:eks:us-east-1:111122223333:cluster/c1")}, testAccountID)
+	_, err = svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(ngARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 }

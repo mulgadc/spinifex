@@ -10,14 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runCrossNodeGateway is the Go port of cross-node gateway access
-// (run-multinode-e2e.sh:828-851). Drives DescribeInstances through every
-// node's gateway and asserts each returns the same instance count as node1
-// (the test runner's local gateway).
-//
-// Catches the regression where the daemon answers only locally-hosted
-// instances instead of fanning out via NATS — i.e. a stale awsgw routing
-// table or a queue-group misconfiguration.
+// runCrossNodeGateway drives DescribeInstances through every node's gateway and asserts
+// each returns the same instance count as node1. Catches the regression where the daemon
+// answers only locally-hosted instances instead of fanning out via NATS.
 func runCrossNodeGateway(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Cross-Node Gateway Access")
 

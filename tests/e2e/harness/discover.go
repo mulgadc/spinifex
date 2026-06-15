@@ -1,12 +1,7 @@
 //go:build e2e
 
-// Cluster-discovery helpers that memoize their answer on the Fixture.
-//
-// These wrap the read-only EC2 calls the single-node e2e suite uses to learn
-// the per-cluster catalog (AZ, nano instance type, Ubuntu AMI) so any top-level
-// Test* can resolve them without depending on an earlier phase having stashed
-// the result on a shared Fixture field. Memo keys are stable per fixture, so
-// the first call pays the API cost and later callers hit the cache.
+// Cluster-discovery helpers that memoize EC2 catalog lookups on the Fixture.
+// First call pays the API cost; later callers in the same process hit the cache.
 package harness
 
 import (
@@ -78,10 +73,8 @@ func DiscoverNanoInstanceType(t *testing.T, fx *Fixture) (instanceType, arch str
 }
 
 // DiscoverUbuntuAMI returns the AMI ID for the architecture-appropriate Ubuntu
-// gold image bootstrap-install.sh staged via `spx admin images import --file`.
-// Tries the v6+ ubuntu-26.04 name first, falls back to the v3 ubuntu-24.04
-// candidate. Routes the discovered ID through EnsureAMI so the state-available
-// poll + memoization match every other AMI consumer in the fixture.
+// gold image. Tries ubuntu-26.04 first, falls back to ubuntu-24.04.
+// Routes through EnsureAMI so the state-available poll and memoization apply.
 func DiscoverUbuntuAMI(t *testing.T, fx *Fixture, arch string) string {
 	t.Helper()
 	if arch == "" {

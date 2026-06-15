@@ -1,10 +1,16 @@
 import {
+  GetInstanceProfileCommand,
   GetPolicyCommand,
   GetPolicyVersionCommand,
+  GetRoleCommand,
   GetUserCommand,
   ListAccessKeysCommand,
+  ListAttachedRolePoliciesCommand,
   ListAttachedUserPoliciesCommand,
+  ListInstanceProfilesCommand,
+  ListInstanceProfilesForRoleCommand,
   ListPoliciesCommand,
+  ListRolesCommand,
   ListUsersCommand,
 } from "@aws-sdk/client-iam"
 import { queryOptions } from "@tanstack/react-query"
@@ -81,6 +87,70 @@ export const iamAttachedUserPoliciesQueryOptions = (userName: string) =>
     queryFn: async () => {
       const command = new ListAttachedUserPoliciesCommand({
         UserName: userName,
+      })
+      return await getIamClient().send(command)
+    },
+    staleTime: 300_000,
+  })
+
+export const iamRolesQueryOptions = queryOptions({
+  queryKey: ["iam", "roles"],
+  queryFn: async () => {
+    const command = new ListRolesCommand({})
+    return await getIamClient().send(command)
+  },
+  staleTime: 300_000,
+})
+
+export const iamRoleQueryOptions = (roleName: string) =>
+  queryOptions({
+    queryKey: ["iam", "roles", roleName],
+    queryFn: async () => {
+      const command = new GetRoleCommand({ RoleName: roleName })
+      return await getIamClient().send(command)
+    },
+    staleTime: 300_000,
+  })
+
+export const iamAttachedRolePoliciesQueryOptions = (roleName: string) =>
+  queryOptions({
+    queryKey: ["iam", "attached-role-policies", roleName],
+    queryFn: async () => {
+      const command = new ListAttachedRolePoliciesCommand({
+        RoleName: roleName,
+      })
+      return await getIamClient().send(command)
+    },
+    staleTime: 300_000,
+  })
+
+export const iamInstanceProfilesQueryOptions = queryOptions({
+  queryKey: ["iam", "instance-profiles"],
+  queryFn: async () => {
+    const command = new ListInstanceProfilesCommand({})
+    return await getIamClient().send(command)
+  },
+  staleTime: 300_000,
+})
+
+export const iamInstanceProfileQueryOptions = (instanceProfileName: string) =>
+  queryOptions({
+    queryKey: ["iam", "instance-profiles", instanceProfileName],
+    queryFn: async () => {
+      const command = new GetInstanceProfileCommand({
+        InstanceProfileName: instanceProfileName,
+      })
+      return await getIamClient().send(command)
+    },
+    staleTime: 300_000,
+  })
+
+export const iamInstanceProfilesForRoleQueryOptions = (roleName: string) =>
+  queryOptions({
+    queryKey: ["iam", "instance-profiles-for-role", roleName],
+    queryFn: async () => {
+      const command = new ListInstanceProfilesForRoleCommand({
+        RoleName: roleName,
       })
       return await getIamClient().send(command)
     },

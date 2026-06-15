@@ -38,21 +38,10 @@ type VPCDiagnosticsOpts struct {
 	ArtifactDir string
 }
 
-// DumpVPCFlowDiagnostics emits a triage bundle for VPC/IGW datapath failures
-// (e.g. Phase8b SSH-to-public-IP timeout). Dumps the guest's console tail
-// (boot + cloud-init state) plus a slim OVN state snapshot to identify
-// whether the gateway router has converged. Non-fatal — runs purely for log
-// signal so the test's primary Fatal still wins.
-//
-// Tracked product bugs surfaced by this signal:
-//   - mulga-siv-105 (handleIGWAttach lacks flows-ready barrier)
-//   - mulga-siv-106 (handleVPCCreate doesn't store spinifex:cidr)
-//   - mulga-siv-107 (dnat_and_snat double-delete race)
-//   - mulga-siv-111 (EIP-recycle stale OVS state; this is the Phase 1
-//     diagnostics surface that closes the bead's first acceptance gate)
-//
-// Skips silently if OVN tooling / passwordless sudo aren't available, so the
-// helper is safe to call from developer laptops too.
+// DumpVPCFlowDiagnostics emits a triage bundle for VPC/IGW datapath failures.
+// Dumps the guest console tail and a slim OVN state snapshot to identify
+// whether the gateway router has converged. Non-fatal — log signal only.
+// Skips silently if OVN tooling / passwordless sudo aren't available.
 func DumpVPCFlowDiagnostics(t *testing.T, c *AWSClient, instanceID, label string, opts VPCDiagnosticsOpts) {
 	t.Helper()
 	fmt.Printf("\n%s%s── DIAGNOSTICS: %s (instance=%s) ──%s\n",
@@ -162,16 +151,10 @@ func dumpOVNState(t *testing.T, instanceID string) {
 	}
 }
 
-// dumpDatapathState captures OVS / kernel-side state keyed on the
-// external IP being probed. The signal disambiguates between three
-// hypotheses on the residual SSH-timeout-despite-barrier failure
-// (mulga-siv-111): (1) stale conntrack, (2) stale upstream ARP, (3)
-// missing OF flow install. Each capture also writes to a separate
-// file under opts.ArtifactDir when set, so the Stage 2 analyzer
-// bundler picks them up.
-//
-// Skipped silently when the IP-specific inputs aren't supplied or the
-// shell tools aren't available.
+// dumpDatapathState captures OVS / kernel-side state keyed on the external IP:
+// conntrack, upstream ARP, and OF flow install. Each capture is also written
+// to opts.ArtifactDir when set. Skipped silently when inputs or shell tools
+// are unavailable.
 func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 	t.Helper()
 	if opts.ExternalIP == "" {

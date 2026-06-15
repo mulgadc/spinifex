@@ -15,25 +15,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// maxConcurrentRecovery limits how many VMs are relaunched in parallel during
-// recovery. Cold-AMI clones plus QEMU exec start are I/O-heavy; bounding the
-// fan-out keeps the host responsive while still parallelising the slow path.
+// maxConcurrentRecovery bounds the recovery fan-out; cold-AMI clones are I/O-heavy.
 const maxConcurrentRecovery = 2
 
-// Restore loads persisted VM state and re-launches instances that are
-// neither terminated nor flagged as user-stopped. Steps:
-//
-//  1. Consume the clean-shutdown marker (deps callback). Without one, sleep
-//     briefly so any stale QEMU PIDs from a crashed previous run finish dying
-//     before isInstanceProcessRunning is consulted.
-//  2. Load the per-node running snapshot via StateStore.
-//  3. Classify each instance — terminated/stopped go to their shared KV
-//     buckets; running with live QEMU + valid sockets reconnects via QMP;
-//     transitional states finalise; everything else queues for relaunch.
-//  4. Fan out Manager.Run across the relaunch queue with a semaphore.
-//
-// All errors are logged; Restore never fails fatally — it always leaves the
-// daemon in a usable state.
+// Restore loads persisted VM state and re-launches instances that are neither
+// terminated nor user-stopped. Terminated/stopped instances migrate to shared KV;
+// running instances with live QEMU reconnect via QMP; others relaunch via Run.
+// All errors are logged; Restore never fails fatally.
 func (m *Manager) Restore() {
 	cleanShutdown := false
 	if m.deps.ConsumeCleanShutdownMarker != nil {
@@ -62,9 +50,8 @@ func (m *Manager) Restore() {
 	}
 }
 
-// loadRunningState replaces the manager's running set with the snapshot
-// persisted for this node. Returns an error only if the StateStore
-// surfaced one — a missing key produces an empty map and no error.
+// loadRunningState replaces the manager's running set from the persisted snapshot.
+// A missing key returns an empty map and no error.
 func (m *Manager) loadRunningState() error {
 	if m.deps.StateStore == nil {
 		return fmt.Errorf("StateStore not wired")
@@ -77,12 +64,9 @@ func (m *Manager) loadRunningState() error {
 	return nil
 }
 
-// classifyRestoredInstances walks every loaded VM and routes it: stopped
-// and terminated instances go to their shared KV buckets and are dropped
-// from the local map; running instances with live QEMU + reachable NBD
-// sockets reconnect via QMP; transitional states (Stopping, ShuttingDown)
-// finalise to their stable counterparts; the remainder is returned for
-// relaunch via Manager.Run.
+// classifyRestoredInstances routes each VM: stopped/terminated migrate to KV;
+// running with live QEMU+NBD reconnects; transitional states finalize;
+// the remainder is returned for relaunch via Manager.Run.
 func (m *Manager) classifyRestoredInstances() []*VM {
 	var toLaunch []*VM
 
@@ -193,9 +177,8 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 	return toLaunch
 }
 
-// markUnschedulable flips an instance to Stopped with an
-// InsufficientInstanceCapacity StateReason so DescribeInstances surfaces a
-// useful error after a node loses the ability to host the type.
+// markUnschedulable flips an instance to Stopped with InsufficientInstanceCapacity
+// so DescribeInstances reports a useful error when the node can no longer host the type.
 func markUnschedulable(instance *VM, reason string) {
 	instance.Status = StateStopped
 	if instance.Instance != nil {
@@ -205,15 +188,9 @@ func markUnschedulable(instance *VM, reason string) {
 	}
 }
 
-// killOrphanedQEMU SIGKILLs a QEMU process whose NBD storage no longer
-// works (viperblock restarted with fresh sockets). Returns true when the
-// process is gone (or was never running) and the caller should proceed
-// with classification; false when the kill failed and the instance
-// should be skipped this cycle.
-//
-// SIGKILL directly: orphaned QEMU with dead storage has no state worth a
-// graceful shutdown, and KillProcess's 120s SIGTERM timeout would block
-// daemon startup.
+// killOrphanedQEMU SIGKILLs a QEMU whose NBD storage is no longer reachable.
+// Returns true when the process is gone and classification can proceed.
+// SIGKILL is used directly to avoid the 120s SIGTERM timeout blocking startup.
 func killOrphanedQEMU(instance *VM) bool {
 	pid, pidErr := utils.ReadPidFile(instance.ID)
 	if pidErr != nil || pid <= 0 {
@@ -235,11 +212,9 @@ func killOrphanedQEMU(instance *VM) bool {
 	return true
 }
 
-// finalizeTransitionalRestore resolves an instance whose QEMU is gone but
-// whose persisted state was Stopping or ShuttingDown — flipping it to its
-// stable counterpart and migrating to the appropriate shared KV bucket.
-// Returns true on a clean migration; false signals the caller to retry on
-// the next restart.
+// finalizeTransitionalRestore advances a Stopping/ShuttingDown instance (whose
+// QEMU is gone) to its stable state and migrates it to the appropriate KV bucket.
+// Returns true on success; false signals the caller to retry on next restart.
 func (m *Manager) finalizeTransitionalRestore(instance *VM) bool {
 	prevStatus := instance.Status
 	if instance.Status == StateStopping {
@@ -265,12 +240,8 @@ func (m *Manager) finalizeTransitionalRestore(instance *VM) bool {
 	return true
 }
 
-// relaunchAll kicks the recovery launch loop. Each instance is announced
-// via OnInstanceRecovering before launching so the daemon can
-// early-subscribe ec2.cmd.<id>; that lets a concurrent terminate reach
-// this node while the relaunch is still pending. The OnInstanceUp hook
-// fired after a successful launch reinstalls both per-instance subs
-// idempotently.
+// relaunchAll fires OnInstanceRecovering for each instance (for early
+// ec2.cmd.<id> subscription) then fans out Manager.Run under a semaphore.
 func (m *Manager) relaunchAll(toLaunch []*VM) {
 	if m.deps.Hooks.OnInstanceRecovering != nil {
 		for _, instance := range toLaunch {
@@ -322,25 +293,14 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 	wg.Wait()
 }
 
-// attachQMPForReconnect is a test seam over (*Manager).AttachQMP so unit
-// tests can drive reconnectInstance's success/failure branches without
-// spawning the qmpHeartbeat goroutine (which sleeps 30s with no
-// cancellation and otherwise leaks under goleak).
+// attachQMPForReconnect is a test seam over (*Manager).AttachQMP so tests can
+// drive reconnectInstance without spawning the 30s heartbeat goroutine (goleak).
 var attachQMPForReconnect = (*Manager).AttachQMP
 
-// reconnectInstance re-establishes the QMP connection for an instance whose
-// QEMU survived the daemon restart, fires OnInstanceUp so the daemon
-// reinstalls per-instance NATS subscriptions, and persists the running
-// state. Bypasses the state-machine validation because reconnect is not a
-// modelled transition.
-//
-// Subscribe failure during the hook is treated as a hard error: the QMP
-// connection is closed (so the heartbeat goroutine exits on the next tick
-// when status leaves StateRunning) and the error is propagated. The caller
-// in classifyRestoredInstances logs and moves on; the instance remains in
-// the loaded map and will be retried on the next daemon restart. Status is
-// only flipped to StateRunning after subscribes are confirmed live so a
-// failed reconnect does not advertise a half-working instance to peers.
+// reconnectInstance re-establishes QMP for a surviving QEMU, fires OnInstanceUp
+// to reinstall NATS subscriptions, and persists running state. Subscribe failure
+// closes QMP and propagates the error; status is only set to Running after
+// subscriptions are confirmed live to avoid advertising a broken instance.
 func (m *Manager) reconnectInstance(instance *VM) error {
 	if err := attachQMPForReconnect(m, instance); err != nil {
 		return fmt.Errorf("failed to reconnect QMP: %w", err)
@@ -366,9 +326,8 @@ func (m *Manager) reconnectInstance(instance *VM) error {
 	return nil
 }
 
-// isInstanceProcessRunning checks whether the QEMU process recorded in
-// the instance's PID file is still alive. Returns false on any failure
-// path (missing PID file, dead PID, signal-0 error).
+// isInstanceProcessRunning reports whether the QEMU process in the PID file
+// is still alive. Returns false on any failure (missing file, dead PID).
 func isInstanceProcessRunning(instance *VM) bool {
 	pid, err := utils.ReadPidFile(instance.ID)
 	if err != nil || pid <= 0 {
@@ -381,16 +340,9 @@ func isInstanceProcessRunning(instance *VM) bool {
 	return process.Signal(syscall.Signal(0)) == nil
 }
 
-// AreVolumeSocketsValid reports whether the NBD Unix sockets backing the
-// instance's volumes are reachable. A dial probe (not just os.Stat) is
-// required because viperblock may restart with sockets at the same paths
-// — the file exists but no process is listening on the old fd that QEMU
-// holds. TCP and unparseable URIs are treated as valid (we can't probe
-// remote viperblockd from the recovery path).
-//
-// Exported so the daemon-side test suite can assert socket-validity
-// behaviour through the existing test helper without reaching into
-// manager internals.
+// AreVolumeSocketsValid dials each NBD Unix socket to confirm viperblock is
+// still listening. A stat-only check is insufficient since viperblock may restart
+// leaving stale socket files. TCP and unparseable URIs are treated as valid.
 func AreVolumeSocketsValid(instance *VM) bool {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()

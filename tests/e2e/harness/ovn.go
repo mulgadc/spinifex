@@ -39,11 +39,7 @@ func OvnSbctl(t *testing.T, args ...string) string {
 }
 
 // OvnTrace runs `sudo -n ovn-trace <args...>` and returns the detailed pipeline
-// trace. Usage is `ovn-trace [options] DATAPATH MICROFLOW`; pass any `--ct=...`
-// options first, then the datapath, then the microflow. The detailed trace names
-// each logical-flow table it traverses (`ls_in_*`, `lr_in_*`, …) and prints the
-// final `/* output to "<port>" */`, so callers can assert both the delivery port
-// and the absence of router stages.
+// trace. Pass `--ct=...` options first, then DATAPATH, then MICROFLOW.
 func OvnTrace(t *testing.T, args ...string) string {
 	t.Helper()
 	return runOvn(t, "ovn-trace", args...)
@@ -62,13 +58,8 @@ func runOvn(t *testing.T, tool string, args ...string) string {
 	return strings.TrimSpace(stdout.String())
 }
 
-// WaitForPortGroupMember polls until the OVN port_group pg contains the
-// logical-switch-port lsp. Default 10s/1s — northd propagation is normally
-// sub-second but tests run on busy nodes.
-//
-// Lookup uses ovn-nbctl --bare --columns=ports find port_group name=<pg>
-// (same shape as run-e2e.sh:3311) and checks for the lsp's UUID in the
-// returned set.
+// WaitForPortGroupMember polls until OVN port_group pg contains lsp (10s/1s).
+// Uses ovn-nbctl to look up the LSP UUID and confirm it appears in the port_group.
 func WaitForPortGroupMember(t *testing.T, pg, lsp string, opts ...PollOpt) {
 	t.Helper()
 	cfg := applyOpts(pollCfg{timeout: 10 * time.Second, interval: 1 * time.Second}, opts...)

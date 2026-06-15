@@ -398,12 +398,9 @@ func TestRegisterRuleBackend_RejectsUnknownAction(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestTargetGroupsForLB_IncludesRuleTGs guards against regressing the
-// rule-TG visibility bug: without rule-action enumeration, the health
-// checker cannot resolve rule-only TGs back to a TG record and never
-// transitions them from initial -> healthy. Reproduces the e2e failure
-// where tgB (referenced only by a CreateRule action) timed out at 0/1
-// healthy because TargetGroupsForLB walked only DefaultActions.
+// TestTargetGroupsForLB_IncludesRuleTGs guards against the rule-TG visibility bug:
+// without rule-action enumeration, the health checker never resolves rule-only TGs
+// and they time out at 0/1 healthy (TargetGroupsForLB walked only DefaultActions).
 func TestTargetGroupsForLB_IncludesRuleTGs(t *testing.T) {
 	env := newRuleTestEnv(t, "tgs-rule")
 	_, err := env.svc.CreateRule(&elbv2.CreateRuleInput{

@@ -13,43 +13,29 @@ import (
 const (
 	defaultRoutePrefix = "0.0.0.0/0"
 
-	// SubnetEgressPriorityIGW is the priority assigned to per-subnet default
-	// egress policies routing via an IGW. NATGW egress sits at a different
-	// priority so the route precedence is deterministic when both apply.
-	// SubnetEgressPriorityDrop sits above both reroute priorities; a subnet
-	// whose effective route table lacks 0.0.0.0/0 gets a drop policy at this
-	// priority to override the VPC LR's router-wide default static route
-	// (which is required so lr_in_ip_routing doesn't drop at priority 0
-	// before lr_in_policy fires).
+	// SubnetEgressPriorityDrop sits above both reroute priorities; subnets
+	// without a 0.0.0.0/0 route get a drop policy to override the VPC LR's
+	// router-wide default static route.
 	SubnetEgressPriorityDrop  = 1100
 	SubnetEgressPriorityIGW   = 1000
 	SubnetEgressPriorityNATGW = 900
 
-	// SystemInstanceEgressPriority sits above the drop gate (1100) so a single
-	// system instance (e.g. an EKS K3s server VM) egresses even when its subnet
-	// is otherwise drop-gated. The policy is scoped to the instance's /32
-	// source, so peer instances in the same subnet are unaffected — they still
-	// hit the 1100 drop (or the subnet's own 1000 reroute where one exists).
+	// SystemInstanceEgressPriority sits above the 1100 drop gate so a system
+	// instance egresses even on an otherwise drop-gated subnet. Scoped to /32.
 	SystemInstanceEgressPriority = 1200
 )
 
-// RouteSpec is a static route on a VPC's LogicalRouter. OutputPort is
-// required when Nexthop isn't directly-connected (e.g. IGW default route on
-// 169.254.0.1/30) — ovn-northd silently drops the route from SB otherwise.
+// RouteSpec is a static route on a VPC's LogicalRouter. OutputPort is required
+// for non-directly-connected nexthops — ovn-northd silently drops the SB route otherwise.
 type RouteSpec struct {
 	Prefix     netip.Prefix
 	Nexthop    string
 	OutputPort string
 }
 
-// SubnetEgressSpec describes a per-subnet egress override installed as an
-// OVN Logical_Router_Policy. The match is built from SubnetID (inport ==
-// "rtr-<subnetID>") AND ip4.dst == Prefix; the action is "reroute" via
-// Nexthop, egressing through OutputPort. ExcludeCIDRs are appended as
-// `&& ip4.dst != <cidr>` clauses so in-VPC traffic skips the reroute and
-// follows the directly-connected route instead — without this, NATGW egress
-// policies on a `0.0.0.0/0` prefix would intercept return traffic from
-// peer subnets (bastion -> private SSH) and forward it to the public IP.
+// SubnetEgressSpec describes a per-subnet egress reroute policy. ExcludeCIDRs
+// are appended as `ip4.dst != <cidr>` clauses so in-VPC return traffic skips
+// the reroute — without them, NATGW 0.0.0.0/0 policies intercept peer-subnet traffic.
 type SubnetEgressSpec struct {
 	SubnetID     string
 	Prefix       netip.Prefix
@@ -59,11 +45,9 @@ type SubnetEgressSpec struct {
 	ExcludeCIDRs []netip.Prefix
 }
 
-// SystemInstanceEgressSpec describes a per-instance egress override installed
-// as an OVN Logical_Router_Policy at SystemInstanceEgressPriority. The match
-// adds an `ip4.src == <SrcIP>/32` clause to the subnet-egress shape so the
-// reroute is confined to a single system instance; peer instances in the same
-// subnet are untouched. Action is "reroute" via Nexthop out OutputPort.
+// SystemInstanceEgressSpec describes a per-instance reroute at
+// SystemInstanceEgressPriority. The /32 src match confines the reroute to one
+// system instance; peers in the same subnet are untouched.
 type SystemInstanceEgressSpec struct {
 	SubnetID     string
 	SrcIP        netip.Addr
@@ -73,9 +57,7 @@ type SystemInstanceEgressSpec struct {
 	ExcludeCIDRs []netip.Prefix
 }
 
-// RouteManager owns static routes on VPC LogicalRouters. Adds are
-// idempotent (no-op on match, delete-then-add on drift) so the reconciler
-// can replay safely.
+// RouteManager owns static routes on VPC LogicalRouters. Adds are idempotent.
 type RouteManager interface {
 	AddDefaultRoute(ctx context.Context, vpcID, nexthop, outputPort string) error
 	DeleteDefaultRoute(ctx context.Context, vpcID string) error
@@ -89,14 +71,9 @@ type RouteManager interface {
 	DeleteSystemInstanceEgress(ctx context.Context, vpcID, subnetID string, srcIP netip.Addr, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error
 }
 
-// SubnetEgressDropSpec describes a per-subnet egress DROP override installed
-// as an OVN Logical_Router_Policy at SubnetEgressPriorityDrop. Match shape
-// mirrors SubnetEgressSpec (inport == rtr-<subnet> && ip4.dst == prefix with
-// optional ip4.dst != <exclude> clauses) but the action is "drop" with no
-// nexthop/output port. Used to gate subnets whose effective route table
-// lacks a 0.0.0.0/0 entry; the policy fires after lr_in_ip_routing has
-// already matched the VPC LR's router-wide default static route, killing
-// the packet before egress.
+// SubnetEgressDropSpec describes a per-subnet DROP policy at SubnetEgressPriorityDrop.
+// Used to gate subnets whose route table lacks a 0.0.0.0/0 entry, overriding the
+// VPC LR's router-wide default static route before egress.
 type SubnetEgressDropSpec struct {
 	SubnetID     string
 	Prefix       netip.Prefix
@@ -165,8 +142,7 @@ func (m *routeManager) DeleteStaticRoute(ctx context.Context, vpcID string, pref
 	return m.deleteByPrefixString(ctx, vpcID, prefix.String())
 }
 
-// deleteByPrefixString returns nil when the route is already absent (every
-// Delete* entrypoint needs this for fire-and-forget event flows).
+// deleteByPrefixString returns nil when the route is already absent (idempotent).
 func (m *routeManager) deleteByPrefixString(ctx context.Context, vpcID, prefix string) error {
 	router := topology.VPCRouter(vpcID)
 	existing, err := m.ovn.FindStaticRoute(ctx, router, prefix)

@@ -14,33 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runAccountScoping ports run-e2e.sh Phase 8 EC2 Account Scoping
-// (lines 1915–2624). Validates that EC2 resources (instances, volumes, key
-// pairs, snapshots, VPCs, IGWs, EIGWs) are isolated between tenant accounts
-// created via `spx admin account create`.
-//
-// Three admin accounts are created (Team Alpha, Team Beta, Team Gamma). All
-// resources are launched through their scoped *AWSClient (statically-credentialed,
-// bypasses AWS_PROFILE). A single t.Cleanup at the outer function tears down
-// every resource across all three accounts regardless of which sub-step
-// failed — every delete is best-effort / not-found tolerant. There is no
-// `spx admin account delete` so the account rows themselves persist beyond
-// the test; the carousel entry is local-only state and goes out of scope
-// with the function.
-//
-// Sub-steps:
-//
-//	Step1_AccountSetup        — create Alpha + Beta, smoke-test auth
-//	Step2_InstanceScoping     — instance describe + cross-account ops blocked
-//	Step3_VolumeScoping       — volume describe + attach/detach/modify
-//	Step4_KeyPairScoping      — key pair namespace + cross-account delete no-op
-//	Step5_SnapshotScoping     — snapshot describe + OwnerId + delete
-//	Step6_VPCSubnetScoping    — VPC/subnet describe + cross-account ops
-//	Step7_IGWEIGWScoping      — IGW/EIGW describe + attach/detach
-//	Step8_AccountSettings     — EBS-encryption-by-default per-tenant
-//	Step9_GlobalResources     — regions/AZs/instance types identical
-//	Step10_EdgeCases          — empty Gamma + non-existent resource ids
-//	Step11_Cleanup            — explicit best-effort teardown (also runs via t.Cleanup)
+// runAccountScoping validates that EC2 resources (instances, volumes, key
+// pairs, snapshots, VPCs, IGWs, EIGWs) are isolated between tenant accounts.
+// Three accounts are created (Alpha, Beta, Gamma). All resources use scoped
+// clients with static credentials. t.Cleanup tears down everything best-effort.
 func runAccountScoping(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — EC2 Account Scoping")
 
@@ -50,8 +27,7 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 
 	carousel := harness.NewAccountCarousel()
 
-	// State threaded across Steps. The teardown below references whatever
-	// is populated at failure time; zero values are skipped.
+	// State threaded across Steps; zero values are skipped by teardown.
 	var (
 		alphaInst, betaInst        string
 		alphaVol, betaVol          string
@@ -66,11 +42,7 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 		betaEncryptionLeftEnabled  bool
 	)
 
-	// t.Cleanup runs LIFO regardless of which Step failed. Every call below
-	// swallows not-found errors so a partial Step 11 run + this cleanup is
-	// idempotent. Step 11's explicit cleanup is duplicated here intentionally:
-	// the bash script's `2>/dev/null || true` pattern translates to "ignore
-	// any error" in Go, which is exactly what these closures do.
+	// t.Cleanup runs LIFO. All deletes below swallow not-found errors (idempotent).
 	t.Cleanup(func() {
 		harness.Step(t, "Phase 8 acct cleanup (deferred)")
 		alpha := carousel.Get("spx-team-alpha")
@@ -224,8 +196,7 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 		require.NoError(t, err, "beta describe-instances (auth check)")
 	})
 
-	// Bail out if Step 1 didn't seat both profiles — every subsequent step
-	// derefs them. Step 11 still runs via t.Cleanup with whatever state exists.
+	// Every subsequent step derefs these; bail if Step 1 failed to register them.
 	alpha := carousel.Get("spx-team-alpha")
 	beta := carousel.Get("spx-team-beta")
 	if alpha == nil || beta == nil {
@@ -493,7 +464,6 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 		require.NotEmpty(t, betaShared, "beta shared key id")
 		assert.NotEqual(t, alphaShared, betaShared, "same KeyPairId across accounts")
 
-		// Cross-account delete is idempotent (no error) but must not affect the other account.
 		harness.Step(t, "beta deletes alpha-key (idempotent, no cross-account effect)")
 		_, _ = beta.Client.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(alphaKey)})
 		assert.Equal(t, alphaKeyID, describeKeyPairID(t, alpha.Client, alphaKey),
@@ -555,8 +525,7 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 		assert.Equal(t, alpha.AccountID, aws.StringValue(alphaSnaps.Snapshots[0].OwnerId),
 			"alpha snapshot OwnerId mismatch")
 
-		// Cross-account delete — bash expects UnauthorizedOperation (NOT the
-		// usual NotFound). This is a Snapshot-specific gateway behavior.
+		// DeleteSnapshot returns UnauthorizedOperation (not NotFound) across accounts.
 		harness.Step(t, "cross-account delete-snapshot blocked (UnauthorizedOperation)")
 		harness.ExpectError(t, "UnauthorizedOperation", func() error {
 			_, err := beta.Client.EC2.DeleteSnapshot(&ec2.DeleteSnapshotInput{
@@ -763,9 +732,7 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 		}
 		assert.NotContains(t, alphaEIGWIDs, betaEIGW, "alpha saw beta's EIGW")
 
-		// Cross-account EIGW delete — bash uses `expect_error "" ... || true`
-		// (any error or none is acceptable). The hard assertion is that
-		// alpha's EIGW survives.
+		// Any error or none is acceptable; the contract is that alpha's EIGW survives.
 		_, _ = beta.Client.EC2.DeleteEgressOnlyInternetGateway(&ec2.DeleteEgressOnlyInternetGatewayInput{
 			EgressOnlyInternetGatewayId: aws.String(alphaEIGW),
 		})
@@ -780,8 +747,7 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 		}
 		assert.True(t, stillThere, "alpha's EIGW was deleted by beta")
 
-		// Cross-account EIGW creation in other's VPC — bash also accepts any
-		// error or none; the existence of alpha's EIGW is the contract.
+		// Best-effort cross-account EIGW creation attempt in alpha's VPC.
 		_, _ = beta.Client.EC2.CreateEgressOnlyInternetGateway(&ec2.CreateEgressOnlyInternetGatewayInput{
 			VpcId: aws.String(alphaVPC),
 		})
@@ -861,9 +827,6 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 		}
 		assert.Empty(t, gInstIDs, "gamma has instances")
 
-		// Volume check is skipped — bash comments "root-account volumes
-		// (empty TenantID) are visible to all accounts by design".
-
 		gKeys := describeKeyPairNames(t, gamma.Client)
 		assert.Empty(t, gKeys, "gamma has key pairs")
 
@@ -912,10 +875,7 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 	// ---------------------------------------------------------------------
 	// Step 11: EC2 Account Scoping Cleanup (bash 2546–2624)
 	// ---------------------------------------------------------------------
-	// Bash performs an explicit ordered teardown here. We do the same — but
-	// the outer t.Cleanup also runs (idempotently) so a Step 11 failure
-	// won't leak. Keeping Step 11 in-line preserves the bash structure and
-	// the explicit assertions a triager expects when reading the log.
+	// Explicit teardown — outer t.Cleanup also runs idempotently on failure.
 	t.Run("Step11_Cleanup", func(t *testing.T) {
 		harness.Step(t, "terminate alpha instance")
 		if alphaInst != "" {
@@ -1034,17 +994,12 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 			betaVPC = ""
 		}
 
-		// Clear the instance IDs so the outer t.Cleanup doesn't redundantly
-		// terminate them (a second terminate on a terminated id is a no-op
-		// at the gateway, but skipping the round-trip keeps logs clean).
 		alphaInst = ""
 		betaInst = ""
 	})
 }
 
-// waitTerminated polls until id reaches "terminated" or vanishes (NotFound
-// is treated as success — some gateway versions garbage-collect terminated
-// rows). Bounded by a short timeout so a stuck termination surfaces fast.
+// waitTerminated polls until id reaches "terminated" or NotFound (60s cap).
 func waitTerminated(t *testing.T, c *harness.AWSClient, id string) {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
@@ -1056,7 +1011,6 @@ func waitTerminated(t *testing.T, c *harness.AWSClient, id string) {
 			if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "InvalidInstanceID.NotFound" {
 				return
 			}
-			// Other errors — keep polling until the deadline.
 		} else if len(out.Reservations) > 0 && len(out.Reservations[0].Instances) > 0 {
 			state := aws.StringValue(out.Reservations[0].Instances[0].State.Name)
 			if state == "terminated" {
@@ -1134,9 +1088,7 @@ func vpcIDs(vpcs []*ec2.Vpc) []string {
 	return ids
 }
 
-// describeRegionNames returns sorted region names. Bash compares by direct
-// equality after a sort-by-position — same here, since the gateway returns
-// the regions in a stable order.
+// describeRegionNames returns region names in gateway-returned order.
 func describeRegionNames(t *testing.T, c *harness.AWSClient) []string {
 	t.Helper()
 	out, err := c.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
@@ -1160,8 +1112,7 @@ func describeAZNames(t *testing.T, c *harness.AWSClient) []string {
 	return names
 }
 
-// describeInstanceTypeNames returns sorted instance-type names — bash sorts
-// before comparing so the assertion is order-insensitive.
+// describeInstanceTypeNames returns sorted instance-type names.
 func describeInstanceTypeNames(t *testing.T, c *harness.AWSClient) []string {
 	t.Helper()
 	out, err := c.EC2.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{})
@@ -1170,13 +1121,11 @@ func describeInstanceTypeNames(t *testing.T, c *harness.AWSClient) []string {
 	for _, it := range out.InstanceTypes {
 		names = append(names, aws.StringValue(it.InstanceType))
 	}
-	// Sort to mirror bash's `| tr '\t' '\n' | sort` step.
 	sortStrings(names)
 	return names
 }
 
-// sortStrings sorts in place — kept local to avoid an extra import in the
-// already-busy file. Equivalent to sort.Strings.
+// sortStrings sorts xs in place (insertion sort).
 func sortStrings(xs []string) {
 	for i := 1; i < len(xs); i++ {
 		for j := i; j > 0 && xs[j-1] > xs[j]; j-- {

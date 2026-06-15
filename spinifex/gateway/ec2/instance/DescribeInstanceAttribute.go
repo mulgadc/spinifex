@@ -101,9 +101,6 @@ func DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, natsCo
 		}
 		responses++
 
-		// ValidateErrorPayload returns a non-nil error when the payload is an
-		// ec2.ResponseError envelope (the daemon's GenerateErrorPayload output);
-		// nil means a normal success payload.
 		if respErr, perr := utils.ValidateErrorPayload(msg.Data); perr != nil {
 			code := ""
 			if respErr.Code != nil {
@@ -119,8 +116,6 @@ func DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, natsCo
 			continue
 		}
 
-		// Skip success parsing once we already have one — the daemon that
-		// owns the instance is unique, so the first parsed payload wins.
 		if success != nil {
 			continue
 		}

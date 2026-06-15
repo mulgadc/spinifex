@@ -325,52 +325,6 @@ func TestUnmarshalJsonPayload(t *testing.T) {
 	}
 }
 
-func TestMarshalJsonPayload(t *testing.T) {
-	type TestStruct struct {
-		Name  string `json:"name"`
-		Value int    `json:"value"`
-	}
-
-	tests := []struct {
-		name        string
-		jsonData    string
-		expectError bool
-		validate    func(t *testing.T, result *TestStruct)
-	}{
-		{
-			name:        "Valid JSON",
-			jsonData:    `{"name":"test","value":456}`,
-			expectError: false,
-			validate: func(t *testing.T, result *TestStruct) {
-				assert.Equal(t, "test", result.Name)
-				assert.Equal(t, 456, result.Value)
-			},
-		},
-		{
-			name:        "Invalid JSON",
-			jsonData:    `{"name":"test","value":}`,
-			expectError: true,
-			validate:    nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var result TestStruct
-			errResp := MarshalJsonPayload(&result, []byte(tt.jsonData))
-
-			if tt.expectError {
-				assert.NotNil(t, errResp, "Expected error response")
-			} else {
-				assert.Nil(t, errResp, "Expected no error response")
-				if tt.validate != nil {
-					tt.validate(t, &result)
-				}
-			}
-		})
-	}
-}
-
 func TestGenerateErrorPayload(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1191,10 +1145,7 @@ func TestWaitForProcessExit_Timeout(t *testing.T) {
 }
 
 func TestHashMAC_FirstOctetPinnedTo02(t *testing.T) {
-	// First octet must be literal 0x02 across all inputs. Anything else
-	// (e.g. 0x4a, 0xfe — technically valid LAA) visually encroaches on
-	// vendor OUI space and is rejected by ops/CI. Second-octet entropy is
-	// covered by the distribution test.
+	// First octet must be 0x02 (not just any LAA value) to stay out of vendor OUI space.
 	for i := range 1000 {
 		hw, err := net.ParseMAC(HashMAC(fmt.Sprintf("id-%d", i)))
 		require.NoError(t, err)
@@ -1598,10 +1549,7 @@ func TestParseSumsFile(t *testing.T) {
 	})
 
 	t.Run("gpg-armored body with no sums returns not found", func(t *testing.T) {
-		// Signature-block lines are individually single tokens. The
-		// bare-digest fallback only fires when bareCount == 1; PGP signatures
-		// always have ≥ 2 (the base64 block + the =CRC trailer), so the
-		// fallback stays dormant and we correctly report NotFound.
+		// PGP signatures always have ≥ 2 bare-token lines (base64 + =CRC), so bareCount stays ≥ 2 and NotFound is returned.
 		body := []byte(`-----BEGIN PGP SIGNED MESSAGE-----
 Hash: SHA256
 

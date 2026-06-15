@@ -68,22 +68,14 @@ func TestGenerateEC2ErrorResponse_Structure(t *testing.T) {
 
 			xmlStr := string(output)
 
-			// Verify XML header
 			assert.True(t, strings.HasPrefix(xmlStr, xml.Header))
-
-			// Verify error code
 			assert.Contains(t, xmlStr, "<Code>"+tc.code+"</Code>")
-
-			// Verify request ID
 			assert.Contains(t, xmlStr, "<RequestID>"+tc.requestID+"</RequestID>")
 
-			// Verify root element — EC2 query API uses <Response>, not
-			// <ErrorResponse>; aws-sdk-go v1 rejects the latter with
-			// SerializationError.
+			// EC2 query API uses <Response>/<Errors>, not <ErrorResponse>; aws-sdk-go v1
+			// rejects the latter with SerializationError.
 			assert.Contains(t, xmlStr, "<Response>")
 			assert.Contains(t, xmlStr, "</Response>")
-
-			// Verify Errors wrapper
 			assert.Contains(t, xmlStr, "<Errors>")
 			assert.Contains(t, xmlStr, "<Error>")
 		})
@@ -94,13 +86,11 @@ func TestGenerateEC2ErrorResponse_ValidXML(t *testing.T) {
 	output := GenerateEC2ErrorResponse("TestCode", "Test message", "req-999")
 	require.NotNil(t, output)
 
-	// Strip XML header and verify it's well-formed
 	xmlBody := strings.TrimPrefix(string(output), xml.Header)
 	decoder := xml.NewDecoder(strings.NewReader(xmlBody))
 	for {
 		_, err := decoder.Token()
 		if err != nil {
-			// io.EOF means we parsed the entire document successfully
 			assert.ErrorIs(t, err, io.EOF)
 			break
 		}
@@ -141,13 +131,9 @@ func TestGenerateIAMErrorResponse_Structure(t *testing.T) {
 
 			xmlStr := string(output)
 
-			// Verify XML header
 			assert.True(t, strings.HasPrefix(xmlStr, xml.Header))
-
 			assert.Contains(t, xmlStr, "<ErrorResponse>")
 			assert.Contains(t, xmlStr, "</ErrorResponse>")
-
-			// Verify IAM-specific structure
 			assert.Contains(t, xmlStr, "<Type>Sender</Type>")
 			assert.Contains(t, xmlStr, "<Code>"+tc.code+"</Code>")
 			assert.Contains(t, xmlStr, "<RequestId>"+tc.requestID+"</RequestId>")
@@ -173,7 +159,6 @@ func TestGenerateIAMErrorResponse_ValidXML(t *testing.T) {
 func TestErrorHandler_IAMService(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 
-	// Build a handler that sets service context and returns an IAM error
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "iam")
 		r = r.WithContext(ctx)
@@ -508,6 +493,11 @@ func TestGetService(t *testing.T) {
 			ctxVal:  "account",
 			wantSvc: "account",
 		},
+		{
+			name:    "tagging service",
+			ctxVal:  "tagging",
+			wantSvc: "tagging",
+		},
 	}
 
 	for _, tc := range tests {
@@ -572,8 +562,7 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Connected NATS satisfies the 1c cluster-available gate so the
-			// request reaches the per-service malformed-query parser.
+			// A live NATS connection bypasses the cluster-unavailable gate.
 			gw := &GatewayConfig{DisableLogging: true, NATSConn: connectedNATS(t)}
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
@@ -978,8 +967,8 @@ func TestIsNATSTransient(t *testing.T) {
 }
 
 func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {
-	// The ImportKeyPair handler has a workaround that decodes URL-encoded
-	// Base64 padding (%3D%3D → ==) before passing to the generic handler.
+	// The ImportKeyPair handler decodes URL-encoded Base64 padding (%3D%3D → ==)
+	// before passing to the generic handler.
 	handler := ec2Actions["ImportKeyPair"]
 	require.NotNil(t, handler)
 
@@ -990,11 +979,9 @@ func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {
 	}
 
 	gw := &GatewayConfig{DisableLogging: true, NATSConn: nil}
-	// The handler will fail because NATS is nil, but we can verify the
-	// workaround ran by checking that q["PublicKeyMaterial"] was modified.
+	// NATS is nil so the handler errors, but PublicKeyMaterial is modified before that.
 	_, _ = handler("ImportKeyPair", q, gw, "123456789012", nil)
 
-	// After the workaround, the URL-encoded padding should be decoded
 	assert.True(t, strings.HasSuffix(q["PublicKeyMaterial"], "=="),
 		"Expected PublicKeyMaterial to end with == but got: %s", q["PublicKeyMaterial"])
 	assert.False(t, strings.Contains(q["PublicKeyMaterial"], "%3D"),
@@ -1003,10 +990,7 @@ func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {
 
 func TestParseArgsToStruct(t *testing.T) {
 	// ParseArgsToStruct wraps QueryParamsToStruct errors as ErrorInvalidParameter.
-	// The *any parameter causes a reflection kind mismatch (Interface vs Struct)
-	// in QueryParamsToStruct, so this function always returns the wrapped error.
-	// Tests verify the error wrapping behavior.
-
+	// The *any parameter causes a reflection kind mismatch, so this always errors.
 	type simpleInput struct {
 		Action string `locationName:"Action"`
 	}
@@ -1133,7 +1117,6 @@ func TestThrottleMiddleware_Integration(t *testing.T) {
 		Throttler:      throttler,
 	}
 
-	// Build a minimal handler that the throttle middleware wraps.
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -1168,7 +1151,7 @@ func TestThrottleMiddleware_Integration(t *testing.T) {
 }
 
 func TestThrottleMiddleware_DisabledConfig(t *testing.T) {
-	// When Throttler is nil, SetupRoutes skips middleware entirely.
+	// When Throttler is nil, SetupRoutes skips middleware — no panic.
 	gw := &GatewayConfig{DisableLogging: true, Throttler: nil}
 	handler := gw.SetupRoutes()
 
@@ -1179,8 +1162,7 @@ func TestThrottleMiddleware_DisabledConfig(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	// Without auth it'll fail on SigV4, not on throttling — that's expected.
-	// The key assertion: no panic from nil Throttler.
+	// Without auth the request fails on SigV4, not throttling.
 	resp := w.Result()
 	assert.NotEqual(t, 503, resp.StatusCode)
 }
@@ -1284,11 +1266,8 @@ func TestRequest_ClusterUnavailableClosedConn(t *testing.T) {
 // TestGenerateEC2ErrorResponse_SDKRoundTrip serves the EC2 error envelope from
 // an httptest server, points an aws-sdk-go v1 EC2 client at it, and asserts
 // the SDK surfaces the code via awserr.Error.Code() — not SerializationError.
-//
-// This is the regression guard for the bug behind mulga-siv-56 §3: aws-sdk-go
-// v1's ec2query response handler rejects the IAM `<ErrorResponse>` envelope
-// and discards the embedded code, leaving Go callers without a parseable
-// AWS error.
+// aws-sdk-go v1's ec2query handler rejects the IAM <ErrorResponse> envelope and
+// discards the embedded code, so the EC2 <Response>/<Errors> shape is required.
 func TestGenerateEC2ErrorResponse_SDKRoundTrip(t *testing.T) {
 	const wantCode = "InvalidInstanceType"
 	const wantMessage = "The instance type 't2.micro' is not supported in this region."

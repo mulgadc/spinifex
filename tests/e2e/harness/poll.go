@@ -11,10 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
 
-// PollOpt tunes the default timeout / interval for a Wait* helper. Defaults
-// are tuned per-resource based on the bash `sleep N; check` loops in
-// run-e2e.sh — instance/volume = 5min, snapshot/image = 10min, all polled
-// every 2s.
+// PollOpt tunes the default timeout / interval for a Wait* helper.
+// Resource defaults: instance/volume = 5min, snapshot/image = 10min, 2s interval.
 type PollOpt func(*pollCfg)
 
 type pollCfg struct {
@@ -36,9 +34,7 @@ func applyOpts(def pollCfg, opts ...PollOpt) pollCfg {
 }
 
 // WaitForInstanceState polls DescribeInstances until State.Name == target.
-// Returns the latest *ec2.Instance on success; t.Fatal on timeout. Separate
-// from lb.go's WaitForInstanceRunning so callers can wait for stopped /
-// terminated / pending without one helper per state.
+// Returns the latest instance on success; t.Fatal on timeout.
 func WaitForInstanceState(t *testing.T, c *AWSClient, id, target string, opts ...PollOpt) *ec2.Instance {
 	t.Helper()
 	cfg := applyOpts(pollCfg{timeout: 5 * time.Minute, interval: 2 * time.Second}, opts...)

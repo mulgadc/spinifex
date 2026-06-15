@@ -9,6 +9,9 @@ tags:
   - flask
   - webapp
   - workbook
+  - imds
+  - sts
+  - instance-profile
 resources:
   - title: "Terraform AWS Provider"
     url: "https://registry.terraform.io/providers/hashicorp/aws/latest"
@@ -36,18 +39,21 @@ resources:
 
 Deploy an EC2 instance running a Flask file-sharing web application backed by S3 (Predastore). Users can upload files through a web form and browse uploaded content — demonstrating Terraform managing both compute and object storage together.
 
+This workbook uses the idiomatic AWS credential model: the instance is launched with an **IAM instance profile** and the app pulls short-lived STS credentials from **IMDS** (`169.254.169.254`) through boto3's default credential chain. **No long-lived S3 keys are baked into the instance.** The Terraform run still uses the operator's admin credentials (to create the bucket, role, profile, and instance), but the running instance authenticates to S3 with credentials it fetches at runtime and which expire in ~1 hour.
+
 **Architecture:**
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/tf-s3-webapp.svg" alt="S3 webapp — browser to Flask EC2 instance to Predastore via S3 API" width="900">
+  <img src="../../../.github/assets/diagrams/tf-s3-webapp.svg" alt="S3 webapp — browser to Flask EC2 instance; the instance fetches short-lived STS credentials from IMDS (169.254.169.254) via its instance profile, then calls Predastore over the S3 API" width="900">
 </p>
 
 **What you'll learn:**
 
 - Configuring the AWS provider with both Spinifex and Predastore endpoints
 - Creating S3 buckets on Predastore via Terraform
-- Deploying a Python webapp with cloud-init that talks to S3
-- Passing credentials and configuration to instances via user-data
+- Defining an IAM role, least-privilege managed policy, and instance profile, and passing the role to an instance (`iam:PassRole`)
+- How the instance obtains short-lived credentials from IMDS via boto3's default credential chain — no static keys on the instance
+- Deploying a Python webapp with cloud-init that signs S3 requests with the STS session token
 
 **Prerequisites:**
 
@@ -55,6 +61,7 @@ Deploy an EC2 instance running a Flask file-sharing web application backed by S3
 - Predastore running (S3 API on port 8443)
 - An Ubuntu 26.04 AMI imported (see [Setting Up Your Cluster](/docs/setting-up-your-cluster))
 - OpenTofu or Terraform installed
+- The operator identity running the Terraform apply (`AWS_PROFILE=spinifex`) must be allowed to manage IAM and pass the role: `iam:CreateRole`, `iam:CreatePolicy`, `iam:AttachRolePolicy`, `iam:CreateInstanceProfile`, `iam:AddRoleToInstanceProfile`, and `iam:PassRole` on the new role. The bootstrap admin profile satisfies this.
 - The EC2 instance must be able to reach Predastore — use the host's br-wan IP, not localhost
 
 ## Instructions
@@ -141,15 +148,38 @@ sudo systemctl status s3-webapp
 sudo journalctl -u s3-webapp --no-pager -n 50
 ```
 
-### Upload Fails or Files Not Appearing
+### Upload Fails with `403 AccessDenied`
 
-Check that the S3 credentials in `/opt/webapp/.env` are correct and that the bucket exists:
+The instance reached S3 but was not authorized. The `.env` file deliberately holds **no** keys — credentials come from IMDS:
 
 ```bash
 ssh -i s3-webapp-demo.pem ec2-user@<public_ip>
-cat /opt/webapp/.env
-/opt/webapp/venv/bin/python -c "import boto3; print('boto3 OK')"
+cat /opt/webapp/.env   # S3_ENDPOINT / S3_BUCKET / S3_REGION only — no keys
 ```
+
+Check that:
+
+- the managed policy is attached to the role (`s3:ListBucket` on the bucket, `s3:GetObject`/`s3:PutObject` on its objects), and the policy's bucket name matches `bucket_name`;
+- the assumed-role session's account matches the bucket owner's account — Predastore enforces bucket ownership. Both are created by the same operator identity, so they align by construction; a mismatch surfaces as `403`.
+
+### `NoCredentialsError` / No Credentials
+
+boto3 could not obtain credentials, which means the IMDS credential chain did not resolve. From the instance:
+
+```bash
+ssh -i s3-webapp-demo.pem ec2-user@<public_ip>
+
+# IMDSv2: fetch a token, then the role name behind the instance profile
+TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')
+curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/
+
+# Confirm the resolved identity — expect assumed-role/s3-webapp-role/<instance-id>
+aws sts get-caller-identity --endpoint-url https://<predastore_host>
+```
+
+If the role name is empty, the instance profile was not attached — confirm `iam_instance_profile` on the instance and that `iam:PassRole` is allowed for the operator.
 
 ### AMI Not Found
 

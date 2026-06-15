@@ -40,9 +40,8 @@ type SubnetEvent struct {
 	CidrBlock string `json:"cidr_block"`
 }
 
-// PortEvent: vpc.create-port / vpc.delete-port. SecurityGroupIds set on
-// create so OVN PG membership is wired atomically with the LSP; empty on
-// delete (handleDeletePort reads current memberships from the cache).
+// PortEvent: vpc.create-port / vpc.delete-port. SecurityGroupIds set on create
+// for atomic PG wiring; empty on delete.
 type PortEvent struct {
 	NetworkInterfaceId string   `json:"network_interface_id"`
 	SubnetId           string   `json:"subnet_id"`
@@ -71,9 +70,7 @@ type NATEvent struct {
 
 // NATGatewayEvent is published on vpc.add-nat-gateway / vpc.delete-nat-gateway.
 // SubnetId + DestinationCidr identify the per-subnet egress policy installed
-// alongside the SNAT rule so the LR has a default route for the private
-// subnet (priority SubnetEgressPriorityNATGW). Without that policy, SNAT
-// rewrites the source IP but the packet has no route to leave the LR.
+// alongside the SNAT rule so the LR can route packets out.
 type NATGatewayEvent struct {
 	VpcId           string `json:"vpc_id"`
 	NatGatewayId    string `json:"nat_gateway_id"`
@@ -83,10 +80,8 @@ type NATGatewayEvent struct {
 	DestinationCidr string `json:"destination_cidr"` // route destination, typically 0.0.0.0/0
 }
 
-// IGWRouteEvent is published on vpc.add-igw-route / vpc.delete-igw-route
-// when a route table associated with SubnetId carries (or loses) a route
-// to InternetGatewayId for DestinationCidr. The subscriber installs (or
-// removes) an OVN Logical_Router_Policy scoped to the subnet's inport.
+// IGWRouteEvent is published on vpc.add-igw-route / vpc.delete-igw-route when a
+// route table gains or loses a route to InternetGatewayId for DestinationCidr.
 type IGWRouteEvent struct {
 	VpcId             string `json:"vpc_id"`
 	SubnetId          string `json:"subnet_id"`
@@ -94,12 +89,8 @@ type IGWRouteEvent struct {
 	InternetGatewayId string `json:"internet_gateway_id"`
 }
 
-// SubnetEgressGateEvent is published on vpc.gate-subnet-egress when the
-// effective route table of SubnetId loses (or never had) a DestinationCidr
-// entry pointing at any egress target (IGW / NATGW). The subscriber installs
-// an OVN Logical_Router_Policy DROP at SubnetEgressPriorityDrop so the
-// subnet cannot reach external destinations via the VPC LR's router-wide
-// default static route.
+// SubnetEgressGateEvent is published on vpc.gate-subnet-egress when SubnetId
+// loses its 0.0.0.0/0 egress target; subscriber installs a DROP policy.
 type SubnetEgressGateEvent struct {
 	VpcId           string `json:"vpc_id"`
 	SubnetId        string `json:"subnet_id"`
@@ -107,20 +98,16 @@ type SubnetEgressGateEvent struct {
 }
 
 // SubnetEgressUngateEvent is published on vpc.ungate-subnet-egress when a
-// previously-gated subnet acquires an egress target in its effective route
-// table. The subscriber removes the DROP policy installed by the gate event.
+// gated subnet acquires an egress target; subscriber removes the DROP policy.
 type SubnetEgressUngateEvent struct {
 	VpcId           string `json:"vpc_id"`
 	SubnetId        string `json:"subnet_id"`
 	DestinationCidr string `json:"destination_cidr"`
 }
 
-// SystemEgressEvent is published on vpc.add-system-egress /
-// vpc.delete-system-egress to give a single hidden system instance (e.g. an
-// EKS K3s server VM) egress-only internet access. The subscriber installs (or
-// removes) a /32 reroute policy at SystemInstanceEgressPriority plus a plain
-// snat (InstanceIp -> ExternalIp) — no DNAT, so the instance stays unreachable
-// inbound.
+// SystemEgressEvent is published on vpc.add/delete-system-egress for egress-only
+// internet access to a single system instance. Subscriber installs a /32 reroute
+// + plain snat (no DNAT, so the instance stays unreachable inbound).
 type SystemEgressEvent struct {
 	VpcId      string `json:"vpc_id"`
 	SubnetId   string `json:"subnet_id"`

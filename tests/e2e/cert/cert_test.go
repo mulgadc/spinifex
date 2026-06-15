@@ -20,7 +20,7 @@ import (
 // Validates that server certificates contain the correct SANs and that TLS
 // connections succeed without InsecureSkipVerify when the Spinifex CA is
 // trusted. Assumes the cluster is bootstrapped (services up, certs generated,
-// CA installed in system trust store via bootstrap.sh step 8).
+// CA installed in system trust store during install).
 func TestCertIssuance(t *testing.T) {
 	env := harness.LoadEnv(t)
 	artifacts := harness.ArtifactDir(t, env)
@@ -56,9 +56,6 @@ func TestCertIssuance(t *testing.T) {
 			t.Skip("hostname SAN check requires local cert path")
 		}
 		referenceIP := env.NodeIPs[0]
-		if env.Mode == harness.ModePseudo {
-			referenceIP = "10.11.12.1"
-		}
 		cert := loadCert(t, env, referenceIP, artifacts)
 		assert.True(t, harness.CertHasDNSSAN(cert, hostname),
 			"cert missing DNS SAN for hostname %q (DNS=%v)", hostname, cert.DNSNames)
@@ -121,7 +118,7 @@ func TestCertIssuance(t *testing.T) {
 		url := fmt.Sprintf("https://%s:%d/api/ca.pem", uiIP, env.UIPort)
 		code, body, err := harness.HTTPSGet(url, pool, env.DefaultTimeout)
 		if err != nil {
-			t.Skipf("UI not reachable at %s: %v (pseudo-multinode disables UI)", url, err)
+			t.Skipf("UI not reachable at %s: %v", url, err)
 		}
 		require.Equalf(t, 200, code, "GET %s returned %d", url, code)
 		downloaded, err := harness.ParseCertPEM(body)
@@ -135,9 +132,6 @@ func TestCertIssuance(t *testing.T) {
 			t.Skip("metadata check requires local cert path")
 		}
 		referenceIP := env.NodeIPs[0]
-		if env.Mode == harness.ModePseudo {
-			referenceIP = "10.11.12.1"
-		}
 		cert := loadCert(t, env, referenceIP, artifacts)
 
 		assert.Contains(t, cert.Subject.CommonName, "Spinifex Server",
@@ -178,7 +172,7 @@ func TestCertIssuance(t *testing.T) {
 // otherwise. Dumps cert text to artifacts on failure.
 func loadCert(t *testing.T, env *harness.Env, ip, artifacts string) *x509.Certificate {
 	t.Helper()
-	if path := harness.ServerCertPath(env, ip); path != "" {
+	if path := harness.ServerCertPath(env); path != "" {
 		cert, err := harness.ParseCertFile(path)
 		require.NoErrorf(t, err, "parse local cert %s", path)
 		harness.OnFailure(t, func() {

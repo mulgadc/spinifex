@@ -3,19 +3,26 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router"
 import {
   Activity,
   BookOpen,
+  Boxes,
   Camera,
   Crosshair,
+  Globe,
   HardDrive,
   Home,
+  IdCard,
   Image,
   Key,
   Layers,
   LayoutGrid,
   LogOut,
+  MapPin,
   Network,
+  Route,
+  Router,
   Server,
   Shield,
   ShieldCheck,
+  UserCog,
   Users,
   Waypoints,
 } from "lucide-react"
@@ -133,6 +140,21 @@ export function SidebarLayout() {
                 >
                   <Key className="size-4" />
                   <span>Key Pairs</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/ec2/describe-addresses">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/ec2/describe-addresses") ||
+                    pathname.startsWith("/ec2/allocate-address")
+                  }
+                  tooltip="Elastic IPs"
+                >
+                  <MapPin className="size-4" />
+                  <span>Elastic IPs</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>
@@ -263,11 +285,13 @@ export function SidebarLayout() {
               </Link>
             </SidebarMenuItem>
 
-            {/* uncomment when route pages are created
             <SidebarMenuItem>
               <Link to="/ec2/describe-route-tables">
                 <SidebarMenuButton
-                  isActive={pathname.startsWith("/ec2/describe-route-tables")}
+                  isActive={
+                    pathname.startsWith("/ec2/describe-route-tables") ||
+                    pathname.startsWith("/ec2/create-route-table")
+                  }
                   tooltip="Route Tables"
                 >
                   <Route className="size-4" />
@@ -289,7 +313,41 @@ export function SidebarLayout() {
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>
-            */}
+
+            <SidebarMenuItem>
+              <Link to="/ec2/describe-nat-gateways">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/ec2/describe-nat-gateways") ||
+                    pathname.startsWith("/ec2/create-nat-gateway")
+                  }
+                  tooltip="NAT Gateways"
+                >
+                  <Router className="size-4" />
+                  <span>NAT Gateways</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>EKS</SidebarGroupLabel>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Link to="/eks/list-clusters">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/eks/list-clusters") ||
+                    pathname.startsWith("/eks/create-cluster")
+                  }
+                  tooltip="Clusters"
+                >
+                  <Boxes className="size-4" />
+                  <span>Clusters</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
 
@@ -322,6 +380,36 @@ export function SidebarLayout() {
                 >
                   <Shield className="size-4" />
                   <span>Policies</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/iam/list-roles">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/iam/list-roles") ||
+                    pathname.startsWith("/iam/create-role")
+                  }
+                  tooltip="Roles"
+                >
+                  <UserCog className="size-4" />
+                  <span>Roles</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/iam/list-instance-profiles">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/iam/list-instance-profiles") ||
+                    pathname.startsWith("/iam/create-instance-profile")
+                  }
+                  tooltip="Instance Profiles"
+                >
+                  <IdCard className="size-4" />
+                  <span>Instance Profiles</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

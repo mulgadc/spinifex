@@ -8,6 +8,7 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"testing"
@@ -81,6 +82,29 @@ func instancePrivateIP(t *testing.T, fix *Fixture, id string) string {
 	ip := aws.StringValue(out.Reservations[0].Instances[0].PrivateIpAddress)
 	require.NotEmptyf(t, ip, "instance %s has no private IP", id)
 	return ip
+}
+
+// pingConverged probes dst over ICMP from tgt, retrying until the east-west
+// datapath converges (0% loss) or timeout elapses. L2 between two freshly
+// launched instances has a warm-up: ARP cannot resolve until the destination
+// guest NIC is up and OVN has programmed its port flows, which lags the EC2
+// "running" transition the launch waits on. A single un-retried ping races that
+// window and reports a false "Destination Host Unreachable". Returns the last
+// ping output and whether it ever converged.
+func pingConverged(tgt harness.SSHTarget, dst string, timeout time.Duration) (string, bool) {
+	deadline := time.Now().Add(timeout)
+	var out string
+	for {
+		var err error
+		out, err = sshCapture(tgt, fmt.Sprintf("ping -c 3 -W 2 %s", dst))
+		if err == nil && strings.Contains(out, "0% packet loss") {
+			return out, true
+		}
+		if time.Now().After(deadline) {
+			return out, false
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // sshCapture runs cmd over SSH and returns combined output + error without
@@ -317,10 +341,9 @@ func runSameSGComms(t *testing.T, fix *Fixture) {
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
 	harness.Step(t, "ping %s (%s) from %s via default-SG self-ingress", dstID, dstPriv, srcID)
-	out, err := sshCapture(tgt, fmt.Sprintf("ping -c 3 -W 2 %s", dstPriv))
-	require.NoErrorf(t, err,
-		"intra-default-SG ping %s -> %s failed; self-ingress not enforced on the datapath\n%s",
+	out, converged := pingConverged(tgt, dstPriv, 45*time.Second)
+	require.Truef(t, converged,
+		"intra-default-SG east-west %s -> %s never reached 0%% loss within 45s; "+
+			"ARP/L2 datapath unreachable across the default-SG self-ingress\n%s",
 		srcID, dstID, out)
-	assert.Containsf(t, out, "0% packet loss",
-		"intra-default-SG ping had loss; self-ingress datapath degraded\n%s", out)
 }

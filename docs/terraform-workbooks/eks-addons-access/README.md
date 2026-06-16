@@ -95,17 +95,31 @@ Or create a `main.tf` file and paste the full configuration below.
 
 ### Step 2. Deploy
 
+The cluster and the demo app are **two root modules with separate state**. Apply the cluster first:
+
 ```bash
 export AWS_PROFILE=spinifex
 tofu init
 tofu apply
 ```
 
-Allow a few minutes for the cluster to reach `ACTIVE` and the worker to register. Argo CD installs onto the worker, then Terraform deploys the demo app.
+Allow a few minutes for the cluster to reach `ACTIVE`, the worker to register, and Argo CD to install. Then deploy the demo app from the nested `workloads/` module:
 
-> Keep `AWS_PROFILE=spinifex` exported for the whole `apply` — the Kubernetes provider runs `aws eks get-token` against the Spinifex STS endpoint.
+```bash
+cd workloads
+tofu init
+tofu apply
+```
+
+> **Why two modules?** The Kubernetes provider in `workloads/` reads the cluster endpoint from a live `data "aws_eks_cluster"` source, so it's only ever configured while the cluster exists. Keeping it out of the cluster module means `destroy` never tries to refresh a workload against a cluster that's already gone — the failure mode where the provider falls back to `http://localhost:80` and reports `connection refused`. Always destroy `workloads/` before the cluster.
+
+> Keep `AWS_PROFILE=spinifex` exported for both applies — the Kubernetes provider runs `aws eks get-token` against the Spinifex STS endpoint.
+
+<!-- INCLUDE: workloads/main.tf lang:hcl -->
 
 ### Step 3. Open the Demo
+
+Run from the cluster module directory (`cd ..` if you're still in `workloads/`):
 
 ```bash
 tofu output demo_url
@@ -129,7 +143,12 @@ The viewer principal is bound to `AmazonEKSViewPolicy` at cluster scope — it c
 
 ### Cleanup
 
+Destroy in reverse — the demo app first (while the cluster is still up), then the cluster:
+
 ```bash
+cd workloads
+tofu destroy
+cd ..
 tofu destroy
 ```
 

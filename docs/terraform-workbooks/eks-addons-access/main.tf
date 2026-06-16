@@ -25,10 +25,6 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 5.40, < 6.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = ">= 2.20"
-    }
   }
 }
 
@@ -61,11 +57,6 @@ variable "node_port" {
   default = 30080
 }
 
-variable "replicas" {
-  type    = number
-  default = 2
-}
-
 variable "browse_cidr" {
   type        = string
   default     = "0.0.0.0/0"
@@ -95,17 +86,6 @@ provider "aws" {
   skip_metadata_api_check     = true
   skip_requesting_account_id  = true
   skip_region_validation      = true
-}
-
-provider "kubernetes" {
-  host                   = aws_eks_cluster.this.endpoint
-  cluster_ca_certificate = base64decode(aws_eks_cluster.this.certificate_authority[0].data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", aws_eks_cluster.this.name, "--region", var.region]
-  }
 }
 
 data "aws_availability_zones" "available" {
@@ -379,65 +359,6 @@ resource "aws_vpc_security_group_ingress_rule" "nodeport" {
   }
 }
 
-# ---------------------------------------------------------------------------
-# Demo workload — deployed after the Argo CD addon reaches ACTIVE
-# ---------------------------------------------------------------------------
-
-resource "kubernetes_deployment_v1" "hello" {
-  metadata {
-    name      = "hello"
-    namespace = "default"
-    labels    = { app = "hello" }
-  }
-
-  spec {
-    replicas = var.replicas
-
-    selector {
-      match_labels = { app = "hello" }
-    }
-
-    template {
-      metadata {
-        labels = { app = "hello" }
-      }
-
-      spec {
-        container {
-          name  = "hello"
-          image = "nginxdemos/hello"
-
-          port {
-            container_port = 80
-          }
-        }
-      }
-    }
-  }
-
-  depends_on = [aws_eks_addon.argocd]
-}
-
-resource "kubernetes_service_v1" "hello" {
-  metadata {
-    name      = "hello"
-    namespace = "default"
-  }
-
-  spec {
-    selector = { app = "hello" }
-    type     = "NodePort"
-
-    port {
-      port        = 80
-      target_port = 80
-      node_port   = var.node_port
-    }
-  }
-
-  depends_on = [kubernetes_deployment_v1.hello]
-}
-
 data "aws_instances" "workers" {
   instance_tags = {
     "spinifex:eks-cluster" = aws_eks_cluster.this.name
@@ -452,6 +373,14 @@ data "aws_instances" "workers" {
 
 output "cluster_name" {
   value = aws_eks_cluster.this.name
+}
+
+output "region" {
+  value = var.region
+}
+
+output "node_port" {
+  value = var.node_port
 }
 
 output "viewer_principal_arn" {

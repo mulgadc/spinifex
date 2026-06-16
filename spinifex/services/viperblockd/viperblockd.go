@@ -219,16 +219,25 @@ func makeSnapshotHandler(cfg *Config, vb *viperblock.VB, volName string, nbdCfg 
 		}
 
 		slog.Info("ebs.snapshot: stopping nbdkit for snapshot", "volume", volName, "pid", currentPID)
-		if err := utils.KillProcess(currentPID); err != nil {
+		if err := utils.KillProcessGraceful(currentPID); err != nil {
 			slog.Error("ebs.snapshot: stop nbdkit", "volume", volName, "err", err)
 			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: fmt.Sprintf("stop nbdkit: %v", err)})
 			return
 		}
 
-		// LoadState reloads block map; OpenFromSnapshot is called automatically for COW clones.
+		// LoadState reloads volume metadata; OpenFromSnapshot is called automatically for COW clones.
 		if err := vb.LoadState(); err != nil {
 			slog.Error("ebs.snapshot: LoadState after stop", "volume", volName, "err", err)
 			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: fmt.Sprintf("reload state: %v", err)})
+			return
+		}
+
+		// LoadBlockState reloads the COW block-to-object map from the checkpoint
+		// written by nbdkit's Close(). Without this, BlockLookup is empty and the
+		// snapshot captures no COW delta.
+		if err := vb.LoadBlockState(); err != nil {
+			slog.Error("ebs.snapshot: LoadBlockState after stop", "volume", volName, "err", err)
+			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: fmt.Sprintf("reload block state: %v", err)})
 			return
 		}
 

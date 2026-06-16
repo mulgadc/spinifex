@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -32,6 +33,11 @@ type fakeSGProvisioner struct {
 	// ingress rules (e.g. a sibling cross-reference), so a test proves the
 	// revoke-before-delete ordering.
 	enforceDepViolation bool
+
+	// deleteFailsBefore maps groupId → the number of DeleteSecurityGroup calls
+	// that return DependencyViolation before succeeding, modelling a worker ENI
+	// detaching after a few retries.
+	deleteFailsBefore map[string]int
 
 	// nextCreateID is returned by the next CreateSecurityGroup call. Tests can
 	// pre-seed a queue via createIDs to differentiate the control-plane vs
@@ -114,6 +120,10 @@ func (f *fakeSGProvisioner) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupIn
 	f.deleteCalls = append(f.deleteCalls, input)
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
+	}
+	if input.GroupId != nil && f.deleteFailsBefore[*input.GroupId] > 0 {
+		f.deleteFailsBefore[*input.GroupId]--
+		return nil, errors.New("DependencyViolation: resource has a dependent object")
 	}
 	if f.enforceDepViolation && input.GroupId != nil && len(f.perms[*input.GroupId]) > 0 {
 		return nil, errors.New("DependencyViolation: resource has a dependent object")
@@ -229,12 +239,46 @@ func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-existing-ng"
-	sgp.deleteErr = errors.New("DependencyViolation")
+	// A non-DependencyViolation error is not retried, so the sweep surfaces it
+	// after a single attempt per SG (the retry path is covered separately).
+	sgp.deleteErr = errors.New("vpcd unavailable")
 
 	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sg-existing-cp")
 	assert.Len(t, sgp.deleteCalls, 2, "both delete calls should be attempted despite first error")
+}
+
+// TestDeleteClusterSGs_RetriesDependencyViolation guards the worker-ENI-detach
+// race: a terminating worker's ENI can still reference the nodegroup SG when the
+// delete runs. DeleteSecurityGroup must retry the DependencyViolation until the
+// instance-terminate cascade releases the ENI (delete succeeds) and surface a
+// persistent one past the budget so the SG is never silently leaked — a leaked
+// cluster SG pins the customer VPC.
+func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
+	origBudget, origInterval := sgDeleteWaitBudget, sgDeleteWaitInterval
+	sgDeleteWaitBudget, sgDeleteWaitInterval = 200*time.Millisecond, time.Millisecond
+	defer func() { sgDeleteWaitBudget, sgDeleteWaitInterval = origBudget, origInterval }()
+
+	t.Run("transient then succeeds", func(t *testing.T) {
+		sgp := newFakeSGProvisioner()
+		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
+		sgp.deleteFailsBefore = map[string]int{"sg-ng": 2} // 2 DepViolations, then ok
+
+		err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+		require.NoError(t, err, "delete must succeed once the ENI detaches")
+		assert.GreaterOrEqual(t, len(sgp.deleteCalls), 3, "retried past the transient violations")
+	})
+
+	t.Run("persistent surfaced past budget", func(t *testing.T) {
+		sgp := newFakeSGProvisioner()
+		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
+		sgp.deleteErr = errors.New("DependencyViolation: still referenced")
+
+		err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+		require.Error(t, err, "a persistent DependencyViolation must surface, not leak the SG")
+		assert.Contains(t, err.Error(), "sg-ng")
+	})
 }
 
 // TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete guards the no-orphan

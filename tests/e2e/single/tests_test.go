@@ -109,6 +109,11 @@ func TestVolumeStatus(t *testing.T) {
 	runVolumeStatus(t, requireSingleNodeFixture(t))
 }
 
+// TestVolumeDurability stops/starts the singleton; sequential, leaves it running.
+func TestVolumeDurability(t *testing.T) {
+	runVolumeDurability(t, requireSingleNodeFixture(t))
+}
+
 func TestSnapshotLifecycle(t *testing.T) {
 	runSnapshotLifecycle(t, requireSingleNodeFixture(t))
 }
@@ -117,8 +122,19 @@ func TestSnapshotBackedLaunch(t *testing.T) {
 	runSnapshotBackedLaunch(t, requireSingleNodeFixture(t))
 }
 
+// TestSnapshotRestore writes guest data, snapshots, restores, and re-reads it.
+func TestSnapshotRestore(t *testing.T) {
+	runSnapshotRestore(t, requireSingleNodeFixture(t))
+}
+
 func TestCreateImage(t *testing.T) {
 	runCreateImage(t, requireSingleNodeFixture(t))
+}
+
+// TestCreateImageData bakes an AMI carrying a root-fs sentinel and verifies it
+// on a fresh instance launched from that AMI (costs one extra boot).
+func TestCreateImageData(t *testing.T) {
+	runCreateImageData(t, requireSingleNodeFixture(t))
 }
 
 func TestSecurityGroupEgress(t *testing.T) {

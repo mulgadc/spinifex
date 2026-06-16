@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -211,6 +212,59 @@ func EnsureDefaultSGOpen(t *testing.T, c *AWSClient) {
 	_, sgID, _ := DiscoverDefaultVPC(t, c)
 	AuthorizeSSHIngress(t, c, sgID)
 	AuthorizeICMPIngress(t, c, sgID)
+}
+
+// AttachVolumeWait attaches volID to instanceID at device and blocks until the
+// volume reaches "in-use". Used by the data-durability tests where the attach
+// must complete before the guest can format the disk.
+func AttachVolumeWait(t *testing.T, c *AWSClient, volID, instanceID, device string) {
+	t.Helper()
+	_, err := c.EC2.AttachVolume(&ec2.AttachVolumeInput{
+		VolumeId:   aws.String(volID),
+		InstanceId: aws.String(instanceID),
+		Device:     aws.String(device),
+	})
+	if err != nil {
+		t.Fatalf("attach-volume %s -> %s as %s: %v", volID, instanceID, device, err)
+	}
+	WaitForVolumeState(t, c, volID, ec2.VolumeStateInUse, WithPoll(500*time.Millisecond))
+}
+
+// DetachVolumeWait detaches volID and blocks until it reaches "available".
+func DetachVolumeWait(t *testing.T, c *AWSClient, volID string) {
+	t.Helper()
+	_, err := c.EC2.DetachVolume(&ec2.DetachVolumeInput{VolumeId: aws.String(volID)})
+	if err != nil {
+		t.Fatalf("detach-volume %s: %v", volID, err)
+	}
+	WaitForVolumeState(t, c, volID, "available", WithPoll(500*time.Millisecond))
+}
+
+// RegisterVolumeTeardown best-effort force-detaches then deletes volID at test
+// end. Non-fatal — it polls for "available" within a bounded window and never
+// calls t.Fatal so a cleanup hiccup doesn't mask the test's real result.
+func RegisterVolumeTeardown(t *testing.T, c *AWSClient, volID string) {
+	t.Helper()
+	t.Cleanup(func() {
+		_, _ = c.EC2.DetachVolume(&ec2.DetachVolumeInput{
+			VolumeId: aws.String(volID),
+			Force:    aws.Bool(true),
+		})
+		deadline := time.Now().Add(90 * time.Second)
+		for time.Now().Before(deadline) {
+			out, err := c.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
+				VolumeIds: []*string{aws.String(volID)},
+			})
+			if err != nil || len(out.Volumes) == 0 {
+				return
+			}
+			if aws.StringValue(out.Volumes[0].State) == "available" {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		_, _ = c.EC2.DeleteVolume(&ec2.DeleteVolumeInput{VolumeId: aws.String(volID)})
+	})
 }
 
 // asErr is a thin errors.As that lets the helper stay testify-free.

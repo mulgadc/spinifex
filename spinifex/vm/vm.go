@@ -134,6 +134,12 @@ type VM struct {
 	// pending|failed). Stamped by terminateCleanup; the GC backstop retries
 	// pending/failed and purges the record once all dependents are done.
 	Teardown map[string]string `json:"teardown,omitempty"`
+
+	// TerminatedAt is when the instance entered StateTerminated. The GC backstop
+	// keeps a completed terminated record describable until this is older than
+	// the visibility window, after which it may reclaim it early; the bucket's
+	// 1h TTL bounds visibility regardless.
+	TerminatedAt time.Time `json:"terminated_at,omitzero"`
 }
 
 // ResetNodeLocalState zeroes node-specific fields after deserializing a VM

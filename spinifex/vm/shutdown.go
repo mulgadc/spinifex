@@ -234,6 +234,12 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 		return fmt.Errorf("transition to terminated: %w", err)
 	}
 
+	// Stamp the termination time so the GC backstop can preserve a
+	// describe-visibility window before reclaiming the record early.
+	if instance.TerminatedAt.IsZero() {
+		instance.TerminatedAt = time.Now()
+	}
+
 	if m.deps.StateStore != nil {
 		if err := m.deps.StateStore.WriteTerminatedInstance(instance.ID, instance); err != nil {
 			slog.Error("Failed to write terminated instance to KV, keeping in local state for retry",

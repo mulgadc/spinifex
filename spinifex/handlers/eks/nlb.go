@@ -67,9 +67,11 @@ func ClusterTargetGroupName(clusterName string) string {
 }
 
 // EnsureClusterNLB provisions (or returns) the cluster's NLB + target group +
-// :443→:6443 TCP listener. Idempotent on clusterName: existing resources are
-// reused so DeleteCluster failure-retry and reconciler crash-recovery both
-// converge without duplicate creates.
+// two TCP listeners (:443 and :6443), both forwarding to the CP target group.
+// :443 serves kubectl/SDK; :6443 serves the in-cluster `kubernetes` Service
+// Endpoints path (worker pods reach PrivateEndpointIP:6443). Idempotent on
+// clusterName: existing resources are reused so DeleteCluster failure-retry and
+// reconciler crash-recovery both converge without duplicate creates.
 //
 // The K3s server VM ENI IP is NOT registered here — Stage 4
 // (k3s_server_vm.go) calls RegisterClusterTarget once the VM has its ENI IP.
@@ -111,7 +113,14 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 	if err := ensureClusterTG(nlbp, accountID, clusterName, tgName, out); err != nil {
 		return nil, err
 	}
-	if err := ensureClusterListener(nlbp, accountID, lbName, out); err != nil {
+	var err error
+	if out.ListenerArn, err = ensureClusterListener(nlbp, accountID, lbName, out.LoadBalancerArn, out.TargetGroupArn, clusterNLBListenPort); err != nil {
+		return nil, err
+	}
+	// Second listener :6443 → same CP target group. The apiserver advertises itself
+	// on :6443 in the in-cluster `kubernetes` Endpoints; worker pods reach it only if
+	// the NLB serves :6443. Arn not persisted — teardown cascades via DeleteLoadBalancer.
+	if _, err = ensureClusterListener(nlbp, accountID, lbName, out.LoadBalancerArn, out.TargetGroupArn, k3sAPIServerPort); err != nil {
 		return nil, err
 	}
 	if internetFacing && narrowsPublicAccess(publicAccessCidrs) {
@@ -364,37 +373,40 @@ func ensureClusterTG(nlbp nlbProvisioner, accountID, clusterName, tgName string,
 	return nil
 }
 
-func ensureClusterListener(nlbp nlbProvisioner, accountID, lbName string, out *ClusterNLB) error {
-	if l, err := lookupListenerByPort(nlbp, accountID, out.LoadBalancerArn, clusterNLBListenPort); err != nil {
-		return err
+// ensureClusterListener creates (or reuses) one TCP listener on the LB at the
+// given port forwarding to tgArn, returning its ARN. Idempotent: an existing
+// listener on the port is reused.
+func ensureClusterListener(nlbp nlbProvisioner, accountID, lbName, lbArn, tgArn string, port int64) (string, error) {
+	if l, err := lookupListenerByPort(nlbp, accountID, lbArn, port); err != nil {
+		return "", err
 	} else if l != nil {
-		out.ListenerArn = aws.StringValue(l.ListenerArn)
-		if out.ListenerArn == "" {
-			return fmt.Errorf("eks: existing listener for %s:%d missing arn", lbName, clusterNLBListenPort)
+		arn := aws.StringValue(l.ListenerArn)
+		if arn == "" {
+			return "", fmt.Errorf("eks: existing listener for %s:%d missing arn", lbName, port)
 		}
-		return nil
+		return arn, nil
 	}
 
 	created, err := nlbp.CreateListener(&elbv2.CreateListenerInput{
-		LoadBalancerArn: aws.String(out.LoadBalancerArn),
+		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String(elbv2.ProtocolEnumTcp),
-		Port:            aws.Int64(clusterNLBListenPort),
+		Port:            aws.Int64(port),
 		DefaultActions: []*elbv2.Action{{
 			Type:           aws.String(elbv2.ActionTypeEnumForward),
-			TargetGroupArn: aws.String(out.TargetGroupArn),
+			TargetGroupArn: aws.String(tgArn),
 		}},
 	}, accountID)
 	if err != nil {
-		return fmt.Errorf("create listener %s:%d: %w", lbName, clusterNLBListenPort, err)
+		return "", fmt.Errorf("create listener %s:%d: %w", lbName, port, err)
 	}
 	if created == nil || len(created.Listeners) == 0 || created.Listeners[0] == nil {
-		return fmt.Errorf("eks: CreateListener returned no listener for %s:%d", lbName, clusterNLBListenPort)
+		return "", fmt.Errorf("eks: CreateListener returned no listener for %s:%d", lbName, port)
 	}
-	out.ListenerArn = aws.StringValue(created.Listeners[0].ListenerArn)
-	if out.ListenerArn == "" {
-		return fmt.Errorf("eks: CreateListener returned empty arn for %s:%d", lbName, clusterNLBListenPort)
+	arn := aws.StringValue(created.Listeners[0].ListenerArn)
+	if arn == "" {
+		return "", fmt.Errorf("eks: CreateListener returned empty arn for %s:%d", lbName, port)
 	}
-	return nil
+	return arn, nil
 }
 
 func lookupLBByName(nlbp nlbProvisioner, accountID, name string) (*elbv2.LoadBalancer, error) {

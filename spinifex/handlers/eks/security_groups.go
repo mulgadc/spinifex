@@ -168,9 +168,10 @@ func revokeAllSGIngress(sgp sgProvisioner, accountID, sgID string) error {
 }
 
 // EnsurePrivateEndpointSG creates (or reuses) the customer-VPC SG for the
-// private-endpoint ENI and admits the customer VPC CIDR on the NLB listen port
-// (:443), so in-VPC workers + kubectl reach the apiserver via the Set A NIC.
-// Idempotent: SG lookup-or-create + duplicate-tolerant ingress authorize.
+// private-endpoint ENI and admits the customer VPC CIDR on :443 (kubectl/SDK) and
+// :6443, so in-VPC workers + kubectl reach the apiserver via the Set A NIC. :6443
+// carries worker pods to the in-cluster `kubernetes` Endpoints (apiserver
+// advertised on :6443). Idempotent: SG lookup-or-create + duplicate-tolerant authorize.
 func EnsurePrivateEndpointSG(sgp sgProvisioner, accountID, clusterName, vpcID, vpcCIDR string) (string, error) {
 	if clusterName == "" {
 		return "", errors.New("eks: EnsurePrivateEndpointSG empty cluster name")
@@ -190,21 +191,23 @@ func EnsurePrivateEndpointSG(sgp sgProvisioner, accountID, clusterName, vpcID, v
 		return "", err
 	}
 
-	perm := &ec2.IpPermission{
-		IpProtocol: aws.String("tcp"),
-		FromPort:   aws.Int64(clusterNLBListenPort),
-		ToPort:     aws.Int64(clusterNLBListenPort),
-		IpRanges: []*ec2.IpRange{{
-			CidrIp:      aws.String(vpcCIDR),
-			Description: aws.String("EKS in-VPC clients to private apiserver endpoint"),
-		}},
-	}
-	_, err = sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-		GroupId:       aws.String(sgID),
-		IpPermissions: []*ec2.IpPermission{perm},
-	}, accountID)
-	if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
-		return "", fmt.Errorf("authorize private-endpoint ingress on %s: %w", sgID, err)
+	for _, port := range []int64{clusterNLBListenPort, k3sAPIServerPort} {
+		perm := &ec2.IpPermission{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(port),
+			ToPort:     aws.Int64(port),
+			IpRanges: []*ec2.IpRange{{
+				CidrIp:      aws.String(vpcCIDR),
+				Description: aws.String("EKS in-VPC clients to private apiserver endpoint"),
+			}},
+		}
+		_, err = sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       aws.String(sgID),
+			IpPermissions: []*ec2.IpPermission{perm},
+		}, accountID)
+		if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+			return "", fmt.Errorf("authorize private-endpoint :%d ingress on %s: %w", port, sgID, err)
+		}
 	}
 	return sgID, nil
 }

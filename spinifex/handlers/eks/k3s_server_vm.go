@@ -475,6 +475,16 @@ func buildK3sUserData(in K3sServerInput) string {
 	if in.PrivateEndpointIP != "" && in.PrivateEndpointIP != in.EndpointIP {
 		configLines = append(configLines, "  - "+in.PrivateEndpointIP)
 	}
+	// advertise-address lands in the in-cluster `kubernetes` Endpoints. The default
+	// CP node-ip sits in the unpeered managed-CP VPC, unreachable from worker pods;
+	// advertise the NLB front-end (Set A private-endpoint, else public) — both SANed.
+	advertiseIP := in.PrivateEndpointIP
+	if advertiseIP == "" {
+		advertiseIP = in.EndpointIP
+	}
+	if advertiseIP != "" {
+		configLines = append(configLines, "advertise-address: "+advertiseIP)
+	}
 	configLines = append(configLines,
 		"kube-apiserver-arg:",
 		"  - service-account-key-file="+k3sOIDCPublicKeyPath,

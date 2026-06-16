@@ -363,6 +363,26 @@ func TestBuildK3sUserData_TLSSANDedupsWhenPrivateEqualsEndpoint(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(ud, "  - 10.20.0.5"), "must not emit a duplicate SAN")
 }
 
+func TestBuildK3sUserData_AdvertiseAddressPrefersPrivateEndpoint(t *testing.T) {
+	in := validK3sInput()
+	in.EndpointIP = "203.0.113.9"
+	in.PrivateEndpointIP = "10.20.0.5"
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "advertise-address: 10.20.0.5",
+		"apiserver must advertise the worker-reachable Set A NLB front-end, not the CP node-ip")
+	assert.NotContains(t, ud, "advertise-address: 203.0.113.9")
+}
+
+func TestBuildK3sUserData_AdvertiseAddressFallsBackToEndpoint(t *testing.T) {
+	in := validK3sInput()
+	in.EndpointIP = "203.0.113.9"
+	in.PrivateEndpointIP = ""
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "advertise-address: 203.0.113.9")
+}
+
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
 

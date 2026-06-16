@@ -3,13 +3,13 @@
 # Builds on eks-quickstart: same single-worker cluster and browsable demo app,
 # but adds two things you reach for on a real cluster:
 #
-#   * a managed addon (CoreDNS) installed through the EKS API, and
+#   * a managed addon (Argo CD) installed through the EKS API, and
 #   * a second IAM principal granted scoped, read-only access via an EKS access
 #     entry + access-policy association (authentication_mode = "API").
 #
 # After `apply`, open the demo_url output — the page reports the pod that
-# served it, so a refresh shows requests landing on different replicas. CoreDNS
-# being healthy is what lets in-cluster name resolution work.
+# served it, so a refresh shows requests landing on different replicas. The Argo
+# CD addon reaching ACTIVE is what gates the demo app rollout below.
 #
 # Usage:
 #   cd spinifex/docs/terraform-workbooks/eks-addons-access
@@ -308,22 +308,22 @@ resource "aws_eks_node_group" "default" {
 }
 
 # ---------------------------------------------------------------------------
-# Addon — CoreDNS
+# Addon — Argo CD
 # ---------------------------------------------------------------------------
 
-resource "aws_eks_addon" "coredns" {
+resource "aws_eks_addon" "argocd" {
   cluster_name                = aws_eks_cluster.this.name
-  addon_name                  = "coredns"
+  addon_name                  = "argocd"
   resolve_conflicts_on_create = "OVERWRITE"
 
   # addon_version omitted on purpose. Spinifex defaults an unset version to its
-  # catalog default (coredns 1.11.1). The AWS provider rejects a bare "1.11.1"
+  # catalog default (argocd 3.0.23). The AWS provider rejects a bare "3.0.23"
   # (it demands a v-prefixed form) which Spinifex's catalog would in turn
   # reject — so pinning is a dead end here; let the server choose.
   depends_on = [aws_eks_node_group.default]
 
   tags = {
-    Name = "${var.cluster_name}-coredns"
+    Name = "${var.cluster_name}-argocd"
   }
 }
 
@@ -380,7 +380,7 @@ resource "aws_vpc_security_group_ingress_rule" "nodeport" {
 }
 
 # ---------------------------------------------------------------------------
-# Demo workload — deployed after CoreDNS so name resolution is up
+# Demo workload — deployed after the Argo CD addon reaches ACTIVE
 # ---------------------------------------------------------------------------
 
 resource "kubernetes_deployment_v1" "hello" {
@@ -415,7 +415,7 @@ resource "kubernetes_deployment_v1" "hello" {
     }
   }
 
-  depends_on = [aws_eks_addon.coredns]
+  depends_on = [aws_eks_addon.argocd]
 }
 
 resource "kubernetes_service_v1" "hello" {

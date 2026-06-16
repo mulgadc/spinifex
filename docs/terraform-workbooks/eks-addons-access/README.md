@@ -1,6 +1,6 @@
 ---
 title: "EKS with Addons + Access-Entry RBAC"
-description: "Extend a single-node EKS cluster with a managed CoreDNS addon, access-entry RBAC, and a browsable load-balanced demo app, using Terraform on Spinifex."
+description: "Extend a single-node EKS cluster with a managed Argo CD addon, access-entry RBAC, and a browsable load-balanced demo app, using Terraform on Spinifex."
 category: "Terraform Workbooks"
 tags:
   - terraform
@@ -23,7 +23,7 @@ resources:
 
 # Terraform: EKS with Addons + Access-Entry RBAC
 
-> Builds on the quickstart by installing a managed addon (CoreDNS) and granting a second IAM principal read-only cluster access — then deploys the same browsable, load-balanced demo app so you can see the result.
+> Builds on the quickstart by installing a managed addon (Argo CD) and granting a second IAM principal read-only cluster access — then deploys the same browsable, load-balanced demo app so you can see the result.
 
 ## Table of Contents
 
@@ -37,7 +37,7 @@ resources:
 
 This workbook takes the same single-node cluster (and the same browsable demo app) from [EKS Quickstart](../eks-quickstart) and adds the two things you reach for on almost any real cluster:
 
-1. **A managed addon.** CoreDNS is installed through the EKS API (`aws_eks_addon`) rather than `kubectl apply`, so its lifecycle is managed by the cluster. The demo app is deployed *after* CoreDNS, so a healthy page also confirms in-cluster DNS is working.
+1. **A managed addon.** Argo CD is installed through the EKS API (`aws_eks_addon`) rather than `kubectl apply`, so its lifecycle is managed by the cluster. Spinifex stages the addon's manifests host-side, then the worker renders them into the K3s auto-deploy dir. The demo app is deployed *after* the addon reaches `ACTIVE`, so a healthy page also confirms the addon delivery pipeline worked end to end.
 2. **Access-entry RBAC.** A second IAM role is granted read-only access via an `aws_eks_access_entry` plus an `aws_eks_access_policy_association` bound to the AWS-managed `AmazonEKSViewPolicy`. This is the modern access-entry path (`authentication_mode = "API"`) — no `aws-auth` ConfigMap.
 
 When `apply` finishes, open the **`demo_url`** output and refresh — the `nginxdemos/hello` page reports which pod served each request.
@@ -60,15 +60,15 @@ When `apply` finishes, open the **`demo_url`** output and refresh — the `nginx
 | IAM Role | `eks-addons-viewer` | Stand-in principal granted read-only access |
 | EKS Cluster | `eks-addons` | Public endpoint, API auth mode |
 | Node Group | `default` | One `t3.medium` worker |
-| Addon | `coredns` | Cluster DNS, managed via the EKS API |
+| Addon | `argocd` | GitOps CD, managed via the EKS API |
 | Access Entry + Assoc. | `eks-addons-viewer` → `AmazonEKSViewPolicy` | Read-only, cluster scope |
 | SG Ingress Rule | `eks-addons-demo-nodeport` | Opens the demo NodePort on the worker SG |
 | K8s Deployment + Service | `hello` | `nginxdemos/hello`, 2 replicas, NodePort |
 
 **Spinifex specifics**
 
-- Addon catalog is limited. Spinifex currently serves `coredns`, `aws-load-balancer-controller` and `spinifex-noop`. There is no `vpc-cni`, `kube-proxy`, `ebs-csi` or `metrics-server`.
-- **Leave `addon_version` unset.** Spinifex defaults an unset version to its catalog default (`coredns` 1.11.1). Pinning is a dead end: the AWS provider rejects a bare `1.11.1` (it requires the `v`-prefixed `v1.11.1-eksbuild.N` form), while Spinifex's catalog only accepts the bare `1.11.1` — so no single string satisfies both.
+- Addon catalog is limited. Spinifex currently serves `argocd`, `coredns`, `aws-load-balancer-controller` and `spinifex-noop`. There is no `vpc-cni`, `kube-proxy`, `ebs-csi` or `metrics-server`. Only addons with a baked bundle shipped in the `eks-node` AMI install successfully — `argocd` and `spinifex-noop` are the bundles shipped today.
+- **Leave `addon_version` unset.** Spinifex defaults an unset version to its catalog default (`argocd` 3.0.23). Pinning is a dead end: the AWS provider rejects a bare `3.0.23` (it requires the `v`-prefixed `v3.0.23-eksbuild.N` form), while Spinifex's catalog only accepts the bare `3.0.23` — so no single string satisfies both.
 - Cluster access policies are the four AWS-managed `cluster-access-policy/Amazon EKS{ClusterAdmin,Admin,Edit,View}Policy` ARNs.
 - The worker SG is auto-managed and the worker AMI is always the `eks-node` image; the NodePort is exposed by adding one rule to the looked-up worker SG.
 
@@ -101,7 +101,7 @@ tofu init
 tofu apply
 ```
 
-Allow a few minutes for the cluster to reach `ACTIVE` and the worker to register. CoreDNS installs onto the worker, then Terraform deploys the demo app.
+Allow a few minutes for the cluster to reach `ACTIVE` and the worker to register. Argo CD installs onto the worker, then Terraform deploys the demo app.
 
 > Keep `AWS_PROFILE=spinifex` exported for the whole `apply` — the Kubernetes provider runs `aws eks get-token` against the Spinifex STS endpoint.
 
@@ -117,7 +117,7 @@ Open it in a browser and refresh — the `nginxdemos/hello` page shows the pod t
 
 ```bash
 aws eks list-addons --cluster-name eks-addons
-aws eks describe-addon --cluster-name eks-addons --addon-name coredns --query 'addon.status'
+aws eks describe-addon --cluster-name eks-addons --addon-name argocd --query 'addon.status'
 
 aws eks list-access-entries --cluster-name eks-addons
 aws eks list-associated-access-policies \
@@ -145,15 +145,16 @@ aws ec2 describe-security-groups --filters "Name=group-name,Values=eks-cluster-e
   --query 'SecurityGroups[0].IpPermissions'
 ```
 
-If the demo pods are stuck `ContainerCreating` with DNS errors, confirm CoreDNS is healthy first:
+If the addon never reaches `ACTIVE`, confirm Argo CD's pods came up on the worker:
 
 ```bash
-kubectl -n kube-system get deploy coredns
+kubectl -n argocd get pods
+kubectl -n argocd get deploy
 ```
 
 ### Addon Stuck in CREATING / DEGRADED
 
-CoreDNS needs a schedulable worker. Confirm the node group is `ACTIVE` and the node is `Ready`:
+Argo CD needs a schedulable worker with headroom (it runs ~6 pods). Confirm the node group is `ACTIVE` and the node is `Ready`:
 
 ```bash
 aws eks describe-nodegroup --cluster-name eks-addons --nodegroup-name default --query 'nodegroup.status'
@@ -162,7 +163,11 @@ kubectl get nodes
 
 ### Addon Version Rejected
 
-This workbook leaves `addon_version` unset so Spinifex picks its catalog default. If you add an explicit `addon_version`, expect a wall: the AWS provider requires the `v`-prefixed `v1.11.1-eksbuild.N` form, but Spinifex's catalog only knows the bare `1.11.1` — a value that passes one is rejected by the other. Prefer omitting the field.
+This workbook leaves `addon_version` unset so Spinifex picks its catalog default. If you add an explicit `addon_version`, expect a wall: the AWS provider requires the `v`-prefixed `v3.0.23-eksbuild.N` form, but Spinifex's catalog only knows the bare `3.0.23` — a value that passes one is rejected by the other. Prefer omitting the field.
+
+### Addon Fails With "no baked bundle"
+
+Spinifex only installs addons whose manifests are baked into the `eks-node` AMI. If `describe-addon` reports `CREATE_FAILED` with `no baked bundle for version <v>`, the running worker image predates that addon. Rebuild and republish the `eks-node` image so the bundle ships, then recreate the addon.
 
 ### Access Entry Not Taking Effect
 

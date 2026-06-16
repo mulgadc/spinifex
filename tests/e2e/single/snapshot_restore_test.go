@@ -70,9 +70,13 @@ func runSnapshotRestore(t *testing.T, fix *Fixture) {
 
 	// 3. Restore → attach → read by device; sha must match the source.
 	harness.Step(t, "create-volume from snapshot=%s", snapID)
+	// Size matches the 1 GiB source so the request never depends on snapshot
+	// size-defaulting — that defaulting is asserted separately and would mask
+	// a fidelity failure here behind an InvalidParameterValue.
 	restoreOut, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(az),
 		SnapshotId:       aws.String(snapID),
+		Size:             aws.Int64(1),
 	})
 	require.NoError(t, err, "create-volume from snapshot")
 	restoreVolID := aws.StringValue(restoreOut.VolumeId)

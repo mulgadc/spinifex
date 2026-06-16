@@ -27,10 +27,6 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 5.40, < 6.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = ">= 2.20"
-    }
   }
 }
 
@@ -65,12 +61,6 @@ variable "node_port" {
   description = "NodePort the demo Service is published on"
 }
 
-variable "replicas" {
-  type        = number
-  default     = 2
-  description = "Demo app replicas; refresh the page to see requests land on different pods"
-}
-
 variable "browse_cidr" {
   type        = string
   default     = "0.0.0.0/0"
@@ -101,19 +91,6 @@ provider "aws" {
   skip_metadata_api_check     = true
   skip_requesting_account_id  = true
   skip_region_validation      = true
-}
-
-# Authenticates to the cluster with the same `aws eks get-token` exec flow the
-# generated kubeconfig uses, so the Kubernetes provider can deploy the demo app.
-provider "kubernetes" {
-  host                   = aws_eks_cluster.this.endpoint
-  cluster_ca_certificate = base64decode(aws_eks_cluster.this.certificate_authority[0].data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", aws_eks_cluster.this.name, "--region", var.region]
-  }
 }
 
 # ---------------------------------------------------------------------------
@@ -337,68 +314,6 @@ resource "aws_vpc_security_group_ingress_rule" "nodeport" {
 }
 
 # ---------------------------------------------------------------------------
-# Demo workload — deployed onto the cluster by Terraform
-#
-# nginxdemos/hello renders a page showing which pod served the request; with
-# multiple replicas, refreshing the demo_url alternates between them.
-# ---------------------------------------------------------------------------
-
-resource "kubernetes_deployment_v1" "hello" {
-  metadata {
-    name      = "hello"
-    namespace = "default"
-    labels    = { app = "hello" }
-  }
-
-  spec {
-    replicas = var.replicas
-
-    selector {
-      match_labels = { app = "hello" }
-    }
-
-    template {
-      metadata {
-        labels = { app = "hello" }
-      }
-
-      spec {
-        container {
-          name  = "hello"
-          image = "nginxdemos/hello"
-
-          port {
-            container_port = 80
-          }
-        }
-      }
-    }
-  }
-
-  depends_on = [aws_eks_node_group.default]
-}
-
-resource "kubernetes_service_v1" "hello" {
-  metadata {
-    name      = "hello"
-    namespace = "default"
-  }
-
-  spec {
-    selector = { app = "hello" }
-    type     = "NodePort"
-
-    port {
-      port        = 80
-      target_port = 80
-      node_port   = var.node_port
-    }
-  }
-
-  depends_on = [kubernetes_deployment_v1.hello]
-}
-
-# ---------------------------------------------------------------------------
 # Discover the worker's public IP for the demo URL
 # ---------------------------------------------------------------------------
 
@@ -416,6 +331,14 @@ data "aws_instances" "workers" {
 
 output "cluster_name" {
   value = aws_eks_cluster.this.name
+}
+
+output "region" {
+  value = var.region
+}
+
+output "node_port" {
+  value = var.node_port
 }
 
 output "demo_url" {

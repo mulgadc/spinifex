@@ -90,17 +90,31 @@ Or create a `main.tf` file and paste the full configuration below.
 
 ### Step 2. Deploy
 
+The cluster and the demo app are **two root modules with separate state**. Apply the cluster first:
+
 ```bash
 export AWS_PROFILE=spinifex
 tofu init
 tofu apply
 ```
 
-This single `apply` does the whole job: it creates the cluster (which bootstraps a control-plane VM and brings up k3s — a few minutes in `CREATING`), launches the worker, opens the NodePort, then deploys the demo app and waits for the pods to roll out.
+This creates the cluster (which bootstraps a control-plane VM and brings up k3s — a few minutes in `CREATING`), launches the worker, and opens the NodePort. Once it's `ACTIVE`, deploy the demo app from the nested `workloads/` module:
 
-> **Same profile for the Kubernetes provider.** The Kubernetes provider authenticates by shelling out to `aws eks get-token`, which has to reach the Spinifex STS endpoint. Keep `AWS_PROFILE=spinifex` exported for the whole `apply`.
+```bash
+cd workloads
+tofu init
+tofu apply
+```
+
+> **Why two modules?** The Kubernetes provider in `workloads/` reads the cluster endpoint from a live `data "aws_eks_cluster"` source, so it's only ever configured while the cluster exists. Keeping it out of the cluster module means `destroy` never tries to refresh a workload against a cluster that's already gone — the failure mode where the provider falls back to `http://localhost:80` and reports `connection refused`. Always destroy `workloads/` before the cluster.
+
+> **Same profile for the Kubernetes provider.** The Kubernetes provider authenticates by shelling out to `aws eks get-token`, which has to reach the Spinifex STS endpoint. Keep `AWS_PROFILE=spinifex` exported for both applies.
+
+<!-- INCLUDE: workloads/main.tf lang:hcl -->
 
 ### Step 3. Open the Demo
+
+Run from the cluster module directory (`cd ..` if you're still in `workloads/`):
 
 ```bash
 tofu output demo_url
@@ -120,7 +134,12 @@ kubectl get pods -o wide
 
 ### Cleanup
 
+Destroy in reverse — the demo app first (while the cluster is still up), then the cluster:
+
 ```bash
+cd workloads
+tofu destroy
+cd ..
 tofu destroy
 ```
 

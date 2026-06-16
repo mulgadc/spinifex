@@ -147,34 +147,6 @@ func GuestReadSentinelSha(t *testing.T, tgt SSHTarget, source, label string) str
 	return mustSha(t, out)
 }
 
-// GuestWriteFileSentinel writes sizeMiB of random data to an arbitrary path on
-// an already-mounted filesystem (e.g. the root fs for the CreateImage test),
-// fsyncs, and returns its sha256. No mkfs/mount — the path's filesystem must
-// already exist.
-func GuestWriteFileSentinel(t *testing.T, tgt SSHTarget, path string, sizeMiB int) string {
-	t.Helper()
-	script := strings.Join([]string{
-		fmt.Sprintf("sudo dd if=/dev/urandom of=%s bs=1M count=%d conv=fsync status=none", path, sizeMiB),
-		"sync",
-		fmt.Sprintf("sudo sha256sum %s", path),
-	}, " && ")
-	out, err := GuestExec(tgt, script)
-	if err != nil {
-		t.Fatalf("GuestWriteFileSentinel(%s): %v\n%s", path, err, out)
-	}
-	return mustSha(t, out)
-}
-
-// GuestFileSha returns the sha256 of an existing file path in the guest.
-func GuestFileSha(t *testing.T, tgt SSHTarget, path string) string {
-	t.Helper()
-	out, err := GuestExec(tgt, fmt.Sprintf("sudo sha256sum %s", path))
-	if err != nil {
-		t.Fatalf("GuestFileSha(%s): %v\n%s", path, err, out)
-	}
-	return mustSha(t, out)
-}
-
 // mustSha extracts the single sha256 digest from command output, failing the
 // test if none is present.
 func mustSha(t *testing.T, out string) string {

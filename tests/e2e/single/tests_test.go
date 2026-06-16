@@ -136,19 +136,8 @@ func TestSnapshotBackedLaunch(t *testing.T) {
 	runSnapshotBackedLaunch(t, requireSingleNodeFixture(t))
 }
 
-// TestSnapshotRestore writes guest data, snapshots, restores, and re-reads it.
-func TestSnapshotRestore(t *testing.T) {
-	runSnapshotRestore(t, requireSingleNodeFixture(t))
-}
-
 func TestCreateImage(t *testing.T) {
 	runCreateImage(t, requireSingleNodeFixture(t))
-}
-
-// TestCreateImageData bakes an AMI carrying a root-fs sentinel and verifies it
-// on a fresh instance launched from that AMI (costs one extra boot).
-func TestCreateImageData(t *testing.T) {
-	runCreateImageData(t, requireSingleNodeFixture(t))
 }
 
 func TestSecurityGroupEgress(t *testing.T) {

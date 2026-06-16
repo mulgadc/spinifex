@@ -25,7 +25,7 @@ sections:
 
 ## Overview
 
-Spinifex is an open-source infrastructure platform that brings core AWS services including EC2, EBS and S3 to bare-metal, edge, and on-prem environments. It exposes an EC2-compatible API, so any tooling that works against AWS (the `aws` CLI, Terraform, SDKs) works against a Spinifex node unchanged, with a single profile swap.
+Spinifex is an open-source infrastructure platform that brings core AWS services including EC2, EBS and S3 to bare-metal, edge, and on-prem environments. It exposes an AWS compatible API, so any tooling that works against AWS (the `aws` CLI, Terraform, SDKs) works against a Spinifex node unchanged, with a single profile swap.
 
 This guide documents a full bare-metal AI deployment on a single chassis using four of its eight available NVIDIA H200 SXM GPUs. Rather than having Spinifex manage MIG partitioning at the host level, each VM receives an entire H200 via PCIe passthrough and manages its own MIG partitions internally. This gives each tenant full control over how they slice their GPU — including the ability to run heterogeneous workloads at different partition sizes on the same physical card.
 
@@ -64,6 +64,10 @@ Twelve concurrent inference endpoints in total: 7 fast 3B slots, 2 mid-tier 32B 
 
 ## Instructions
 
+### 0. Pre-req
+
+gpu passthrough changes here
+
 ### 1. Configure host-local VPC networking
 
 The bridge must exist before Spinifex starts, so configure and apply netplan first.
@@ -83,7 +87,7 @@ Edit `/etc/spinifex/spinifex.toml` to point the external pool and VPCD at the br
 
 ```toml
 [network]
-external_mode = "host-local"
+external_mode = "static"
 
 [[network.external_pools]]
 name        = "default"
@@ -106,6 +110,9 @@ sudo systemctl status spinifex.target
 
 ### 4. Attach Predastore storage
 
+Expand: Note, we will distribute the predastore volume over 3 physical drives for data redundancy (similar to RAID, predastore uses reed solomon encoding for data shards and parity). Note this environment is ideal to demonstrate this since multiple drives are provided.
+
+
 This chassis has four NVMe drives. One is the OS drive, so confirm drive assignments with `lsblk` before proceeding, as device names vary between systems. Each of the three data drives needs to be symlinked into the path Predastore expects for its node data directories:
 
 ```bash
@@ -114,18 +121,36 @@ lsblk
 
 # Symlink each data drive into the Predastore node directories
 # (adjust device paths to match your drive layout)
-sudo ln -s /dev/nvme1n1 /var/lib/predastore/node0/disk
-sudo ln -s /dev/nvme2n1 /var/lib/predastore/node1/disk
-sudo ln -s /dev/nvme3n1 /var/lib/predastore/node2/disk
 
-sudo systemctl restart predastore.target
-sudo systemctl status predastore.target
+# stop services first
+sudo systemctl stop spinifex.target
+
+# mount first
+# /var/lib/spinifex/predastore/distributed/nodes/node-1/ path
+
+# sudo mkdir -p /mnt/nvme-1/
+# sudo mount /dev/nvme1n1 /mnt/nvme-1
+# sudo mkdir /mnt/nvme-1/nodes/
+# sudo mkdir /mnt/nvme-1/db/
+
+# mv /var/lib/spinifex/predastore/distributed/db/node-1 /mnt/nvme-1/db/node-1
+# mv /var/lib/spinifex/predastore/distributed/nodes/node-1 /mnt/nvme-1/nodes/node-1
+
+# double check syntax
+# ln -s /var/lib/spinifex/predastore/distributed/nodes/node-1 /mnt/nvme-1/nodes/node-1
+# ln -s /var/lib/spinifex/predastore/distributed/db/node-1 /mnt/nvme-1/db/node-1
+
+# repeat for nvme2,3
+
+# (edit /etc/fstab)
+
+sudo systemctl start spinifex.target
 ```
 
 Verify the nodes are healthy before proceeding:
 
 ```bash
-aws s3 ls --endpoint-url http://localhost:9000
+aws s3 ls --endpoint-url https://localhost:8443
 # Should return without error (empty bucket list is fine)
 ```
 
@@ -225,6 +250,8 @@ nvidia-smi | grep "MIG M."
 
 ### 9. Create MIG partitions inside each VM
 
+<expand what MIG is again, why we are doing this>
+
 Once MIG is enabled, create the partitions. The partition profile determines how many vLLM (or YOLO) instances can run concurrently and how much HBM each gets.
 
 **vm-llama3b — 7 × 1g.18gb (Llama 3B):**
@@ -250,6 +277,8 @@ nvidia-smi -L  # Verify 1 MIG device
 sudo nvidia-smi mig -cgi 3g.71gb,3g.71gb -C
 nvidia-smi -L  # Verify 2 MIG devices
 ```
+
+<add screenshot of the nvidia-smi MIG output here as an example>
 
 Each MIG device gets a UUID of the form `MIG-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`. These UUIDs are used to pin individual containers to their slice via `--gpus "device=<UUID>"` (for Docker) or `CUDA_VISIBLE_DEVICES=<UUID>` (for direct Python processes).
 
@@ -300,6 +329,8 @@ sudo systemctl restart docker
 ### 11. Deploy the LLM workloads
 
 Each model is downloaded onto the host and copied to the relevant VMs. Take note of the location of the models on the VMs, then set each one up as follows:
+
+<expand more about MODEL_DIR=<path-to-model>> give an example
 
 **vm-llama3b — 7 × Llama-3.2-3B-Instruct (one container per MIG slice):**
 
@@ -417,6 +448,6 @@ The dashboard shows:
 
 ### 14. Conclusion
 
-this document highlights how Spinifex can turn a single bare-metal chassis into a multi-tenant AI serving platform. Spinifex utilises the flexibility of PCIe passthrough combined with NVIDIA's MIG capability to allocate GPU resources in whichever configuration is required by the workload/s. This flexibility and fine-grain control ensures maximum GPU utilisation.
+This document highlights how Spinifex can turn a single bare-metal chassis into a multi-tenant AI serving platform. Spinifex utilises the flexibility of PCIe passthrough combined with NVIDIA's MIG capability to allocate GPU resources in whichever configuration is required by the workload/s. This flexibility and fine-grain control ensures maximum GPU utilisation.
 
 Importantly, it does so with standard `aws ec2` CLI calls — `run-instances`, `describe-instances`, `terminate-instances` — against Spinifex's EC2-compatible endpoint. Teams already operating AWS infrastructure can point their existing tooling at a Spinifex node with a single profile change, against GPUs that sit in their own rack.

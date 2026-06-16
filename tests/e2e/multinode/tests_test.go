@@ -39,6 +39,13 @@ func TestMultinodeVolumeLifecycle(t *testing.T) {
 	runVolumeLifecycle(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeVolumeDurability is sequential and declared before CrossNodeOps
+// (which destabilises trio[0]'s sshd) so its guest-SSH probes hit settled VMs.
+// Touches predastore state.
+func TestMultinodeVolumeDurability(t *testing.T) {
+	runVolumeDurability(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeCrossNodeGateway is sequential: asserts a stable per-gateway instance count
 // that concurrent launches/terminates would break.
 func TestMultinodeCrossNodeGateway(t *testing.T) {

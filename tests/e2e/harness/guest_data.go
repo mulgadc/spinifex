@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// Guest-side data-durability helpers shared by the P0 e2e tests (volume
-// durability, snapshot restore, CreateImage). They drive a real guest over SSH
+// Guest-side data-durability helpers shared by the volume-durability,
+// snapshot-restore, and CreateImage e2e tests. They drive a real guest over SSH
 // to format, write, sync, and checksum bytes so the assembled
 // QEMU↔viperblock↔predastore I/O path is exercised end-to-end — something the
 // per-layer unit tests cannot cover.

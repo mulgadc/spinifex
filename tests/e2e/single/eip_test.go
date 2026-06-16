@@ -128,16 +128,27 @@ func runInstanceEIP(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "disassociate-address")
 	disassociated = true
 
-	// The EIP no longer maps to the guest. DNAT flow teardown can lag, so poll
-	// for loss of reachability rather than asserting on the first probe. A
-	// 5s-ConnectTimeout SSH that errors is the unreachable signal.
+	// The EIP no longer maps to the guest, but DNAT teardown can lag and a single
+	// transient SSH error must not be read as teardown — require several
+	// consecutive unreachable probes before declaring success.
 	harness.Step(t, "verify guest unreachable via EIP %s after disassociate", eipIP)
+	const wantUnreachable = 3
+	consecutive := 0
 	harness.EventuallyErr(t, func() error {
 		if _, sErr := runSSHQuiet(tgt, "true"); sErr == nil {
+			consecutive = 0
 			return fmt.Errorf("EIP %s still reaches guest after disassociate", eipIP)
+		}
+		if consecutive++; consecutive < wantUnreachable {
+			return fmt.Errorf("EIP %s unreachable %d/%d — confirming it is not a transient blip",
+				eipIP, consecutive, wantUnreachable)
 		}
 		return nil
 	}, 90*time.Second, 5*time.Second)
+
+	// Rule out an instance-death false pass: the unreachability must be the EIP
+	// teardown, not the subject VM having gone away mid-poll.
+	harness.WaitForInstanceState(t, c, instID, "running", harness.WithTimeout(30*time.Second))
 	harness.Detail(t, "datapath", "eip_unreachable_after_disassociate_ok")
 
 	// --- ReleaseAddress ----------------------------------------------------

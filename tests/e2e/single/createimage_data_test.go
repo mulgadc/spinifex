@@ -24,8 +24,8 @@ const dataAMIName = "e2e-data-ami"
 // runCreateImageData is the AMI analog of the snapshot-restore test: it proves
 // CreateImage captures real root-filesystem bytes by writing a sentinel into
 // the singleton's root fs, baking a no-reboot AMI, launching a fresh instance
-// from it, and verifying the sentinel's sha256 survives. Sequential and the one
-// P0 item that costs an extra boot.
+// from it, and verifying the sentinel's sha256 survives. Sequential; the only
+// data-integrity test that costs an extra boot.
 func runCreateImageData(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — CreateImage Root Data Fidelity")
 

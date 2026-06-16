@@ -49,7 +49,7 @@ func TestClusterJoinEndpoint_PublicOnlyUsesPublished(t *testing.T) {
 	assert.Equal(t, "https://203.0.113.9:443", clusterJoinEndpoint(meta))
 }
 
-func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROn443(t *testing.T) {
+func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROnAPIServerPorts(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.createIDs = []string{"sg-pe-001"}
 
@@ -57,16 +57,21 @@ func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROn443(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "sg-pe-001", sgID)
 
-	require.Len(t, sgp.authorizeCalls, 1)
-	in := sgp.authorizeCalls[0]
-	assert.Equal(t, "sg-pe-001", aws.StringValue(in.GroupId))
-	require.Len(t, in.IpPermissions, 1)
-	perm := in.IpPermissions[0]
-	assert.Equal(t, "tcp", aws.StringValue(perm.IpProtocol))
-	assert.Equal(t, clusterNLBListenPort, aws.Int64Value(perm.FromPort))
-	assert.Equal(t, clusterNLBListenPort, aws.Int64Value(perm.ToPort))
-	require.Len(t, perm.IpRanges, 1)
-	assert.Equal(t, "10.0.0.0/16", aws.StringValue(perm.IpRanges[0].CidrIp))
+	// :443 for kubectl/SDK; :6443 for worker pods hitting the in-cluster kubernetes Endpoints.
+	require.Len(t, sgp.authorizeCalls, 2)
+	ports := map[int64]bool{}
+	for _, in := range sgp.authorizeCalls {
+		assert.Equal(t, "sg-pe-001", aws.StringValue(in.GroupId))
+		require.Len(t, in.IpPermissions, 1)
+		perm := in.IpPermissions[0]
+		assert.Equal(t, "tcp", aws.StringValue(perm.IpProtocol))
+		assert.Equal(t, aws.Int64Value(perm.FromPort), aws.Int64Value(perm.ToPort))
+		require.Len(t, perm.IpRanges, 1)
+		assert.Equal(t, "10.0.0.0/16", aws.StringValue(perm.IpRanges[0].CidrIp))
+		ports[aws.Int64Value(perm.FromPort)] = true
+	}
+	assert.True(t, ports[clusterNLBListenPort], "admits :443")
+	assert.True(t, ports[k3sAPIServerPort], "admits :6443")
 }
 
 func TestEnsurePrivateEndpointSG_EmptyInputsRejected(t *testing.T) {

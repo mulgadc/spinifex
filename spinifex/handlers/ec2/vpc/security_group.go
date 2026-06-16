@@ -696,8 +696,13 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 		return nil, err
 	}
 
+	ruleSet := make([]*ec2.SecurityGroupRule, 0, len(newRules))
+	for _, nr := range newRules {
+		ruleSet = append(ruleSet, sgRuleToSecurityGroupRule(&record, nr, false, accountID))
+	}
 	return &ec2.AuthorizeSecurityGroupIngressOutput{
-		Return: aws.Bool(true),
+		Return:             aws.Bool(true),
+		SecurityGroupRules: ruleSet,
 	}, nil
 }
 
@@ -766,8 +771,13 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 		return nil, err
 	}
 
+	ruleSet := make([]*ec2.SecurityGroupRule, 0, len(newRules))
+	for _, nr := range newRules {
+		ruleSet = append(ruleSet, sgRuleToSecurityGroupRule(&record, nr, true, accountID))
+	}
 	return &ec2.AuthorizeSecurityGroupEgressOutput{
-		Return: aws.Bool(true),
+		Return:             aws.Bool(true),
+		SecurityGroupRules: ruleSet,
 	}, nil
 }
 

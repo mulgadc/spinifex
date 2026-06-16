@@ -50,6 +50,20 @@ start_pre() {
         fi
     fi
 
+    # Node-local CoreDNS: suppress k3s's bundled CoreDNS (a single Deployment that
+    # tolerates the CP taint and strands itself on the control-plane node) and
+    # deploy the Mulga DaemonSet variant so every node resolves via its own
+    # CoreDNS. Worker pods cannot reach a CP-resident CoreDNS — the worker<->CP
+    # overlay does not cross the VPC boundary. Staged pre-start so the deploy
+    # controller never applies the bundled manifest. Guarded on the baked bundle:
+    # an older image without it keeps k3s's CoreDNS rather than losing DNS.
+    if [ -f /usr/share/spinifex-eks/coredns/coredns-mulga.yaml ]; then
+        mkdir -p /var/lib/rancher/k3s/server/manifests
+        : > /var/lib/rancher/k3s/server/manifests/coredns.yaml.skip
+        cp /usr/share/spinifex-eks/coredns/coredns-mulga.yaml \
+            /var/lib/rancher/k3s/server/manifests/coredns-mulga.yaml
+    fi
+
     # The apiserver is configured with --authentication-token-webhook-config-file
     # pointing at the kubeconfig eks-token-webhook writes at startup. `before k3s`
     # orders the webhook's start but it backgrounds, so wait (bounded) for the

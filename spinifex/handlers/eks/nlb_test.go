@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -39,7 +40,6 @@ type fakeNLBProvisioner struct {
 
 	createLBOut       *elbv2.CreateLoadBalancerOutput
 	createTGOut       *elbv2.CreateTargetGroupOutput
-	createListenerOut *elbv2.CreateListenerOutput
 	createLBErr       error
 	createTGErr       error
 	createListenerErr error
@@ -210,25 +210,20 @@ func (f *fakeNLBProvisioner) CreateListener(input *elbv2.CreateListenerInput, _ 
 	if f.createListenerErr != nil {
 		return nil, f.createListenerErr
 	}
-	if f.createListenerOut == nil {
-		lbArn := aws.StringValue(input.LoadBalancerArn)
-		port := aws.Int64Value(input.Port)
-		listenerArn := lbArn + "/listener/lst-001"
-		f.createListenerOut = &elbv2.CreateListenerOutput{
-			Listeners: []*elbv2.Listener{{
-				ListenerArn:     aws.String(listenerArn),
-				LoadBalancerArn: input.LoadBalancerArn,
-				Port:            input.Port,
-				Protocol:        input.Protocol,
-				DefaultActions:  input.DefaultActions,
-			}},
-		}
-		if f.listenerByPort[lbArn] == nil {
-			f.listenerByPort[lbArn] = map[int64]*elbv2.Listener{}
-		}
-		f.listenerByPort[lbArn][port] = f.createListenerOut.Listeners[0]
+	lbArn := aws.StringValue(input.LoadBalancerArn)
+	port := aws.Int64Value(input.Port)
+	listener := &elbv2.Listener{
+		ListenerArn:     aws.String(fmt.Sprintf("%s/listener/lst-%d", lbArn, port)),
+		LoadBalancerArn: input.LoadBalancerArn,
+		Port:            input.Port,
+		Protocol:        input.Protocol,
+		DefaultActions:  input.DefaultActions,
 	}
-	return f.createListenerOut, nil
+	if f.listenerByPort[lbArn] == nil {
+		f.listenerByPort[lbArn] = map[int64]*elbv2.Listener{}
+	}
+	f.listenerByPort[lbArn][port] = listener
+	return &elbv2.CreateListenerOutput{Listeners: []*elbv2.Listener{listener}}, nil
 }
 
 func (f *fakeNLBProvisioner) DescribeListeners(input *elbv2.DescribeListenersInput, _ string) (*elbv2.DescribeListenersOutput, error) {
@@ -315,7 +310,7 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	assert.Equal(t, elbv2.TargetTypeEnumIp, aws.StringValue(tgIn.TargetType))
 	assertELBv2TaggedAsEKS(t, tgIn.Tags, "alpha")
 
-	require.Len(t, nlbp.createListenerCalls, 1)
+	require.Len(t, nlbp.createListenerCalls, 2)
 	lstIn := nlbp.createListenerCalls[0]
 	assert.Equal(t, out.LoadBalancerArn, aws.StringValue(lstIn.LoadBalancerArn))
 	assert.Equal(t, elbv2.ProtocolEnumTcp, aws.StringValue(lstIn.Protocol))
@@ -323,6 +318,12 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	require.Len(t, lstIn.DefaultActions, 1)
 	assert.Equal(t, elbv2.ActionTypeEnumForward, aws.StringValue(lstIn.DefaultActions[0].Type))
 	assert.Equal(t, out.TargetGroupArn, aws.StringValue(lstIn.DefaultActions[0].TargetGroupArn))
+	// Second listener serves :6443 to the same TG — the in-cluster kubernetes Endpoints path.
+	apiLstIn := nlbp.createListenerCalls[1]
+	assert.Equal(t, k3sAPIServerPort, aws.Int64Value(apiLstIn.Port))
+	assert.Equal(t, elbv2.ProtocolEnumTcp, aws.StringValue(apiLstIn.Protocol))
+	require.Len(t, apiLstIn.DefaultActions, 1)
+	assert.Equal(t, out.TargetGroupArn, aws.StringValue(apiLstIn.DefaultActions[0].TargetGroupArn))
 }
 
 func TestEnsureClusterNLB_NoFrontendIPFailsLoud(t *testing.T) {

@@ -475,6 +475,16 @@ func buildK3sUserData(in K3sServerInput) string {
 	if in.PrivateEndpointIP != "" && in.PrivateEndpointIP != in.EndpointIP {
 		configLines = append(configLines, "  - "+in.PrivateEndpointIP)
 	}
+	// advertise-address lands in the in-cluster `kubernetes` Endpoints. The default
+	// CP node-ip sits in the unpeered managed-CP VPC, unreachable from worker pods;
+	// advertise the NLB front-end (Set A private-endpoint, else public) — both SANed.
+	advertiseIP := in.PrivateEndpointIP
+	if advertiseIP == "" {
+		advertiseIP = in.EndpointIP
+	}
+	if advertiseIP != "" {
+		configLines = append(configLines, "advertise-address: "+advertiseIP)
+	}
 	configLines = append(configLines,
 		"kube-apiserver-arg:",
 		"  - service-account-key-file="+k3sOIDCPublicKeyPath,
@@ -530,10 +540,12 @@ func buildK3sUserData(in K3sServerInput) string {
 		}
 	}
 
-	// Enable OpenRC `local` so the IMDS route script runs on every boot.
+	// Enable OpenRC `local` for reboot persistence, then run the IMDS route script
+	// directly. Starting the service here would deadlock: runcmd runs inside
+	// cloud-final, but `local` is ordered after it — blocking until OpenRC times out.
 	buf.WriteString("runcmd:\n")
 	buf.WriteString("  - [ rc-update, add, local, default ]\n")
-	buf.WriteString("  - [ rc-service, local, start ]\n")
+	buf.WriteString("  - [ /etc/local.d/imds-onlink-route.start ]\n")
 
 	return buf.String()
 }

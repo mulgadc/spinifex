@@ -94,4 +94,12 @@ sed -i \
     's|console=ttyS0,115200n8 console=ttyAMA0,115200n8 console=tty0|console=tty0 console=ttyAMA0,115200n8 console=ttyS0,115200n8|' \
     /etc/update-extlinux.conf /boot/extlinux.conf
 
+# Cut the boot-menu countdown from 10s to ~1s. The stock cloud image waits 10s at
+# the SYSLINUX menu before auto-booting — a fixed, network-independent tax on every
+# VM start. Patch the generator config (timeout in seconds) and the rendered output
+# (TIMEOUT in 1/10s) so a regenerate keeps the short value. A small nonzero value is
+# kept so the menu stays interruptible over serial; TIMEOUT 0 would wait forever.
+sed -i 's/^timeout=.*/timeout=1/' /etc/update-extlinux.conf
+sed -i 's/^TIMEOUT[[:space:]].*/TIMEOUT 10/' /boot/extlinux.conf
+
 echo "[eks-node-setup] done"

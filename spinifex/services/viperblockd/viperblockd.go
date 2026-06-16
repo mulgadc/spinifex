@@ -231,6 +231,36 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 	return vb, nil
 }
 
+// sealVolumeVB persists a detached volume's block->object map to predastore.
+// The runtime nbdkit plugin is the only path that flushes the map on close and
+// it does not reliably fire on detach, so without this seal a reattach on a
+// node lacking the local WAL finds no checkpoint (bad superblock). It mirrors
+// the plugin's recover sequence (LoadBlockState + RecoverLocalWALs replay
+// un-sealed chunk WALs) then Close()s to flush the map. The caller MUST ensure
+// no nbdkit process is writing the shared BaseDir first (post-KillProcess).
+func sealVolumeVB(cfg *Config, volumeName string) error {
+	vb, err := openVolumeVB(cfg, volumeName)
+	if err != nil {
+		return err
+	}
+	if err := vb.LoadBlockState(); err != nil {
+		vb.StopWALSyncer()
+		return fmt.Errorf("load block state: %w", err)
+	}
+	// RecoverLocalWALs is fail-closed on integrity errors and persists recovered
+	// state itself; on failure retain the local WAL (no Close) for retry.
+	if err := vb.RecoverLocalWALs(); err != nil {
+		vb.StopWALSyncer()
+		return fmt.Errorf("recover local WALs: %w", err)
+	}
+	// Close removes local files only after the predastore writes succeed, so a
+	// failed seal leaves the WAL intact rather than losing data.
+	if err := vb.Close(); err != nil {
+		return fmt.Errorf("seal close: %w", err)
+	}
+	return nil
+}
+
 // respondJSON marshals data and sends it as a NATS response. On marshal
 // failure a raw JSON error string is sent instead.
 func respondJSON(msg *nats.Msg, data any) {
@@ -450,6 +480,18 @@ func launchService(cfg *Config) (err error) {
 
 			if err := utils.KillProcess(matched.PID); err != nil {
 				slog.Error("Failed to kill nbdkit process", "pid", matched.PID, "err", err)
+			}
+
+			// nbdkit is now dead, so no process writes the shared BaseDir: seal
+			// the block map to predastore. Auxiliary volumes are recreated on
+			// launch and carry no durable guest data, so skip their seal.
+			if !strings.HasSuffix(matched.Name, "-efi") && !strings.HasSuffix(matched.Name, "-cloudinit") {
+				if err := sealVolumeVB(cfg, matched.Name); err != nil {
+					slog.Error("ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
+					ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
+				} else {
+					slog.Info("ebs.unmount: volume sealed to predastore", "volume", matched.Name)
+				}
 			}
 
 			// Remove the socket file if using socket transport

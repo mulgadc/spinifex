@@ -38,7 +38,7 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 		{"POST", "/clusters/alpha/access-entries/arn-user", "UpdateAccessEntry", []string{"alpha", "arn-user"}},
 		{"DELETE", "/clusters/alpha/access-entries/arn-user", "DeleteAccessEntry", []string{"alpha", "arn-user"}},
 		{"POST", "/clusters/alpha/access-entries/arn-user/access-policies", "AssociateAccessPolicy", []string{"alpha", "arn-user"}},
-		{"DELETE", "/clusters/alpha/access-entries/arn-user/access-policies", "DisassociateAccessPolicy", []string{"alpha", "arn-user"}},
+		{"DELETE", "/clusters/alpha/access-entries/arn-user/access-policies/policy-arn", "DisassociateAccessPolicy", []string{"alpha", "arn-user", "policy-arn"}},
 		{"GET", "/clusters/alpha/access-entries/arn-user/access-policies", "ListAssociatedAccessPolicies", []string{"alpha", "arn-user"}},
 		{"GET", "/access-policies", "ListAccessPolicies", nil},
 		{"GET", "/clusters/alpha/addons", "ListAddons", []string{"alpha"}},
@@ -81,7 +81,6 @@ func TestLookupEKSAction_EncodedPrincipalARN(t *testing.T) {
 		{"POST", "/clusters/alpha/access-entries/" + escaped, "UpdateAccessEntry"},
 		{"DELETE", "/clusters/alpha/access-entries/" + escaped, "DeleteAccessEntry"},
 		{"POST", "/clusters/alpha/access-entries/" + escaped + "/access-policies", "AssociateAccessPolicy"},
-		{"DELETE", "/clusters/alpha/access-entries/" + escaped + "/access-policies", "DisassociateAccessPolicy"},
 		{"GET", "/clusters/alpha/access-entries/" + escaped + "/access-policies", "ListAssociatedAccessPolicies"},
 	}
 	for _, tc := range cases {
@@ -93,6 +92,24 @@ func TestLookupEKSAction_EncodedPrincipalARN(t *testing.T) {
 			assert.Equal(t, []string{"alpha", arn}, params)
 		})
 	}
+}
+
+// DisassociateAccessPolicy carries the policy ARN as the final path segment
+// (DELETE .../access-policies/{policyArn}); both principal and policy ARNs are
+// percent-encoded and must survive as separate single segments.
+func TestLookupEKSAction_DisassociateEncodedARNs(t *testing.T) {
+	const (
+		principal        = "arn:aws:iam::000000000001:user/admin"
+		principalEscaped = "arn%3Aaws%3Aiam%3A%3A000000000001%3Auser%2Fadmin"
+		policy           = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+		policyEscaped    = "arn%3Aaws%3Aeks%3A%3Aaws%3Acluster-access-policy%2FAmazonEKSViewPolicy"
+	)
+	path := "/clusters/alpha/access-entries/" + principalEscaped + "/access-policies/" + policyEscaped
+	action, params, handler, ok := lookupEKSAction("DELETE", path)
+	require.True(t, ok, "encoded disassociate path should match: %s", path)
+	require.NotNil(t, handler)
+	assert.Equal(t, "DisassociateAccessPolicy", action)
+	assert.Equal(t, []string{"alpha", principal, policy}, params)
 }
 
 func TestLookupEKSAction_CoversAllActions(t *testing.T) {

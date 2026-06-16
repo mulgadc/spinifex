@@ -259,11 +259,16 @@ func runSTS(t *testing.T, fix *Fixture) {
 	// Tampered session token → InvalidClientTokenId. Reuse the happy-path ASIA
 	// akid+secret but present a forged X-Amz-Security-Token. resolveSessionAKID
 	// verifies the token HMAC before the request signature, so the mismatch
-	// surfaces as InvalidClientTokenId regardless of the (valid) SigV4 sig.
-	harness.Step(t, "get-caller-identity with tampered session token (expect InvalidClientTokenId)")
+	// surfaces as InvalidClientTokenId regardless of the (valid) SigV4 sig. The
+	// probe is an EC2 call: the gateway serialises SigV4 auth failures in the EC2
+	// XML envelope (writeSigV4Error), which the STS Query client can't unmarshal
+	// (it masks the code as SerializationError). The HMAC branch is
+	// service-agnostic, so EC2 drives the same gateway/auth.go path with a
+	// response the SDK decodes into the asserted code.
+	harness.Step(t, "ec2 describe-regions with tampered session token (expect InvalidClientTokenId)")
 	tamperedCli := harness.NewAWSClientWithSessionCreds(t, fix.Env, akid, secret, token+"-tampered")
 	harness.ExpectError(t, "InvalidClientTokenId", func() error {
-		_, e := tamperedCli.STS.GetCallerIdentity(&sts.GetCallerIdentityInput{})
+		_, e := tamperedCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
 		return e
 	})
 

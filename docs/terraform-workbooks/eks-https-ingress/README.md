@@ -108,15 +108,29 @@ Or create a `main.tf` file and paste the full configuration below.
 
 ### Step 2. Deploy
 
+The cluster (with its ALB and ACM cert) and the demo app are **two root modules with separate state**. Apply the cluster first:
+
 ```bash
 export AWS_PROFILE=spinifex
 tofu init
 tofu apply
 ```
 
-Expect several minutes: the control plane bootstraps, three workers launch and join over the private endpoint, the NAT gateway comes up, CoreDNS installs, the ALB is provisioned, and the Kubernetes provider rolls out the demo app.
+Expect several minutes: the control plane bootstraps, three workers launch and join over the private endpoint, the NAT gateway comes up, CoreDNS installs, and the ALB is provisioned. Then deploy the demo app from the nested `workloads/` module:
 
-> **Keep `AWS_PROFILE=spinifex` exported** for the whole `apply` — the Kubernetes provider authenticates with `aws eks get-token` against the Spinifex STS endpoint.
+```bash
+cd workloads
+tofu init
+tofu apply
+```
+
+The ALB target group already points at the workers' NodePort; once these pods are running the targets turn healthy.
+
+> **Why two modules?** The Kubernetes provider in `workloads/` reads the cluster endpoint from a live `data "aws_eks_cluster"` source, so it's only ever configured while the cluster exists. Keeping it out of the cluster module means `destroy` never tries to refresh a workload against a cluster that's already gone — the failure mode where the provider falls back to `http://localhost:80` and reports `connection refused`. Always destroy `workloads/` before the cluster.
+
+> **Keep `AWS_PROFILE=spinifex` exported** for both applies — the Kubernetes provider authenticates with `aws eks get-token` against the Spinifex STS endpoint.
+
+<!-- INCLUDE: workloads/main.tf lang:hcl -->
 
 > **Tighten access in production.** `api_public_access_cidr` and `alb_ingress_cidr` both default to `0.0.0.0/0`. Set them to your own CIDR:
 >
@@ -158,7 +172,12 @@ aws elbv2 describe-target-health --target-group-arn "$TG_ARN"
 
 ### Cleanup
 
+Destroy in reverse — the demo app first (while the cluster is still up), then the cluster:
+
 ```bash
+cd workloads
+tofu destroy
+cd ..
 tofu destroy
 ```
 

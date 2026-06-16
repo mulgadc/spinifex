@@ -172,13 +172,9 @@ func TestGatewayWrappers_Access(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out9)
 
-	out10, err := DisassociateAccessPolicy(nc, acct, "alpha", "arn-user", []byte(`{}`))
+	out10, err := DisassociateAccessPolicy(nc, acct, "alpha", "arn-user", "policy-arn")
 	require.NoError(t, err)
 	assert.NotNil(t, out10)
-
-	out11, err := DisassociateAccessPolicy(nc, acct, "alpha", "arn-user", nil)
-	require.NoError(t, err)
-	assert.NotNil(t, out11)
 
 	out12, err := ListAssociatedAccessPolicies(nc, acct, "alpha", "arn-user")
 	require.NoError(t, err)
@@ -198,8 +194,6 @@ func TestGatewayWrappers_Access_BadJSON(t *testing.T) {
 	_, err = UpdateAccessEntry(nc, acct, "alpha", "arn-user", []byte(`{x`))
 	require.Error(t, err)
 	_, err = AssociateAccessPolicy(nc, acct, "alpha", "arn-user", []byte(`{x`))
-	require.Error(t, err)
-	_, err = DisassociateAccessPolicy(nc, acct, "alpha", "arn-user", []byte(`{x`))
 	require.Error(t, err)
 }
 

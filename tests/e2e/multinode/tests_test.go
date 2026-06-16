@@ -34,6 +34,13 @@ func TestMultinodeInstanceDistribution(t *testing.T) {
 	runInstanceDistribution(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeJetStreamReplicas is read-only over NATS; parallel so it resumes
+// after the sequential node-failure/recovery tests have restabilised the cluster.
+func TestMultinodeJetStreamReplicas(t *testing.T) {
+	t.Parallel()
+	runJetStreamReplicas(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeVolumeLifecycle is sequential: touches predastore state.
 func TestMultinodeVolumeLifecycle(t *testing.T) {
 	runVolumeLifecycle(t, requireMultiNodeFixture(t))

@@ -70,6 +70,28 @@ func TestValidErrorCode(t *testing.T) {
 	}
 }
 
+func TestHasErrorCode(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		want bool
+	}{
+		{"known code", ErrorInsufficientInstanceCapacity, true},
+		{"another known code", ErrorAuthFailure, true},
+		{"wrapped code is not exact", "launch workers: " + ErrorInsufficientInstanceCapacity, false},
+		{"unknown code", "CompletelyMadeUp", false},
+		{"empty string", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasErrorCode(tt.code); got != tt.want {
+				t.Errorf("HasErrorCode(%q) = %v, want %v", tt.code, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsNotFound covers the destroy-orchestration tolerance helper: it matches
 // any AWS canonical InvalidX.NotFound (so teardown converges on already-gone
 // resources) and only those — a nil error or a non-NotFound failure is not

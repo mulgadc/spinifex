@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	"github.com/aws/aws-sdk-go/service/eks"
@@ -33,6 +34,7 @@ type AWSClient struct {
 	IAM     *iam.IAM
 	STS     *sts.STS
 	EKS     *eks.EKS
+	ACM     *acm.ACM
 }
 
 // NewAWSClient builds clients pointed at the spinifex gateway using the
@@ -128,6 +130,7 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 		IAM:     iam.New(sess),
 		STS:     sts.New(sess),
 		EKS:     eks.New(sess),
+		ACM:     acm.New(sess),
 	}
 }
 
@@ -141,5 +144,6 @@ func (c *AWSClient) IgnoreCertErrors() {
 	c.EKS.Config.HTTPClient = hc
 	c.IAM.Config.HTTPClient = hc
 	c.STS.Config.HTTPClient = hc
+	c.ACM.Config.HTTPClient = hc
 	_ = (*x509.CertPool)(nil) // silence unused-import on hardened paths
 }

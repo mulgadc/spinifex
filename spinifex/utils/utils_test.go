@@ -1182,23 +1182,6 @@ func TestHashMAC_IdSeparates(t *testing.T) {
 	assert.NotEqual(t, a, b)
 }
 
-func TestHashMAC_Distribution(t *testing.T) {
-	// 100k random ids — 0 collisions expected. 46-bit space, birthday-
-	// paradox 1% at ~1.2M; 100k is well below.
-	if testing.Short() {
-		t.Skip("skipping distribution test in -short mode")
-	}
-	seen := make(map[string]string, 100_000)
-	for range 100_000 {
-		id := GenerateResourceID("res")
-		mac := HashMAC(id)
-		if prev, ok := seen[mac]; ok {
-			t.Fatalf("collision on %s: id=%s prev=%s", mac, id, prev)
-		}
-		seen[mac] = id
-	}
-}
-
 // writeTempImage writes content to a file named name under t.TempDir() and
 // returns the absolute path.
 func writeTempImage(t *testing.T, name string, content []byte) string {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,6 +138,7 @@ func (f *fakeK3sInst) TerminateSystemInstance(instanceID string) error {
 }
 
 type fakeK3sAMI struct {
+	mu            sync.Mutex
 	describeCalls []*ec2.DescribeImagesInput
 
 	describeOut *ec2.DescribeImagesOutput
@@ -146,6 +148,8 @@ type fakeK3sAMI struct {
 var _ k3sAMIResolver = (*fakeK3sAMI)(nil)
 
 func (f *fakeK3sAMI) DescribeImages(input *ec2.DescribeImagesInput, _ string) (*ec2.DescribeImagesOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.describeCalls = append(f.describeCalls, input)
 	if f.describeErr != nil {
 		return nil, f.describeErr
@@ -359,6 +363,26 @@ func TestBuildK3sUserData_TLSSANDedupsWhenPrivateEqualsEndpoint(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(ud, "  - 10.20.0.5"), "must not emit a duplicate SAN")
 }
 
+func TestBuildK3sUserData_AdvertiseAddressPrefersPrivateEndpoint(t *testing.T) {
+	in := validK3sInput()
+	in.EndpointIP = "203.0.113.9"
+	in.PrivateEndpointIP = "10.20.0.5"
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "advertise-address: 10.20.0.5",
+		"apiserver must advertise the worker-reachable Set A NLB front-end, not the CP node-ip")
+	assert.NotContains(t, ud, "advertise-address: 203.0.113.9")
+}
+
+func TestBuildK3sUserData_AdvertiseAddressFallsBackToEndpoint(t *testing.T) {
+	in := validK3sInput()
+	in.EndpointIP = "203.0.113.9"
+	in.PrivateEndpointIP = ""
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "advertise-address: 203.0.113.9")
+}
+
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
 
@@ -447,6 +471,10 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, `ip route replace 169.254.169.254/32 dev "$dev" scope link`)
 	assert.Contains(t, udata, "runcmd:")
 	assert.Contains(t, udata, "[ rc-update, add, local, default ]")
+	// Route script is run directly, not via `rc-service local start` — that would
+	// deadlock against cloud-final and stall the boot ~50s on the OpenRC timeout.
+	assert.Contains(t, udata, "[ /etc/local.d/imds-onlink-route.start ]")
+	assert.NotContains(t, udata, "rc-service, local, start")
 
 	// Exactly one write_files / runcmd key — a second would collide and silently
 	// drop a block under yaml.safe_load (last key wins).

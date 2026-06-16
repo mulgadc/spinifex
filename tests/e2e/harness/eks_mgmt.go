@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/spf13/viper"
 )
 
 // ControlPlaneMgmtIP resolves the EKS control-plane VM's br-mgmt address —
@@ -56,7 +57,7 @@ func natsConn(t *testing.T, env *Env) (host, token, ca string) {
 	}
 
 	cfgPath := filepath.Join(env.ConfigDir, "spinifex.toml")
-	cc, err := config.LoadConfig(cfgPath)
+	cc, err := loadClusterConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("load %s for NATS settings: %v", cfgPath, err)
 	}
@@ -65,6 +66,23 @@ func natsConn(t *testing.T, env *Env) (host, token, ca string) {
 		t.Fatalf("no node stanza with a NATS host in %s", cfgPath)
 	}
 	return dialableNATSHost(node.NATS.Host), node.NATS.ACL.Token, node.NATS.CACert
+}
+
+// loadClusterConfig reads spinifex.toml via a private viper instance with no
+// AutomaticEnv, so the harness's own SPINIFEX_* vars (the multinode workflow
+// exports SPINIFEX_NODES) cannot shadow the [nodes.*] table and blank the parse.
+func loadClusterConfig(path string) (*config.ClusterConfig, error) {
+	v := viper.New()
+	v.SetConfigFile(path)
+	v.SetConfigType("toml")
+	if err := v.ReadInConfig(); err != nil {
+		return nil, err
+	}
+	var cc config.ClusterConfig
+	if err := v.Unmarshal(&cc); err != nil {
+		return nil, err
+	}
+	return &cc, nil
 }
 
 // dialableNATSHost rewrites a wildcard bind address to loopback. NATS.Host is a

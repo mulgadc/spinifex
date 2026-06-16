@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
@@ -54,6 +55,30 @@ func TestRLC5_GCRetriesPendingTeardownToDoneThenPurges(t *testing.T) {
 	assert.Equal(t, []string{v.ID}, cleaner.releasePublicIP)
 	assert.Equal(t, []string{v.ID}, cleaner.detachAndDeleteENI)
 	_ = m
+}
+
+// TestRLC5_GCRetainsRecentlyCompletedForVisibility enforces the describe-
+// visibility window: a record the GC drives to done while still inside the
+// window must be retained (not purged) so the just-terminated instance stays
+// describable as `terminated`; the 1h bucket TTL bounds visibility. Mirrors a
+// normal termination, which arrives NAT/OVN-pending and completes on the first
+// sweep, seconds after terminate.
+func TestRLC5_GCRetainsRecentlyCompletedForVisibility(t *testing.T) {
+	_, _, store, reaper, v := seedTerminated(t, map[string]string{
+		TeardownNAT: string(TeardownPending),
+		TeardownOVN: string(TeardownPending),
+	})
+	v.TerminatedAt = time.Now()
+	require.NoError(t, store.WriteTerminatedInstance(v.ID, v))
+
+	reaped, err := reaper.Sweep(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, reaped, "a record completed inside the visibility window must not be purged")
+	assert.True(t, v.TeardownComplete(), "teardown is still driven to done")
+	remaining, err := store.ListTerminatedInstances()
+	require.NoError(t, err)
+	require.Len(t, remaining, 1, "the terminated instance must stay describable inside the window")
 }
 
 // TestRLC5_GCNeverPurgesIncompleteRecord enforces ADR-0003 §4 (no-orphan

@@ -114,3 +114,30 @@ func KillProcess(pid int) error {
 
 	return nil //nolint:nilerr // Signal(0) error means process exited — that's success
 }
+
+// KillProcessGraceful sends SIGTERM and waits indefinitely for the process to
+// exit on its own. Use this when the process must flush state before exiting
+// (e.g., nbdkit before a snapshot) and a SIGKILL would corrupt that state.
+func KillProcessGraceful(pid int) error {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+
+	if err = process.Signal(syscall.SIGTERM); err != nil {
+		return err
+	}
+
+	for {
+		time.Sleep(1 * time.Second)
+		process, err = os.FindProcess(pid)
+		if err != nil {
+			return err
+		}
+		if err = process.Signal(syscall.Signal(0)); err != nil {
+			break // process exited
+		}
+	}
+
+	return nil //nolint:nilerr // Signal(0) error means process exited — that's success
+}

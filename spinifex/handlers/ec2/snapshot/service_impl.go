@@ -248,7 +248,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(input *ec2.CreateSnapshotInput, acc
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
-		msg, err := s.natsConn.Request(fmt.Sprintf("ebs.snapshot.%s", volumeID), snapData, 30*time.Second)
+		msg, err := s.natsConn.Request(fmt.Sprintf("ebs.snapshot.%s", volumeID), snapData, 5*time.Minute)
 		if errors.Is(err, nats.ErrNoResponders) {
 			// Volume is not mounted — data is already persisted to S3, proceed with metadata-only snapshot.
 			slog.Info("CreateSnapshot: volume not mounted, creating metadata-only snapshot", "volumeId", volumeID, "snapshotId", snapshotID)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -229,6 +230,25 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 	return vb, nil
+}
+
+// isAuxVolume reports whether a volume is an -efi/-cloudinit auxiliary volume.
+// Auxiliary volumes are recreated on launch and carry no durable guest data, so
+// they never need sealing to predastore.
+func isAuxVolume(volumeName string) bool {
+	return strings.HasSuffix(volumeName, "-efi") || strings.HasSuffix(volumeName, "-cloudinit")
+}
+
+// volumeNeedsSeal reports whether an unmounted volume must be sealed to
+// predastore on this node: it carries durable guest data (not an auxiliary
+// volume) and has local viperblock state under baseDir/<volume> to flush. A
+// node that never held the local WAL has nothing to seal.
+func volumeNeedsSeal(volumeName, baseDir string) bool {
+	if isAuxVolume(volumeName) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(baseDir, volumeName))
+	return err == nil
 }
 
 // sealVolumeVB persists a detached volume's block->object map to predastore.
@@ -483,15 +503,21 @@ func launchService(cfg *Config) (err error) {
 			}
 
 			// nbdkit is now dead, so no process writes the shared BaseDir: seal
-			// the block map to predastore. Auxiliary volumes are recreated on
-			// launch and carry no durable guest data, so skip their seal.
-			if !strings.HasSuffix(matched.Name, "-efi") && !strings.HasSuffix(matched.Name, "-cloudinit") {
+			// the block map to predastore for volumes that hold local state to
+			// flush (see volumeNeedsSeal).
+			if volumeNeedsSeal(matched.Name, cfg.BaseDir) {
 				if err := sealVolumeVB(cfg, matched.Name); err != nil {
 					slog.Error("ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
 					ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
 				} else {
 					slog.Info("ebs.unmount: volume sealed to predastore", "volume", matched.Name)
 				}
+			} else if !isAuxVolume(matched.Name) {
+				// A durable volume reached unmount with no local WAL under
+				// BaseDir: this node never held its state, so there is nothing to
+				// seal. WARN since a missing local WAL for a volume we expected to
+				// seal can mask the durability gap the seal closes.
+				slog.Warn("ebs.unmount: no local viperblock state for volume, skipping seal", "volume", matched.Name, "baseDir", cfg.BaseDir)
 			}
 
 			// Remove the socket file if using socket transport

@@ -116,6 +116,7 @@ type fakeVolumeMounter struct {
 	mountedOne, unmountedOne []string
 	mountErr                 error
 	mountOneErr              error
+	unmountOneErr            error
 	mountOneURI              string
 	// onMount fires synchronously inside Mount before the configured
 	// mountErr is returned. Used by lifecycle tests to simulate a
@@ -157,10 +158,12 @@ func (f *fakeVolumeMounter) MountOne(req *types.EBSRequest) error {
 	return nil
 }
 
-func (f *fakeVolumeMounter) UnmountOne(req types.EBSRequest) {
+func (f *fakeVolumeMounter) UnmountOne(req types.EBSRequest) error {
 	f.mu.Lock()
 	f.unmountedOne = append(f.unmountedOne, req.Name)
+	err := f.unmountOneErr
 	f.mu.Unlock()
+	return err
 }
 
 var _ VolumeMounter = (*fakeVolumeMounter)(nil)

@@ -16,7 +16,8 @@ type VolumeMounter interface {
 	// MountOne sends ebs.mount for a single request and writes the resolved
 	// NBDURI back into req.NBDURI on success. Used by hot-attach.
 	MountOne(req *types.EBSRequest) error
-	// UnmountOne sends ebs.unmount for a single request. Best-effort: errors
-	// are logged and tolerated.
-	UnmountOne(req types.EBSRequest)
+	// UnmountOne sends ebs.unmount for a single request and returns any error.
+	// ebs.unmount drives the synchronous block-map seal to predastore, so hot
+	// detach gates the volume's available transition on the returned error.
+	UnmountOne(req types.EBSRequest) error
 }

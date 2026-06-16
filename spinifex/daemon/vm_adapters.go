@@ -77,6 +77,11 @@ type volumeMounterAdapter struct {
 
 var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
 
+// unmountSealTimeout bounds the ebs.unmount NATS request. The handler now drives
+// a synchronous block-map seal to predastore (S3 I/O), so it matches
+// viperblockd's 120s KillProcess wait rather than a bare RPC budget.
+const unmountSealTimeout = 120 * time.Second
+
 func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
 	return &volumeMounterAdapter{nc: nc, node: node, volState: volState}
 }
@@ -152,7 +157,7 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 			continue
 		}
 
-		msg, err := a.nc.Request(a.topic("unmount"), ebsUnMountRequest, 30*time.Second)
+		msg, err := a.nc.Request(a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
 		if err != nil {
 			slog.Error("Failed to unmount volume",
 				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
@@ -200,13 +205,16 @@ func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
 	return nil
 }
 
-// UnmountOne sends ebs.unmount; errors are logged and swallowed.
-func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) {
+// UnmountOne sends ebs.unmount and returns any error. The handler seals the
+// volume's block map to predastore, so the caller decides whether a failure
+// blocks the volume's available transition.
+func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) error {
 	if err := a.unmountOne(req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
-		return
+		return err
 	}
 	slog.Info("UnmountOne: volume unmounted successfully", "volume", req.Name)
+	return nil
 }
 
 // unmountOne sends ebs.unmount and returns any error.
@@ -215,7 +223,7 @@ func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
 	if err != nil {
 		return fmt.Errorf("marshal unmount request: %w", err)
 	}
-	msg, err := a.nc.Request(a.topic("unmount"), payload, 10*time.Second)
+	msg, err := a.nc.Request(a.topic("unmount"), payload, unmountSealTimeout)
 	if err != nil {
 		return fmt.Errorf("ebs.unmount NATS request: %w", err)
 	}

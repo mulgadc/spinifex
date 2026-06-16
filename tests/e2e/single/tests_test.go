@@ -60,6 +60,13 @@ func TestRouteTableValidation(t *testing.T) {
 	runRouteTableValidation(t, requireSingleNodeFixture(t))
 }
 
+// TestReplaceRouteConvergence owns its own scratch VPCs/IGWs end to end and
+// never touches the singleton or default VPC, so it is parallel-safe.
+func TestReplaceRouteConvergence(t *testing.T) {
+	t.Parallel()
+	runReplaceRouteConvergence(t, requireSingleNodeFixture(t))
+}
+
 // --- Sequential: singleton VM lifecycle ---
 
 // TestClusterStatsCLI asserts 0-VM baseline state before any instance launches.
@@ -99,6 +106,13 @@ func TestSSHProbe(t *testing.T) {
 
 func TestConsoleOutput(t *testing.T) {
 	runConsoleOutput(t, requireSingleNodeFixture(t))
+}
+
+// TestENIHotplug hot-plugs a secondary ENI onto the freshly-booted singleton
+// and asserts the NIC reaches the guest, then restores it. Placed before the
+// stop/start churn so the singleton is known running + SSH-healthy.
+func TestENIHotplug(t *testing.T) {
+	runENIHotplug(t, requireSingleNodeFixture(t))
 }
 
 func TestVolumeLifecycle(t *testing.T) {
@@ -153,6 +167,13 @@ func TestNegativeErrorPaths(t *testing.T) {
 
 func TestNATGateway(t *testing.T) {
 	runNATGateway(t, requireSingleNodeFixture(t))
+}
+
+// TestInstanceEIP allocates an Elastic IP, associates it to a throwaway VM,
+// and asserts the EIP datapath flips on/off with the association. Sequential:
+// it authorizes ingress on the shared default SG.
+func TestInstanceEIP(t *testing.T) {
+	runInstanceEIP(t, requireSingleNodeFixture(t))
 }
 
 func TestSGToSGDatapath(t *testing.T) {

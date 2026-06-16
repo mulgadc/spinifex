@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
@@ -208,6 +209,11 @@ func TestEKS(t *testing.T) {
 		}, 3*time.Minute, 10*time.Second)
 	})
 
+	t.Run("IRSAWebIdentity", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runIRSAWebIdentity(t, c, env, artifacts, fx)
+	})
+
 	t.Run("DeleteCluster", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		_, err := c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
@@ -215,6 +221,103 @@ func TestEKS(t *testing.T) {
 		harness.WaitForEKSClusterDeleted(t, c, fx.ClusterName)
 		fx.Deleted = true
 	})
+}
+
+// runIRSAWebIdentity exercises the IRSA token-exchange path at the API level
+// (no pod, no nodegroup): register the cluster's OIDC provider, create a role
+// trusting it, mint a real ServiceAccount token via `kubectl create token`
+// (signed by the cluster's OIDC key, JWKS published at CreateCluster), exchange
+// it through AssumeRoleWithWebIdentity, and prove the returned credentials are
+// usable via GetCallerIdentity.
+func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string, fx *clusterFixture) {
+	require.NotNil(t, fx.Cluster.Identity, "ACTIVE cluster must expose Identity")
+	require.NotNil(t, fx.Cluster.Identity.Oidc, "ACTIVE cluster must expose Identity.Oidc")
+	issuer := aws.StringValue(fx.Cluster.Identity.Oidc.Issuer)
+	require.NotEmpty(t, issuer, "cluster OIDC issuer must be published")
+	t.Logf("OIDC issuer: %s", issuer)
+
+	// 1) Register the cluster's OIDC provider in the caller account so the STS
+	//    handler will accept tokens carrying this issuer.
+	oidcOut, err := c.IAM.CreateOpenIDConnectProvider(&iam.CreateOpenIDConnectProviderInput{
+		Url:            aws.String(issuer),
+		ClientIDList:   aws.StringSlice([]string{"sts.amazonaws.com"}),
+		ThumbprintList: aws.StringSlice([]string{"0000000000000000000000000000000000000000"}),
+	})
+	require.NoError(t, err, "create-open-id-connect-provider")
+	providerArn := aws.StringValue(oidcOut.OpenIDConnectProviderArn)
+	require.NotEmpty(t, providerArn, "OIDC provider ARN empty")
+	t.Cleanup(func() {
+		_, _ = c.IAM.DeleteOpenIDConnectProvider(&iam.DeleteOpenIDConnectProviderInput{
+			OpenIDConnectProviderArn: aws.String(providerArn),
+		})
+	})
+	t.Logf("OIDC provider: %s", providerArn)
+
+	// 2) Create a role whose trust policy federates the OIDC provider. No
+	//    Condition block — the Federated principal + AssumeRoleWithWebIdentity
+	//    action are sufficient to grant, which keeps the test independent of the
+	//    condition-key issuer-prefix format.
+	roleName := fmt.Sprintf("%s-irsa", fx.ClusterName)
+	trustPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"}]}`, providerArn)
+	roleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
+		RoleName:                 aws.String(roleName),
+		AssumeRolePolicyDocument: aws.String(trustPolicy),
+		Description:              aws.String("E2E IRSA web-identity role"),
+	})
+	require.NoError(t, err, "create-role")
+	roleArn := aws.StringValue(roleOut.Role.Arn)
+	require.NotEmpty(t, roleArn, "role ARN empty")
+	t.Cleanup(func() {
+		_, _ = c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(roleName)})
+	})
+	t.Logf("role: %s", roleArn)
+
+	// 3) Mint a ServiceAccount token bound to sts.amazonaws.com. `kubectl create
+	//    token` uses the TokenRequest API — no pod required. The token's iss is
+	//    the cluster OIDC issuer and aud includes sts.amazonaws.com (k3s is wired
+	//    with --service-account-issuer / --api-audiences at CreateCluster).
+	kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
+	kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
+	tokenOut, err := kc.Run(30*time.Second, "create", "token", "default",
+		"--namespace", "default", "--audience", "sts.amazonaws.com")
+	require.NoErrorf(t, err, "kubectl create token:\n%s", tokenOut)
+	token := strings.TrimSpace(tokenOut)
+	require.Equal(t, 2, strings.Count(token, "."), "web-identity token must be a JWT (3 dot-separated parts)")
+
+	// 4) Exchange the token. AssumeRoleWithWebIdentity is anonymous (the SDK
+	//    strips SigV4 for this op); the JWT is the identity.
+	const sessionName = "e2e-irsa"
+	var assumeOut *sts.AssumeRoleWithWebIdentityOutput
+	harness.EventuallyErr(t, func() error {
+		out, aerr := c.STS.AssumeRoleWithWebIdentity(&sts.AssumeRoleWithWebIdentityInput{
+			RoleArn:          aws.String(roleArn),
+			RoleSessionName:  aws.String(sessionName),
+			WebIdentityToken: aws.String(token),
+		})
+		if aerr != nil {
+			return fmt.Errorf("assume-role-with-web-identity: %w", aerr)
+		}
+		assumeOut = out
+		return nil
+	}, 60*time.Second, 5*time.Second)
+	require.NotNil(t, assumeOut.Credentials, "AssumeRoleWithWebIdentity returned no credentials")
+	assert.Equal(t, "system:serviceaccount:default:default",
+		aws.StringValue(assumeOut.SubjectFromWebIdentityToken), "subject must be the default SA")
+	require.True(t, strings.HasPrefix(aws.StringValue(assumeOut.Credentials.AccessKeyId), "ASIA"),
+		"web-identity credentials must be temporary (ASIA…)")
+
+	// 5) The returned temporary credentials must be usable: GetCallerIdentity
+	//    must resolve to the assumed-role principal.
+	sessClient := harness.NewAWSClientWithSessionCreds(t, env,
+		aws.StringValue(assumeOut.Credentials.AccessKeyId),
+		aws.StringValue(assumeOut.Credentials.SecretAccessKey),
+		aws.StringValue(assumeOut.Credentials.SessionToken))
+	ident, err := sessClient.STS.GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	require.NoError(t, err, "get-caller-identity with web-identity creds")
+	assert.Equal(t, fx.AccountID, aws.StringValue(ident.Account), "caller account must match")
+	assert.Contains(t, aws.StringValue(ident.Arn), "assumed-role/"+roleName,
+		"caller ARN must reflect the assumed IRSA role")
+	t.Logf("GetCallerIdentity (web-identity creds): %s", aws.StringValue(ident.Arn))
 }
 
 // --- Fixture --------------------------------------------------------------

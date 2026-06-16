@@ -5,6 +5,7 @@ package lb
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
@@ -87,6 +89,15 @@ func TestLoadBalancer(t *testing.T) {
 			t.Skip("no peer node available")
 		}
 		runLBSuite(t, client, fixture, kindNLB, "internet-facing", ssh, peer)
+	})
+	t.Run("InternetFacing_ALB_HTTPS", func(t *testing.T) {
+		if peer == "" {
+			// HTTPS handshake is driven from the test runner against the LB
+			// public IP; gate on the same peer-available signal the sibling
+			// internet-facing subtests use, where driver→LB reachability holds.
+			t.Skip("no peer node available")
+		}
+		runHTTPSCertSuite(t, client, fixture)
 	})
 	// Gate remaining internal subtests on Internal_ALB: if the LB never reaches active,
 	// the rest will time out identically — fail fast instead of burning ~5min each.
@@ -525,6 +536,142 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	require.NotEmpty(t, priv, label+" needs private IP")
 	assertInternalDNS(t, c, lb.ARN, label)
 	runInternalTrafficViaClient(t, c, f, kind, priv)
+}
+
+// runHTTPSCertSuite exercises the ACM → HTTPS listener path end-to-end:
+// ImportCertificate a self-signed leaf → create an internet-facing ALB HTTPS
+// listener referencing the cert ARN → complete a TLS handshake against the LB
+// and assert HAProxy serves exactly the imported cert → drive one HTTPS GET
+// that terminates TLS at the LB and forwards to a healthy backend →
+// DeleteCertificate. The cert is minted for the LB's public IP (known only
+// after the LB is active) so the end-to-end GET can verify the chain by IP SAN.
+func runHTTPSCertSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
+	t.Helper()
+	const label = "ALB internet-facing HTTPS (ACM)"
+	const httpsPort int64 = 443
+
+	authorizeSGPort(t, c, f, "tcp", httpsPort)
+
+	tgArn := createTargetGroup(t, c, f, "lb-e2e-https-tg", "HTTP", httpPort, "/index.html")
+	t.Cleanup(func() { deleteTargetGroup(t, c, tgArn) })
+	registerTargets(t, c, tgArn, f.AppInstanceIDs)
+	t.Cleanup(func() { deregisterTargets(t, c, tgArn, f.AppInstanceIDs) })
+
+	lb := createLB(t, c, f, "lb-e2e-https", "application", "internet-facing")
+	t.Cleanup(func() { deleteLB(t, c, lb) })
+
+	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	eni := lbENI(t, c, "app", lb)
+	pubIP := publicIP(eni)
+	require.NotEmpty(t, pubIP, label+" needs a public IP for the TLS handshake")
+
+	// Mint a self-signed leaf for the LB's public IP and import it into ACM.
+	certPEM, keyPEM, leaf, err := harness.GenerateSelfSignedCertPEM(pubIP)
+	require.NoError(t, err, "generate self-signed cert")
+	imp, err := c.ACM.ImportCertificate(&acm.ImportCertificateInput{
+		Certificate: certPEM,
+		PrivateKey:  keyPEM,
+	})
+	require.NoError(t, err, "acm import-certificate")
+	certArn := aws.StringValue(imp.CertificateArn)
+	require.NotEmpty(t, certArn, "ImportCertificate returned empty CertificateArn")
+	require.Contains(t, certArn, ":certificate/", "cert ARN must be an ACM certificate ARN")
+	t.Cleanup(func() {
+		if _, derr := c.ACM.DeleteCertificate(&acm.DeleteCertificateInput{
+			CertificateArn: aws.String(certArn),
+		}); derr != nil {
+			t.Logf("delete certificate %s: %v", certArn, derr)
+		}
+	})
+	t.Logf("imported cert: %s", certArn)
+
+	listener := createHTTPSListener(t, c, lb.ARN, httpsPort, tgArn, certArn)
+	t.Cleanup(func() { deleteListener(t, c, listener) })
+
+	harness.WaitForTargetsHealthy(t, c, tgArn, 2, label, 2*time.Minute)
+
+	// TLS handshake: HAProxy must present exactly the imported leaf. The
+	// lb-agent picks up the new listener cert on its reconcile tick, so poll
+	// the handshake until the served cert matches before asserting.
+	var served *x509.Certificate
+	harness.EventuallyErr(t, func() error {
+		got, ferr := harness.FetchServedCert(pubIP, int(httpsPort), 5*time.Second)
+		if ferr != nil {
+			return ferr
+		}
+		if !harness.FingerprintMatches(got, leaf) {
+			return fmt.Errorf("served cert does not match imported cert yet")
+		}
+		served = got
+		return nil
+	}, 90*time.Second, 3*time.Second)
+	require.NotNil(t, served, label+" never served the imported cert")
+	t.Logf("TLS handshake ok — HAProxy served the imported cert (CN=%s)", served.Subject.CommonName)
+
+	version, _, err := harness.FetchTLSPosture(pubIP, int(httpsPort), 5*time.Second)
+	require.NoError(t, err, "fetch TLS posture")
+	assert.GreaterOrEqualf(t, version, uint16(0x0303), "negotiated TLS version must be >= 1.2, got 0x%04x", version)
+
+	// End-to-end: one HTTPS GET that terminates TLS at the LB and forwards to a
+	// backend. Verify the chain against the imported cert (IP SAN matches pubIP).
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM(certPEM), "build CA pool from imported cert")
+	url := fmt.Sprintf("https://%s:%d/index.html", pubIP, httpsPort)
+	harness.EventuallyErr(t, func() error {
+		status, body, gerr := harness.HTTPSGet(url, pool, 10*time.Second)
+		if gerr != nil {
+			return gerr
+		}
+		if status != http.StatusOK {
+			return fmt.Errorf("status %d (body=%q)", status, string(body))
+		}
+		return nil
+	}, 90*time.Second, 3*time.Second)
+	t.Logf("HTTPS GET %s -> 200 (TLS terminated at LB, forwarded to backend)", url)
+}
+
+// createHTTPSListener creates an HTTPS listener referencing certArn. Distinct
+// from createListener because the ELBv2 handler requires Certificates for HTTPS
+// and rejects them for HTTP.
+func createHTTPSListener(t *testing.T, c *harness.AWSClient, lbArn string, port int64, tgArn, certArn string) string {
+	t.Helper()
+	// e2e:allow-create — the HTTPS listener is the subject under test (ACM cert -> termination).
+	out, err := c.ELBv2.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: aws.String(lbArn),
+		Protocol:        aws.String("HTTPS"),
+		Port:            aws.Int64(port),
+		Certificates:    []*elbv2.Certificate{{CertificateArn: aws.String(certArn)}},
+		DefaultActions: []*elbv2.Action{{
+			Type:           aws.String("forward"),
+			TargetGroupArn: aws.String(tgArn),
+		}},
+	})
+	require.NoError(t, err, "create-listener HTTPS")
+	require.NotEmpty(t, out.Listeners, "create-listener HTTPS returned no listeners")
+	arn := aws.StringValue(out.Listeners[0].ListenerArn)
+	t.Logf("listener HTTPS:%d -> %s (cert %s)", port, arn, certArn)
+	return arn
+}
+
+// authorizeSGPort idempotently opens proto/port from 0.0.0.0/0 on the shared
+// default SG, tolerating the Duplicate code on re-runs.
+func authorizeSGPort(t *testing.T, c *harness.AWSClient, f *sharedFixture, proto string, port int64) {
+	t.Helper()
+	_, err := c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(f.SecurityGroup),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String(proto),
+			FromPort:   aws.Int64(port),
+			ToPort:     aws.Int64(port),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		}},
+	})
+	if err != nil {
+		var aerr awserr.Error
+		if !errors.As(err, &aerr) || aerr.Code() != "InvalidPermission.Duplicate" {
+			t.Fatalf("authorize %s/%d: %v", proto, port, err)
+		}
+	}
 }
 
 // runUDPNLBSuite exercises an internal NLB with a UDP listener. The lb-agent probes

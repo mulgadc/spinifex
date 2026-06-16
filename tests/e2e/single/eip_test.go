@@ -42,6 +42,7 @@ func runInstanceEIP(t *testing.T, fix *Fixture) {
 
 	// --- Throwaway EIP subject --------------------------------------------
 	harness.Step(t, "run-instances (EIP subject)")
+	// e2e:allow-create — dedicated throwaway subject; reusing the singleton would corrupt its public IP.
 	runOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
 		ImageId:      aws.String(amiID),
 		InstanceType: aws.String(instType),
@@ -68,6 +69,7 @@ func runInstanceEIP(t *testing.T, fix *Fixture) {
 
 	// --- AllocateAddress ---------------------------------------------------
 	harness.Step(t, "allocate-address (vpc)")
+	// e2e:allow-create — the Elastic IP is the resource under test.
 	eipOut, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
 	require.NoError(t, err, "allocate-address")
 	allocID := aws.StringValue(eipOut.AllocationId)

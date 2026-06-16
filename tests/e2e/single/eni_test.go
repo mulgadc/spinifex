@@ -50,6 +50,7 @@ func runENIHotplug(t *testing.T, fix *Fixture) {
 
 	// --- CreateNetworkInterface -------------------------------------------
 	harness.Step(t, "create-network-interface subnet=%s", def.SubnetID)
+	// e2e:allow-create — the secondary ENI is the subject hot-plugged under test.
 	cniOut, err := c.EC2.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(def.SubnetID),
 		Groups:      []*string{aws.String(def.SGID)},

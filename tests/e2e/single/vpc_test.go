@@ -605,6 +605,7 @@ func runReplaceRouteConvergence(t *testing.T, fix *Fixture) {
 
 	// --- Custom route table in the primary VPC -----------------------------
 	harness.Step(t, "create-route-table (vpc=%s)", vpcID)
+	// e2e:allow-create — scratch route table owned by this ReplaceRoute test.
 	rtOut, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(vpcID)})
 	require.NoError(t, err, "create-route-table")
 	require.NotNil(t, rtOut.RouteTable, "create-route-table returned nil RouteTable")
@@ -703,6 +704,7 @@ func runReplaceRouteConvergence(t *testing.T, fix *Fixture) {
 func createScratchVPC(t *testing.T, c *harness.AWSClient, cidr string) string {
 	t.Helper()
 	harness.Step(t, "create-vpc %s", cidr)
+	// e2e:allow-create — scratch VPC owned end to end by the caller.
 	out, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(cidr)})
 	require.NoError(t, err, "create-vpc %s", cidr)
 	require.NotNil(t, out.Vpc, "create-vpc %s returned nil Vpc", cidr)
@@ -719,6 +721,7 @@ func createScratchVPC(t *testing.T, c *harness.AWSClient, cidr string) string {
 // VPC's delete).
 func createAttachedIGW(t *testing.T, c *harness.AWSClient, vpcID string) string {
 	t.Helper()
+	// e2e:allow-create — scratch IGW owned by the caller's ReplaceRoute test.
 	out, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
 	require.NoError(t, err, "create-internet-gateway")
 	require.NotNil(t, out.InternetGateway, "create-internet-gateway returned nil IGW")

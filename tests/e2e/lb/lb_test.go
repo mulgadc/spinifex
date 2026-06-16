@@ -635,6 +635,7 @@ func runHTTPSCertSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 // and rejects them for HTTP.
 func createHTTPSListener(t *testing.T, c *harness.AWSClient, lbArn string, port int64, tgArn, certArn string) string {
 	t.Helper()
+	// e2e:allow-create — the HTTPS listener is the subject under test (ACM cert -> termination).
 	out, err := c.ELBv2.CreateListener(&elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String("HTTPS"),

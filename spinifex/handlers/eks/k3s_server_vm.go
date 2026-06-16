@@ -99,6 +99,9 @@ type K3sServerInput struct {
 	ClusterName      string
 	Region           string
 	SubnetID         string
+	// VpcID is the cluster VPC; surfaced as EKS_VPC_ID so the in-cluster LB
+	// controller can pass --aws-vpc-id to the gateway elbv2/ec2 handlers.
+	VpcID            string
 	ControlPlaneSGID string
 	NLBDNS           string
 	// EndpointIP is the NLB front-end IP added to the apiserver cert SANs for TLS.
@@ -431,6 +434,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_ACCESS_KEY=" + in.AccessKey,
 		"EKS_SECRET_KEY=" + in.SecretKey,
 		"EKS_REGION=" + in.Region,
+		"EKS_VPC_ID=" + in.VpcID,
 		"EKS_ACCOUNT_ID=" + in.ClusterAccountID,
 		"EKS_CLUSTER_NAME=" + in.ClusterName,
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,

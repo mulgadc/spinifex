@@ -559,6 +559,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		ClusterName:       name,
 		Region:            region,
 		SubnetID:          cpRefs.PrivateSubnetIDs[0],
+		VpcID:             cpRefs.VpcID,
 		ControlPlaneSGID:  cpSG,
 		NLBDNS:            nlb.DNSName,
 		EndpointIP:        nlb.FrontendIP,

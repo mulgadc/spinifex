@@ -176,6 +176,7 @@ func validK3sInput() K3sServerInput {
 		ClusterName:       "alpha",
 		Region:            "us-east-1",
 		SubnetID:          "subnet-aaa",
+		VpcID:             "vpc-aaa",
 		ControlPlaneSGID:  "sg-cp-aaa",
 		NLBDNS:            "eks-alpha-lb-001.us-east-1.elb.spinifex.local",
 		OIDCIssuer:        "https://oidc.spinifex.local/clusters/111122223333/alpha",
@@ -413,6 +414,7 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "EKS_ACCESS_KEY=AKIAEXAMPLE")
 	assert.Contains(t, udata, "EKS_SECRET_KEY=s3cr3t-key")
 	assert.Contains(t, udata, "EKS_REGION=us-east-1")
+	assert.Contains(t, udata, "EKS_VPC_ID=vpc-aaa")
 	// EKS_ACCOUNT_ID is the cluster-OWNER account (ClusterAccountID), not the
 	// infra account the VM is launched under — the on-VM agents namespace their
 	// bootstrap publish / state report / add-on fetch by it, so it must reach the

@@ -252,6 +252,121 @@ func runSTS(t *testing.T, fix *Fixture) {
 		return e
 	})
 
+	// --- Edge cases: tampered token, rejected params, duration clamp ---------
+	// Run while sts-e2e-role still trusts AWS:* and carries no
+	// MaxSessionDuration, so the duration ceiling is the 3600s default.
+
+	// Tampered session token → InvalidClientTokenId. Reuse the happy-path ASIA
+	// akid+secret but present a forged X-Amz-Security-Token. resolveSessionAKID
+	// verifies the token HMAC before the request signature, so the mismatch
+	// surfaces as InvalidClientTokenId regardless of the (valid) SigV4 sig. The
+	// probe is an EC2 call: the gateway serialises SigV4 auth failures in the EC2
+	// XML envelope (writeSigV4Error), which the STS Query client can't unmarshal
+	// (it masks the code as SerializationError). The HMAC branch is
+	// service-agnostic, so EC2 drives the same gateway/auth.go path with a
+	// response the SDK decodes into the asserted code.
+	harness.Step(t, "ec2 describe-regions with tampered session token (expect InvalidClientTokenId)")
+	tamperedCli := harness.NewAWSClientWithSessionCreds(t, fix.Env, akid, secret, token+"-tampered")
+	harness.ExpectError(t, "InvalidClientTokenId", func() error {
+		_, e := tamperedCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
+		return e
+	})
+
+	// Rejected-parameter wire rejections. The handler refuses inline session
+	// policies, session tags, and MFA up front; each sub-test sets only its own
+	// field so the field-specific code is unambiguous. Proves the SDK marshals
+	// these over the wire and the gateway returns the AWS code rather than
+	// silently dropping them.
+	harness.Step(t, "assume-role with inline Policy (expect PackedPolicyTooLarge)")
+	harness.ExpectError(t, "PackedPolicyTooLarge", func() error {
+		_, e := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+			RoleArn:         aws.String(roleARN),
+			RoleSessionName: aws.String("e2e-reject-policy"),
+			Policy:          aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
+		})
+		return e
+	})
+	harness.Step(t, "assume-role with session Tags (expect InvalidParameterValue)")
+	harness.ExpectError(t, "InvalidParameterValue", func() error {
+		_, e := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+			RoleArn:         aws.String(roleARN),
+			RoleSessionName: aws.String("e2e-reject-tags"),
+			Tags:            []*sts.Tag{{Key: aws.String("team"), Value: aws.String("eng")}},
+		})
+		return e
+	})
+	harness.Step(t, "assume-role with MFA SerialNumber+TokenCode (expect InvalidParameterValue)")
+	harness.ExpectError(t, "InvalidParameterValue", func() error {
+		_, e := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+			RoleArn:         aws.String(roleARN),
+			RoleSessionName: aws.String("e2e-reject-mfa"),
+			SerialNumber:    aws.String("arn:aws:iam::" + adminAccount + ":mfa/e2e"),
+			TokenCode:       aws.String("123456"),
+		})
+		return e
+	})
+
+	// DurationSeconds × role MaxSessionDuration clamp. With no MaxSessionDuration
+	// on the role the ceiling is the 3600s default: 900s mints a ~15m session and
+	// 7200s is rejected. After raising MaxSessionDuration to 7200, 7200s mints a
+	// ~2h session and 10800s is rejected.
+	harness.Step(t, "assume-role DurationSeconds=900 (expect ~15m expiry)")
+	beforeShort := time.Now().UTC()
+	shortOut, err := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+		RoleArn:         aws.String(roleARN),
+		RoleSessionName: aws.String("e2e-dur-900"),
+		DurationSeconds: aws.Int64(900),
+	})
+	require.NoError(t, err, "assume-role DurationSeconds=900")
+	require.NotNil(t, shortOut.Credentials, "nil Credentials for DurationSeconds=900")
+	shortExpiresIn := shortOut.Credentials.Expiration.Sub(beforeShort)
+	require.Greater(t, shortExpiresIn, 14*time.Minute,
+		"DurationSeconds=900 expiry too soon: %v", shortExpiresIn)
+	require.LessOrEqual(t, shortExpiresIn, 16*time.Minute,
+		"DurationSeconds=900 expiry too far: %v", shortExpiresIn)
+
+	harness.Step(t, "assume-role DurationSeconds=7200 over default 3600 ceiling (expect ValidationError)")
+	harness.ExpectError(t, "ValidationError", func() error {
+		_, e := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+			RoleArn:         aws.String(roleARN),
+			RoleSessionName: aws.String("e2e-dur-7200-over"),
+			DurationSeconds: aws.Int64(7200),
+		})
+		return e
+	})
+
+	harness.Step(t, "update-role %q MaxSessionDuration=7200", stsRoleName)
+	_, err = fix.AWS.IAM.UpdateRole(&iam.UpdateRoleInput{
+		RoleName:           aws.String(stsRoleName),
+		MaxSessionDuration: aws.Int64(7200),
+	})
+	require.NoError(t, err, "update-role MaxSessionDuration=7200")
+
+	harness.Step(t, "assume-role DurationSeconds=7200 under raised ceiling (expect ~2h expiry)")
+	beforeLong := time.Now().UTC()
+	longOut, err := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+		RoleArn:         aws.String(roleARN),
+		RoleSessionName: aws.String("e2e-dur-7200-ok"),
+		DurationSeconds: aws.Int64(7200),
+	})
+	require.NoError(t, err, "assume-role DurationSeconds=7200 after raise")
+	require.NotNil(t, longOut.Credentials, "nil Credentials for DurationSeconds=7200")
+	longExpiresIn := longOut.Credentials.Expiration.Sub(beforeLong)
+	require.Greater(t, longExpiresIn, time.Hour+50*time.Minute,
+		"DurationSeconds=7200 expiry too soon: %v", longExpiresIn)
+	require.LessOrEqual(t, longExpiresIn, 2*time.Hour+5*time.Minute,
+		"DurationSeconds=7200 expiry too far: %v", longExpiresIn)
+
+	harness.Step(t, "assume-role DurationSeconds=10800 over raised 7200 ceiling (expect ValidationError)")
+	harness.ExpectError(t, "ValidationError", func() error {
+		_, e := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+			RoleArn:         aws.String(roleARN),
+			RoleSessionName: aws.String("e2e-dur-10800-over"),
+			DurationSeconds: aws.Int64(10800),
+		})
+		return e
+	})
+
 	// Chained assume: create a second role whose trust policy names the
 	// first role's IAM ARN, then have the assumed-role session call
 	// AssumeRole on it. Exercises the role-ARN-clause vs. session-ARN-

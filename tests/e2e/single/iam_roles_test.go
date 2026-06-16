@@ -18,6 +18,8 @@ const (
 	iamRoleAppName            = "app-role"
 	iamProfileAppName         = "app-profile"
 	iamProfileOtherName       = "other-profile"
+	iamProfileEngName         = "eng-profile"
+	iamProfileEngPath         = "/eng/"
 	iamPolicyAdministrator    = "AdministratorAccess"
 	iamTrustPolicyEC2Standard = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 	iamTrustPolicyEC2V2       = `{"Version":"2012-10-17","Statement":[{"Sid":"v2","Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
@@ -38,10 +40,10 @@ func runIAMRolesAndProfiles(t *testing.T, fix *Fixture) {
 	// matters: detach role from profile before delete-instance-profile,
 	// detach policy from role before delete-role.
 	iamDeleteRoleAndProfilesBestEffort(fix, iamRoleAppName,
-		[]string{iamProfileAppName, iamProfileOtherName}, adminPolicyARN)
+		[]string{iamProfileAppName, iamProfileOtherName, iamProfileEngName}, adminPolicyARN)
 	fix.Harness.RegisterCleanup(func() {
 		iamDeleteRoleAndProfilesBestEffort(fix, iamRoleAppName,
-			[]string{iamProfileAppName, iamProfileOtherName}, adminPolicyARN)
+			[]string{iamProfileAppName, iamProfileOtherName, iamProfileEngName}, adminPolicyARN)
 	})
 
 	// CreateRole — happy path with non-default description.
@@ -162,6 +164,16 @@ func runIAMRolesAndProfiles(t *testing.T, fix *Fixture) {
 		return e
 	})
 
+	// List attached policies for a role that doesn't exist → NoSuchEntity
+	// (must not be masked into an empty list).
+	harness.Step(t, "list-attached-role-policies ghost role (expect NoSuchEntity)")
+	harness.ExpectError(t, "NoSuchEntity", func() error {
+		_, e := fix.AWS.IAM.ListAttachedRolePolicies(&iam.ListAttachedRolePoliciesInput{
+			RoleName: aws.String("ghost-role"),
+		})
+		return e
+	})
+
 	// CreateInstanceProfile — primary + replace-target.
 	harness.Step(t, "create-instance-profile %q", iamProfileAppName)
 	prim, err := fix.AWS.IAM.CreateInstanceProfile(&iam.CreateInstanceProfileInput{
@@ -191,9 +203,35 @@ func runIAMRolesAndProfiles(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "get-instance-profile")
 	require.Equal(t, iamProfileAppName, aws.StringValue(gotProf.InstanceProfile.InstanceProfileName))
 
+	harness.Step(t, "get-instance-profile ghost (expect NoSuchEntity)")
+	harness.ExpectError(t, "NoSuchEntity", func() error {
+		_, e := fix.AWS.IAM.GetInstanceProfile(&iam.GetInstanceProfileInput{
+			InstanceProfileName: aws.String("ghost-profile"),
+		})
+		return e
+	})
+
 	listedProf, err := fix.AWS.IAM.ListInstanceProfiles(&iam.ListInstanceProfilesInput{})
 	require.NoError(t, err, "list-instance-profiles")
 	require.GreaterOrEqual(t, len(listedProf.InstanceProfiles), 2)
+
+	// Explicit Path → the ARN carries the path between instance-profile and the
+	// name (arn:...:instance-profile/eng/<name>). Created, asserted, and torn
+	// down inline so it doesn't perturb the count assertions above.
+	harness.Step(t, "create-instance-profile %q path=%s (ARN carries the path)", iamProfileEngName, iamProfileEngPath)
+	engProf, err := fix.AWS.IAM.CreateInstanceProfile(&iam.CreateInstanceProfileInput{
+		InstanceProfileName: aws.String(iamProfileEngName),
+		Path:                aws.String(iamProfileEngPath),
+	})
+	require.NoError(t, err, "create-instance-profile with explicit path")
+	require.Equal(t,
+		"arn:aws:iam::"+adminAccount+":instance-profile"+iamProfileEngPath+iamProfileEngName,
+		aws.StringValue(engProf.InstanceProfile.Arn),
+		"explicit-Path instance-profile ARN must embed the path")
+	_, err = fix.AWS.IAM.DeleteInstanceProfile(&iam.DeleteInstanceProfileInput{
+		InstanceProfileName: aws.String(iamProfileEngName),
+	})
+	require.NoError(t, err, "delete-instance-profile (explicit path)")
 
 	// AddRoleToInstanceProfile — primary; second add rejected by one-role limit.
 	harness.Step(t, "add-role-to-instance-profile %s <- %s", iamProfileAppName, iamRoleAppName)
@@ -207,6 +245,26 @@ func runIAMRolesAndProfiles(t *testing.T, fix *Fixture) {
 	harness.ExpectError(t, "LimitExceeded", func() error {
 		_, e := fix.AWS.IAM.AddRoleToInstanceProfile(&iam.AddRoleToInstanceProfileInput{
 			InstanceProfileName: aws.String(iamProfileAppName),
+			RoleName:            aws.String(iamRoleAppName),
+		})
+		return e
+	})
+
+	// Ghost-entity binds → NoSuchEntity. Role is validated before the profile, so
+	// a real profile + ghost role and a real role + ghost profile both surface
+	// NoSuchEntity rather than silently no-op'ing.
+	harness.Step(t, "add-role-to-instance-profile ghost role (expect NoSuchEntity)")
+	harness.ExpectError(t, "NoSuchEntity", func() error {
+		_, e := fix.AWS.IAM.AddRoleToInstanceProfile(&iam.AddRoleToInstanceProfileInput{
+			InstanceProfileName: aws.String(iamProfileOtherName),
+			RoleName:            aws.String("ghost-role"),
+		})
+		return e
+	})
+	harness.Step(t, "add-role-to-instance-profile ghost profile (expect NoSuchEntity)")
+	harness.ExpectError(t, "NoSuchEntity", func() error {
+		_, e := fix.AWS.IAM.AddRoleToInstanceProfile(&iam.AddRoleToInstanceProfileInput{
+			InstanceProfileName: aws.String("ghost-profile"),
 			RoleName:            aws.String(iamRoleAppName),
 		})
 		return e

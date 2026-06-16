@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -132,12 +133,46 @@ func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) e
 	}
 
 	for _, id := range ids {
-		if _, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}, accountID); err != nil && !awserrors.IsNotFound(err) {
+		if err := deleteSGAwaitingDetach(sgp, accountID, id); err != nil {
 			slog.Warn("DeleteClusterSGs: SG delete failed", "sg", id, "err", err)
 			record(fmt.Errorf("delete SG %s: %w", id, err))
 		}
 	}
 	return firstErr
+}
+
+var (
+	// sgDeleteWaitBudget bounds how long deleteSGAwaitingDetach retries a
+	// DeleteSecurityGroup returning DependencyViolation while a terminating
+	// worker's ENI still references the nodegroup SG. The instance-terminate
+	// cascade releases the ENI asynchronously, so the immediate delete can lose
+	// the race. Vars (not consts) so tests can shrink them.
+	sgDeleteWaitBudget   = 45 * time.Second
+	sgDeleteWaitInterval = 1 * time.Second
+)
+
+// deleteSGAwaitingDetach deletes a cluster SG, tolerating the DependencyViolation
+// window while the async instance-terminate cascade releases the last worker ENI
+// still referencing it. A missing SG is idempotent success. A persistent
+// DependencyViolation past the budget is surfaced so the teardown backstop retries
+// rather than leaking the SG — a leaked cluster SG sits in the customer VPC and
+// pins it on DependencyViolation.
+func deleteSGAwaitingDetach(sgp sgProvisioner, accountID, sgID string) error {
+	deadline := time.Now().Add(sgDeleteWaitBudget)
+	for {
+		_, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgID)}, accountID)
+		switch {
+		case err == nil, awserrors.IsNotFound(err):
+			return nil
+		case awserrors.IsErrorCode(err, awserrors.ErrorDependencyViolation):
+			if time.Now().After(deadline) {
+				return err
+			}
+			time.Sleep(sgDeleteWaitInterval)
+		default:
+			return err
+		}
+	}
 }
 
 // revokeAllSGIngress clears every ingress rule on an SG so cross-references from a

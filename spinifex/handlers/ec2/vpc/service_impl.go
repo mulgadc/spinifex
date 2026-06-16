@@ -33,6 +33,11 @@ const (
 	KVBucketVPCsVersion       = 1
 	KVBucketSubnetsVersion    = 1
 	KVBucketVNICounterVersion = 1
+
+	// SingleZoneID is the only availability-zone id the gateway exposes. The
+	// deployment is single-AZ, so every subnet and every DescribeAvailabilityZones
+	// result reports it (AWS clients resolve AZ topology by zone-id, not name).
+	SingleZoneID = "spinifexz1"
 )
 
 // VPCRecord represents a stored VPC. AZ is stamped at create time; empty AZ
@@ -902,6 +907,7 @@ func (s *VPCServiceImpl) subnetRecordToEC2(record *SubnetRecord, availableIPs in
 		VpcId:                   aws.String(record.VpcId),
 		CidrBlock:               aws.String(record.CidrBlock),
 		AvailabilityZone:        aws.String(record.AvailabilityZone),
+		AvailabilityZoneId:      aws.String(SingleZoneID),
 		State:                   aws.String(record.State),
 		DefaultForAz:            aws.Bool(record.IsDefault),
 		AvailableIpAddressCount: aws.Int64(int64(availableIPs)),

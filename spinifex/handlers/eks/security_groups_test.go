@@ -19,9 +19,19 @@ type fakeSGProvisioner struct {
 	describeCalls  []*ec2.DescribeSecurityGroupsInput
 	deleteCalls    []*ec2.DeleteSecurityGroupInput
 	authorizeCalls []*ec2.AuthorizeSecurityGroupIngressInput
+	revokeCalls    []*ec2.RevokeSecurityGroupIngressInput
 
 	// existing maps "name|vpcId" → groupId for DescribeSecurityGroups lookup.
 	existing map[string]string
+
+	// perms maps groupId → its current ingress rules, served by a GroupIds
+	// DescribeSecurityGroups and cleared by RevokeSecurityGroupIngress.
+	perms map[string][]*ec2.IpPermission
+
+	// enforceDepViolation models AWS refusing to delete an SG that still has
+	// ingress rules (e.g. a sibling cross-reference), so a test proves the
+	// revoke-before-delete ordering.
+	enforceDepViolation bool
 
 	// nextCreateID is returned by the next CreateSecurityGroup call. Tests can
 	// pre-seed a queue via createIDs to differentiate the control-plane vs
@@ -65,6 +75,19 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(input *ec2.DescribeSecurityGr
 	if f.describeErr != nil {
 		return nil, f.describeErr
 	}
+	if len(input.GroupIds) > 0 {
+		out := &ec2.DescribeSecurityGroupsOutput{}
+		for _, gid := range input.GroupIds {
+			if gid == nil {
+				continue
+			}
+			out.SecurityGroups = append(out.SecurityGroups, &ec2.SecurityGroup{
+				GroupId:       gid,
+				IpPermissions: f.perms[*gid],
+			})
+		}
+		return out, nil
+	}
 	var name, vpc string
 	for _, filt := range input.Filters {
 		if filt == nil || filt.Name == nil || len(filt.Values) == 0 || filt.Values[0] == nil {
@@ -92,7 +115,20 @@ func (f *fakeSGProvisioner) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupIn
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
 	}
+	if f.enforceDepViolation && input.GroupId != nil && len(f.perms[*input.GroupId]) > 0 {
+		return nil, errors.New("DependencyViolation: resource has a dependent object")
+	}
 	return &ec2.DeleteSecurityGroupOutput{}, nil
+}
+
+func (f *fakeSGProvisioner) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGroupIngressInput, _ string) (*ec2.RevokeSecurityGroupIngressOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revokeCalls = append(f.revokeCalls, input)
+	if input.GroupId != nil {
+		delete(f.perms, *input.GroupId)
+	}
+	return &ec2.RevokeSecurityGroupIngressOutput{}, nil
 }
 
 func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, _ string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
@@ -199,6 +235,43 @@ func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sg-existing-cp")
 	assert.Len(t, sgp.deleteCalls, 2, "both delete calls should be attempted despite first error")
+}
+
+// TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete guards the no-orphan
+// teardown contract: the control-plane and nodegroup SGs reference each other, so
+// AWS rejects deleting either while the other's rule points at it. DeleteClusterSGs
+// must revoke all ingress on both before deleting, or the SGs leak and pin the VPC.
+func TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cp"
+	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
+	// cp<->ng cross-references, as EnsureNodegroupSGRules creates them.
+	sgp.perms = map[string][]*ec2.IpPermission{
+		"sg-cp": {groupRefPerm("tcp", 6443, "sg-ng"), groupRefPerm("udp", 8472, "sg-ng")},
+		"sg-ng": {groupRefPerm("udp", 8472, "sg-cp"), groupRefPerm("tcp", 10250, "sg-cp")},
+	}
+	// AWS refuses to delete an SG still referenced by a sibling's rule.
+	sgp.enforceDepViolation = true
+
+	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	require.NoError(t, err, "revoke-then-delete must clear the cp<->ng cycle so both SGs delete")
+
+	require.Len(t, sgp.revokeCalls, 2, "ingress on both SGs must be revoked before delete")
+	require.Len(t, sgp.deleteCalls, 2, "both SGs deleted once cross-refs are cleared")
+	deleted := map[string]bool{}
+	for _, d := range sgp.deleteCalls {
+		deleted[aws.StringValue(d.GroupId)] = true
+	}
+	assert.True(t, deleted["sg-cp"] && deleted["sg-ng"], "both cluster SGs removed")
+}
+
+func groupRefPerm(proto string, port int64, refSG string) *ec2.IpPermission {
+	return &ec2.IpPermission{
+		IpProtocol:       aws.String(proto),
+		FromPort:         aws.Int64(port),
+		ToPort:           aws.Int64(port),
+		UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(refSG)}},
+	}
 }
 
 func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) {

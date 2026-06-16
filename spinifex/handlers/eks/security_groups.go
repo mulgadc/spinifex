@@ -17,6 +17,7 @@ type sgProvisioner interface {
 	DescribeSecurityGroups(input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error)
 	DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput, accountID string) (*ec2.DeleteSecurityGroupOutput, error)
 	AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, accountID string) (*ec2.AuthorizeSecurityGroupIngressOutput, error)
+	RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGroupIngressInput, accountID string) (*ec2.RevokeSecurityGroupIngressOutput, error)
 }
 
 // clusterEKSClusterTagKey groups all cluster-scoped resources for DeleteCluster sweeps.
@@ -86,7 +87,12 @@ func EnsureClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) (
 	return controlPlaneSGID, nodegroupSGID, nil
 }
 
-// DeleteClusterSGs removes both cluster SGs. Missing SGs are no-ops; first error is returned.
+// DeleteClusterSGs removes both cluster SGs. The control-plane and nodegroup SGs
+// cross-reference each other (EnsureNodegroupSGRules), and AWS refuses to delete a
+// security group still referenced by another SG's rule — so every ingress rule on
+// both is revoked first to break the cycle, then both are deleted. Skipping the
+// revoke leaks the SGs and pins the VPC on DependencyViolation. Missing SGs are
+// no-ops; the first error is returned after the full sweep.
 func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) error {
 	if clusterName == "" {
 		return errors.New("eks: DeleteClusterSGs empty cluster name")
@@ -96,26 +102,69 @@ func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) e
 	}
 
 	var firstErr error
+	record := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	// Resolve both IDs up front so all cross-references can be revoked before any
+	// delete is attempted.
+	var ids []string
 	for _, name := range []string{ClusterControlPlaneSGName(clusterName), ClusterNodegroupSGName(clusterName)} {
 		id, err := lookupSGByName(sgp, accountID, vpcID, name)
 		if err != nil {
 			slog.Warn("DeleteClusterSGs: SG lookup failed", "sg", name, "err", err)
-			if firstErr == nil {
-				firstErr = err
-			}
+			record(err)
 			continue
 		}
-		if id == "" {
-			continue
+		if id != "" {
+			ids = append(ids, id)
 		}
+	}
+
+	// Break the cp<->ng cross-references before deleting either SG.
+	for _, id := range ids {
+		if err := revokeAllSGIngress(sgp, accountID, id); err != nil {
+			slog.Warn("DeleteClusterSGs: revoke ingress failed", "sg", id, "err", err)
+			record(err)
+		}
+	}
+
+	for _, id := range ids {
 		if _, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}, accountID); err != nil && !awserrors.IsNotFound(err) {
-			slog.Warn("DeleteClusterSGs: SG delete failed", "sg", id, "name", name, "err", err)
-			if firstErr == nil {
-				firstErr = fmt.Errorf("delete SG %s: %w", id, err)
-			}
+			slog.Warn("DeleteClusterSGs: SG delete failed", "sg", id, "err", err)
+			record(fmt.Errorf("delete SG %s: %w", id, err))
 		}
 	}
 	return firstErr
+}
+
+// revokeAllSGIngress clears every ingress rule on an SG so cross-references from a
+// sibling SG no longer block its deletion. A missing SG or one with no ingress is
+// a no-op.
+func revokeAllSGIngress(sgp sgProvisioner, accountID, sgID string) error {
+	out, err := sgp.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		GroupIds: aws.StringSlice([]string{sgID}),
+	}, accountID)
+	if err != nil {
+		if awserrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("describe SG %s: %w", sgID, err)
+	}
+	for _, g := range out.SecurityGroups {
+		if g == nil || len(g.IpPermissions) == 0 {
+			continue
+		}
+		if _, err := sgp.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+			GroupId:       aws.String(sgID),
+			IpPermissions: g.IpPermissions,
+		}, accountID); err != nil && !awserrors.IsNotFound(err) {
+			return fmt.Errorf("revoke ingress on %s: %w", sgID, err)
+		}
+	}
+	return nil
 }
 
 // EnsurePrivateEndpointSG creates (or reuses) the customer-VPC SG for the

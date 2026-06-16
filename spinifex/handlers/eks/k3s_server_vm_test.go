@@ -451,6 +451,10 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, `ip route replace 169.254.169.254/32 dev "$dev" scope link`)
 	assert.Contains(t, udata, "runcmd:")
 	assert.Contains(t, udata, "[ rc-update, add, local, default ]")
+	// Route script is run directly, not via `rc-service local start` — that would
+	// deadlock against cloud-final and stall the boot ~50s on the OpenRC timeout.
+	assert.Contains(t, udata, "[ /etc/local.d/imds-onlink-route.start ]")
+	assert.NotContains(t, udata, "rc-service, local, start")
 
 	// Exactly one write_files / runcmd key — a second would collide and silently
 	// drop a block under yaml.safe_load (last key wins).

@@ -221,6 +221,10 @@ func TestBuildAgentUserData_Shape(t *testing.T) {
 	assert.Contains(t, ud, agentEnvPath)
 	// IMDS on-link route line present.
 	assert.Contains(t, ud, "ip route replace "+imdsServerIP+"/32")
+	// Route script is run directly, not via `rc-service local start` — that would
+	// deadlock against cloud-final and stall the boot ~50s on the OpenRC timeout.
+	assert.Contains(t, ud, "[ /etc/local.d/imds-onlink-route.start ]")
+	assert.NotContains(t, ud, "rc-service, local, start")
 	// Exactly one write_files block (single "write_files:" key).
 	assert.Equal(t, 1, strings.Count(ud, "write_files:"))
 }

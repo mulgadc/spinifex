@@ -149,6 +149,37 @@ func runIMDS(t *testing.T, fix *Fixture) {
 		imdsCode(tgtX, `-H "X-aws-ec2-metadata-token: not-a-real-token"`, "/latest/meta-data/instance-id"),
 		"unknown token must be rejected with 401 (no token-exists leak)")
 
+	// --- SSRF defence: X-Forwarded-For → 403 even with a valid token ---------
+	// A forwarded request is a proxied SSRF attempt; the host refuses it before
+	// the token is consulted, so a valid token does not rescue it.
+	harness.Step(t, "X-Forwarded-For GET with valid token → 403")
+	require.Equal(t, "403",
+		imdsCode(tgtX, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s" -H "X-Forwarded-For: 10.0.0.1"`, tokenX),
+			"/latest/meta-data/instance-id"),
+		"X-Forwarded-For must be rejected with 403 even with a valid token (SSRF defence)")
+
+	// --- Token-TTL validation: missing / 0 / over-max / non-numeric → 400 ----
+	// PUT /latest/api/token requires X-aws-ec2-metadata-token-ttl-seconds in
+	// [1,21600]; anything outside that mints no token and returns 400.
+	for _, tc := range []struct{ label, header string }{
+		{"missing", `-X PUT`},
+		{"zero", `-X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 0"`},
+		{"over-max", `-X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 21601"`},
+		{"non-numeric", `-X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: abc"`},
+	} {
+		harness.Step(t, "PUT token with %s TTL → 400", tc.label)
+		require.Equalf(t, "400", imdsCode(tgtX, tc.header, "/latest/api/token"),
+			"PUT token with %s TTL must be 400", tc.label)
+	}
+
+	// --- Method-not-allowed: token is PUT-only, metadata is GET-only → 405 ---
+	// The method check precedes token validation, so neither probe needs a token.
+	harness.Step(t, "GET /latest/api/token → 405; PUT metadata path → 405")
+	require.Equal(t, "405", imdsCode(tgtX, "", "/latest/api/token"),
+		"GET on the PUT-only token endpoint must be 405")
+	require.Equal(t, "405", imdsCode(tgtX, `-X PUT`, "/latest/meta-data/instance-id"),
+		"PUT on a GET-only metadata path must be 405")
+
 	// --- Metadata surface ----------------------------------------------------
 	harness.Step(t, "GET metadata surface")
 	require.Equal(t, idX, imdsGet(t, tgtX, tokenX, "/latest/meta-data/instance-id"),
@@ -234,6 +265,39 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	require.Equal(t, idX, imdsGet(t, tgtX, tokenX, "/latest/meta-data/instance-id"),
 		"VM X IMDS must still return VM X's instance-id")
 	harness.Detail(t, "isolation", "ok")
+
+	// --- Cross-instance token binding + no-profile surface -------------------
+	// Re-mint a fresh VM X token so the binding rejection below is unambiguously
+	// about ENI binding rather than TTL expiry of the token minted early above.
+	freshTokenX := imdsAwaitToken(t, fix, tgtX, subX, privX)
+
+	harness.Step(t, "VM Y presents VM X's token → 401 (ENI-bound)")
+	require.Equal(t, "401",
+		imdsCode(tgtY, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, freshTokenX),
+			"/latest/meta-data/instance-id"),
+		"a token bound to VM X's ENI must not authorise VM Y")
+
+	// VM Y has no instance profile: iam/info is 404 and the credential listing is
+	// an empty 200 (absence is not an error, matching AWS).
+	harness.Step(t, "VM Y iam/info → 404; security-credentials/ → empty 200")
+	require.Equal(t, "404",
+		imdsCode(tgtY, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, tokenY),
+			"/latest/meta-data/iam/info"),
+		"an instance with no profile must 404 on iam/info")
+	require.Equal(t, "200",
+		imdsCode(tgtY, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, tokenY),
+			"/latest/meta-data/iam/security-credentials/"),
+		"no-profile security-credentials/ listing must be an empty 200")
+	require.Empty(t, imdsGet(t, tgtY, tokenY, "/latest/meta-data/iam/security-credentials/"),
+		"no-profile security-credentials/ body must be empty")
+
+	// VM X is profile-bound: a credential request for a role it isn't bound to
+	// is a 404, not a leak of the bound role's creds.
+	harness.Step(t, "VM X credential request for an unbound role name → 404")
+	require.Equal(t, "404",
+		imdsCode(tgtX, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, freshTokenX),
+			"/latest/meta-data/iam/security-credentials/wrong-role-name"),
+		"a credential request for a role the instance isn't bound to must 404")
 }
 
 // imdsVMSpec parameterises a launch for the IMDS suite. profileName / userData

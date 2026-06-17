@@ -433,9 +433,9 @@ EIP commands are only registered when an external IPAM pool is configured.
 | `delete-dhcp-options` | — | `--dhcp-options-id`, `--dry-run` | **NOT STARTED** |
 | `describe-dhcp-options` | — | `--dhcp-options-ids`, `--filters`, `--max-results` | **NOT STARTED** |
 | `associate-dhcp-options` | — | `--dhcp-options-id`, `--vpc-id`, `--dry-run` | **NOT STARTED** |
-| `create-capacity-reservation` | — | `--instance-type`, `--instance-platform`, `--availability-zone`, `--instance-count`, `--end-date`, `--end-date-type`, `--instance-match-criteria`, `--tag-specifications` | **NOT STARTED** |
-| `cancel-capacity-reservation` | — | `--capacity-reservation-id`, `--dry-run` | **NOT STARTED** |
-| `describe-capacity-reservations` | — | `--capacity-reservation-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `create-capacity-reservation` | `--instance-type`, `--instance-count`, `--availability-zone`, `--instance-platform`, `--instance-match-criteria`, `--tenancy` (default only), `--dry-run` | `--end-date`, `--end-date-type` (unlimited only), `--availability-zone-id`, `--tag-specifications` | **DONE** |
+| `cancel-capacity-reservation` | `--capacity-reservation-id`, `--dry-run` | — | **DONE** |
+| `describe-capacity-reservations` | `--capacity-reservation-ids`, `--filters` | `--max-results`, `--next-token` | **DONE** |
 | `modify-capacity-reservation` | — | `--capacity-reservation-id`, `--instance-count`, `--end-date`, `--end-date-type` | **NOT STARTED** |
 
 ### EC2 — Misc

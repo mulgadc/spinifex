@@ -70,6 +70,33 @@ func TestCreateRule_PathPattern(t *testing.T) {
 	assert.Contains(t, *out.Rules[0].RuleArn, ":listener-rule/")
 }
 
+// TestCreateRule_ForwardConfig guards the regression where a forward action that
+// carries its target group via ForwardConfig (the shape the AWS Load Balancer
+// Controller emits) was rejected with MissingParameter because only the flat
+// TargetGroupArn field was read.
+func TestCreateRule_ForwardConfig(t *testing.T) {
+	env := newRuleTestEnv(t, "cr-fwdcfg")
+
+	out, err := env.svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(1),
+		Conditions: []*elbv2.RuleCondition{
+			{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/*"})},
+		},
+		Actions: []*elbv2.Action{
+			{Type: aws.String("forward"), ForwardConfig: &elbv2.ForwardActionConfig{
+				TargetGroups: []*elbv2.TargetGroupTuple{
+					{TargetGroupArn: aws.String(env.tgAltArn)},
+				},
+			}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Rules, 1)
+	require.Len(t, out.Rules[0].Actions, 1)
+	assert.Equal(t, env.tgAltArn, *out.Rules[0].Actions[0].TargetGroupArn)
+}
+
 // TestDeleteLoadBalancer_CascadesRuleDeletion guards against the regression where
 // DeleteLoadBalancer called store.DeleteListener directly, bypassing rule cascade,
 // leaving a rule's target group pinned as ResourceInUse permanently.

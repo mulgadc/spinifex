@@ -2027,6 +2027,17 @@ func listenerActionFromSDK(a *elbv2.Action) ListenerAction {
 	if a.TargetGroupArn != nil {
 		action.TargetGroupArn = *a.TargetGroupArn
 	}
+	// Forward actions may carry the target group via ForwardConfig (the modern
+	// weighted shape the LB controller emits) instead of the flat field. Flatten
+	// the first target group so the single-TG model resolves it.
+	if action.TargetGroupArn == "" && a.ForwardConfig != nil {
+		for _, tg := range a.ForwardConfig.TargetGroups {
+			if tg != nil && tg.TargetGroupArn != nil && *tg.TargetGroupArn != "" {
+				action.TargetGroupArn = *tg.TargetGroupArn
+				break
+			}
+		}
+	}
 	if a.FixedResponseConfig != nil {
 		fr := &FixedResponseAction{}
 		if a.FixedResponseConfig.StatusCode != nil {

@@ -5,7 +5,9 @@
 package ecr
 
 import (
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -52,6 +54,86 @@ func IndexKey(repo string) string { return fmt.Sprintf(indexKeyFmt, repo) }
 
 // UploadKey returns the key for an in-progress upload's bytes.
 func UploadKey(uploadID string) string { return fmt.Sprintf(uploadKeyFmt, uploadID) }
+
+// KV bucket layout for per-account ECR metadata. The bucket name is
+// KVBucketAccountPrefix + accountID (e.g. "ecr-account-000000000000"), created
+// lazily on the first repo create or push for that account.
+const (
+	KVBucketAccountPrefix  = "ecr-account-"
+	KVBucketAccountVersion = 1
+	KVBucketAccountHistory = 1
+)
+
+// KVAccountBucket returns the per-account JetStream KV bucket name.
+func KVAccountBucket(accountID string) string {
+	return KVBucketAccountPrefix + accountID
+}
+
+// KV key-path helpers for per-account metadata.
+//
+//	repos/{name}/meta
+//	repos/{name}/tags/{tag}
+//	repos/{name}/manifests/{digest}
+//	uploads/{uuid}
+const (
+	kvRepoMetaKeyFmt = "repos/%s/meta"
+	kvTagsPrefixFmt  = "repos/%s/tags/"
+	kvTagKeyFmt      = "repos/%s/tags/%s"
+	kvManifestKeyFmt = "repos/%s/manifests/%s"
+	kvReposPrefix    = "repos/"
+	kvUploadKeyFmt   = "uploads/%s"
+)
+
+// KVRepoMetaKey returns the KV key for a repository's meta record.
+func KVRepoMetaKey(repo string) string { return fmt.Sprintf(kvRepoMetaKeyFmt, repo) }
+
+// KVTagsPrefix returns the KV key prefix enumerating a repository's tags.
+func KVTagsPrefix(repo string) string { return fmt.Sprintf(kvTagsPrefixFmt, repo) }
+
+// KVTagKey returns the KV key for a single tag record.
+func KVTagKey(repo, tag string) string { return fmt.Sprintf(kvTagKeyFmt, repo, tag) }
+
+// KVManifestKey returns the KV key for a manifest metadata record. The digest
+// (which contains ':') is sanitized to a KV-safe token via DigestToken.
+func KVManifestKey(repo, digest string) string {
+	return fmt.Sprintf(kvManifestKeyFmt, repo, DigestToken(digest))
+}
+
+// KVReposPrefix is the prefix under which every repo meta key lives. Used by
+// the catalog listing to enumerate account repositories.
+const KVReposPrefix = kvReposPrefix
+
+// KVUploadKey returns the KV key for an in-progress upload's state record.
+func KVUploadKey(uploadID string) string { return fmt.Sprintf(kvUploadKeyFmt, uploadID) }
+
+// DigestToken maps a content digest ("sha256:<hex>") to a KV-key-safe token by
+// replacing the ':' separator, which JetStream KV keys disallow.
+func DigestToken(digest string) string {
+	return strings.ReplaceAll(digest, ":", "-")
+}
+
+// repoNameRe is the OCI Distribution repository-name grammar. Compiled once.
+var repoNameRe = regexp.MustCompile(`^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+
+// ValidateRepoName enforces the OCI repository-name grammar and 2-256 length
+// bound. It returns nil for a valid name and a descriptive error otherwise.
+func ValidateRepoName(name string) error {
+	if len(name) < 2 || len(name) > 256 {
+		return errors.New("repository name must be 2-256 characters")
+	}
+	if !repoNameRe.MatchString(name) {
+		return errors.New("repository name does not match the required format")
+	}
+	return nil
+}
+
+// digestRe matches an OCI content digest ("sha256:<64 hex>").
+var digestRe = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
+// ValidateDigest reports whether s is a well-formed sha256 content digest.
+func ValidateDigest(s string) bool {
+	return digestRe.MatchString(s)
+}
 
 // BlobKey returns the account-pool key for a blob digest ("sha256:<hex>"). The
 // two-char shard is taken from the first hex bytes after the "sha256:" prefix,

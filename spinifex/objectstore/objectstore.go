@@ -38,6 +38,7 @@ func IsNoSuchKeyError(err error) bool {
 // ObjectStore defines the interface for S3-like object storage operations.
 type ObjectStore interface {
 	GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error)
+	HeadObject(input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
 	PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
 	DeleteObject(input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error)
 	ListObjectsV2(input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error)
@@ -69,6 +70,18 @@ func NewS3ObjectStore(client *s3.S3) *S3ObjectStore {
 
 func (s *S3ObjectStore) GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
 	out, err := s.client.GetObject(input)
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok &&
+			(aerr.Code() == s3.ErrCodeNoSuchKey || aerr.Code() == "NotFound") {
+			return nil, &NoSuchKeyError{Key: aws.StringValue(input.Key)}
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *S3ObjectStore) HeadObject(input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+	out, err := s.client.HeadObject(input)
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok &&
 			(aerr.Code() == s3.ErrCodeNoSuchKey || aerr.Code() == "NotFound") {
@@ -123,6 +136,21 @@ func (m *MemoryObjectStore) GetObject(input *s3.GetObjectInput) (*s3.GetObjectOu
 
 	return &s3.GetObjectOutput{
 		Body:          io.NopCloser(bytes.NewReader(data)),
+		ContentLength: aws.Int64(int64(len(data))),
+	}, nil
+}
+
+func (m *MemoryObjectStore) HeadObject(input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	storageKey := makeKey(*input.Bucket, *input.Key)
+	data, exists := m.objects[storageKey]
+	if !exists {
+		return nil, &NoSuchKeyError{Key: *input.Key}
+	}
+
+	return &s3.HeadObjectOutput{
 		ContentLength: aws.Int64(int64(len(data))),
 	}, nil
 }

@@ -117,6 +117,10 @@ render_addon() {
     # untouched. Blocks assume a Deployment pod spec (env 8sp, volumes 6sp,
     # volumeMounts 8sp). The token (aud sts.amazonaws.com) + role ARN + gateway
     # STS endpoint/CA are what AssumeRoleWithWebIdentity at the gateway needs.
+    # AWS_ENDPOINT_URL points every other service (ec2/elbv2/acm) at the gateway:
+    # aws-sdk-go-v2 honors this global base-endpoint override, whereas the LBC
+    # --aws-api-endpoints flag keys on SDK-v2 service IDs and silently ignores
+    # the legacy lowercase service names, sending those calls to real AWS.
     _irsa_env='        - name: AWS_ROLE_ARN
           value: "{{SERVICE_ACCOUNT_ROLE_ARN}}"
         - name: AWS_WEB_IDENTITY_TOKEN_FILE
@@ -128,6 +132,8 @@ render_addon() {
         - name: AWS_DEFAULT_REGION
           value: "{{AWS_REGION}}"
         - name: AWS_ENDPOINT_URL_STS
+          value: "{{GATEWAY_ENDPOINT}}"
+        - name: AWS_ENDPOINT_URL
           value: "{{GATEWAY_ENDPOINT}}"
         - name: AWS_CA_BUNDLE
           value: /etc/spinifex/gateway-ca/ca.pem'

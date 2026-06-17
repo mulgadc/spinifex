@@ -311,7 +311,6 @@ spec:
         - --feature-gates=ALBSingleSubnet=true
         - --aws-region={{AWS_REGION}}
         - --aws-vpc-id={{AWS_VPC_ID}}
-        - --aws-api-endpoints=sts={{GATEWAY_ENDPOINT}},elasticloadbalancing={{GATEWAY_ENDPOINT}},ec2={{GATEWAY_ENDPOINT}},acm={{GATEWAY_ENDPOINT}}
         env:
 {{IRSA_ENV}}
         image: public.ecr.aws/eks/aws-load-balancer-controller:v2.11.0

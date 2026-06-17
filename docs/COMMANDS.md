@@ -113,7 +113,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn) | `--security-group-ids`, `--tag-specifications`, `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--metadata-options`, `--launch-template`, `--hibernate-options` | **DONE** |
+| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--metadata-options`, `--launch-template`, `--hibernate-options` | **DONE** |
 | `describe-instances` | `--instance-ids`, `--filters` (instance-state-name, instance-id, instance-type, vpc-id, subnet-id, tag:*, tag-key, tag-value) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `start-instances` | `--instance-ids` | `--dry-run`, `--force` | **DONE** |
 | `stop-instances` | `--instance-ids` | `--force`, `--hibernate`, `--dry-run` | **DONE** |

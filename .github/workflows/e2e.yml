@@ -14,9 +14,6 @@ on:
       - .github/workflows/e2e.yml
   workflow_dispatch:
     inputs:
-      sha:
-        description: "PR head SHA to report status on"
-        required: false
       suites:
         description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks')"
         required: false
@@ -892,12 +889,8 @@ jobs:
       - name: Report Status to PR
         env:
           GH_TOKEN: ${{ github.token }}
-          REPORT_SHA: ${{ inputs.sha || github.sha }}
+          REPORT_SHA: ${{ github.sha }}
         run: |
-          if [[ -z "${REPORT_SHA}" ]]; then
-            echo "::error::no SHA available (inputs.sha and github.sha both empty)"
-            exit 1
-          fi
           single_ok=true; multi_ok=true
           case "${{ needs.e2e_single.result }}" in success|skipped) ;; *) single_ok=false ;; esac
           case "${{ needs.e2e_real_multi.result }}" in success|skipped) ;; *) multi_ok=false ;; esac

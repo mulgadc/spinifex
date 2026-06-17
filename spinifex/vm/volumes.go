@@ -392,6 +392,15 @@ func (m *Manager) tryBlockdevDel(instance *VM, nodeName string) error {
 			}
 			return nil
 		}
+		// A prior detach already removed the block node (e.g. an AWS-CLI retry
+		// after the ebs.unmount seal failed): treat as success so the retry
+		// resumes through object-del to the seal instead of wedging on a
+		// now-absent node.
+		if isQMPNodeNotFound(err) {
+			slog.Info("DetachVolume: block node already removed (resuming detach)",
+				"nodeName", nodeName, "err", err)
+			return nil
+		}
 		lastErr = err
 		if !isQMPNodeInUse(err) {
 			return err
@@ -424,4 +433,16 @@ func isQMPNodeInUse(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "in use")
+}
+
+// isQMPNodeNotFound reports whether err is a QMP error for a block node that no
+// longer exists. blockdev-del on an already-removed node returns this (QEMU:
+// "Failed to find node with node-name=..."), making blockdev-del idempotent
+// across detach retries — mirroring isQMPDeviceNotFound for device_del.
+func isQMPNodeNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Failed to find node") || strings.Contains(msg, "Cannot find device")
 }

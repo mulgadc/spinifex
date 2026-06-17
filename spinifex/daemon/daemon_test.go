@@ -3279,7 +3279,8 @@ func TestVolumeMounterAdapter_UnmountOne_Success(t *testing.T) {
 }
 
 // TestVolumeMounterAdapter_UnmountOne_UnmountError verifies that UnmountOne
-// tolerates an error response from ebs.unmount (logs only, no propagation).
+// propagates an error response from ebs.unmount. DetachVolume gates the volume's
+// available transition on this error, so it must not be swallowed.
 func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -3294,11 +3295,12 @@ func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	adapter.UnmountOne(types.EBSRequest{Name: "vol-rollback-err"})
+	require.Error(t, adapter.UnmountOne(types.EBSRequest{Name: "vol-rollback-err"}),
+		"an ebs.unmount error response must propagate so DetachVolume can keep the volume attached")
 }
 
 // TestVolumeMounterAdapter_UnmountOne_StillMounted verifies that UnmountOne
-// tolerates an unmount response that reports the volume still mounted.
+// returns an error when the unmount response reports the volume still mounted.
 func TestVolumeMounterAdapter_UnmountOne_StillMounted(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -3313,18 +3315,103 @@ func TestVolumeMounterAdapter_UnmountOne_StillMounted(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	adapter.UnmountOne(types.EBSRequest{Name: "vol-still-mounted"})
+	require.Error(t, adapter.UnmountOne(types.EBSRequest{Name: "vol-still-mounted"}),
+		"a still-mounted response must propagate as an error")
 }
 
-// TestVolumeMounterAdapter_UnmountOne_NATSTimeout verifies that UnmountOne
-// tolerates NATS request timeout (no subscriber on ebs.unmount).
-func TestVolumeMounterAdapter_UnmountOne_NATSTimeout(t *testing.T) {
-	natsURL := sharedNATSURL
+// TestVolumeMounterAdapter_UnmountOne_RequestFailure verifies that UnmountOne
+// surfaces a failed ebs.unmount NATS request as an error. A closed connection
+// fails immediately, rather than blocking on the full unmountSealTimeout (120s)
+// that a no-subscriber timeout would incur in every preflight run.
+func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	nc.Close()
 
-	daemon := createTestDaemon(t, natsURL)
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+	adapter := newVolumeMounterAdapter(nc, "node-1", nil)
+	require.Error(t, adapter.UnmountOne(types.EBSRequest{Name: "vol-timeout"}),
+		"a failed ebs.unmount request must propagate as an error")
+}
 
-	adapter.UnmountOne(types.EBSRequest{Name: "vol-timeout"})
+// recordingVolState records UpdateVolumeState calls so the bulk-unmount test can
+// assert which volumes transitioned to available.
+type recordingVolState struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *recordingVolState) UpdateVolumeState(volumeID, state, instanceID, attachmentDevice string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, volumeID+":"+state)
+	return nil
+}
+
+func (r *recordingVolState) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+var _ vm.VolumeStateUpdater = (*recordingVolState)(nil)
+
+// TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable verifies the
+// teardown-path durability gate: a per-volume seal failure during the bulk
+// Unmount (stop/terminate) must NOT transition that volume to available — a
+// reattach on a WAL-less node would find no checkpoint (bad superblock) — while
+// other volumes still seal and the loop completes (terminate stays idempotent).
+func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+	volState := &recordingVolState{}
+	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
+
+	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
+		var req types.EBSRequest
+		json.Unmarshal(msg.Data, &req)
+		resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+		if req.Name == "vol-fail" {
+			resp.Error = "seal volume: predastore unreachable"
+		}
+		data, _ := json.Marshal(resp)
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	inst := &vm.VM{
+		ID: "i-1",
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
+		},
+	}
+	require.NoError(t, adapter.Unmount(inst),
+		"bulk Unmount must tolerate a per-volume seal failure so terminate stays idempotent")
+
+	calls := volState.snapshot()
+	assert.NotContains(t, calls, "vol-fail:available",
+		"a failed seal must not transition the volume to available")
+	assert.Contains(t, calls, "vol-ok:available",
+		"a successful seal must still transition the volume to available")
+}
+
+// TestUnmountResponseError covers the shared seal-result parser used by both the
+// gated DetachVolume path (unmountOne) and the tolerated teardown path (Unmount).
+func TestUnmountResponseError(t *testing.T) {
+	t.Run("success (not mounted, no error)", func(t *testing.T) {
+		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Mounted: false})
+		require.NoError(t, unmountResponseError(data))
+	})
+	t.Run("seal error propagates", func(t *testing.T) {
+		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Error: "seal volume: boom"})
+		require.Error(t, unmountResponseError(data))
+	})
+	t.Run("still mounted propagates", func(t *testing.T) {
+		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Mounted: true})
+		require.Error(t, unmountResponseError(data))
+	})
+	t.Run("malformed payload propagates", func(t *testing.T) {
+		require.Error(t, unmountResponseError([]byte("not json")))
+	})
 }
 
 // TestVolumeMounterAdapter_Mount_PartialFailureRollback verifies that when

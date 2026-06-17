@@ -9,6 +9,16 @@ export function isValidJson(value: string): boolean {
   }
 }
 
+// Pretty-print JSON with a 2-space indent. Returns null when the input is not
+// valid JSON so callers can leave the original text untouched.
+export function formatJson(value: string): string | null {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return null
+  }
+}
+
 // Zod field for a JSON document entered as a string. Messages derive from
 // `label` so they read naturally per field. When `allowEmpty` is true an
 // empty/whitespace value passes (optional field); otherwise it is required.

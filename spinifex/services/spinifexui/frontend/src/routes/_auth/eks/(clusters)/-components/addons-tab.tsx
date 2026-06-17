@@ -3,7 +3,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { ArrowUpCircle, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
-import { useForm } from "react-hook-form"
+import { Controller, useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { DetailCard } from "@/components/detail-card"
@@ -21,7 +21,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
+import { JsonEditor } from "@/components/ui/json-editor"
 import { useCreateAddon, useDeleteAddon, useUpdateAddon } from "@/mutations/eks"
 import {
   eksAddonQueryOptions,
@@ -60,6 +60,7 @@ function AddAddonDialog({
   )
 
   const {
+    control,
     formState: { errors },
     handleSubmit,
     register,
@@ -178,12 +179,21 @@ function AddAddonDialog({
             <FieldTitle>
               <label htmlFor="addon-config">Configuration values (JSON)</label>
             </FieldTitle>
-            <Textarea
-              aria-invalid={!!errors.configurationValues}
-              id="addon-config"
-              placeholder='{"replicaCount": 2}'
-              rows={4}
-              {...register("configurationValues")}
+            <Controller
+              control={control}
+              name="configurationValues"
+              render={({ field: { onBlur, onChange, ref, value } }) => (
+                <JsonEditor
+                  error={!!errors.configurationValues}
+                  id="addon-config"
+                  onBlur={onBlur}
+                  onChange={onChange}
+                  placeholder='{"replicaCount": 2}'
+                  ref={ref}
+                  rows={4}
+                  value={value}
+                />
+              )}
             />
             <FieldError errors={[errors.configurationValues]} />
           </Field>
@@ -313,9 +323,10 @@ function UpdateAddonDialog({
                 Configuration values (JSON)
               </label>
             </FieldTitle>
-            <Textarea
+            <JsonEditor
+              error={!!error}
               id="update-addon-config"
-              onChange={(e) => setConfig(e.target.value)}
+              onChange={setConfig}
               rows={4}
               value={config}
             />

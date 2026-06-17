@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { isValidJson, jsonStringSchema } from "./json"
+import { formatJson, isValidJson, jsonStringSchema } from "./json"
 
 type JsonSchema = ReturnType<typeof jsonStringSchema>
 
@@ -20,6 +20,17 @@ describe("isValidJson", () => {
     expect(isValidJson("{")).toBeFalsy()
     expect(isValidJson("{a:1}")).toBeFalsy()
     expect(isValidJson("")).toBeFalsy()
+  })
+})
+
+describe("formatJson", () => {
+  it("pretty-prints valid JSON with a 2-space indent", () => {
+    expect(formatJson('{"a":1}')).toBe('{\n  "a": 1\n}')
+  })
+
+  it("returns null for malformed JSON", () => {
+    expect(formatJson("{ not json")).toBeNull()
+    expect(formatJson("")).toBeNull()
   })
 })
 

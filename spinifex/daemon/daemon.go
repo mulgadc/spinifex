@@ -95,6 +95,14 @@ type ResourceManager struct {
 	reservedMem   float64
 	allocatedVCPU int
 	allocatedMem  float64
+	// reservedCRVCPU / reservedCRMem: compute held by capacity reservations
+	// pinned to this node. Subtracted from schedulable capacity exactly like
+	// the host reserve. In-memory only — lost on daemon restart.
+	reservedCRVCPU int
+	reservedCRMem  float64
+	// reservations: in-memory capacity reservations owned by this node, keyed
+	// by id. Mutated together with reservedCR* under mu.
+	reservations map[string]*capacityReservation
 	// nbdkitMainMiB / nbdkitAuxMiB: per-volume nbdkit memory charged at
 	// admission so nbdkit backing a guest's volumes is accounted explicitly.
 	nbdkitMainMiB int
@@ -485,6 +493,7 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		instanceTypes:      instanceTypes,
 		gpuManager:         gpuMgr,
 		readMemAvailableGB: memReader,
+		reservations:       make(map[string]*capacityReservation),
 	}, nil
 }
 
@@ -624,17 +633,19 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 
 	totalVCPU = rm.hostVCPU
 	totalMemGB = rm.hostMemGB
-	reservedVCPU = rm.reservedVCPU
-	reservedMemGB = rm.reservedMem
+	// Fold the capacity-reservation carve-out into the reported reserve figures;
+	// Phase 1 has no separate status field for it.
+	reservedVCPU = rm.reservedVCPU + rm.reservedCRVCPU
+	reservedMemGB = rm.reservedMem + rm.reservedCRMem
 	allocVCPU = rm.allocatedVCPU
 	allocMemGB = rm.allocatedMem
 
-	remainingVCPU := rm.hostVCPU - rm.reservedVCPU - rm.allocatedVCPU
-	remainingMem := rm.hostMemGB - rm.reservedMem - rm.allocatedMem
+	remainingVCPU := rm.hostVCPU - reservedVCPU - rm.allocatedVCPU
+	remainingMem := rm.hostMemGB - reservedMemGB - rm.allocatedMem
 	if remainingVCPU < 0 || remainingMem < 0 {
 		slog.Error("schedulable capacity negative — reserve misconfigured or allocation drift",
-			"hostVCPU", rm.hostVCPU, "reservedVCPU", rm.reservedVCPU, "allocatedVCPU", rm.allocatedVCPU,
-			"hostMemGB", rm.hostMemGB, "reservedMem", rm.reservedMem, "allocatedMem", rm.allocatedMem,
+			"hostVCPU", rm.hostVCPU, "reservedVCPU", reservedVCPU, "allocatedVCPU", rm.allocatedVCPU,
+			"hostMemGB", rm.hostMemGB, "reservedMem", reservedMemGB, "allocatedMem", rm.allocatedMem,
 			"remainingVCPU", remainingVCPU, "remainingMem", remainingMem)
 	}
 
@@ -771,6 +782,11 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RemoveInstanceFromPlacementGroup", d.handleEC2RemoveInstanceFromPlacementGroup, "spinifex-workers"},
 		{"ec2.ReserveClusterNode", d.handleEC2ReserveClusterNode, "spinifex-workers"},
 		{"ec2.FinalizeClusterInstances", d.handleEC2FinalizeClusterInstances, "spinifex-workers"},
+		// Capacity reservations: Create is node-targeted (gateway pins one node);
+		// Describe fans out and Cancel broadcasts, so both use plain Subscribe.
+		{fmt.Sprintf("ec2.CreateCapacityReservation.%s", d.node), d.handleEC2CreateCapacityReservation, ""},
+		{"ec2.DescribeCapacityReservations", d.handleEC2DescribeCapacityReservations, ""},
+		{"ec2.CancelCapacityReservation", d.handleEC2CancelCapacityReservation, ""},
 		{"ec2.CreateNatGateway", d.handleEC2CreateNatGateway, "spinifex-workers"},
 		{"ec2.DeleteNatGateway", d.handleEC2DeleteNatGateway, "spinifex-workers"},
 		{"ec2.DescribeNatGateways", d.handleEC2DescribeNatGateways, "spinifex-workers"},
@@ -2023,8 +2039,8 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 	}
 
 	n := canAllocateCount(
-		rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
-		rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
+		rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+		rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
 		instanceTypeVCPUs(instanceType),
 		rm.instanceMemChargeMiB(instanceType),
 		count,
@@ -2044,7 +2060,7 @@ func (rm *ResourceManager) liveMemGate(n int, instanceType *ec2.InstanceTypeInfo
 		return n
 	}
 	memGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
-	return liveMemCount(n, availGB, rm.reservedMem, memGB)
+	return liveMemCount(n, availGB, rm.reservedMem+rm.reservedCRMem, memGB)
 }
 
 // allocate reserves resources for one instance and updates NATS subscriptions.

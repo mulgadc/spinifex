@@ -484,6 +484,18 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		initialCount := len(initialOutput.InstanceTypes)
 		t.Logf("Initial supported instance types: %d", initialCount)
 
+		// Pin host capacity so the allocate below is independent of the
+		// runner's live headroom. Without this, readMemAvailableGB reads
+		// live /proc MemAvailable, which a box already running VMs can drive
+		// below a 2 vCPU type's footprint, failing allocate spuriously.
+		daemon.resourceMgr.mu.Lock()
+		daemon.resourceMgr.hostVCPU = 16
+		daemon.resourceMgr.hostMemGB = 32.0
+		daemon.resourceMgr.reservedVCPU = 0
+		daemon.resourceMgr.reservedMem = 0
+		daemon.resourceMgr.readMemAvailableGB = nil
+		daemon.resourceMgr.mu.Unlock()
+
 		schedulableMem := daemon.resourceMgr.hostMemGB - daemon.resourceMgr.reservedMem
 		var instanceType2CPU *ec2.InstanceTypeInfo
 		for _, it := range initialOutput.InstanceTypes {
@@ -903,6 +915,18 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 		}
 		require.NotNil(t, microType)
 		require.NotNil(t, mediumType)
+
+		// Pin host capacity so the test is independent of the runner's
+		// schedulable headroom. A constrained box (e.g. 4 vCPU, 2 schedulable
+		// after reserve, more when EKS VMs hold capacity) cannot fit a medium
+		// and rm.allocate would fail with an unexpected insufficient-capacity error.
+		rm.mu.Lock()
+		rm.hostVCPU = 16
+		rm.hostMemGB = 32.0
+		rm.reservedVCPU = 0
+		rm.reservedMem = 0
+		rm.readMemAvailableGB = nil // accounting test: pin to synthetic host, not live /proc
+		rm.mu.Unlock()
 
 		initialMicro := rm.canAllocate(microType, 100)
 		initialMedium := rm.canAllocate(mediumType, 100)

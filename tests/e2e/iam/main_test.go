@@ -1,10 +1,12 @@
 //go:build e2e
 
-// Package iam is the standalone control-plane IAM + STS E2E suite, split out of
-// the single-node suite so it builds and runs as its own iam.test binary. Every
-// entry point is a top-level Test* in tests_test.go; the suite is zero-VM (no
-// RunInstances, no volumes, no OVN/SSH) so it can run concurrently with the
-// single suite on one provisioned node, driving only the awsgw IAM/STS surface.
+// Package iam is the standalone "everything IAM" E2E suite, split out of the
+// single-node suite so it builds and runs as its own iam.test binary. Every
+// entry point is a top-level Test* in tests_test.go. The control-plane phases
+// (IAM/STS CRUD) are zero-VM; the instance-identity tail (instance-profile
+// association + IMDS) boots guest VMs, so the suite is a single-mode,
+// VM-booting matrix leg covering the awsgw IAM/STS surface plus the
+// instance-profile + IMDS datapath.
 package iam
 
 import (

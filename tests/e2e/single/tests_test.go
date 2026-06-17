@@ -69,7 +69,8 @@ func TestReplaceRouteConvergence(t *testing.T) {
 
 // --- Sequential: singleton VM lifecycle ---
 
-// TestClusterStatsCLI asserts 0-VM baseline state before any instance launches.
+// TestClusterStatsCLI exercises the spx cluster CLI; its get-vms baseline is
+// concurrency-tolerant (other suites may have VMs on the node).
 func TestClusterStatsCLI(t *testing.T) {
 	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }

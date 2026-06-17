@@ -286,10 +286,11 @@ suites:
 
   e2e-iam:
     path: tests/e2e/iam
-    covers: [awsgw]
-    # Pure IAM/STS control plane, extracted from single. Zero guest VMs —
-    # drives only the awsgw IAM/STS surface, so it runs concurrently with
-    # single on one provisioned node. Handler-path attribution is deferred.
+    covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+    # "Everything IAM": the IAM/STS control plane plus the instance-identity
+    # tests (instance-profile association + IMDS), which boot guest VMs — OVN
+    # via vpcd, AMI via predastore, root volume via viperblockd, lifecycle via
+    # spinifex_daemon. Single-mode, VM-booting leg.
 
   e2e-ddil:
     path: tests/e2e/ddil

@@ -57,9 +57,9 @@ GPU passthrough requires a host kernel and OS that supports vfio-pci. Ubuntu 24.
 ## Prerequisites
 
 - Supermicro H14 with 8× AMD Instinct MI350X installed
-- Host OS: **Ubuntu 24.04 LTS** (kernel 6.8+) or **Debian 13** (kernel 6.12+) — minimum for vfio-pci support
+- Host OS: **Ubuntu 26.04 LTS** (kernel 6.8+) or **Debian 13** (kernel 6.12+) — minimum for vfio-pci support
 - Spinifex installed and all services running (`systemctl status spinifex.target`)
-- AMD GPU AMI registered (`ami-ubuntu-amd-gpu`) — Ubuntu 26.04 LTS with ROCm-compatible kernel
+- AMD GPU AMI registered (`ubuntu-26.04-amd-gpu-x86_64`) — Ubuntu 26.04 LTS with ROCm-compatible kernel
 - AWS CLI configured with `AWS_PROFILE=spinifex` pointing at the Spinifex endpoint
 - SSH key pair imported into Spinifex, VPC and security group created (see [Launching Instances](/docs/launching-instances))
 

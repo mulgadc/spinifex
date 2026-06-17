@@ -27,7 +27,9 @@ sections:
 
 Spinifex is an open-source infrastructure platform that brings core AWS services including EC2, EBS and S3 to bare-metal, edge, and on-prem environments. It exposes an AWS compatible API, so any tooling that works against AWS (the `aws` CLI, Terraform, SDKs) works against a Spinifex node unchanged, with a single profile swap.
 
-This guide documents a full bare-metal AI deployment on a single chassis using four of its eight available NVIDIA H200 SXM GPUs. Rather than having Spinifex manage MIG partitioning at the host level, each VM receives an entire H200 via PCIe passthrough and manages its own MIG partitions internally. This gives each tenant full control over how they slice their GPU — including the ability to run heterogeneous workloads at different partition sizes on the same physical card.
+This guide documents a full bare-metal AI deployment on a single SMCI X13 chassis using four of its eight available NVIDIA H200 SXM GPUs. These GPUs come with MIG (Multi Instance GPU) capability, which allows a single GPU to be "sliced" into up to seven independent GPU partitions. Each partition is capable of running its own workloads with reserved resources from the "host" GPU.
+
+In this setup, each VM receives an entire H200 via PCIe passthrough and manages its own MIG partitions internally. This gives each tenant full control over how they slice their GPU — including the ability to run heterogeneous workloads at different partition sizes on the same physical card.
 
 ### VM layout
 
@@ -40,7 +42,6 @@ This guide documents a full bare-metal AI deployment on a single chassis using f
 
 Twelve concurrent inference endpoints in total: 7 fast 3B slots, 2 mid-tier 32B slots, 1 full-GPU 70B slot, and 2 real-time vision streams running side-by-side to compare detection models.
 
-## Prerequisites
 
 ### Platform
 
@@ -62,26 +63,54 @@ Twelve concurrent inference endpoints in total: 7 fast 3B slots, 2 mid-tier 32B 
 
 ---
 
+
+## Prerequisites
+
+### 1. Verify GPU visibility on host
+Before making any changes, verify that the host can see its GPUs:
+
+<img src="../../../.github/assets/images/h200/nvidia-smi.png" alt="NVIDIA SMI">
+
+
 ## Instructions
 
-### 0. Pre-req
-
-gpu passthrough changes here
 
 ### 1. Configure host-local VPC networking
 
-The bridge must exist before Spinifex starts, so configure and apply netplan first.
+Spinifex utilises bridged networking via OVN. In this example, the remote host exposes only one public IP address, attached to a single physical NIC. Before provisioning Spinifex, we must first ensure that `br-wan` exists and enslave the physical NIC to it.
 
-This chassis runs host-local only with no upstream router. Therefore, `br-wan` must be created and the hosts physical NIC enslaved to it. Additionally, the address range `192.168.10.0/24` must be attached to `br-wan` which will be used by the guest VMs to communicate with the host and each other.
+Since we have no access to an upstream router or knowledge of available IP address pools, we must also attach our own `192.168.10.0/24` address range to `br-wan` which will be used by the guest VMs to communicate with the host and each other.
 
-The exact process for this is described in the [VPC Networking](/docs/vpc-networking#host-local-subnet-no-upstream-router)) guide.
+For example:
+
+```yaml
+# /etc/netplan/…
+bridges:
+  br-wan:
+    addresses:
+      - 192.168.10.1/24      # VM pool gateway — host-local
+      - 198.51.100.10/24     # existing WAN IP — unchanged
+    routes:
+      - to: default
+        via: 198.51.100.1
+```
+
+Then apply with `sudo netplan apply`. VMs, once provisioned, are reachable from the host at
+`192.168.10.x`. For internet access through the host's WAN interface:
+
+```bash
+sysctl -w net.ipv4.ip_forward=1
+iptables -t nat -A POSTROUTING -s 192.168.10.0/24 -o br-wan -j MASQUERADE
+```
+The exact process for this is described in the [VPC Networking](/docs/vpc-networking#host-local-subnet-no-upstream-router) guide.
+
 
 
 ### 2. Install Spinifex from source
 
 Follow the [Install from Source](/docs/install-source) guide. This process will install Spinifex and start Spinifex services, however `spinifex.toml` needs to be edited to finalise the changes made to the networking in the previous section, as described in the following section.
 
-### 3. Configure spinifex.toml and start services
+### 3. Configure spinifex.toml and restart services
 
 Edit `/etc/spinifex/spinifex.toml` to point the external pool and VPCD at the bridge created in step 1:
 
@@ -112,8 +141,9 @@ sudo systemctl status spinifex.target
 
 Expand: Note, we will distribute the predastore volume over 3 physical drives for data redundancy (similar to RAID, predastore uses reed solomon encoding for data shards and parity). Note this environment is ideal to demonstrate this since multiple drives are provided.
 
+Spinifex distributes the Predastore (object storage) volume accross multiple nodes, using Reed Solomon encoding to provide data redundancy and increased reliability. In this specific example, where we have access to one hardware unit with four separate physical drives (one for the OS, three for data), we can mount and symlink a storage node to each of the three dedicated data storage drives, similar to RAID. This provides a perfect environment to demonstrate Spinifex/Predastore's approach to reliable distributed storage.
 
-This chassis has four NVMe drives. One is the OS drive, so confirm drive assignments with `lsblk` before proceeding, as device names vary between systems. Each of the three data drives needs to be symlinked into the path Predastore expects for its node data directories:
+Confirm drive assignments with `lsblk` before proceeding, as device names vary between systems. Each of the three data drives needs to be symlinked into the path Predastore expects for its node data directories:
 
 ```bash
 # Confirm drive paths — identify the OS drive and the three data drives
@@ -150,9 +180,17 @@ sudo systemctl start spinifex.target
 Verify the nodes are healthy before proceeding:
 
 ```bash
+export AWS_PROFILE=spinifex
+
 aws s3 ls --endpoint-url https://localhost:8443
 # Should return without error (empty bucket list is fine)
 ```
+
+### 5. Enable GPU Passthrough
+Spinifex allows GPUs to be utilised by guest VMS via VFIO-passthrough. This can be enabled via `sudo spx admin gpu setup`. Then, after a reboot, run `sudo spx admin gpu enable`. The Spinifex banner should update to reflect GPU passthrough state after every step:
+
+<img src="../../../.github/assets/images/h200/spinifex-banner1.png" alt="GPU Enabled">
+
 
 ### 5. Import the GPU AMI
 
@@ -163,26 +201,20 @@ The demo uses the standard Spinifex NVIDIA GPU AMI (`ubuntu-26.04-nvidia-gpu-x86
 - Docker CE + nvidia-container-toolkit (`--gpus` support enabled at boot)
 - Python 3 + venv, common utilities (tmux, curl, ffmpeg, etc.)
 
-No models or container images are pre-baked. The vLLM image is served from the host local registry, and models are downloaded onto the host before copying to the relevant VM.
-
 ```bash
 spx admin images import --name ubuntu-26.04-nvidia-gpu-x86_64
 ```
 
-Confirm it's visible:
-
+Confirm and set the AMI ID:
 ```bash
-export AWS_PROFILE=spinifex
-aws ec2 describe-images \
-    --query 'Images[*].[ImageId,Name]' \
-    --output table
+AMI_ID=$(aws ec2 describe-images \
+    --filters "Name=name,Values=ubuntu-26.04-nvidia-gpu-x86_64" \
+    --query 'Images[0].ImageId' --output text)
 ```
 
 ### 6. Create VPC resources
 
 ```bash
-export AWS_PROFILE=spinifex
-
 # Create VPC and subnet
 VPC_ID=$(aws ec2 create-vpc --cidr-block 192.168.10.0/24 \
     --query 'Vpc.VpcId' --output text)
@@ -200,9 +232,19 @@ aws ec2 authorize-security-group-ingress --group-id $SG_ID \
 aws ec2 authorize-security-group-ingress --group-id $SG_ID \
     --protocol tcp --port 8000-8011 --cidr 0.0.0.0/0
 
-# Import SSH key
-aws ec2 import-key-pair --key-name spinifex-key \
-    --public-key-material fileb://~/.ssh/spinifex-key.pub
+# Create SSH key
+```bash
+aws ec2 create-key-pair --key-name spinifex-key \
+  | jq -r '.KeyMaterial | rtrimstr("\n")' > ~/.ssh/spinifex-key
+
+chmod 600 ~/.ssh/spinifex-key
+ssh-keygen -y -f ~/.ssh/spinifex-key > ~/.ssh/spinifex-key.pub
+```
+
+Verify:
+
+```bash
+aws ec2 describe-key-pairs
 ```
 
 ### 7. Launch the four VMs
@@ -210,29 +252,20 @@ aws ec2 import-key-pair --key-name spinifex-key \
 Each VM gets a whole H200 via PCIe passthrough. The `p5e.4xlarge` instance type maps one H200 per VM:
 
 ```bash
-AMI_ID=$(aws ec2 describe-images \
-    --filters "Name=name,Values=ubuntu-26.04-nvidia-gpu-x86_64" \
-    --query 'Images[0].ImageId' --output text)
-
-for i in 1 2 3 4; do
-    aws ec2 run-instances \
-        --image-id $AMI_ID \
-        --instance-type p5e.4xlarge \
-        --key-name spinifex-key \
-        --subnet-id $SUBNET_ID \
-        --security-group-ids $SG_ID \
-        --count 1 \
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=mig-demo-$i}]"
-done
+aws ec2 run-instances \
+  --image-id $AMI_ID \
+  --instance-type p5e.4xlarge \
+  --key-name spinifex-key \
+  --subnet-id $SUBNET_ID \
+  --security-group-ids $SG_ID \
+  --count 4
 ```
 
 Wait until all four reach running state, then take note of the public IPs assigned to each instance:
 
 ```bash
 aws ec2 describe-instances \
-    --filters "Name=tag:Name,Values=mig-demo-*" "Name=instance-state-name,Values=running" \
-    --query 'Reservations[*].Instances[*].[InstanceId,PublicIpAddress,State.Name]' \
-    --output table
+    --query 'Reservations[*].Instances[*].[InstanceId,PublicIpAddress,State.Name' \
 ```
 
 ### 8. Enable MIG inside each VM
@@ -250,9 +283,20 @@ nvidia-smi | grep "MIG M."
 
 ### 9. Create MIG partitions inside each VM
 
-<expand what MIG is again, why we are doing this>
+With MIG enabled, we are now able to partition each VM's assigned H200 GPU into several separate GPU instances. This process assigns each GPU slice its own UUID, so each VM goes from seeing one whole GPU to seeing a number of "MIG devices":
 
-Once MIG is enabled, create the partitions. The partition profile determines how many vLLM (or YOLO) instances can run concurrently and how much HBM each gets.
+<img src="../../../.github/assets/images/h200/mig-activated.png" alt="NVIDIA SMI">
+
+This allows us to run several separate workloads, each assigned to its own GPU instance, on the same physical GPU, and thus utilise more of the overall GPU's resources.
+
+Run nvidia-smi mig -lgip to see the available partition types. MIG profiles are named Xg.Ygb, where:
+
+* X is the number of GPU slices (GPU Instances, or GIs) allocated to the partition. On an H200 there are 7 allocatable GPU slices, so the largest profile is 7g.
+* Y is the amount of HBM memory allocated to that partition.
+
+Larger profiles also receive proportionally more SMs, cache, copy engines, encoders/decoders, and other GPU resources.
+
+Thus we partition the GPUs assigned to our VMs as follows:
 
 **vm-llama3b — 7 × 1g.18gb (Llama 3B):**
 ```bash
@@ -328,17 +372,42 @@ sudo systemctl restart docker
 
 ### 11. Deploy the LLM workloads
 
-Each model is downloaded onto the host and copied to the relevant VMs. Take note of the location of the models on the VMs, then set each one up as follows:
+Each LLM is downloaded using the Huggingface CLI onto the respective VM. First install the CLI:
 
-<expand more about MODEL_DIR=<path-to-model>> give an example
+```bash
+pip install -U "huggingface_hub[cli]"
+```
+
+Then download the model and determine its snapshot directory. This directory contains the model’s config.json, tokenizer files, and weight files, and will be used as MODEL_DIR when launching vLLM.
+
+```bash
+#On VM 1
+hf download meta-llama/Llama-3.2-3B-Instruct
+
+MODEL_DIR=$(dirname "$(find ~/.cache/huggingface/hub -path '*Llama-3.2-3B-Instruct*' -name config.json | head -1)")
+echo "$MODEL_DIR"
+
+#On VM 2
+hf download meta-llama/Llama-3.2-3B-Instruct
+
+MODEL_DIR=$(dirname "$(find ~/.cache/huggingface/hub -path '*Llama-3.2-3B-Instruct*' -name config.json | head -1)")
+echo "$MODEL_DIR"
+
+#On VM 3
+hf download RedHatAI/Meta-Llama-3.1-70B-Instruct-FP8
+
+MODEL_DIR=$(dirname "$(find ~/.cache/huggingface/hub -path '*Meta-Llama-3.1-70B-Instruct-FP8*' -name config.json | head -1)")
+echo "$MODEL_DIR"
+```
+
+Then we run the docker containers as follows:
 
 **vm-llama3b — 7 × Llama-3.2-3B-Instruct (one container per MIG slice):**
 
 Enumerate the MIG UUIDs and start one vLLM container per slice:
 
-```bash
-MODEL_DIR=<path-to-model>
 
+```bash
 mapfile -t UUIDS < <(nvidia-smi -L | grep -oP 'MIG-[0-9a-f-]+')
 for i in "${!UUIDS[@]}"; do
     docker run -d --rm \
@@ -346,7 +415,7 @@ for i in "${!UUIDS[@]}"; do
         --gpus "device=${UUIDS[$i]}" \
         --ipc host \
         -p $((8000 + i)):8000 \
-        -v "${MODEL_DIR}:/models" \
+        -v "${MODEL_DIR}:/hf/snapshot:ro" \
         192.168.10.1:5000/vllm-openai:latest \
         vllm serve /models \
             --served-model-name llama-3b \
@@ -360,8 +429,6 @@ done
 **vm-qwen32b — 2 × Qwen2.5-32B-Instruct:**
 
 ```bash
-MODEL_DIR=<path-to-model>
-
 mapfile -t UUIDS < <(nvidia-smi -L | grep -oP 'MIG-[0-9a-f-]+')
 for i in "${!UUIDS[@]}"; do
     docker run -d --rm \
@@ -369,7 +436,7 @@ for i in "${!UUIDS[@]}"; do
         --gpus "device=${UUIDS[$i]}" \
         --ipc host \
         -p $((8000 + i)):8000 \
-        -v "${MODEL_DIR}:/models" \
+        -v "${MODEL_DIR}:/hf/snapshot:ro" \
         192.168.10.1:5000/vllm-openai:latest \
         vllm serve /models/Qwen2.5-32B-Instruct \
             --served-model-name qwen2.5-32b \
@@ -391,7 +458,7 @@ docker run -d --rm \
     --gpus "device=${UUID}" \
     --ipc host \
     -p 8000:8000 \
-    -v "${MODEL_DIR}:/models" \
+    -v "${MODEL_DIR}:/hf/snapshot:ro" \
     192.168.10.1:5000/vllm-openai:latest \
     vllm serve /models/Meta-Llama-3.1-70B-Instruct-FP8 \
         --served-model-name meta-llama-3.1-70b \
@@ -403,7 +470,7 @@ docker run -d --rm \
 
 ### 12. Deploy YOLO object detection (vm-yolo)
 
-We set up a simple YOLO inference server runs which runs directly in a Python venv and streams its output to a dashboard running on the host.
+We set up a simple YOLO inference server which runs directly in a Python venv and streams its output to a dashboard running on the host.
 
 ```bash
 # Install dependencies

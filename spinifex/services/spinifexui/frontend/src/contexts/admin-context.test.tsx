@@ -17,7 +17,7 @@ vi.mock("@/lib/sts", () => ({
 }))
 
 vi.mock("@/lib/signed-fetch", () => ({
-  signedFetch: async (opts: unknown) => mockSignedFetch(opts),
+  signedFetch: async (opts: unknown) => await mockSignedFetch(opts),
 }))
 
 vi.mock("@aws-sdk/client-sts", () => ({

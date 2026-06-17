@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ec2_account "github.com/mulgadc/spinifex/spinifex/gateway/ec2/account"
+	gateway_ec2_capacityreservation "github.com/mulgadc/spinifex/spinifex/gateway/ec2/capacityreservation"
 	gateway_ec2_eigw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eigw"
 	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
@@ -290,6 +291,15 @@ var ec2Actions = map[string]EC2Handler{
 	}),
 	"DescribePlacementGroups": ec2Handler(func(input *ec2.DescribePlacementGroupsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_placementgroup.DescribePlacementGroups(input, gw.NATSConn, accountID)
+	}),
+	"CreateCapacityReservation": ec2Handler(func(input *ec2.CreateCapacityReservationInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_capacityreservation.CreateCapacityReservation(input, gw.NATSConn, gw.ExpectedNodes, accountID)
+	}),
+	"DescribeCapacityReservations": ec2Handler(func(input *ec2.DescribeCapacityReservationsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_capacityreservation.DescribeCapacityReservations(input, gw.NATSConn, gw.ExpectedNodes, accountID)
+	}),
+	"CancelCapacityReservation": ec2Handler(func(input *ec2.CancelCapacityReservationInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_capacityreservation.CancelCapacityReservation(input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"CreateVpc": ec2Handler(func(input *ec2.CreateVpcInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.CreateVpc(input, gw.NATSConn, accountID)

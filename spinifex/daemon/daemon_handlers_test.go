@@ -16,7 +16,6 @@ import (
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -1123,21 +1122,6 @@ func TestHandleEC2CreateImage_MalformedJSON(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
 	assert.Equal(t, awserrors.ErrorValidationError, errResp["Code"])
-}
-
-// --- SetConfigPath test ---
-
-func TestSetConfigPath(t *testing.T) {
-	clusterCfg := &config.ClusterConfig{
-		Node:  "node-1",
-		Nodes: map[string]config.Config{"node-1": {BaseDir: "/tmp"}},
-	}
-	daemon, err := NewDaemon(clusterCfg)
-	require.NoError(t, err)
-
-	assert.Empty(t, daemon.configPath)
-	daemon.SetConfigPath("/etc/spinifex/config.toml")
-	assert.Equal(t, "/etc/spinifex/config.toml", daemon.configPath)
 }
 
 // --- handleEC2StartStoppedInstance tests ---

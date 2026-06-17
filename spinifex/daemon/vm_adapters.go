@@ -177,8 +177,7 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 				"instance", instance.ID, "volume", ebsRequest.Name, "data", string(msg.Data))
 		}
 
-		if sealed && !ebsRequest.EFI && a.volState != nil {
-			if err := a.volState.UpdateVolumeState(ebsRequest.Name, "available", "", ""); err != nil {
+		if sealed && !ebsRequest.EFI && !ebsRequest.CloudInit && a.volState != nil {			if err := a.volState.UpdateVolumeState(ebsRequest.Name, "available", "", ""); err != nil {
 				slog.Error("Failed to update volume state to available after unmount",
 					"volumeId", ebsRequest.Name, "err", err)
 			}

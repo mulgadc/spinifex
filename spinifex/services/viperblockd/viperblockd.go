@@ -176,8 +176,8 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 // the ebs.mount path so encrypted volumes open with the master key and matching
 // encryption state. Callers that Close() the VB MUST go through
 // openLoadedVolumeVB instead, so the block map is restored before Close()
-// flushes it back to predastore.func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
-	s3cfg := s3.S3Config{
+// flushes it back to predastore.
+func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {	s3cfg := s3.S3Config{
 		VolumeName: volumeName,
 		Bucket:     cfg.Bucket,
 		Region:     cfg.Region,
@@ -206,12 +206,11 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 	return vb, nil
 }
 
-// isAuxVolume reports whether a volume is an -efi auxiliary volume. Auxiliary
-// volumes are recreated on launch and carry no durable guest data, so they
-// never need sealing to predastore.
+// isAuxVolume reports whether a volume is an -efi/-cloudinit auxiliary volume.
+// Auxiliary volumes are recreated on launch and carry no durable guest data, so
+// they never need sealing to predastore.
 func isAuxVolume(volumeName string) bool {
-	return strings.HasSuffix(volumeName, "-efi")
-}
+	return strings.HasSuffix(volumeName, "-efi") || strings.HasSuffix(volumeName, "-cloudinit")}
 
 // volumeNeedsSeal reports whether an unmounted volume must be sealed to
 // predastore on this node: it carries durable guest data (not an auxiliary
@@ -597,8 +596,8 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		vb, err := openLoadedVolumeVB(cfg, req.Volume)		if err != nil {
-			slog.Error("ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
+		vb, err := openLoadedVolumeVB(cfg, req.Volume)
+		if err != nil {			slog.Error("ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
 			return
 		}

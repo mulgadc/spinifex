@@ -117,11 +117,15 @@ type K3sServerInput struct {
 	// Gateway broker config: CP VM publishes via SigV4-signed HTTPS POST to AWSGW.
 	// GatewayURL is the mgmt-reachable endpoint; AccessKey/SecretKey are system
 	// SigV4 creds; GatewayCACert signs the gateway TLS cert.
-	GatewayURL    string
-	AccessKey     string
-	SecretKey     string
-	GatewayCACert string
-	InstanceType  string
+	GatewayURL string
+	// AddonGatewayURL is the customer-facing gateway endpoint baked into managed
+	// addon pod specs (EKS_ADDON_GATEWAY_URL). Those pods run on workers, which
+	// cannot reach the mgmt GatewayURL, so they target this public address.
+	AddonGatewayURL string
+	AccessKey       string
+	SecretKey       string
+	GatewayCACert   string
+	InstanceType    string
 	// TargetNodeID pins the VM to a specific host for HA spread; empty = local node.
 	TargetNodeID string
 	// JoinToken is the shared k3s cluster token so HA servers join the etcd quorum.
@@ -373,6 +377,8 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput empty OIDCPublicKeyPEM")
 	case in.GatewayURL == "":
 		return errors.New("eks: K3sServerInput empty GatewayURL")
+	case in.AddonGatewayURL == "":
+		return errors.New("eks: K3sServerInput empty AddonGatewayURL")
 	case in.AccessKey == "":
 		return errors.New("eks: K3sServerInput empty AccessKey")
 	case in.SecretKey == "":
@@ -430,6 +436,7 @@ func buildK3sUserData(in K3sServerInput) string {
 	envBody := strings.Join([]string{
 		"SPINIFEX_K3S_ROLE=" + role,
 		"EKS_GATEWAY_URL=" + in.GatewayURL,
+		"EKS_ADDON_GATEWAY_URL=" + in.AddonGatewayURL,
 		"EKS_GATEWAY_CA=" + k3sGatewayCAPath,
 		"EKS_ACCESS_KEY=" + in.AccessKey,
 		"EKS_SECRET_KEY=" + in.SecretKey,

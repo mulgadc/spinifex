@@ -183,6 +183,7 @@ func validK3sInput() K3sServerInput {
 		OIDCPrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\nFAKEKEY\n-----END PRIVATE KEY-----\n",
 		OIDCPublicKeyPEM:  "-----BEGIN PUBLIC KEY-----\nFAKEPUB\n-----END PUBLIC KEY-----\n",
 		GatewayURL:        "https://10.15.8.1:9999",
+		AddonGatewayURL:   "https://192.168.1.33:9999",
 		AccessKey:         "AKIAEXAMPLE",
 		SecretKey:         "s3cr3t-key",
 		GatewayCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
@@ -210,6 +211,7 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		{"empty OIDCPrivateKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPrivateKeyPEM = "   \n " })},
 		{"empty OIDCPublicKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPublicKeyPEM = "   \n " })},
 		{"empty GatewayURL", mk(func(in *K3sServerInput) { in.GatewayURL = "" })},
+		{"empty AddonGatewayURL", mk(func(in *K3sServerInput) { in.AddonGatewayURL = "" })},
 		{"empty AccessKey", mk(func(in *K3sServerInput) { in.AccessKey = "" })},
 		{"empty SecretKey", mk(func(in *K3sServerInput) { in.SecretKey = "" })},
 		{"empty GatewayCACert", mk(func(in *K3sServerInput) { in.GatewayCACert = "  \n" })},
@@ -410,6 +412,7 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// services; without it the unified AMI boots into no role.
 	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server")
 	assert.Contains(t, udata, "EKS_GATEWAY_URL=https://10.15.8.1:9999")
+	assert.Contains(t, udata, "EKS_ADDON_GATEWAY_URL=https://192.168.1.33:9999")
 	assert.Contains(t, udata, "EKS_GATEWAY_CA="+k3sGatewayCAPath)
 	assert.Contains(t, udata, "EKS_ACCESS_KEY=AKIAEXAMPLE")
 	assert.Contains(t, udata, "EKS_SECRET_KEY=s3cr3t-key")

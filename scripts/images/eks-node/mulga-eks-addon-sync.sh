@@ -26,6 +26,7 @@ set -a
 set +a
 
 : "${EKS_GATEWAY_URL:?}"
+: "${EKS_ADDON_GATEWAY_URL:?}"
 : "${EKS_ACCESS_KEY:?}"
 : "${EKS_SECRET_KEY:?}"
 : "${EKS_ACCOUNT_ID:?}"
@@ -163,7 +164,7 @@ render_addon() {
             -e "s|{{CLUSTER_NAME}}|${EKS_CLUSTER_NAME}|g" \
             -e "s|{{AWS_REGION}}|${EKS_REGION:-}|g" \
             -e "s|{{AWS_VPC_ID}}|${EKS_VPC_ID:-}|g" \
-            -e "s|{{GATEWAY_ENDPOINT}}|${EKS_GATEWAY_URL}|g" \
+            -e "s|{{GATEWAY_ENDPOINT}}|${EKS_ADDON_GATEWAY_URL}|g" \
             -e "s|{{GATEWAY_CA_PEM_B64}}|${_ca_b64}|g" \
             -e "s|{{WEBHOOK_CA_B64}}|${_wh_ca}|g" \
             -e "s|{{WEBHOOK_TLS_CRT_B64}}|${_wh_crt}|g" \

@@ -156,14 +156,35 @@ render_addon() {
           mountPath: /etc/spinifex/gateway-ca
           readOnly: true'
 
+    # IngressClassParams spec injection. EKS_ELB_SUBNET_IDS is the cluster's
+    # ELB-eligible subnets (CSV, deduped to one per AZ by the daemon). Inject them
+    # as explicit .spec.subnets.ids so every Ingress takes LBC's explicit-subnet
+    # path, the only one that honors ALBSingleSubnet; a single-AZ cluster otherwise
+    # fails reconcile. Empty value drops the marker line, leaving tag auto-discovery.
+    _icp_spec=''
+    if [ -n "${EKS_ELB_SUBNET_IDS:-}" ]; then
+        _icp_spec='  spec:
+    subnets:
+      ids:'
+        _oldifs=$IFS
+        IFS=','
+        for _sn in ${EKS_ELB_SUBNET_IDS}; do
+            [ -n "${_sn}" ] || continue
+            _icp_spec="${_icp_spec}
+      - ${_sn}"
+        done
+        IFS=$_oldifs
+    fi
+
     _tmp="${_dst}.tmp.$$"
     : > "${_tmp}"
     for _f in "${_src}"/*.yaml; do
         [ -e "${_f}" ] || continue
-        awk -v env="${_irsa_env}" -v vol="${_irsa_vol}" -v mnt="${_irsa_mnt}" '
-            index($0, "{{IRSA_ENV}}")          { print env; next }
-            index($0, "{{IRSA_VOLUME_MOUNT}}") { print mnt; next }
-            index($0, "{{IRSA_VOLUME}}")       { print vol; next }
+        awk -v env="${_irsa_env}" -v vol="${_irsa_vol}" -v mnt="${_irsa_mnt}" -v icp="${_icp_spec}" '
+            index($0, "{{IRSA_ENV}}")                  { print env; next }
+            index($0, "{{IRSA_VOLUME_MOUNT}}")         { print mnt; next }
+            index($0, "{{IRSA_VOLUME}}")               { print vol; next }
+            index($0, "{{ELB_INGRESS_PARAMS_SPEC}}")   { if (icp != "") print icp; next }
             { print }
         ' "${_f}" \
         | sed -e "s|{{SERVICE_ACCOUNT_ROLE_ARN}}|${_role}|g" \

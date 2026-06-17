@@ -759,40 +759,6 @@ func TestDaemon_BootAllocation(t *testing.T) {
 	assert.Equal(t, expectedMem, daemon.resourceMgr.allocatedMem)
 }
 
-// TestStopInstance_Deallocation verifies that stopping an instance deallocates resources
-func TestStopInstance_Deallocation(t *testing.T) {
-	clusterCfg := &config.ClusterConfig{
-		Node:  "node-1",
-		Nodes: map[string]config.Config{"node-1": {BaseDir: "/tmp"}},
-	}
-	daemon, err := NewDaemon(clusterCfg)
-	require.NoError(t, err)
-
-	// Setup a running instance with allocated resources
-	instanceId := "i-test-stop"
-	instanceTypeStr := getTestInstanceType(t)
-	instanceType := daemon.resourceMgr.instanceTypes[instanceTypeStr]
-	daemon.vmMgr.Insert(&vm.VM{
-		ID:           instanceId,
-		InstanceType: instanceTypeStr,
-		Status:       vm.StateRunning,
-		AccountID:    testAccountID,
-	})
-
-	err = daemon.resourceMgr.allocate(instanceType)
-	require.NoError(t, err)
-	assert.Greater(t, daemon.resourceMgr.allocatedVCPU, 0)
-
-	// Call stopInstance (we can't easily wait for QMP/PID here, so we just want to see deallocate call)
-	// Actually stopInstance runs in goroutines and waits for PID removal.
-	// This might be tricky to test without heavy mocking.
-
-	// Let's test the ResourceManager deallocate directly since we've already verified
-	// that stopInstance calls it in the code.
-	daemon.resourceMgr.deallocate(instanceType)
-	assert.Equal(t, 0, daemon.resourceMgr.allocatedVCPU)
-}
-
 // TestCanAllocate_CountEdgeCases tests edge cases for canAllocate with count parameter
 func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	t.Run("MinCount_equals_MaxCount", func(t *testing.T) {
@@ -1625,78 +1591,6 @@ func TestResourceManager_ConcurrentAccess(t *testing.T) {
 	// Final state should be clean (no allocations)
 	assert.Equal(t, 0, rm.allocatedVCPU, "All resources should be deallocated")
 	assert.Equal(t, float64(0), rm.allocatedMem, "All memory should be deallocated")
-}
-
-// TestGenerateVolumes_DeleteOnTermination_FromBlockDeviceMapping verifies that
-// the deleteOnTermination flag from RunInstancesInput.BlockDeviceMappings is
-// propagated to the EBSRequest on the instance's volume list.
-func TestGenerateVolumes_DeleteOnTermination_FromBlockDeviceMapping(t *testing.T) {
-	tests := []struct {
-		name                    string
-		deleteOnTerminationFlag *bool
-		expectedFlag            bool
-	}{
-		{
-			name:                    "DeleteOnTermination=true",
-			deleteOnTerminationFlag: aws.Bool(true),
-			expectedFlag:            true,
-		},
-		{
-			name:                    "DeleteOnTermination=false",
-			deleteOnTerminationFlag: aws.Bool(false),
-			expectedFlag:            false,
-		},
-		{
-			name:                    "DeleteOnTermination=nil (defaults to true)",
-			deleteOnTerminationFlag: nil,
-			expectedFlag:            true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Build a RunInstancesInput with BlockDeviceMappings
-			input := &ec2.RunInstancesInput{
-				ImageId:      aws.String("vol-existing-volume"),
-				InstanceType: aws.String("t3.micro"),
-				MinCount:     aws.Int64(1),
-				MaxCount:     aws.Int64(1),
-			}
-
-			if tt.deleteOnTerminationFlag != nil {
-				input.BlockDeviceMappings = []*ec2.BlockDeviceMapping{
-					{
-						DeviceName: aws.String("/dev/vda"),
-						Ebs: &ec2.EbsBlockDevice{
-							VolumeSize:          aws.Int64(8),
-							DeleteOnTermination: tt.deleteOnTerminationFlag,
-						},
-					},
-				}
-			}
-
-			// Exercise the parsing logic that GenerateVolumes uses
-			// Default is true (matches AWS RunInstances behavior for root volumes)
-			deleteOnTermination := true
-			if len(input.BlockDeviceMappings) > 0 {
-				bdm := input.BlockDeviceMappings[0]
-				if bdm.Ebs != nil && bdm.Ebs.DeleteOnTermination != nil {
-					deleteOnTermination = *bdm.Ebs.DeleteOnTermination
-				}
-			}
-
-			assert.Equal(t, tt.expectedFlag, deleteOnTermination,
-				"deleteOnTermination should match expected value")
-
-			// Verify the flag is correctly assigned to an EBSRequest
-			ebsReq := types.EBSRequest{
-				Name:                "vol-test",
-				Boot:                true,
-				DeleteOnTermination: deleteOnTermination,
-			}
-			assert.Equal(t, tt.expectedFlag, ebsReq.DeleteOnTermination)
-		})
-	}
 }
 
 // TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination tests that

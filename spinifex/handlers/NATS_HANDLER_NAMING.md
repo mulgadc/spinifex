@@ -198,3 +198,27 @@ EKS reconcilers also publish on existing namespaces when interacting with
 other services (no `eks.` prefix): `ec2.RunInstances`,
 `ec2.CreateNetworkInterface`, `elbv2.CreateLoadBalancer`,
 `elbv2.RegisterTargets`, `route53.ChangeResourceRecordSets`, etc.
+
+## ECR (OCI Distribution registry metadata)
+
+ECR is not a SigV4 AWS-action surface but an OCI Distribution v2 (`/v2/*`)
+registry. Blob and manifest *bytes* stream straight from the gateway to
+predastore and never traverse NATS. Only the *metadata* — repo/tag/manifest
+records and in-progress upload-state CAS — is owned by the daemon, which holds
+the per-account JetStream KV. The gateway is a request/reply client; the daemon
+serves these subjects under the `spinifex-workers` queue group.
+
+Subjects use a `ecr.<noun>.<verb>` shape (handler `handleECR<Noun><Verb>`):
+
+```
+ecr.repo.create, ecr.repo.describe, ecr.repo.list
+ecr.tag.put, ecr.tag.get, ecr.tag.list, ecr.tag.delete
+ecr.manifest.put, ecr.manifest.describe
+ecr.upload.create, ecr.upload.get, ecr.upload.update, ecr.upload.delete
+```
+
+`ecr.upload.update` is the serialization point for chunked blob uploads: it is a
+JetStream KV compare-and-swap, so a concurrent PATCH that loses the revision
+race is rejected rather than silently merged. Absent records and CAS conflicts
+travel back as response flags (`found`, `conflict`), not transport errors, so
+they round-trip a reply envelope that otherwise only carries AWS error codes.

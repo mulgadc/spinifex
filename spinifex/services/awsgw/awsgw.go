@@ -199,22 +199,18 @@ func launchService(config *config.ClusterConfig) error {
 		slog.Warn("Failed to load throttle config, throttling disabled", "err", err)
 	}
 
-	// OCI Distribution v2 registry: blob/manifest bytes stream to predastore;
-	// repo/tag/manifest metadata and in-progress uploads live in per-account
-	// JetStream KV. Account scoping uses the bootstrap account until the
-	// /v2 token-auth bridge lands.
-	var ecrRegistry *gateway_ecr.Registry
-	if js, jsErr := natsConn.JetStream(); jsErr != nil {
-		slog.Warn("ECR registry disabled: JetStream unavailable", "err", jsErr)
-	} else {
-		ecrStore := objectstore.NewS3ObjectStoreFromConfig(
-			admin.DialTarget(nodeConfig.Predastore.Host),
-			nodeConfig.Predastore.Region,
-			nodeConfig.Predastore.AccessKey,
-			nodeConfig.Predastore.SecretKey,
-		)
-		ecrRegistry = gateway_ecr.NewRegistry(ecrStore, ecr.NewKVMetaStore(js), config.Bootstrap.AccountID)
-	}
+	// OCI Distribution v2 registry: blob/manifest bytes stream straight to
+	// predastore from the gateway; repo/tag/manifest metadata and in-progress
+	// uploads are owned by the daemon and reached over NATS request/reply.
+	// Account scoping uses the bootstrap account until the /v2 token-auth
+	// bridge lands.
+	ecrStore := objectstore.NewS3ObjectStoreFromConfig(
+		admin.DialTarget(nodeConfig.Predastore.Host),
+		nodeConfig.Predastore.Region,
+		nodeConfig.Predastore.AccessKey,
+		nodeConfig.Predastore.SecretKey,
+	)
+	ecrRegistry := gateway_ecr.NewRegistry(ecrStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
 
 	gw := gateway.GatewayConfig{
 		Debug:          nodeConfig.AWSGW.Debug,

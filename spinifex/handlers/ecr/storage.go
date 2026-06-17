@@ -38,6 +38,10 @@ const (
 	blobKeyFmt = "blobs/%s/%s"
 	// uploadKeyFmt holds in-progress chunked upload bytes.
 	uploadKeyFmt = "uploads/%s"
+	// uploadChunkKeyFmt holds a single revision's assembled bytes under a unique
+	// per-write token, so a CAS-winning PATCH always points at exactly the bytes
+	// it hashed (a losing concurrent write lands on a different, orphaned token).
+	uploadChunkKeyFmt = "uploads/%s/%s"
 )
 
 // RepoMetaKey returns the key for a repository's config object.
@@ -54,6 +58,12 @@ func IndexKey(repo string) string { return fmt.Sprintf(indexKeyFmt, repo) }
 
 // UploadKey returns the key for an in-progress upload's bytes.
 func UploadKey(uploadID string) string { return fmt.Sprintf(uploadKeyFmt, uploadID) }
+
+// UploadChunkKey returns the key for one revision's assembled upload bytes,
+// addressed by a unique per-write token.
+func UploadChunkKey(uploadID, token string) string {
+	return fmt.Sprintf(uploadChunkKeyFmt, uploadID, token)
+}
 
 // KV bucket layout for per-account ECR metadata. The bucket name is
 // KVBucketAccountPrefix + accountID (e.g. "ecr-account-000000000000"), created

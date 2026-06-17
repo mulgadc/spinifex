@@ -46,6 +46,10 @@ type UploadState struct {
 	CommittedBytes       int64     `json:"committedBytes"`
 	SHA256MarshaledState []byte    `json:"sha256MarshaledState"`
 	ExpectedDigest       string    `json:"expectedDigest,omitempty"`
+	// BytesKey addresses the object holding all bytes committed so far. Each
+	// PATCH writes a fresh key and records it under CAS, so the committed hash
+	// and the committed bytes always refer to the same object.
+	BytesKey string `json:"bytesKey,omitempty"`
 }
 
 // MetaStore is the per-account metadata surface backing the OCI registry. Reads

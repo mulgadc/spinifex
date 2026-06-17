@@ -48,6 +48,7 @@ import (
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
@@ -142,6 +143,7 @@ type Daemon struct {
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
 	acmService            *handlers_acm.ACMServiceImpl
+	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
 	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
@@ -939,6 +941,26 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// ECR gateway → daemon subscriptions. The daemon owns the per-account
+	// JetStream KV metadata; blob/manifest bytes never traverse these subjects.
+	if d.ecrMetaService != nil {
+		subs = append(subs,
+			natsSub{handlers_ecr.SubjectRepoCreate, d.handleECRRepoCreate, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectRepoDescribe, d.handleECRRepoDescribe, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectRepoList, d.handleECRRepoList, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagPut, d.handleECRTagPut, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagGet, d.handleECRTagGet, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagList, d.handleECRTagList, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagDelete, d.handleECRTagDelete, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectManifestPut, d.handleECRManifestPut, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectManifestDescribe, d.handleECRManifestDescribe, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadCreate, d.handleECRUploadCreate, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadGet, d.handleECRUploadGet, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadUpdate, d.handleECRUploadUpdate, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadDelete, d.handleECRUploadDelete, "spinifex-workers"},
+		)
+	}
+
 	// EIP operations require external IPAM (pool mode). Only subscribe when available;
 	// without a subscriber the gateway returns a NATS timeout → clean error to the client.
 	if d.eipService != nil {
@@ -1341,6 +1363,15 @@ func (d *Daemon) startCluster() error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)
+	}
+
+	// ECR metadata service: owns per-account JetStream KV for repos, tags,
+	// manifest records and upload-state CAS. Disabled (gateway returns NATS
+	// timeouts) when JetStream is unavailable.
+	if js, jsErr := d.natsConn.JetStream(); jsErr != nil {
+		slog.Warn("ECR metadata service disabled: JetStream unavailable", "err", jsErr)
+	} else {
+		d.ecrMetaService = handlers_ecr.NewKVMetaService(js)
 	}
 
 	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {

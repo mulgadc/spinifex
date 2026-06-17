@@ -35,18 +35,19 @@ const (
 // blobs; anything larger is rejected before buffering.
 const maxManifestBytes = 4 << 20
 
-// Registry serves the OCI Distribution Spec v2 surface (/v2/*) against an
-// account-scoped predastore bucket (blob and manifest bytes) and a JetStream-KV
-// metadata store (repos, tags, manifest records, in-progress uploads). Blob
-// bytes stream straight to predastore; only metadata is content-addressed in KV.
+// Registry serves the OCI Distribution Spec v2 surface (/v2/*). Blob and
+// manifest bytes stream straight to an account-scoped predastore bucket via
+// Store. Metadata (repos, tags, manifest records, in-progress upload-state CAS)
+// goes through Meta, which the gateway reaches over NATS request/reply to the
+// daemon that owns the per-account JetStream KV.
 type Registry struct {
 	Store     objectstore.ObjectStore
 	Meta      ecr.MetaStore
 	AccountID string
 }
 
-// NewRegistry wires a Registry to its predastore object store and KV metadata
-// store for the given account.
+// NewRegistry wires a Registry to its predastore object store and the metadata
+// store (a NATS client in production) for the given account.
 func NewRegistry(store objectstore.ObjectStore, meta ecr.MetaStore, accountID string) *Registry {
 	return &Registry{Store: store, Meta: meta, AccountID: accountID}
 }
@@ -227,12 +228,15 @@ func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name st
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// patchUpload appends a chunk to an in-progress upload. The chunk bytes are
-// folded into the running sha256, and the assembled bytes are stored under the
-// upload's temp key. predastore exposes no append primitive through the shared
-// object-store interface, so each chunk is concatenated onto the prior temp
-// object and re-put; the running hash advances incrementally either way. The
-// upload record advances under a KV CAS so concurrent PATCHes can't interleave.
+// patchUpload appends a chunk to an in-progress upload. predastore exposes no
+// append primitive, so each PATCH reads the bytes committed by the prior
+// revision, concatenates the chunk, and writes the result under a fresh unique
+// key. The running sha256 advances from the stored marshaled state. The new
+// byte key and hash state are committed together under a single KV CAS at the
+// revision read at the top: a concurrent PATCH that loses the CAS gets 409 and
+// its freshly-written object is simply orphaned, never referenced. Because the
+// winning record names the exact object it hashed, the digest finally verified
+// always equals the bytes finally stored.
 func (reg *Registry) patchUpload(w http.ResponseWriter, r *http.Request, name, uploadID string) {
 	st, rev, err := reg.Meta.GetUpload(reg.AccountID, uploadID)
 	if err != nil {
@@ -250,9 +254,10 @@ func (reg *Registry) patchUpload(w http.ResponseWriter, r *http.Request, name, u
 		return
 	}
 
-	prior := reg.readUploadBytes(uploadID)
+	prior := reg.readUploadBytesAt(st.BytesKey)
 	assembled := append(prior, chunk...)
-	if err := reg.putUploadBytes(uploadID, assembled); err != nil {
+	newKey := ecr.UploadChunkKey(uploadID, uuid.NewString())
+	if err := reg.putUploadBytesAt(newKey, assembled); err != nil {
 		reg.internal(w, "store chunk", err)
 		return
 	}
@@ -269,16 +274,25 @@ func (reg *Registry) patchUpload(w http.ResponseWriter, r *http.Request, name, u
 		return
 	}
 
+	priorKey := st.BytesKey
 	st.CommittedBytes += int64(len(chunk))
 	st.SHA256MarshaledState = marshaled
 	st.LastActivity = time.Now().UTC()
+	st.BytesKey = newKey
 	if _, err := reg.Meta.UpdateUpload(reg.AccountID, uploadID, st, rev); err != nil {
+		// Lost the CAS or a real failure: drop the object this attempt wrote so
+		// it doesn't linger, then surface 409 (the client/registry retries).
+		_ = reg.deleteUploadBytesAt(newKey)
 		if errors.Is(err, ecr.ErrConflict) {
 			WriteError(w, http.StatusConflict, "BLOB_UPLOAD_INVALID", "concurrent upload modification")
 			return
 		}
 		reg.internal(w, "update upload", err)
 		return
+	}
+	// CAS won: the superseded object is no longer referenced.
+	if priorKey != "" {
+		_ = reg.deleteUploadBytesAt(priorKey)
 	}
 
 	w.Header().Set("Location", uploadPath(name, uploadID))
@@ -321,17 +335,16 @@ func (reg *Registry) finishUpload(w http.ResponseWriter, r *http.Request, name, 
 
 	var assembled []byte
 	if len(finalChunk) > 0 {
-		assembled = append(reg.readUploadBytes(uploadID), finalChunk...)
+		assembled = append(reg.readUploadBytesAt(st.BytesKey), finalChunk...)
 		h.Write(finalChunk)
 		st.CommittedBytes += int64(len(finalChunk))
 	} else {
-		assembled = reg.readUploadBytes(uploadID)
+		assembled = reg.readUploadBytesAt(st.BytesKey)
 	}
 
 	computed := "sha256:" + hex.EncodeToString(h.Sum(nil))
 	if computed != digest {
-		_ = reg.deleteUploadBytes(uploadID)
-		_ = reg.Meta.DeleteUpload(reg.AccountID, uploadID)
+		reg.cleanupUpload(uploadID)
 		WriteError(w, http.StatusBadRequest, "DIGEST_INVALID", "computed digest does not match expected digest")
 		return
 	}
@@ -344,28 +357,53 @@ func (reg *Registry) finishUpload(w http.ResponseWriter, r *http.Request, name, 
 			Key:    aws.String(ecr.BlobKey(digest)),
 			Body:   aws.ReadSeekCloser(strings.NewReader(string(assembled))),
 		}); err != nil {
+			// Finalize failed: drop the temp object and upload record so the
+			// uuid is reusable and no partial blob is left assembled.
+			reg.cleanupUpload(uploadID)
 			reg.internal(w, "store blob", err)
 			return
 		}
 	}
 
-	_ = reg.deleteUploadBytes(uploadID)
-	_ = reg.Meta.DeleteUpload(reg.AccountID, uploadID)
+	reg.cleanupUpload(uploadID)
 	reg.writeBlobCreated(w, name, digest)
 }
 
+// cancelUpload aborts an in-progress upload, deleting both the committed temp
+// bytes and the upload record. An unknown uuid is a 404; a successful delete is
+// 204 (idempotent — a second cancel sees the record gone and returns 404).
 func (reg *Registry) cancelUpload(w http.ResponseWriter, _, uploadID string) {
+	st, _, getErr := reg.Meta.GetUpload(reg.AccountID, uploadID)
 	err := reg.Meta.DeleteUpload(reg.AccountID, uploadID)
-	if err != nil && !errors.Is(err, ecr.ErrNotFound) {
+	switch {
+	case errors.Is(err, ecr.ErrNotFound):
+		WriteError(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "upload not found")
+		return
+	case err != nil:
 		reg.internal(w, "cancel upload", err)
 		return
 	}
-	if errors.Is(err, ecr.ErrNotFound) {
-		WriteError(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "upload not found")
-		return
+	if getErr == nil && st.BytesKey != "" {
+		if delErr := reg.deleteUploadBytesAt(st.BytesKey); delErr != nil {
+			slog.Error("ECR/OCI: cancel upload temp cleanup failed", "uploadID", uploadID, "err", delErr)
+		}
 	}
-	_ = reg.deleteUploadBytes(uploadID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// cleanupUpload drops the upload record and its committed temp bytes. Used on
+// finalize success and on finalize failure so an aborted upload leaves neither
+// an orphaned record (which would block the uuid) nor partial blob bytes.
+func (reg *Registry) cleanupUpload(uploadID string) {
+	st, _, getErr := reg.Meta.GetUpload(reg.AccountID, uploadID)
+	if err := reg.Meta.DeleteUpload(reg.AccountID, uploadID); err != nil && !errors.Is(err, ecr.ErrNotFound) {
+		slog.Error("ECR/OCI: upload record cleanup failed", "uploadID", uploadID, "err", err)
+	}
+	if getErr == nil && st.BytesKey != "" {
+		if err := reg.deleteUploadBytesAt(st.BytesKey); err != nil {
+			slog.Error("ECR/OCI: upload temp cleanup failed", "uploadID", uploadID, "err", err)
+		}
+	}
 }
 
 func (reg *Registry) writeBlobCreated(w http.ResponseWriter, name, digest string) {
@@ -432,7 +470,7 @@ func (reg *Registry) getManifest(w http.ResponseWriter, r *http.Request, name, r
 		return
 	}
 	if !acceptsType(r.Header.Get("Accept"), meta.MediaType) {
-		WriteError(w, http.StatusNotAcceptable, "MANIFEST_UNKNOWN", "no acceptable manifest media type")
+		WriteError(w, http.StatusNotAcceptable, "MANIFEST_INVALID", "no acceptable manifest media type")
 		return
 	}
 	out, err := reg.Store.GetObject(&s3.GetObjectInput{
@@ -679,10 +717,15 @@ func (reg *Registry) blobExists(digest string) bool {
 	return err == nil
 }
 
-func (reg *Registry) readUploadBytes(uploadID string) []byte {
+// readUploadBytesAt returns the bytes at key, or nil for an empty key or a miss
+// (a fresh upload has no committed bytes yet).
+func (reg *Registry) readUploadBytesAt(key string) []byte {
+	if key == "" {
+		return nil
+	}
 	out, err := reg.Store.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(reg.bucket()),
-		Key:    aws.String(ecr.UploadKey(uploadID)),
+		Key:    aws.String(key),
 	})
 	if err != nil {
 		return nil
@@ -695,19 +738,22 @@ func (reg *Registry) readUploadBytes(uploadID string) []byte {
 	return data
 }
 
-func (reg *Registry) putUploadBytes(uploadID string, data []byte) error {
+func (reg *Registry) putUploadBytesAt(key string, data []byte) error {
 	_, err := reg.Store.PutObject(&s3.PutObjectInput{
 		Bucket: aws.String(reg.bucket()),
-		Key:    aws.String(ecr.UploadKey(uploadID)),
+		Key:    aws.String(key),
 		Body:   aws.ReadSeekCloser(strings.NewReader(string(data))),
 	})
 	return err
 }
 
-func (reg *Registry) deleteUploadBytes(uploadID string) error {
+func (reg *Registry) deleteUploadBytesAt(key string) error {
+	if key == "" {
+		return nil
+	}
 	_, err := reg.Store.DeleteObject(&s3.DeleteObjectInput{
 		Bucket: aws.String(reg.bucket()),
-		Key:    aws.String(ecr.UploadKey(uploadID)),
+		Key:    aws.String(key),
 	})
 	return err
 }

@@ -17,7 +17,22 @@ type ClusterConfig struct {
 	Version   string            `mapstructure:"version"`   // spinifex version
 	Network   NetworkConfig     `mapstructure:"network"`   // cluster-wide external network settings
 	Bootstrap BootstrapConfig   `mapstructure:"bootstrap"` // default VPC IDs for OVN reconciliation
+	AWS       AWSConfig         `mapstructure:"aws"`       // cluster-wide AWS-parity settings (region, endpoint suffix)
 	Nodes     map[string]Config `mapstructure:"nodes"`     // full config for every node
+}
+
+// Defaults for cluster-wide AWS-parity settings.
+const (
+	DefaultAWSRegion         = "us-east-1"
+	DefaultAWSInternalSuffix = "mulga.internal"
+)
+
+// AWSConfig holds cluster-wide AWS-parity settings shared across services.
+// Region scopes the default AWS region; InternalSuffix is the internal DNS
+// suffix used to build service endpoints (e.g. ecr.{region}.{suffix}).
+type AWSConfig struct {
+	Region         string `mapstructure:"region"`
+	InternalSuffix string `mapstructure:"internal_suffix"`
 }
 
 // ExternalPool defines a range of routable IPs that Spinifex manages for public subnets.
@@ -210,6 +225,10 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	// Default ipsec_enabled to true; operators must explicitly set false to disable.
 	viper.SetDefault("network.ipsec_enabled", true)
 
+	// Cluster-wide AWS-parity defaults so existing deployments keep working.
+	viper.SetDefault("aws.region", DefaultAWSRegion)
+	viper.SetDefault("aws.internal_suffix", DefaultAWSInternalSuffix)
+
 	// Try to load config file if it exists
 	if configPath != "" {
 		// Check if file exists
@@ -230,6 +249,14 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	var config ClusterConfig
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
+	}
+
+	// Backfill AWS-parity defaults when keys are unset so callers never see empties.
+	if config.AWS.Region == "" {
+		config.AWS.Region = DefaultAWSRegion
+	}
+	if config.AWS.InternalSuffix == "" {
+		config.AWS.InternalSuffix = DefaultAWSInternalSuffix
 	}
 
 	// Rewrite 0.0.0.0 in Predastore.Host to 127.0.0.1 for the local node only (not a valid connect address).

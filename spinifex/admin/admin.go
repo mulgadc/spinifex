@@ -155,7 +155,22 @@ func GenerateConfigFile(configPath string, configTemplate string, configSettings
 	return nil
 }
 
-func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string) (caCertPath string) {
+// AWSGWServiceDNSNames builds the AWS-parity TLS SANs for the awsgw cert from
+// the cluster region and internal suffix: the exact ECR control-plane host and
+// the wildcard covering per-account registry hosts. Returns nil if either input
+// is empty so callers omit the SANs rather than emitting malformed names.
+func AWSGWServiceDNSNames(region, suffix string) []string {
+	if region == "" || suffix == "" {
+		return nil
+	}
+	base := "ecr." + region + "." + suffix
+	return []string{
+		base,            // control plane: ecr.{region}.{suffix}
+		"*.dkr." + base, // registry: *.dkr.ecr.{region}.{suffix}
+	}
+}
+
+func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, awsRegion, internalSuffix string) (caCertPath string) {
 	caCertPath = filepath.Join(configDir, "ca.pem")
 	caKeyPath := filepath.Join(configDir, "ca.key")
 	serverCertPath := filepath.Join(configDir, "server.pem")
@@ -177,7 +192,8 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string) (
 		fmt.Printf("   CA Certificate: %s\n", caCertPath)
 		fmt.Printf("   CA Key: %s\n", caKeyPath)
 
-		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, bindIP); err != nil {
+		extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
+		if err := GenerateSignedCertWithDNS(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
 			os.Exit(1)
 		}
@@ -200,8 +216,9 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string) (
 }
 
 // GenerateServerCertOnly generates a server certificate signed by an existing CA.
-// Used by joining nodes that receive the CA from the leader.
-func GenerateServerCertOnly(configDir string, bindIP string) error {
+// Used by joining nodes that receive the CA from the leader. awsRegion and
+// internalSuffix add the AWS-parity ECR SANs; empty values omit them.
+func GenerateServerCertOnly(configDir string, bindIP, awsRegion, internalSuffix string) error {
 	caCertPath := filepath.Join(configDir, "ca.pem")
 	caKeyPath := filepath.Join(configDir, "ca.key")
 	serverCertPath := filepath.Join(configDir, "server.pem")
@@ -211,7 +228,8 @@ func GenerateServerCertOnly(configDir string, bindIP string) error {
 		return fmt.Errorf("CA files not found in %s", configDir)
 	}
 
-	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, bindIP)
+	extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
+	return GenerateSignedCertWithDNS(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS)
 }
 
 func CreateServiceDirectories(spxRoot string) {

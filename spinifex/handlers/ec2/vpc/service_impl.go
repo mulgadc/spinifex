@@ -802,6 +802,116 @@ func (s *VPCServiceImpl) DescribeSubnets(input *ec2.DescribeSubnetsInput, accoun
 	}, nil
 }
 
+// ApplyRecordTags mirrors CreateTags into the owning subnet/vpc KV record so
+// tag-filtered describes (DescribeSubnets/DescribeVpcs, e.g. LBC subnet
+// auto-discovery) observe tags added after create. Resource types this service
+// does not own are skipped; the generic tag store stays their record of truth.
+func (s *VPCServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	merge := func(tags map[string]string) {
+		for _, t := range input.Tags {
+			if t.Key != nil && t.Value != nil {
+				tags[*t.Key] = *t.Value
+			}
+		}
+	}
+	for _, res := range input.Resources {
+		if res == nil {
+			continue
+		}
+		if err := s.updateRecordTags(accountID, *res, merge); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning subnet/vpc KV record.
+// Empty input.Tags clears all tags; a tag with a value deletes only on a value
+// match (AWS-faithful), a nil value deletes unconditionally.
+func (s *VPCServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	remove := func(tags map[string]string) {
+		if len(input.Tags) == 0 {
+			for k := range tags {
+				delete(tags, k)
+			}
+			return
+		}
+		for _, t := range input.Tags {
+			if t.Key == nil {
+				continue
+			}
+			if t.Value == nil {
+				delete(tags, *t.Key)
+			} else if cur, ok := tags[*t.Key]; ok && cur == *t.Value {
+				delete(tags, *t.Key)
+			}
+		}
+	}
+	for _, res := range input.Resources {
+		if res == nil {
+			continue
+		}
+		if err := s.updateRecordTags(accountID, *res, remove); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// updateRecordTags applies mut to the tag map of the subnet- or vpc-scoped
+// record identified by resourceID. Other resource ids are a no-op.
+func (s *VPCServiceImpl) updateRecordTags(accountID, resourceID string, mut func(map[string]string)) error {
+	switch {
+	case strings.HasPrefix(resourceID, "subnet-"):
+		return updateKVRecordTags(s.subnetKV, accountID, resourceID, func(r *SubnetRecord) {
+			if r.Tags == nil {
+				r.Tags = map[string]string{}
+			}
+			mut(r.Tags)
+		})
+	case strings.HasPrefix(resourceID, "vpc-"):
+		return updateKVRecordTags(s.vpcKV, accountID, resourceID, func(r *VPCRecord) {
+			if r.Tags == nil {
+				r.Tags = map[string]string{}
+			}
+			mut(r.Tags)
+		})
+	}
+	return nil
+}
+
+// updateKVRecordTags read-modify-writes a typed KV record, applying mut. A
+// resource absent from this store is skipped (its tags live elsewhere).
+func updateKVRecordTags[R any](kv nats.KeyValue, accountID, resourceID string, mut func(*R)) error {
+	key := utils.AccountKey(accountID, resourceID)
+	entry, err := kv.Get(key)
+	if err != nil {
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return nil
+		}
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	var rec R
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	mut(&rec)
+	data, err := json.Marshal(&rec)
+	if err != nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if _, err := kv.Put(key, data); err != nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return nil
+}
+
 // vpcMatchesFilters checks whether a VPCRecord satisfies all parsed filters.
 func vpcMatchesFilters(record *VPCRecord, accountID string, filters map[string][]string) bool {
 	for name, values := range filters {

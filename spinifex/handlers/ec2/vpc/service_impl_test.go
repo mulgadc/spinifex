@@ -1742,3 +1742,107 @@ func TestGetSubnet_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "subnet-missing")
 }
+
+// --- CreateTags write-through (mulga-siv-347) ---
+
+func TestApplyRecordTags_SubnetTagFilteredDescribe(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+
+	err := svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String(subnetID)},
+		Tags: []*ec2.Tag{
+			{Key: aws.String("kubernetes.io/role/elb"), Value: aws.String("1")},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// DescribeSubnets must surface the tag...
+	out, err := svc.DescribeSubnets(&ec2.DescribeSubnetsInput{
+		SubnetIds: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Subnets, 1)
+	assert.Equal(t, "1", findTag(out.Subnets[0].Tags, "kubernetes.io/role/elb"))
+
+	// ...and a tag: filter must match it (the LBC auto-discovery path).
+	filtered, err := svc.DescribeSubnets(&ec2.DescribeSubnetsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("tag:kubernetes.io/role/elb"), Values: []*string{aws.String("1")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, filtered.Subnets, 1)
+	assert.Equal(t, subnetID, *filtered.Subnets[0].SubnetId)
+}
+
+func TestApplyRecordTags_VpcMergePreservesRecord(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.1.0.0/16")
+
+	err := svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String(vpcID)},
+		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("prod")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{
+		VpcIds: []*string{aws.String(vpcID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Vpcs, 1)
+	// Merge must not clobber the rest of the record.
+	assert.Equal(t, "10.1.0.0/16", *out.Vpcs[0].CidrBlock)
+	assert.Equal(t, "prod", findTag(out.Vpcs[0].Tags, "Name"))
+}
+
+func TestRemoveRecordTags_Subnet(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.2.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.2.1.0/24")
+
+	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String(subnetID)},
+		Tags: []*ec2.Tag{
+			{Key: aws.String("keep"), Value: aws.String("yes")},
+			{Key: aws.String("drop"), Value: aws.String("v")},
+		},
+	}, testAccountID))
+
+	// Value-mismatched delete is a no-op; matched delete removes.
+	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
+		Resources: []*string{aws.String(subnetID)},
+		Tags: []*ec2.Tag{
+			{Key: aws.String("keep"), Value: aws.String("wrong")},
+			{Key: aws.String("drop"), Value: aws.String("v")},
+		},
+	}, testAccountID))
+
+	out, err := svc.DescribeSubnets(&ec2.DescribeSubnetsInput{
+		SubnetIds: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Subnets, 1)
+	assert.Equal(t, "yes", findTag(out.Subnets[0].Tags, "keep"))
+	assert.Equal(t, "", findTag(out.Subnets[0].Tags, "drop"))
+}
+
+func TestApplyRecordTags_UnknownResourceNoError(t *testing.T) {
+	svc := setupTestVPCService(t)
+	// Absent subnet + non-VPC-owned resource id: both skipped without error.
+	err := svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String("subnet-doesnotexist"), aws.String("i-instance")},
+		Tags:      []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+func findTag(tags []*ec2.Tag, key string) string {
+	for _, t := range tags {
+		if t.Key != nil && *t.Key == key {
+			return aws.StringValue(t.Value)
+		}
+	}
+	return ""
+}

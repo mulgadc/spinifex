@@ -79,6 +79,7 @@ var supportedServices = map[string]bool{
 	"account":              true,
 	"elasticloadbalancing": true,
 	"eks":                  true,
+	"ecr":                  true,
 	"acm":                  true,
 	"tagging":              true,
 	"spinifex":             true,
@@ -139,6 +140,10 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 		pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/.well-known/openid-configuration", gw.OIDCDiscoveryDocument)
 		pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/keys", gw.OIDCJWKS)
 	})
+
+	// OCI Distribution registry (/v2/*). Token/host-authenticated rather than
+	// SigV4-credential-scoped, so it mounts outside the SigV4 group.
+	gw.mountOCIRegistry(r)
 
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {
@@ -299,6 +304,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ELBv2_Request(w, r)
 	case "eks":
 		err = gw.EKS_Request(w, r)
+	case "ecr":
+		err = gw.ECR_Request(w, r)
 	case "acm":
 		err = gw.ACM_Request(w, r)
 	case "tagging":
@@ -456,8 +463,8 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	// EKS, ACM, and tagging use AWS JSON 1.1; query/XML services fall through.
-	if svc == "eks" || svc == "acm" || svc == "tagging" {
+	// EKS, ECR, ACM, and tagging use AWS JSON 1.1; query/XML services fall through.
+	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "tagging" {
 		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err.Error(), "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)

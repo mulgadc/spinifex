@@ -1,6 +1,6 @@
 //go:build e2e
 
-package single
+package iam
 
 import (
 	"testing"
@@ -28,13 +28,13 @@ const (
 // live session is allowed once a policy is attached (policies resolved per request).
 func runAssumedRoleControlPlaneEnforcement(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Assumed-role control-plane enforcement")
-	adminAccount := iamEnsureAdminAccountID(t, fix)
-	roleARN := iamRoleARN(adminAccount, areRoleName)
-	policyARN := iamPolicyARN(adminAccount, arePolicyName)
+	adminAccount := harness.IAMAccountID(t, fix.AWS)
+	roleARN := harness.IAMRoleARN(adminAccount, areRoleName)
+	policyARN := harness.IAMPolicyARN(adminAccount, arePolicyName)
 
 	// Pre-sweep in case a previous run left fragments.
 	sweep := func() {
-		iamDeleteRoleAndProfilesBestEffort(fix, areRoleName, nil, policyARN)
+		harness.IAMDeleteRoleAndProfilesBestEffort(fix.AWS, areRoleName, nil, policyARN)
 		_, _ = fix.AWS.IAM.DeletePolicy(&iam.DeletePolicyInput{PolicyArn: aws.String(policyARN)})
 	}
 	sweep()

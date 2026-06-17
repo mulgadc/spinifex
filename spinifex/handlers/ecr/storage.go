@@ -50,8 +50,11 @@ func RepoMetaKey(repo string) string { return fmt.Sprintf(repoMetaKeyFmt, repo) 
 // TagKey returns the key for a tag's digest pointer.
 func TagKey(repo, tag string) string { return fmt.Sprintf(tagKeyFmt, repo, tag) }
 
-// ManifestKey returns the key for a manifest stored by its digest.
-func ManifestKey(repo, digest string) string { return fmt.Sprintf(manifestKeyFmt, repo, digest) }
+// ManifestKey returns the key for a manifest stored by its digest. The digest
+// is sanitized via DigestToken so the object key carries no ':' separator.
+func ManifestKey(repo, digest string) string {
+	return fmt.Sprintf(manifestKeyFmt, repo, DigestToken(digest))
+}
 
 // IndexKey returns the key for a repository's tag->digest index.
 func IndexKey(repo string) string { return fmt.Sprintf(indexKeyFmt, repo) }
@@ -147,7 +150,8 @@ func ValidateDigest(s string) bool {
 
 // BlobKey returns the account-pool key for a blob digest ("sha256:<hex>"). The
 // two-char shard is taken from the first hex bytes after the "sha256:" prefix,
-// matching the on-disk layout used by upstream OCI registries.
+// matching the on-disk layout used by upstream OCI registries. The digest is
+// sanitized via DigestToken so the object key carries no ':' separator.
 func BlobKey(digest string) string {
 	hex := digest
 	if _, after, found := strings.Cut(digest, ":"); found {
@@ -157,5 +161,5 @@ func BlobKey(digest string) string {
 	if len(hex) >= 2 {
 		shard = hex[:2]
 	}
-	return fmt.Sprintf(blobKeyFmt, shard, digest)
+	return fmt.Sprintf(blobKeyFmt, shard, DigestToken(digest))
 }

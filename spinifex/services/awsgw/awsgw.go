@@ -203,6 +203,7 @@ func launchService(config *config.ClusterConfig) error {
 		Config:         nodeConfig.AWSGW.Config,
 		ExpectedNodes:  len(config.Nodes),
 		Region:         nodeConfig.Region,
+		InternalSuffix: config.AWS.InternalSuffix,
 		AZ:             nodeConfig.AZ,
 		IAMService:     iamService,
 		STSService:     stsService,

@@ -8,8 +8,8 @@ import (
 
 // mountOCIRegistry registers the OCI Distribution Spec v2 surface (/v2/*) on r.
 // These endpoints are host- and token-authenticated rather than
-// SigV4-credential-scoped, so they mount outside the SigV4 group under the
-// no-op hostMatch skeleton.
+// SigV4-credential-scoped, so they mount outside the SigV4 group behind the
+// hostMatch host-routing middleware.
 //
 // OCI repository names may contain slashes (e.g. team/app), so the blob,
 // manifest and tag paths can't be expressed as fixed chi segments. Everything
@@ -18,7 +18,7 @@ import (
 // version-check probe succeeds.
 func (gw *GatewayConfig) mountOCIRegistry(r chi.Router) {
 	r.Route("/v2", func(v2 chi.Router) {
-		v2.Use(hostMatch)
+		v2.Use(gw.hostMatch)
 		v2.Get("/", gateway_ecr.APIVersion)
 		v2.HandleFunc("/*", gateway_ecr.NotImplemented)
 	})

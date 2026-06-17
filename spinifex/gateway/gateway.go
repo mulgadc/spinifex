@@ -45,6 +45,12 @@ const (
 	// Policy enforcement resolves the role name from this, never from ctxIdentity
 	// (attacker-influenced RoleSessionName).
 	ctxUnderlyingRoleARN contextKey = "sigv4.underlyingRoleARN"
+
+	// ctxTargetAccount carries the accountID parsed from a registry host
+	// ({accountID}.dkr.ecr.{region}.{suffix}) by the host-routing middleware.
+	ctxTargetAccount contextKey = "host.targetAccount"
+	// ctxTargetRegion carries the region parsed from the same registry host.
+	ctxTargetRegion contextKey = "host.targetRegion"
 )
 
 // Values stored under ctxPrincipalType. Downstream handlers that interpret
@@ -63,6 +69,7 @@ type GatewayConfig struct {
 	Config         string     // Shared AWS Gateway config for S3 auth
 	ExpectedNodes  int        // Number of expected spinifex nodes for multi-node operations
 	Region         string     // Region this gateway is running in
+	InternalSuffix string     // Internal DNS suffix for AWS-parity endpoints (e.g. mulga.internal)
 	AZ             string     // Availability zone this gateway is running in
 	IAMService     handlers_iam.IAMService
 	STSService     handlers_sts.STSService

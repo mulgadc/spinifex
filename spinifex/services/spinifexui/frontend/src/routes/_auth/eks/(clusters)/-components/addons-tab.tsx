@@ -29,6 +29,7 @@ import {
   eksAddonVersionsQueryOptions,
 } from "@/queries/eks"
 import {
+  addonConfigurationSchema,
   addonStatusVariant,
   type CreateAddonFormValues,
   createAddonSchema,
@@ -39,18 +40,6 @@ const STATUS_POLL_MS = 5000
 
 const selectClassName =
   "h-7 w-full rounded-md border border-input bg-input/20 px-2 text-sm"
-
-function isValidJson(value: string): boolean {
-  if (value.trim() === "") {
-    return true
-  }
-  try {
-    JSON.parse(value)
-    return true
-  } catch {
-    return false
-  }
-}
 
 function AddAddonDialog({
   clusterName,
@@ -257,10 +246,14 @@ function UpdateAddonDialog({
   ])
 
   const handleConfirm = () => {
-    if (!isValidJson(config)) {
-      setError("Configuration must be valid JSON")
+    const result = addonConfigurationSchema.safeParse(config)
+    if (!result.success) {
+      setError(
+        result.error.issues[0]?.message ?? "Configuration must be valid JSON",
+      )
       return
     }
+    setError(undefined)
     updateAddon.mutate(
       {
         clusterName,

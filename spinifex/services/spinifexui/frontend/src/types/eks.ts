@@ -1,6 +1,7 @@
 import type { AMITypes, CapacityTypes } from "@aws-sdk/client-eks"
 import { z } from "zod"
 
+import { jsonStringSchema } from "@/lib/json"
 import { isValidCidr } from "@/lib/subnet-calculator"
 
 // K3s control plane is pinned per Mulga release; expose the supported
@@ -89,24 +90,16 @@ export const createNodegroupSchema = z
 
 export type CreateNodegroupFormValues = z.infer<typeof createNodegroupSchema>
 
+export const addonConfigurationSchema = jsonStringSchema({
+  label: "Configuration",
+  allowEmpty: true,
+})
+
 export const createAddonSchema = z.object({
   addonName: z.string().min(1, "Add-on is required"),
   addonVersion: z.string().min(1, "Version is required"),
   serviceAccountRoleArn: z.string(),
-  configurationValues: z.string().refine(
-    (v) => {
-      if (v.trim() === "") {
-        return true
-      }
-      try {
-        JSON.parse(v)
-        return true
-      } catch {
-        return false
-      }
-    },
-    { message: "Configuration must be valid JSON" },
-  ),
+  configurationValues: addonConfigurationSchema,
 })
 
 export type CreateAddonFormValues = z.infer<typeof createAddonSchema>

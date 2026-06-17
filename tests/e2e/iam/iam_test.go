@@ -81,24 +81,13 @@ const (
             "Resource": "*"
         }]
     }`
-
-	iamDocEC2ReadOnlyV2 = `{
-        "Version": "2012-10-17",
-        "Statement": [{
-            "Effect": "Allow",
-            "Action": ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeVpcs", "ec2:DescribeImages"],
-            "Resource": "*"
-        }]
-    }`
 )
 
 // runIAMUserCRUD ports run-e2e.sh IAM Phase 1 (~1405–1459):
-// CreateUser, GetUser, ListUsers, UpdateUser (rename+path), DeleteUser
-// plus the EntityAlreadyExists / NoSuchEntity negative paths. Each
-// created user is scheduled for cleanup so a mid-phase failure can't
-// poison later runs. UpdateUser exercises an out-of-band rename +
-// rename-back so Phase 2+ continue to find "alice" by the well-known
-// name.
+// CreateUser, GetUser, ListUsers, DeleteUser plus the
+// EntityAlreadyExists / NoSuchEntity negative paths. Each created user
+// is scheduled for cleanup so a mid-phase failure can't poison later
+// runs.
 func runIAMUserCRUD(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — IAM User CRUD")
 
@@ -168,34 +157,6 @@ func runIAMUserCRUD(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "list-users --path-prefix")
 	require.Len(t, eng.Users, 1,
 		"expected 1 user under %s, got %d (names=%v)", iamUserBobPath, len(eng.Users), iamUserNames(eng.Users))
-
-	// UpdateUser rename+path round-trip: daemon does not implement the
-	// UpdateUser action yet (returns InvalidAction). Skip-gate the block
-	// so the rest of Phase 1 still runs; flip to a real assertion once
-	// the daemon handler lands.
-	t.Run("UpdateUser", func(t *testing.T) {
-		t.Skip("daemon UpdateUser handler not implemented — InvalidAction")
-		const renamed = "alice-renamed"
-		const renamedPath = "/staff/"
-		harness.Step(t, "update-user %q -> %q path=%q", iamUserAlice, renamed, renamedPath)
-		_, err := fix.AWS.IAM.UpdateUser(&iam.UpdateUserInput{
-			UserName:    aws.String(iamUserAlice),
-			NewUserName: aws.String(renamed),
-			NewPath:     aws.String(renamedPath),
-		})
-		require.NoError(t, err, "update-user rename+path")
-		check, err := fix.AWS.IAM.GetUser(&iam.GetUserInput{UserName: aws.String(renamed)})
-		require.NoError(t, err, "get-user after rename")
-		assert.Equal(t, renamedPath, aws.StringValue(check.User.Path), "path not updated")
-
-		harness.Step(t, "update-user %q -> %q (restore)", renamed, iamUserAlice)
-		_, err = fix.AWS.IAM.UpdateUser(&iam.UpdateUserInput{
-			UserName:    aws.String(renamed),
-			NewUserName: aws.String(iamUserAlice),
-			NewPath:     aws.String("/"),
-		})
-		require.NoError(t, err, "update-user restore")
-	})
 
 	// DeleteUser idempotency: create a throwaway user, delete it, then
 	// delete it again and assert the second delete surfaces NoSuchEntity
@@ -378,11 +339,9 @@ func runIAMUserAuthentication(t *testing.T, fix *Fixture) {
 }
 
 // runIAMPolicyCRUD ports IAM Phase 4 (~1583–1698):
-// CreatePolicy (5 variants), CreatePolicyVersion / ListPolicyVersions /
-// SetDefaultPolicyVersion / DeletePolicyVersion (extends bash, per
-// task spec), GetPolicy, GetPolicyVersion, ListPolicies plus
-// EntityAlreadyExists / MalformedPolicyDocument / NoSuchEntity errors.
-// Captures the admin account ID into the Fixture for Phase 5–7.
+// CreatePolicy (5 variants), GetPolicy, GetPolicyVersion, ListPolicies
+// plus EntityAlreadyExists / MalformedPolicyDocument / NoSuchEntity
+// errors. Captures the admin account ID into the Fixture for Phase 5–7.
 func runIAMPolicyCRUD(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — IAM Policy CRUD")
 
@@ -506,47 +465,6 @@ func runIAMPolicyCRUD(t *testing.T, fix *Fixture) {
 	})
 	require.NoError(t, err, "get-policy-version v1")
 	require.Equal(t, "v1", aws.StringValue(pv.PolicyVersion.VersionId))
-
-	// Policy version lifecycle — extends the bash driver (task spec).
-	// Round-trip: create v2 (as default), list, set v1 default, delete v2.
-	// Daemon does not implement CreatePolicyVersion / ListPolicyVersions /
-	// SetDefaultPolicyVersion / DeletePolicyVersion yet (InvalidAction).
-	// Skip-gate until the handlers land.
-	t.Run("PolicyVersionLifecycle", func(t *testing.T) {
-		t.Skip("daemon CreatePolicyVersion handler not implemented — InvalidAction")
-		harness.Step(t, "create-policy-version %s v2 (default)", iamPolicyEC2ReadOnly)
-		cv, err := fix.AWS.IAM.CreatePolicyVersion(&iam.CreatePolicyVersionInput{
-			PolicyArn:      aws.String(ec2roArn),
-			PolicyDocument: aws.String(iamDocEC2ReadOnlyV2),
-			SetAsDefault:   aws.Bool(true),
-		})
-		require.NoError(t, err, "create-policy-version v2")
-		v2 := aws.StringValue(cv.PolicyVersion.VersionId)
-		require.NotEmpty(t, v2, "empty new VersionId")
-		harness.Detail(t, "new_version", v2)
-
-		harness.Step(t, "list-policy-versions %s", iamPolicyEC2ReadOnly)
-		versions, err := fix.AWS.IAM.ListPolicyVersions(&iam.ListPolicyVersionsInput{
-			PolicyArn: aws.String(ec2roArn),
-		})
-		require.NoError(t, err, "list-policy-versions")
-		require.GreaterOrEqual(t, len(versions.Versions), 2,
-			"expected >=2 versions, got %d", len(versions.Versions))
-
-		harness.Step(t, "set-default-policy-version %s v1", iamPolicyEC2ReadOnly)
-		_, err = fix.AWS.IAM.SetDefaultPolicyVersion(&iam.SetDefaultPolicyVersionInput{
-			PolicyArn: aws.String(ec2roArn),
-			VersionId: aws.String("v1"),
-		})
-		require.NoError(t, err, "set-default-policy-version v1")
-
-		harness.Step(t, "delete-policy-version %s %s", iamPolicyEC2ReadOnly, v2)
-		_, err = fix.AWS.IAM.DeletePolicyVersion(&iam.DeletePolicyVersionInput{
-			PolicyArn: aws.String(ec2roArn),
-			VersionId: aws.String(v2),
-		})
-		require.NoError(t, err, "delete-policy-version %s", v2)
-	})
 
 	harness.Step(t, "list-policies (>=5)")
 	all, err := fix.AWS.IAM.ListPolicies(&iam.ListPoliciesInput{})

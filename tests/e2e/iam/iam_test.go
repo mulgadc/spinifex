@@ -1,6 +1,6 @@
 //go:build e2e
 
-package single
+package iam
 
 import (
 	"strings"
@@ -416,7 +416,7 @@ func runIAMPolicyCRUD(t *testing.T, fix *Fixture) {
 			if p.path != "" {
 				key = p.path[1:] + p.name
 			}
-			iamDeletePolicyBestEffort(fix, iamPolicyARN(adminAccount, key))
+			iamDeletePolicyBestEffort(fix, harness.IAMPolicyARN(adminAccount, key))
 		}
 	})
 	harness.Detail(t, "policy", iamPolicyEC2ReadOnly, "arn", ec2roArn, "account", adminAccount)
@@ -490,7 +490,7 @@ func runIAMPolicyCRUD(t *testing.T, fix *Fixture) {
 	require.Equal(t, iamPolicyEC2ReadOnly, aws.StringValue(got.Policy.PolicyName))
 
 	harness.Step(t, "get-policy nonexistent (expect NoSuchEntity)")
-	ghostArn := iamPolicyARN(adminAccount, "Ghost")
+	ghostArn := harness.IAMPolicyARN(adminAccount, "Ghost")
 	harness.ExpectError(t, "NoSuchEntity", func() error {
 		_, e := fix.AWS.IAM.GetPolicy(&iam.GetPolicyInput{PolicyArn: aws.String(ghostArn)})
 		return e
@@ -561,16 +561,16 @@ func runIAMPolicyAttachmentEnforcement(t *testing.T, fix *Fixture) {
 	// Enforcement depends on scoped-credential signing which the daemon
 	// doesn't honour yet.
 	t.Skip("daemon IAM scoped-credential enforcement not implemented")
-	adminAccount := iamEnsureAdminAccountID(t, fix)
+	adminAccount := harness.IAMAccountID(t, fix.AWS)
 	aliceKeyID, aliceSecret := iamEnsureAliceKey(t, fix)
 	bobKeyID, bobSecret := iamEnsureBobKey(t, fix)
 	charlieKeyID, charlieSecret := iamEnsureCharlieKey(t, fix)
 
-	ec2roArn := iamPolicyARN(adminAccount, iamPolicyEC2ReadOnly)
-	iamroArn := iamPolicyARN(adminAccount, iamPolicyIAMReadOnly)
-	denyArn := iamPolicyARN(adminAccount, iamPolicyDenyTerminate)
-	descAllArn := iamPolicyARN(adminAccount, iamPolicyEC2DescribeAll)
-	fullAdminArn := iamPolicyARN(adminAccount, iamPolicyFullAdminPath[1:]+iamPolicyFullAdmin)
+	ec2roArn := harness.IAMPolicyARN(adminAccount, iamPolicyEC2ReadOnly)
+	iamroArn := harness.IAMPolicyARN(adminAccount, iamPolicyIAMReadOnly)
+	denyArn := harness.IAMPolicyARN(adminAccount, iamPolicyDenyTerminate)
+	descAllArn := harness.IAMPolicyARN(adminAccount, iamPolicyEC2DescribeAll)
+	fullAdminArn := harness.IAMPolicyARN(adminAccount, iamPolicyFullAdminPath[1:]+iamPolicyFullAdmin)
 
 	harness.Detail(t, "charlie_key", charlieKeyID)
 	aliceCli := harness.NewAWSClientWithCreds(t, fix.Env, aliceKeyID, aliceSecret)
@@ -617,7 +617,7 @@ func runIAMPolicyAttachmentEnforcement(t *testing.T, fix *Fixture) {
 	harness.ExpectError(t, "NoSuchEntity", func() error {
 		_, e := fix.AWS.IAM.AttachUserPolicy(&iam.AttachUserPolicyInput{
 			UserName:  aws.String(iamUserAlice),
-			PolicyArn: aws.String(iamPolicyARN(adminAccount, "Ghost")),
+			PolicyArn: aws.String(harness.IAMPolicyARN(adminAccount, "Ghost")),
 		})
 		return e
 	})
@@ -734,11 +734,11 @@ func runIAMPolicyLifecycle(t *testing.T, fix *Fixture) {
 	// DetachUserPolicy returns 404 NoSuchEntity even for confirmed attachments —
 	// the daemon's attachment ledger isn't persisted across the API boundary.
 	t.Skip("daemon DetachUserPolicy not implemented")
-	adminAccount := iamEnsureAdminAccountID(t, fix)
+	adminAccount := harness.IAMAccountID(t, fix.AWS)
 	aliceKeyID, aliceSecret := iamEnsureAliceKey(t, fix)
 
-	descAllArn := iamPolicyARN(adminAccount, iamPolicyEC2DescribeAll)
-	denyArn := iamPolicyARN(adminAccount, iamPolicyDenyTerminate)
+	descAllArn := harness.IAMPolicyARN(adminAccount, iamPolicyEC2DescribeAll)
+	denyArn := harness.IAMPolicyARN(adminAccount, iamPolicyDenyTerminate)
 
 	aliceCli := harness.NewAWSClientWithCreds(t, fix.Env, aliceKeyID, aliceSecret)
 
@@ -785,7 +785,7 @@ func runIAMCleanup(t *testing.T, fix *Fixture) {
 
 	// Resolve account ID before deleting users — iamEnsureAdminAccountID
 	// probes via GetUser(alice), and the user is gone after the loop below.
-	adminAccount := iamEnsureAdminAccountID(t, fix)
+	adminAccount := harness.IAMAccountID(t, fix.AWS)
 
 	// Users: delete their keys first, then the user. iamDeleteUserBestEffort
 	// handles already-deleted resources gracefully.
@@ -819,7 +819,7 @@ func runIAMCleanup(t *testing.T, fix *Fixture) {
 			// stripping the leading '/' matches iamPolicyARN's expectation.
 			key = p.path[1:] + p.name
 		}
-		arn := iamPolicyARN(adminAccount, key)
+		arn := harness.IAMPolicyARN(adminAccount, key)
 		harness.Step(t, "cleanup policy %s", arn)
 		iamDeletePolicyBestEffort(fix, arn)
 	}
@@ -944,10 +944,4 @@ func iamAccountFromARN(t *testing.T, arn string) string {
 	require.GreaterOrEqual(t, len(parts), 6, "unexpected ARN shape: %q", arn)
 	require.NotEmpty(t, parts[4], "empty account-id in ARN %q", arn)
 	return parts[4]
-}
-
-// iamPolicyARN builds the canonical policy ARN for a given account +
-// policy "key" (name or "path/name" without the leading slash).
-func iamPolicyARN(account, key string) string {
-	return "arn:aws:iam::" + account + ":policy/" + key
 }

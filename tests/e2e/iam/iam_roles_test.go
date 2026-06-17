@@ -1,6 +1,6 @@
 //go:build e2e
 
-package single
+package iam
 
 import (
 	"testing"
@@ -32,17 +32,17 @@ const (
 // which recreates the same names.
 func runIAMRolesAndProfiles(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — IAM Roles & Instance Profiles")
-	adminAccount := iamEnsureAdminAccountID(t, fix)
-	roleARN := iamRoleARN(adminAccount, iamRoleAppName)
-	adminPolicyARN := iamPolicyARN(adminAccount, iamPolicyAdministrator)
+	adminAccount := harness.IAMAccountID(t, fix.AWS)
+	roleARN := harness.IAMRoleARN(adminAccount, iamRoleAppName)
+	adminPolicyARN := harness.IAMPolicyARN(adminAccount, iamPolicyAdministrator)
 
 	// Defensive sweep — previous failed run may have left fragments. Order
 	// matters: detach role from profile before delete-instance-profile,
 	// detach policy from role before delete-role.
-	iamDeleteRoleAndProfilesBestEffort(fix, iamRoleAppName,
+	harness.IAMDeleteRoleAndProfilesBestEffort(fix.AWS, iamRoleAppName,
 		[]string{iamProfileAppName, iamProfileOtherName, iamProfileEngName}, adminPolicyARN)
 	fix.Harness.RegisterCleanup(func() {
-		iamDeleteRoleAndProfilesBestEffort(fix, iamRoleAppName,
+		harness.IAMDeleteRoleAndProfilesBestEffort(fix.AWS, iamRoleAppName,
 			[]string{iamProfileAppName, iamProfileOtherName, iamProfileEngName}, adminPolicyARN)
 	})
 
@@ -159,7 +159,7 @@ func runIAMRolesAndProfiles(t *testing.T, fix *Fixture) {
 	harness.ExpectError(t, "NoSuchEntity", func() error {
 		_, e := fix.AWS.IAM.AttachRolePolicy(&iam.AttachRolePolicyInput{
 			RoleName:  aws.String(iamRoleAppName),
-			PolicyArn: aws.String(iamPolicyARN(adminAccount, "Ghost")),
+			PolicyArn: aws.String(harness.IAMPolicyARN(adminAccount, "Ghost")),
 		})
 		return e
 	})
@@ -328,45 +328,4 @@ func runIAMRolesAndProfiles(t *testing.T, fix *Fixture) {
 		_, e := fix.AWS.IAM.GetRole(&iam.GetRoleInput{RoleName: aws.String(iamRoleAppName)})
 		return e
 	})
-}
-
-// iamRoleARN constructs arn:aws:iam::<acct>:role/<name>.
-func iamRoleARN(account, name string) string {
-	return "arn:aws:iam::" + account + ":role/" + name
-}
-
-// iamDeleteRoleAndProfilesBestEffort tears down every fragment of a role +
-// profile graph the suite might have left behind. Each step swallows errors
-// so a missing fragment doesn't cascade. Used both as a pre-test sweep and
-// as a fixture-teardown cleanup.
-func iamDeleteRoleAndProfilesBestEffort(fix *Fixture, roleName string, profileNames []string, policyARNs ...string) {
-	for _, p := range profileNames {
-		// Drop role-from-profile binding (idempotent).
-		_, _ = fix.AWS.IAM.RemoveRoleFromInstanceProfile(&iam.RemoveRoleFromInstanceProfileInput{
-			InstanceProfileName: aws.String(p),
-			RoleName:            aws.String(roleName),
-		})
-		_, _ = fix.AWS.IAM.DeleteInstanceProfile(&iam.DeleteInstanceProfileInput{
-			InstanceProfileName: aws.String(p),
-		})
-	}
-	for _, arn := range policyARNs {
-		_, _ = fix.AWS.IAM.DetachRolePolicy(&iam.DetachRolePolicyInput{
-			RoleName:  aws.String(roleName),
-			PolicyArn: aws.String(arn),
-		})
-	}
-	// Defensive: pull any other attached policies we don't know about so the
-	// final DeleteRole isn't blocked by a stray attach from a partial run.
-	if attached, err := fix.AWS.IAM.ListAttachedRolePolicies(&iam.ListAttachedRolePoliciesInput{
-		RoleName: aws.String(roleName),
-	}); err == nil {
-		for _, p := range attached.AttachedPolicies {
-			_, _ = fix.AWS.IAM.DetachRolePolicy(&iam.DetachRolePolicyInput{
-				RoleName:  aws.String(roleName),
-				PolicyArn: p.PolicyArn,
-			})
-		}
-	}
-	_, _ = fix.AWS.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(roleName)})
 }

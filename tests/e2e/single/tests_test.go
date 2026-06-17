@@ -185,59 +185,12 @@ func TestSGToSGDatapath(t *testing.T) {
 	runSGToSGDatapath(t, requireSingleNodeFixture(t))
 }
 
-// IAM Tests share the package-scoped IAM fixture; sub-tests inside each
-// runIAM* already use t.Parallel for fan-out.
-func TestIAMUserCRUD(t *testing.T) {
-	runIAMUserCRUD(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMAccessKeyLifecycle(t *testing.T) {
-	runIAMAccessKeyLifecycle(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMUserAuthentication(t *testing.T) {
-	runIAMUserAuthentication(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMPolicyCRUD(t *testing.T) {
-	runIAMPolicyCRUD(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMPolicyAttachmentEnforcement(t *testing.T) {
-	runIAMPolicyAttachmentEnforcement(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMPolicyLifecycle(t *testing.T) {
-	runIAMPolicyLifecycle(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMCleanup(t *testing.T) {
-	runIAMCleanup(t, requireSingleNodeFixture(t))
-}
-
-// TestIAMRolesAndProfiles + TestIAMInstanceProfileAssociation are sequential:
-// the second recreates role/profile names the first tore down.
-func TestIAMRolesAndProfiles(t *testing.T) {
-	runIAMRolesAndProfiles(t, requireSingleNodeFixture(t))
-}
-
 // TestIAMInstanceProfileAssociation mutates the singleton VM, so it cannot
-// share the parallel bucket.
+// share the parallel bucket. It self-bootstraps its own role + instance
+// profiles (single-iamprofile-*); the control-plane IAM/STS suite that owns the
+// canonical app-role/app-profile names lives in the standalone tests/e2e/iam.
 func TestIAMInstanceProfileAssociation(t *testing.T) {
 	runIAMInstanceProfileAssociation(t, requireSingleNodeFixture(t))
-}
-
-// TestSTSAssumeRoleAndGetCallerIdentity is sequential to avoid racing trust-policy
-// mutations against a parallel AssumeRole.
-func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
-	runSTS(t, requireSingleNodeFixture(t))
-}
-
-// TestAssumedRoleControlPlaneEnforcement verifies a zero-policy assumed-role
-// is denied and permitted once a policy is attached. Sequential to avoid
-// racing the mid-test grant.
-func TestAssumedRoleControlPlaneEnforcement(t *testing.T) {
-	runAssumedRoleControlPlaneEnforcement(t, requireSingleNodeFixture(t))
 }
 
 // TestIMDS exercises IMDSv2 end-to-end: token issuance, metadata surface,

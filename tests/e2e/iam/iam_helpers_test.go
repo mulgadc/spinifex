@@ -1,6 +1,6 @@
 //go:build e2e
 
-package single
+package iam
 
 import (
 	"sync"
@@ -36,10 +36,6 @@ var (
 	iamCharlieKeyID     string
 	iamCharlieKeySecret string
 	iamCharlieKeyErr    error
-
-	iamAdminAccountOnce sync.Once
-	iamAdminAccountID   string
-	iamAdminAccountErr  error
 )
 
 // iamEnsureAlice ensures the canonical "alice" IAM user exists. The user is
@@ -127,26 +123,6 @@ func iamEnsureCharlieKey(t *testing.T, fix *Fixture) (keyID, secret string) {
 		t.Fatalf("iamEnsureCharlieKey: %v", iamCharlieKeyErr)
 	}
 	return iamCharlieKeyID, iamCharlieKeySecret
-}
-
-// iamEnsureAdminAccountID returns the active account ID, derived from the
-// ARN of a probe IAM resource. Uses GetUser on the canonical alice user so
-// no policy churn is needed; alice is created on first call.
-func iamEnsureAdminAccountID(t *testing.T, fix *Fixture) string {
-	t.Helper()
-	iamEnsureAlice(t, fix)
-	iamAdminAccountOnce.Do(func() {
-		out, err := fix.AWS.IAM.GetUser(&iam.GetUserInput{UserName: aws.String(iamUserAlice)})
-		if err != nil {
-			iamAdminAccountErr = err
-			return
-		}
-		iamAdminAccountID = iamAccountFromARN(t, aws.StringValue(out.User.Arn))
-	})
-	if iamAdminAccountErr != nil {
-		t.Fatalf("iamEnsureAdminAccountID: %v", iamAdminAccountErr)
-	}
-	return iamAdminAccountID
 }
 
 // iamCreateUserIdempotent creates a user, treating EntityAlreadyExists as success.

@@ -14,24 +14,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// IAM identifiers owned by this test. They use a single-iamprofile- namespace
+// distinct from the control-plane iam suite's app-role/app-profile so the two
+// suites can run concurrently against the same account without colliding on
+// account-flat IAM names.
+const (
+	singleIAMProfileRole        = "single-iamprofile-role"
+	singleIAMProfileApp         = "single-iamprofile-profile"
+	singleIAMProfileOther       = "single-iamprofile-other-profile"
+	singleIAMProfileAdminPolicy = "AdministratorAccess"
+	singleIAMProfileTrustPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+)
+
 // runIAMInstanceProfileAssociation ports run-e2e.sh IAM Phase 9: EC2 IAM
 // instance-profile association lifecycle. Reuses the singleton VM for the
 // post-launch Associate/Replace/Disassociate cycle, then launches a single
 // short-lived VM whose sole purpose is to exercise (a) RunInstances with
 // --iam-instance-profile and (b) auto-disassociate on terminate.
 //
-// Pre-state: TestIAMRolesAndProfiles already tore everything down — this
-// test recreates the role + two profiles, asserts the EC2 surface, then
-// cleans up so subsequent tests see no residue.
+// Self-bootstrapping: it creates its own role + two profiles under the
+// single-iamprofile- namespace, asserts the EC2 surface, then cleans up so
+// subsequent tests see no residue.
 func runIAMInstanceProfileAssociation(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — EC2 IAM Instance Profile Association")
 
-	adminAccount := iamEnsureAdminAccountID(t, fix)
-	adminPolicyARN := iamPolicyARN(adminAccount, iamPolicyAdministrator)
+	adminAccount := harness.IAMAccountID(t, fix.AWS)
+	adminPolicyARN := harness.IAMPolicyARN(adminAccount, singleIAMProfileAdminPolicy)
 
 	// Defensive cleanup of stale state from a prior run.
-	iamDeleteRoleAndProfilesBestEffort(fix, iamRoleAppName,
-		[]string{iamProfileAppName, iamProfileOtherName}, adminPolicyARN)
+	harness.IAMDeleteRoleAndProfilesBestEffort(fix.AWS, singleIAMProfileRole,
+		[]string{singleIAMProfileApp, singleIAMProfileOther}, adminPolicyARN)
 
 	// Singleton instance — reused for the post-launch Associate/Replace
 	// cycle. Must be running before we proceed.
@@ -43,27 +55,27 @@ func runIAMInstanceProfileAssociation(t *testing.T, fix *Fixture) {
 	// Build role + two profiles. The second profile is the Replace target.
 	harness.Step(t, "setup: create-role + 2 instance profiles")
 	_, err := fix.AWS.IAM.CreateRole(&iam.CreateRoleInput{
-		RoleName:                 aws.String(iamRoleAppName),
-		AssumeRolePolicyDocument: aws.String(iamTrustPolicyEC2Standard),
+		RoleName:                 aws.String(singleIAMProfileRole),
+		AssumeRolePolicyDocument: aws.String(singleIAMProfileTrustPolicy),
 	})
 	require.NoError(t, err, "create-role")
 
 	// Even though root bypasses iam:PassRole, attach AdministratorAccess
 	// to match production usage and exercise the PassRole code path.
 	_, err = fix.AWS.IAM.AttachRolePolicy(&iam.AttachRolePolicyInput{
-		RoleName:  aws.String(iamRoleAppName),
+		RoleName:  aws.String(singleIAMProfileRole),
 		PolicyArn: aws.String(adminPolicyARN),
 	})
 	require.NoError(t, err, "attach AdministratorAccess to role")
 
-	for _, p := range []string{iamProfileAppName, iamProfileOtherName} {
+	for _, p := range []string{singleIAMProfileApp, singleIAMProfileOther} {
 		_, err = fix.AWS.IAM.CreateInstanceProfile(&iam.CreateInstanceProfileInput{
 			InstanceProfileName: aws.String(p),
 		})
 		require.NoError(t, err, "create-instance-profile %s", p)
 		_, err = fix.AWS.IAM.AddRoleToInstanceProfile(&iam.AddRoleToInstanceProfileInput{
 			InstanceProfileName: aws.String(p),
-			RoleName:            aws.String(iamRoleAppName),
+			RoleName:            aws.String(singleIAMProfileRole),
 		})
 		require.NoError(t, err, "add-role-to-instance-profile %s", p)
 	}
@@ -86,15 +98,15 @@ func runIAMInstanceProfileAssociation(t *testing.T, fix *Fixture) {
 					&ec2.DisassociateIamInstanceProfileInput{AssociationId: a.AssociationId})
 			}
 		}
-		iamDeleteRoleAndProfilesBestEffort(fix, iamRoleAppName,
-			[]string{iamProfileAppName, iamProfileOtherName}, adminPolicyARN)
+		harness.IAMDeleteRoleAndProfilesBestEffort(fix.AWS, singleIAMProfileRole,
+			[]string{singleIAMProfileApp, singleIAMProfileOther}, adminPolicyARN)
 	})
 
 	// ---- Associate (post-launch) on singleton ----
-	harness.Step(t, "associate-iam-instance-profile %s -> %s", iamProfileAppName, singletonID)
+	harness.Step(t, "associate-iam-instance-profile %s -> %s", singleIAMProfileApp, singletonID)
 	assocOut, err := fix.AWS.EC2.AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
 		InstanceId:         aws.String(singletonID),
-		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(iamProfileAppName)},
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(singleIAMProfileApp)},
 	})
 	require.NoError(t, err, "associate-iam-instance-profile")
 	require.NotNil(t, assocOut.IamInstanceProfileAssociation, "missing association in response")
@@ -108,7 +120,7 @@ func runIAMInstanceProfileAssociation(t *testing.T, fix *Fixture) {
 	harness.ExpectError(t, "IamInstanceProfileAlreadyAssociated", func() error {
 		_, e := fix.AWS.EC2.AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
 			InstanceId:         aws.String(singletonID),
-			IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(iamProfileAppName)},
+			IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(singleIAMProfileApp)},
 		})
 		return e
 	})
@@ -124,7 +136,7 @@ func runIAMInstanceProfileAssociation(t *testing.T, fix *Fixture) {
 	ip := desc.Reservations[0].Instances[0].IamInstanceProfile
 	require.NotNil(t, ip, "DescribeInstances must populate IamInstanceProfile when bound")
 	require.True(t,
-		strings.HasSuffix(aws.StringValue(ip.Arn), ":instance-profile/"+iamProfileAppName),
+		strings.HasSuffix(aws.StringValue(ip.Arn), ":instance-profile/"+singleIAMProfileApp),
 		"unexpected IamInstanceProfile.Arn %q", aws.StringValue(ip.Arn))
 
 	// DescribeIamInstanceProfileAssociations by id.
@@ -143,17 +155,17 @@ func runIAMInstanceProfileAssociation(t *testing.T, fix *Fixture) {
 	harness.Step(t, "delete-instance-profile while bound (expect DeleteConflict)")
 	harness.ExpectError(t, "DeleteConflict", func() error {
 		_, e := fix.AWS.IAM.DeleteInstanceProfile(&iam.DeleteInstanceProfileInput{
-			InstanceProfileName: aws.String(iamProfileAppName),
+			InstanceProfileName: aws.String(singleIAMProfileApp),
 		})
 		return e
 	})
 
 	// Replace → other-profile, must mint a new assoc id.
-	harness.Step(t, "replace-iam-instance-profile-association -> %s", iamProfileOtherName)
+	harness.Step(t, "replace-iam-instance-profile-association -> %s", singleIAMProfileOther)
 	replaceOut, err := fix.AWS.EC2.ReplaceIamInstanceProfileAssociation(
 		&ec2.ReplaceIamInstanceProfileAssociationInput{
 			AssociationId:      aws.String(assocID),
-			IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(iamProfileOtherName)},
+			IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(singleIAMProfileOther)},
 		})
 	require.NoError(t, err, "replace-iam-instance-profile-association")
 	newAssocID := aws.StringValue(replaceOut.IamInstanceProfileAssociation.AssociationId)
@@ -166,7 +178,7 @@ func runIAMInstanceProfileAssociation(t *testing.T, fix *Fixture) {
 		_, e := fix.AWS.EC2.ReplaceIamInstanceProfileAssociation(
 			&ec2.ReplaceIamInstanceProfileAssociationInput{
 				AssociationId:      aws.String(assocID),
-				IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(iamProfileAppName)},
+				IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(singleIAMProfileApp)},
 			})
 		return e
 	})
@@ -200,7 +212,7 @@ func runIAMInstanceProfileAssociation(t *testing.T, fix *Fixture) {
 	// Reuse the singleton's launch attributes so we don't need to rediscover
 	// AMI / type / key / subnet / SG — guarantees the ephemeral VM lands on a
 	// known-good combination on the local single-node fixture.
-	ephID := runInstanceWithProfile(t, fix, inst, iamProfileAppName)
+	ephID := runInstanceWithProfile(t, fix, inst, singleIAMProfileApp)
 	defer func() {
 		// Belt-and-braces: even if the auto-disassociate assertion fails, we
 		// must not leave a VM running. Terminate is idempotent.

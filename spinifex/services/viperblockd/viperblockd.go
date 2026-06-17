@@ -198,10 +198,12 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 	}
 }
 
-// openVolumeVB opens an existing viperblock volume for a short-lived, exclusive
-// state update (detached-volume config reseal). The caller MUST Close the
-// returned VB. Construction mirrors the ebs.mount path so encrypted volumes open
-// with the master key and matching encryption state.
+// openVolumeVB constructs and opens an existing viperblock volume with its
+// config state loaded (LoadState) but NOT its block map. Construction mirrors
+// the ebs.mount path so encrypted volumes open with the master key and matching
+// encryption state. Callers that Close() the VB MUST go through
+// openLoadedVolumeVB instead, so the block map is restored before Close()
+// flushes it back to predastore.
 func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 	s3cfg := s3.S3Config{
 		VolumeName: volumeName,
@@ -251,27 +253,42 @@ func volumeNeedsSeal(volumeName, baseDir string) bool {
 	return err == nil
 }
 
-// sealVolumeVB persists a detached volume's block->object map to predastore.
-// The runtime nbdkit plugin is the only path that flushes the map on close and
-// it does not reliably fire on detach, so without this seal a reattach on a
-// node lacking the local WAL finds no checkpoint (bad superblock). It mirrors
-// the plugin's recover sequence (LoadBlockState + RecoverLocalWALs replay
-// un-sealed chunk WALs) then Close()s to flush the map. The caller MUST ensure
-// no nbdkit process is writing the shared BaseDir first (post-KillProcess).
-func sealVolumeVB(cfg *Config, volumeName string) error {
+// openLoadedVolumeVB opens a detached volume and fully restores its state for a
+// short-lived operation that ends in Close(): LoadState + LoadBlockState +
+// RecoverLocalWALs. Skipping LoadBlockState would leave an empty in-memory block
+// map that Close() then flushes over the good checkpoint in predastore — silent
+// data loss (a reattach then finds an empty map, bad superblock). The caller
+// MUST Close the returned VB; on error the WAL syncer is stopped and no VB is
+// returned. The caller MUST ensure no nbdkit process is writing the shared
+// BaseDir first (post-KillProcess, or volume detached).
+func openLoadedVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 	vb, err := openVolumeVB(cfg, volumeName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := vb.LoadBlockState(); err != nil {
 		vb.StopWALSyncer()
-		return fmt.Errorf("load block state: %w", err)
+		return nil, fmt.Errorf("load block state: %w", err)
 	}
 	// RecoverLocalWALs is fail-closed on integrity errors and persists recovered
 	// state itself; on failure retain the local WAL (no Close) for retry.
 	if err := vb.RecoverLocalWALs(); err != nil {
 		vb.StopWALSyncer()
-		return fmt.Errorf("recover local WALs: %w", err)
+		return nil, fmt.Errorf("recover local WALs: %w", err)
+	}
+	return vb, nil
+}
+
+// sealVolumeVB persists a detached volume's block->object map to predastore.
+// The runtime nbdkit plugin is the only path that flushes the map on close and
+// it does not reliably fire on detach, so without this seal a reattach on a
+// node lacking the local WAL finds no checkpoint (bad superblock). It mirrors
+// the plugin's recover sequence (LoadBlockState + RecoverLocalWALs replay
+// un-sealed chunk WALs) then Close()s to flush the map.
+func sealVolumeVB(cfg *Config, volumeName string) error {
+	vb, err := openLoadedVolumeVB(cfg, volumeName)
+	if err != nil {
+		return err
 	}
 	// Close removes local files only after the predastore writes succeed, so a
 	// failed seal leaves the WAL intact rather than losing data.
@@ -615,7 +632,7 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		vb, err := openVolumeVB(cfg, req.Volume)
+		vb, err := openLoadedVolumeVB(cfg, req.Volume)
 		if err != nil {
 			slog.Error("ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})

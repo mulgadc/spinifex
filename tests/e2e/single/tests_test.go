@@ -123,6 +123,11 @@ func TestVolumeStatus(t *testing.T) {
 	runVolumeStatus(t, requireSingleNodeFixture(t))
 }
 
+// TestVolumeDurability stops/starts the singleton; sequential, leaves it running.
+func TestVolumeDurability(t *testing.T) {
+	runVolumeDurability(t, requireSingleNodeFixture(t))
+}
+
 func TestSnapshotLifecycle(t *testing.T) {
 	runSnapshotLifecycle(t, requireSingleNodeFixture(t))
 }

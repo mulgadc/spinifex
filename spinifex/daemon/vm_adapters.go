@@ -77,6 +77,11 @@ type volumeMounterAdapter struct {
 
 var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
 
+// unmountSealTimeout bounds the ebs.unmount NATS request. The handler now drives
+// a synchronous block-map seal to predastore (S3 I/O), so it matches
+// viperblockd's 120s KillProcess wait rather than a bare RPC budget.
+const unmountSealTimeout = 120 * time.Second
+
 func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
 	return &volumeMounterAdapter{nc: nc, node: node, volState: volState}
 }
@@ -152,16 +157,27 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 			continue
 		}
 
-		msg, err := a.nc.Request(a.topic("unmount"), ebsUnMountRequest, 30*time.Second)
+		// ebs.unmount seals the block map to predastore. Teardown tolerates a
+		// failed seal (log + continue) so terminate stays idempotent, but the
+		// volume must NOT then go available: a reattach on a node without the
+		// local WAL would find no checkpoint (bad superblock). On terminate the
+		// volume is deleted regardless; on stop it stays attached/retryable.
+		sealed := true
+		msg, err := a.nc.Request(a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
 		if err != nil {
 			slog.Error("Failed to unmount volume",
 				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
+			sealed = false
+		} else if sealErr := unmountResponseError(msg.Data); sealErr != nil {
+			slog.Error("Volume unmount seal failed, leaving volume non-available",
+				"instance", instance.ID, "volume", ebsRequest.Name, "err", sealErr)
+			sealed = false
 		} else {
 			slog.Info("Unmounted volume",
 				"instance", instance.ID, "volume", ebsRequest.Name, "data", string(msg.Data))
 		}
 
-		if !ebsRequest.EFI && !ebsRequest.CloudInit && a.volState != nil {
+		if sealed && !ebsRequest.EFI && !ebsRequest.CloudInit && a.volState != nil {
 			if err := a.volState.UpdateVolumeState(ebsRequest.Name, "available", "", ""); err != nil {
 				slog.Error("Failed to update volume state to available after unmount",
 					"volumeId", ebsRequest.Name, "err", err)
@@ -200,13 +216,16 @@ func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
 	return nil
 }
 
-// UnmountOne sends ebs.unmount; errors are logged and swallowed.
-func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) {
+// UnmountOne sends ebs.unmount and returns any error. The handler seals the
+// volume's block map to predastore, so the caller decides whether a failure
+// blocks the volume's available transition.
+func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) error {
 	if err := a.unmountOne(req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
-		return
+		return err
 	}
 	slog.Info("UnmountOne: volume unmounted successfully", "volume", req.Name)
+	return nil
 }
 
 // unmountOne sends ebs.unmount and returns any error.
@@ -215,12 +234,19 @@ func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
 	if err != nil {
 		return fmt.Errorf("marshal unmount request: %w", err)
 	}
-	msg, err := a.nc.Request(a.topic("unmount"), payload, 10*time.Second)
+	msg, err := a.nc.Request(a.topic("unmount"), payload, unmountSealTimeout)
 	if err != nil {
 		return fmt.Errorf("ebs.unmount NATS request: %w", err)
 	}
+	return unmountResponseError(msg.Data)
+}
+
+// unmountResponseError reports a seal/unmount failure from an ebs.unmount
+// response payload: a non-empty Error, or a volume still reported mounted.
+// Returns nil when the unmount and its block-map seal succeeded.
+func unmountResponseError(data []byte) error {
 	var resp types.EBSUnMountResponse
-	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+	if err := json.Unmarshal(data, &resp); err != nil {
 		return fmt.Errorf("unmarshal unmount response: %w", err)
 	}
 	if resp.Error != "" {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -197,10 +198,12 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 	}
 }
 
-// openVolumeVB opens an existing viperblock volume for a short-lived, exclusive
-// state update (detached-volume config reseal). The caller MUST Close the
-// returned VB. Construction mirrors the ebs.mount path so encrypted volumes open
-// with the master key and matching encryption state.
+// openVolumeVB constructs and opens an existing viperblock volume with its
+// config state loaded (LoadState) but NOT its block map. Construction mirrors
+// the ebs.mount path so encrypted volumes open with the master key and matching
+// encryption state. Callers that Close() the VB MUST go through
+// openLoadedVolumeVB instead, so the block map is restored before Close()
+// flushes it back to predastore.
 func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 	s3cfg := s3.S3Config{
 		VolumeName: volumeName,
@@ -229,6 +232,70 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 	return vb, nil
+}
+
+// isAuxVolume reports whether a volume is an -efi/-cloudinit auxiliary volume.
+// Auxiliary volumes are recreated on launch and carry no durable guest data, so
+// they never need sealing to predastore.
+func isAuxVolume(volumeName string) bool {
+	return strings.HasSuffix(volumeName, "-efi") || strings.HasSuffix(volumeName, "-cloudinit")
+}
+
+// volumeNeedsSeal reports whether an unmounted volume must be sealed to
+// predastore on this node: it carries durable guest data (not an auxiliary
+// volume) and has local viperblock state under baseDir/<volume> to flush. A
+// node that never held the local WAL has nothing to seal.
+func volumeNeedsSeal(volumeName, baseDir string) bool {
+	if isAuxVolume(volumeName) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(baseDir, volumeName))
+	return err == nil
+}
+
+// openLoadedVolumeVB opens a detached volume and fully restores its state for a
+// short-lived operation that ends in Close(): LoadState + LoadBlockState +
+// RecoverLocalWALs. Skipping LoadBlockState would leave an empty in-memory block
+// map that Close() then flushes over the good checkpoint in predastore — silent
+// data loss (a reattach then finds an empty map, bad superblock). The caller
+// MUST Close the returned VB; on error the WAL syncer is stopped and no VB is
+// returned. The caller MUST ensure no nbdkit process is writing the shared
+// BaseDir first (post-KillProcess, or volume detached).
+func openLoadedVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
+	vb, err := openVolumeVB(cfg, volumeName)
+	if err != nil {
+		return nil, err
+	}
+	if err := vb.LoadBlockState(); err != nil {
+		vb.StopWALSyncer()
+		return nil, fmt.Errorf("load block state: %w", err)
+	}
+	// RecoverLocalWALs is fail-closed on integrity errors and persists recovered
+	// state itself; on failure retain the local WAL (no Close) for retry.
+	if err := vb.RecoverLocalWALs(); err != nil {
+		vb.StopWALSyncer()
+		return nil, fmt.Errorf("recover local WALs: %w", err)
+	}
+	return vb, nil
+}
+
+// sealVolumeVB persists a detached volume's block->object map to predastore.
+// The runtime nbdkit plugin is the only path that flushes the map on close and
+// it does not reliably fire on detach, so without this seal a reattach on a
+// node lacking the local WAL finds no checkpoint (bad superblock). It mirrors
+// the plugin's recover sequence (LoadBlockState + RecoverLocalWALs replay
+// un-sealed chunk WALs) then Close()s to flush the map.
+func sealVolumeVB(cfg *Config, volumeName string) error {
+	vb, err := openLoadedVolumeVB(cfg, volumeName)
+	if err != nil {
+		return err
+	}
+	// Close removes local files only after the predastore writes succeed, so a
+	// failed seal leaves the WAL intact rather than losing data.
+	if err := vb.Close(); err != nil {
+		return fmt.Errorf("seal close: %w", err)
+	}
+	return nil
 }
 
 // respondJSON marshals data and sends it as a NATS response. On marshal
@@ -452,6 +519,24 @@ func launchService(cfg *Config) (err error) {
 				slog.Error("Failed to kill nbdkit process", "pid", matched.PID, "err", err)
 			}
 
+			// nbdkit is now dead, so no process writes the shared BaseDir: seal
+			// the block map to predastore for volumes that hold local state to
+			// flush (see volumeNeedsSeal).
+			if volumeNeedsSeal(matched.Name, cfg.BaseDir) {
+				if err := sealVolumeVB(cfg, matched.Name); err != nil {
+					slog.Error("ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
+					ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
+				} else {
+					slog.Info("ebs.unmount: volume sealed to predastore", "volume", matched.Name)
+				}
+			} else if !isAuxVolume(matched.Name) {
+				// A durable volume reached unmount with no local WAL under
+				// BaseDir: this node never held its state, so there is nothing to
+				// seal. WARN since a missing local WAL for a volume we expected to
+				// seal can mask the durability gap the seal closes.
+				slog.Warn("ebs.unmount: no local viperblock state for volume, skipping seal", "volume", matched.Name, "baseDir", cfg.BaseDir)
+			}
+
 			// Remove the socket file if using socket transport
 			if matched.Socket != "" {
 				slog.Info("Removing socket file", "socket", matched.Socket)
@@ -547,7 +632,7 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		vb, err := openVolumeVB(cfg, req.Volume)
+		vb, err := openLoadedVolumeVB(cfg, req.Volume)
 		if err != nil {
 			slog.Error("ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})

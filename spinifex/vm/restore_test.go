@@ -486,9 +486,9 @@ func (f *recoveryMounter) Mount(v *VM) error {
 	return nil
 }
 
-func (f *recoveryMounter) Unmount(*VM) error                { return nil }
-func (f *recoveryMounter) MountOne(*types.EBSRequest) error { return nil }
-func (f *recoveryMounter) UnmountOne(types.EBSRequest)      {}
+func (f *recoveryMounter) Unmount(*VM) error                 { return nil }
+func (f *recoveryMounter) MountOne(*types.EBSRequest) error  { return nil }
+func (f *recoveryMounter) UnmountOne(types.EBSRequest) error { return nil }
 
 var _ VolumeMounter = (*recoveryMounter)(nil)
 

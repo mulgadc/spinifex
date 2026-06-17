@@ -1136,12 +1136,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	var subnets []string
-	for _, sn := range input.Subnets {
-		if sn != nil {
-			subnets = append(subnets, *sn)
-		}
-	}
+	subnets := flattenSubnetIDs(input.Subnets, input.SubnetMappings)
 
 	var securityGroups []string
 	for _, sg := range input.SecurityGroups {

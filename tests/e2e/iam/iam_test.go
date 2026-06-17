@@ -315,22 +315,28 @@ func runIAMAccessKeyLifecycle(t *testing.T, fix *Fixture) {
 	require.Len(t, after.AccessKeyMetadata, 1, "alice should have 1 key after delete")
 }
 
-// runIAMUserAuthentication ports IAM Phase 3 (~1538–1579):
-// build a scoped AWS client with alice's key and confirm signing
-// works (active key) / fails (deactivated key, bad secret, bogus ID).
-// Also creates bob's key so Phase 5 enforcement / Phase 7 cleanup
-// can use it.
+// runIAMUserAuthentication ports IAM Phase 3 (~1538–1579): build a scoped
+// AWS client with alice's key and confirm signing is honoured (active key)
+// / rejected (deactivated key, bad secret, bogus ID). Alice has no policy in
+// this phase, so the authenticated call is authz-denied — AccessDenied (not
+// an authn error) proves the active key signed and was accepted. Also creates
+// bob's key so Phase 5 enforcement / Phase 7 cleanup can use it.
 func runIAMUserAuthentication(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — IAM User Authentication")
 	aliceKeyID, aliceSecret := iamEnsureAliceKey(t, fix)
 
-	harness.Step(t, "scoped client (alice) describe-instances — active key OK")
+	// Active, correctly-signed key with no policy: the request authenticates
+	// then default-denies. AccessDenied (vs the InvalidClientTokenId /
+	// SignatureDoesNotMatch below) is the signal that authn succeeded.
+	harness.Step(t, "scoped client (alice) describe-instances — active key authenticates (AccessDenied, no policy)")
 	aliceCli := harness.NewAWSClientWithCreds(t, fix.Env, aliceKeyID, aliceSecret)
-	_, err := aliceCli.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
-	require.NoError(t, err, "alice describe-instances with active key")
+	harness.ExpectError(t, "AccessDenied", func() error {
+		_, e := aliceCli.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
+		return e
+	})
 
 	harness.Step(t, "deactivate alice key, expect InvalidClientTokenId")
-	_, err = fix.AWS.IAM.UpdateAccessKey(&iam.UpdateAccessKeyInput{
+	_, err := fix.AWS.IAM.UpdateAccessKey(&iam.UpdateAccessKeyInput{
 		UserName:    aws.String(iamUserAlice),
 		AccessKeyId: aws.String(aliceKeyID),
 		Status:      aws.String(iam.StatusTypeInactive),

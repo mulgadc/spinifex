@@ -466,6 +466,11 @@ func buildK3sUserData(in K3sServerInput) string {
 	}
 	configLines = append(configLines,
 		"etcd-expose-metrics: true",
+		// Managed-CP: the apiserver VM sits in the system CP VPC with no route to
+		// the worker pod network. `cluster` routes apiserver->pod/service traffic
+		// (admission webhooks, aggregated APIs) through the agent's outbound tunnel;
+		// the default `agent` mode tunnels only kubelet, leaving webhooks unreachable.
+		"egress-selector-mode: cluster",
 		// Prevent user workloads on the CP (EKS parity). k3s packaged addons tolerate CriticalAddonsOnly.
 		"node-taint:",
 		"  - CriticalAddonsOnly=true:NoExecute",

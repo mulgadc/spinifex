@@ -386,6 +386,12 @@ func TestBuildK3sUserData_AdvertiseAddressFallsBackToEndpoint(t *testing.T) {
 	assert.Contains(t, ud, "advertise-address: 203.0.113.9")
 }
 
+func TestBuildK3sUserData_EgressSelectorClusterMode(t *testing.T) {
+	ud := buildK3sUserData(validK3sInput())
+	assert.Contains(t, ud, "egress-selector-mode: cluster",
+		"managed-CP apiserver must tunnel pod/service traffic (webhooks) through the agent")
+}
+
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
 

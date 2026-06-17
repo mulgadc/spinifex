@@ -42,6 +42,9 @@ type ObjectStore interface {
 	PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
 	DeleteObject(input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error)
 	ListObjectsV2(input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error)
+	// EnsureBucket idempotently makes bucket exist. It is safe to call
+	// concurrently and on an already-present bucket.
+	EnsureBucket(bucket string) error
 }
 
 // NewS3ObjectStoreFromConfig creates an S3ObjectStore from Predastore connection parameters.
@@ -102,6 +105,26 @@ func (s *S3ObjectStore) DeleteObject(input *s3.DeleteObjectInput) (*s3.DeleteObj
 
 func (s *S3ObjectStore) ListObjectsV2(input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
 	return s.client.ListObjectsV2(input)
+}
+
+// EnsureBucket creates bucket when absent. A successful HeadBucket short-circuits
+// the create; an already-owned/existing bucket from a racing creator is treated
+// as success so concurrent callers converge.
+func (s *S3ObjectStore) EnsureBucket(bucket string) error {
+	if _, err := s.client.HeadBucket(&s3.HeadBucketInput{Bucket: aws.String(bucket)}); err == nil {
+		return nil
+	}
+	_, err := s.client.CreateBucket(&s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case s3.ErrCodeBucketAlreadyOwnedByYou, s3.ErrCodeBucketAlreadyExists:
+				return nil
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // MemoryObjectStore implements ObjectStore using in-memory storage for testing.
@@ -235,6 +258,10 @@ func (m *MemoryObjectStore) ListObjectsV2(input *s3.ListObjectsV2Input) (*s3.Lis
 		KeyCount:       aws.Int64(int64(len(contents))),
 	}, nil
 }
+
+// EnsureBucket is a no-op: the memory store has no bucket namespace, keys are
+// prefixed with the bucket name on write.
+func (m *MemoryObjectStore) EnsureBucket(bucket string) error { return nil }
 
 // Clear removes all objects from the memory store (useful for test cleanup)
 func (m *MemoryObjectStore) Clear() {

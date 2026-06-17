@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -44,6 +45,12 @@ type Registry struct {
 	Store     objectstore.ObjectStore
 	Meta      ecr.MetaStore
 	AccountID string
+
+	// bucketMu guards bucketReady, which caches that the account's predastore
+	// bucket has been provisioned. Only success is cached: a failed ensure is
+	// retried on the next request.
+	bucketMu    sync.Mutex
+	bucketReady bool
 }
 
 // NewRegistry wires a Registry to its predastore object store and the metadata
@@ -56,6 +63,11 @@ func NewRegistry(store objectstore.ObjectStore, meta ecr.MetaStore, accountID st
 // names contain slashes, so the {name} segment is everything between "/v2/" and
 // the trailing "/blobs", "/manifests" or "/tags" marker.
 func (reg *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if err := reg.ensureBucket(); err != nil {
+		reg.internal(w, "ensure bucket", err)
+		return
+	}
+
 	path := strings.TrimPrefix(r.URL.Path, "/v2/")
 
 	if path == "_catalog" {
@@ -699,6 +711,23 @@ func (reg *Registry) handleCatalog(w http.ResponseWriter, r *http.Request) {
 // ---- helpers ----
 
 func (reg *Registry) bucket() string { return ecr.AccountBucket(reg.AccountID) }
+
+// ensureBucket provisions the account's predastore bucket on first use. ECR
+// storage is account-managed: the bucket appears transparently rather than
+// being created by an operator. The result is cached once provisioned; a
+// backend failure is left uncached so the next request retries.
+func (reg *Registry) ensureBucket() error {
+	reg.bucketMu.Lock()
+	defer reg.bucketMu.Unlock()
+	if reg.bucketReady {
+		return nil
+	}
+	if err := reg.Store.EnsureBucket(reg.bucket()); err != nil {
+		return err
+	}
+	reg.bucketReady = true
+	return nil
+}
 
 func (reg *Registry) ensureRepo(name string) error {
 	if _, err := reg.Meta.GetRepo(reg.AccountID, name); err == nil {

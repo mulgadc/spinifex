@@ -44,8 +44,8 @@ func TestMain(m *testing.M) {
 // requireIAMFixture returns the package-scoped Fixture singleton, building it on
 // first call. Skips the calling test if SPINIFEX_E2E is unset or the cluster
 // mode is not single-node. Fails the test if init itself errors (e.g. AWS
-// client construction). No default-SG mutation or pool-mode detection — the
-// suite is pure control-plane and touches neither.
+// client construction). PoolMode is detected so the instance-identity tests can
+// gate their probe-VPC public-IP path.
 func requireIAMFixture(t *testing.T) *Fixture {
 	t.Helper()
 	pkgFixOnce.Do(func() {
@@ -68,10 +68,11 @@ func requireIAMFixture(t *testing.T) *Fixture {
 			return
 		}
 		pkgFix = &Fixture{
-			Env:     env,
-			AWS:     awsCli,
-			Harness: h,
-			TmpDir:  tmpDir,
+			Env:      env,
+			AWS:      awsCli,
+			Harness:  h,
+			TmpDir:   tmpDir,
+			PoolMode: detectPoolMode(env),
 		}
 	})
 	if pkgFixErr != nil {
@@ -87,10 +88,11 @@ func requireIAMFixture(t *testing.T) *Fixture {
 // package. Only environment-level slots — every per-phase resource ID is
 // memoized on Harness (harness.Fixture) or the package-local iamEnsure* helpers.
 type Fixture struct {
-	Env     *harness.Env
-	AWS     *harness.AWSClient
-	Harness *harness.Fixture // memoized Ensure* fixture; spans the whole process.
-	TmpDir  string           // package-scoped scratch dir; survives every Test* in the package.
+	Env      *harness.Env
+	AWS      *harness.AWSClient
+	Harness  *harness.Fixture // memoized Ensure* fixture; spans the whole process.
+	TmpDir   string           // package-scoped scratch dir; survives every Test* in the package.
+	PoolMode bool             // external IPAM in play; gates the IMDS probe-VPC public-IP path.
 }
 
 // ArtifactDir returns the artifact directory for the *currently running* test.

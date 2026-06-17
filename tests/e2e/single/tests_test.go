@@ -185,21 +185,6 @@ func TestSGToSGDatapath(t *testing.T) {
 	runSGToSGDatapath(t, requireSingleNodeFixture(t))
 }
 
-// TestIAMInstanceProfileAssociation mutates the singleton VM, so it cannot
-// share the parallel bucket. It self-bootstraps its own role + instance
-// profiles (single-iamprofile-*); the control-plane IAM/STS suite that owns the
-// canonical app-role/app-profile names lives in the standalone tests/e2e/iam.
-func TestIAMInstanceProfileAssociation(t *testing.T) {
-	runIAMInstanceProfileAssociation(t, requireSingleNodeFixture(t))
-}
-
-// TestIMDS exercises IMDSv2 end-to-end: token issuance, metadata surface,
-// instance-role credentials, OVN datapath, and cross-VPC isolation. Sequential
-// because it launches profile-bound VMs and creates a fresh VPC.
-func TestIMDS(t *testing.T) {
-	runIMDS(t, requireSingleNodeFixture(t))
-}
-
 // TestFinalClusterStats runs as the last sequential test.
 func TestFinalClusterStats(t *testing.T) {
 	runFinalClusterStats(t, requireSingleNodeFixture(t))

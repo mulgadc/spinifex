@@ -14,7 +14,7 @@ import (
 
 // validCapacityReservationFilters is the set of Describe filter names matched
 // against reservation fields. tag: filters are accepted by ParseFilters but never
-// match, since Phase 1 reservations carry no tags.
+// match, since reservations carry no tags.
 var validCapacityReservationFilters = map[string]bool{
 	"instance-type":           true,
 	"availability-zone":       true,
@@ -87,7 +87,7 @@ func filterReservations(reservations []*ec2.CapacityReservation, ids []string, f
 
 // reservationMatchesFilters reports whether r satisfies every filter. Each filter's
 // values are OR'd (with wildcard support); filters are AND'd together. A tag: or
-// otherwise unhandled filter never matches an untagged Phase 1 reservation.
+// otherwise unhandled filter never matches an untagged reservation.
 func reservationMatchesFilters(r *ec2.CapacityReservation, filters map[string][]string) bool {
 	for name, values := range filters {
 		var field string

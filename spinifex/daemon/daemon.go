@@ -579,8 +579,8 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 		}
 
 		count := canAllocateCount(
-			rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
-			rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
+			rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+			rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
 			vCPUs, rm.instanceMemChargeMiB(it),
 			1<<30, // effectively unlimited — let resources be the constraint
 			0, false,
@@ -598,6 +598,7 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 	slog.Info("GetAvailableInstanceTypeInfos", "total_types", len(rm.instanceTypes), "total_available_slots", len(infos),
 		"hostVCPU", rm.hostVCPU, "hostMem", rm.hostMemGB,
 		"reservedVCPU", rm.reservedVCPU, "reservedMem", rm.reservedMem,
+		"reservedCRVCPU", rm.reservedCRVCPU, "reservedCRMem", rm.reservedCRMem,
 		"showCapacity", showCapacity)
 
 	return infos

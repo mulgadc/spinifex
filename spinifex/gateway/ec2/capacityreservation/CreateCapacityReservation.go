@@ -37,7 +37,7 @@ func ValidateCreateCapacityReservationInput(input *ec2.CreateCapacityReservation
 	if aws.StringValue(input.AvailabilityZoneId) != "" {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	// Phase 1 reservations never auto-expire: reject any limited end date.
+	// Reservations never auto-expire: reject any limited end date.
 	if input.EndDate != nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -50,12 +50,9 @@ func ValidateCreateCapacityReservationInput(input *ec2.CreateCapacityReservation
 	return nil
 }
 
-// CreateCapacityReservation validates the request, runs a census-complete node
-// status fan-out, pins the highest-available in-AZ node that fits the whole
-// InstanceCount, and node-targets the Create to that daemon. An unknown AZ or
-// instance type is rejected from the census; no eligible node or a lost fit
-// re-check on the pinned daemon yields InsufficientInstanceCapacity (the client
-// retries — the gateway does not try another node).
+// CreateCapacityReservation runs a census-complete fan-out, pins the highest-
+// available in-AZ node that fits the whole InstanceCount, and node-targets Create.
+// No eligible node (or a lost fit re-check) yields InsufficientInstanceCapacity.
 func CreateCapacityReservation(input *ec2.CreateCapacityReservationInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.CreateCapacityReservationOutput, error) {
 	var output ec2.CreateCapacityReservationOutput
 

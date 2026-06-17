@@ -8,10 +8,8 @@ import (
 )
 
 // capacityReservation is an in-memory On-Demand Capacity Reservation pinned to
-// this node. The carve-out it holds (TotalInstanceCount × per-instance compute)
-// is subtracted from schedulable capacity via reservedCR*. Records are immutable
-// after creation; an active reservation is simply present in the map, and
-// cancelling removes it. Lost on daemon restart (no persistence in Phase 1).
+// this node, holding a TotalInstanceCount × per-instance compute carve-out via
+// reservedCR*. Present in the map means active; cancel removes it. Lost on restart.
 type capacityReservation struct {
 	ID                    string
 	AccountID             string
@@ -27,16 +25,14 @@ type capacityReservation struct {
 }
 
 // reservationCompute returns the headline compute carve-out for a reservation:
-// InstanceCount × catalog (vCPU, memory), with no nbdkit overhead in Phase 1.
+// InstanceCount × catalog (vCPU, memory), with no nbdkit overhead.
 func (r *capacityReservation) reservationCompute() (vcpu int, memGB float64) {
 	return r.TotalInstanceCount * r.VCPUPerInstance, float64(r.TotalInstanceCount) * r.MemGBPerInstance
 }
 
-// CreateReservation re-checks that the reservation's headline compute fits in
-// this node's remaining schedulable capacity, and on success bumps reservedCR*,
-// stores the record, and refreshes subscriptions. The check-and-commit run under
-// a single write-lock so a concurrent allocate or CreateReservation cannot
-// overcommit the host. Returns InsufficientInstanceCapacity if it no longer fits.
+// CreateReservation re-checks fit under a single write-lock, then bumps reservedCR*,
+// stores the record, and refreshes subscriptions, so a concurrent allocate cannot
+// overcommit. Returns InsufficientInstanceCapacity if the carve-out no longer fits.
 func (rm *ResourceManager) CreateReservation(rec *capacityReservation) error {
 	wantVCPU, wantMem := rec.reservationCompute()
 

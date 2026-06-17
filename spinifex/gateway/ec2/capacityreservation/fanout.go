@@ -13,9 +13,8 @@ import (
 )
 
 // censusTimeout bounds the census-complete node-status fan-out. Unlike the
-// latency-optimised queryNodeCapacity (which narrows to +200ms after the first
-// reply), we wait for every expected node or this full deadline so that a "no
-// node fits" answer is trustworthy rather than a race against a slow daemon.
+// latency-optimised queryNodeCapacity (which narrows after the first reply), we wait
+// for every expected node or this full deadline so a "no node fits" answer is trustworthy.
 const censusTimeout = 3 * time.Second
 
 // nodeCensus is one node's capacity snapshot from spinifex.node.status: its id,
@@ -27,9 +26,8 @@ type nodeCensus struct {
 }
 
 // collectCensus fans out spinifex.node.status and returns one entry per distinct
-// node that responds, stopping once expectedNodes nodes have answered or
-// censusTimeout elapses. It deliberately does not narrow the deadline after the
-// first reply, trading latency for a complete cluster picture.
+// node that responds, stopping once expectedNodes answer or censusTimeout elapses.
+// It does not narrow the deadline after the first reply, trading latency for completeness.
 func collectCensus(natsConn *nats.Conn, expectedNodes int) ([]nodeCensus, error) {
 	if natsConn == nil || !natsConn.IsConnected() {
 		return nil, utils.ErrClusterUnavailable
@@ -127,9 +125,8 @@ func azInCensus(census []nodeCensus, az string) bool {
 }
 
 // typeInCensus reports whether instanceType is in any node's catalog. Known types
-// appear in node status even at zero available count, so an absent key means the
-// type is unsupported (or GPU, which is excluded from schedulable capacity) and is
-// rejected as InvalidInstanceType.
+// appear in node status even at zero available count, so an absent key means the type
+// is unsupported (or GPU, excluded from schedulable capacity) — rejected as InvalidInstanceType.
 func typeInCensus(census []nodeCensus, instanceType string) bool {
 	for _, n := range census {
 		if _, ok := n.Available[instanceType]; ok {
@@ -140,10 +137,8 @@ func typeInCensus(census []nodeCensus, instanceType string) bool {
 }
 
 // fanoutCollect publishes payload to subject and gathers every node's reply,
-// stopping once expectedNodes have answered or censusTimeout elapses. Per-node
-// error payloads and malformed replies are skipped. Unlike NATSScatterGather
-// (first success wins) it returns all successful responses so a Describe can merge
-// them and a broadcast Cancel can inspect every ack.
+// stopping once expectedNodes answer or censusTimeout elapses. Error and malformed
+// replies are skipped; all successful responses are returned for the caller to merge.
 func fanoutCollect[Out any](natsConn *nats.Conn, subject string, payload []byte, expectedNodes int, accountID string) ([]Out, error) {
 	if natsConn == nil || !natsConn.IsConnected() {
 		return nil, utils.ErrClusterUnavailable

@@ -12,11 +12,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// handleEC2CreateCapacityReservation is the node-targeted Create handler. The
-// gateway has already validated input and pinned this node; here we resolve the
-// per-instance carve-out from the local catalog, generate the id, and commit it
-// under the ResourceManager's fit re-check. A lost race returns
-// InsufficientInstanceCapacity and the client retries.
+// handleEC2CreateCapacityReservation is the node-targeted Create handler: resolve
+// the per-instance carve-out from the local catalog, generate the id, and commit
+// under the fit re-check. A lost race returns InsufficientInstanceCapacity.
 func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) {
 	accountID := utils.AccountIDFromMsg(msg)
 	input := new(ec2.CreateCapacityReservationInput)
@@ -98,8 +96,8 @@ func (d *Daemon) handleEC2CancelCapacityReservation(msg *nats.Msg) {
 }
 
 // toAWSCapacityReservation renders the in-memory record as the AWS API type.
-// Phase 1 reservations are always active with AvailableInstanceCount equal to
-// the total, and never expire (EndDateType=unlimited).
+// Reservations are always active with AvailableInstanceCount equal to the total,
+// and never expire (EndDateType=unlimited).
 func (r *capacityReservation) toAWSCapacityReservation() *ec2.CapacityReservation {
 	count := int64(r.TotalInstanceCount)
 	return &ec2.CapacityReservation{

@@ -60,9 +60,17 @@ func TestRouteTableValidation(t *testing.T) {
 	runRouteTableValidation(t, requireSingleNodeFixture(t))
 }
 
+// TestReplaceRouteConvergence owns its own scratch VPCs/IGWs end to end and
+// never touches the singleton or default VPC, so it is parallel-safe.
+func TestReplaceRouteConvergence(t *testing.T) {
+	t.Parallel()
+	runReplaceRouteConvergence(t, requireSingleNodeFixture(t))
+}
+
 // --- Sequential: singleton VM lifecycle ---
 
-// TestClusterStatsCLI asserts 0-VM baseline state before any instance launches.
+// TestClusterStatsCLI exercises the spx cluster CLI; its get-vms baseline is
+// concurrency-tolerant (other suites may have VMs on the node).
 func TestClusterStatsCLI(t *testing.T) {
 	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
@@ -101,12 +109,24 @@ func TestConsoleOutput(t *testing.T) {
 	runConsoleOutput(t, requireSingleNodeFixture(t))
 }
 
+// TestENIHotplug hot-plugs a secondary ENI onto the freshly-booted singleton
+// and asserts the NIC reaches the guest, then restores it. Placed before the
+// stop/start churn so the singleton is known running + SSH-healthy.
+func TestENIHotplug(t *testing.T) {
+	runENIHotplug(t, requireSingleNodeFixture(t))
+}
+
 func TestVolumeLifecycle(t *testing.T) {
 	runVolumeLifecycle(t, requireSingleNodeFixture(t))
 }
 
 func TestVolumeStatus(t *testing.T) {
 	runVolumeStatus(t, requireSingleNodeFixture(t))
+}
+
+// TestVolumeDurability stops/starts the singleton; sequential, leaves it running.
+func TestVolumeDurability(t *testing.T) {
+	runVolumeDurability(t, requireSingleNodeFixture(t))
 }
 
 func TestSnapshotLifecycle(t *testing.T) {
@@ -155,70 +175,15 @@ func TestNATGateway(t *testing.T) {
 	runNATGateway(t, requireSingleNodeFixture(t))
 }
 
+// TestInstanceEIP allocates an Elastic IP, associates it to a throwaway VM,
+// and asserts the EIP datapath flips on/off with the association. Sequential:
+// it authorizes ingress on the shared default SG.
+func TestInstanceEIP(t *testing.T) {
+	runInstanceEIP(t, requireSingleNodeFixture(t))
+}
+
 func TestSGToSGDatapath(t *testing.T) {
 	runSGToSGDatapath(t, requireSingleNodeFixture(t))
-}
-
-// IAM Tests share the package-scoped IAM fixture; sub-tests inside each
-// runIAM* already use t.Parallel for fan-out.
-func TestIAMUserCRUD(t *testing.T) {
-	runIAMUserCRUD(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMAccessKeyLifecycle(t *testing.T) {
-	runIAMAccessKeyLifecycle(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMUserAuthentication(t *testing.T) {
-	runIAMUserAuthentication(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMPolicyCRUD(t *testing.T) {
-	runIAMPolicyCRUD(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMPolicyAttachmentEnforcement(t *testing.T) {
-	runIAMPolicyAttachmentEnforcement(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMPolicyLifecycle(t *testing.T) {
-	runIAMPolicyLifecycle(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMCleanup(t *testing.T) {
-	runIAMCleanup(t, requireSingleNodeFixture(t))
-}
-
-// TestIAMRolesAndProfiles + TestIAMInstanceProfileAssociation are sequential:
-// the second recreates role/profile names the first tore down.
-func TestIAMRolesAndProfiles(t *testing.T) {
-	runIAMRolesAndProfiles(t, requireSingleNodeFixture(t))
-}
-
-// TestIAMInstanceProfileAssociation mutates the singleton VM, so it cannot
-// share the parallel bucket.
-func TestIAMInstanceProfileAssociation(t *testing.T) {
-	runIAMInstanceProfileAssociation(t, requireSingleNodeFixture(t))
-}
-
-// TestSTSAssumeRoleAndGetCallerIdentity is sequential to avoid racing trust-policy
-// mutations against a parallel AssumeRole.
-func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
-	runSTS(t, requireSingleNodeFixture(t))
-}
-
-// TestAssumedRoleControlPlaneEnforcement verifies a zero-policy assumed-role
-// is denied and permitted once a policy is attached. Sequential to avoid
-// racing the mid-test grant.
-func TestAssumedRoleControlPlaneEnforcement(t *testing.T) {
-	runAssumedRoleControlPlaneEnforcement(t, requireSingleNodeFixture(t))
-}
-
-// TestIMDS exercises IMDSv2 end-to-end: token issuance, metadata surface,
-// instance-role credentials, OVN datapath, and cross-VPC isolation. Sequential
-// because it launches profile-bound VMs and creates a fresh VPC.
-func TestIMDS(t *testing.T) {
-	runIMDS(t, requireSingleNodeFixture(t))
 }
 
 // TestFinalClusterStats runs as the last sequential test.

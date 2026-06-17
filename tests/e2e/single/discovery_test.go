@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,7 +91,9 @@ func runEnvironment(t *testing.T, fix *Fixture) {
 
 // runClusterStatsCLI exercises the spx CLI cluster surface (`get nodes`,
 // `top nodes`, `get vms`). Single-node only — multinode mode is tested by a
-// different scenario. Maps to run-e2e.sh ~95–127.
+// different scenario. The `get vms` baseline is concurrency-tolerant: it asserts
+// the empty state only when no instance rows are present, so suites booting VMs
+// in parallel (iam/lb) don't break it. Maps to run-e2e.sh ~95–127.
 func runClusterStatsCLI(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Cluster Stats CLI")
 	if fix.Env.Mode != harness.ModeSingle {
@@ -108,10 +111,17 @@ func runClusterStatsCLI(t *testing.T, fix *Fixture) {
 	// actually rendered.
 	assert.Contains(t, top, "0/", "spx top nodes should report resource stats\n%s", top)
 
-	harness.Step(t, "spx get vms (empty before any launches)")
+	// spx get vms is node-wide: a hard "No VMs found" baseline breaks once the
+	// iam/lb suites boot VMs concurrently. Assert the empty state only when no
+	// instance rows are present; otherwise log (the CLI is still exercised).
+	harness.Step(t, "spx get vms (baseline; tolerant of concurrent suites)")
 	vms := harness.SpxGetVMs(t)
-	assert.Contains(t, vms, "No VMs found",
-		"spx get vms should be empty before Phase 5\n%s", vms)
+	if strings.Contains(vms, "i-") {
+		t.Logf("spx get vms lists instance-like rows at baseline (may be from concurrent suites):\n%s", vms)
+	} else {
+		assert.Contains(t, vms, "No VMs found",
+			"spx get vms with no instances present should report the empty state\n%s", vms)
+	}
 }
 
 // runDiscovery re-asserts describe-regions / describe-availability-zones

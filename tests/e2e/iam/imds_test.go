@@ -1,6 +1,6 @@
 //go:build e2e
 
-package single
+package iam
 
 import (
 	"encoding/base64"
@@ -26,6 +26,12 @@ import (
 const (
 	imdsRoleName    = "imds-e2e-role"
 	imdsProfileName = "imds-e2e-profile"
+
+	// imdsAdminPolicyName is the bootstrap managed policy attached to the IMDS
+	// role so the minted instance-role creds round-trip a real API call.
+	imdsAdminPolicyName = "AdministratorAccess"
+	// imdsTrustPolicyEC2 lets ec2.amazonaws.com assume the IMDS instance role.
+	imdsTrustPolicyEC2 = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 
 	// metaURL is the AWS-compatible link-local IMDS endpoint, answered L2 on each
 	// subnet's own switch from the host via SO_BINDTODEVICE on the
@@ -87,7 +93,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	harness.SkipIfNoOVN(t)
 	requireSSHHealthy(t)
 
-	adminAccount := iamEnsureAdminAccountID(t, fix)
+	adminAccount := harness.IAMAccountID(t, fix.AWS)
 	keyName, keyPath := needKeyPair(t, fix)
 	imdsEnsureRoleProfile(t, fix, adminAccount)
 
@@ -525,16 +531,16 @@ func imdsAttachInternet(t *testing.T, c *harness.AWSClient, vpcID, subnetID stri
 // sweeps any residue from a prior run first.
 func imdsEnsureRoleProfile(t *testing.T, fix *Fixture, adminAccount string) {
 	t.Helper()
-	adminPolicyARN := iamPolicyARN(adminAccount, iamPolicyAdministrator)
-	iamDeleteRoleAndProfilesBestEffort(fix, imdsRoleName, []string{imdsProfileName}, adminPolicyARN)
+	adminPolicyARN := harness.IAMPolicyARN(adminAccount, imdsAdminPolicyName)
+	harness.IAMDeleteRoleAndProfilesBestEffort(fix.AWS, imdsRoleName, []string{imdsProfileName}, adminPolicyARN)
 	fix.Harness.RegisterCleanup(func() {
-		iamDeleteRoleAndProfilesBestEffort(fix, imdsRoleName, []string{imdsProfileName}, adminPolicyARN)
+		harness.IAMDeleteRoleAndProfilesBestEffort(fix.AWS, imdsRoleName, []string{imdsProfileName}, adminPolicyARN)
 	})
 
 	harness.Step(t, "create-role %q (trust=ec2.amazonaws.com) + profile %q", imdsRoleName, imdsProfileName)
 	_, err := fix.AWS.IAM.CreateRole(&iam.CreateRoleInput{
 		RoleName:                 aws.String(imdsRoleName),
-		AssumeRolePolicyDocument: aws.String(iamTrustPolicyEC2Standard),
+		AssumeRolePolicyDocument: aws.String(imdsTrustPolicyEC2),
 		Description:              aws.String("E2E IMDS instance-role credentials"),
 	})
 	require.NoError(t, err, "create-role")

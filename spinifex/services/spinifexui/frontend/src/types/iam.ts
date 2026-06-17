@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { jsonStringSchema } from "@/lib/json"
+
 export const createUserSchema = z.object({
   userName: z
     .string()
@@ -18,20 +20,7 @@ export const createPolicySchema = z.object({
     .max(128, "Policy name must be 128 characters or less")
     .regex(/^[\w+=,.@-]+$/, "Policy name contains invalid characters"),
   description: z.string().optional(),
-  policyDocument: z
-    .string()
-    .min(1, "Policy document is required")
-    .refine(
-      (val) => {
-        try {
-          JSON.parse(val)
-          return true
-        } catch {
-          return false
-        }
-      },
-      { message: "Policy document must be valid JSON" },
-    ),
+  policyDocument: jsonStringSchema({ label: "Policy document" }),
 })
 
 export type CreatePolicyFormData = z.infer<typeof createPolicySchema>
@@ -59,20 +48,7 @@ export const createRoleSchema = z.object({
     .regex(/^[\w+=,.@-]+$/, "Role name contains invalid characters"),
   path: z.string().optional(),
   description: z.string().optional(),
-  assumeRolePolicyDocument: z
-    .string()
-    .min(1, "Trust policy is required")
-    .refine(
-      (val) => {
-        try {
-          JSON.parse(val)
-          return true
-        } catch {
-          return false
-        }
-      },
-      { message: "Trust policy must be valid JSON" },
-    ),
+  assumeRolePolicyDocument: jsonStringSchema({ label: "Trust policy" }),
 })
 
 export type CreateRoleFormData = z.infer<typeof createRoleSchema>

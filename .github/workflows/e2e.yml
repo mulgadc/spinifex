@@ -14,13 +14,10 @@ on:
       - .github/workflows/e2e.yml
   workflow_dispatch:
     inputs:
-      sha:
-        description: "PR head SHA to report status on"
-        required: false
       suites:
-        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks')"
+        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks e2e-iam')"
         required: false
-        default: "e2e-single e2e-multinode e2e-cert e2e-lb"
+        default: "e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam"
       test_run:
         description: "Optional regex for -test.run (e.g. '^TestMultinodeIPSec$'). Empty = run all tests in suite."
         required: false
@@ -32,7 +29,7 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb' }}
+  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
 
 jobs:
@@ -78,7 +75,7 @@ jobs:
     # suites='e2e-multinode' only). Push triggers and the default SUITES list
     # both include single/cert/lb so the inputs.suites null-check keeps the
     # job running on plain PR pushes.
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks')
+    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-iam')
     runs-on: [self-hosted, ci-single]
     timeout-minutes: 45
     env:
@@ -593,12 +590,15 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          # single + iam are single-node-only suites — their fixtures skip
+          # unless SPINIFEX_MODE=single, so building/running them on multinode
+          # is wasted work.
           # eks is excluded on multinode: EKS KV is a clustered (Raft) JetStream
           # stream and create-cluster needs an elected leader, but multinode
           # JetStream clustering isn't solid yet (mulga-omq/z2z/5yg). EKS is
           # validated single-node only for now; re-enable here once clustered
           # JetStream + multinode EKS are a deliberate target.
-          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks)$' | tr '\n' ' ')
+          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks|iam)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_BUILD}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); nothing to build"
             exit 0
@@ -681,7 +681,7 @@ jobs:
         id: e2e
         run: |
           set +e
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks)$' | tr '\n' ' ')
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks|iam)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"
@@ -892,12 +892,8 @@ jobs:
       - name: Report Status to PR
         env:
           GH_TOKEN: ${{ github.token }}
-          REPORT_SHA: ${{ inputs.sha || github.sha }}
+          REPORT_SHA: ${{ github.sha }}
         run: |
-          if [[ -z "${REPORT_SHA}" ]]; then
-            echo "::error::no SHA available (inputs.sha and github.sha both empty)"
-            exit 1
-          fi
           single_ok=true; multi_ok=true
           case "${{ needs.e2e_single.result }}" in success|skipped) ;; *) single_ok=false ;; esac
           case "${{ needs.e2e_real_multi.result }}" in success|skipped) ;; *) multi_ok=false ;; esac

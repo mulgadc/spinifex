@@ -34,9 +34,23 @@ func TestMultinodeInstanceDistribution(t *testing.T) {
 	runInstanceDistribution(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeJetStreamReplicas is read-only over NATS; parallel so it resumes
+// after the sequential node-failure/recovery tests have restabilised the cluster.
+func TestMultinodeJetStreamReplicas(t *testing.T) {
+	t.Parallel()
+	runJetStreamReplicas(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeVolumeLifecycle is sequential: touches predastore state.
 func TestMultinodeVolumeLifecycle(t *testing.T) {
 	runVolumeLifecycle(t, requireMultiNodeFixture(t))
+}
+
+// TestMultinodeVolumeDurability is sequential and declared before CrossNodeOps
+// (which destabilises trio[0]'s sshd) so its guest-SSH probes hit settled VMs.
+// Touches predastore state.
+func TestMultinodeVolumeDurability(t *testing.T) {
+	runVolumeDurability(t, requireMultiNodeFixture(t))
 }
 
 // TestMultinodeCrossNodeGateway is sequential: asserts a stable per-gateway instance count

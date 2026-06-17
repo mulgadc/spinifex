@@ -867,11 +867,12 @@ func (s *EKSServiceImpl) claimClusterName(accountID string, acctKV nats.KeyValue
 
 // purgeClusterInfra tears down a cluster's live AWS resources and erases its
 // per-cluster KV state. Zeroize (a security guarantee — no recoverable key
-// material) plus NLB and VM teardown are blocking: their failures are joined
-// and returned BEFORE the KV sweep, so a billable resource is never orphaned
-// without the meta record that owns its ARNs/IDs. SG cleanup is best-effort
-// (a leaked SG strands no owning record). Shared by DeleteCluster and the
-// FAILED-cluster reclaim path in CreateCluster.
+// material), NLB, VM, SG, IGW, and CP-VPC teardown are all blocking: their
+// failures are joined and returned BEFORE the KV sweep, so neither a billable
+// resource nor a VPC-pinning SG is orphaned without the meta record that owns
+// its IDs. The cluster SGs sit in the customer VPC, so a leaked SG pins the VPC
+// on DependencyViolation — leaving the cluster DELETING for a retry is correct.
+// Shared by DeleteCluster and the FAILED-cluster reclaim path in CreateCluster.
 func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *ClusterMeta, acctKV nats.KeyValue, deleteMeta bool) error {
 	s.registry.Stop(accountID, name)
 
@@ -961,10 +962,6 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		}
 	}
 
-	if len(teardownErrs) > 0 {
-		return errors.Join(teardownErrs...)
-	}
-
 	// Private endpoint (301): reclaim the customer-VPC SG now its ENI is gone.
 	// Best-effort — its only billable dependant (the ENI) is already deleted.
 	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
@@ -973,29 +970,29 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		}
 	}
 
+	// SG / IGW / CP-VPC cleanup runs even when an earlier step failed: the cluster
+	// SGs sit in the customer VPC, so skipping them would pin the VPC. Failures are
+	// joined into teardownErrs (not swallowed) so the meta survives for a retry.
 	if meta.ManagedCPVPC != nil && meta.ManagedCPVPC.VpcId != "" {
 		// New topology: SGs + IGW + subnets + route tables + NAT GW + VPC all live
 		// in the managed CP VPC under the system account. DeleteClusterCPVPC removes
 		// the IGW + VPC after the SGs, so SG cleanup must precede it.
 		if err := DeleteClusterSGs(s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId); err != nil {
-			slog.Warn("purgeClusterInfra: DeleteClusterSGs failed", "cluster", name, "err", err)
+			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", err))
 		}
-		// The CP VPC holds a billable NAT-GW EIP, so a teardown failure is surfaced
-		// (not best-effort): returning before the KV sweep keeps the meta refs alive
-		// for a delete retry rather than orphaning the EIP.
 		if err := DeleteClusterCPVPC(s.cpVPCDeps(), infraAcct, name); err != nil {
-			return fmt.Errorf("delete managed CP VPC: %w", err)
+			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", err))
 		}
 	} else if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 		// Legacy topology: CP lived in the customer VPC; reclaim its SGs + the
 		// cluster-owned IGW (ownership-scoped — a reused customer IGW is left
 		// intact). IGW delete must precede any VPC delete to avoid DependencyViolation.
 		if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
-			slog.Warn("purgeClusterInfra: DeleteClusterSGs failed", "cluster", name, "err", err)
+			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", err))
 		}
 		if s.deps.IGW != nil {
 			if err := DeleteClusterIGW(s.deps.IGW, accountID, meta.ResourcesVpcConfig.VpcId, name); err != nil {
-				slog.Warn("purgeClusterInfra: DeleteClusterIGW failed", "cluster", name, "err", err)
+				teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster IGW: %w", err))
 			}
 		}
 	}
@@ -1004,6 +1001,13 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 	// clusters). Best-effort: the VMs are already gone, so a leaked internal
 	// group strands nothing.
 	s.teardownSpreadGroup(meta)
+
+	// Any blocking-teardown failure (billable infra or a VPC-pinning SG) keeps the
+	// meta — and the IDs that own the stranded resources — alive for a delete retry
+	// or the DELETING backstop, rather than completing deletion with infra leaked.
+	if len(teardownErrs) > 0 {
+		return errors.Join(teardownErrs...)
+	}
 
 	// Only now, with NLB + VM confirmed gone, erase the meta + per-cluster KV.
 	// The reclaim path passes deleteMeta=false: it has already CAS-claimed the

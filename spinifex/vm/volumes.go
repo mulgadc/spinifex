@@ -27,6 +27,18 @@ type AttachVolumeResult struct {
 	GuestDevice string
 }
 
+// rollbackUnmount best-effort unmounts a volume while unwinding a failed
+// AttachVolume. The volume never took guest writes, so the unmount seal is a
+// no-op; a failure is logged and tolerated rather than masking the attach error.
+func (m *Manager) rollbackUnmount(req types.EBSRequest) {
+	if m.deps.VolumeMounter == nil {
+		return
+	}
+	if err := m.deps.VolumeMounter.UnmountOne(req); err != nil {
+		slog.Warn("AttachVolume: rollback unmount failed", "volume", req.Name, "err", err)
+	}
+}
+
 // AttachVolume hot-plugs a volume via the QMP pipeline (mount → blockdev-add →
 // device_add). Partial state is rolled back on failure. If device is empty, the
 // next free /dev/sd[f-p] slot is allocated. Instance must be in StateRunning.
@@ -61,7 +73,7 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		// Empty-URI response leaves backend NBD state ambiguous; unmount
 		// defensively to avoid orphaning a half-started mount.
 		if errors.Is(err, ErrMountAmbiguous) {
-			m.deps.VolumeMounter.UnmountOne(ebsRequest)
+			m.rollbackUnmount(ebsRequest)
 		}
 		return AttachVolumeResult{}, fmt.Errorf("mount volume %s: %w", volumeID, err)
 	}
@@ -69,7 +81,7 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	serverType, socketPath, nbdHost, nbdPort, err := utils.ParseNBDURI(ebsRequest.NBDURI)
 	if err != nil {
 		slog.Error("AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
-		m.deps.VolumeMounter.UnmountOne(ebsRequest)
+		m.rollbackUnmount(ebsRequest)
 		return AttachVolumeResult{}, fmt.Errorf("parse NBDURI: %w", err)
 	}
 
@@ -92,7 +104,7 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		},
 	}, instance.ID); err != nil {
 		slog.Error("AttachVolume: QMP object-add iothread failed", "volumeId", volumeID, "err", err)
-		m.deps.VolumeMounter.UnmountOne(ebsRequest)
+		m.rollbackUnmount(ebsRequest)
 		return AttachVolumeResult{}, fmt.Errorf("QMP object-add iothread: %w", err)
 	}
 
@@ -107,7 +119,7 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		},
 	}, instance.ID); err != nil {
 		slog.Error("AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)
-		m.deps.VolumeMounter.UnmountOne(ebsRequest)
+		m.rollbackUnmount(ebsRequest)
 		return AttachVolumeResult{}, fmt.Errorf("QMP blockdev-add: %w", err)
 	}
 
@@ -146,7 +158,7 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 			slog.Error("AttachVolume: rollback blockdev-del failed, skipping EBS unmount",
 				"volumeId", volumeID, "err", delErr)
 		} else {
-			m.deps.VolumeMounter.UnmountOne(ebsRequest)
+			m.rollbackUnmount(ebsRequest)
 		}
 		return AttachVolumeResult{}, fmt.Errorf("QMP device_add: %w", err)
 	}
@@ -313,9 +325,16 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 			"volumeId", volumeID, "err", iothreadErr)
 	}
 
-	// ebs.unmount (best-effort).
+	// ebs.unmount drives the synchronous block-map seal to predastore. On
+	// failure the volume's local WAL is retained, so keep the volume attached
+	// and return the error; an AWS-CLI retry re-drives the seal and same-node
+	// reattach still works meanwhile.
 	if m.deps.VolumeMounter != nil {
-		m.deps.VolumeMounter.UnmountOne(ebsReq)
+		if err := m.deps.VolumeMounter.UnmountOne(ebsReq); err != nil {
+			slog.Error("DetachVolume: ebs.unmount seal failed, leaving volume attached",
+				"volumeId", volumeID, "err", err)
+			return "", fmt.Errorf("ebs.unmount seal: %w", err)
+		}
 	}
 
 	// State cleanup.
@@ -373,6 +392,15 @@ func (m *Manager) tryBlockdevDel(instance *VM, nodeName string) error {
 			}
 			return nil
 		}
+		// A prior detach already removed the block node (e.g. an AWS-CLI retry
+		// after the ebs.unmount seal failed): treat as success so the retry
+		// resumes through object-del to the seal instead of wedging on a
+		// now-absent node.
+		if isQMPNodeNotFound(err) {
+			slog.Info("DetachVolume: block node already removed (resuming detach)",
+				"nodeName", nodeName, "err", err)
+			return nil
+		}
 		lastErr = err
 		if !isQMPNodeInUse(err) {
 			return err
@@ -405,4 +433,16 @@ func isQMPNodeInUse(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "in use")
+}
+
+// isQMPNodeNotFound reports whether err is a QMP error for a block node that no
+// longer exists. blockdev-del on an already-removed node returns this (QEMU:
+// "Failed to find node with node-name=..."), making blockdev-del idempotent
+// across detach retries — mirroring isQMPDeviceNotFound for device_del.
+func isQMPNodeNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Failed to find node") || strings.Contains(msg, "Cannot find device")
 }

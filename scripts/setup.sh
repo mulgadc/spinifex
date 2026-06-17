@@ -221,6 +221,7 @@ install_apt_deps() {
             pciutils \
             jq curl iproute2 netcat-openbsd wget unzip xz-utils file \
             ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base \
+            chrony \
             > /dev/null
 
         info "System dependencies installed"

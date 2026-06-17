@@ -40,10 +40,6 @@ terraform {
       source  = "hashicorp/tls"
       version = ">= 4.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = ">= 2.20"
-    }
   }
 }
 
@@ -125,17 +121,6 @@ provider "aws" {
   skip_metadata_api_check     = true
   skip_requesting_account_id  = true
   skip_region_validation      = true
-}
-
-provider "kubernetes" {
-  host                   = aws_eks_cluster.this.endpoint
-  cluster_ca_certificate = base64decode(aws_eks_cluster.this.certificate_authority[0].data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", aws_eks_cluster.this.name, "--region", var.region]
-  }
 }
 
 data "aws_availability_zones" "available" {
@@ -573,81 +558,23 @@ resource "aws_vpc_security_group_ingress_rule" "nodeport_from_alb" {
 }
 
 # ---------------------------------------------------------------------------
-# Demo workload — three replicas spread across the workers
-# ---------------------------------------------------------------------------
-
-resource "kubernetes_deployment_v1" "hello" {
-  metadata {
-    name      = "hello"
-    namespace = "default"
-    labels    = { app = "hello" }
-  }
-
-  spec {
-    replicas = var.node_desired_size
-
-    selector {
-      match_labels = { app = "hello" }
-    }
-
-    template {
-      metadata {
-        labels = { app = "hello" }
-      }
-
-      spec {
-        container {
-          name  = "hello"
-          image = "nginxdemos/hello"
-
-          port {
-            container_port = 80
-          }
-        }
-
-        # Spread one replica per node so a refresh visibly hits different nodes.
-        topology_spread_constraint {
-          max_skew           = 1
-          topology_key       = "kubernetes.io/hostname"
-          when_unsatisfiable = "ScheduleAnyway"
-
-          label_selector {
-            match_labels = { app = "hello" }
-          }
-        }
-      }
-    }
-  }
-
-  depends_on = [aws_eks_addon.coredns]
-}
-
-resource "kubernetes_service_v1" "hello" {
-  metadata {
-    name      = "hello"
-    namespace = "default"
-  }
-
-  spec {
-    selector = { app = "hello" }
-    type     = "NodePort"
-
-    port {
-      port        = 80
-      target_port = 80
-      node_port   = var.node_port
-    }
-  }
-
-  depends_on = [kubernetes_deployment_v1.hello]
-}
-
-# ---------------------------------------------------------------------------
 # Outputs
 # ---------------------------------------------------------------------------
 
 output "cluster_name" {
   value = aws_eks_cluster.this.name
+}
+
+output "region" {
+  value = var.region
+}
+
+output "node_port" {
+  value = var.node_port
+}
+
+output "node_desired_size" {
+  value = var.node_desired_size
 }
 
 output "certificate_arn" {

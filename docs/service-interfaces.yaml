@@ -284,6 +284,14 @@ suites:
     # into per-test fixture-driven coverage so the selector can pick
     # subtests, not just whole suites.
 
+  e2e-iam:
+    path: tests/e2e/iam
+    covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+    # "Everything IAM": the IAM/STS control plane plus the instance-identity
+    # tests (instance-profile association + IMDS), which boot guest VMs — OVN
+    # via vpcd, AMI via predastore, root volume via viperblockd, lifecycle via
+    # spinifex_daemon. Single-mode, VM-booting leg.
+
   e2e-ddil:
     path: tests/e2e/ddil
     covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]

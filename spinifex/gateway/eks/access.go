@@ -63,14 +63,13 @@ func AssociateAccessPolicy(natsConn *nats.Conn, accountID, cluster, principalARN
 	return handlers_eks.NewNATSEKSService(natsConn).AssociateAccessPolicy(input, accountID)
 }
 
-// DisassociateAccessPolicy — DELETE /clusters/{name}/access-entries/{arn}/access-policies
-func DisassociateAccessPolicy(natsConn *nats.Conn, accountID, cluster, principalARN string, body []byte) (*eks.DisassociateAccessPolicyOutput, error) {
-	input := new(eks.DisassociateAccessPolicyInput)
-	if err := unmarshalIfBody(body, input); err != nil {
-		return nil, err
+// DisassociateAccessPolicy — DELETE /clusters/{name}/access-entries/{arn}/access-policies/{policyArn}
+func DisassociateAccessPolicy(natsConn *nats.Conn, accountID, cluster, principalARN, policyARN string) (*eks.DisassociateAccessPolicyOutput, error) {
+	input := &eks.DisassociateAccessPolicyInput{
+		ClusterName:  aws.String(cluster),
+		PrincipalArn: aws.String(principalARN),
+		PolicyArn:    aws.String(policyARN),
 	}
-	input.ClusterName = aws.String(cluster)
-	input.PrincipalArn = aws.String(principalARN)
 	return handlers_eks.NewNATSEKSService(natsConn).DisassociateAccessPolicy(input, accountID)
 }
 

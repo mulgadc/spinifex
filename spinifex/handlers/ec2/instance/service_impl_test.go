@@ -138,6 +138,57 @@ func TestRunInstance_WithIamInstanceProfile(t *testing.T) {
 		"daemon must not emit InstanceProfileID — that is the gateway's responsibility")
 }
 
+func TestRunInstance_AppliesInstanceTags(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("t3.micro"),
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("instance"),
+				Tags: []*ec2.Tag{
+					{Key: aws.String("spinifex:eks-cluster"), Value: aws.String("eks-quickstart")},
+					{Key: aws.String("spinifex:eks-nodegroup"), Value: aws.String("default")},
+				},
+			},
+			// A non-instance spec must not leak onto the instance.
+			{
+				ResourceType: aws.String("volume"),
+				Tags:         []*ec2.Tag{{Key: aws.String("ignored"), Value: aws.String("vol")}},
+			},
+		},
+	}
+
+	_, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+
+	// Tags must surface on the instance metadata so DescribeInstances returns
+	// them and the node group can discover its workers by tag.
+	got := map[string]string{}
+	for _, tg := range ec2Instance.Tags {
+		got[aws.StringValue(tg.Key)] = aws.StringValue(tg.Value)
+	}
+	assert.Equal(t, "eks-quickstart", got["spinifex:eks-cluster"])
+	assert.Equal(t, "default", got["spinifex:eks-nodegroup"])
+	assert.NotContains(t, got, "ignored", "volume-scoped tags must not land on the instance")
+}
+
+func TestRunInstance_NoTagSpecifications(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("t3.micro"),
+	}
+
+	_, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+	assert.Empty(t, ec2Instance.Tags)
+}
+
 func TestRunInstance_IamInstanceProfileEmptyARNIgnored(t *testing.T) {
 	// AWS SDKs sometimes round-trip an IamInstanceProfile with both fields
 	// empty. Treat that as "no profile attached" rather than persisting a

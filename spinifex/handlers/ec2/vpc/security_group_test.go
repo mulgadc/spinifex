@@ -2,6 +2,7 @@ package handlers_ec2_vpc
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -243,6 +244,57 @@ func TestAuthorizeSecurityGroupEgress_NotFound(t *testing.T) {
 		GroupId: aws.String("sg-nonexistent"),
 	}, testAccountID)
 	assert.Error(t, err)
+}
+
+// The AWS provider reads SecurityGroupRules[0].SecurityGroupRuleId on create;
+// an empty ruleset panics the plugin. Authorize must echo the created rules.
+func TestAuthorizeSecurityGroupIngress_ReturnsRuleSet(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "ingress-ruleset-sg")
+
+	out, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(30000),
+			ToPort:     aws.Int64(32767),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroupRules, 1)
+	r := out.SecurityGroupRules[0]
+	assert.NotEmpty(t, aws.StringValue(r.SecurityGroupRuleId))
+	assert.True(t, strings.HasPrefix(aws.StringValue(r.SecurityGroupRuleId), "sgr-"))
+	assert.Equal(t, sgID, aws.StringValue(r.GroupId))
+	assert.False(t, aws.BoolValue(r.IsEgress))
+	assert.Equal(t, "tcp", aws.StringValue(r.IpProtocol))
+	assert.Equal(t, int64(30000), aws.Int64Value(r.FromPort))
+	assert.Equal(t, int64(32767), aws.Int64Value(r.ToPort))
+	assert.Equal(t, "0.0.0.0/0", aws.StringValue(r.CidrIpv4))
+}
+
+func TestAuthorizeSecurityGroupEgress_ReturnsRuleSet(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "egress-ruleset-sg")
+
+	out, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(443),
+			ToPort:     aws.Int64(443),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroupRules, 1)
+	r := out.SecurityGroupRules[0]
+	assert.NotEmpty(t, aws.StringValue(r.SecurityGroupRuleId))
+	assert.True(t, aws.BoolValue(r.IsEgress))
+	assert.Equal(t, "10.0.0.0/8", aws.StringValue(r.CidrIpv4))
 }
 
 // --- RevokeSecurityGroupIngress ---

@@ -112,9 +112,9 @@ var eksRoutes = []eksRoute{
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.AssociateAccessPolicy(gw.NATSConn, acct, p[0], p[1], b)
 		}},
-	{"DELETE", regexp.MustCompile(`^/clusters/([^/]+)/access-entries/([^/]+)/access-policies$`), "DisassociateAccessPolicy",
+	{"DELETE", regexp.MustCompile(`^/clusters/([^/]+)/access-entries/([^/]+)/access-policies/([^/]+)$`), "DisassociateAccessPolicy",
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DisassociateAccessPolicy(gw.NATSConn, acct, p[0], p[1], b)
+			return gateway_eks.DisassociateAccessPolicy(gw.NATSConn, acct, p[0], p[1], p[2])
 		}},
 	{"GET", regexp.MustCompile(`^/clusters/([^/]+)/access-entries/([^/]+)/access-policies$`), "ListAssociatedAccessPolicies",
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {

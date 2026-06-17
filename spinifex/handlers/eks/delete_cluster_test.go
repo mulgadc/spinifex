@@ -109,6 +109,7 @@ type deleteClusterFixture struct {
 	inst *fakeK3sInst
 	vpc  *fakeK3sVPC
 	eip  *fakeEIPProvisioner
+	sg   *fakeSGProvisioner
 }
 
 func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFixture {
@@ -131,7 +132,32 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 	_, _, err := GenerateClusterOIDCKeypair(kv, clusterName, bootstrapTestMasterKey)
 	require.NoError(t, err)
 
-	return &deleteClusterFixture{svc: f.svc, kv: kv, nlb: f.nlb, inst: f.inst, vpc: f.vpc, eip: f.eip}
+	return &deleteClusterFixture{svc: f.svc, kv: kv, nlb: f.nlb, inst: f.inst, vpc: f.vpc, eip: f.eip, sg: f.sg}
+}
+
+// TestDeleteCluster_LeakedSGKeepsClusterDeleting guards the customer-VPC SG
+// no-orphan contract (mulga-siv-340): the cluster SGs live in the customer VPC,
+// so a DeleteClusterSGs failure must surface and leave the cluster DELETING — its
+// meta intact for a retry — never complete deletion with an SG stranded that pins
+// the VPC on DependencyViolation. All other teardown steps succeed, isolating the
+// SG failure as the sole cause.
+func TestDeleteCluster_LeakedSGKeepsClusterDeleting(t *testing.T) {
+	origBudget, origInterval := sgDeleteWaitBudget, sgDeleteWaitInterval
+	sgDeleteWaitBudget, sgDeleteWaitInterval = 50*time.Millisecond, time.Millisecond
+	defer func() { sgDeleteWaitBudget, sgDeleteWaitInterval = origBudget, origInterval }()
+
+	f := newDeleteClusterFixture(t, "alpha")
+	f.sg.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cp"
+	f.sg.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
+	// A worker ENI never detaches — the SG delete keeps returning DependencyViolation.
+	f.sg.deleteErr = errors.New("DependencyViolation: resource has a dependent object")
+
+	_, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.Error(t, err, "a leaked customer-VPC SG must surface, not be swallowed")
+
+	meta, getErr := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, getErr, "the KV sweep must NOT run while an SG is still leaked — meta must survive for retry")
+	assert.Equal(t, ClusterStatusDeleting, meta.Status, "a cluster with a leaked SG must stay DELETING")
 }
 
 // TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes locks the mulga-siv-303

@@ -3,13 +3,13 @@
 # Builds on eks-quickstart: same single-worker cluster and browsable demo app,
 # but adds two things you reach for on a real cluster:
 #
-#   * a managed addon (CoreDNS) installed through the EKS API, and
+#   * a managed addon (Argo CD) installed through the EKS API, and
 #   * a second IAM principal granted scoped, read-only access via an EKS access
 #     entry + access-policy association (authentication_mode = "API").
 #
 # After `apply`, open the demo_url output — the page reports the pod that
-# served it, so a refresh shows requests landing on different replicas. CoreDNS
-# being healthy is what lets in-cluster name resolution work.
+# served it, so a refresh shows requests landing on different replicas. The Argo
+# CD addon reaching ACTIVE is what gates the demo app rollout below.
 #
 # Usage:
 #   cd spinifex/docs/terraform-workbooks/eks-addons-access
@@ -24,10 +24,6 @@ terraform {
     aws = {
       source  = "hashicorp/aws"
       version = ">= 5.40, < 6.0"
-    }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = ">= 2.20"
     }
   }
 }
@@ -61,11 +57,6 @@ variable "node_port" {
   default = 30080
 }
 
-variable "replicas" {
-  type    = number
-  default = 2
-}
-
 variable "browse_cidr" {
   type        = string
   default     = "0.0.0.0/0"
@@ -95,17 +86,6 @@ provider "aws" {
   skip_metadata_api_check     = true
   skip_requesting_account_id  = true
   skip_region_validation      = true
-}
-
-provider "kubernetes" {
-  host                   = aws_eks_cluster.this.endpoint
-  cluster_ca_certificate = base64decode(aws_eks_cluster.this.certificate_authority[0].data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", aws_eks_cluster.this.name, "--region", var.region]
-  }
 }
 
 data "aws_availability_zones" "available" {
@@ -308,22 +288,22 @@ resource "aws_eks_node_group" "default" {
 }
 
 # ---------------------------------------------------------------------------
-# Addon — CoreDNS
+# Addon — Argo CD
 # ---------------------------------------------------------------------------
 
-resource "aws_eks_addon" "coredns" {
+resource "aws_eks_addon" "argocd" {
   cluster_name                = aws_eks_cluster.this.name
-  addon_name                  = "coredns"
+  addon_name                  = "argocd"
   resolve_conflicts_on_create = "OVERWRITE"
 
   # addon_version omitted on purpose. Spinifex defaults an unset version to its
-  # catalog default (coredns 1.11.1). The AWS provider rejects a bare "1.11.1"
+  # catalog default (argocd 3.0.23). The AWS provider rejects a bare "3.0.23"
   # (it demands a v-prefixed form) which Spinifex's catalog would in turn
   # reject — so pinning is a dead end here; let the server choose.
   depends_on = [aws_eks_node_group.default]
 
   tags = {
-    Name = "${var.cluster_name}-coredns"
+    Name = "${var.cluster_name}-argocd"
   }
 }
 
@@ -379,65 +359,6 @@ resource "aws_vpc_security_group_ingress_rule" "nodeport" {
   }
 }
 
-# ---------------------------------------------------------------------------
-# Demo workload — deployed after CoreDNS so name resolution is up
-# ---------------------------------------------------------------------------
-
-resource "kubernetes_deployment_v1" "hello" {
-  metadata {
-    name      = "hello"
-    namespace = "default"
-    labels    = { app = "hello" }
-  }
-
-  spec {
-    replicas = var.replicas
-
-    selector {
-      match_labels = { app = "hello" }
-    }
-
-    template {
-      metadata {
-        labels = { app = "hello" }
-      }
-
-      spec {
-        container {
-          name  = "hello"
-          image = "nginxdemos/hello"
-
-          port {
-            container_port = 80
-          }
-        }
-      }
-    }
-  }
-
-  depends_on = [aws_eks_addon.coredns]
-}
-
-resource "kubernetes_service_v1" "hello" {
-  metadata {
-    name      = "hello"
-    namespace = "default"
-  }
-
-  spec {
-    selector = { app = "hello" }
-    type     = "NodePort"
-
-    port {
-      port        = 80
-      target_port = 80
-      node_port   = var.node_port
-    }
-  }
-
-  depends_on = [kubernetes_deployment_v1.hello]
-}
-
 data "aws_instances" "workers" {
   instance_tags = {
     "spinifex:eks-cluster" = aws_eks_cluster.this.name
@@ -452,6 +373,14 @@ data "aws_instances" "workers" {
 
 output "cluster_name" {
   value = aws_eks_cluster.this.name
+}
+
+output "region" {
+  value = var.region
+}
+
+output "node_port" {
+  value = var.node_port
 }
 
 output "viewer_principal_arn" {

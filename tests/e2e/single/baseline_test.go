@@ -166,9 +166,11 @@ func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 	pubIP := instancePublicIP(t, fix, instanceID)
 	harness.Detail(t, "instance", instanceID, "public_ip", pubIP)
 
-	// Poll for 30s so a slow-converging datapath would still be caught.
+	// Probe a short window to confirm the default-deny ACL is applied and stable.
+	// This overlaps guest boot, and the positive phase below still pays the full
+	// boot wait via trySSHReady, so a longer window buys little extra coverage.
 	harness.Step(t, "asserting tcp/22 stays blocked under default-deny SG")
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		require.Falsef(t, tcpReachable(pubIP, 22, 3*time.Second),
 			"tcp/22 to %s connected with NO ingress rule — default SG must deny external traffic", pubIP)

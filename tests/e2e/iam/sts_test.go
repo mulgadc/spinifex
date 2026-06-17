@@ -1,6 +1,6 @@
 //go:build e2e
 
-package single
+package iam
 
 import (
 	"fmt"
@@ -54,7 +54,7 @@ const (
 // blocks (Condition / NotPrincipal / NotAction) via the SDK.
 func runSTS(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — STS AssumeRole + GetCallerIdentity")
-	adminAccount := iamEnsureAdminAccountID(t, fix)
+	adminAccount := harness.IAMAccountID(t, fix.AWS)
 
 	// Bootstrap-creds GetCallerIdentity — sanity check the live endpoint and
 	// capture the active ARN for the detail log so failures elsewhere are
@@ -151,11 +151,11 @@ func runSTS(t *testing.T, fix *Fixture) {
 		stsRoleNameForbidNotAction,
 	}
 	for _, name := range stsRoles {
-		iamDeleteRoleAndProfilesBestEffort(fix, name, nil)
+		harness.IAMDeleteRoleAndProfilesBestEffort(fix.AWS, name, nil)
 	}
 	fix.Harness.RegisterCleanup(func() {
 		for _, name := range stsRoles {
-			iamDeleteRoleAndProfilesBestEffort(fix, name, nil)
+			harness.IAMDeleteRoleAndProfilesBestEffort(fix.AWS, name, nil)
 		}
 	})
 
@@ -167,7 +167,7 @@ func runSTS(t *testing.T, fix *Fixture) {
 	})
 	require.NoError(t, err, "create-role")
 	roleARN := aws.StringValue(createOut.Role.Arn)
-	require.Equal(t, iamRoleARN(adminAccount, stsRoleName), roleARN,
+	require.Equal(t, harness.IAMRoleARN(adminAccount, stsRoleName), roleARN,
 		"role ARN must follow arn:aws:iam::<acct>:role/<name>")
 
 	// Happy path. Verify the wire-format invariants: ASIA prefix, non-empty
@@ -375,7 +375,7 @@ func runSTS(t *testing.T, fix *Fixture) {
 	// → trust-policy match → new ASIA mint) is not.
 	chainedTrustPolicy := fmt.Sprintf(
 		`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":%q},"Action":"sts:AssumeRole"}]}`,
-		iamRoleARN(adminAccount, stsRoleName),
+		harness.IAMRoleARN(adminAccount, stsRoleName),
 	)
 	harness.Step(t, "create-role %q (trust=role/%s for chained assume)",
 		stsRoleNameChain, stsRoleName)
@@ -445,7 +445,7 @@ func runSTS(t *testing.T, fix *Fixture) {
 	harness.Step(t, "assume-role missing role (expect NoSuchEntity)")
 	harness.ExpectError(t, "NoSuchEntity", func() error {
 		_, e := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
-			RoleArn: aws.String(iamRoleARN(adminAccount,
+			RoleArn: aws.String(harness.IAMRoleARN(adminAccount,
 				"sts-e2e-no-such-role")),
 			RoleSessionName: aws.String("ghost"),
 		})

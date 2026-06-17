@@ -573,3 +573,191 @@ func runRouteTableValidation(t *testing.T, fix *Fixture) {
 		}
 	})
 }
+
+// runReplaceRouteConvergence validates ReplaceRoute's control-plane contract:
+// a route installed against one IGW target re-points to a different IGW, with
+// the route record converging to the new gateway. It then walks the negative
+// matrix (no-such-route, local-route, missing-target, unknown-IGW, cross-VPC
+// IGW) so each rejection path stays pinned to its AWS error code.
+//
+// V1 scope note: ReplaceRoute updates the route record but publishes no vpc
+// event, so it does NOT reprogram the OVN datapath. There is no datapath to
+// assert here — the contract under test is control-plane convergence only.
+// When ReplaceRoute begins emitting add/delete-igw-route events, extend this
+// with a guest-egress assertion mirroring runNATGateway.
+//
+// Owns two scratch VPCs + three IGWs end to end, so it never touches the
+// singleton or default VPC and is safe in the parallel bucket. No pool mode or
+// OVN needed — every step is pure KV control plane.
+func runReplaceRouteConvergence(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — ReplaceRoute Convergence (control plane)")
+
+	c := fix.AWS
+
+	// --- Primary VPC + two attached IGWs -----------------------------------
+	vpcID := createScratchVPC(t, c, "10.77.0.0/16")
+	igw1 := createAttachedIGW(t, c, vpcID)
+	igw2 := createAttachedIGW(t, c, vpcID)
+
+	// --- Secondary VPC + its own IGW (cross-VPC rejection target) ----------
+	otherVPCID := createScratchVPC(t, c, "10.88.0.0/16")
+	igwOther := createAttachedIGW(t, c, otherVPCID)
+
+	// --- Custom route table in the primary VPC -----------------------------
+	harness.Step(t, "create-route-table (vpc=%s)", vpcID)
+	// e2e:allow-create — scratch route table owned by this ReplaceRoute test.
+	rtOut, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(vpcID)})
+	require.NoError(t, err, "create-route-table")
+	require.NotNil(t, rtOut.RouteTable, "create-route-table returned nil RouteTable")
+	rtbID := aws.StringValue(rtOut.RouteTable.RouteTableId)
+	require.NotEmpty(t, rtbID, "RouteTableId empty")
+	t.Cleanup(func() {
+		_, _ = c.EC2.DeleteRouteTable(&ec2.DeleteRouteTableInput{RouteTableId: aws.String(rtbID)})
+	})
+
+	const dest = "192.0.2.0/24"
+
+	// --- CreateRoute -> igw1 -----------------------------------------------
+	harness.Step(t, "create-route %s -> %s", dest, igw1)
+	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String(dest),
+		GatewayId:            aws.String(igw1),
+	})
+	require.NoError(t, err, "create-route %s -> igw1", dest)
+	require.Equalf(t, igw1, routeGateway(t, c, rtbID, dest),
+		"route %s should target igw1 after create", dest)
+
+	// --- ReplaceRoute -> igw2 (genuine target convergence) -----------------
+	harness.Step(t, "replace-route %s -> %s", dest, igw2)
+	_, err = c.EC2.ReplaceRoute(&ec2.ReplaceRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String(dest),
+		GatewayId:            aws.String(igw2),
+	})
+	require.NoError(t, err, "replace-route %s -> igw2", dest)
+	require.Equalf(t, igw2, routeGateway(t, c, rtbID, dest),
+		"route %s did not converge to igw2 after replace-route", dest)
+	harness.Detail(t, "convergence", dest+": "+igw1+" -> "+igw2)
+
+	// --- Negative matrix ---------------------------------------------------
+	// Unknown destination CIDR — route doesn't exist in the table.
+	harness.Step(t, "replace-route on absent route (must fail)")
+	harness.ExpectError(t, "InvalidRoute.NotFound", func() error {
+		_, e := c.EC2.ReplaceRoute(&ec2.ReplaceRouteInput{
+			RouteTableId:         aws.String(rtbID),
+			DestinationCidrBlock: aws.String("198.51.100.0/24"),
+			GatewayId:            aws.String(igw2),
+		})
+		return e
+	})
+
+	// Local route is immutable.
+	harness.Step(t, "replace-route on local route (must fail)")
+	harness.ExpectError(t, "InvalidParameterValue", func() error {
+		_, e := c.EC2.ReplaceRoute(&ec2.ReplaceRouteInput{
+			RouteTableId:         aws.String(rtbID),
+			DestinationCidrBlock: aws.String("10.77.0.0/16"),
+			GatewayId:            aws.String(igw2),
+		})
+		return e
+	})
+
+	// Missing target — V1 requires a GatewayId.
+	harness.Step(t, "replace-route with no target (must fail)")
+	harness.ExpectError(t, "InvalidParameterValue", func() error {
+		_, e := c.EC2.ReplaceRoute(&ec2.ReplaceRouteInput{
+			RouteTableId:         aws.String(rtbID),
+			DestinationCidrBlock: aws.String(dest),
+		})
+		return e
+	})
+
+	// Unknown IGW target.
+	harness.Step(t, "replace-route to non-existent IGW (must fail)")
+	harness.ExpectError(t, "InvalidInternetGatewayID.NotFound", func() error {
+		_, e := c.EC2.ReplaceRoute(&ec2.ReplaceRouteInput{
+			RouteTableId:         aws.String(rtbID),
+			DestinationCidrBlock: aws.String(dest),
+			GatewayId:            aws.String("igw-00000000000000000"),
+		})
+		return e
+	})
+
+	// IGW attached to a different VPC than the route table.
+	harness.Step(t, "replace-route to cross-VPC IGW %s (must fail)", igwOther)
+	harness.ExpectError(t, "InvalidParameterValue", func() error {
+		_, e := c.EC2.ReplaceRoute(&ec2.ReplaceRouteInput{
+			RouteTableId:         aws.String(rtbID),
+			DestinationCidrBlock: aws.String(dest),
+			GatewayId:            aws.String(igwOther),
+		})
+		return e
+	})
+
+	// Each rejection left the route untouched at igw2.
+	require.Equalf(t, igw2, routeGateway(t, c, rtbID, dest),
+		"route %s drifted off igw2 after the rejection matrix", dest)
+}
+
+// createScratchVPC creates a VPC with the given CIDR and registers its deletion.
+func createScratchVPC(t *testing.T, c *harness.AWSClient, cidr string) string {
+	t.Helper()
+	harness.Step(t, "create-vpc %s", cidr)
+	// e2e:allow-create — scratch VPC owned end to end by the caller.
+	out, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(cidr)})
+	require.NoError(t, err, "create-vpc %s", cidr)
+	require.NotNil(t, out.Vpc, "create-vpc %s returned nil Vpc", cidr)
+	id := aws.StringValue(out.Vpc.VpcId)
+	require.NotEmpty(t, id, "VpcId empty for %s", cidr)
+	t.Cleanup(func() {
+		_, _ = c.EC2.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(id)})
+	})
+	return id
+}
+
+// createAttachedIGW creates an internet gateway, attaches it to vpcID, and
+// registers detach+delete cleanup (LIFO-safe: detach runs before the owning
+// VPC's delete).
+func createAttachedIGW(t *testing.T, c *harness.AWSClient, vpcID string) string {
+	t.Helper()
+	// e2e:allow-create — scratch IGW owned by the caller's ReplaceRoute test.
+	out, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
+	require.NoError(t, err, "create-internet-gateway")
+	require.NotNil(t, out.InternetGateway, "create-internet-gateway returned nil IGW")
+	igwID := aws.StringValue(out.InternetGateway.InternetGatewayId)
+	require.NotEmpty(t, igwID, "InternetGatewayId empty")
+	_, err = c.EC2.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String(vpcID),
+	})
+	require.NoError(t, err, "attach-internet-gateway %s -> %s", igwID, vpcID)
+	t.Cleanup(func() {
+		_, _ = c.EC2.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+			InternetGatewayId: aws.String(igwID),
+			VpcId:             aws.String(vpcID),
+		})
+		_, _ = c.EC2.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+			InternetGatewayId: aws.String(igwID),
+		})
+	})
+	return igwID
+}
+
+// routeGateway returns the GatewayId of the route matching destCidr in rtbID,
+// failing the test if the route is absent.
+func routeGateway(t *testing.T, c *harness.AWSClient, rtbID, destCidr string) string {
+	t.Helper()
+	out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+		RouteTableIds: []*string{aws.String(rtbID)},
+	})
+	require.NoError(t, err, "describe-route-tables %s", rtbID)
+	require.NotEmpty(t, out.RouteTables, "route table %s not found", rtbID)
+	for _, r := range out.RouteTables[0].Routes {
+		if aws.StringValue(r.DestinationCidrBlock) == destCidr {
+			return aws.StringValue(r.GatewayId)
+		}
+	}
+	t.Fatalf("route %s not found in table %s", destCidr, rtbID)
+	return ""
+}

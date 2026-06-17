@@ -311,6 +311,9 @@ spec:
         - --feature-gates=ALBSingleSubnet=true
         - --aws-region={{AWS_REGION}}
         - --aws-vpc-id={{AWS_VPC_ID}}
+        - --enable-shield=false
+        - --enable-waf=false
+        - --enable-wafv2=false
         env:
 {{IRSA_ENV}}
         image: public.ecr.aws/eks/aws-load-balancer-controller:v2.11.0

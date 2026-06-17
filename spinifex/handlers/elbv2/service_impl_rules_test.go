@@ -424,6 +424,44 @@ func TestDescribeRules_ByListener_SortedAndDefaultLast(t *testing.T) {
 	assert.True(t, *out.Rules[3].IsDefault)
 }
 
+// TestDefaultRule_HasArnAndIsTaggable guards against the regression where the
+// synthetic default rule was returned with no ARN: the controller then issued
+// DescribeTags with an empty resource and got MissingParameter, aborting the
+// Ingress reconcile right after listener creation.
+func TestDefaultRule_HasArnAndIsTaggable(t *testing.T) {
+	env := newRuleTestEnv(t, "defrule")
+
+	rules, err := env.svc.DescribeRules(&elbv2.DescribeRulesInput{ListenerArn: aws.String(env.listenerArn)}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, rules.Rules, 1)
+	def := rules.Rules[0]
+	require.True(t, *def.IsDefault)
+	require.NotNil(t, def.RuleArn, "default rule must carry an ARN")
+	require.NotEmpty(t, *def.RuleArn)
+	assert.Contains(t, *def.RuleArn, ":listener-rule/")
+
+	// DescribeTags on the default rule ARN must succeed with empty tags, not error.
+	tagsOut, err := env.svc.DescribeTags(&elbv2.DescribeTagsInput{
+		ResourceArns: []*string{def.RuleArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, tagsOut.TagDescriptions, 1)
+	assert.Equal(t, *def.RuleArn, *tagsOut.TagDescriptions[0].ResourceArn)
+	assert.Empty(t, tagsOut.TagDescriptions[0].Tags)
+
+	// DescribeRules by the default rule ARN resolves the synthetic rule.
+	byArn, err := env.svc.DescribeRules(&elbv2.DescribeRulesInput{
+		RuleArns: []*string{def.RuleArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, byArn.Rules, 1)
+	assert.True(t, *byArn.Rules[0].IsDefault)
+
+	// A non-default, unknown rule ARN under the same listener still 404s.
+	_, err = env.svc.DescribeTags(&elbv2.DescribeTagsInput{ResourceArns: []*string{aws.String(*def.RuleArn + "-bogus")}}, testAccountID)
+	require.Error(t, err)
+}
+
 func TestSetRulePriorities_Reorders(t *testing.T) {
 	env := newRuleTestEnv(t, "spri")
 

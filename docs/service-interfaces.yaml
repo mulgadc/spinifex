@@ -284,6 +284,13 @@ suites:
     # into per-test fixture-driven coverage so the selector can pick
     # subtests, not just whole suites.
 
+  e2e-iam:
+    path: tests/e2e/iam
+    covers: [awsgw]
+    # Pure IAM/STS control plane, extracted from single. Zero guest VMs —
+    # drives only the awsgw IAM/STS surface, so it runs concurrently with
+    # single on one provisioned node. Handler-path attribution is deferred.
+
   e2e-ddil:
     path: tests/e2e/ddil
     covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]

@@ -7,6 +7,7 @@ create	tests/e2e/eks/eks_test.go	CreateVpc	#1
 create	tests/e2e/gpu/gpu_test.go	RunInstances	#1
 create	tests/e2e/gpu/gpu_test.go	RunInstances	#2
 create	tests/e2e/gpu/helpers_test.go	RunInstances	#1
+create	tests/e2e/iam/iam_test.go	CreateKeyPair	#1
 create	tests/e2e/lb/lb_test.go	CreateInternetGateway	#1
 create	tests/e2e/lb/lb_test.go	CreateKeyPair	#1
 create	tests/e2e/lb/lb_test.go	CreateListener	#1
@@ -72,7 +73,6 @@ create	tests/e2e/single/baseline_test.go	CreateVpc	#1
 create	tests/e2e/single/baseline_test.go	RunInstances	#1
 create	tests/e2e/single/datapath_test.go	CreateSecurityGroup	#1
 create	tests/e2e/single/datapath_test.go	RunInstances	#1
-create	tests/e2e/single/iam_test.go	CreateKeyPair	#1
 create	tests/e2e/single/imds_test.go	CreateInternetGateway	#1
 create	tests/e2e/single/imds_test.go	CreateRouteTable	#1
 create	tests/e2e/single/imds_test.go	CreateSubnet	#1

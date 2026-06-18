@@ -180,7 +180,7 @@ aws s3 ls --endpoint-url https://localhost:8443
 ```
 
 ### 5. Enable GPU Passthrough
-Spinifex allows GPUs to be utilised by guest VMS via VFIO-passthrough. This can be enabled via `sudo spx admin gpu setup`. Then, after a reboot, run `sudo spx admin gpu enable`. The Spinifex banner should update to reflect GPU passthrough state after every step:
+Spinifex allows GPUs to be utilised by guest VMS via PCIe-passthrough. This can be enabled via `sudo spx admin gpu setup`. Then, after a reboot, run `sudo spx admin gpu enable`. The Spinifex banner should update to reflect GPU passthrough state after every step:
 
 <img src="../../../.github/assets/images/h200/spinifex-banner1.png" alt="GPU Enabled">
 
@@ -317,7 +317,7 @@ sudo nvidia-smi mig -cgi 3g.71gb,3g.71gb -C
 nvidia-smi -L  # Verify 2 MIG devices
 ```
 
-Each MIG device gets a UUID of the form `MIG-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`. These UUIDs are used to pin individual containers to their slice via `--gpus "device=<UUID>"` (for Docker) or `CUDA_VISIBLE_DEVICES=<UUID>` (for direct Python processes).
+Each MIG device gets a UUID of the form `MIG-xxxxxxxx-...`. These UUIDs are used to pin individual containers to their slice via `--gpus "device=<UUID>"` (for Docker) or `CUDA_VISIBLE_DEVICES=<UUID>` (for direct Python processes).
 
 ### 11. Configure Docker to use the local image registry
 
@@ -496,7 +496,7 @@ Each instance exposes a `/video` endpoint serving a `multipart/x-mixed-replace` 
 
 ### 14. Dashboard
 
-We also built a simple host-side dashboard — a FastAPI application that proxies all the VM streams to the browser so only one port on the host needs to be exposed. Each VM endpoint is wired in by address at startup, mapping directly to the IPs assigned in step 8:
+We also built a simple host-side dashboard — another FastAPI application that proxies all the VM streams to the browser so only one port on the host needs to be exposed. Each VM endpoint is wired in by address at startup, mapping directly to the IPs assigned in step 8:
 
 ```
 http://192.168.10.14:8010  →  vm-yolo  YOLO11x MJPEG stream

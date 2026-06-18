@@ -50,7 +50,7 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) {
 		AvailabilityZone:      aws.StringValue(input.AvailabilityZone),
 		TotalInstanceCount:    int(aws.Int64Value(input.InstanceCount)),
 		VCPUPerInstance:       int(instanceTypeVCPUs(it)),
-		MemGBPerInstance:      float64(instanceTypeMemoryMiB(it)) / 1024.0,
+		MemGBPerInstance:      float64(d.resourceMgr.instanceMemChargeMiB(it)) / 1024.0,
 		InstanceMatchCriteria: matchCriteria,
 		Tenancy:               tenancy,
 		InstancePlatform:      aws.StringValue(input.InstancePlatform),
@@ -96,18 +96,17 @@ func (d *Daemon) handleEC2CancelCapacityReservation(msg *nats.Msg) {
 }
 
 // toAWSCapacityReservation renders the in-memory record as the AWS API type.
-// Reservations are always active with AvailableInstanceCount equal to the total,
+// Reservations are always active with AvailableInstanceCount = Total − Consumed,
 // and never expire (EndDateType=unlimited).
 func (r *capacityReservation) toAWSCapacityReservation() *ec2.CapacityReservation {
-	count := int64(r.TotalInstanceCount)
 	return &ec2.CapacityReservation{
 		CapacityReservationId:  aws.String(r.ID),
 		OwnerId:                aws.String(r.AccountID),
 		InstanceType:           aws.String(r.InstanceType),
 		InstancePlatform:       aws.String(r.InstancePlatform),
 		AvailabilityZone:       aws.String(r.AvailabilityZone),
-		TotalInstanceCount:     aws.Int64(count),
-		AvailableInstanceCount: aws.Int64(count),
+		TotalInstanceCount:     aws.Int64(int64(r.TotalInstanceCount)),
+		AvailableInstanceCount: aws.Int64(int64(r.TotalInstanceCount - r.ConsumedCount)),
 		State:                  aws.String(ec2.CapacityReservationStateActive),
 		StartDate:              aws.Time(r.CreateDate),
 		CreateDate:             aws.Time(r.CreateDate),

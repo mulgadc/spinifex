@@ -22,10 +22,13 @@ type capacityReservation struct {
 	Tenancy               string
 	InstancePlatform      string
 	CreateDate            time.Time
+	ConsumedCount         int // instances launched into this reservation; slots moved reservedCR*->allocated*
 }
 
-// reservationCompute returns the headline compute carve-out for a reservation:
-// InstanceCount × catalog (vCPU, memory), with no nbdkit overhead.
+// reservationCompute returns the full compute carve-out for a reservation:
+// TotalInstanceCount × per-instance (vCPU, memory). MemGBPerInstance already
+// folds in nbdkit overhead (set at create), so the reservedCR->allocated swap on
+// launch is net-zero.
 func (r *capacityReservation) reservationCompute() (vcpu int, memGB float64) {
 	return r.TotalInstanceCount * r.VCPUPerInstance, float64(r.TotalInstanceCount) * r.MemGBPerInstance
 }
@@ -52,10 +55,10 @@ func (rm *ResourceManager) CreateReservation(rec *capacityReservation) error {
 	return nil
 }
 
-// CancelReservation releases the carve-out for an account-owned reservation and
-// removes it from the map, then refreshes subscriptions. Returns the removed
-// record and true on success, or (nil, false) if no reservation with that id is
-// owned by the account.
+// CancelReservation releases the unconsumed remainder of an account-owned
+// reservation's carve-out and removes it; consumed slots already moved to
+// allocated* and keep running. Returns the removed record and true on success,
+// or (nil, false) if no reservation with that id is owned by the account.
 func (rm *ResourceManager) CancelReservation(id, accountID string) (*capacityReservation, bool) {
 	rm.mu.Lock()
 	rec, ok := rm.reservations[id]
@@ -63,9 +66,9 @@ func (rm *ResourceManager) CancelReservation(id, accountID string) (*capacityRes
 		rm.mu.Unlock()
 		return nil, false
 	}
-	freedVCPU, freedMem := rec.reservationCompute()
-	rm.reservedCRVCPU -= freedVCPU
-	rm.reservedCRMem -= freedMem
+	remaining := rec.TotalInstanceCount - rec.ConsumedCount
+	rm.reservedCRVCPU -= remaining * rec.VCPUPerInstance
+	rm.reservedCRMem -= float64(remaining) * rec.MemGBPerInstance
 	delete(rm.reservations, id)
 	rm.mu.Unlock()
 

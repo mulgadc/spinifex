@@ -48,6 +48,33 @@ func (s *NATSMetaStore) ListRepos(accountID string) ([]string, error) {
 	return resp.Repos, nil
 }
 
+func (s *NATSMetaStore) PutRepoPolicy(accountID, repo string, policyText []byte) error {
+	_, err := utils.NATSRequest[PolicyPutResponse](s.conn, SubjectPolicyPut, &PolicyPutRequest{Repo: repo, PolicyText: policyText}, metaRequestTimeout, accountID)
+	return err
+}
+
+func (s *NATSMetaStore) GetRepoPolicy(accountID, repo string) ([]byte, error) {
+	resp, err := utils.NATSRequest[PolicyGetResponse](s.conn, SubjectPolicyGet, &PolicyGetRequest{Repo: repo}, metaRequestTimeout, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Found {
+		return nil, ErrNotFound
+	}
+	return resp.PolicyText, nil
+}
+
+func (s *NATSMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, error) {
+	resp, err := utils.NATSRequest[PolicyDeleteResponse](s.conn, SubjectPolicyDelete, &PolicyDeleteRequest{Repo: repo}, metaRequestTimeout, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Found {
+		return nil, ErrNotFound
+	}
+	return resp.PolicyText, nil
+}
+
 func (s *NATSMetaStore) PutTag(accountID, repo, tag, digest string) error {
 	_, err := utils.NATSRequest[TagPutResponse](s.conn, SubjectTagPut, &TagPutRequest{Repo: repo, Tag: tag, Digest: digest}, metaRequestTimeout, accountID)
 	return err

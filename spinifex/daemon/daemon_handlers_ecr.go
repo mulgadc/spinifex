@@ -14,6 +14,18 @@ func (d *Daemon) handleECRRepoList(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecrMetaService.RepoList)
 }
 
+func (d *Daemon) handleECRPolicyPut(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecrMetaService.PolicyPut)
+}
+
+func (d *Daemon) handleECRPolicyGet(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecrMetaService.PolicyGet)
+}
+
+func (d *Daemon) handleECRPolicyDelete(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecrMetaService.PolicyDelete)
+}
+
 func (d *Daemon) handleECRTagPut(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecrMetaService.TagPut)
 }

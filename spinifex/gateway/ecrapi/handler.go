@@ -63,9 +63,9 @@ var Actions = map[string]Handler{
 	"CompleteLayerUpload":         NotImplemented,
 
 	// Repository / registry policy.
-	"SetRepositoryPolicy":    NotImplemented,
-	"GetRepositoryPolicy":    NotImplemented,
-	"DeleteRepositoryPolicy": NotImplemented,
+	"SetRepositoryPolicy":    SetRepositoryPolicy,
+	"GetRepositoryPolicy":    GetRepositoryPolicy,
+	"DeleteRepositoryPolicy": DeleteRepositoryPolicy,
 	"GetRegistryPolicy":      NotImplemented,
 	"PutRegistryPolicy":      NotImplemented,
 	"DescribeRegistry":       NotImplemented,

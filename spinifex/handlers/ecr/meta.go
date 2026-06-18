@@ -60,6 +60,10 @@ type MetaStore interface {
 	GetRepo(accountID, repo string) (RepoMeta, error)
 	ListRepos(accountID string) ([]string, error)
 
+	PutRepoPolicy(accountID, repo string, policyText []byte) error
+	GetRepoPolicy(accountID, repo string) ([]byte, error)
+	DeleteRepoPolicy(accountID, repo string) ([]byte, error)
+
 	PutTag(accountID, repo, tag, digest string) error
 	GetTag(accountID, repo, tag string) (string, error)
 	DeleteTag(accountID, repo, tag string) error
@@ -157,6 +161,44 @@ func (s *KVMetaStore) ListRepos(accountID string) ([]string, error) {
 	}
 	sort.Strings(repos)
 	return repos, nil
+}
+
+func (s *KVMetaStore) PutRepoPolicy(accountID, repo string, policyText []byte) error {
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return err
+	}
+	_, err = kv.Put(KVRepoPolicyKey(repo), policyText)
+	return err
+}
+
+func (s *KVMetaStore) GetRepoPolicy(accountID, repo string) ([]byte, error) {
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return nil, err
+	}
+	entry, err := kv.Get(KVRepoPolicyKey(repo))
+	if err != nil {
+		return nil, mapKVErr(err)
+	}
+	return entry.Value(), nil
+}
+
+func (s *KVMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, error) {
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return nil, err
+	}
+	// JetStream KV Delete is silently idempotent, so the value is read first to
+	// surface a real not-found and return the deleted document to the caller.
+	entry, err := kv.Get(KVRepoPolicyKey(repo))
+	if err != nil {
+		return nil, mapKVErr(err)
+	}
+	if err := kv.Delete(KVRepoPolicyKey(repo)); err != nil {
+		return nil, mapKVErr(err)
+	}
+	return entry.Value(), nil
 }
 
 func (s *KVMetaStore) PutTag(accountID, repo, tag, digest string) error {
@@ -316,6 +358,7 @@ func (s *KVMetaStore) DeleteUpload(accountID, uploadID string) error {
 type MemoryMetaStore struct {
 	mu        sync.Mutex
 	repos     map[string]map[string]RepoMeta     // account -> repo -> meta
+	policies  map[string]map[string][]byte       // account -> repo -> policyText
 	tags      map[string]map[string]string       // account -> repo|tag -> digest
 	manifests map[string]map[string]ManifestMeta // account -> repo|digest -> meta
 	uploads   map[string]map[string]uploadRev    // account -> id -> state+rev
@@ -332,6 +375,7 @@ var _ MetaStore = (*MemoryMetaStore)(nil)
 func NewMemoryMetaStore() *MemoryMetaStore {
 	return &MemoryMetaStore{
 		repos:     make(map[string]map[string]RepoMeta),
+		policies:  make(map[string]map[string][]byte),
 		tags:      make(map[string]map[string]string),
 		manifests: make(map[string]map[string]ManifestMeta),
 		uploads:   make(map[string]map[string]uploadRev),
@@ -367,6 +411,37 @@ func (m *MemoryMetaStore) ListRepos(accountID string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func (m *MemoryMetaStore) PutRepoPolicy(accountID, repo string, policyText []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.policies[accountID] == nil {
+		m.policies[accountID] = make(map[string][]byte)
+	}
+	m.policies[accountID][repo] = policyText
+	return nil
+}
+
+func (m *MemoryMetaStore) GetRepoPolicy(accountID, repo string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.policies[accountID][repo]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return p, nil
+}
+
+func (m *MemoryMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.policies[accountID][repo]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	delete(m.policies[accountID], repo)
+	return p, nil
 }
 
 func (m *MemoryMetaStore) PutTag(accountID, repo, tag, digest string) error {

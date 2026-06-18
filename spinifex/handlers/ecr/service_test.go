@@ -51,6 +51,38 @@ func TestMetaServiceImpl_FlagMapping(t *testing.T) {
 	assert.True(t, uu.Conflict)
 }
 
+// TestNATSMetaStore_RepoPolicy drives the policy passthrough round-trip
+// (put/get/delete + not-found mapping) end to end over the embedded server.
+func TestNATSMetaStore_RepoPolicy(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	svc := NewKVMetaService(js)
+
+	serveMeta(t, nc, SubjectPolicyPut, svc.PolicyPut)
+	serveMeta(t, nc, SubjectPolicyGet, svc.PolicyGet)
+	serveMeta(t, nc, SubjectPolicyDelete, svc.PolicyDelete)
+
+	var client MetaStore = NewNATSMetaStore(nc)
+	const acct = svcTestAccount
+	const policy = `{"Version":"2012-10-17"}`
+
+	// Unset policy round-trips as ErrNotFound for both get and delete.
+	_, err := client.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = client.DeleteRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	require.NoError(t, client.PutRepoPolicy(acct, "team/app", []byte(policy)))
+	got, err := client.GetRepoPolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(got))
+
+	deleted, err := client.DeleteRepoPolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(deleted))
+	_, err = client.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
 // serveMeta wires a MetaService method to a NATS subject, mirroring the daemon's
 // handleNATSRequest (unmarshal -> service(accountID) -> JSON or error payload).
 func serveMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(*I, string) (*O, error)) {

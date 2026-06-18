@@ -52,6 +52,35 @@ func (s *MetaServiceImpl) RepoList(_ *RepoListRequest, accountID string) (*RepoL
 	return &RepoListResponse{Repos: repos}, nil
 }
 
+func (s *MetaServiceImpl) PolicyPut(req *PolicyPutRequest, accountID string) (*PolicyPutResponse, error) {
+	if err := s.store.PutRepoPolicy(accountID, req.Repo, req.PolicyText); err != nil {
+		return nil, err
+	}
+	return &PolicyPutResponse{}, nil
+}
+
+func (s *MetaServiceImpl) PolicyGet(req *PolicyGetRequest, accountID string) (*PolicyGetResponse, error) {
+	policy, err := s.store.GetRepoPolicy(accountID, req.Repo)
+	if errors.Is(err, ErrNotFound) {
+		return &PolicyGetResponse{Found: false}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &PolicyGetResponse{Found: true, PolicyText: policy}, nil
+}
+
+func (s *MetaServiceImpl) PolicyDelete(req *PolicyDeleteRequest, accountID string) (*PolicyDeleteResponse, error) {
+	policy, err := s.store.DeleteRepoPolicy(accountID, req.Repo)
+	if errors.Is(err, ErrNotFound) {
+		return &PolicyDeleteResponse{Found: false}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &PolicyDeleteResponse{Found: true, PolicyText: policy}, nil
+}
+
 func (s *MetaServiceImpl) TagPut(req *TagPutRequest, accountID string) (*TagPutResponse, error) {
 	if err := s.store.PutTag(accountID, req.Repo, req.Tag, req.Digest); err != nil {
 		return nil, err

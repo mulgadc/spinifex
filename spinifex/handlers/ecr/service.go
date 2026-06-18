@@ -8,6 +8,10 @@ const (
 	SubjectRepoDescribe = "ecr.repo.describe"
 	SubjectRepoList     = "ecr.repo.list"
 
+	SubjectPolicyPut    = "ecr.policy.put"
+	SubjectPolicyGet    = "ecr.policy.get"
+	SubjectPolicyDelete = "ecr.policy.delete"
+
 	SubjectTagPut    = "ecr.tag.put"
 	SubjectTagGet    = "ecr.tag.get"
 	SubjectTagList   = "ecr.tag.list"
@@ -45,6 +49,31 @@ type RepoListRequest struct{}
 
 type RepoListResponse struct {
 	Repos []string `json:"repos"`
+}
+
+type PolicyPutRequest struct {
+	Repo       string `json:"repo"`
+	PolicyText []byte `json:"policyText"`
+}
+
+type PolicyPutResponse struct{}
+
+type PolicyGetRequest struct {
+	Repo string `json:"repo"`
+}
+
+type PolicyGetResponse struct {
+	Found      bool   `json:"found"`
+	PolicyText []byte `json:"policyText"`
+}
+
+type PolicyDeleteRequest struct {
+	Repo string `json:"repo"`
+}
+
+type PolicyDeleteResponse struct {
+	Found      bool   `json:"found"`
+	PolicyText []byte `json:"policyText"`
 }
 
 type TagPutRequest struct {
@@ -146,6 +175,10 @@ type MetaService interface {
 	RepoCreate(req *RepoCreateRequest, accountID string) (*RepoCreateResponse, error)
 	RepoDescribe(req *RepoDescribeRequest, accountID string) (*RepoDescribeResponse, error)
 	RepoList(req *RepoListRequest, accountID string) (*RepoListResponse, error)
+
+	PolicyPut(req *PolicyPutRequest, accountID string) (*PolicyPutResponse, error)
+	PolicyGet(req *PolicyGetRequest, accountID string) (*PolicyGetResponse, error)
+	PolicyDelete(req *PolicyDeleteRequest, accountID string) (*PolicyDeleteResponse, error)
 
 	TagPut(req *TagPutRequest, accountID string) (*TagPutResponse, error)
 	TagGet(req *TagGetRequest, accountID string) (*TagGetResponse, error)

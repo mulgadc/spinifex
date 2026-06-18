@@ -78,3 +78,34 @@ func TestKVMetaStore_FullCycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 }
+
+// TestKVMetaStore_RepoPolicy exercises the policy passthrough against the
+// JetStream-backed store and proves the policy key shares the repo bucket
+// without being mistaken for a repository by ListRepos.
+func TestKVMetaStore_RepoPolicy(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	store := NewKVMetaStore(js)
+	const acct = "000000000000"
+	const policy = `{"Version":"2012-10-17","Statement":[]}`
+
+	require.NoError(t, store.PutRepo(acct, RepoMeta{Name: "team/app", CreatedAt: time.Now()}))
+
+	_, err := store.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	require.NoError(t, store.PutRepoPolicy(acct, "team/app", []byte(policy)))
+	got, err := store.GetRepoPolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(got))
+
+	// The policy key must not appear as a repository.
+	repos, err := store.ListRepos(acct)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"team/app"}, repos)
+
+	deleted, err := store.DeleteRepoPolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(deleted))
+	_, err = store.DeleteRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+}

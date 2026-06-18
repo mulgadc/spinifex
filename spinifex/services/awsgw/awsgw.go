@@ -16,8 +16,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
+	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
+	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	toml "github.com/pelletier/go-toml/v2"
@@ -196,6 +199,19 @@ func launchService(config *config.ClusterConfig) error {
 		slog.Warn("Failed to load throttle config, throttling disabled", "err", err)
 	}
 
+	// OCI Distribution v2 registry: blob/manifest bytes stream straight to
+	// predastore from the gateway; repo/tag/manifest metadata and in-progress
+	// uploads are owned by the daemon and reached over NATS request/reply.
+	// Account scoping uses the bootstrap account until the /v2 token-auth
+	// bridge lands.
+	ecrStore := objectstore.NewS3ObjectStoreFromConfig(
+		admin.DialTarget(nodeConfig.Predastore.Host),
+		nodeConfig.Predastore.Region,
+		nodeConfig.Predastore.AccessKey,
+		nodeConfig.Predastore.SecretKey,
+	)
+	ecrRegistry := gateway_ecr.NewRegistry(ecrStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
+
 	gw := gateway.GatewayConfig{
 		Debug:          nodeConfig.AWSGW.Debug,
 		DisableLogging: false,
@@ -209,6 +225,7 @@ func launchService(config *config.ClusterConfig) error {
 		STSService:     stsService,
 		Version:        version,
 		Commit:         commit,
+		ECRRegistry:    ecrRegistry,
 	}
 
 	if throttleCfg.Enabled {

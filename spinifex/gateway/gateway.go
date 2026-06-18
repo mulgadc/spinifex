@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/predastore/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -77,6 +78,9 @@ type GatewayConfig struct {
 	Throttler      *ratelimit.Throttler // Per-account+action API request throttler
 	Version        string               // Build-time version string (set from cmd.Version)
 	Commit         string               // Build-time commit hash (set from cmd.Commit)
+	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
+	// to the 501 stub (e.g. in unit tests of unrelated routes).
+	ECRRegistry *gateway_ecr.Registry
 }
 
 var supportedServices = map[string]bool{

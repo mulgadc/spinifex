@@ -12,8 +12,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import { useAttachRolePolicy, useCreateRole } from "@/mutations/iam"
+import { PolicyDocumentViewer } from "@/routes/_auth/iam/-components/policy-document-viewer"
 import {
   AMAZON_EKS_CLUSTER_POLICY_ARN,
   EKS_CLUSTER_ASSUME_ROLE_POLICY_DOCUMENT,
@@ -109,13 +109,20 @@ export function CreateClusterRoleDialog({
 
         <Field>
           <FieldTitle>Trust policy (JSON)</FieldTitle>
-          <Textarea
-            className="font-mono text-sm"
-            id="eks-role-trust-policy"
-            readOnly
-            rows={10}
-            value={EKS_CLUSTER_ASSUME_ROLE_POLICY_DOCUMENT}
+          <PolicyDocumentViewer
+            document={EKS_CLUSTER_ASSUME_ROLE_POLICY_DOCUMENT}
           />
+        </Field>
+
+        <Field>
+          <FieldTitle>Attached managed policy</FieldTitle>
+          <code className="block rounded-md border bg-muted p-2 font-mono text-sm break-all">
+            {AMAZON_EKS_CLUSTER_POLICY_ARN}
+          </code>
+          <p className="text-sm text-muted-foreground">
+            Grants the EKS control plane the permissions it needs to manage the
+            cluster.
+          </p>
         </Field>
 
         {formError && <p className="text-sm text-destructive">{formError}</p>}

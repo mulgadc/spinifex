@@ -101,8 +101,8 @@ func TestECRAuthBridge_NoAuthChallenges401(t *testing.T) {
 
 	assert.False(t, *called, "handler must not run unauthenticated")
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	assert.Contains(t, w.Header().Get("WWW-Authenticate"), `realm="https://`+req.Host+`/v2/token"`)
-	assert.Contains(t, w.Header().Get("WWW-Authenticate"), `service="`+ecrTestAudience+`"`)
+	// ECR uses Basic auth, not the Bearer token-endpoint flow.
+	assert.Equal(t, `Basic realm="https://`+req.Host+`/"`, w.Header().Get("WWW-Authenticate"))
 }
 
 func TestECRAuthBridge_ValidTokenPassesThrough(t *testing.T) {

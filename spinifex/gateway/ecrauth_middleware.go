@@ -87,11 +87,13 @@ func extractECRToken(authz string) (string, bool) {
 	}
 }
 
-// writeECRChallenge emits the 401 Bearer challenge. The realm uses the request
-// Host so docker negotiates against the address it actually dialed.
+// writeECRChallenge emits the 401 Basic challenge. ECR authenticates the OCI
+// registry with Basic AWS:<token> rather than the OAuth2 token-endpoint flow,
+// so the scheme must be Basic: a Bearer challenge makes docker chase a
+// /v2/token endpoint that does not exist. The realm uses the request Host so
+// docker negotiates against the address it actually dialed.
 func (gw *GatewayConfig) writeECRChallenge(w http.ResponseWriter, r *http.Request) {
-	service := "ecr." + gw.Region + "." + gw.InternalSuffix
-	realm := "https://" + r.Host + "/v2/token"
-	w.Header().Set("WWW-Authenticate", `Bearer realm="`+realm+`",service="`+service+`"`)
+	realm := "https://" + r.Host + "/"
+	w.Header().Set("WWW-Authenticate", `Basic realm="`+realm+`"`)
 	gateway_ecr.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 }

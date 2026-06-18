@@ -46,23 +46,58 @@ type Registry struct {
 	Meta      ecr.MetaStore
 	AccountID string
 
-	// bucketMu guards bucketReady, which caches that the account's predastore
-	// bucket has been provisioned. Only success is cached: a failed ensure is
-	// retried on the next request.
-	bucketMu    sync.Mutex
-	bucketReady bool
+	// buckets caches which account predastore buckets have been provisioned.
+	// Shared across per-request Registry copies so concurrent callers converge.
+	buckets *bucketCache
+}
+
+// bucketCache records, per account, that the predastore bucket exists. Only
+// success is cached: a failed ensure is retried on the next request.
+type bucketCache struct {
+	mu    sync.Mutex
+	ready map[string]bool
 }
 
 // NewRegistry wires a Registry to its predastore object store and the metadata
-// store (a NATS client in production) for the given account.
+// store (a NATS client in production). accountID is the fallback account used
+// when a request carries no auth-bridge account (e.g. unit tests).
 func NewRegistry(store objectstore.ObjectStore, meta ecr.MetaStore, accountID string) *Registry {
-	return &Registry{Store: store, Meta: meta, AccountID: accountID}
+	return &Registry{
+		Store:     store,
+		Meta:      meta,
+		AccountID: accountID,
+		buckets:   &bucketCache{ready: make(map[string]bool)},
+	}
 }
 
-// ServeHTTP dispatches a /v2/* request by manually parsing the path: OCI repo
-// names contain slashes, so the {name} segment is everything between "/v2/" and
-// the trailing "/blobs", "/manifests" or "/tags" marker.
+// forAccount returns a shallow Registry copy scoped to account. Store, Meta and
+// the bucket cache are shared by pointer; only the request-scoped AccountID
+// differs, so every handler method transparently operates on the caller's
+// account without threading it through each signature.
+func (reg *Registry) forAccount(account string) *Registry {
+	cp := *reg
+	cp.AccountID = account
+	return &cp
+}
+
+// ServeHTTP resolves the caller account from the auth-bridge context (falling
+// back to the configured default), then dispatches on a per-request scoped copy.
 func (reg *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	account := authAccount(r.Context())
+	if account == "" {
+		account = reg.AccountID
+	}
+	if account == "" {
+		reg.internal(w, "resolve account", errors.New("no authenticated account"))
+		return
+	}
+	reg.forAccount(account).serve(w, r)
+}
+
+// serve dispatches a /v2/* request by manually parsing the path: OCI repo names
+// contain slashes, so the {name} segment is everything between "/v2/" and the
+// trailing "/blobs", "/manifests" or "/tags" marker.
+func (reg *Registry) serve(w http.ResponseWriter, r *http.Request) {
 	if err := reg.ensureBucket(); err != nil {
 		reg.internal(w, "ensure bucket", err)
 		return
@@ -714,18 +749,18 @@ func (reg *Registry) bucket() string { return ecr.AccountBucket(reg.AccountID) }
 
 // ensureBucket provisions the account's predastore bucket on first use. ECR
 // storage is account-managed: the bucket appears transparently rather than
-// being created by an operator. The result is cached once provisioned; a
-// backend failure is left uncached so the next request retries.
+// being created by an operator. Success is cached per account; a backend
+// failure is left uncached so the next request retries.
 func (reg *Registry) ensureBucket() error {
-	reg.bucketMu.Lock()
-	defer reg.bucketMu.Unlock()
-	if reg.bucketReady {
+	reg.buckets.mu.Lock()
+	defer reg.buckets.mu.Unlock()
+	if reg.buckets.ready[reg.AccountID] {
 		return nil
 	}
 	if err := reg.Store.EnsureBucket(reg.bucket()); err != nil {
 		return err
 	}
-	reg.bucketReady = true
+	reg.buckets.ready[reg.AccountID] = true
 	return nil
 }
 

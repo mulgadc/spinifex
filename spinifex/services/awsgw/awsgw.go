@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
+	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -201,9 +202,8 @@ func launchService(config *config.ClusterConfig) error {
 
 	// OCI Distribution v2 registry: blob/manifest bytes stream straight to
 	// predastore from the gateway; repo/tag/manifest metadata and in-progress
-	// uploads are owned by the daemon and reached over NATS request/reply.
-	// Account scoping uses the bootstrap account until the /v2 token-auth
-	// bridge lands.
+	// uploads are owned by the daemon and reached over NATS request/reply. The
+	// /v2 auth bridge resolves the per-request account from a verified token.
 	ecrStore := objectstore.NewS3ObjectStoreFromConfig(
 		admin.DialTarget(nodeConfig.Predastore.Host),
 		nodeConfig.Predastore.Region,
@@ -212,20 +212,35 @@ func launchService(config *config.ClusterConfig) error {
 	)
 	ecrRegistry := gateway_ecr.NewRegistry(ecrStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
 
+	// ECR auth bridge: load (or first-run create) the ES256 signing key from the
+	// cluster-replicated awsgw-keys KV bucket, then build the token issuer
+	// (GetAuthorizationToken) and verifier (/v2 Authorization).
+	js, err := natsConn.JetStream()
+	if err != nil {
+		return fmt.Errorf("ECR auth bridge: JetStream context: %w", err)
+	}
+	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(js, masterKey, len(config.Nodes))
+	if err != nil {
+		return fmt.Errorf("ECR auth bridge: load signing key: %w", err)
+	}
+	ecrAudience := "ecr." + nodeConfig.Region + "." + config.AWS.InternalSuffix
+
 	gw := gateway.GatewayConfig{
-		Debug:          nodeConfig.AWSGW.Debug,
-		DisableLogging: false,
-		NATSConn:       natsConn,
-		Config:         nodeConfig.AWSGW.Config,
-		ExpectedNodes:  len(config.Nodes),
-		Region:         nodeConfig.Region,
-		InternalSuffix: config.AWS.InternalSuffix,
-		AZ:             nodeConfig.AZ,
-		IAMService:     iamService,
-		STSService:     stsService,
-		Version:        version,
-		Commit:         commit,
-		ECRRegistry:    ecrRegistry,
+		Debug:            nodeConfig.AWSGW.Debug,
+		DisableLogging:   false,
+		NATSConn:         natsConn,
+		Config:           nodeConfig.AWSGW.Config,
+		ExpectedNodes:    len(config.Nodes),
+		Region:           nodeConfig.Region,
+		InternalSuffix:   config.AWS.InternalSuffix,
+		AZ:               nodeConfig.AZ,
+		IAMService:       iamService,
+		STSService:       stsService,
+		Version:          version,
+		Commit:           commit,
+		ECRRegistry:      ecrRegistry,
+		ECRTokenIssuer:   gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
+		ECRTokenVerifier: gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
 	}
 
 	if throttleCfg.Enabled {

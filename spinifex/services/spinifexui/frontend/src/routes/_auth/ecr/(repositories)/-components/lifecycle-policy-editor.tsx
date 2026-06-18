@@ -3,7 +3,8 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
+import { JsonEditor } from "@/components/ui/json-editor"
+import { isValidJson } from "@/lib/json"
 import { formatDateTime } from "@/lib/utils"
 import {
   useDeleteLifecyclePolicy,
@@ -76,6 +77,8 @@ export function LifecyclePolicyEditor({
     }
   }
 
+  const trimmed = draft.trim()
+  const invalidJson = trimmed.length > 0 && !isValidJson(draft)
   const error = putPolicy.error ?? deletePolicy.error ?? preview.error
   const results = preview.data?.previewResults ?? []
 
@@ -102,7 +105,9 @@ export function LifecyclePolicyEditor({
               {preview.isPending ? "Previewing…" : "Preview"}
             </Button>
             <Button
-              disabled={putPolicy.isPending || draft.trim().length === 0}
+              disabled={
+                putPolicy.isPending || trimmed.length === 0 || invalidJson
+              }
               onClick={handleSave}
               size="sm"
             >
@@ -110,13 +115,19 @@ export function LifecyclePolicyEditor({
             </Button>
           </div>
         </div>
-        <Textarea
-          className="font-mono text-xs"
-          onChange={(e) => setDraft(e.target.value)}
+        <JsonEditor
+          className="text-xs"
+          error={invalidJson}
+          onChange={setDraft}
           placeholder={SAMPLE_POLICY}
           rows={14}
           value={draft}
         />
+        {invalidJson && (
+          <p className="mt-2 text-sm text-destructive">
+            Lifecycle policy must be valid JSON.
+          </p>
+        )}
         {error && (
           <p className="mt-2 text-sm text-destructive">{error.message}</p>
         )}

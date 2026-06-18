@@ -51,6 +51,20 @@ describe("LifecyclePolicyEditor", () => {
     })
   })
 
+  it("blocks save and flags invalid JSON", () => {
+    renderWithClient(
+      <LifecyclePolicyEditor repositoryName={REPO} />,
+      seed(POLICY),
+    )
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "{not json" },
+    })
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+    expect(
+      screen.getByText("Lifecycle policy must be valid JSON."),
+    ).toBeInTheDocument()
+  })
+
   it("deletes the policy when one is attached", async () => {
     send.mockResolvedValue({})
     renderWithClient(

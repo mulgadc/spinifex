@@ -2,7 +2,8 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
+import { JsonEditor } from "@/components/ui/json-editor"
+import { isValidJson } from "@/lib/json"
 import {
   useDeleteRepositoryPolicy,
   useSetRepositoryPolicy,
@@ -45,6 +46,8 @@ export function RepositoryPolicyEditor({
     }
   }
 
+  const trimmed = draft.trim()
+  const invalidJson = trimmed.length > 0 && !isValidJson(draft)
   const error = setPolicy.error ?? deletePolicy.error
 
   return (
@@ -61,7 +64,9 @@ export function RepositoryPolicyEditor({
             {deletePolicy.isPending ? "Deleting…" : "Delete"}
           </Button>
           <Button
-            disabled={setPolicy.isPending || draft.trim().length === 0}
+            disabled={
+              setPolicy.isPending || trimmed.length === 0 || invalidJson
+            }
             onClick={handleSave}
             size="sm"
           >
@@ -69,13 +74,19 @@ export function RepositoryPolicyEditor({
           </Button>
         </div>
       </div>
-      <Textarea
-        className="font-mono text-xs"
-        onChange={(e) => setDraft(e.target.value)}
+      <JsonEditor
+        className="text-xs"
+        error={invalidJson}
+        onChange={setDraft}
         placeholder="No policy attached. Paste an IAM policy document to set one."
         rows={10}
         value={draft}
       />
+      {invalidJson && (
+        <p className="mt-2 text-sm text-destructive">
+          Policy must be valid JSON.
+        </p>
+      )}
       {error && (
         <p className="mt-2 text-sm text-destructive">{error.message}</p>
       )}

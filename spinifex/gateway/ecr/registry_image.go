@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -210,7 +211,8 @@ func (reg *Registry) DeleteImage(account, repo, tag, digest string) (string, err
 		return resolved, nil
 	}
 
-	if _, err := scoped.Meta.GetManifestMeta(account, repo, digest); err != nil {
+	meta, err := scoped.Meta.GetManifestMeta(account, repo, digest)
+	if err != nil {
 		if errors.Is(err, ecr.ErrNotFound) {
 			return "", ErrImageNotFound
 		}
@@ -237,7 +239,74 @@ func (reg *Registry) DeleteImage(account, repo, tag, digest string) (string, err
 	if err := scoped.Meta.DeleteManifestMeta(account, repo, digest); err != nil {
 		return "", err
 	}
+
+	// The KV record is gone, so the image is logically deleted. Predastore
+	// reclaim is best-effort: a failure leaks bytes (a capacity nuisance) but
+	// does not undo the delete.
+	scoped.reclaimManifest(account, repo, digest, meta.ChildDigests)
 	return digest, nil
+}
+
+// reclaimManifest deletes a manifest's predastore object and any child blob no
+// longer referenced by a live manifest in the account pool. It must be called
+// after the manifest's KV meta is removed, so referencedDigests excludes it.
+func (reg *Registry) reclaimManifest(account, repo, digest string, children []string) {
+	if _, err := reg.Store.DeleteObject(&s3.DeleteObjectInput{
+		Bucket: aws.String(ecr.AccountBucket(account)),
+		Key:    aws.String(ecr.ManifestKey(repo, digest)),
+	}); err != nil {
+		slog.Warn("ECR/GC: manifest object delete failed", "repo", repo, "digest", digest, "err", err)
+	}
+
+	if len(children) == 0 {
+		return
+	}
+	referenced, err := reg.referencedDigests(account)
+	if err != nil {
+		slog.Warn("ECR/GC: reference scan failed, skipping blob reclaim", "account", account, "err", err)
+		return
+	}
+	for _, child := range children {
+		if referenced[child] {
+			continue
+		}
+		if _, err := reg.Store.DeleteObject(&s3.DeleteObjectInput{
+			Bucket: aws.String(ecr.AccountBucket(account)),
+			Key:    aws.String(ecr.BlobKey(child)),
+		}); err != nil {
+			slog.Warn("ECR/GC: blob delete failed", "digest", child, "err", err)
+		}
+	}
+}
+
+// referencedDigests returns the set of child digests referenced by every live
+// manifest across the account's repos. The account blob pool is shared, so the
+// reference set spans all repos, not just the one being mutated.
+func (reg *Registry) referencedDigests(account string) (map[string]bool, error) {
+	repos, err := reg.Meta.ListRepos(account)
+	if err != nil {
+		return nil, err
+	}
+	referenced := make(map[string]bool)
+	for _, repo := range repos {
+		digests, err := reg.Meta.ListManifests(account, repo)
+		if err != nil {
+			return nil, err
+		}
+		for _, key := range digests {
+			meta, err := reg.Meta.GetManifestMeta(account, repo, key)
+			if err != nil {
+				if errors.Is(err, ecr.ErrNotFound) {
+					continue
+				}
+				return nil, err
+			}
+			for _, child := range meta.ChildDigests {
+				referenced[child] = true
+			}
+		}
+	}
+	return referenced, nil
 }
 
 // mediaTypeAccepted reports whether mediaType is in the accepted set.

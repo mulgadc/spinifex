@@ -574,8 +574,18 @@ func (reg *Registry) putManifest(w http.ResponseWriter, r *http.Request, name, r
 }
 
 func (reg *Registry) deleteManifest(w http.ResponseWriter, name, reference string) {
-	// Tag pointer deletion only; digest GC is out of scope.
+	// Delete by digest removes the manifest record + object and reclaims any
+	// orphaned blobs; delete by tag removes only the tag pointer (the untagged
+	// image persists, matching AWS).
 	if ecr.ValidateDigest(reference) {
+		if _, err := reg.DeleteImage(reg.AccountID, name, "", reference); err != nil {
+			if errors.Is(err, ErrImageNotFound) {
+				WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
+				return
+			}
+			reg.internal(w, "delete manifest", err)
+			return
+		}
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}

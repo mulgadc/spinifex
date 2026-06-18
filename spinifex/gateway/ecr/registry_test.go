@@ -271,6 +271,30 @@ func TestManifest_Delete_Tag(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
+// TestManifest_Delete_ByDigest proves delete-by-digest is no longer a no-op: it
+// removes the manifest record + object, and a subsequent GET is a 404.
+func TestManifest_Delete_ByDigest(t *testing.T) {
+	reg := newTestRegistry()
+	repo := "team/app"
+	cfg := pushBlob(t, reg, repo, []byte("cfg-bytes"))
+	manifest := fmt.Appendf(nil,
+		`{"mediaType":"%s","config":{"digest":"%s"},"layers":[]}`, mediaTypeDockerManifest, cfg)
+	mdg := digestOf(manifest)
+	do(reg, http.MethodPut, "/v2/"+repo+"/manifests/v1", manifest,
+		map[string]string{"Content-Type": mediaTypeDockerManifest})
+
+	w := do(reg, http.MethodDelete, "/v2/"+repo+"/manifests/"+mdg, nil, nil)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+
+	// The record is gone: GET by digest now 404s, and the object was reclaimed.
+	w = do(reg, http.MethodGet, "/v2/"+repo+"/manifests/"+mdg, nil, nil)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	// Deleting again -> 404 (record already gone).
+	w = do(reg, http.MethodDelete, "/v2/"+repo+"/manifests/"+mdg, nil, nil)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
 func TestTagsList(t *testing.T) {
 	reg := newTestRegistry()
 	repo := "team/app"

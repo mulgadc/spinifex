@@ -1,5 +1,6 @@
 import { ACMClient } from "@aws-sdk/client-acm"
 import { EC2Client } from "@aws-sdk/client-ec2"
+import { ECRClient } from "@aws-sdk/client-ecr"
 import { EKSClient } from "@aws-sdk/client-eks"
 import { ElasticLoadBalancingV2Client } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { IAMClient } from "@aws-sdk/client-iam"
@@ -23,6 +24,7 @@ let elbv2Client: ElasticLoadBalancingV2Client | null = null
 let acmClient: ACMClient | null = null
 let iamClient: IAMClient | null = null
 let s3Client: S3Client | null = null
+let ecrClient: ECRClient | null = null
 
 export function getEc2Client(): EC2Client {
   if (!ec2Client) {
@@ -174,6 +176,36 @@ export function getIamClient(): IAMClient {
   return iamClient
 }
 
+export function getEcrClient(): ECRClient {
+  if (!ecrClient) {
+    const credentials = getCredentials()
+    if (!credentials) {
+      throw new Error("AWS credentials not configured")
+    }
+    ecrClient = new ECRClient({
+      endpoint: AWSGW_SIGN_ENDPOINT,
+      region: AWS_REGION,
+      credentials: {
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
+      },
+    })
+    ecrClient.middlewareStack.add(
+      (next) => async (args) => {
+        if (HttpRequest.isInstance(args.request)) {
+          args.request.hostname = window.location.hostname
+          args.request.port = Number(window.location.port) || 443
+          args.request.path = `/proxy/awsgw${args.request.path}`
+        }
+        return await next(args)
+      },
+      { step: "finalizeRequest", name: "proxyRewrite", override: true },
+    )
+  }
+  return ecrClient
+}
+
 export function getS3Client(): S3Client {
   if (!s3Client) {
     const credentials = getCredentials()
@@ -229,4 +261,5 @@ export function clearClients(): void {
   acmClient = null
   iamClient = null
   s3Client = null
+  ecrClient = null
 }

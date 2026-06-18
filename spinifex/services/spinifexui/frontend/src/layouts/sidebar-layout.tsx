@@ -17,6 +17,7 @@ import {
   LogOut,
   MapPin,
   Network,
+  Package,
   Route,
   Router,
   Server,
@@ -345,6 +346,23 @@ export function SidebarLayout() {
                 >
                   <Boxes className="size-4" />
                   <span>Clusters</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>ECR</SidebarGroupLabel>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Link to="/ecr/list-repositories">
+                <SidebarMenuButton
+                  isActive={pathname.startsWith("/ecr/list-repositories")}
+                  tooltip="Repositories"
+                >
+                  <Package className="size-4" />
+                  <span>Repositories</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

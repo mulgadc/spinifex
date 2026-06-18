@@ -593,17 +593,25 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | Path | Method | Source | Status |
 |------|--------|--------|--------|
 | `/latest/api/token` | PUT | Issues an ENI-bound IMDSv2 token; `X-aws-ec2-metadata-token-ttl-seconds` ∈ [1, 21600] required | **DONE** |
+| `/` | GET | Supported API-version list (`2021-07-15`, `latest`); token-gated | **DONE** |
+| `/latest` | GET | Top-level tree listing (`dynamic`, `meta-data`, `user-data`) | **DONE** |
+| `/<date>/...` | GET/PUT | Any dated API version aliases to `/latest` (cloud-init parity) | **DONE** |
 | `/latest/meta-data/` | GET | Directory listing of supported children | **DONE** |
 | `/latest/meta-data/instance-id` | GET | `vm.ID` | **DONE** |
 | `/latest/meta-data/instance-type` | GET | `vm.InstanceType` | **DONE** |
 | `/latest/meta-data/ami-id` | GET | launch `ImageId` | **DONE** |
+| `/latest/meta-data/ami-launch-index` | GET | Per-instance launch index (`0..n-1`), contiguous on partial failure | **DONE** |
+| `/latest/meta-data/reservation-id` | GET | `DescribeInstances` `Reservation.ReservationId` | **DONE** |
+| `/latest/meta-data/instance-life-cycle` | GET | `on-demand` (Spot not modelled) | **DONE** |
 | `/latest/meta-data/local-ipv4` | GET | `ENIRecord.PrivateIpAddress` (== request source IP) | **DONE** |
 | `/latest/meta-data/public-ipv4` | GET | EIP, else instance public IP; empty body if none | **DONE** |
+| `/latest/meta-data/public-hostname` | GET | Mirrors `public-ipv4`; 404 when no public IP | **DONE** |
 | `/latest/meta-data/mac` | GET | `ENIRecord.MacAddress` | **DONE** |
 | `/latest/meta-data/security-groups` | GET | `ENIRecord.SecurityGroupIds`, newline-separated | **DONE** |
 | `/latest/meta-data/hostname`, `/local-hostname` | GET | Synthesised `ip-<dashed-ip>.<region>.compute.internal` | **DONE** |
 | `/latest/meta-data/placement/availability-zone` | GET | `ENIRecord.AvailabilityZone` | **DONE** |
 | `/latest/meta-data/placement/region` | GET | Derived from AZ (trailing letter stripped) | **DONE** |
+| `/latest/meta-data/services/{domain,partition}` | GET | Static: `amazonaws.com` / `aws` | **DONE** |
 | `/latest/meta-data/iam/info` | GET | `{InstanceProfileArn, InstanceProfileId}`; 404 if no profile | **DONE** |
 | `/latest/meta-data/iam/security-credentials/` | GET | Role name(s) under the profile, one per line; empty body if none | **DONE** |
 | `/latest/meta-data/iam/security-credentials/<role>` | GET | STS `AssumeRoleForInstance` → ASIA-prefixed temporary credential JSON | **DONE** |
@@ -611,16 +619,15 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | `/latest/meta-data/public-keys/0/` | GET | `openssh-key` (format list for index 0) | **DONE** |
 | `/latest/meta-data/public-keys/0/openssh-key` | GET | Launch SSH public key, live-fetched from the key store; 404 if the key was deleted, 500 on backend fault | **DONE** |
 | `/latest/user-data` | GET | `vm.UserData`; 404 if none | **DONE** |
-| `/latest/dynamic/instance-identity/document` (+ `signature`, `pkcs7`, `rsa2048`) | GET | Needs a per-cluster signing key | **NOT STARTED** (404; lands with EKS IRSA) |
+| `/latest/dynamic` | GET | Lists `instance-identity/` | **DONE** |
+| `/latest/dynamic/instance-identity` | GET | Lists `document` (signed forms listed when the signing key lands) | **DONE** |
+| `/latest/dynamic/instance-identity/document` | GET | Unsigned identity document from resolved ENI + instance facts | **DONE** |
+| `/latest/dynamic/instance-identity/{signature,pkcs7,rsa2048}` | GET | Signed forms; need a per-cluster signing key | **NOT STARTED** (404; lands with EKS IRSA) |
 | `/latest/meta-data/network/interfaces/macs/<mac>/...` | GET | Multi-ENI rendering (subnet-id, vpc-id, ipv4s, security-group-ids, …) | **NOT STARTED** (404) |
 | `/latest/meta-data/tags/instance/<key>` | GET | Instance-tag metadata; gated on `InstanceMetadataTags` enablement | **NOT STARTED** (404) |
-| `/latest/meta-data/public-hostname` | GET | No public DNS today; would mirror `public-ipv4` | **NOT STARTED** (404) |
-| `/latest/meta-data/reservation-id` | GET | Available on the stored `Reservation`; cheap, not yet surfaced | **NOT STARTED** (404) |
-| `/latest/meta-data/ami-launch-index` | GET | `0` for single-instance launches; trivial once multi-count is exercised | **NOT STARTED** (404) |
 | `/latest/meta-data/block-device-mapping/...` | GET | `ami`/`root`/`ebsN`/`ephemeralN` device map | **NOT STARTED** (404) |
 | `/latest/meta-data/placement/{group-name,partition-number,availability-zone-id,host-id}` | GET | Placement extras beyond `availability-zone`/`region` | **NOT STARTED** (404) |
-| `/latest/meta-data/instance-life-cycle`, `/instance-action` | GET | `on-demand`/`spot`; `none` unless interruptible instances ship | **NOT STARTED** (404) |
-| `/latest/meta-data/services/{domain,partition}` | GET | Static per-deployment values | **NOT STARTED** (404) |
+| `/latest/meta-data/instance-action` | GET | `none` unless interruptible instances ship | **NOT STARTED** (404) |
 | `/latest/meta-data/spot/{instance-action,termination-time}` | GET | Only meaningful once Spot is modelled | **NOT STARTED** (404) |
 
 ---

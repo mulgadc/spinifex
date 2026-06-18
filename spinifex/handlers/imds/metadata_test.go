@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -422,15 +423,33 @@ func TestHTTP_PublicHostnameAbsent404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// The meta-data root lists every served child, alphabetically, to match AWS.
 func TestHTTP_DirectoryListing(t *testing.T) {
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := svc.httpHandler()
 	token := issueToken(t, h)
 	rec := get(t, h, pathMetaDataRoot, token)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "instance-id")
-	assert.Contains(t, rec.Body.String(), "iam/")
-	assert.Contains(t, rec.Body.String(), "public-keys/")
+	want := strings.Join([]string{
+		"ami-id",
+		"ami-launch-index",
+		"hostname",
+		"iam/",
+		"instance-id",
+		"instance-life-cycle",
+		"instance-type",
+		"local-hostname",
+		"local-ipv4",
+		"mac",
+		"placement/",
+		"public-hostname",
+		"public-ipv4",
+		"public-keys/",
+		"reservation-id",
+		"security-groups",
+		"services/",
+	}, "\n")
+	assert.Equal(t, want, rec.Body.String())
 }
 
 func TestHTTP_UserDataAbsent404(t *testing.T) {

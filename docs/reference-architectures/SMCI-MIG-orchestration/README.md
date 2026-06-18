@@ -116,18 +116,16 @@ Edit `/etc/spinifex/spinifex.toml` to point the external pool and VPCD at the br
 
 ```toml
 [network]
-external_mode = "static"
+external_mode = "pool"
 
 [[network.external_pools]]
-name        = "default"
-bind_bridge = "br-wan"
+name        = "wan"
+source      = "static"         # required — no upstream DHCP for this range
 range_start = "192.168.10.2"
-range_end   = "192.168.10.254"
-gateway_ip  = "192.168.10.1"
+range_end   = "192.168.10.100"
+gateway     = "192.168.10.1"   # second address on br-wan
 prefix_len  = 24
-
-[nodes.node1.vpcd]
-external_interface = "br-wan"
+dns_servers = ["8.8.8.8"]
 ```
 
 Then restart all services:
@@ -139,40 +137,35 @@ sudo systemctl status spinifex.target
 
 ### 4. Attach Predastore storage
 
-Expand: Note, we will distribute the predastore volume over 3 physical drives for data redundancy (similar to RAID, predastore uses reed solomon encoding for data shards and parity). Note this environment is ideal to demonstrate this since multiple drives are provided.
+Spinifex distributes the Predastore object storage volume across multiple nodes using Reed–Solomon encoding for data redundancy. This chassis has four NVMe drives — one for the OS, three dedicated to data — so we back each Predastore storage node with its own physical drive, giving us fault-tolerant distributed storage on a single machine — conceptually similar to RAID 5, where data and parity are spread across drives so a single drive failure is recoverable.
 
-Spinifex distributes the Predastore (object storage) volume accross multiple nodes, using Reed Solomon encoding to provide data redundancy and increased reliability. In this specific example, where we have access to one hardware unit with four separate physical drives (one for the OS, three for data), we can mount and symlink a storage node to each of the three dedicated data storage drives, similar to RAID. This provides a perfect environment to demonstrate Spinifex/Predastore's approach to reliable distributed storage.
-
-Confirm drive assignments with `lsblk` before proceeding, as device names vary between systems. Each of the three data drives needs to be symlinked into the path Predastore expects for its node data directories:
+Confirm drive assignments with `lsblk` before proceeding, as device names vary between systems.
 
 ```bash
-# Confirm drive paths — identify the OS drive and the three data drives
-lsblk
+lsblk   # identify the OS drive and the three data drives
 
-# Symlink each data drive into the Predastore node directories
-# (adjust device paths to match your drive layout)
-
-# stop services first
+# Stop services so Predastore isn't writing while we relocate its data directories
 sudo systemctl stop spinifex.target
 
-# mount first
-# /var/lib/spinifex/predastore/distributed/nodes/node-1/ path
+# --- Repeat the block below for each data drive (node-1/nvme-1, node-2/nvme-2, node-3/nvme-3) ---
 
-# sudo mkdir -p /mnt/nvme-1/
-# sudo mount /dev/nvme1n1 /mnt/nvme-1
-# sudo mkdir /mnt/nvme-1/nodes/
-# sudo mkdir /mnt/nvme-1/db/
+# Mount the physical drive at a stable path
+sudo mkdir -p /mnt/nvme-1
+sudo mount /dev/nvme1n1 /mnt/nvme-1
+sudo mkdir -p /mnt/nvme-1/nodes /mnt/nvme-1/db
 
-# mv /var/lib/spinifex/predastore/distributed/db/node-1 /mnt/nvme-1/db/node-1
-# mv /var/lib/spinifex/predastore/distributed/nodes/node-1 /mnt/nvme-1/nodes/node-1
+# Move Predastore's node data and metadata off the OS drive onto the physical NVMe
+sudo mv /var/lib/spinifex/predastore/distributed/nodes/node-1 /mnt/nvme-1/nodes/node-1
+sudo mv /var/lib/spinifex/predastore/distributed/db/node-1    /mnt/nvme-1/db/node-1
 
-# double check syntax
-# ln -s /var/lib/spinifex/predastore/distributed/nodes/node-1 /mnt/nvme-1/nodes/node-1
-# ln -s /var/lib/spinifex/predastore/distributed/db/node-1 /mnt/nvme-1/db/node-1
+# Symlink the original paths back so Predastore finds its data unchanged
+sudo ln -s /mnt/nvme-1/nodes/node-1 /var/lib/spinifex/predastore/distributed/nodes/node-1
+sudo ln -s /mnt/nvme-1/db/node-1    /var/lib/spinifex/predastore/distributed/db/node-1
 
-# repeat for nvme2,3
+# Persist the mount across reboots
+echo "/dev/nvme1n1  /mnt/nvme-1  auto  defaults  0  2" | sudo tee -a /etc/fstab
 
-# (edit /etc/fstab)
+# --- End of per-drive block ---
 
 sudo systemctl start spinifex.target
 ```
@@ -192,7 +185,7 @@ Spinifex allows GPUs to be utilised by guest VMS via VFIO-passthrough. This can 
 <img src="../../../.github/assets/images/h200/spinifex-banner1.png" alt="GPU Enabled">
 
 
-### 5. Import the GPU AMI
+### 6. Import the GPU AMI
 
 The demo uses the standard Spinifex NVIDIA GPU AMI (`ubuntu-26.04-nvidia-gpu-x86_64`), which includes:
 
@@ -212,7 +205,7 @@ AMI_ID=$(aws ec2 describe-images \
     --query 'Images[0].ImageId' --output text)
 ```
 
-### 6. Create VPC resources
+### 7. Create VPC resources
 
 ```bash
 # Create VPC and subnet
@@ -231,9 +224,10 @@ aws ec2 authorize-security-group-ingress --group-id $SG_ID \
     --protocol tcp --port 22 --cidr 0.0.0.0/0
 aws ec2 authorize-security-group-ingress --group-id $SG_ID \
     --protocol tcp --port 8000-8011 --cidr 0.0.0.0/0
+```
 
-# Create SSH key
 ```bash
+# Create SSH key
 aws ec2 create-key-pair --key-name spinifex-key \
   | jq -r '.KeyMaterial | rtrimstr("\n")' > ~/.ssh/spinifex-key
 
@@ -247,7 +241,7 @@ Verify:
 aws ec2 describe-key-pairs
 ```
 
-### 7. Launch the four VMs
+### 8. Launch the four VMs
 
 Each VM gets a whole H200 via PCIe passthrough. The `p5e.4xlarge` instance type maps one H200 per VM:
 
@@ -265,10 +259,11 @@ Wait until all four reach running state, then take note of the public IPs assign
 
 ```bash
 aws ec2 describe-instances \
-    --query 'Reservations[*].Instances[*].[InstanceId,PublicIpAddress,State.Name' \
+    --query 'Reservations[*].Instances[*].[InstanceId,PublicIpAddress,State.Name]' \
+    --output table
 ```
 
-### 8. Enable MIG inside each VM
+### 9. Enable MIG inside each VM
 
 MIG is enabled inside each guest VM, not on the host. SSH into each VM and enable it:
 
@@ -281,7 +276,7 @@ nvidia-smi | grep "MIG M."
 # Should show: MIG M.  Enabled
 ```
 
-### 9. Create MIG partitions inside each VM
+### 10. Create MIG partitions inside each VM
 
 With MIG enabled, we are now able to partition each VM's assigned H200 GPU into several separate GPU instances. This process assigns each GPU slice its own UUID, so each VM goes from seeing one whole GPU to seeing a number of "MIG devices":
 
@@ -289,12 +284,12 @@ With MIG enabled, we are now able to partition each VM's assigned H200 GPU into 
 
 This allows us to run several separate workloads, each assigned to its own GPU instance, on the same physical GPU, and thus utilise more of the overall GPU's resources.
 
-Run nvidia-smi mig -lgip to see the available partition types. MIG profiles are named Xg.Ygb, where:
+Run `nvidia-smi mig -lgip` to see the available partition types. MIG profiles are named Xg.Ygb, where:
 
 * X is the number of GPU slices (GPU Instances, or GIs) allocated to the partition. On an H200 there are 7 allocatable GPU slices, so the largest profile is 7g.
 * Y is the amount of HBM memory allocated to that partition.
 
-Larger profiles also receive proportionally more SMs, cache, copy engines, encoders/decoders, and other GPU resources.
+Larger profiles also receive proportionally more SMs (Streaming Multiprocessors - analagous to CPU cores), cache, copy engines, encoders/decoders, and other GPU resources.
 
 Thus we partition the GPUs assigned to our VMs as follows:
 
@@ -322,11 +317,9 @@ sudo nvidia-smi mig -cgi 3g.71gb,3g.71gb -C
 nvidia-smi -L  # Verify 2 MIG devices
 ```
 
-<add screenshot of the nvidia-smi MIG output here as an example>
-
 Each MIG device gets a UUID of the form `MIG-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`. These UUIDs are used to pin individual containers to their slice via `--gpus "device=<UUID>"` (for Docker) or `CUDA_VISIBLE_DEVICES=<UUID>` (for direct Python processes).
 
-### 10. Configure Docker to use the local image registry
+### 11. Configure Docker to use the local image registry
 
 The vLLM image is served from the host's local Docker registry (`192.168.10.1:5000`).
 
@@ -370,7 +363,7 @@ EOF
 sudo systemctl restart docker
 ```
 
-### 11. Deploy the LLM workloads
+### 12. Deploy the LLM workloads
 
 Each LLM is downloaded using the Huggingface CLI onto the respective VM. First install the CLI:
 
@@ -381,19 +374,19 @@ pip install -U "huggingface_hub[cli]"
 Then download the model and determine its snapshot directory. This directory contains the model’s config.json, tokenizer files, and weight files, and will be used as MODEL_DIR when launching vLLM.
 
 ```bash
-#On VM 1
+#On vm-llama3b
 hf download meta-llama/Llama-3.2-3B-Instruct
 
 MODEL_DIR=$(dirname "$(find ~/.cache/huggingface/hub -path '*Llama-3.2-3B-Instruct*' -name config.json | head -1)")
 echo "$MODEL_DIR"
 
-#On VM 2
-hf download meta-llama/Llama-3.2-3B-Instruct
+#On vm-qwen32b
+hf download Qwen/Qwen2.5-32B-Instruct
 
-MODEL_DIR=$(dirname "$(find ~/.cache/huggingface/hub -path '*Llama-3.2-3B-Instruct*' -name config.json | head -1)")
+MODEL_DIR=$(dirname "$(find ~/.cache/huggingface/hub -path '*Qwen2.5-32B-Instruct*' -name config.json | head -1)")
 echo "$MODEL_DIR"
 
-#On VM 3
+#On vm-llama70b
 hf download RedHatAI/Meta-Llama-3.1-70B-Instruct-FP8
 
 MODEL_DIR=$(dirname "$(find ~/.cache/huggingface/hub -path '*Meta-Llama-3.1-70B-Instruct-FP8*' -name config.json | head -1)")
@@ -415,7 +408,7 @@ for i in "${!UUIDS[@]}"; do
         --gpus "device=${UUIDS[$i]}" \
         --ipc host \
         -p $((8000 + i)):8000 \
-        -v "${MODEL_DIR}:/hf/snapshot:ro" \
+        -v "${MODEL_DIR}:/models:ro" \
         192.168.10.1:5000/vllm-openai:latest \
         vllm serve /models \
             --served-model-name llama-3b \
@@ -436,9 +429,9 @@ for i in "${!UUIDS[@]}"; do
         --gpus "device=${UUIDS[$i]}" \
         --ipc host \
         -p $((8000 + i)):8000 \
-        -v "${MODEL_DIR}:/hf/snapshot:ro" \
+        -v "${MODEL_DIR}:/models:ro" \
         192.168.10.1:5000/vllm-openai:latest \
-        vllm serve /models/Qwen2.5-32B-Instruct \
+        vllm serve /models \
             --served-model-name qwen2.5-32b \
             --dtype bfloat16 \
             --max-model-len 4096 \
@@ -450,17 +443,15 @@ done
 **vm-llama70b — Llama-3.1-70B-Instruct-FP8 (full GPU slice):**
 
 ```bash
-MODEL_DIR=<path-to-model>
-
 UUID=$(nvidia-smi -L | grep -oP 'MIG-[0-9a-f-]+' | head -1)
 docker run -d --rm \
     --name vllm \
     --gpus "device=${UUID}" \
     --ipc host \
     -p 8000:8000 \
-    -v "${MODEL_DIR}:/hf/snapshot:ro" \
+    -v "${MODEL_DIR}:/models:ro" \
     192.168.10.1:5000/vllm-openai:latest \
-    vllm serve /models/Meta-Llama-3.1-70B-Instruct-FP8 \
+    vllm serve /models \
         --served-model-name meta-llama-3.1-70b \
         --dtype auto \
         --max-model-len 8192 \
@@ -468,52 +459,96 @@ docker run -d --rm \
         --port 8000
 ```
 
-### 12. Deploy YOLO object detection (vm-yolo)
+### 13. Deploy YOLO object detection (vm-yolo)
 
-We set up a simple YOLO inference server which runs directly in a Python venv and streams its output to a dashboard running on the host.
+For this demo we built a simple YOLO inference server that runs detection on a looping video file and serves the annotated output as an MJPEG stream. The same script runs twice on vm-yolo — once for YOLO11x (larger, more accurate) and once for YOLO11s (smaller, faster) — each pinned to its own MIG slice and listening on a different port.
+
+The MIG pinning works through `CUDA_VISIBLE_DEVICES`: setting it to a MIG UUID before launch scopes the process to that slice, and CUDA remaps it to device index 0 inside the process. From the script's perspective it always sees one GPU at index 0 — the MIG boundary is invisible to it. `YOLO_MODEL` and `PORT` are what actually differentiate the two instances:
 
 ```bash
-# Install dependencies
 python3 -m venv ~/yolo-venv
-~/yolo-venv/bin/pip install ultralytics fastapi "uvicorn[standard]" opencv-python-headless
-```
-Start one process per MIG slice, using `CUDA_VISIBLE_DEVICES` to pin each to its UUID:
+~/yolo-venv/bin/pip install ultralytics fastapi "uvicorn[standard]" opencv-python-headless httpx
 
-```bash
-# On vm-yolo — get UUIDs first
+# Get MIG UUIDs
 nvidia-smi -L
 # GPU 0: NVIDIA H200 (UUID: GPU-...)
 #   MIG 3g.71gb  Device 0: (UUID: MIG-<uuid0>)
 #   MIG 3g.71gb  Device 1: (UUID: MIG-<uuid1>)
 
-# YOLO11x on slice 0
+# YOLO11x on slice 0 — larger model, port 8010
 CUDA_VISIBLE_DEVICES=MIG-<uuid0> \
-  VIDEO_PATH=<path-to-video> YOLO_MODEL=yolo11x.pt PORT=8010 \
+  VIDEO_PATH=<path-to-video> \
+  YOLO_MODEL=yolo11x.pt \
+  YOLO_DEVICE=0 \
+  PORT=8010 \
   ~/yolo-venv/bin/python ~/yolo_stream.py >> ~/yolo-x.log 2>&1 &
 
-# YOLO11s on slice 1
+# YOLO11s on slice 1 — smaller/faster model, port 8011
 CUDA_VISIBLE_DEVICES=MIG-<uuid1> \
-  VIDEO_PATH=<path-to-video> YOLO_MODEL=yolo11s.pt PORT=8011 \
+  VIDEO_PATH=<path-to-video> \
+  YOLO_MODEL=yolo11s.pt \
+  YOLO_DEVICE=0 \
+  PORT=8011 \
   ~/yolo-venv/bin/python ~/yolo_stream.py >> ~/yolo-s.log 2>&1 &
 ```
 
-YOLO11x (~75 MB) and YOLO11s (~9 MB) weights download automatically on first run from the Ultralytics model hub.
+Each instance exposes a `/video` endpoint serving a `multipart/x-mixed-replace` MJPEG stream, consumable directly by browsers and most HTTP clients. YOLO11x (~75 MB) and YOLO11s (~9 MB) weights download automatically on first run from the Ultralytics model hub.
 
-### 13. Dashboard
+### 14. Dashboard
 
-We created a simple dashboard that runs on the host and proxies all 10 LLM endpoints (via SSE streaming) and both YOLO MJPEG feeds:
+We also built a simple host-side dashboard — a FastAPI application that proxies all the VM streams to the browser so only one port on the host needs to be exposed. Each VM endpoint is wired in by address at startup, mapping directly to the IPs assigned in step 8:
+
+```
+http://192.168.10.14:8010  →  vm-yolo  YOLO11x MJPEG stream
+http://192.168.10.14:8011  →  vm-yolo  YOLO11s MJPEG stream
+http://192.168.10.7:8000   →  vm-llama3b  vLLM endpoint 0
+http://192.168.10.7:8001   →  vm-llama3b  vLLM endpoint 1
+... (one entry per endpoint across all three LLM VMs)
+```
+
+The dashboard has two proxy patterns: MJPEG passthrough for the YOLO feeds (forwarding the raw boundary stream from vm-yolo to the browser), and SSE passthrough for the LLM token streams (subscribing to each vLLM endpoint and re-emitting tokens as server-sent events). Both use a reconnect loop so the browser connection stays open if a VM is temporarily unreachable.
+
+
 
 <p><video src="https://iso.mulgadc.com/h200-demo.mp4" controls width="100%" style="border-radius:6px"></video></p>
-
 
 The dashboard shows:
 - GPU allocation bars for all four VMs (proportional to MIG slice size)
 - Live streaming LLM responses per endpoint, colour-coded by tier
 - Side-by-side YOLO11x vs YOLO11s video feeds with FPS and detection counts
 
+The dashboard also displays the overall GPU utilisation, derived as a percentage of maximum power usage. Importantly, it demonstrates how Spinifex combined with NVIDIA's MIG capability enables the deployment of multiple heterogeneous workloads on owned hardware.
+
+### 15. Teardown
+
+```bash
+# Stop the YOLO processes on vm-yolo
+ssh -i ~/.ssh/spinifex-key ubuntu@192.168.10.14 'pkill -f yolo_stream.py || true'
+
+# Stop all vLLM containers on the LLM VMs
+for IP in 192.168.10.7 192.168.10.8 192.168.10.12; do
+    ssh -i ~/.ssh/spinifex-key ubuntu@$IP 'docker stop $(docker ps -q) 2>/dev/null || true'
+done
+
+# Disable MIG inside each VM before terminating.
+for IP in 192.168.10.7 192.168.10.8 192.168.10.12 192.168.10.14; do
+    ssh -i ~/.ssh/spinifex-key ubuntu@$IP \
+        'sudo nvidia-smi mig -dci 2>/dev/null; sudo nvidia-smi mig -dgi 2>/dev/null; sudo nvidia-smi -mig 0' || true
+done
+
+# Terminate all four instances — releases 4× H200 back to the Spinifex pool
+aws ec2 terminate-instances --instance-ids \
+    $(aws ec2 describe-instances \
+        --filters "Name=instance-state-name,Values=running" \
+        --query 'Reservations[*].Instances[*].InstanceId' \
+        --output text)
+```
+
+The four H200s are immediately returned to the host GPU pool once the instances terminate, ready for reallocation without touching the host.
+
 ---
 
-### 14. Conclusion
+### 16. Conclusion
 
 This document highlights how Spinifex can turn a single bare-metal chassis into a multi-tenant AI serving platform. Spinifex utilises the flexibility of PCIe passthrough combined with NVIDIA's MIG capability to allocate GPU resources in whichever configuration is required by the workload/s. This flexibility and fine-grain control ensures maximum GPU utilisation.
 

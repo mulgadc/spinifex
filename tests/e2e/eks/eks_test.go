@@ -214,6 +214,11 @@ func TestEKS(t *testing.T) {
 		runIRSAWebIdentity(t, c, env, artifacts, fx)
 	})
 
+	t.Run("EBSCSIVolume", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runEBSCSIVolume(t, c, env, artifacts, fx)
+	})
+
 	t.Run("DeleteCluster", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		_, err := c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
@@ -318,6 +323,211 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	assert.Contains(t, aws.StringValue(ident.Arn), "assumed-role/"+roleName,
 		"caller ARN must reflect the assumed IRSA role")
 	t.Logf("GetCallerIdentity (web-identity creds): %s", aws.StringValue(ident.Arn))
+}
+
+// runEBSCSIVolume exercises the full EBS CSI data path on the live cluster:
+// install the aws-ebs-csi-driver managed addon bound to an IRSA role, then
+// drive a default gp3 PVC -> Pod -> CreateVolume(Viperblock)/AttachVolume
+// (virtio-blk hotplug, serial=volume-id) -> mdev by-id symlink -> ext4 mount.
+// A nonce written by the first pod must survive a reschedule onto a fresh pod
+// backed by the same PVC, proving the volume detaches/reattaches data-intact.
+func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string, fx *clusterFixture) {
+	require.NotNil(t, fx.Cluster.Identity, "ACTIVE cluster must expose Identity")
+	require.NotNil(t, fx.Cluster.Identity.Oidc, "ACTIVE cluster must expose Identity.Oidc")
+	issuer := aws.StringValue(fx.Cluster.Identity.Oidc.Issuer)
+	require.NotEmpty(t, issuer, "cluster OIDC issuer must be published")
+
+	// IRSA role for ebs-csi-controller-sa. awsgw does not enforce EC2 IAM
+	// authorization, so the web-identity trust alone suffices (no permission
+	// policy) — the controller's projected SA token is the identity it presents
+	// to AssumeRoleWithWebIdentity before calling CreateVolume/AttachVolume.
+	oidcOut, err := c.IAM.CreateOpenIDConnectProvider(&iam.CreateOpenIDConnectProviderInput{
+		Url:            aws.String(issuer),
+		ClientIDList:   aws.StringSlice([]string{"sts.amazonaws.com"}),
+		ThumbprintList: aws.StringSlice([]string{"0000000000000000000000000000000000000000"}),
+	})
+	require.NoError(t, err, "create-open-id-connect-provider")
+	providerArn := aws.StringValue(oidcOut.OpenIDConnectProviderArn)
+	t.Cleanup(func() {
+		_, _ = c.IAM.DeleteOpenIDConnectProvider(&iam.DeleteOpenIDConnectProviderInput{
+			OpenIDConnectProviderArn: aws.String(providerArn),
+		})
+	})
+
+	roleName := fmt.Sprintf("%s-ebs-csi", fx.ClusterName)
+	trustPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"}]}`, providerArn)
+	roleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
+		RoleName:                 aws.String(roleName),
+		AssumeRolePolicyDocument: aws.String(trustPolicy),
+		Description:              aws.String("E2E EBS CSI controller role"),
+	})
+	require.NoError(t, err, "create-role")
+	roleArn := aws.StringValue(roleOut.Role.Arn)
+	t.Cleanup(func() {
+		_, _ = c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(roleName)})
+	})
+	t.Logf("EBS CSI IRSA role: %s", roleArn)
+
+	// Install the managed addon bound to the role. The addon-sync agent renders
+	// the controller manifest's {{SERVICE_ACCOUNT_ROLE_ARN}} from this ARN.
+	const addon = "aws-ebs-csi-driver"
+	harness.Phase(t, "Installing %s addon", addon)
+	_, err = c.EKS.CreateAddon(&eks.CreateAddonInput{
+		ClusterName:           aws.String(fx.ClusterName),
+		AddonName:             aws.String(addon),
+		ServiceAccountRoleArn: aws.String(roleArn),
+	})
+	require.NoError(t, err, "create-addon")
+	t.Cleanup(func() {
+		_, _ = c.EKS.DeleteAddon(&eks.DeleteAddonInput{
+			ClusterName: aws.String(fx.ClusterName),
+			AddonName:   aws.String(addon),
+		})
+	})
+
+	harness.EventuallyErr(t, func() error {
+		out, derr := c.EKS.DescribeAddon(&eks.DescribeAddonInput{
+			ClusterName: aws.String(fx.ClusterName),
+			AddonName:   aws.String(addon),
+		})
+		if derr != nil {
+			return fmt.Errorf("describe-addon: %w", derr)
+		}
+		if s := aws.StringValue(out.Addon.Status); s != eks.AddonStatusActive {
+			return fmt.Errorf("addon status %q, want ACTIVE", s)
+		}
+		return nil
+	}, 5*time.Minute, 10*time.Second)
+
+	kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
+	kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
+
+	// Controller Deployment + node DaemonSet must roll out before a PVC binds.
+	harness.Phase(t, "Waiting for CSI driver rollout")
+	harness.EventuallyErr(t, func() error {
+		if out, rerr := kc.Run(60*time.Second, "-n", "kube-system", "rollout", "status",
+			"deployment/ebs-csi-controller", "--timeout", "30s"); rerr != nil {
+			return fmt.Errorf("controller rollout: %v\n%s", rerr, out)
+		}
+		if out, rerr := kc.Run(60*time.Second, "-n", "kube-system", "rollout", "status",
+			"daemonset/ebs-csi-node", "--timeout", "30s"); rerr != nil {
+			return fmt.Errorf("node rollout: %v\n%s", rerr, out)
+		}
+		return nil
+	}, 3*time.Minute, 10*time.Second)
+
+	// Provision a gp3 PVC and a pod that writes a unique marker onto the volume.
+	marker := fmt.Sprintf("csi-e2e-%d", time.Now().UnixNano())
+	const pvcName = "ebs-csi-e2e"
+	writerPath := filepath.Join(artifacts, "ebs-csi-writer.yaml")
+	require.NoError(t, os.WriteFile(writerPath, []byte(csiPVCPodManifest(pvcName, "ebs-csi-e2e-writer",
+		fmt.Sprintf("echo %s > /data/marker && sync && sleep 3600", marker))), 0o600))
+	t.Cleanup(func() {
+		_, _ = kc.Run(60*time.Second, "delete", "-f", writerPath, "--ignore-not-found", "--wait=false")
+	})
+
+	harness.Phase(t, "Applying gp3 PVC + writer pod")
+	out, err := kc.Run(60*time.Second, "apply", "-f", writerPath)
+	require.NoErrorf(t, err, "apply writer:\n%s", out)
+
+	// Bind drives CreateVolume(Viperblock) + AttachVolume(virtio-blk hotplug).
+	harness.EventuallyErr(t, func() error {
+		ph, perr := kc.Run(30*time.Second, "get", "pvc", pvcName, "-o", `jsonpath={.status.phase}`)
+		if perr != nil {
+			return fmt.Errorf("get pvc: %v\n%s", perr, ph)
+		}
+		if strings.TrimSpace(ph) != "Bound" {
+			return fmt.Errorf("pvc phase %q, want Bound", strings.TrimSpace(ph))
+		}
+		return nil
+	}, 5*time.Minute, 5*time.Second)
+	t.Logf("PVC %s Bound", pvcName)
+
+	waitPodReady(t, kc, "ebs-csi-e2e-writer")
+
+	// The marker must have landed on the mounted volume.
+	got, err := kc.Run(30*time.Second, "exec", "ebs-csi-e2e-writer", "--", "cat", "/data/marker")
+	require.NoErrorf(t, err, "exec cat marker:\n%s", got)
+	require.Equal(t, marker, strings.TrimSpace(got), "writer must observe its own marker")
+
+	// Reschedule: delete the writer, bind the same PVC to a fresh reader pod and
+	// assert the marker survived the detach/reattach + remount.
+	harness.Phase(t, "Rescheduling onto a fresh pod")
+	out, err = kc.Run(90*time.Second, "delete", "pod", "ebs-csi-e2e-writer", "--wait=true", "--timeout", "60s")
+	require.NoErrorf(t, err, "delete writer:\n%s", out)
+
+	readerPath := filepath.Join(artifacts, "ebs-csi-reader.yaml")
+	require.NoError(t, os.WriteFile(readerPath, []byte(csiPVCPodManifest(pvcName, "ebs-csi-e2e-reader",
+		"cat /data/marker && sleep 3600")), 0o600))
+	t.Cleanup(func() {
+		_, _ = kc.Run(60*time.Second, "delete", "-f", readerPath, "--ignore-not-found", "--wait=false")
+	})
+	out, err = kc.Run(60*time.Second, "apply", "-f", readerPath)
+	require.NoErrorf(t, err, "apply reader:\n%s", out)
+	waitPodReady(t, kc, "ebs-csi-e2e-reader")
+
+	got, err = kc.Run(30*time.Second, "exec", "ebs-csi-e2e-reader", "--", "cat", "/data/marker")
+	require.NoErrorf(t, err, "exec cat marker (reader):\n%s", got)
+	assert.Equal(t, marker, strings.TrimSpace(got), "marker must survive pod reschedule")
+	t.Logf("marker survived reschedule: %s", strings.TrimSpace(got))
+}
+
+// csiPVCPodManifest renders a gp3 PVC plus a single pod that mounts it at /data
+// and runs cmd. Reusing the claim name lets the reader pod rebind the volume the
+// writer provisioned. Control-plane tolerations let it schedule on single-node
+// k3s servers, where the only node carries the control-plane taint.
+func csiPVCPodManifest(pvc, pod, cmd string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: %s
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: ebs-gp3
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: default
+spec:
+  restartPolicy: Never
+  tolerations:
+  - operator: Exists
+  containers:
+  - name: app
+    image: public.ecr.aws/docker/library/busybox:1.36
+    command: ["sh", "-c", %q]
+    volumeMounts:
+    - name: vol
+      mountPath: /data
+  volumes:
+  - name: vol
+    persistentVolumeClaim:
+      claimName: %s
+`, pvc, pod, cmd, pvc)
+}
+
+// waitPodReady blocks until the named default-namespace pod reports Ready,
+// dumping `describe pod` into the failure message on timeout.
+func waitPodReady(t *testing.T, kc *harness.Kubectl, pod string) {
+	t.Helper()
+	harness.EventuallyErr(t, func() error {
+		out, err := kc.Run(30*time.Second, "get", "pod", pod, "-o",
+			`jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
+		if err != nil {
+			return fmt.Errorf("get pod: %v\n%s", err, out)
+		}
+		if strings.TrimSpace(out) != "True" {
+			desc, _ := kc.Run(30*time.Second, "describe", "pod", pod)
+			return fmt.Errorf("pod %s not Ready (%q)\n%s", pod, strings.TrimSpace(out), desc)
+		}
+		return nil
+	}, 4*time.Minute, 5*time.Second)
 }
 
 // --- Fixture --------------------------------------------------------------

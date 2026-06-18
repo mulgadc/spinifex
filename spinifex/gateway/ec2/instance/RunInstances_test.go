@@ -231,7 +231,7 @@ func TestParseRunInstances(t *testing.T) {
 			}
 
 			// For validation tests, we can pass nil conn since validation happens before NATS call
-			response, err := RunInstances(test.input, nil, nil, "123456789012", nil)
+			response, err := RunInstances(test.input, nil, nil, "123456789012", nil, 1)
 
 			// Use assert to check if the error is as expected
 			assert.Equal(t, test.want, err)

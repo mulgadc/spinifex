@@ -72,14 +72,14 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 // When ClientToken is set, wraps the launch in idempotency via the KV store.
 // iamSvc may be nil only when no IamInstanceProfile is supplied.
 // passRoleCheck may be nil to skip PassRole enforcement.
-func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (reservation ec2.Reservation, err error) {
+func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	if err = ValidateRunInstancesInput(input); err != nil {
 		return reservation, err
 	}
 
 	token := aws.StringValue(input.ClientToken)
 	if token == "" {
-		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, expectedNodes)
 	}
 
 	// ClientToken set: dedup concurrent/retried launches; store failure is fatal
@@ -92,13 +92,13 @@ func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc hand
 	// Hash before any mutation so the same token+params always matches.
 	paramHash := clientTokenParamHash(input)
 	return runInstancesWithClientToken(store, accountID, token, paramHash, func() (ec2.Reservation, error) {
-		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, expectedNodes)
 	})
 }
 
 // runInstancesInner performs the actual launch: profile resolution, placement
 // routing, and capacity-aware distribution. Wrapped by RunInstances for idempotency.
-func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (reservation ec2.Reservation, err error) {
+func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	resolvedProfile, err := resolveAndAuthorizeInstanceProfile(input, iamSvc, accountID, passRoleCheck)
 	if err != nil {
 		return reservation, err
@@ -113,14 +113,14 @@ func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc
 
 		switch strategy {
 		case ec2.PlacementStrategySpread:
-			reservationPtr, err := distributeInstancesSpread(input, natsConn, accountID, groupName)
+			reservationPtr, err := distributeInstancesSpread(input, natsConn, accountID, groupName, expectedNodes)
 			if err != nil {
 				return reservation, err
 			}
 			enrichReservationWithProfileID(reservationPtr, resolvedProfile)
 			return *reservationPtr, nil
 		case ec2.PlacementStrategyCluster:
-			reservationPtr, err := distributeInstancesCluster(input, natsConn, accountID, groupName)
+			reservationPtr, err := distributeInstancesCluster(input, natsConn, accountID, groupName, expectedNodes)
 			if err != nil {
 				return reservation, err
 			}
@@ -131,7 +131,7 @@ func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc
 		}
 	}
 
-	reservationPtr, err := distributeInstances(input, natsConn, accountID)
+	reservationPtr, err := distributeInstances(input, natsConn, accountID, expectedNodes)
 	if err != nil {
 		// Distinguish "unknown type" from "no capacity" via DescribeInstanceTypes.
 		if err.Error() == awserrors.ErrorInsufficientInstanceCapacity {

@@ -1,6 +1,9 @@
 package handlers_ec2_image
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -26,7 +29,31 @@ func (s *NATSImageService) DescribeImages(input *ec2.DescribeImagesInput, accoun
 }
 
 func (s *NATSImageService) CreateImage(input *ec2.CreateImageInput, accountID string) (*ec2.CreateImageOutput, error) {
-	return utils.NATSScatterGather[ec2.CreateImageOutput](s.natsConn, "ec2.CreateImage", input, 120*time.Second, s.expectedNodes, accountID)
+	jsonData, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal input: %w", err)
+	}
+
+	frames, sum, err := utils.Gather(s.natsConn, "ec2.CreateImage", jsonData,
+		utils.GatherOpts{Timeout: 120 * time.Second, ExpectedNodes: s.expectedNodes, StopOnFirst: true, AccountID: accountID})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(frames) > 0 {
+		var out ec2.CreateImageOutput
+		if err := json.Unmarshal(frames[0], &out); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal CreateImage response: %w", err)
+		}
+		return &out, nil
+	}
+
+	// No node produced the image: surface the first deterministic client error
+	// (e.g. the owner is absent and every node replied NotFound), else a timeout.
+	if sum.FirstClient4xx != "" {
+		return nil, errors.New(sum.FirstClient4xx)
+	}
+	return nil, fmt.Errorf("CreateImage: no successful response received for ec2.CreateImage")
 }
 
 func (s *NATSImageService) CopyImage(input *ec2.CopyImageInput, accountID string) (*ec2.CopyImageOutput, error) {

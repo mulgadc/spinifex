@@ -612,45 +612,20 @@ func (gw *GatewayConfig) DiscoverActiveNodes() int {
 		return gw.ExpectedNodes
 	}
 
-	inbox := nats.NewInbox()
-	sub, err := gw.NATSConn.SubscribeSync(inbox)
+	frames, _, err := utils.Gather(gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
+		utils.GatherOpts{Timeout: 500 * time.Millisecond})
 	if err != nil {
-		slog.Error("DiscoverActiveNodes: Failed to create inbox subscription", "err", err)
+		slog.Error("DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
 	}
-	defer sub.Unsubscribe()
-
-	err = gw.NATSConn.PublishRequest("spinifex.nodes.discover", inbox, []byte("{}"))
-	if err != nil {
-		slog.Error("DiscoverActiveNodes: Failed to publish request", "err", err)
-		return gw.ExpectedNodes
-	}
-
-	timeout := 500 * time.Millisecond
-	deadline := time.Now().Add(timeout)
 
 	nodesSeen := make(map[string]bool)
-	for time.Now().Before(deadline) {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if err == nats.ErrTimeout {
-				break
-			}
-			slog.Debug("DiscoverActiveNodes: Error receiving message", "err", err)
-			break
-		}
-
+	for _, frame := range frames {
 		var response types.NodeDiscoverResponse
-		if err := json.Unmarshal(msg.Data, &response); err != nil {
+		if err := json.Unmarshal(frame, &response); err != nil {
 			slog.Debug("DiscoverActiveNodes: Failed to unmarshal response", "err", err)
 			continue
 		}
-
 		nodesSeen[response.Node] = true
 	}
 

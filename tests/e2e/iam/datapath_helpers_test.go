@@ -31,15 +31,32 @@ import (
 // than re-running the same multi-minute timeout against the same broken datapath.
 var sshDatapathBroken atomic.Bool
 
-// sshReadyBudget bounds the SSH-handshake probes. Widen via
+// sshReadyBudget bounds the first SSH-handshake pass. Widen via
 // SPINIFEX_SSH_READY_TIMEOUT (Go duration); default 3m bounds shared runners.
-var sshReadyBudget = resolveSSHReadyBudget(3 * time.Minute)
+var sshReadyBudget = resolveDurationEnv("SPINIFEX_SSH_READY_TIMEOUT", 3*time.Minute)
 
-func resolveSSHReadyBudget(def time.Duration) time.Duration {
-	if v := os.Getenv("SPINIFEX_SSH_READY_TIMEOUT"); v != "" {
+// sshReprimeBudget bounds the second SSH pass after an ARP re-prime. Short by
+// design — if the re-prime helps, the handshake lands quickly. Override via
+// SPINIFEX_SSH_REPRIME_TIMEOUT.
+var sshReprimeBudget = resolveDurationEnv("SPINIFEX_SSH_REPRIME_TIMEOUT", 60*time.Second)
+
+// wanBridge is the host bridge an EIP is presented on — the L2 segment the
+// runner ARPs to reach a guest's public IP. Default br-wan; override for
+// non-standard pool fixtures via SPINIFEX_WAN_BRIDGE.
+var wanBridge = resolveStringEnv("SPINIFEX_WAN_BRIDGE", "br-wan")
+
+func resolveDurationEnv(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}
+	}
+	return def
+}
+
+func resolveStringEnv(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
 	}
 	return def
 }
@@ -64,11 +81,43 @@ func waitForSSHReady(t *testing.T, host string, port int, keyPath string) {
 	requireSSHHealthy(t)
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	harness.Step(t, "waiting for SSH handshake %s", addr)
-	if !trySSHReady(host, port, keyPath, sshReadyBudget) {
-		sshDatapathBroken.Store(true)
-		t.Fatalf("Eventually: condition not met within %s: "+
-			"[SSH handshake %s never completed] "+
-			"(sticky-skip enabled for downstream)", sshReadyBudget, addr)
+	if trySSHReady(host, port, keyPath, sshReadyBudget) {
+		return
+	}
+	// First budget elapsed. OVN emits no GARP on a same-chassis EIP rebind, so a
+	// decayed host neigh entry for the EIP can blackhole host->guest SSH until it
+	// ages out — past our budget. Re-prime the ARP entry and retry once before
+	// declaring the datapath broken, riding out the transient learning gap.
+	harness.Step(t, "SSH handshake %s missed %s budget; re-priming ARP + retrying", addr, sshReadyBudget)
+	reprimeSSHReachability(t, host)
+	if trySSHReady(host, port, keyPath, sshReprimeBudget) {
+		return
+	}
+	sshDatapathBroken.Store(true)
+	t.Fatalf("Eventually: condition not met within %s (+%s after ARP re-prime): "+
+		"[SSH handshake %s never completed] "+
+		"(sticky-skip enabled for downstream)", sshReadyBudget, sshReprimeBudget, addr)
+}
+
+// reprimeSSHReachability best-effort flushes the host ARP entry for the EIP on
+// the WAN bridge, forcing a fresh broadcast re-resolution before the next SSH
+// pass. Flush (not replace) is mode-agnostic: it needs no MAC and can't install
+// a wrong centralised-mode entry. Gated on ip + passwordless sudo like the IMDS
+// datapath dump; non-fatal so a missing tool never masks the real result.
+func reprimeSSHReachability(t *testing.T, host string) {
+	t.Helper()
+	if _, err := exec.LookPath("ip"); err != nil {
+		harness.Step(t, "skip ARP re-prime: ip(8) unavailable (%v)", err)
+		return
+	}
+	if err := exec.Command("sudo", "-n", "true").Run(); err != nil {
+		harness.Step(t, "skip ARP re-prime: passwordless sudo unavailable (%v)", err)
+		return
+	}
+	harness.Step(t, "flushing host neigh for %s dev %s", host, wanBridge)
+	out, err := exec.Command("sudo", "-n", "ip", "neigh", "flush", "to", host, "dev", wanBridge).CombinedOutput()
+	if err != nil {
+		harness.Step(t, "ARP re-prime flush failed (best-effort): %v: %s", err, strings.TrimSpace(string(out)))
 	}
 }
 

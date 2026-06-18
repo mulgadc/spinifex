@@ -27,17 +27,19 @@ func (l *natsInstanceLookup) describe(accountID, instanceID string) (*instanceFa
 		return nil, fmt.Errorf("describe instance %s: %w", instanceID, err)
 	}
 
-	inst := firstInstance(out)
+	res, inst := firstReservationInstance(out)
 	if inst == nil {
 		return nil, nil // terminating or not yet visible; treat as miss
 	}
 
 	facts := &instanceFacts{
-		instanceType: aws.StringValue(inst.InstanceType),
-		imageID:      aws.StringValue(inst.ImageId),
-		keyName:      aws.StringValue(inst.KeyName),
-		architecture: aws.StringValue(inst.Architecture),
-		pendingTime:  aws.TimeValue(inst.LaunchTime),
+		instanceType:   aws.StringValue(inst.InstanceType),
+		imageID:        aws.StringValue(inst.ImageId),
+		keyName:        aws.StringValue(inst.KeyName),
+		architecture:   aws.StringValue(inst.Architecture),
+		amiLaunchIndex: aws.Int64Value(inst.AmiLaunchIndex),
+		reservationID:  aws.StringValue(res.ReservationId),
+		pendingTime:    aws.TimeValue(inst.LaunchTime),
 	}
 	if inst.IamInstanceProfile != nil {
 		facts.iamInstanceProfileArn = aws.StringValue(inst.IamInstanceProfile.Arn)
@@ -64,11 +66,13 @@ func (l *natsInstanceLookup) userData(accountID, instanceID string) []byte {
 	return decoded
 }
 
-// firstInstance returns the first instance in a DescribeInstances response, or
-// nil when the response carries none.
-func firstInstance(out *ec2.DescribeInstancesOutput) *ec2.Instance {
+// firstReservationInstance returns the first instance in a DescribeInstances
+// response along with its owning reservation, or (nil, nil) when none. The
+// reservation is always non-nil when the instance is, since an instance is only
+// returned from a non-nil reservation that contains it.
+func firstReservationInstance(out *ec2.DescribeInstancesOutput) (*ec2.Reservation, *ec2.Instance) {
 	if out == nil {
-		return nil
+		return nil, nil
 	}
 	for _, res := range out.Reservations {
 		if res == nil {
@@ -76,9 +80,9 @@ func firstInstance(out *ec2.DescribeInstancesOutput) *ec2.Instance {
 		}
 		for _, inst := range res.Instances {
 			if inst != nil {
-				return inst
+				return res, inst
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }

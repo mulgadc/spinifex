@@ -686,6 +686,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 				s.resourceMgr.Deallocate(instanceType)
 				continue
 			}
+			ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
 			instances = append(instances, instance)
 			allEC2Instances = append(allEC2Instances, ec2Instance)
 			continue
@@ -815,6 +816,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			}
 		}
 
+		ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
 		instances = append(instances, instance)
 		allEC2Instances = append(allEC2Instances, ec2Instance)
 	}

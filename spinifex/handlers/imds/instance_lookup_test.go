@@ -9,25 +9,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFirstInstance_NilAndEmpty(t *testing.T) {
-	assert.Nil(t, firstInstance(nil))
-	assert.Nil(t, firstInstance(&ec2.DescribeInstancesOutput{}))
-	assert.Nil(t, firstInstance(&ec2.DescribeInstancesOutput{
-		Reservations: []*ec2.Reservation{nil, {Instances: []*ec2.Instance{nil}}},
-	}))
+func TestFirstReservationInstance_NilAndEmpty(t *testing.T) {
+	for _, out := range []*ec2.DescribeInstancesOutput{
+		nil,
+		{},
+		{Reservations: []*ec2.Reservation{nil, {Instances: []*ec2.Instance{nil}}}},
+	} {
+		res, inst := firstReservationInstance(out)
+		assert.Nil(t, res)
+		assert.Nil(t, inst)
+	}
 }
 
-// firstInstance skips nil reservations and nil instance slots and returns the
-// first concrete instance it finds.
-func TestFirstInstance_SkipsNilsAndReturnsFirst(t *testing.T) {
+// firstReservationInstance skips nil reservations and nil instance slots and
+// returns the first concrete instance with its owning reservation.
+func TestFirstReservationInstance_SkipsNilsAndReturnsFirst(t *testing.T) {
 	out := &ec2.DescribeInstancesOutput{
 		Reservations: []*ec2.Reservation{
 			nil,
 			{Instances: []*ec2.Instance{nil}},
-			{Instances: []*ec2.Instance{{InstanceId: aws.String("i-first")}, {InstanceId: aws.String("i-second")}}},
+			{
+				ReservationId: aws.String("r-123"),
+				Instances:     []*ec2.Instance{{InstanceId: aws.String("i-first")}, {InstanceId: aws.String("i-second")}},
+			},
 		},
 	}
-	got := firstInstance(out)
-	require.NotNil(t, got)
-	assert.Equal(t, "i-first", aws.StringValue(got.InstanceId))
+	res, inst := firstReservationInstance(out)
+	require.NotNil(t, inst)
+	assert.Equal(t, "i-first", aws.StringValue(inst.InstanceId))
+	require.NotNil(t, res)
+	assert.Equal(t, "r-123", aws.StringValue(res.ReservationId))
 }

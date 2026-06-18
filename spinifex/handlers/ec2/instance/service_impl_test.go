@@ -2496,6 +2496,72 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 	}
 }
 
+// TestPrepareRunInstances_AmiLaunchIndexContiguous pins that ami-launch-index is
+// assigned per successful launch (0..n-1) so it flows to DescribeInstances and the
+// IMDS identity document. The mid-loop-failure case proves survivors stay
+// contiguous — a failed launch leaves no gap — matching AWS.
+func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
+	t.Run("count_3_no_eni", func(t *testing.T) {
+		types, _ := defaultPrepareInstanceTypes()
+		prov := &fakeResourceCapacityProvider{
+			instanceTypes: types,
+			canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+		}
+		svc := &InstanceServiceImpl{
+			config:        &config.Config{},
+			instanceTypes: types,
+			amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+				"ami-1": {ImageOwnerAlias: "acc"},
+			}},
+			resourceMgr: prov,
+		}
+		reservation, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+			InstanceType: aws.String("t3.micro"),
+			ImageId:      aws.String("ami-1"),
+			MinCount:     aws.Int64(3),
+			MaxCount:     aws.Int64(3),
+		}, "acc")
+		require.NoError(t, err)
+		require.Len(t, instances, 3)
+		require.Len(t, reservation.Instances, 3)
+		for i, inst := range reservation.Instances {
+			assert.Equal(t, int64(i), aws.Int64Value(inst.AmiLaunchIndex))
+		}
+	})
+
+	t.Run("mid_loop_failure_stays_contiguous", func(t *testing.T) {
+		// Second of three ENI creates fails, so the second instance never
+		// appends; the third fills index 1 (not 2), leaving no gap.
+		eni := &fakeENICreator{
+			defaultSubnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1"},
+			createOut: &ec2.CreateNetworkInterfaceOutput{
+				NetworkInterface: &ec2.NetworkInterface{
+					NetworkInterfaceId: aws.String("eni-1"),
+					MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+					PrivateIpAddress:   aws.String("10.0.0.10"),
+					VpcId:              aws.String("vpc-1"),
+				},
+			},
+			createErr:       errors.New("eni create failed"),
+			createErrOnCall: 2,
+		}
+		svc, _ := prepareSvcWithENI(t, eni, nil)
+
+		reservation, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+			InstanceType: aws.String("t3.micro"),
+			ImageId:      aws.String("ami-1"),
+			SubnetId:     aws.String("subnet-1"),
+			MinCount:     aws.Int64(2),
+			MaxCount:     aws.Int64(3),
+		}, "acc")
+		require.NoError(t, err)
+		require.Len(t, instances, 2)
+		require.Len(t, reservation.Instances, 2)
+		assert.Equal(t, int64(0), aws.Int64Value(reservation.Instances[0].AmiLaunchIndex))
+		assert.Equal(t, int64(1), aws.Int64Value(reservation.Instances[1].AmiLaunchIndex))
+	})
+}
+
 // TestPrepareRunInstances_BootModePropagated pins that the AMI's BootMode
 // flows onto every prepared VM, so the launch path picks UEFI vs BIOS without
 // a second AMI lookup. Empty AMI BootMode (legacy) flows through as empty.
@@ -2608,18 +2674,19 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 }
 
 type fakeENICreator struct {
-	defaultSubnet *SubnetInfo
-	subnet        *SubnetInfo
-	getENIByID    map[string]*ENIInfo
-	getENIErr     error
-	createOut     *ec2.CreateNetworkInterfaceOutput
-	createCalls   int
-	createErr     error
-	attachErr     error
-	attachCalls   int
-	updateCalls   int
-	clearCalls    int // updateCalls where publicIP is ""
-	detachCalls   int
+	defaultSubnet   *SubnetInfo
+	subnet          *SubnetInfo
+	getENIByID      map[string]*ENIInfo
+	getENIErr       error
+	createOut       *ec2.CreateNetworkInterfaceOutput
+	createCalls     int
+	createErr       error
+	createErrOnCall int // 1-based call index to fail; 0 fails every call when createErr is set
+	attachErr       error
+	attachCalls     int
+	updateCalls     int
+	clearCalls      int // updateCalls where publicIP is ""
+	detachCalls     int
 }
 
 func (f *fakeENICreator) GetDefaultSubnet(_ string) (*SubnetInfo, error) {
@@ -2652,7 +2719,7 @@ func (f *fakeENICreator) GetENI(_, eniID string) (*ENIInfo, error) {
 
 func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	f.createCalls++
-	if f.createErr != nil {
+	if f.createErr != nil && (f.createErrOnCall == 0 || f.createErrOnCall == f.createCalls) {
 		return nil, f.createErr
 	}
 	return f.createOut, nil

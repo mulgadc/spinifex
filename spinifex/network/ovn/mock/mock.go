@@ -489,24 +489,34 @@ func (m *Client) DeleteNAT(_ context.Context, routerName string, natType, logica
 	if !exists {
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
-	var foundUUID string
-	var foundIdx int
-	for i, uuid := range lr.NAT {
+	var foundUUIDs []string
+	for _, uuid := range lr.NAT {
 		n, ok := m.NATs[uuid]
 		if !ok {
 			continue
 		}
 		if n.Type == natType && n.LogicalIP == logicalIP {
-			foundUUID = uuid
-			foundIdx = i
-			break
+			foundUUIDs = append(foundUUIDs, uuid)
 		}
 	}
-	if foundUUID == "" {
+	if len(foundUUIDs) == 0 {
 		return fmt.Errorf("NAT %s %s on %s: %w", natType, logicalIP, routerName, ovn.ErrNATNotFound)
 	}
-	lr.NAT = append(lr.NAT[:foundIdx], lr.NAT[foundIdx+1:]...)
-	delete(m.NATs, foundUUID)
+	stale := make(map[string]struct{}, len(foundUUIDs))
+	for _, u := range foundUUIDs {
+		stale[u] = struct{}{}
+	}
+	filtered := lr.NAT[:0]
+	for _, uuid := range lr.NAT {
+		if _, drop := stale[uuid]; drop {
+			continue
+		}
+		filtered = append(filtered, uuid)
+	}
+	lr.NAT = filtered
+	for _, u := range foundUUIDs {
+		delete(m.NATs, u)
+	}
 	return nil
 }
 

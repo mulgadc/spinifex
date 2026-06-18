@@ -36,6 +36,16 @@ func findNAT(m *mock.Client, natType, logicalIP string) *nbdb.NAT {
 	return nil
 }
 
+func countNAT(m *mock.Client, natType, logicalIP string) int {
+	var n int
+	for _, nat := range m.NATs {
+		if nat.Type == natType && nat.LogicalIP == logicalIP {
+			n++
+		}
+	}
+	return n
+}
+
 func TestNATModeFromUplinkMode(t *testing.T) {
 	assert.Equal(t, NATModeDistributed, NATModeFromUplinkMode(host.UplinkModePhysical))
 	assert.Equal(t, NATModeCentralized, NATModeFromUplinkMode(host.UplinkModeVeth))
@@ -337,6 +347,58 @@ func TestNATManager_AddNATGateway_FlowsBarrier_Fires(t *testing.T) {
 		SubnetCIDR:   "10.0.1.0/24",
 	}))
 	assert.Equal(t, 1, calls, "FlowsBarrier must fire once per AddNATGateway")
+}
+
+// TestNATManager_AddNATGateway_IdempotentSkip guards the SNAT-leak root cause:
+// the 5-minute reconcile re-publishes the same NAT GW spec, and an unconditional
+// create would mint a second identical snat row that survives teardown.
+func TestNATManager_AddNATGateway_IdempotentSkip(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	var barrierCalls int
+	nm, err := NewNATManager(m, NATModeCentralized, WithFlowsBarrier(func() error {
+		barrierCalls++
+		return nil
+	}))
+	require.NoError(t, err)
+
+	spec := NATGWSpec{
+		VPCID: "vpc-1", NATGatewayID: "nat-xyz", PublicIP: "9.9.9.9", SubnetCIDR: "172.31.16.0/20",
+	}
+	require.NoError(t, nm.AddNATGateway(ctx, spec))
+	require.Equal(t, 1, barrierCalls, "first AddNATGateway must fire barrier")
+	firstUUID := findNAT(m, "snat", spec.SubnetCIDR).UUID
+
+	// Reconcile re-publish: the guard must skip the create.
+	require.NoError(t, nm.AddNATGateway(ctx, spec))
+	assert.Equal(t, 1, countNAT(m, "snat", spec.SubnetCIDR),
+		"idempotent re-add must not mint a duplicate snat row")
+	assert.Equal(t, firstUUID, findNAT(m, "snat", spec.SubnetCIDR).UUID,
+		"idempotent re-add must reuse the existing row")
+	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
+}
+
+// TestNATManager_DeleteNATGateway_RemovesDuplicates is defensive: any duplicate
+// snat row that slipped past the idempotency guard (race, pre-existing) must be
+// fully removed on teardown, not left to leak egress past the first delete.
+func TestNATManager_DeleteNATGateway_RemovesDuplicates(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	router := seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeCentralized)
+	require.NoError(t, err)
+
+	for range 2 {
+		require.NoError(t, m.AddNAT(ctx, router, &nbdb.NAT{
+			Type: "snat", ExternalIP: "9.9.9.9", LogicalIP: "172.31.16.0/20",
+		}))
+	}
+	require.Equal(t, 2, countNAT(m, "snat", "172.31.16.0/20"))
+
+	require.NoError(t, nm.DeleteNATGateway(ctx, "vpc-1", "172.31.16.0/20"))
+	assert.Equal(t, 0, countNAT(m, "snat", "172.31.16.0/20"),
+		"DeleteNATGateway must remove every matching snat row, not just the first")
 }
 
 func TestNATManager_AddNATGateway_AndDelete(t *testing.T) {

@@ -60,6 +60,38 @@ func TestClient_DeleteAllNATsByExternalIP(t *testing.T) {
 	}
 }
 
+func TestClient_DeleteNAT_RemovesAllMatches(t *testing.T) {
+	m := New()
+	ctx := context.Background()
+
+	_ = m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-r1"})
+	_ = m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-r2"})
+
+	// Two duplicate snat rows for the same subnet on r1 (the leak shape), plus an
+	// unrelated rule on r1 and the same CIDR on r2 (cross-router isolation).
+	_ = m.AddNAT(ctx, "vpc-r1", &nbdb.NAT{Type: "snat", ExternalIP: "9.9.9.9", LogicalIP: "172.31.16.0/20"})
+	_ = m.AddNAT(ctx, "vpc-r1", &nbdb.NAT{Type: "snat", ExternalIP: "9.9.9.9", LogicalIP: "172.31.16.0/20"})
+	_ = m.AddNAT(ctx, "vpc-r1", &nbdb.NAT{Type: "snat", ExternalIP: "9.9.9.9", LogicalIP: "172.31.0.0/20"})
+	_ = m.AddNAT(ctx, "vpc-r2", &nbdb.NAT{Type: "snat", ExternalIP: "8.8.8.8", LogicalIP: "172.31.16.0/20"})
+
+	if err := m.DeleteNAT(ctx, "vpc-r1", "snat", "172.31.16.0/20"); err != nil {
+		t.Fatalf("DeleteNAT: %v", err)
+	}
+
+	r1, _ := m.GetLogicalRouter(ctx, "vpc-r1")
+	if len(r1.NAT) != 1 {
+		t.Errorf("r1 should retain 1 unrelated NAT, got %d", len(r1.NAT))
+	}
+	r2, _ := m.GetLogicalRouter(ctx, "vpc-r2")
+	if len(r2.NAT) != 1 {
+		t.Errorf("r2 NAT must be untouched, got %d", len(r2.NAT))
+	}
+
+	if err := m.DeleteNAT(ctx, "vpc-r1", "snat", "172.31.16.0/20"); err == nil {
+		t.Errorf("second DeleteNAT must return ErrNATNotFound")
+	}
+}
+
 func TestSetGatewayChassis_Idempotent(t *testing.T) {
 	m := New()
 	_ = m.Connect(context.Background())

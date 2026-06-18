@@ -819,8 +819,10 @@ func (c *LiveClient) AddNAT(ctx context.Context, routerName string, nat *nbdb.NA
 	return nil
 }
 
-// DeleteNAT removes a NAT rule matching (natType, logicalIP) from routerName.
-// Scoped to routerName.NAT — AWS CIDRs repeat across VPCs so the pair is not globally unique.
+// DeleteNAT removes every NAT rule matching (natType, logicalIP) from routerName.
+// Scoped to routerName.NAT — AWS CIDRs repeat across VPCs so the pair is not globally
+// unique. Deletes all matches so a duplicate row (e.g. minted by a racing reconcile)
+// is fully cleaned on teardown rather than leaking past the first delete.
 func (c *LiveClient) DeleteNAT(ctx context.Context, routerName string, natType, logicalIP string) error {
 	lr, err := c.GetLogicalRouter(ctx, routerName)
 	if err != nil {
@@ -845,24 +847,26 @@ func (c *LiveClient) DeleteNAT(ctx context.Context, routerName string, natType, 
 		return fmt.Errorf("NAT %s %s on %s: %w", natType, logicalIP, routerName, ErrNATNotFound)
 	}
 
-	nat := &nats[0]
-	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
-		Field:   &lr.NAT,
-		Mutator: "delete",
-		Value:   []string{nat.UUID},
-	})
-	if err != nil {
-		return fmt.Errorf("mutate router NAT ops: %w", err)
+	var allOps []ovsdb.Operation
+	for i := range nats {
+		nat := &nats[i]
+		mutateOps, mErr := c.client.Where(lr).Mutate(lr, model.Mutation{
+			Field:   &lr.NAT,
+			Mutator: "delete",
+			Value:   []string{nat.UUID},
+		})
+		if mErr != nil {
+			return fmt.Errorf("mutate router NAT ops: %w", mErr)
+		}
+		deleteOps, dErr := c.client.Where(nat).Delete()
+		if dErr != nil {
+			return fmt.Errorf("delete NAT ops: %w", dErr)
+		}
+		allOps = append(allOps, mutateOps...)
+		allOps = append(allOps, deleteOps...)
 	}
 
-	deleteOps, err := c.client.Where(nat).Delete()
-	if err != nil {
-		return fmt.Errorf("delete NAT ops: %w", err)
-	}
-
-	ops := append(mutateOps, deleteOps...)
-	err = c.transactOps(ctx, ops)
-	if err != nil {
+	if err := c.transactOps(ctx, allOps); err != nil {
 		return fmt.Errorf("delete NAT transact: %w", err)
 	}
 	return nil

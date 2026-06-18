@@ -52,8 +52,11 @@ func DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, natsCo
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, sum, _ := utils.Gather(natsConn, "ec2.DescribeInstanceAttribute", jsonData,
+	frames, sum, err := utils.Gather(natsConn, "ec2.DescribeInstanceAttribute", jsonData,
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, StopOnFirst: true, AccountID: accountID})
+	if err != nil {
+		return nil, err
+	}
 
 	if len(frames) > 0 {
 		var out ec2.DescribeInstanceAttributeOutput

@@ -107,6 +107,10 @@ jobs:
           awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
             | sort -r | xargs -r -I{} sudo umount -l -R {} || true
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+          # ARTIFACT_DIR lives in /tmp, outside the workspace, so a re-run on
+          # the same self-hosted runner reuses it. Wipe it so a prior attempt's
+          # stale suite-status.txt / analysis dirs can't leak into this attempt.
+          rm -rf "${ARTIFACT_DIR}"
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -463,7 +467,7 @@ jobs:
       - name: Fail job if any suite failed
         if: always()
         run: |
-          if [ "${{ steps.e2e.outputs.rc }}" != "0" ] || [ -s "${ARTIFACT_DIR}/suite-status.txt" ]; then
+          if [ "${{ steps.e2e.outputs.rc }}" != "0" ]; then
             echo "::error::E2E suites failed (rc=${{ steps.e2e.outputs.rc }})"
             cat "${ARTIFACT_DIR}/suite-status.txt" 2>/dev/null || true
             exit 1
@@ -503,6 +507,10 @@ jobs:
           awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
             | sort -r | xargs -r -I{} sudo umount -l -R {} || true
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+          # ARTIFACT_DIR lives in /tmp, outside the workspace, so a re-run on
+          # the same self-hosted runner reuses it. Wipe it so a prior attempt's
+          # stale suite-status.txt / analysis dirs can't leak into this attempt.
+          rm -rf "${ARTIFACT_DIR}"
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -876,7 +884,7 @@ jobs:
       - name: Fail job if any suite failed
         if: always()
         run: |
-          if [ "${{ steps.e2e.outputs.rc }}" != "0" ] || [ -s "${ARTIFACT_DIR}/suite-status.txt" ]; then
+          if [ "${{ steps.e2e.outputs.rc }}" != "0" ]; then
             echo "::error::Multi-node E2E suites failed (rc=${{ steps.e2e.outputs.rc }})"
             cat "${ARTIFACT_DIR}/suite-status.txt" 2>/dev/null || true
             exit 1

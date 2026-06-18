@@ -98,6 +98,7 @@ func TestKVMetaStore_DeleteRepo(t *testing.T) {
 	require.NoError(t, store.PutTag(acct, "team/app", "v1", dig))
 	require.NoError(t, store.PutManifestMeta(acct, "team/app", ManifestMeta{Digest: dig, MediaType: "x", Size: 1}))
 	require.NoError(t, store.PutRepoPolicy(acct, "team/app", []byte(`{}`)))
+	require.NoError(t, store.PutLifecyclePolicy(acct, "team/app", []byte(`{}`)))
 
 	manifests, err := store.ListManifests(acct, "team/app")
 	require.NoError(t, err)
@@ -114,6 +115,8 @@ func TestKVMetaStore_DeleteRepo(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, manifests)
 	_, err = store.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = store.GetLifecyclePolicy(acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 
 	// The same-prefix nested repo must survive.
@@ -152,5 +155,36 @@ func TestKVMetaStore_RepoPolicy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, policy, string(deleted))
 	_, err = store.DeleteRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestKVMetaStore_LifecyclePolicy exercises the lifecycle-policy passthrough
+// against the JetStream-backed store and proves the lifecycle key shares the
+// repo bucket without being mistaken for a repository by ListRepos.
+func TestKVMetaStore_LifecyclePolicy(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	store := NewKVMetaStore(js)
+	const acct = "000000000000"
+	const policy = `{"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":14},"action":{"type":"expire"}}]}`
+
+	require.NoError(t, store.PutRepo(acct, RepoMeta{Name: "team/app", CreatedAt: time.Now()}))
+
+	_, err := store.GetLifecyclePolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	require.NoError(t, store.PutLifecyclePolicy(acct, "team/app", []byte(policy)))
+	got, err := store.GetLifecyclePolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(got))
+
+	// The lifecycle key must not appear as a repository.
+	repos, err := store.ListRepos(acct)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"team/app"}, repos)
+
+	deleted, err := store.DeleteLifecyclePolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(deleted))
+	_, err = store.DeleteLifecyclePolicy(acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 }

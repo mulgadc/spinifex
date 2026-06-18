@@ -23,6 +23,7 @@ import {
   ecrRepositoryImagesQueryOptions,
 } from "@/queries/ecr"
 
+import { LifecyclePolicyEditor } from "./lifecycle-policy-editor"
 import { RepositoryPolicyEditor } from "./repository-policy-editor"
 import { RepositorySummary } from "./repository-summary"
 
@@ -80,6 +81,7 @@ export function RepositoryDetailPage({
         <TabsList>
           <TabsTab value="summary">Summary</TabsTab>
           <TabsTab value="images">Images</TabsTab>
+          <TabsTab value="lifecycle">Lifecycle</TabsTab>
           <TabsTab value="permissions">Permissions</TabsTab>
         </TabsList>
 
@@ -146,6 +148,10 @@ export function RepositoryDetailPage({
           ) : (
             <p className="text-muted-foreground">No images pushed yet.</p>
           )}
+        </TabsPanel>
+
+        <TabsPanel value="lifecycle">
+          <LifecyclePolicyEditor repositoryName={repositoryName} />
         </TabsPanel>
 
         <TabsPanel value="permissions">

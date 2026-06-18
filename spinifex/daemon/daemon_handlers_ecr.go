@@ -30,6 +30,18 @@ func (d *Daemon) handleECRPolicyDelete(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecrMetaService.PolicyDelete)
 }
 
+func (d *Daemon) handleECRLifecyclePut(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecrMetaService.LifecyclePut)
+}
+
+func (d *Daemon) handleECRLifecycleGet(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecrMetaService.LifecycleGet)
+}
+
+func (d *Daemon) handleECRLifecycleDelete(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecrMetaService.LifecycleDelete)
+}
+
 func (d *Daemon) handleECRTagPut(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecrMetaService.TagPut)
 }

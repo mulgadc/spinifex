@@ -94,6 +94,33 @@ func (s *NATSMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, error)
 	return resp.PolicyText, nil
 }
 
+func (s *NATSMetaStore) PutLifecyclePolicy(accountID, repo string, policyText []byte) error {
+	_, err := utils.NATSRequest[LifecyclePutResponse](s.conn, SubjectLifecyclePut, &LifecyclePutRequest{Repo: repo, PolicyText: policyText}, metaRequestTimeout, accountID)
+	return err
+}
+
+func (s *NATSMetaStore) GetLifecyclePolicy(accountID, repo string) ([]byte, error) {
+	resp, err := utils.NATSRequest[LifecycleGetResponse](s.conn, SubjectLifecycleGet, &LifecycleGetRequest{Repo: repo}, metaRequestTimeout, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Found {
+		return nil, ErrNotFound
+	}
+	return resp.PolicyText, nil
+}
+
+func (s *NATSMetaStore) DeleteLifecyclePolicy(accountID, repo string) ([]byte, error) {
+	resp, err := utils.NATSRequest[LifecycleDeleteResponse](s.conn, SubjectLifecycleDelete, &LifecycleDeleteRequest{Repo: repo}, metaRequestTimeout, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Found {
+		return nil, ErrNotFound
+	}
+	return resp.PolicyText, nil
+}
+
 func (s *NATSMetaStore) PutTag(accountID, repo, tag, digest string) error {
 	_, err := utils.NATSRequest[TagPutResponse](s.conn, SubjectTagPut, &TagPutRequest{Repo: repo, Tag: tag, Digest: digest}, metaRequestTimeout, accountID)
 	return err

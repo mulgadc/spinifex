@@ -3,9 +3,12 @@ import {
   type ImageTagMutability,
   BatchDeleteImageCommand,
   CreateRepositoryCommand,
+  DeleteLifecyclePolicyCommand,
   DeleteRepositoryCommand,
   DeleteRepositoryPolicyCommand,
+  GetLifecyclePolicyPreviewCommand,
   PutImageTagMutabilityCommand,
+  PutLifecyclePolicyCommand,
   SetRepositoryPolicyCommand,
 } from "@aws-sdk/client-ecr"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
@@ -123,6 +126,61 @@ export function useDeleteRepositoryPolicy() {
       void queryClient.invalidateQueries({
         queryKey: ["ecr", "repositories", repositoryName, "policy"],
       })
+    },
+  })
+}
+
+export interface PutLifecyclePolicyParams {
+  repositoryName: string
+  lifecyclePolicyText: string
+}
+
+export function usePutLifecyclePolicy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: PutLifecyclePolicyParams) => {
+      const command = new PutLifecyclePolicyCommand({
+        repositoryName: params.repositoryName,
+        lifecyclePolicyText: params.lifecyclePolicyText,
+      })
+      return await getEcrClient().send(command)
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: [
+          "ecr",
+          "repositories",
+          variables.repositoryName,
+          "lifecycle",
+        ],
+      })
+    },
+  })
+}
+
+export function useDeleteLifecyclePolicy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (repositoryName: string) => {
+      const command = new DeleteLifecyclePolicyCommand({ repositoryName })
+      return await getEcrClient().send(command)
+    },
+    onSuccess: (_data, repositoryName) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ecr", "repositories", repositoryName, "lifecycle"],
+      })
+    },
+  })
+}
+
+// usePreviewLifecyclePolicy evaluates the repo's saved lifecycle policy against
+// its current images without deleting anything. The gateway serves the preview
+// synchronously, so the single Get call returns the full result.
+export function usePreviewLifecyclePolicy() {
+  return useMutation({
+    mutationFn: async (repositoryName: string) => {
+      const command = new GetLifecyclePolicyPreviewCommand({ repositoryName })
+      return await getEcrClient().send(command)
     },
   })
 }

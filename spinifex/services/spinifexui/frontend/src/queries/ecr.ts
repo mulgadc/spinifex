@@ -1,7 +1,9 @@
 import {
   DescribeImagesCommand,
   DescribeRepositoriesCommand,
+  GetLifecyclePolicyCommand,
   GetRepositoryPolicyCommand,
+  LifecyclePolicyNotFoundException,
   RepositoryPolicyNotFoundException,
 } from "@aws-sdk/client-ecr"
 import { queryOptions } from "@tanstack/react-query"
@@ -38,6 +40,26 @@ export const ecrRepositoryPolicyQueryOptions = (repositoryName: string) =>
         return result.policyText ?? null
       } catch (error) {
         if (error instanceof RepositoryPolicyNotFoundException) {
+          return null
+        }
+        throw error
+      }
+    },
+  })
+
+// ecrLifecyclePolicyQueryOptions resolves a repo's lifecycle-policy document. A
+// repo with no policy returns LifecyclePolicyNotFoundException, which is a normal
+// empty state here, so it is mapped to a null document rather than thrown.
+export const ecrLifecyclePolicyQueryOptions = (repositoryName: string) =>
+  queryOptions({
+    queryKey: ["ecr", "repositories", repositoryName, "lifecycle"],
+    queryFn: async () => {
+      try {
+        const command = new GetLifecyclePolicyCommand({ repositoryName })
+        const result = await getEcrClient().send(command)
+        return result.lifecyclePolicyText ?? null
+      } catch (error) {
+        if (error instanceof LifecyclePolicyNotFoundException) {
           return null
         }
         throw error

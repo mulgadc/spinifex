@@ -52,6 +52,18 @@ describe("RepositoryPolicyEditor", () => {
     })
   })
 
+  it("blocks save and flags invalid JSON", () => {
+    renderWithClient(
+      <RepositoryPolicyEditor repositoryName={REPO} />,
+      seed(POLICY),
+    )
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "{not json" },
+    })
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+    expect(screen.getByText("Policy must be valid JSON.")).toBeInTheDocument()
+  })
+
   it("deletes the policy when one is attached", async () => {
     send.mockResolvedValue({})
     renderWithClient(

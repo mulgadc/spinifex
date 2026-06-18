@@ -145,6 +145,17 @@ func (s *NATSMetaStore) GetManifestMeta(accountID, repo, digest string) (Manifes
 	return resp.Meta, nil
 }
 
+func (s *NATSMetaStore) DeleteManifestMeta(accountID, repo, digest string) error {
+	resp, err := utils.NATSRequest[ManifestDeleteResponse](s.conn, SubjectManifestDelete, &ManifestDeleteRequest{Repo: repo, Digest: digest}, metaRequestTimeout, accountID)
+	if err != nil {
+		return err
+	}
+	if !resp.Found {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *NATSMetaStore) PutUpload(accountID, uploadID string, state UploadState) (uint64, error) {
 	resp, err := utils.NATSRequest[UploadCreateResponse](s.conn, SubjectUploadCreate, &UploadCreateRequest{UploadID: uploadID, State: state}, metaRequestTimeout, accountID)
 	if err != nil {

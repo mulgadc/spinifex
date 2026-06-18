@@ -58,6 +58,10 @@ func (d *Daemon) handleECRManifestList(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecrMetaService.ManifestList)
 }
 
+func (d *Daemon) handleECRManifestDelete(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecrMetaService.ManifestDelete)
+}
+
 func (d *Daemon) handleECRUploadCreate(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecrMetaService.UploadCreate)
 }

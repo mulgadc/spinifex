@@ -82,6 +82,11 @@ func TestMemoryMetaStore_TagsAndManifests(t *testing.T) {
 	assert.Equal(t, int64(7), mm.Size)
 	_, err = m.GetManifestMeta(acct, "r", "sha256:zzz")
 	assert.ErrorIs(t, err, ErrNotFound)
+
+	require.NoError(t, m.DeleteManifestMeta(acct, "r", "sha256:ccc"))
+	_, err = m.GetManifestMeta(acct, "r", "sha256:ccc")
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorIs(t, m.DeleteManifestMeta(acct, "r", "sha256:ccc"), ErrNotFound)
 }
 
 func TestMemoryMetaStore_UploadCAS(t *testing.T) {

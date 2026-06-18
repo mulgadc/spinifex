@@ -74,6 +74,7 @@ type MetaStore interface {
 
 	PutManifestMeta(accountID, repo string, meta ManifestMeta) error
 	GetManifestMeta(accountID, repo, digest string) (ManifestMeta, error)
+	DeleteManifestMeta(accountID, repo, digest string) error
 
 	PutUpload(accountID, uploadID string, state UploadState) (uint64, error)
 	GetUpload(accountID, uploadID string) (UploadState, uint64, error)
@@ -348,6 +349,17 @@ func (s *KVMetaStore) GetManifestMeta(accountID, repo, digest string) (ManifestM
 	return m, nil
 }
 
+func (s *KVMetaStore) DeleteManifestMeta(accountID, repo, digest string) error {
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return err
+	}
+	if _, err := kv.Get(KVManifestKey(repo, digest)); err != nil {
+		return mapKVErr(err)
+	}
+	return kv.Delete(KVManifestKey(repo, digest))
+}
+
 func (s *KVMetaStore) PutUpload(accountID, uploadID string, state UploadState) (uint64, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -598,6 +610,17 @@ func (m *MemoryMetaStore) GetManifestMeta(accountID, repo, digest string) (Manif
 		return ManifestMeta{}, ErrNotFound
 	}
 	return meta, nil
+}
+
+func (m *MemoryMetaStore) DeleteManifestMeta(accountID, repo, digest string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := repo + "|" + digest
+	if _, ok := m.manifests[accountID][key]; !ok {
+		return ErrNotFound
+	}
+	delete(m.manifests[accountID], key)
+	return nil
 }
 
 func (m *MemoryMetaStore) PutUpload(accountID, uploadID string, state UploadState) (uint64, error) {

@@ -21,6 +21,7 @@ const (
 	SubjectManifestPut      = "ecr.manifest.put"
 	SubjectManifestDescribe = "ecr.manifest.describe"
 	SubjectManifestList     = "ecr.manifest.list"
+	SubjectManifestDelete   = "ecr.manifest.delete"
 
 	SubjectUploadCreate = "ecr.upload.create"
 	SubjectUploadGet    = "ecr.upload.get"
@@ -146,6 +147,15 @@ type ManifestListResponse struct {
 	Digests []string `json:"digests"`
 }
 
+type ManifestDeleteRequest struct {
+	Repo   string `json:"repo"`
+	Digest string `json:"digest"`
+}
+
+type ManifestDeleteResponse struct {
+	Found bool `json:"found"`
+}
+
 type UploadCreateRequest struct {
 	UploadID string      `json:"uploadID"`
 	State    UploadState `json:"state"`
@@ -207,6 +217,7 @@ type MetaService interface {
 	ManifestPut(req *ManifestPutRequest, accountID string) (*ManifestPutResponse, error)
 	ManifestDescribe(req *ManifestDescribeRequest, accountID string) (*ManifestDescribeResponse, error)
 	ManifestList(req *ManifestListRequest, accountID string) (*ManifestListResponse, error)
+	ManifestDelete(req *ManifestDeleteRequest, accountID string) (*ManifestDeleteResponse, error)
 
 	UploadCreate(req *UploadCreateRequest, accountID string) (*UploadCreateResponse, error)
 	UploadGet(req *UploadGetRequest, accountID string) (*UploadGetResponse, error)

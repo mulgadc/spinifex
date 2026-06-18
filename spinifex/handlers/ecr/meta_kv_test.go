@@ -53,6 +53,11 @@ func TestKVMetaStore_FullCycle(t *testing.T) {
 	_, err = store.GetManifestMeta(acct, "team/app", "sha256:zzz")
 	assert.ErrorIs(t, err, ErrNotFound)
 
+	require.NoError(t, store.DeleteManifestMeta(acct, "team/app", "sha256:ccc"))
+	_, err = store.GetManifestMeta(acct, "team/app", "sha256:ccc")
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorIs(t, store.DeleteManifestMeta(acct, "team/app", "sha256:zzz"), ErrNotFound)
+
 	// Upload CAS lifecycle.
 	rev, err := store.PutUpload(acct, "u1", UploadState{RepoName: "team/app"})
 	require.NoError(t, err)

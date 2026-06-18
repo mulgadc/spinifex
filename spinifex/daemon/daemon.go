@@ -976,6 +976,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{handlers_ecr.SubjectManifestPut, d.handleECRManifestPut, "spinifex-workers"},
 			natsSub{handlers_ecr.SubjectManifestDescribe, d.handleECRManifestDescribe, "spinifex-workers"},
 			natsSub{handlers_ecr.SubjectManifestList, d.handleECRManifestList, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectManifestDelete, d.handleECRManifestDelete, "spinifex-workers"},
 			natsSub{handlers_ecr.SubjectUploadCreate, d.handleECRUploadCreate, "spinifex-workers"},
 			natsSub{handlers_ecr.SubjectUploadGet, d.handleECRUploadGet, "spinifex-workers"},
 			natsSub{handlers_ecr.SubjectUploadUpdate, d.handleECRUploadUpdate, "spinifex-workers"},

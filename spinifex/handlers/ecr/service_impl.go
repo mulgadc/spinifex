@@ -144,6 +144,17 @@ func (s *MetaServiceImpl) ManifestList(req *ManifestListRequest, accountID strin
 	return &ManifestListResponse{Digests: digests}, nil
 }
 
+func (s *MetaServiceImpl) ManifestDelete(req *ManifestDeleteRequest, accountID string) (*ManifestDeleteResponse, error) {
+	err := s.store.DeleteManifestMeta(accountID, req.Repo, req.Digest)
+	if errors.Is(err, ErrNotFound) {
+		return &ManifestDeleteResponse{Found: false}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ManifestDeleteResponse{Found: true}, nil
+}
+
 func (s *MetaServiceImpl) ManifestDescribe(req *ManifestDescribeRequest, accountID string) (*ManifestDescribeResponse, error) {
 	meta, err := s.store.GetManifestMeta(accountID, req.Repo, req.Digest)
 	if errors.Is(err, ErrNotFound) {

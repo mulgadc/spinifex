@@ -551,64 +551,21 @@ func (reg *Registry) getManifest(w http.ResponseWriter, r *http.Request, name, r
 // to ensure every referenced blob exists in the pool; image indexes are checked
 // to ensure every referenced child manifest exists with a matching mediaType.
 func (reg *Registry) putManifest(w http.ResponseWriter, r *http.Request, name, reference string) {
-	if err := reg.ensureRepo(name); err != nil {
-		reg.internal(w, "ensure repo", err)
-		return
-	}
-
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxManifestBytes+1))
 	if err != nil {
 		reg.internal(w, "read manifest", err)
 		return
 	}
-	if len(body) > maxManifestBytes {
-		WriteError(w, http.StatusRequestEntityTooLarge, "MANIFEST_INVALID", "manifest too large")
-		return
-	}
 
-	contentType := r.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = detectManifestType(body)
-	}
-
-	digest := "sha256:" + hex.EncodeToString(sha256Sum(body))
-	if ecr.ValidateDigest(reference) && reference != digest {
-		WriteError(w, http.StatusBadRequest, "DIGEST_INVALID", "reference digest does not match content")
-		return
-	}
-
-	children, code, vErr := reg.validateManifest(name, contentType, body)
-	if vErr != nil {
-		WriteError(w, http.StatusBadRequest, code, vErr.Error())
-		return
-	}
-
-	if _, err := reg.Store.PutObject(&s3.PutObjectInput{
-		Bucket:      aws.String(reg.bucket()),
-		Key:         aws.String(ecr.ManifestKey(name, digest)),
-		Body:        aws.ReadSeekCloser(strings.NewReader(string(body))),
-		ContentType: aws.String(contentType),
-	}); err != nil {
-		reg.internal(w, "store manifest", err)
-		return
-	}
-
-	if err := reg.Meta.PutManifestMeta(reg.AccountID, name, ecr.ManifestMeta{
-		Digest:       digest,
-		MediaType:    contentType,
-		Size:         int64(len(body)),
-		PushedAt:     time.Now().UTC(),
-		ChildDigests: children,
-	}); err != nil {
-		reg.internal(w, "store manifest meta", err)
-		return
-	}
-
-	if !ecr.ValidateDigest(reference) {
-		if err := reg.Meta.PutTag(reg.AccountID, name, reference, digest); err != nil {
-			reg.internal(w, "store tag", err)
+	digest, err := reg.StoreManifest(reg.AccountID, name, reference, r.Header.Get("Content-Type"), body)
+	if err != nil {
+		var mErr *ManifestStoreError
+		if errors.As(err, &mErr) {
+			WriteError(w, mErr.Status, mErr.Code, mErr.Msg)
 			return
 		}
+		reg.internal(w, "store manifest", err)
+		return
 	}
 
 	w.Header().Set("Docker-Content-Digest", digest)

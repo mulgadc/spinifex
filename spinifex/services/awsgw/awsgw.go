@@ -212,6 +212,14 @@ func launchService(config *config.ClusterConfig) error {
 	)
 	ecrRegistry := gateway_ecr.NewRegistry(ecrStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
 
+	// Lifecycle expiry sweep applies each repo's stored lifecycle policy and
+	// deletes the expired set via the registry GC path. It runs here (not the
+	// daemon) because only the gateway holds the object store. Bound to the same
+	// lifetime context as the STS janitor.
+	lifecycleSweeper := gateway_ecr.NewLifecycleSweeper(
+		ecrRegistry, activeAccountIDs(iamService), gateway_ecr.DefaultLifecycleSweepInterval)
+	go lifecycleSweeper.Run(janitorCtx)
+
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the
 	// cluster-replicated awsgw-keys KV bucket, then build the token issuer
 	// (GetAuthorizationToken) and verifier (/v2 Authorization).
@@ -304,6 +312,24 @@ func initIAMService(natsConn *nats.Conn, masterKey []byte, clusterSize int) (*ha
 		slog.Warn("IAM service not ready (waiting for JetStream cluster quorum)", "error", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second), "retryIn", retryDelay)
 		time.Sleep(retryDelay)
 		retryDelay = min(retryDelay*2, 10*time.Second)
+	}
+}
+
+// activeAccountIDs adapts IAMService.ListAccounts into the account-ID enumerator
+// the ECR lifecycle sweeper expects, including only ACTIVE accounts.
+func activeAccountIDs(iam handlers_iam.IAMService) func() ([]string, error) {
+	return func() ([]string, error) {
+		accounts, err := iam.ListAccounts()
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, len(accounts))
+		for _, acct := range accounts {
+			if acct.Status == handlers_iam.AccountStatusActive {
+				ids = append(ids, acct.AccountID)
+			}
+		}
+		return ids, nil
 	}
 }
 

@@ -972,6 +972,11 @@ type fakeResourceCapacityProvider struct {
 	allocated      []*ec2.InstanceTypeInfo
 	deallocated    []*ec2.InstanceTypeInfo
 	canAllocFn     func(*ec2.InstanceTypeInfo, int) int
+
+	reservationAllocErr  error
+	reservationAllocated []*ec2.InstanceTypeInfo
+	reservationReleased  []*ec2.InstanceTypeInfo
+	reservationAvailFn   func(string, string, *ec2.InstanceTypeInfo) int
 }
 
 func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
@@ -1005,6 +1010,25 @@ func (f *fakeResourceCapacityProvider) CanAllocate(it *ec2.InstanceTypeInfo, cou
 		return f.canAllocFn(it, count)
 	}
 	return count
+}
+
+func (f *fakeResourceCapacityProvider) AllocateFromReservation(_, _ string, it *ec2.InstanceTypeInfo) error {
+	if f.reservationAllocErr != nil {
+		return f.reservationAllocErr
+	}
+	f.reservationAllocated = append(f.reservationAllocated, it)
+	return nil
+}
+
+func (f *fakeResourceCapacityProvider) ReleaseToReservation(_ string, it *ec2.InstanceTypeInfo) {
+	f.reservationReleased = append(f.reservationReleased, it)
+}
+
+func (f *fakeResourceCapacityProvider) ReservationAvailable(reservationID, accountID string, it *ec2.InstanceTypeInfo) int {
+	if f.reservationAvailFn != nil {
+		return f.reservationAvailFn(reservationID, accountID, it)
+	}
+	return 0
 }
 
 func (f *fakeResourceCapacityProvider) InstanceTypes() map[string]*ec2.InstanceTypeInfo {

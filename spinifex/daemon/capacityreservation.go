@@ -4,6 +4,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -74,6 +76,74 @@ func (rm *ResourceManager) CancelReservation(id, accountID string) (*capacityRes
 
 	rm.updateInstanceSubscriptions()
 	return rec, true
+}
+
+// AllocateFromReservation launches one instance into reservation crID via a
+// net-zero swap under rm.mu: the per-instance compute already held in reservedCR*
+// at create moves to allocated* and ConsumedCount bumps, so schedulable capacity
+// is unchanged by construction. Errors: unknown/foreign id ->
+// InvalidCapacityReservationId.NotFound; type mismatch -> InvalidParameterValue;
+// already full -> ReservationCapacityExceeded.
+func (rm *ResourceManager) AllocateFromReservation(crID, accountID string, it *ec2.InstanceTypeInfo) error {
+	rm.mu.Lock()
+	rec, ok := rm.reservations[crID]
+	if !ok || rec.AccountID != accountID {
+		rm.mu.Unlock()
+		return errors.New(awserrors.ErrorInvalidCapacityReservationIdNotFound)
+	}
+	if rec.InstanceType != aws.StringValue(it.InstanceType) {
+		rm.mu.Unlock()
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if rec.ConsumedCount >= rec.TotalInstanceCount {
+		rm.mu.Unlock()
+		return errors.New(awserrors.ErrorReservationCapacityExceeded)
+	}
+	rm.reservedCRVCPU -= rec.VCPUPerInstance
+	rm.reservedCRMem -= rec.MemGBPerInstance
+	rm.allocatedVCPU += rec.VCPUPerInstance
+	rm.allocatedMem += rec.MemGBPerInstance
+	rec.ConsumedCount++
+	rm.mu.Unlock()
+
+	rm.updateInstanceSubscriptions()
+	return nil
+}
+
+// ReleaseToReservation returns a launched instance's slot. If the reservation
+// still exists it is the inverse net-zero swap (allocated* -> reservedCR*,
+// ConsumedCount--); if the reservation is gone (cancelled or lost on restart) the
+// allocation is freed to the general pool using the catalog charge so it never
+// overcounts. Best-effort: a missing reservation is not an error.
+func (rm *ResourceManager) ReleaseToReservation(crID string, it *ec2.InstanceTypeInfo) {
+	rm.mu.Lock()
+	if rec, ok := rm.reservations[crID]; ok && rec.ConsumedCount > 0 {
+		rm.allocatedVCPU -= rec.VCPUPerInstance
+		rm.allocatedMem -= rec.MemGBPerInstance
+		rm.reservedCRVCPU += rec.VCPUPerInstance
+		rm.reservedCRMem += rec.MemGBPerInstance
+		rec.ConsumedCount--
+	} else {
+		rm.allocatedVCPU -= int(instanceTypeVCPUs(it))
+		rm.allocatedMem -= float64(rm.instanceMemChargeMiB(it)) / 1024.0
+	}
+	rm.mu.Unlock()
+
+	rm.updateInstanceSubscriptions()
+}
+
+// ReservationAvailable reports how many more instances can launch into crID
+// (Total - Consumed), or 0 when the reservation is unknown, owned by another
+// account, or for a different instance type. The daemon handler's up-front check
+// turns those zero cases into precise errors before the launch loop.
+func (rm *ResourceManager) ReservationAvailable(crID, accountID string, it *ec2.InstanceTypeInfo) int {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	rec, ok := rm.reservations[crID]
+	if !ok || rec.AccountID != accountID || rec.InstanceType != aws.StringValue(it.InstanceType) {
+		return 0
+	}
+	return rec.TotalInstanceCount - rec.ConsumedCount
 }
 
 // ListReservations returns a snapshot of the account's reservations on this node.

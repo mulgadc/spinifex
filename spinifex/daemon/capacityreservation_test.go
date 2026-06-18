@@ -169,3 +169,159 @@ func TestCapacityReservation_ConcurrentNoOvercommit(t *testing.T) {
 	assert.Equal(t, sumVCPU, rm.reservedCRVCPU)
 	assert.Equal(t, sumMem, rm.reservedCRMem)
 }
+
+// AllocateFromReservation moves a slot reservedCR*->allocated* without touching
+// schedulable capacity, bumps ConsumedCount, and drops AvailableInstanceCount.
+func TestAllocateFromReservation_NetZeroSwap(t *testing.T) {
+	rm := newReservationTestRM()
+	mt := microType()
+	rec := microReservation("cr-1", "acct-a", 2)
+	require.NoError(t, rm.CreateReservation(rec))
+
+	before := rm.canAllocate(mt, 100)
+	require.Equal(t, 2, before, "carve-out of 2 leaves room for 2 general launches")
+
+	require.NoError(t, rm.AllocateFromReservation("cr-1", "acct-a", mt))
+
+	rm.mu.RLock()
+	assert.Equal(t, 2, rm.reservedCRVCPU, "one slot left reservedCR*")
+	assert.Equal(t, 1.0, rm.reservedCRMem)
+	assert.Equal(t, 2, rm.allocatedVCPU, "consumed slot now in allocated*")
+	assert.Equal(t, 1.0, rm.allocatedMem)
+	assert.Equal(t, 1, rec.ConsumedCount)
+	rm.mu.RUnlock()
+
+	assert.Equal(t, before, rm.canAllocate(mt, 100), "schedulable capacity unchanged by the swap")
+	assert.Equal(t, int64(1), aws.Int64Value(rec.toAWSCapacityReservation().AvailableInstanceCount))
+}
+
+// The semantic checks reject unknown/foreign ids, type mismatch, and over-consume
+// with their mapped AWS error codes, leaving accounting untouched.
+func TestAllocateFromReservation_Errors(t *testing.T) {
+	rm := newReservationTestRM()
+	mt := microType()
+	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 1)))
+
+	err := rm.AllocateFromReservation("cr-missing", "acct-a", mt)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdNotFound, err.Error())
+
+	err = rm.AllocateFromReservation("cr-1", "acct-b", mt)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdNotFound, err.Error(), "foreign account is not found")
+
+	wrongType := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("t3.large"),
+		VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(2)},
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(8192)},
+	}
+	err = rm.AllocateFromReservation("cr-1", "acct-a", wrongType)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+
+	require.NoError(t, rm.AllocateFromReservation("cr-1", "acct-a", mt), "first slot consumes")
+	err = rm.AllocateFromReservation("cr-1", "acct-a", mt)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorReservationCapacityExceeded, err.Error(), "second exceeds Total=1")
+}
+
+// ReleaseToReservation is the inverse swap when the reservation still exists:
+// allocated*->reservedCR*, ConsumedCount--, AvailableInstanceCount restored.
+func TestReleaseToReservation_RestoresSlot(t *testing.T) {
+	rm := newReservationTestRM()
+	mt := microType()
+	rec := microReservation("cr-1", "acct-a", 2)
+	require.NoError(t, rm.CreateReservation(rec))
+	require.NoError(t, rm.AllocateFromReservation("cr-1", "acct-a", mt))
+
+	rm.ReleaseToReservation("cr-1", mt)
+
+	rm.mu.RLock()
+	assert.Equal(t, 4, rm.reservedCRVCPU, "slot returned to reservedCR*")
+	assert.Equal(t, 2.0, rm.reservedCRMem)
+	assert.Equal(t, 0, rm.allocatedVCPU)
+	assert.Equal(t, 0.0, rm.allocatedMem)
+	assert.Equal(t, 0, rec.ConsumedCount)
+	rm.mu.RUnlock()
+
+	assert.Equal(t, int64(2), aws.Int64Value(rec.toAWSCapacityReservation().AvailableInstanceCount))
+}
+
+// After the reservation is cancelled, a still-running consumer's release frees to
+// the general pool (catalog charge) instead of a now-gone reservedCR*, never
+// overcounting. Cancel itself frees only the unconsumed remainder.
+func TestReleaseToReservation_AfterCancelFreesToGeneralPool(t *testing.T) {
+	rm := newReservationTestRM()
+	mt := microType()
+	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 2)))
+	require.NoError(t, rm.AllocateFromReservation("cr-1", "acct-a", mt))
+
+	_, ok := rm.CancelReservation("cr-1", "acct-a")
+	require.True(t, ok)
+
+	rm.mu.RLock()
+	assert.Equal(t, 0, rm.reservedCRVCPU, "cancel freed only the unconsumed slot")
+	assert.Equal(t, 0.0, rm.reservedCRMem)
+	assert.Equal(t, 2, rm.allocatedVCPU, "consumed slot keeps running on general capacity")
+	rm.mu.RUnlock()
+
+	rm.ReleaseToReservation("cr-1", mt)
+
+	rm.mu.RLock()
+	assert.Equal(t, 0, rm.allocatedVCPU, "release frees the dangling consumer to general pool")
+	assert.Equal(t, 0.0, rm.allocatedMem)
+	assert.Equal(t, 0, rm.reservedCRVCPU, "no phantom reservedCR* re-added")
+	rm.mu.RUnlock()
+
+	assert.Equal(t, 4, rm.canAllocate(mt, 100), "general capacity fully restored")
+}
+
+// ReservationAvailable reports Total-Consumed, and 0 for unknown/foreign-account
+// /type-mismatch so the count site degrades to the daemon's up-front error.
+func TestReservationAvailable(t *testing.T) {
+	rm := newReservationTestRM()
+	mt := microType()
+	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 2)))
+
+	assert.Equal(t, 2, rm.ReservationAvailable("cr-1", "acct-a", mt))
+	assert.Equal(t, 0, rm.ReservationAvailable("cr-missing", "acct-a", mt))
+	assert.Equal(t, 0, rm.ReservationAvailable("cr-1", "acct-b", mt), "foreign account sees nothing")
+
+	wrongType := &ec2.InstanceTypeInfo{InstanceType: aws.String("t3.large")}
+	assert.Equal(t, 0, rm.ReservationAvailable("cr-1", "acct-a", wrongType), "type mismatch sees nothing")
+
+	require.NoError(t, rm.AllocateFromReservation("cr-1", "acct-a", mt))
+	assert.Equal(t, 1, rm.ReservationAvailable("cr-1", "acct-a", mt), "consume drops availability")
+}
+
+// Concurrent general allocate and AllocateFromReservation share rm.mu; the swap is
+// net-zero on reservedCR*+allocated*, so committed compute never exceeds the host
+// and ConsumedCount never passes Total.
+func TestAllocateFromReservation_ConcurrentNoOvercommit(t *testing.T) {
+	rm := newReservationTestRM()
+	mt := microType()
+	rec := microReservation("cr-1", "acct-a", 2)
+	require.NoError(t, rm.CreateReservation(rec))
+
+	const workers = 32
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				_ = rm.AllocateFromReservation("cr-1", "acct-a", mt)
+			} else {
+				_ = rm.allocate(mt)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	assert.LessOrEqual(t, rm.reservedCRVCPU+rm.allocatedVCPU, rm.hostVCPU, "vCPU never overcommitted")
+	assert.LessOrEqual(t, rm.reservedCRMem+rm.allocatedMem, rm.hostMemGB, "memory never overcommitted")
+	assert.LessOrEqual(t, rec.ConsumedCount, rec.TotalInstanceCount, "ConsumedCount never passes Total")
+	assert.GreaterOrEqual(t, rec.ConsumedCount, 0)
+}

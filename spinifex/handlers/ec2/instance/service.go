@@ -59,6 +59,9 @@ type InstanceTypeAllocator interface {
 	Allocate(instanceType *ec2.InstanceTypeInfo) error
 	Deallocate(instanceType *ec2.InstanceTypeInfo)
 	CanAllocate(instanceType *ec2.InstanceTypeInfo, count int) int
+	AllocateFromReservation(reservationID, accountID string, instanceType *ec2.InstanceTypeInfo) error
+	ReleaseToReservation(reservationID string, instanceType *ec2.InstanceTypeInfo)
+	ReservationAvailable(reservationID, accountID string, instanceType *ec2.InstanceTypeInfo) int
 	InstanceTypes() map[string]*ec2.InstanceTypeInfo
 }
 

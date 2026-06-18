@@ -2141,6 +2141,8 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	rm.updateInstanceSubscriptions()
 }
 
+var _ handlers_ec2_instance.InstanceTypeAllocator = (*ResourceManager)(nil)
+
 // Allocate, Deallocate, CanAllocate satisfy handlers_ec2_instance.InstanceTypeAllocator.
 func (rm *ResourceManager) Allocate(it *ec2.InstanceTypeInfo) error { return rm.allocate(it) }
 func (rm *ResourceManager) Deallocate(it *ec2.InstanceTypeInfo)     { rm.deallocate(it) }

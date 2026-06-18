@@ -89,13 +89,14 @@ func KVAccountBucket(accountID string) string {
 //	repos/{name}/manifests/{digest}
 //	uploads/{uuid}
 const (
-	kvRepoMetaKeyFmt   = "repos/%s/meta"
-	kvRepoPolicyKeyFmt = "repos/%s/policy"
-	kvTagsPrefixFmt    = "repos/%s/tags/"
-	kvTagKeyFmt        = "repos/%s/tags/%s"
-	kvManifestKeyFmt   = "repos/%s/manifests/%s"
-	kvReposPrefix      = "repos/"
-	kvUploadKeyFmt     = "uploads/%s"
+	kvRepoMetaKeyFmt     = "repos/%s/meta"
+	kvRepoPolicyKeyFmt   = "repos/%s/policy"
+	kvTagsPrefixFmt      = "repos/%s/tags/"
+	kvTagKeyFmt          = "repos/%s/tags/%s"
+	kvManifestKeyFmt     = "repos/%s/manifests/%s"
+	kvManifestsPrefixFmt = "repos/%s/manifests/"
+	kvReposPrefix        = "repos/"
+	kvUploadKeyFmt       = "uploads/%s"
 )
 
 // KVRepoMetaKey returns the KV key for a repository's meta record.
@@ -115,6 +116,10 @@ func KVTagKey(repo, tag string) string { return fmt.Sprintf(kvTagKeyFmt, repo, t
 func KVManifestKey(repo, digest string) string {
 	return fmt.Sprintf(kvManifestKeyFmt, repo, DigestToken(digest))
 }
+
+// KVManifestsPrefix returns the KV key prefix enumerating a repository's
+// manifest metadata records.
+func KVManifestsPrefix(repo string) string { return fmt.Sprintf(kvManifestsPrefixFmt, repo) }
 
 // KVReposPrefix is the prefix under which every repo meta key lives. Used by
 // the catalog listing to enumerate account repositories.

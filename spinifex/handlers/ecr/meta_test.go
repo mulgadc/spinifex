@@ -115,6 +115,40 @@ func TestTrimSuffixMeta(t *testing.T) {
 	assert.Equal(t, "team/app", trimSuffixMeta("repos/team/app/meta"))
 }
 
+func TestMemoryMetaStore_DeleteRepoAndListManifests(t *testing.T) {
+	m := NewMemoryMetaStore()
+	const acct = "000000000000"
+
+	require.NoError(t, m.PutRepo(acct, RepoMeta{Name: "team/app", CreatedAt: time.Now()}))
+	require.NoError(t, m.PutRepo(acct, RepoMeta{Name: "team/web", CreatedAt: time.Now()}))
+	require.NoError(t, m.PutTag(acct, "team/app", "v1", "sha256:aaa"))
+	require.NoError(t, m.PutManifestMeta(acct, "team/app", ManifestMeta{Digest: "sha256:ccc", MediaType: "x", Size: 3}))
+	require.NoError(t, m.PutRepoPolicy(acct, "team/app", []byte(`{}`)))
+
+	digs, err := m.ListManifests(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sha256:ccc"}, digs)
+
+	require.NoError(t, m.DeleteRepo(acct, "team/app"))
+	_, err = m.GetRepo(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+	tags, err := m.ListTags(acct, "team/app")
+	require.NoError(t, err)
+	assert.Empty(t, tags)
+	digs, err = m.ListManifests(acct, "team/app")
+	require.NoError(t, err)
+	assert.Empty(t, digs)
+	_, err = m.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// Other repo untouched.
+	got, err := m.GetRepo(acct, "team/web")
+	require.NoError(t, err)
+	assert.Equal(t, "team/web", got.Name)
+
+	assert.ErrorIs(t, m.DeleteRepo(acct, "team/ghost"), ErrNotFound)
+}
+
 func TestMemoryMetaStore_RepoPolicy(t *testing.T) {
 	m := NewMemoryMetaStore()
 	const acct = "000000000000"

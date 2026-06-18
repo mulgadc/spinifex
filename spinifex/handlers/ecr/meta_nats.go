@@ -48,6 +48,25 @@ func (s *NATSMetaStore) ListRepos(accountID string) ([]string, error) {
 	return resp.Repos, nil
 }
 
+func (s *NATSMetaStore) DeleteRepo(accountID, repo string) error {
+	resp, err := utils.NATSRequest[RepoDeleteResponse](s.conn, SubjectRepoDelete, &RepoDeleteRequest{Repo: repo}, metaRequestTimeout, accountID)
+	if err != nil {
+		return err
+	}
+	if !resp.Found {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *NATSMetaStore) ListManifests(accountID, repo string) ([]string, error) {
+	resp, err := utils.NATSRequest[ManifestListResponse](s.conn, SubjectManifestList, &ManifestListRequest{Repo: repo}, metaRequestTimeout, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Digests, nil
+}
+
 func (s *NATSMetaStore) PutRepoPolicy(accountID, repo string, policyText []byte) error {
 	_, err := utils.NATSRequest[PolicyPutResponse](s.conn, SubjectPolicyPut, &PolicyPutRequest{Repo: repo, PolicyText: policyText}, metaRequestTimeout, accountID)
 	return err

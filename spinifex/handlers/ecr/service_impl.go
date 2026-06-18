@@ -52,6 +52,17 @@ func (s *MetaServiceImpl) RepoList(_ *RepoListRequest, accountID string) (*RepoL
 	return &RepoListResponse{Repos: repos}, nil
 }
 
+func (s *MetaServiceImpl) RepoDelete(req *RepoDeleteRequest, accountID string) (*RepoDeleteResponse, error) {
+	err := s.store.DeleteRepo(accountID, req.Repo)
+	if errors.Is(err, ErrNotFound) {
+		return &RepoDeleteResponse{Found: false}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &RepoDeleteResponse{Found: true}, nil
+}
+
 func (s *MetaServiceImpl) PolicyPut(req *PolicyPutRequest, accountID string) (*PolicyPutResponse, error) {
 	if err := s.store.PutRepoPolicy(accountID, req.Repo, req.PolicyText); err != nil {
 		return nil, err
@@ -123,6 +134,14 @@ func (s *MetaServiceImpl) ManifestPut(req *ManifestPutRequest, accountID string)
 		return nil, err
 	}
 	return &ManifestPutResponse{}, nil
+}
+
+func (s *MetaServiceImpl) ManifestList(req *ManifestListRequest, accountID string) (*ManifestListResponse, error) {
+	digests, err := s.store.ListManifests(accountID, req.Repo)
+	if err != nil {
+		return nil, err
+	}
+	return &ManifestListResponse{Digests: digests}, nil
 }
 
 func (s *MetaServiceImpl) ManifestDescribe(req *ManifestDescribeRequest, accountID string) (*ManifestDescribeResponse, error) {

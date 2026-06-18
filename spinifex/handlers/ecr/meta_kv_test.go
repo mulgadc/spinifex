@@ -79,6 +79,46 @@ func TestKVMetaStore_FullCycle(t *testing.T) {
 	assert.Empty(t, empty)
 }
 
+// TestKVMetaStore_DeleteRepo proves the cascade removes a repo's meta, policy,
+// tags, and manifests, leaves a same-prefix nested repo intact, and reports
+// ErrNotFound for an absent repo.
+func TestKVMetaStore_DeleteRepo(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	store := NewKVMetaStore(js)
+	const acct = "000000000000"
+	const dig = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	require.NoError(t, store.PutRepo(acct, RepoMeta{Name: "team/app", CreatedAt: time.Now()}))
+	require.NoError(t, store.PutRepo(acct, RepoMeta{Name: "team/app/sub", CreatedAt: time.Now()}))
+	require.NoError(t, store.PutTag(acct, "team/app", "v1", dig))
+	require.NoError(t, store.PutManifestMeta(acct, "team/app", ManifestMeta{Digest: dig, MediaType: "x", Size: 1}))
+	require.NoError(t, store.PutRepoPolicy(acct, "team/app", []byte(`{}`)))
+
+	manifests, err := store.ListManifests(acct, "team/app")
+	require.NoError(t, err)
+	assert.Len(t, manifests, 1)
+
+	require.NoError(t, store.DeleteRepo(acct, "team/app"))
+
+	_, err = store.GetRepo(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+	tags, err := store.ListTags(acct, "team/app")
+	require.NoError(t, err)
+	assert.Empty(t, tags)
+	manifests, err = store.ListManifests(acct, "team/app")
+	require.NoError(t, err)
+	assert.Empty(t, manifests)
+	_, err = store.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// The same-prefix nested repo must survive.
+	got, err := store.GetRepo(acct, "team/app/sub")
+	require.NoError(t, err)
+	assert.Equal(t, "team/app/sub", got.Name)
+
+	assert.ErrorIs(t, store.DeleteRepo(acct, "team/ghost"), ErrNotFound)
+}
+
 // TestKVMetaStore_RepoPolicy exercises the policy passthrough against the
 // JetStream-backed store and proves the policy key shares the repo bucket
 // without being mistaken for a repository by ListRepos.

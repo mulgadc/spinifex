@@ -52,6 +52,15 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return gw.handleDescribeRepositories(w, r)
 	}
 
+	// CreateRepository and DeleteRepository return the repository ARN/URI, built
+	// from the gateway region and internal suffix, so they are served inline.
+	if action == "CreateRepository" {
+		return gw.handleCreateRepository(w, r)
+	}
+	if action == "DeleteRepository" {
+		return gw.handleDeleteRepository(w, r)
+	}
+
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("ECR_Request: no account ID in auth context")

@@ -456,6 +456,8 @@ var (
 	// ECR-specific error codes
 	ErrorRepositoryNotFound       = "RepositoryNotFoundException"
 	ErrorRepositoryPolicyNotFound = "RepositoryPolicyNotFoundException"
+	ErrorRepositoryAlreadyExists  = "RepositoryAlreadyExistsException"
+	ErrorRepositoryNotEmpty       = "RepositoryNotEmptyException"
 
 	// ELBv2-specific error codes
 	ErrorELBv2LoadBalancerNotFound         = "LoadBalancerNotFound"
@@ -964,6 +966,8 @@ var ErrorLookup = map[string]ErrorMessage{
 	// ECR error codes
 	ErrorRepositoryNotFound:       {HTTPCode: 400, Message: "The repository could not be found. Check the spelling of the specified repository and ensure that you are performing operations on the correct registry."},
 	ErrorRepositoryPolicyNotFound: {HTTPCode: 400, Message: "The repository and registry do not have an associated repository policy."},
+	ErrorRepositoryAlreadyExists:  {HTTPCode: 400, Message: "The repository already exists in the registry."},
+	ErrorRepositoryNotEmpty:       {HTTPCode: 400, Message: "The repository contains images. Either delete the images or use the force option to delete the repository."},
 
 	// ELBv2 error codes
 	ErrorELBv2LoadBalancerNotFound:         {HTTPCode: 400, Message: "One or more load balancers not found."},

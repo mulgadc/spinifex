@@ -121,7 +121,7 @@ func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(pathToken, s.handleToken)
 	mux.HandleFunc("/", s.handleMetadata)
-	return rejectForwarded(mux)
+	return rejectForwarded(normalizeVersion(mux))
 }
 
 // Run starts the bind manager (sync + watch) and token-sweep ticker, blocks until ctx is done.

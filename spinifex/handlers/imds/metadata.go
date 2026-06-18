@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,26 @@ func rejectForwarded(next http.Handler) http.Handler {
 		if r.Header.Get(hdrForwardedFor) != "" {
 			w.WriteHeader(http.StatusForbidden)
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// dateVersion matches a dated IMDS API-version segment, e.g. 2021-03-23.
+var dateVersion = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+// normalizeVersion rewrites any dated API-version prefix to the canonical /latest
+// tree so one dispatch table serves every version a client probes — cloud-init
+// probes its own hardcoded dated versions, not the GET / listing. latest is left
+// untouched; a bare GET / is not date-shaped, so it falls through to the listing.
+func normalizeVersion(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seg, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		if dateVersion.MatchString(seg) {
+			r.URL.Path = "/latest"
+			if rest != "" {
+				r.URL.Path += "/" + rest
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -136,6 +157,10 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	}
 
 	switch path {
+	case "/":
+		writeText(w, strings.Join(supportedVersions, "\n"))
+	case "/latest", "/latest/":
+		writeText(w, "dynamic\nmeta-data\nuser-data")
 	case pathMetaDataRoot, prefixMetaData:
 		writeText(w, "ami-id\nhostname\niam/\ninstance-id\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nplacement/\npublic-ipv4\npublic-keys/\nsecurity-groups")
 	case prefixMetaData + "instance-id":

@@ -228,6 +228,69 @@ func TestHTTP_ENIMissReturns404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// ----- version discovery -------------------------------------------------
+
+// GET / returns the advertised version list (token-gated, IMDSv2-only).
+func TestHTTP_RootVersionListing(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, "/", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "2021-07-15\nlatest", rec.Body.String())
+}
+
+// Version discovery is not a tokenless side channel: GET / without a token is 401.
+func TestHTTP_RootVersionListingTokenless401(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	rec := get(t, h, "/", "")
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Empty(t, rec.Body.String())
+}
+
+// GET /latest lists the top-level tree.
+func TestHTTP_LatestListing(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, "/latest", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "dynamic\nmeta-data\nuser-data", rec.Body.String())
+}
+
+// Any dated API-version prefix aliases to the /latest tree — including a version
+// cloud-init probes (2021-03-23) that we do not advertise — while a non-date
+// first segment is not rewritten and stays 404. The dated token PUT works too.
+func TestHTTP_DatedVersionAlias(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+
+	// PUT /<date>/api/token issues a token like /latest/api/token does.
+	put := httptest.NewRequest(http.MethodPut, "http://"+MetaDataServerIP+"/2021-07-15/api/token", nil)
+	put.RemoteAddr = testIP + ":50000"
+	put = put.WithContext(context.WithValue(put.Context(), ctxKeyVPCID, testVPC))
+	put.Header.Set(hdrTokenTTL, "60")
+	putRec := httptest.NewRecorder()
+	h.ServeHTTP(putRec, put)
+	require.Equal(t, http.StatusOK, putRec.Code)
+	token := putRec.Body.String()
+	require.NotEmpty(t, token)
+
+	want := get(t, h, prefixMetaData+"instance-id", token).Body.String()
+
+	// Advertised and non-advertised dated versions both resolve to /latest.
+	for _, date := range []string{"2021-07-15", "2021-03-23"} {
+		rec := get(t, h, "/"+date+"/meta-data/instance-id", token)
+		assert.Equal(t, http.StatusOK, rec.Code, "date=%s", date)
+		assert.Equal(t, want, rec.Body.String(), "date=%s", date)
+	}
+
+	// A non-date first segment is left alone and 404s.
+	rec := get(t, h, "/bogus/meta-data/instance-id", token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 // ----- metadata surface --------------------------------------------------
 
 func TestHTTP_MetadataPaths(t *testing.T) {

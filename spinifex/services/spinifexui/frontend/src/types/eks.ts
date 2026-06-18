@@ -31,6 +31,26 @@ export const EKS_ACCESS_POLICIES = [
 export const EKS_AMI_TYPES = ["AL2_x86_64", "AL2_ARM_64"] as const
 export const EKS_CAPACITY_TYPES = ["ON_DEMAND", "SPOT"] as const
 
+// Trust policy for an EKS cluster IAM role: the EKS control plane assumes it.
+export const EKS_CLUSTER_ASSUME_ROLE_POLICY_DOCUMENT = JSON.stringify(
+  {
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Effect: "Allow",
+        Principal: { Service: "eks.amazonaws.com" },
+        Action: "sts:AssumeRole",
+      },
+    ],
+  },
+  null,
+  2,
+)
+
+// Managed policy granting the EKS control plane the permissions it needs.
+export const AMAZON_EKS_CLUSTER_POLICY_ARN =
+  "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+
 const eksNameField = z
   .string()
   .min(1, "Name is required")

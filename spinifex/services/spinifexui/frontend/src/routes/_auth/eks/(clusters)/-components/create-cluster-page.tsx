@@ -34,6 +34,7 @@ import {
   EKS_SUPPORTED_VERSIONS,
 } from "@/types/eks"
 
+import { CreateClusterRoleDialog } from "./create-cluster-role-dialog"
 import { EksSystemImageRequired } from "./eks-system-image-required"
 
 function vpcLabel(vpc: Vpc): string {
@@ -51,6 +52,7 @@ export function CreateClusterPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [isRechecking, setIsRechecking] = useState(false)
+  const [isRoleDialogOpen, setIsRoleDialogOpen] = useState(false)
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: rolesData } = useSuspenseQuery(iamRolesQueryOptions)
@@ -133,6 +135,15 @@ export function CreateClusterPage() {
       { shouldValidate: true },
     )
 
+  const clusterName = watch("name")
+
+  const handleRoleCreated = async (roleArn: string) => {
+    await queryClient.invalidateQueries({
+      queryKey: iamRolesQueryOptions.queryKey,
+    })
+    setValue("roleArn", roleArn, { shouldValidate: true })
+  }
+
   const onSubmit = async (data: CreateClusterFormData) => {
     await createCluster.mutateAsync(data)
     await navigate({
@@ -209,30 +220,46 @@ export function CreateClusterPage() {
           <FieldTitle>
             <label htmlFor="cluster-role">Cluster IAM role</label>
           </FieldTitle>
-          <Controller
-            control={control}
-            name="roleArn"
-            render={({ field }) => (
-              <Select onValueChange={field.onChange} value={field.value}>
-                <SelectTrigger
-                  aria-invalid={!!errors.roleArn}
-                  className="w-full"
-                  id="cluster-role"
-                >
-                  <SelectValue placeholder="Select role" />
-                </SelectTrigger>
-                <SelectContent>
-                  {roles.map((role) => (
-                    <SelectItem key={role.Arn} value={role.Arn ?? ""}>
-                      {role.RoleName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
+          <div className="flex items-center gap-2">
+            <Controller
+              control={control}
+              name="roleArn"
+              render={({ field }) => (
+                <Select onValueChange={field.onChange} value={field.value}>
+                  <SelectTrigger
+                    aria-invalid={!!errors.roleArn}
+                    className="w-full"
+                    id="cluster-role"
+                  >
+                    <SelectValue placeholder="Select role" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {roles.map((role) => (
+                      <SelectItem key={role.Arn} value={role.Arn ?? ""}>
+                        {role.RoleName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+            <Button
+              onClick={() => setIsRoleDialogOpen(true)}
+              type="button"
+              variant="outline"
+            >
+              Create role
+            </Button>
+          </div>
           <FieldError errors={[errors.roleArn]} />
         </Field>
+
+        <CreateClusterRoleDialog
+          clusterName={clusterName}
+          onCreated={handleRoleCreated}
+          onOpenChange={setIsRoleDialogOpen}
+          open={isRoleDialogOpen}
+        />
 
         <Field>
           <FieldTitle>

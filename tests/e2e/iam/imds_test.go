@@ -199,8 +199,8 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, imdsGet(t, tgtX, tokenX, "/latest/meta-data/placement/availability-zone"),
 		"placement/availability-zone must be populated")
 
-	// Cheap leaves added with the easy-routes work: a real reservation id, the
-	// static instance-life-cycle, and the services subtree.
+	// Cheap one-field/static leaves: a real reservation id, the static
+	// instance-life-cycle, and the services subtree.
 	require.True(t, strings.HasPrefix(imdsGet(t, tgtX, tokenX, "/latest/meta-data/reservation-id"), "r-"),
 		"reservation-id must be served as an r-… identifier")
 	require.Equal(t, "on-demand", imdsGet(t, tgtX, tokenX, "/latest/meta-data/instance-life-cycle"),
@@ -258,7 +258,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	// --- Version discovery + dated-version alias (cloud-init parity) ----------
 	// cloud-init's EC2 datasource probes its OWN hardcoded dated versions
 	// (e.g. 2021-03-23), not the GET / listing, so any dated prefix must alias to
-	// /latest. That breakage is what the easy-routes work fixes; prove it in-guest.
+	// /latest. Prove that aliasing resolves in-guest.
 	harness.Step(t, "version discovery: GET /, GET /latest, dated-version alias")
 	require.Contains(t, imdsGet(t, tgtX, tokenX, "/"), "latest",
 		"GET / must advertise the supported version list")

@@ -2498,8 +2498,7 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 
 // TestPrepareRunInstances_AmiLaunchIndexContiguous pins that ami-launch-index is
 // assigned per successful launch (0..n-1) so it flows to DescribeInstances and the
-// IMDS identity document. The mid-loop-failure case proves survivors stay
-// contiguous — a failed launch leaves no gap — matching AWS.
+// IMDS identity document. Survivors of a mid-loop failure stay contiguous (no gap).
 func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
 	t.Run("count_3_no_eni", func(t *testing.T) {
 		types, _ := defaultPrepareInstanceTypes()

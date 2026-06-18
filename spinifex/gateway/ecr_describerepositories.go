@@ -74,7 +74,7 @@ func (gw *GatewayConfig) handleDescribeRepositories(w http.ResponseWriter, r *ht
 			RepositoryArn:      aws.String(gw.ecrRepositoryArn(accountID, name)),
 			RepositoryUri:      aws.String(gw.ecrRepositoryUri(accountID, name)),
 			CreatedAt:          aws.Time(meta.CreatedAt),
-			ImageTagMutability: aws.String("MUTABLE"),
+			ImageTagMutability: aws.String(meta.TagMutability()),
 		})
 	}
 

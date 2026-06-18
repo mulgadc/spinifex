@@ -67,6 +67,24 @@ func (reg *Registry) StoreManifest(account, repo, ref, contentType string, body 
 		return "", &ManifestStoreError{http.StatusBadRequest, "DIGEST_INVALID", "reference digest does not match content"}
 	}
 
+	// On an IMMUTABLE repo, re-tagging an existing tag onto a different digest is
+	// rejected before any write so a published tag cannot be silently overwritten.
+	if ref != "" && !ecr.ValidateDigest(ref) {
+		meta, err := scoped.Meta.GetRepo(account, repo)
+		if err != nil {
+			return "", err
+		}
+		if meta.TagMutability() == ecr.TagMutabilityImmutable {
+			existing, err := scoped.Meta.GetTag(account, repo, ref)
+			switch {
+			case err == nil && existing != digest:
+				return "", &ManifestStoreError{http.StatusConflict, "TAG_IMMUTABLE", "tag is immutable and already resolves to a different digest"}
+			case err != nil && !errors.Is(err, ecr.ErrNotFound):
+				return "", err
+			}
+		}
+	}
+
 	children, code, vErr := scoped.validateManifest(repo, contentType, body)
 	if vErr != nil {
 		return "", &ManifestStoreError{http.StatusBadRequest, code, vErr.Error()}

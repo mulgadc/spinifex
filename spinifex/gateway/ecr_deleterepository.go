@@ -85,7 +85,7 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 			RepositoryArn:      aws.String(gw.ecrRepositoryArn(accountID, req.RepositoryName)),
 			RepositoryUri:      aws.String(gw.ecrRepositoryUri(accountID, req.RepositoryName)),
 			CreatedAt:          aws.Time(meta.CreatedAt),
-			ImageTagMutability: aws.String("MUTABLE"),
+			ImageTagMutability: aws.String(meta.TagMutability()),
 		},
 	})
 	return nil

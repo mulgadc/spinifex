@@ -20,10 +20,27 @@ var ErrNotFound = errors.New("ecr: metadata record not found")
 // retry the read-modify-write loop on this error.
 var ErrConflict = errors.New("ecr: metadata update conflict")
 
+// Image tag mutability settings. An empty stored value is treated as MUTABLE.
+const (
+	TagMutabilityMutable   = "MUTABLE"
+	TagMutabilityImmutable = "IMMUTABLE"
+)
+
 // RepoMeta is the per-repository metadata record.
 type RepoMeta struct {
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"createdAt"`
+	// ImageTagMutability is MUTABLE or IMMUTABLE; empty == MUTABLE.
+	ImageTagMutability string `json:"imageTagMutability,omitempty"`
+}
+
+// TagMutability returns the repo's effective mutability, defaulting an unset
+// value to MUTABLE.
+func (m RepoMeta) TagMutability() string {
+	if m.ImageTagMutability == "" {
+		return TagMutabilityMutable
+	}
+	return m.ImageTagMutability
 }
 
 // ManifestMeta records a stored manifest's properties for shallow validation

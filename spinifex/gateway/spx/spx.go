@@ -45,50 +45,18 @@ type GetNodesOutput struct {
 
 // GetNodes queries all daemon nodes via NATS fan-out and returns their status.
 func GetNodes(nc *nats.Conn, expectedNodes int) (*GetNodesOutput, error) {
-	inbox := nats.NewInbox()
-	sub, err := nc.SubscribeSync(inbox)
-	if err != nil {
-		return nil, err
-	}
-	defer sub.Unsubscribe()
-
-	err = nc.PublishRequest("spinifex.node.status", inbox, []byte("{}"))
+	frames, _, err := utils.Gather(nc, "spinifex.node.status", []byte("{}"),
+		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
 	}
 
-	timeout := 3 * time.Second
-	deadline := time.Now().Add(timeout)
-	var nodes []types.NodeStatusResponse
-	responsesReceived := 0
-
-	for time.Now().Before(deadline) {
-		if expectedNodes > 0 && responsesReceived >= expectedNodes {
-			break
-		}
-		remaining := time.Until(deadline)
-		msg, err := sub.NextMsg(remaining)
-		if err == nats.ErrTimeout {
-			break
-		}
-		if err != nil {
-			break
-		}
-		responsesReceived++
-
-		if _, valErr := utils.ValidateErrorPayload(msg.Data); valErr != nil {
-			continue
-		}
-
+	nodes := make([]types.NodeStatusResponse, 0, len(frames))
+	for _, frame := range frames {
 		var node types.NodeStatusResponse
-		if err := json.Unmarshal(msg.Data, &node); err != nil {
-			continue
+		if json.Unmarshal(frame, &node) == nil {
+			nodes = append(nodes, node)
 		}
-		nodes = append(nodes, node)
-	}
-
-	if nodes == nil {
-		nodes = []types.NodeStatusResponse{}
 	}
 
 	clusterMode := "single-node"
@@ -116,43 +84,16 @@ type GetVMsOutput struct {
 
 // GetVMs queries all daemon nodes via NATS fan-out and returns their VMs.
 func GetVMs(nc *nats.Conn, expectedNodes int) (*GetVMsOutput, error) {
-	inbox := nats.NewInbox()
-	sub, err := nc.SubscribeSync(inbox)
-	if err != nil {
-		return nil, err
-	}
-	defer sub.Unsubscribe()
-
-	err = nc.PublishRequest("spinifex.node.vms", inbox, []byte("{}"))
+	frames, _, err := utils.Gather(nc, "spinifex.node.vms", []byte("{}"),
+		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
 	}
 
-	timeout := 3 * time.Second
-	deadline := time.Now().Add(timeout)
-	var allVMs []VMInfoWithNode
-	responsesReceived := 0
-
-	for time.Now().Before(deadline) {
-		if expectedNodes > 0 && responsesReceived >= expectedNodes {
-			break
-		}
-		remaining := time.Until(deadline)
-		msg, err := sub.NextMsg(remaining)
-		if err == nats.ErrTimeout {
-			break
-		}
-		if err != nil {
-			break
-		}
-		responsesReceived++
-
-		if _, valErr := utils.ValidateErrorPayload(msg.Data); valErr != nil {
-			continue
-		}
-
+	allVMs := make([]VMInfoWithNode, 0)
+	for _, frame := range frames {
 		var nodeResp types.NodeVMsResponse
-		if err := json.Unmarshal(msg.Data, &nodeResp); err != nil {
+		if json.Unmarshal(frame, &nodeResp) != nil {
 			continue
 		}
 		for _, vm := range nodeResp.VMs {
@@ -161,10 +102,6 @@ func GetVMs(nc *nats.Conn, expectedNodes int) (*GetVMsOutput, error) {
 				Node:   nodeResp.Node,
 			})
 		}
-	}
-
-	if allVMs == nil {
-		allVMs = []VMInfoWithNode{}
 	}
 
 	return &GetVMsOutput{

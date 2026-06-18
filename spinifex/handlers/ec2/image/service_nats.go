@@ -1,9 +1,13 @@
 package handlers_ec2_image
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -26,7 +30,37 @@ func (s *NATSImageService) DescribeImages(input *ec2.DescribeImagesInput, accoun
 }
 
 func (s *NATSImageService) CreateImage(input *ec2.CreateImageInput, accountID string) (*ec2.CreateImageOutput, error) {
-	return utils.NATSScatterGather[ec2.CreateImageOutput](s.natsConn, "ec2.CreateImage", input, 120*time.Second, s.expectedNodes, accountID)
+	jsonData, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal input: %w", err)
+	}
+
+	frames, sum, err := utils.Gather(s.natsConn, "ec2.CreateImage", jsonData,
+		utils.GatherOpts{Timeout: 120 * time.Second, ExpectedNodes: s.expectedNodes, StopOnFirst: true, AccountID: accountID})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(frames) > 0 {
+		var out ec2.CreateImageOutput
+		if err := json.Unmarshal(frames[0], &out); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal CreateImage response: %w", err)
+		}
+		return &out, nil
+	}
+
+	// Surface the owner's fault (IncorrectInstanceState, or a 5xx) ahead of a
+	// non-owner's NotFound; NotFound wins only when every node agrees. No
+	// responses at all is a cluster fault, not a missing instance.
+	for code, n := range sum.ErrorCodes {
+		if n > 0 && code != "" && code != awserrors.ErrorInvalidInstanceIDNotFound {
+			return nil, errors.New(code)
+		}
+	}
+	if sum.ErrorCodes[awserrors.ErrorInvalidInstanceIDNotFound] > 0 {
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 
 func (s *NATSImageService) CopyImage(input *ec2.CopyImageInput, accountID string) (*ec2.CopyImageOutput, error) {

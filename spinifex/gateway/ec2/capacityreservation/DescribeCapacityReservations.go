@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -45,14 +46,18 @@ func DescribeCapacityReservations(input *ec2.DescribeCapacityReservationsInput, 
 		return output, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	nodeOutputs, err := fanoutCollect[ec2.DescribeCapacityReservationsOutput](natsConn, "ec2.DescribeCapacityReservations", payload, expectedNodes, accountID)
+	frames, _, err := utils.Gather(natsConn, "ec2.DescribeCapacityReservations", payload,
+		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return output, err
 	}
 
 	var all []*ec2.CapacityReservation
-	for _, o := range nodeOutputs {
-		all = append(all, o.CapacityReservations...)
+	for _, frame := range frames {
+		var o ec2.DescribeCapacityReservationsOutput
+		if json.Unmarshal(frame, &o) == nil {
+			all = append(all, o.CapacityReservations...)
+		}
 	}
 
 	output.CapacityReservations = filterReservations(all, aws.StringValueSlice(input.CapacityReservationIds), filters)

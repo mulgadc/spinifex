@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -38,13 +39,15 @@ func CancelCapacityReservation(input *ec2.CancelCapacityReservationInput, natsCo
 		return output, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	acks, err := fanoutCollect[ec2.CancelCapacityReservationOutput](natsConn, "ec2.CancelCapacityReservation", payload, expectedNodes, accountID)
+	frames, _, err := utils.Gather(natsConn, "ec2.CancelCapacityReservation", payload,
+		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return output, err
 	}
 
-	for _, ack := range acks {
-		if aws.BoolValue(ack.Return) {
+	for _, frame := range frames {
+		var ack ec2.CancelCapacityReservationOutput
+		if json.Unmarshal(frame, &ack) == nil && aws.BoolValue(ack.Return) {
 			output.Return = aws.Bool(true)
 			return output, nil
 		}

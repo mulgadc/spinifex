@@ -52,94 +52,32 @@ func DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, natsCo
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	inbox := nats.NewInbox()
-	sub, err := natsConn.SubscribeSync(inbox)
+	frames, sum, err := utils.Gather(natsConn, "ec2.DescribeInstanceAttribute", jsonData,
+		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, StopOnFirst: true, AccountID: accountID})
 	if err != nil {
-		slog.Error("DescribeInstanceAttribute: Failed to create inbox subscription", "err", err)
-		return nil, fmt.Errorf("failed to create inbox: %w", err)
-	}
-	defer sub.Unsubscribe()
-
-	pubMsg := nats.NewMsg("ec2.DescribeInstanceAttribute")
-	pubMsg.Reply = inbox
-	pubMsg.Data = jsonData
-	pubMsg.Header.Set(utils.AccountIDHeader, accountID)
-	if err := natsConn.PublishMsg(pubMsg); err != nil {
-		slog.Error("DescribeInstanceAttribute: Failed to publish request", "err", err)
-		return nil, fmt.Errorf("failed to publish request: %w", err)
+		return nil, err
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-
-	if expectedNodes <= 0 {
-		expectedNodes = -1
-		slog.Warn("DescribeInstanceAttribute: ExpectedNodes not configured, using timeout-only collection")
-	}
-
-	var (
-		success       *ec2.DescribeInstanceAttributeOutput
-		clientErr     string // first non-NotFound AWS error seen
-		notFoundCount int
-		responses     int
-	)
-
-	for time.Now().Before(deadline) {
-		if expectedNodes > 0 && responses >= expectedNodes {
-			break
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if err == nats.ErrTimeout {
-				break
-			}
-			slog.Error("DescribeInstanceAttribute: Error receiving message", "err", err)
-			break
-		}
-		responses++
-
-		if respErr, perr := utils.ValidateErrorPayload(msg.Data); perr != nil {
-			code := ""
-			if respErr.Code != nil {
-				code = *respErr.Code
-			}
-			if code == awserrors.ErrorInvalidInstanceIDNotFound {
-				notFoundCount++
-				continue
-			}
-			if clientErr == "" && code != "" {
-				clientErr = code
-			}
-			continue
-		}
-
-		if success != nil {
-			continue
-		}
+	if len(frames) > 0 {
 		var out ec2.DescribeInstanceAttributeOutput
-		if err := json.Unmarshal(msg.Data, &out); err != nil {
-			slog.Error("DescribeInstanceAttribute: Failed to unmarshal node response", "err", err)
-			continue
+		if json.Unmarshal(frames[0], &out) == nil {
+			slog.Info("DescribeInstanceAttribute: Completed successfully",
+				"instance_id", *input.InstanceId, "responses", sum.Received)
+			return &out, nil
 		}
-		success = &out
 	}
 
-	if success != nil {
-		slog.Info("DescribeInstanceAttribute: Completed successfully",
-			"instance_id", *input.InstanceId, "responses", responses, "notfound", notFoundCount)
-		return success, nil
+	// A node reported a real fault (a deterministic 4xx, or a 5xx such as a KV
+	// outage) rather than confirming absence: surface it so the client retries
+	// instead of treating a transient failure as a deleted instance.
+	for code, n := range sum.ErrorCodes {
+		if n > 0 && code != "" && code != awserrors.ErrorInvalidInstanceIDNotFound {
+			return nil, errors.New(code)
+		}
 	}
-	if clientErr != "" {
-		return nil, errors.New(clientErr)
-	}
-	if notFoundCount > 0 {
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
-	}
-	// No responses at all — surface NotFound so terraform retries cleanly.
-	slog.Warn("DescribeInstanceAttribute: No responses from any daemon",
-		"instance_id", *input.InstanceId, "expected", expectedNodes)
+	// Every node confirmed absence, or none answered — surface NotFound so
+	// terraform retries cleanly.
+	slog.Warn("DescribeInstanceAttribute: instance absent or no responses",
+		"instance_id", *input.InstanceId, "received", sum.Received, "expected", expectedNodes)
 	return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 }

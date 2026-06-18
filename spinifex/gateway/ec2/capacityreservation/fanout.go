@@ -2,8 +2,6 @@ package gateway_ec2_capacityreservation
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -28,48 +26,22 @@ type nodeCensus struct {
 // collectCensus fans out spinifex.node.status and returns one entry per distinct
 // node that responds, stopping once expectedNodes answer or censusTimeout elapses.
 // It does not narrow the deadline after the first reply, trading latency for completeness.
-func collectCensus(natsConn *nats.Conn, expectedNodes int) ([]nodeCensus, error) {
-	if natsConn == nil || !natsConn.IsConnected() {
-		return nil, utils.ErrClusterUnavailable
-	}
+func collectCensus(natsConn *nats.Conn, expectedNodes int, accountID string) ([]nodeCensus, error) {
 	if expectedNodes < 1 {
 		expectedNodes = 1
 	}
 
-	inbox := nats.NewInbox()
-	sub, err := natsConn.SubscribeSync(inbox)
+	frames, _, err := utils.Gather(natsConn, "spinifex.node.status", []byte("{}"),
+		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create inbox: %w", err)
-	}
-	defer func() { _ = sub.Unsubscribe() }()
-
-	pubMsg := nats.NewMsg("spinifex.node.status")
-	pubMsg.Reply = inbox
-	pubMsg.Data = []byte("{}")
-	if err := natsConn.PublishMsg(pubMsg); err != nil {
-		return nil, fmt.Errorf("failed to publish node status request: %w", err)
+		return nil, err
 	}
 
-	deadline := time.Now().Add(censusTimeout)
 	seen := make(map[string]struct{})
 	var census []nodeCensus
-
-	for len(seen) < expectedNodes {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if errors.Is(err, nats.ErrTimeout) {
-				break
-			}
-			slog.Debug("collectCensus: error receiving message", "err", err)
-			break
-		}
-
+	for _, frame := range frames {
 		var status types.NodeStatusResponse
-		if err := json.Unmarshal(msg.Data, &status); err != nil {
+		if err := json.Unmarshal(frame, &status); err != nil {
 			slog.Debug("collectCensus: failed to unmarshal response", "err", err)
 			continue
 		}
@@ -134,60 +106,4 @@ func typeInCensus(census []nodeCensus, instanceType string) bool {
 		}
 	}
 	return false
-}
-
-// fanoutCollect publishes payload to subject and gathers every node's reply,
-// stopping once expectedNodes answer or censusTimeout elapses. Error and malformed
-// replies are skipped; all successful responses are returned for the caller to merge.
-func fanoutCollect[Out any](natsConn *nats.Conn, subject string, payload []byte, expectedNodes int, accountID string) ([]Out, error) {
-	if natsConn == nil || !natsConn.IsConnected() {
-		return nil, utils.ErrClusterUnavailable
-	}
-	if expectedNodes < 1 {
-		expectedNodes = 1
-	}
-
-	inbox := nats.NewInbox()
-	sub, err := natsConn.SubscribeSync(inbox)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create inbox: %w", err)
-	}
-	defer func() { _ = sub.Unsubscribe() }()
-
-	pubMsg := nats.NewMsg(subject)
-	pubMsg.Reply = inbox
-	pubMsg.Data = payload
-	pubMsg.Header.Set(utils.AccountIDHeader, accountID)
-	if err := natsConn.PublishMsg(pubMsg); err != nil {
-		return nil, fmt.Errorf("failed to publish %s: %w", subject, err)
-	}
-
-	deadline := time.Now().Add(censusTimeout)
-	var out []Out
-	for received := 0; received < expectedNodes; received++ {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if errors.Is(err, nats.ErrTimeout) {
-				break
-			}
-			slog.Debug("fanoutCollect: error receiving message", "subject", subject, "err", err)
-			break
-		}
-		if _, perr := utils.ValidateErrorPayload(msg.Data); perr != nil {
-			slog.Debug("fanoutCollect: skipping error response", "subject", subject)
-			continue
-		}
-		var o Out
-		if err := json.Unmarshal(msg.Data, &o); err != nil {
-			slog.Debug("fanoutCollect: failed to unmarshal response", "subject", subject, "err", err)
-			continue
-		}
-		out = append(out, o)
-	}
-
-	return out, nil
 }

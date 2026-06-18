@@ -10,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -24,83 +23,17 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	inbox := nats.NewInbox()
-	sub, err := natsConn.SubscribeSync(inbox)
+	frames, sum, err := utils.Gather(natsConn, "ec2.DescribeInstances", jsonData,
+		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
-		slog.Error("DescribeInstances: Failed to create inbox subscription", "err", err)
-		return nil, fmt.Errorf("failed to create inbox: %w", err)
+		return nil, err
 	}
-	defer sub.Unsubscribe()
-
-	pubMsg := nats.NewMsg("ec2.DescribeInstances")
-	pubMsg.Reply = inbox
-	pubMsg.Data = jsonData
-	pubMsg.Header.Set(utils.AccountIDHeader, accountID)
-	err = natsConn.PublishMsg(pubMsg)
-	if err != nil {
-		slog.Error("DescribeInstances: Failed to publish request", "err", err)
-		return nil, fmt.Errorf("failed to publish request: %w", err)
-	}
-
-	deadline := time.Now().Add(3 * time.Second)
 
 	var allReservations []*ec2.Reservation
-	var clientError string // first deterministic 4xx error code
-	responsesReceived := 0
-
-	if expectedNodes <= 0 {
-		expectedNodes = -1
-		slog.Warn("DescribeInstances: ExpectedNodes not configured, using timeout-only collection")
-	}
-
-	for time.Now().Before(deadline) {
-		// Check if we've received responses from all expected nodes
-		if expectedNodes > 0 && responsesReceived >= expectedNodes {
-			slog.Info("DescribeInstances: Received responses from all expected nodes", "expected", expectedNodes, "received", responsesReceived)
-			break
-		}
-
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if err == nats.ErrTimeout {
-				break
-			}
-			slog.Error("DescribeInstances: Error receiving message", "err", err)
-			break
-		}
-
-		responsesReceived++
-
-		responseError, err := utils.ValidateErrorPayload(msg.Data)
-		if err != nil {
-			code := ""
-			if responseError.Code != nil {
-				code = *responseError.Code
-			}
-			// Capture the first deterministic 4xx; propagated only if no data collected.
-			if clientError == "" && code != "" {
-				if info, known := awserrors.ErrorLookup[code]; known && info.HTTPCode >= 400 && info.HTTPCode < 500 {
-					clientError = code
-				}
-			}
-			slog.Warn("DescribeInstances: Received error from node", "code", code, "responses_received", responsesReceived)
-			continue
-		}
-
+	for _, frame := range frames {
 		var nodeOutput ec2.DescribeInstancesOutput
-		err = json.Unmarshal(msg.Data, &nodeOutput)
-		if err != nil {
-			slog.Error("DescribeInstances: Failed to unmarshal node response", "err", err)
-			continue
-		}
-
-		if nodeOutput.Reservations != nil {
+		if json.Unmarshal(frame, &nodeOutput) == nil && nodeOutput.Reservations != nil {
 			allReservations = append(allReservations, nodeOutput.Reservations...)
-			slog.Info("DescribeInstances: Collected reservations from node", "count", len(nodeOutput.Reservations), "responses_received", responsesReceived)
 		}
 	}
 
@@ -121,8 +54,9 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 	}
 	kvWg.Wait()
 
-	if clientError != "" && len(allReservations) == 0 {
-		return nil, errors.New(clientError)
+	// Propagate a deterministic 4xx only when nothing was collected (fan-out + KV).
+	if sum.FirstClient4xx != "" && len(allReservations) == 0 {
+		return nil, errors.New(sum.FirstClient4xx)
 	}
 
 	output := &ec2.DescribeInstancesOutput{

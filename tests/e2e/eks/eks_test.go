@@ -368,6 +368,33 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 	})
 	t.Logf("EBS CSI IRSA role: %s", roleArn)
 
+	// awsgw enforces IAM on assumed-role EC2 calls, so the controller's
+	// CreateVolume/AttachVolume need a permission policy on the role — a
+	// customer-managed one with an explicit allow (AWS-managed ARNs are opaque
+	// and grant nothing). This mirrors what an operator attaches to the
+	// ServiceAccountRoleArn in production.
+	const ebsPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ec2:CreateVolume","ec2:DeleteVolume","ec2:AttachVolume","ec2:DetachVolume","ec2:ModifyVolume","ec2:DescribeVolumes","ec2:DescribeVolumesModifications","ec2:DescribeInstances","ec2:DescribeAvailabilityZones","ec2:DescribeSnapshots","ec2:CreateSnapshot","ec2:DeleteSnapshot","ec2:DescribeTags","ec2:CreateTags","ec2:DeleteTags"],"Resource":"*"}]}`
+	polOut, err := c.IAM.CreatePolicy(&iam.CreatePolicyInput{
+		PolicyName:     aws.String(roleName + "-policy"),
+		PolicyDocument: aws.String(ebsPolicy),
+	})
+	require.NoError(t, err, "create-policy")
+	policyArn := aws.StringValue(polOut.Policy.Arn)
+	t.Cleanup(func() {
+		_, _ = c.IAM.DeletePolicy(&iam.DeletePolicyInput{PolicyArn: aws.String(policyArn)})
+	})
+	_, err = c.IAM.AttachRolePolicy(&iam.AttachRolePolicyInput{
+		RoleName:  aws.String(roleName),
+		PolicyArn: aws.String(policyArn),
+	})
+	require.NoError(t, err, "attach-role-policy")
+	t.Cleanup(func() {
+		_, _ = c.IAM.DetachRolePolicy(&iam.DetachRolePolicyInput{
+			RoleName:  aws.String(roleName),
+			PolicyArn: aws.String(policyArn),
+		})
+	})
+
 	// Install the managed addon bound to the role. The addon-sync agent renders
 	// the controller manifest's {{SERVICE_ACCOUNT_ROLE_ARN}} from this ARN.
 	const addon = "aws-ebs-csi-driver"
@@ -401,6 +428,27 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 
 	kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
 	kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
+
+	// On failure, snapshot the CSI control path while the cluster is still up
+	// (DeleteCluster runs in a later subtest). Dumps land in the artifact dir,
+	// which is retained on failure.
+	harness.OnFailure(t, func() {
+		dumps := map[string][]string{
+			"csi-describe-pvc.txt":     {"-n", "default", "describe", "pvc", "ebs-csi-e2e"},
+			"csi-describe-pods.txt":    {"-n", "default", "describe", "pods"},
+			"csi-get-events.txt":       {"-n", "default", "get", "events", "--sort-by", ".lastTimestamp"},
+			"csi-storageclass.txt":     {"get", "storageclass", "-o", "yaml"},
+			"csi-csidriver.txt":        {"get", "csidriver,csinode", "-o", "wide"},
+			"csi-volumeattach.txt":     {"get", "volumeattachment", "-o", "wide"},
+			"csi-ctrl-provisioner.txt": {"-n", "kube-system", "logs", "deploy/ebs-csi-controller", "-c", "csi-provisioner", "--tail", "200"},
+			"csi-ctrl-plugin.txt":      {"-n", "kube-system", "logs", "deploy/ebs-csi-controller", "-c", "ebs-plugin", "--tail", "200"},
+			"csi-node-plugin.txt":      {"-n", "kube-system", "logs", "daemonset/ebs-csi-node", "-c", "ebs-plugin", "--tail", "200"},
+		}
+		for name, args := range dumps {
+			out, _ := kc.Run(45*time.Second, args...)
+			harness.DumpFile(t, artifacts, name, []byte(out))
+		}
+	})
 
 	// Controller Deployment + node DaemonSet must roll out before a PVC binds.
 	harness.Phase(t, "Waiting for CSI driver rollout")

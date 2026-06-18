@@ -7,6 +7,7 @@ const (
 	SubjectRepoCreate   = "ecr.repo.create"
 	SubjectRepoDescribe = "ecr.repo.describe"
 	SubjectRepoList     = "ecr.repo.list"
+	SubjectRepoDelete   = "ecr.repo.delete"
 
 	SubjectPolicyPut    = "ecr.policy.put"
 	SubjectPolicyGet    = "ecr.policy.get"
@@ -19,6 +20,7 @@ const (
 
 	SubjectManifestPut      = "ecr.manifest.put"
 	SubjectManifestDescribe = "ecr.manifest.describe"
+	SubjectManifestList     = "ecr.manifest.list"
 
 	SubjectUploadCreate = "ecr.upload.create"
 	SubjectUploadGet    = "ecr.upload.get"
@@ -49,6 +51,14 @@ type RepoListRequest struct{}
 
 type RepoListResponse struct {
 	Repos []string `json:"repos"`
+}
+
+type RepoDeleteRequest struct {
+	Repo string `json:"repo"`
+}
+
+type RepoDeleteResponse struct {
+	Found bool `json:"found"`
 }
 
 type PolicyPutRequest struct {
@@ -128,6 +138,14 @@ type ManifestDescribeResponse struct {
 	Meta  ManifestMeta `json:"meta"`
 }
 
+type ManifestListRequest struct {
+	Repo string `json:"repo"`
+}
+
+type ManifestListResponse struct {
+	Digests []string `json:"digests"`
+}
+
 type UploadCreateRequest struct {
 	UploadID string      `json:"uploadID"`
 	State    UploadState `json:"state"`
@@ -175,6 +193,7 @@ type MetaService interface {
 	RepoCreate(req *RepoCreateRequest, accountID string) (*RepoCreateResponse, error)
 	RepoDescribe(req *RepoDescribeRequest, accountID string) (*RepoDescribeResponse, error)
 	RepoList(req *RepoListRequest, accountID string) (*RepoListResponse, error)
+	RepoDelete(req *RepoDeleteRequest, accountID string) (*RepoDeleteResponse, error)
 
 	PolicyPut(req *PolicyPutRequest, accountID string) (*PolicyPutResponse, error)
 	PolicyGet(req *PolicyGetRequest, accountID string) (*PolicyGetResponse, error)
@@ -187,6 +206,7 @@ type MetaService interface {
 
 	ManifestPut(req *ManifestPutRequest, accountID string) (*ManifestPutResponse, error)
 	ManifestDescribe(req *ManifestDescribeRequest, accountID string) (*ManifestDescribeResponse, error)
+	ManifestList(req *ManifestListRequest, accountID string) (*ManifestListResponse, error)
 
 	UploadCreate(req *UploadCreateRequest, accountID string) (*UploadCreateResponse, error)
 	UploadGet(req *UploadGetRequest, accountID string) (*UploadGetResponse, error)

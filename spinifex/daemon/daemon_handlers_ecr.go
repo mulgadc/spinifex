@@ -14,6 +14,10 @@ func (d *Daemon) handleECRRepoList(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecrMetaService.RepoList)
 }
 
+func (d *Daemon) handleECRRepoDelete(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecrMetaService.RepoDelete)
+}
+
 func (d *Daemon) handleECRPolicyPut(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecrMetaService.PolicyPut)
 }
@@ -48,6 +52,10 @@ func (d *Daemon) handleECRManifestPut(msg *nats.Msg) {
 
 func (d *Daemon) handleECRManifestDescribe(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecrMetaService.ManifestDescribe)
+}
+
+func (d *Daemon) handleECRManifestList(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecrMetaService.ManifestList)
 }
 
 func (d *Daemon) handleECRUploadCreate(msg *nats.Msg) {

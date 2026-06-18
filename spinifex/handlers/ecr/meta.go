@@ -59,6 +59,9 @@ type MetaStore interface {
 	PutRepo(accountID string, meta RepoMeta) error
 	GetRepo(accountID, repo string) (RepoMeta, error)
 	ListRepos(accountID string) ([]string, error)
+	DeleteRepo(accountID, repo string) error
+
+	ListManifests(accountID, repo string) ([]string, error)
 
 	PutRepoPolicy(accountID, repo string, policyText []byte) error
 	GetRepoPolicy(accountID, repo string) ([]byte, error)
@@ -161,6 +164,61 @@ func (s *KVMetaStore) ListRepos(accountID string) ([]string, error) {
 	}
 	sort.Strings(repos)
 	return repos, nil
+}
+
+// DeleteRepo removes a repository and cascades its metadata: meta, policy, all
+// tags, and all manifest records. Predastore blob garbage collection is out of
+// scope here (deferred); only the per-account KV records are removed. Returns
+// ErrNotFound when the repository meta is absent.
+func (s *KVMetaStore) DeleteRepo(accountID, repo string) error {
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return err
+	}
+	if _, err := kv.Get(KVRepoMetaKey(repo)); err != nil {
+		return mapKVErr(err)
+	}
+	keys, err := kv.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return nil
+		}
+		return err
+	}
+	tagsPrefix, manifestsPrefix := KVTagsPrefix(repo), KVManifestsPrefix(repo)
+	metaKey, policyKey := KVRepoMetaKey(repo), KVRepoPolicyKey(repo)
+	for _, k := range keys {
+		if k == metaKey || k == policyKey ||
+			strings.HasPrefix(k, tagsPrefix) || strings.HasPrefix(k, manifestsPrefix) {
+			if err := kv.Delete(k); err != nil {
+				return mapKVErr(err)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *KVMetaStore) ListManifests(accountID, repo string) ([]string, error) {
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := kv.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	prefix := KVManifestsPrefix(repo)
+	var digests []string
+	for _, k := range keys {
+		if token, ok := strings.CutPrefix(k, prefix); ok {
+			digests = append(digests, token)
+		}
+	}
+	sort.Strings(digests)
+	return digests, nil
 }
 
 func (s *KVMetaStore) PutRepoPolicy(accountID, repo string, policyText []byte) error {
@@ -408,6 +466,40 @@ func (m *MemoryMetaStore) ListRepos(accountID string) ([]string, error) {
 	var out []string
 	for name := range m.repos[accountID] {
 		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (m *MemoryMetaStore) DeleteRepo(accountID, repo string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.repos[accountID][repo]; !ok {
+		return ErrNotFound
+	}
+	delete(m.repos[accountID], repo)
+	delete(m.policies[accountID], repo)
+	for k := range m.tags[accountID] {
+		if r, _, ok := strings.Cut(k, "|"); ok && r == repo {
+			delete(m.tags[accountID], k)
+		}
+	}
+	for k := range m.manifests[accountID] {
+		if r, _, ok := strings.Cut(k, "|"); ok && r == repo {
+			delete(m.manifests[accountID], k)
+		}
+	}
+	return nil
+}
+
+func (m *MemoryMetaStore) ListManifests(accountID, repo string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for k := range m.manifests[accountID] {
+		if r, d, ok := strings.Cut(k, "|"); ok && r == repo {
+			out = append(out, d)
+		}
 	}
 	sort.Strings(out)
 	return out, nil

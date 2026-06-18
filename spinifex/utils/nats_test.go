@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
@@ -872,4 +873,216 @@ func TestAddNAT_NoResponders(t *testing.T) {
 
 	err = AddNAT(nc, "vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
 	require.Error(t, err)
+}
+
+// --- Gather tests ---
+
+func TestGather_EarlyExitBeforeTimeout(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	for range 3 {
+		_, err := nc.Subscribe("test.gather.early", func(msg *nats.Msg) {
+			_ = msg.Respond([]byte(`{"ok":true}`))
+		})
+		require.NoError(t, err)
+	}
+
+	start := time.Now()
+	frames, sum, err := Gather(nc, "test.gather.early", []byte("{}"),
+		GatherOpts{Timeout: 5 * time.Second, ExpectedNodes: 3})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Len(t, frames, 3)
+	assert.Equal(t, 3, sum.Received)
+	assert.Equal(t, 3, sum.Successes)
+	assert.False(t, sum.TimedOut)
+	assert.Less(t, elapsed, 2*time.Second)
+}
+
+func TestGather_TimesOutBelowExpected(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	for range 2 {
+		_, err := nc.Subscribe("test.gather.timeout", func(msg *nats.Msg) {
+			_ = msg.Respond([]byte(`{"ok":true}`))
+		})
+		require.NoError(t, err)
+	}
+
+	frames, sum, err := Gather(nc, "test.gather.timeout", []byte("{}"),
+		GatherOpts{Timeout: 300 * time.Millisecond, ExpectedNodes: 3})
+
+	require.NoError(t, err)
+	assert.Len(t, frames, 2)
+	assert.Equal(t, 2, sum.Received)
+	assert.True(t, sum.TimedOut)
+}
+
+func TestGather_MixedSuccessAndErrors(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	_, err := nc.Subscribe("test.gather.mixed", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"ok":true}`))
+	})
+	require.NoError(t, err)
+	for range 2 {
+		_, err = nc.Subscribe("test.gather.mixed", func(msg *nats.Msg) {
+			_ = msg.Respond(GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+		})
+		require.NoError(t, err)
+	}
+	// A 5xx error must be counted but must not become FirstClient4xx.
+	_, err = nc.Subscribe("test.gather.mixed", func(msg *nats.Msg) {
+		_ = msg.Respond(GenerateErrorPayload(awserrors.ErrorBandwidthLimitExceeded))
+	})
+	require.NoError(t, err)
+
+	frames, sum, err := Gather(nc, "test.gather.mixed", []byte("{}"),
+		GatherOpts{Timeout: 2 * time.Second, ExpectedNodes: 4})
+
+	require.NoError(t, err)
+	assert.Len(t, frames, 1)
+	assert.Equal(t, 4, sum.Received)
+	assert.Equal(t, 1, sum.Successes)
+	assert.Equal(t, 2, sum.ErrorCodes[awserrors.ErrorInvalidInstanceIDNotFound])
+	assert.Equal(t, 1, sum.ErrorCodes[awserrors.ErrorBandwidthLimitExceeded])
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, sum.FirstClient4xx)
+}
+
+func TestGather_StopOnFirstSkipsErrors(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	for range 2 {
+		_, err := nc.Subscribe("test.gather.first", func(msg *nats.Msg) {
+			_ = msg.Respond(GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+		})
+		require.NoError(t, err)
+	}
+	// Delayed so the two error frames are processed (and skipped) first.
+	_, err := nc.Subscribe("test.gather.first", func(msg *nats.Msg) {
+		time.Sleep(50 * time.Millisecond)
+		_ = msg.Respond([]byte(`{"value":"found"}`))
+	})
+	require.NoError(t, err)
+
+	frames, sum, err := Gather(nc, "test.gather.first", []byte("{}"),
+		GatherOpts{Timeout: 2 * time.Second, ExpectedNodes: 3, StopOnFirst: true})
+
+	require.NoError(t, err)
+	require.Len(t, frames, 1)
+	var out struct {
+		Value string `json:"value"`
+	}
+	require.NoError(t, json.Unmarshal(frames[0], &out))
+	assert.Equal(t, "found", out.Value)
+	assert.Equal(t, 1, sum.Successes)
+	assert.False(t, sum.TimedOut)
+	assert.Equal(t, 2, sum.ErrorCodes[awserrors.ErrorInvalidInstanceIDNotFound])
+}
+
+func TestGather_OversizedFrameDropped(t *testing.T) {
+	opts := &server.Options{
+		Host:       "127.0.0.1",
+		Port:       -1,
+		NoLog:      true,
+		NoSigs:     true,
+		MaxPayload: maxScatterGatherResponseSize + 1024*1024, // headroom above the 10 MB cap
+	}
+	ns, err := server.NewServer(opts)
+	require.NoError(t, err)
+	go ns.Start()
+	require.True(t, ns.ReadyForConnections(5*time.Second))
+	t.Cleanup(func() { ns.Shutdown() })
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Close() })
+
+	big := bytes.Repeat([]byte("a"), maxScatterGatherResponseSize+1)
+	_, err = nc.Subscribe("test.gather.oversized", func(msg *nats.Msg) {
+		_ = msg.Respond(big)
+	})
+	require.NoError(t, err)
+
+	frames, sum, err := Gather(nc, "test.gather.oversized", []byte("{}"),
+		GatherOpts{Timeout: 2 * time.Second, ExpectedNodes: 1})
+
+	require.NoError(t, err)
+	assert.Empty(t, frames)
+	assert.Equal(t, 1, sum.Received)
+	assert.Equal(t, 0, sum.Successes)
+}
+
+// gatherAcctEcho reports the X-Account-ID header a Gather request carried.
+type gatherAcctEcho struct {
+	ID      string `json:"id"`
+	Present bool   `json:"present"`
+}
+
+func TestGather_AccountIDHeaderSet(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	_, err := nc.Subscribe("test.gather.acct.set", func(msg *nats.Msg) {
+		echo := gatherAcctEcho{
+			ID:      msg.Header.Get(AccountIDHeader),
+			Present: len(msg.Header.Values(AccountIDHeader)) > 0,
+		}
+		data, _ := json.Marshal(echo)
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+
+	frames, _, err := Gather(nc, "test.gather.acct.set", []byte("{}"),
+		GatherOpts{Timeout: time.Second, ExpectedNodes: 1, AccountID: "111122223333"})
+	require.NoError(t, err)
+	require.Len(t, frames, 1)
+
+	var echo gatherAcctEcho
+	require.NoError(t, json.Unmarshal(frames[0], &echo))
+	assert.True(t, echo.Present)
+	assert.Equal(t, "111122223333", echo.ID)
+}
+
+func TestGather_AccountIDHeaderAbsentWhenEmpty(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	_, err := nc.Subscribe("test.gather.acct.empty", func(msg *nats.Msg) {
+		echo := gatherAcctEcho{
+			ID:      msg.Header.Get(AccountIDHeader),
+			Present: len(msg.Header.Values(AccountIDHeader)) > 0,
+		}
+		data, _ := json.Marshal(echo)
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+
+	frames, _, err := Gather(nc, "test.gather.acct.empty", []byte("{}"),
+		GatherOpts{Timeout: time.Second, ExpectedNodes: 1})
+	require.NoError(t, err)
+	require.Len(t, frames, 1)
+
+	var echo gatherAcctEcho
+	require.NoError(t, json.Unmarshal(frames[0], &echo))
+	assert.False(t, echo.Present)
+	assert.Equal(t, "", echo.ID)
+}
+
+func TestGather_NilConn_ReturnsClusterUnavailable(t *testing.T) {
+	frames, sum, err := Gather(nil, "test.never", []byte("{}"),
+		GatherOpts{Timeout: 50 * time.Millisecond, ExpectedNodes: 1})
+	require.ErrorIs(t, err, ErrClusterUnavailable)
+	assert.Nil(t, frames)
+	assert.NotNil(t, sum.ErrorCodes)
+}
+
+func TestGather_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
+	ns := startTestNATSServer(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	nc.Close()
+
+	_, _, err = Gather(nc, "test.never", []byte("{}"),
+		GatherOpts{Timeout: 50 * time.Millisecond, ExpectedNodes: 1})
+	require.ErrorIs(t, err, ErrClusterUnavailable)
 }

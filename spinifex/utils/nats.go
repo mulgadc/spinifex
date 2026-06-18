@@ -380,6 +380,106 @@ func NATSScatterGather[Out any](conn *nats.Conn, subject string, input any, time
 	return nil, fmt.Errorf("scatter-gather timeout: no responses received for %s", subject)
 }
 
+// Summary is a local tally of a fan-out; it is never sent over the wire.
+type Summary struct {
+	Received       int            // frames seen (success + error)
+	Successes      int            // frames that decoded as a non-error envelope
+	ErrorCodes     map[string]int // AWS error code -> count across error frames
+	FirstClient4xx string         // first deterministic 4xx code seen, "" if none
+	TimedOut       bool           // deadline hit before the stop condition was met
+}
+
+// GatherOpts configures a Gather fan-out.
+type GatherOpts struct {
+	Timeout       time.Duration // hard deadline for the whole fan-out
+	ExpectedNodes int           // early-exit once this many frames arrive (0 = wait full Timeout)
+	StopOnFirst   bool          // return after the first non-error frame (first-wins)
+	AccountID     string        // sets X-Account-ID header when non-empty
+}
+
+// Gather publishes payload to subject over a fresh inbox and collects reply frames
+// until ExpectedNodes answer, StopOnFirst yields a success, or Timeout elapses.
+// Error envelopes and oversized frames are dropped from frames but counted in sum;
+// returned frames are raw daemon replies for the caller to decode and merge.
+func Gather(conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
+	sum.ErrorCodes = map[string]int{}
+	if conn == nil || !conn.IsConnected() {
+		return nil, sum, ErrClusterUnavailable
+	}
+
+	inbox := nats.NewInbox()
+	sub, err := conn.SubscribeSync(inbox)
+	if err != nil {
+		return nil, sum, fmt.Errorf("failed to create inbox: %w", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	pubMsg := nats.NewMsg(subject)
+	pubMsg.Reply = inbox
+	pubMsg.Data = payload
+	if opts.AccountID != "" {
+		pubMsg.Header.Set(AccountIDHeader, opts.AccountID)
+	}
+	if err := conn.PublishMsg(pubMsg); err != nil {
+		return nil, sum, fmt.Errorf("failed to publish request: %w", err)
+	}
+
+	maxResponses := maxScatterGatherUnboundedResponses
+	if opts.ExpectedNodes > 0 {
+		maxResponses = opts.ExpectedNodes
+	}
+
+	deadline := time.Now().Add(opts.Timeout)
+	for sum.Received < maxResponses {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			sum.TimedOut = true
+			break
+		}
+
+		msg, nerr := sub.NextMsg(remaining)
+		if nerr != nil {
+			if errors.Is(nerr, nats.ErrTimeout) || errors.Is(nerr, nats.ErrNoResponders) {
+				sum.TimedOut = true
+				break
+			}
+			return frames, sum, fmt.Errorf("gather receive error on %s: %w", subject, nerr)
+		}
+
+		sum.Received++
+
+		if len(msg.Data) > maxScatterGatherResponseSize {
+			slog.Warn("Gather: skipping oversized response", "subject", subject, "size", len(msg.Data))
+			continue
+		}
+
+		responseError, verr := ValidateErrorPayload(msg.Data)
+		if verr != nil {
+			code := ""
+			if responseError.Code != nil {
+				code = *responseError.Code
+			}
+			sum.ErrorCodes[code]++
+			// Capture the first deterministic 4xx; callers propagate it only when nothing was collected.
+			if sum.FirstClient4xx == "" && code != "" {
+				if info, known := awserrors.ErrorLookup[code]; known && info.HTTPCode >= 400 && info.HTTPCode < 500 {
+					sum.FirstClient4xx = code
+				}
+			}
+			slog.Debug("Gather: skipping error response", "code", code, "subject", subject)
+			continue
+		}
+
+		sum.Successes++
+		frames = append(frames, msg.Data)
+		if opts.StopOnFirst {
+			return frames, sum, nil
+		}
+	}
+
+	return frames, sum, nil
+}
+
 // PublishEvent marshals event as JSON and publishes to topic (fire-and-forget; nil conn is a no-op).
 func PublishEvent(nc *nats.Conn, topic string, event any) {
 	if nc == nil {

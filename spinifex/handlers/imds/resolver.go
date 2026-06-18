@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
@@ -33,6 +34,8 @@ type instanceFacts struct {
 	imageID               string
 	iamInstanceProfileArn string
 	keyName               string
+	architecture          string
+	pendingTime           time.Time
 	userData              []byte
 }
 

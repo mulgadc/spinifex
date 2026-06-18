@@ -36,6 +36,8 @@ func (l *natsInstanceLookup) describe(accountID, instanceID string) (*instanceFa
 		instanceType: aws.StringValue(inst.InstanceType),
 		imageID:      aws.StringValue(inst.ImageId),
 		keyName:      aws.StringValue(inst.KeyName),
+		architecture: aws.StringValue(inst.Architecture),
+		pendingTime:  aws.TimeValue(inst.LaunchTime),
 	}
 	if inst.IamInstanceProfile != nil {
 		facts.iamInstanceProfileArn = aws.StringValue(inst.IamInstanceProfile.Arn)

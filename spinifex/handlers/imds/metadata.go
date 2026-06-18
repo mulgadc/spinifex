@@ -27,6 +27,14 @@ const (
 	prefixPublicKeys     = "/latest/meta-data/public-keys/"
 	pathPublicKeysDir    = "/latest/meta-data/public-keys"
 
+	prefixDynamic        = "/latest/dynamic"
+	pathIdentityDir      = "/latest/dynamic/instance-identity"
+	pathIdentityDocument = "/latest/dynamic/instance-identity/document"
+
+	// identityDocSchemaVersion is the identity-document schema version, distinct
+	// from the IMDS API version (pinnedVersion).
+	identityDocSchemaVersion = "2017-09-30"
+
 	hdrToken    = "X-Aws-Ec2-Metadata-Token"             //nolint:gosec // HTTP header name, not a credential
 	hdrTokenTTL = "X-Aws-Ec2-Metadata-Token-Ttl-Seconds" //nolint:gosec // HTTP header name, not a credential
 
@@ -161,6 +169,12 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		writeText(w, strings.Join(supportedVersions, "\n"))
 	case "/latest", "/latest/":
 		writeText(w, "dynamic\nmeta-data\nuser-data")
+	case prefixDynamic, prefixDynamic + "/":
+		writeText(w, "instance-identity/")
+	case pathIdentityDir, pathIdentityDir + "/":
+		writeText(w, "document") // signed forms (pkcs7/rsa2048/signature) listed when the signing key lands
+	case pathIdentityDocument:
+		s.serveInstanceIdentityDocument(w, eni)
 	case pathMetaDataRoot, prefixMetaData:
 		writeText(w, "ami-id\nhostname\niam/\ninstance-id\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nplacement/\npublic-ipv4\npublic-keys/\nsecurity-groups")
 	case prefixMetaData + "instance-id":
@@ -208,6 +222,50 @@ func (s *IMDSServiceImpl) serveInstanceField(w http.ResponseWriter, eni *eniFact
 		return
 	}
 	writeText(w, field(inst))
+}
+
+// instanceIdentityDocument is the unsigned EC2 instance-identity document. nil
+// slices and *string fields marshal to JSON null, matching AWS's billingProducts,
+// kernelId, and related fields, which Spinifex does not model.
+type instanceIdentityDocument struct {
+	AccountID               string   `json:"accountId"`
+	Architecture            string   `json:"architecture"`
+	AvailabilityZone        string   `json:"availabilityZone"`
+	BillingProducts         []string `json:"billingProducts"`
+	DevpayProductCodes      []string `json:"devpayProductCodes"`
+	MarketplaceProductCodes []string `json:"marketplaceProductCodes"`
+	ImageID                 string   `json:"imageId"`
+	InstanceID              string   `json:"instanceId"`
+	InstanceType            string   `json:"instanceType"`
+	KernelID                *string  `json:"kernelId"`
+	PendingTime             string   `json:"pendingTime"`
+	PrivateIP               string   `json:"privateIp"`
+	RamdiskID               *string  `json:"ramdiskId"`
+	Region                  string   `json:"region"`
+	Version                 string   `json:"version"`
+}
+
+// serveInstanceIdentityDocument writes the unsigned instance-identity document.
+// The signed forms (pkcs7/rsa2048/signature) need a per-cluster signing key and
+// are deferred. 404s when the instance is no longer visible.
+func (s *IMDSServiceImpl) serveInstanceIdentityDocument(w http.ResponseWriter, eni *eniFacts) {
+	inst := s.instanceFor(w, eni)
+	if inst == nil {
+		return
+	}
+	doc := instanceIdentityDocument{
+		AccountID:        eni.accountID,
+		Architecture:     inst.architecture,
+		AvailabilityZone: eni.availabilityZone,
+		ImageID:          inst.imageID,
+		InstanceID:       eni.instanceID,
+		InstanceType:     inst.instanceType,
+		PendingTime:      inst.pendingTime.UTC().Format("2006-01-02T15:04:05Z"),
+		PrivateIP:        eni.privateIP,
+		Region:           regionFromAZ(eni.availabilityZone),
+		Version:          identityDocSchemaVersion,
+	}
+	writeIdentityDocument(w, doc)
 }
 
 // serveUserData writes the instance's user-data, or 404 if absent.
@@ -409,6 +467,18 @@ func synthHostname(ip, region string) string {
 func writeText(w http.ResponseWriter, body string) {
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = io.WriteString(w, body)
+}
+
+// writeIdentityDocument writes the identity document pretty-printed as text/plain,
+// mirroring the AWS IMDS response (2-space indent, nil fields rendered as null).
+func writeIdentityDocument(w http.ResponseWriter, doc instanceIdentityDocument) {
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write(data)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

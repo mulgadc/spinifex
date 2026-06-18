@@ -112,6 +112,33 @@ func TestRunInstance_Success(t *testing.T) {
 	assert.NotNil(t, ec2Instance.LaunchTime)
 }
 
+// Architecture is projected onto the customer instance from the instance type at
+// launch, so it flows to DescribeInstances and the IMDS identity document. Guards
+// the platform-wide describe-instances change, not just IMDS.
+func TestRunInstance_ArchitecturePopulated(t *testing.T) {
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {
+			InstanceType:  aws.String("t3.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("x86_64")}},
+		},
+		"t4g.micro": {
+			InstanceType:  aws.String("t4g.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("arm64")}},
+		},
+	}
+	svc := &InstanceServiceImpl{instanceTypes: instanceTypes}
+
+	for typ, wantArch := range map[string]string{"t3.micro": "x86_64", "t4g.micro": "arm64"} {
+		_, ec2Instance, err := svc.RunInstance(&ec2.RunInstancesInput{
+			ImageId:      aws.String("ami-0abcdef1234567890"),
+			InstanceType: aws.String(typ),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, ec2Instance.Architecture, "type=%s", typ)
+		assert.Equal(t, wantArch, *ec2Instance.Architecture, "type=%s", typ)
+	}
+}
+
 func TestRunInstance_WithIamInstanceProfile(t *testing.T) {
 	const profileARN = "arn:aws:iam::111122223333:instance-profile/app-profile"
 	svc := &InstanceServiceImpl{

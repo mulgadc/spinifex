@@ -2,6 +2,7 @@ package handlers_imds
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -291,6 +292,78 @@ func TestHTTP_DatedVersionAlias(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// ----- dynamic instance-identity -----------------------------------------
+
+// /latest/dynamic lists instance-identity/; /latest/dynamic/instance-identity
+// advertises only document (the signed forms are deferred).
+func TestHTTP_DynamicListings(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	cases := []struct{ path, want string }{
+		{prefixDynamic, "instance-identity/"},
+		{prefixDynamic + "/", "instance-identity/"},
+		{pathIdentityDir, "document"},
+		{pathIdentityDir + "/", "document"},
+	}
+	for _, c := range cases {
+		rec := get(t, h, c.path, token)
+		assert.Equal(t, http.StatusOK, rec.Code, "path=%s", c.path)
+		assert.Equal(t, c.want, rec.Body.String(), "path=%s", c.path)
+	}
+}
+
+// The unsigned identity document resolves every field from eni + instance facts;
+// fields Spinifex does not model (billingProducts, kernelId, ...) are JSON null.
+func TestHTTP_InstanceIdentityDocument(t *testing.T) {
+	pending := time.Date(2026, 6, 18, 1, 2, 3, 0, time.UTC)
+	res := &fakeResolver{
+		eni:  testENI(),
+		inst: &instanceFacts{instanceType: "t3.micro", imageID: "ami-12345", architecture: "x86_64", pendingTime: pending},
+	}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+
+	rec := get(t, h, pathIdentityDocument, token)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	for k, want := range map[string]any{
+		"accountId":        "111122223333",
+		"architecture":     "x86_64",
+		"availabilityZone": "ap-southeast-2a",
+		"region":           "ap-southeast-2",
+		"imageId":          "ami-12345",
+		"instanceId":       "i-0123456789",
+		"instanceType":     "t3.micro",
+		"privateIp":        "10.0.1.5",
+		"pendingTime":      "2026-06-18T01:02:03Z",
+		"version":          "2017-09-30",
+	} {
+		assert.Equal(t, want, doc[k], "field=%s", k)
+	}
+
+	// Unmodelled fields marshal to JSON null, not absent and not "".
+	for _, k := range []string{"billingProducts", "devpayProductCodes", "marketplaceProductCodes", "kernelId", "ramdiskId"} {
+		v, ok := doc[k]
+		assert.True(t, ok, "field=%s present", k)
+		assert.Nil(t, v, "field=%s null", k)
+	}
+}
+
+// An instance that is no longer visible (terminating/invisible) is a 404, not a
+// document with empty fields.
+func TestHTTP_InstanceIdentityDocumentInvisible404(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: nil}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, pathIdentityDocument, token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 // ----- metadata surface --------------------------------------------------
 
 func TestHTTP_MetadataPaths(t *testing.T) {
@@ -350,7 +423,9 @@ func TestHTTP_OutOfScopePaths404(t *testing.T) {
 	h := svc.httpHandler()
 	token := issueToken(t, h)
 	for _, p := range []string{
-		"/latest/dynamic/instance-identity/document",
+		pathIdentityDir + "/pkcs7",     // signed forms stay deferred until the signing key lands
+		pathIdentityDir + "/rsa2048",   //
+		pathIdentityDir + "/signature", //
 		prefixMetaData + "network/interfaces/macs",
 		prefixMetaData + "nonsense",
 	} {

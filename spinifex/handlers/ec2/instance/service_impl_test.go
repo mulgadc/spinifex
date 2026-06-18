@@ -112,6 +112,33 @@ func TestRunInstance_Success(t *testing.T) {
 	assert.NotNil(t, ec2Instance.LaunchTime)
 }
 
+// Architecture is projected onto the customer instance from the instance type at
+// launch, so it flows to DescribeInstances and the IMDS identity document. Guards
+// the platform-wide describe-instances change, not just IMDS.
+func TestRunInstance_ArchitecturePopulated(t *testing.T) {
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {
+			InstanceType:  aws.String("t3.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("x86_64")}},
+		},
+		"t4g.micro": {
+			InstanceType:  aws.String("t4g.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("arm64")}},
+		},
+	}
+	svc := &InstanceServiceImpl{instanceTypes: instanceTypes}
+
+	for typ, wantArch := range map[string]string{"t3.micro": "x86_64", "t4g.micro": "arm64"} {
+		_, ec2Instance, err := svc.RunInstance(&ec2.RunInstancesInput{
+			ImageId:      aws.String("ami-0abcdef1234567890"),
+			InstanceType: aws.String(typ),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, ec2Instance.Architecture, "type=%s", typ)
+		assert.Equal(t, wantArch, *ec2Instance.Architecture, "type=%s", typ)
+	}
+}
+
 func TestRunInstance_WithIamInstanceProfile(t *testing.T) {
 	const profileARN = "arn:aws:iam::111122223333:instance-profile/app-profile"
 	svc := &InstanceServiceImpl{
@@ -2469,6 +2496,71 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 	}
 }
 
+// TestPrepareRunInstances_AmiLaunchIndexContiguous pins that ami-launch-index is
+// assigned per successful launch (0..n-1) so it flows to DescribeInstances and the
+// IMDS identity document. Survivors of a mid-loop failure stay contiguous (no gap).
+func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
+	t.Run("count_3_no_eni", func(t *testing.T) {
+		types, _ := defaultPrepareInstanceTypes()
+		prov := &fakeResourceCapacityProvider{
+			instanceTypes: types,
+			canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+		}
+		svc := &InstanceServiceImpl{
+			config:        &config.Config{},
+			instanceTypes: types,
+			amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+				"ami-1": {ImageOwnerAlias: "acc"},
+			}},
+			resourceMgr: prov,
+		}
+		reservation, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+			InstanceType: aws.String("t3.micro"),
+			ImageId:      aws.String("ami-1"),
+			MinCount:     aws.Int64(3),
+			MaxCount:     aws.Int64(3),
+		}, "acc")
+		require.NoError(t, err)
+		require.Len(t, instances, 3)
+		require.Len(t, reservation.Instances, 3)
+		for i, inst := range reservation.Instances {
+			assert.Equal(t, int64(i), aws.Int64Value(inst.AmiLaunchIndex))
+		}
+	})
+
+	t.Run("mid_loop_failure_stays_contiguous", func(t *testing.T) {
+		// Second of three ENI creates fails, so the second instance never
+		// appends; the third fills index 1 (not 2), leaving no gap.
+		eni := &fakeENICreator{
+			defaultSubnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1"},
+			createOut: &ec2.CreateNetworkInterfaceOutput{
+				NetworkInterface: &ec2.NetworkInterface{
+					NetworkInterfaceId: aws.String("eni-1"),
+					MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+					PrivateIpAddress:   aws.String("10.0.0.10"),
+					VpcId:              aws.String("vpc-1"),
+				},
+			},
+			createErr:       errors.New("eni create failed"),
+			createErrOnCall: 2,
+		}
+		svc, _ := prepareSvcWithENI(t, eni, nil)
+
+		reservation, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+			InstanceType: aws.String("t3.micro"),
+			ImageId:      aws.String("ami-1"),
+			SubnetId:     aws.String("subnet-1"),
+			MinCount:     aws.Int64(2),
+			MaxCount:     aws.Int64(3),
+		}, "acc")
+		require.NoError(t, err)
+		require.Len(t, instances, 2)
+		require.Len(t, reservation.Instances, 2)
+		assert.Equal(t, int64(0), aws.Int64Value(reservation.Instances[0].AmiLaunchIndex))
+		assert.Equal(t, int64(1), aws.Int64Value(reservation.Instances[1].AmiLaunchIndex))
+	})
+}
+
 // TestPrepareRunInstances_BootModePropagated pins that the AMI's BootMode
 // flows onto every prepared VM, so the launch path picks UEFI vs BIOS without
 // a second AMI lookup. Empty AMI BootMode (legacy) flows through as empty.
@@ -2581,18 +2673,19 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 }
 
 type fakeENICreator struct {
-	defaultSubnet *SubnetInfo
-	subnet        *SubnetInfo
-	getENIByID    map[string]*ENIInfo
-	getENIErr     error
-	createOut     *ec2.CreateNetworkInterfaceOutput
-	createCalls   int
-	createErr     error
-	attachErr     error
-	attachCalls   int
-	updateCalls   int
-	clearCalls    int // updateCalls where publicIP is ""
-	detachCalls   int
+	defaultSubnet   *SubnetInfo
+	subnet          *SubnetInfo
+	getENIByID      map[string]*ENIInfo
+	getENIErr       error
+	createOut       *ec2.CreateNetworkInterfaceOutput
+	createCalls     int
+	createErr       error
+	createErrOnCall int // 1-based call index to fail; 0 fails every call when createErr is set
+	attachErr       error
+	attachCalls     int
+	updateCalls     int
+	clearCalls      int // updateCalls where publicIP is ""
+	detachCalls     int
 }
 
 func (f *fakeENICreator) GetDefaultSubnet(_ string) (*SubnetInfo, error) {
@@ -2625,7 +2718,7 @@ func (f *fakeENICreator) GetENI(_, eniID string) (*ENIInfo, error) {
 
 func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	f.createCalls++
-	if f.createErr != nil {
+	if f.createErr != nil && (f.createErrOnCall == 0 || f.createErrOnCall == f.createCalls) {
 		return nil, f.createErr
 	}
 	return f.createOut, nil

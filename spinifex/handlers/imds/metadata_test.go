@@ -2,9 +2,11 @@ package handlers_imds
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,12 +230,153 @@ func TestHTTP_ENIMissReturns404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// ----- version discovery -------------------------------------------------
+
+// GET / returns the advertised version list (token-gated, IMDSv2-only).
+func TestHTTP_RootVersionListing(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, "/", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "2021-07-15\nlatest", rec.Body.String())
+}
+
+// Version discovery is not a tokenless side channel: GET / without a token is 401.
+func TestHTTP_RootVersionListingTokenless401(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	rec := get(t, h, "/", "")
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Empty(t, rec.Body.String())
+}
+
+// GET /latest lists the top-level tree.
+func TestHTTP_LatestListing(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, "/latest", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "dynamic\nmeta-data\nuser-data", rec.Body.String())
+}
+
+// Any dated API-version prefix aliases to the /latest tree — including a version
+// cloud-init probes (2021-03-23) that we do not advertise — while a non-date
+// first segment is not rewritten and stays 404. The dated token PUT works too.
+func TestHTTP_DatedVersionAlias(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+
+	// PUT /<date>/api/token issues a token like /latest/api/token does.
+	put := httptest.NewRequest(http.MethodPut, "http://"+MetaDataServerIP+"/2021-07-15/api/token", nil)
+	put.RemoteAddr = testIP + ":50000"
+	put = put.WithContext(context.WithValue(put.Context(), ctxKeyVPCID, testVPC))
+	put.Header.Set(hdrTokenTTL, "60")
+	putRec := httptest.NewRecorder()
+	h.ServeHTTP(putRec, put)
+	require.Equal(t, http.StatusOK, putRec.Code)
+	token := putRec.Body.String()
+	require.NotEmpty(t, token)
+
+	want := get(t, h, prefixMetaData+"instance-id", token).Body.String()
+
+	// Advertised and non-advertised dated versions both resolve to /latest.
+	for _, date := range []string{"2021-07-15", "2021-03-23"} {
+		rec := get(t, h, "/"+date+"/meta-data/instance-id", token)
+		assert.Equal(t, http.StatusOK, rec.Code, "date=%s", date)
+		assert.Equal(t, want, rec.Body.String(), "date=%s", date)
+	}
+
+	// A non-date first segment is left alone and 404s.
+	rec := get(t, h, "/bogus/meta-data/instance-id", token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// ----- dynamic instance-identity -----------------------------------------
+
+// /latest/dynamic lists instance-identity/; /latest/dynamic/instance-identity
+// advertises only document (the signed forms are deferred).
+func TestHTTP_DynamicListings(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	cases := []struct{ path, want string }{
+		{prefixDynamic, "instance-identity/"},
+		{prefixDynamic + "/", "instance-identity/"},
+		{pathIdentityDir, "document"},
+		{pathIdentityDir + "/", "document"},
+	}
+	for _, c := range cases {
+		rec := get(t, h, c.path, token)
+		assert.Equal(t, http.StatusOK, rec.Code, "path=%s", c.path)
+		assert.Equal(t, c.want, rec.Body.String(), "path=%s", c.path)
+	}
+}
+
+// The unsigned identity document resolves every field from eni + instance facts;
+// fields Spinifex does not model (billingProducts, kernelId, ...) are JSON null.
+func TestHTTP_InstanceIdentityDocument(t *testing.T) {
+	pending := time.Date(2026, 6, 18, 1, 2, 3, 0, time.UTC)
+	res := &fakeResolver{
+		eni:  testENI(),
+		inst: &instanceFacts{instanceType: "t3.micro", imageID: "ami-12345", architecture: "x86_64", pendingTime: pending},
+	}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+
+	rec := get(t, h, pathIdentityDocument, token)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	for k, want := range map[string]any{
+		"accountId":        "111122223333",
+		"architecture":     "x86_64",
+		"availabilityZone": "ap-southeast-2a",
+		"region":           "ap-southeast-2",
+		"imageId":          "ami-12345",
+		"instanceId":       "i-0123456789",
+		"instanceType":     "t3.micro",
+		"privateIp":        "10.0.1.5",
+		"pendingTime":      "2026-06-18T01:02:03Z",
+		"version":          "2017-09-30",
+	} {
+		assert.Equal(t, want, doc[k], "field=%s", k)
+	}
+
+	// Unmodelled fields marshal to JSON null, not absent and not "".
+	for _, k := range []string{"billingProducts", "devpayProductCodes", "marketplaceProductCodes", "kernelId", "ramdiskId"} {
+		v, ok := doc[k]
+		assert.True(t, ok, "field=%s present", k)
+		assert.Nil(t, v, "field=%s null", k)
+	}
+}
+
+// An instance that is no longer visible (terminating/invisible) is a 404, not a
+// document with empty fields.
+func TestHTTP_InstanceIdentityDocumentInvisible404(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: nil}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, pathIdentityDocument, token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 // ----- metadata surface --------------------------------------------------
 
 func TestHTTP_MetadataPaths(t *testing.T) {
 	res := &fakeResolver{
-		eni:     testENI(),
-		inst:    &instanceFacts{instanceType: "t3.micro", imageID: "ami-12345", userData: []byte("#!/bin/sh\necho hi")},
+		eni: testENI(),
+		inst: &instanceFacts{
+			instanceType:   "t3.micro",
+			imageID:        "ami-12345",
+			reservationID:  "r-0abc123",
+			amiLaunchIndex: 3,
+			userData:       []byte("#!/bin/sh\necho hi"),
+		},
 		sgNames: map[string]string{"sg-1": "web-sg", "sg-2": "db-sg"},
 	}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
@@ -244,14 +387,22 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 		{prefixMetaData + "instance-id", "i-0123456789"},
 		{prefixMetaData + "instance-type", "t3.micro"},
 		{prefixMetaData + "ami-id", "ami-12345"},
+		{prefixMetaData + "ami-launch-index", "3"},
+		{prefixMetaData + "reservation-id", "r-0abc123"},
+		{prefixMetaData + "instance-life-cycle", "on-demand"},
 		{prefixMetaData + "local-ipv4", "10.0.1.5"},
 		{prefixMetaData + "public-ipv4", "203.0.113.7"},
+		{prefixMetaData + "public-hostname", "203.0.113.7"},
 		{prefixMetaData + "mac", "02:11:22:33:44:55"},
 		{prefixMetaData + "placement/availability-zone", "ap-southeast-2a"},
 		{prefixMetaData + "placement/region", "ap-southeast-2"},
 		{prefixMetaData + "security-groups", "web-sg\ndb-sg"},
 		{prefixMetaData + "hostname", "ip-10-0-1-5.ap-southeast-2.compute.internal"},
 		{prefixMetaData + "local-hostname", "ip-10-0-1-5.ap-southeast-2.compute.internal"},
+		{prefixMetaData + "services", "domain\npartition"},
+		{prefixMetaData + "services/", "domain\npartition"},
+		{prefixMetaData + "services/domain", "amazonaws.com"},
+		{prefixMetaData + "services/partition", "aws"},
 		{pathUserData, "#!/bin/sh\necho hi"},
 	}
 	for _, c := range cases {
@@ -261,15 +412,44 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 	}
 }
 
+// An instance with no public IP has no public hostname: 404, not an empty 200.
+func TestHTTP_PublicHostnameAbsent404(t *testing.T) {
+	eni := testENI()
+	eni.publicIP = ""
+	svc, _ := newTestService(&fakeResolver{eni: eni}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, prefixMetaData+"public-hostname", token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// The meta-data root lists every served child, alphabetically, to match AWS.
 func TestHTTP_DirectoryListing(t *testing.T) {
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := svc.httpHandler()
 	token := issueToken(t, h)
 	rec := get(t, h, pathMetaDataRoot, token)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "instance-id")
-	assert.Contains(t, rec.Body.String(), "iam/")
-	assert.Contains(t, rec.Body.String(), "public-keys/")
+	want := strings.Join([]string{
+		"ami-id",
+		"ami-launch-index",
+		"hostname",
+		"iam/",
+		"instance-id",
+		"instance-life-cycle",
+		"instance-type",
+		"local-hostname",
+		"local-ipv4",
+		"mac",
+		"placement/",
+		"public-hostname",
+		"public-ipv4",
+		"public-keys/",
+		"reservation-id",
+		"security-groups",
+		"services/",
+	}, "\n")
+	assert.Equal(t, want, rec.Body.String())
 }
 
 func TestHTTP_UserDataAbsent404(t *testing.T) {
@@ -287,7 +467,9 @@ func TestHTTP_OutOfScopePaths404(t *testing.T) {
 	h := svc.httpHandler()
 	token := issueToken(t, h)
 	for _, p := range []string{
-		"/latest/dynamic/instance-identity/document",
+		pathIdentityDir + "/pkcs7",     // signed forms stay deferred until the signing key lands
+		pathIdentityDir + "/rsa2048",   //
+		pathIdentityDir + "/signature", //
 		prefixMetaData + "network/interfaces/macs",
 		prefixMetaData + "nonsense",
 	} {

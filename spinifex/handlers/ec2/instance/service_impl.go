@@ -507,6 +507,12 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 	ec2Instance.State.SetCode(0)
 	ec2Instance.State.SetName("pending")
 
+	// Project the instance type's architecture onto the customer instance so it
+	// flows to DescribeInstances and the IMDS identity document for free.
+	if arch := instanceArchitecture(s.instanceTypes[*input.InstanceType]); arch != "" {
+		ec2Instance.SetArchitecture(arch)
+	}
+
 	// IAM instance profile attached at launch: gateway has already resolved
 	// the reference to a canonical ARN and enforced iam:PassRole; here we
 	// just persist it on the VM and generate the association ID. Id is left
@@ -680,6 +686,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 				s.resourceMgr.Deallocate(instanceType)
 				continue
 			}
+			ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
 			instances = append(instances, instance)
 			allEC2Instances = append(allEC2Instances, ec2Instance)
 			continue
@@ -809,6 +816,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			}
 		}
 
+		ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
 		instances = append(instances, instance)
 		allEC2Instances = append(allEC2Instances, ec2Instance)
 	}

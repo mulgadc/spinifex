@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,14 @@ const (
 	prefixPublicKeys     = "/latest/meta-data/public-keys/"
 	pathPublicKeysDir    = "/latest/meta-data/public-keys"
 
+	prefixDynamic        = "/latest/dynamic"
+	pathIdentityDir      = "/latest/dynamic/instance-identity"
+	pathIdentityDocument = "/latest/dynamic/instance-identity/document"
+
+	// identityDocSchemaVersion is the identity-document schema version, distinct
+	// from the IMDS API version (pinnedVersion).
+	identityDocSchemaVersion = "2017-09-30"
+
 	hdrToken    = "X-Aws-Ec2-Metadata-Token"             //nolint:gosec // HTTP header name, not a credential
 	hdrTokenTTL = "X-Aws-Ec2-Metadata-Token-Ttl-Seconds" //nolint:gosec // HTTP header name, not a credential
 
@@ -38,6 +47,26 @@ func rejectForwarded(next http.Handler) http.Handler {
 		if r.Header.Get(hdrForwardedFor) != "" {
 			w.WriteHeader(http.StatusForbidden)
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// dateVersion matches a dated IMDS API-version segment, e.g. 2021-03-23.
+var dateVersion = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+// normalizeVersion rewrites any dated API-version prefix to the canonical /latest
+// tree so one dispatch table serves every version a client probes — cloud-init
+// probes its own hardcoded dated versions, not the GET / listing. latest is left
+// untouched; a bare GET / is not date-shaped, so it falls through to the listing.
+func normalizeVersion(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seg, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		if dateVersion.MatchString(seg) {
+			r.URL.Path = "/latest"
+			if rest != "" {
+				r.URL.Path += "/" + rest
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -136,14 +165,32 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	}
 
 	switch path {
+	case "/":
+		writeText(w, strings.Join(supportedVersions, "\n"))
+	case "/latest", "/latest/":
+		writeText(w, "dynamic\nmeta-data\nuser-data")
+	case prefixDynamic, prefixDynamic + "/":
+		writeText(w, "instance-identity/")
+	case pathIdentityDir, pathIdentityDir + "/":
+		writeText(w, "document") // signed forms (pkcs7/rsa2048/signature) listed when the signing key lands
+	case pathIdentityDocument:
+		s.serveInstanceIdentityDocument(w, eni)
 	case pathMetaDataRoot, prefixMetaData:
-		writeText(w, "ami-id\nhostname\niam/\ninstance-id\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nplacement/\npublic-ipv4\npublic-keys/\nsecurity-groups")
+		writeText(w, "ami-id\nami-launch-index\nhostname\niam/\ninstance-id\ninstance-life-cycle\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nplacement/\npublic-hostname\npublic-ipv4\npublic-keys/\nreservation-id\nsecurity-groups\nservices/")
 	case prefixMetaData + "instance-id":
 		writeText(w, eni.instanceID)
+	case prefixMetaData + "instance-life-cycle":
+		writeText(w, "on-demand") // Spot is not modelled yet
 	case prefixMetaData + "local-ipv4":
 		writeText(w, eni.privateIP)
 	case prefixMetaData + "public-ipv4":
 		writeText(w, eni.publicIP)
+	case prefixMetaData + "public-hostname":
+		if eni.publicIP == "" {
+			w.WriteHeader(http.StatusNotFound) // no public IP → no public hostname
+			return
+		}
+		writeText(w, eni.publicIP) // mirror public-ipv4 until public DNS exists
 	case prefixMetaData + "mac":
 		writeText(w, eni.mac)
 	case prefixMetaData + "security-groups":
@@ -160,6 +207,18 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		s.serveInstanceField(w, eni, func(i *instanceFacts) string { return i.instanceType })
 	case prefixMetaData + "ami-id":
 		s.serveInstanceField(w, eni, func(i *instanceFacts) string { return i.imageID })
+	case prefixMetaData + "ami-launch-index":
+		s.serveInstanceField(w, eni, func(i *instanceFacts) string {
+			return strconv.FormatInt(i.amiLaunchIndex, 10)
+		})
+	case prefixMetaData + "reservation-id":
+		s.serveInstanceField(w, eni, func(i *instanceFacts) string { return i.reservationID })
+	case prefixMetaData + "services", prefixMetaData + "services/":
+		writeText(w, "domain\npartition")
+	case prefixMetaData + "services/domain":
+		writeText(w, "amazonaws.com")
+	case prefixMetaData + "services/partition":
+		writeText(w, "aws")
 	case prefixMetaData + "iam", prefixMetaData + "iam/":
 		writeText(w, "info\nsecurity-credentials/")
 	case prefixMetaData + "iam/info":
@@ -183,6 +242,50 @@ func (s *IMDSServiceImpl) serveInstanceField(w http.ResponseWriter, eni *eniFact
 		return
 	}
 	writeText(w, field(inst))
+}
+
+// instanceIdentityDocument is the unsigned EC2 instance-identity document. nil
+// slices and *string fields marshal to JSON null, matching AWS's billingProducts,
+// kernelId, and related fields, which Spinifex does not model.
+type instanceIdentityDocument struct {
+	AccountID               string   `json:"accountId"`
+	Architecture            string   `json:"architecture"`
+	AvailabilityZone        string   `json:"availabilityZone"`
+	BillingProducts         []string `json:"billingProducts"`
+	DevpayProductCodes      []string `json:"devpayProductCodes"`
+	MarketplaceProductCodes []string `json:"marketplaceProductCodes"`
+	ImageID                 string   `json:"imageId"`
+	InstanceID              string   `json:"instanceId"`
+	InstanceType            string   `json:"instanceType"`
+	KernelID                *string  `json:"kernelId"`
+	PendingTime             string   `json:"pendingTime"`
+	PrivateIP               string   `json:"privateIp"`
+	RamdiskID               *string  `json:"ramdiskId"`
+	Region                  string   `json:"region"`
+	Version                 string   `json:"version"`
+}
+
+// serveInstanceIdentityDocument writes the unsigned instance-identity document.
+// The signed forms (pkcs7/rsa2048/signature) need a per-cluster signing key and
+// are deferred. 404s when the instance is no longer visible.
+func (s *IMDSServiceImpl) serveInstanceIdentityDocument(w http.ResponseWriter, eni *eniFacts) {
+	inst := s.instanceFor(w, eni)
+	if inst == nil {
+		return
+	}
+	doc := instanceIdentityDocument{
+		AccountID:        eni.accountID,
+		Architecture:     inst.architecture,
+		AvailabilityZone: eni.availabilityZone,
+		ImageID:          inst.imageID,
+		InstanceID:       eni.instanceID,
+		InstanceType:     inst.instanceType,
+		PendingTime:      inst.pendingTime.UTC().Format("2006-01-02T15:04:05Z"),
+		PrivateIP:        eni.privateIP,
+		Region:           regionFromAZ(eni.availabilityZone),
+		Version:          identityDocSchemaVersion,
+	}
+	writeIdentityDocument(w, doc)
 }
 
 // serveUserData writes the instance's user-data, or 404 if absent.
@@ -384,6 +487,18 @@ func synthHostname(ip, region string) string {
 func writeText(w http.ResponseWriter, body string) {
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = io.WriteString(w, body)
+}
+
+// writeIdentityDocument writes the identity document pretty-printed as text/plain,
+// mirroring the AWS IMDS response (2-space indent, nil fields rendered as null).
+func writeIdentityDocument(w http.ResponseWriter, doc instanceIdentityDocument) {
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write(data)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

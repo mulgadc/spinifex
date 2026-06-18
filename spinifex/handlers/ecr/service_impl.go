@@ -92,6 +92,35 @@ func (s *MetaServiceImpl) PolicyDelete(req *PolicyDeleteRequest, accountID strin
 	return &PolicyDeleteResponse{Found: true, PolicyText: policy}, nil
 }
 
+func (s *MetaServiceImpl) LifecyclePut(req *LifecyclePutRequest, accountID string) (*LifecyclePutResponse, error) {
+	if err := s.store.PutLifecyclePolicy(accountID, req.Repo, req.PolicyText); err != nil {
+		return nil, err
+	}
+	return &LifecyclePutResponse{}, nil
+}
+
+func (s *MetaServiceImpl) LifecycleGet(req *LifecycleGetRequest, accountID string) (*LifecycleGetResponse, error) {
+	policy, err := s.store.GetLifecyclePolicy(accountID, req.Repo)
+	if errors.Is(err, ErrNotFound) {
+		return &LifecycleGetResponse{Found: false}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &LifecycleGetResponse{Found: true, PolicyText: policy}, nil
+}
+
+func (s *MetaServiceImpl) LifecycleDelete(req *LifecycleDeleteRequest, accountID string) (*LifecycleDeleteResponse, error) {
+	policy, err := s.store.DeleteLifecyclePolicy(accountID, req.Repo)
+	if errors.Is(err, ErrNotFound) {
+		return &LifecycleDeleteResponse{Found: false}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &LifecycleDeleteResponse{Found: true, PolicyText: policy}, nil
+}
+
 func (s *MetaServiceImpl) TagPut(req *TagPutRequest, accountID string) (*TagPutResponse, error) {
 	if err := s.store.PutTag(accountID, req.Repo, req.Tag, req.Digest); err != nil {
 		return nil, err

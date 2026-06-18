@@ -129,6 +129,7 @@ func TestMemoryMetaStore_DeleteRepoAndListManifests(t *testing.T) {
 	require.NoError(t, m.PutTag(acct, "team/app", "v1", "sha256:aaa"))
 	require.NoError(t, m.PutManifestMeta(acct, "team/app", ManifestMeta{Digest: "sha256:ccc", MediaType: "x", Size: 3}))
 	require.NoError(t, m.PutRepoPolicy(acct, "team/app", []byte(`{}`)))
+	require.NoError(t, m.PutLifecyclePolicy(acct, "team/app", []byte(`{}`)))
 
 	digs, err := m.ListManifests(acct, "team/app")
 	require.NoError(t, err)
@@ -144,6 +145,8 @@ func TestMemoryMetaStore_DeleteRepoAndListManifests(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, digs)
 	_, err = m.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = m.GetLifecyclePolicy(acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 
 	// Other repo untouched.
@@ -173,5 +176,27 @@ func TestMemoryMetaStore_RepoPolicy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, policy, string(deleted))
 	_, err = m.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestMemoryMetaStore_LifecyclePolicy(t *testing.T) {
+	m := NewMemoryMetaStore()
+	const acct = "000000000000"
+	const policy = `{"rules":[]}`
+
+	_, err := m.GetLifecyclePolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = m.DeleteLifecyclePolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	require.NoError(t, m.PutLifecyclePolicy(acct, "team/app", []byte(policy)))
+	got, err := m.GetLifecyclePolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(got))
+
+	deleted, err := m.DeleteLifecyclePolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(deleted))
+	_, err = m.GetLifecyclePolicy(acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 }

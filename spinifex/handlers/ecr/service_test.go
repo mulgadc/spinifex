@@ -83,6 +83,37 @@ func TestNATSMetaStore_RepoPolicy(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
+// TestNATSMetaStore_LifecyclePolicy drives the lifecycle-policy passthrough
+// round-trip (put/get/delete + not-found mapping) end to end.
+func TestNATSMetaStore_LifecyclePolicy(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	svc := NewKVMetaService(js)
+
+	serveMeta(t, nc, SubjectLifecyclePut, svc.LifecyclePut)
+	serveMeta(t, nc, SubjectLifecycleGet, svc.LifecycleGet)
+	serveMeta(t, nc, SubjectLifecycleDelete, svc.LifecycleDelete)
+
+	var client MetaStore = NewNATSMetaStore(nc)
+	const acct = svcTestAccount
+	const policy = `{"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":14},"action":{"type":"expire"}}]}`
+
+	_, err := client.GetLifecyclePolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = client.DeleteLifecyclePolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	require.NoError(t, client.PutLifecyclePolicy(acct, "team/app", []byte(policy)))
+	got, err := client.GetLifecyclePolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(got))
+
+	deleted, err := client.DeleteLifecyclePolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(deleted))
+	_, err = client.GetLifecyclePolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
 // serveMeta wires a MetaService method to a NATS subject, mirroring the daemon's
 // handleNATSRequest (unmarshal -> service(accountID) -> JSON or error payload).
 func serveMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(*I, string) (*O, error)) {

@@ -83,6 +83,16 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return gw.handleBatchDeleteImage(w, r)
 	}
 
+	// Lifecycle-policy preview evaluates the stored/override policy against the
+	// repo's current images via the gateway-side OCI registry, which the relayed
+	// Handler signature does not reach, so they are served inline.
+	switch action {
+	case "StartLifecyclePolicyPreview":
+		return gw.handleStartLifecyclePolicyPreview(w, r)
+	case "GetLifecyclePolicyPreview":
+		return gw.handleGetLifecyclePolicyPreview(w, r)
+	}
+
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("ECR_Request: no account ID in auth context")

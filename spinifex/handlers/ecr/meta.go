@@ -84,6 +84,10 @@ type MetaStore interface {
 	GetRepoPolicy(accountID, repo string) ([]byte, error)
 	DeleteRepoPolicy(accountID, repo string) ([]byte, error)
 
+	PutLifecyclePolicy(accountID, repo string, policyText []byte) error
+	GetLifecyclePolicy(accountID, repo string) ([]byte, error)
+	DeleteLifecyclePolicy(accountID, repo string) ([]byte, error)
+
 	PutTag(accountID, repo, tag, digest string) error
 	GetTag(accountID, repo, tag string) (string, error)
 	DeleteTag(accountID, repo, tag string) error
@@ -204,9 +208,9 @@ func (s *KVMetaStore) DeleteRepo(accountID, repo string) error {
 		return err
 	}
 	tagsPrefix, manifestsPrefix := KVTagsPrefix(repo), KVManifestsPrefix(repo)
-	metaKey, policyKey := KVRepoMetaKey(repo), KVRepoPolicyKey(repo)
+	metaKey, policyKey, lifecycleKey := KVRepoMetaKey(repo), KVRepoPolicyKey(repo), KVLifecyclePolicyKey(repo)
 	for _, k := range keys {
-		if k == metaKey || k == policyKey ||
+		if k == metaKey || k == policyKey || k == lifecycleKey ||
 			strings.HasPrefix(k, tagsPrefix) || strings.HasPrefix(k, manifestsPrefix) {
 			if err := kv.Delete(k); err != nil {
 				return mapKVErr(err)
@@ -272,6 +276,44 @@ func (s *KVMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, error) {
 		return nil, mapKVErr(err)
 	}
 	if err := kv.Delete(KVRepoPolicyKey(repo)); err != nil {
+		return nil, mapKVErr(err)
+	}
+	return entry.Value(), nil
+}
+
+func (s *KVMetaStore) PutLifecyclePolicy(accountID, repo string, policyText []byte) error {
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return err
+	}
+	_, err = kv.Put(KVLifecyclePolicyKey(repo), policyText)
+	return err
+}
+
+func (s *KVMetaStore) GetLifecyclePolicy(accountID, repo string) ([]byte, error) {
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return nil, err
+	}
+	entry, err := kv.Get(KVLifecyclePolicyKey(repo))
+	if err != nil {
+		return nil, mapKVErr(err)
+	}
+	return entry.Value(), nil
+}
+
+func (s *KVMetaStore) DeleteLifecyclePolicy(accountID, repo string) ([]byte, error) {
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return nil, err
+	}
+	// JetStream KV Delete is silently idempotent, so the value is read first to
+	// surface a real not-found and return the deleted document to the caller.
+	entry, err := kv.Get(KVLifecyclePolicyKey(repo))
+	if err != nil {
+		return nil, mapKVErr(err)
+	}
+	if err := kv.Delete(KVLifecyclePolicyKey(repo)); err != nil {
 		return nil, mapKVErr(err)
 	}
 	return entry.Value(), nil
@@ -446,6 +488,7 @@ type MemoryMetaStore struct {
 	mu        sync.Mutex
 	repos     map[string]map[string]RepoMeta     // account -> repo -> meta
 	policies  map[string]map[string][]byte       // account -> repo -> policyText
+	lifecycle map[string]map[string][]byte       // account -> repo -> lifecyclePolicyText
 	tags      map[string]map[string]string       // account -> repo|tag -> digest
 	manifests map[string]map[string]ManifestMeta // account -> repo|digest -> meta
 	uploads   map[string]map[string]uploadRev    // account -> id -> state+rev
@@ -463,6 +506,7 @@ func NewMemoryMetaStore() *MemoryMetaStore {
 	return &MemoryMetaStore{
 		repos:     make(map[string]map[string]RepoMeta),
 		policies:  make(map[string]map[string][]byte),
+		lifecycle: make(map[string]map[string][]byte),
 		tags:      make(map[string]map[string]string),
 		manifests: make(map[string]map[string]ManifestMeta),
 		uploads:   make(map[string]map[string]uploadRev),
@@ -508,6 +552,7 @@ func (m *MemoryMetaStore) DeleteRepo(accountID, repo string) error {
 	}
 	delete(m.repos[accountID], repo)
 	delete(m.policies[accountID], repo)
+	delete(m.lifecycle[accountID], repo)
 	for k := range m.tags[accountID] {
 		if r, _, ok := strings.Cut(k, "|"); ok && r == repo {
 			delete(m.tags[accountID], k)
@@ -562,6 +607,37 @@ func (m *MemoryMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, erro
 		return nil, ErrNotFound
 	}
 	delete(m.policies[accountID], repo)
+	return p, nil
+}
+
+func (m *MemoryMetaStore) PutLifecyclePolicy(accountID, repo string, policyText []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lifecycle[accountID] == nil {
+		m.lifecycle[accountID] = make(map[string][]byte)
+	}
+	m.lifecycle[accountID][repo] = policyText
+	return nil
+}
+
+func (m *MemoryMetaStore) GetLifecyclePolicy(accountID, repo string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.lifecycle[accountID][repo]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return p, nil
+}
+
+func (m *MemoryMetaStore) DeleteLifecyclePolicy(accountID, repo string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.lifecycle[accountID][repo]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	delete(m.lifecycle[accountID], repo)
 	return p, nil
 }
 

@@ -13,6 +13,10 @@ const (
 	SubjectPolicyGet    = "ecr.policy.get"
 	SubjectPolicyDelete = "ecr.policy.delete"
 
+	SubjectLifecyclePut    = "ecr.lifecycle.put"
+	SubjectLifecycleGet    = "ecr.lifecycle.get"
+	SubjectLifecycleDelete = "ecr.lifecycle.delete"
+
 	SubjectTagPut    = "ecr.tag.put"
 	SubjectTagGet    = "ecr.tag.get"
 	SubjectTagList   = "ecr.tag.list"
@@ -83,6 +87,31 @@ type PolicyDeleteRequest struct {
 }
 
 type PolicyDeleteResponse struct {
+	Found      bool   `json:"found"`
+	PolicyText []byte `json:"policyText"`
+}
+
+type LifecyclePutRequest struct {
+	Repo       string `json:"repo"`
+	PolicyText []byte `json:"policyText"`
+}
+
+type LifecyclePutResponse struct{}
+
+type LifecycleGetRequest struct {
+	Repo string `json:"repo"`
+}
+
+type LifecycleGetResponse struct {
+	Found      bool   `json:"found"`
+	PolicyText []byte `json:"policyText"`
+}
+
+type LifecycleDeleteRequest struct {
+	Repo string `json:"repo"`
+}
+
+type LifecycleDeleteResponse struct {
 	Found      bool   `json:"found"`
 	PolicyText []byte `json:"policyText"`
 }
@@ -208,6 +237,10 @@ type MetaService interface {
 	PolicyPut(req *PolicyPutRequest, accountID string) (*PolicyPutResponse, error)
 	PolicyGet(req *PolicyGetRequest, accountID string) (*PolicyGetResponse, error)
 	PolicyDelete(req *PolicyDeleteRequest, accountID string) (*PolicyDeleteResponse, error)
+
+	LifecyclePut(req *LifecyclePutRequest, accountID string) (*LifecyclePutResponse, error)
+	LifecycleGet(req *LifecycleGetRequest, accountID string) (*LifecycleGetResponse, error)
+	LifecycleDelete(req *LifecycleDeleteRequest, accountID string) (*LifecycleDeleteResponse, error)
 
 	TagPut(req *TagPutRequest, accountID string) (*TagPutResponse, error)
 	TagGet(req *TagGetRequest, accountID string) (*TagGetResponse, error)

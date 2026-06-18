@@ -89,16 +89,20 @@ func KVAccountBucket(accountID string) string {
 //	repos/{name}/manifests/{digest}
 //	uploads/{uuid}
 const (
-	kvRepoMetaKeyFmt = "repos/%s/meta"
-	kvTagsPrefixFmt  = "repos/%s/tags/"
-	kvTagKeyFmt      = "repos/%s/tags/%s"
-	kvManifestKeyFmt = "repos/%s/manifests/%s"
-	kvReposPrefix    = "repos/"
-	kvUploadKeyFmt   = "uploads/%s"
+	kvRepoMetaKeyFmt   = "repos/%s/meta"
+	kvRepoPolicyKeyFmt = "repos/%s/policy"
+	kvTagsPrefixFmt    = "repos/%s/tags/"
+	kvTagKeyFmt        = "repos/%s/tags/%s"
+	kvManifestKeyFmt   = "repos/%s/manifests/%s"
+	kvReposPrefix      = "repos/"
+	kvUploadKeyFmt     = "uploads/%s"
 )
 
 // KVRepoMetaKey returns the KV key for a repository's meta record.
 func KVRepoMetaKey(repo string) string { return fmt.Sprintf(kvRepoMetaKeyFmt, repo) }
+
+// KVRepoPolicyKey returns the KV key for a repository's policy document.
+func KVRepoPolicyKey(repo string) string { return fmt.Sprintf(kvRepoPolicyKeyFmt, repo) }
 
 // KVTagsPrefix returns the KV key prefix enumerating a repository's tags.
 func KVTagsPrefix(repo string) string { return fmt.Sprintf(kvTagsPrefixFmt, repo) }

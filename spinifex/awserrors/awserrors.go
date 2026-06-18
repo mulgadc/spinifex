@@ -453,6 +453,10 @@ var (
 	ErrorIAMMalformedPolicyDocument = "MalformedPolicyDocument"
 	ErrorAccessDenied               = "AccessDenied"
 
+	// ECR-specific error codes
+	ErrorRepositoryNotFound       = "RepositoryNotFoundException"
+	ErrorRepositoryPolicyNotFound = "RepositoryPolicyNotFoundException"
+
 	// ELBv2-specific error codes
 	ErrorELBv2LoadBalancerNotFound         = "LoadBalancerNotFound"
 	ErrorELBv2TargetGroupNotFound          = "TargetGroupNotFound"
@@ -956,6 +960,10 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorIAMLimitExceeded:           {HTTPCode: 409, Message: "The request was rejected because it attempted to create resources beyond the current AWS account limits."},
 	ErrorIAMMalformedPolicyDocument: {HTTPCode: 400, Message: "The policy document is malformed."},
 	ErrorAccessDenied:               {HTTPCode: 403, Message: "User is not authorized to perform this action."},
+
+	// ECR error codes
+	ErrorRepositoryNotFound:       {HTTPCode: 400, Message: "The repository could not be found. Check the spelling of the specified repository and ensure that you are performing operations on the correct registry."},
+	ErrorRepositoryPolicyNotFound: {HTTPCode: 400, Message: "The repository and registry do not have an associated repository policy."},
 
 	// ELBv2 error codes
 	ErrorELBv2LoadBalancerNotFound:         {HTTPCode: 400, Message: "One or more load balancers not found."},

@@ -114,3 +114,25 @@ func TestMemoryMetaStore_UploadCAS(t *testing.T) {
 func TestTrimSuffixMeta(t *testing.T) {
 	assert.Equal(t, "team/app", trimSuffixMeta("repos/team/app/meta"))
 }
+
+func TestMemoryMetaStore_RepoPolicy(t *testing.T) {
+	m := NewMemoryMetaStore()
+	const acct = "000000000000"
+	const policy = `{"Version":"2012-10-17"}`
+
+	_, err := m.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = m.DeleteRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	require.NoError(t, m.PutRepoPolicy(acct, "team/app", []byte(policy)))
+	got, err := m.GetRepoPolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(got))
+
+	deleted, err := m.DeleteRepoPolicy(acct, "team/app")
+	require.NoError(t, err)
+	assert.Equal(t, policy, string(deleted))
+	_, err = m.GetRepoPolicy(acct, "team/app")
+	assert.ErrorIs(t, err, ErrNotFound)
+}

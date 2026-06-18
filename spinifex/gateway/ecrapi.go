@@ -45,6 +45,13 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return gw.handleGetAuthorizationToken(w, r)
 	}
 
+	// DescribeRepositories builds repository ARNs/URIs from the gateway region
+	// and internal suffix, which the relayed Handler signature does not carry,
+	// so it is served inline like GetAuthorizationToken.
+	if action == "DescribeRepositories" {
+		return gw.handleDescribeRepositories(w, r)
+	}
+
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("ECR_Request: no account ID in auth context")

@@ -29,6 +29,7 @@ import (
 type SubnetVPCResolver interface {
 	GetSubnetVPC(accountID, subnetID string) (vpcID string, err error)
 	GetVPCCIDR(accountID, vpcID string) (cidr string, err error)
+	GetSubnetAZ(accountID, subnetID string) (az string, err error)
 }
 
 // EKSServiceDeps wires the external collaborators EKSServiceImpl needs.
@@ -370,6 +371,32 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	return out, nil
 }
 
+// dedupSubnetsByAZ resolves each subnet's AZ and keeps the first subnet per AZ,
+// preserving input order. AWS ALB rejects two subnets in the same AZ, so the
+// alb IngressClassParams must carry at most one per AZ; the ALBSingleSubnet gate
+// then relaxes the minimum to one. A resolve error drops that subnet (and logs),
+// leaving an empty result that falls back to LBC tag auto-discovery.
+func dedupSubnetsByAZ(resolver SubnetVPCResolver, accountID string, subnetIDs []string) []string {
+	if resolver == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(subnetIDs))
+	out := make([]string, 0, len(subnetIDs))
+	for _, id := range subnetIDs {
+		az, err := resolver.GetSubnetAZ(accountID, id)
+		if err != nil || az == "" {
+			slog.Warn("dedupSubnetsByAZ: skip subnet, AZ unresolved", "subnet", id, "err", err)
+			continue
+		}
+		if _, ok := seen[az]; ok {
+			continue
+		}
+		seen[az] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 // clusterLaunchCtx carries the inputs the asynchronous control-plane launch
 // needs, captured at the end of CreateCluster's fast (claim) phase.
 type clusterLaunchCtx struct {
@@ -553,12 +580,21 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		return
 	}
 
+	// Dedup the customer's ELB-eligible subnets to one per AZ for the alb
+	// IngressClassParams. LBC's tag auto-discovery never honors ALBSingleSubnet, so
+	// a single-AZ cluster collapses to 1<2 subnets and fails; the explicit-subnet
+	// path (driven by these IDs) is the only one that threads the gate. Best-effort:
+	// an unresolved AZ falls back to auto-discovery rather than risk a dup-AZ error.
+	elbSubnets := dedupSubnetsByAZ(s.deps.VPCSubnet, accountID, lc.subnetIDs)
+
 	cpNodes, spreadGroup, err := s.placeControlPlane(sysAcct, name, K3sServerInput{
 		AccountID:         sysAcct,
 		ClusterAccountID:  accountID,
 		ClusterName:       name,
 		Region:            region,
 		SubnetID:          cpRefs.PrivateSubnetIDs[0],
+		VpcID:             meta.ResourcesVpcConfig.VpcId,
+		ELBSubnetIDs:      elbSubnets,
 		ControlPlaneSGID:  cpSG,
 		NLBDNS:            nlb.DNSName,
 		EndpointIP:        nlb.FrontendIP,
@@ -567,6 +603,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		OIDCPrivateKeyPEM: privPEM,
 		OIDCPublicKeyPEM:  pubPEM,
 		GatewayURL:        s.deps.SystemGatewayURL,
+		AddonGatewayURL:   s.deps.GatewayBaseURL,
 		AccessKey:         s.deps.SystemAccessKey,
 		SecretKey:         s.deps.SystemSecretKey,
 		GatewayCACert:     s.deps.GatewayCACert,

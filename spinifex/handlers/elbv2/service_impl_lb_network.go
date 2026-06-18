@@ -239,6 +239,13 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 
 // desiredSubnetSet flattens Subnets and SubnetMappings into a deduplicated, ordered list.
 func desiredSubnetSet(input *elbv2.SetSubnetsInput) []string {
+	return flattenSubnetIDs(input.Subnets, input.SubnetMappings)
+}
+
+// flattenSubnetIDs deduplicates the explicit Subnets list and the SubnetMappings
+// list into one ordered subnet-ID slice. LBC supplies ALB subnets via
+// SubnetMappings, so both sources must be honoured wherever subnets are read.
+func flattenSubnetIDs(subnets []*string, mappings []*elbv2.SubnetMapping) []string {
 	seen := make(map[string]bool)
 	var out []string
 	add := func(sn string) {
@@ -247,12 +254,12 @@ func desiredSubnetSet(input *elbv2.SetSubnetsInput) []string {
 			out = append(out, sn)
 		}
 	}
-	for _, sn := range input.Subnets {
+	for _, sn := range subnets {
 		if sn != nil {
 			add(*sn)
 		}
 	}
-	for _, m := range input.SubnetMappings {
+	for _, m := range mappings {
 		if m != nil && m.SubnetId != nil {
 			add(*m.SubnetId)
 		}

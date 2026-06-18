@@ -1136,12 +1136,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	var subnets []string
-	for _, sn := range input.Subnets {
-		if sn != nil {
-			subnets = append(subnets, *sn)
-		}
-	}
+	subnets := flattenSubnetIDs(input.Subnets, input.SubnetMappings)
 
 	var securityGroups []string
 	for _, sg := range input.SecurityGroups {
@@ -2027,6 +2022,17 @@ func listenerActionFromSDK(a *elbv2.Action) ListenerAction {
 	if a.TargetGroupArn != nil {
 		action.TargetGroupArn = *a.TargetGroupArn
 	}
+	// Forward actions may carry the target group via ForwardConfig (the modern
+	// weighted shape the LB controller emits) instead of the flat field. Flatten
+	// the first target group so the single-TG model resolves it.
+	if action.TargetGroupArn == "" && a.ForwardConfig != nil {
+		for _, tg := range a.ForwardConfig.TargetGroups {
+			if tg != nil && tg.TargetGroupArn != nil && *tg.TargetGroupArn != "" {
+				action.TargetGroupArn = *tg.TargetGroupArn
+				break
+			}
+		}
+	}
 	if a.FixedResponseConfig != nil {
 		fr := &FixedResponseAction{}
 		if a.FixedResponseConfig.StatusCode != nil {
@@ -2640,6 +2646,20 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 				found = true
 				tags = r.Tags
 				ownerAccount = r.AccountID
+			} else if lArn, isDefault := listenerArnFromDefaultRuleArn(arn); isDefault {
+				// Synthetic default rule: not stored, carries no tags. Resolve via
+				// its parent listener so a controller's post-create rule-tag sync
+				// gets an empty TagDescription instead of an error.
+				l, lErr := s.store.GetListenerByArn(lArn)
+				if lErr != nil {
+					slog.Error("DescribeTags: failed to get listener", "arn", lArn, "err", lErr)
+					return nil, errors.New(awserrors.ErrorServerInternal)
+				}
+				if l != nil {
+					found = true
+					tags = nil
+					ownerAccount = l.AccountID
+				}
 			}
 		}
 

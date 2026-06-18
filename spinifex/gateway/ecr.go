@@ -12,14 +12,19 @@ import (
 // hostMatch host-routing middleware.
 //
 // OCI repository names may contain slashes (e.g. team/app), so the blob,
-// manifest and tag paths can't be expressed as fixed chi segments. Everything
-// under /v2 therefore routes through a single catch-all 501 stub until a
-// path-parsing dispatcher and storage exist. GET /v2/ is live so the registry
-// version-check probe succeeds.
+// manifest and tag paths can't be expressed as fixed chi segments. The
+// Registry parses the path manually. GET /v2/ is always live so the registry
+// version-check probe succeeds even before any repository exists. When no
+// Registry is wired (e.g. unit tests of unrelated routes), the surface falls
+// back to the 501 stub.
 func (gw *GatewayConfig) mountOCIRegistry(r chi.Router) {
 	r.Route("/v2", func(v2 chi.Router) {
 		v2.Use(gw.hostMatch)
 		v2.Get("/", gateway_ecr.APIVersion)
-		v2.HandleFunc("/*", gateway_ecr.NotImplemented)
+		if gw.ECRRegistry != nil {
+			v2.HandleFunc("/*", gw.ECRRegistry.ServeHTTP)
+		} else {
+			v2.HandleFunc("/*", gateway_ecr.NotImplemented)
+		}
 	})
 }

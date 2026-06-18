@@ -22,6 +22,7 @@ var _ SubnetVPCResolver = (*fakeSubnetResolver)(nil)
 
 func (fakeSubnetResolver) GetSubnetVPC(_, _ string) (string, error) { return "vpc-aaa", nil }
 func (fakeSubnetResolver) GetVPCCIDR(_, _ string) (string, error)   { return "10.0.0.0/16", nil }
+func (fakeSubnetResolver) GetSubnetAZ(_, _ string) (string, error)  { return "spinifexz1", nil }
 
 func deleteInput(name string) *eks.DeleteClusterInput {
 	return &eks.DeleteClusterInput{Name: aws.String(name)}

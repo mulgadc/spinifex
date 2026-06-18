@@ -109,6 +109,38 @@ func TestCreateLoadBalancer_CreatesENIs(t *testing.T) {
 	assert.True(t, foundTag, "ENI should have spinifex:managed-by=elbv2 tag")
 }
 
+// TestCreateLoadBalancer_SubnetMappings_CreatesENIs guards the LBC path: the AWS
+// Load Balancer Controller supplies ALB subnets via SubnetMappings, not the plain
+// Subnets list. Ignoring SubnetMappings skips ENI allocation, so the data-plane VM
+// never launches and the ALB is created but cannot serve traffic.
+func TestCreateLoadBalancer_SubnetMappings_CreatesENIs(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	subnets, err := vpcSvc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.NotEmpty(t, subnets.Subnets)
+	subnetID := *subnets.Subnets[0].SubnetId
+
+	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name: aws.String("subnetmapping-alb"),
+		SubnetMappings: []*elbv2.SubnetMapping{
+			{SubnetId: aws.String(subnetID)},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.LoadBalancers, 1)
+	lb := out.LoadBalancers[0]
+
+	assert.NotEmpty(t, *lb.VpcId, "VpcId must be resolved from the SubnetMappings subnet")
+	require.Len(t, lb.AvailabilityZones, 1)
+	assert.Equal(t, subnetID, *lb.AvailabilityZones[0].SubnetId)
+
+	eniDesc, err := vpcSvc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, eniDesc.NetworkInterfaces, 1, "an ENI must be created for the SubnetMappings subnet")
+	assert.Equal(t, subnetID, *eniDesc.NetworkInterfaces[0].SubnetId)
+}
+
 func TestCreateLoadBalancer_MultipleSubnets(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 

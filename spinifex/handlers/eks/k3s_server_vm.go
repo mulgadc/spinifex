@@ -99,6 +99,15 @@ type K3sServerInput struct {
 	ClusterName      string
 	Region           string
 	SubnetID         string
+	// VpcID is the cluster VPC; surfaced as EKS_VPC_ID so the in-cluster LB
+	// controller can pass --aws-vpc-id to the gateway elbv2/ec2 handlers.
+	VpcID string
+	// ELBSubnetIDs is the cluster's ELB-eligible subnets, deduped to one per AZ.
+	// Surfaced as EKS_ELB_SUBNET_IDS and injected into the alb IngressClassParams
+	// so every Ingress takes LBC's explicit-subnet path (the only path that honors
+	// the ALBSingleSubnet gate); tag auto-discovery never threads that gate, so a
+	// single-AZ cluster would otherwise dedup to 1<2 subnets and fail reconcile.
+	ELBSubnetIDs     []string
 	ControlPlaneSGID string
 	NLBDNS           string
 	// EndpointIP is the NLB front-end IP added to the apiserver cert SANs for TLS.
@@ -114,11 +123,15 @@ type K3sServerInput struct {
 	// Gateway broker config: CP VM publishes via SigV4-signed HTTPS POST to AWSGW.
 	// GatewayURL is the mgmt-reachable endpoint; AccessKey/SecretKey are system
 	// SigV4 creds; GatewayCACert signs the gateway TLS cert.
-	GatewayURL    string
-	AccessKey     string
-	SecretKey     string
-	GatewayCACert string
-	InstanceType  string
+	GatewayURL string
+	// AddonGatewayURL is the customer-facing gateway endpoint baked into managed
+	// addon pod specs (EKS_ADDON_GATEWAY_URL). Those pods run on workers, which
+	// cannot reach the mgmt GatewayURL, so they target this public address.
+	AddonGatewayURL string
+	AccessKey       string
+	SecretKey       string
+	GatewayCACert   string
+	InstanceType    string
 	// TargetNodeID pins the VM to a specific host for HA spread; empty = local node.
 	TargetNodeID string
 	// JoinToken is the shared k3s cluster token so HA servers join the etcd quorum.
@@ -370,6 +383,8 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput empty OIDCPublicKeyPEM")
 	case in.GatewayURL == "":
 		return errors.New("eks: K3sServerInput empty GatewayURL")
+	case in.AddonGatewayURL == "":
+		return errors.New("eks: K3sServerInput empty AddonGatewayURL")
 	case in.AccessKey == "":
 		return errors.New("eks: K3sServerInput empty AccessKey")
 	case in.SecretKey == "":
@@ -427,10 +442,13 @@ func buildK3sUserData(in K3sServerInput) string {
 	envBody := strings.Join([]string{
 		"SPINIFEX_K3S_ROLE=" + role,
 		"EKS_GATEWAY_URL=" + in.GatewayURL,
+		"EKS_ADDON_GATEWAY_URL=" + in.AddonGatewayURL,
 		"EKS_GATEWAY_CA=" + k3sGatewayCAPath,
 		"EKS_ACCESS_KEY=" + in.AccessKey,
 		"EKS_SECRET_KEY=" + in.SecretKey,
 		"EKS_REGION=" + in.Region,
+		"EKS_VPC_ID=" + in.VpcID,
+		"EKS_ELB_SUBNET_IDS=" + strings.Join(in.ELBSubnetIDs, ","),
 		"EKS_ACCOUNT_ID=" + in.ClusterAccountID,
 		"EKS_CLUSTER_NAME=" + in.ClusterName,
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
@@ -455,6 +473,11 @@ func buildK3sUserData(in K3sServerInput) string {
 	}
 	configLines = append(configLines,
 		"etcd-expose-metrics: true",
+		// Managed-CP: the apiserver VM sits in the system CP VPC with no route to
+		// the worker pod network. `cluster` routes apiserver->pod/service traffic
+		// (admission webhooks, aggregated APIs) through the agent's outbound tunnel;
+		// the default `agent` mode tunnels only kubelet, leaving webhooks unreachable.
+		"egress-selector-mode: cluster",
 		// Prevent user workloads on the CP (EKS parity). k3s packaged addons tolerate CriticalAddonsOnly.
 		"node-taint:",
 		"  - CriticalAddonsOnly=true:NoExecute",

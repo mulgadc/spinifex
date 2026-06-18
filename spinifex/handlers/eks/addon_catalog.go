@@ -19,7 +19,7 @@ type AddonSpec struct {
 var addonCatalog = buildAddonCatalog(
 	newAddonSpec("aws-load-balancer-controller", true,
 		"Provisions ELBv2 load balancers for Kubernetes Service/Ingress resources.",
-		"2.8.1"),
+		"2.11.0"),
 	newAddonSpec("coredns", false,
 		"Cluster DNS server.",
 		"1.11.1"),

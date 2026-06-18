@@ -48,6 +48,7 @@ import (
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
@@ -95,6 +96,14 @@ type ResourceManager struct {
 	reservedMem   float64
 	allocatedVCPU int
 	allocatedMem  float64
+	// reservedCRVCPU / reservedCRMem: compute held by capacity reservations
+	// pinned to this node. Subtracted from schedulable capacity exactly like
+	// the host reserve. In-memory only — lost on daemon restart.
+	reservedCRVCPU int
+	reservedCRMem  float64
+	// reservations: in-memory capacity reservations owned by this node, keyed
+	// by id. Mutated together with reservedCR* under mu.
+	reservations map[string]*capacityReservation
 	// nbdkitMainMiB / nbdkitAuxMiB: per-volume nbdkit memory charged at
 	// admission so nbdkit backing a guest's volumes is accounted explicitly.
 	nbdkitMainMiB int
@@ -142,6 +151,7 @@ type Daemon struct {
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
 	acmService            *handlers_acm.ACMServiceImpl
+	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
 	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
@@ -485,6 +495,7 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		instanceTypes:      instanceTypes,
 		gpuManager:         gpuMgr,
 		readMemAvailableGB: memReader,
+		reservations:       make(map[string]*capacityReservation),
 	}, nil
 }
 
@@ -570,8 +581,8 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 		}
 
 		count := canAllocateCount(
-			rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
-			rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
+			rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+			rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
 			vCPUs, rm.instanceMemChargeMiB(it),
 			1<<30, // effectively unlimited — let resources be the constraint
 			0, false,
@@ -589,6 +600,7 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 	slog.Info("GetAvailableInstanceTypeInfos", "total_types", len(rm.instanceTypes), "total_available_slots", len(infos),
 		"hostVCPU", rm.hostVCPU, "hostMem", rm.hostMemGB,
 		"reservedVCPU", rm.reservedVCPU, "reservedMem", rm.reservedMem,
+		"reservedCRVCPU", rm.reservedCRVCPU, "reservedCRMem", rm.reservedCRMem,
 		"showCapacity", showCapacity)
 
 	return infos
@@ -624,17 +636,19 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 
 	totalVCPU = rm.hostVCPU
 	totalMemGB = rm.hostMemGB
-	reservedVCPU = rm.reservedVCPU
-	reservedMemGB = rm.reservedMem
+	// Fold the capacity-reservation carve-out into the reported reserve figures;
+	// Phase 1 has no separate status field for it.
+	reservedVCPU = rm.reservedVCPU + rm.reservedCRVCPU
+	reservedMemGB = rm.reservedMem + rm.reservedCRMem
 	allocVCPU = rm.allocatedVCPU
 	allocMemGB = rm.allocatedMem
 
-	remainingVCPU := rm.hostVCPU - rm.reservedVCPU - rm.allocatedVCPU
-	remainingMem := rm.hostMemGB - rm.reservedMem - rm.allocatedMem
+	remainingVCPU := rm.hostVCPU - reservedVCPU - rm.allocatedVCPU
+	remainingMem := rm.hostMemGB - reservedMemGB - rm.allocatedMem
 	if remainingVCPU < 0 || remainingMem < 0 {
 		slog.Error("schedulable capacity negative — reserve misconfigured or allocation drift",
-			"hostVCPU", rm.hostVCPU, "reservedVCPU", rm.reservedVCPU, "allocatedVCPU", rm.allocatedVCPU,
-			"hostMemGB", rm.hostMemGB, "reservedMem", rm.reservedMem, "allocatedMem", rm.allocatedMem,
+			"hostVCPU", rm.hostVCPU, "reservedVCPU", reservedVCPU, "allocatedVCPU", rm.allocatedVCPU,
+			"hostMemGB", rm.hostMemGB, "reservedMem", reservedMemGB, "allocatedMem", rm.allocatedMem,
 			"remainingVCPU", remainingVCPU, "remainingMem", remainingMem)
 	}
 
@@ -771,6 +785,11 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RemoveInstanceFromPlacementGroup", d.handleEC2RemoveInstanceFromPlacementGroup, "spinifex-workers"},
 		{"ec2.ReserveClusterNode", d.handleEC2ReserveClusterNode, "spinifex-workers"},
 		{"ec2.FinalizeClusterInstances", d.handleEC2FinalizeClusterInstances, "spinifex-workers"},
+		// Capacity reservations: Create is node-targeted (gateway pins one node);
+		// Describe fans out and Cancel broadcasts, so both use plain Subscribe.
+		{fmt.Sprintf("ec2.CreateCapacityReservation.%s", d.node), d.handleEC2CreateCapacityReservation, ""},
+		{"ec2.DescribeCapacityReservations", d.handleEC2DescribeCapacityReservations, ""},
+		{"ec2.CancelCapacityReservation", d.handleEC2CancelCapacityReservation, ""},
 		{"ec2.CreateNatGateway", d.handleEC2CreateNatGateway, "spinifex-workers"},
 		{"ec2.DeleteNatGateway", d.handleEC2DeleteNatGateway, "spinifex-workers"},
 		{"ec2.DescribeNatGateways", d.handleEC2DescribeNatGateways, "spinifex-workers"},
@@ -936,6 +955,26 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"acm.DescribeCertificate", d.handleACMDescribeCertificate, "spinifex-workers"},
 			natsSub{"acm.ListCertificates", d.handleACMListCertificates, "spinifex-workers"},
 			natsSub{"acm.DeleteCertificate", d.handleACMDeleteCertificate, "spinifex-workers"},
+		)
+	}
+
+	// ECR gateway → daemon subscriptions. The daemon owns the per-account
+	// JetStream KV metadata; blob/manifest bytes never traverse these subjects.
+	if d.ecrMetaService != nil {
+		subs = append(subs,
+			natsSub{handlers_ecr.SubjectRepoCreate, d.handleECRRepoCreate, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectRepoDescribe, d.handleECRRepoDescribe, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectRepoList, d.handleECRRepoList, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagPut, d.handleECRTagPut, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagGet, d.handleECRTagGet, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagList, d.handleECRTagList, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagDelete, d.handleECRTagDelete, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectManifestPut, d.handleECRManifestPut, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectManifestDescribe, d.handleECRManifestDescribe, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadCreate, d.handleECRUploadCreate, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadGet, d.handleECRUploadGet, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadUpdate, d.handleECRUploadUpdate, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadDelete, d.handleECRUploadDelete, "spinifex-workers"},
 		)
 	}
 
@@ -1341,6 +1380,15 @@ func (d *Daemon) startCluster() error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)
+	}
+
+	// ECR metadata service: owns per-account JetStream KV for repos, tags,
+	// manifest records and upload-state CAS. Disabled (gateway returns NATS
+	// timeouts) when JetStream is unavailable.
+	if js, jsErr := d.natsConn.JetStream(); jsErr != nil {
+		slog.Warn("ECR metadata service disabled: JetStream unavailable", "err", jsErr)
+	} else {
+		d.ecrMetaService = handlers_ecr.NewKVMetaService(js)
 	}
 
 	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {
@@ -2023,8 +2071,8 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 	}
 
 	n := canAllocateCount(
-		rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
-		rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
+		rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+		rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
 		instanceTypeVCPUs(instanceType),
 		rm.instanceMemChargeMiB(instanceType),
 		count,
@@ -2044,7 +2092,7 @@ func (rm *ResourceManager) liveMemGate(n int, instanceType *ec2.InstanceTypeInfo
 		return n
 	}
 	memGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
-	return liveMemCount(n, availGB, rm.reservedMem, memGB)
+	return liveMemCount(n, availGB, rm.reservedMem+rm.reservedCRMem, memGB)
 }
 
 // allocate reserves resources for one instance and updates NATS subscriptions.

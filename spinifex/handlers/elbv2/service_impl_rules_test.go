@@ -70,6 +70,33 @@ func TestCreateRule_PathPattern(t *testing.T) {
 	assert.Contains(t, *out.Rules[0].RuleArn, ":listener-rule/")
 }
 
+// TestCreateRule_ForwardConfig guards the regression where a forward action that
+// carries its target group via ForwardConfig (the shape the AWS Load Balancer
+// Controller emits) was rejected with MissingParameter because only the flat
+// TargetGroupArn field was read.
+func TestCreateRule_ForwardConfig(t *testing.T) {
+	env := newRuleTestEnv(t, "cr-fwdcfg")
+
+	out, err := env.svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(1),
+		Conditions: []*elbv2.RuleCondition{
+			{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/*"})},
+		},
+		Actions: []*elbv2.Action{
+			{Type: aws.String("forward"), ForwardConfig: &elbv2.ForwardActionConfig{
+				TargetGroups: []*elbv2.TargetGroupTuple{
+					{TargetGroupArn: aws.String(env.tgAltArn)},
+				},
+			}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Rules, 1)
+	require.Len(t, out.Rules[0].Actions, 1)
+	assert.Equal(t, env.tgAltArn, *out.Rules[0].Actions[0].TargetGroupArn)
+}
+
 // TestDeleteLoadBalancer_CascadesRuleDeletion guards against the regression where
 // DeleteLoadBalancer called store.DeleteListener directly, bypassing rule cascade,
 // leaving a rule's target group pinned as ResourceInUse permanently.
@@ -395,6 +422,44 @@ func TestDescribeRules_ByListener_SortedAndDefaultLast(t *testing.T) {
 	assert.Equal(t, "20", *out.Rules[1].Priority)
 	assert.Equal(t, "30", *out.Rules[2].Priority)
 	assert.True(t, *out.Rules[3].IsDefault)
+}
+
+// TestDefaultRule_HasArnAndIsTaggable guards against the regression where the
+// synthetic default rule was returned with no ARN: the controller then issued
+// DescribeTags with an empty resource and got MissingParameter, aborting the
+// Ingress reconcile right after listener creation.
+func TestDefaultRule_HasArnAndIsTaggable(t *testing.T) {
+	env := newRuleTestEnv(t, "defrule")
+
+	rules, err := env.svc.DescribeRules(&elbv2.DescribeRulesInput{ListenerArn: aws.String(env.listenerArn)}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, rules.Rules, 1)
+	def := rules.Rules[0]
+	require.True(t, *def.IsDefault)
+	require.NotNil(t, def.RuleArn, "default rule must carry an ARN")
+	require.NotEmpty(t, *def.RuleArn)
+	assert.Contains(t, *def.RuleArn, ":listener-rule/")
+
+	// DescribeTags on the default rule ARN must succeed with empty tags, not error.
+	tagsOut, err := env.svc.DescribeTags(&elbv2.DescribeTagsInput{
+		ResourceArns: []*string{def.RuleArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, tagsOut.TagDescriptions, 1)
+	assert.Equal(t, *def.RuleArn, *tagsOut.TagDescriptions[0].ResourceArn)
+	assert.Empty(t, tagsOut.TagDescriptions[0].Tags)
+
+	// DescribeRules by the default rule ARN resolves the synthetic rule.
+	byArn, err := env.svc.DescribeRules(&elbv2.DescribeRulesInput{
+		RuleArns: []*string{def.RuleArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, byArn.Rules, 1)
+	assert.True(t, *byArn.Rules[0].IsDefault)
+
+	// A non-default, unknown rule ARN under the same listener still 404s.
+	_, err = env.svc.DescribeTags(&elbv2.DescribeTagsInput{ResourceArns: []*string{aws.String(*def.RuleArn + "-bogus")}}, testAccountID)
+	require.Error(t, err)
 }
 
 func TestSetRulePriorities_Reorders(t *testing.T) {

@@ -77,7 +77,7 @@ jobs:
     # job running on plain PR pushes.
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-iam')
     runs-on: [self-hosted, ci-single]
-    timeout-minutes: 45
+    timeout-minutes: 50
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}
@@ -469,8 +469,8 @@ jobs:
             exit 1
           fi
 
-  e2e_real_multi:
-    name: Real Multi-Node E2E
+  e2e_multi:
+    name: Multi-Node E2E
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode')
     runs-on: [self-hosted, ci-multi]
     timeout-minutes: 60
@@ -885,7 +885,7 @@ jobs:
   e2e_status:
     name: Report E2E Status
     if: always()
-    needs: [e2e_single, e2e_real_multi]
+    needs: [e2e_single, e2e_multi]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -896,13 +896,13 @@ jobs:
         run: |
           single_ok=true; multi_ok=true
           case "${{ needs.e2e_single.result }}" in success|skipped) ;; *) single_ok=false ;; esac
-          case "${{ needs.e2e_real_multi.result }}" in success|skipped) ;; *) multi_ok=false ;; esac
+          case "${{ needs.e2e_multi.result }}" in success|skipped) ;; *) multi_ok=false ;; esac
           if $single_ok && $multi_ok; then
             STATE="success"
             DESC="E2E suites passed"
           else
             STATE="failure"
-            DESC="E2E failed: single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_real_multi.result }}"
+            DESC="E2E failed: single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_multi.result }}"
           fi
           gh api "repos/${{ github.repository }}/statuses/${REPORT_SHA}" \
             -f state="$STATE" \

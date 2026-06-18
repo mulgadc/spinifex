@@ -98,6 +98,38 @@ func TestLoadConfig_EmptyConfigPath(t *testing.T) {
 	assert.Empty(t, cfg.Node)
 }
 
+func TestLoadConfig_AWSDefaults(t *testing.T) {
+	resetViper(t)
+	cfg, err := LoadConfig("")
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, DefaultAWSRegion, cfg.AWS.Region)
+	assert.Equal(t, DefaultAWSInternalSuffix, cfg.AWS.InternalSuffix)
+}
+
+func TestLoadConfig_AWSOverride(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[aws]
+region = "ap-southeast-2"
+internal_suffix = "dev.local"
+
+[nodes.n1]
+region = "ap-southeast-2"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, "ap-southeast-2", cfg.AWS.Region)
+	assert.Equal(t, "dev.local", cfg.AWS.InternalSuffix)
+}
+
 func TestLoadConfig_NonexistentFile(t *testing.T) {
 	resetViper(t)
 	cfg, err := LoadConfig("/tmp/nonexistent-spinifex-config-test-12345.toml")

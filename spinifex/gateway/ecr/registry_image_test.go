@@ -6,12 +6,67 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// objectExists reports whether a predastore key is present in the test account
+// bucket.
+func objectExists(reg *Registry, key string) bool {
+	_, err := reg.Store.HeadObject(&s3.HeadObjectInput{
+		Bucket: aws.String(ecr.AccountBucket(testAccount)),
+		Key:    aws.String(key),
+	})
+	return err == nil
+}
+
+// storeLayersManifest stores a manifest referencing the given layer blobs under
+// repo:tag, returning its digest.
+func storeLayersManifest(t *testing.T, reg *Registry, repo, tag string, layers ...string) string {
+	t.Helper()
+	refs := make([]string, len(layers))
+	for i, l := range layers {
+		refs[i] = fmt.Sprintf(`{"digest":"%s"}`, l)
+	}
+	body := fmt.Appendf(nil,
+		`{"schemaVersion":2,"mediaType":"%s","layers":[%s]}`,
+		mediaTypeDockerManifest, strings.Join(refs, ","))
+	digest, err := reg.StoreManifest(testAccount, repo, tag, mediaTypeDockerManifest, body)
+	require.NoError(t, err)
+	return digest
+}
+
+func TestDeleteImage_ReclaimsBlobsKeepsShared(t *testing.T) {
+	reg := newTestRegistry()
+	repo := "team/app"
+	shared := pushBlob(t, reg, repo, []byte("shared-layer-bytes"))
+	exclusive := pushBlob(t, reg, repo, []byte("exclusive-layer-bytes"))
+
+	digA := storeLayersManifest(t, reg, repo, "a", shared, exclusive)
+	digB := storeLayersManifest(t, reg, repo, "b", shared)
+
+	require.True(t, objectExists(reg, ecr.ManifestKey(repo, digA)))
+	require.True(t, objectExists(reg, ecr.BlobKey(exclusive)))
+
+	got, err := reg.DeleteImage(testAccount, repo, "", digA)
+	require.NoError(t, err)
+	assert.Equal(t, digA, got)
+
+	// Manifest A object + its exclusive blob reclaimed.
+	assert.False(t, objectExists(reg, ecr.ManifestKey(repo, digA)), "manifest A object should be gone")
+	assert.False(t, objectExists(reg, ecr.BlobKey(exclusive)), "exclusive blob should be reclaimed")
+
+	// Shared blob + manifest B survive (B still references the shared blob).
+	assert.True(t, objectExists(reg, ecr.BlobKey(shared)), "shared blob must survive")
+	assert.True(t, objectExists(reg, ecr.ManifestKey(repo, digB)), "manifest B object must survive")
+	_, _, _, err = reg.GetManifest(testAccount, repo, digB, nil)
+	require.NoError(t, err)
+}
 
 // seedImage pushes a config + layer blob and stores an image manifest tagged
 // `tag`, returning the manifest bytes and digest.

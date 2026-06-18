@@ -90,6 +90,7 @@ type Client interface {
 	DeleteNATByExternalIP(ctx context.Context, routerName string, natType, externalIP string) error
 	DeleteAllNATsByExternalIP(ctx context.Context, natType, externalIP string) (int, error)
 	FindNATByExternalIP(ctx context.Context, natType, externalIP string) (*nbdb.NAT, error)
+	FindNATByLogicalIP(ctx context.Context, routerName, natType, logicalIP string) (*nbdb.NAT, error)
 
 	// Static routes
 	AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error

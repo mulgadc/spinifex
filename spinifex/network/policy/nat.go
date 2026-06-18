@@ -292,6 +292,26 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 			"spinifex:nat_gateway_id": gw.NATGatewayID,
 		},
 	}
+	// Reconcile the existing row, keyed on (router, subnet CIDR) — DeleteNAT's key —
+	// so the reconcile's re-publish is a no-op and a multi-subnet NAT GW dedups per
+	// subnet instead of minting duplicate snat rows that survive teardown.
+	if existing, err := m.ovn.FindNATByLogicalIP(ctx, router, "snat", gw.SubnetCIDR); err != nil {
+		slog.Warn("policy: AddNATGateway idempotency lookup failed", "subnet_cidr", gw.SubnetCIDR, "err", err)
+	} else if existing != nil && existing.ExternalIP == gw.PublicIP {
+		slog.Info("policy: AddNATGateway idempotent skip — rule already current",
+			"router", router, "public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR)
+		return nil
+	} else if existing != nil {
+		// Same subnet CIDR, different public IP (e.g. a dropped delete then a recreate
+		// with a new EIP). Scrub the stale row(s) so the new EIP does not leak egress
+		// via the old one; delete-all also clears any accumulated duplicates.
+		slog.Info("policy: AddNATGateway replacing stale snat — public IP changed",
+			"router", router, "old_ip", existing.ExternalIP, "new_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR)
+		if err := m.ovn.DeleteNAT(ctx, router, "snat", gw.SubnetCIDR); err != nil && !errors.Is(err, ovn.ErrNATNotFound) {
+			return fmt.Errorf("replace stale NAT GW snat %s on %s: %w", gw.SubnetCIDR, router, err)
+		}
+	}
+
 	if err := m.ovn.AddNAT(ctx, router, snatRule); err != nil {
 		return fmt.Errorf("add NAT GW snat %s -> %s on %s: %w", gw.SubnetCIDR, gw.PublicIP, router, err)
 	}

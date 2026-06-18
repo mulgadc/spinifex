@@ -36,6 +36,16 @@ func findNAT(m *mock.Client, natType, logicalIP string) *nbdb.NAT {
 	return nil
 }
 
+func countNAT(m *mock.Client, natType, logicalIP string) int {
+	var n int
+	for _, nat := range m.NATs {
+		if nat.Type == natType && nat.LogicalIP == logicalIP {
+			n++
+		}
+	}
+	return n
+}
+
 func TestNATModeFromUplinkMode(t *testing.T) {
 	assert.Equal(t, NATModeDistributed, NATModeFromUplinkMode(host.UplinkModePhysical))
 	assert.Equal(t, NATModeCentralized, NATModeFromUplinkMode(host.UplinkModeVeth))
@@ -337,6 +347,110 @@ func TestNATManager_AddNATGateway_FlowsBarrier_Fires(t *testing.T) {
 		SubnetCIDR:   "10.0.1.0/24",
 	}))
 	assert.Equal(t, 1, calls, "FlowsBarrier must fire once per AddNATGateway")
+}
+
+// TestNATManager_AddNATGateway_IdempotentSkip guards the SNAT-leak root cause:
+// the 5-minute reconcile re-publishes the same NAT GW spec, and an unconditional
+// create would mint a second identical snat row that survives teardown.
+func TestNATManager_AddNATGateway_IdempotentSkip(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	var barrierCalls int
+	nm, err := NewNATManager(m, NATModeCentralized, WithFlowsBarrier(func() error {
+		barrierCalls++
+		return nil
+	}))
+	require.NoError(t, err)
+
+	spec := NATGWSpec{
+		VPCID: "vpc-1", NATGatewayID: "nat-xyz", PublicIP: "9.9.9.9", SubnetCIDR: "172.31.16.0/20",
+	}
+	require.NoError(t, nm.AddNATGateway(ctx, spec))
+	require.Equal(t, 1, barrierCalls, "first AddNATGateway must fire barrier")
+	firstUUID := findNAT(m, "snat", spec.SubnetCIDR).UUID
+
+	// Reconcile re-publish: the guard must skip the create.
+	require.NoError(t, nm.AddNATGateway(ctx, spec))
+	assert.Equal(t, 1, countNAT(m, "snat", spec.SubnetCIDR),
+		"idempotent re-add must not mint a duplicate snat row")
+	assert.Equal(t, firstUUID, findNAT(m, "snat", spec.SubnetCIDR).UUID,
+		"idempotent re-add must reuse the existing row")
+	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
+}
+
+// TestNATManager_AddNATGateway_IdempotentSkip_MultiSubnet guards the multi-subnet
+// topology: one NAT GW public IP serves several private subnets, so its snat rows
+// share an external IP but differ by subnet CIDR. The guard keys on (router, subnet
+// CIDR) so it dedups per subnet — keying on the public IP alone would match the
+// wrong row and let the reconcile mint duplicates.
+func TestNATManager_AddNATGateway_IdempotentSkip_MultiSubnet(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeCentralized)
+	require.NoError(t, err)
+
+	a := NATGWSpec{VPCID: "vpc-1", NATGatewayID: "nat-xyz", PublicIP: "9.9.9.9", SubnetCIDR: "172.31.16.0/20"}
+	b := NATGWSpec{VPCID: "vpc-1", NATGatewayID: "nat-xyz", PublicIP: "9.9.9.9", SubnetCIDR: "172.31.32.0/20"}
+	require.NoError(t, nm.AddNATGateway(ctx, a))
+	require.NoError(t, nm.AddNATGateway(ctx, b))
+	require.Equal(t, 1, countNAT(m, "snat", a.SubnetCIDR))
+	require.Equal(t, 1, countNAT(m, "snat", b.SubnetCIDR))
+
+	// Reconcile re-publishes both specs; each must be a per-subnet no-op.
+	require.NoError(t, nm.AddNATGateway(ctx, a))
+	require.NoError(t, nm.AddNATGateway(ctx, b))
+	assert.Equal(t, 1, countNAT(m, "snat", a.SubnetCIDR),
+		"re-add of subnet A must not mint a duplicate")
+	assert.Equal(t, 1, countNAT(m, "snat", b.SubnetCIDR),
+		"re-add of subnet B must not mint a duplicate")
+}
+
+// TestNATManager_AddNATGateway_ReplacesStaleOnPublicIPChange guards the EIP-change
+// edge: a dropped delete then a recreate with a new EIP for the same subnet must not
+// leave the old snat row behind to leak egress via the stale public IP.
+func TestNATManager_AddNATGateway_ReplacesStaleOnPublicIPChange(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeCentralized)
+	require.NoError(t, err)
+
+	old := NATGWSpec{VPCID: "vpc-1", NATGatewayID: "nat-old", PublicIP: "9.9.9.9", SubnetCIDR: "172.31.16.0/20"}
+	require.NoError(t, nm.AddNATGateway(ctx, old))
+
+	// Recreate the subnet's NAT GW with a different EIP; the stale row must go.
+	fresh := NATGWSpec{VPCID: "vpc-1", NATGatewayID: "nat-new", PublicIP: "8.8.8.8", SubnetCIDR: "172.31.16.0/20"}
+	require.NoError(t, nm.AddNATGateway(ctx, fresh))
+
+	assert.Equal(t, 1, countNAT(m, "snat", fresh.SubnetCIDR),
+		"public-IP change must replace, not stack, the snat row")
+	got := findNAT(m, "snat", fresh.SubnetCIDR)
+	require.NotNil(t, got)
+	assert.Equal(t, "8.8.8.8", got.ExternalIP, "surviving row must carry the new public IP")
+}
+
+// TestNATManager_DeleteNATGateway_RemovesDuplicates is defensive: any duplicate
+// snat row that slipped past the idempotency guard (race, pre-existing) must be
+// fully removed on teardown, not left to leak egress past the first delete.
+func TestNATManager_DeleteNATGateway_RemovesDuplicates(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	router := seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeCentralized)
+	require.NoError(t, err)
+
+	for range 2 {
+		require.NoError(t, m.AddNAT(ctx, router, &nbdb.NAT{
+			Type: "snat", ExternalIP: "9.9.9.9", LogicalIP: "172.31.16.0/20",
+		}))
+	}
+	require.Equal(t, 2, countNAT(m, "snat", "172.31.16.0/20"))
+
+	require.NoError(t, nm.DeleteNATGateway(ctx, "vpc-1", "172.31.16.0/20"))
+	assert.Equal(t, 0, countNAT(m, "snat", "172.31.16.0/20"),
+		"DeleteNATGateway must remove every matching snat row, not just the first")
 }
 
 func TestNATManager_AddNATGateway_AndDelete(t *testing.T) {

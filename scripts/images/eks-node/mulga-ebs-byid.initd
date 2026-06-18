@@ -1,0 +1,22 @@
+#!/sbin/openrc-run
+# mulga-ebs-byid — role-agnostic boot oneshot that enables the EBS by-id
+# symlink bridge for the aws-ebs-csi-driver node plugin. Points the kernel
+# hotplug helper at busybox mdev (Alpine has no eudev/netlink device manager),
+# so a hot-attached virtio-blk volume triggers /etc/mdev.conf, then coldplugs
+# any volume already present at boot. Runs on every node (server + agent).
+
+description="Mulga EBS /dev/disk/by-id symlink bridge (mdev hotplug)"
+
+depend() {
+    after dev
+    before k3s k3s-agent
+}
+
+start() {
+    ebegin "Enabling EBS by-id hotplug bridge"
+    if [ -w /proc/sys/kernel/hotplug ]; then
+        echo /sbin/mdev > /proc/sys/kernel/hotplug
+    fi
+    ACTION=coldplug /usr/local/sbin/mulga-ebs-byid
+    eend $?
+}

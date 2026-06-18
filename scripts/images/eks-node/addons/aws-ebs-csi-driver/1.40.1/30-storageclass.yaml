@@ -1,0 +1,18 @@
+# Default gp3 StorageClass — PVCs without an explicit class provision a
+# Viperblock-backed EBS volume via the Spinifex EBS API. WaitForFirstConsumer
+# defers CreateVolume until a pod schedules so the volume lands in the node's AZ.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    app.kubernetes.io/name: aws-ebs-csi-driver
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  csi.storage.k8s.io/fstype: ext4

@@ -47,7 +47,14 @@ chmod 0755 /etc/init.d/eks-node-role /etc/init.d/k3s /etc/init.d/k3s-agent \
     /etc/init.d/mulga-eks-addon-sync
 chmod 0755 /usr/local/sbin/eks-node-role /usr/local/sbin/k3s-first-boot \
     /usr/local/sbin/mulga-eks-state-report /usr/local/sbin/mulga-eks-addon-sync
+chmod 0755 /etc/init.d/mulga-ebs-byid /usr/local/sbin/mulga-ebs-byid
 chmod 0755 /etc/periodic/daily/mulga-eks-etcd-snapshot
+
+# EBS by-id bridge: mdev rule firing mulga-ebs-byid for whole virtio-blk disks
+# (vd[a-z], no partition suffix). The leading '*' runs the command on both add
+# and remove; the script keys on $ACTION. mulga-ebs-byid (boot oneshot) points
+# the kernel hotplug helper at mdev so hot-attached volumes reach this rule.
+printf '%s\n' 'vd[a-z]		root:root 0660 */usr/local/sbin/mulga-ebs-byid' >> /etc/mdev.conf
 
 # K3s server config — skeleton; cloud-init / first-boot fills in the
 # per-cluster fields (cluster-cidr, service-cidr, token-file, etc). Agents

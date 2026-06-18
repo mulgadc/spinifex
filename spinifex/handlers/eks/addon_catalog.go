@@ -26,6 +26,9 @@ var addonCatalog = buildAddonCatalog(
 	newAddonSpec("argocd", false,
 		"Declarative GitOps continuous delivery for Kubernetes.",
 		"3.0.23"),
+	newAddonSpec("aws-ebs-csi-driver", true,
+		"Container Storage Interface driver for Amazon EBS (Viperblock) volumes.",
+		"1.40.1"),
 	// spinifex-noop is the delivery-transport fixture: a trivial bundle
 	// (Namespace + ConfigMap) used by the addon e2e to prove stage → render →
 	// auto-deploy → ACTIVE → delete round-trips end-to-end without depending on

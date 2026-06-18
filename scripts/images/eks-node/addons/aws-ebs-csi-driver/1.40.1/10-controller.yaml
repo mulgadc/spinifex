@@ -1,0 +1,309 @@
+# aws-ebs-csi-driver 1.40.1 — controller Deployment + gateway-CA Secret.
+# IRSA (web-identity) wired to the Spinifex AWS gateway: projected SA token
+# (aud sts.amazonaws.com) + role ARN + EC2/STS endpoint + CA, filled by
+# mulga-eks-addon-sync. Static aws-secret key auth removed.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: spinifex-gateway-ca
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: aws-ebs-csi-driver
+type: Opaque
+data:
+  ca.pem: '{{GATEWAY_CA_PEM_B64}}'
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: ebs-csi-controller
+  labels:
+    app.kubernetes.io/name: aws-ebs-csi-driver
+  namespace: kube-system
+spec:
+  replicas: 2
+  revisionHistoryLimit: 10
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: ebs-csi-controller
+      app.kubernetes.io/name: aws-ebs-csi-driver
+  template:
+    metadata:
+      labels:
+        app: ebs-csi-controller
+        app.kubernetes.io/name: aws-ebs-csi-driver
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      serviceAccountName: ebs-csi-controller-sa
+      priorityClassName: system-cluster-critical
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - preference:
+              matchExpressions:
+              - key: eks.amazonaws.com/compute-type
+                operator: NotIn
+                values:
+                - fargate
+                - auto
+                - hybrid
+            weight: 1
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - ebs-csi-controller
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+        tolerationSeconds: 300
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: ebs-plugin
+        image: public.ecr.aws/ebs-csi-driver/aws-ebs-csi-driver:v1.40.1
+        imagePullPolicy: IfNotPresent
+        args:
+        - controller
+        - --endpoint=$(CSI_ENDPOINT)
+        - --batching=true
+        - --logging-format=text
+        - --user-agent-extra=kustomize
+        - --v=2
+        env:
+        - name: CSI_ENDPOINT
+          value: unix:///var/lib/csi/sockets/pluginproxy/csi.sock
+        - name: CSI_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: AWS_EC2_ENDPOINT
+          value: '{{GATEWAY_ENDPOINT}}'
+        - name: AWS_ROLE_ARN
+          value: '{{SERVICE_ACCOUNT_ROLE_ARN}}'
+        - name: AWS_WEB_IDENTITY_TOKEN_FILE
+          value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+        - name: AWS_STS_REGIONAL_ENDPOINTS
+          value: regional
+        - name: AWS_REGION
+          value: '{{AWS_REGION}}'
+        - name: AWS_DEFAULT_REGION
+          value: '{{AWS_REGION}}'
+        - name: AWS_ENDPOINT_URL_STS
+          value: '{{GATEWAY_ENDPOINT}}'
+        - name: AWS_ENDPOINT_URL_EC2
+          value: '{{GATEWAY_ENDPOINT}}'
+        - name: AWS_CA_BUNDLE
+          value: /etc/spinifex/gateway-ca/ca.pem
+        volumeMounts:
+        - name: socket-dir
+          mountPath: /var/lib/csi/sockets/pluginproxy/
+        - name: aws-iam-token
+          mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+          readOnly: true
+        - name: spinifex-gateway-ca
+          mountPath: /etc/spinifex/gateway-ca
+          readOnly: true
+        ports:
+        - name: healthz
+          containerPort: 9808
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: healthz
+          initialDelaySeconds: 10
+          timeoutSeconds: 3
+          periodSeconds: 10
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: healthz
+          initialDelaySeconds: 10
+          timeoutSeconds: 3
+          periodSeconds: 10
+          failureThreshold: 5
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 40Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+      - name: csi-provisioner
+        image: public.ecr.aws/eks-distro/kubernetes-csi/external-provisioner:v5.2.0-eks-1-32-7
+        imagePullPolicy: IfNotPresent
+        args:
+        - --timeout=60s
+        - --csi-address=$(ADDRESS)
+        - --v=2
+        - --feature-gates=Topology=true
+        - --extra-create-metadata
+        - --leader-election=true
+        - --default-fstype=ext4
+        - --kube-api-qps=20
+        - --kube-api-burst=100
+        - --worker-threads=100
+        - --retry-interval-max=30m
+        - --feature-gates=VolumeAttributesClass=true
+        env:
+        - name: ADDRESS
+          value: /var/lib/csi/sockets/pluginproxy/csi.sock
+        volumeMounts:
+        - name: socket-dir
+          mountPath: /var/lib/csi/sockets/pluginproxy/
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 40Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+      - name: csi-attacher
+        image: public.ecr.aws/eks-distro/kubernetes-csi/external-attacher:v4.8.1-eks-1-32-7
+        imagePullPolicy: IfNotPresent
+        args:
+        - --timeout=60s
+        - --csi-address=$(ADDRESS)
+        - --v=2
+        - --leader-election=true
+        - --kube-api-qps=20
+        - --kube-api-burst=100
+        - --worker-threads=100
+        - --retry-interval-max=5m
+        env:
+        - name: ADDRESS
+          value: /var/lib/csi/sockets/pluginproxy/csi.sock
+        volumeMounts:
+        - name: socket-dir
+          mountPath: /var/lib/csi/sockets/pluginproxy/
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 40Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+      - name: csi-snapshotter
+        image: public.ecr.aws/eks-distro/kubernetes-csi/external-snapshotter/csi-snapshotter:v8.2.1-eks-1-32-7
+        imagePullPolicy: IfNotPresent
+        args:
+        - --csi-address=$(ADDRESS)
+        - --leader-election=true
+        - --v=2
+        - --extra-create-metadata
+        - --kube-api-qps=20
+        - --kube-api-burst=100
+        - --worker-threads=100
+        - --retry-interval-max=30m
+        env:
+        - name: ADDRESS
+          value: /var/lib/csi/sockets/pluginproxy/csi.sock
+        volumeMounts:
+        - name: socket-dir
+          mountPath: /var/lib/csi/sockets/pluginproxy/
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 40Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+      - name: csi-resizer
+        image: public.ecr.aws/eks-distro/kubernetes-csi/external-resizer:v1.13.2-eks-1-32-7
+        imagePullPolicy: IfNotPresent
+        args:
+        - --timeout=60s
+        - --extra-modify-metadata
+        - --csi-address=$(ADDRESS)
+        - --v=2
+        - --handle-volume-inuse-error=false
+        - --leader-election=true
+        - --kube-api-qps=20
+        - --kube-api-burst=100
+        - --workers=100
+        - --retry-interval-max=30m
+        - --feature-gates=VolumeAttributesClass=true
+        env:
+        - name: ADDRESS
+          value: /var/lib/csi/sockets/pluginproxy/csi.sock
+        volumeMounts:
+        - name: socket-dir
+          mountPath: /var/lib/csi/sockets/pluginproxy/
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 40Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+      - name: liveness-probe
+        image: public.ecr.aws/eks-distro/kubernetes-csi/livenessprobe:v2.14.0-eks-1-32-7
+        imagePullPolicy: IfNotPresent
+        args:
+        - --csi-address=/csi/csi.sock
+        volumeMounts:
+        - name: socket-dir
+          mountPath: /csi
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 40Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: socket-dir
+        emptyDir: {}
+      - name: aws-iam-token
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              audience: sts.amazonaws.com
+              expirationSeconds: 86400
+              path: token
+      - name: spinifex-gateway-ca
+        secret:
+          defaultMode: 420
+          secretName: spinifex-gateway-ca

@@ -199,6 +199,32 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, imdsGet(t, tgtX, tokenX, "/latest/meta-data/placement/availability-zone"),
 		"placement/availability-zone must be populated")
 
+	// Cheap leaves added with the easy-routes work: a real reservation id, the
+	// static instance-life-cycle, and the services subtree.
+	require.True(t, strings.HasPrefix(imdsGet(t, tgtX, tokenX, "/latest/meta-data/reservation-id"), "r-"),
+		"reservation-id must be served as an r-… identifier")
+	require.Equal(t, "on-demand", imdsGet(t, tgtX, tokenX, "/latest/meta-data/instance-life-cycle"),
+		"instance-life-cycle must be on-demand (Spot not modelled)")
+	require.Equal(t, "aws", imdsGet(t, tgtX, tokenX, "/latest/meta-data/services/partition"),
+		"services/partition must be aws")
+	require.Equal(t, "amazonaws.com", imdsGet(t, tgtX, tokenX, "/latest/meta-data/services/domain"),
+		"services/domain must be amazonaws.com")
+
+	// public-hostname mirrors public-ipv4 when the instance has one, else 404. In
+	// pool mode the probe subnet maps a public IP on launch; in dev_networking it
+	// has none, so the two modes exercise the two branches.
+	if fix.PoolMode {
+		pubIP := imdsGet(t, tgtX, tokenX, "/latest/meta-data/public-ipv4")
+		require.NotEmpty(t, pubIP, "pool-mode VM must have a public IP")
+		require.Equal(t, pubIP, imdsGet(t, tgtX, tokenX, "/latest/meta-data/public-hostname"),
+			"public-hostname must mirror public-ipv4")
+	} else {
+		require.Equal(t, "404",
+			imdsCode(tgtX, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, tokenX),
+				"/latest/meta-data/public-hostname"),
+			"no public IP → public-hostname must 404")
+	}
+
 	// iam/info → InstanceProfileArn ends with the bound profile.
 	iamInfo := imdsGet(t, tgtX, tokenX, "/latest/meta-data/iam/info")
 	require.Containsf(t, iamInfo, ":instance-profile/"+imdsProfileName,
@@ -228,6 +254,38 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	harness.Step(t, "GET /latest/user-data round-trips launch user-data")
 	require.Contains(t, imdsGet(t, tgtX, tokenX, "/latest/user-data"), imdsUDMarker,
 		"user-data must round-trip the launch user-data")
+
+	// --- Version discovery + dated-version alias (cloud-init parity) ----------
+	// cloud-init's EC2 datasource probes its OWN hardcoded dated versions
+	// (e.g. 2021-03-23), not the GET / listing, so any dated prefix must alias to
+	// /latest. That breakage is what the easy-routes work fixes; prove it in-guest.
+	harness.Step(t, "version discovery: GET /, GET /latest, dated-version alias")
+	require.Contains(t, imdsGet(t, tgtX, tokenX, "/"), "latest",
+		"GET / must advertise the supported version list")
+	require.Equal(t, "dynamic\nmeta-data\nuser-data", imdsGet(t, tgtX, tokenX, "/latest"),
+		"GET /latest must list the top-level tree")
+	require.Equal(t, idX, imdsGet(t, tgtX, tokenX, "/2021-03-23/meta-data/instance-id"),
+		"a dated API version must alias to /latest (cloud-init parity)")
+
+	// --- Dynamic instance-identity document ----------------------------------
+	// The unsigned document is consumed by real SDKs in-guest; assert the fields
+	// resolved from ENI + instance facts, including the launch-time architecture.
+	harness.Step(t, "GET /latest/dynamic/instance-identity/document")
+	_, wantArch := needInstanceTypeArch(t, fix)
+	docBody := imdsGet(t, tgtX, tokenX, "/latest/dynamic/instance-identity/document")
+	var idDoc struct {
+		InstanceID   string `json:"instanceId"`
+		AccountID    string `json:"accountId"`
+		Region       string `json:"region"`
+		Architecture string `json:"architecture"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(docBody), &idDoc),
+		"identity document must be valid JSON: %s", docBody)
+	require.Equal(t, idX, idDoc.InstanceID, "identity document instanceId mismatch")
+	require.Equal(t, adminAccount, idDoc.AccountID, "identity document accountId mismatch")
+	require.NotEmpty(t, idDoc.Region, "identity document region must be populated")
+	require.Equal(t, wantArch, idDoc.Architecture,
+		"identity document architecture must match the launch instance type")
 
 	// --- Instance-role credentials + wire round-trip -------------------------
 	harness.Step(t, "GET security-credentials/%s → ASIA creds", imdsRoleName)

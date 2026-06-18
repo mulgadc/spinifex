@@ -57,9 +57,13 @@ func (g *GarbageCollector) WithLeaderElection(acquire func() (release func(), el
 // Start runs an immediate sweep, then one every GCInterval until ctx is done.
 // Call once per GC to avoid duplicating the goroutine.
 func (g *GarbageCollector) Start(ctx context.Context) {
+	// Read GCInterval on the caller's goroutine so tests that mutate the package
+	// var (set then restore in a defer) are ordered against this read; the
+	// spawned goroutine then only touches the captured local.
+	interval := GCInterval
 	go func() {
 		g.SweepOnce(ctx)
-		ticker := time.NewTicker(GCInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {

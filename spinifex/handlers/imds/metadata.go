@@ -179,10 +179,18 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		writeText(w, "ami-id\nhostname\niam/\ninstance-id\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nplacement/\npublic-ipv4\npublic-keys/\nsecurity-groups")
 	case prefixMetaData + "instance-id":
 		writeText(w, eni.instanceID)
+	case prefixMetaData + "instance-life-cycle":
+		writeText(w, "on-demand") // Spot is not modelled yet
 	case prefixMetaData + "local-ipv4":
 		writeText(w, eni.privateIP)
 	case prefixMetaData + "public-ipv4":
 		writeText(w, eni.publicIP)
+	case prefixMetaData + "public-hostname":
+		if eni.publicIP == "" {
+			w.WriteHeader(http.StatusNotFound) // no public IP → no public hostname
+			return
+		}
+		writeText(w, eni.publicIP) // mirror public-ipv4 until public DNS exists
 	case prefixMetaData + "mac":
 		writeText(w, eni.mac)
 	case prefixMetaData + "security-groups":
@@ -199,6 +207,18 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		s.serveInstanceField(w, eni, func(i *instanceFacts) string { return i.instanceType })
 	case prefixMetaData + "ami-id":
 		s.serveInstanceField(w, eni, func(i *instanceFacts) string { return i.imageID })
+	case prefixMetaData + "ami-launch-index":
+		s.serveInstanceField(w, eni, func(i *instanceFacts) string {
+			return strconv.FormatInt(i.amiLaunchIndex, 10)
+		})
+	case prefixMetaData + "reservation-id":
+		s.serveInstanceField(w, eni, func(i *instanceFacts) string { return i.reservationID })
+	case prefixMetaData + "services", prefixMetaData + "services/":
+		writeText(w, "domain\npartition")
+	case prefixMetaData + "services/domain":
+		writeText(w, "amazonaws.com")
+	case prefixMetaData + "services/partition":
+		writeText(w, "aws")
 	case prefixMetaData + "iam", prefixMetaData + "iam/":
 		writeText(w, "info\nsecurity-credentials/")
 	case prefixMetaData + "iam/info":

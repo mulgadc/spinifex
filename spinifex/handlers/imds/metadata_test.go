@@ -368,8 +368,14 @@ func TestHTTP_InstanceIdentityDocumentInvisible404(t *testing.T) {
 
 func TestHTTP_MetadataPaths(t *testing.T) {
 	res := &fakeResolver{
-		eni:     testENI(),
-		inst:    &instanceFacts{instanceType: "t3.micro", imageID: "ami-12345", userData: []byte("#!/bin/sh\necho hi")},
+		eni: testENI(),
+		inst: &instanceFacts{
+			instanceType:   "t3.micro",
+			imageID:        "ami-12345",
+			reservationID:  "r-0abc123",
+			amiLaunchIndex: 3,
+			userData:       []byte("#!/bin/sh\necho hi"),
+		},
 		sgNames: map[string]string{"sg-1": "web-sg", "sg-2": "db-sg"},
 	}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
@@ -380,14 +386,22 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 		{prefixMetaData + "instance-id", "i-0123456789"},
 		{prefixMetaData + "instance-type", "t3.micro"},
 		{prefixMetaData + "ami-id", "ami-12345"},
+		{prefixMetaData + "ami-launch-index", "3"},
+		{prefixMetaData + "reservation-id", "r-0abc123"},
+		{prefixMetaData + "instance-life-cycle", "on-demand"},
 		{prefixMetaData + "local-ipv4", "10.0.1.5"},
 		{prefixMetaData + "public-ipv4", "203.0.113.7"},
+		{prefixMetaData + "public-hostname", "203.0.113.7"},
 		{prefixMetaData + "mac", "02:11:22:33:44:55"},
 		{prefixMetaData + "placement/availability-zone", "ap-southeast-2a"},
 		{prefixMetaData + "placement/region", "ap-southeast-2"},
 		{prefixMetaData + "security-groups", "web-sg\ndb-sg"},
 		{prefixMetaData + "hostname", "ip-10-0-1-5.ap-southeast-2.compute.internal"},
 		{prefixMetaData + "local-hostname", "ip-10-0-1-5.ap-southeast-2.compute.internal"},
+		{prefixMetaData + "services", "domain\npartition"},
+		{prefixMetaData + "services/", "domain\npartition"},
+		{prefixMetaData + "services/domain", "amazonaws.com"},
+		{prefixMetaData + "services/partition", "aws"},
 		{pathUserData, "#!/bin/sh\necho hi"},
 	}
 	for _, c := range cases {
@@ -395,6 +409,17 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 		assert.Equal(t, http.StatusOK, rec.Code, "path=%s", c.path)
 		assert.Equal(t, c.want, rec.Body.String(), "path=%s", c.path)
 	}
+}
+
+// An instance with no public IP has no public hostname: 404, not an empty 200.
+func TestHTTP_PublicHostnameAbsent404(t *testing.T) {
+	eni := testENI()
+	eni.publicIP = ""
+	svc, _ := newTestService(&fakeResolver{eni: eni}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, prefixMetaData+"public-hostname", token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestHTTP_DirectoryListing(t *testing.T) {

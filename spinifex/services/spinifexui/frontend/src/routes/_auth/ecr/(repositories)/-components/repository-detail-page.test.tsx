@@ -28,11 +28,21 @@ const URI = "111.dkr.ecr.ap-southeast-2.local/team/app"
 function seed(imageDetails: unknown[]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecr", "repositories"], {
-    repositories: [{ repositoryName: REPO, repositoryUri: URI }],
+    repositories: [
+      {
+        repositoryName: REPO,
+        repositoryUri: URI,
+        imageTagMutability: "MUTABLE",
+      },
+    ],
   })
   qc.setQueryData(["ecr", "repositories", REPO, "images"], { imageDetails })
   qc.setQueryData(["ecr", "repositories", REPO, "policy"], null)
   return qc
+}
+
+function openImagesTab() {
+  fireEvent.click(screen.getByRole("tab", { name: "Images" }))
 }
 
 const IMAGE = {
@@ -43,12 +53,13 @@ const IMAGE = {
 }
 
 describe("RepositoryDetailPage", () => {
-  it("renders the push commands and an image row", () => {
+  it("renders the push commands on the Summary tab and image rows on Images", () => {
     renderWithClient(
       <RepositoryDetailPage repositoryName={REPO} />,
       seed([IMAGE]),
     )
     expect(screen.getByText(/docker push/)).toBeInTheDocument()
+    openImagesTab()
     expect(screen.getByText("v1, latest")).toBeInTheDocument()
   })
 
@@ -57,11 +68,13 @@ describe("RepositoryDetailPage", () => {
       <RepositoryDetailPage repositoryName={REPO} />,
       seed([{ imageDigest: "sha256:deadbeef00112233445566", imageTags: [] }]),
     )
+    openImagesTab()
     expect(screen.getByText("<untagged>")).toBeInTheDocument()
   })
 
   it("shows the empty state when no images are pushed", () => {
     renderWithClient(<RepositoryDetailPage repositoryName={REPO} />, seed([]))
+    openImagesTab()
     expect(screen.getByText("No images pushed yet.")).toBeInTheDocument()
   })
 
@@ -70,6 +83,7 @@ describe("RepositoryDetailPage", () => {
       <RepositoryDetailPage repositoryName={REPO} />,
       seed([IMAGE]),
     )
+    openImagesTab()
     fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0])
     expect(
       screen.getByText(/permanently deletes the image manifest/),

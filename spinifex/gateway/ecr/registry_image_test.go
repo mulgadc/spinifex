@@ -3,6 +3,7 @@ package gateway_ecr
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -214,6 +215,39 @@ func TestDeleteImage_ByDigestClearsTags(t *testing.T) {
 	tags, err := reg.Meta.ListTags(testAccount, repo)
 	require.NoError(t, err)
 	assert.Empty(t, tags)
+}
+
+func TestStoreManifest_ImmutableTag(t *testing.T) {
+	reg := newTestRegistry()
+	repo := "team/app"
+	manA := fmt.Appendf(nil, `{"schemaVersion":2,"mediaType":"%s","layers":[{"digest":"%s"}]}`,
+		mediaTypeDockerManifest, pushBlob(t, reg, repo, []byte("layer-a")))
+	manB := fmt.Appendf(nil, `{"schemaVersion":2,"mediaType":"%s","layers":[{"digest":"%s"}]}`,
+		mediaTypeDockerManifest, pushBlob(t, reg, repo, []byte("layer-b")))
+
+	digA, err := reg.StoreManifest(testAccount, repo, "v1", mediaTypeDockerManifest, manA)
+	require.NoError(t, err)
+
+	// Flip the repo to IMMUTABLE.
+	require.NoError(t, reg.Meta.PutRepo(testAccount, ecr.RepoMeta{Name: repo, ImageTagMutability: ecr.TagMutabilityImmutable}))
+
+	// Re-pushing the same tag onto the same digest is idempotent, not a conflict.
+	got, err := reg.StoreManifest(testAccount, repo, "v1", mediaTypeDockerManifest, manA)
+	require.NoError(t, err)
+	assert.Equal(t, digA, got)
+
+	// Re-pushing the tag onto a different digest is rejected.
+	_, err = reg.StoreManifest(testAccount, repo, "v1", mediaTypeDockerManifest, manB)
+	var mErr *ManifestStoreError
+	require.True(t, errors.As(err, &mErr))
+	assert.Equal(t, "TAG_IMMUTABLE", mErr.Code)
+	assert.Equal(t, http.StatusConflict, mErr.Status)
+
+	// A new tag and a digest reference are still allowed on an immutable repo.
+	_, err = reg.StoreManifest(testAccount, repo, "v2", mediaTypeDockerManifest, manB)
+	require.NoError(t, err)
+	_, err = reg.StoreManifest(testAccount, repo, digestOf(manB), mediaTypeDockerManifest, manB)
+	require.NoError(t, err)
 }
 
 func TestStoreManifest_BadDigestReference(t *testing.T) {

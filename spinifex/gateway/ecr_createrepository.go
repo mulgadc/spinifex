@@ -27,8 +27,8 @@ type createRepositoryRequest struct {
 
 // handleCreateRepository provisions an empty repository in the caller account.
 // The predastore object bucket stays lazily created on first push; this writes
-// only the per-account KV meta record. imageTagMutability is reported as MUTABLE
-// in v1 (immutable tags are a separate follow-on).
+// only the per-account KV meta record. imageTagMutability (MUTABLE/IMMUTABLE)
+// is validated, persisted, and echoed; an unset value defaults to MUTABLE.
 func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.Request) error {
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
@@ -51,6 +51,10 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 	if req.RegistryID != "" && req.RegistryID != accountID {
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
+	mutability, err := normalizeTagMutability(req.ImageTagMutability)
+	if err != nil {
+		return err
+	}
 
 	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)
 	if _, err := store.GetRepo(accountID, req.RepositoryName); err == nil {
@@ -60,7 +64,11 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	meta := handlers_ecr.RepoMeta{Name: req.RepositoryName, CreatedAt: time.Now().UTC()}
+	meta := handlers_ecr.RepoMeta{
+		Name:               req.RepositoryName,
+		CreatedAt:          time.Now().UTC(),
+		ImageTagMutability: mutability,
+	}
 	if err := store.PutRepo(accountID, meta); err != nil {
 		slog.Error("CreateRepository: put repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -73,8 +81,21 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 			RepositoryArn:      aws.String(gw.ecrRepositoryArn(accountID, req.RepositoryName)),
 			RepositoryUri:      aws.String(gw.ecrRepositoryUri(accountID, req.RepositoryName)),
 			CreatedAt:          aws.Time(meta.CreatedAt),
-			ImageTagMutability: aws.String("MUTABLE"),
+			ImageTagMutability: aws.String(meta.TagMutability()),
 		},
 	})
 	return nil
+}
+
+// normalizeTagMutability validates the requested mutability, defaulting an empty
+// value to MUTABLE. An unknown value is rejected with InvalidParameterValue.
+func normalizeTagMutability(v string) (string, error) {
+	switch v {
+	case "":
+		return handlers_ecr.TagMutabilityMutable, nil
+	case handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable:
+		return v, nil
+	default:
+		return "", errors.New(awserrors.ErrorInvalidParameterValue)
+	}
 }

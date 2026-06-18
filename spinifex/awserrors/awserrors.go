@@ -460,6 +460,7 @@ var (
 	ErrorRepositoryNotEmpty       = "RepositoryNotEmptyException"
 	ErrorImageNotFound            = "ImageNotFoundException"
 	ErrorImageAlreadyExists       = "ImageAlreadyExistsException"
+	ErrorImageTagAlreadyExists    = "ImageTagAlreadyExistsException"
 	ErrorImageDigestDoesNotMatch  = "ImageDigestDoesNotMatchException"
 	ErrorLayersNotFound           = "LayersNotFoundException"
 	ErrorReferencedImagesNotFound = "ReferencedImagesNotFoundException"
@@ -976,6 +977,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorRepositoryNotEmpty:       {HTTPCode: 400, Message: "The repository contains images. Either delete the images or use the force option to delete the repository."},
 	ErrorImageNotFound:            {HTTPCode: 400, Message: "The image requested does not exist in the specified repository."},
 	ErrorImageAlreadyExists:       {HTTPCode: 400, Message: "The specified image has already been pushed, and there were no changes to the manifest or image tag after the last push."},
+	ErrorImageTagAlreadyExists:    {HTTPCode: 400, Message: "The specified image is tagged with a tag that already exists. The repository is configured for tag immutability."},
 	ErrorImageDigestDoesNotMatch:  {HTTPCode: 400, Message: "The specified image digest does not match the digest of the supplied image manifest."},
 	ErrorLayersNotFound:           {HTTPCode: 400, Message: "The specified layers could not be found, or the specified layer is not valid for this repository."},
 	ErrorReferencedImagesNotFound: {HTTPCode: 400, Message: "The manifest list is referencing an image that does not exist."},

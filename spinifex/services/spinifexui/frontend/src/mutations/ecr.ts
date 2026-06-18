@@ -1,9 +1,11 @@
 import {
   type ImageIdentifier,
+  type ImageTagMutability,
   BatchDeleteImageCommand,
   CreateRepositoryCommand,
   DeleteRepositoryCommand,
   DeleteRepositoryPolicyCommand,
+  PutImageTagMutabilityCommand,
   SetRepositoryPolicyCommand,
 } from "@aws-sdk/client-ecr"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
@@ -83,6 +85,29 @@ export function useSetRepositoryPolicy() {
       void queryClient.invalidateQueries({
         queryKey: ["ecr", "repositories", variables.repositoryName, "policy"],
       })
+    },
+  })
+}
+
+export interface PutImageTagMutabilityParams {
+  repositoryName: string
+  imageTagMutability: ImageTagMutability
+}
+
+// usePutImageTagMutability flips a repo between MUTABLE and IMMUTABLE; the value
+// lives on the repository record, so the repositories list is invalidated.
+export function usePutImageTagMutability() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: PutImageTagMutabilityParams) => {
+      const command = new PutImageTagMutabilityCommand({
+        repositoryName: params.repositoryName,
+        imageTagMutability: params.imageTagMutability,
+      })
+      return await getEcrClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ecr", "repositories"] })
     },
   })
 }

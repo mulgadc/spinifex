@@ -61,6 +61,12 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return gw.handleDeleteRepository(w, r)
 	}
 
+	// PutImageTagMutability read-modify-writes the per-account RepoMeta record
+	// over NATS, like CreateRepository, so it is served inline.
+	if action == "PutImageTagMutability" {
+		return gw.handlePutImageTagMutability(w, r)
+	}
+
 	// Image-management actions need the gateway-side predastore Store (manifest
 	// bytes) carried by the OCI Registry, which the relayed Handler signature
 	// does not reach, so they are served inline.

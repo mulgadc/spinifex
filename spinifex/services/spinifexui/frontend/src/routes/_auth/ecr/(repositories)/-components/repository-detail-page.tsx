@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
 import { formatDateTime, formatSize } from "@/lib/utils"
 import { useBatchDeleteImage } from "@/mutations/ecr"
 import {
@@ -22,8 +23,8 @@ import {
   ecrRepositoryImagesQueryOptions,
 } from "@/queries/ecr"
 
-import { PushCommands } from "./push-commands"
 import { RepositoryPolicyEditor } from "./repository-policy-editor"
+import { RepositorySummary } from "./repository-summary"
 
 interface RepositoryDetailPageProps {
   repositoryName: string
@@ -75,14 +76,22 @@ export function RepositoryDetailPage({
         </Link>
       </div>
 
-      <div className="space-y-6">
-        <PushCommands
-          repositoryName={repositoryName}
-          repositoryUri={repository?.repositoryUri}
-        />
+      <Tabs defaultValue="summary">
+        <TabsList>
+          <TabsTab value="summary">Summary</TabsTab>
+          <TabsTab value="images">Images</TabsTab>
+          <TabsTab value="permissions">Permissions</TabsTab>
+        </TabsList>
 
-        <div>
-          <h2 className="mb-2 text-sm font-medium">Images</h2>
+        <TabsPanel value="summary">
+          <RepositorySummary
+            imageTagMutability={repository?.imageTagMutability}
+            repositoryName={repositoryName}
+            repositoryUri={repository?.repositoryUri}
+          />
+        </TabsPanel>
+
+        <TabsPanel value="images">
           {images.length > 0 ? (
             <div className="overflow-x-auto rounded-lg border bg-card">
               <table className="w-full text-sm">
@@ -137,10 +146,12 @@ export function RepositoryDetailPage({
           ) : (
             <p className="text-muted-foreground">No images pushed yet.</p>
           )}
-        </div>
+        </TabsPanel>
 
-        <RepositoryPolicyEditor repositoryName={repositoryName} />
-      </div>
+        <TabsPanel value="permissions">
+          <RepositoryPolicyEditor repositoryName={repositoryName} />
+        </TabsPanel>
+      </Tabs>
 
       <AlertDialog
         onOpenChange={(open) => !open && setDeleteTarget(null)}

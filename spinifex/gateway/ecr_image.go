@@ -386,6 +386,8 @@ func mapStoreManifestError(err error, repo string) error {
 			return errors.New(awserrors.ErrorImageDigestDoesNotMatch)
 		case "MANIFEST_BLOB_UNKNOWN":
 			return errors.New(awserrors.ErrorLayersNotFound)
+		case "TAG_IMMUTABLE":
+			return errors.New(awserrors.ErrorImageTagAlreadyExists)
 		default:
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}

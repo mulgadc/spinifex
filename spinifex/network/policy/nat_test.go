@@ -407,6 +407,30 @@ func TestNATManager_AddNATGateway_IdempotentSkip_MultiSubnet(t *testing.T) {
 		"re-add of subnet B must not mint a duplicate")
 }
 
+// TestNATManager_AddNATGateway_ReplacesStaleOnPublicIPChange guards the EIP-change
+// edge: a dropped delete then a recreate with a new EIP for the same subnet must not
+// leave the old snat row behind to leak egress via the stale public IP.
+func TestNATManager_AddNATGateway_ReplacesStaleOnPublicIPChange(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeCentralized)
+	require.NoError(t, err)
+
+	old := NATGWSpec{VPCID: "vpc-1", NATGatewayID: "nat-old", PublicIP: "9.9.9.9", SubnetCIDR: "172.31.16.0/20"}
+	require.NoError(t, nm.AddNATGateway(ctx, old))
+
+	// Recreate the subnet's NAT GW with a different EIP; the stale row must go.
+	fresh := NATGWSpec{VPCID: "vpc-1", NATGatewayID: "nat-new", PublicIP: "8.8.8.8", SubnetCIDR: "172.31.16.0/20"}
+	require.NoError(t, nm.AddNATGateway(ctx, fresh))
+
+	assert.Equal(t, 1, countNAT(m, "snat", fresh.SubnetCIDR),
+		"public-IP change must replace, not stack, the snat row")
+	got := findNAT(m, "snat", fresh.SubnetCIDR)
+	require.NotNil(t, got)
+	assert.Equal(t, "8.8.8.8", got.ExternalIP, "surviving row must carry the new public IP")
+}
+
 // TestNATManager_DeleteNATGateway_RemovesDuplicates is defensive: any duplicate
 // snat row that slipped past the idempotency guard (race, pre-existing) must be
 // fully removed on teardown, not left to leak egress past the first delete.

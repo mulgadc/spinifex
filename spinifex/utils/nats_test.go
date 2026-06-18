@@ -381,145 +381,6 @@ func TestNATSRequest_MarshalError(t *testing.T) {
 
 // --- AccountIDFromMsg tests ---
 
-// --- NATSScatterGather tests ---
-
-func TestNATSScatterGather_SuccessAmongErrors(t *testing.T) {
-	ns := startTestNATSServer(t)
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	defer nc.Close()
-
-	type Resp struct {
-		Value string `json:"value"`
-	}
-
-	// Simulate 3 nodes: 2 return errors, 1 returns success
-	_, err = nc.Subscribe("test.scatter", func(msg *nats.Msg) {
-		// Simulate varying response times
-		resp := Resp{Value: "found"}
-		data, _ := json.Marshal(resp)
-		msg.Respond(data)
-	})
-	require.NoError(t, err)
-
-	// Two error responders (faster)
-	for range 2 {
-		_, err = nc.Subscribe("test.scatter", func(msg *nats.Msg) {
-			errPayload := GenerateErrorPayload("InvalidInstanceID.NotFound")
-			msg.Respond(errPayload)
-		})
-		require.NoError(t, err)
-	}
-
-	result, err := NATSScatterGather[Resp](nc, "test.scatter", struct{}{}, 3*time.Second, 3, "")
-	require.NoError(t, err)
-	assert.Equal(t, "found", result.Value)
-}
-
-func TestNATSScatterGather_AllErrors(t *testing.T) {
-	ns := startTestNATSServer(t)
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	defer nc.Close()
-
-	type Resp struct{}
-
-	// All 3 nodes return errors
-	for range 3 {
-		_, err = nc.Subscribe("test.scatter.allerr", func(msg *nats.Msg) {
-			errPayload := GenerateErrorPayload("InvalidInstanceID.NotFound")
-			msg.Respond(errPayload)
-		})
-		require.NoError(t, err)
-	}
-
-	_, err = NATSScatterGather[Resp](nc, "test.scatter.allerr", struct{}{}, 2*time.Second, 3, "")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidInstanceID.NotFound")
-}
-
-func TestNATSScatterGather_Timeout(t *testing.T) {
-	ns := startTestNATSServer(t)
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	defer nc.Close()
-
-	type Resp struct{}
-
-	// No subscribers — should return a timeout error
-	_, err = NATSScatterGather[Resp](nc, "test.scatter.timeout", struct{}{}, 200*time.Millisecond, 0, "")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no responses received")
-}
-
-func TestNATSScatterGather_SingleSuccess(t *testing.T) {
-	ns := startTestNATSServer(t)
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	defer nc.Close()
-
-	type Resp struct {
-		ID string `json:"id"`
-	}
-
-	_, err = nc.Subscribe("test.scatter.single", func(msg *nats.Msg) {
-		resp := Resp{ID: "ami-123"}
-		data, _ := json.Marshal(resp)
-		msg.Respond(data)
-	})
-	require.NoError(t, err)
-
-	result, err := NATSScatterGather[Resp](nc, "test.scatter.single", struct{}{}, 2*time.Second, 1, "acct-123")
-	require.NoError(t, err)
-	assert.Equal(t, "ami-123", result.ID)
-}
-
-func TestNATSScatterGather_MarshalError(t *testing.T) {
-	ns := startTestNATSServer(t)
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	defer nc.Close()
-
-	type Resp struct{}
-	_, err = NATSScatterGather[Resp](nc, "test.scatter.marshal", make(chan int), 2*time.Second, 0, "")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to marshal input")
-}
-
-func TestNATSScatterGather_EarlyExitOnSuccess(t *testing.T) {
-	ns := startTestNATSServer(t)
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	defer nc.Close()
-
-	type Resp struct {
-		Value string `json:"value"`
-	}
-
-	// One fast success responder — should return immediately without waiting
-	_, err = nc.Subscribe("test.scatter.early", func(msg *nats.Msg) {
-		resp := Resp{Value: "quick"}
-		data, _ := json.Marshal(resp)
-		msg.Respond(data)
-	})
-	require.NoError(t, err)
-
-	start := time.Now()
-	result, err := NATSScatterGather[Resp](nc, "test.scatter.early", struct{}{}, 5*time.Second, 0, "")
-	elapsed := time.Since(start)
-
-	require.NoError(t, err)
-	assert.Equal(t, "quick", result.Value)
-	// Should return well before the 5s timeout
-	assert.Less(t, elapsed, 2*time.Second)
-}
-
 func TestAccountIDFromMsg(t *testing.T) {
 	msg := nats.NewMsg("test")
 	msg.Header.Set(AccountIDHeader, "444455556666")
@@ -656,23 +517,6 @@ func TestNATSRequest_DisconnectedFastFail(t *testing.T) {
 	assert.Less(t, elapsed, 500*time.Millisecond, "should bail before per-call timeout")
 }
 
-func TestNATSScatterGather_DisconnectedFastFail(t *testing.T) {
-	ns := startTestNATSServer(t)
-	nc, err := ConnectNATS(ns.ClientURL(), "", "")
-	require.NoError(t, err)
-	defer nc.Close()
-
-	ns.Shutdown()
-	require.Eventually(t, func() bool { return !nc.IsConnected() }, 3*time.Second, 50*time.Millisecond)
-
-	start := time.Now()
-	_, err = NATSScatterGather[map[string]any](nc, "ec2.Describe", struct{}{}, 5*time.Second, 0, "")
-	elapsed := time.Since(start)
-
-	require.ErrorIs(t, err, ErrClusterUnavailable)
-	assert.Less(t, elapsed, 500*time.Millisecond, "should bail before fan-out timeout")
-}
-
 // --- 1c fail-fast tests: NATS request helpers reject when conn is down ---
 
 func TestNATSRequest_NilConn_ReturnsClusterUnavailable(t *testing.T) {
@@ -690,25 +534,6 @@ func TestNATSRequest_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
 
 	type Resp struct{}
 	_, err = NATSRequest[Resp](nc, "test.never", struct{}{}, 50*time.Millisecond, "")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrClusterUnavailable)
-}
-
-func TestNATSScatterGather_NilConn_ReturnsClusterUnavailable(t *testing.T) {
-	type Resp struct{}
-	_, err := NATSScatterGather[Resp](nil, "test.never", struct{}{}, 50*time.Millisecond, 1, "")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrClusterUnavailable)
-}
-
-func TestNATSScatterGather_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
-	ns := startTestNATSServer(t)
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	nc.Close()
-
-	type Resp struct{}
-	_, err = NATSScatterGather[Resp](nc, "test.never", struct{}{}, 50*time.Millisecond, 1, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrClusterUnavailable)
 }

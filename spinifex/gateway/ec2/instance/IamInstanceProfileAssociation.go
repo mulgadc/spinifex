@@ -187,63 +187,27 @@ func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, e
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	inbox := nats.NewInbox()
-	sub, err := natsConn.SubscribeSync(inbox)
+	frames, sum, err := utils.Gather(natsConn, subject, jsonData,
+		utils.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create inbox: %w", err)
-	}
-	defer sub.Unsubscribe()
-
-	pubMsg := nats.NewMsg(subject)
-	pubMsg.Reply = inbox
-	pubMsg.Data = jsonData
-	pubMsg.Header.Set(utils.AccountIDHeader, accountID)
-	if err := natsConn.PublishMsg(pubMsg); err != nil {
-		return nil, fmt.Errorf("failed to publish request: %w", err)
+		return nil, err
 	}
 
-	deadline := time.Now().Add(fanOutTimeout)
-	responsesReceived := 0
-	if expectedNodes <= 0 {
-		expectedNodes = -1
-	}
-
-	for time.Now().Before(deadline) {
-		if expectedNodes > 0 && responsesReceived >= expectedNodes {
-			break
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if err == nats.ErrTimeout {
-				break
-			}
-			return nil, fmt.Errorf("fan-out receive error: %w", err)
-		}
-		responsesReceived++
-
-		if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
-			// Daemon errors short-circuit — only the owner would return a definitive error.
-			code := awserrors.ErrorServerInternal
-			if errPayload.Code != nil {
-				code = *errPayload.Code
-			}
-			return nil, errors.New(code)
-		}
-
+	// Only the owner answers definitively: a populated association, or an error.
+	// Non-owners reply JSON null (a success frame that unmarshals to nil).
+	for _, f := range frames {
 		var assoc *ec2.IamInstanceProfileAssociation
-		if err := json.Unmarshal(msg.Data, &assoc); err != nil {
-			slog.Warn("fan-out: skipping malformed response", "subject", subject, "err", err)
-			continue
-		}
-		if assoc != nil {
+		if json.Unmarshal(f, &assoc) == nil && assoc != nil {
 			return assoc, nil
 		}
 	}
-
+	// A daemon error is authoritative — only the owner would return one.
+	if sum.FirstClient4xx != "" {
+		return nil, errors.New(sum.FirstClient4xx)
+	}
+	if sum.Successes < sum.Received {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 	return nil, errors.New(awserrors.ErrorNoSuchAssociation)
 }
 
@@ -255,76 +219,25 @@ func broadcastDescribeAssociations(natsConn *nats.Conn, input *ec2.DescribeIamIn
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	inbox := nats.NewInbox()
-	sub, err := natsConn.SubscribeSync(inbox)
+	frames, sum, err := utils.Gather(natsConn, "ec2.IamProfileAssociation.describe", jsonData,
+		utils.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create inbox: %w", err)
-	}
-	defer sub.Unsubscribe()
-
-	pubMsg := nats.NewMsg("ec2.IamProfileAssociation.describe")
-	pubMsg.Reply = inbox
-	pubMsg.Data = jsonData
-	pubMsg.Header.Set(utils.AccountIDHeader, accountID)
-	if err := natsConn.PublishMsg(pubMsg); err != nil {
-		return nil, fmt.Errorf("failed to publish request: %w", err)
+		return nil, err
 	}
 
-	deadline := time.Now().Add(fanOutTimeout)
-	responsesReceived := 0
 	var associations []*ec2.IamInstanceProfileAssociation
-	var clientError string
-
-	if expectedNodes <= 0 {
-		expectedNodes = -1
-	}
-
-	for time.Now().Before(deadline) {
-		if expectedNodes > 0 && responsesReceived >= expectedNodes {
-			break
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if err == nats.ErrTimeout {
-				break
-			}
-			return nil, fmt.Errorf("fan-out receive error: %w", err)
-		}
-		responsesReceived++
-
-		if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
-			code := ""
-			if errPayload.Code != nil {
-				code = *errPayload.Code
-			}
-			// Capture first deterministic 4xx (e.g. invalid filter) to return instead of
-			// an empty success. 5xx/unknown codes are dropped as transient noise but logged
-			// — CountInstanceProfileAssociations feeds DeleteInstanceProfile's live-instance gate.
-			if clientError == "" && code != "" {
-				if info, known := awserrors.ErrorLookup[code]; known && info.HTTPCode >= 400 && info.HTTPCode < 500 {
-					clientError = code
-					continue
-				}
-			}
-			slog.Warn("Describe fan-out: daemon error dropped from aggregate",
-				"subject", "ec2.IamProfileAssociation.describe", "code", code)
-			continue
-		}
-
+	for _, f := range frames {
 		var resp ec2.DescribeIamInstanceProfileAssociationsOutput
-		if err := json.Unmarshal(msg.Data, &resp); err != nil {
-			slog.Warn("Describe fan-out: skipping malformed response", "err", err)
-			continue
+		if json.Unmarshal(f, &resp) == nil {
+			associations = append(associations, resp.IamInstanceProfileAssociations...)
 		}
-		associations = append(associations, resp.IamInstanceProfileAssociations...)
 	}
 
-	if clientError != "" && len(associations) == 0 {
-		return nil, errors.New(clientError)
+	// A deterministic 4xx (e.g. invalid filter) is propagated only when nothing was
+	// collected; transient 5xx/unknown errors are dropped so partial Describe results
+	// still feed CountInstanceProfileAssociations' live-instance gate.
+	if sum.FirstClient4xx != "" && len(associations) == 0 {
+		return nil, errors.New(sum.FirstClient4xx)
 	}
 	return associations, nil
 }

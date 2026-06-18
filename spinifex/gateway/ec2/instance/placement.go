@@ -30,12 +30,12 @@ type nodeAllocation struct {
 // distributeInstances spreads instances across nodes: queries capacity, allocates
 // (1 per node first, then packs extras by remaining capacity), launches in parallel,
 // and rolls back on partial failure.
-func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.Reservation, error) {
+func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, expectedNodes int) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
 
-	nodes, err := queryNodeCapacity(natsConn, instanceType)
+	nodes, err := queryNodeCapacity(natsConn, instanceType, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -60,47 +60,19 @@ func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, acco
 
 // queryNodeCapacity fans out spinifex.node.status and returns eligible nodes
 // (Available >= 1 for instanceType), sorted by capacity desc with random tiebreaking.
-// After the first response, narrows the deadline to 200ms to avoid waiting the full 3s.
-func queryNodeCapacity(natsConn *nats.Conn, instanceType string) ([]nodeAllocation, error) {
-	inbox := nats.NewInbox()
-	sub, err := natsConn.SubscribeSync(inbox)
+// Early-exits once expectedNodes reply; on a degraded cluster it waits the full timeout
+// rather than placing on a partial view.
+func queryNodeCapacity(natsConn *nats.Conn, instanceType string, expectedNodes int, accountID string) ([]nodeAllocation, error) {
+	frames, _, err := utils.Gather(natsConn, "spinifex.node.status", []byte("{}"),
+		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create inbox: %w", err)
-	}
-	defer sub.Unsubscribe()
-
-	pubMsg := nats.NewMsg("spinifex.node.status")
-	pubMsg.Reply = inbox
-	pubMsg.Data = []byte("{}")
-	if err := natsConn.PublishMsg(pubMsg); err != nil {
-		return nil, fmt.Errorf("failed to publish node status request: %w", err)
+		return nil, err
 	}
 
-	const (
-		initialTimeout = 3 * time.Second
-		collectWindow  = 200 * time.Millisecond
-	)
-
-	deadline := time.Now().Add(initialTimeout)
-	gotFirst := false
 	var nodes []nodeAllocation
-
-	for time.Now().Before(deadline) {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if err == nats.ErrTimeout {
-				break
-			}
-			slog.Debug("queryNodeCapacity: error receiving message", "err", err)
-			break
-		}
-
+	for _, frame := range frames {
 		var status types.NodeStatusResponse
-		if err := json.Unmarshal(msg.Data, &status); err != nil {
+		if err := json.Unmarshal(frame, &status); err != nil {
 			slog.Debug("queryNodeCapacity: failed to unmarshal response", "err", err)
 			continue
 		}
@@ -116,14 +88,6 @@ func queryNodeCapacity(natsConn *nats.Conn, instanceType string) ([]nodeAllocati
 					Available: cap.Available,
 				})
 				break
-			}
-		}
-
-		if !gotFirst {
-			gotFirst = true
-			collectDeadline := time.Now().Add(collectWindow)
-			if collectDeadline.Before(deadline) {
-				deadline = collectDeadline
 			}
 		}
 	}
@@ -262,14 +226,14 @@ func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.C
 
 // distributeInstancesSpread implements strict 1-per-node spread: queries capacity,
 // atomically reserves nodes via CAS, launches 1 per node, then finalizes or rolls back.
-func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string) (*ec2.Reservation, error) {
+func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
 
 	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
 
-	nodes, err := queryNodeCapacity(natsConn, instanceType)
+	nodes, err := queryNodeCapacity(natsConn, instanceType, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -377,14 +341,14 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 
 // distributeInstancesCluster pins all instances to a single node.
 // Subsequent launches on an existing group reuse the same node; first launch picks highest capacity.
-func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string) (*ec2.Reservation, error) {
+func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
 
 	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
 
-	nodes, err := queryNodeCapacity(natsConn, instanceType)
+	nodes, err := queryNodeCapacity(natsConn, instanceType, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}

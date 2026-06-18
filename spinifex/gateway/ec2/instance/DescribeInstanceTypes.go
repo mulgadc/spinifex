@@ -12,72 +12,24 @@ import (
 )
 
 // DescribeInstanceTypes fans out to all nodes and aggregates instance type info.
-func DescribeInstanceTypes(input *ec2.DescribeInstanceTypesInput, natsConn *nats.Conn, expectedNodes int) (*ec2.DescribeInstanceTypesOutput, error) {
+func DescribeInstanceTypes(input *ec2.DescribeInstanceTypesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeInstanceTypesOutput, error) {
 	jsonData, err := json.Marshal(input)
 	if err != nil {
 		slog.Error("DescribeInstanceTypes: Failed to marshal input", "err", err)
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	inbox := nats.NewInbox()
-	sub, err := natsConn.SubscribeSync(inbox)
+	frames, _, err := utils.Gather(natsConn, "ec2.DescribeInstanceTypes", jsonData,
+		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
-		slog.Error("DescribeInstanceTypes: Failed to create inbox subscription", "err", err)
-		return nil, fmt.Errorf("failed to create inbox: %w", err)
-	}
-	defer sub.Unsubscribe()
-
-	// No queue group — all daemons receive the request.
-	err = natsConn.PublishRequest("ec2.DescribeInstanceTypes", inbox, jsonData)
-	if err != nil {
-		slog.Error("DescribeInstanceTypes: Failed to publish request", "err", err)
-		return nil, fmt.Errorf("failed to publish request: %w", err)
+		return nil, err
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
 	var allInstanceTypes []*ec2.InstanceTypeInfo
-	responsesReceived := 0
-
-	if expectedNodes <= 0 {
-		expectedNodes = -1
-		slog.Warn("DescribeInstanceTypes: ExpectedNodes not configured, using timeout-only collection")
-	}
-
-	for time.Now().Before(deadline) {
-		if expectedNodes > 0 && responsesReceived >= expectedNodes {
-			slog.Info("DescribeInstanceTypes: Received responses from all expected nodes", "expected", expectedNodes, "received", responsesReceived)
-			break
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if err == nats.ErrTimeout {
-				break
-			}
-			slog.Error("DescribeInstanceTypes: Error receiving message", "err", err)
-			break
-		}
-		responsesReceived++
-
-		responseError, err := utils.ValidateErrorPayload(msg.Data)
-		if err != nil {
-			slog.Warn("DescribeInstanceTypes: Received error from node", "code", responseError.Code, "responses_received", responsesReceived)
-			continue
-		}
-
+	for _, frame := range frames {
 		var nodeOutput ec2.DescribeInstanceTypesOutput
-		err = json.Unmarshal(msg.Data, &nodeOutput)
-		if err != nil {
-			slog.Error("DescribeInstanceTypes: Failed to unmarshal node response", "err", err)
-			continue
-		}
-
-		if nodeOutput.InstanceTypes != nil {
+		if json.Unmarshal(frame, &nodeOutput) == nil {
 			allInstanceTypes = append(allInstanceTypes, nodeOutput.InstanceTypes...)
-			slog.Info("DescribeInstanceTypes: Collected instance types from node", "count", len(nodeOutput.InstanceTypes), "responses_received", responsesReceived)
 		}
 	}
 

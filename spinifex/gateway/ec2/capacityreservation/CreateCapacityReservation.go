@@ -63,7 +63,7 @@ func CreateCapacityReservation(input *ec2.CreateCapacityReservationInput, natsCo
 		return output, errors.New(awserrors.ErrorDryRunOperation)
 	}
 
-	census, err := collectCensus(natsConn, expectedNodes)
+	census, err := collectCensus(natsConn, expectedNodes, accountID)
 	if err != nil {
 		return output, err
 	}

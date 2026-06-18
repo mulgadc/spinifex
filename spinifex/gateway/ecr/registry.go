@@ -236,7 +236,7 @@ func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name st
 
 	w.Header().Set("Location", uploadPath(name, uploadID))
 	w.Header().Set("Range", "0-0")
-	w.Header().Set("Docker-Upload-UUID", uploadID)
+	w.Header().Set("Docker-Upload-Uuid", uploadID)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -309,7 +309,7 @@ func (reg *Registry) patchUpload(w http.ResponseWriter, r *http.Request, name, u
 
 	w.Header().Set("Location", uploadPath(name, uploadID))
 	w.Header().Set("Range", fmt.Sprintf("0-%d", st.CommittedBytes-1))
-	w.Header().Set("Docker-Upload-UUID", uploadID)
+	w.Header().Set("Docker-Upload-Uuid", uploadID)
 	w.WriteHeader(http.StatusAccepted)
 }
 

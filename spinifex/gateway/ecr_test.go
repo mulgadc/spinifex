@@ -60,12 +60,12 @@ func TestECRRequest_UnknownAction(t *testing.T) {
 }
 
 // A registered-but-unimplemented action resolves to the 501 stub until its
-// handler lands. CreateRepository/DeleteRepository/DescribeRepositories are now
-// served inline, so ListImages stands in as a still-stubbed action.
+// handler lands. The repo/image actions are now served inline, so
+// ListRepositories stands in as a still-stubbed action.
 func TestECRRequest_KnownActionNotImplemented(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 	err := gw.ECR_Request(httptest.NewRecorder(),
-		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.ListImages", "{}"))
+		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.ListRepositories", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }

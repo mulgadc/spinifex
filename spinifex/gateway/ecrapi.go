@@ -61,6 +61,22 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return gw.handleDeleteRepository(w, r)
 	}
 
+	// Image-management actions need the gateway-side predastore Store (manifest
+	// bytes) carried by the OCI Registry, which the relayed Handler signature
+	// does not reach, so they are served inline.
+	switch action {
+	case "ListImages":
+		return gw.handleListImages(w, r)
+	case "DescribeImages":
+		return gw.handleDescribeImages(w, r)
+	case "BatchGetImage":
+		return gw.handleBatchGetImage(w, r)
+	case "PutImage":
+		return gw.handlePutImage(w, r)
+	case "BatchDeleteImage":
+		return gw.handleBatchDeleteImage(w, r)
+	}
+
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("ECR_Request: no account ID in auth context")

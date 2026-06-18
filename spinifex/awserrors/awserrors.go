@@ -458,6 +458,12 @@ var (
 	ErrorRepositoryPolicyNotFound = "RepositoryPolicyNotFoundException"
 	ErrorRepositoryAlreadyExists  = "RepositoryAlreadyExistsException"
 	ErrorRepositoryNotEmpty       = "RepositoryNotEmptyException"
+	ErrorImageNotFound            = "ImageNotFoundException"
+	ErrorImageAlreadyExists       = "ImageAlreadyExistsException"
+	ErrorImageDigestDoesNotMatch  = "ImageDigestDoesNotMatchException"
+	ErrorLayersNotFound           = "LayersNotFoundException"
+	ErrorReferencedImagesNotFound = "ReferencedImagesNotFoundException"
+	ErrorTooManyTags              = "TooManyTagsException"
 
 	// ELBv2-specific error codes
 	ErrorELBv2LoadBalancerNotFound         = "LoadBalancerNotFound"
@@ -968,6 +974,12 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorRepositoryPolicyNotFound: {HTTPCode: 400, Message: "The repository and registry do not have an associated repository policy."},
 	ErrorRepositoryAlreadyExists:  {HTTPCode: 400, Message: "The repository already exists in the registry."},
 	ErrorRepositoryNotEmpty:       {HTTPCode: 400, Message: "The repository contains images. Either delete the images or use the force option to delete the repository."},
+	ErrorImageNotFound:            {HTTPCode: 400, Message: "The image requested does not exist in the specified repository."},
+	ErrorImageAlreadyExists:       {HTTPCode: 400, Message: "The specified image has already been pushed, and there were no changes to the manifest or image tag after the last push."},
+	ErrorImageDigestDoesNotMatch:  {HTTPCode: 400, Message: "The specified image digest does not match the digest of the supplied image manifest."},
+	ErrorLayersNotFound:           {HTTPCode: 400, Message: "The specified layers could not be found, or the specified layer is not valid for this repository."},
+	ErrorReferencedImagesNotFound: {HTTPCode: 400, Message: "The manifest list is referencing an image that does not exist."},
+	ErrorTooManyTags:              {HTTPCode: 400, Message: "The list of tags on the repository is over the limit. The maximum number of tags that can be applied to a repository is 50."},
 
 	// ELBv2 error codes
 	ErrorELBv2LoadBalancerNotFound:         {HTTPCode: 400, Message: "One or more load balancers not found."},

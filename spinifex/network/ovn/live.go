@@ -989,6 +989,33 @@ func (c *LiveClient) FindNATByExternalIP(ctx context.Context, natType, externalI
 	return &nats[0], nil
 }
 
+// FindNATByLogicalIP returns the first owned NAT rule matching (natType, logicalIP)
+// on routerName, or (nil, nil). Router-scoped because AWS CIDRs repeat across VPCs,
+// so the pair is not globally unique (mirrors FindStaticRoute and DeleteNAT's key).
+func (c *LiveClient) FindNATByLogicalIP(ctx context.Context, routerName, natType, logicalIP string) (*nbdb.NAT, error) {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return nil, fmt.Errorf("get logical router for NAT lookup: %w", err)
+	}
+	owned := make(map[string]struct{}, len(lr.NAT))
+	for _, u := range lr.NAT {
+		owned[u] = struct{}{}
+	}
+	var nats []nbdb.NAT
+	if err := c.client.WhereCache(func(n *nbdb.NAT) bool {
+		if _, ok := owned[n.UUID]; !ok {
+			return false
+		}
+		return n.Type == natType && n.LogicalIP == logicalIP
+	}).List(ctx, &nats); err != nil {
+		return nil, fmt.Errorf("find NAT by logical IP: %w", err)
+	}
+	if len(nats) == 0 {
+		return nil, nil
+	}
+	return &nats[0], nil
+}
+
 func (c *LiveClient) AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error {
 	if route.UUID == "" {
 		route.UUID = namedUUID("route_", route.IPPrefix)

@@ -603,6 +603,25 @@ func (m *Client) FindNATByExternalIP(_ context.Context, natType, externalIP stri
 	return nil, nil
 }
 
+func (m *Client) FindNATByLogicalIP(_ context.Context, routerName, natType, logicalIP string) (*nbdb.NAT, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return nil, fmt.Errorf("logical router %q not found", routerName)
+	}
+	for _, uuid := range lr.NAT {
+		n, ok := m.NATs[uuid]
+		if !ok {
+			continue
+		}
+		if n.Type == natType && n.LogicalIP == logicalIP {
+			return n, nil
+		}
+	}
+	return nil, nil
+}
+
 // Static Routes
 
 func (m *Client) AddStaticRoute(_ context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error {

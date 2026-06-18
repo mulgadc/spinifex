@@ -292,12 +292,12 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 			"spinifex:nat_gateway_id": gw.NATGatewayID,
 		},
 	}
-	// Skip when the existing row already matches. The reconcile re-publishes the
-	// same spec and AddNAT is an unconditional create, so without this guard a
-	// duplicate snat row is minted that survives teardown.
-	if existing, err := m.ovn.FindNATByExternalIP(ctx, "snat", gw.PublicIP); err != nil {
-		slog.Warn("policy: AddNATGateway idempotency lookup failed", "public_ip", gw.PublicIP, "err", err)
-	} else if existing != nil && existing.LogicalIP == gw.SubnetCIDR {
+	// Skip when the row already exists. Keyed on (router, subnet CIDR) — DeleteNAT's
+	// key — so the reconcile's re-publish is a no-op and a multi-subnet NAT GW dedups
+	// per subnet instead of minting duplicate snat rows that survive teardown.
+	if existing, err := m.ovn.FindNATByLogicalIP(ctx, router, "snat", gw.SubnetCIDR); err != nil {
+		slog.Warn("policy: AddNATGateway idempotency lookup failed", "subnet_cidr", gw.SubnetCIDR, "err", err)
+	} else if existing != nil && existing.ExternalIP == gw.PublicIP {
 		slog.Info("policy: AddNATGateway idempotent skip — rule already current",
 			"router", router, "public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR)
 		return nil

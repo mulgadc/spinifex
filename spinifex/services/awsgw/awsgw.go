@@ -315,9 +315,14 @@ func initIAMService(natsConn *nats.Conn, masterKey []byte, clusterSize int) (*ha
 	}
 }
 
+// accountLister is the slice of IAMService the lifecycle sweeper needs.
+type accountLister interface {
+	ListAccounts() ([]*handlers_iam.Account, error)
+}
+
 // activeAccountIDs adapts IAMService.ListAccounts into the account-ID enumerator
 // the ECR lifecycle sweeper expects, including only ACTIVE accounts.
-func activeAccountIDs(iam handlers_iam.IAMService) func() ([]string, error) {
+func activeAccountIDs(iam accountLister) func() ([]string, error) {
 	return func() ([]string, error) {
 		accounts, err := iam.ListAccounts()
 		if err != nil {

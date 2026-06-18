@@ -20,6 +20,7 @@ import (
 func (gw *GatewayConfig) mountOCIRegistry(r chi.Router) {
 	r.Route("/v2", func(v2 chi.Router) {
 		v2.Use(gw.hostMatch)
+		v2.Use(gw.ecrAuthBridge)
 		v2.Get("/", gateway_ecr.APIVersion)
 		if gw.ECRRegistry != nil {
 			v2.HandleFunc("/*", gw.ECRRegistry.ServeHTTP)

@@ -39,6 +39,12 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
+	// GetAuthorizationToken mints a registry token from the SigV4 auth context;
+	// it is served inline rather than relayed onto a NATS subject.
+	if action == "GetAuthorizationToken" {
+		return gw.handleGetAuthorizationToken(w, r)
+	}
+
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("ECR_Request: no account ID in auth context")

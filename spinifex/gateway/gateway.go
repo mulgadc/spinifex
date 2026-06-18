@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
+	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -52,6 +53,11 @@ const (
 	ctxTargetAccount contextKey = "host.targetAccount"
 	// ctxTargetRegion carries the region parsed from the same registry host.
 	ctxTargetRegion contextKey = "host.targetRegion"
+
+	// ctxAuthPrincipal carries the verified ECR token subject (principal ARN).
+	// The resolved account is stashed via gateway_ecr.WithAuthAccount so the
+	// registry package can read it without sharing this package's key type.
+	ctxAuthPrincipal contextKey = "ecr.authPrincipal"
 )
 
 // Values stored under ctxPrincipalType. Downstream handlers that interpret
@@ -81,6 +87,11 @@ type GatewayConfig struct {
 	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
 	// to the 501 stub (e.g. in unit tests of unrelated routes).
 	ECRRegistry *gateway_ecr.Registry
+	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
+	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
+	// in unit tests of unrelated routes).
+	ECRTokenIssuer   *gateway_ecrauth.Issuer
+	ECRTokenVerifier *gateway_ecrauth.Verifier
 }
 
 var supportedServices = map[string]bool{

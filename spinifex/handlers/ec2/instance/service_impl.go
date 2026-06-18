@@ -42,6 +42,10 @@ const cloudInitUserDataTemplate = `#cloud-config
 users:
   - name: {{.Username}}
     shell: /bin/sh
+{{- if .AlpineUnlockPasswd}}
+    lock_passwd: false
+    hashed_passwd: "*"
+{{- end}}
     groups:
       - {{.SudoGroup}}
     sudo: "ALL=(ALL) NOPASSWD:ALL"
@@ -208,6 +212,11 @@ type CloudInitData struct {
 	// Empty on non-Alpine or non-VPC instances.
 	AlpineWriteFiles string
 	AlpineRunCmd     string
+	// AlpineUnlockPasswd renders the user with a disabled-but-unlocked password
+	// (lock_passwd: false, hashed_passwd: "*"). Alpine's sshd is built without
+	// PAM and rejects any login for a locked ("!") account; "*" keeps password
+	// auth disabled while letting pubkey auth through.
+	AlpineUnlockPasswd bool
 }
 
 // buildRHELCloudInit produces the cloud-init write_files (NM keyfiles) and
@@ -1846,14 +1855,15 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 	}
 
 	userData := CloudInitData{
-		Username:       "ec2-user",
-		SSHKey:         string(sshKey),
-		Hostname:       hostname,
-		CACertPEM:      caCertPEM,
-		DistroFamily:   distroFamily,
-		SudoGroup:      sudoGroup,
-		RHELWriteFiles: rhelWriteFiles,
-		RHELRunCmd:     rhelRunCmd,
+		Username:           "ec2-user",
+		SSHKey:             string(sshKey),
+		Hostname:           hostname,
+		CACertPEM:          caCertPEM,
+		DistroFamily:       distroFamily,
+		SudoGroup:          sudoGroup,
+		RHELWriteFiles:     rhelWriteFiles,
+		RHELRunCmd:         rhelRunCmd,
+		AlpineUnlockPasswd: distroFamily == "alpine",
 	}
 
 	// Decode and classify user-data from RunInstances (base64-encoded).

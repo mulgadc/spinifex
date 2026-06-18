@@ -550,6 +550,32 @@ func TestCloudInitTemplate_FamilyBranching(t *testing.T) {
 		assert.Contains(t, out, "nmcli, connection, up, vpc0")
 	})
 
+	t.Run("alpine family: user rendered unlocked with disabled password", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-alpine",
+			DistroFamily: "alpine", SudoGroup: "sudo", AlpineUnlockPasswd: true,
+		}))
+		out := buf.String()
+		// Alpine's no-PAM sshd denies a locked ("!") account; "*" keeps password
+		// auth disabled while letting pubkey auth through.
+		assert.Contains(t, out, "lock_passwd: false")
+		assert.Contains(t, out, `hashed_passwd: "*"`)
+	})
+
+	t.Run("non-alpine family: no password unlock lines", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-deb",
+			DistroFamily: "debian", SudoGroup: "sudo",
+		}))
+		out := buf.String()
+		assert.NotContains(t, out, "lock_passwd")
+		assert.NotContains(t, out, "hashed_passwd")
+	})
+
 	t.Run("rhel + user script: both blocks merged under single write_files/runcmd", func(t *testing.T) {
 		var buf bytes.Buffer
 		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))

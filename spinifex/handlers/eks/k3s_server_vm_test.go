@@ -176,12 +176,14 @@ func validK3sInput() K3sServerInput {
 		ClusterName:       "alpha",
 		Region:            "us-east-1",
 		SubnetID:          "subnet-aaa",
+		VpcID:             "vpc-aaa",
 		ControlPlaneSGID:  "sg-cp-aaa",
 		NLBDNS:            "eks-alpha-lb-001.us-east-1.elb.spinifex.local",
 		OIDCIssuer:        "https://oidc.spinifex.local/clusters/111122223333/alpha",
 		OIDCPrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\nFAKEKEY\n-----END PRIVATE KEY-----\n",
 		OIDCPublicKeyPEM:  "-----BEGIN PUBLIC KEY-----\nFAKEPUB\n-----END PUBLIC KEY-----\n",
 		GatewayURL:        "https://10.15.8.1:9999",
+		AddonGatewayURL:   "https://192.168.1.33:9999",
 		AccessKey:         "AKIAEXAMPLE",
 		SecretKey:         "s3cr3t-key",
 		GatewayCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
@@ -209,6 +211,7 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		{"empty OIDCPrivateKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPrivateKeyPEM = "   \n " })},
 		{"empty OIDCPublicKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPublicKeyPEM = "   \n " })},
 		{"empty GatewayURL", mk(func(in *K3sServerInput) { in.GatewayURL = "" })},
+		{"empty AddonGatewayURL", mk(func(in *K3sServerInput) { in.AddonGatewayURL = "" })},
 		{"empty AccessKey", mk(func(in *K3sServerInput) { in.AccessKey = "" })},
 		{"empty SecretKey", mk(func(in *K3sServerInput) { in.SecretKey = "" })},
 		{"empty GatewayCACert", mk(func(in *K3sServerInput) { in.GatewayCACert = "  \n" })},
@@ -383,6 +386,12 @@ func TestBuildK3sUserData_AdvertiseAddressFallsBackToEndpoint(t *testing.T) {
 	assert.Contains(t, ud, "advertise-address: 203.0.113.9")
 }
 
+func TestBuildK3sUserData_EgressSelectorClusterMode(t *testing.T) {
+	ud := buildK3sUserData(validK3sInput())
+	assert.Contains(t, ud, "egress-selector-mode: cluster",
+		"managed-CP apiserver must tunnel pod/service traffic (webhooks) through the agent")
+}
+
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
 
@@ -409,10 +418,12 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// services; without it the unified AMI boots into no role.
 	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server")
 	assert.Contains(t, udata, "EKS_GATEWAY_URL=https://10.15.8.1:9999")
+	assert.Contains(t, udata, "EKS_ADDON_GATEWAY_URL=https://192.168.1.33:9999")
 	assert.Contains(t, udata, "EKS_GATEWAY_CA="+k3sGatewayCAPath)
 	assert.Contains(t, udata, "EKS_ACCESS_KEY=AKIAEXAMPLE")
 	assert.Contains(t, udata, "EKS_SECRET_KEY=s3cr3t-key")
 	assert.Contains(t, udata, "EKS_REGION=us-east-1")
+	assert.Contains(t, udata, "EKS_VPC_ID=vpc-aaa")
 	// EKS_ACCOUNT_ID is the cluster-OWNER account (ClusterAccountID), not the
 	// infra account the VM is launched under — the on-VM agents namespace their
 	// bootstrap publish / state report / add-on fetch by it, so it must reach the

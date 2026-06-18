@@ -25,6 +25,17 @@ func (a *daemonEKSSubnetResolver) GetSubnetVPC(accountID, subnetID string) (stri
 	return rec.VpcId, nil
 }
 
+func (a *daemonEKSSubnetResolver) GetSubnetAZ(accountID, subnetID string) (string, error) {
+	if a.d == nil || a.d.vpcService == nil {
+		return "", errors.New("eks: VPC service not initialized")
+	}
+	rec, err := a.d.vpcService.GetSubnet(accountID, subnetID)
+	if err != nil {
+		return "", err
+	}
+	return rec.AvailabilityZone, nil
+}
+
 func (a *daemonEKSSubnetResolver) GetVPCCIDR(accountID, vpcID string) (string, error) {
 	if a.d == nil || a.d.vpcService == nil {
 		return "", errors.New("eks: VPC service not initialized")

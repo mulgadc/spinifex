@@ -26,6 +26,7 @@ set -a
 set +a
 
 : "${EKS_GATEWAY_URL:?}"
+: "${EKS_ADDON_GATEWAY_URL:?}"
 : "${EKS_ACCESS_KEY:?}"
 : "${EKS_SECRET_KEY:?}"
 : "${EKS_ACCOUNT_ID:?}"
@@ -40,6 +41,10 @@ export KUBECONFIG
 BAKED_DIR=/usr/share/spinifex-eks/addons
 DEPLOY_DIR=/var/lib/rancher/k3s/server/manifests
 RENDER_PREFIX=spinifex-addon-
+# Per-cluster admission-webhook serving certs are minted once and cached here so
+# the rendered manifest is byte-stable across sync ticks (a churning cert would
+# re-apply the addon every tick).
+WEBHOOK_CERT_DIR=/var/lib/spinifex-eks/webhook-certs
 
 # log mirrors to syslog (on-VM /var/log) and, best-effort, to the serial
 # console — the host captures ttyS0 to a per-instance log, so this is the only
@@ -59,8 +64,10 @@ report() {
 }
 
 # render_addon ADDON VERSION ROLE_ARN — render the baked bundle into the
-# auto-deploy dir, substituting the IRSA role ARN. Returns non-zero (and reports
-# failed) when the baked bundle for ADDON/VERSION is absent.
+# auto-deploy dir, substituting the IRSA role ARN plus the cluster/gateway
+# placeholders an in-cluster AWS-SDK addon (e.g. the LB controller) needs to
+# reach the gateway. Returns non-zero (and reports failed) when the baked bundle
+# for ADDON/VERSION is absent. Placeholders not present in a bundle are no-ops.
 render_addon() {
     _addon=$1; _version=$2; _role=$3
     _src="${BAKED_DIR}/${_addon}/${_version}"
@@ -72,11 +79,125 @@ render_addon() {
         return 1
     fi
 
+    # Gateway CA as single-line base64 for a kube Secret .data entry the addon
+    # mounts as AWS_CA_BUNDLE. tr -d so busybox base64 (no -w0) stays one line.
+    _ca_b64=""
+    if [ -n "${EKS_GATEWAY_CA:-}" ] && [ -f "${EKS_GATEWAY_CA}" ]; then
+        _ca_b64=$(base64 < "${EKS_GATEWAY_CA}" | tr -d '\n')
+    fi
+
+    # Webhook serving cert (opt-in): a bundle ships webhook.conf with its service
+    # SANs when it runs an admission webhook. Mint/reuse a self-signed cert on the
+    # node (the AMI has no openssl) and embed it as the Secret + every caBundle.
+    _wh_ca=""; _wh_crt=""; _wh_key=""
+    if [ -f "${_src}/webhook.conf" ]; then
+        WEBHOOK_CN=""; WEBHOOK_DNS=""
+        # shellcheck disable=SC1090,SC1091
+        . "${_src}/webhook.conf"
+        if [ -n "${WEBHOOK_CN}" ] && [ -n "${WEBHOOK_DNS}" ]; then
+            _wh_err="${_dst}.whcert.$$"
+            if ! _wh_out=$(eks-webhook-cert -dir "${WEBHOOK_CERT_DIR}/${_addon}" \
+                    -cn "${WEBHOOK_CN}" -dns "${WEBHOOK_DNS}" 2>"${_wh_err}"); then
+                log "addon ${_addon}: webhook cert gen failed: $(tr '\n' ' ' < "${_wh_err}")"
+                rm -f "${_wh_err}"
+                report failed "${_addon}" "${_version}" "webhook cert generation failed"
+                return 1
+            fi
+            rm -f "${_wh_err}"
+            _wh_ca=$(printf '%s' "${_wh_out}" | cut -f1)
+            _wh_crt=$(printf '%s' "${_wh_out}" | cut -f2)
+            _wh_key=$(printf '%s' "${_wh_out}" | cut -f3)
+        fi
+    fi
+
+    # Reusable IRSA (web-identity) injection. A bundle opts in by placing the
+    # {{IRSA_ENV}} / {{IRSA_VOLUME}} / {{IRSA_VOLUME_MOUNT}} markers on their own
+    # line; awk swaps each for the standard block, then the sed pass fills the
+    # nested role/region/gateway placeholders. Bundles without the markers are
+    # untouched. Blocks assume a Deployment pod spec (env 8sp, volumes 6sp,
+    # volumeMounts 8sp). The token (aud sts.amazonaws.com) + role ARN + gateway
+    # STS endpoint/CA are what AssumeRoleWithWebIdentity at the gateway needs.
+    # AWS_ENDPOINT_URL_STS points the web-identity credential STS client (built
+    # from the standard config, before per-service overrides) at the gateway.
+    # The LBC service clients (ec2/elbv2/acm) ignore the global AWS_ENDPOINT_URL
+    # because LBC installs its own per-client BaseEndpoint resolver; those are
+    # redirected via the bundle's --aws-api-endpoints flag, which keys on the
+    # SDK-v2 service IDs (EC2, "Elastic Load Balancing v2", ACM), not the legacy
+    # lowercase names. AWS_CA_BUNDLE makes every client trust the gateway CA.
+    _irsa_env='        - name: AWS_ROLE_ARN
+          value: "{{SERVICE_ACCOUNT_ROLE_ARN}}"
+        - name: AWS_WEB_IDENTITY_TOKEN_FILE
+          value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+        - name: AWS_STS_REGIONAL_ENDPOINTS
+          value: regional
+        - name: AWS_REGION
+          value: "{{AWS_REGION}}"
+        - name: AWS_DEFAULT_REGION
+          value: "{{AWS_REGION}}"
+        - name: AWS_ENDPOINT_URL_STS
+          value: "{{GATEWAY_ENDPOINT}}"
+        - name: AWS_CA_BUNDLE
+          value: /etc/spinifex/gateway-ca/ca.pem'
+    _irsa_vol='      - name: aws-iam-token
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              audience: sts.amazonaws.com
+              expirationSeconds: 86400
+              path: token
+      - name: spinifex-gateway-ca
+        secret:
+          defaultMode: 420
+          secretName: spinifex-gateway-ca'
+    _irsa_mnt='        - name: aws-iam-token
+          mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+          readOnly: true
+        - name: spinifex-gateway-ca
+          mountPath: /etc/spinifex/gateway-ca
+          readOnly: true'
+
+    # IngressClassParams spec injection. EKS_ELB_SUBNET_IDS is the cluster's
+    # ELB-eligible subnets (CSV, deduped to one per AZ by the daemon). Inject them
+    # as explicit .spec.subnets.ids so every Ingress takes LBC's explicit-subnet
+    # path, the only one that honors ALBSingleSubnet; a single-AZ cluster otherwise
+    # fails reconcile. Empty value drops the marker line, leaving tag auto-discovery.
+    _icp_spec=''
+    if [ -n "${EKS_ELB_SUBNET_IDS:-}" ]; then
+        _icp_spec='  spec:
+    subnets:
+      ids:'
+        _oldifs=$IFS
+        IFS=','
+        for _sn in ${EKS_ELB_SUBNET_IDS}; do
+            [ -n "${_sn}" ] || continue
+            _icp_spec="${_icp_spec}
+      - ${_sn}"
+        done
+        IFS=$_oldifs
+    fi
+
     _tmp="${_dst}.tmp.$$"
     : > "${_tmp}"
     for _f in "${_src}"/*.yaml; do
         [ -e "${_f}" ] || continue
-        sed -e "s|{{SERVICE_ACCOUNT_ROLE_ARN}}|${_role}|g" "${_f}" >> "${_tmp}"
+        awk -v env="${_irsa_env}" -v vol="${_irsa_vol}" -v mnt="${_irsa_mnt}" -v icp="${_icp_spec}" '
+            index($0, "{{IRSA_ENV}}")                  { print env; next }
+            index($0, "{{IRSA_VOLUME_MOUNT}}")         { print mnt; next }
+            index($0, "{{IRSA_VOLUME}}")               { print vol; next }
+            index($0, "{{ELB_INGRESS_PARAMS_SPEC}}")   { if (icp != "") print icp; next }
+            { print }
+        ' "${_f}" \
+        | sed -e "s|{{SERVICE_ACCOUNT_ROLE_ARN}}|${_role}|g" \
+            -e "s|{{CLUSTER_NAME}}|${EKS_CLUSTER_NAME}|g" \
+            -e "s|{{AWS_REGION}}|${EKS_REGION:-}|g" \
+            -e "s|{{AWS_VPC_ID}}|${EKS_VPC_ID:-}|g" \
+            -e "s|{{GATEWAY_ENDPOINT}}|${EKS_ADDON_GATEWAY_URL}|g" \
+            -e "s|{{GATEWAY_CA_PEM_B64}}|${_ca_b64}|g" \
+            -e "s|{{WEBHOOK_CA_B64}}|${_wh_ca}|g" \
+            -e "s|{{WEBHOOK_TLS_CRT_B64}}|${_wh_crt}|g" \
+            -e "s|{{WEBHOOK_TLS_KEY_B64}}|${_wh_key}|g" \
+            >> "${_tmp}"
         printf '\n---\n' >> "${_tmp}"
     done
     # Idempotent: only replace the auto-deploy file when the rendered content

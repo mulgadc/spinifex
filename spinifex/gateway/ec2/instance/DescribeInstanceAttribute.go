@@ -67,16 +67,17 @@ func DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, natsCo
 		}
 	}
 
-	// Every node confirmed the instance is absent.
-	if sum.Received > 0 && sum.ErrorCodes[awserrors.ErrorInvalidInstanceIDNotFound] == sum.Received {
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	// A node reported a real fault (a deterministic 4xx, or a 5xx such as a KV
+	// outage) rather than confirming absence: surface it so the client retries
+	// instead of treating a transient failure as a deleted instance.
+	for code, n := range sum.ErrorCodes {
+		if n > 0 && code != "" && code != awserrors.ErrorInvalidInstanceIDNotFound {
+			return nil, errors.New(code)
+		}
 	}
-	// A deterministic client error (e.g. malformed) outranks the NotFound fallback.
-	if sum.FirstClient4xx != "" {
-		return nil, errors.New(sum.FirstClient4xx)
-	}
-	// No responses at all — surface NotFound so terraform retries cleanly.
-	slog.Warn("DescribeInstanceAttribute: No responses from any daemon",
-		"instance_id", *input.InstanceId, "expected", expectedNodes)
+	// Every node confirmed absence, or none answered — surface NotFound so
+	// terraform retries cleanly.
+	slog.Warn("DescribeInstanceAttribute: instance absent or no responses",
+		"instance_id", *input.InstanceId, "received", sum.Received, "expected", expectedNodes)
 	return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 }

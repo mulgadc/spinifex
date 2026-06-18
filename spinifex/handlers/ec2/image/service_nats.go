@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -48,12 +49,18 @@ func (s *NATSImageService) CreateImage(input *ec2.CreateImageInput, accountID st
 		return &out, nil
 	}
 
-	// No node produced the image: surface the first deterministic client error
-	// (e.g. the owner is absent and every node replied NotFound), else a timeout.
-	if sum.FirstClient4xx != "" {
-		return nil, errors.New(sum.FirstClient4xx)
+	// Surface the owner's fault (IncorrectInstanceState, or a 5xx) ahead of a
+	// non-owner's NotFound; NotFound wins only when every node agrees. No
+	// responses at all is a cluster fault, not a missing instance.
+	for code, n := range sum.ErrorCodes {
+		if n > 0 && code != "" && code != awserrors.ErrorInvalidInstanceIDNotFound {
+			return nil, errors.New(code)
+		}
 	}
-	return nil, fmt.Errorf("CreateImage: no successful response received for ec2.CreateImage")
+	if sum.ErrorCodes[awserrors.ErrorInvalidInstanceIDNotFound] > 0 {
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 
 func (s *NATSImageService) CopyImage(input *ec2.CopyImageInput, accountID string) (*ec2.CopyImageOutput, error) {

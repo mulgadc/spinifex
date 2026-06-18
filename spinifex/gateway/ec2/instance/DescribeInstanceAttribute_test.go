@@ -197,6 +197,35 @@ func TestDescribeInstanceAttribute_ClientErrorPropagates(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
 
+// TestDescribeInstanceAttribute_ServerErrorNotMaskedByNotFound ensures a node's
+// 5xx fault (e.g. a transient KV outage on the owner) is surfaced rather than
+// masked by sibling NotFound replies — otherwise terraform treats a live
+// instance as deleted.
+func TestDescribeInstanceAttribute_ServerErrorNotMaskedByNotFound(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+
+	_, err := nc.Subscribe("ec2.DescribeInstanceAttribute", respondWithError(awserrors.ErrorServerInternal))
+	require.NoError(t, err)
+
+	nc2, err := nats.Connect(nc.ConnectedUrl())
+	require.NoError(t, err)
+	defer nc2.Close()
+	_, err = nc2.Subscribe("ec2.DescribeInstanceAttribute", respondWithError(awserrors.ErrorInvalidInstanceIDNotFound))
+	require.NoError(t, err)
+
+	nc.Flush()
+	nc2.Flush()
+
+	input := &ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String("i-abc123"),
+		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
+	}
+
+	_, err = DescribeInstanceAttribute(input, nc, 2, "123456789012")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
 // TestDescribeInstanceAttribute_NoResponders returns NotFound (not a NATS
 // timeout) so terraform retries cleanly rather than hanging.
 func TestDescribeInstanceAttribute_NoResponders(t *testing.T) {

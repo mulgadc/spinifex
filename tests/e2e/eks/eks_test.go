@@ -25,10 +25,11 @@ import (
 )
 
 const (
-	eksVPCCIDR    = "10.210.0.0/16"
-	eksSubnetCIDR = "10.210.1.0/24"
-	eksClusterPfx = "eks-e2e"
-	getTokenTpl   = "k8s-aws-v1."
+	eksVPCCIDR          = "10.210.0.0/16"
+	eksSubnetCIDR       = "10.210.1.0/24"
+	eksPublicSubnetCIDR = "10.210.2.0/24"
+	eksClusterPfx       = "eks-e2e"
+	getTokenTpl         = "k8s-aws-v1."
 )
 
 // TestEKS drives the EKS control-plane lifecycle against the local awsgw
@@ -619,12 +620,20 @@ func waitPodReady(t *testing.T, kc *harness.Kubectl, pod string) {
 // --- Fixture --------------------------------------------------------------
 
 type clusterFixture struct {
-	ClusterName string
-	AccountID   string
-	VPCID       string
-	SubnetID    string
-	Cluster     *eks.Cluster
-	Deleted     bool
+	ClusterName     string
+	AccountID       string
+	VPCID           string
+	SubnetID        string // worker (private) subnet
+	IGWID           string
+	PubSubnetID     string
+	PubRTID         string
+	PubRTAssocID    string
+	EIPAllocID      string
+	NATGWID         string
+	WorkerRTID      string
+	WorkerRTAssocID string
+	Cluster         *eks.Cluster
+	Deleted         bool
 }
 
 func setupClusterFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string) *clusterFixture {
@@ -642,6 +651,8 @@ func setupClusterFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, a
 	t.Cleanup(func() { deleteVPC(t, c, fx) })
 	createSubnet(t, c, fx)
 	t.Cleanup(func() { deleteSubnet(t, c, fx) })
+	createWorkerEgress(t, c, fx)
+	t.Cleanup(func() { deleteWorkerEgress(t, c, fx) })
 
 	harness.Phase(t, "Creating cluster %q", fx.ClusterName)
 	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/%s-role", fx.AccountID, fx.ClusterName)
@@ -650,6 +661,10 @@ func setupClusterFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, a
 		RoleArn: aws.String(roleArn),
 		ResourcesVpcConfig: &eks.VpcConfigRequest{
 			SubnetIds: aws.StringSlice([]string{fx.SubnetID}),
+			// Public access (default). The customer VPC has a NAT Gateway
+			// (createWorkerEgress), so the private worker SNATs out to reach
+			// the internet-facing NLB endpoint and pull public CSI images.
+			EndpointPublicAccess: aws.Bool(true),
 		},
 	})
 	require.NoError(t, err, "create-cluster")
@@ -702,6 +717,197 @@ func deleteSubnet(t *testing.T, c *harness.AWSClient, fx *clusterFixture) {
 	}
 	if _, err := c.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(fx.SubnetID)}); err != nil {
 		t.Logf("delete subnet %s: %v", fx.SubnetID, err)
+	}
+}
+
+// createWorkerEgress gives the customer VPC the egress a real customer VPC
+// needs for private workers: an IGW-fronted public subnet hosting a NAT
+// Gateway, with the worker subnet default-routed to that NAT Gateway. AttachIGW
+// deliberately programs no SNAT (mirrors AWS: an IGW serves only public-IP
+// instances), so a private worker reaches the public NLB endpoint and pulls
+// public CSI images only through the NAT Gateway's subnet-wide SNAT.
+func createWorkerEgress(t *testing.T, c *harness.AWSClient, fx *clusterFixture) {
+	t.Helper()
+
+	igwOut, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}) // e2e:allow-create
+	require.NoError(t, err, "create-internet-gateway")
+	fx.IGWID = aws.StringValue(igwOut.InternetGateway.InternetGatewayId)
+	_, err = c.EC2.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(fx.IGWID),
+		VpcId:             aws.String(fx.VPCID),
+	})
+	require.NoError(t, err, "attach-internet-gateway")
+
+	// Public subnet routed straight to the IGW; the NAT Gateway lives here.
+	pubOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // e2e:allow-create
+		VpcId:     aws.String(fx.VPCID),
+		CidrBlock: aws.String(eksPublicSubnetCIDR),
+	})
+	require.NoError(t, err, "create-public-subnet")
+	fx.PubSubnetID = aws.StringValue(pubOut.Subnet.SubnetId)
+
+	pubRT, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(fx.VPCID)}) // e2e:allow-create
+	require.NoError(t, err, "create-public-route-table")
+	fx.PubRTID = aws.StringValue(pubRT.RouteTable.RouteTableId)
+	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(fx.PubRTID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String(fx.IGWID),
+	})
+	require.NoError(t, err, "create-public-route")
+	pubAssoc, err := c.EC2.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(fx.PubRTID),
+		SubnetId:     aws.String(fx.PubSubnetID),
+	})
+	require.NoError(t, err, "associate-public-route-table")
+	fx.PubRTAssocID = aws.StringValue(pubAssoc.AssociationId)
+
+	// Elastic IP + NAT Gateway in the public subnet.
+	eip, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")}) // e2e:allow-create
+	require.NoError(t, err, "allocate-address")
+	fx.EIPAllocID = aws.StringValue(eip.AllocationId)
+	natOut, err := c.EC2.CreateNatGateway(&ec2.CreateNatGatewayInput{ // e2e:allow-create
+		SubnetId:     aws.String(fx.PubSubnetID),
+		AllocationId: aws.String(fx.EIPAllocID),
+	})
+	require.NoError(t, err, "create-nat-gateway")
+	fx.NATGWID = aws.StringValue(natOut.NatGateway.NatGatewayId)
+	waitNatGatewayAvailable(t, c, fx.NATGWID)
+
+	// Worker (private) subnet default-routes to the NAT Gateway; associating
+	// the route table triggers the subnet-wide SNAT egress reroute.
+	workerRT, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(fx.VPCID)}) // e2e:allow-create
+	require.NoError(t, err, "create-worker-route-table")
+	fx.WorkerRTID = aws.StringValue(workerRT.RouteTable.RouteTableId)
+	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(fx.WorkerRTID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		NatGatewayId:         aws.String(fx.NATGWID),
+	})
+	require.NoError(t, err, "create-worker-route")
+	workerAssoc, err := c.EC2.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(fx.WorkerRTID),
+		SubnetId:     aws.String(fx.SubnetID),
+	})
+	require.NoError(t, err, "associate-worker-route-table")
+	fx.WorkerRTAssocID = aws.StringValue(workerAssoc.AssociationId)
+	t.Logf("egress: igw=%s nat=%s eip=%s pubrt=%s workerrt=%s",
+		fx.IGWID, fx.NATGWID, fx.EIPAllocID, fx.PubRTID, fx.WorkerRTID)
+}
+
+// waitNatGatewayAvailable blocks until the NAT Gateway reports "available";
+// SNAT is not programmed on the VPC router until then.
+func waitNatGatewayAvailable(t *testing.T, c *harness.AWSClient, natID string) {
+	t.Helper()
+	const timeout = 3 * time.Minute
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := c.EC2.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+			NatGatewayIds: aws.StringSlice([]string{natID}),
+		})
+		if err == nil && len(out.NatGateways) > 0 {
+			switch aws.StringValue(out.NatGateways[0].State) {
+			case "available":
+				return
+			case "failed", "deleted":
+				t.Fatalf("nat gateway %s entered terminal state %q", natID, aws.StringValue(out.NatGateways[0].State))
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nat gateway %s not available within %s", natID, timeout)
+		}
+		time.Sleep(3 * time.Second)
+	}
+}
+
+// deleteWorkerEgress tears the egress topology down in reverse: the worker
+// route table releases the private subnet, then the NAT Gateway is deleted and
+// drained before the public subnet + EIP it pins can be removed.
+func deleteWorkerEgress(t *testing.T, c *harness.AWSClient, fx *clusterFixture) {
+	if fx.WorkerRTAssocID != "" {
+		if _, err := c.EC2.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+			AssociationId: aws.String(fx.WorkerRTAssocID),
+		}); err != nil {
+			t.Logf("disassociate worker route table %s: %v", fx.WorkerRTAssocID, err)
+		}
+	}
+	if fx.WorkerRTID != "" {
+		if _, err := c.EC2.DeleteRouteTable(&ec2.DeleteRouteTableInput{
+			RouteTableId: aws.String(fx.WorkerRTID),
+		}); err != nil {
+			t.Logf("delete worker route table %s: %v", fx.WorkerRTID, err)
+		}
+	}
+	if fx.NATGWID != "" {
+		if _, err := c.EC2.DeleteNatGateway(&ec2.DeleteNatGatewayInput{
+			NatGatewayId: aws.String(fx.NATGWID),
+		}); err != nil {
+			t.Logf("delete nat gateway %s: %v", fx.NATGWID, err)
+		}
+		waitNatGatewayDeleted(t, c, fx.NATGWID)
+	}
+	if fx.EIPAllocID != "" {
+		if _, err := c.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{
+			AllocationId: aws.String(fx.EIPAllocID),
+		}); err != nil {
+			t.Logf("release address %s: %v", fx.EIPAllocID, err)
+		}
+	}
+	if fx.PubRTAssocID != "" {
+		if _, err := c.EC2.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+			AssociationId: aws.String(fx.PubRTAssocID),
+		}); err != nil {
+			t.Logf("disassociate public route table %s: %v", fx.PubRTAssocID, err)
+		}
+	}
+	if fx.PubRTID != "" {
+		if _, err := c.EC2.DeleteRouteTable(&ec2.DeleteRouteTableInput{
+			RouteTableId: aws.String(fx.PubRTID),
+		}); err != nil {
+			t.Logf("delete public route table %s: %v", fx.PubRTID, err)
+		}
+	}
+	if fx.PubSubnetID != "" {
+		if _, err := c.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(fx.PubSubnetID)}); err != nil {
+			t.Logf("delete public subnet %s: %v", fx.PubSubnetID, err)
+		}
+	}
+	if fx.IGWID != "" {
+		if _, err := c.EC2.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+			InternetGatewayId: aws.String(fx.IGWID),
+			VpcId:             aws.String(fx.VPCID),
+		}); err != nil {
+			t.Logf("detach igw %s: %v", fx.IGWID, err)
+		}
+		if _, err := c.EC2.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+			InternetGatewayId: aws.String(fx.IGWID),
+		}); err != nil {
+			t.Logf("delete igw %s: %v", fx.IGWID, err)
+		}
+	}
+}
+
+// waitNatGatewayDeleted blocks until the NAT Gateway drains to "deleted" so the
+// public subnet + EIP it holds can be released; best-effort on timeout.
+func waitNatGatewayDeleted(t *testing.T, c *harness.AWSClient, natID string) {
+	t.Helper()
+	const timeout = 3 * time.Minute
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := c.EC2.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+			NatGatewayIds: aws.StringSlice([]string{natID}),
+		})
+		if err != nil || len(out.NatGateways) == 0 {
+			return
+		}
+		if aws.StringValue(out.NatGateways[0].State) == "deleted" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Logf("nat gateway %s not deleted within %s; continuing teardown", natID, timeout)
+			return
+		}
+		time.Sleep(3 * time.Second)
 	}
 }
 

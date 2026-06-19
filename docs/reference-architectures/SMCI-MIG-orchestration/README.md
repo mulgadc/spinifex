@@ -29,16 +29,23 @@ Spinifex is an open-source infrastructure platform that brings core AWS services
 
 This guide documents a full bare-metal AI deployment on a single [Supermicro X13](https://www.supermicro.com/en/products/x13) chassis using NVIDIA H200 SXM GPUs. These GPUs include the [NVIDIA Multi-Instance GPU](https://www.nvidia.com/en-au/technologies/multi-instance-gpu/) (MIG) capability, which allows a single GPU to be "sliced" into up to seven independent GPU partitions that are hardware isolated. Each partition is capable of running its own workloads with reserved resources from the "host" GPU.
 
-In this setup, each VM receives an entire H200 via PCIe passthrough and manages its own MIG partitions within the individual EC2 instance. This gives each tenant full control over how they slice their GPU — including the ability to run heterogeneous workloads at different partition sizes on the same physical card.
+<figure align="center">
+  <img src="../../../.github/assets/images/h200/X13.png" alt="Supermicro X13 8U GPU System">
+  <figcaption><em>Supermicro X13 8U GPU system</em></figcaption>
+</figure>
+
+In this setup, each EC2 instance receives an entire H200 via PCIe passthrough and manages its own MIG partitions. This gives each tenant full control over how they slice their GPU — including the ability to run heterogeneous workloads at different partition sizes on the same physical card.
+
+A key consideration for this example is that we do not have access to the router upstream of the X13 host, or knowledge of potentially available IP addresses for the VMs we provision on it. The first step in the Instructions section outlines how we attach our own local IP address range to the bridge on the host, effectively creating a pseudo-airgapped environment - although in this specific case outbound connectivity is still required for remote access to the host, downloading required packages etc, with this configuration it is *not* required for host/EC2 instance communication.
 
 ### EC2 workload layout
 
 | EC2 Workload | IP | MIG config | Workload | Model |
 |---|---|---|---|---|
-| `vm-llama3b` | 192.168.10.7  | 7 × 1g.18gb | Chat inference × 7 | Llama-3.2-3B-Instruct |
-| `vm-qwen32b` | 192.168.10.8  | 2 × 3g.71gb | Chat inference × 2 | Qwen2.5-32B-Instruct |
-| `vm-llama70b` | 192.168.10.12 | 1 × 7g.141gb | Chat inference × 1 | Llama-3.1-70B-FP8 |
-| `vm-yolo`    | 192.168.10.14 | 2 × 3g.71gb | Object detection × 2 | YOLO11x + YOLO11s |
+| `vm-llama3b` | 192.168.10.X  | 7 × 1g.18gb | Chat inference × 7 | Llama-3.2-3B-Instruct |
+| `vm-qwen32b` | 192.168.10.X  | 2 × 3g.71gb | Chat inference × 2 | Qwen2.5-32B-Instruct |
+| `vm-llama70b` | 192.168.10.X | 1 × 7g.141gb | Chat inference × 1 | Llama-3.1-70B-FP8 |
+| `vm-yolo`    | 192.168.10.X | 2 × 3g.71gb | Object detection × 2 | YOLO11x + YOLO11s |
 
 Twelve concurrent inference endpoints in total: 7 fast 3B slots, 2 mid-tier 32B slots, 1 full-GPU 70B slot, and 2 real-time vision streams running side-by-side to compare detection models.
 
@@ -182,7 +189,7 @@ aws s3 ls --endpoint-url https://localhost:8443
 ### 5. Enable GPU Passthrough
 Spinifex allows GPUs to be utilised by guest VMS via PCIe-passthrough. This can be enabled via `sudo spx admin gpu setup`. Then, after a reboot, run `sudo spx admin gpu enable`. The Spinifex banner should update to reflect GPU passthrough state after every step:
 
-<img src="../../../.github/assets/images/h200/spinifex-banner1.png" alt="GPU Enabled">
+<p align="center"><img src="../../../.github/assets/images/h200/spinifex-banner1.png" alt="GPU Enabled"></p>
 
 
 ### 6. Import the GPU AMI
@@ -280,7 +287,7 @@ nvidia-smi | grep "MIG M."
 
 With MIG enabled, we are now able to partition each VM's assigned H200 GPU into several separate GPU instances. This process assigns each GPU slice its own UUID, so each VM goes from seeing one whole GPU to seeing a number of "MIG devices":
 
-<img src="../../../.github/assets/images/h200/mig-activated.png" alt="NVIDIA SMI">
+<p align="center"><img src="../../../.github/assets/images/h200/mig-activated.png" alt="NVIDIA SMI"></p>
 
 This allows us to run several separate workloads, each assigned to its own GPU instance, on the same physical GPU, and thus utilise more of the overall GPU's resources.
 
@@ -513,7 +520,7 @@ The dashboard has two proxy patterns: MJPEG passthrough for the YOLO feeds (forw
 <p><video src="https://iso.mulgadc.com/h200-demo.mp4" controls width="100%" style="border-radius:6px"></video></p>
 
 The dashboard shows:
-- GPU allocation bars for all four VMs (proportional to MIG slice size)
+- GPU allocation bars for all four EC2 instancess (proportional to MIG slice size)
 - Live streaming LLM responses per endpoint, colour-coded by tier
 - Side-by-side YOLO11x vs YOLO11s video feeds with FPS and detection counts
 
@@ -526,7 +533,7 @@ The dashboard also displays the overall GPU utilisation, derived as a percentage
 # Stop YOLO processes
 pkill -f yolo_stream.py
 
-# On each LLM VM:
+# On each LLM instance:
 # Stop docker containers
 
 docker stop $(docker ps -q)

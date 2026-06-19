@@ -47,7 +47,23 @@ chmod 0755 /etc/init.d/eks-node-role /etc/init.d/k3s /etc/init.d/k3s-agent \
     /etc/init.d/mulga-eks-addon-sync
 chmod 0755 /usr/local/sbin/eks-node-role /usr/local/sbin/k3s-first-boot \
     /usr/local/sbin/mulga-eks-state-report /usr/local/sbin/mulga-eks-addon-sync
+chmod 0755 /etc/init.d/mulga-ebs-byid /usr/local/sbin/mulga-ebs-byid
+chmod 0755 /etc/init.d/mulga-eks-provider-id /usr/local/sbin/mulga-eks-provider-id
 chmod 0755 /etc/periodic/daily/mulga-eks-etcd-snapshot
+
+# EBS by-id bridge: route every virtio-blk event through mulga-ebs-byid, which
+# delegates to the stock persistent-storage helper and then mints the
+# nvme-Amazon_Elastic_Block_Store_<serial> link the EBS CSI node plugin resolves.
+# busybox mdev stops at the first matching rule, so the stock vd* persistent-
+# storage line is replaced in place — appending a second vd* rule would be
+# shadowed and never fire. The leading '*' runs the command on add and remove.
+sed -i \
+    's#^vd\[a-z\]\.\*[[:space:]].*persistent-storage#vd[a-z].*\troot:disk 0660 */usr/local/sbin/mulga-ebs-byid#' \
+    /etc/mdev.conf
+grep -q 'mulga-ebs-byid' /etc/mdev.conf || {
+    echo "[eks-node-setup] failed to wire mulga-ebs-byid into /etc/mdev.conf"
+    exit 1
+}
 
 # K3s server config — skeleton; cloud-init / first-boot fills in the
 # per-cluster fields (cluster-cidr, service-cidr, token-file, etc). Agents

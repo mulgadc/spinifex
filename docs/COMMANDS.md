@@ -31,6 +31,9 @@ Service lifecycle commands for starting, stopping, and checking status of all Sp
 | `spx service vpcd start` | — | Loads cluster config → starts VPC daemon (subscribes to `vpc.*` NATS events, translates to OVN logical switches/ports/routers) |
 | `spx service vpcd stop` | — | Stops the vpcd service |
 | `spx service vpcd status` | — | Reports vpcd service status |
+| `spx service northstar start` | `--northstar-config` (overrides `nodes.<node>.northstar.config_path`) | Loads cluster config → reads `northstar.toml` → starts the northstar DNS server (authoritative for internal `*.spinifex.local`, recursive via upstream forwarders), syncing zones from its S3 bucket |
+| `spx service northstar stop` | — | Stops the northstar service |
+| `spx service northstar status` | — | Reports northstar service status |
 
 ### Cluster Inspection
 

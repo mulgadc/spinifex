@@ -100,11 +100,15 @@ func (c *ExternalCLI) RunStdin(timeout time.Duration, stdin string, args ...stri
 }
 
 // RequireRegistryResolves SKIPS the calling test unless host resolves to an
-// address. The data-plane subtests need {account}.dkr.ecr.{region}.{suffix} to
-// reach the awsgw bind IP (Route53 in prod, /etc/hosts in dev); without it the
-// client cannot connect.
+// address. host may carry a :port suffix (stripped before lookup). The
+// data-plane subtests need {account}.dkr.ecr.{region}.{suffix} to reach the
+// awsgw bind IP (Route53 in prod, /etc/hosts in dev); without it the client
+// cannot connect.
 func RequireRegistryResolves(t *testing.T, host string) {
 	t.Helper()
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
 	if _, err := net.LookupHost(host); err != nil {
 		t.Skipf("registry host %q does not resolve (%v); seed /etc/hosts or DNS", host, err)
 	}

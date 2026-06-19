@@ -22,11 +22,20 @@ func ECRRegistrySuffix() string { return getenv("SPINIFEX_ECR_SUFFIX", "mulga.in
 // client region.
 func ECRRegistryRegion() string { return getenv("SPINIFEX_AWS_REGION", "ap-southeast-2") }
 
-// ECRRegistryHost returns {account}.dkr.ecr.{region}.{suffix} — the OCI registry
-// hostname docker/crane/skopeo address. Must resolve to the awsgw bind IP (DNS
-// or /etc/hosts) for the data-plane subtests to run.
+// ECRRegistryPort is the awsgw port appended to the registry host for OCI
+// clients. Empty by default (production parity, :443); set SPINIFEX_ECR_PORT on
+// dev clusters where awsgw binds a non-standard port (e.g. 9999).
+func ECRRegistryPort() string { return getenv("SPINIFEX_ECR_PORT", "") }
+
+// ECRRegistryHost returns {account}.dkr.ecr.{region}.{suffix}[:port] — the OCI
+// registry endpoint docker/crane/skopeo address. The bare host must resolve to
+// the awsgw bind IP (DNS or /etc/hosts) for the data-plane subtests to run.
 func ECRRegistryHost(account string) string {
-	return account + ".dkr.ecr." + ECRRegistryRegion() + "." + ECRRegistrySuffix()
+	host := account + ".dkr.ecr." + ECRRegistryRegion() + "." + ECRRegistrySuffix()
+	if p := ECRRegistryPort(); p != "" {
+		host += ":" + p
+	}
+	return host
 }
 
 // ECRRepositoryURI returns the full push/pull reference for repo under account.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -112,9 +113,69 @@ func (r *metadataResolver) resolveENI(vpcID, srcIP string) (*eniFacts, error) {
 		return nil, fmt.Errorf("unmarshal eni record %s: %w", idx.ENIId, err)
 	}
 
+	return eniFactsFromRecord(idx.AccountID, &rec), nil
+}
+
+// resolveENIByID returns ENI facts for an ENI located by its ID alone — the
+// per-tap identity path. The tap maps one-to-one to an ENI, so the ENI ID is the
+// identity and no (vpcID, srcIP) reverse lookup is needed. The owning account is
+// recovered by suffix-scanning the ENI bucket (keyed "{accountID}.{eniID}").
+// Returns (nil, nil) on miss. Per-tap serving resolves once per responder, so the
+// scan is amortised over the tap's lifetime rather than paid per request.
+func (r *metadataResolver) resolveENIByID(eniID string) (*eniFacts, error) {
+	if eniID == "" {
+		return nil, nil
+	}
+	accountID, raw, err := r.findENIByID(eniID)
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, nil
+	}
+
+	var rec eniRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return nil, fmt.Errorf("unmarshal eni record %s: %w", eniID, err)
+	}
+	return eniFactsFromRecord(accountID, &rec), nil
+}
+
+// findENIByID scans the ENI bucket for the record whose key ends in ".{eniID}",
+// returning the owning account and the raw record bytes, or ("", nil, nil) on
+// miss. ENI IDs are globally unique, so at most one key matches.
+func (r *metadataResolver) findENIByID(eniID string) (string, []byte, error) {
+	keys, err := r.eniKV.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return "", nil, nil
+		}
+		return "", nil, fmt.Errorf("list eni bucket: %w", err)
+	}
+
+	suffix := "." + eniID
+	for _, key := range keys {
+		if !strings.HasSuffix(key, suffix) {
+			continue
+		}
+		entry, err := r.eniKV.Get(key)
+		if err != nil {
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue // raced with a concurrent delete
+			}
+			return "", nil, fmt.Errorf("get eni record %s: %w", key, err)
+		}
+		return strings.TrimSuffix(key, suffix), entry.Value(), nil
+	}
+	return "", nil, nil
+}
+
+// eniFactsFromRecord projects an ENI record plus its owning account into the
+// fact subset the metadata surface serves.
+func eniFactsFromRecord(accountID string, rec *eniRecord) *eniFacts {
 	return &eniFacts{
 		eniID:            rec.NetworkInterfaceId,
-		accountID:        idx.AccountID,
+		accountID:        accountID,
 		instanceID:       rec.InstanceId,
 		vpcID:            rec.VpcId,
 		subnetID:         rec.SubnetId,
@@ -123,7 +184,7 @@ func (r *metadataResolver) resolveENI(vpcID, srcIP string) (*eniFacts, error) {
 		mac:              rec.MacAddress,
 		availabilityZone: rec.AvailabilityZone,
 		securityGroupIDs: rec.SecurityGroupIds,
-	}, nil
+	}
 }
 
 // resolveInstance fetches instance-only fields for an ENI's attached instance, or (nil, nil) if unattached.

@@ -134,6 +134,123 @@ func TestResolveENI_ENIRecordBadJSONErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
+// seedENIByID writes an ENI record keyed "{accountID}.{eniID}" — the per-tap
+// path's source of truth, with no eni-by-vpc-ip index row.
+func seedENIByID(t *testing.T, r *metadataResolver, accountID, eniID string, rec eniRecord) {
+	t.Helper()
+	putJSON(t, r.eniKV, accountID+"."+eniID, rec)
+}
+
+// The per-tap path resolves an ENI from its ID alone and recovers the owning
+// account from the bucket key, with no reverse-index lookup.
+func TestResolveENIByID_Hit(t *testing.T) {
+	r, _ := newTestResolver(t)
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{
+		NetworkInterfaceId: "eni-aaa",
+		SubnetId:           "subnet-1",
+		VpcId:              testVPC,
+		AvailabilityZone:   "ap-southeast-2a",
+		PrivateIpAddress:   testIP,
+		MacAddress:         "02:11:22:33:44:55",
+		InstanceId:         "i-0123456789",
+		PublicIpAddress:    "203.0.113.7",
+		SecurityGroupIds:   []string{"sg-1", "sg-2"},
+	})
+
+	eni, err := r.resolveENIByID("eni-aaa")
+	require.NoError(t, err)
+	require.NotNil(t, eni)
+	assert.Equal(t, "eni-aaa", eni.eniID)
+	assert.Equal(t, "111122223333", eni.accountID)
+	assert.Equal(t, "i-0123456789", eni.instanceID)
+	assert.Equal(t, testVPC, eni.vpcID)
+	assert.Equal(t, "subnet-1", eni.subnetID)
+	assert.Equal(t, testIP, eni.privateIP)
+	assert.Equal(t, "203.0.113.7", eni.publicIP)
+	assert.Equal(t, "02:11:22:33:44:55", eni.mac)
+	assert.Equal(t, "ap-southeast-2a", eni.availabilityZone)
+	assert.Equal(t, []string{"sg-1", "sg-2"}, eni.securityGroupIDs)
+}
+
+// The tap identity is unambiguous even when two tenants share a CIDR and IP: the
+// ENI ID selects exactly one record, and its key supplies the right account.
+func TestResolveENIByID_RecoversAccountAcrossTenants(t *testing.T) {
+	r, _ := newTestResolver(t)
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{
+		NetworkInterfaceId: "eni-aaa", VpcId: testVPC, PrivateIpAddress: testIP, InstanceId: "i-aaaa1111",
+	})
+	seedENIByID(t, r, "444455556666", "eni-bbb", eniRecord{
+		NetworkInterfaceId: "eni-bbb", VpcId: testVPC, PrivateIpAddress: testIP, InstanceId: "i-bbbb2222",
+	})
+
+	a, err := r.resolveENIByID("eni-aaa")
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	assert.Equal(t, "111122223333", a.accountID)
+	assert.Equal(t, "i-aaaa1111", a.instanceID)
+
+	b, err := r.resolveENIByID("eni-bbb")
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, "444455556666", b.accountID)
+	assert.Equal(t, "i-bbbb2222", b.instanceID)
+}
+
+// An unknown ENI ID (or empty bucket) is a miss, not an error — the caller maps
+// it to a 404, matching the boot-time "not yet visible" posture.
+func TestResolveENIByID_MissIsNilNil(t *testing.T) {
+	r, _ := newTestResolver(t)
+	eni, err := r.resolveENIByID("eni-nope")
+	require.NoError(t, err)
+	assert.Nil(t, eni)
+
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{NetworkInterfaceId: "eni-aaa"})
+	eni, err = r.resolveENIByID("eni-other")
+	require.NoError(t, err)
+	assert.Nil(t, eni)
+}
+
+// An empty ENI ID short-circuits to a miss without scanning the bucket.
+func TestResolveENIByID_EmptyIDIsNilNil(t *testing.T) {
+	r, _ := newTestResolver(t)
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{NetworkInterfaceId: "eni-aaa"})
+	eni, err := r.resolveENIByID("")
+	require.NoError(t, err)
+	assert.Nil(t, eni)
+}
+
+func TestResolveENIByID_BadJSONErrors(t *testing.T) {
+	r, _ := newTestResolver(t)
+	_, err := r.eniKV.Put("111122223333.eni-aaa", []byte("not json"))
+	require.NoError(t, err)
+
+	_, err = r.resolveENIByID("eni-aaa")
+	require.Error(t, err)
+}
+
+// End-to-end identity chain: tap-supplied ENI ID → ENI facts → instance facts,
+// surfacing the account and the IAM instance-profile ARN with no srcIP lookup.
+func TestResolveENIByID_ChainsToInstanceProfile(t *testing.T) {
+	r, lookup := newTestResolver(t)
+	lookup.facts = &instanceFacts{
+		iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile",
+	}
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{
+		NetworkInterfaceId: "eni-aaa", InstanceId: "i-0123456789",
+	})
+
+	eni, err := r.resolveENIByID("eni-aaa")
+	require.NoError(t, err)
+	require.NotNil(t, eni)
+	assert.Equal(t, "111122223333", eni.accountID)
+
+	inst, err := r.resolveInstance(eni)
+	require.NoError(t, err)
+	require.NotNil(t, inst)
+	assert.Equal(t, "arn:aws:iam::111122223333:instance-profile/app-profile", inst.iamInstanceProfileArn)
+	assert.Equal(t, 1, lookup.calls)
+}
+
 func TestResolveInstance_NoAttachedInstance(t *testing.T) {
 	r, lookup := newTestResolver(t)
 	inst, err := r.resolveInstance(&eniFacts{instanceID: ""})

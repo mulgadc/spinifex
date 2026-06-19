@@ -282,6 +282,14 @@ func (m *Manager) stopCleanup(instance *VM) {
 		}
 	}
 	m.deallocateResources(instance)
+
+	// The slot just returned to the reservation; detach the binding (under the
+	// manager lock, mirroring crash recovery) so a later start re-allocates from
+	// the general pool and terminate frees there too — never double-counting the
+	// reservation while the stopped instance no longer holds a slot.
+	if instance.CapacityReservationId != "" {
+		m.UpdateState(instance.ID, func(v *VM) { v.CapacityReservationId = "" })
+	}
 }
 
 // terminateCleanup is stopCleanup plus the AWS-resource cleanup that
@@ -398,9 +406,18 @@ func (m *Manager) cleanupExtraENITaps(instance *VM) {
 }
 
 // deallocateResources releases the per-instance vCPU/memory reservation
-// back to the resource controller.
+// back to the resource controller. The single release/restore chokepoint for
+// stop, terminate and crash recovery.
 func (m *Manager) deallocateResources(instance *VM) {
 	if m.deps.Resources == nil || instance.InstanceType == "" {
+		return
+	}
+	// A reservation-bound instance returns its slot to the reservation, not the
+	// general pool. CapacityReservationId is set at launch and only cleared (under
+	// the manager lock, on crash before a general-capacity restart), so the
+	// stop/terminate/crash reads here do not overlap that clear.
+	if instance.CapacityReservationId != "" {
+		m.deps.Resources.ReleaseToReservation(instance.CapacityReservationId, instance.InstanceType)
 		return
 	}
 	m.deps.Resources.Deallocate(instance.InstanceType)

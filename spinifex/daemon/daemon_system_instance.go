@@ -427,7 +427,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		}}
 	}
 
-	_, instances, instanceType, err := d.instanceService.PrepareRunInstances(runInput, input.AccountID)
+	_, instances, instanceType, err := d.instanceService.PrepareRunInstances(runInput, input.AccountID, "")
 	if err != nil {
 		return nil, err
 	}

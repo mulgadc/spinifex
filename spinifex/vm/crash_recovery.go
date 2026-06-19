@@ -114,7 +114,16 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	if m.deps.Resources != nil && instance.InstanceType != "" {
 		slog.Info("Deallocating resources for crashed instance",
 			"instance", instance.ID, "type", instance.InstanceType)
-		m.deps.Resources.Deallocate(instance.InstanceType)
+		m.deallocateResources(instance)
+	}
+
+	// The slot just returned to the reservation (deallocateResources above), but
+	// the restart re-allocates from the general pool, so drop the binding under the
+	// manager lock. This keeps the crash release and restart allocation on the same
+	// pool; leaving it set would drift the shared reservation counter on the later
+	// stop/terminate while other instances still consume the reservation.
+	if instance.CapacityReservationId != "" {
+		m.UpdateState(instance.ID, func(v *VM) { v.CapacityReservationId = "" })
 	}
 
 	if instance.Config.QMPSocket != "" {
@@ -246,7 +255,7 @@ func (m *Manager) RestartCrashedInstance(instance *VM) {
 		if err := m.deps.TransitionState(instance, StatePending); err != nil {
 			slog.Error("Failed to transition instance to pending for restart",
 				"instance", instance.ID, "err", err)
-			m.deps.Resources.Deallocate(instance.InstanceType)
+			m.deallocateResources(instance)
 			return
 		}
 	}

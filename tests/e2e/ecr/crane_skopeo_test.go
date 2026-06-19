@@ -79,6 +79,28 @@ func TestCranePushPull(t *testing.T) {
 	require.NoErrorf(t, err, "crane pull: %s", out)
 }
 
+// TestPushToUncreatedRepoRejected asserts the registry does not auto-create a
+// repository on push: a crane append to a repo that was never created with
+// CreateRepository must fail with NAME_UNKNOWN.
+func TestPushToUncreatedRepoRejected(t *testing.T) {
+	f := requireECRFixture(t)
+	host := harness.ECRRegistryHost(f.Account)
+	harness.RequireRegistryResolves(t, host)
+
+	dockerConfig := filepath.Join(f.TmpDir, "uncreated")
+	require.NoError(t, os.MkdirAll(dockerConfig, 0o700))
+	crane := harness.NewCrane(t, dockerConfig)
+	craneLogin(t, crane, host, harness.ECRGetLoginPassword(t, f.AWS))
+
+	// Deliberately NOT created: no CreateECRRepository call.
+	ref := harness.ECRRepositoryURI(f.Account, uniqueRepo("uncreated")) + ":v1"
+	layer := writeLayerTar(t, f.TmpDir)
+
+	out, err := crane.Run(ociCmdTimeout, "append", "-f", layer, "-t", ref)
+	require.Errorf(t, err, "push to uncreated repo should fail; got success: %s", out)
+	assert.Contains(t, out, "NAME_UNKNOWN", "expected NAME_UNKNOWN rejection, got: %s", out)
+}
+
 // TestSkopeoCopy seeds an image with crane, then `skopeo copy` retags it within
 // the registry — exercising skopeo's Bearer auth on both read and write.
 func TestSkopeoCopy(t *testing.T) {

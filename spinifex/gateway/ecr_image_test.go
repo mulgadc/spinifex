@@ -26,10 +26,18 @@ func newImageGateway(t *testing.T) *GatewayConfig {
 	return &GatewayConfig{ECRRegistry: reg, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true}
 }
 
+// seedGatewayRepo creates the repository metadata so push/PutImage handlers —
+// which require an existing repository — accept writes. Idempotent.
+func seedGatewayRepo(t *testing.T, gw *GatewayConfig, repo string) {
+	t.Helper()
+	require.NoError(t, gw.ECRRegistry.Meta.PutRepo(ecrTestAccount, handlers_ecr.RepoMeta{Name: repo}))
+}
+
 // seedTaggedImage stores a layerless manifest under repo:tag, returning its
 // digest. A unique manifest per tag yields a unique digest.
 func seedTaggedImage(t *testing.T, gw *GatewayConfig, repo, tag string) string {
 	t.Helper()
+	seedGatewayRepo(t, gw, repo)
 	manifest := fmt.Appendf(nil,
 		`{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","layers":[],"annotations":{"tag":"%s"}}`, tag)
 	digest, err := gw.ECRRegistry.StoreManifest(ecrTestAccount, repo, tag, "application/vnd.docker.distribution.manifest.v2+json", manifest)
@@ -143,6 +151,7 @@ func TestBatchGetImage_CapExceeded(t *testing.T) {
 
 func TestPutImage_HappyAndMissingManifest(t *testing.T) {
 	gw := newImageGateway(t)
+	seedGatewayRepo(t, gw, "team/app")
 	manifest := `{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","layers":[]}`
 	body, _ := json.Marshal(map[string]string{
 		"repositoryName":         "team/app",
@@ -169,6 +178,21 @@ func TestPutImage_HappyAndMissingManifest(t *testing.T) {
 	_, err = callImage(t, gw, (*GatewayConfig).handlePutImage, `{"repositoryName":"team/app","imageTag":"v2"}`)
 	require.Error(t, err)
 	assert.Equal(t, "InvalidParameterValue", err.Error())
+}
+
+// TestPutImage_RepoNotCreated asserts the JSON PutImage path rejects an uncreated
+// repository with RepositoryNotFoundException (the AWS twin of OCI NAME_UNKNOWN).
+func TestPutImage_RepoNotCreated(t *testing.T) {
+	gw := newImageGateway(t)
+	body, _ := json.Marshal(map[string]string{
+		"repositoryName":         "team/ghost",
+		"imageManifest":          `{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","layers":[]}`,
+		"imageManifestMediaType": "application/vnd.docker.distribution.manifest.v2+json",
+		"imageTag":               "v1",
+	})
+	_, err := callImage(t, gw, (*GatewayConfig).handlePutImage, string(body))
+	require.Error(t, err)
+	assert.Equal(t, "RepositoryNotFoundException", err.Error())
 }
 
 func TestBatchDeleteImage_Partial(t *testing.T) {

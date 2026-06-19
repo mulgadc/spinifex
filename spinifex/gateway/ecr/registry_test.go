@@ -43,9 +43,17 @@ func do(reg *Registry, method, path string, body []byte, hdr map[string]string) 
 	return w
 }
 
+// seedRepo creates the repository metadata so push handlers — which require an
+// existing repository — accept writes. Idempotent.
+func seedRepo(t *testing.T, reg *Registry, repo string) {
+	t.Helper()
+	require.NoError(t, reg.Meta.PutRepo(testAccount, ecr.RepoMeta{Name: repo}))
+}
+
 // pushBlob runs the monolithic upload-start + PUT?digest round-trip.
 func pushBlob(t *testing.T, reg *Registry, repo string, data []byte) string {
 	t.Helper()
+	seedRepo(t, reg, repo)
 	w := do(reg, http.MethodPost, "/v2/"+repo+"/blobs/uploads/", nil, nil)
 	require.Equal(t, http.StatusAccepted, w.Code)
 	loc := w.Header().Get("Location")
@@ -88,6 +96,7 @@ func TestBlobGet_MalformedDigest(t *testing.T) {
 
 func TestBlobUpload_Chunked(t *testing.T) {
 	reg := newTestRegistry()
+	seedRepo(t, reg, "r/repo")
 	c1 := []byte("first-chunk-")
 	c2 := []byte("second-chunk")
 	full := append(append([]byte{}, c1...), c2...)
@@ -114,6 +123,7 @@ func TestBlobUpload_Chunked(t *testing.T) {
 
 func TestBlobUpload_DigestMismatch(t *testing.T) {
 	reg := newTestRegistry()
+	seedRepo(t, reg, "r/repo")
 	w := do(reg, http.MethodPost, "/v2/r/repo/blobs/uploads/", nil, nil)
 	loc := w.Header().Get("Location")
 	w = do(reg, http.MethodPut, loc+"?digest="+digestOf([]byte("wrong")), []byte("actual"), nil)
@@ -123,6 +133,7 @@ func TestBlobUpload_DigestMismatch(t *testing.T) {
 
 func TestBlobUpload_Cancel(t *testing.T) {
 	reg := newTestRegistry()
+	seedRepo(t, reg, "r/repo")
 	w := do(reg, http.MethodPost, "/v2/r/repo/blobs/uploads/", nil, nil)
 	loc := w.Header().Get("Location")
 
@@ -138,6 +149,7 @@ func TestBlobMount_HitAndMiss(t *testing.T) {
 	reg := newTestRegistry()
 	data := []byte("shared-layer")
 	dg := pushBlob(t, reg, "team/source", data)
+	seedRepo(t, reg, "team/dest")
 
 	// Mount hit: blob already in account pool -> 201 without upload.
 	w := do(reg, http.MethodPost,
@@ -185,6 +197,7 @@ func TestManifest_PutGetHead_ImageManifest(t *testing.T) {
 func TestManifest_Put_MissingBlob(t *testing.T) {
 	reg := newTestRegistry()
 	repo := "team/app"
+	seedRepo(t, reg, repo)
 	manifest := fmt.Appendf(nil,
 		`{"mediaType":"%s","config":{"digest":"%s"},"layers":[]}`,
 		mediaTypeDockerManifest, digestOf([]byte("nope")))
@@ -236,6 +249,26 @@ func TestManifest_Get_Unknown(t *testing.T) {
 	w := do(reg, http.MethodGet, "/v2/team/app/manifests/missing", nil, nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assertCode(t, w, "MANIFEST_UNKNOWN")
+}
+
+// TestStartUpload_RepoNotCreated asserts a blob upload to a repository that was
+// never created is rejected up front — ECR does not auto-create on push.
+func TestStartUpload_RepoNotCreated(t *testing.T) {
+	reg := newTestRegistry()
+	w := do(reg, http.MethodPost, "/v2/team/ghost/blobs/uploads/", nil, nil)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assertCode(t, w, "NAME_UNKNOWN")
+}
+
+// TestPutManifest_RepoNotCreated asserts a manifest PUT to an uncreated
+// repository is rejected with NAME_UNKNOWN.
+func TestPutManifest_RepoNotCreated(t *testing.T) {
+	reg := newTestRegistry()
+	manifest := fmt.Appendf(nil, `{"mediaType":"%s","layers":[]}`, mediaTypeDockerManifest)
+	w := do(reg, http.MethodPut, "/v2/team/ghost/manifests/v1", manifest,
+		map[string]string{"Content-Type": mediaTypeDockerManifest})
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assertCode(t, w, "NAME_UNKNOWN")
 }
 
 func TestManifest_ImageIndex_ChildValidation(t *testing.T) {

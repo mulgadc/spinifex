@@ -388,6 +388,8 @@ func mapStoreManifestError(err error, repo string) error {
 			return errors.New(awserrors.ErrorLayersNotFound)
 		case "TAG_IMMUTABLE":
 			return errors.New(awserrors.ErrorImageTagAlreadyExists)
+		case "NAME_UNKNOWN":
+			return errors.New(awserrors.ErrorRepositoryNotFound)
 		default:
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}

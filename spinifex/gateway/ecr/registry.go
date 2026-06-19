@@ -237,8 +237,13 @@ func (reg *Registry) getBlob(w http.ResponseWriter, _, digest string) {
 // to 201 when the digest already lives in the account pool; otherwise it opens a
 // new chunked upload (202) with a fresh running sha256 state.
 func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name string) {
-	if err := reg.ensureRepo(name); err != nil {
-		reg.internal(w, "ensure repo", err)
+	if err := reg.requireRepo(name); err != nil {
+		var mErr *ManifestStoreError
+		if errors.As(err, &mErr) {
+			WriteError(w, mErr.Status, mErr.Code, mErr.Msg)
+			return
+		}
+		reg.internal(w, "require repo", err)
 		return
 	}
 
@@ -731,13 +736,19 @@ func (reg *Registry) ensureBucket() error {
 	return nil
 }
 
-func (reg *Registry) ensureRepo(name string) error {
-	if _, err := reg.Meta.GetRepo(reg.AccountID, name); err == nil {
+// requireRepo enforces that the repository exists before a push. ECR does not
+// auto-create repositories: a push to a repo that was never created with
+// CreateRepository is rejected with OCI NAME_UNKNOWN (the JSON PutImage path
+// maps this to RepositoryNotFoundException).
+func (reg *Registry) requireRepo(name string) error {
+	_, err := reg.Meta.GetRepo(reg.AccountID, name)
+	if err == nil {
 		return nil
-	} else if !errors.Is(err, ecr.ErrNotFound) {
-		return err
 	}
-	return reg.Meta.PutRepo(reg.AccountID, ecr.RepoMeta{Name: name, CreatedAt: time.Now().UTC()})
+	if errors.Is(err, ecr.ErrNotFound) {
+		return &ManifestStoreError{http.StatusNotFound, "NAME_UNKNOWN", fmt.Sprintf("repository %q does not exist", name)}
+	}
+	return err
 }
 
 func (reg *Registry) blobExists(digest string) bool {

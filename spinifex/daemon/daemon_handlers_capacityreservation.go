@@ -62,6 +62,11 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) {
 		return
 	}
 
+	// Subscribe the per-reservation launch subject before responding: the SUB and
+	// this reply share d.natsConn, so the server registers the responder before
+	// the gateway sees the new id and can route a targeted launch to it.
+	d.subscribeReservationLaunch(rec.ID)
+
 	respondWithJSON(msg, rec.toAWSCapacityReservation())
 }
 
@@ -92,7 +97,56 @@ func (d *Daemon) handleEC2CancelCapacityReservation(msg *nats.Msg) {
 	}
 
 	_, found := d.resourceMgr.CancelReservation(aws.StringValue(input.CapacityReservationId), accountID)
+	if found {
+		// Drop the launch subject so a targeted launch against the cancelled id
+		// hits no responder → InvalidCapacityReservationId.NotFound at the gateway.
+		d.unsubscribeReservationLaunch(aws.StringValue(input.CapacityReservationId))
+	}
 	respondWithJSON(msg, &ec2.CancelCapacityReservationOutput{Return: aws.Bool(found)})
+}
+
+// reservationLaunchSubject is the per-reservation subject the owning daemon
+// subscribes so the gateway routes a targeted launch straight to it, with no
+// cr→node lookup. ErrNoResponders on this subject therefore means the
+// reservation is gone (cancelled or lost to a restart).
+func reservationLaunchSubject(crID string) string {
+	return "ec2.RunInstances.cr." + crID
+}
+
+// subscribeReservationLaunch wires the cr launch subject to the standard
+// RunInstances handler — the target id rides in the input, so handleEC2RunInstances
+// serves it unchanged. Tracked in natsSubscriptions (keyed by cr id) so cancel
+// and shutdown can drop it. Idempotent.
+func (d *Daemon) subscribeReservationLaunch(crID string) {
+	if d.natsConn == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, exists := d.natsSubscriptions[crID]; exists {
+		return
+	}
+	sub, err := d.natsConn.Subscribe(reservationLaunchSubject(crID), d.handleEC2RunInstances)
+	if err != nil {
+		slog.Error("Failed to subscribe reservation launch subject", "crId", crID, "err", err)
+		return
+	}
+	d.natsSubscriptions[crID] = sub
+}
+
+// unsubscribeReservationLaunch drops the cr launch subscription on cancel.
+func (d *Daemon) unsubscribeReservationLaunch(crID string) {
+	d.mu.Lock()
+	sub, ok := d.natsSubscriptions[crID]
+	if ok {
+		delete(d.natsSubscriptions, crID)
+	}
+	d.mu.Unlock()
+	if ok {
+		if err := sub.Unsubscribe(); err != nil {
+			slog.Warn("Failed to unsubscribe reservation launch subject", "crId", crID, "err", err)
+		}
+	}
 }
 
 // toAWSCapacityReservation renders the in-memory record as the AWS API type.

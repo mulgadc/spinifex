@@ -5,9 +5,15 @@
 # at /sys/block/<dev>/serial. Alpine uses busybox mdev (no eudev), so the
 # nvme-Amazon_Elastic_Block_Store_<serial> link is created here from that serial.
 #
+# The mdev rule routes every vd* event here (busybox mdev stops at the first
+# matching line, so this helper supersedes the stock vd* rule rather than
+# stacking with it). Stock by-id/by-path/block links are preserved by
+# delegating to /lib/mdev/persistent-storage first.
+#
 # Invoked by mdev (env MDEV=<dev>, ACTION add|remove) and at boot for coldplug.
 set -eu
 
+PERSISTENT_STORAGE=/lib/mdev/persistent-storage
 BYID_DIR=/dev/disk/by-id
 PREFIX=nvme-Amazon_Elastic_Block_Store_
 
@@ -32,14 +38,25 @@ unlink_dev() {
     done
 }
 
+delegate() {
+    [ -x "${PERSISTENT_STORAGE}" ] || return 0
+    MDEV="${dev}" "${PERSISTENT_STORAGE}" || true
+}
+
 case "${ACTION:-add}" in
-    remove) unlink_dev "${dev}" ;;
+    remove)
+        unlink_dev "${dev}"
+        delegate
+        ;;
     coldplug)
         for _p in /sys/block/vd*; do
             [ -e "${_p}" ] || continue
             link_dev "$(basename "${_p}")"
         done
         ;;
-    *) link_dev "${dev}" ;;
+    *)
+        delegate
+        link_dev "${dev}"
+        ;;
 esac
 exit 0

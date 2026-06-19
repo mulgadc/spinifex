@@ -225,24 +225,29 @@ func (b *bindManager) shutdown() {
 	}
 }
 
+// bindToDeviceControl returns a ListenConfig.Control that scopes the socket to
+// dev via SO_BINDTODEVICE and sets SO_REUSEADDR. Shared by the per-subnet
+// localport listener and the per-tap responder.
+func bindToDeviceControl(dev string) func(string, string, syscall.RawConn) error {
+	return func(_, _ string, c syscall.RawConn) error {
+		var sockErr error
+		if err := c.Control(func(fd uintptr) {
+			if sockErr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, dev); sockErr != nil {
+				return
+			}
+			sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+		}); err != nil {
+			return err
+		}
+		return sockErr
+	}
+}
+
 // bindLocalListener opens 169.254.169.254:80 inside the subnet's netns.
 // The socket is created inside the netns (locked thread) so the fd belongs to it;
 // SO_BINDTODEVICE and SO_REUSEADDR are also set.
 func bindLocalListener(ctx context.Context, netnsName, hostEnd string) (net.Listener, error) {
-	lc := net.ListenConfig{
-		Control: func(_, _ string, c syscall.RawConn) error {
-			var sockErr error
-			if err := c.Control(func(fd uintptr) {
-				if sockErr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, hostEnd); sockErr != nil {
-					return
-				}
-				sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-			}); err != nil {
-				return err
-			}
-			return sockErr
-		},
-	}
+	lc := net.ListenConfig{Control: bindToDeviceControl(hostEnd)}
 
 	bind := func() (net.Listener, error) {
 		return lc.Listen(ctx, "tcp4", net.JoinHostPort(MetaDataServerIP, "80"))

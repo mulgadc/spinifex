@@ -29,7 +29,8 @@ type fakeResolver struct {
 	sgNames map[string]string // sg-id → group name; absent IDs fall back to the ID
 }
 
-func (f *fakeResolver) resolveENI(_, _ string) (*eniFacts, error) { return f.eni, f.eniErr }
+func (f *fakeResolver) resolveENI(_, _ string) (*eniFacts, error)  { return f.eni, f.eniErr }
+func (f *fakeResolver) resolveENIByID(_ string) (*eniFacts, error) { return f.eni, f.eniErr }
 func (f *fakeResolver) resolveInstance(_ *eniFacts) (*instanceFacts, error) {
 	return f.inst, f.instErr
 }

@@ -127,9 +127,17 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 	s.dispatch(w, r, eni)
 }
 
-// resolveCaller maps (vpcID-from-context, source-IP) to the owning ENI.
+// resolveCaller maps a request to its owning ENI. The per-tap responder resolves
+// the ENI from the tap's bound device once at start and threads it in, so when
+// present that identity is authoritative — the tap is unique, so source IP is
+// never consulted (overlapping guest CIDRs cannot collide). Otherwise the
+// per-subnet localport path maps (vpcID-from-context, source-IP) to the ENI.
 // Returns nil on miss or backend error, producing a 404 instead of 500.
 func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
+	if eni, ok := r.Context().Value(ctxKeyENI).(*eniFacts); ok && eni != nil {
+		return eni
+	}
+
 	vpcID, _ := r.Context().Value(ctxKeyVPCID).(string)
 	subnetID, _ := r.Context().Value(ctxKeySubnetID).(string)
 	srcIP := utils.ClientIP(r.RemoteAddr)
@@ -517,4 +525,7 @@ type ctxKey int
 const (
 	ctxKeyVPCID ctxKey = iota
 	ctxKeySubnetID
+	// ctxKeyENI carries a *eniFacts resolved once per per-tap responder. When set
+	// it is the authoritative identity; the (vpcID, srcIP) path is not consulted.
+	ctxKeyENI
 )

@@ -34,14 +34,19 @@ type IMDSService interface {
 
 var _ IMDSService = (*IMDSServiceImpl)(nil)
 
-// eniResolver maps a datapath-attested (vpcID, srcIP) to ENI + instance facts.
+// eniResolver maps a request to ENI + instance facts, either from a datapath-
+// attested (vpcID, srcIP) (per-subnet localport) or from the tap's ENI ID
+// (per-tap responder).
 type eniResolver interface {
 	resolveENI(vpcID, srcIP string) (*eniFacts, error)
+	resolveENIByID(eniID string) (*eniFacts, error)
 	resolveInstance(eni *eniFacts) (*instanceFacts, error)
 	resolveSGNames(accountID string, sgIDs []string) []string
 }
 
-// IMDSServiceImpl is the in-process IMDS implementation with its own per-subnet listener stack.
+// IMDSServiceImpl is the in-process IMDS implementation. It carries both the
+// per-subnet localport listener stack (live) and the per-tap responder manager
+// (built but off the production path until the Phase 3 cutover).
 type IMDSServiceImpl struct {
 	resolver eniResolver
 	tokens   *tokenStore
@@ -49,6 +54,7 @@ type IMDSServiceImpl struct {
 	iam      profileLookup
 	pubKeys  publicKeyLookup
 	bind     *bindManager
+	tapResp  *tapResponderManager
 	now      func() time.Time
 }
 
@@ -108,7 +114,11 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 		pubKeys: pubKeys,
 		now:     time.Now,
 	}
-	svc.bind = newBindManager(vethKV, svc.httpHandler(), ensureVeth, removeVeth, bindLocalListener)
+	// One shared mux serves both stacks: the per-subnet localport listeners and
+	// the per-tap responders thread their respective identities via BaseContext.
+	handler := svc.httpHandler()
+	svc.bind = newBindManager(vethKV, handler, ensureVeth, removeVeth, bindLocalListener)
+	svc.tapResp = newTapResponderManager(handler, svc.resolver.resolveENIByID, bindTapListener)
 
 	slog.Info("IMDS service initialized",
 		"index_bucket", KVBucketENIByVPCIP,
@@ -135,6 +145,7 @@ func (s *IMDSServiceImpl) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	s.bind.shutdown()
+	s.tapResp.shutdown()
 	return ctx.Err()
 }
 

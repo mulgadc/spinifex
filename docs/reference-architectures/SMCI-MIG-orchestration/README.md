@@ -108,7 +108,7 @@ The exact process for this is described in the [VPC Networking](/docs/vpc-networ
 
 ### 2. Install Spinifex from source
 
-Follow the [Install from Source](/docs/install-source) guide. This process will install Spinifex and start Spinifex services, however `spinifex.toml` needs to be edited to finalise the changes made to the networking in the previous section, as described in the following section.
+Follow the [Single Node Install](/docs/install) guide. This process will install Spinifex and start Spinifex services, however `spinifex.toml` needs to be edited to finalise the changes made to the networking in the previous section, as described in the following section.
 
 ### 3. Configure spinifex.toml and restart services
 
@@ -499,10 +499,10 @@ Each instance exposes a `/video` endpoint serving a `multipart/x-mixed-replace` 
 We also built a simple host-side dashboard — another FastAPI application that proxies all the VM streams to the browser so only one port on the host needs to be exposed. Each VM endpoint is wired in by address at startup, mapping directly to the IPs assigned in step 8:
 
 ```
-http://192.168.10.14:8010  →  vm-yolo  YOLO11x MJPEG stream
-http://192.168.10.14:8011  →  vm-yolo  YOLO11s MJPEG stream
-http://192.168.10.7:8000   →  vm-llama3b  vLLM endpoint 0
-http://192.168.10.7:8001   →  vm-llama3b  vLLM endpoint 1
+http://vm-yolo-IP:8010  →  vm-yolo  YOLO11x MJPEG stream
+http://vm-yolo-IP:8011  →  vm-yolo  YOLO11s MJPEG stream
+http://vm-llama3b-IP:8000   →  vm-llama3b  vLLM endpoint 0
+http://vm-llama3b-IP:8001   →  vm-llama3b  vLLM endpoint 1
 ... (one entry per endpoint across all three LLM VMs)
 ```
 
@@ -522,20 +522,21 @@ The dashboard also displays the overall GPU utilisation, derived as a percentage
 ### 15. Teardown
 
 ```bash
-# Stop the YOLO processes on vm-yolo
-ssh -i ~/.ssh/spinifex-key ubuntu@192.168.10.14 'pkill -f yolo_stream.py || true'
+# On vm-yolo:
+# Stop YOLO processes
+pkill -f yolo_stream.py
 
-# Stop all vLLM containers on the LLM VMs
-for IP in 192.168.10.7 192.168.10.8 192.168.10.12; do
-    ssh -i ~/.ssh/spinifex-key ubuntu@$IP 'docker stop $(docker ps -q) 2>/dev/null || true'
-done
+# On each LLM VM:
+# Stop docker containers
+
+docker stop $(docker ps -q)
 
 # Disable MIG inside each VM before terminating.
-for IP in 192.168.10.7 192.168.10.8 192.168.10.12 192.168.10.14; do
-    ssh -i ~/.ssh/spinifex-key ubuntu@$IP \
-        'sudo nvidia-smi mig -dci 2>/dev/null; sudo nvidia-smi mig -dgi 2>/dev/null; sudo nvidia-smi -mig 0' || true
-done
+sudo nvidia-smi mig -dci
+sudo nvidia-smi mig -dgi
+sudo nvidia-smi -mig 0
 
+# On the host:
 # Terminate all four instances — releases 4× H200 back to the Spinifex pool
 aws ec2 terminate-instances --instance-ids \
     $(aws ec2 describe-instances \
@@ -544,7 +545,7 @@ aws ec2 terminate-instances --instance-ids \
         --output text)
 ```
 
-The four H200s are immediately returned to the host GPU pool once the instances terminate, ready for reallocation without touching the host.
+The four H200s are immediately returned to the host GPU pool once the instances terminate, ready for reallocation.
 
 ---
 

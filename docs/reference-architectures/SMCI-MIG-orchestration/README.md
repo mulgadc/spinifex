@@ -27,13 +27,13 @@ sections:
 
 Spinifex is an open-source infrastructure platform that brings core AWS services including EC2, EBS and S3 to bare-metal, edge, and on-prem environments. It exposes an AWS compatible API, so any tooling that works against AWS (the `aws` CLI, Terraform, SDKs) works against a Spinifex node unchanged, with a single profile swap.
 
-This guide documents a full bare-metal AI deployment on a single SMCI X13 chassis using four of its eight available NVIDIA H200 SXM GPUs. These GPUs come with MIG (Multi Instance GPU) capability, which allows a single GPU to be "sliced" into up to seven independent GPU partitions. Each partition is capable of running its own workloads with reserved resources from the "host" GPU.
+This guide documents a full bare-metal AI deployment on a single [Supermicro X13](https://www.supermicro.com/en/products/x13) chassis using NVIDIA H200 SXM GPUs. These GPUs include the [NVIDIA Multi-Instance GPU](https://www.nvidia.com/en-au/technologies/multi-instance-gpu/) (MIG) capability, which allows a single GPU to be "sliced" into up to seven independent GPU partitions that are hardware isolated. Each partition is capable of running its own workloads with reserved resources from the "host" GPU.
 
-In this setup, each VM receives an entire H200 via PCIe passthrough and manages its own MIG partitions internally. This gives each tenant full control over how they slice their GPU — including the ability to run heterogeneous workloads at different partition sizes on the same physical card.
+In this setup, each VM receives an entire H200 via PCIe passthrough and manages its own MIG partitions within the individual EC2 instance. This gives each tenant full control over how they slice their GPU — including the ability to run heterogeneous workloads at different partition sizes on the same physical card.
 
-### VM layout
+### EC2 workload layout
 
-| VM | IP | MIG config | Workload | Model |
+| EC2 Workload | IP | MIG config | Workload | Model |
 |---|---|---|---|---|
 | `vm-llama3b` | 192.168.10.7  | 7 × 1g.18gb | Chat inference × 7 | Llama-3.2-3B-Instruct |
 | `vm-qwen32b` | 192.168.10.8  | 2 × 3g.71gb | Chat inference × 2 | Qwen2.5-32B-Instruct |

@@ -52,7 +52,7 @@ type ImageRecord struct {
 // *ManifestStoreError carrying the OCI code.
 func (reg *Registry) StoreManifest(account, repo, ref, contentType string, body []byte) (string, error) {
 	scoped := reg.forAccount(account)
-	if err := scoped.ensureRepo(repo); err != nil {
+	if err := scoped.requireRepo(repo); err != nil {
 		return "", err
 	}
 	if len(body) > maxManifestBytes {

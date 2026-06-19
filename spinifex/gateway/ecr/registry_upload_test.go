@@ -35,6 +35,7 @@ func TestFinishUpload_StoreFailure_CleansUp(t *testing.T) {
 	store := &blobPutFailStore{MemoryObjectStore: mem}
 	meta := ecr.NewMemoryMetaStore()
 	reg := NewRegistry(store, meta, testAccount)
+	seedRepo(t, reg, "team/app")
 
 	w := do(reg, http.MethodPost, "/v2/team/app/blobs/uploads/", nil, nil)
 	require.Equal(t, http.StatusAccepted, w.Code)
@@ -115,6 +116,7 @@ func TestPatchUpload_ConcurrentNoCorruption(t *testing.T) {
 	for iter := range 25 {
 		reg := newTestRegistry()
 		repo := "team/race"
+		seedRepo(t, reg, repo)
 
 		w := do(reg, http.MethodPost, "/v2/"+repo+"/blobs/uploads/", nil, nil)
 		require.Equal(t, http.StatusAccepted, w.Code)

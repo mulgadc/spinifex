@@ -159,6 +159,7 @@ func TestListImages_KVDigestForm(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	reg := NewRegistry(objectstore.NewMemoryObjectStore(), ecr.NewKVMetaStore(js), testAccount)
 	repo := "team/app"
+	require.NoError(t, reg.Meta.PutRepo(testAccount, ecr.RepoMeta{Name: repo}))
 
 	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","layers":[]}`)
 	digest, err := reg.StoreManifest(testAccount, repo, "v1", mediaTypeDockerManifest, manifest)

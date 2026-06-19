@@ -292,6 +292,14 @@ suites:
     # via vpcd, AMI via predastore, root volume via viperblockd, lifecycle via
     # spinifex_daemon. Single-mode, VM-booting leg.
 
+  e2e-ecr:
+    path: tests/e2e/ecr
+    covers: [awsgw, spinifex_daemon, predastore]
+    # ECR control plane (handlers/ecr, gateway/ecr*) + OCI data plane: blobs and
+    # manifests in predastore, control + auth bridge in awsgw, KV via
+    # spinifex_daemon. docker/crane/skopeo data-plane subtests skip when the
+    # client binary or registry-host resolution is absent.
+
   e2e-ddil:
     path: tests/e2e/ddil
     covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]

@@ -261,3 +261,31 @@ func nextAvailableDevice(instance *VM) string {
 
 	return ""
 }
+
+// nextHotplugEBSPort picks the lowest free EBS hot-plug PCIe port
+// (1..EBSHotPlugSlotCount) from live QEMU state. The port is decoupled from the
+// AWS device name: callers (e.g. the EBS CSI driver) supply arbitrary names like
+// /dev/xvdaa that do not map onto the /dev/sd[f-p] slot range, so the physical
+// port is allocated independently. Returns 0 when the pool is exhausted.
+func nextHotplugEBSPort(qmpClient *qmp.QMPClient, instanceID string) (int, error) {
+	resp, err := sendQMPCommand(qmpClient, qmp.QMPCommand{Execute: "query-block"}, instanceID)
+	if err != nil {
+		return 0, fmt.Errorf("query-block failed: %w", err)
+	}
+	var devices []qmp.BlockDevice
+	if err := json.Unmarshal(resp.Return, &devices); err != nil {
+		return 0, fmt.Errorf("failed to parse query-block response: %w", err)
+	}
+	used := make(map[int]bool, len(devices))
+	for _, dev := range devices {
+		if port := extractHotplugPort(dev.QDev); port > 0 {
+			used[port] = true
+		}
+	}
+	for p := 1; p <= EBSHotPlugSlotCount; p++ {
+		if !used[p] {
+			return p, nil
+		}
+	}
+	return 0, nil
+}

@@ -516,7 +516,7 @@ func (reg *Registry) getManifest(w http.ResponseWriter, r *http.Request, name, r
 		WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 		return
 	}
-	if !acceptsType(r.Header.Get("Accept"), meta.MediaType) {
+	if !acceptsType(strings.Join(r.Header.Values("Accept"), ","), meta.MediaType) {
 		WriteError(w, http.StatusNotAcceptable, "MANIFEST_INVALID", "no acceptable manifest media type")
 		return
 	}

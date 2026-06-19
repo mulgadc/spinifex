@@ -208,6 +208,29 @@ func TestManifest_Get_AcceptMismatch(t *testing.T) {
 	assert.Equal(t, http.StatusNotAcceptable, w.Code)
 }
 
+// TestManifest_Get_MultipleAcceptHeaders reproduces skopeo, which sends each
+// acceptable manifest media type as its own Accept header line rather than one
+// comma-joined value. Negotiation must consider every line, not just the first.
+func TestManifest_Get_MultipleAcceptHeaders(t *testing.T) {
+	reg := newTestRegistry()
+	repo := "team/app"
+	cfg := pushBlob(t, reg, repo, []byte("c"))
+	manifest := fmt.Appendf(nil,
+		`{"mediaType":"%s","config":{"digest":"%s"},"layers":[]}`, mediaTypeDockerManifest, cfg)
+	do(reg, http.MethodPut, "/v2/"+repo+"/manifests/v1", manifest,
+		map[string]string{"Content-Type": mediaTypeDockerManifest})
+
+	r := httptest.NewRequest(http.MethodGet, "/v2/"+repo+"/manifests/v1", nil)
+	r.Header.Add("Accept", mediaTypeOCIIndex)
+	r.Header.Add("Accept", mediaTypeOCIManifest)
+	r.Header.Add("Accept", mediaTypeDockerManifest)
+	w := httptest.NewRecorder()
+	reg.ServeHTTP(w, r)
+
+	assert.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, manifest, w.Body.Bytes())
+}
+
 func TestManifest_Get_Unknown(t *testing.T) {
 	reg := newTestRegistry()
 	w := do(reg, http.MethodGet, "/v2/team/app/manifests/missing", nil, nil)

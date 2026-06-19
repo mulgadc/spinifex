@@ -78,25 +78,25 @@ func TestInstallIMDSFlow(t *testing.T) {
 	s.expect("ovs-ofctl", nil, nil)
 
 	spec := "table=0,priority=200,in_port=7,actions=drop"
-	if err := installIMDSFlow(context.Background(), s, spec); err != nil {
+	if err := installIMDSFlow(context.Background(), s, "0xa1d5cafe", spec); err != nil {
 		t.Fatalf("installIMDSFlow: %v", err)
 	}
 
-	want := "ovs-ofctl add-flow " + IMDSBridge + " cookie=" + imdsFlowCookie + "," + spec
+	want := "ovs-ofctl add-flow " + IMDSBridge + " cookie=0xa1d5cafe," + spec
 	if !s.called(want) {
 		t.Errorf("expected %q; calls: %v", want, s.calls)
 	}
 }
 
-func TestClearIMDSFlows(t *testing.T) {
+func TestClearIMDSFlowsByCookie(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-ofctl", nil, nil)
 
-	if err := clearIMDSFlows(context.Background(), s); err != nil {
-		t.Fatalf("clearIMDSFlows: %v", err)
+	if err := clearIMDSFlowsByCookie(context.Background(), s, "0xa1d5cafe"); err != nil {
+		t.Fatalf("clearIMDSFlowsByCookie: %v", err)
 	}
-	// Cookie mask /-1 deletes only the IMDS flow-group, never another tenant's flows.
-	want := "ovs-ofctl del-flows " + IMDSBridge + " cookie=" + imdsFlowCookie + "/-1"
+	// Cookie mask /-1 deletes only this tap's flows, never another tap's.
+	want := "ovs-ofctl del-flows " + IMDSBridge + " cookie=0xa1d5cafe/-1"
 	if !s.called(want) {
 		t.Errorf("expected cookie-scoped del-flows; calls: %v", s.calls)
 	}

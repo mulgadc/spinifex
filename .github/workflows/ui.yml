@@ -23,7 +23,7 @@ permissions:
 jobs:
   ui_build_and_test:
     name: UI Build and Test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: spinifex/services/spinifexui/frontend

@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   distro-amd64:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout Spinifex
         uses: actions/checkout@v6
@@ -54,7 +54,7 @@ jobs:
             spinifex/scripts/setup.sh
 
   distro-arm64:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     steps:
       - name: Checkout Spinifex
         uses: actions/checkout@v6
@@ -91,7 +91,7 @@ jobs:
 
   release:
     needs: [ distro-amd64, distro-arm64 ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Download amd64 Artifacts
         uses: actions/download-artifact@v8
@@ -190,7 +190,7 @@ jobs:
 
   promote:
     needs: [ verify, baremetal ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       TAG: ${{ github.ref_name }}
       REPO: ${{ github.repository }}
@@ -211,7 +211,7 @@ jobs:
   mark-failed:
     needs: [ verify, baremetal ]
     if: failure()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       TAG: ${{ github.ref_name }}
       REPO: ${{ github.repository }}

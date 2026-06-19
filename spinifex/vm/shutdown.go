@@ -398,9 +398,17 @@ func (m *Manager) cleanupExtraENITaps(instance *VM) {
 }
 
 // deallocateResources releases the per-instance vCPU/memory reservation
-// back to the resource controller.
+// back to the resource controller. The single release/restore chokepoint for
+// stop, terminate and crash recovery.
 func (m *Manager) deallocateResources(instance *VM) {
 	if m.deps.Resources == nil || instance.InstanceType == "" {
+		return
+	}
+	// A reservation-bound instance returns its slot to the reservation, not the
+	// general pool. CapacityReservationId is stamped once at launch and never
+	// mutated, so reading it here lock-free is safe (like InstanceType).
+	if instance.CapacityReservationId != "" {
+		m.deps.Resources.ReleaseToReservation(instance.CapacityReservationId, instance.InstanceType)
 		return
 	}
 	m.deps.Resources.Deallocate(instance.InstanceType)

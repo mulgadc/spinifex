@@ -161,6 +161,30 @@ func TestHandleCrash_CoreFlow(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "QMP socket must be removed")
 }
 
+// A reservation-bound instance returns its slot to the reservation through the
+// deallocateResources chokepoint, never to the general pool (net-zero swap).
+func TestHandleCrash_ReservationBoundReleasesToReservation(t *testing.T) {
+	m, rc, _, _ := crashTestManager(t)
+
+	tmpDir := t.TempDir()
+	qmpPath := filepath.Join(tmpDir, "qmp.sock")
+	require.NoError(t, os.WriteFile(qmpPath, []byte("dummy"), 0o600))
+
+	instance := &VM{
+		ID:                    "i-cr",
+		Status:                StateRunning,
+		InstanceType:          "t3.micro",
+		CapacityReservationId: "cr-0123456789abcdef0",
+		Config:                Config{QMPSocket: qmpPath},
+	}
+	m.Insert(instance)
+
+	m.HandleCrash(instance, fmt.Errorf("test crash"))
+
+	assert.Equal(t, 1, rc.releaseCount(), "slot must return to the reservation")
+	assert.Zero(t, rc.deallocateCount("t3.micro"), "reservation-bound release must not hit the general pool")
+}
+
 func TestHandleCrash_FirstCrashSetsTime(t *testing.T) {
 	m, _, _, _ := crashTestManager(t)
 

@@ -114,7 +114,7 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	if m.deps.Resources != nil && instance.InstanceType != "" {
 		slog.Info("Deallocating resources for crashed instance",
 			"instance", instance.ID, "type", instance.InstanceType)
-		m.deps.Resources.Deallocate(instance.InstanceType)
+		m.deallocateResources(instance)
 	}
 
 	if instance.Config.QMPSocket != "" {
@@ -246,7 +246,7 @@ func (m *Manager) RestartCrashedInstance(instance *VM) {
 		if err := m.deps.TransitionState(instance, StatePending); err != nil {
 			slog.Error("Failed to transition instance to pending for restart",
 				"instance", instance.ID, "err", err)
-			m.deps.Resources.Deallocate(instance.InstanceType)
+			m.deallocateResources(instance)
 			return
 		}
 	}

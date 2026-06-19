@@ -9,6 +9,7 @@ type fakeResourceController struct {
 	mu             sync.Mutex
 	allocated      map[string]int
 	deallocated    []string
+	released       []string // "<reservationID>/<type>" per ReleaseToReservation call
 	allocateErr    error
 	canAllocateRet int
 }
@@ -34,6 +35,21 @@ func (f *fakeResourceController) Deallocate(typeName string) {
 	if f.allocated[typeName] > 0 {
 		f.allocated[typeName]--
 	}
+}
+
+func (f *fakeResourceController) ReleaseToReservation(reservationID, typeName string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released = append(f.released, reservationID+"/"+typeName)
+	if f.allocated[typeName] > 0 {
+		f.allocated[typeName]--
+	}
+}
+
+func (f *fakeResourceController) releaseCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.released)
 }
 
 func (f *fakeResourceController) CanAllocate(typeName string, count int) int {

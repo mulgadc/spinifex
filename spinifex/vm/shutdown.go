@@ -282,6 +282,14 @@ func (m *Manager) stopCleanup(instance *VM) {
 		}
 	}
 	m.deallocateResources(instance)
+
+	// The slot just returned to the reservation; detach the binding (under the
+	// manager lock, mirroring crash recovery) so a later start re-allocates from
+	// the general pool and terminate frees there too — never double-counting the
+	// reservation while the stopped instance no longer holds a slot.
+	if instance.CapacityReservationId != "" {
+		m.UpdateState(instance.ID, func(v *VM) { v.CapacityReservationId = "" })
+	}
 }
 
 // terminateCleanup is stopCleanup plus the AWS-resource cleanup that

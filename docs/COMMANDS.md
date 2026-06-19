@@ -113,7 +113,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--metadata-options`, `--launch-template`, `--hibernate-options` | **DONE** |
+| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn), `--capacity-reservation-specification` (CapacityReservationTarget.CapacityReservationId, targeted-by-id only) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--metadata-options`, `--launch-template`, `--hibernate-options` | **DONE** |
 | `describe-instances` | `--instance-ids`, `--filters` (instance-state-name, instance-id, instance-type, vpc-id, subnet-id, tag:*, tag-key, tag-value) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `start-instances` | `--instance-ids` | `--dry-run`, `--force` | **DONE** |
 | `stop-instances` | `--instance-ids` | `--force`, `--hibernate`, `--dry-run` | **DONE** |
@@ -131,6 +131,11 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 `run-instances --iam-instance-profile` enforces `iam:PassRole` on the contained
 role ARN and rejects cross-account profile ARNs. Placement strategies: `spread`
 (1 per node, atomic CAS) and `cluster` (pin all to one node).
+
+`run-instances --capacity-reservation-specification` consumes a reserved slot on
+the node owning the targeted reservation (targeted-by-id only; `open`
+auto-matching is not supported). The combination with `--placement` (group) is
+rejected. `describe-instances` then reports the instance's `CapacityReservationId`.
 
 ### EC2 — IAM Instance Profile Associations
 

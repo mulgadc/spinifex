@@ -335,6 +335,19 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 					}
 				}
 
+				// Echo the consumed capacity reservation so targeted-launch
+				// Terraform converges — without it the instance reports no
+				// reservation and the plan never settles.
+				if instance.CapacityReservationId != "" {
+					instanceCopy.CapacityReservationId = aws.String(instance.CapacityReservationId)
+					instanceCopy.CapacityReservationSpecification = &ec2.CapacityReservationSpecificationResponse{
+						CapacityReservationPreference: aws.String(ec2.CapacityReservationPreferenceOpen),
+						CapacityReservationTarget: &ec2.CapacityReservationTargetResponse{
+							CapacityReservationId: aws.String(instance.CapacityReservationId),
+						},
+					}
+				}
+
 				// Apply filters against the fully-built instance copy
 				if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, &instanceCopy, parsedFilters) {
 					continue

@@ -76,6 +76,7 @@ type Config struct {
 	Viperblock ViperblockConfig `json:"Viperblock" mapstructure:"viperblock"`
 	AWSGW      AWSGWConfig      `json:"AWSGW" mapstructure:"awsgw"`
 	VPCD       VPCDConfig       `json:"VPCD" mapstructure:"vpcd"`
+	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -105,6 +106,12 @@ type VPCDConfig struct {
 	OVNSBAddr         string `json:"OVNSBAddr" mapstructure:"ovn_sb_addr"`                // OVN Southbound DB address (e.g., "tcp:127.0.0.1:6642")
 	ExternalInterface string `json:"ExternalInterface" mapstructure:"external_interface"` // WAN NIC name (e.g., "eth1", "enp0s3") — the physical NIC on the WAN bridge
 	BridgeMode        string `json:"BridgeMode" mapstructure:"bridge_mode"`               // "direct" or "veth" (auto-detected if empty)
+}
+
+// NorthstarConfig holds the per-node northstar DNS service configuration.
+type NorthstarConfig struct {
+	// ConfigPath is the path to northstar.toml written by `spx admin init`.
+	ConfigPath string `json:"ConfigPath" mapstructure:"config_path"`
 }
 
 type PredastoreConfig struct {

@@ -26,6 +26,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/service"
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
+	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
@@ -823,6 +824,92 @@ var vpcdStatusCmd = &cobra.Command{
 	},
 }
 
+var northstarCmd = &cobra.Command{
+	Use:   "northstar",
+	Short: "Manage the northstar (DNS) service",
+}
+
+var northstarStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start the northstar service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Starting northstar service...")
+
+		cfgFile := viper.GetString("config")
+		if cfgFile == "" {
+			fmt.Println("Config file is not set")
+			return
+		}
+
+		clusterConfig, err := config.LoadConfig(cfgFile)
+		if err != nil {
+			fmt.Println("Error loading config file:", err)
+			return
+		}
+
+		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
+
+		configPath := nodeConfig.Northstar.ConfigPath
+		if override := viper.GetString("northstar-config"); override != "" {
+			fmt.Println("Overwriting northstar config path to:", override)
+			configPath = override
+		}
+		if configPath == "" {
+			slog.Error("northstar config path is not set (nodes.<node>.northstar.config_path or --northstar-config)")
+			os.Exit(1)
+		}
+
+		baseDir := nodeConfig.BaseDir
+		if override := viper.GetString("base-dir"); override != "" {
+			baseDir = override
+		}
+
+		svc, err := service.New("northstar", &northstar.Config{
+			ConfigPath: configPath,
+			BasePath:   baseDir,
+			NodeID:     nodeConfig.Predastore.NodeID,
+		})
+		if err != nil {
+			fmt.Println("Error starting northstar service:", err)
+			return
+		}
+
+		if _, err = svc.Start(); err != nil {
+			fmt.Println("Error starting northstar service:", err)
+			os.Exit(1)
+		}
+		fmt.Println("northstar service started")
+	},
+}
+
+var northstarStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the northstar service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Stopping northstar service...")
+
+		svc, err := service.New("northstar", &northstar.Config{})
+		if err != nil {
+			fmt.Println("Error stopping northstar service:", err)
+			return
+		}
+
+		if err = svc.Stop(); err != nil {
+			fmt.Println("Error stopping northstar service:", err)
+			os.Exit(1)
+		}
+		fmt.Println("northstar service stopped")
+	},
+}
+
+var northstarStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Get status of the northstar service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("northstar service status: ...")
+	},
+}
+
 func init() {
 	viper.SetEnvPrefix("SPINIFEX") // Prefix for environment variables
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
@@ -1022,4 +1109,14 @@ func init() {
 	vpcdCmd.AddCommand(vpcdStartCmd)
 	vpcdCmd.AddCommand(vpcdStopCmd)
 	vpcdCmd.AddCommand(vpcdStatusCmd)
+
+	serviceCmd.AddCommand(northstarCmd)
+
+	northstarCmd.PersistentFlags().String("northstar-config", "", "Path to northstar.toml (overrides config file)")
+	viper.BindEnv("northstar-config", "SPINIFEX_NORTHSTAR_CONFIG")
+	viper.BindPFlag("northstar-config", northstarCmd.PersistentFlags().Lookup("northstar-config"))
+
+	northstarCmd.AddCommand(northstarStartCmd)
+	northstarCmd.AddCommand(northstarStopCmd)
+	northstarCmd.AddCommand(northstarStatusCmd)
 }

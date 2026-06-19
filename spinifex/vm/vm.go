@@ -140,6 +140,11 @@ type VM struct {
 	// the visibility window, after which it may reclaim it early; the bucket's
 	// 1h TTL bounds visibility regardless.
 	TerminatedAt time.Time `json:"terminated_at,omitzero"`
+
+	// CapacityReservationId is the On-Demand Capacity Reservation this instance
+	// was launched into (targeted launch). Empty for instances on general
+	// capacity. Drives slot restore to the reservation on stop/terminate.
+	CapacityReservationId string `json:"capacity_reservation_id,omitempty"`
 }
 
 // ResetNodeLocalState zeroes node-specific fields after deserializing a VM

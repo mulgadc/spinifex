@@ -313,6 +313,14 @@ func (a *resourceControllerAdapter) Deallocate(instanceType string) {
 	a.rm.deallocate(it)
 }
 
+func (a *resourceControllerAdapter) ReleaseToReservation(reservationID, instanceType string) {
+	it := a.rm.instanceTypes[instanceType]
+	if it == nil {
+		return
+	}
+	a.rm.ReleaseToReservation(reservationID, it)
+}
+
 func (a *resourceControllerAdapter) CanAllocate(instanceType string, count int) int {
 	it := a.rm.instanceTypes[instanceType]
 	if it == nil {

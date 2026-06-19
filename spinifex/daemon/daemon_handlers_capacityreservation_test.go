@@ -249,3 +249,61 @@ func TestHandleEC2CancelCapacityReservation_ScopingAndAck(t *testing.T) {
 
 	assert.False(t, cancel(testAccountID), "a second cancel reports not-found")
 }
+
+// Create subscribes the per-reservation launch subject (so a targeted launch has
+// a responder) and Cancel drops it (so a launch against the cancelled id returns
+// ErrNoResponders → InvalidCapacityReservationId.NotFound at the gateway).
+func TestHandleEC2CapacityReservation_LaunchSubjectLifecycle(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+
+	instType := getTestInstanceType(t)
+	it := daemon.resourceMgr.instanceTypes[instType]
+	require.NotNil(t, it)
+	require.GreaterOrEqual(t, daemon.resourceMgr.canAllocate(it, 1000), 1)
+
+	createSubject := "ec2.CreateCapacityReservation." + daemon.node
+	createSub, err := daemon.natsConn.Subscribe(createSubject, daemon.handleEC2CreateCapacityReservation)
+	require.NoError(t, err)
+	defer func() { _ = createSub.Unsubscribe() }()
+	cancelSub, err := daemon.natsConn.Subscribe("ec2.CancelCapacityReservation", daemon.handleEC2CancelCapacityReservation)
+	require.NoError(t, err)
+	defer func() { _ = cancelSub.Unsubscribe() }()
+
+	reqData, _ := json.Marshal(&ec2.CreateCapacityReservationInput{
+		InstanceType: aws.String(instType), InstanceCount: aws.Int64(1),
+		AvailabilityZone: aws.String("ap-southeast-2a"), InstancePlatform: aws.String("Linux/UNIX"),
+	})
+	reply, err := natsRequest(daemon.natsConn, createSubject, reqData, 5*time.Second)
+	require.NoError(t, err)
+	require.Empty(t, replyErrCode(t, reply.Data), "create should not error: %s", reply.Data)
+	var cr ec2.CapacityReservation
+	require.NoError(t, json.Unmarshal(reply.Data, &cr))
+	crID := aws.StringValue(cr.CapacityReservationId)
+
+	daemon.mu.Lock()
+	_, tracked := daemon.natsSubscriptions[crID]
+	daemon.mu.Unlock()
+	assert.True(t, tracked, "create tracks the cr launch subscription")
+
+	// An empty payload makes handleEC2RunInstances reject on MissingParameter
+	// before any allocation; the point is only that a responder exists (no
+	// ErrNoResponders) — the SUB raced ahead of the create reply on the same conn.
+	launchSubject := reservationLaunchSubject(crID)
+	_, err = natsRequest(daemon.natsConn, launchSubject, []byte("{}"), 2*time.Second)
+	require.NotErrorIs(t, err, nats.ErrNoResponders, "cr launch subject has a responder after create")
+
+	cancelData, _ := json.Marshal(&ec2.CancelCapacityReservationInput{CapacityReservationId: aws.String(crID)})
+	creply, err := natsRequest(daemon.natsConn, "ec2.CancelCapacityReservation", cancelData, 5*time.Second)
+	require.NoError(t, err)
+	var cout ec2.CancelCapacityReservationOutput
+	require.NoError(t, json.Unmarshal(creply.Data, &cout))
+	require.True(t, aws.BoolValue(cout.Return), "owner cancel succeeds")
+
+	daemon.mu.Lock()
+	_, tracked = daemon.natsSubscriptions[crID]
+	daemon.mu.Unlock()
+	assert.False(t, tracked, "cancel drops the cr launch subscription")
+
+	_, err = natsRequest(daemon.natsConn, launchSubject, []byte("{}"), 1*time.Second)
+	assert.ErrorIs(t, err, nats.ErrNoResponders, "cr launch subject has no responder after cancel")
+}

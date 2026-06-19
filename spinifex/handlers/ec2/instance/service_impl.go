@@ -572,7 +572,13 @@ func instanceTagsFromSpec(specs []*ec2.TagSpecification) []*ec2.Tag {
 // PrepareRunInstances validates input, allocates capacity, creates VM metadata,
 // auto-creates the primary ENI, and auto-assigns a public IP when needed.
 // Does NOT touch vmMgr or NATS — callers insert VMs then call LaunchRunInstances.
-func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, []*vm.VM, *ec2.InstanceTypeInfo, error) {
+//
+// A non-empty reservationID makes this a targeted launch into an On-Demand
+// Capacity Reservation: capacity is consumed from that reservation (net-zero
+// swap), the count is capped at the reservation's free slots (never spilling
+// onto general capacity), and every rollback site returns slots to the
+// reservation rather than the general pool.
+func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, accountID, reservationID string) (*ec2.Reservation, []*vm.VM, *ec2.InstanceTypeInfo, error) {
 	if accountID == "" {
 		return nil, nil, nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -620,10 +626,21 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	minCount := int(*input.MinCount)
 	maxCount := int(*input.MaxCount)
 
-	allocatableCount := s.resourceMgr.CanAllocate(instanceType, maxCount)
+	var allocatableCount int
+	if reservationID == "" {
+		allocatableCount = s.resourceMgr.CanAllocate(instanceType, maxCount)
+	} else {
+		// Targeted launch: confined to the reservation. Cap at its free slots so
+		// the overflow never spills onto the node's general capacity.
+		allocatableCount = min(s.resourceMgr.ReservationAvailable(reservationID, accountID, instanceType), maxCount)
+	}
 	if allocatableCount < minCount {
-		slog.Error("PrepareRunInstances: insufficient capacity", "requested", minCount, "available", allocatableCount, "InstanceType", *input.InstanceType)
-		return nil, nil, nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		errCode := awserrors.ErrorInsufficientInstanceCapacity
+		if reservationID != "" {
+			errCode = awserrors.ErrorReservationCapacityExceeded
+		}
+		slog.Error("PrepareRunInstances: insufficient capacity", "requested", minCount, "available", allocatableCount, "InstanceType", *input.InstanceType, "reservationId", reservationID)
+		return nil, nil, nil, errors.New(errCode)
 	}
 
 	launchCount := allocatableCount
@@ -633,18 +650,32 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	// allocatableCount — the < minCount branch below rolls back.
 	var allocatedCount int
 	for i := 0; i < launchCount; i++ {
-		if err := s.resourceMgr.Allocate(instanceType); err != nil {
-			slog.Error("PrepareRunInstances: allocate failed mid-allocation", "allocated", allocatedCount, "err", err)
+		var allocErr error
+		if reservationID == "" {
+			allocErr = s.resourceMgr.Allocate(instanceType)
+		} else {
+			allocErr = s.resourceMgr.AllocateFromReservation(reservationID, accountID, instanceType)
+		}
+		if allocErr != nil {
+			slog.Error("PrepareRunInstances: allocate failed mid-allocation", "allocated", allocatedCount, "err", allocErr)
 			break
 		}
 		allocatedCount++
 	}
 	if allocatedCount < minCount {
 		for i := 0; i < allocatedCount; i++ {
-			s.resourceMgr.Deallocate(instanceType)
+			if reservationID == "" {
+				s.resourceMgr.Deallocate(instanceType)
+			} else {
+				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
+		}
+		errCode := awserrors.ErrorInsufficientInstanceCapacity
+		if reservationID != "" {
+			errCode = awserrors.ErrorReservationCapacityExceeded
 		}
 		slog.Error("PrepareRunInstances: insufficient capacity after allocation", "allocated", allocatedCount, "minCount", minCount)
-		return nil, nil, nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		return nil, nil, nil, errors.New(errCode)
 	}
 	launchCount = allocatedCount
 
@@ -657,7 +688,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 		if err != nil {
 			slog.Error("PrepareRunInstances: RunInstance failed", "index", i, "err", err)
 			lastRunErr = err
-			s.resourceMgr.Deallocate(instanceType)
+			if reservationID == "" {
+				s.resourceMgr.Deallocate(instanceType)
+			} else {
+				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
 			continue
 		}
 		instance.BootMode = amiMeta.BootMode
@@ -685,14 +720,22 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 				slog.Error("PrepareRunInstances: pre-created ENI specified but ENI service unavailable",
 					"instanceId", instance.ID, "eniId", preExistingENIID)
 				lastRunErr = errors.New(awserrors.ErrorServerInternal)
-				s.resourceMgr.Deallocate(instanceType)
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
 				continue
 			}
 			if err := s.attachPreCreatedENI(accountID, preExistingENIID, instance, ec2Instance); err != nil {
 				slog.Error("PrepareRunInstances: pre-created ENI attach failed",
 					"instanceId", instance.ID, "eniId", preExistingENIID, "err", err)
 				lastRunErr = err
-				s.resourceMgr.Deallocate(instanceType)
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
 				continue
 			}
 			ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
@@ -718,7 +761,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			if eniErr != nil {
 				slog.Error("PrepareRunInstances: auto-create ENI failed", "instanceId", instance.ID, "subnetId", *input.SubnetId, "err", eniErr)
 				lastRunErr = eniErr
-				s.resourceMgr.Deallocate(instanceType)
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
 				continue
 			}
 
@@ -738,7 +785,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 						"eniId", instance.ENIId, "err", delErr)
 				}
 				lastRunErr = attachErr
-				s.resourceMgr.Deallocate(instanceType)
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
 				continue
 			}
 			ec2Instance.SetPrivateIpAddress(*eni.PrivateIpAddress)
@@ -794,7 +845,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 								"eniId", *eni.NetworkInterfaceId, "err", delErr)
 						}
 						lastRunErr = errors.New(awserrors.ErrorInsufficientAddressCapacity)
-						s.resourceMgr.Deallocate(instanceType)
+						if reservationID == "" {
+							s.resourceMgr.Deallocate(instanceType)
+						} else {
+							s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+						}
 						continue
 					} else {
 						if updateErr := s.eniCreator.UpdateENIPublicIP(accountID, *eni.NetworkInterfaceId, publicIP, poolName); updateErr != nil {
@@ -808,7 +863,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 							utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
 							s.rollbackAutoAssignedPublicIP(accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
 							lastRunErr = natErr
-							s.resourceMgr.Deallocate(instanceType)
+							if reservationID == "" {
+								s.resourceMgr.Deallocate(instanceType)
+							} else {
+								s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+							}
 							continue
 						}
 						ec2Instance.PublicIpAddress = aws.String(publicIP)
@@ -832,7 +891,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 
 	if len(instances) < minCount {
 		for range instances {
-			s.resourceMgr.Deallocate(instanceType)
+			if reservationID == "" {
+				s.resourceMgr.Deallocate(instanceType)
+			} else {
+				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
 		}
 		errCode := awserrors.ErrorServerInternal
 		if lastRunErr != nil {
@@ -852,6 +915,9 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	for _, instance := range instances {
 		instance.Reservation = reservation
 		instance.AccountID = accountID
+		if reservationID != "" {
+			instance.CapacityReservationId = reservationID
+		}
 		if input.Placement != nil && input.Placement.GroupName != nil && *input.Placement.GroupName != "" {
 			instance.PlacementGroupName = *input.Placement.GroupName
 		}
@@ -987,7 +1053,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(instances []*vm.VM, input *ec2.
 // RunInstances is for non-daemon callers (tests). The daemon calls
 // PrepareRunInstances + LaunchRunInstances directly to respond before launching.
 func (s *InstanceServiceImpl) RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
-	reservation, instances, instanceType, err := s.PrepareRunInstances(input, accountID)
+	reservation, instances, instanceType, err := s.PrepareRunInstances(input, accountID, "")
 	if err != nil {
 		return nil, err
 	}

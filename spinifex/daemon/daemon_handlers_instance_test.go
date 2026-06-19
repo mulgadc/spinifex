@@ -595,3 +595,82 @@ func TestHandleEC2DescribeStoppedInstances_ReservationGrouping(t *testing.T) {
 	assert.Equal(t, "r-shared", *output.Reservations[0].ReservationId)
 	assert.Len(t, output.Reservations[0].Instances, 2)
 }
+
+// DescribeInstances echoes the consumed capacity reservation so a targeted
+// launch reports a CapacityReservationId (without it, Terraform never converges).
+func TestHandleEC2DescribeInstances_CapacityReservationEcho(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+
+	reservation := &ec2.Reservation{}
+	reservation.SetReservationId("r-cr-echo")
+	reservation.SetOwnerId(testAccountID)
+	instance := &ec2.Instance{}
+	instance.SetInstanceId("i-cr-echo")
+	instance.SetInstanceType("t3.micro")
+
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:                    "i-cr-echo",
+		Status:                vm.StateRunning,
+		AccountID:             testAccountID,
+		CapacityReservationId: "cr-0123456789abcdef0",
+		Reservation:           reservation,
+		Instance:              instance,
+	})
+
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances", daemon.handleEC2DescribeInstances)
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	reqData, _ := json.Marshal(&ec2.DescribeInstancesInput{})
+	reply, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", reqData, 5*time.Second)
+	require.NoError(t, err)
+	var out ec2.DescribeInstancesOutput
+	require.NoError(t, json.Unmarshal(reply.Data, &out))
+	require.Len(t, out.Reservations, 1)
+	require.Len(t, out.Reservations[0].Instances, 1)
+
+	got := out.Reservations[0].Instances[0]
+	assert.Equal(t, "cr-0123456789abcdef0", aws.StringValue(got.CapacityReservationId))
+	require.NotNil(t, got.CapacityReservationSpecification)
+	assert.Equal(t, ec2.CapacityReservationPreferenceOpen,
+		aws.StringValue(got.CapacityReservationSpecification.CapacityReservationPreference))
+	require.NotNil(t, got.CapacityReservationSpecification.CapacityReservationTarget)
+	assert.Equal(t, "cr-0123456789abcdef0",
+		aws.StringValue(got.CapacityReservationSpecification.CapacityReservationTarget.CapacityReservationId))
+}
+
+// An instance with no reservation reports no capacity-reservation fields.
+func TestHandleEC2DescribeInstances_NoCapacityReservationEcho(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+
+	reservation := &ec2.Reservation{}
+	reservation.SetReservationId("r-plain")
+	reservation.SetOwnerId(testAccountID)
+	instance := &ec2.Instance{}
+	instance.SetInstanceId("i-plain")
+	instance.SetInstanceType("t3.micro")
+
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:          "i-plain",
+		Status:      vm.StateRunning,
+		AccountID:   testAccountID,
+		Reservation: reservation,
+		Instance:    instance,
+	})
+
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances", daemon.handleEC2DescribeInstances)
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	reqData, _ := json.Marshal(&ec2.DescribeInstancesInput{})
+	reply, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", reqData, 5*time.Second)
+	require.NoError(t, err)
+	var out ec2.DescribeInstancesOutput
+	require.NoError(t, json.Unmarshal(reply.Data, &out))
+	require.Len(t, out.Reservations, 1)
+	require.Len(t, out.Reservations[0].Instances, 1)
+
+	got := out.Reservations[0].Instances[0]
+	assert.Empty(t, aws.StringValue(got.CapacityReservationId))
+	assert.Nil(t, got.CapacityReservationSpecification)
+}

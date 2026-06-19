@@ -104,6 +104,25 @@ func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc
 		return reservation, err
 	}
 
+	// Targeted capacity-reservation launch routes straight to the owning node's
+	// cr-subject. The gateway does input-only checks (malformed id, the PG+CR
+	// combination); the owning daemon does the semantic checks (account, type,
+	// full) only it can see, and ErrNoResponders surfaces a gone id as NotFound.
+	if crID := capacityReservationTargetID(input); crID != "" {
+		if !strings.HasPrefix(crID, "cr-") {
+			return reservation, errors.New(awserrors.ErrorInvalidCapacityReservationIdMalformed)
+		}
+		if placementGroupName(input) != "" {
+			return reservation, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		reservationPtr, err := runIntoReservation(input, natsConn, accountID, crID)
+		if err != nil {
+			return reservation, err
+		}
+		enrichReservationWithProfileID(reservationPtr, resolvedProfile)
+		return *reservationPtr, nil
+	}
+
 	groupName := placementGroupName(input)
 	if groupName != "" {
 		strategy, err := lookupPlacementGroupStrategy(natsConn, accountID, groupName)
@@ -196,6 +215,17 @@ func placementGroupName(input *ec2.RunInstancesInput) string {
 		return aws.StringValue(input.Placement.GroupName)
 	}
 	return ""
+}
+
+// capacityReservationTargetID returns the explicit targeted-launch reservation id
+// from the input, or "" when the launch is untargeted (general path). Preference
+// is ignored — only a present target id routes to the cr-subject.
+func capacityReservationTargetID(input *ec2.RunInstancesInput) string {
+	spec := input.CapacityReservationSpecification
+	if spec == nil || spec.CapacityReservationTarget == nil {
+		return ""
+	}
+	return aws.StringValue(spec.CapacityReservationTarget.CapacityReservationId)
 }
 
 // lookupPlacementGroupStrategy returns the strategy of a placement group, or an error if absent/unavailable.

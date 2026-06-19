@@ -74,6 +74,9 @@ var natsConfTemplate string
 //go:embed templates/predastore-multinode.toml
 var predastoreMultiNodeTemplate string
 
+//go:embed templates/northstar.toml
+var northstarTomlTemplate string
+
 var supportedArchs = map[string]bool{
 	"x86_64":  true,
 	"aarch64": true, // alias for arm64
@@ -1227,9 +1230,31 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 	portStr := strconv.Itoa(port)
 
+	// Generate dedicated, bucket-scoped credentials for the northstar DNS
+	// service. Rendered into predastore.toml ([[auth]]) and northstar.toml so
+	// the resolver reads zone files read-only from its own S3 bucket.
+	northstarAccessKey, err := admin.GenerateAWSAccessKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar access key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarSecretKey, err := admin.GenerateAWSSecretKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar secret key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
+
 	// Parse multi-node predastore configuration (legacy flag-based approach for single-node)
 	var predastoreNodeID int
 	if predastoreNodesStr != "" {
+		// V1 provisions the northstar bucket/auth only into the single-node
+		// predastore.toml. The multi-node template does not yet carry them, so
+		// skip northstar.toml here rather than write creds predastore can't honor.
+		northstarAccessKey = ""
+		northstarSecretKey = ""
+		northstarConfigPath = ""
+
 		ips := strings.Split(predastoreNodesStr, ",")
 		if len(ips) < 2 {
 			fmt.Fprintf(os.Stderr, "❌ Error: --predastore-nodes requires at least 2 IPs, got %d\n", len(ips))
@@ -1327,6 +1352,12 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		IPSecEnabled:   ipsecEnabled,
 
 		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:     northstarAccessKey,
+		NorthstarSecretKey:     northstarSecretKey,
+		NorthstarBucket:        admin.NorthstarBucketName,
+		NorthstarDefaultDomain: admin.NorthstarDefaultDomain,
+		NorthstarConfigPath:    northstarConfigPath,
 	}
 
 	// Print external networking summary
@@ -2339,6 +2370,7 @@ type configDirs struct {
 	Viperblock string
 	NATS       string
 	Spinifex   string
+	Northstar  string
 }
 
 // createConfigSubdirs creates the standard config subdirectories under configDir.
@@ -2349,8 +2381,9 @@ func createConfigSubdirs(configDir string) (configDirs, error) {
 		Viperblock: filepath.Join(configDir, "viperblock"),
 		NATS:       filepath.Join(configDir, "nats"),
 		Spinifex:   filepath.Join(configDir, "spinifex"),
+		Northstar:  filepath.Join(configDir, "northstar"),
 	}
-	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.Spinifex} {
+	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.Spinifex, dirs.Northstar} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return configDirs{}, fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -2365,6 +2398,13 @@ func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings 
 		{Name: "spinifex.toml", Path: spinifexTomlPath, Template: spinifexTomlTemplate},
 		{Name: filepath.Join(dirs.AWSGW, "awsgw.toml"), Path: filepath.Join(dirs.AWSGW, "awsgw.toml"), Template: awsgwTomlTemplate},
 		{Name: filepath.Join(dirs.NATS, "nats.conf"), Path: filepath.Join(dirs.NATS, "nats.conf"), Template: natsConfTemplate},
+	}
+	// northstar.toml is only rendered when scoped DNS credentials were
+	// provisioned (single-node init); cluster-wide distribution is future work.
+	if settings.NorthstarAccessKey != "" {
+		configs = append(configs, admin.ConfigFile{
+			Name: filepath.Join(dirs.Northstar, "northstar.toml"), Path: filepath.Join(dirs.Northstar, "northstar.toml"), Template: northstarTomlTemplate,
+		})
 	}
 	if !skipPredastore {
 		configs = append(configs, admin.ConfigFile{

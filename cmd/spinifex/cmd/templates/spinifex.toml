@@ -113,6 +113,12 @@ secretkey = "{{.SecretKey}}"
 {{- if gt .PredastoreNodeID 0}}
 node_id = {{.PredastoreNodeID}}
 {{- end}}
+
+{{- if .NorthstarConfigPath}}
+
+[nodes.{{.Node}}.northstar]
+config_path = "{{.NorthstarConfigPath}}"
+{{- end}}
 {{- range .RemoteNodes}}
 
 [nodes.{{.Name}}]

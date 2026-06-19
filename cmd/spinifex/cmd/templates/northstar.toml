@@ -1,0 +1,28 @@
+# Northstar DNS service configuration (TOML).
+# Written by `spx admin init`; read by the spinifex northstar service.
+# Contains bucket-scoped S3 credentials — keep mode 0600.
+
+# UDP+TCP bind addresses (comma separated). Northstar binds :5300 on the host;
+# the per-VPC resolver VIP (:53) is fronted by OVN and remapped to :5300.
+listen     = "0.0.0.0:5300"
+dot_listen = ""
+tls_cert   = ""
+tls_key    = ""
+
+# Authoritative base domain for internal resource names.
+default_domain = "{{.NorthstarDefaultDomain}}"
+
+# Seconds between S3 zone re-scans (anti-entropy; live changes arrive via NATS).
+sync_interval = 30
+
+[s3]
+endpoint   = "https://{{if eq .BindIP "0.0.0.0"}}127.0.0.1{{else}}{{.BindIP}}{{end}}:8443"
+bucket     = "{{.NorthstarBucket}}"
+region     = "{{.Region}}"
+access_key = "{{.NorthstarAccessKey}}"
+secret_key = "{{.NorthstarSecretKey}}"
+insecure   = true
+
+# Forwarders for non-authoritative (recursive) queries. Empty => REFUSED.
+[upstream]
+nameservers = [{{range $i, $s := .PoolDNSServers}}{{if $i}}, {{end}}"{{$s}}:53"{{end}}]

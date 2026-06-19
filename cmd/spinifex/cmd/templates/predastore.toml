@@ -75,13 +75,40 @@ public = false
 encryption = ""
 account_id = "000000000000"
 
+{{- if .NorthstarAccessKey}}
+# Northstar DNS zone storage. Read-only for the northstar service; the control
+# plane writes zone files with the system credentials.
+[[buckets]]
+name = "{{.NorthstarBucket}}"
+region = "{{.Region}}"
+type = "distributed"
+public = false
+encryption = ""
+account_id = "000000000000"
+{{- end}}
+
 [[auth]]
 access_key_id = "{{.AccessKey}}"
 secret_access_key = "{{.SecretKey}}"
 account_id = "000000000000"
 policy = [
   { bucket = "predastore", actions = ["s3:ListBucket",  "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListAllMyBuckets"] },
+{{- if .NorthstarAccessKey}}
+  { bucket = "{{.NorthstarBucket}}", actions = ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"] },
+{{- end}}
 ]
+{{- if .NorthstarAccessKey}}
+
+# Bucket-scoped, read-only credentials for the northstar service (isolation
+# guarantee: ListBucket + GetObject on the northstar bucket only).
+[[auth]]
+access_key_id = "{{.NorthstarAccessKey}}"
+secret_access_key = "{{.NorthstarSecretKey}}"
+account_id = "000000000000"
+policy = [
+  { bucket = "{{.NorthstarBucket}}", actions = ["s3:ListBucket", "s3:GetObject"] },
+]
+{{- end}}
 
 # API request throttling (per-account, per-action token bucket)
 [ratelimit]

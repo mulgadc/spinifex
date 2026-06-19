@@ -110,6 +110,15 @@ type ConfigSettings struct {
 	// Empty means no key was provisioned and volumes are written cleartext
 	// (legacy mode); the template omits the field entirely in that case.
 	EncryptionKeyFile string
+
+	// Northstar (DNS) settings. The northstar service reads zones from a
+	// dedicated, read-only S3 bucket using bucket-scoped credentials rendered
+	// into predastore.toml ([[auth]]) and northstar.toml ([s3]).
+	NorthstarAccessKey     string
+	NorthstarSecretKey     string
+	NorthstarBucket        string // S3 bucket holding zone files (default "northstar")
+	NorthstarDefaultDomain string // authoritative base domain (default "spinifex.local")
+	NorthstarConfigPath    string // path to northstar.toml, rendered into spinifex.toml
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.
@@ -443,6 +452,14 @@ func GenerateAWSSecretKey() (string, error) {
 	}
 	return base64.StdEncoding.EncodeToString(bytes), nil
 }
+
+// Northstar DNS defaults baked into config files at init time.
+const (
+	// NorthstarBucketName is the S3 bucket holding DNS zone files.
+	NorthstarBucketName = "northstar"
+	// NorthstarDefaultDomain is the authoritative base domain for internal names.
+	NorthstarDefaultDomain = "spinifex.local"
+)
 
 // SystemAccountID returns the system/root account ID (000000000000).
 // Used for service-to-service auth credentials baked into config files.
@@ -873,7 +890,12 @@ func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNod
 		NatsToken string
 		ConfigDir string
 		BindIP    string
-	}{nodes, accessKey, secretKey, region, natsToken, configDir, bindIP}
+		// Northstar provisioning is single-node only for V1; these stay empty
+		// in the multi-node path so the template omits the northstar stanzas.
+		NorthstarAccessKey string
+		NorthstarSecretKey string
+		NorthstarBucket    string
+	}{Nodes: nodes, AccessKey: accessKey, SecretKey: secretKey, Region: region, NatsToken: natsToken, ConfigDir: configDir, BindIP: bindIP}
 
 	tmpl, err := template.New("predastore-multinode").Parse(templateStr)
 	if err != nil {

@@ -165,16 +165,18 @@ func (rm *ResourceManager) ValidateReservationTarget(crID, accountID string, it 
 	return nil
 }
 
-// ListReservations returns a snapshot of the account's reservations on this node.
-// Records are immutable, so the returned pointers are safe to read concurrently.
-func (rm *ResourceManager) ListReservations(accountID string) []*capacityReservation {
+// ListReservations returns value-copy snapshots of the account's reservations on
+// this node, taken under the read lock. Copies rather than the live pointers
+// because ConsumedCount is mutated under rm.mu by the launch/release paths, so a
+// caller reading the shared record lock-free would race.
+func (rm *ResourceManager) ListReservations(accountID string) []capacityReservation {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
-	var out []*capacityReservation
+	var out []capacityReservation
 	for _, rec := range rm.reservations {
 		if rec.AccountID == accountID {
-			out = append(out, rec)
+			out = append(out, *rec)
 		}
 	}
 	return out

@@ -185,6 +185,29 @@ func TestHandleCrash_ReservationBoundReleasesToReservation(t *testing.T) {
 	assert.Zero(t, rc.deallocateCount("t3.micro"), "reservation-bound release must not hit the general pool")
 }
 
+// A crashed reservation-bound instance drops its binding: the slot went back to
+// the reservation, and the restart runs on general capacity, so a later
+// stop/terminate must not double-credit the reservation's shared counter.
+func TestHandleCrash_ReservationBoundClearsBindingForRestart(t *testing.T) {
+	m, rc, _, _ := crashTestManager(t)
+
+	instance := &VM{
+		ID:                    "i-cr-clear",
+		Status:                StateRunning,
+		InstanceType:          "t3.micro",
+		CapacityReservationId: "cr-0123456789abcdef0",
+	}
+	m.Insert(instance)
+
+	m.HandleCrash(instance, fmt.Errorf("test crash"))
+
+	assert.Equal(t, 1, rc.releaseCount(), "slot must return to the reservation on crash")
+	assert.Empty(t, instance.CapacityReservationId, "binding must be cleared so restart uses general capacity")
+	stored, ok := m.Get(instance.ID)
+	require.True(t, ok)
+	assert.Empty(t, stored.CapacityReservationId, "cleared binding must be persisted on the stored VM")
+}
+
 func TestHandleCrash_FirstCrashSetsTime(t *testing.T) {
 	m, _, _, _ := crashTestManager(t)
 

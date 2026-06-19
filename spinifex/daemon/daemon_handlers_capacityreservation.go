@@ -64,8 +64,16 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) {
 
 	// Subscribe the per-reservation launch subject before responding: the SUB and
 	// this reply share d.natsConn, so the server registers the responder before
-	// the gateway sees the new id and can route a targeted launch to it.
-	d.subscribeReservationLaunch(rec.ID)
+	// the gateway sees the new id and can route a targeted launch to it. A failed
+	// subscribe would leave the reservation holding capacity no targeted launch
+	// could ever reach, so roll it back rather than return a dead id.
+	if err := d.subscribeReservationLaunch(rec.ID); err != nil {
+		slog.Error("Failed to subscribe reservation launch subject, rolling back reservation",
+			"crId", rec.ID, "err", err)
+		d.resourceMgr.CancelReservation(rec.ID, accountID)
+		respondWithError(msg, awserrors.ErrorServerInternal)
+		return
+	}
 
 	respondWithJSON(msg, rec.toAWSCapacityReservation())
 }
@@ -116,22 +124,23 @@ func reservationLaunchSubject(crID string) string {
 // subscribeReservationLaunch wires the cr launch subject to the standard
 // RunInstances handler — the target id rides in the input, so handleEC2RunInstances
 // serves it unchanged. Tracked in natsSubscriptions (keyed by cr id) so cancel
-// and shutdown can drop it. Idempotent.
-func (d *Daemon) subscribeReservationLaunch(crID string) {
+// and shutdown can drop it. Idempotent; returns the subscribe error so the
+// caller can roll the reservation back rather than leave it unlaunchable.
+func (d *Daemon) subscribeReservationLaunch(crID string) error {
 	if d.natsConn == nil {
-		return
+		return nil
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, exists := d.natsSubscriptions[crID]; exists {
-		return
+		return nil
 	}
 	sub, err := d.natsConn.Subscribe(reservationLaunchSubject(crID), d.handleEC2RunInstances)
 	if err != nil {
-		slog.Error("Failed to subscribe reservation launch subject", "crId", crID, "err", err)
-		return
+		return err
 	}
 	d.natsSubscriptions[crID] = sub
+	return nil
 }
 
 // unsubscribeReservationLaunch drops the cr launch subscription on cancel.

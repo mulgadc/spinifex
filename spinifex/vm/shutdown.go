@@ -405,8 +405,9 @@ func (m *Manager) deallocateResources(instance *VM) {
 		return
 	}
 	// A reservation-bound instance returns its slot to the reservation, not the
-	// general pool. CapacityReservationId is stamped once at launch and never
-	// mutated, so reading it here lock-free is safe (like InstanceType).
+	// general pool. CapacityReservationId is set at launch and only cleared (under
+	// the manager lock, on crash before a general-capacity restart), so the
+	// stop/terminate/crash reads here do not overlap that clear.
 	if instance.CapacityReservationId != "" {
 		m.deps.Resources.ReleaseToReservation(instance.CapacityReservationId, instance.InstanceType)
 		return

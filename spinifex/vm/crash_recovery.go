@@ -117,6 +117,15 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 		m.deallocateResources(instance)
 	}
 
+	// The slot just returned to the reservation (deallocateResources above), but
+	// the restart re-allocates from the general pool, so drop the binding under the
+	// manager lock. This keeps the crash release and restart allocation on the same
+	// pool; leaving it set would drift the shared reservation counter on the later
+	// stop/terminate while other instances still consume the reservation.
+	if instance.CapacityReservationId != "" {
+		m.UpdateState(instance.ID, func(v *VM) { v.CapacityReservationId = "" })
+	}
+
 	if instance.Config.QMPSocket != "" {
 		_ = os.Remove(instance.Config.QMPSocket)
 	}

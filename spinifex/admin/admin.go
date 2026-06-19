@@ -323,6 +323,8 @@ func SetServiceOwnership() {
 		"/var/lib/spinifex/nats":       "spinifex-nats",
 		"/etc/spinifex/predastore":     "spinifex-storage",
 		"/var/lib/spinifex/predastore": "spinifex-storage",
+		"/etc/spinifex/northstar":      "spinifex-northstar",
+		"/var/lib/spinifex/northstar":  "spinifex-northstar",
 		"/etc/spinifex/viperblock":     "spinifex-viperblock",
 		"/var/lib/spinifex/spinifex":   "spinifex-daemon",
 		"/var/lib/spinifex/viperblock": "spinifex-viperblock",

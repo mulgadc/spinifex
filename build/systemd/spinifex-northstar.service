@@ -1,0 +1,51 @@
+[Unit]
+Description=Spinifex Northstar (Authoritative DNS)
+PartOf=spinifex.target
+After=spinifex-nats.service spinifex-predastore.service
+Wants=spinifex-predastore.service
+
+[Service]
+Type=simple
+Slice=spinifex-system.slice
+User=spinifex-northstar
+Group=spinifex
+ExecStart=/usr/local/bin/spx service northstar start
+Restart=on-failure
+RestartSec=5
+OOMScoreAdjust=-500
+Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
+Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/northstar/
+
+# Filesystem access
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateDevices=yes
+ReadOnlyPaths=/etc/spinifex/northstar /etc/spinifex/spinifex.toml /etc/spinifex/ca.pem
+ReadWritePaths=/var/lib/spinifex/northstar /var/log/spinifex
+
+# Hardening
+ProtectHome=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+ProtectHostname=yes
+KeyringMode=private
+RemoveIPC=yes
+LimitCORE=0
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=spinifex.target

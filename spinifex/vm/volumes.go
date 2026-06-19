@@ -135,11 +135,16 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		}
 	}
 
+	// serial is the volume-id with dashes stripped ("vol" + 17 hex = 20 bytes,
+	// the virtio-blk serial limit). It surfaces in-guest as the block device
+	// serial so the EBS CSI node plugin can locate /dev/disk/by-id and match
+	// `lsblk -o SERIAL` against the volume-id.
 	deviceAddArgs := map[string]any{
 		"driver":   "virtio-blk-pci",
 		"id":       deviceID,
 		"drive":    nodeName,
 		"iothread": iothreadID,
+		"serial":   strings.ReplaceAll(volumeID, "-", ""),
 	}
 	if hotplugBus != "" {
 		deviceAddArgs["bus"] = hotplugBus

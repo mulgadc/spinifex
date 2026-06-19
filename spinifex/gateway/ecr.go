@@ -20,12 +20,19 @@ import (
 func (gw *GatewayConfig) mountOCIRegistry(r chi.Router) {
 	r.Route("/v2", func(v2 chi.Router) {
 		v2.Use(gw.hostMatch)
-		v2.Use(gw.ecrAuthBridge)
-		v2.Get("/", gateway_ecr.APIVersion)
-		if gw.ECRRegistry != nil {
-			v2.HandleFunc("/*", gw.ECRRegistry.ServeHTTP)
-		} else {
-			v2.HandleFunc("/*", gateway_ecr.NotImplemented)
-		}
+
+		// The token endpoint authenticates the presented credential in-band and
+		// issues a Bearer token, so it mounts outside the bearer auth bridge.
+		v2.Get("/token", gw.handleECRToken)
+
+		v2.Group(func(reg chi.Router) {
+			reg.Use(gw.ecrAuthBridge)
+			reg.Get("/", gateway_ecr.APIVersion)
+			if gw.ECRRegistry != nil {
+				reg.HandleFunc("/*", gw.ECRRegistry.ServeHTTP)
+			} else {
+				reg.HandleFunc("/*", gateway_ecr.NotImplemented)
+			}
+		})
 	})
 }

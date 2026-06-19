@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -39,7 +40,10 @@ type Principal struct {
 }
 
 // Issuer mints ES256 ECR tokens bound to an audience (ecr.{region}.{suffix}).
+// The active signing key is swapped under mu by the rotation scheduler while
+// Mint runs concurrently.
 type Issuer struct {
+	mu       sync.RWMutex
 	key      *SigningKey
 	audience string
 	ttl      time.Duration
@@ -50,10 +54,31 @@ func NewIssuer(key *SigningKey, audience string) *Issuer {
 	return &Issuer{key: key, audience: audience, ttl: DefaultTokenTTL}
 }
 
+// SetActiveKey swaps the signing key used by subsequent Mint calls. The rotator
+// calls it after minting a fresh key.
+func (i *Issuer) SetActiveKey(key *SigningKey) {
+	i.mu.Lock()
+	i.key = key
+	i.mu.Unlock()
+}
+
+// ActiveKid returns the kid of the current signing key, or "" if none.
+func (i *Issuer) ActiveKid() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.key == nil {
+		return ""
+	}
+	return i.key.Kid
+}
+
 // Mint returns a signed ES256 JWT for p and its expiry. The kid header lets any
 // verifier resolve the public key from the shared signing-key set.
 func (i *Issuer) Mint(p Principal) (token string, expiresAt time.Time, err error) {
-	if i.key == nil {
+	i.mu.RLock()
+	key := i.key
+	i.mu.RUnlock()
+	if key == nil {
 		return "", time.Time{}, errors.New("ecrauth: issuer has no signing key")
 	}
 	if p.AccountID == "" {
@@ -75,8 +100,8 @@ func (i *Issuer) Mint(p Principal) (token string, expiresAt time.Time, err error
 		AccessKeyID:   p.AccessKeyID,
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-	tok.Header["kid"] = i.key.Kid
-	signed, err := tok.SignedString(i.key.priv)
+	tok.Header["kid"] = key.Kid
+	signed, err := tok.SignedString(key.priv)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("sign ECR token: %w", err)
 	}
@@ -84,8 +109,10 @@ func (i *Issuer) Mint(p Principal) (token string, expiresAt time.Time, err error
 }
 
 // Verifier validates ECR tokens against the shared kid->public-key set and a
-// fixed expected audience.
+// fixed expected audience. The key set is swapped under mu by the rotation
+// scheduler while Verify runs concurrently.
 type Verifier struct {
+	mu       sync.RWMutex
 	keys     map[string]*ecdsa.PublicKey
 	audience string
 }
@@ -93,6 +120,22 @@ type Verifier struct {
 // NewVerifier returns a Verifier over keys for the expected audience.
 func NewVerifier(keys map[string]*ecdsa.PublicKey, audience string) *Verifier {
 	return &Verifier{keys: keys, audience: audience}
+}
+
+// SetKeys swaps the kid->public-key verification set. The rotator calls it after
+// each cycle so a newly minted key is accepted and pruned keys are dropped.
+func (v *Verifier) SetKeys(keys map[string]*ecdsa.PublicKey) {
+	v.mu.Lock()
+	v.keys = keys
+	v.mu.Unlock()
+}
+
+// publicKey resolves a kid under the read lock.
+func (v *Verifier) publicKey(kid string) (*ecdsa.PublicKey, bool) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	pub, ok := v.keys[kid]
+	return pub, ok
 }
 
 // Verify parses and validates raw: ES256, unexpired, known kid, matching iss and
@@ -105,7 +148,7 @@ func (v *Verifier) Verify(raw string) (*Claims, error) {
 	)
 	_, err := parser.ParseWithClaims(raw, claims, func(t *jwt.Token) (any, error) {
 		kid, _ := t.Header["kid"].(string)
-		pub, ok := v.keys[kid]
+		pub, ok := v.publicKey(kid)
 		if !ok {
 			return nil, fmt.Errorf("unknown kid %q", kid)
 		}

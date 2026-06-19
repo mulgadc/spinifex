@@ -251,6 +251,15 @@ func launchService(config *config.ClusterConfig) error {
 		ECRTokenVerifier: gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
 	}
 
+	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
+	// until their tokens expire. The rotator keeps the issuer/verifier current as
+	// keys roll. Bound to the same lifetime context as the STS janitor.
+	keyRotator, err := gateway_ecrauth.NewRotator(js, masterKey, len(config.Nodes), gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	if err != nil {
+		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
+	}
+	go keyRotator.Run(janitorCtx)
+
 	if throttleCfg.Enabled {
 		gw.Throttler = ratelimit.New(throttleCfg)
 		defer gw.Throttler.Stop()

@@ -395,6 +395,46 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 		})
 	})
 
+	// The EBS CSI driver obeys the control-plane taint, so it and the volume
+	// workloads need a customer worker node. Create a 1-node nodegroup; its
+	// worker is a customer-space instance, so the customer-owned volume can
+	// attach to it. DescribeNodegroup reports ACTIVE only once the worker has
+	// registered Ready.
+	const nodegroup = "ebs-csi-e2e-ng"
+	harness.Phase(t, "Creating worker nodegroup %s", nodegroup)
+	// e2e:allow-create — the worker nodegroup is the subject under test (customer-space node for cross-space attach).
+	_, err = c.EKS.CreateNodegroup(&eks.CreateNodegroupInput{
+		ClusterName:   aws.String(fx.ClusterName),
+		NodegroupName: aws.String(nodegroup),
+		Subnets:       aws.StringSlice([]string{fx.SubnetID}),
+		NodeRole:      aws.String(fmt.Sprintf("arn:aws:iam::%s:role/%s-node", fx.AccountID, fx.ClusterName)),
+		ScalingConfig: &eks.NodegroupScalingConfig{
+			MinSize:     aws.Int64(1),
+			MaxSize:     aws.Int64(1),
+			DesiredSize: aws.Int64(1),
+		},
+	})
+	require.NoError(t, err, "create-nodegroup")
+	t.Cleanup(func() {
+		_, _ = c.EKS.DeleteNodegroup(&eks.DeleteNodegroupInput{
+			ClusterName:   aws.String(fx.ClusterName),
+			NodegroupName: aws.String(nodegroup),
+		})
+	})
+	harness.EventuallyErr(t, func() error {
+		out, derr := c.EKS.DescribeNodegroup(&eks.DescribeNodegroupInput{
+			ClusterName:   aws.String(fx.ClusterName),
+			NodegroupName: aws.String(nodegroup),
+		})
+		if derr != nil {
+			return fmt.Errorf("describe-nodegroup: %w", derr)
+		}
+		if s := aws.StringValue(out.Nodegroup.Status); s != eks.NodegroupStatusActive {
+			return fmt.Errorf("nodegroup status %q, want ACTIVE", s)
+		}
+		return nil
+	}, 8*time.Minute, 10*time.Second)
+
 	// Install the managed addon bound to the role. The addon-sync agent renders
 	// the controller manifest's {{SERVICE_ACCOUNT_ROLE_ARN}} from this ARN.
 	const addon = "aws-ebs-csi-driver"
@@ -522,8 +562,8 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 
 // csiPVCPodManifest renders a gp3 PVC plus a single pod that mounts it at /data
 // and runs cmd. Reusing the claim name lets the reader pod rebind the volume the
-// writer provisioned. Control-plane tolerations let it schedule on single-node
-// k3s servers, where the only node carries the control-plane taint.
+// writer provisioned. No control-plane toleration: the pod must land on the
+// customer worker node (the volume's space), not the system control-plane.
 func csiPVCPodManifest(pvc, pod, cmd string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: PersistentVolumeClaim
@@ -544,8 +584,6 @@ metadata:
   namespace: default
 spec:
   restartPolicy: Never
-  tolerations:
-  - operator: Exists
   containers:
   - name: app
     image: public.ecr.aws/docker/library/busybox:1.36

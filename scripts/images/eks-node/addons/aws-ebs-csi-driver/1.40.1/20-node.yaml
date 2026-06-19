@@ -49,8 +49,6 @@ spec:
       serviceAccountName: ebs-csi-node-sa
       terminationGracePeriodSeconds: 30
       priorityClassName: system-node-critical
-      tolerations:
-      - operator: Exists
       hostNetwork: false
       securityContext:
         fsGroup: 0

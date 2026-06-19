@@ -65,12 +65,6 @@ spec:
                   - ebs-csi-controller
               topologyKey: kubernetes.io/hostname
             weight: 100
-      tolerations:
-      - key: CriticalAddonsOnly
-        operator: Exists
-      - effect: NoExecute
-        operator: Exists
-        tolerationSeconds: 300
       securityContext:
         fsGroup: 1000
         runAsGroup: 1000

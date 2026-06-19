@@ -2399,14 +2399,14 @@ func defaultPrepareInstanceTypes() (map[string]*ec2.InstanceTypeInfo, *ec2.Insta
 
 func TestPrepareRunInstances_MissingAccountID(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{InstanceType: aws.String("t3.micro")}, "")
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{InstanceType: aws.String("t3.micro")}, "", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
 func TestPrepareRunInstances_MissingInstanceType(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{}, "acc")
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -2415,7 +2415,7 @@ func TestPrepareRunInstances_InvalidInstanceType(t *testing.T) {
 	svc := &InstanceServiceImpl{instanceTypes: map[string]*ec2.InstanceTypeInfo{}}
 	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
 		InstanceType: aws.String("unknown.type"),
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceType, err.Error())
 }
@@ -2425,7 +2425,7 @@ func TestPrepareRunInstances_MissingImageID(t *testing.T) {
 	svc := &InstanceServiceImpl{instanceTypes: types}
 	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -2436,7 +2436,7 @@ func TestPrepareRunInstances_NilAMILoader(t *testing.T) {
 	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -2450,7 +2450,7 @@ func TestPrepareRunInstances_AMINotFound(t *testing.T) {
 	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-missing"),
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
@@ -2466,7 +2466,7 @@ func TestPrepareRunInstances_AMINotOwnedByCaller(t *testing.T) {
 	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-other"),
-	}, "111122223333")
+	}, "111122223333", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
@@ -2486,7 +2486,7 @@ func TestPrepareRunInstances_KeyPairNotFound(t *testing.T) {
 		KeyName:      aws.String("nope"),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
 }
@@ -2510,7 +2510,7 @@ func TestPrepareRunInstances_InsufficientCapacity(t *testing.T) {
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(5),
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -2534,7 +2534,7 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(2),
 		MaxCount:     aws.Int64(2),
-	}, "acc")
+	}, "acc", "")
 	require.NoError(t, err)
 	require.NotNil(t, reservation)
 	require.Len(t, instances, 2)
@@ -2544,6 +2544,124 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 		assert.Equal(t, "acc", inst.AccountID)
 		assert.Equal(t, "t3.micro", inst.InstanceType)
 	}
+}
+
+// A targeted launch consumes slots from the reservation (not the general pool)
+// and stamps the reservation id onto every prepared VM so terminate can restore.
+func TestPrepareRunInstances_ConsumesReservation(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:      types,
+		reservationAvailFn: func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 3 },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "cr-123")
+	require.NoError(t, err)
+	require.Len(t, instances, 2)
+	assert.Len(t, prov.reservationAllocated, 2, "slots consumed from the reservation")
+	assert.Empty(t, prov.allocated, "targeted launch must not touch general capacity")
+	for _, inst := range instances {
+		assert.Equal(t, "cr-123", inst.CapacityReservationId, "instance stamped with reservation id")
+	}
+}
+
+// A targeted launch is capped at the reservation's free slots and never spills
+// onto general capacity: MaxCount past Available yields exactly Available.
+func TestPrepareRunInstances_ReservationCapsNoSpill(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:      types,
+		reservationAvailFn: func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 2 },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(5),
+	}, "acc", "cr-123")
+	require.NoError(t, err)
+	assert.Len(t, instances, 2, "launch capped at the 2 available reservation slots")
+	assert.Empty(t, prov.allocated, "no general-pool allocation for a targeted launch")
+}
+
+// When the reservation has fewer free slots than MinCount the launch is rejected
+// with ReservationCapacityExceeded and nothing is allocated.
+func TestPrepareRunInstances_ReservationExceeded(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:      types,
+		reservationAvailFn: func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 1 },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "cr-123")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorReservationCapacityExceeded, err.Error())
+	assert.Empty(t, prov.reservationAllocated, "nothing allocated when below MinCount")
+}
+
+// Invariant guardrail: a mid-launch failure on the reservation path must return
+// every consumed slot to the reservation (reservationReleased == reservationAllocated)
+// and never leak one onto the general pool (Deallocate untouched). Each per-instance
+// ENI create fails, exercising a rollback site inside the launch loop.
+func TestPrepareRunInstances_ReservationRollbackNoGeneralPoolLeak(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:      types,
+		reservationAvailFn: func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 2 },
+	}
+	eni := &fakeENICreator{createErr: errors.New("eni create failed")} // fails every call
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{Region: "us-east-1", AZ: "us-east-1a"},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+		eniCreator:  eni,
+	}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "cr-123")
+	require.Error(t, err)
+	assert.Len(t, prov.reservationAllocated, 2, "both slots allocated from the reservation")
+	assert.Len(t, prov.reservationReleased, 2, "both reservation slots restored on rollback")
+	assert.Empty(t, prov.deallocated, "no reservation-bound slot may leak to the general pool")
 }
 
 // TestPrepareRunInstances_AmiLaunchIndexContiguous pins that ami-launch-index is
@@ -2569,7 +2687,7 @@ func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
 			ImageId:      aws.String("ami-1"),
 			MinCount:     aws.Int64(3),
 			MaxCount:     aws.Int64(3),
-		}, "acc")
+		}, "acc", "")
 		require.NoError(t, err)
 		require.Len(t, instances, 3)
 		require.Len(t, reservation.Instances, 3)
@@ -2602,7 +2720,7 @@ func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
 			SubnetId:     aws.String("subnet-1"),
 			MinCount:     aws.Int64(2),
 			MaxCount:     aws.Int64(3),
-		}, "acc")
+		}, "acc", "")
 		require.NoError(t, err)
 		require.Len(t, instances, 2)
 		require.Len(t, reservation.Instances, 2)
@@ -2645,7 +2763,7 @@ func TestPrepareRunInstances_BootModePropagated(t *testing.T) {
 				ImageId:      aws.String("ami-1"),
 				MinCount:     aws.Int64(1),
 				MaxCount:     aws.Int64(1),
-			}, "acc")
+			}, "acc", "")
 			require.NoError(t, err)
 			require.Len(t, instances, 1)
 			assert.Equal(t, tc.wantBootMode, instances[0].BootMode)
@@ -2850,7 +2968,7 @@ func TestPrepareRunInstances_DefaultSubnetResolved(t *testing.T) {
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
-	}, "acc")
+	}, "acc", "")
 	require.NoError(t, err)
 	require.Len(t, instances, 1)
 	assert.Equal(t, "eni-1", instances[0].ENIId)
@@ -2906,7 +3024,7 @@ func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
 				}
 			}
 
-			_, instances, _, err := svc.PrepareRunInstances(input, "acc")
+			_, instances, _, err := svc.PrepareRunInstances(input, "acc", "")
 			require.NoError(t, err)
 			require.Len(t, instances, 1)
 			if tc.wantPublic {
@@ -2973,7 +3091,7 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 		SubnetId:     aws.String("subnet-1"),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
-	}, "acc")
+	}, "acc", "")
 
 	// MinCount=1 with a single launch attempt that NAT-failed must drop
 	// below minimum and return ServerInternal — the wrapped natErr is not
@@ -3042,7 +3160,7 @@ func TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch(t *testing.T) {
 		SubnetId:     aws.String("subnet-1"),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
-	}, "acc")
+	}, "acc", "")
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, err.Error(),
@@ -3077,7 +3195,7 @@ func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
 		SubnetId:     aws.String("subnet-1"),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	// MinCount not satisfied → InsufficientInstanceCapacity (no known
 	// AWS code for raw ENI failure).
@@ -3110,7 +3228,7 @@ func TestPrepareRunInstances_ENIAttachFailureRollsBack(t *testing.T) {
 		SubnetId:     aws.String("subnet-1"),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
-	}, "acc")
+	}, "acc", "")
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
@@ -3146,7 +3264,7 @@ func TestPrepareRunInstances_NetworkInterfaceLifted(t *testing.T) {
 				Groups:   []*string{aws.String("sg-1")},
 			},
 		},
-	}, "acc")
+	}, "acc", "")
 	require.NoError(t, err)
 	require.Len(t, instances, 1)
 	assert.Equal(t, "eni-3", instances[0].ENIId)
@@ -3172,7 +3290,7 @@ func TestPrepareRunInstances_PlacementGroup(t *testing.T) {
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
 		Placement:    &ec2.Placement{GroupName: aws.String("pg-1")},
-	}, "acc")
+	}, "acc", "")
 	require.NoError(t, err)
 	require.Len(t, instances, 1)
 	assert.Equal(t, "pg-1", instances[0].PlacementGroupName)
@@ -3198,7 +3316,7 @@ func TestPrepareRunInstances_AllocateFailsMidLoop(t *testing.T) {
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(3),
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -3554,7 +3672,7 @@ func TestPrepareRunInstances_PreCreatedENIAttachedSkipsAutoCreate(t *testing.T) 
 			NetworkInterfaceId: aws.String("eni-pre"),
 			DeviceIndex:        aws.Int64(0),
 		}},
-	}, "acc")
+	}, "acc", "")
 	require.NoError(t, err)
 	require.Len(t, instances, 1)
 	assert.Equal(t, "eni-pre", instances[0].ENIId)
@@ -3582,7 +3700,7 @@ func TestPrepareRunInstances_PreCreatedENIInUseRejected(t *testing.T) {
 		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
 			NetworkInterfaceId: aws.String("eni-busy"),
 		}},
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceInUse, err.Error())
 	assert.Equal(t, 0, eni.attachCalls, "in-use ENI must not be attached")
@@ -3603,7 +3721,7 @@ func TestPrepareRunInstances_PreCreatedENILookupErrorSurfaced(t *testing.T) {
 		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
 			NetworkInterfaceId: aws.String("eni-ghost"),
 		}},
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, err.Error())
 	assert.Equal(t, 0, eni.attachCalls)
@@ -3634,7 +3752,7 @@ func TestPrepareRunInstances_PreCreatedENIAttachErrorSurfaced(t *testing.T) {
 		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
 			NetworkInterfaceId: aws.String("eni-pre"),
 		}},
-	}, "acc")
+	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Equal(t, 1, eni.attachCalls)

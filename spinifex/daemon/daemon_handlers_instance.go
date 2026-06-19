@@ -50,7 +50,21 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 		return
 	}
 
-	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(input, accountID)
+	// Targeted launch: the gateway routes only when an explicit reservation id is
+	// present, but the id rides in the input either way. Validate semantics
+	// up-front (the per-instance atomic re-check under rm.mu covers the race);
+	// the count gate in PrepareRunInstances handles a full reservation.
+	reservationID := capacityReservationTargetID(input)
+	if reservationID != "" {
+		if it, ok := d.resourceMgr.instanceTypes[aws.StringValue(input.InstanceType)]; ok {
+			if vErr := d.resourceMgr.ValidateReservationTarget(reservationID, accountID, it); vErr != nil {
+				respondWithError(msg, awserrors.ValidErrorCode(vErr.Error()))
+				return
+			}
+		}
+	}
+
+	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(input, accountID, reservationID)
 	if err != nil {
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return
@@ -68,7 +82,11 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 		slog.Error("handleEC2RunInstances failed to marshal reservation", "err", err)
 		respondWithError(msg, awserrors.ErrorServerInternal)
 		for range instances {
-			d.resourceMgr.deallocate(instanceType)
+			if reservationID == "" {
+				d.resourceMgr.deallocate(instanceType)
+			} else {
+				d.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
 		}
 		return
 	}
@@ -98,6 +116,16 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 	d.mu.Unlock()
 
 	d.instanceService.LaunchRunInstances(instances, input, instanceType)
+}
+
+// capacityReservationTargetID returns the explicit targeted-launch reservation id
+// from the input, or "" when the launch is untargeted (general path).
+func capacityReservationTargetID(input *ec2.RunInstancesInput) string {
+	spec := input.CapacityReservationSpecification
+	if spec == nil || spec.CapacityReservationTarget == nil {
+		return ""
+	}
+	return aws.StringValue(spec.CapacityReservationTarget.CapacityReservationId)
 }
 
 // describeInstancesValidFilters defines the set of filter names accepted by DescribeInstances.

@@ -146,6 +146,25 @@ func (rm *ResourceManager) ReservationAvailable(crID, accountID string, it *ec2.
 	return rec.TotalInstanceCount - rec.ConsumedCount
 }
 
+// ValidateReservationTarget is the owning daemon's up-front semantic check for a
+// targeted launch, run before the launch loop. It returns
+// InvalidCapacityReservationId.NotFound for an unknown or foreign id and
+// InvalidParameterValue on an instance-type mismatch. The "full" case is left to
+// the count gate in PrepareRunInstances, which caps the launch at the available
+// slots and returns ReservationCapacityExceeded when none remain.
+func (rm *ResourceManager) ValidateReservationTarget(crID, accountID string, it *ec2.InstanceTypeInfo) error {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	rec, ok := rm.reservations[crID]
+	if !ok || rec.AccountID != accountID {
+		return errors.New(awserrors.ErrorInvalidCapacityReservationIdNotFound)
+	}
+	if rec.InstanceType != aws.StringValue(it.InstanceType) {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	return nil
+}
+
 // ListReservations returns a snapshot of the account's reservations on this node.
 // Records are immutable, so the returned pointers are safe to read concurrently.
 func (rm *ResourceManager) ListReservations(accountID string) []*capacityReservation {

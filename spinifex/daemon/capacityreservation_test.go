@@ -294,6 +294,34 @@ func TestReservationAvailable(t *testing.T) {
 	assert.Equal(t, 1, rm.ReservationAvailable("cr-1", "acct-a", mt), "consume drops availability")
 }
 
+// ValidateReservationTarget is the up-front semantic check: unknown/foreign ids
+// map to NotFound, a type mismatch to InvalidParameterValue, and a matching
+// reservation passes (the full case is left to the launch-side count gate).
+func TestValidateReservationTarget(t *testing.T) {
+	rm := newReservationTestRM()
+	mt := microType()
+	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 1)))
+
+	require.NoError(t, rm.ValidateReservationTarget("cr-1", "acct-a", mt))
+
+	err := rm.ValidateReservationTarget("cr-missing", "acct-a", mt)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdNotFound, err.Error())
+
+	err = rm.ValidateReservationTarget("cr-1", "acct-b", mt)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdNotFound, err.Error(), "foreign account is not found")
+
+	wrongType := &ec2.InstanceTypeInfo{InstanceType: aws.String("t3.large")}
+	err = rm.ValidateReservationTarget("cr-1", "acct-a", wrongType)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+
+	// A full reservation still validates — the count gate handles capacity.
+	require.NoError(t, rm.AllocateFromReservation("cr-1", "acct-a", mt))
+	require.NoError(t, rm.ValidateReservationTarget("cr-1", "acct-a", mt), "full reservation passes the semantic check")
+}
+
 // Concurrent general allocate and AllocateFromReservation share rm.mu; the swap is
 // net-zero on reservedCR*+allocated*, so committed compute never exceeds the host
 // and ConsumedCount never passes Total.

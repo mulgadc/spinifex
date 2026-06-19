@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -72,6 +73,30 @@ func GenerateDevMAC(instanceID string) string {
 // same instance (which shares instanceID).
 func GenerateMgmtMAC(instanceID string) string {
 	return utils.HashMAC("mgmt:" + instanceID)
+}
+
+// attachPrimaryIMDSDatapath installs the per-tap IMDS datapath for the instance's
+// primary ENI once its tap is up, before QEMU starts the guest. Best-effort: a
+// failure is logged and never fails the launch, since IMDS readiness must not
+// gate boot. Only the primary ENI serves IMDS, so extra ENIs are skipped.
+// Serving is wired separately by the IMDS responder's reconcile-from-taps.
+func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) {
+	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
+		return
+	}
+	subnetID := ""
+	if instance.Instance != nil {
+		subnetID = aws.StringValue(instance.Instance.SubnetId)
+	}
+	if subnetID == "" {
+		slog.Debug("IMDS: no subnet for primary ENI, skipping per-tap datapath",
+			"instance", instance.ID, "eni", instance.ENIId)
+		return
+	}
+	if err := m.deps.NetworkPlumber.AttachIMDSDatapath(instance.ENIId, instance.ENIMac, subnetID); err != nil {
+		slog.Warn("IMDS: per-tap datapath attach failed (continuing)",
+			"instance", instance.ID, "eni", instance.ENIId, "err", err)
+	}
 }
 
 // setupExtraENINICs creates tap devices on br-int and appends matching QEMU

@@ -843,6 +843,8 @@ func (p *scriptedNetworkPlumber) SetupTap(spec TapSpec) error {
 
 func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
 
+func (p *scriptedNetworkPlumber) AttachIMDSDatapath(_, _, _ string) error { return nil }
+
 var _ NetworkPlumber = (*scriptedNetworkPlumber)(nil)
 
 func TestStartupTimeouts(t *testing.T) {

@@ -5,14 +5,26 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 )
 
 // fakeNetworkPlumber records calls so tests can assert per-spec behaviour.
 type fakeNetworkPlumber struct {
-	setupCalls   []TapSpec
-	cleanupCalls []string
-	setupErr     error
-	cleanupErr   error
+	setupCalls      []TapSpec
+	cleanupCalls    []string
+	imdsAttachCalls []imdsAttachCall
+	setupErr        error
+	cleanupErr      error
+	imdsAttachErr   error
+}
+
+// imdsAttachCall captures the args of one AttachIMDSDatapath invocation.
+type imdsAttachCall struct {
+	eniID    string
+	mac      string
+	subnetID string
 }
 
 func (p *fakeNetworkPlumber) SetupTap(spec TapSpec) error {
@@ -23,6 +35,11 @@ func (p *fakeNetworkPlumber) SetupTap(spec TapSpec) error {
 func (p *fakeNetworkPlumber) CleanupTap(name string) error {
 	p.cleanupCalls = append(p.cleanupCalls, name)
 	return p.cleanupErr
+}
+
+func (p *fakeNetworkPlumber) AttachIMDSDatapath(eniID, mac, subnetID string) error {
+	p.imdsAttachCalls = append(p.imdsAttachCalls, imdsAttachCall{eniID: eniID, mac: mac, subnetID: subnetID})
+	return p.imdsAttachErr
 }
 
 var _ NetworkPlumber = (*fakeNetworkPlumber)(nil)
@@ -79,6 +96,76 @@ func TestVPCTapSpec(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("VPCTapSpec = %+v, want %+v", got, want)
+	}
+}
+
+func TestAttachPrimaryIMDSDatapath(t *testing.T) {
+	primary := &VM{
+		ID:       "i-primary",
+		ENIId:    "eni-abc123",
+		ENIMac:   "02:00:00:aa:bb:cc",
+		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	}
+
+	tests := []struct {
+		name     string
+		instance *VM
+		plumber  *fakeNetworkPlumber
+		want     []imdsAttachCall
+	}{
+		{
+			name:     "primary ENI with subnet attaches once",
+			instance: primary,
+			plumber:  &fakeNetworkPlumber{},
+			want:     []imdsAttachCall{{eniID: "eni-abc123", mac: "02:00:00:aa:bb:cc", subnetID: "subnet-xyz"}},
+		},
+		{
+			name:     "no primary ENI is a no-op",
+			instance: &VM{ID: "i-no-eni", Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")}},
+			plumber:  &fakeNetworkPlumber{},
+			want:     nil,
+		},
+		{
+			name:     "missing subnet is a no-op",
+			instance: &VM{ID: "i-no-subnet", ENIId: "eni-abc123", ENIMac: "02:00:00:aa:bb:cc"},
+			plumber:  &fakeNetworkPlumber{},
+			want:     nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManagerWithDeps(Deps{NetworkPlumber: tt.plumber})
+			m.attachPrimaryIMDSDatapath(tt.instance)
+			if !reflect.DeepEqual(tt.plumber.imdsAttachCalls, tt.want) {
+				t.Errorf("imdsAttachCalls = %+v, want %+v", tt.plumber.imdsAttachCalls, tt.want)
+			}
+		})
+	}
+}
+
+func TestAttachPrimaryIMDSDatapath_NilPlumber_NoOp(t *testing.T) {
+	m := NewManagerWithDeps(Deps{})
+	// Must not panic without a plumber.
+	m.attachPrimaryIMDSDatapath(&VM{
+		ID:       "i-no-plumber",
+		ENIId:    "eni-abc123",
+		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	})
+}
+
+func TestAttachPrimaryIMDSDatapath_AttachErrorIsNonFatal(t *testing.T) {
+	plumber := &fakeNetworkPlumber{imdsAttachErr: errors.New("simulated attach failure")}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	// Best-effort: a failing attach must not panic or surface — boot must not
+	// be gated on IMDS readiness.
+	m.attachPrimaryIMDSDatapath(&VM{
+		ID:       "i-attach-err",
+		ENIId:    "eni-abc123",
+		ENIMac:   "02:00:00:aa:bb:cc",
+		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	})
+	if len(plumber.imdsAttachCalls) != 1 {
+		t.Errorf("expected the attach to be attempted once, got %d calls", len(plumber.imdsAttachCalls))
 	}
 }
 

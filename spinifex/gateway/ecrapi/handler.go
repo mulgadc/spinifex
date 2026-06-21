@@ -36,6 +36,14 @@ func NotImplemented(_ *nats.Conn, _ string, _ []byte) (any, error) {
 	return nil, errors.New(awserrors.ErrorNotImplemented)
 }
 
+// ScanningNotSupported is the handler for the ECR image-scanning surface. mulga
+// runs no vulnerability scanner, so these actions return the AWS
+// OperationNotSupportedException (400) rather than NotImplemented (501): clients
+// and the console read it as a deliberately-off feature, not a server fault.
+func ScanningNotSupported(_ *nats.Conn, _ string, _ []byte) (any, error) {
+	return nil, errors.New(awserrors.ErrorOperationNotSupported)
+}
+
 // Actions is the authoritative ECR control-plane action namespace. Real
 // implementations replace the NotImplemented value as each action lands; the
 // key set is the v1 API contract.
@@ -70,21 +78,27 @@ var Actions = map[string]Handler{
 	"PutRegistryPolicy":      NotImplemented,
 	"DescribeRegistry":       NotImplemented,
 
-	// Deferred-feature surface (image scan, lifecycle, replication, tagging).
-	"PutImageScanningConfiguration": NotImplemented,
-	"GetImageScanningConfiguration": NotImplemented,
-	"StartImageScan":                NotImplemented,
-	"DescribeImageScanFindings":     NotImplemented,
-	"PutLifecyclePolicy":            PutLifecyclePolicy,
-	"GetLifecyclePolicy":            GetLifecyclePolicy,
-	"DeleteLifecyclePolicy":         DeleteLifecyclePolicy,
-	"StartLifecyclePolicyPreview":   NotImplemented,
-	"GetLifecyclePolicyPreview":     NotImplemented,
-	"PutReplicationConfiguration":   NotImplemented,
-	"ReplicateImage":                NotImplemented,
-	"TagResource":                   NotImplemented,
-	"UntagResource":                 NotImplemented,
-	"ListTagsForResource":           NotImplemented,
+	// Image scanning is unsupported (no scanner backend): the whole scan surface
+	// returns OperationNotSupportedException rather than NotImplemented.
+	"PutImageScanningConfiguration":           ScanningNotSupported,
+	"GetImageScanningConfiguration":           ScanningNotSupported,
+	"StartImageScan":                          ScanningNotSupported,
+	"DescribeImageScanFindings":               ScanningNotSupported,
+	"GetRegistryScanningConfiguration":        ScanningNotSupported,
+	"PutRegistryScanningConfiguration":        ScanningNotSupported,
+	"BatchGetRepositoryScanningConfiguration": ScanningNotSupported,
+
+	// Deferred-feature surface (lifecycle, replication, tagging).
+	"PutLifecyclePolicy":          PutLifecyclePolicy,
+	"GetLifecyclePolicy":          GetLifecyclePolicy,
+	"DeleteLifecyclePolicy":       DeleteLifecyclePolicy,
+	"StartLifecyclePolicyPreview": NotImplemented,
+	"GetLifecyclePolicyPreview":   NotImplemented,
+	"PutReplicationConfiguration": NotImplemented,
+	"ReplicateImage":              NotImplemented,
+	"TagResource":                 NotImplemented,
+	"UntagResource":               NotImplemented,
+	"ListTagsForResource":         NotImplemented,
 }
 
 // WriteJSONResponse serialises obj as a 200 AWS JSON 1.1 response using the

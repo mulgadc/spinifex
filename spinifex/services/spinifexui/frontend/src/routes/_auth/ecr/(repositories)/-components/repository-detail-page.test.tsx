@@ -78,6 +78,14 @@ describe("RepositoryDetailPage", () => {
     expect(screen.getByText("No images pushed yet.")).toBeInTheDocument()
   })
 
+  it("shows scanning is unsupported on the Scan tab", () => {
+    renderWithClient(<RepositoryDetailPage repositoryName={REPO} />, seed([]))
+    fireEvent.click(screen.getByRole("tab", { name: "Scan" }))
+    expect(
+      screen.getByText(/Vulnerability scanning is not supported/),
+    ).toBeInTheDocument()
+  })
+
   it("opens the delete-image confirmation", () => {
     renderWithClient(
       <RepositoryDetailPage repositoryName={REPO} />,

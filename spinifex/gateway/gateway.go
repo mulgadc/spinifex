@@ -76,7 +76,7 @@ type GatewayConfig struct {
 	Config         string     // Shared AWS Gateway config for S3 auth
 	ExpectedNodes  int        // Number of expected spinifex nodes for multi-node operations
 	Region         string     // Region this gateway is running in
-	InternalSuffix string     // Internal DNS suffix for AWS-parity endpoints (e.g. mulga.internal)
+	InternalSuffix string     // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
 	AZ             string     // Availability zone this gateway is running in
 	IAMService     handlers_iam.IAMService
 	STSService     handlers_sts.STSService

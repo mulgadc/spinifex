@@ -466,6 +466,7 @@ var (
 	ErrorLayersNotFound           = "LayersNotFoundException"
 	ErrorReferencedImagesNotFound = "ReferencedImagesNotFoundException"
 	ErrorTooManyTags              = "TooManyTagsException"
+	ErrorOperationNotSupported    = "OperationNotSupportedException"
 
 	// ELBv2-specific error codes
 	ErrorELBv2LoadBalancerNotFound         = "LoadBalancerNotFound"
@@ -984,6 +985,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorLayersNotFound:           {HTTPCode: 400, Message: "The specified layers could not be found, or the specified layer is not valid for this repository."},
 	ErrorReferencedImagesNotFound: {HTTPCode: 400, Message: "The manifest list is referencing an image that does not exist."},
 	ErrorTooManyTags:              {HTTPCode: 400, Message: "The list of tags on the repository is over the limit. The maximum number of tags that can be applied to a repository is 50."},
+	ErrorOperationNotSupported:    {HTTPCode: 400, Message: "The specified operation is not supported in this registry."},
 
 	// ELBv2 error codes
 	ErrorELBv2LoadBalancerNotFound:         {HTTPCode: 400, Message: "One or more load balancers not found."},

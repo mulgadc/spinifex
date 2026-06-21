@@ -24,7 +24,7 @@ type ClusterConfig struct {
 // Defaults for cluster-wide AWS-parity settings.
 const (
 	DefaultAWSRegion         = "us-east-1"
-	DefaultAWSInternalSuffix = "mulga.internal"
+	DefaultAWSInternalSuffix = "spinifex.internal"
 )
 
 // AWSConfig holds cluster-wide AWS-parity settings shared across services.

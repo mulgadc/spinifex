@@ -19,16 +19,16 @@ func TestParseRegistryHost(t *testing.T) {
 	}{
 		{
 			name:     "match with suffix",
-			host:     "123456789012.dkr.ecr.us-east-1.mulga.internal",
-			suffix:   "mulga.internal",
+			host:     "123456789012.dkr.ecr.us-east-1.spinifex.internal",
+			suffix:   "spinifex.internal",
 			wantAcct: "123456789012",
 			wantRegn: "us-east-1",
 			wantOK:   true,
 		},
 		{
 			name:     "match strips port",
-			host:     "123456789012.dkr.ecr.us-east-1.mulga.internal:9999",
-			suffix:   "mulga.internal",
+			host:     "123456789012.dkr.ecr.us-east-1.spinifex.internal:9999",
+			suffix:   "spinifex.internal",
 			wantAcct: "123456789012",
 			wantRegn: "us-east-1",
 			wantOK:   true,
@@ -43,26 +43,26 @@ func TestParseRegistryHost(t *testing.T) {
 		},
 		{
 			name:   "control plane host is not a registry host",
-			host:   "ecr.us-east-1.mulga.internal",
-			suffix: "mulga.internal",
+			host:   "ecr.us-east-1.spinifex.internal",
+			suffix: "spinifex.internal",
 			wantOK: false,
 		},
 		{
 			name:   "wrong suffix does not match",
 			host:   "123456789012.dkr.ecr.us-east-1.other.internal",
-			suffix: "mulga.internal",
+			suffix: "spinifex.internal",
 			wantOK: false,
 		},
 		{
 			name:   "missing dkr.ecr labels",
-			host:   "123456789012.foo.bar.us-east-1.mulga.internal",
-			suffix: "mulga.internal",
+			host:   "123456789012.foo.bar.us-east-1.spinifex.internal",
+			suffix: "spinifex.internal",
 			wantOK: false,
 		},
 		{
 			name:   "empty host",
 			host:   "",
-			suffix: "mulga.internal",
+			suffix: "spinifex.internal",
 			wantOK: false,
 		},
 		{
@@ -95,7 +95,7 @@ func TestParseRegistryHost(t *testing.T) {
 func TestHostMatch_PopulatesContextOnRegistryHost(t *testing.T) {
 	t.Parallel()
 
-	gw := &GatewayConfig{InternalSuffix: "mulga.internal"}
+	gw := &GatewayConfig{InternalSuffix: "spinifex.internal"}
 
 	var gotAcct, gotRegn string
 	var acctOK, regnOK bool
@@ -105,7 +105,7 @@ func TestHostMatch_PopulatesContextOnRegistryHost(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-	req.Host = "123456789012.dkr.ecr.us-east-1.mulga.internal"
+	req.Host = "123456789012.dkr.ecr.us-east-1.spinifex.internal"
 	gw.hostMatch(next).ServeHTTP(httptest.NewRecorder(), req)
 
 	if !acctOK || gotAcct != "123456789012" {
@@ -119,7 +119,7 @@ func TestHostMatch_PopulatesContextOnRegistryHost(t *testing.T) {
 func TestHostMatch_PassesThroughNonRegistryHost(t *testing.T) {
 	t.Parallel()
 
-	gw := &GatewayConfig{InternalSuffix: "mulga.internal"}
+	gw := &GatewayConfig{InternalSuffix: "spinifex.internal"}
 
 	var hadAccount bool
 	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -127,7 +127,7 @@ func TestHostMatch_PassesThroughNonRegistryHost(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-	req.Host = "ecr.us-east-1.mulga.internal"
+	req.Host = "ecr.us-east-1.spinifex.internal"
 	gw.hostMatch(next).ServeHTTP(httptest.NewRecorder(), req)
 
 	if hadAccount {

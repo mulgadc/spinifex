@@ -16,7 +16,7 @@ import (
 
 const (
 	ecrTestRegion   = "ap-southeast-2"
-	ecrTestSuffix   = "mulga.internal"
+	ecrTestSuffix   = "spinifex.internal"
 	ecrTestAudience = "ecr." + ecrTestRegion + "." + ecrTestSuffix
 	ecrTestAccount  = "000000000001"
 )

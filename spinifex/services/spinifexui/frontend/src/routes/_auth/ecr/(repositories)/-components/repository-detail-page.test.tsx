@@ -92,7 +92,7 @@ describe("RepositoryDetailPage", () => {
       seed([IMAGE]),
     )
     openImagesTab()
-    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0])
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]!)
     expect(
       screen.getByText(/permanently deletes the image manifest/),
     ).toBeInTheDocument()

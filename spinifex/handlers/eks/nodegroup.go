@@ -429,7 +429,7 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 	registryHost := accountID + ".dkr.ecr." + region + "." + suffix
 	gatewayIP := gatewayHostIP(s.deps.GatewayBaseURL)
 	if gatewayIP == "" {
-		slog.Warn("EKS nodegroup: gateway base URL is not an IP; worker /etc/hosts mapping for ECR registry skipped, DNS resolution required",
+		slog.Warn("EKS nodegroup: gateway base URL is not an IP; worker ECR registry mirror falls back to the hostname endpoint, DNS resolution required",
 			"gatewayBaseURL", s.deps.GatewayBaseURL, "registryHost", registryHost)
 	}
 
@@ -481,8 +481,8 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 }
 
 // gatewayHostIP returns the IP literal of the gateway base URL's host, or "" when
-// the host is empty or a DNS name (in which case the worker must resolve the ECR
-// registry host via DNS rather than a baked /etc/hosts entry).
+// the host is empty or a DNS name (in which case the worker's ECR registry mirror
+// uses the hostname endpoint and must resolve it via DNS).
 func gatewayHostIP(gatewayURL string) string {
 	if gatewayURL == "" {
 		return ""

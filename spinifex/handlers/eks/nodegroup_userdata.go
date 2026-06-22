@@ -19,8 +19,8 @@ type agentUserDataInput struct {
 	// ECR registry wiring for the kubelet credential provider. GatewayURL is the
 	// worker-reachable gateway base URL; GatewayCACert is the inline CA PEM;
 	// RegistryHost is the precomputed <acct>.dkr.ecr.<region>.<suffix>; GatewayIP
-	// is the IP host parsed from GatewayURL for the /etc/hosts mapping (empty when
-	// the gateway is a hostname).
+	// is the IP host parsed from GatewayURL used as the registry mirror endpoint
+	// (empty when the gateway is a hostname, in which case DNS must resolve it).
 	GatewayURL    string
 	GatewayCACert string
 	Region        string
@@ -54,13 +54,22 @@ func buildAgentUserData(in agentUserDataInput) string {
 		"EKS_ACCOUNT_ID=" + in.AccountID,
 	}, "\n")
 
+	// The mirror endpoint is dialed by IP when the gateway IP is known: the gateway
+	// cert carries an IP SAN, so TLS validates without DNS, and there is no internal
+	// resolver yet (cloud-init manage_etc_hosts rewrites /etc/hosts each boot). The
+	// pod image ref stays the port-less RegistryHost; the configs tls block must key
+	// the endpoint host:port actually dialed so the CA trust applies.
+	endpointHost := in.RegistryHost
+	if in.GatewayIP != "" {
+		endpointHost = in.GatewayIP
+	}
 	registriesYAML := strings.Join([]string{
 		"mirrors:",
 		"  \"" + in.RegistryHost + "\":",
 		"    endpoint:",
-		"      - \"https://" + in.RegistryHost + ":9999\"",
+		"      - \"https://" + endpointHost + ":9999\"",
 		"configs:",
-		"  \"" + in.RegistryHost + ":9999\":",
+		"  \"" + endpointHost + ":9999\":",
 		"    tls:",
 		"      ca_file: " + k3sGatewayCAPath,
 	}, "\n")
@@ -108,12 +117,6 @@ func buildAgentUserData(in agentUserDataInput) string {
 	buf.WriteString("  - rm -f " + k3sResolvConfPath + "\n")
 	fmt.Fprintf(&buf, "  - printf '%s\\n' > %s\n",
 		strings.ReplaceAll(k3sResolvConf, "\n", "\\n"), k3sResolvConfPath)
-	// /etc/hosts maps the registry host to the gateway IP before k3s starts; only
-	// when the gateway is reachable by IP (else DNS must resolve the host).
-	if in.GatewayIP != "" && in.RegistryHost != "" {
-		hostsLine := in.GatewayIP + " " + in.RegistryHost + " ecr." + in.Region + "." + suffixFromRegistryHost(in.RegistryHost, in.Region)
-		fmt.Fprintf(&buf, "  - grep -q '%s' /etc/hosts || printf '%s\\n' >> /etc/hosts\n", in.RegistryHost, hostsLine)
-	}
 
 	buf.WriteString("write_files:\n")
 	for _, f := range files {
@@ -135,16 +138,4 @@ func buildAgentUserData(in agentUserDataInput) string {
 	buf.WriteString("  - [ /etc/local.d/imds-onlink-route.start ]\n")
 
 	return buf.String()
-}
-
-// suffixFromRegistryHost extracts the internal DNS suffix from a registry host of
-// the form <acct>.dkr.ecr.<region>.<suffix>, used for the ecr.<region>.<suffix>
-// alias in /etc/hosts. Returns "" when the host does not carry the expected
-// .ecr.<region>. marker.
-func suffixFromRegistryHost(host, region string) string {
-	marker := ".ecr." + region + "."
-	if _, after, ok := strings.Cut(host, marker); ok {
-		return after
-	}
-	return ""
 }

@@ -23,9 +23,12 @@ func TestBuildAgentUserData_ECRWiring(t *testing.T) {
 	got := buildAgentUserData(in)
 
 	wantContains := []string{
-		// registries.yaml mirror + tls config.
+		// registries.yaml: pod ref stays the port-less host, mirror endpoint and
+		// tls config key the gateway IP actually dialed.
 		"/etc/rancher/k3s/registries.yaml",
-		"\"https://123456789012.dkr.ecr.ap-southeast-2.mulga.internal:9999\"",
+		"\"123456789012.dkr.ecr.ap-southeast-2.mulga.internal\":",
+		"\"https://10.15.8.1:9999\"",
+		"\"10.15.8.1:9999\":",
 		"ca_file: /etc/spinifex-eks/gateway-ca.pem",
 		// config.yaml.d drop-in.
 		"/etc/rancher/k3s/config.yaml.d/20-ecr-credential-provider.yaml",
@@ -41,18 +44,19 @@ func TestBuildAgentUserData_ECRWiring(t *testing.T) {
 		"EKS_GATEWAY_CA=/etc/spinifex-eks/gateway-ca.pem",
 		// gateway CA write_files.
 		"/etc/spinifex-eks/gateway-ca.pem",
-		// /etc/hosts bootcmd.
-		"10.15.8.1 123456789012.dkr.ecr.ap-southeast-2.mulga.internal ecr.ap-southeast-2.mulga.internal",
-		">> /etc/hosts",
 	}
 	for _, want := range wantContains {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered userdata missing %q\n---\n%s", want, got)
 		}
 	}
+	// No /etc/hosts injection: cloud-init manage_etc_hosts rewrites it each boot.
+	if strings.Contains(got, "/etc/hosts") {
+		t.Errorf("rendered userdata should not touch /etc/hosts\n%s", got)
+	}
 }
 
-func TestBuildAgentUserData_NoGatewayIPSkipsHosts(t *testing.T) {
+func TestBuildAgentUserData_NoGatewayIPUsesHostnameEndpoint(t *testing.T) {
 	in := agentUserDataInput{
 		ClusterName:   "alpha",
 		NodegroupName: "ng-1",
@@ -65,7 +69,12 @@ func TestBuildAgentUserData_NoGatewayIPSkipsHosts(t *testing.T) {
 		GatewayIP:     "",
 	}
 	got := buildAgentUserData(in)
-	if strings.Contains(got, ">> /etc/hosts") {
-		t.Errorf("expected no /etc/hosts bootcmd when GatewayIP is empty\n%s", got)
+	// With no gateway IP, the endpoint falls back to the registry hostname (DNS
+	// must resolve it) and the tls config keys that hostname:port.
+	if !strings.Contains(got, "\"https://123456789012.dkr.ecr.ap-southeast-2.mulga.internal:9999\"") {
+		t.Errorf("expected hostname endpoint when GatewayIP is empty\n%s", got)
+	}
+	if !strings.Contains(got, "\"123456789012.dkr.ecr.ap-southeast-2.mulga.internal:9999\":") {
+		t.Errorf("expected hostname:port tls config key when GatewayIP is empty\n%s", got)
 	}
 }

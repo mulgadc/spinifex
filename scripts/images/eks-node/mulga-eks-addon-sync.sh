@@ -209,11 +209,14 @@ render_addon() {
     : > "${_tmp}"
     for _f in "${_src}"/*.yaml; do
         [ -e "${_f}" ] || continue
+        # Each block marker must be the ONLY token on its line (whitespace aside);
+        # matching a substring would also fire on a comment that merely names the
+        # marker, injecting the block mid-document and producing invalid YAML.
         awk -v env="${_irsa_env}" -v vol="${_irsa_vol}" -v mnt="${_irsa_mnt}" -v icp="${_icp_spec}" '
-            index($0, "{{IRSA_ENV}}")                  { print env; next }
-            index($0, "{{IRSA_VOLUME_MOUNT}}")         { print mnt; next }
-            index($0, "{{IRSA_VOLUME}}")               { print vol; next }
-            index($0, "{{ELB_INGRESS_PARAMS_SPEC}}")   { if (icp != "") print icp; next }
+            $0 ~ /^[[:space:]]*[{][{]IRSA_ENV[}][}][[:space:]]*$/                { print env; next }
+            $0 ~ /^[[:space:]]*[{][{]IRSA_VOLUME_MOUNT[}][}][[:space:]]*$/       { print mnt; next }
+            $0 ~ /^[[:space:]]*[{][{]IRSA_VOLUME[}][}][[:space:]]*$/             { print vol; next }
+            $0 ~ /^[[:space:]]*[{][{]ELB_INGRESS_PARAMS_SPEC[}][}][[:space:]]*$/ { if (icp != "") print icp; next }
             { print }
         ' "${_f}" \
         | sed -e "s|{{SERVICE_ACCOUNT_ROLE_ARN}}|${_role}|g" \

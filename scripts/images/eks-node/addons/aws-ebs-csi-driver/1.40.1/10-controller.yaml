@@ -1,10 +1,9 @@
 # aws-ebs-csi-driver 1.40.1 — controller Deployment + gateway-CA Secret.
-# AWS credentials filled by mulga-eks-addon-sync via the {{IRSA_ENV}} /
-# {{IRSA_VOLUME_MOUNT}} / {{IRSA_VOLUME}} markers: web-identity (projected SA
-# token aud sts.amazonaws.com + role ARN + STS endpoint + CA) when a service
-# account role ARN is staged, otherwise node instance-profile creds over IMDS.
-# AWS_EC2_ENDPOINT / AWS_ENDPOINT_URL_EC2 point EBS calls at the gateway in
-# both modes. Static aws-secret key auth removed.
+# AWS credentials filled by mulga-eks-addon-sync via the IRSA env/volume/mount
+# markers below: web-identity (projected SA token aud sts.amazonaws.com + role
+# ARN + STS endpoint + CA) when a service account role ARN is staged, otherwise
+# node instance-profile creds over IMDS. AWS_EC2_ENDPOINT / AWS_ENDPOINT_URL_EC2
+# point EBS calls at the gateway in both modes. Static aws-secret key auth removed.
 ---
 apiVersion: v1
 kind: Secret

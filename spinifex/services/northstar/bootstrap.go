@@ -6,6 +6,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -14,6 +15,13 @@ import (
 // baseZoneTXT is the marker TXT record seeded at the apex of the base zone.
 const baseZoneTXT = "v=spinifex1"
 
+// Seed retry budget: predastore is ordered first in systemd but may not be
+// listening yet (Type=simple). ~60s of retries covers a cold start.
+const bootstrapMaxAttempts = 30
+
+// bootstrapRetryDelay is a var so tests can shorten the backoff.
+var bootstrapRetryDelay = 2 * time.Second
+
 // BootstrapBaseZone ensures the northstar default_domain zone exists in the S3
 // bucket. It is a control-plane action: the seed is written with the system
 // predastore credentials (the long-running daemon's own key is read-only), and
@@ -21,24 +29,41 @@ const baseZoneTXT = "v=spinifex1"
 // default_domain or S3 bucket is configured, and never overwrites an existing
 // zone.
 func BootstrapBaseZone(configPath string, cluster *config.ClusterConfig) error {
+	slog.Info("northstar bootstrap: starting base zone check",
+		"config_path", configPath, "node", cluster.Node)
+
 	serverCfg, err := nsconfig.LoadServerConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("load northstar config: %w", err)
 	}
 
 	domain := strings.TrimSpace(serverCfg.DefaultDomain)
+	slog.Info("northstar bootstrap: loaded northstar config",
+		"default_domain", domain,
+		"s3_endpoint", serverCfg.S3.Endpoint,
+		"s3_bucket", serverCfg.S3.Bucket,
+		"s3_region", serverCfg.S3.Region)
+
 	if domain == "" {
-		slog.Debug("northstar bootstrap: no default_domain set, skipping base zone seed")
+		slog.Info("northstar bootstrap: no default_domain set, skipping base zone seed")
 		return nil
 	}
 	if serverCfg.S3.Bucket == "" {
-		slog.Debug("northstar bootstrap: filesystem mode, skipping base zone seed")
+		slog.Info("northstar bootstrap: no s3 bucket configured (filesystem mode), skipping base zone seed")
 		return nil
 	}
 
-	sysCreds := cluster.Nodes[cluster.Node].Predastore
+	node, ok := cluster.Nodes[cluster.Node]
+	if !ok {
+		return fmt.Errorf("node %q not found in cluster config (nodes: %v)", cluster.Node, nodeNames(cluster))
+	}
+	sysCreds := node.Predastore
+	slog.Info("northstar bootstrap: resolved system predastore credentials",
+		"node", cluster.Node,
+		"access_key_set", sysCreds.AccessKey != "",
+		"secret_key_set", sysCreds.SecretKey != "")
 	if sysCreds.AccessKey == "" || sysCreds.SecretKey == "" {
-		return fmt.Errorf("missing system predastore credentials for base zone seed")
+		return fmt.Errorf("missing system predastore credentials for base zone seed (node %q)", cluster.Node)
 	}
 
 	// Reuse northstar.toml's endpoint/bucket but with the system (read-write)
@@ -56,20 +81,47 @@ func BootstrapBaseZone(configPath string, cluster *config.ClusterConfig) error {
 	slog.Info("northstar bootstrap: ensuring base zone",
 		"domain", domain, "nameservers", len(nameservers), "multi_node", len(nameservers) > 1)
 
-	created, err := nsconfig.EnsureBaseZone(s3cfg, nsconfig.BaseZoneSeed{
+	seed := nsconfig.BaseZoneSeed{
 		Domain:      domain,
 		Nameservers: nameservers,
 		TXT:         []string{baseZoneTXT},
-	})
-	if err != nil {
-		return err
 	}
+
+	// Predastore is ordered before us in systemd, but Type=simple means it may
+	// not be accepting connections yet when we run. Retry the seed until it is
+	// reachable (or we exhaust the budget) so a cold-start race does not leave
+	// the base zone unseeded until the next restart.
+	var created bool
+	for attempt := 1; attempt <= bootstrapMaxAttempts; attempt++ {
+		created, err = nsconfig.EnsureBaseZone(s3cfg, seed)
+		if err == nil {
+			break
+		}
+		slog.Warn("northstar bootstrap: seed attempt failed, retrying",
+			"attempt", attempt, "max", bootstrapMaxAttempts,
+			"endpoint", s3cfg.Endpoint, "error", err)
+		time.Sleep(bootstrapRetryDelay)
+	}
+	if err != nil {
+		return fmt.Errorf("seed base zone %q after %d attempts: %w", domain, bootstrapMaxAttempts, err)
+	}
+
 	if created {
 		slog.Info("northstar bootstrap: base zone created", "domain", domain)
 	} else {
 		slog.Info("northstar bootstrap: base zone already present", "domain", domain)
 	}
 	return nil
+}
+
+// nodeNames returns the sorted node keys of the cluster, for diagnostics.
+func nodeNames(cluster *config.ClusterConfig) []string {
+	names := make([]string, 0, len(cluster.Nodes))
+	for name := range cluster.Nodes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // buildNameserverSeeds derives one nameserver (nsN → node IP) per cluster node

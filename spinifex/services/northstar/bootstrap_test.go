@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/stretchr/testify/assert"
@@ -132,6 +133,101 @@ insecure = true
 	// Second start is idempotent — does not rewrite the zone.
 	require.NoError(t, BootstrapBaseZone(configPath, cluster))
 	assert.Equal(t, body, objects["spx3.net.toml"])
+}
+
+// flakyS3 refuses the first failUntil requests (simulating predastore not yet
+// listening) then behaves like fakeS3, to exercise the bootstrap retry loop.
+func flakyS3(t *testing.T, bucket string, failUntil int) (endpoint string, objects map[string]string) {
+	t.Helper()
+	var mu sync.Mutex
+	objects = map[string]string{}
+	var calls int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls <= failUntil {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		key := strings.TrimPrefix(r.URL.Path, "/"+bucket+"/")
+		switch r.Method {
+		case http.MethodHead:
+			if _, ok := objects[key]; ok {
+				w.WriteHeader(http.StatusOK)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
+		case http.MethodPut:
+			body, _ := io.ReadAll(r.Body)
+			objects[key] = string(body)
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, objects
+}
+
+func TestBootstrapBaseZoneRetries(t *testing.T) {
+	prev := bootstrapRetryDelay
+	bootstrapRetryDelay = time.Millisecond
+	t.Cleanup(func() { bootstrapRetryDelay = prev })
+
+	// Fail the first two S3 requests, then succeed — the retry must seed.
+	endpoint, objects := flakyS3(t, "northstar", 2)
+	tomlBody := fmt.Sprintf(`listen = "0.0.0.0:5300"
+default_domain = "spx3.net"
+[s3]
+endpoint = %q
+bucket = "northstar"
+region = "us-east-1"
+access_key = "READONLY"
+secret_key = "READONLY"
+insecure = true
+`, endpoint)
+	configPath := filepath.Join(t.TempDir(), "northstar.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
+
+	cluster := &config.ClusterConfig{
+		Node: "node1",
+		Nodes: map[string]config.Config{
+			"node1": {
+				Host:       "10.11.12.1",
+				Predastore: config.PredastoreConfig{AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET"},
+				Northstar:  config.NorthstarConfig{ConfigPath: configPath},
+			},
+		},
+	}
+
+	require.NoError(t, BootstrapBaseZone(configPath, cluster))
+	require.Contains(t, objects, "spx3.net.toml")
+}
+
+func TestNodeNames(t *testing.T) {
+	cluster := &config.ClusterConfig{Nodes: map[string]config.Config{"b": {}, "a": {}, "c": {}}}
+	assert.Equal(t, []string{"a", "b", "c"}, nodeNames(cluster))
+}
+
+func TestBootstrapBaseZoneUnknownNode(t *testing.T) {
+	endpoint, _ := fakeS3(t, "northstar")
+	tomlBody := fmt.Sprintf(`default_domain = "spx3.net"
+[s3]
+endpoint = %q
+bucket = "northstar"
+access_key = "READONLY"
+secret_key = "READONLY"
+insecure = true
+`, endpoint)
+	configPath := filepath.Join(t.TempDir(), "northstar.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
+
+	cluster := &config.ClusterConfig{Node: "missing", Nodes: map[string]config.Config{"node1": {}}}
+	err := BootstrapBaseZone(configPath, cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in cluster config")
 }
 
 func TestBootstrapBaseZoneNoDomain(t *testing.T) {

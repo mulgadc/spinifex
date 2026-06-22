@@ -80,6 +80,12 @@ variable "node_port" {
   description = "NodePort the demo Service is published on and the ALB forwards to"
 }
 
+variable "argocd_node_port" {
+  type        = number
+  default     = 30081
+  description = "NodePort the Argo CD UI Service is published on and its ALB forwards to"
+}
+
 variable "cert_common_name" {
   type    = string
   default = "eks-gitops.spinifex.local"
@@ -307,6 +313,106 @@ resource "aws_iam_role_policy_attachment" "node_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# The AWS Load Balancer Controller runs with the node's instance-profile
+# credentials (Spinifex wires creds at the node level, not IRSA — see the addon
+# block below), so the permissions it needs to manage ALBs must live on the node
+# role. This mirrors the upstream AWSLoadBalancerControllerIAMPolicy, trimmed to
+# the actions an ALB Ingress exercises (Shield/WAF/Cognito are disabled on the
+# controller). Resources are "*" since Spinifex evaluates grants by action.
+# A customer-managed policy + attachment is used (Spinifex implements
+# CreatePolicy/AttachRolePolicy, not inline PutRolePolicy).
+resource "aws_iam_policy" "node_lbc" {
+  name = "${var.cluster_name}-node-lbc"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeTags",
+          "ec2:GetCoipPoolUsage",
+          "ec2:DescribeCoipPools",
+          "ec2:CreateSecurityGroup",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:DeleteSecurityGroup",
+          "elasticloadbalancing:*",
+          "acm:ListCertificates",
+          "acm:DescribeCertificate",
+          "acm:GetCertificate",
+          "iam:CreateServiceLinkedRole",
+          "iam:ListServerCertificates",
+          "iam:GetServerCertificate",
+          "tag:GetResources",
+          "tag:TagResources",
+          "wafv2:GetWebACLForResource",
+          "shield:GetSubscriptionState"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_lbc" {
+  role       = aws_iam_role.node.name
+  policy_arn = aws_iam_policy.node_lbc.arn
+}
+
+# The EBS CSI driver also runs with the node's instance-profile credentials, so
+# the volume-lifecycle permissions it needs must live on the node role too. This
+# mirrors the upstream AmazonEBSCSIDriverPolicy. Resources are "*" since Spinifex
+# evaluates grants by action; the CreateVolume/CreateSnapshot/CreateTags grants
+# upstream scope with request/resource tag conditions, omitted here because
+# Spinifex does not yet evaluate IAM tag conditions.
+resource "aws_iam_policy" "node_ebs_csi" {
+  name = "${var.cluster_name}-node-ebs-csi"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateSnapshot",
+          "ec2:AttachVolume",
+          "ec2:DetachVolume",
+          "ec2:ModifyVolume",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInstances",
+          "ec2:DescribeSnapshots",
+          "ec2:DescribeTags",
+          "ec2:DescribeVolumes",
+          "ec2:DescribeVolumesModifications",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:CreateVolume",
+          "ec2:DeleteVolume",
+          "ec2:DeleteSnapshot"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_ebs_csi" {
+  role       = aws_iam_role.node.name
+  policy_arn = aws_iam_policy.node_ebs_csi.arn
+}
+
 # ---------------------------------------------------------------------------
 # IAM — a second principal to grant read-only cluster access to
 # ---------------------------------------------------------------------------
@@ -363,6 +469,16 @@ resource "aws_eks_cluster" "this" {
 
   depends_on = [aws_iam_role_policy_attachment.cluster]
 
+  # Spinifex's DescribeCluster doesn't echo these back the way the AWS provider
+  # expects: access_config reads as absent (and its ForceNew
+  # bootstrap_cluster_creator_admin_permissions would replace the live cluster on
+  # re-add), and vpc_config.security_group_ids reads back as drift. Ignore both so
+  # later applies (e.g. adding the Argo CD NodePort rule) neither replace the
+  # cluster nor detach its security groups.
+  lifecycle {
+    ignore_changes = [access_config, vpc_config[0].security_group_ids]
+  }
+
   tags = {
     Name                          = var.cluster_name
     "spinifex.io/managed-ingress" = "false"
@@ -392,6 +508,8 @@ resource "aws_eks_node_group" "workers" {
     aws_iam_role_policy_attachment.node_worker,
     aws_iam_role_policy_attachment.node_cni,
     aws_iam_role_policy_attachment.node_ecr,
+    aws_iam_role_policy_attachment.node_lbc,
+    aws_iam_role_policy_attachment.node_ebs_csi,
   ]
 
   tags = {
@@ -504,7 +622,9 @@ resource "tls_self_signed_cert" "ingress" {
     organization = "Spinifex EKS Demo"
   }
 
-  dns_names             = [var.cert_common_name]
+  # Wildcard SAN so one ALB (shared IngressGroup) can host-route both the demo
+  # app (app.<cn>) and the Argo CD UI (argocd.<cn>) off this single cert.
+  dns_names             = [var.cert_common_name, "*.${var.cert_common_name}"]
   validity_period_hours = 8760
   early_renewal_hours   = 720
 
@@ -558,6 +678,19 @@ resource "aws_vpc_security_group_ingress_rule" "nodeport_from_vpc" {
   }
 }
 
+# Same, for the Argo CD UI NodePort its ALB forwards to.
+resource "aws_vpc_security_group_ingress_rule" "argocd_nodeport_from_vpc" {
+  security_group_id = data.aws_security_group.nodegroup.id
+  cidr_ipv4         = aws_vpc.main.cidr_block
+  from_port         = var.argocd_node_port
+  to_port           = var.argocd_node_port
+  ip_protocol       = "tcp"
+
+  tags = {
+    Name = "${var.cluster_name}-argocd-nodeport"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Outputs
 # ---------------------------------------------------------------------------
@@ -574,12 +707,20 @@ output "node_port" {
   value = var.node_port
 }
 
+output "argocd_node_port" {
+  value = var.argocd_node_port
+}
+
 output "node_desired_size" {
   value = var.node_desired_size
 }
 
 output "certificate_arn" {
   value = aws_acm_certificate.ingress.arn
+}
+
+output "cert_common_name" {
+  value = var.cert_common_name
 }
 
 output "viewer_principal_arn" {
@@ -592,7 +733,11 @@ output "ecr_repository_url" {
 }
 
 output "ingress_address_hint" {
-  value = "After applying workloads: kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{\"\\n\"}' — then open https://<that-address> (self-signed cert: curl -k)."
+  value = "The demo app and Argo CD UI share one ALB (LBC IngressGroup), host-routed: app.${var.cert_common_name} and argocd.${var.cert_common_name}. Get the address: kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{\"\\n\"}'."
+}
+
+output "argocd_ingress_hint" {
+  value = "Same ALB as the app. Open https://argocd.${var.cert_common_name} (admin password: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d). Resolve the host to the ALB address, or curl -k --resolve."
 }
 
 output "update_kubeconfig" {

@@ -140,22 +140,62 @@ tofu apply \
   -var git_token=<read-only-PAT>     # omit for a public repo
 ```
 
-This registers the repo credential, creates the Argo CD `Application`, and creates the HTTPS Ingress. Argo CD then syncs the Deployment, Service, and PVC from git.
+This registers the repo credential, creates the Argo CD `Application`, the demo app's HTTPS Ingress, and an HTTPS Ingress for the Argo CD UI itself. Argo CD then syncs the Deployment, Service, and PVC from git.
 
 <!-- INCLUDE: workloads/main.tf lang:hcl -->
 
 ### Step 5. Watch the Sync and Open the App
+
+The demo app and the Argo CD UI share **one ALB** (an LBC IngressGroup): LBC gives
+each backend its own target group and host-routes between them —
+`app.eks-gitops.spinifex.local` to the app, `argocd.eks-gitops.spinifex.local` to
+the UI. Grab the shared ALB address once:
 
 ```bash
 kubectl -n argocd get applications
 kubectl get pods -o wide
 kubectl get pvc                    # the EBS-CSI volume should be Bound
 
-ADDR=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-curl -k "https://$ADDR"
+ALB=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "$ALB"
 ```
 
-Open `https://$ADDR` (accept the self-signed cert). The page shows the **"persisted to EBS volume"** badge and a hit counter that keeps climbing — delete the pod (`kubectl delete pod -l app=spinifex-demo`) and the count survives, proving the volume is durable.
+In a real deployment northstar resolves the ALB hostname and you point
+`app.eks-gitops.spinifex.local` / `argocd.eks-gitops.spinifex.local` at it (a
+CNAME). To test before DNS is wired, send the host header explicitly:
+
+```bash
+curl -k --resolve app.eks-gitops.spinifex.local:443:"$(getent hosts "$ALB" | awk '{print $1}')" \
+  https://app.eks-gitops.spinifex.local
+```
+
+The page shows the **"persisted to EBS volume"** badge and a hit counter that keeps climbing — delete the pod (`kubectl delete pod -l app=spinifex-demo`) and the count survives, proving the volume is durable.
+
+### Step 6. Open the Argo CD UI
+
+Managing deployments through the Argo CD console is the point of this workbook, so
+the UI is exposed on the **same ALB** as the app, not behind a port-forward. The
+`workloads` module adds a `NodePort` Service in front of `argocd-server` (the addon
+ships it `ClusterIP` only) and an Ingress in the shared group. `argocd-server`
+serves TLS on its own port, so its Ingress uses `backend-protocol: HTTPS`.
+
+```bash
+PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d)
+echo "https://argocd.eks-gitops.spinifex.local  —  admin / $PASS"
+```
+
+Open `https://argocd.eks-gitops.spinifex.local` (resolve it to the ALB as above;
+accept the self-signed cert) and log in as `admin`. The `spinifex-demo`
+Application shows the sync status, the resource tree, and live diffs against git —
+change a manifest in the repo and watch Argo CD reconcile it.
+
+If you'd rather not expose the UI at all, port-forward instead:
+
+```bash
+kubectl -n argocd port-forward svc/argocd-server 8080:443
+# then open https://localhost:8080
+```
 
 ### Cleanup
 
@@ -204,6 +244,13 @@ kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=50
 ```
 
 Confirm the cluster carries `spinifex.io/managed-ingress = "false"` so the LBC owns ingress.
+
+If the controller logs show `FailedBuildModel ... DescribeAvailabilityZones ...
+403 ... AccessDenied`, the node role is missing the LBC permissions. The
+controller runs with the node instance-profile credentials, so the
+`${var.cluster_name}-node-lbc` policy (`aws_iam_policy.node_lbc`) must be
+attached to the node role — re-run `tofu apply` on the parent module if it was
+provisioned before that policy existed.
 
 ### Provider Connection Refused
 

@@ -1326,6 +1326,59 @@ func TestDeleteVolume_VolumeAttachedButAvailable(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
 }
 
+func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	// Drift: a detach/terminate left State empty with no attachment. The volume
+	// is not in use and must be deletable, not VolumeInUse (mulga-siv-409).
+	createVolumeInStoreWithMeta(t, store, "vol-drift", viperblock.VolumeMetadata{
+		VolumeID: "vol-drift",
+		SizeGiB:  10,
+		State:    "",
+	})
+
+	_, err := svc.DeleteVolume(&ec2.DeleteVolumeInput{
+		VolumeId: aws.String("vol-drift"),
+	}, "")
+	require.NoError(t, err)
+}
+
+func TestDescribeVolumes_EmptyStateDerivedFromAttachment(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	seedVolume(t, svc, "vol-empty-unattached", "", "")
+	seedVolume(t, svc, "vol-empty-attached", "", "i-attached00000000")
+
+	out, err := svc.DescribeVolumes(&ec2.DescribeVolumesInput{
+		VolumeIds: []*string{aws.String("vol-empty-unattached"), aws.String("vol-empty-attached")},
+	}, testVolAccountID)
+	require.NoError(t, err)
+
+	got := map[string]string{}
+	for _, v := range out.Volumes {
+		got[aws.StringValue(v.VolumeId)] = aws.StringValue(v.State)
+	}
+	assert.Equal(t, "available", got["vol-empty-unattached"], "empty state + no attachment renders available")
+	assert.Equal(t, "in-use", got["vol-empty-attached"], "empty state + attachment must not be masked as available (mulga-siv-409)")
+}
+
+func TestUpdateVolumeState_EmptyUnattachedNormalizesToAvailable(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	seedVolume(t, svc, "vol-norm", "in-use", "i-x")
+
+	// A detach writeback that clears the attachment without a state must not
+	// strand the volume with an empty State (mulga-siv-409).
+	require.NoError(t, svc.UpdateVolumeState("vol-norm", "", "", ""))
+	cfg, err := svc.GetVolumeConfig("vol-norm")
+	require.NoError(t, err)
+	assert.Equal(t, "available", cfg.VolumeMetadata.State)
+	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance)
+}
+
 func TestDeleteVolume_WithNATSNotification(t *testing.T) {
 	kv := setupTestVolumeKV(t)
 	store := objectstore.NewMemoryObjectStore()

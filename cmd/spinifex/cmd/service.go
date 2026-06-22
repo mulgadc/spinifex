@@ -864,6 +864,13 @@ var northstarStartCmd = &cobra.Command{
 			baseDir = override
 		}
 
+		// Seed the default_domain base zone (control-plane action with system
+		// predastore credentials) before the read-only daemon starts. Best
+		// effort: a failure here must not block DNS from serving.
+		if err := northstar.BootstrapBaseZone(configPath, clusterConfig); err != nil {
+			slog.Warn("northstar base zone bootstrap failed (continuing)", "error", err)
+		}
+
 		svc, err := service.New("northstar", &northstar.Config{
 			ConfigPath: configPath,
 			BasePath:   baseDir,

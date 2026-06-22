@@ -966,10 +966,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 	// stale attachment first, then delete before its SG. Detach is best-effort: a
 	// missing/already-detached ENI is fine; the delete is the authoritative gate.
 	if meta.PrivateEndpointENIID != "" {
-		if err := s.deps.VPCK3s.DetachENI(accountID, meta.PrivateEndpointENIID); err != nil {
-			slog.Warn("purgeClusterInfra: detach private-endpoint ENI", "cluster", name, "eni", meta.PrivateEndpointENIID, "err", err)
-		}
-		if err := deleteENIAwaitingTerminate(s.deps.VPCK3s, accountID, meta.PrivateEndpointENIID); err != nil {
+		if err := detachAndDeleteServerENI(s.deps.VPCK3s, accountID, meta.PrivateEndpointENIID); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete private-endpoint ENI: %w", err))
 		}
 	}

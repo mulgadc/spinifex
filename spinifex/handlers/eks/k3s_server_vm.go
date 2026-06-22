@@ -9,7 +9,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -262,7 +261,7 @@ func TerminateK3sServerVM(
 		}
 	}
 	if eniID != "" {
-		if err := deleteENIAwaitingTerminate(vpcSvc, accountID, eniID); err != nil {
+		if err := detachAndDeleteServerENI(vpcSvc, accountID, eniID); err != nil {
 			slog.Warn("TerminateK3sServerVM: ENI delete failed", "eniId", eniID, "err", err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("delete ENI %s: %w", eniID, err)
@@ -272,47 +271,34 @@ func TerminateK3sServerVM(
 	return firstErr
 }
 
-var (
-	// eniDeleteWaitBudget bounds how long deleteENIAwaitingTerminate retries a
-	// DeleteNetworkInterface that returns InvalidNetworkInterface.InUse while the
-	// async instance-terminate cascade force-deletes the same ENI. Vars (not
-	// consts) so tests can shrink them.
-	eniDeleteWaitBudget   = 45 * time.Second
-	eniDeleteWaitInterval = 1 * time.Second
-)
-
-// deleteENIAwaitingTerminate deletes the server VM's ENI, tolerating the
-// InvalidNetworkInterface.InUse window while the async instance-terminate
-// cascade (DetachAndDeleteENI → ForceDeleteInstanceENI) removes the same ENI
-// once qemu exits. On a multi-node cluster the teardown handler often runs on a
-// node that does not own the VM, so TerminateSystemInstance returns before the
-// cascade completes and the immediate delete loses the race. It retries until
-// the ENI is gone (NotFound = removed by the cascade or by us) or the budget
-// elapses; a persistent InUse past the budget is surfaced so the teardown
-// backstop retries rather than stranding the cluster's billable infra.
-func deleteENIAwaitingTerminate(vpcSvc k3sVPCProvisioner, accountID, eniID string) error {
-	deadline := time.Now().Add(eniDeleteWaitBudget)
-	for {
-		_, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
-			NetworkInterfaceId: aws.String(eniID),
-		}, accountID)
-		switch {
-		case err == nil:
-			return nil
-		case awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
-			awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound):
-			// ENI already gone (cascade or prior retry); idempotent success.
-			slog.Debug("TerminateK3sServerVM: ENI already gone", "eniId", eniID)
-			return nil
-		case awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceInUse):
-			if time.Now().After(deadline) {
-				return err
-			}
-			time.Sleep(eniDeleteWaitInterval)
-		default:
-			return err
-		}
+// detachAndDeleteServerENI removes the server VM's control-plane ENI. Teardown
+// owns this ENI and has already terminated its VM, so the attachment is
+// authoritatively dead even if the record still shows it in-use — a state a
+// plain force=false delete would reject as InvalidNetworkInterface.InUse
+// forever, wedging EKSDeletingReaper in a no-progress loop (mulga-siv-407).
+// Detach first to clear the stale attachment fields, then delete. Both calls
+// tolerate an already-gone ENI (NotFound), so a race with the async
+// instance-terminate cascade that removes the same ENI resolves to idempotent
+// success either way.
+func detachAndDeleteServerENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) error {
+	if err := vpcSvc.DetachENI(accountID, eniID); err != nil && !isENINotFound(err) {
+		// Non-fatal: the delete below still runs and surfaces any real failure.
+		slog.Debug("TerminateK3sServerVM: ENI detach failed; deleting anyway", "eniId", eniID, "err", err)
 	}
+	_, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+		NetworkInterfaceId: aws.String(eniID),
+	}, accountID)
+	if err == nil || isENINotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// isENINotFound reports whether err is one of the ENI-absent error codes, which
+// teardown treats as idempotent success.
+func isENINotFound(err error) bool {
+	return awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound) ||
+		awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound)
 }
 
 // lookupEKSServerAMI resolves the EKS CP AMI by the spinifex:managed-by=eks tag

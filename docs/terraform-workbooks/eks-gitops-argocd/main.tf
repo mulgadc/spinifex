@@ -60,7 +60,7 @@ variable "k8s_version" {
 
 variable "node_instance_type" {
   type    = string
-  default = "t3.large"
+  default = "t3.medium"
 }
 
 variable "node_desired_size" {

@@ -63,7 +63,7 @@ variable "k8s_version" {
 
 variable "node_instance_type" {
   type    = string
-  default = "t3.large"
+  default = "t3.medium"
 }
 
 variable "node_desired_size" {
@@ -308,6 +308,64 @@ resource "aws_iam_role_policy_attachment" "node_cni" {
 resource "aws_iam_role_policy_attachment" "node_ecr" {
   role       = aws_iam_role.node.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+# The AWS Load Balancer Controller runs with the node's instance-profile
+# credentials (Spinifex wires creds at the node level, not IRSA — see the addon
+# block below), so the permissions it needs to manage ALBs must live on the node
+# role. This mirrors the upstream AWSLoadBalancerControllerIAMPolicy, trimmed to
+# the actions an ALB Ingress exercises (Shield/WAF/Cognito are disabled on the
+# controller). Resources are "*" since Spinifex evaluates grants by action.
+# A customer-managed policy + attachment is used (Spinifex implements
+# CreatePolicy/AttachRolePolicy, not inline PutRolePolicy).
+resource "aws_iam_policy" "node_lbc" {
+  name = "${var.cluster_name}-node-lbc"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeTags",
+          "ec2:GetCoipPoolUsage",
+          "ec2:DescribeCoipPools",
+          "ec2:CreateSecurityGroup",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:DeleteSecurityGroup",
+          "elasticloadbalancing:*",
+          "acm:ListCertificates",
+          "acm:DescribeCertificate",
+          "acm:GetCertificate",
+          "iam:CreateServiceLinkedRole",
+          "iam:ListServerCertificates",
+          "iam:GetServerCertificate",
+          "tag:GetResources",
+          "tag:TagResources",
+          "wafv2:GetWebACLForResource",
+          "shield:GetSubscriptionState"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_lbc" {
+  role       = aws_iam_role.node.name
+  policy_arn = aws_iam_policy.node_lbc.arn
 }
 
 # ---------------------------------------------------------------------------

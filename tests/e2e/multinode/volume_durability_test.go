@@ -3,6 +3,7 @@
 package multinode
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -93,10 +94,25 @@ func pickCrossNodePair(t *testing.T, fix *Fixture, trio []string) (srcID, dstID,
 }
 
 // guestTarget resolves an SSH target for a guest, waiting until SSH answers.
+// On a 2min timeout it dumps VPC/IGW datapath diagnostics (guest console + OVN
+// state + flow/conntrack/NAT captures) before failing — a fresh cross-node
+// public-IP VM unreachable for the full window is the SNAT/DNAT flow-install
+// flake signature, only diagnosable from CI artifacts.
 func guestTarget(t *testing.T, fix *Fixture, instanceID, pemPath string) harness.SSHTarget {
 	t.Helper()
 	host, port := harness.GuestSSHEndpoint(t, fix.AWS, fix.Cluster, instanceID)
-	harness.GuestSSHReady(t, host, port, "ec2-user", pemPath,
-		harness.WithTimeout(2*time.Minute), harness.WithPoll(2*time.Second))
+	if !harness.TryGuestSSHReady(host, port, "ec2-user", pemPath, 2*time.Minute) {
+		privIP := harness.InstancePrivateIP(t, fix.AWS, instanceID)
+		harness.DumpVPCFlowDiagnostics(t, fix.AWS, instanceID,
+			fmt.Sprintf("volume-durability guest SSH timeout — instance=%s pub=%s priv=%s",
+				instanceID, host, privIP),
+			harness.VPCDiagnosticsOpts{
+				ExternalIP:  host,
+				LogicalIP:   privIP,
+				ArtifactDir: fix.Artifacts,
+			})
+		t.Fatalf("guest %s SSH %s:%d never became reachable within 2min (see diagnostics above)",
+			instanceID, host, port)
+	}
 	return harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: pemPath}
 }

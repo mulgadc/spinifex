@@ -248,6 +248,10 @@ resource "aws_iam_role_policy_attachment" "node_ecr" {
 
 resource "aws_ecr_repository" "demo" {
   name = "spinifex-demo"
+
+  # tofu destroy must remove the repo even though it still holds the pushed demo
+  # image; without this, DeleteRepository (force=false) fails RepositoryNotEmpty.
+  force_delete = true
 }
 
 # ---------------------------------------------------------------------------

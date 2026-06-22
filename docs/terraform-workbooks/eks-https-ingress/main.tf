@@ -316,10 +316,6 @@ resource "aws_iam_role_policy_attachment" "node_ecr" {
 
 resource "aws_ecr_repository" "demo" {
   name = "spinifex-demo"
-
-  tags = {
-    Name = "${var.cluster_name}-demo"
-  }
 }
 
 # ---------------------------------------------------------------------------

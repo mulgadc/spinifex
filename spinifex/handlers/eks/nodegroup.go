@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -421,12 +423,28 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 	}
 	subnet := rec.Subnets[0]
 	shortID := uuid.NewString()[:8]
+
+	region := s.deps.Region
+	suffix := s.deps.InternalSuffix
+	registryHost := accountID + ".dkr.ecr." + region + "." + suffix
+	gatewayIP := gatewayHostIP(s.deps.GatewayBaseURL)
+	if gatewayIP == "" {
+		slog.Warn("EKS nodegroup: gateway base URL is not an IP; worker /etc/hosts mapping for ECR registry skipped, DNS resolution required",
+			"gatewayBaseURL", s.deps.GatewayBaseURL, "registryHost", registryHost)
+	}
+
 	userData := buildAgentUserData(agentUserDataInput{
 		ClusterName:   rec.ClusterName,
 		NodegroupName: rec.Name,
 		ServerURL:     clusterJoinEndpoint(meta),
 		JoinToken:     token,
 		NodeName:      fmt.Sprintf("%s-%s-%s", rec.ClusterName, rec.Name, shortID),
+		GatewayURL:    s.deps.GatewayBaseURL,
+		GatewayCACert: s.deps.GatewayCACert,
+		Region:        region,
+		AccountID:     accountID,
+		RegistryHost:  registryHost,
+		GatewayIP:     gatewayIP,
 	})
 	runInput := &ec2.RunInstancesInput{
 		ImageId:          aws.String(amiID),
@@ -460,6 +478,24 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 		}
 	}
 	return "", errors.New("run worker returned no instance id")
+}
+
+// gatewayHostIP returns the IP literal of the gateway base URL's host, or "" when
+// the host is empty or a DNS name (in which case the worker must resolve the ECR
+// registry host via DNS rather than a baked /etc/hosts entry).
+func gatewayHostIP(gatewayURL string) string {
+	if gatewayURL == "" {
+		return ""
+	}
+	u, err := url.Parse(gatewayURL)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if net.ParseIP(host) == nil {
+		return ""
+	}
+	return host
 }
 
 func (s *EKSServiceImpl) describeNodegroup(acctKV nats.KeyValue, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {

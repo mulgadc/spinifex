@@ -41,6 +41,10 @@ type EKSServiceDeps struct {
 	Region         string
 	HolderID       string
 
+	// InternalSuffix is the AWS-parity internal DNS suffix (e.g. mulga.internal)
+	// used to compose the worker's ECR registry host.
+	InternalSuffix string
+
 	// Gateway broker config for the K3s server VM (SigV4 HTTPS to AWSGW).
 	// SystemGatewayURL is the mgmt-reachable endpoint; GatewayCACert signs its TLS cert.
 	SystemGatewayURL string

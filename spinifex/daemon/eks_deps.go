@@ -21,6 +21,11 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		masterKey = nil
 	}
 
+	internalSuffix := ""
+	if d.clusterConfig != nil {
+		internalSuffix = d.clusterConfig.AWS.InternalSuffix
+	}
+
 	gatewayCA := ""
 	if d.config.NATS.CACert != "" {
 		if caBytes, readErr := os.ReadFile(d.config.NATS.CACert); readErr == nil {
@@ -38,6 +43,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		GatewayBaseURL:   d.resolveGatewayBaseURL(),
 		Region:           d.config.Region,
 		HolderID:         d.node,
+		InternalSuffix:   internalSuffix,
 		SystemGatewayURL: d.resolveSystemGatewayBaseURL(),
 		SystemAccessKey:  d.config.Predastore.AccessKey,
 		SystemSecretKey:  d.config.Predastore.SecretKey,

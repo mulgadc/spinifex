@@ -34,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -128,6 +129,7 @@ type Daemon struct {
 	natsConn              *nats.Conn
 	resourceMgr           *ResourceManager
 	instanceService       *handlers_ec2_instance.InstanceServiceImpl
+	dnsWriter             *handlers_dns.Writer
 	keyService            *handlers_ec2_key.KeyServiceImpl
 	imageService          *handlers_ec2_image.ImageServiceImpl
 	volumeService         *handlers_ec2_volume.VolumeServiceImpl
@@ -1150,6 +1152,7 @@ func (d *Daemon) startCluster() error {
 	// Create services before loading/launching instances, since LaunchInstance depends on them
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
+	d.dnsWriter = handlers_dns.NewWriter(d.config)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
 	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
 
@@ -1387,6 +1390,15 @@ func (d *Daemon) startCluster() error {
 
 	if err := d.subscribeAll(); err != nil {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
+	}
+
+	// DNS record writer (route53 Phase B): the single queue-group consumer of
+	// dns.recordset.change. No-op when northstar S3 is not configured.
+	if sub, err := d.dnsWriter.Subscribe(d.natsConn); err != nil {
+		return fmt.Errorf("failed to subscribe DNS record writer: %w", err)
+	} else if sub != nil {
+		d.natsSubscriptions[handlers_dns.SubjectRecordsetChange] = sub
+		slog.Info("Subscribed DNS record writer", "subject", handlers_dns.SubjectRecordsetChange, "queue", handlers_dns.QueueGroup)
 	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.

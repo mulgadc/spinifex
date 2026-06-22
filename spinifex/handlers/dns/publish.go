@@ -18,18 +18,16 @@ func PublishChanges(nc *nats.Conn, accountID string, changes []Change) (*ChangeR
 	return utils.NATSRequest[ChangeResult](nc, SubjectRecordsetChange, ChangeBatch{Changes: changes}, requestTimeout, accountID)
 }
 
-// PublishEC2 builds and publishes the public+private record changes for one
-// instance. Failures are logged, not propagated, so DNS registration never
-// blocks a launch or terminate.
-func PublishEC2(nc *nats.Conn, accountID string, action Action, region, baseDomain, publicIP, privateIP string) {
-	changes := EC2Changes(action, region, baseDomain, publicIP, privateIP)
+// PublishChangesBestEffort publishes a batch and logs the outcome without
+// propagating the error, so DNS registration never blocks a resource operation.
+// The reconcile loop repairs anything missed by a failed publish.
+func PublishChangesBestEffort(nc *nats.Conn, accountID string, changes []Change) {
 	if len(changes) == 0 {
 		return
 	}
-	if _, err := PublishChanges(nc, accountID, changes); err != nil {
-		slog.Warn("dns: publish ec2 records failed (continuing)",
-			"action", action, "publicIp", publicIP, "privateIp", privateIP, "error", err)
-		return
+	if res, err := PublishChanges(nc, accountID, changes); err != nil {
+		slog.Warn("dns: publish changes failed (continuing)", "count", len(changes), "error", err)
+	} else {
+		slog.Info("dns: published changes", "count", len(changes), "zones", res.Zones)
 	}
-	slog.Info("dns: published ec2 records", "action", action, "publicIp", publicIP, "privateIp", privateIP)
 }

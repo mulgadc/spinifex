@@ -23,6 +23,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
@@ -425,6 +426,7 @@ type InstanceServiceImpl struct {
 	keyValidator  KeyPairValidator
 	eniCreator    ENICreator
 	ipAllocator   PublicIPAllocator
+	dnsBaseDomain string
 }
 
 // NewInstanceServiceImpl creates a new instance service implementation for daemon use
@@ -445,6 +447,7 @@ func NewInstanceServiceImpl(
 		vmMgr:         vmMgr,
 		resourceMgr:   resourceMgr,
 		stoppedStore:  stoppedStore,
+		dnsBaseDomain: handlers_dns.ResolveBaseDomain(cfg),
 	}
 }
 
@@ -840,7 +843,28 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 		}
 	}
 
+	s.publishDNS(accountID, handlers_dns.ActionUpsert, instances)
+
 	return reservation, instances, instanceType, nil
+}
+
+// publishDNS registers (or withdraws) the public + private A records for a batch
+// of instances with the control-plane DNS writer. Best-effort: a failure is
+// logged by the writer helper and never blocks the lifecycle operation; the
+// reconcile loop repairs any miss. No-op when northstar is not configured.
+func (s *InstanceServiceImpl) publishDNS(accountID string, action handlers_dns.Action, instances []*vm.VM) {
+	if s.dnsBaseDomain == "" || len(instances) == 0 {
+		return
+	}
+	var changes []handlers_dns.Change
+	for _, instance := range instances {
+		privateIP := ""
+		if instance.Instance != nil && instance.Instance.PrivateIpAddress != nil {
+			privateIP = *instance.Instance.PrivateIpAddress
+		}
+		changes = append(changes, handlers_dns.EC2Changes(action, s.config.Region, s.dnsBaseDomain, instance.PublicIP, privateIP)...)
+	}
+	handlers_dns.PublishChangesBestEffort(s.natsConn, accountID, changes)
 }
 
 // attachPreCreatedENI verifies the ENI is available, attaches it as device-0,
@@ -1121,6 +1145,12 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 		slog.Warn("StopOrTerminateInstance: instance in incorrect state for "+strings.ToLower(action),
 			"instanceId", instance.ID, "currentState", string(currentState))
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+
+	// Withdraw the instance's DNS records on terminate (V1.6); stop/start retains
+	// the IP and the name, so they are a no-op here.
+	if isTerminate {
+		s.publishDNS(instance.AccountID, handlers_dns.ActionDelete, []*vm.VM{instance})
 	}
 
 	go func(id string) {

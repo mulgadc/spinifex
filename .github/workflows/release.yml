@@ -12,18 +12,18 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: spinifex
 
       - name: Checkout Predastore
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
           path: predastore
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
           path: viperblock
@@ -57,18 +57,18 @@ jobs:
     runs-on: ubuntu-26.04-arm
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: spinifex
 
       - name: Checkout Predastore
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
           path: predastore
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
           path: viperblock
@@ -143,7 +143,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
@@ -251,25 +251,25 @@ jobs:
           repositories: mulga
 
       - name: Checkout Spinifex
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: spinifex
           ref: ${{ github.ref }}
 
       - name: Checkout Predastore
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
           path: predastore
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
           path: viperblock
 
       - name: Checkout Mulga iso-builder
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}

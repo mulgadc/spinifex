@@ -92,14 +92,14 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 
@@ -277,7 +277,7 @@ jobs:
       SSH_KEY: ${{ needs.single_provision.outputs.ssh_key }}
       ARTIFACT_DIR: /tmp/spinifex-e2e-single-${{ github.run_id }}-${{ matrix.suite }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 
@@ -386,7 +386,7 @@ jobs:
       # Reuse the persisted mulga/ tofu-cluster workspace from single_provision.
       # Re-checkout only spinifex (for ci-fmt + diag scripts); checking out mulga
       # again would wipe the local tofu state and orphan the VM.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 
@@ -505,14 +505,14 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 
@@ -627,7 +627,7 @@ jobs:
       NODES_CSV: ${{ needs.multi_provision.outputs.nodes_csv }}
       ARTIFACT_DIR: /tmp/spinifex-e2e-multi-${{ github.run_id }}-${{ matrix.suite }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 
@@ -732,7 +732,7 @@ jobs:
       SSH_KEY: ${{ needs.multi_provision.outputs.ssh_key }}
       NODES_CSV: ${{ needs.multi_provision.outputs.nodes_csv }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 

@@ -1033,6 +1033,14 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		if err := DeleteClusterSGs(s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", err))
 		}
+		// launchNodegroupInfra also creates the cluster SGs in the customer VPC for
+		// worker<->control-plane networking; reclaim them here too, or they orphan
+		// (cross-referencing each other) and pin the customer VPC on destroy.
+		if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
+			if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+				teardownErrs = append(teardownErrs, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
+			}
+		}
 		if err := DeleteClusterCPVPC(s.cpVPCDeps(), infraAcct, name); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", err))
 		}

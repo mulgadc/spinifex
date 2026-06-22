@@ -243,6 +243,7 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		Version:        version,
 		NodeRole:       aws.StringValue(input.NodeRole),
 		Labels:         aws.StringValueMap(input.Labels),
+		Tags:           aws.StringValueMap(input.Tags),
 		CreatedAt:      now,
 		ModifiedAt:     now,
 	}
@@ -1040,6 +1041,9 @@ func nodegroupRecordToAWS(rec *NodegroupRecord) *eks.Nodegroup {
 	}
 	if len(rec.Labels) > 0 {
 		out.Labels = aws.StringMap(rec.Labels)
+	}
+	if len(rec.Tags) > 0 {
+		out.Tags = aws.StringMap(rec.Tags)
 	}
 	if rec.StatusReason != "" {
 		out.Health = &eks.NodegroupHealth{Issues: []*eks.Issue{{

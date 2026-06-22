@@ -1461,75 +1461,160 @@ func (s *EKSServiceImpl) DisassociateIdentityProviderConfig(_ *eks.DisassociateI
 
 // --- Tags ---
 //
-// Store-only against the cluster meta record (no enforcement). Together with
-// DescribeCluster echoing create-time tags this gives a stock terraform-aws
-// provider a clean default_tags round-trip instead of perpetual drift. Only
-// cluster ARNs are backed; other EKS resource ARNs return NotImplemented.
+// Store-only against the cluster meta record or nodegroup record (no
+// enforcement). Together with DescribeCluster/DescribeNodegroup echoing
+// create-time tags this gives a stock terraform-aws provider a clean
+// default_tags round-trip instead of perpetual drift. Cluster and nodegroup
+// ARNs are backed; other EKS resource ARNs return NotImplemented.
 
 func (s *EKSServiceImpl) TagResource(input *eks.TagResourceInput, accountID string) (*eks.TagResourceOutput, error) {
-	name, ok := clusterNameFromARN(aws.StringValue(input.ResourceArn))
-	if !ok {
-		return nil, notImpl()
-	}
-	acctKV, err := s.accountBucket(accountID)
-	if err != nil {
-		return nil, err
-	}
+	arn := aws.StringValue(input.ResourceArn)
 	add := aws.StringValueMap(input.Tags)
-	if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
-		if len(add) == 0 {
-			return false
+
+	if name, ok := clusterNameFromARN(arn); ok {
+		acctKV, err := s.accountBucket(accountID)
+		if err != nil {
+			return nil, err
 		}
-		if m.Tags == nil {
-			m.Tags = make(map[string]string, len(add))
+		if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+			if len(add) == 0 {
+				return false
+			}
+			if m.Tags == nil {
+				m.Tags = make(map[string]string, len(add))
+			}
+			maps.Copy(m.Tags, add)
+			return true
+		}); err != nil {
+			return nil, eksTagErr(err)
 		}
-		maps.Copy(m.Tags, add)
-		return true
-	}); err != nil {
-		return nil, eksTagErr(err)
+		return &eks.TagResourceOutput{}, nil
 	}
-	return &eks.TagResourceOutput{}, nil
+
+	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
+		if err := s.casUpdateNodegroupTags(accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+			if len(add) == 0 {
+				return tags, false
+			}
+			if tags == nil {
+				tags = make(map[string]string, len(add))
+			}
+			maps.Copy(tags, add)
+			return tags, true
+		}); err != nil {
+			return nil, err
+		}
+		return &eks.TagResourceOutput{}, nil
+	}
+
+	return nil, notImpl()
 }
 
 func (s *EKSServiceImpl) UntagResource(input *eks.UntagResourceInput, accountID string) (*eks.UntagResourceOutput, error) {
-	name, ok := clusterNameFromARN(aws.StringValue(input.ResourceArn))
-	if !ok {
-		return nil, notImpl()
-	}
-	acctKV, err := s.accountBucket(accountID)
-	if err != nil {
-		return nil, err
-	}
+	arn := aws.StringValue(input.ResourceArn)
 	keys := aws.StringValueSlice(input.TagKeys)
-	if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
-		changed := false
-		for _, k := range keys {
-			if _, ok := m.Tags[k]; ok {
-				delete(m.Tags, k)
-				changed = true
-			}
+
+	if name, ok := clusterNameFromARN(arn); ok {
+		acctKV, err := s.accountBucket(accountID)
+		if err != nil {
+			return nil, err
 		}
-		return changed
-	}); err != nil {
-		return nil, eksTagErr(err)
+		if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+			changed := false
+			for _, k := range keys {
+				if _, ok := m.Tags[k]; ok {
+					delete(m.Tags, k)
+					changed = true
+				}
+			}
+			return changed
+		}); err != nil {
+			return nil, eksTagErr(err)
+		}
+		return &eks.UntagResourceOutput{}, nil
 	}
-	return &eks.UntagResourceOutput{}, nil
+
+	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
+		if err := s.casUpdateNodegroupTags(accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+			changed := false
+			for _, k := range keys {
+				if _, ok := tags[k]; ok {
+					delete(tags, k)
+					changed = true
+				}
+			}
+			return tags, changed
+		}); err != nil {
+			return nil, err
+		}
+		return &eks.UntagResourceOutput{}, nil
+	}
+
+	return nil, notImpl()
 }
 
 func (s *EKSServiceImpl) ListTagsForResource(input *eks.ListTagsForResourceInput, accountID string) (*eks.ListTagsForResourceOutput, error) {
-	name, ok := clusterNameFromARN(aws.StringValue(input.ResourceArn))
-	if !ok {
-		return nil, notImpl()
+	arn := aws.StringValue(input.ResourceArn)
+
+	if name, ok := clusterNameFromARN(arn); ok {
+		acctKV, err := s.accountBucket(accountID)
+		if err != nil {
+			return nil, err
+		}
+		meta, err := GetClusterMeta(acctKV, name)
+		if err != nil {
+			return nil, eksTagErr(err)
+		}
+		return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(meta.Tags)}, nil
 	}
+
+	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
+		acctKV, err := s.accountBucket(accountID)
+		if err != nil {
+			return nil, err
+		}
+		rec, err := GetNodegroupRecord(acctKV, cluster, ng)
+		if err != nil {
+			if errors.Is(err, ErrNodegroupNotFound) {
+				return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			}
+			return nil, err
+		}
+		return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(rec.Tags)}, nil
+	}
+
+	return nil, notImpl()
+}
+
+// casUpdateNodegroupTags applies mutate to the nodegroup record's tag map under
+// compare-and-swap. mutate returns the new tag map and whether it changed; a
+// no-op skips the write. A missing nodegroup surfaces as ResourceNotFound.
+func (s *EKSServiceImpl) casUpdateNodegroupTags(accountID, cluster, ng string, mutate func(map[string]string) (map[string]string, bool)) error {
 	acctKV, err := s.accountBucket(accountID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	meta, err := GetClusterMeta(acctKV, name)
-	if err != nil {
-		return nil, eksTagErr(err)
+	for range ngCASMaxRetries {
+		rec, rev, err := getNodegroupEntry(acctKV, cluster, ng)
+		if err != nil {
+			if errors.Is(err, ErrNodegroupNotFound) {
+				return errors.New(awserrors.ErrorEKSResourceNotFound)
+			}
+			return err
+		}
+		tags, changed := mutate(rec.Tags)
+		if !changed {
+			return nil
+		}
+		rec.Tags = tags
+		rec.ModifiedAt = time.Now().UTC()
+		if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
+			return err
+		} else if ok {
+			return nil
+		}
 	}
-	return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(meta.Tags)}, nil
+	return errors.New(awserrors.ErrorServerInternal)
 }
 
 // accountBucket returns the per-account KV bucket for accountID.
@@ -1558,6 +1643,29 @@ func clusterNameFromARN(arn string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// nodegroupRefFromARN extracts (cluster, nodegroup) from an EKS nodegroup ARN
+// (arn:aws:eks:<region>:<acct>:nodegroup/<cluster>/<ng>/<uuid>), reporting false
+// for any other ARN shape.
+func nodegroupRefFromARN(arn string) (string, string, bool) {
+	const prefix = "arn:aws:eks:"
+	if !strings.HasPrefix(arn, prefix) {
+		return "", "", false
+	}
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) != 6 {
+		return "", "", false
+	}
+	resType, rest, found := strings.Cut(parts[5], "/")
+	if !found || resType != "nodegroup" {
+		return "", "", false
+	}
+	seg := strings.SplitN(rest, "/", 3)
+	if len(seg) < 2 || seg[0] == "" || seg[1] == "" {
+		return "", "", false
+	}
+	return seg[0], seg[1], true
 }
 
 // eksTagErr maps a meta-store error to the AWS-visible tag-op error: a missing

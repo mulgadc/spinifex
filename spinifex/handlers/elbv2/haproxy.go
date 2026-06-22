@@ -49,7 +49,7 @@ backend {{.Name}}
     option httpchk GET {{.HealthCheckPath}}
     http-check expect status {{.HealthCheckMatcher}}{{end}}
 {{- range .Servers}}
-    server {{.Name}} {{.Addr}}:{{.Port}} check inter {{.CheckInterval}}s fall {{.Fall}} rise {{.Rise}}
+    server {{.Name}} {{.Addr}}:{{.Port}} check{{if .Secure}} check-ssl ssl verify none{{end}} inter {{.CheckInterval}}s fall {{.Fall}} rise {{.Rise}}
 {{- end}}
 {{- end}}
 {{end}}
@@ -127,6 +127,10 @@ type HAProxyServer struct {
 	CheckInterval int64
 	Fall          int64
 	Rise          int64
+	// Secure re-encrypts traffic and health checks to an HTTPS target group
+	// (backend-protocol HTTPS). Without it haproxy speaks plaintext to a TLS
+	// backend, its check fails, and the server is marked DOWN (503).
+	Secure bool
 }
 
 // GenerateHAProxyConfig builds an HAProxy config from the LB, listeners, and
@@ -201,6 +205,7 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 				CheckInterval: tg.HealthCheck.IntervalSeconds,
 				Fall:          tg.HealthCheck.UnhealthyThreshold,
 				Rise:          tg.HealthCheck.HealthyThreshold,
+				Secure:        strings.EqualFold(tg.Protocol, ProtocolHTTPS),
 			})
 		}
 		cfg.Backends = append(cfg.Backends, backend)

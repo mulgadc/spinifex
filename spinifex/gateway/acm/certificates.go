@@ -44,3 +44,30 @@ func DeleteCertificate(natsConn *nats.Conn, accountID string, body []byte) (*acm
 	}
 	return handlers_acm.NewNATSACMService(natsConn).DeleteCertificate(input, accountID)
 }
+
+// ListTagsForCertificate — CertificateManager.ListTagsForCertificate
+func ListTagsForCertificate(natsConn *nats.Conn, accountID string, body []byte) (*acm.ListTagsForCertificateOutput, error) {
+	input := new(acm.ListTagsForCertificateInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameter)
+	}
+	return handlers_acm.NewNATSACMService(natsConn).ListTagsForCertificate(input, accountID)
+}
+
+// AddTagsToCertificate — CertificateManager.AddTagsToCertificate
+func AddTagsToCertificate(natsConn *nats.Conn, accountID string, body []byte) (*acm.AddTagsToCertificateOutput, error) {
+	input := new(acm.AddTagsToCertificateInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameter)
+	}
+	return handlers_acm.NewNATSACMService(natsConn).AddTagsToCertificate(input, accountID)
+}
+
+// RemoveTagsFromCertificate — CertificateManager.RemoveTagsFromCertificate
+func RemoveTagsFromCertificate(natsConn *nats.Conn, accountID string, body []byte) (*acm.RemoveTagsFromCertificateOutput, error) {
+	input := new(acm.RemoveTagsFromCertificateInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameter)
+	}
+	return handlers_acm.NewNATSACMService(natsConn).RemoveTagsFromCertificate(input, accountID)
+}

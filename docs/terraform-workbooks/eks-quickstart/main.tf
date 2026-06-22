@@ -1,23 +1,27 @@
 # Example: EKS Quickstart on Spinifex
 #
 # A minimal managed-Kubernetes cluster that ends in something you can see: a
-# VPC, the two IAM roles EKS needs, a single-worker cluster, and a demo web app
-# deployed onto it by Terraform and exposed on the worker's public IP.
+# VPC, the two IAM roles EKS needs, a one- or three-worker cluster, an ECR
+# repository, and the Spinifex-themed demo app deployed onto it by Terraform and
+# exposed on the worker's public IP.
 #
-# Once `apply` finishes, open the demo_url output in a browser. The page is
-# served by the nginxdemos/hello image and prints the pod name that answered —
-# refresh and it bounces between the app's replicas, showing the cluster is
-# really scheduling and load-balancing pods.
+# Once `apply` finishes, open the demo_url output in a browser. The page reports
+# the pod, node, cluster, and region that answered — refresh and it bounces
+# between the app's replicas, showing the cluster is really scheduling and
+# load-balancing pods.
 #
 # Demonstrates: VPC + subnets, EKS cluster + node IAM roles, an aws_eks_cluster
-# and managed aws_eks_node_group, the Kubernetes provider authenticating to the
-# cluster, and a Deployment + NodePort Service reachable from your browser.
+# and managed aws_eks_node_group, an ECR repository the workers pull from, the
+# Kubernetes provider authenticating to the cluster, and a Deployment + NodePort
+# Service reachable from your browser.
 #
 # Usage:
 #   cd spinifex/docs/terraform-workbooks/eks-quickstart
 #   export AWS_PROFILE=spinifex
 #   tofu init && tofu apply
-#   # then open the demo_url output
+#   # build + push the demo image to the ECR repo this creates (see README),
+#   # then: cd workloads && tofu init && tofu apply
+#   # finally open the demo_url output
 
 terraform {
   required_version = ">= 1.6.0"
@@ -55,6 +59,17 @@ variable "instance_type" {
   default = "t3.medium"
 }
 
+variable "node_desired_size" {
+  type        = number
+  default     = 1
+  description = "Worker count. Use 1 for a single-node demo, or 3 for an HA-shaped cluster."
+
+  validation {
+    condition     = var.node_desired_size == 1 || var.node_desired_size == 3
+    error_message = "node_desired_size must be 1 or 3."
+  }
+}
+
 variable "node_port" {
   type        = number
   default     = 30080
@@ -85,6 +100,7 @@ provider "aws" {
     iam = var.spinifex_endpoint
     sts = var.spinifex_endpoint
     eks = var.spinifex_endpoint
+    ecr = var.spinifex_endpoint
   }
 
   skip_credentials_validation = true
@@ -223,6 +239,22 @@ resource "aws_iam_role_policy_attachment" "node_ecr" {
 }
 
 # ---------------------------------------------------------------------------
+# ECR — repository the workers pull the demo image from
+#
+# Build and push the demo-app image here before applying the workloads module
+# (see ../demo-app/README.md). The node role already carries
+# AmazonEC2ContainerRegistryReadOnly, so workers can pull from it.
+# ---------------------------------------------------------------------------
+
+resource "aws_ecr_repository" "demo" {
+  name = "spinifex-demo"
+
+  tags = {
+    Name = "${var.cluster_name}-demo"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # EKS cluster — public API endpoint, API (access-entry) auth mode
 # ---------------------------------------------------------------------------
 
@@ -260,9 +292,9 @@ resource "aws_eks_node_group" "default" {
   subnet_ids      = [aws_subnet.a.id, aws_subnet.b.id]
 
   scaling_config {
-    desired_size = 1
-    min_size     = 1
-    max_size     = 2
+    desired_size = var.node_desired_size
+    min_size     = var.node_desired_size
+    max_size     = var.node_desired_size * 2
   }
 
   instance_types = [var.instance_type]
@@ -339,6 +371,15 @@ output "region" {
 
 output "node_port" {
   value = var.node_port
+}
+
+output "node_desired_size" {
+  value = var.node_desired_size
+}
+
+output "ecr_repository_url" {
+  value       = aws_ecr_repository.demo.repository_url
+  description = "Push the demo-app image here, then apply the workloads module"
 }
 
 output "demo_url" {

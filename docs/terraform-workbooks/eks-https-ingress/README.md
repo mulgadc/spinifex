@@ -1,31 +1,30 @@
 ---
-title: "3-Node EKS behind an HTTPS ALB (ACM TLS)"
-description: "Provision an HA-shaped EKS cluster with public + private API endpoints and three workers, deploy a demo app, and publish it through an internet-facing ALB that terminates TLS with an ACM-imported certificate, using Terraform on Spinifex."
+title: "EKS HTTPS Ingress (LBC + ACM)"
+description: "Serve a Spinifex-themed demo app over HTTPS on EKS using the AWS Load Balancer Controller addon and an ACM certificate — an internet-facing ALB provisioned from a Kubernetes Ingress, using Terraform on Spinifex."
 category: "Terraform Workbooks"
 tags:
   - terraform
   - eks
   - kubernetes
-  - acm
-  - tls
+  - ingress
   - alb
-  - elbv2
-  - vpc
+  - acm
+  - https
   - workbook
 resources:
+  - title: "AWS Load Balancer Controller"
+    url: "https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/"
   - title: "Terraform AWS Provider"
     url: "https://registry.terraform.io/providers/hashicorp/aws/latest"
   - title: "Terraform Kubernetes Provider"
     url: "https://registry.terraform.io/providers/hashicorp/kubernetes/latest"
   - title: "Spinifex Repository"
     url: "https://github.com/mulgadc/spinifex"
-  - title: "OpenTofu"
-    url: "https://opentofu.org/"
 ---
 
-# Terraform: 3-Node EKS behind an HTTPS ALB
+# Terraform: EKS HTTPS Ingress (LBC + ACM)
 
-> The largest EKS workbook, and the clearest demo. An HA-shaped cluster with public + private API endpoints and three workers, running a demo app published over HTTPS through an internet-facing ALB that terminates TLS with an ACM-imported certificate.
+> Builds on the quickstart. Instead of a raw NodePort, it serves the Spinifex-themed demo app over **HTTPS** through an ALB that the **AWS Load Balancer Controller** provisions from a Kubernetes **Ingress**, terminating TLS with a certificate held in **ACM** — the same pattern you'd use on AWS EKS.
 
 ## Table of Contents
 
@@ -37,59 +36,50 @@ resources:
 
 ## Overview
 
-This workbook is sized for a **3-node Spinifex deployment** and is built to show off. It brings together the pieces from the smaller EKS examples, deploys a demo app across three workers, and fronts it with a TLS-terminating load balancer. When `apply` finishes, fetch the ALB's public IP and open `https://<ip>` — the `nginxdemos/hello` page reports which pod answered, and refreshing moves between the three replicas spread across the cluster. That single page demonstrates a multi-node Kubernetes cluster load-balancing behind HTTPS.
+This is the second rung of the EKS ladder. It takes the cluster + demo app from [EKS Quickstart](../eks-quickstart) and publishes the app the way you would in production: a Kubernetes `Ingress` reconciled by the **AWS Load Balancer Controller (LBC)** into an internet-facing **Application Load Balancer** that terminates TLS with an **ACM** certificate.
 
-- **Public + private API endpoints.** `endpoint_public_access` serves `kubectl` and the Kubernetes provider from your host (CIDR-restricted); `endpoint_private_access` exposes an in-VPC private endpoint the workers use to join.
-- **Private workers + NAT.** The three workers sit in private subnets. They *join* the cluster over the in-VPC private endpoint, and a NAT gateway gives them outbound access to pull the demo container image.
-- **CoreDNS** installed as a managed addon.
-- **TLS via ACM.** A self-signed certificate is generated with the `tls` provider and **imported into ACM** (Spinifex ACM supports `ImportCertificate`, not `RequestCertificate`). The ALB's HTTPS listener references the ACM ARN and forwards to the workers' NodePort.
-- **The app, deployed by Terraform.** The Kubernetes provider deploys the Deployment + NodePort Service, and one security-group rule lets the ALB reach the NodePort.
+To make room for an internet-facing ALB with private workers, the network grows from the quickstart's two public subnets to a public/private split: the ALB and a **NAT gateway** sit in the public subnets, the workers sit in the private subnets and reach ECR through the NAT. The cluster is tagged `spinifex.io/managed-ingress = "false"`, which disables K3s' built-in traefik/servicelb so the LBC owns ingress.
 
-<p align="center">
-  <img src="../../../.github/assets/diagrams/tf-eks-https-ingress.svg" alt="3-node EKS — public+private API endpoints, ALB in public subnets terminating TLS, three workers in private subnets behind a NAT gateway" width="900">
-</p>
+The LBC is installed as a managed **addon** (`aws_eks_addon`). Spinifex wires the controller's AWS credentials and the cluster's ELB-eligible subnets at the node level and injects those subnets into the `alb` `IngressClassParams`, so the Ingress needs **no IRSA role and no subnet tags** — just `ingressClassName: alb` and a handful of annotations.
 
 **What you'll learn:**
 
-- Running an EKS cluster with both public and private API endpoints
-- Placing workers in private subnets that join over the private endpoint and egress via NAT
-- Importing a certificate into ACM and terminating TLS on an ALB HTTPS listener
-- Wiring an ALB target group to managed node-group workers via a NodePort, including the SG rule that allows it
-- Deploying a load-balanced workload with the Kubernetes provider
+- Installing the `aws-load-balancer-controller` addon and letting it own ingress
+- Disabling the built-in K3s ingress with the `spinifex.io/managed-ingress` tag
+- Importing a self-signed certificate into ACM and attaching it to an ALB listener
+- Driving an ALB entirely from a Kubernetes `Ingress` (`ingressClassName: alb`)
+- A public/private VPC with a NAT gateway for private workers
 
 **What gets created**
 
 | Resource | Name | Purpose |
 |---|---|---|
-| VPC | `eks-https-vpc` | Isolated network (10.32.0.0/16) |
-| Public Subnets | `eks-https-public-a/-b` | Host the ALB and NAT gateway |
-| Private Subnets | `eks-https-private-a/-b` | Host the workers |
-| Internet Gateway | `eks-https-igw` | Internet for the public subnets |
-| NAT Gateway (+ EIP) | `eks-https-nat` | Outbound for the private workers (image pulls) |
-| Route Tables | `eks-https-public-rt`, `eks-https-private-rt` | Public via IGW; private via NAT |
+| VPC | `eks-https-vpc` | Isolated network (10.31.0.0/16) |
+| Subnets | `eks-https-public-a/-b`, `eks-https-private-a/-b` | Public (ALB + NAT) and private (workers) |
+| Internet + NAT Gateway | `eks-https-igw`, `eks-https-nat` | Public egress; private-worker egress to ECR |
 | IAM Roles | `eks-https-cluster-role`, `eks-https-node-role` | Control-plane and worker roles |
-| EKS Cluster | `eks-https` | Public (CIDR-restricted) + private endpoints |
-| Node Group | `workers` | Three `t3.large` workers in the private subnets |
-| Addon | `coredns` | Cluster DNS |
-| ACM Cert | `eks-https-ingress` | Self-signed cert imported into ACM |
-| ALB + HTTPS Listener | `eks-https-alb` | Internet-facing, terminates TLS on :443 |
-| Target Group | `eks-https-tg` | Instance targets on the NodePort |
-| SG Ingress Rule | `eks-https-alb-nodeport` | Lets the ALB SG reach the worker NodePort |
-| K8s Deployment + Service | `hello` | `nginxdemos/hello`, 3 replicas, NodePort |
+| ECR Repository | `spinifex-demo` | Holds the demo image the workers pull |
+| EKS Cluster | `eks-https` | Public + private endpoints; `managed-ingress=false` |
+| Node Group | `workers` | `node_desired_size` `t3.large` worker(s) — 1 or 3 |
+| Addon | `aws-load-balancer-controller` | Provisions the ALB from the Ingress |
+| ACM Certificate | `eks-https-ingress` | Self-signed, imported; attached to the HTTPS listener |
+| SG Ingress Rule | `eks-https-alb-nodeport` | Admits the VPC CIDR to the workers' NodePort |
+| K8s Deployment + Service | `spinifex-demo` | Themed demo image, 2 replicas, NodePort |
+| K8s Ingress | `spinifex-demo` | `ingressClassName: alb`, HTTPS via the ACM cert |
 
 **Spinifex specifics**
 
-- ACM supports `ImportCertificate`, `DescribeCertificate`, `ListCertificates`, `DeleteCertificate` — there is no `RequestCertificate`/DNS-validation flow, hence the self-signed import.
-- The ALB HTTPS listener resolves the cert from ACM. Valid SSL policies are `ELBSecurityPolicy-2016-08` (default) and `ELBSecurityPolicy-TLS13-1-2-2021-06`.
-- The worker SG is auto-managed (`vpc_config.security_group_ids` is ignored) and admits only intra-cluster traffic. The ALB→NodePort rule is added by looking the SG up by its deterministic name and admitting the ALB SG.
-- Worker discovery uses the `spinifex:eks-cluster` tag Spinifex stamps on node-group instances; the target-group attachment count is the known `node_desired_size`.
-- Leave `addon_version` unset (see the addons workbook for why pinning it can't satisfy both the provider and the catalog).
+- **The LBC needs no IRSA or subnet tagging here.** Credentials and ELB-eligible subnets are injected by Spinifex at the node level and into the `alb` `IngressClassParams`. The Ingress just sets `ingressClassName: alb` plus the `alb.ingress.kubernetes.io/*` annotations.
+- **`spinifex.io/managed-ingress = "false"`** disables the K3s built-in traefik/servicelb so the LBC owns ingress, matching AWS parity. Omit the tag (or set it `true`) and the built-in ingress stays on.
+- The ALB targets the workers' **NodePort** (`target-type: instance`). The one SG rule admits the VPC CIDR on that port so the in-VPC ALB can reach the workers; the worker SG is otherwise auto-managed.
+- Spinifex ACM supports **ImportCertificate only** — the cert is generated by the `tls` provider and imported, not requested.
+- **Leave `addon_version` unset** (see the [quickstart/addons notes](../eks-quickstart)) — the AWS provider and the Spinifex catalog disagree on the version string format, so let the server choose.
 
 **Prerequisites:**
 
-- A 3-node Spinifex deployment, installed and running
-- The Spinifex `eks-node` image available on the cluster
-- OpenTofu or Terraform, plus `kubectl` and the AWS CLI
+- Spinifex installed and running, with the `eks-node` image (carrying the LBC bundle) available
+- OpenTofu or Terraform, plus `kubectl`, the AWS CLI, and Docker
+- The demo image built and pushed to ECR (see [`../demo-app/README.md`](../demo-app/README.md))
 
 ## Instructions
 
@@ -106,9 +96,9 @@ Or create a `main.tf` file and paste the full configuration below.
 
 <!-- INCLUDE: main.tf lang:hcl -->
 
-### Step 2. Deploy
+### Step 2. Deploy the Cluster
 
-The cluster (with its ALB and ACM cert) and the demo app are **two root modules with separate state**. Apply the cluster first:
+The cluster and the demo app are **two root modules with separate state**. Apply the cluster first (set `node_desired_size=3` for an HA-shaped cluster):
 
 ```bash
 export AWS_PROFILE=spinifex
@@ -116,7 +106,21 @@ tofu init
 tofu apply
 ```
 
-Expect several minutes: the control plane bootstraps, three workers launch and join over the private endpoint, the NAT gateway comes up, CoreDNS installs, and the ALB is provisioned. Then deploy the demo app from the nested `workloads/` module:
+This brings up the cluster, the workers, the NAT gateway, the LBC addon, the ACM cert, and the `spinifex-demo` ECR repository. Give it a few minutes to reach `ACTIVE` and for the LBC addon to report healthy.
+
+### Step 3. Build and Push the Demo Image
+
+```bash
+cd ../demo-app
+REGISTRY=$(cd ../eks-https-ingress && tofu output -raw ecr_repository_url)
+REGISTRY_HOST=${REGISTRY%%/*}
+aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY_HOST"
+docker build -t "$REGISTRY:latest" .
+docker push "$REGISTRY:latest"
+cd ../eks-https-ingress
+```
+
+### Step 4. Deploy the App and Ingress
 
 ```bash
 cd workloads
@@ -124,55 +128,25 @@ tofu init
 tofu apply
 ```
 
-The ALB target group already points at the workers' NodePort; once these pods are running the targets turn healthy.
-
-> **Why two modules?** The Kubernetes provider in `workloads/` reads the cluster endpoint from a live `data "aws_eks_cluster"` source, so it's only ever configured while the cluster exists. Keeping it out of the cluster module means `destroy` never tries to refresh a workload against a cluster that's already gone — the failure mode where the provider falls back to `http://localhost:80` and reports `connection refused`. Always destroy `workloads/` before the cluster.
-
-> **Keep `AWS_PROFILE=spinifex` exported** for both applies — the Kubernetes provider authenticates with `aws eks get-token` against the Spinifex STS endpoint.
+> **Why two modules?** The Kubernetes provider in `workloads/` reads the cluster endpoint from a live `data "aws_eks_cluster"` source, so it's only configured while the cluster exists. Always destroy `workloads/` before the cluster, or the provider falls back to `http://localhost:80` and reports `connection refused`. Keep `AWS_PROFILE=spinifex` exported for both applies.
 
 <!-- INCLUDE: workloads/main.tf lang:hcl -->
 
-> **Tighten access in production.** `api_public_access_cidr` and `alb_ingress_cidr` both default to `0.0.0.0/0`. Set them to your own CIDR:
->
-> ```bash
-> export TF_VAR_api_public_access_cidr="203.0.113.10/32"
-> export TF_VAR_alb_ingress_cidr="203.0.113.10/32"
-> ```
+### Step 5. Open the Demo over HTTPS
 
-### Step 3. Open the Demo over HTTPS
-
-The ALB DNS name (`*.elb.spinifex.local`) won't resolve from your host, so fetch its public IP:
+The LBC takes a minute or two to provision the ALB after the Ingress is created. Fetch its address and open it:
 
 ```bash
-ALB_IP=$(aws elbv2 describe-load-balancers --names eks-https-alb \
-  --query 'LoadBalancers[0].AvailabilityZones[].LoadBalancerAddresses[].IpAddress' \
-  --output text)
+kubectl get ingress spinifex-demo -o wide
+ADDR=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+curl -k "https://$ADDR"        # self-signed cert: -k skips verification
 ```
 
-The certificate is self-signed, so a browser will warn (proceed anyway) and `curl` needs `-k`:
-
-```bash
-curl -k https://$ALB_IP
-curl -k https://$ALB_IP   # refresh: the "Server name" changes between pods
-```
-
-Open `https://$ALB_IP` in a browser and refresh to watch requests land on different pods across the three nodes.
-
-### Step 4. Inspect (optional)
-
-```bash
-aws eks update-kubeconfig --name eks-https --region ap-southeast-2
-kubectl get nodes
-kubectl get pods -o wide          # three replicas, one per node
-
-TG_ARN=$(aws elbv2 describe-target-groups --names eks-https-tg \
-  --query 'TargetGroups[0].TargetGroupArn' --output text)
-aws elbv2 describe-target-health --target-group-arn "$TG_ARN"
-```
+Open `https://$ADDR` in a browser (accept the self-signed certificate). The Spinifex-themed page reports the pod, node, cluster, and region that answered — refresh to watch requests land on different replicas, now over HTTPS through the ALB.
 
 ### Cleanup
 
-Destroy in reverse — the demo app first (while the cluster is still up), then the cluster:
+Destroy in reverse — the app/Ingress first (so the LBC tears the ALB down while the cluster is up), then the cluster:
 
 ```bash
 cd workloads
@@ -183,60 +157,40 @@ tofu destroy
 
 ## Troubleshooting
 
-### Targets Unhealthy / ALB Returns 5xx
+### The Ingress Has No Address
 
-The ALB health-checks `/` on the NodePort. Targets turn healthy once the demo pods are running *and* the SG rule admits the ALB. Check, in order:
-
-```bash
-kubectl get pods -o wide                                  # pods Running?
-aws ec2 describe-security-groups \
-  --filters "Name=group-name,Values=eks-cluster-eks-https-nodegroup-sg" \
-  --query 'SecurityGroups[0].IpPermissions'               # NodePort rule present?
-aws elbv2 describe-target-health --target-group-arn "$TG_ARN"
-```
-
-If pods are `ImagePullBackOff`, the workers can't reach Docker Hub — confirm the NAT gateway is `available`:
+The LBC populates `status.loadBalancer` once it has provisioned the ALB. If it stays empty:
 
 ```bash
-aws ec2 describe-nat-gateways --query 'NatGateways[].[NatGatewayId,State]'
+kubectl describe ingress spinifex-demo            # events show LBC reconcile errors
+kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=50
+aws eks describe-addon --cluster-name eks-https --addon-name aws-load-balancer-controller --query 'addon.status'
 ```
 
-### Workers Never Join
+Confirm the addon is `ACTIVE` and the cluster carries `spinifex.io/managed-ingress = "false"` (otherwise the built-in ingress competes).
 
-The workers join over the private endpoint. Confirm it's enabled and the node group is progressing:
+> **Verify on a live cluster.** The LBC reconcile path (ALB creation, target registration, listener wiring) exercises the running Spinifex EKS data plane end to end. Stand this up on a live stack to confirm the ALB serves the page; the manifests here are the AWS-parity shape of that flow.
+
+### HTTPS Loads but Returns 502 / 504
+
+The ALB reached the workers but the backend didn't answer. Check the demo pods and the NodePort SG rule:
 
 ```bash
-aws eks describe-cluster --name eks-https --query 'cluster.resourcesVpcConfig.endpointPrivateAccess'
-aws eks describe-nodegroup --cluster-name eks-https --nodegroup-name workers --query 'nodegroup.status'
+kubectl get pods -o wide
+kubectl get svc spinifex-demo
+aws ec2 describe-security-groups --filters "Name=group-name,Values=eks-cluster-eks-https-nodegroup-sg" \
+  --query 'SecurityGroups[0].IpPermissions'
 ```
 
-### Target-Group Attachment Errors at Apply
+The `eks-https-alb-nodeport` rule must admit the VPC CIDR on the NodePort, and the target group health check (`/healthz`) must pass.
 
-The attachment indexes the discovered worker IDs by `node_desired_size`. If `apply` errors with an index out of range, the workers weren't all tagged/running when the `aws_instances` lookup ran. Re-run `tofu apply` — the node group will be `ACTIVE` by then:
+### Addon Fails With "no baked bundle"
 
-```bash
-aws ec2 describe-instances --filters "Name=tag:spinifex:eks-cluster,Values=eks-https" \
-  --query 'Reservations[].Instances[].[InstanceId,State.Name]' --output text
-```
+Spinifex only installs addons whose manifests are baked into the `eks-node` AMI. If `describe-addon` reports `CREATE_FAILED` with `no baked bundle`, the running worker image predates the LBC bundle — rebuild and republish the `eks-node` image, then recreate the addon.
 
-### kubernetes provider: connection refused / Unauthorized
+### Pods Stuck in ImagePullBackOff
 
-The provider runs `aws eks get-token` against the Spinifex STS endpoint. If the cluster was still `CREATING` when the provider first connected, re-run `tofu apply`. Otherwise confirm:
-
-```bash
-aws sts get-caller-identity
-aws eks describe-cluster --name eks-https --query 'cluster.status'
-```
-
-### ACM Import / HTTPS Listener Errors
-
-```bash
-aws acm list-certificates
-aws acm describe-certificate --certificate-arn "$(tofu output -raw certificate_arn)" \
-  --query 'Certificate.Status'
-```
-
-A `CertificateNotFound` on the listener means the ACM ARN didn't resolve — check the cert exists and belongs to the same account/profile.
+The private workers pull from ECR through the NAT gateway. Confirm the image was pushed (`tofu output ecr_repository_url`), the NAT route is in place, and the node role carries `AmazonEC2ContainerRegistryReadOnly`.
 
 ### Provider Connection Refused
 

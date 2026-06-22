@@ -16,10 +16,10 @@ sections:
 resources:
   - title: "EKS Quickstart Workbook"
     url: "https://github.com/mulgadc/spinifex/tree/main/docs/terraform-workbooks/eks-quickstart"
-  - title: "EKS HTTPS Ingress Workbook"
+  - title: "EKS HTTPS Ingress Workbook (LBC + ACM)"
     url: "https://github.com/mulgadc/spinifex/tree/main/docs/terraform-workbooks/eks-https-ingress"
-  - title: "EKS Addons & Access Workbook"
-    url: "https://github.com/mulgadc/spinifex/tree/main/docs/terraform-workbooks/eks-addons-access"
+  - title: "EKS GitOps Workbook (Argo CD + EBS-CSI)"
+    url: "https://github.com/mulgadc/spinifex/tree/main/docs/terraform-workbooks/eks-gitops-argocd"
   - title: "Terraform AWS Provider"
     url: "https://registry.terraform.io/providers/hashicorp/aws/latest"
   - title: "kubectl Documentation"
@@ -227,7 +227,7 @@ aws eks update-kubeconfig --name eks-quickstart
 kubectl get nodes
 ```
 
-For more, the **eks-https-ingress** workbook adds private subnets, a NAT gateway, and an HTTPS load balancer, and **eks-addons-access** demonstrates managed addons and access entries. See the full templates linked in Resources.
+The workbooks form a ladder. **eks-quickstart** is a NodePort demo; **eks-https-ingress** adds private subnets, a NAT gateway, and HTTPS via the AWS Load Balancer Controller + ACM; **eks-gitops-argocd** delivers the app from a git repo with the Argo CD addon and persists state on an EBS-CSI (Viperblock-backed) volume. See the full templates linked in Resources.
 
 :::
 

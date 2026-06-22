@@ -1,30 +1,27 @@
-# Example: EKS HTTPS Ingress via the AWS Load Balancer Controller + ACM
+# Example: GitOps on EKS with Argo CD + a persistent EBS-CSI volume
 #
-# Builds on eks-quickstart. Instead of poking a NodePort open on the worker, this
-# workbook serves the Spinifex-themed demo app over HTTPS through an Application
-# Load Balancer that the AWS Load Balancer Controller (LBC) provisions from a
-# Kubernetes Ingress — the same pattern you'd use on AWS EKS.
+# The top rung of the EKS ladder. It extends eks-https-ingress (LBC + ACM HTTPS)
+# and changes how the app is delivered: instead of Terraform applying the
+# workload, the Argo CD addon syncs a more elaborate Spinifex-themed app from a
+# git repository, and the app stores state on a Viperblock-backed EBS volume
+# provisioned dynamically through the EBS-CSI driver.
 #
-# What it adds over the quickstart:
-#   * Public subnets for the ALB + a NAT gateway, private subnets for the workers.
-#   * The aws-load-balancer-controller addon, installed through the EKS API.
-#   * The cluster tag spinifex.io/managed-ingress = "false", which disables K3s'
-#     built-in traefik/servicelb so the LBC owns ingress (AWS parity).
-#   * A self-signed certificate imported into ACM and attached to the ALB's HTTPS
-#     listener via an Ingress annotation.
+# What it adds over eks-https-ingress:
+#   * The argocd addon — GitOps continuous delivery, installed via the EKS API.
+#   * The aws-ebs-csi-driver addon — dynamic EBS (Viperblock) PersistentVolumes.
+#   * An access entry granting a second IAM principal read-only cluster access.
 #
-# The workloads/ module then creates a Deployment, a NodePort Service, and an
-# Ingress (ingressClassName: alb). The LBC reconciles that Ingress into an
-# internet-facing ALB that terminates TLS with the ACM cert and forwards to the
-# workers' NodePort. The cluster's ELB-eligible subnets are injected by Spinifex
-# into the alb IngressClassParams, so the Ingress needs no subnet annotations.
+# The workloads/ module registers the (private) git repo with Argo CD, creates an
+# Argo CD Application that syncs the app from it, and keeps the HTTPS Ingress
+# (LBC + ACM) pointing at the git-managed Service. The app's manifests — including
+# the PersistentVolumeClaim — live in the git repo (see ../../../../eks-demo-app).
 #
 # Usage:
-#   cd spinifex/docs/terraform-workbooks/eks-https-ingress
+#   cd spinifex/docs/terraform-workbooks/eks-gitops-argocd
 #   export AWS_PROFILE=spinifex
 #   tofu init && tofu apply
 #   # build + push the demo image to the ECR repo this creates (see README),
-#   # then: cd workloads && tofu init && tofu apply
+#   # then: cd workloads && tofu init && tofu apply -var git_repo_url=... -var git_token=...
 #   # finally: kubectl get ingress spinifex-demo -o wide  → open https://<address>
 
 terraform {
@@ -53,7 +50,7 @@ variable "region" {
 
 variable "cluster_name" {
   type    = string
-  default = "eks-https"
+  default = "eks-gitops"
 }
 
 variable "k8s_version" {
@@ -85,7 +82,7 @@ variable "node_port" {
 
 variable "cert_common_name" {
   type    = string
-  default = "eks-https.spinifex.local"
+  default = "eks-gitops.spinifex.local"
 }
 
 variable "api_public_access_cidr" {
@@ -130,7 +127,7 @@ data "aws_availability_zones" "available" {
 # ---------------------------------------------------------------------------
 
 resource "aws_vpc" "main" {
-  cidr_block           = "10.31.0.0/16"
+  cidr_block           = "10.32.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
 
@@ -149,7 +146,7 @@ resource "aws_internet_gateway" "igw" {
 
 resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.31.1.0/24"
+  cidr_block              = "10.32.1.0/24"
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
 
@@ -160,7 +157,7 @@ resource "aws_subnet" "public_a" {
 
 resource "aws_subnet" "public_b" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.31.2.0/24"
+  cidr_block              = "10.32.2.0/24"
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
 
@@ -171,7 +168,7 @@ resource "aws_subnet" "public_b" {
 
 resource "aws_subnet" "private_a" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.31.11.0/24"
+  cidr_block        = "10.32.11.0/24"
   availability_zone = data.aws_availability_zones.available.names[0]
 
   tags = {
@@ -181,7 +178,7 @@ resource "aws_subnet" "private_a" {
 
 resource "aws_subnet" "private_b" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.31.12.0/24"
+  cidr_block        = "10.32.12.0/24"
   availability_zone = data.aws_availability_zones.available.names[0]
 
   tags = {
@@ -311,6 +308,23 @@ resource "aws_iam_role_policy_attachment" "node_ecr" {
 }
 
 # ---------------------------------------------------------------------------
+# IAM — a second principal to grant read-only cluster access to
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "viewer" {
+  name = "${var.cluster_name}-viewer"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+}
+
+# ---------------------------------------------------------------------------
 # ECR — repository the workers pull the demo image from
 # ---------------------------------------------------------------------------
 
@@ -404,6 +418,69 @@ resource "aws_eks_addon" "lbc" {
   tags = {
     Name = "${var.cluster_name}-lbc"
   }
+}
+
+# ---------------------------------------------------------------------------
+# Addon — Argo CD (GitOps delivery)
+#
+# Installed through the EKS API; Spinifex stages the bundle host-side and the
+# worker renders it into the K3s auto-deploy dir. The workloads module registers
+# the git repo and creates the Argo CD Application that syncs the demo app.
+# addon_version omitted (see the LBC note).
+# ---------------------------------------------------------------------------
+
+resource "aws_eks_addon" "argocd" {
+  cluster_name                = aws_eks_cluster.this.name
+  addon_name                  = "argocd"
+  resolve_conflicts_on_create = "OVERWRITE"
+
+  depends_on = [aws_eks_node_group.workers]
+
+  tags = {
+    Name = "${var.cluster_name}-argocd"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Addon — EBS CSI driver (Viperblock-backed PersistentVolumes)
+#
+# Ships a default gp3 StorageClass (provisioner ebs.csi.aws.com). A PVC in the
+# demo app's git manifests dynamically provisions a Viperblock-backed EBS volume
+# so the app's state survives pod restarts. addon_version omitted (see LBC note).
+# ---------------------------------------------------------------------------
+
+resource "aws_eks_addon" "ebs_csi" {
+  cluster_name                = aws_eks_cluster.this.name
+  addon_name                  = "aws-ebs-csi-driver"
+  resolve_conflicts_on_create = "OVERWRITE"
+
+  depends_on = [aws_eks_node_group.workers]
+
+  tags = {
+    Name = "${var.cluster_name}-ebs-csi"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Access entry — grant the viewer principal read-only access (API auth mode)
+# ---------------------------------------------------------------------------
+
+resource "aws_eks_access_entry" "viewer" {
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = aws_iam_role.viewer.arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "viewer" {
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = aws_iam_role.viewer.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.viewer]
 }
 
 # ---------------------------------------------------------------------------
@@ -503,6 +580,10 @@ output "node_desired_size" {
 
 output "certificate_arn" {
   value = aws_acm_certificate.ingress.arn
+}
+
+output "viewer_principal_arn" {
+  value = aws_iam_role.viewer.arn
 }
 
 output "ecr_repository_url" {

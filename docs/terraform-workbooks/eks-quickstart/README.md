@@ -1,6 +1,6 @@
 ---
 title: "EKS Quickstart"
-description: "Stand up a minimal managed-Kubernetes cluster and a browsable demo app — VPC, IAM roles, an EKS cluster, a single-worker node group, and a load-balanced web page — using Terraform on Spinifex."
+description: "Stand up a minimal managed-Kubernetes cluster and a browsable Spinifex-themed demo app — VPC, IAM roles, an EKS cluster, a one- or three-worker node group, an ECR repository, and a load-balanced web page — using Terraform on Spinifex."
 category: "Terraform Workbooks"
 tags:
   - terraform
@@ -22,7 +22,7 @@ resources:
 
 # Terraform: EKS Quickstart
 
-> The smallest end-to-end EKS example on Spinifex: a VPC, the two IAM roles EKS needs, a single-worker cluster, and a demo web app you can open in a browser.
+> The smallest end-to-end EKS example on Spinifex: a VPC, the two IAM roles EKS needs, a one- or three-worker cluster, an ECR repository, and a Spinifex-themed demo app you can open in a browser.
 
 ## Table of Contents
 
@@ -34,9 +34,9 @@ resources:
 
 ## Overview
 
-Provision a managed Kubernetes cluster on Spinifex with Terraform/OpenTofu — and finish with something you can actually see. As well as the cluster, this workbook deploys a small demo app onto it and publishes it on the worker's public IP. When `apply` finishes, open the **`demo_url`** output: the page is served by `nginxdemos/hello` and prints the name of the pod that answered. Refresh it and the answering pod changes, so even a non-technical viewer can watch Kubernetes scheduling and load-balancing in real time.
+Provision a managed Kubernetes cluster on Spinifex with Terraform/OpenTofu — and finish with something you can actually see. As well as the cluster, this workbook creates an **ECR repository**, then deploys the Spinifex-themed demo app onto the cluster and publishes it on the worker's public IP. When `apply` finishes, open the **`demo_url`** output: the page reports the **pod, node, cluster, and region** that answered. Refresh it and the answering pod changes, so even a non-technical viewer can watch Kubernetes scheduling and load-balancing in real time.
 
-Under the hood it keeps things minimal: a VPC with two public subnets, an IAM role for the control plane, an IAM role for the workers with the three managed policies AWS-managed node groups expect, a public-endpoint `aws_eks_cluster`, and a single-node `aws_eks_node_group`. Terraform then uses the **Kubernetes provider** (authenticating exactly like `kubectl` does, via `aws eks get-token`) to deploy the Deployment + NodePort Service.
+Under the hood it keeps things minimal: a VPC with two public subnets, an IAM role for the control plane, an IAM role for the workers with the three managed policies AWS-managed node groups expect, a public-endpoint `aws_eks_cluster`, and a node group sized by **`node_desired_size`** (1 for a single-node demo, or 3 for an HA-shaped cluster). You build the demo image and push it to the ECR repository, then Terraform uses the **Kubernetes provider** (authenticating exactly like `kubectl` does, via `aws eks get-token`) to deploy the Deployment + NodePort Service.
 
 **What you'll learn:**
 
@@ -54,11 +54,12 @@ Under the hood it keeps things minimal: a VPC with two public subnets, an IAM ro
 | Subnets | `eks-quickstart-subnet-a/-b` | Public subnets for the cluster and worker |
 | Internet Gateway | `eks-quickstart-igw` | Egress so the worker can pull the demo image |
 | IAM Roles | `eks-quickstart-cluster-role`, `eks-quickstart-node-role` | Control-plane and worker roles |
+| ECR Repository | `spinifex-demo` | Holds the demo image the workers pull |
 | EKS Cluster | `eks-quickstart` | Public API endpoint, API auth mode, Kubernetes 1.32 |
-| Node Group | `default` | One `t3.medium` worker |
+| Node Group | `default` | `node_desired_size` `t3.medium` worker(s) — 1 or 3 |
 | SG Ingress Rule | `eks-quickstart-demo-nodeport` | Opens the demo NodePort on the auto-managed worker SG |
-| K8s Deployment | `hello` | `nginxdemos/hello`, 2 replicas |
-| K8s Service | `hello` | NodePort publishing the demo on the worker |
+| K8s Deployment | `spinifex-demo` | The themed demo image from ECR, 2 replicas |
+| K8s Service | `spinifex-demo` | NodePort publishing the demo on the worker |
 
 **Spinifex specifics**
 
@@ -72,6 +73,7 @@ Under the hood it keeps things minimal: a VPC with two public subnets, an IAM ro
 - Spinifex installed and running (see [Installing Spinifex](/docs/install))
 - The Spinifex `eks-node` image available on the cluster
 - OpenTofu or Terraform, plus `kubectl` and the AWS CLI
+- Docker, to build and push the demo image to ECR
 
 ## Instructions
 
@@ -98,7 +100,27 @@ tofu init
 tofu apply
 ```
 
-This creates the cluster (which bootstraps a control-plane VM and brings up k3s — a few minutes in `CREATING`), launches the worker, and opens the NodePort. Once it's `ACTIVE`, deploy the demo app from the nested `workloads/` module:
+This creates the cluster (which bootstraps a control-plane VM and brings up k3s — a few minutes in `CREATING`), launches the worker(s), creates the `spinifex-demo` ECR repository, and opens the NodePort.
+
+Set the worker count with `node_desired_size` (`1` for a single node, `3` for an HA-shaped cluster):
+
+```bash
+tofu apply -var node_desired_size=3
+```
+
+Once the cluster is `ACTIVE`, **build and push the demo image** to the ECR repository this created (full commands in [`../demo-app/README.md`](../demo-app/README.md)):
+
+```bash
+cd ../demo-app
+REGISTRY=$(cd ../eks-quickstart && tofu output -raw ecr_repository_url)
+REGISTRY_HOST=${REGISTRY%%/*}
+aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY_HOST"
+docker build -t "$REGISTRY:latest" .
+docker push "$REGISTRY:latest"
+cd ../eks-quickstart
+```
+
+Then deploy the demo app from the nested `workloads/` module — it defaults `demo_image` to the parent's ECR repository at `:latest`:
 
 ```bash
 cd workloads
@@ -120,7 +142,7 @@ Run from the cluster module directory (`cd ..` if you're still in `workloads/`):
 tofu output demo_url
 ```
 
-Open that URL in a browser. You'll see the `nginxdemos/hello` page showing the **Server name** (the pod that handled the request). Refresh a few times — with two replicas, the pod name alternates, demonstrating that the Service is load-balancing across the cluster.
+Open that URL in a browser. You'll see the Spinifex-themed page reporting the **pod, node, cluster, and region** that handled the request. Refresh a few times — with two replicas, the pod name alternates, demonstrating that the Service is load-balancing across the cluster.
 
 ### Step 4. Inspect with kubectl (optional)
 
@@ -162,7 +184,7 @@ aws ec2 describe-security-groups --filters "Name=group-name,Values=eks-cluster-e
   --query 'SecurityGroups[0].IpPermissions'
 ```
 
-If the pods are `Pending`, the worker may not be `Ready` yet — give it a moment. If they're `ImagePullBackOff`, the worker can't reach Docker Hub; confirm the IGW route and the worker's public IP.
+If the pods are `Pending`, the worker may not be `Ready` yet — give it a moment. If they're `ImagePullBackOff`, the worker can't pull from ECR: confirm you built and pushed the image (`tofu output ecr_repository_url`), that the IGW route and the worker's public IP are in place, and that the node role carries `AmazonEC2ContainerRegistryReadOnly`.
 
 ### kubernetes provider: connection refused / Unauthorized
 

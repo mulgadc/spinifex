@@ -22,4 +22,10 @@ func TestNATSACMService_NoResponder(t *testing.T) {
 	require.Error(t, err)
 	_, err = svc.DeleteCertificate(&acm.DeleteCertificateInput{}, testAccountID)
 	require.Error(t, err)
+	_, err = svc.ListTagsForCertificate(&acm.ListTagsForCertificateInput{}, testAccountID)
+	require.Error(t, err)
+	_, err = svc.AddTagsToCertificate(&acm.AddTagsToCertificateInput{}, testAccountID)
+	require.Error(t, err)
+	_, err = svc.RemoveTagsFromCertificate(&acm.RemoveTagsFromCertificateInput{}, testAccountID)
+	require.Error(t, err)
 }

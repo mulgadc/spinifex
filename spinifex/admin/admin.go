@@ -60,6 +60,10 @@ type ConfigSettings struct {
 	// Predastore multi-node
 	PredastoreNodeID int
 
+	// CompactionIntervalSeconds gates the predastore [compaction] block. Zero
+	// means unset: no block is emitted and predastore keeps its built-in default.
+	CompactionIntervalSeconds int
+
 	// Node capabilities
 	Services []string
 
@@ -878,20 +882,21 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP, wanIP s
 // GenerateMultiNodePredastoreConfig produces a complete predastore.toml for a
 // multi-node Predastore cluster. Each node gets its own DB entry (port 6660)
 // and shard entry (port 9991) on a distinct IP. Node ID 1 is the bootstrap leader.
-func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string) (string, error) {
+func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string, compactionIntervalSeconds int) (string, error) {
 	if len(nodes) < 2 {
 		return "", fmt.Errorf("multi-node predastore requires at least 2 nodes, got %d", len(nodes))
 	}
 
 	data := struct {
-		Nodes     []PredastoreNodeConfig
-		AccessKey string
-		SecretKey string
-		Region    string
-		NatsToken string
-		ConfigDir string
-		BindIP    string
-	}{nodes, accessKey, secretKey, region, natsToken, configDir, bindIP}
+		Nodes                     []PredastoreNodeConfig
+		AccessKey                 string
+		SecretKey                 string
+		Region                    string
+		NatsToken                 string
+		ConfigDir                 string
+		BindIP                    string
+		CompactionIntervalSeconds int
+	}{nodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionIntervalSeconds}
 
 	tmpl, err := template.New("predastore-multinode").Parse(templateStr)
 	if err != nil {

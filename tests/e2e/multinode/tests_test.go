@@ -2,7 +2,12 @@
 
 package multinode
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
+)
 
 // Top-level Test* wrappers, each delegating to a runX function. Parallel tests
 // share the read-only singleton trio; sequential tests mutate cluster state
@@ -95,4 +100,11 @@ func TestMultinodeVPCNetworking(t *testing.T) {
 func TestMultinodeIPSec(t *testing.T) {
 	t.Parallel()
 	runIPSec(t, requireMultiNodeFixture(t))
+}
+
+// TestPredastoreCompaction is sequential: drives write-then-delete churn against
+// predastore and asserts on-disk reclaim, mutating shard-store state.
+func TestPredastoreCompaction(t *testing.T) {
+	fix := requireMultiNodeFixture(t)
+	harness.AssertPredastoreCompaction(context.Background(), t, fix.Cluster)
 }

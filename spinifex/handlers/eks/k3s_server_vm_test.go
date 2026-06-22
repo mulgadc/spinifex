@@ -439,10 +439,13 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "  - CriticalAddonsOnly=true:NoExecute")
 	// Parity default (BuiltinIngress=false): K3s' bundled traefik + servicelb are
 	// disabled; Service type=LoadBalancer / Ingress are the AWS LB Controller's job.
+	// local-storage is disabled too so its local-path provisioner does not add a
+	// second default StorageClass racing the EBS CSI one.
 	// With built-in ingress off there is nothing to defer, so EKS_DEFER_TRAEFIK=0.
 	assert.Contains(t, udata, "disable:")
 	assert.Contains(t, udata, "  - traefik")
 	assert.Contains(t, udata, "  - servicelb")
+	assert.Contains(t, udata, "  - local-storage")
 	assert.Contains(t, udata, "EKS_DEFER_TRAEFIK=0")
 	assert.Contains(t, udata, "tls-san:")
 	assert.Contains(t, udata, "  - eks-alpha-lb-001.us-east-1.elb.spinifex.local")

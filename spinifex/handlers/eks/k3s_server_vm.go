@@ -446,7 +446,7 @@ func buildK3sUserData(in K3sServerInput) string {
 	// First server uses cluster-init (embedded etcd); join servers set `server: <first>` + token.
 	// etcd-expose-metrics: surfaces etcd fsync/commit latency on 127.0.0.1:2381/metrics.
 	// anonymous-auth=true: reconciler probes /healthz unauthenticated to gate ACTIVE; RBAC limits exposure.
-	// When BuiltinIngress=false, traefik+servicelb are disabled for AWS LB Controller parity.
+	// When BuiltinIngress=false, traefik+servicelb+local-storage are disabled for AWS LB Controller parity.
 	// When true, traefik is deferred (not disabled) to avoid hammering etcd during bootstrap.
 	var configLines []string
 	if in.ServerURL == "" {
@@ -473,6 +473,10 @@ func buildK3sUserData(in K3sServerInput) string {
 			"disable:",
 			"  - traefik",
 			"  - servicelb",
+			// EKS has no local-path provisioner; leaving it enabled gives the
+			// cluster a second default StorageClass that races ebs-gp3. Disable
+			// it so the EBS CSI StorageClass is the sole default.
+			"  - local-storage",
 		)
 	}
 	configLines = append(configLines, "tls-san:", "  - "+in.NLBDNS)

@@ -39,7 +39,7 @@ func northstarSettings() admin.ConfigSettings {
 func TestNorthstarTomlTemplate(t *testing.T) {
 	content := renderTemplate(t, northstarTomlTemplate, northstarSettings())
 
-	assert.Contains(t, content, `default_domain = "spinifex.local"`)
+	assert.Contains(t, content, `default_domain = "spx3.net"`)
 	assert.Contains(t, content, `bucket     = "northstar"`)
 	assert.Contains(t, content, `access_key = "AKIANORTHSTAR"`)
 	assert.Contains(t, content, `secret_key = "NORTHSTARSECRET"`)

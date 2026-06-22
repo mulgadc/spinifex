@@ -117,7 +117,7 @@ type ConfigSettings struct {
 	NorthstarAccessKey     string
 	NorthstarSecretKey     string
 	NorthstarBucket        string // S3 bucket holding zone files (default "northstar")
-	NorthstarDefaultDomain string // authoritative base domain (default "spinifex.local")
+	NorthstarDefaultDomain string // authoritative base domain (default "spx3.net")
 	NorthstarConfigPath    string // path to northstar.toml, rendered into spinifex.toml
 }
 
@@ -460,7 +460,7 @@ const (
 	// NorthstarBucketName is the S3 bucket holding DNS zone files.
 	NorthstarBucketName = "northstar"
 	// NorthstarDefaultDomain is the authoritative base domain for internal names.
-	NorthstarDefaultDomain = "spinifex.local"
+	NorthstarDefaultDomain = "spx3.net"
 )
 
 // SystemAccountID returns the system/root account ID (000000000000).

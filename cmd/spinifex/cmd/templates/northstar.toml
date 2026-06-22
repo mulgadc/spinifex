@@ -6,6 +6,7 @@
 # the per-VPC resolver VIP (:53) is fronted by OVN and remapped to :5300.
 listen     = "0.0.0.0:5300"
 dot_listen = ""
+doh_listen = ""
 tls_cert   = ""
 tls_key    = ""
 

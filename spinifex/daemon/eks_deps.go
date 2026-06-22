@@ -36,7 +36,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		}
 	}
 
-	return handlers_eks.EKSServiceDeps{
+	deps := handlers_eks.EKSServiceDeps{
 		Config:           d.config,
 		NATSConn:         d.natsConn,
 		MasterKey:        masterKey,
@@ -63,6 +63,25 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		PlacementGroup:   handlers_ec2_placementgroup.NewNATSPlacementGroupService(d.natsConn),
 		Scheduler:        handlers_eks.NewNATSHostScheduler(d.natsConn),
 	}
+
+	// A KV-backed IAM service (sharing the gateway's buckets over NATS) lets EKS
+	// find-or-create the node-role instance profile workers need for ECR pulls.
+	// Only wired when the master key is present; a typed-nil would defeat the
+	// service's own nil guard.
+	if masterKey != nil {
+		clusterSize := 1
+		if d.clusterConfig != nil {
+			clusterSize = len(d.clusterConfig.Nodes)
+		}
+		if iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.natsConn, masterKey, clusterSize); iamErr != nil {
+			slog.Warn("EKS: IAM service init failed; nodegroup workers launch without an instance profile, internal ECR pulls will fail",
+				"err", iamErr)
+		} else {
+			deps.IAM = iamSvc
+		}
+	}
+
+	return deps
 }
 
 // resolveGatewayHost returns the single AWSGW host used by LB VMs, EKS OIDC

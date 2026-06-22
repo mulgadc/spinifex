@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -62,6 +63,11 @@ type EKSServiceDeps struct {
 	IGW       igwProvisioner
 	Worker    WorkerLauncher
 
+	// IAM backs a nodegroup's node role with an instance profile so workers expose
+	// the role over IMDS for the ECR credential provider. Nil disables the wiring
+	// (workers launch without a profile and cannot pull from the internal ECR).
+	IAM instanceProfileEnsurer
+
 	// VPCMgr / NATGW / RouteTable compose the managed control-plane VPC ("Set B")
 	// from the real EC2 VPC-family APIs under the system account. The daemon
 	// adapts its concrete VPC / NAT-gateway / route-table services onto these.
@@ -84,6 +90,15 @@ type EKSServiceDeps struct {
 type WorkerLauncher interface {
 	RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
 	TerminateWorkerInstances(instanceIDs []string, accountID string) error
+}
+
+// instanceProfileEnsurer is the narrow IAM surface EKS needs to find-or-create the
+// instance profile that fronts a nodegroup's node role. Real EKS creates this
+// profile implicitly for a node role; Spinifex does the same at worker launch.
+type instanceProfileEnsurer interface {
+	GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
+	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
+	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
 }
 
 // eipProvisioner is the narrow EIP surface for allocating a CP VM egress IP.

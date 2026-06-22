@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -468,6 +469,20 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 			Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(rec.DiskSize)},
 		}}
 	}
+
+	// Attach the node role's instance profile so IMDS serves the role to the ECR
+	// credential provider; without it worker pulls from the internal ECR get 401.
+	if s.deps.IAM != nil && rec.NodeRole != "" {
+		profileARN, perr := s.ensureNodeInstanceProfile(accountID, rec.NodeRole)
+		if perr != nil {
+			return "", fmt.Errorf("ensure node instance profile: %w", perr)
+		}
+		runInput.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{Arn: aws.String(profileARN)}
+	} else {
+		slog.Warn("EKS nodegroup: no IAM service or node role; worker launches without an instance profile, internal ECR pulls will fail",
+			"nodegroup", rec.Name, "nodeRole", rec.NodeRole)
+	}
+
 	res, err := s.deps.Worker.RunWorkerInstance(runInput, accountID)
 	if err != nil {
 		return "", err
@@ -496,6 +511,76 @@ func gatewayHostIP(gatewayURL string) string {
 		return ""
 	}
 	return host
+}
+
+// ensureNodeInstanceProfile guarantees an IAM instance profile named for the
+// nodegroup's node role exists and carries that role, returning its ARN. Workers
+// launch with this profile so IMDS serves the node role to the ECR credential
+// provider, mirroring the implicit instance profile real EKS creates for a node
+// role. Idempotent: concurrent worker launches converge on the same profile.
+func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string) (string, error) {
+	roleName := roleNameFromARN(nodeRoleARN)
+	if roleName == "" {
+		return "", fmt.Errorf("node role ARN %q has no role name", nodeRoleARN)
+	}
+	profileName := roleName
+
+	out, err := s.deps.IAM.GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
+		InstanceProfileName: aws.String(profileName),
+	})
+	if err == nil {
+		return s.attachRoleToProfile(accountID, profileName, roleName,
+			aws.StringValue(out.InstanceProfile.Arn), len(out.InstanceProfile.Roles) > 0)
+	}
+	if err.Error() != awserrors.ErrorIAMNoSuchEntity {
+		return "", fmt.Errorf("get instance profile %q: %w", profileName, err)
+	}
+
+	created, err := s.deps.IAM.CreateInstanceProfile(accountID, &iam.CreateInstanceProfileInput{
+		InstanceProfileName: aws.String(profileName),
+	})
+	if err != nil {
+		// A racing worker launch may have created it first; re-read and converge.
+		if err.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+			return "", fmt.Errorf("create instance profile %q: %w", profileName, err)
+		}
+		got, gerr := s.deps.IAM.GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
+			InstanceProfileName: aws.String(profileName),
+		})
+		if gerr != nil {
+			return "", fmt.Errorf("re-get instance profile %q: %w", profileName, gerr)
+		}
+		return s.attachRoleToProfile(accountID, profileName, roleName,
+			aws.StringValue(got.InstanceProfile.Arn), len(got.InstanceProfile.Roles) > 0)
+	}
+	return s.attachRoleToProfile(accountID, profileName, roleName,
+		aws.StringValue(created.InstanceProfile.Arn), false)
+}
+
+// attachRoleToProfile adds roleName to the profile unless it is already attached,
+// returning the profile ARN. A LimitExceeded error means another launch attached
+// it first and is treated as success.
+func (s *EKSServiceImpl) attachRoleToProfile(accountID, profileName, roleName, profileARN string, alreadyAttached bool) (string, error) {
+	if alreadyAttached {
+		return profileARN, nil
+	}
+	_, err := s.deps.IAM.AddRoleToInstanceProfile(accountID, &iam.AddRoleToInstanceProfileInput{
+		InstanceProfileName: aws.String(profileName),
+		RoleName:            aws.String(roleName),
+	})
+	if err != nil && err.Error() != awserrors.ErrorIAMLimitExceeded {
+		return "", fmt.Errorf("add role %q to instance profile %q: %w", roleName, profileName, err)
+	}
+	return profileARN, nil
+}
+
+// roleNameFromARN extracts the role name from an arn:aws:iam::<acct>:role/<name>
+// ARN, returning "" when the ARN does not carry the :role/ segment.
+func roleNameFromARN(arn string) string {
+	if _, after, ok := strings.Cut(arn, ":role/"); ok {
+		return after
+	}
+	return ""
 }
 
 func (s *EKSServiceImpl) describeNodegroup(acctKV nats.KeyValue, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {

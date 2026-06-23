@@ -207,10 +207,15 @@ func zoneS3Config(cfg *config.Config) (s3cfg *nsconfig.S3Config, baseDomain stri
 }
 
 // ResolveBaseDomain returns the northstar default_domain for producers building
-// record names, or "" when DNS registration is not configured.
+// record names, or "" when DNS registration is not configured. Prefers the
+// non-secret cluster-config value so confined services (e.g. vpcd) need not read
+// the credential-bearing northstar.toml; falls back to it when absent.
 func ResolveBaseDomain(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
+	}
+	if d := strings.TrimSpace(cfg.Northstar.DefaultDomain); d != "" {
+		return d
 	}
 	serverCfg, ok := loadNorthstar(cfg)
 	if !ok {
@@ -222,9 +227,13 @@ func ResolveBaseDomain(cfg *config.Config) string {
 // ResolveInternalDomain returns the northstar internal_domain (AWS-parity private
 // zone) for producers building private record names, or "" when DNS registration
 // is not configured. Callers fall back to PrivateZone for an empty result.
+// Prefers the non-secret cluster-config value, falling back to northstar.toml.
 func ResolveInternalDomain(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
+	}
+	if d := strings.TrimSpace(cfg.Northstar.InternalDomain); d != "" {
+		return d
 	}
 	serverCfg, ok := loadNorthstar(cfg)
 	if !ok {

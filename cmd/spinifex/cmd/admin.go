@@ -1353,11 +1353,12 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 		EncryptionKeyFile: viperblockKeyPath,
 
-		NorthstarAccessKey:     northstarAccessKey,
-		NorthstarSecretKey:     northstarSecretKey,
-		NorthstarBucket:        admin.NorthstarBucketName,
-		NorthstarDefaultDomain: admin.NorthstarDefaultDomain,
-		NorthstarConfigPath:    northstarConfigPath,
+		NorthstarAccessKey:      northstarAccessKey,
+		NorthstarSecretKey:      northstarSecretKey,
+		NorthstarBucket:         admin.NorthstarBucketName,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
 	}
 
 	// Print external networking summary

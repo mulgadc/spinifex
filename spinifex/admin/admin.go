@@ -114,11 +114,12 @@ type ConfigSettings struct {
 	// Northstar (DNS) settings. The northstar service reads zones from a
 	// dedicated, read-only S3 bucket using bucket-scoped credentials rendered
 	// into predastore.toml ([[auth]]) and northstar.toml ([s3]).
-	NorthstarAccessKey     string
-	NorthstarSecretKey     string
-	NorthstarBucket        string // S3 bucket holding zone files (default "northstar")
-	NorthstarDefaultDomain string // authoritative base domain (default "spx3.net")
-	NorthstarConfigPath    string // path to northstar.toml, rendered into spinifex.toml
+	NorthstarAccessKey      string
+	NorthstarSecretKey      string
+	NorthstarBucket         string // S3 bucket holding zone files (default "northstar")
+	NorthstarDefaultDomain  string // authoritative base domain (default "spx3.net")
+	NorthstarInternalDomain string // AWS-parity private zone (default "compute.internal")
+	NorthstarConfigPath     string // path to northstar.toml, rendered into spinifex.toml
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.
@@ -461,6 +462,8 @@ const (
 	NorthstarBucketName = "northstar"
 	// NorthstarDefaultDomain is the authoritative base domain for internal names.
 	NorthstarDefaultDomain = "spx3.net"
+	// NorthstarInternalDomain is the AWS-parity private zone for ip-<addr> names.
+	NorthstarInternalDomain = "compute.internal"
 )
 
 // SystemAccountID returns the system/root account ID (000000000000).

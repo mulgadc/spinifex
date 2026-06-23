@@ -24,17 +24,18 @@ func renderTemplate(t *testing.T, tmpl string, settings admin.ConfigSettings) st
 
 func northstarSettings() admin.ConfigSettings {
 	return admin.ConfigSettings{
-		Region:                 "ap-southeast-2",
-		BindIP:                 "0.0.0.0",
-		AdvertiseIP:            "192.168.1.31",
-		AccessKey:              "AKIASYSTEM",
-		SecretKey:              "SYSTEMSECRET",
-		NatsToken:              "NATSTOKEN",
-		PoolDNSServers:         []string{"1.1.1.1", "8.8.8.8"},
-		NorthstarAccessKey:     "AKIANORTHSTAR",
-		NorthstarSecretKey:     "NORTHSTARSECRET",
-		NorthstarBucket:        admin.NorthstarBucketName,
-		NorthstarDefaultDomain: admin.NorthstarDefaultDomain,
+		Region:                  "ap-southeast-2",
+		BindIP:                  "0.0.0.0",
+		AdvertiseIP:             "192.168.1.31",
+		AccessKey:               "AKIASYSTEM",
+		SecretKey:               "SYSTEMSECRET",
+		NatsToken:               "NATSTOKEN",
+		PoolDNSServers:          []string{"1.1.1.1", "8.8.8.8"},
+		NorthstarAccessKey:      "AKIANORTHSTAR",
+		NorthstarSecretKey:      "NORTHSTARSECRET",
+		NorthstarBucket:         admin.NorthstarBucketName,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
 	}
 }
 

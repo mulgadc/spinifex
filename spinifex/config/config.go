@@ -112,6 +112,11 @@ type VPCDConfig struct {
 type NorthstarConfig struct {
 	// ConfigPath is the path to northstar.toml written by `spx admin init`.
 	ConfigPath string `json:"ConfigPath" mapstructure:"config_path"`
+	// DefaultDomain and InternalDomain mirror the northstar zone domains as
+	// non-secret values so producers (daemon, vpcd) can resolve DNS names
+	// without reading the credential-bearing northstar.toml.
+	DefaultDomain  string `json:"DefaultDomain" mapstructure:"default_domain"`
+	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
 }
 
 type PredastoreConfig struct {

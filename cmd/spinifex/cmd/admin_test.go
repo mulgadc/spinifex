@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/spf13/viper"
@@ -140,6 +141,44 @@ func TestSpinifexTomlTemplate_AdvertiseOmittedWhenEmpty(t *testing.T) {
 	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
 	data, _ := os.ReadFile(path)
 	assert.NotContains(t, string(data), "advertise =")
+}
+
+// The northstar stanza carries the non-secret domains so confined services
+// (vpcd) resolve DNS names without reading the 0600 northstar.toml.
+func TestSpinifexTomlTemplate_NorthstarDomains(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:                    "node1",
+		Az:                      "ap-southeast-2a",
+		Port:                    "4432",
+		Region:                  "ap-southeast-2",
+		BindIP:                  "10.11.12.1",
+		AccessKey:               "AKIATEST",
+		SecretKey:               "SECRET",
+		AccountID:               "123456789012",
+		NatsToken:               "token",
+		ConfigDir:               dir,
+		OVNNBAddr:               "tcp:127.0.0.1:6641",
+		OVNSBAddr:               "tcp:127.0.0.1:6642",
+		NorthstarConfigPath:     "/etc/spinifex/northstar/northstar.toml",
+		NorthstarDefaultDomain:  "spx3.net",
+		NorthstarInternalDomain: "compute.internal",
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `config_path = "/etc/spinifex/northstar/northstar.toml"`)
+	assert.Contains(t, content, `default_domain = "spx3.net"`)
+	assert.Contains(t, content, `internal_domain = "compute.internal"`)
+
+	// The stanza must round-trip into NorthstarConfig so the resolvers read it.
+	cfg, err := config.LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, "spx3.net", cfg.Nodes["node1"].Northstar.DefaultDomain)
+	assert.Equal(t, "compute.internal", cfg.Nodes["node1"].Northstar.InternalDomain)
 }
 
 // Legacy `wan_bridge` TOML key must fail-start vpcd with guidance, not silently

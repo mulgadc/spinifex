@@ -118,6 +118,8 @@ node_id = {{.PredastoreNodeID}}
 
 [nodes.{{.Node}}.northstar]
 config_path = "{{.NorthstarConfigPath}}"
+default_domain = "{{.NorthstarDefaultDomain}}"
+internal_domain = "{{.NorthstarInternalDomain}}"
 {{- end}}
 {{- range .RemoteNodes}}
 

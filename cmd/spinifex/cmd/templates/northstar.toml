@@ -17,7 +17,7 @@ tls_key    = ""
 default_domain = "{{.NorthstarDefaultDomain}}"
 
 # AWS-parity private DNS zone for instance ip-<addr> records (IMDS hostname).
-internal_domain = "compute.internal"
+internal_domain = "{{.NorthstarInternalDomain}}"
 
 # NATS URL for live zone-reload events: the control plane publishes after a zone
 # write so the change is served immediately instead of after the next S3 poll.

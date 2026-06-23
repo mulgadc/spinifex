@@ -162,3 +162,14 @@ func TestResolveBaseDomain(t *testing.T) {
 	assert.Equal(t, "spx3.net", w.baseDomain)
 	assert.Empty(t, ResolveBaseDomain(&config.Config{}))
 }
+
+// The resolvers prefer the non-secret cluster-config domains so confined
+// services need not read the 0600 northstar.toml.
+func TestResolveDomainsPreferClusterConfig(t *testing.T) {
+	cfg := &config.Config{Northstar: config.NorthstarConfig{
+		DefaultDomain:  "example.net",
+		InternalDomain: "vpc.internal",
+	}}
+	assert.Equal(t, "example.net", ResolveBaseDomain(cfg))
+	assert.Equal(t, "vpc.internal", ResolveInternalDomain(cfg))
+}

@@ -57,7 +57,7 @@ func fakeBackend(t *testing.T) *httptest.Server {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"authorizationData": []map[string]any{{
 				"authorizationToken": authToken,
-				"proxyEndpoint":      "https://123456789012.dkr.ecr.us-east-1.mulga.internal",
+				"proxyEndpoint":      "https://123456789012.dkr.ecr.us-east-1.spinifex.internal",
 			}},
 		})
 	})
@@ -83,7 +83,7 @@ func TestRun_ReturnsBasicAuth(t *testing.T) {
 		IMDSBase:   srv.URL + "/latest",
 	}
 
-	const image = "123456789012.dkr.ecr.us-east-1.mulga.internal/spinifex-demo:latest"
+	const image = "123456789012.dkr.ecr.us-east-1.spinifex.internal/spinifex-demo:latest"
 	reqBody, err := json.Marshal(CredentialProviderRequest{
 		APIVersion: credProviderAPIVersion,
 		Kind:       "CredentialProviderRequest",
@@ -110,7 +110,7 @@ func TestRun_ReturnsBasicAuth(t *testing.T) {
 		t.Errorf("CacheKeyType = %q, want Registry", resp.CacheKeyType)
 	}
 
-	host := "123456789012.dkr.ecr.us-east-1.mulga.internal"
+	host := "123456789012.dkr.ecr.us-east-1.spinifex.internal"
 	auth, ok := resp.Auth[host]
 	if !ok {
 		t.Fatalf("auth map missing host %q; got %v", host, resp.Auth)
@@ -125,10 +125,10 @@ func TestRun_ReturnsBasicAuth(t *testing.T) {
 
 func TestHostFromImage(t *testing.T) {
 	cases := map[string]string{
-		"acct.dkr.ecr.us-east-1.mulga.internal/demo:latest": "acct.dkr.ecr.us-east-1.mulga.internal",
-		"https://acct.dkr.ecr.us-east-1.mulga.internal":     "acct.dkr.ecr.us-east-1.mulga.internal",
-		"host:9999/repo:tag":                                "host:9999",
-		"plainhost":                                         "plainhost",
+		"acct.dkr.ecr.us-east-1.spinifex.internal/demo:latest": "acct.dkr.ecr.us-east-1.spinifex.internal",
+		"https://acct.dkr.ecr.us-east-1.spinifex.internal":     "acct.dkr.ecr.us-east-1.spinifex.internal",
+		"host:9999/repo:tag": "host:9999",
+		"plainhost":          "plainhost",
 	}
 	for in, want := range cases {
 		if got := hostFromImage(in); got != want {

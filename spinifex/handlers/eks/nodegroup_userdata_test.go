@@ -16,7 +16,7 @@ func TestBuildAgentUserData_ECRWiring(t *testing.T) {
 		GatewayCACert: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
 		Region:        "ap-southeast-2",
 		AccountID:     "123456789012",
-		RegistryHost:  "123456789012.dkr.ecr.ap-southeast-2.mulga.internal",
+		RegistryHost:  "123456789012.dkr.ecr.ap-southeast-2.spinifex.internal",
 		GatewayIP:     "10.15.8.1",
 	}
 
@@ -26,7 +26,7 @@ func TestBuildAgentUserData_ECRWiring(t *testing.T) {
 		// registries.yaml: pod ref stays the port-less host, mirror endpoint and
 		// tls config key the gateway IP actually dialed.
 		"/etc/rancher/k3s/registries.yaml",
-		"\"123456789012.dkr.ecr.ap-southeast-2.mulga.internal\":",
+		"\"123456789012.dkr.ecr.ap-southeast-2.spinifex.internal\":",
 		"\"https://10.15.8.1:9999\"",
 		"\"10.15.8.1:9999\":",
 		"ca_file: /etc/spinifex-eks/gateway-ca.pem",
@@ -65,16 +65,16 @@ func TestBuildAgentUserData_NoGatewayIPUsesHostnameEndpoint(t *testing.T) {
 		NodeName:      "alpha-ng-1-abcd1234",
 		Region:        "ap-southeast-2",
 		AccountID:     "123456789012",
-		RegistryHost:  "123456789012.dkr.ecr.ap-southeast-2.mulga.internal",
+		RegistryHost:  "123456789012.dkr.ecr.ap-southeast-2.spinifex.internal",
 		GatewayIP:     "",
 	}
 	got := buildAgentUserData(in)
 	// With no gateway IP, the endpoint falls back to the registry hostname (DNS
 	// must resolve it) and the tls config keys that hostname:port.
-	if !strings.Contains(got, "\"https://123456789012.dkr.ecr.ap-southeast-2.mulga.internal:9999\"") {
+	if !strings.Contains(got, "\"https://123456789012.dkr.ecr.ap-southeast-2.spinifex.internal:9999\"") {
 		t.Errorf("expected hostname endpoint when GatewayIP is empty\n%s", got)
 	}
-	if !strings.Contains(got, "\"123456789012.dkr.ecr.ap-southeast-2.mulga.internal:9999\":") {
+	if !strings.Contains(got, "\"123456789012.dkr.ecr.ap-southeast-2.spinifex.internal:9999\":") {
 		t.Errorf("expected hostname:port tls config key when GatewayIP is empty\n%s", got)
 	}
 }

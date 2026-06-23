@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -233,6 +234,14 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	ecrAudience := "ecr." + nodeConfig.Region + "." + config.AWS.InternalSuffix
 
+	// The ECR registry is served on this gateway's own port; advertise it so
+	// docker login/tag/push dial the right port (a SplitHostPort failure leaves
+	// it empty, rendering a port-less, 443-style host).
+	registryPort := ""
+	if _, port, err := net.SplitHostPort(nodeConfig.AWSGW.Host); err == nil {
+		registryPort = port
+	}
+
 	gw := gateway.GatewayConfig{
 		Debug:            nodeConfig.AWSGW.Debug,
 		DisableLogging:   false,
@@ -241,6 +250,7 @@ func launchService(config *config.ClusterConfig) error {
 		ExpectedNodes:    len(config.Nodes),
 		Region:           nodeConfig.Region,
 		InternalSuffix:   config.AWS.InternalSuffix,
+		RegistryPort:     registryPort,
 		AZ:               nodeConfig.AZ,
 		IAMService:       iamService,
 		STSService:       stsService,

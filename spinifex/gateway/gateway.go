@@ -76,14 +76,18 @@ type GatewayConfig struct {
 	Config         string     // Shared AWS Gateway config for S3 auth
 	ExpectedNodes  int        // Number of expected spinifex nodes for multi-node operations
 	Region         string     // Region this gateway is running in
-	InternalSuffix string     // Internal DNS suffix for AWS-parity endpoints (e.g. mulga.internal)
-	AZ             string     // Availability zone this gateway is running in
-	IAMService     handlers_iam.IAMService
-	STSService     handlers_sts.STSService
-	RateLimiter    *AuthRateLimiter     // Per-IP auth failure rate limiter
-	Throttler      *ratelimit.Throttler // Per-account+action API request throttler
-	Version        string               // Build-time version string (set from cmd.Version)
-	Commit         string               // Build-time commit hash (set from cmd.Commit)
+	InternalSuffix string     // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
+	// RegistryPort is the gateway's advertised port, appended to the ECR
+	// registry host so docker login/tag/push dial the right port. Empty or
+	// "443" renders a port-less host (standard HTTPS parity).
+	RegistryPort string
+	AZ           string // Availability zone this gateway is running in
+	IAMService   handlers_iam.IAMService
+	STSService   handlers_sts.STSService
+	RateLimiter  *AuthRateLimiter     // Per-IP auth failure rate limiter
+	Throttler    *ratelimit.Throttler // Per-account+action API request throttler
+	Version      string               // Build-time version string (set from cmd.Version)
+	Commit       string               // Build-time commit hash (set from cmd.Commit)
 	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
 	// to the 501 stub (e.g. in unit tests of unrelated routes).
 	ECRRegistry *gateway_ecr.Registry

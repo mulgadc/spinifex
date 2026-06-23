@@ -621,7 +621,7 @@ func TestGenerateCertificatesIfNeeded(t *testing.T) {
 	dir := t.TempDir()
 
 	// First call generates all certs
-	caCertPath := GenerateCertificatesIfNeeded(dir, false, "", "us-east-1", "mulga.internal")
+	caCertPath := GenerateCertificatesIfNeeded(dir, false, "", "us-east-1", "spinifex.internal")
 	assert.Equal(t, filepath.Join(dir, "ca.pem"), caCertPath)
 	assert.True(t, FileExists(filepath.Join(dir, "ca.pem")))
 	assert.True(t, FileExists(filepath.Join(dir, "ca.key")))
@@ -632,7 +632,7 @@ func TestGenerateCertificatesIfNeeded(t *testing.T) {
 		caInfo, _ := os.Stat(filepath.Join(dir, "ca.pem"))
 		origModTime := caInfo.ModTime()
 
-		GenerateCertificatesIfNeeded(dir, false, "", "us-east-1", "mulga.internal")
+		GenerateCertificatesIfNeeded(dir, false, "", "us-east-1", "spinifex.internal")
 		caInfo2, _ := os.Stat(filepath.Join(dir, "ca.pem"))
 		assert.Equal(t, origModTime, caInfo2.ModTime())
 	})
@@ -640,7 +640,7 @@ func TestGenerateCertificatesIfNeeded(t *testing.T) {
 	t.Run("ForceRegenerates", func(t *testing.T) {
 		origCA, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
 
-		GenerateCertificatesIfNeeded(dir, true, "", "us-east-1", "mulga.internal")
+		GenerateCertificatesIfNeeded(dir, true, "", "us-east-1", "spinifex.internal")
 		newCA, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
 		assert.NotEqual(t, origCA, newCA)
 	})
@@ -660,7 +660,7 @@ func TestGenerateServerCertOnly(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.pem"), caCert, 0600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.key"), caKey, 0600))
 
-		err := GenerateServerCertOnly(dir, "10.0.0.5", "us-east-1", "mulga.internal")
+		err := GenerateServerCertOnly(dir, "10.0.0.5", "us-east-1", "spinifex.internal")
 		require.NoError(t, err)
 		assert.True(t, FileExists(filepath.Join(dir, "server.pem")))
 		assert.True(t, FileExists(filepath.Join(dir, "server.key")))
@@ -678,13 +678,13 @@ func TestGenerateServerCertOnly(t *testing.T) {
 		assert.True(t, hasBindIP)
 
 		// AWS-parity ECR SANs must be present.
-		assert.Contains(t, cert.DNSNames, "ecr.us-east-1.mulga.internal")
-		assert.Contains(t, cert.DNSNames, "*.dkr.ecr.us-east-1.mulga.internal")
+		assert.Contains(t, cert.DNSNames, "ecr.us-east-1.spinifex.internal")
+		assert.Contains(t, cert.DNSNames, "*.dkr.ecr.us-east-1.spinifex.internal")
 	})
 
 	t.Run("MissingCA", func(t *testing.T) {
 		dir := t.TempDir()
-		err := GenerateServerCertOnly(dir, "10.0.0.5", "us-east-1", "mulga.internal")
+		err := GenerateServerCertOnly(dir, "10.0.0.5", "us-east-1", "spinifex.internal")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "CA files not found")
 	})
@@ -693,13 +693,13 @@ func TestGenerateServerCertOnly(t *testing.T) {
 func TestAWSGWServiceDNSNames(t *testing.T) {
 	t.Parallel()
 
-	got := AWSGWServiceDNSNames("us-east-1", "mulga.internal")
+	got := AWSGWServiceDNSNames("us-east-1", "spinifex.internal")
 	assert.Equal(t, []string{
-		"ecr.us-east-1.mulga.internal",
-		"*.dkr.ecr.us-east-1.mulga.internal",
+		"ecr.us-east-1.spinifex.internal",
+		"*.dkr.ecr.us-east-1.spinifex.internal",
 	}, got)
 
-	assert.Nil(t, AWSGWServiceDNSNames("", "mulga.internal"))
+	assert.Nil(t, AWSGWServiceDNSNames("", "spinifex.internal"))
 	assert.Nil(t, AWSGWServiceDNSNames("us-east-1", ""))
 	assert.Nil(t, AWSGWServiceDNSNames("", ""))
 }

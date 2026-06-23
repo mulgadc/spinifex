@@ -30,11 +30,16 @@ resources:
 
 ## Overview
 
-ECR on Spinifex gives every account a private container registry reachable at a per-account endpoint:
+ECR on Spinifex gives every account a private container registry reachable at a per-account endpoint, served on the Spinifex gateway port (`9999`):
 
 ```
-<account-id>.dkr.ecr.<region>.<your-spinifex-domain>
+<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999
 ```
+
+The `:9999` is part of the host you authenticate, tag, and push to —
+`aws ecr describe-repositories` and `aws ecr get-login-password` return the
+exact `host:port` for your account, so prefer copying it from there rather than
+typing it by hand.
 
 Each repository holds image manifests and their layers. Images are stored in object storage ([Predastore](https://github.com/mulgadc/predastore)) in a per-account bucket, with blobs content-addressed and de-duplicated across repositories. Authentication is token-based: `aws ecr get-login-password` mints a short-lived bearer token that `docker login` uses against the registry's `/v2/` endpoint.
 
@@ -55,7 +60,7 @@ Each repository holds image manifests and their layers. Images are stored in obj
 
 - **Spinifex running**, with the AWS CLI configured for the `spinifex` profile (see [Installing Spinifex](/docs/install)).
 - **Docker** installed locally to build, push, and pull images.
-- **The registry endpoint** for your deployment — `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>`. `aws ecr get-login-password` and `aws ecr describe-repositories` return the exact host for your account.
+- **The registry endpoint** for your deployment — `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999`. `aws ecr get-login-password` and `aws ecr describe-repositories` return the exact `host:port` for your account.
 - **For EKS pulls:** worker nodes need the `AmazonEC2ContainerRegistryReadOnly` policy on their node IAM role (the EKS prerequisites already include this) and network egress to the registry endpoint.
 
 ## Instructions
@@ -75,13 +80,16 @@ aws ecr describe-repositories --repository-names my-app \
   --query 'repositories[0].repositoryUri'
 ```
 
-The `repositoryUri` is the value you tag and push to:
-`<account-id>.dkr.ecr.<region>.<your-spinifex-domain>/my-app`.
+The `repositoryUri` is the value you tag and push to, port included:
+`<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999/my-app`.
 
 ### 2. Authenticate Docker
 
+Take the registry host straight from the API so the `:9999` port is correct:
+
 ```bash
-REGISTRY=<account-id>.dkr.ecr.<region>.<your-spinifex-domain>
+REGISTRY=$(aws ecr describe-repositories --repository-names my-app \
+  --query 'repositories[0].repositoryUri' --output text | cut -d/ -f1)
 
 aws ecr get-login-password --region <region> \
   | docker login --username AWS --password-stdin "$REGISTRY"
@@ -165,7 +173,7 @@ Then authenticate Docker and push using the `repository_url` output, following s
 
 **`docker login` fails with an authorization error.** The token is account-scoped and short-lived. Re-run `aws ecr get-login-password` to mint a fresh token, and confirm the registry host in `docker login` matches your account's endpoint (`aws ecr describe-repositories` returns it).
 
-**`docker push` cannot reach the registry.** Confirm you are using the per-account endpoint `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>` — the registry routes by Host header, so the hostname must match your account and your deployment's domain.
+**`docker push` cannot reach the registry.** Confirm you are using the per-account endpoint *with the `:9999` port* — `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999`. Docker dials the host directly (no mirror), so without the port it tries `:443` and fails. The registry routes by Host header, so the hostname must also match your account and your deployment's domain.
 
 **EKS workers cannot pull an image.** Confirm the node IAM role has `AmazonEC2ContainerRegistryReadOnly` and that the workers have egress to the registry endpoint (an Internet Gateway or NAT Gateway route). See the [EKS prerequisites](/docs/eks).
 

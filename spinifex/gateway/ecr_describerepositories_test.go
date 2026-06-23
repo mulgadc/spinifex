@@ -98,6 +98,26 @@ func TestDescribeRepositories_ListsAccountScoped(t *testing.T) {
 	assert.Positive(t, app.CreatedAt)
 }
 
+func TestECRRegistryHost_AppendsAdvertisedPort(t *testing.T) {
+	base := ecrTestAccount + ".dkr.ecr." + ecrTestRegion + "." + ecrTestSuffix
+	cases := []struct {
+		name string
+		port string
+		want string
+	}{
+		{"empty renders port-less", "", base},
+		{"443 renders port-less", "443", base},
+		{"9999 is appended for docker", "9999", base + ":9999"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gw := &GatewayConfig{Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, RegistryPort: tc.port}
+			assert.Equal(t, tc.want, gw.ecrRegistryHost(ecrTestAccount))
+			assert.Equal(t, tc.want+"/team/app", gw.ecrRepositoryUri(ecrTestAccount, "team/app"))
+		})
+	}
+}
+
 func TestDescribeRepositories_NameFilter(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app", "team/web")
 	w := describeReposRequest(t, gw, `{"repositoryNames":["team/web"]}`)

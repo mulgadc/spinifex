@@ -49,6 +49,8 @@ type eniResolver interface {
 	resolveENIByID(eniID string) (*eniFacts, error)
 	resolveInstance(eni *eniFacts) (*instanceFacts, error)
 	resolveSGNames(accountID string, sgIDs []string) []string
+	resolveSubnetCIDR(accountID, subnetID string) (string, error)
+	resolveVPCCIDR(accountID, vpcID string) (string, error)
 }
 
 // IMDSServiceImpl is the in-process IMDS implementation. It runs one per-tap
@@ -101,11 +103,26 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 		sgKV = nil
 	}
 
+	// Open subnet/VPC buckets best-effort; the network-interfaces CIDR leaves 404
+	// (and drop from the listing) when a bucket is unavailable, IMDS still starts.
+	subnetKV, err := js.KeyValue(kvBucketSubnets)
+	if err != nil {
+		slog.Warn("IMDS: subnet bucket unavailable, network-interfaces subnet CIDR will 404", "bucket", kvBucketSubnets, "err", err)
+		subnetKV = nil
+	}
+	vpcKV, err := js.KeyValue(kvBucketVPCs)
+	if err != nil {
+		slog.Warn("IMDS: vpc bucket unavailable, network-interfaces VPC CIDR will 404", "bucket", kvBucketVPCs, "err", err)
+		vpcKV = nil
+	}
+
 	svc := &IMDSServiceImpl{
 		resolver: &metadataResolver{
-			eniKV:  eniKV,
-			sgKV:   sgKV,
-			lookup: &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
+			eniKV:    eniKV,
+			sgKV:     sgKV,
+			subnetKV: subnetKV,
+			vpcKV:    vpcKV,
+			lookup:   &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
 		},
 		tokens:   newTokenStore(),
 		creds:    newCredCache(sts),

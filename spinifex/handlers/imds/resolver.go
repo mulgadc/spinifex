@@ -14,6 +14,8 @@ import (
 // kvBucketENIs and kvBucketSecurityGroups are duplicated as literals to avoid an import cycle.
 const kvBucketENIs = "spinifex-vpc-enis"
 const kvBucketSecurityGroups = "spinifex-vpc-security-groups"
+const kvBucketSubnets = "spinifex-vpc-subnets"
+const kvBucketVPCs = "spinifex-vpc-vpcs"
 
 // eniFacts is the ENI fields served by the IMDS metadata surface, read live from the ENI record.
 type eniFacts struct {
@@ -68,9 +70,11 @@ type eniRecord struct {
 // metadataResolver resolves a tap's ENI ID to ENI + instance facts.
 // Resolution chain: eniID → ENIRecord (account recovered from the bucket key) → instanceFacts.
 type metadataResolver struct {
-	eniKV  nats.KeyValue // spinifex-vpc-enis
-	sgKV   nats.KeyValue // spinifex-vpc-security-groups (nil-safe: degrades to IDs)
-	lookup instanceLookup
+	eniKV    nats.KeyValue // spinifex-vpc-enis
+	sgKV     nats.KeyValue // spinifex-vpc-security-groups (nil-safe: degrades to IDs)
+	subnetKV nats.KeyValue // spinifex-vpc-subnets        (nil-safe: CIDR leaf 404s)
+	vpcKV    nats.KeyValue // spinifex-vpc-vpcs           (nil-safe: CIDR leaf 404s)
+	lookup   instanceLookup
 }
 
 var _ eniResolver = (*metadataResolver)(nil)
@@ -177,4 +181,38 @@ func (r *metadataResolver) resolveSGNames(accountID string, sgIDs []string) []st
 		}
 	}
 	return names
+}
+
+// cidrRecord is the subnet/VPC record subset the network-interfaces subtree reads.
+type cidrRecord struct {
+	CidrBlock string `json:"cidr_block"`
+}
+
+func (r *metadataResolver) resolveSubnetCIDR(accountID, subnetID string) (string, error) {
+	return cidrFromKV(r.subnetKV, accountID, subnetID)
+}
+
+func (r *metadataResolver) resolveVPCCIDR(accountID, vpcID string) (string, error) {
+	return cidrFromKV(r.vpcKV, accountID, vpcID)
+}
+
+// cidrFromKV reads cidr_block from an account-scoped record. ("", nil) on a nil
+// bucket or key miss; the error on any other fault so the leaf 500s rather than
+// serving an empty CIDR a guest would mis-render into its network config.
+func cidrFromKV(kv nats.KeyValue, accountID, id string) (string, error) {
+	if kv == nil || id == "" {
+		return "", nil
+	}
+	entry, err := kv.Get(accountID + "." + id)
+	if err != nil {
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("get cidr record %s.%s: %w", accountID, id, err)
+	}
+	var rec cidrRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		return "", fmt.Errorf("unmarshal cidr record %s.%s: %w", accountID, id, err)
+	}
+	return rec.CidrBlock, nil
 }

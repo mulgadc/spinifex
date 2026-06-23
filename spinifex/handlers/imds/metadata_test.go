@@ -22,11 +22,15 @@ import (
 // ----- fakes -------------------------------------------------------------
 
 type fakeResolver struct {
-	eni     *eniFacts
-	eniErr  error
-	inst    *instanceFacts
-	instErr error
-	sgNames map[string]string // sg-id → group name; absent IDs fall back to the ID
+	eni        *eniFacts
+	eniErr     error
+	inst       *instanceFacts
+	instErr    error
+	sgNames    map[string]string // sg-id → group name; absent IDs fall back to the ID
+	subnetCIDR string
+	subnetErr  error
+	vpcCIDR    string
+	vpcErr     error
 }
 
 func (f *fakeResolver) resolveENIByID(_ string) (*eniFacts, error) { return f.eni, f.eniErr }
@@ -45,6 +49,11 @@ func (f *fakeResolver) resolveSGNames(_ string, sgIDs []string) []string {
 	}
 	return out
 }
+
+func (f *fakeResolver) resolveSubnetCIDR(_, _ string) (string, error) {
+	return f.subnetCIDR, f.subnetErr
+}
+func (f *fakeResolver) resolveVPCCIDR(_, _ string) (string, error) { return f.vpcCIDR, f.vpcErr }
 
 type fakeIAM struct {
 	profile    *handlers_iam.InstanceProfile
@@ -445,6 +454,7 @@ func TestHTTP_DirectoryListing(t *testing.T) {
 		"local-hostname",
 		"local-ipv4",
 		"mac",
+		"network/",
 		"placement/",
 		"public-hostname",
 		"public-ipv4",
@@ -471,15 +481,180 @@ func TestHTTP_OutOfScopePaths404(t *testing.T) {
 	h := withTapENI(svc.httpHandler(), testENI())
 	token := issueToken(t, h)
 	for _, p := range []string{
-		pathIdentityDir + "/pkcs7",     // signed forms stay deferred until the signing key lands
-		pathIdentityDir + "/rsa2048",   //
-		pathIdentityDir + "/signature", //
-		prefixMetaData + "network/interfaces/macs",
+		pathIdentityDir + "/pkcs7",                               // signed forms stay deferred until the signing key lands
+		pathIdentityDir + "/rsa2048",                             //
+		pathIdentityDir + "/signature",                           //
+		prefixNetworkMacs + testENI().mac + "/ipv4-associations", // IPv6/associations stay deferred
+		prefixNetworkMacs + testENI().mac + "/ipv6s",             //
+		prefixNetworkMacs + "02:00:00:00:00:00/subnet-id",        // a MAC that is not the caller's
 		prefixMetaData + "nonsense",
 	} {
 		rec := get(t, h, p, token)
 		assert.Equal(t, http.StatusNotFound, rec.Code, "path=%s", p)
 	}
+}
+
+// ----- network interfaces ------------------------------------------------
+
+const (
+	testSubnetCIDR = "10.0.1.0/24"
+	testVPCCIDR    = "10.0.0.0/16"
+)
+
+// macPath builds a /network/interfaces/macs/<mac>[/<key>] request path.
+func macPath(mac, key string) string {
+	p := prefixNetworkMacs + mac
+	if key != "" {
+		p += "/" + key
+	}
+	return p
+}
+
+// The intermediate directory listings walk down to the caller's single MAC.
+func TestHTTP_NetworkInterfacesListings(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	mac := testENI().mac
+	cases := []struct{ path, want string }{
+		{prefixMetaData + "network", "interfaces/"},
+		{prefixMetaData + "network/", "interfaces/"},
+		{prefixMetaData + "network/interfaces", "macs/"},
+		{prefixMetaData + "network/interfaces/", "macs/"},
+		{prefixMetaData + "network/interfaces/macs", mac + "/"},
+		{prefixMetaData + "network/interfaces/macs/", mac + "/"},
+	}
+	for _, c := range cases {
+		rec := get(t, h, c.path, token)
+		assert.Equal(t, http.StatusOK, rec.Code, "path=%s", c.path)
+		assert.Equal(t, c.want, rec.Body.String(), "path=%s", c.path)
+	}
+}
+
+// macs/<mac> and macs/<mac>/ list exactly the leaves served — CIDR and public keys
+// included only when they resolve, so cloud-init's crawl never lists a key that 404s.
+func TestHTTP_NetworkInterfaceMacDirListing(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), subnetCIDR: testSubnetCIDR, vpcCIDR: testVPCCIDR}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	want := strings.Join([]string{
+		"device-number",
+		"interface-id",
+		"local-hostname",
+		"local-ipv4s",
+		"mac",
+		"owner-id",
+		"public-hostname",
+		"public-ipv4s",
+		"security-group-ids",
+		"security-groups",
+		"subnet-id",
+		"subnet-ipv4-cidr-block",
+		"vpc-id",
+		"vpc-ipv4-cidr-block",
+		"vpc-ipv4-cidr-blocks",
+	}, "\n")
+	mac := testENI().mac
+	for _, p := range []string{macPath(mac, ""), macPath(mac, "") + "/"} {
+		rec := get(t, h, p, token)
+		assert.Equal(t, http.StatusOK, rec.Code, "path=%s", p)
+		assert.Equal(t, want, rec.Body.String(), "path=%s", p)
+	}
+}
+
+// Every served leaf resolves from eni + resolver facts.
+func TestHTTP_NetworkInterfaceLeaves(t *testing.T) {
+	res := &fakeResolver{
+		eni:        testENI(),
+		sgNames:    map[string]string{"sg-1": "web-sg", "sg-2": "db-sg"},
+		subnetCIDR: testSubnetCIDR,
+		vpcCIDR:    testVPCCIDR,
+	}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	mac := testENI().mac
+	cases := []struct{ key, want string }{
+		{"mac", mac},
+		{"device-number", "0"},
+		{"interface-id", "eni-aaa"},
+		{"owner-id", "111122223333"},
+		{"subnet-id", "subnet-1"},
+		{"vpc-id", testVPC},
+		{"local-ipv4s", testIP},
+		{"local-hostname", "ip-10-0-1-5.ap-southeast-2.compute.internal"},
+		{"security-group-ids", "sg-1\nsg-2"},
+		{"security-groups", "web-sg\ndb-sg"},
+		{"subnet-ipv4-cidr-block", testSubnetCIDR},
+		{"vpc-ipv4-cidr-block", testVPCCIDR},
+		{"vpc-ipv4-cidr-blocks", testVPCCIDR},
+		{"public-ipv4s", "203.0.113.7"},
+		{"public-hostname", "203.0.113.7"},
+	}
+	for _, c := range cases {
+		rec := get(t, h, macPath(mac, c.key), token)
+		assert.Equal(t, http.StatusOK, rec.Code, "key=%s", c.key)
+		assert.Equal(t, c.want, rec.Body.String(), "key=%s", c.key)
+	}
+}
+
+// With no public IP, public-ipv4s and public-hostname 404 and drop from the listing.
+func TestHTTP_NetworkInterfacePublicAbsent(t *testing.T) {
+	eni := testENI()
+	eni.publicIP = ""
+	res := &fakeResolver{eni: eni, subnetCIDR: testSubnetCIDR, vpcCIDR: testVPCCIDR}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), eni)
+	token := issueToken(t, h)
+
+	listing := get(t, h, macPath(eni.mac, ""), token).Body.String()
+	assert.NotContains(t, listing, "public-ipv4s")
+	assert.NotContains(t, listing, "public-hostname")
+
+	for _, key := range []string{"public-ipv4s", "public-hostname"} {
+		rec := get(t, h, macPath(eni.mac, key), token)
+		assert.Equal(t, http.StatusNotFound, rec.Code, "key=%s", key)
+	}
+}
+
+// On a CIDR miss the CIDR leaves 404 and drop from the listing; a resolver error
+// is a 500 on both the leaf and the listing, never an empty/dropped CIDR a guest
+// would mis-render into its network config.
+func TestHTTP_NetworkInterfaceCidrMiss(t *testing.T) {
+	res := &fakeResolver{eni: testENI()} // no canned CIDRs → miss
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	mac := testENI().mac
+
+	listing := get(t, h, macPath(mac, ""), token).Body.String()
+	assert.NotContains(t, listing, "subnet-ipv4-cidr-block")
+	assert.NotContains(t, listing, "vpc-ipv4-cidr-block")
+	for _, key := range []string{"subnet-ipv4-cidr-block", "vpc-ipv4-cidr-block", "vpc-ipv4-cidr-blocks"} {
+		rec := get(t, h, macPath(mac, key), token)
+		assert.Equal(t, http.StatusNotFound, rec.Code, "key=%s", key)
+	}
+
+	errRes := &fakeResolver{eni: testENI(), subnetErr: errors.New("kv unavailable"), vpcErr: errors.New("kv unavailable")}
+	errSvc, _ := newTestService(errRes, &fakeIAM{}, &fakeAssumer{})
+	errH := withTapENI(errSvc.httpHandler(), testENI())
+	errToken := issueToken(t, errH)
+	for _, key := range []string{"subnet-ipv4-cidr-block", "vpc-ipv4-cidr-block", "vpc-ipv4-cidr-blocks"} {
+		rec := get(t, errH, macPath(mac, key), errToken)
+		assert.Equal(t, http.StatusInternalServerError, rec.Code, "key=%s", key)
+	}
+	listingRec := get(t, errH, macPath(mac, ""), errToken)
+	assert.Equal(t, http.StatusInternalServerError, listingRec.Code, "listing under resolver error")
+}
+
+// A MAC that is not the caller's is 404: the per-tap responder only serves its own ENI.
+func TestHTTP_NetworkInterfaceForeignMac404(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	rec := get(t, h, macPath("02:00:00:00:00:00", "subnet-id"), token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 // ----- public keys -------------------------------------------------------

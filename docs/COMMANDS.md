@@ -628,7 +628,7 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | `/latest/dynamic/instance-identity` | GET | Lists `document` (signed forms listed when the signing key lands) | **DONE** |
 | `/latest/dynamic/instance-identity/document` | GET | Unsigned identity document from resolved ENI + instance facts | **DONE** |
 | `/latest/dynamic/instance-identity/{signature,pkcs7,rsa2048}` | GET | Signed forms; need a per-cluster signing key | **NOT STARTED** (404; lands with EKS IRSA) |
-| `/latest/meta-data/network/interfaces/macs/<mac>/...` | GET | Multi-ENI rendering (subnet-id, vpc-id, ipv4s, security-group-ids, …) | **NOT STARTED** (404) |
+| `/latest/meta-data/network/interfaces/macs/<mac>/...` | GET | Primary ENI subtree: `mac`, `device-number`, `interface-id`, `owner-id`, `subnet-id`, `vpc-id`, `local-ipv4s`, `local-hostname`, `security-group-ids`, `security-groups`, `subnet-ipv4-cidr-block`, `vpc-ipv4-cidr-block(s)`, and `public-ipv4s`/`public-hostname` when an EIP is attached | **DONE** (single-NIC; multi-ENI deferred) |
 | `/latest/meta-data/tags/instance/<key>` | GET | Instance-tag metadata; gated on `InstanceMetadataTags` enablement | **NOT STARTED** (404) |
 | `/latest/meta-data/block-device-mapping/...` | GET | `ami`/`root`/`ebsN`/`ephemeralN` device map | **NOT STARTED** (404) |
 | `/latest/meta-data/placement/{group-name,partition-number,availability-zone-id,host-id}` | GET | Placement extras beyond `availability-zone`/`region` | **NOT STARTED** (404) |

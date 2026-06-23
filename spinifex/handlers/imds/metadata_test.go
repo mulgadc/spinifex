@@ -22,11 +22,15 @@ import (
 // ----- fakes -------------------------------------------------------------
 
 type fakeResolver struct {
-	eni     *eniFacts
-	eniErr  error
-	inst    *instanceFacts
-	instErr error
-	sgNames map[string]string // sg-id → group name; absent IDs fall back to the ID
+	eni        *eniFacts
+	eniErr     error
+	inst       *instanceFacts
+	instErr    error
+	sgNames    map[string]string // sg-id → group name; absent IDs fall back to the ID
+	subnetCIDR string
+	subnetErr  error
+	vpcCIDR    string
+	vpcErr     error
 }
 
 func (f *fakeResolver) resolveENIByID(_ string) (*eniFacts, error) { return f.eni, f.eniErr }
@@ -45,6 +49,11 @@ func (f *fakeResolver) resolveSGNames(_ string, sgIDs []string) []string {
 	}
 	return out
 }
+
+func (f *fakeResolver) resolveSubnetCIDR(_, _ string) (string, error) {
+	return f.subnetCIDR, f.subnetErr
+}
+func (f *fakeResolver) resolveVPCCIDR(_, _ string) (string, error) { return f.vpcCIDR, f.vpcErr }
 
 type fakeIAM struct {
 	profile    *handlers_iam.InstanceProfile

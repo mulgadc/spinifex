@@ -462,8 +462,8 @@ func TestBuildRHELCloudInit(t *testing.T) {
 		assert.Contains(t, wf, "dhcp-client-id=mac")
 		assert.Contains(t, wf, "method=auto")
 		assert.NotContains(t, wf, "never-default")
-		// The IMDS on-link route rides vpc0 even with no dev NIC / extra ENIs.
-		assert.Contains(t, wf, "route1=169.254.169.254/32", "vpc0 must carry the IMDS on-link route")
+		// IMDS is served at the host tap, so the NM keyfile carries no on-link route.
+		assert.NotContains(t, wf, "route1=169.254.169.254/32", "vpc0 must not carry an in-guest IMDS route")
 		assert.Contains(t, rc, "  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]")
 		assert.Contains(t, rc, "  - [ nmcli, connection, reload ]")
 		assert.Contains(t, rc, "  - [ nmcli, connection, up, vpc0 ]")
@@ -498,16 +498,15 @@ func TestBuildRHELCloudInit(t *testing.T) {
 		assert.Contains(t, wf, "vpc2.nmconnection")
 	})
 
-	t.Run("vpc0 carries on-link IMDS route, others do not", func(t *testing.T) {
+	t.Run("no NIC carries an in-guest IMDS route", func(t *testing.T) {
 		wf, _ := buildRHELCloudInit(
 			"02:00:00:00:00:01",
 			"02:00:00:00:00:99",
 			"", "",
 			[]string{"02:00:00:00:00:02"},
 		)
-		assert.Contains(t, wf, "route1=169.254.169.254/32")
-		// Primary NIC only — not extra VPC NICs or the dev NIC.
-		assert.Equal(t, 1, strings.Count(wf, "route1=169.254.169.254/32"))
+		// Served at the tap — no NM keyfile (primary, extra, or dev) emits a route.
+		assert.NotContains(t, wf, "route1=169.254.169.254/32")
 	})
 }
 
@@ -765,7 +764,7 @@ func TestParseVolumeParams_PartialEbs(t *testing.T) {
 
 func TestCloudInitNetworkConfigWildcard(t *testing.T) {
 	// No MACs → wildcard config (non-VPC or VPC without DEV_NETWORKING)
-	cfg := generateNetworkConfig("", "", "", "", nil, true)
+	cfg := generateNetworkConfig("", "", "", "", nil)
 	assert.Contains(t, cfg, "version: 2")
 	assert.Contains(t, cfg, "dhcp4: true")
 	assert.Contains(t, cfg, "dhcp-identifier: mac")
@@ -777,7 +776,7 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 	eniMAC := "02:00:00:61:ef:c2"
 	devMAC := "02:de:00:60:83:0d"
 
-	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil, true)
+	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil)
 
 	// Both MACs present in config
 	assert.Contains(t, cfg, eniMAC)
@@ -797,12 +796,12 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 
 func TestCloudInitNetworkConfigPartialMAC(t *testing.T) {
 	// Only ENI MAC (VPC without dev) → per-interface config with VPC NIC only
-	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil, true)
+	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil)
 	assert.Contains(t, cfg, "vpc0:")
 	assert.NotContains(t, cfg, "dev0:")
 
 	// Only dev MAC (shouldn't happen, but defensive) → wildcard
-	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil, true)
+	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil)
 	assert.Contains(t, cfg, `name: "e*"`)
 	assert.NotContains(t, cfg, "use-routes")
 }
@@ -813,7 +812,7 @@ func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
 		"02:00:00:bb:bb:bb",
 		"02:00:00:cc:cc:cc",
 	}
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras, true)
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras)
 
 	assert.Contains(t, cfg, "vpc0:")
 	assert.Contains(t, cfg, "vpc1:")
@@ -832,7 +831,7 @@ func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
 func TestCloudInitNetworkConfigEmptyExtraMACSkipped(t *testing.T) {
 	// Empty strings inside the extras slice are ignored rather than producing
 	// a malformed ethernets block.
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""}, true)
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""})
 	assert.Contains(t, cfg, "vpc0:")
 	assert.NotContains(t, cfg, "vpc1:")
 }

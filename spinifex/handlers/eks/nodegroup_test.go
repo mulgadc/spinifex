@@ -219,12 +219,9 @@ func TestBuildAgentUserData_Shape(t *testing.T) {
 	assert.Contains(t, ud, "K3S_NODE_NAME=c1-ng1-abc123de")
 	assert.Contains(t, ud, "eks.amazonaws.com/nodegroup=ng1")
 	assert.Contains(t, ud, agentEnvPath)
-	// IMDS on-link route line present.
-	assert.Contains(t, ud, "ip route replace "+imdsServerIP+"/32")
-	// Route script is run directly, not via `rc-service local start` — that would
-	// deadlock against cloud-final and stall the boot ~50s on the OpenRC timeout.
-	assert.Contains(t, ud, "[ /etc/local.d/imds-onlink-route.start ]")
-	assert.NotContains(t, ud, "rc-service, local, start")
+	// IMDS is served at the host tap, so no in-guest on-link route is emitted.
+	assert.NotContains(t, ud, "169.254.169.254")
+	assert.NotContains(t, ud, "/etc/local.d/imds-onlink-route.start")
 	// Exactly one write_files block (single "write_files:" key).
 	assert.Equal(t, 1, strings.Count(ud, "write_files:"))
 }

@@ -39,13 +39,6 @@ func buildAgentUserData(in agentUserDataInput) string {
 	files := []userDataFile{
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: agentEnvPath, Perms: "0600", Body: agentBody},
-		{
-			Path:  "/etc/local.d/imds-onlink-route.start",
-			Perms: "0755",
-			Body: "#!/bin/sh\n" +
-				"dev=$(ip route show default | awk '{print $5; exit}')\n" +
-				"[ -n \"$dev\" ] && ip route replace " + imdsServerIP + "/32 dev \"$dev\" scope link",
-		},
 	}
 
 	var buf strings.Builder
@@ -68,13 +61,6 @@ func buildAgentUserData(in agentUserDataInput) string {
 			buf.WriteString("\n")
 		}
 	}
-
-	// Enable OpenRC `local` for reboot persistence, then run the IMDS route script
-	// directly. Starting the service here would deadlock: runcmd runs inside
-	// cloud-final, but `local` is ordered after it — blocking until OpenRC times out.
-	buf.WriteString("runcmd:\n")
-	buf.WriteString("  - [ rc-update, add, local, default ]\n")
-	buf.WriteString("  - [ /etc/local.d/imds-onlink-route.start ]\n")
 
 	return buf.String()
 }

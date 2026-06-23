@@ -146,28 +146,37 @@ This registers the repo credential, creates the Argo CD `Application`, the demo 
 
 ### Step 5. Watch the Sync and Open the App
 
-The demo app and the Argo CD UI share **one ALB** (an LBC IngressGroup): LBC gives
-each backend its own target group and host-routes between them —
-`app.eks-gitops.spinifex.local` to the app, `argocd.eks-gitops.spinifex.local` to
-the UI. Grab the shared ALB address once:
+The demo app and the Argo CD UI share **one ALB** (an LBC IngressGroup). On
+`:443` the app is the catch-all and `argocd.eks-gitops.spinifex.local`
+host-routes to the UI; Argo CD also gets a hostless `:8443` listener so it is
+reachable on the raw ALB IP before DNS exists. Grab the shared ALB address once:
 
 ```bash
 kubectl -n argocd get applications
 kubectl get pods -o wide
 kubectl get pvc                    # the EBS-CSI volume should be Bound
 
-ALB=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-echo "$ALB"
+ALB_IP=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "$ALB_IP"
 ```
 
-In a real deployment northstar resolves the ALB hostname and you point
-`app.eks-gitops.spinifex.local` / `argocd.eks-gitops.spinifex.local` at it (a
-CNAME). To test before DNS is wired, send the host header explicitly:
+**Reach it by raw IP (no DNS, no host header):**
+
+| Service | URL |
+|---|---|
+| Demo app | `https://<ALB_IP>/` |
+| Argo CD UI | `https://<ALB_IP>:8443/` |
 
 ```bash
-curl -k --resolve app.eks-gitops.spinifex.local:443:"$(getent hosts "$ALB" | awk '{print $1}')" \
-  https://app.eks-gitops.spinifex.local
+curl -k https://"$ALB_IP"/            # app — returns the Spinifex page
+curl -k https://"$ALB_IP":8443/       # Argo CD UI
 ```
+
+The bare ALB IP serves the **app** on `:443`. Hitting `https://<ALB_IP>/` and
+expecting Argo CD gives the app instead — use `:8443` for the UI. Once northstar
+(or Route 53) resolves the hostnames to the ALB, `app.eks-gitops.spinifex.local`
+and `argocd.eks-gitops.spinifex.local` both work on `:443`. Self-signed cert —
+accept the browser warning.
 
 The page shows the **"persisted to EBS volume"** badge and a hit counter that keeps climbing — delete the pod (`kubectl delete pod -l app=spinifex-demo`) and the count survives, proving the volume is durable.
 
@@ -176,19 +185,27 @@ The page shows the **"persisted to EBS volume"** badge and a hit counter that ke
 Managing deployments through the Argo CD console is the point of this workbook, so
 the UI is exposed on the **same ALB** as the app, not behind a port-forward. The
 `workloads` module adds a `NodePort` Service in front of `argocd-server` (the addon
-ships it `ClusterIP` only) and an Ingress in the shared group. `argocd-server`
-serves TLS on its own port, so its Ingress uses `backend-protocol: HTTPS`.
+ships it `ClusterIP` only) and two Ingresses in the shared group — a host-routed
+one on `:443` and a hostless one on `:8443` for raw-IP access. `argocd-server`
+serves TLS on its own port, so both use `backend-protocol: HTTPS`.
+
+**Get the admin credentials.** Argo CD generates a one-time `admin` password into
+a Secret on install; the username is always `admin`:
 
 ```bash
-PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath='{.data.password}' | base64 -d)
-echo "https://argocd.eks-gitops.spinifex.local  —  admin / $PASS"
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d ; echo
 ```
 
-Open `https://argocd.eks-gitops.spinifex.local` (resolve it to the ALB as above;
-accept the self-signed cert) and log in as `admin`. The `spinifex-demo`
-Application shows the sync status, the resource tree, and live diffs against git —
-change a manifest in the repo and watch Argo CD reconcile it.
+(`tofu output argocd_admin_password_cmd` prints this same command.)
+
+Open the UI and log in as `admin`:
+
+- By raw IP: `https://<ALB_IP>:8443/`
+- By DNS once wired: `https://argocd.eks-gitops.spinifex.local`
+
+The `spinifex-demo` Application shows the sync status, the resource tree, and live
+diffs against git — change a manifest in the repo and watch Argo CD reconcile it.
 
 If you'd rather not expose the UI at all, port-forward instead:
 

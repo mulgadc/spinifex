@@ -211,9 +211,10 @@ resource "kubernetes_ingress_v1" "demo" {
   spec {
     ingress_class_name = "alb"
 
+    # No host condition: the app is the ALB's catch-all on :443, so it answers on
+    # the raw ALB IP as well as app.<cn> once DNS is wired. Argo CD's host rule is
+    # more specific and still wins for argocd.<cn>.
     rule {
-      host = local.app_host
-
       http {
         path {
           path      = "/"
@@ -242,8 +243,10 @@ resource "kubernetes_ingress_v1" "demo" {
 # only; expose it via a NodePort the ALB targets. argocd-server serves TLS on
 # 8080 (no --insecure), so the ALB speaks HTTPS to the backend.
 #
-# Same group.name as the demo Ingress, so LBC folds both onto ONE ALB with two
-# target groups, host-routing app.<cn> to the app and argocd.<cn> to the UI.
+# Same group.name as the demo Ingress, so LBC folds both onto ONE ALB. On :443
+# the app is the catch-all and argocd.<cn> host-routes to the UI. Argo CD also
+# gets a hostless :8443 listener (argocd_ip below) so the UI is reachable on the
+# raw ALB IP before DNS exists — https://<alb-ip>:8443.
 # ---------------------------------------------------------------------------
 
 resource "kubernetes_service_v1" "argocd_server_nodeport" {
@@ -307,12 +310,59 @@ resource "kubernetes_ingress_v1" "argocd" {
   }
 }
 
+# Hostless Argo CD listener on :8443 of the same ALB, so the UI is reachable on
+# the raw ALB IP (https://<alb-ip>:8443) without DNS or a host header. argocd.<cn>
+# on :443 still works via the host-routed ingress above.
+resource "kubernetes_ingress_v1" "argocd_ip" {
+  metadata {
+    name      = "argocd-server-ip"
+    namespace = "argocd"
+
+    annotations = {
+      "alb.ingress.kubernetes.io/scheme"               = "internet-facing"
+      "alb.ingress.kubernetes.io/target-type"          = "instance"
+      "alb.ingress.kubernetes.io/group.name"           = local.alb_group
+      "alb.ingress.kubernetes.io/listen-ports"         = "[{\"HTTPS\":8443}]"
+      "alb.ingress.kubernetes.io/certificate-arn"      = local.cert_arn
+      "alb.ingress.kubernetes.io/backend-protocol"     = "HTTPS"
+      "alb.ingress.kubernetes.io/healthcheck-protocol" = "HTTPS"
+      "alb.ingress.kubernetes.io/healthcheck-path"     = "/healthz"
+    }
+  }
+
+  spec {
+    ingress_class_name = "alb"
+
+    rule {
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+
+          backend {
+            service {
+              name = kubernetes_service_v1.argocd_server_nodeport.metadata[0].name
+              port {
+                number = 443
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 output "application_name" {
   value = kubernetes_manifest.demo_app.manifest.metadata.name
 }
 
 output "alb_address_hint" {
-  value = "Both share one ALB: kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{\"\\n\"}'. App host: ${local.app_host}. Argo CD host: ${local.argocd_host}."
+  value = "One shared ALB. Get its IP: kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}{\"\\n\"}' (or [0].hostname). Reach by raw IP — app: https://<alb-ip>/  Argo CD: https://<alb-ip>:8443/ . By DNS — app: ${local.app_host}  Argo CD: ${local.argocd_host}."
+}
+
+output "argocd_admin_password_cmd" {
+  value = "kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d ; echo"
 }
 
 output "argocd_url_hint" {

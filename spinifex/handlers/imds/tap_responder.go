@@ -101,9 +101,15 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	m.mu.Unlock()
 
 	go func() {
-		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("IMDS: tap responder serve exited", "eni_id", eniID, "endpoint", endpoint, "err", err)
+		err := server.Serve(listener)
+		if errors.Is(err, http.ErrServerClosed) {
+			return // clean stop/shutdown already removed the entry
 		}
+		// Unexpected exit: drop ourselves from the active set so the next reconcile
+		// re-starts this tap. Without this the stale entry makes start a no-op and
+		// the tap never serves again.
+		slog.Error("IMDS: tap responder serve exited", "eni_id", eniID, "endpoint", endpoint, "err", err)
+		m.removeIfCurrent(eniID, server)
 	}()
 
 	slog.Info("IMDS: tap responder serving", "eni_id", eniID, "endpoint", endpoint, "addr", listener.Addr().String())
@@ -152,6 +158,18 @@ func (m *tapResponderManager) stop(eniID string) {
 		slog.Warn("IMDS: tap responder close failed", "eni_id", eniID, "err", err)
 	}
 	slog.Info("IMDS: tap responder stopped", "eni_id", eniID)
+}
+
+// removeIfCurrent deletes eniID from the active set only if it still maps to
+// server. A Serve goroutine that exits unexpectedly calls this so the next
+// reconcile re-starts the tap; the identity check avoids evicting a newer
+// responder that replaced this one after a stop/start.
+func (m *tapResponderManager) removeIfCurrent(eniID string, server *http.Server) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cur, ok := m.active[eniID]; ok && cur.server == server {
+		delete(m.active, eniID)
+	}
 }
 
 // shutdown closes every active tap responder.

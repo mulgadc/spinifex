@@ -143,6 +143,55 @@ func TestTapResponder_ReconcileConvergesToLiveSet(t *testing.T) {
 	assertActive(t, m, "eni-bbb22222")
 }
 
+// TestTapResponder_UnexpectedServeExitAllowsRestart guards the fix that drops a
+// responder from the active set when its Serve goroutine exits unexpectedly:
+// otherwise the stale entry makes start a no-op and the tap never serves again.
+func TestTapResponder_UnexpectedServeExitAllowsRestart(t *testing.T) {
+	const (
+		eniID    = "eni-aaa11111"
+		endpoint = "ime-aaa11111"
+	)
+	table := map[string]*eniFacts{eniID: {eniID: eniID, instanceID: "i-aaaa1111"}}
+
+	var mu sync.Mutex
+	var listeners []net.Listener
+	listen := func(_ context.Context, _ string) (net.Listener, error) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		listeners = append(listeners, ln)
+		mu.Unlock()
+		return ln, nil
+	}
+
+	m := newTapResponderManager(http.NewServeMux(), staticResolve(table), listen)
+	ctx := context.Background()
+	require.NoError(t, m.start(ctx, eniID, endpoint))
+	assertActive(t, m, eniID)
+
+	// Close the listener out from under Serve (not via server.Close), so Serve
+	// returns a non-ErrServerClosed error, driving the unexpected-exit path.
+	mu.Lock()
+	require.Len(t, listeners, 1)
+	require.NoError(t, listeners[0].Close())
+	mu.Unlock()
+
+	// The responder must remove itself so a retry can re-start it.
+	require.Eventually(t, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		_, ok := m.active[eniID]
+		return !ok
+	}, time.Second, 10*time.Millisecond, "responder must drop from active after unexpected exit")
+
+	// And a subsequent start succeeds — no stale entry blocks it.
+	require.NoError(t, m.start(ctx, eniID, endpoint))
+	assertActive(t, m, eniID)
+	m.shutdown()
+}
+
 func TestTapResponder_StartRejectsMissAndError(t *testing.T) {
 	var addrs sync.Map
 	listen := loopbackTapListen(&addrs)

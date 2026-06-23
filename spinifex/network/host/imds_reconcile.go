@@ -24,7 +24,7 @@ type IMDSTapEndpoint struct {
 // state, the source of truth vpcd reconciles its responders against. The br-int
 // patch ports (IMDSIntPatchPort, "imi-*") carry the OVN iface-id
 // (vm.OVSIfaceID(eniID) = "port-<eniID>"), the only place the *full* ENI survives
-// on the chassis — the br-imds endpoint name truncates it to the last 8 chars.
+// on the chassis — the br-imds endpoint name hashes it to 8 hex chars.
 // OVS on this chassis holds only local ports, so the result is inherently the
 // local tap set. A port with an unreadable or unexpected iface-id is skipped, not
 // fatal: one malformed port must not stall serving for the rest.

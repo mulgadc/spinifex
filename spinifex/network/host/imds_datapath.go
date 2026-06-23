@@ -31,14 +31,13 @@ const (
 	imdsForwardPriority = 100
 )
 
-// shortENIID returns the last 8 chars of the ENI (sans eni- prefix), the short
-// form per-tap port names key off to stay within the 15-char IFNAMSIZ limit.
+// shortENIID returns a stable 8-hex-char tag hashed (FNV-32a) from the full ENI.
+// Per-tap port names key off it to stay within the 15-char IFNAMSIZ limit; hashing
+// the whole ENI rather than truncating keeps ENIs sharing a suffix distinct.
 func shortENIID(eniID string) string {
-	id := strings.TrimPrefix(eniID, "eni-")
-	if len(id) > 8 {
-		id = id[len(id)-8:]
-	}
-	return id
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(eniID))
+	return fmt.Sprintf("%08x", h.Sum32())
 }
 
 // IMDSEndpointName returns the per-tap endpoint port on IMDSBridge — the

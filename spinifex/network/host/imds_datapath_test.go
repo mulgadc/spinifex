@@ -28,9 +28,30 @@ func TestIMDSEndpointName(t *testing.T) {
 	if !strings.HasPrefix(got, "ime-") {
 		t.Errorf("endpoint name %q missing ime- prefix", got)
 	}
-	// Short ENIs are not truncated.
-	if n := IMDSEndpointName("eni-abc"); n != "ime-abc" {
-		t.Errorf("short ENI: got %q want ime-abc", n)
+	// "ime-" + 8 hex chars = 12, regardless of ENI length.
+	if len(got) != len("ime-")+8 {
+		t.Errorf("endpoint name %q is not ime- + 8 hex chars", got)
+	}
+	// Deterministic: the same ENI always maps to the same name.
+	if again := IMDSEndpointName("eni-0abc1234deadbeef"); again != got {
+		t.Errorf("endpoint name not deterministic: %q vs %q", got, again)
+	}
+}
+
+// TestShortENIIDDistinguishesSharedSuffix guards the hashing of the full ENI:
+// truncating to the trailing chars made two ENIs differing only in a prefix
+// (sharing an 8-char suffix) collide on every per-tap port name.
+func TestShortENIIDDistinguishesSharedSuffix(t *testing.T) {
+	const a = "eni-1111deadbeef"
+	const b = "eni-2222deadbeef" // same trailing 8 chars ("deadbeef")
+	if IMDSEndpointName(a) == IMDSEndpointName(b) {
+		t.Errorf("ENIs sharing a suffix collide on endpoint name: %q", IMDSEndpointName(a))
+	}
+	if IMDSPatchPort(a) == IMDSPatchPort(b) {
+		t.Errorf("ENIs sharing a suffix collide on patch port: %q", IMDSPatchPort(a))
+	}
+	if IMDSIntPatchPort(a) == IMDSIntPatchPort(b) {
+		t.Errorf("ENIs sharing a suffix collide on br-int patch port: %q", IMDSIntPatchPort(a))
 	}
 }
 

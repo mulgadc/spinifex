@@ -208,6 +208,7 @@ func LaunchK3sServerVM(
 		ENIID:        eniID,
 		ENIMac:       aws.StringValue(eniOut.NetworkInterface.MacAddress),
 		ENIIP:        eniIP,
+		SubnetID:     in.SubnetID,
 		UserData:     userData,
 	})
 	if err != nil {

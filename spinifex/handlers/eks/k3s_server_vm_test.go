@@ -299,6 +299,9 @@ func TestLaunchK3sServerVM_HappyPath(t *testing.T) {
 	assert.Equal(t, "000000000000", runIn.AccountID, "VM launches under the infra (system) account")
 	assert.Equal(t, "eni-aaa111", runIn.ENIID)
 	assert.Equal(t, "10.0.1.42", runIn.ENIIP)
+	// The subnet must reach the launch input so the daemon can build the per-tap
+	// IMDS datapath; without it the primary tap is stranded on br-imds (no patch).
+	assert.Equal(t, "subnet-aaa", runIn.SubnetID)
 
 	assert.Empty(t, vpc.deleteCalls, "no rollback on success")
 }

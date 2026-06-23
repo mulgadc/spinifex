@@ -514,16 +514,24 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 		termErr = d.terminateSystemInstanceRemote(instanceID)
 	}
 
-	// Backstop EIP reclaim. The local path releases a cached allocation, but when
-	// the VM is gone from the manager (remote / no-owner) that never ran and an
-	// internet-facing ALB's EIP would orphan. Idempotent: a no-op once the owning
-	// path has already released the record.
-	if d.eipService != nil {
-		if relErr := d.eipService.ReleaseAddressByInstanceID(instanceID); relErr != nil {
-			slog.Warn("TerminateSystemInstance: EIP reconcile backstop failed", "instanceId", instanceID, "err", relErr)
-		}
-	}
+	// Backstop for the no-owner case: terminateSystemInstanceLocal runs the
+	// reclaim on the owning node, but when no node owns the VM (already gone) the
+	// remote route returns NotFound and never reaches it, so an internet-facing
+	// ALB's EIP would orphan. Idempotent — a no-op once the record is released.
+	d.reclaimSystemInstanceEIP(instanceID)
 	return termErr
+}
+
+// reclaimSystemInstanceEIP releases any EIP still recorded against instanceID via
+// the authoritative EIP KV, independent of the cached fields on the VM record.
+// Idempotent and nil-safe; logs on failure.
+func (d *Daemon) reclaimSystemInstanceEIP(instanceID string) {
+	if d.eipService == nil {
+		return
+	}
+	if err := d.eipService.ReleaseAddressByInstanceID(instanceID); err != nil {
+		slog.Warn("reclaimSystemInstanceEIP: backstop release failed", "instanceId", instanceID, "err", err)
+	}
 }
 
 // terminateSystemInstanceLocal stops a VM owned by this node.
@@ -534,8 +542,12 @@ func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
 	}
 
 	// Release EIP through the EIP service for system VMs whose public IP was
-	// allocated via AllocateAddress (internet-facing ALBs).
+	// allocated via AllocateAddress (internet-facing ALBs). releaseSystemInstanceEIP
+	// uses the VM's cached allocation; reclaimSystemInstanceEIP then reconciles
+	// against the EIP KV in case the cache was empty (the authoritative path — this
+	// runs on the owning node, including the NATS terminate handler).
 	d.releaseSystemInstanceEIP(instance)
+	d.reclaimSystemInstanceEIP(instanceID)
 
 	if err := d.vmMgr.Terminate(instanceID); err != nil {
 		slog.Error("TerminateSystemInstance: vmMgr.Terminate failed", "instanceId", instanceID, "err", err)

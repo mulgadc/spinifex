@@ -36,11 +36,6 @@ ECR on Spinifex gives every account a private container registry reachable at a 
 <account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999
 ```
 
-The `:9999` is part of the host you authenticate, tag, and push to —
-`aws ecr describe-repositories` and `aws ecr get-login-password` return the
-exact `host:port` for your account, so prefer copying it from there rather than
-typing it by hand.
-
 Each repository holds image manifests and their layers. Images are stored in object storage ([Predastore](https://github.com/mulgadc/predastore)) in a per-account bucket, with blobs content-addressed and de-duplicated across repositories. Authentication is token-based: `aws ecr get-login-password` mints a short-lived bearer token that `docker login` uses against the registry's `/v2/` endpoint.
 
 **What works today**

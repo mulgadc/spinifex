@@ -134,15 +134,18 @@ tofu apply
 
 ### Step 5. Open the Demo over HTTPS
 
-The LBC takes a minute or two to provision the ALB after the Ingress is created. Fetch its address and open it:
+The LBC takes a minute or two to provision the ALB after the Ingress is created. The Ingress publishes the ALB's **DNS name**, which has no resolver yet (northstar will add one) — resolve it to the ALB's public IP with `describe-load-balancers` so you can reach it without DNS or `/etc/hosts`:
 
 ```bash
 kubectl get ingress spinifex-demo -o wide
-ADDR=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-curl -k "https://$ADDR"        # self-signed cert: -k skips verification
+DNSNAME=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+IP=$(aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?DNSName=='${DNSNAME}'].AvailabilityZones[].LoadBalancerAddresses[].IpAddress | [0]" \
+  --output text)
+curl -k "https://$IP"          # self-signed cert: -k skips verification
 ```
 
-Open `https://$ADDR` in a browser (accept the self-signed certificate). The Spinifex-themed page reports the pod, node, cluster, and region that answered — refresh to watch requests land on different replicas, now over HTTPS through the ALB.
+Open `https://$IP` in a browser (accept the self-signed certificate). The Spinifex-themed page reports the pod, node, cluster, and region that answered — refresh to watch requests land on different replicas, now over HTTPS through the ALB.
 
 ### Cleanup
 

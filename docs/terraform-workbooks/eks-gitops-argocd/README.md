@@ -156,7 +156,10 @@ kubectl -n argocd get applications
 kubectl get pods -o wide
 kubectl get pvc                    # the EBS-CSI volume should be Bound
 
-ALB_IP=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+DNSNAME=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+ALB_IP=$(aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?DNSName=='${DNSNAME}'].AvailabilityZones[].LoadBalancerAddresses[].IpAddress | [0]" \
+  --output text)
 echo "$ALB_IP"
 ```
 

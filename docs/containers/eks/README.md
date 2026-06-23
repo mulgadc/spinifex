@@ -63,8 +63,8 @@ Before creating a cluster you need the supporting infrastructure in place. The T
 - **The `eks-node` image** registered on the cluster. The console blocks cluster creation until it is present.
 - **A VPC with at least one subnet.** The control plane launches in your first subnet; workers run in the subnets you pass to the node group.
 - **Egress for the workers.** Workers must reach the internet to pull container images:
-  - *Public workers* — an **Internet Gateway** with a default route (`0.0.0.0/0 → IGW`) and public IPs.
-  - *Private workers* — a **NAT Gateway** in a public subnet with a default route (`0.0.0.0/0 → NAT`) from the private subnets.
+  - **Public workers** — an **Internet Gateway** with a default route (`0.0.0.0/0 → IGW`) and public IPs.
+  - **Private workers** — a **NAT Gateway** in a public subnet with a default route (`0.0.0.0/0 → NAT`) from the private subnets.
 - **Two IAM roles:**
   - A **cluster role** trusted by `eks.amazonaws.com` with `AmazonEKSClusterPolicy` attached.
   - A **node role** trusted by `ec2.amazonaws.com` with `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly` attached (the last lets workers pull images from [ECR](/docs/ecr)).

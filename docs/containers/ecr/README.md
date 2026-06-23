@@ -168,7 +168,7 @@ Then authenticate Docker and push using the `repository_url` output, following s
 
 **`docker login` fails with an authorization error.** The token is account-scoped and short-lived. Re-run `aws ecr get-login-password` to mint a fresh token, and confirm the registry host in `docker login` matches your account's endpoint (`aws ecr describe-repositories` returns it).
 
-**`docker push` cannot reach the registry.** Confirm you are using the per-account endpoint *with the `:9999` port* — `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999`. Docker dials the host directly (no mirror), so without the port it tries `:443` and fails. The registry routes by Host header, so the hostname must also match your account and your deployment's domain.
+**`docker push` cannot reach the registry.** Confirm you are using the per-account endpoint with the `:9999` port — `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999`. Docker dials the host directly (no mirror), so without the port it tries `:443` and fails. The registry routes by Host header, so the hostname must also match your account and your deployment's domain.
 
 **EKS workers cannot pull an image.** Confirm the node IAM role has `AmazonEC2ContainerRegistryReadOnly` and that the workers have egress to the registry endpoint (an Internet Gateway or NAT Gateway route). See the [EKS prerequisites](/docs/eks).
 

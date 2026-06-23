@@ -152,6 +152,10 @@ host-routes to the UI; Argo CD also gets a hostless `:8443` listener so it is
 reachable on the raw ALB IP before DNS exists. Grab the shared ALB address once:
 
 ```bash
+# Point kubectl at the cluster first (writes ~/.kube/config) — without this every
+# kubectl call fails to connect:
+aws eks update-kubeconfig --name eks-gitops --region ap-southeast-2
+
 kubectl -n argocd get applications
 kubectl get pods -o wide
 kubectl get pvc                    # the EBS-CSI volume should be Bound

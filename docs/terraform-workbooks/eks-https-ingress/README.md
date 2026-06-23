@@ -137,6 +137,10 @@ tofu apply
 The LBC takes a minute or two to provision the ALB after the Ingress is created. The Ingress publishes the ALB's **DNS name**, which has no resolver yet (northstar will add one) — resolve it to the ALB's public IP with `describe-load-balancers` so you can reach it without DNS or `/etc/hosts`:
 
 ```bash
+# Point kubectl at the cluster first (writes ~/.kube/config) — without this every
+# kubectl call fails to connect:
+aws eks update-kubeconfig --name eks-https --region ap-southeast-2
+
 kubectl get ingress spinifex-demo -o wide
 DNSNAME=$(kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 IP=$(aws elbv2 describe-load-balancers \

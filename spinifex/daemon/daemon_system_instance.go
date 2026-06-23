@@ -507,10 +507,23 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 // stop qemu and free the ENI — otherwise the local-only path returns NotFound
 // and the teardown deletes a still-attached ENI (InvalidNetworkInterface.InUse).
 func (d *Daemon) TerminateSystemInstance(instanceID string) error {
+	var termErr error
 	if _, exists := d.vmMgr.Get(instanceID); exists {
-		return d.terminateSystemInstanceLocal(instanceID)
+		termErr = d.terminateSystemInstanceLocal(instanceID)
+	} else {
+		termErr = d.terminateSystemInstanceRemote(instanceID)
 	}
-	return d.terminateSystemInstanceRemote(instanceID)
+
+	// Backstop EIP reclaim. The local path releases a cached allocation, but when
+	// the VM is gone from the manager (remote / no-owner) that never ran and an
+	// internet-facing ALB's EIP would orphan. Idempotent: a no-op once the owning
+	// path has already released the record.
+	if d.eipService != nil {
+		if relErr := d.eipService.ReleaseAddressByInstanceID(instanceID); relErr != nil {
+			slog.Warn("TerminateSystemInstance: EIP reconcile backstop failed", "instanceId", instanceID, "err", relErr)
+		}
+	}
+	return termErr
 }
 
 // terminateSystemInstanceLocal stops a VM owned by this node.

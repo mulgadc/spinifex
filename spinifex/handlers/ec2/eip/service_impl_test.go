@@ -140,6 +140,52 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 	assert.Contains(t, err.Error(), "InvalidAddress.Locked")
 }
 
+func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
+	svc, _ := setupTestEIP(t)
+
+	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	allocID := *out.AllocationId
+
+	// Mark the EIP associated with a system instance, as an internet-facing ALB
+	// leaves it. ENIId stays empty so disassociate skips the VPC-service lookup.
+	entry, err := svc.eipKV.Get(testAccountID + "." + allocID)
+	require.NoError(t, err)
+	var record EIPRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &record))
+	record.State = "associated"
+	record.AssociationId = "eipassoc-test"
+	record.InstanceId = "i-alb-test"
+	data, err := json.Marshal(record)
+	require.NoError(t, err)
+	_, err = svc.eipKV.Update(testAccountID+"."+allocID, data, entry.Revision())
+	require.NoError(t, err)
+
+	// Backstop release by instance disassociates then frees the allocation.
+	require.NoError(t, svc.ReleaseAddressByInstanceID("i-alb-test"))
+
+	_, err = svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)}, testAccountID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidAllocationID.NotFound")
+}
+
+func TestEIP_ReleaseByInstanceID_NoMatchIsNoOp(t *testing.T) {
+	svc, _ := setupTestEIP(t)
+
+	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	allocID := *out.AllocationId
+
+	// An instance with no recorded EIP must leave existing allocations untouched.
+	require.NoError(t, svc.ReleaseAddressByInstanceID("i-unrelated"))
+
+	_, err = svc.eipKV.Get(testAccountID + "." + allocID)
+	assert.NoError(t, err)
+
+	// Empty instance ID is a no-op too.
+	require.NoError(t, svc.ReleaseAddressByInstanceID(""))
+}
+
 func TestEIP_ReleaseMissingParams(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 

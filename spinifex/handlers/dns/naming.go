@@ -23,6 +23,23 @@ func EC2PrivateName(privateIP, region, internalDomain string) string {
 	return fmt.Sprintf("ip-%s.%s.%s", dashIP(privateIP), region, privateZoneOrDefault(internalDomain))
 }
 
+// EC2DNSNames returns the public and private AWS-shaped DNS names for an
+// instance. Each is empty when its inputs are unavailable: the public name needs
+// a public IP and base domain, the private name needs a private IP. region is
+// required for both.
+func EC2DNSNames(region, baseDomain, internalDomain, publicIP, privateIP string) (public, private string) {
+	if region == "" {
+		return "", ""
+	}
+	if publicIP != "" && baseDomain != "" {
+		public = EC2PublicName(publicIP, region, baseDomain)
+	}
+	if privateIP != "" {
+		private = EC2PrivateName(privateIP, region, internalDomain)
+	}
+	return public, private
+}
+
 // EC2Changes builds the record-set changes for one instance's public and
 // private addresses. Empty IPs are skipped (e.g. no public IP assigned). The
 // private record lands in internalDomain (default compute.internal).

@@ -130,6 +130,8 @@ type Daemon struct {
 	resourceMgr           *ResourceManager
 	instanceService       *handlers_ec2_instance.InstanceServiceImpl
 	dnsWriter             *handlers_dns.Writer
+	dnsBaseDomain         string
+	dnsInternalDomain     string
 	keyService            *handlers_ec2_key.KeyServiceImpl
 	imageService          *handlers_ec2_image.ImageServiceImpl
 	volumeService         *handlers_ec2_volume.VolumeServiceImpl
@@ -1153,6 +1155,8 @@ func (d *Daemon) startCluster() error {
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = handlers_dns.NewWriter(d.config, d.natsConn)
+	d.dnsBaseDomain = handlers_dns.ResolveBaseDomain(d.config)
+	d.dnsInternalDomain = handlers_dns.ResolveInternalDomain(d.config)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
 	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
 

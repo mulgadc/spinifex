@@ -137,7 +137,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 
 	switch path {
 	case pathMetaDataRoot, prefixMetaData:
-		writeText(w, "ami-id\nhostname\niam/\ninstance-id\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nplacement/\npublic-ipv4\npublic-keys/\nsecurity-groups")
+		writeText(w, s.metadataListing(eni))
 	case prefixMetaData + "instance-id":
 		writeText(w, eni.instanceID)
 	case prefixMetaData + "local-ipv4":
@@ -150,6 +150,8 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		writeText(w, strings.Join(s.resolver.resolveSGNames(eni.accountID, eni.securityGroupIDs), "\n"))
 	case prefixMetaData + "hostname", prefixMetaData + "local-hostname":
 		writeText(w, synthHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
+	case prefixMetaData + "public-hostname":
+		writeText(w, publicHostname(eni.publicIP, regionFromAZ(eni.availabilityZone), s.baseDomain))
 	case prefixMetaData + "placement", prefixMetaData + "placement/":
 		writeText(w, "availability-zone\nregion")
 	case prefixMetaData + "placement/availability-zone":
@@ -379,6 +381,31 @@ func synthHostname(ip, region string) string {
 		return ""
 	}
 	return fmt.Sprintf("ip-%s.%s.compute.internal", strings.ReplaceAll(ip, ".", "-"), region)
+}
+
+// publicHostname builds "ec2-1-2-3-4.<region>.compute.<baseDomain>" from a
+// public IP, region and the cluster base domain. Empty when any input is
+// missing (no public IP, or DNS not configured).
+func publicHostname(ip, region, baseDomain string) string {
+	if ip == "" || region == "" || baseDomain == "" {
+		return ""
+	}
+	return fmt.Sprintf("ec2-%s.%s.compute.%s", strings.ReplaceAll(ip, ".", "-"), region, baseDomain)
+}
+
+// metadataListing returns the top-level metadata keys, including the public-*
+// entries only when the instance has a public IP (AWS parity).
+func (s *IMDSServiceImpl) metadataListing(eni *eniFacts) string {
+	keys := []string{"ami-id", "hostname", "iam/", "instance-id", "instance-type",
+		"local-hostname", "local-ipv4", "mac", "placement/"}
+	if eni.publicIP != "" {
+		if s.baseDomain != "" {
+			keys = append(keys, "public-hostname")
+		}
+		keys = append(keys, "public-ipv4")
+	}
+	keys = append(keys, "public-keys/", "security-groups")
+	return strings.Join(keys, "\n")
 }
 
 func writeText(w http.ResponseWriter, body string) {

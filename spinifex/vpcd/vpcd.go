@@ -117,6 +117,10 @@ type Config struct {
 	// to scope its IntentState scan to local-AZ KV records; new VPC records
 	// are stamped with this value at create time.
 	AZ string
+	// NorthstarBaseDomain is the cluster's authoritative base domain (northstar
+	// default_domain, e.g. "spx3.net"). IMDS uses it to serve public-hostname.
+	// Empty disables the public-hostname metadata key.
+	NorthstarBaseDomain string
 }
 
 // ExternalPoolConfig mirrors config.ExternalPool for vpcd's internal use.
@@ -480,6 +484,7 @@ func launchService(cfg *Config) error {
 		handlers_imds.NewNATSPublicKeyLookup(nc),
 		max(len(chassisNames), 1),
 		host.EnsureIMDSVeth, host.RemoveIMDSVeth,
+		cfg.NorthstarBaseDomain,
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)

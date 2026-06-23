@@ -43,17 +43,19 @@ type eniResolver interface {
 
 // IMDSServiceImpl is the in-process IMDS implementation with its own per-subnet listener stack.
 type IMDSServiceImpl struct {
-	resolver eniResolver
-	tokens   *tokenStore
-	creds    *credCache
-	iam      profileLookup
-	pubKeys  publicKeyLookup
-	bind     *bindManager
-	now      func() time.Time
+	resolver   eniResolver
+	tokens     *tokenStore
+	creds      *credCache
+	iam        profileLookup
+	pubKeys    publicKeyLookup
+	bind       *bindManager
+	now        func() time.Time
+	baseDomain string
 }
 
 // NewIMDSServiceImpl wires the IMDS service. ensureVeth/removeVeth are injected to avoid an import cycle.
-func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, ensureVeth ensureVethFunc, removeVeth removeVethFunc) (*IMDSServiceImpl, error) {
+// baseDomain is the cluster's authoritative DNS domain used for public-hostname.
+func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, ensureVeth ensureVethFunc, removeVeth removeVethFunc, baseDomain string) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -102,11 +104,12 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 			sgKV:   sgKV,
 			lookup: &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
 		},
-		tokens:  newTokenStore(),
-		creds:   newCredCache(sts),
-		iam:     iamSvc,
-		pubKeys: pubKeys,
-		now:     time.Now,
+		tokens:     newTokenStore(),
+		creds:      newCredCache(sts),
+		iam:        iamSvc,
+		pubKeys:    pubKeys,
+		now:        time.Now,
+		baseDomain: baseDomain,
 	}
 	svc.bind = newBindManager(vethKV, svc.httpHandler(), ensureVeth, removeVeth, bindLocalListener)
 

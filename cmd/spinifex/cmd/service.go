@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/service"
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
@@ -769,19 +770,20 @@ var vpcdStartCmd = &cobra.Command{
 		}
 
 		svc, err := service.New("vpcd", &vpcd.Config{
-			NatsHost:          nodeConfig.NATS.Host,
-			NatsToken:         nodeConfig.NATS.ACL.Token,
-			NatsCACert:        nodeConfig.NATS.CACert,
-			OVNNBAddr:         nodeConfig.VPCD.OVNNBAddr,
-			OVNSBAddr:         nodeConfig.VPCD.OVNSBAddr,
-			BaseDir:           nodeConfig.BaseDir,
-			Debug:             false,
-			ExternalMode:      clusterConfig.Network.ExternalMode,
-			ExternalPools:     extPools,
-			Bootstrap:         bootstrap,
-			ExternalInterface: nodeConfig.VPCD.ExternalInterface,
-			BridgeMode:        nodeConfig.VPCD.BridgeMode,
-			AZ:                nodeConfig.AZ,
+			NatsHost:            nodeConfig.NATS.Host,
+			NatsToken:           nodeConfig.NATS.ACL.Token,
+			NatsCACert:          nodeConfig.NATS.CACert,
+			OVNNBAddr:           nodeConfig.VPCD.OVNNBAddr,
+			OVNSBAddr:           nodeConfig.VPCD.OVNSBAddr,
+			BaseDir:             nodeConfig.BaseDir,
+			Debug:               false,
+			ExternalMode:        clusterConfig.Network.ExternalMode,
+			ExternalPools:       extPools,
+			Bootstrap:           bootstrap,
+			ExternalInterface:   nodeConfig.VPCD.ExternalInterface,
+			BridgeMode:          nodeConfig.VPCD.BridgeMode,
+			AZ:                  nodeConfig.AZ,
+			NorthstarBaseDomain: handlers_dns.ResolveBaseDomain(&nodeConfig),
 		})
 		if err != nil {
 			fmt.Println("Error starting vpcd service:", err)

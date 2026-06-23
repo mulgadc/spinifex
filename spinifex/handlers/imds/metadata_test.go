@@ -101,12 +101,13 @@ func testENI() *eniFacts {
 func newTestService(res eniResolver, fIAM profileLookup, assumer stsAssumer) (*IMDSServiceImpl, time.Time) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	return &IMDSServiceImpl{
-		resolver: res,
-		tokens:   newTokenStore(),
-		creds:    newCredCache(assumer),
-		iam:      fIAM,
-		pubKeys:  &fakePublicKeys{},
-		now:      func() time.Time { return now },
+		resolver:   res,
+		tokens:     newTokenStore(),
+		creds:      newCredCache(assumer),
+		iam:        fIAM,
+		pubKeys:    &fakePublicKeys{},
+		now:        func() time.Time { return now },
+		baseDomain: "spx3.net",
 	}, now
 }
 
@@ -252,6 +253,7 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 		{prefixMetaData + "security-groups", "web-sg\ndb-sg"},
 		{prefixMetaData + "hostname", "ip-10-0-1-5.ap-southeast-2.compute.internal"},
 		{prefixMetaData + "local-hostname", "ip-10-0-1-5.ap-southeast-2.compute.internal"},
+		{prefixMetaData + "public-hostname", "ec2-203-0-113-7.ap-southeast-2.compute.spx3.net"},
 		{pathUserData, "#!/bin/sh\necho hi"},
 	}
 	for _, c := range cases {
@@ -270,6 +272,26 @@ func TestHTTP_DirectoryListing(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "instance-id")
 	assert.Contains(t, rec.Body.String(), "iam/")
 	assert.Contains(t, rec.Body.String(), "public-keys/")
+	// public-hostname is listed because testENI has a public IP and a base domain.
+	assert.Contains(t, rec.Body.String(), "public-hostname")
+}
+
+// Without a public IP, the public-* metadata keys are omitted from the listing
+// and public-hostname serves empty (AWS parity).
+func TestHTTP_NoPublicIP(t *testing.T) {
+	eni := testENI()
+	eni.publicIP = ""
+	svc, _ := newTestService(&fakeResolver{eni: eni}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+
+	listing := get(t, h, pathMetaDataRoot, token).Body.String()
+	assert.NotContains(t, listing, "public-hostname")
+	assert.NotContains(t, listing, "public-ipv4")
+
+	rec := get(t, h, prefixMetaData+"public-hostname", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Body.String())
 }
 
 func TestHTTP_UserDataAbsent404(t *testing.T) {

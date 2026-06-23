@@ -13,6 +13,10 @@ type AddonSpec struct {
 	// RequiresIRSA indicates the add-on needs an IAM role for service-account binding.
 	RequiresIRSA bool
 	Description  string
+	// Hidden keeps the spec out of the unfiltered DescribeAddonVersions listing.
+	// It stays creatable (lookupAddon finds it) — used for internal fixtures that
+	// should not surface as user-installable add-ons.
+	Hidden bool
 }
 
 // addonCatalog is the bundled add-on registry. Keep newest version first per slice.
@@ -29,11 +33,19 @@ var addonCatalog = buildAddonCatalog(
 	// spinifex-noop is the delivery-transport fixture: a trivial bundle
 	// (Namespace + ConfigMap) used by the addon e2e to prove stage → render →
 	// auto-deploy → ACTIVE → delete round-trips end-to-end without depending on
-	// the CSI or load-balancer-controller manifests. Not a real workload addon.
-	newAddonSpec("spinifex-noop", false,
+	// the CSI or load-balancer-controller manifests. Not a real workload addon,
+	// so it is hidden from the public DescribeAddonVersions catalog.
+	hiddenAddonSpec(newAddonSpec("spinifex-noop", false,
 		"No-op delivery-transport fixture (Namespace + ConfigMap).",
-		"0.1.0"),
+		"0.1.0")),
 )
+
+// hiddenAddonSpec marks a spec as internal: still creatable, but absent from the
+// unfiltered add-on catalog listing.
+func hiddenAddonSpec(s AddonSpec) AddonSpec {
+	s.Hidden = true
+	return s
+}
 
 // newAddonSpec builds a spec with DefaultVersion = versions[0]. Panics on empty versions.
 func newAddonSpec(name string, requiresIRSA bool, description string, versions ...string) AddonSpec {

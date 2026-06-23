@@ -47,6 +47,11 @@ func (s *EKSServiceImpl) DescribeAddonVersions(input *eks.DescribeAddonVersionsI
 		if filter != "" && spec.Name != filter {
 			continue
 		}
+		// Hidden fixtures stay out of the unfiltered listing but remain
+		// describable (and creatable) when asked for by name.
+		if spec.Hidden && filter == "" {
+			continue
+		}
 		out = append(out, addonSpecToAWS(spec))
 	}
 	return &eks.DescribeAddonVersionsOutput{Addons: out}, nil

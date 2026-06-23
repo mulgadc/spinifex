@@ -47,7 +47,16 @@ func TestDescribeAddonVersions_ReturnsCatalog(t *testing.T) {
 
 	out, err := svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{}, testAccountID)
 	require.NoError(t, err)
-	assert.Len(t, out.Addons, len(addonCatalog))
+	visible := 0
+	for _, spec := range addonCatalog {
+		if !spec.Hidden {
+			visible++
+		}
+	}
+	assert.Len(t, out.Addons, visible)
+	for _, a := range out.Addons {
+		assert.NotEqual(t, "spinifex-noop", aws.StringValue(a.AddonName), "hidden fixture must not surface")
+	}
 
 	// Filtered to one addon.
 	out, err = svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{

@@ -1552,6 +1552,23 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// ProtocolVersion applies only to HTTP/HTTPS target groups (AWS defaults to
+	// HTTP1). It must round-trip: the load balancer controller always sends it and
+	// recreates the TG if Describe reads it back empty.
+	protocolVersion := ""
+	if protocol == ProtocolHTTP || protocol == ProtocolHTTPS {
+		protocolVersion = ProtocolVersionHTTP1
+		if input.ProtocolVersion != nil && *input.ProtocolVersion != "" {
+			protocolVersion = *input.ProtocolVersion
+		}
+		switch protocolVersion {
+		case ProtocolVersionHTTP1, ProtocolVersionHTTP2, ProtocolVersionGRPC:
+			// valid
+		default:
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+	}
+
 	port := int64(80)
 	if input.Port != nil {
 		port = *input.Port
@@ -1629,17 +1646,18 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	tags := tagsFromSDK(input.Tags)
 
 	record := &TargetGroupRecord{
-		TargetGroupArn: tgArn,
-		TargetGroupID:  tgID,
-		Name:           name,
-		Protocol:       protocol,
-		Port:           port,
-		VpcId:          vpcID,
-		TargetType:     targetType,
-		HealthCheck:    hc,
-		Tags:           tags,
-		AccountID:      accountID,
-		CreatedAt:      time.Now().UTC(),
+		TargetGroupArn:  tgArn,
+		TargetGroupID:   tgID,
+		Name:            name,
+		Protocol:        protocol,
+		ProtocolVersion: protocolVersion,
+		Port:            port,
+		VpcId:           vpcID,
+		TargetType:      targetType,
+		HealthCheck:     hc,
+		Tags:            tags,
+		AccountID:       accountID,
+		CreatedAt:       time.Now().UTC(),
 	}
 
 	if err := s.store.PutTargetGroup(record); err != nil {
@@ -2769,7 +2787,7 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(r *LoadBalancerRecord) *elbv2.LoadBalan
 }
 
 func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGroup {
-	return &elbv2.TargetGroup{
+	tg := &elbv2.TargetGroup{
 		TargetGroupArn:             aws.String(r.TargetGroupArn),
 		TargetGroupName:            aws.String(r.Name),
 		Protocol:                   aws.String(r.Protocol),
@@ -2788,6 +2806,14 @@ func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGrou
 			HttpCode: aws.String(r.HealthCheck.Matcher),
 		},
 	}
+
+	// Omitted for NLB (TCP/UDP/TLS) target groups, matching AWS, which returns
+	// ProtocolVersion only for HTTP/HTTPS target groups.
+	if r.ProtocolVersion != "" {
+		tg.ProtocolVersion = aws.String(r.ProtocolVersion)
+	}
+
+	return tg
 }
 
 func (s *ELBv2ServiceImpl) listenerRecordToSDK(r *ListenerRecord) *elbv2.Listener {

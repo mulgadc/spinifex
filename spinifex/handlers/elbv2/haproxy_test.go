@@ -63,6 +63,40 @@ func TestGenerateHAProxyConfig_SingleListenerAndBackend(t *testing.T) {
 	assert.Contains(t, config, "check inter 30s fall 2 rise 5")
 }
 
+// An HTTPS target group (backend-protocol HTTPS, e.g. argocd-server) must
+// re-encrypt: the server line carries `check-ssl ssl verify none` so haproxy's
+// own check and proxied traffic both speak TLS. Without it the check fails and
+// the server is marked DOWN, returning 503.
+func TestGenerateHAProxyConfig_HTTPSBackendReencrypts(t *testing.T) {
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-tls"}
+	tgArn := "arn:aws:elasticloadbalancing:us-east-1:123:targetgroup/tls-tg/tg-tls"
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: "arn:lst-tls",
+			Protocol:    ProtocolHTTP,
+			Port:        80,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeForward, TargetGroupArn: tgArn},
+			},
+		},
+	}
+	tgByArn := map[string]*TargetGroupRecord{
+		tgArn: {
+			TargetGroupArn: tgArn,
+			Name:           "tls-tg",
+			Protocol:       ProtocolHTTPS,
+			HealthCheck:    HealthCheckConfig{Path: "/healthz", Matcher: "200", IntervalSeconds: 10, UnhealthyThreshold: 2, HealthyThreshold: 2},
+			Targets: []Target{
+				{Id: "i-tls1", Port: 30081, PrivateIP: "10.0.2.10", HealthState: TargetHealthHealthy},
+			},
+		},
+	}
+
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "10.0.2.5")
+	require.NoError(t, err)
+	assert.Contains(t, config, "10.0.2.10:30081 check check-ssl ssl verify none inter 10s")
+}
+
 func TestGenerateHAProxyConfig_MultipleListeners(t *testing.T) {
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-multi"}
 

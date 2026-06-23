@@ -23,20 +23,21 @@ const (
 // CertRecord is the stored representation of an imported certificate.
 // AccountID scopes ownership so list/describe never cross account boundaries.
 type CertRecord struct {
-	CertificateArn   string    `json:"certificate_arn"`
-	AccountID        string    `json:"account_id"`
-	Certificate      string    `json:"certificate"`
-	CertificateChain string    `json:"certificate_chain,omitempty"`
-	PrivateKey       string    `json:"private_key"`
-	DomainName       string    `json:"domain_name"`
-	SubjectAltNames  []string  `json:"subject_alt_names,omitempty"`
-	Serial           string    `json:"serial"`
-	Subject          string    `json:"subject"`
-	Issuer           string    `json:"issuer"`
-	KeyAlgorithm     string    `json:"key_algorithm"`
-	NotBefore        time.Time `json:"not_before"`
-	NotAfter         time.Time `json:"not_after"`
-	ImportedAt       time.Time `json:"imported_at"`
+	CertificateArn   string            `json:"certificate_arn"`
+	AccountID        string            `json:"account_id"`
+	Certificate      string            `json:"certificate"`
+	CertificateChain string            `json:"certificate_chain,omitempty"`
+	PrivateKey       string            `json:"private_key"`
+	DomainName       string            `json:"domain_name"`
+	SubjectAltNames  []string          `json:"subject_alt_names,omitempty"`
+	Serial           string            `json:"serial"`
+	Subject          string            `json:"subject"`
+	Issuer           string            `json:"issuer"`
+	KeyAlgorithm     string            `json:"key_algorithm"`
+	NotBefore        time.Time         `json:"not_before"`
+	NotAfter         time.Time         `json:"not_after"`
+	ImportedAt       time.Time         `json:"imported_at"`
+	Tags             map[string]string `json:"tags,omitempty"`
 }
 
 // Store provides CRUD for ACM certificate records backed by JetStream KV.

@@ -955,6 +955,9 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"acm.DescribeCertificate", d.handleACMDescribeCertificate, "spinifex-workers"},
 			natsSub{"acm.ListCertificates", d.handleACMListCertificates, "spinifex-workers"},
 			natsSub{"acm.DeleteCertificate", d.handleACMDeleteCertificate, "spinifex-workers"},
+			natsSub{"acm.ListTagsForCertificate", d.handleACMListTagsForCertificate, "spinifex-workers"},
+			natsSub{"acm.AddTagsToCertificate", d.handleACMAddTagsToCertificate, "spinifex-workers"},
+			natsSub{"acm.RemoveTagsFromCertificate", d.handleACMRemoveTagsFromCertificate, "spinifex-workers"},
 		)
 	}
 

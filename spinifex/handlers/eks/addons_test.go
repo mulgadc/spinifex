@@ -47,7 +47,16 @@ func TestDescribeAddonVersions_ReturnsCatalog(t *testing.T) {
 
 	out, err := svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{}, testAccountID)
 	require.NoError(t, err)
-	assert.Len(t, out.Addons, len(addonCatalog))
+	visible := 0
+	for _, spec := range addonCatalog {
+		if !spec.Hidden {
+			visible++
+		}
+	}
+	assert.Len(t, out.Addons, visible)
+	for _, a := range out.Addons {
+		assert.NotEqual(t, "spinifex-noop", aws.StringValue(a.AddonName), "hidden fixture must not surface")
+	}
 
 	// Filtered to one addon.
 	out, err = svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{
@@ -171,16 +180,16 @@ func TestDescribeDeleteAddon_MissingIsNotFound(t *testing.T) {
 
 func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 	svc, fake := setupAddonService(t)
-	spec, _ := lookupAddon("coredns")
+	spec, _ := lookupAddon("argocd")
 
 	_, err := svc.CreateAddon(&eks.CreateAddonInput{
-		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, fake.installs, 1)
 
 	out, err := svc.UpdateAddon(&eks.UpdateAddonInput{
-		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 		ConfigurationValues: aws.String(`{"replicaCount":2}`),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -189,7 +198,7 @@ func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 	require.Len(t, fake.installs, 2, "update must re-drive the installer")
 
 	desc, err := svc.DescribeAddon(&eks.DescribeAddonInput{
-		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, `{"replicaCount":2}`, aws.StringValue(desc.Addon.ConfigurationValues))
@@ -200,12 +209,12 @@ func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 func TestUpdateAddon_UnknownVersionRejected(t *testing.T) {
 	svc, _ := setupAddonService(t)
 	_, err := svc.CreateAddon(&eks.CreateAddonInput{
-		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	_, err = svc.UpdateAddon(&eks.UpdateAddonInput{
-		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 		AddonVersion: aws.String("9.9.9-nope"),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
@@ -214,7 +223,7 @@ func TestUpdateAddon_UnknownVersionRejected(t *testing.T) {
 func TestUpdateAddon_MissingIsNotFound(t *testing.T) {
 	svc, _ := setupAddonService(t)
 	_, err := svc.UpdateAddon(&eks.UpdateAddonInput{
-		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
 }
@@ -251,7 +260,7 @@ func TestListStagedAddonManifests(t *testing.T) {
 
 	// Stage two addons; reader returns both, sorted by name, with config carried.
 	_, err = svc.CreateAddon(&eks.CreateAddonInput{
-		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.NoError(t, err)
 	_, err = svc.CreateAddon(&eks.CreateAddonInput{
@@ -263,9 +272,9 @@ func TestListStagedAddonManifests(t *testing.T) {
 	out, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Manifests, 2)
-	assert.Equal(t, albController, out.Manifests[0].AddonName, "sorted by addon name")
-	assert.Equal(t, "coredns", out.Manifests[1].AddonName)
-	assert.Equal(t, "arn:aws:iam::111122223333:role/alb", out.Manifests[0].ServiceAccountRoleArn)
+	assert.Equal(t, "argocd", out.Manifests[0].AddonName, "sorted by addon name")
+	assert.Equal(t, albController, out.Manifests[1].AddonName)
+	assert.Equal(t, "arn:aws:iam::111122223333:role/alb", out.Manifests[1].ServiceAccountRoleArn)
 
 	// Deleting an addon unstages its manifest; reader drops it.
 	_, err = svc.DeleteAddon(&eks.DeleteAddonInput{
@@ -276,7 +285,7 @@ func TestListStagedAddonManifests(t *testing.T) {
 	out, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Manifests, 1)
-	assert.Equal(t, "coredns", out.Manifests[0].AddonName)
+	assert.Equal(t, "argocd", out.Manifests[0].AddonName)
 
 	// Unknown cluster surfaces ResourceNotFound; empty cluster name is invalid.
 	_, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "missing"}, testAccountID)

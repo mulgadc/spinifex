@@ -919,9 +919,17 @@ func (s *VolumeServiceImpl) getVolumeByID(volumeID string) (*volumeResult, error
 		return nil, fmt.Errorf("volume %s has zero size in config", volumeID)
 	}
 
+	// An empty State is internal drift, not a valid AWS state. Derive the
+	// effective state from ground truth (the attachment) rather than blindly
+	// rendering "available", which would hide an empty-but-attached volume
+	// (mulga-siv-409).
 	state := volMeta.State
 	if state == "" {
-		state = "available"
+		if volMeta.AttachedInstance != "" {
+			state = "in-use"
+		} else {
+			state = "available"
+		}
 	}
 	volumeType := volMeta.VolumeType
 	if volumeType == "" {
@@ -1176,6 +1184,14 @@ func (s *VolumeServiceImpl) UpdateVolumeState(volumeID, state, attachedInstance,
 		return fmt.Errorf("failed to get volume config for state update: %w", err)
 	}
 
+	// A detached volume is "available": never persist an empty State for an
+	// unattached volume, so a detach/terminate writeback that omits the state
+	// cannot strand the volume in drift that later reads as undeletable
+	// (mulga-siv-409).
+	if state == "" && attachedInstance == "" {
+		state = "available"
+	}
+
 	cfg.VolumeMetadata.State = state
 	cfg.VolumeMetadata.AttachedInstance = attachedInstance
 	cfg.VolumeMetadata.DeviceName = deviceName
@@ -1306,9 +1322,14 @@ func (s *VolumeServiceImpl) DeleteVolume(input *ec2.DeleteVolumeInput, accountID
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
 
-	// Validate: volume must be available and not attached
-	if cfg.VolumeMetadata.State != "available" || cfg.VolumeMetadata.AttachedInstance != "" {
-		slog.Error("DeleteVolume: volume is in use", "volumeId", volumeID, "state", cfg.VolumeMetadata.State, "attachedInstance", cfg.VolumeMetadata.AttachedInstance)
+	// Validate: an unattached volume is deletable. State must be "available" OR
+	// empty: a detach/terminate that failed to write back "available" leaves the
+	// State drifted to empty with no attachment, and gating on State=="available"
+	// exactly would return VolumeInUse for a volume nothing is using, stranding it
+	// undeletable and blocking stack teardown (mulga-siv-409).
+	state := cfg.VolumeMetadata.State
+	if cfg.VolumeMetadata.AttachedInstance != "" || (state != "available" && state != "") {
+		slog.Error("DeleteVolume: volume is in use", "volumeId", volumeID, "state", state, "attachedInstance", cfg.VolumeMetadata.AttachedInstance)
 		return nil, errors.New(awserrors.ErrorVolumeInUse)
 	}
 

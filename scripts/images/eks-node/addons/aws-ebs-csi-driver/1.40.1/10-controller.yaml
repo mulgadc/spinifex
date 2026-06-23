@@ -1,7 +1,9 @@
 # aws-ebs-csi-driver 1.40.1 — controller Deployment + gateway-CA Secret.
-# IRSA (web-identity) wired to the Spinifex AWS gateway: projected SA token
-# (aud sts.amazonaws.com) + role ARN + EC2/STS endpoint + CA, filled by
-# mulga-eks-addon-sync. Static aws-secret key auth removed.
+# AWS credentials filled by mulga-eks-addon-sync via the IRSA env/volume/mount
+# markers below: web-identity (projected SA token aud sts.amazonaws.com + role
+# ARN + STS endpoint + CA) when a service account role ARN is staged, otherwise
+# node instance-profile creds over IMDS. AWS_EC2_ENDPOINT / AWS_ENDPOINT_URL_EC2
+# point EBS calls at the gateway in both modes. Static aws-secret key auth removed.
 ---
 apiVersion: v1
 kind: Secret
@@ -90,31 +92,13 @@ spec:
               fieldPath: spec.nodeName
         - name: AWS_EC2_ENDPOINT
           value: '{{GATEWAY_ENDPOINT}}'
-        - name: AWS_ROLE_ARN
-          value: '{{SERVICE_ACCOUNT_ROLE_ARN}}'
-        - name: AWS_WEB_IDENTITY_TOKEN_FILE
-          value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
-        - name: AWS_STS_REGIONAL_ENDPOINTS
-          value: regional
-        - name: AWS_REGION
-          value: '{{AWS_REGION}}'
-        - name: AWS_DEFAULT_REGION
-          value: '{{AWS_REGION}}'
-        - name: AWS_ENDPOINT_URL_STS
-          value: '{{GATEWAY_ENDPOINT}}'
         - name: AWS_ENDPOINT_URL_EC2
           value: '{{GATEWAY_ENDPOINT}}'
-        - name: AWS_CA_BUNDLE
-          value: /etc/spinifex/gateway-ca/ca.pem
+{{IRSA_ENV}}
         volumeMounts:
         - name: socket-dir
           mountPath: /var/lib/csi/sockets/pluginproxy/
-        - name: aws-iam-token
-          mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
-          readOnly: true
-        - name: spinifex-gateway-ca
-          mountPath: /etc/spinifex/gateway-ca
-          readOnly: true
+{{IRSA_VOLUME_MOUNT}}
         ports:
         - name: healthz
           containerPort: 9808
@@ -289,15 +273,4 @@ spec:
       volumes:
       - name: socket-dir
         emptyDir: {}
-      - name: aws-iam-token
-        projected:
-          defaultMode: 420
-          sources:
-          - serviceAccountToken:
-              audience: sts.amazonaws.com
-              expirationSeconds: 86400
-              path: token
-      - name: spinifex-gateway-ca
-        secret:
-          defaultMode: 420
-          secretName: spinifex-gateway-ca
+{{IRSA_VOLUME}}

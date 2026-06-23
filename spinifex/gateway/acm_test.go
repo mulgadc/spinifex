@@ -34,6 +34,9 @@ func TestACMActionsMap_AllActionsRegistered(t *testing.T) {
 		"DescribeCertificate",
 		"ListCertificates",
 		"DeleteCertificate",
+		"ListTagsForCertificate",
+		"AddTagsToCertificate",
+		"RemoveTagsFromCertificate",
 	}
 	for _, action := range expected {
 		_, ok := acmActions[action]

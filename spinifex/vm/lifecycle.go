@@ -600,18 +600,30 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 	q.Mu.Lock()
 	defer q.Mu.Unlock()
 
+	// A prior timed-out decode leaves the shared Decoder mid-message, wedging
+	// every subsequent command (a single contention spike would otherwise break
+	// EBS attach/detach on this instance for the VM's lifetime). Redial first.
+	if q.Dead {
+		if err := reconnectQMP(q, instanceID); err != nil {
+			return nil, fmt.Errorf("reconnect wedged QMP client: %w", err)
+		}
+	}
+
 	if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 	defer func() { _ = q.Conn.SetReadDeadline(time.Time{}) }()
 
 	if err := q.Encoder.Encode(cmd); err != nil {
+		q.Dead = true
 		return nil, fmt.Errorf("encode error: %w", err)
 	}
 
 	for {
 		var msg map[string]any
 		if err := q.Decoder.Decode(&msg); err != nil {
+			// The stream position is now unknown; force a reconnect next call.
+			q.Dead = true
 			return nil, fmt.Errorf("decode error: %w", err)
 		}
 		if _, ok := msg["event"]; ok {
@@ -636,6 +648,58 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 			return &resp, nil
 		}
 	}
+}
+
+// reconnectQMP redials a wedged QMP client's socket and re-runs the
+// qmp_capabilities handshake in place, so the cached *qmp.QMPClient pointer the
+// instance holds stays valid. The caller must hold q.Mu. The capabilities
+// exchange runs inline rather than via sendQMPCommand because the lock is held.
+func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
+	if q.Path == "" {
+		return fmt.Errorf("QMP client has no socket path")
+	}
+	fresh, err := qmp.NewQMPClient(q.Path)
+	if err != nil {
+		return fmt.Errorf("redial QMP socket %s: %w", q.Path, err)
+	}
+	// QEMU starts in Negotiation mode and rejects every command until
+	// qmp_capabilities completes, so run it before swapping the client in.
+	if err := fresh.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		_ = fresh.Conn.Close()
+		return fmt.Errorf("set capabilities deadline: %w", err)
+	}
+	if err := fresh.Encoder.Encode(qmp.QMPCommand{Execute: "qmp_capabilities"}); err != nil {
+		_ = fresh.Conn.Close()
+		return fmt.Errorf("encode qmp_capabilities: %w", err)
+	}
+	for {
+		var msg map[string]any
+		if err := fresh.Decoder.Decode(&msg); err != nil {
+			_ = fresh.Conn.Close()
+			return fmt.Errorf("decode qmp_capabilities: %w", err)
+		}
+		if _, ok := msg["event"]; ok {
+			continue
+		}
+		if errObj, ok := msg["error"].(map[string]any); ok {
+			_ = fresh.Conn.Close()
+			return fmt.Errorf("qmp_capabilities error: %v: %v", errObj["class"], errObj["desc"])
+		}
+		if _, ok := msg["return"]; ok {
+			break
+		}
+	}
+	_ = fresh.Conn.SetReadDeadline(time.Time{})
+
+	if q.Conn != nil {
+		_ = q.Conn.Close()
+	}
+	q.Conn = fresh.Conn
+	q.Decoder = fresh.Decoder
+	q.Encoder = fresh.Encoder
+	q.Dead = false
+	slog.Info("QMP client reconnected after wedged stream", "instance", instanceID, "socket", q.Path)
+	return nil
 }
 
 // EBSHotPlugSlotCount is the fixed number of PCIe root ports pre-allocated for

@@ -95,13 +95,6 @@ checksum, and registers it tagged `spinifex:managed-by=eks`. `eks create-cluster
 and `eks create-nodegroup` resolve the boot AMI by that tag, so no further
 configuration is needed.
 
-Operators publishing a freshly built node image to the mirror run the
-**Publish EKS node AMI** GitHub Actions workflow (manual dispatch; uses the
-`CF_R2_*` repo secrets) or, locally, `make publish-eks-node-image` (see
-`scripts/publish-system-image.sh`; requires `R2_ENDPOINT` + R2-scoped
-`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`).
-
-
 ## Cluster Shutdown
 
 Coordinated, phased shutdown of the entire cluster (API/UI → VMs → viperblock → predastore → NATS/daemon):

@@ -2176,11 +2176,30 @@ func TestTerminateStoppedInstance_ENIDeleted(t *testing.T) {
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-1234"}
 	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
 	ed := &fakeENIDeleter{}
-	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed}
+	ec := &fakeENICreator{}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
 
 	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
+	// Detach must precede the delete so a stale in-use attachment can't strand
+	// the ENI record after the instance is gone (mulga-siv-408).
+	assert.Equal(t, 1, ec.detachCalls, "ENI must be detached before delete")
 	assert.Equal(t, []string{"eni-1234"}, ed.calls)
+}
+
+func TestTerminateStoppedInstance_ENIDeleteNotFoundTolerated(t *testing.T) {
+	// A retried teardown after the ENI is already gone returns NotFound. The
+	// instance must still finalize to the terminated bucket, not error out.
+	id := "i-eni-gone"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-gone"}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{err: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: &fakeENICreator{}}
+
+	out, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, "terminated", out.Status)
+	assert.Equal(t, []string{"eni-gone"}, ed.calls)
 }
 
 // --- StartStoppedInstance tests ---

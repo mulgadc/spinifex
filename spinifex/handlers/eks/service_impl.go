@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -41,6 +42,10 @@ type EKSServiceDeps struct {
 	Region         string
 	HolderID       string
 
+	// InternalSuffix is the AWS-parity internal DNS suffix (e.g. spinifex.internal)
+	// used to compose the worker's ECR registry host.
+	InternalSuffix string
+
 	// Gateway broker config for the K3s server VM (SigV4 HTTPS to AWSGW).
 	// SystemGatewayURL is the mgmt-reachable endpoint; GatewayCACert signs its TLS cert.
 	SystemGatewayURL string
@@ -57,6 +62,11 @@ type EKSServiceDeps struct {
 	EIP       eipProvisioner
 	IGW       igwProvisioner
 	Worker    WorkerLauncher
+
+	// IAM backs a nodegroup's node role with an instance profile so workers expose
+	// the role over IMDS for the ECR credential provider. Nil disables the wiring
+	// (workers launch without a profile and cannot pull from the internal ECR).
+	IAM instanceProfileEnsurer
 
 	// VPCMgr / NATGW / RouteTable compose the managed control-plane VPC ("Set B")
 	// from the real EC2 VPC-family APIs under the system account. The daemon
@@ -80,6 +90,15 @@ type EKSServiceDeps struct {
 type WorkerLauncher interface {
 	RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
 	TerminateWorkerInstances(instanceIDs []string, accountID string) error
+}
+
+// instanceProfileEnsurer is the narrow IAM surface EKS needs to find-or-create the
+// instance profile that fronts a nodegroup's node role. Real EKS creates this
+// profile implicitly for a node role; Spinifex does the same at worker launch.
+type instanceProfileEnsurer interface {
+	GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
+	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
+	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
 }
 
 // eipProvisioner is the narrow EIP surface for allocating a CP VM egress IP.
@@ -280,15 +299,6 @@ func logCreateErr(name, accountID, stage string, err error) error {
 	return fmt.Errorf("%s: %w", stage, err)
 }
 
-// managedIngressTagKey controls K3s built-in traefik+servicelb; "false" opts out for AWS parity.
-const managedIngressTagKey = "spinifex.io/managed-ingress"
-
-// builtinIngressEnabled reports whether a cluster keeps the K3s built-in ingress
-// stack. Default ON; the tag opts out with "false".
-func builtinIngressEnabled(tags map[string]*string) bool {
-	return !strings.EqualFold(aws.StringValue(tags[managedIngressTagKey]), "false")
-}
-
 func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error) {
 	if err := s.requireOrchestrationDeps("CreateCluster"); err != nil {
 		return nil, err
@@ -335,9 +345,8 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 			EndpointPrivateAccess: privateAccess,
 			PublicAccessCidrs:     publicCidrs,
 		},
-		BuiltinIngress: builtinIngressEnabled(input.Tags),
-		Tags:           aws.StringValueMap(input.Tags),
-		CreatedAt:      time.Now().UTC(),
+		Tags:      aws.StringValueMap(input.Tags),
+		CreatedAt: time.Now().UTC(),
 	}
 	// Claim the cluster name before any launching; duplicate/retry handlers lose the claim.
 	if err := s.claimClusterName(accountID, acctKV, meta); err != nil {
@@ -607,7 +616,6 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		AccessKey:         s.deps.SystemAccessKey,
 		SecretKey:         s.deps.SystemSecretKey,
 		GatewayCACert:     s.deps.GatewayCACert,
-		BuiltinIngress:    meta.BuiltinIngress,
 		JoinToken:         joinToken,
 	})
 	if err != nil {
@@ -947,10 +955,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 	// stale attachment first, then delete before its SG. Detach is best-effort: a
 	// missing/already-detached ENI is fine; the delete is the authoritative gate.
 	if meta.PrivateEndpointENIID != "" {
-		if err := s.deps.VPCK3s.DetachENI(accountID, meta.PrivateEndpointENIID); err != nil {
-			slog.Warn("purgeClusterInfra: detach private-endpoint ENI", "cluster", name, "eni", meta.PrivateEndpointENIID, "err", err)
-		}
-		if err := deleteENIAwaitingTerminate(s.deps.VPCK3s, accountID, meta.PrivateEndpointENIID); err != nil {
+		if err := detachAndDeleteServerENI(s.deps.VPCK3s, accountID, meta.PrivateEndpointENIID); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete private-endpoint ENI: %w", err))
 		}
 	}
@@ -1016,6 +1021,14 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		// the IGW + VPC after the SGs, so SG cleanup must precede it.
 		if err := DeleteClusterSGs(s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", err))
+		}
+		// launchNodegroupInfra also creates the cluster SGs in the customer VPC for
+		// worker<->control-plane networking; reclaim them here too, or they orphan
+		// (cross-referencing each other) and pin the customer VPC on destroy.
+		if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
+			if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+				teardownErrs = append(teardownErrs, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
+			}
 		}
 		if err := DeleteClusterCPVPC(s.cpVPCDeps(), infraAcct, name); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", err))
@@ -1442,75 +1455,160 @@ func (s *EKSServiceImpl) DisassociateIdentityProviderConfig(_ *eks.DisassociateI
 
 // --- Tags ---
 //
-// Store-only against the cluster meta record (no enforcement). Together with
-// DescribeCluster echoing create-time tags this gives a stock terraform-aws
-// provider a clean default_tags round-trip instead of perpetual drift. Only
-// cluster ARNs are backed; other EKS resource ARNs return NotImplemented.
+// Store-only against the cluster meta record or nodegroup record (no
+// enforcement). Together with DescribeCluster/DescribeNodegroup echoing
+// create-time tags this gives a stock terraform-aws provider a clean
+// default_tags round-trip instead of perpetual drift. Cluster and nodegroup
+// ARNs are backed; other EKS resource ARNs return NotImplemented.
 
 func (s *EKSServiceImpl) TagResource(input *eks.TagResourceInput, accountID string) (*eks.TagResourceOutput, error) {
-	name, ok := clusterNameFromARN(aws.StringValue(input.ResourceArn))
-	if !ok {
-		return nil, notImpl()
-	}
-	acctKV, err := s.accountBucket(accountID)
-	if err != nil {
-		return nil, err
-	}
+	arn := aws.StringValue(input.ResourceArn)
 	add := aws.StringValueMap(input.Tags)
-	if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
-		if len(add) == 0 {
-			return false
+
+	if name, ok := clusterNameFromARN(arn); ok {
+		acctKV, err := s.accountBucket(accountID)
+		if err != nil {
+			return nil, err
 		}
-		if m.Tags == nil {
-			m.Tags = make(map[string]string, len(add))
+		if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+			if len(add) == 0 {
+				return false
+			}
+			if m.Tags == nil {
+				m.Tags = make(map[string]string, len(add))
+			}
+			maps.Copy(m.Tags, add)
+			return true
+		}); err != nil {
+			return nil, eksTagErr(err)
 		}
-		maps.Copy(m.Tags, add)
-		return true
-	}); err != nil {
-		return nil, eksTagErr(err)
+		return &eks.TagResourceOutput{}, nil
 	}
-	return &eks.TagResourceOutput{}, nil
+
+	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
+		if err := s.casUpdateNodegroupTags(accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+			if len(add) == 0 {
+				return tags, false
+			}
+			if tags == nil {
+				tags = make(map[string]string, len(add))
+			}
+			maps.Copy(tags, add)
+			return tags, true
+		}); err != nil {
+			return nil, err
+		}
+		return &eks.TagResourceOutput{}, nil
+	}
+
+	return nil, notImpl()
 }
 
 func (s *EKSServiceImpl) UntagResource(input *eks.UntagResourceInput, accountID string) (*eks.UntagResourceOutput, error) {
-	name, ok := clusterNameFromARN(aws.StringValue(input.ResourceArn))
-	if !ok {
-		return nil, notImpl()
-	}
-	acctKV, err := s.accountBucket(accountID)
-	if err != nil {
-		return nil, err
-	}
+	arn := aws.StringValue(input.ResourceArn)
 	keys := aws.StringValueSlice(input.TagKeys)
-	if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
-		changed := false
-		for _, k := range keys {
-			if _, ok := m.Tags[k]; ok {
-				delete(m.Tags, k)
-				changed = true
-			}
+
+	if name, ok := clusterNameFromARN(arn); ok {
+		acctKV, err := s.accountBucket(accountID)
+		if err != nil {
+			return nil, err
 		}
-		return changed
-	}); err != nil {
-		return nil, eksTagErr(err)
+		if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+			changed := false
+			for _, k := range keys {
+				if _, ok := m.Tags[k]; ok {
+					delete(m.Tags, k)
+					changed = true
+				}
+			}
+			return changed
+		}); err != nil {
+			return nil, eksTagErr(err)
+		}
+		return &eks.UntagResourceOutput{}, nil
 	}
-	return &eks.UntagResourceOutput{}, nil
+
+	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
+		if err := s.casUpdateNodegroupTags(accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+			changed := false
+			for _, k := range keys {
+				if _, ok := tags[k]; ok {
+					delete(tags, k)
+					changed = true
+				}
+			}
+			return tags, changed
+		}); err != nil {
+			return nil, err
+		}
+		return &eks.UntagResourceOutput{}, nil
+	}
+
+	return nil, notImpl()
 }
 
 func (s *EKSServiceImpl) ListTagsForResource(input *eks.ListTagsForResourceInput, accountID string) (*eks.ListTagsForResourceOutput, error) {
-	name, ok := clusterNameFromARN(aws.StringValue(input.ResourceArn))
-	if !ok {
-		return nil, notImpl()
+	arn := aws.StringValue(input.ResourceArn)
+
+	if name, ok := clusterNameFromARN(arn); ok {
+		acctKV, err := s.accountBucket(accountID)
+		if err != nil {
+			return nil, err
+		}
+		meta, err := GetClusterMeta(acctKV, name)
+		if err != nil {
+			return nil, eksTagErr(err)
+		}
+		return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(meta.Tags)}, nil
 	}
+
+	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
+		acctKV, err := s.accountBucket(accountID)
+		if err != nil {
+			return nil, err
+		}
+		rec, err := GetNodegroupRecord(acctKV, cluster, ng)
+		if err != nil {
+			if errors.Is(err, ErrNodegroupNotFound) {
+				return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			}
+			return nil, err
+		}
+		return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(rec.Tags)}, nil
+	}
+
+	return nil, notImpl()
+}
+
+// casUpdateNodegroupTags applies mutate to the nodegroup record's tag map under
+// compare-and-swap. mutate returns the new tag map and whether it changed; a
+// no-op skips the write. A missing nodegroup surfaces as ResourceNotFound.
+func (s *EKSServiceImpl) casUpdateNodegroupTags(accountID, cluster, ng string, mutate func(map[string]string) (map[string]string, bool)) error {
 	acctKV, err := s.accountBucket(accountID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	meta, err := GetClusterMeta(acctKV, name)
-	if err != nil {
-		return nil, eksTagErr(err)
+	for range ngCASMaxRetries {
+		rec, rev, err := getNodegroupEntry(acctKV, cluster, ng)
+		if err != nil {
+			if errors.Is(err, ErrNodegroupNotFound) {
+				return errors.New(awserrors.ErrorEKSResourceNotFound)
+			}
+			return err
+		}
+		tags, changed := mutate(rec.Tags)
+		if !changed {
+			return nil
+		}
+		rec.Tags = tags
+		rec.ModifiedAt = time.Now().UTC()
+		if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
+			return err
+		} else if ok {
+			return nil
+		}
 	}
-	return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(meta.Tags)}, nil
+	return errors.New(awserrors.ErrorServerInternal)
 }
 
 // accountBucket returns the per-account KV bucket for accountID.
@@ -1539,6 +1637,29 @@ func clusterNameFromARN(arn string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// nodegroupRefFromARN extracts (cluster, nodegroup) from an EKS nodegroup ARN
+// (arn:aws:eks:<region>:<acct>:nodegroup/<cluster>/<ng>/<uuid>), reporting false
+// for any other ARN shape.
+func nodegroupRefFromARN(arn string) (string, string, bool) {
+	const prefix = "arn:aws:eks:"
+	if !strings.HasPrefix(arn, prefix) {
+		return "", "", false
+	}
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) != 6 {
+		return "", "", false
+	}
+	resType, rest, found := strings.Cut(parts[5], "/")
+	if !found || resType != "nodegroup" {
+		return "", "", false
+	}
+	seg := strings.SplitN(rest, "/", 3)
+	if len(seg) < 2 || seg[0] == "" || seg[1] == "" {
+		return "", "", false
+	}
+	return seg[0], seg[1], true
 }
 
 // eksTagErr maps a meta-store error to the AWS-visible tag-op error: a missing

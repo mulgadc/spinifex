@@ -98,7 +98,7 @@ var Actions = map[string]Handler{
 	"ReplicateImage":              NotImplemented,
 	"TagResource":                 NotImplemented,
 	"UntagResource":               NotImplemented,
-	"ListTagsForResource":         NotImplemented,
+	"ListTagsForResource":         ListTagsForResource,
 }
 
 // WriteJSONResponse serialises obj as a 200 AWS JSON 1.1 response using the

@@ -37,3 +37,15 @@ func (s *NATSACMService) ListCertificates(input *acm.ListCertificatesInput, acco
 func (s *NATSACMService) DeleteCertificate(input *acm.DeleteCertificateInput, accountID string) (*acm.DeleteCertificateOutput, error) {
 	return utils.NATSRequest[acm.DeleteCertificateOutput](s.natsConn, "acm.DeleteCertificate", input, defaultTimeout, accountID)
 }
+
+func (s *NATSACMService) ListTagsForCertificate(input *acm.ListTagsForCertificateInput, accountID string) (*acm.ListTagsForCertificateOutput, error) {
+	return utils.NATSRequest[acm.ListTagsForCertificateOutput](s.natsConn, "acm.ListTagsForCertificate", input, defaultTimeout, accountID)
+}
+
+func (s *NATSACMService) AddTagsToCertificate(input *acm.AddTagsToCertificateInput, accountID string) (*acm.AddTagsToCertificateOutput, error) {
+	return utils.NATSRequest[acm.AddTagsToCertificateOutput](s.natsConn, "acm.AddTagsToCertificate", input, defaultTimeout, accountID)
+}
+
+func (s *NATSACMService) RemoveTagsFromCertificate(input *acm.RemoveTagsFromCertificateInput, accountID string) (*acm.RemoveTagsFromCertificateOutput, error) {
+	return utils.NATSRequest[acm.RemoveTagsFromCertificateOutput](s.natsConn, "acm.RemoveTagsFromCertificate", input, defaultTimeout, accountID)
+}

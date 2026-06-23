@@ -16,7 +16,7 @@ import (
 // ECRRegistrySuffix is the internal DNS suffix the registry host is built from.
 // Defaults to the gateway's DefaultAWSInternalSuffix; override per cluster with
 // SPINIFEX_ECR_SUFFIX.
-func ECRRegistrySuffix() string { return getenv("SPINIFEX_ECR_SUFFIX", "mulga.internal") }
+func ECRRegistrySuffix() string { return getenv("SPINIFEX_ECR_SUFFIX", "spinifex.internal") }
 
 // ECRRegistryRegion is the region label in the registry host. Mirrors the AWS
 // client region.

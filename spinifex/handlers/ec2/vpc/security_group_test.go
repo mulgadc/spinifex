@@ -1942,3 +1942,65 @@ func TestDescribeSecurityGroupRules_InvalidFilter(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidParameterValue")
 }
+
+// TestSecurityGroupRule_DescriptionRoundTrips models the AWS Load Balancer
+// Controller teardown: it tags the worker-node SG ingress it manages with a
+// UserIdGroupPair description and later finds those rules by that description to
+// revoke them. If the description is dropped on store/describe the controller
+// cannot match its rules, never revokes them, and the backend SG is pinned by
+// DependencyViolation — hanging tofu destroy with orphaned security groups.
+func TestSecurityGroupRule_DescriptionRoundTrips(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	nodeSG := createTestSG(t, svc, vpcID, "node-sg")
+	backendSG := createTestSG(t, svc, vpcID, "backend-sg")
+
+	const desc = "elbv2.k8s.aws/targetGroupBinding=shared"
+	proto := "tcp"
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(nodeSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       &proto,
+			FromPort:         aws.Int64(30080),
+			ToPort:           aws.Int64(30081),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(backendSG), Description: aws.String(desc)}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Describe must surface the description so the controller recognises its rule.
+	dout, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(nodeSG)},
+	}, testAccountID)
+	require.NoError(t, err)
+	var gotDesc string
+	for _, p := range dout.SecurityGroups[0].IpPermissions {
+		for _, pair := range p.UserIdGroupPairs {
+			if aws.StringValue(pair.GroupId) == backendSG {
+				gotDesc = aws.StringValue(pair.Description)
+			}
+		}
+	}
+	assert.Equal(t, desc, gotDesc, "UserIdGroupPair description must round-trip through describe")
+
+	// Backend SG is pinned while the node-SG rule references it.
+	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(backendSG)}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorDependencyViolation)
+
+	// Revoke matching the rule WITHOUT a description must still match (description
+	// is metadata, not identity) so the controller's revoke clears the cross-ref.
+	_, err = svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+		GroupId: aws.String(nodeSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       &proto,
+			FromPort:         aws.Int64(30080),
+			ToPort:           aws.Int64(30081),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(backendSG)}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err, "revoke without description must match the tagged rule")
+
+	// With the cross-ref gone the backend SG tears down cleanly — no orphan.
+	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(backendSG)}, testAccountID)
+	require.NoError(t, err, "backend SG must delete once its node-SG reference is revoked")
+}

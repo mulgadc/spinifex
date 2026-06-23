@@ -46,6 +46,7 @@ type NodegroupRecord struct {
 	Version        string            `json:"version,omitempty"`
 	NodeRole       string            `json:"nodeRole,omitempty"`
 	Labels         map[string]string `json:"labels,omitempty"`
+	Tags           map[string]string `json:"tags,omitempty"`
 	InstanceIDs    []string          `json:"instanceIds,omitempty"`
 	Health         string            `json:"health,omitempty"`
 	CreatedAt      time.Time         `json:"createdAt"`

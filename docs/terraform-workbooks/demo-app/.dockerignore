@@ -1,0 +1,4 @@
+README.md
+*.tfstate
+*.tfstate.backup
+.terraform

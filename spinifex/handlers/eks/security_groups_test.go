@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,19 +16,21 @@ import (
 )
 
 type fakeSGProvisioner struct {
-	mu             sync.Mutex
-	createCalls    []*ec2.CreateSecurityGroupInput
-	describeCalls  []*ec2.DescribeSecurityGroupsInput
-	deleteCalls    []*ec2.DeleteSecurityGroupInput
-	authorizeCalls []*ec2.AuthorizeSecurityGroupIngressInput
-	revokeCalls    []*ec2.RevokeSecurityGroupIngressInput
+	mu               sync.Mutex
+	createCalls      []*ec2.CreateSecurityGroupInput
+	describeCalls    []*ec2.DescribeSecurityGroupsInput
+	deleteCalls      []*ec2.DeleteSecurityGroupInput
+	authorizeCalls   []*ec2.AuthorizeSecurityGroupIngressInput
+	revokeCalls      []*ec2.RevokeSecurityGroupIngressInput
+	revokeEgressCall []*ec2.RevokeSecurityGroupEgressInput
 
 	// existing maps "name|vpcId" → groupId for DescribeSecurityGroups lookup.
 	existing map[string]string
 
-	// perms maps groupId → its current ingress rules, served by a GroupIds
-	// DescribeSecurityGroups and cleared by RevokeSecurityGroupIngress.
-	perms map[string][]*ec2.IpPermission
+	// perms maps groupId → its current ingress rules, served by DescribeSecurityGroups
+	// and cleared by RevokeSecurityGroupIngress. permsEgress is the egress equivalent.
+	perms       map[string][]*ec2.IpPermission
+	permsEgress map[string][]*ec2.IpPermission
 
 	// enforceDepViolation models AWS refusing to delete an SG that still has
 	// ingress rules (e.g. a sibling cross-reference), so a test proves the
@@ -88,8 +91,9 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(input *ec2.DescribeSecurityGr
 				continue
 			}
 			out.SecurityGroups = append(out.SecurityGroups, &ec2.SecurityGroup{
-				GroupId:       gid,
-				IpPermissions: f.perms[*gid],
+				GroupId:             gid,
+				IpPermissions:       f.perms[*gid],
+				IpPermissionsEgress: f.permsEgress[*gid],
 			})
 		}
 		return out, nil
@@ -106,10 +110,32 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(input *ec2.DescribeSecurityGr
 			vpc = *filt.Values[0]
 		}
 	}
-	id, ok := f.existing[name+"|"+vpc]
 	out := &ec2.DescribeSecurityGroupsOutput{}
-	if ok {
-		out.SecurityGroups = []*ec2.SecurityGroup{{GroupId: aws.String(id), GroupName: aws.String(name), VpcId: aws.String(vpc)}}
+	// vpc-id-only filter: enumerate every SG in the VPC (the teardown sweep).
+	if name == "" && vpc != "" {
+		for key, id := range f.existing {
+			parts := strings.SplitN(key, "|", 2)
+			if len(parts) != 2 || parts[1] != vpc {
+				continue
+			}
+			out.SecurityGroups = append(out.SecurityGroups, &ec2.SecurityGroup{
+				GroupId:             aws.String(id),
+				GroupName:           aws.String(parts[0]),
+				VpcId:               aws.String(vpc),
+				IpPermissions:       f.perms[id],
+				IpPermissionsEgress: f.permsEgress[id],
+			})
+		}
+		return out, nil
+	}
+	if id, ok := f.existing[name+"|"+vpc]; ok {
+		out.SecurityGroups = []*ec2.SecurityGroup{{
+			GroupId:             aws.String(id),
+			GroupName:           aws.String(name),
+			VpcId:               aws.String(vpc),
+			IpPermissions:       f.perms[id],
+			IpPermissionsEgress: f.permsEgress[id],
+		}}
 	}
 	return out, nil
 }
@@ -139,6 +165,16 @@ func (f *fakeSGProvisioner) RevokeSecurityGroupIngress(input *ec2.RevokeSecurity
 		delete(f.perms, *input.GroupId)
 	}
 	return &ec2.RevokeSecurityGroupIngressOutput{}, nil
+}
+
+func (f *fakeSGProvisioner) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGroupEgressInput, _ string) (*ec2.RevokeSecurityGroupEgressOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revokeEgressCall = append(f.revokeEgressCall, input)
+	if input.GroupId != nil {
+		delete(f.permsEgress, *input.GroupId)
+	}
+	return &ec2.RevokeSecurityGroupEgressOutput{}, nil
 }
 
 func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, _ string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
@@ -307,6 +343,56 @@ func TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete(t *testing.T) {
 		deleted[aws.StringValue(d.GroupId)] = true
 	}
 	assert.True(t, deleted["sg-cp"] && deleted["sg-ng"], "both cluster SGs removed")
+}
+
+// TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers guards mulga-siv-410:
+// a cluster SG is pinned by ANY referencing rule in the VPC, including an egress
+// rule on a non-cluster SG (LBC/ALB, user/TF). The teardown must revoke both
+// directions on every non-default SG so the cluster SGs delete, must NOT delete
+// the referrer SGs (their owners do), and must leave the default SG untouched.
+func TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cp"
+	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
+	sgp.existing["alb-controller-sg|vpc-aaa"] = "sg-lbc"
+	sgp.existing["default|vpc-aaa"] = "sg-default"
+	sgp.perms = map[string][]*ec2.IpPermission{
+		"sg-cp":      {groupRefPerm("tcp", 6443, "sg-ng")},
+		"sg-default": {groupRefPerm("-1", 0, "sg-default")},
+	}
+	// The LBC SG references the cluster CP SG via an EGRESS rule: an ingress-only
+	// revoke would leave this cross-reference pinning sg-cp on delete.
+	sgp.permsEgress = map[string][]*ec2.IpPermission{
+		"sg-lbc": {groupRefPerm("tcp", 6443, "sg-cp")},
+		"sg-cp":  {groupRefPerm("udp", 8472, "sg-ng")},
+	}
+	sgp.enforceDepViolation = true
+
+	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	require.NoError(t, err, "revoking both directions on all non-default SGs must clear every cycle")
+
+	revokedEgress := map[string]bool{}
+	for _, r := range sgp.revokeEgressCall {
+		revokedEgress[aws.StringValue(r.GroupId)] = true
+	}
+	assert.True(t, revokedEgress["sg-lbc"], "egress on the LBC referrer SG must be revoked")
+	assert.True(t, revokedEgress["sg-cp"], "egress on the cluster CP SG must be revoked")
+
+	// The default SG must never be revoked or deleted.
+	for _, r := range sgp.revokeCalls {
+		assert.NotEqual(t, "sg-default", aws.StringValue(r.GroupId), "default SG ingress must not be revoked")
+	}
+	for _, r := range sgp.revokeEgressCall {
+		assert.NotEqual(t, "sg-default", aws.StringValue(r.GroupId), "default SG egress must not be revoked")
+	}
+
+	deleted := map[string]bool{}
+	for _, d := range sgp.deleteCalls {
+		deleted[aws.StringValue(d.GroupId)] = true
+	}
+	assert.True(t, deleted["sg-cp"] && deleted["sg-ng"], "both cluster SGs deleted")
+	assert.False(t, deleted["sg-lbc"], "referrer SG must NOT be deleted; its owner handles it")
+	assert.False(t, deleted["sg-default"], "default SG must never be deleted")
 }
 
 func groupRefPerm(proto string, port int64, refSG string) *ec2.IpPermission {

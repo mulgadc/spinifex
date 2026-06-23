@@ -439,21 +439,29 @@ func TestExternalCIDRFromBridge_UnknownInterface(t *testing.T) {
 }
 
 func TestEnsureExternalCIDRReady_NoExternalMode(t *testing.T) {
-	if err := ensureExternalCIDRReady(context.Background(), "", "br-wan"); err != nil {
+	cidr, err := ensureExternalCIDRReady(context.Background(), "", "br-wan")
+	if err != nil {
 		t.Fatalf("empty externalMode must be a no-op, got: %v", err)
+	}
+	if cidr.IsValid() {
+		t.Fatalf("empty externalMode must return zero prefix, got: %v", cidr)
 	}
 }
 
 func TestEnsureExternalCIDRReady_ResolvesSuccessfully(t *testing.T) {
 	stubExternalCIDR(t, []externalCIDRResponse{{prefix: netip.MustParsePrefix("10.0.0.1/24")}})
-	if err := ensureExternalCIDRReady(context.Background(), "direct", "br-wan"); err != nil {
+	cidr, err := ensureExternalCIDRReady(context.Background(), "direct", "br-wan")
+	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
+	}
+	if !cidr.IsValid() {
+		t.Fatal("expected valid prefix on success")
 	}
 }
 
 func TestEnsureExternalCIDRReady_PropagatesError(t *testing.T) {
 	stubExternalCIDR(t, []externalCIDRResponse{{err: fmt.Errorf("no IPv4")}})
-	err := ensureExternalCIDRReady(context.Background(), "direct", "br-wan")
+	_, err := ensureExternalCIDRReady(context.Background(), "direct", "br-wan")
 	if err == nil {
 		t.Fatal("expected error when resolveExternalCIDR fails")
 	}

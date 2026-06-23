@@ -61,17 +61,23 @@ type IGWManagerConfig struct {
 	Chassis      []string
 	NATMode      policy.NATMode
 	FlowsBarrier FlowsBarrier
+	// ManagementIPs are /32 host prefixes for this chassis's WAN addresses.
+	// They are excluded from subnet egress reroute and drop policies, and a
+	// direct /32 static route is installed for each so VM→host traffic resolves
+	// via MAC_Binding rather than being rerouted through the physical gateway.
+	ManagementIPs []netip.Prefix
 }
 
 type igwManager struct {
-	ovn       ovn.Client
-	routes    policy.RouteManager
-	nat       policy.NATManager
-	pool      *ExternalPoolConfig
-	allocator GatewayIPAllocator
-	chassis   []string
-	natMode   policy.NATMode
-	barrier   FlowsBarrier
+	ovn           ovn.Client
+	routes        policy.RouteManager
+	nat           policy.NATManager
+	pool          *ExternalPoolConfig
+	allocator     GatewayIPAllocator
+	chassis       []string
+	natMode       policy.NATMode
+	barrier       FlowsBarrier
+	managementIPs []netip.Prefix
 }
 
 var _ IGWManager = (*igwManager)(nil)
@@ -95,14 +101,15 @@ func NewIGWManager(cfg IGWManagerConfig) (IGWManager, error) {
 		barrier = func() error { return nil }
 	}
 	return &igwManager{
-		ovn:       cfg.OVN,
-		routes:    cfg.Routes,
-		nat:       cfg.NAT,
-		pool:      cfg.Pool,
-		allocator: cfg.Allocator,
-		chassis:   cfg.Chassis,
-		natMode:   cfg.NATMode,
-		barrier:   barrier,
+		ovn:           cfg.OVN,
+		routes:        cfg.Routes,
+		nat:           cfg.NAT,
+		pool:          cfg.Pool,
+		allocator:     cfg.Allocator,
+		chassis:       cfg.Chassis,
+		natMode:       cfg.NATMode,
+		barrier:       barrier,
+		managementIPs: cfg.ManagementIPs,
 	}, nil
 }
 
@@ -131,7 +138,7 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	if _, err := m.ovn.GetLogicalSwitchPort(ctx, switchGWPortName); err == nil {
 		slog.Debug("external: IGW already attached for VPC, skipping",
 			"vpc_id", spec.VPCID, "gw_port", switchGWPortName)
-		return nil
+		return m.ensureManagementRoutes(ctx, spec.VPCID, gwPortName)
 	}
 
 	gwNetwork, wanNexthop, gwLrpIP, err := m.resolveGatewayNetwork(ctx, spec.VPCID)
@@ -181,6 +188,10 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 
 	if err := m.routes.AddDefaultRoute(ctx, spec.VPCID, wanNexthop, gwPortName); err != nil {
 		return fmt.Errorf("add default route on %s: %w", routerName, err)
+	}
+
+	if err := m.ensureManagementRoutes(ctx, spec.VPCID, gwPortName); err != nil {
+		return err
 	}
 
 	if len(m.chassis) == 0 {
@@ -254,6 +265,11 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 
 	if err := m.routes.DeleteDefaultRoute(ctx, vpcID); err != nil {
 		slog.Warn("external: delete default route failed", "router", routerName, "err", err)
+	}
+	for _, mgmtIP := range m.managementIPs {
+		if err := m.routes.DeleteStaticRoute(ctx, vpcID, mgmtIP); err != nil {
+			slog.Warn("external: delete management IP host route failed", "ip", mgmtIP, "err", err)
+		}
 	}
 
 	if router, err := m.ovn.GetLogicalRouter(ctx, routerName); err == nil {
@@ -453,20 +469,37 @@ var (
 )
 
 // dropExcludeCIDRs returns the exclusion list for a drop policy: VPC CIDR,
-// link-local, and multicast.
+// link-local, multicast, and chassis management IPs.
 func (m *igwManager) dropExcludeCIDRs(ctx context.Context, vpcID string) []netip.Prefix {
 	excludes := []netip.Prefix{linkLocalCIDR, multicastCIDR}
 	if vpc := m.vpcExcludeCIDRs(ctx, vpcID); len(vpc) > 0 {
 		excludes = append(vpc, excludes...)
 	}
-	return excludes
+	return append(excludes, m.managementIPs...)
 }
 
 // rerouteExcludeCIDRs returns the exclusion list for an egress reroute policy:
-// VPC CIDR plus link-local (0.0.0.0/0 would otherwise divert link-local out the gateway).
+// VPC CIDR, link-local, and chassis management IPs.
 func (m *igwManager) rerouteExcludeCIDRs(ctx context.Context, vpcID string) []netip.Prefix {
 	excludes := m.vpcExcludeCIDRs(ctx, vpcID)
-	return append(excludes, linkLocalCIDR)
+	excludes = append(excludes, linkLocalCIDR)
+	return append(excludes, m.managementIPs...)
+}
+
+// ensureManagementRoutes installs a /32 direct-nexthop static route for each
+// management IP on the VPC router. Idempotent. Called from AttachIGW on both
+// the initial and already-attached paths so routes survive spinifex restarts.
+func (m *igwManager) ensureManagementRoutes(ctx context.Context, vpcID, gwPortName string) error {
+	for _, mgmtIP := range m.managementIPs {
+		if err := m.routes.AddStaticRoute(ctx, vpcID, policy.RouteSpec{
+			Prefix:     mgmtIP,
+			Nexthop:    mgmtIP.Addr().String(),
+			OutputPort: gwPortName,
+		}); err != nil {
+			return fmt.Errorf("add management IP host route %s: %w", mgmtIP, err)
+		}
+	}
+	return nil
 }
 
 // vpcExcludeCIDRs returns the VPC's primary CIDR from the LR ExternalIDs.

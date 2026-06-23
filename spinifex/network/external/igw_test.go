@@ -549,3 +549,100 @@ func TestRemoveSubnetEgress_PropagatesDeleteError(t *testing.T) {
 	err := mgr.RemoveSubnetEgress(ctx, "vpc-missing", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0"))
 	require.Error(t, err)
 }
+
+func newTestIGWManagerWithMgmtIPs(t *testing.T, m *mock.Client, pool *ExternalPoolConfig, mgmtIPs []netip.Prefix) IGWManager {
+	t.Helper()
+	nm, err := policy.NewNATManager(m, policy.NATModeDistributed)
+	require.NoError(t, err)
+	mgr, err := NewIGWManager(IGWManagerConfig{
+		OVN:           m,
+		Routes:        policy.NewRouteManager(m),
+		NAT:           nm,
+		Pool:          pool,
+		Allocator:     LinkLocalAllocator{},
+		Chassis:       []string{"chassis-a"},
+		NATMode:       policy.NATModeDistributed,
+		ManagementIPs: mgmtIPs,
+		FlowsBarrier:  func() error { return nil },
+	})
+	require.NoError(t, err)
+	return mgr
+}
+
+// TestAttachIGW_ManagementIPsInstallHostRoutes asserts AttachIGW installs a /32
+// direct-nexthop static route for each management IP so lr_in_ip_routing resolves
+// the chassis's own WAN address without going through the physical gateway.
+func TestAttachIGW_ManagementIPsInstallHostRoutes(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgmtIP := netip.MustParsePrefix("192.168.1.50/32")
+	mgr := newTestIGWManagerWithMgmtIPs(t, m, pool, []netip.Prefix{mgmtIP})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "192.168.1.50/32")
+	require.NoError(t, err)
+	require.NotNil(t, route, "AttachIGW must install /32 host route for management IP")
+	assert.Equal(t, "192.168.1.50", route.Nexthop)
+	require.NotNil(t, route.OutputPort)
+	assert.Equal(t, topology.GatewayRouterPort("vpc-1"), *route.OutputPort)
+}
+
+// TestAttachIGW_ManagementIPsIdempotent checks that re-running AttachIGW (second
+// call hits the already-attached early-return path) still ensures the /32 route.
+func TestAttachIGW_ManagementIPsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgmtIP := netip.MustParsePrefix("192.168.1.50/32")
+	mgr := newTestIGWManagerWithMgmtIPs(t, m, pool, []netip.Prefix{mgmtIP})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "192.168.1.50/32")
+	require.NoError(t, err)
+	require.NotNil(t, route)
+}
+
+// TestEnsureSubnetEgress_ExcludesManagementIPs asserts the IGW reroute policy
+// match contains an ip4.dst != clause for each management IP so VM→host traffic
+// is not intercepted and redirected to the physical gateway.
+func TestEnsureSubnetEgress_ExcludesManagementIPs(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgmtIP := netip.MustParsePrefix("192.168.1.50/32")
+	mgr := newTestIGWManagerWithMgmtIPs(t, m, pool, []netip.Prefix{mgmtIP})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.EnsureSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	assert.Contains(t, policies[0].Match, "ip4.dst != 192.168.1.50/32",
+		"IGW reroute policy must exclude the chassis WAN IP so VM→host traffic skips the gateway reroute")
+}
+
+// TestDetachIGW_RemovesManagementIPHostRoutes asserts DetachIGW cleans up the
+// /32 host routes installed by AttachIGW for management IPs.
+func TestDetachIGW_RemovesManagementIPHostRoutes(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgmtIP := netip.MustParsePrefix("192.168.1.50/32")
+	mgr := newTestIGWManagerWithMgmtIPs(t, m, pool, []netip.Prefix{mgmtIP})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.DetachIGW(ctx, "vpc-1"))
+
+	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "192.168.1.50/32")
+	require.NoError(t, err)
+	assert.Nil(t, route, "management IP /32 host route must be removed by DetachIGW")
+}

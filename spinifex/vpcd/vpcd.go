@@ -355,18 +355,19 @@ func resolveExternalCIDR(ctx context.Context, bridge string, timeout time.Durati
 }
 
 // ensureExternalCIDRReady blocks until the WAN bridge has an IPv4 address within the timeout.
-// No-op when externalMode is empty (overlay-only). Missing address indicates boot race or misconfiguration.
-func ensureExternalCIDRReady(ctx context.Context, externalMode, bridge string) error {
+// No-op when externalMode is empty (overlay-only); returns zero Prefix in that case.
+// Missing address indicates a boot race or misconfiguration.
+func ensureExternalCIDRReady(ctx context.Context, externalMode, bridge string) (netip.Prefix, error) {
 	if externalMode == "" {
-		return nil
+		return netip.Prefix{}, nil
 	}
 	cidr, err := resolveExternalCIDR(ctx, bridge, 30*time.Second)
 	if err != nil {
 		slog.Error("vpcd: external CIDR resolution failed", "bridge", bridge, "err", err)
-		return err
+		return netip.Prefix{}, err
 	}
 	slog.Info("vpcd: external CIDR resolved at startup", "bridge", bridge, "cidr", cidr.String())
-	return nil
+	return cidr, nil
 }
 
 func launchService(cfg *Config) error {
@@ -408,8 +409,13 @@ func launchService(cfg *Config) error {
 		return err
 	}
 
-	if err := ensureExternalCIDRReady(ctx, cfg.ExternalMode, wanBridge); err != nil {
+	wanCIDR, err := ensureExternalCIDRReady(ctx, cfg.ExternalMode, wanBridge)
+	if err != nil {
 		return err
+	}
+	var managementIPs []netip.Prefix
+	if wanCIDR.IsValid() {
+		managementIPs = []netip.Prefix{netip.PrefixFrom(wanCIDR.Addr(), 32)}
 	}
 
 	if cfg.ExternalMode != "" {
@@ -507,14 +513,15 @@ func launchService(cfg *Config) error {
 
 	gwAllocator := pickGatewayAllocator(igwPool, liveClient, dhcpMgr)
 	igwMgr, err := external.NewIGWManager(external.IGWManagerConfig{
-		OVN:          liveClient,
-		Routes:       routeMgr,
-		NAT:          natMgr,
-		Pool:         igwPool,
-		Allocator:    gwAllocator,
-		Chassis:      chassisNames,
-		NATMode:      natMode,
-		FlowsBarrier: waitForFlowsHV,
+		OVN:           liveClient,
+		Routes:        routeMgr,
+		NAT:           natMgr,
+		Pool:          igwPool,
+		Allocator:     gwAllocator,
+		Chassis:       chassisNames,
+		NATMode:       natMode,
+		FlowsBarrier:  waitForFlowsHV,
+		ManagementIPs: managementIPs,
 	})
 	if err != nil {
 		return fmt.Errorf("construct IGW manager: %w", err)

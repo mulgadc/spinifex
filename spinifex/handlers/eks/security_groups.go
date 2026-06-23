@@ -19,6 +19,7 @@ type sgProvisioner interface {
 	DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput, accountID string) (*ec2.DeleteSecurityGroupOutput, error)
 	AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, accountID string) (*ec2.AuthorizeSecurityGroupIngressOutput, error)
 	RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGroupIngressInput, accountID string) (*ec2.RevokeSecurityGroupIngressOutput, error)
+	RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGroupEgressInput, accountID string) (*ec2.RevokeSecurityGroupEgressOutput, error)
 }
 
 // clusterEKSClusterTagKey groups all cluster-scoped resources for DeleteCluster sweeps.
@@ -88,12 +89,15 @@ func EnsureClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) (
 	return controlPlaneSGID, nodegroupSGID, nil
 }
 
-// DeleteClusterSGs removes both cluster SGs. The control-plane and nodegroup SGs
-// cross-reference each other (EnsureNodegroupSGRules), and AWS refuses to delete a
-// security group still referenced by another SG's rule — so every ingress rule on
-// both is revoked first to break the cycle, then both are deleted. Skipping the
-// revoke leaks the SGs and pins the VPC on DependencyViolation. Missing SGs are
-// no-ops; the first error is returned after the full sweep.
+// DeleteClusterSGs removes the cluster control-plane and nodegroup SGs. AWS
+// refuses to delete a security group still referenced by ANY other SG's rule —
+// not just the cp<->ng cross-reference (EnsureNodegroupSGRules) but the VPC's
+// LBC/ALB SG, the private-endpoint SG, and user/TF SGs, in either direction
+// (ingress or egress). To break every cycle order-independently, all ingress and
+// egress rules are revoked on every non-default SG in the VPC first, then the two
+// cluster-owned SGs are deleted. Referrer SGs are owned and deleted by their own
+// teardown — only the cluster SGs are deleted here. Missing SGs are no-ops; the
+// first error is returned after the full sweep.
 func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) error {
 	if clusterName == "" {
 		return errors.New("eks: DeleteClusterSGs empty cluster name")
@@ -109,33 +113,47 @@ func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) e
 		}
 	}
 
-	// Resolve both IDs up front so all cross-references can be revoked before any
-	// delete is attempted.
-	var ids []string
-	for _, name := range []string{ClusterControlPlaneSGName(clusterName), ClusterNodegroupSGName(clusterName)} {
-		id, err := lookupSGByName(sgp, accountID, vpcID, name)
-		if err != nil {
-			slog.Warn("DeleteClusterSGs: SG lookup failed", "sg", name, "err", err)
-			record(err)
+	// Break every cross-reference in the VPC before deleting any SG. Revoking
+	// both directions on every non-default SG guarantees no rule still points at
+	// a cluster SG, so the deletes below succeed regardless of order.
+	out, err := sgp.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("vpc-id"), Values: aws.StringSlice([]string{vpcID})},
+		},
+	}, accountID)
+	if err != nil {
+		slog.Warn("DeleteClusterSGs: describe SGs failed", "vpc", vpcID, "err", err)
+		record(fmt.Errorf("describe SGs in vpc %s: %w", vpcID, err))
+	}
+	for _, g := range out.SecurityGroups {
+		if g == nil || g.GroupId == nil {
 			continue
 		}
-		if id != "" {
-			ids = append(ids, id)
+		// The default SG cannot be deleted and does not reference cluster SGs;
+		// leave its rules intact.
+		if aws.StringValue(g.GroupName) == "default" {
+			continue
+		}
+		if revokeErr := revokeAllSGRules(sgp, accountID, g); revokeErr != nil {
+			slog.Warn("DeleteClusterSGs: revoke rules failed", "sg", aws.StringValue(g.GroupId), "err", revokeErr)
+			record(revokeErr)
 		}
 	}
 
-	// Break the cp<->ng cross-references before deleting either SG.
-	for _, id := range ids {
-		if err := revokeAllSGIngress(sgp, accountID, id); err != nil {
-			slog.Warn("DeleteClusterSGs: revoke ingress failed", "sg", id, "err", err)
-			record(err)
+	// Delete only the cluster-owned SGs.
+	for _, name := range []string{ClusterControlPlaneSGName(clusterName), ClusterNodegroupSGName(clusterName)} {
+		id, lookupErr := lookupSGByName(sgp, accountID, vpcID, name)
+		if lookupErr != nil {
+			slog.Warn("DeleteClusterSGs: SG lookup failed", "sg", name, "err", lookupErr)
+			record(lookupErr)
+			continue
 		}
-	}
-
-	for _, id := range ids {
-		if err := deleteSGAwaitingDetach(sgp, accountID, id); err != nil {
-			slog.Warn("DeleteClusterSGs: SG delete failed", "sg", id, "err", err)
-			record(fmt.Errorf("delete SG %s: %w", id, err))
+		if id == "" {
+			continue
+		}
+		if delErr := deleteSGAwaitingDetach(sgp, accountID, id); delErr != nil {
+			slog.Warn("DeleteClusterSGs: SG delete failed", "sg", id, "err", delErr)
+			record(fmt.Errorf("delete SG %s: %w", id, delErr))
 		}
 	}
 	return firstErr
@@ -175,28 +193,30 @@ func deleteSGAwaitingDetach(sgp sgProvisioner, accountID, sgID string) error {
 	}
 }
 
-// revokeAllSGIngress clears every ingress rule on an SG so cross-references from a
-// sibling SG no longer block its deletion. A missing SG or one with no ingress is
-// a no-op.
-func revokeAllSGIngress(sgp sgProvisioner, accountID, sgID string) error {
-	out, err := sgp.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
-		GroupIds: aws.StringSlice([]string{sgID}),
-	}, accountID)
-	if err != nil {
-		if awserrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("describe SG %s: %w", sgID, err)
+// revokeAllSGRules clears every ingress AND egress rule on the given SG so no
+// rule (in either direction) still references another SG, letting the cluster
+// SGs delete in any order. An egress cross-reference pins an SG on
+// DependencyViolation just as an ingress one does, so both must go. Empty rule
+// sets are no-ops; a raced-away SG (NotFound) is tolerated.
+func revokeAllSGRules(sgp sgProvisioner, accountID string, g *ec2.SecurityGroup) error {
+	if g == nil || g.GroupId == nil {
+		return nil
 	}
-	for _, g := range out.SecurityGroups {
-		if g == nil || len(g.IpPermissions) == 0 {
-			continue
-		}
+	sgID := aws.StringValue(g.GroupId)
+	if len(g.IpPermissions) > 0 {
 		if _, err := sgp.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
-			GroupId:       aws.String(sgID),
+			GroupId:       g.GroupId,
 			IpPermissions: g.IpPermissions,
 		}, accountID); err != nil && !awserrors.IsNotFound(err) {
 			return fmt.Errorf("revoke ingress on %s: %w", sgID, err)
+		}
+	}
+	if len(g.IpPermissionsEgress) > 0 {
+		if _, err := sgp.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+			GroupId:       g.GroupId,
+			IpPermissions: g.IpPermissionsEgress,
+		}, accountID); err != nil && !awserrors.IsNotFound(err) {
+			return fmt.Errorf("revoke egress on %s: %w", sgID, err)
 		}
 	}
 	return nil

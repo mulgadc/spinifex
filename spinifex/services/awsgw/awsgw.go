@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -233,6 +234,23 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	ecrAudience := "ecr." + nodeConfig.Region + "." + config.AWS.InternalSuffix
 
+	// The ECR registry is served on this gateway's own host:port; advertise both so
+	// docker login/tag/push reach it without DNS — the account comes from the auth
+	// token. Prefer a concrete AWSGW bind host; when it is unspecified (0.0.0.0/::)
+	// fall back to AdvertiseIP, the off-host dial target carried in the server cert
+	// SANs (the same host EKS workers dial), so the returned URI resolves without
+	// DNS. Only when neither is concrete does the per-account parity name apply.
+	registryHost, registryPort := "", ""
+	if host, port, err := net.SplitHostPort(nodeConfig.AWSGW.Host); err == nil {
+		registryPort = port
+		if isConcreteRegistryHost(host) {
+			registryHost = host
+		}
+	}
+	if registryHost == "" && isConcreteRegistryHost(nodeConfig.AdvertiseIP) {
+		registryHost = nodeConfig.AdvertiseIP
+	}
+
 	gw := gateway.GatewayConfig{
 		Debug:            nodeConfig.AWSGW.Debug,
 		DisableLogging:   false,
@@ -241,6 +259,8 @@ func launchService(config *config.ClusterConfig) error {
 		ExpectedNodes:    len(config.Nodes),
 		Region:           nodeConfig.Region,
 		InternalSuffix:   config.AWS.InternalSuffix,
+		RegistryPort:     registryPort,
+		RegistryHost:     registryHost,
 		AZ:               nodeConfig.AZ,
 		IAMService:       iamService,
 		STSService:       stsService,
@@ -250,6 +270,15 @@ func launchService(config *config.ClusterConfig) error {
 		ECRTokenIssuer:   gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
 		ECRTokenVerifier: gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
 	}
+
+	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
+	// until their tokens expire. The rotator keeps the issuer/verifier current as
+	// keys roll. Bound to the same lifetime context as the STS janitor.
+	keyRotator, err := gateway_ecrauth.NewRotator(js, masterKey, len(config.Nodes), gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	if err != nil {
+		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
+	}
+	go keyRotator.Run(janitorCtx)
 
 	if throttleCfg.Enabled {
 		gw.Throttler = ratelimit.New(throttleCfg)
@@ -352,4 +381,11 @@ func findBootstrapFile(baseDir string) string {
 		}
 	}
 	return candidates[0]
+}
+
+// isConcreteRegistryHost reports whether host is a dialable address to advertise
+// as the ECR registry host — a non-empty, non-unspecified literal. The wildcard
+// bind addresses are rejected so the registry URI never hands back 0.0.0.0/::.
+func isConcreteRegistryHost(host string) bool {
+	return host != "" && host != "0.0.0.0" && host != "::"
 }

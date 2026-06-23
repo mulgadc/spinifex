@@ -75,3 +75,8 @@ nats_token = "{{.NatsToken}}"
 nats_ca_cert = "{{.ConfigDir}}/ca.pem"
 master_key_path = "{{.ConfigDir}}/master.key"
 access_keys_bucket = "spinifex-iam-access-keys"
+{{- if .CompactionIntervalSeconds}}
+
+[compaction]
+interval_seconds = {{.CompactionIntervalSeconds}}
+{{- end}}

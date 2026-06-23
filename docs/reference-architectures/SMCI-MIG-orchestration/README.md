@@ -29,10 +29,7 @@ Spinifex is an open-source infrastructure platform that brings core AWS services
 
 This guide documents a full bare-metal AI deployment on a single [Supermicro X13](https://www.supermicro.com/en/products/x13) chassis using NVIDIA H200 SXM GPUs. These GPUs include the [NVIDIA Multi-Instance GPU](https://www.nvidia.com/en-au/technologies/multi-instance-gpu/) (MIG) capability, which allows a single GPU to be "sliced" into up to seven independent GPU partitions that are hardware isolated. Each partition is capable of running its own workloads with reserved resources from the "host" GPU.
 
-<figure align="center">
-  <img src="../../../.github/assets/images/h200/X13.png" alt="Supermicro X13 8U GPU System">
-  <figcaption><em>Supermicro X13 8U GPU system</em></figcaption>
-</figure>
+<p align="center"><img src="../../../.github/assets/images/h200/X13.png" alt="Supermicro X13 8U GPU System"></p>
 
 In this setup, each EC2 instance receives an entire H200 via PCIe passthrough and manages its own MIG partitions. This gives each tenant full control over how they slice their GPU — including the ability to run heterogeneous workloads at different partition sizes on the same physical card.
 
@@ -67,8 +64,6 @@ Twelve concurrent inference endpoints in total: 7 fast 3B slots, 2 mid-tier 32B 
 | **Container runtime** | Docker |
 | **Inference runtime** | vLLM (`vllm-openai` image from local registry) |
 | **Vision runtime** | Ultralytics YOLO11 |
-
----
 
 
 ## Prerequisites
@@ -113,7 +108,7 @@ The exact process for this is described in the [VPC Networking](/docs/vpc-networ
 
 
 
-### 2. Install Spinifex from source
+### 2. Install Spinifex
 
 Follow the [Single Node Install](/docs/install) guide. This process will install Spinifex and start Spinifex services, however `spinifex.toml` needs to be edited to finalise the changes made to the networking in the previous section, as described in the following section.
 
@@ -553,8 +548,6 @@ aws ec2 terminate-instances --instance-ids \
 ```
 
 The four H200s are immediately returned to the host GPU pool once the instances terminate, ready for reallocation.
-
----
 
 ### 16. Conclusion
 

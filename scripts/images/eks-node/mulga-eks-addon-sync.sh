@@ -110,21 +110,30 @@ render_addon() {
         fi
     fi
 
-    # Reusable IRSA (web-identity) injection. A bundle opts in by placing the
+    # Reusable AWS-credential injection. A bundle opts in by placing the
     # {{IRSA_ENV}} / {{IRSA_VOLUME}} / {{IRSA_VOLUME_MOUNT}} markers on their own
     # line; awk swaps each for the standard block, then the sed pass fills the
     # nested role/region/gateway placeholders. Bundles without the markers are
     # untouched. Blocks assume a Deployment pod spec (env 8sp, volumes 6sp,
-    # volumeMounts 8sp). The token (aud sts.amazonaws.com) + role ARN + gateway
-    # STS endpoint/CA are what AssumeRoleWithWebIdentity at the gateway needs.
-    # AWS_ENDPOINT_URL_STS points the web-identity credential STS client (built
-    # from the standard config, before per-service overrides) at the gateway.
-    # The LBC service clients (ec2/elbv2/acm) ignore the global AWS_ENDPOINT_URL
-    # because LBC installs its own per-client BaseEndpoint resolver; those are
-    # redirected via the bundle's --aws-api-endpoints flag, which keys on the
-    # SDK-v2 service IDs (EC2, "Elastic Load Balancing v2", ACM), not the legacy
-    # lowercase names. AWS_CA_BUNDLE makes every client trust the gateway CA.
-    _irsa_env='        - name: AWS_ROLE_ARN
+    # volumeMounts 8sp).
+    #
+    # Gateway-CA trust is injected in both modes: AWS_CA_BUNDLE covers the
+    # standard-config clients, and SSL_CERT_FILE adds the gateway CA to the Go
+    # system trust pool. The LBC ec2/elbv2/acm clients install their own
+    # per-client BaseEndpoint resolver and build a fresh HTTP client that
+    # ignores AWS_CA_BUNDLE, falling back to the system pool — so without
+    # SSL_CERT_FILE they reject the gateway cert as "unknown authority".
+    #
+    # IRSA (web-identity) env is injected ONLY when a service-account role ARN is
+    # staged. The token (aud sts.amazonaws.com) + role ARN + gateway STS endpoint
+    # are what AssumeRoleWithWebIdentity needs. Without a role ARN, those are
+    # omitted entirely: injecting an empty AWS_ROLE_ARN beside the token file
+    # half-arms the SDK web-identity provider, which then signs anonymously
+    # instead of falling through the default chain to the node instance-profile
+    # credentials served over IMDS. Omitting them restores that node-credential
+    # fallback.
+    if [ -n "${_role}" ]; then
+        _irsa_env='        - name: AWS_ROLE_ARN
           value: "{{SERVICE_ACCOUNT_ROLE_ARN}}"
         - name: AWS_WEB_IDENTITY_TOKEN_FILE
           value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
@@ -137,8 +146,10 @@ render_addon() {
         - name: AWS_ENDPOINT_URL_STS
           value: "{{GATEWAY_ENDPOINT}}"
         - name: AWS_CA_BUNDLE
+          value: /etc/spinifex/gateway-ca/ca.pem
+        - name: SSL_CERT_FILE
           value: /etc/spinifex/gateway-ca/ca.pem'
-    _irsa_vol='      - name: aws-iam-token
+        _irsa_vol='      - name: aws-iam-token
         projected:
           defaultMode: 420
           sources:
@@ -150,12 +161,29 @@ render_addon() {
         secret:
           defaultMode: 420
           secretName: spinifex-gateway-ca'
-    _irsa_mnt='        - name: aws-iam-token
+        _irsa_mnt='        - name: aws-iam-token
           mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
           readOnly: true
         - name: spinifex-gateway-ca
           mountPath: /etc/spinifex/gateway-ca
           readOnly: true'
+    else
+        _irsa_env='        - name: AWS_REGION
+          value: "{{AWS_REGION}}"
+        - name: AWS_DEFAULT_REGION
+          value: "{{AWS_REGION}}"
+        - name: AWS_CA_BUNDLE
+          value: /etc/spinifex/gateway-ca/ca.pem
+        - name: SSL_CERT_FILE
+          value: /etc/spinifex/gateway-ca/ca.pem'
+        _irsa_vol='      - name: spinifex-gateway-ca
+        secret:
+          defaultMode: 420
+          secretName: spinifex-gateway-ca'
+        _irsa_mnt='        - name: spinifex-gateway-ca
+          mountPath: /etc/spinifex/gateway-ca
+          readOnly: true'
+    fi
 
     # IngressClassParams spec injection. EKS_ELB_SUBNET_IDS is the cluster's
     # ELB-eligible subnets (CSV, deduped to one per AZ by the daemon). Inject them
@@ -181,11 +209,14 @@ render_addon() {
     : > "${_tmp}"
     for _f in "${_src}"/*.yaml; do
         [ -e "${_f}" ] || continue
+        # Each block marker must be the ONLY token on its line (whitespace aside);
+        # matching a substring would also fire on a comment that merely names the
+        # marker, injecting the block mid-document and producing invalid YAML.
         awk -v env="${_irsa_env}" -v vol="${_irsa_vol}" -v mnt="${_irsa_mnt}" -v icp="${_icp_spec}" '
-            index($0, "{{IRSA_ENV}}")                  { print env; next }
-            index($0, "{{IRSA_VOLUME_MOUNT}}")         { print mnt; next }
-            index($0, "{{IRSA_VOLUME}}")               { print vol; next }
-            index($0, "{{ELB_INGRESS_PARAMS_SPEC}}")   { if (icp != "") print icp; next }
+            $0 ~ /^[[:space:]]*[{][{]IRSA_ENV[}][}][[:space:]]*$/                { print env; next }
+            $0 ~ /^[[:space:]]*[{][{]IRSA_VOLUME_MOUNT[}][}][[:space:]]*$/       { print mnt; next }
+            $0 ~ /^[[:space:]]*[{][{]IRSA_VOLUME[}][}][[:space:]]*$/             { print vol; next }
+            $0 ~ /^[[:space:]]*[{][{]ELB_INGRESS_PARAMS_SPEC[}][}][[:space:]]*$/ { if (icp != "") print icp; next }
             { print }
         ' "${_f}" \
         | sed -e "s|{{SERVICE_ACCOUNT_ROLE_ARN}}|${_role}|g" \

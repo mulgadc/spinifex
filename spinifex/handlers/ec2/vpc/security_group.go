@@ -77,6 +77,10 @@ type SGRule struct {
 	ToPort     int64  `json:"to_port"`
 	CidrIp     string `json:"cidr_ip,omitempty"`
 	SourceSG   string `json:"source_sg,omitempty"` // Another SG ID for intra-SG rules
+	// Description is rule metadata, not identity: it is excluded from sgRuleKey
+	// so revoke/duplicate matching ignores it. The AWS Load Balancer Controller
+	// tags the node-SG rules it manages here and revokes them by this value.
+	Description string `json:"description,omitempty"`
 }
 
 // SecurityGroupRecord represents a stored security group.
@@ -961,6 +965,9 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 				continue
 			}
 			r := SGRule{IpProtocol: proto, FromPort: fromPort, ToPort: toPort, CidrIp: *ipRange.CidrIp}
+			if ipRange.Description != nil {
+				r.Description = *ipRange.Description
+			}
 			if err := validateSGRule(r); err != nil {
 				return nil, err
 			}
@@ -976,6 +983,9 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 				continue
 			}
 			r := SGRule{IpProtocol: proto, FromPort: fromPort, ToPort: toPort, SourceSG: *pair.GroupId}
+			if pair.Description != nil {
+				r.Description = *pair.Description
+			}
 			if err := validateSGRule(r); err != nil {
 				return nil, err
 			}
@@ -1032,14 +1042,18 @@ func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
 		}
 
 		if rule.CidrIp != "" {
-			perm.IpRanges = append(perm.IpRanges, &ec2.IpRange{
-				CidrIp: aws.String(rule.CidrIp),
-			})
+			ipRange := &ec2.IpRange{CidrIp: aws.String(rule.CidrIp)}
+			if rule.Description != "" {
+				ipRange.Description = aws.String(rule.Description)
+			}
+			perm.IpRanges = append(perm.IpRanges, ipRange)
 		}
 		if rule.SourceSG != "" {
-			perm.UserIdGroupPairs = append(perm.UserIdGroupPairs, &ec2.UserIdGroupPair{
-				GroupId: aws.String(rule.SourceSG),
-			})
+			pair := &ec2.UserIdGroupPair{GroupId: aws.String(rule.SourceSG)}
+			if rule.Description != "" {
+				pair.Description = aws.String(rule.Description)
+			}
+			perm.UserIdGroupPairs = append(perm.UserIdGroupPairs, pair)
 		}
 	}
 

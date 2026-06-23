@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -31,10 +30,6 @@ type fakeK3sVPC struct {
 	// attachment. detached tracks which ENIs DetachENI has cleared.
 	inUseUntilDetached map[string]bool
 	detached           map[string]bool
-	// deleteInUseUntil models the async instance-terminate cascade: the first N
-	// DeleteNetworkInterface calls return InvalidNetworkInterface.InUse, then the
-	// cascade has force-deleted the ENI so the next call returns NotFound.
-	deleteInUseUntil int
 
 	// describeByENI maps an ENI ID to the record DescribeNetworkInterfaces
 	// returns; a missing ENI yields an empty result (gone). describeErr forces
@@ -66,12 +61,6 @@ func (f *fakeK3sVPC) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInp
 	f.deleteCalls = append(f.deleteCalls, input)
 	if id := aws.StringValue(input.NetworkInterfaceId); f.inUseUntilDetached[id] && !f.detached[id] {
 		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
-	}
-	if f.deleteInUseUntil > 0 {
-		if len(f.deleteCalls) <= f.deleteInUseUntil {
-			return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
-		}
-		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
 	}
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
@@ -451,13 +440,15 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// parity, and it keeps image pulls off the etcd disk).
 	assert.Contains(t, udata, "node-taint:")
 	assert.Contains(t, udata, "  - CriticalAddonsOnly=true:NoExecute")
-	// Parity default (BuiltinIngress=false): K3s' bundled traefik + servicelb are
-	// disabled; Service type=LoadBalancer / Ingress are the AWS LB Controller's job.
-	// With built-in ingress off there is nothing to defer, so EKS_DEFER_TRAEFIK=0.
+	// AWS parity: K3s' bundled traefik + servicelb are always disabled; Service
+	// type=LoadBalancer / Ingress are the AWS LB Controller's job. local-storage is
+	// disabled too so its local-path provisioner does not add a second default
+	// StorageClass racing the EBS CSI one.
 	assert.Contains(t, udata, "disable:")
 	assert.Contains(t, udata, "  - traefik")
 	assert.Contains(t, udata, "  - servicelb")
-	assert.Contains(t, udata, "EKS_DEFER_TRAEFIK=0")
+	assert.Contains(t, udata, "  - local-storage")
+	assert.NotContains(t, udata, "EKS_DEFER_TRAEFIK")
 	assert.Contains(t, udata, "tls-san:")
 	assert.Contains(t, udata, "  - eks-alpha-lb-001.us-east-1.elb.spinifex.local")
 	// service-account-key-file must point at the PUBLIC key; the signing key
@@ -486,27 +477,6 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// Exactly one write_files key — a second would collide and silently
 	// drop a block under yaml.safe_load (last key wins).
 	assert.Equal(t, 1, strings.Count(udata, "\nwrite_files:"))
-}
-
-func TestLaunchK3sServerVM_BuiltinIngressOptInDefersTraefik(t *testing.T) {
-	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
-
-	in := validK3sInput()
-	in.BuiltinIngress = true
-	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
-	require.NoError(t, err)
-	require.Len(t, inst.launchCalls, 1)
-
-	udata := inst.launchCalls[0].UserData
-	// Opted in: traefik stays ENABLED in config so k3s writes traefik.yaml, but
-	// it is deferred — k3s.initd stages a .skip marker and the state-reporter
-	// removes it once the apiserver is stable, gated by EKS_DEFER_TRAEFIK=1.
-	// Disabling traefik would leave no manifest to un-skip, so the config must
-	// carry no disable block at all. servicelb is lazy and likewise enabled.
-	assert.NotContains(t, udata, "disable:")
-	assert.NotContains(t, udata, "  - traefik")
-	assert.NotContains(t, udata, "  - servicelb")
-	assert.Contains(t, udata, "EKS_DEFER_TRAEFIK=1")
 }
 
 func TestLaunchK3sServerVM_UsesEmbeddedEtcd(t *testing.T) {
@@ -622,6 +592,9 @@ func TestTerminateK3sServerVM_TerminatesInstanceAndDeletesENI(t *testing.T) {
 	require.NoError(t, TerminateK3sServerVM(vpc, inst, "111122223333", "i-aaa111", "eni-aaa111"))
 	require.Len(t, inst.terminateCalls, 1)
 	assert.Equal(t, "i-aaa111", inst.terminateCalls[0])
+	// Teardown owns its CP ENI: detach first to clear any stale attachment, then
+	// delete. The detach precedes the delete so the delete passes the in-use guard.
+	require.Equal(t, []string{"eni-aaa111"}, vpc.detachCalls)
 	require.Len(t, vpc.deleteCalls, 1)
 	assert.Equal(t, "eni-aaa111", aws.StringValue(vpc.deleteCalls[0].NetworkInterfaceId))
 }
@@ -648,39 +621,29 @@ func TestTerminateK3sServerVM_ENINotFoundIsIdempotent(t *testing.T) {
 	require.Len(t, vpc.deleteCalls, 1)
 }
 
-func TestTerminateK3sServerVM_ENIInUseThenCascadeDeletes(t *testing.T) {
-	// mulga-siv-295.10: the VM is still terminating async; its terminate cascade
-	// force-deletes the ENI a beat later. TerminateK3sServerVM must wait out the
-	// InUse window so the first DeleteCluster completes instead of wedging.
-	withFastENIWait(t)
-	vpc := &fakeK3sVPC{deleteInUseUntil: 3}
+func TestTerminateK3sServerVM_ENIInUseDetachedThenDeletes(t *testing.T) {
+	// mulga-siv-407: the ENI record still shows the attachment (VM gone but
+	// fields never cleared), so a plain force=false delete returns InUse forever
+	// and wedges EKSDeletingReaper. Teardown owns the ENI: detach clears the
+	// stale attachment, then the delete succeeds — no retry loop.
+	vpc := &fakeK3sVPC{inUseUntilDetached: map[string]bool{"eni-aaa111": true}}
 	inst := &fakeK3sInst{}
 
 	err := TerminateK3sServerVM(vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
-	require.NoError(t, err, "InUse that resolves to NotFound (cascade) must be tolerated, not surfaced")
-	assert.Greater(t, len(vpc.deleteCalls), 3, "must retry past the InUse window until the ENI is gone")
+	require.NoError(t, err, "detach-then-delete must clear the stale attachment, not surface InUse")
+	require.Equal(t, []string{"eni-aaa111"}, vpc.detachCalls, "must detach before deleting")
+	require.Len(t, vpc.deleteCalls, 1, "single delete after detach; no InUse-retry loop")
 }
 
-func TestTerminateK3sServerVM_ENIInUsePastBudgetSurfaces(t *testing.T) {
-	// A persistent InUse (cascade never fires) must still surface after the
-	// bounded budget so the teardown backstop retries rather than blocking forever.
-	withFastENIWait(t)
+func TestTerminateK3sServerVM_ENIDeleteErrorSurfaces(t *testing.T) {
+	// A real delete failure (not NotFound) must surface so the teardown backstop
+	// retries rather than silently stranding the ENI.
 	vpc := &fakeK3sVPC{deleteErr: errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)}
 	inst := &fakeK3sInst{}
 
 	err := TerminateK3sServerVM(vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
-	require.Error(t, err, "ENI in use past the budget must surface so the backstop retries")
+	require.Error(t, err, "a non-NotFound delete error must surface")
 	assert.Contains(t, err.Error(), "delete ENI eni-aaa111")
-	assert.Greater(t, len(vpc.deleteCalls), 1, "must have retried before giving up")
-}
-
-// withFastENIWait shrinks the ENI-delete retry budget for tests so a bounded
-// retry loop runs in milliseconds, restoring the production defaults after.
-func withFastENIWait(t *testing.T) {
-	t.Helper()
-	budget, interval := eniDeleteWaitBudget, eniDeleteWaitInterval
-	eniDeleteWaitBudget, eniDeleteWaitInterval = 20*time.Millisecond, 1*time.Millisecond
-	t.Cleanup(func() { eniDeleteWaitBudget, eniDeleteWaitInterval = budget, interval })
 }
 
 func TestTerminateK3sServerVM_InstanceAlreadyGoneIsIdempotent(t *testing.T) {

@@ -3,7 +3,6 @@
 package harness
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -87,10 +86,6 @@ func (s *sshClient) Run(ctx context.Context, node Node, cmd string) ([]byte, err
 	}
 	defer func() { _ = session.Close() }()
 
-	var out bytes.Buffer
-	session.Stdout = &out
-	session.Stderr = &out
-
 	// Signal(KILL) is the portable way to interrupt a running command.
 	done := make(chan struct{})
 	defer close(done)
@@ -103,11 +98,16 @@ func (s *sshClient) Run(ctx context.Context, node Node, cmd string) ([]byte, err
 		}
 	}()
 
-	if err := session.Run(cmd); err != nil {
-		return out.Bytes(), fmt.Errorf("e2e harness: ssh run on %s (%q): %w\noutput: %s",
-			node.Name, cmd, err, out.String())
+	// CombinedOutput captures stdout+stderr through x/crypto/ssh's mutex-guarded
+	// singleWriter. Assigning one bytes.Buffer to both session.Stdout and
+	// session.Stderr races: the library copies the two streams in separate
+	// goroutines and bytes.Buffer is not concurrent-safe.
+	out, err := session.CombinedOutput(cmd)
+	if err != nil {
+		return out, fmt.Errorf("e2e harness: ssh run on %s (%q): %w\noutput: %s",
+			node.Name, cmd, err, out)
 	}
-	return out.Bytes(), nil
+	return out, nil
 }
 
 func (s *sshClient) Close() error {

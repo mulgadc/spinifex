@@ -17,3 +17,15 @@ func (d *Daemon) handleACMListCertificates(msg *nats.Msg) {
 func (d *Daemon) handleACMDeleteCertificate(msg *nats.Msg) {
 	handleNATSRequest(msg, d.acmService.DeleteCertificate)
 }
+
+func (d *Daemon) handleACMListTagsForCertificate(msg *nats.Msg) {
+	handleNATSRequest(msg, d.acmService.ListTagsForCertificate)
+}
+
+func (d *Daemon) handleACMAddTagsToCertificate(msg *nats.Msg) {
+	handleNATSRequest(msg, d.acmService.AddTagsToCertificate)
+}
+
+func (d *Daemon) handleACMRemoveTagsFromCertificate(msg *nats.Msg) {
+	handleNATSRequest(msg, d.acmService.RemoveTagsFromCertificate)
+}

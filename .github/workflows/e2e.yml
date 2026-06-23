@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-go@v6
@@ -119,14 +119,14 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 
@@ -519,14 +519,14 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 

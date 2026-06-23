@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testAudience = "ecr.ap-southeast-2.mulga.internal"
+const testAudience = "ecr.ap-southeast-2.spinifex.internal"
 
 var testMasterKey = func() []byte {
 	k := make([]byte, 32)
@@ -102,7 +102,7 @@ func TestVerifier_RejectsWrongAudience(t *testing.T) {
 	tok, _, err := NewIssuer(key, testAudience).Mint(samplePrincipal())
 	require.NoError(t, err)
 
-	_, err = NewVerifier(verify, "ecr.us-east-1.mulga.internal").Verify(tok)
+	_, err = NewVerifier(verify, "ecr.us-east-1.spinifex.internal").Verify(tok)
 	require.Error(t, err)
 }
 

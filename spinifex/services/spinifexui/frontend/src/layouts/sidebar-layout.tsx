@@ -333,7 +333,7 @@ export function SidebarLayout() {
         </SidebarGroup>
 
         <SidebarGroup>
-          <SidebarGroupLabel>EKS</SidebarGroupLabel>
+          <SidebarGroupLabel>Containers</SidebarGroupLabel>
           <SidebarMenu>
             <SidebarMenuItem>
               <Link to="/eks/list-clusters">
@@ -342,27 +342,21 @@ export function SidebarLayout() {
                     pathname.startsWith("/eks/list-clusters") ||
                     pathname.startsWith("/eks/create-cluster")
                   }
-                  tooltip="Clusters"
+                  tooltip="EKS clusters"
                 >
                   <Boxes className="size-4" />
-                  <span>Clusters</span>
+                  <span>EKS</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupLabel>ECR</SidebarGroupLabel>
-          <SidebarMenu>
             <SidebarMenuItem>
               <Link to="/ecr/list-repositories">
                 <SidebarMenuButton
                   isActive={pathname.startsWith("/ecr/list-repositories")}
-                  tooltip="Repositories"
+                  tooltip="ECR repositories"
                 >
                   <Package className="size-4" />
-                  <span>Repositories</span>
+                  <span>ECR</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

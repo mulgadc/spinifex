@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -893,4 +895,100 @@ func TestRG4_GuestOOMTier(t *testing.T) {
 		"RG-4: EKS control-plane node must rank above user guests (0)")
 	assert.Greater(t, guestOOMScore(""), guestOOMScore("elbv2"),
 		"RG-4: a user guest must always be killed before a system instance")
+}
+
+// startWorkingQMPListener accepts one connection on a unix socket, sends the
+// QMP greeting, then echoes a {"return":{}} reply for every command line the
+// client writes (qmp_capabilities and any later command). It models a live
+// QEMU QMP monitor closely enough to exercise reconnect. Returns the socket
+// path and a stop function the caller must invoke before goleak.VerifyNone.
+func startWorkingQMPListener(t *testing.T) (string, func()) {
+	t.Helper()
+	sockPath := filepath.Join(t.TempDir(), "qmp.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer func() { _ = c.Close() }()
+				greeting := `{"QMP":{"version":{"qemu":{"major":8,"minor":0}},"capabilities":[]}}` + "\n"
+				if _, err := c.Write([]byte(greeting)); err != nil {
+					return
+				}
+				dec := json.NewDecoder(c)
+				for {
+					var cmd map[string]any
+					if err := dec.Decode(&cmd); err != nil {
+						return
+					}
+					if _, err := c.Write([]byte(`{"return":{}}` + "\n")); err != nil {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	stopped := false
+	stop := func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		_ = ln.Close()
+		<-done
+	}
+	t.Cleanup(stop)
+	return sockPath, stop
+}
+
+// TestSendQMPCommand_ReconnectsWedgedClient covers the EBS-attach flake fix: a
+// QMPClient flagged Dead (a prior timed-out decode left the shared Decoder
+// mid-message) must redial its socket on the next send, complete the command,
+// and clear Dead — instead of failing for the VM's lifetime.
+func TestSendQMPCommand_ReconnectsWedgedClient(t *testing.T) {
+	sockPath, stop := startWorkingQMPListener(t)
+	defer stop()
+
+	client, err := qmp.NewQMPClient(sockPath)
+	require.NoError(t, err)
+	defer func() { _ = client.Conn.Close() }()
+
+	// Simulate the wedge: mark Dead as a timed-out decode would.
+	client.Dead = true
+
+	resp, err := sendQMPCommand(client, qmp.QMPCommand{Execute: "query-status"}, "i-wedged")
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.False(t, client.Dead, "reconnect must clear Dead so later commands reuse the fresh stream")
+
+	// A second command must succeed over the reconnected stream.
+	_, err = sendQMPCommand(client, qmp.QMPCommand{Execute: "query-status"}, "i-wedged")
+	require.NoError(t, err)
+}
+
+// TestSendQMPCommand_NoPathCannotReconnect asserts a wedged client with no
+// retained socket path surfaces a clear error rather than panicking — the
+// reconnect needs the path NewQMPClient now stores.
+func TestSendQMPCommand_NoPathCannotReconnect(t *testing.T) {
+	sockPath, stop := startWorkingQMPListener(t)
+	defer stop()
+
+	client, err := qmp.NewQMPClient(sockPath)
+	require.NoError(t, err)
+	defer func() { _ = client.Conn.Close() }()
+
+	client.Dead = true
+	client.Path = ""
+
+	_, err = sendQMPCommand(client, qmp.QMPCommand{Execute: "query-status"}, "i-nopath")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no socket path")
 }

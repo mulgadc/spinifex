@@ -40,6 +40,13 @@ const (
 	ProtocolTLS    = "TLS"
 	ProtocolTCPUDP = "TCP_UDP"
 
+	// Target-group application protocol versions (HTTP/HTTPS target groups only).
+	// AWS defaults to HTTP1; the load balancer controller always sends a value
+	// and compares it back, so it must round-trip.
+	ProtocolVersionHTTP1 = "HTTP1"
+	ProtocolVersionHTTP2 = "HTTP2"
+	ProtocolVersionGRPC  = "GRPC"
+
 	// Data-plane engines. ALBs (L7) run HAProxy; NLBs (L4) run nginx `stream`
 	// because HAProxy cannot load-balance UDP. The agent learns which engine to
 	// run from the GetLBConfig response.
@@ -162,19 +169,20 @@ type AvailZoneInfo struct {
 
 // TargetGroupRecord represents a stored Target Group.
 type TargetGroupRecord struct {
-	TargetGroupArn string            `json:"target_group_arn"`
-	TargetGroupID  string            `json:"target_group_id"` // Short ID (hex suffix)
-	Name           string            `json:"name"`
-	Protocol       string            `json:"protocol"` // "HTTP" or "HTTPS"
-	Port           int64             `json:"port"`     // Default target port
-	VpcId          string            `json:"vpc_id"`
-	TargetType     string            `json:"target_type"` // TargetTypeInstance or TargetTypeIP
-	HealthCheck    HealthCheckConfig `json:"health_check"`
-	Targets        []Target          `json:"targets"`
-	Attributes     map[string]string `json:"attributes,omitempty"`
-	Tags           map[string]string `json:"tags,omitempty"`
-	AccountID      string            `json:"account_id"`
-	CreatedAt      time.Time         `json:"created_at"`
+	TargetGroupArn  string            `json:"target_group_arn"`
+	TargetGroupID   string            `json:"target_group_id"` // Short ID (hex suffix)
+	Name            string            `json:"name"`
+	Protocol        string            `json:"protocol"`                   // "HTTP" or "HTTPS"
+	ProtocolVersion string            `json:"protocol_version,omitempty"` // HTTP1/HTTP2/GRPC (HTTP[S] TGs only)
+	Port            int64             `json:"port"`                       // Default target port
+	VpcId           string            `json:"vpc_id"`
+	TargetType      string            `json:"target_type"` // TargetTypeInstance or TargetTypeIP
+	HealthCheck     HealthCheckConfig `json:"health_check"`
+	Targets         []Target          `json:"targets"`
+	Attributes      map[string]string `json:"attributes,omitempty"`
+	Tags            map[string]string `json:"tags,omitempty"`
+	AccountID       string            `json:"account_id"`
+	CreatedAt       time.Time         `json:"created_at"`
 }
 
 // HealthCheckConfig defines health check parameters for a target group.

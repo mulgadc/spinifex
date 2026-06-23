@@ -108,6 +108,13 @@ type QMPClient struct {
 	Decoder *json.Decoder
 	Encoder *json.Encoder
 	Mu      sync.Mutex
+	// Path is the QMP unix socket, retained so a wedged client can redial the
+	// same QEMU without the caller re-plumbing it.
+	Path string
+	// Dead marks the stream as unusable after a failed read: a timed-out decode
+	// leaves the shared Decoder mid-message, so every later command would fail
+	// until the connection is re-established. The next send reconnects.
+	Dead bool
 }
 
 func NewQMPClient(path string) (*QMPClient, error) {
@@ -126,6 +133,7 @@ func NewQMPClient(path string) (*QMPClient, error) {
 		Conn:    conn,
 		Decoder: json.NewDecoder(conn),
 		Encoder: json.NewEncoder(conn),
+		Path:    path,
 	}
 
 	// wait for greeting

@@ -35,7 +35,7 @@ describe("CreateRepositoryDialog", () => {
 
     fireEvent.click(createButton)
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1))
-    expect(send.mock.calls[0][0].input).toStrictEqual({
+    expect(send.mock.calls[0]![0].input).toStrictEqual({
       repositoryName: "team/app",
     })
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))

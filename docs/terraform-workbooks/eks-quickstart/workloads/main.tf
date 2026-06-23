@@ -38,6 +38,12 @@ variable "replicas" {
   description = "Demo app replicas; refresh the page to see requests land on different pods"
 }
 
+variable "demo_image" {
+  type        = string
+  default     = ""
+  description = "Demo image ref. Defaults to the parent's ECR repository URL at :latest."
+}
+
 provider "aws" {
   region = data.terraform_remote_state.infra.outputs.region
 
@@ -69,6 +75,7 @@ locals {
   cluster_name = data.terraform_remote_state.infra.outputs.cluster_name
   region       = data.terraform_remote_state.infra.outputs.region
   node_port    = data.terraform_remote_state.infra.outputs.node_port
+  demo_image   = var.demo_image != "" ? var.demo_image : "${data.terraform_remote_state.infra.outputs.ecr_repository_url}:latest"
 }
 
 data "aws_eks_cluster" "this" {
@@ -88,34 +95,81 @@ provider "kubernetes" {
   }
 }
 
-# nginxdemos/hello renders a page showing which pod served the request; with
-# multiple replicas, refreshing the demo_url alternates between them.
-resource "kubernetes_deployment_v1" "hello" {
+# The Spinifex-themed demo app reports the pod, node, cluster, and region that
+# served the request. With multiple replicas, refreshing the demo_url alternates
+# between them. The pod and node names come from the downward API.
+resource "kubernetes_deployment_v1" "demo" {
   metadata {
-    name      = "hello"
+    name      = "spinifex-demo"
     namespace = "default"
-    labels    = { app = "hello" }
+    labels    = { app = "spinifex-demo" }
   }
 
   spec {
     replicas = var.replicas
 
     selector {
-      match_labels = { app = "hello" }
+      match_labels = { app = "spinifex-demo" }
     }
 
     template {
       metadata {
-        labels = { app = "hello" }
+        labels = { app = "spinifex-demo" }
       }
 
       spec {
         container {
-          name  = "hello"
-          image = "nginxdemos/hello"
+          name  = "spinifex-demo"
+          image = local.demo_image
 
           port {
-            container_port = 80
+            container_port = 8080
+          }
+
+          env {
+            name = "POD_NAME"
+            value_from {
+              field_ref {
+                field_path = "metadata.name"
+              }
+            }
+          }
+
+          env {
+            name = "NODE_NAME"
+            value_from {
+              field_ref {
+                field_path = "spec.nodeName"
+              }
+            }
+          }
+
+          env {
+            name = "POD_NAMESPACE"
+            value_from {
+              field_ref {
+                field_path = "metadata.namespace"
+              }
+            }
+          }
+
+          env {
+            name  = "CLUSTER_NAME"
+            value = local.cluster_name
+          }
+
+          env {
+            name  = "AWS_REGION"
+            value = local.region
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/healthz"
+              port = 8080
+            }
+            initial_delay_seconds = 3
+            period_seconds        = 10
           }
         }
       }
@@ -123,22 +177,22 @@ resource "kubernetes_deployment_v1" "hello" {
   }
 }
 
-resource "kubernetes_service_v1" "hello" {
+resource "kubernetes_service_v1" "demo" {
   metadata {
-    name      = "hello"
+    name      = "spinifex-demo"
     namespace = "default"
   }
 
   spec {
-    selector = { app = "hello" }
+    selector = { app = "spinifex-demo" }
     type     = "NodePort"
 
     port {
       port        = 80
-      target_port = 80
+      target_port = 8080
       node_port   = local.node_port
     }
   }
 
-  depends_on = [kubernetes_deployment_v1.hello]
+  depends_on = [kubernetes_deployment_v1.demo]
 }

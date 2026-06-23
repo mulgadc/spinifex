@@ -2737,12 +2737,28 @@ func (s *InstanceServiceImpl) deleteInstanceENI(instance *vm.VM, instanceID stri
 	if instance.ENIId == "" || s.eniDeleter == nil {
 		return
 	}
-	if _, err := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	// Detach first to clear the attachment record. A stopped instance's ENI may
+	// still show Status=in-use/AttachmentId set; without the detach the
+	// force=false DeleteNetworkInterface below fails InvalidNetworkInterface.InUse,
+	// stranding the ENI record after the instance is already gone from the store
+	// and blocking VPC/subnet delete (mulga-siv-408). Best-effort: the delete is
+	// the authoritative gate.
+	if s.eniCreator != nil {
+		if err := s.eniCreator.DetachENI(instance.AccountID, instance.ENIId); err != nil {
+			slog.Warn("TerminateStoppedInstance: failed to detach ENI before delete",
+				"eni", instance.ENIId, "instanceId", instanceID, "err", err)
+		}
+	}
+	_, err := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: &instance.ENIId,
-	}, instance.AccountID); err != nil {
-		slog.Error("TerminateStoppedInstance: failed to delete ENI", "eni", instance.ENIId, "err", err)
-	} else {
+	}, instance.AccountID)
+	switch {
+	case err == nil,
+		awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+		awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound):
 		slog.Info("TerminateStoppedInstance: deleted ENI", "eni", instance.ENIId, "instanceId", instanceID)
+	default:
+		slog.Error("TerminateStoppedInstance: failed to delete ENI", "eni", instance.ENIId, "err", err)
 	}
 }
 

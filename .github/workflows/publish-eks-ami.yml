@@ -30,19 +30,19 @@ jobs:
 
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: spinifex
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
           ref: dev
           path: viperblock
 
       - name: Checkout Predastore
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
           ref: dev

@@ -361,3 +361,32 @@ func TestDeleteClusterWinnerReleasesTeardownLease(t *testing.T) {
 	_, getErr := f.svc.leaderKV.Get(teardownLeaderKey(testAccountID, "alpha"))
 	assert.ErrorIs(t, getErr, nats.ErrKeyNotFound, "the teardown lease must be released after a successful delete")
 }
+
+// TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs guards mulga-siv-419: in
+// the managed control-plane VPC topology the nodegroup's worker-side security
+// groups are created by launchNodegroupInfra in the CUSTOMER VPC
+// (ResourcesVpcConfig.VpcId), not the managed CP VPC. Teardown must reclaim them
+// there too, or they orphan — cross-referencing each other — and pin the
+// customer VPC with DependencyViolation, hanging tofu destroy of the VPC.
+func TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+
+	meta, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	meta.ManagedCPVPC = &ManagedCPVPC{VpcId: "vpc-cp"}
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	// Worker-side SGs created in the customer VPC (vpc-aaa) by launchNodegroupInfra.
+	f.sg.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cust-cp"
+	f.sg.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-cust-ng"
+
+	_, err = f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+
+	var deleted []string
+	for _, c := range f.sg.deleteCalls {
+		deleted = append(deleted, aws.StringValue(c.GroupId))
+	}
+	assert.Contains(t, deleted, "sg-cust-cp", "customer-VPC control-plane SG must be reclaimed on teardown")
+	assert.Contains(t, deleted, "sg-cust-ng", "customer-VPC nodegroup SG must be reclaimed on teardown")
+}

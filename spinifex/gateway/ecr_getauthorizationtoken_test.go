@@ -54,6 +54,29 @@ func TestHandleGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 	assert.Equal(t, ecrTestAccount, claims.AccountID)
 }
 
+func TestHandleGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
+	iss, verify := newECRAuth(t)
+	gw := &GatewayConfig{
+		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, RegistryPort: "9999",
+		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
+	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	w := httptest.NewRecorder()
+	require.NoError(t, gw.handleGetAuthorizationToken(w, req.WithContext(ctx)))
+
+	var out struct {
+		AuthorizationData []struct {
+			ProxyEndpoint string `json:"proxyEndpoint"`
+		} `json:"authorizationData"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+	require.Len(t, out.AuthorizationData, 1)
+	assert.Equal(t, "https://"+ecrTestAccount+".dkr.ecr."+ecrTestRegion+"."+ecrTestSuffix+":9999", out.AuthorizationData[0].ProxyEndpoint)
+}
+
 func TestHandleGetAuthorizationToken_NoIssuerNotImplemented(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))

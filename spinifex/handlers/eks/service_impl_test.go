@@ -385,16 +385,84 @@ func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 	require.False(t, hasEnv)
 }
 
-func TestEKSServiceImpl_TagsNonClusterARNNotImplemented(t *testing.T) {
+func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
-	const ngARN = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"
+	js, err := svc.deps.NATSConn.JetStream()
+	require.NoError(t, err)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	require.NoError(t, err)
 
-	_, err := svc.TagResource(&eks.TagResourceInput{ResourceArn: aws.String(ngARN)}, testAccountID)
+	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"
+	require.NoError(t, PutNodegroupRecord(kv, &NodegroupRecord{
+		ClusterName: "c1",
+		Name:        "ng1",
+		Arn:         arn,
+		Status:      eks.NodegroupStatusActive,
+		Tags:        map[string]string{"env": "prod"},
+	}))
+
+	// Create-time tags are echoed (the drift-killing round-trip).
+	lt, err := svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "prod", aws.StringValue(lt.Tags["env"]))
+
+	dn, err := svc.DescribeNodegroup(&eks.DescribeNodegroupInput{
+		ClusterName:   aws.String("c1"),
+		NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "prod", aws.StringValue(dn.Nodegroup.Tags["env"]))
+
+	// TagResource merges, UntagResource removes — both store-only.
+	_, err = svc.TagResource(&eks.TagResourceInput{
+		ResourceArn: aws.String(arn),
+		Tags:        aws.StringMap(map[string]string{"team": "platform"}),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.UntagResource(&eks.UntagResourceInput{
+		ResourceArn: aws.String(arn),
+		TagKeys:     aws.StringSlice([]string{"env"}),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	lt, err = svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "platform", aws.StringValue(lt.Tags["team"]))
+	_, hasEnv := lt.Tags["env"]
+	require.False(t, hasEnv)
+}
+
+func TestEKSServiceImpl_NodegroupTagMissingNotFound(t *testing.T) {
+	svc := setupTestService(t)
+	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/absent/abc123"
+
+	_, err := svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+
+	_, err = svc.TagResource(&eks.TagResourceInput{
+		ResourceArn: aws.String(arn),
+		Tags:        aws.StringMap(map[string]string{"k": "v"}),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+
+	_, err = svc.UntagResource(&eks.UntagResourceInput{
+		ResourceArn: aws.String(arn),
+		TagKeys:     aws.StringSlice([]string{"k"}),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
+
+func TestEKSServiceImpl_TagsUnsupportedARNNotImplemented(t *testing.T) {
+	svc := setupTestService(t)
+	const fpARN = "arn:aws:eks:us-east-1:111122223333:fargateprofile/c1/fp1/abc123"
+
+	_, err := svc.TagResource(&eks.TagResourceInput{ResourceArn: aws.String(fpARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
-	_, err = svc.UntagResource(&eks.UntagResourceInput{ResourceArn: aws.String(ngARN)}, testAccountID)
+	_, err = svc.UntagResource(&eks.UntagResourceInput{ResourceArn: aws.String(fpARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
-	_, err = svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(ngARN)}, testAccountID)
+	_, err = svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(fpARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 }

@@ -115,8 +115,8 @@ cd ../demo-app
 REGISTRY=$(cd ../eks-https-ingress && tofu output -raw ecr_repository_url)
 REGISTRY_HOST=${REGISTRY%%/*}
 aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY_HOST"
-docker build -t "$REGISTRY:latest" .
-docker push "$REGISTRY:latest"
+docker build -t "${REGISTRY}:latest" .
+docker push "${REGISTRY}:latest"
 cd ../eks-https-ingress
 ```
 

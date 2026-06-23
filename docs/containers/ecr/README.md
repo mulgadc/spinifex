@@ -55,6 +55,14 @@ Each repository holds image manifests and their layers. Images are stored in obj
 
 - **Spinifex running**, with the AWS CLI configured for the `spinifex` profile (see [Installing Spinifex](/docs/install)).
 - **Docker** installed locally to build, push, and pull images.
+- **Docker trusting the Spinifex CA.** The registry serves TLS signed by the Spinifex local CA. Install it into the host trust store once (Docker uses the host root pool for registry TLS, so this covers every account endpoint without per-host config):
+
+```bash
+sudo cp /etc/spinifex/ca.pem /usr/local/share/ca-certificates/spinifex-local-ca.crt
+sudo update-ca-certificates
+sudo systemctl restart docker
+```
+
 - **The registry endpoint** for your deployment — `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999`. `aws ecr get-login-password` and `aws ecr describe-repositories` return the exact `host:port` for your account.
 - **For EKS pulls:** worker nodes need the `AmazonEC2ContainerRegistryReadOnly` policy on their node IAM role (the EKS prerequisites already include this) and network egress to the registry endpoint.
 

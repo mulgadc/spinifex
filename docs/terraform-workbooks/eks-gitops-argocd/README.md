@@ -123,12 +123,12 @@ cd ../demo-app
 REGISTRY=$(cd ../eks-gitops-argocd && tofu output -raw ecr_repository_url)
 REGISTRY_HOST=${REGISTRY%%/*}
 aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY_HOST"
-docker build -t "$REGISTRY:latest" .
-docker push "$REGISTRY:latest"
+docker build -t "${REGISTRY}:latest" .
+docker push "${REGISTRY}:latest"
 cd ../eks-gitops-argocd
 ```
 
-Point the app's manifests at this image: set the image ref in `eks-demo-app/manifests` (a kustomize `images:` override) to your `$REGISTRY:latest`, and push that to the git repo.
+Point the app's manifests at this image: set the image ref in `eks-demo-app/manifests` (a kustomize `images:` override) to your `${REGISTRY}:latest`, and push that to the git repo.
 
 ### Step 4. Hand Delivery to Argo CD
 

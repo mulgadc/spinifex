@@ -51,13 +51,13 @@ aws ecr get-login-password --region "$REGION" \
 
 # 3. Build, tag, and push.
 docker build -t spinifex-demo:latest .
-docker tag spinifex-demo:latest "$REGISTRY:latest"
-docker push "$REGISTRY:latest"
+docker tag spinifex-demo:latest "${REGISTRY}:latest"
+docker push "${REGISTRY}:latest"
 
-echo "Image: $REGISTRY:latest"
+echo "Image: ${REGISTRY}:latest"
 ```
 
-Pass the resulting `$REGISTRY:latest` value to a workbook as the `demo_image`
+Pass the resulting `${REGISTRY}:latest` value to a workbook as the `demo_image`
 variable (or accept its default, which resolves the URI from the ECR repository
 the workbook creates).
 

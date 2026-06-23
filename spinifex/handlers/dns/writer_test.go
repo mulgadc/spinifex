@@ -93,7 +93,7 @@ insecure = true
 		Predastore: config.PredastoreConfig{AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET"},
 		Northstar:  config.NorthstarConfig{ConfigPath: configPath},
 	}
-	w := NewWriter(cfg)
+	w := NewWriter(cfg, nil)
 	require.True(t, w.Enabled(), "writer should be enabled")
 	return w, objects
 }
@@ -101,7 +101,7 @@ insecure = true
 func TestWriterUpsertPublicAndPrivate(t *testing.T) {
 	w, objects := newTestWriter(t)
 
-	changes := EC2Changes(ActionUpsert, "ap-southeast-2", "spx3.net", "1.2.3.4", "172.31.26.216")
+	changes := EC2Changes(ActionUpsert, "ap-southeast-2", "spx3.net", "", "1.2.3.4", "172.31.26.216")
 	res, err := w.ApplyBatch(&ChangeBatch{Changes: changes})
 	require.NoError(t, err)
 	assert.Equal(t, 2, res.Applied)
@@ -120,7 +120,7 @@ func TestWriterUpsertPublicAndPrivate(t *testing.T) {
 
 func TestWriterUpsertIsIdempotentAndDeletes(t *testing.T) {
 	w, objects := newTestWriter(t)
-	changes := EC2Changes(ActionUpsert, "ap-southeast-2", "spx3.net", "1.2.3.4", "172.31.26.216")
+	changes := EC2Changes(ActionUpsert, "ap-southeast-2", "spx3.net", "", "1.2.3.4", "172.31.26.216")
 
 	_, err := w.ApplyBatch(&ChangeBatch{Changes: changes})
 	require.NoError(t, err)
@@ -132,7 +132,7 @@ func TestWriterUpsertIsIdempotentAndDeletes(t *testing.T) {
 	assert.Equal(t, first, objects["spx3.net.toml"])
 
 	// Delete withdraws both records.
-	del := EC2Changes(ActionDelete, "ap-southeast-2", "spx3.net", "1.2.3.4", "172.31.26.216")
+	del := EC2Changes(ActionDelete, "ap-southeast-2", "spx3.net", "", "1.2.3.4", "172.31.26.216")
 	_, err = w.ApplyBatch(&ChangeBatch{Changes: del})
 	require.NoError(t, err)
 	assert.NotContains(t, objects["spx3.net.toml"], "ec2-1-2-3-4")
@@ -142,7 +142,7 @@ func TestWriterUpsertIsIdempotentAndDeletes(t *testing.T) {
 func TestWriterDeleteMissingZoneNoop(t *testing.T) {
 	w, objects := newTestWriter(t)
 	// Delete a private record before any private zone exists → no zone created.
-	del := EC2Changes(ActionDelete, "ap-southeast-2", "spx3.net", "", "172.31.26.216")
+	del := EC2Changes(ActionDelete, "ap-southeast-2", "spx3.net", "", "", "172.31.26.216")
 	res, err := w.ApplyBatch(&ChangeBatch{Changes: del})
 	require.NoError(t, err)
 	assert.Equal(t, 1, res.Applied)
@@ -151,7 +151,7 @@ func TestWriterDeleteMissingZoneNoop(t *testing.T) {
 }
 
 func TestWriterDisabledWithoutNorthstar(t *testing.T) {
-	w := NewWriter(&config.Config{})
+	w := NewWriter(&config.Config{}, nil)
 	assert.False(t, w.Enabled())
 	_, err := w.ApplyBatch(&ChangeBatch{Changes: []Change{{Action: ActionUpsert}}})
 	require.Error(t, err)

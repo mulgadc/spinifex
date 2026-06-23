@@ -17,14 +17,16 @@ func EC2PublicName(publicIP, region, baseDomain string) string {
 }
 
 // EC2PrivateName is the private AWS-parity name for an instance:
-// ip-{dashed-private-ip}.{region}.compute.internal (IMDS synthHostname).
-func EC2PrivateName(privateIP, region string) string {
-	return fmt.Sprintf("ip-%s.%s.compute.internal", dashIP(privateIP), region)
+// ip-{dashed-private-ip}.{region}.{internalDomain} (IMDS synthHostname). The
+// internal domain defaults to PrivateZone when empty.
+func EC2PrivateName(privateIP, region, internalDomain string) string {
+	return fmt.Sprintf("ip-%s.%s.%s", dashIP(privateIP), region, privateZoneOrDefault(internalDomain))
 }
 
 // EC2Changes builds the record-set changes for one instance's public and
-// private addresses. Empty IPs are skipped (e.g. no public IP assigned).
-func EC2Changes(action Action, region, baseDomain, publicIP, privateIP string) []Change {
+// private addresses. Empty IPs are skipped (e.g. no public IP assigned). The
+// private record lands in internalDomain (default compute.internal).
+func EC2Changes(action Action, region, baseDomain, internalDomain, publicIP, privateIP string) []Change {
 	var changes []Change
 	if region == "" {
 		return changes
@@ -39,15 +41,25 @@ func EC2Changes(action Action, region, baseDomain, publicIP, privateIP string) [
 		})
 	}
 	if privateIP != "" {
+		zone := privateZoneOrDefault(internalDomain)
 		changes = append(changes, Change{
 			Action: action,
-			Zone:   PrivateZone,
-			Name:   EC2PrivateName(privateIP, region),
+			Zone:   zone,
+			Name:   EC2PrivateName(privateIP, region, zone),
 			Type:   "A",
 			Value:  privateIP,
 		})
 	}
 	return changes
+}
+
+// privateZoneOrDefault returns the configured internal domain or the
+// compute.internal default when unset.
+func privateZoneOrDefault(internalDomain string) string {
+	if d := strings.TrimSpace(internalDomain); d != "" {
+		return d
+	}
+	return PrivateZone
 }
 
 // relativeLabel converts a fully-qualified name to a zone-relative label in the

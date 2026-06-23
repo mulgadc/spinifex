@@ -411,22 +411,23 @@ func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
 
 // InstanceServiceImpl handles daemon-side EC2 instance operations
 type InstanceServiceImpl struct {
-	config        *config.Config
-	instanceTypes map[string]*ec2.InstanceTypeInfo
-	natsConn      *nats.Conn
-	objectStore   objectstore.ObjectStore
-	vmMgr         *vm.Manager
-	resourceMgr   InstanceTypeAllocator
-	stoppedStore  StoppedInstanceStore
-	volumeDeleter VolumeDeleter
-	eniDeleter    ENIDeleter
-	ipReleaser    PublicIPReleaser
-	gpuClaimer    GPUClaimer
-	amiLoader     AMIMetaLoader
-	keyValidator  KeyPairValidator
-	eniCreator    ENICreator
-	ipAllocator   PublicIPAllocator
-	dnsBaseDomain string
+	config            *config.Config
+	instanceTypes     map[string]*ec2.InstanceTypeInfo
+	natsConn          *nats.Conn
+	objectStore       objectstore.ObjectStore
+	vmMgr             *vm.Manager
+	resourceMgr       InstanceTypeAllocator
+	stoppedStore      StoppedInstanceStore
+	volumeDeleter     VolumeDeleter
+	eniDeleter        ENIDeleter
+	ipReleaser        PublicIPReleaser
+	gpuClaimer        GPUClaimer
+	amiLoader         AMIMetaLoader
+	keyValidator      KeyPairValidator
+	eniCreator        ENICreator
+	ipAllocator       PublicIPAllocator
+	dnsBaseDomain     string
+	dnsInternalDomain string
 }
 
 // NewInstanceServiceImpl creates a new instance service implementation for daemon use
@@ -440,14 +441,15 @@ func NewInstanceServiceImpl(
 	stoppedStore StoppedInstanceStore,
 ) *InstanceServiceImpl {
 	return &InstanceServiceImpl{
-		config:        cfg,
-		instanceTypes: instanceTypes,
-		natsConn:      nc,
-		objectStore:   store,
-		vmMgr:         vmMgr,
-		resourceMgr:   resourceMgr,
-		stoppedStore:  stoppedStore,
-		dnsBaseDomain: handlers_dns.ResolveBaseDomain(cfg),
+		config:            cfg,
+		instanceTypes:     instanceTypes,
+		natsConn:          nc,
+		objectStore:       store,
+		vmMgr:             vmMgr,
+		resourceMgr:       resourceMgr,
+		stoppedStore:      stoppedStore,
+		dnsBaseDomain:     handlers_dns.ResolveBaseDomain(cfg),
+		dnsInternalDomain: handlers_dns.ResolveInternalDomain(cfg),
 	}
 }
 
@@ -862,7 +864,7 @@ func (s *InstanceServiceImpl) publishDNS(accountID string, action handlers_dns.A
 		if instance.Instance != nil && instance.Instance.PrivateIpAddress != nil {
 			privateIP = *instance.Instance.PrivateIpAddress
 		}
-		changes = append(changes, handlers_dns.EC2Changes(action, s.config.Region, s.dnsBaseDomain, instance.PublicIP, privateIP)...)
+		changes = append(changes, handlers_dns.EC2Changes(action, s.config.Region, s.dnsBaseDomain, s.dnsInternalDomain, instance.PublicIP, privateIP)...)
 	}
 	handlers_dns.PublishChangesBestEffort(s.natsConn, accountID, changes)
 }

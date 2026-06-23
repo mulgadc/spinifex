@@ -130,9 +130,16 @@ insecure = true
 	assert.Contains(t, body, baseZoneTXT)  // base TXT marker
 	assert.Contains(t, body, "type = 2")   // NS record
 
-	// Second start is idempotent — does not rewrite the zone.
+	// The AWS-parity private zone is seeded alongside the base zone.
+	require.Contains(t, objects, "compute.internal.toml")
+	internal := objects["compute.internal.toml"]
+	assert.Contains(t, internal, `domain = "compute.internal"`)
+	assert.Contains(t, internal, "10.11.12.1") // shares the NS glue topology
+
+	// Second start is idempotent — does not rewrite either zone.
 	require.NoError(t, BootstrapBaseZone(configPath, cluster))
 	assert.Equal(t, body, objects["spx3.net.toml"])
+	assert.Equal(t, internal, objects["compute.internal.toml"])
 }
 
 // flakyS3 refuses the first failUntil requests (simulating predastore not yet

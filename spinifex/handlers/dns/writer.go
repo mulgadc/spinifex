@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,13 +22,15 @@ type Writer struct {
 	baseDomain string
 	localNS    nsconfig.NameserverSeed
 	ttl        uint32
+	nc         *nats.Conn
 }
 
 // NewWriter resolves the northstar S3 endpoint/bucket from the node's
 // northstar.toml and pairs it with the system predastore credentials. The
-// writer is disabled (a no-op) when northstar is not configured for S3.
-func NewWriter(cfg *config.Config) *Writer {
-	w := &Writer{ttl: DefaultTTL}
+// writer is disabled (a no-op) when northstar is not configured for S3. The
+// NATS connection, when non-nil, is used to fan out per-zone reload events.
+func NewWriter(cfg *config.Config, nc *nats.Conn) *Writer {
+	w := &Writer{ttl: DefaultTTL, nc: nc}
 	s3cfg, baseDomain, ok := zoneS3Config(cfg)
 	if !ok {
 		slog.Info("dns writer: northstar S3 not configured, record registration disabled")
@@ -77,10 +80,27 @@ func (w *Writer) ApplyBatch(batch *ChangeBatch) (*ChangeResult, error) {
 		}
 		if applied {
 			res.Zones = append(res.Zones, zone)
+			w.publishReload(zone)
 		}
 		res.Applied += len(byZone[zone])
 	}
 	return res, nil
+}
+
+// publishReload fans out a per-zone reload so northstar serves the change
+// immediately instead of waiting for the S3 poll. Best-effort: the poll is the
+// backstop, so a publish failure only delays propagation.
+func (w *Writer) publishReload(zone string) {
+	if w.nc == nil {
+		return
+	}
+	payload, err := json.Marshal(ZoneReload{Zone: zone})
+	if err != nil {
+		return
+	}
+	if err := w.nc.Publish(SubjectZoneReload, payload); err != nil {
+		slog.Warn("dns writer: publish zone reload", "zone", zone, "error", err)
+	}
 }
 
 // applyZone read-modify-writes a single zone TOML for its changes. It returns
@@ -197,6 +217,20 @@ func ResolveBaseDomain(cfg *config.Config) string {
 		return ""
 	}
 	return strings.TrimSpace(serverCfg.DefaultDomain)
+}
+
+// ResolveInternalDomain returns the northstar internal_domain (AWS-parity private
+// zone) for producers building private record names, or "" when DNS registration
+// is not configured. Callers fall back to PrivateZone for an empty result.
+func ResolveInternalDomain(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	serverCfg, ok := loadNorthstar(cfg)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(serverCfg.InternalDomain)
 }
 
 // loadNorthstar loads the node's northstar.toml; ok is false when no path is set

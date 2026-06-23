@@ -81,35 +81,55 @@ func BootstrapBaseZone(configPath string, cluster *config.ClusterConfig) error {
 	slog.Info("northstar bootstrap: ensuring base zone",
 		"domain", domain, "nameservers", len(nameservers), "multi_node", len(nameservers) > 1)
 
-	seed := nsconfig.BaseZoneSeed{
+	// Seed the public base zone (with the apex TXT marker).
+	if err := ensureZone(s3cfg, nsconfig.BaseZoneSeed{
 		Domain:      domain,
 		Nameservers: nameservers,
 		TXT:         []string{baseZoneTXT},
+	}); err != nil {
+		return err
 	}
 
-	// Predastore is ordered before us in systemd, but Type=simple means it may
-	// not be accepting connections yet when we run. Retry the seed until it is
-	// reachable (or we exhaust the budget) so a cold-start race does not leave
-	// the base zone unseeded until the next restart.
+	// Seed the AWS-parity private zone (compute.internal) so its NS topology is
+	// consistent across nodes; the writer would otherwise materialise it lazily
+	// on the first instance launch.
+	internal := strings.TrimSpace(serverCfg.InternalDomain)
+	if internal != "" && internal != domain {
+		if err := ensureZone(s3cfg, nsconfig.BaseZoneSeed{
+			Domain:      internal,
+			Nameservers: nameservers,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureZone seeds one zone, retrying while predastore comes up. Predastore is
+// ordered before us in systemd, but Type=simple means it may not be accepting
+// connections yet, so retry until reachable (or the budget is exhausted) rather
+// than leaving the zone unseeded until the next restart.
+func ensureZone(s3cfg *nsconfig.S3Config, seed nsconfig.BaseZoneSeed) error {
 	var created bool
+	var err error
 	for attempt := 1; attempt <= bootstrapMaxAttempts; attempt++ {
 		created, err = nsconfig.EnsureBaseZone(s3cfg, seed)
 		if err == nil {
 			break
 		}
 		slog.Warn("northstar bootstrap: seed attempt failed, retrying",
-			"attempt", attempt, "max", bootstrapMaxAttempts,
+			"domain", seed.Domain, "attempt", attempt, "max", bootstrapMaxAttempts,
 			"endpoint", s3cfg.Endpoint, "error", err)
 		time.Sleep(bootstrapRetryDelay)
 	}
 	if err != nil {
-		return fmt.Errorf("seed base zone %q after %d attempts: %w", domain, bootstrapMaxAttempts, err)
+		return fmt.Errorf("seed zone %q after %d attempts: %w", seed.Domain, bootstrapMaxAttempts, err)
 	}
 
 	if created {
-		slog.Info("northstar bootstrap: base zone created", "domain", domain)
+		slog.Info("northstar bootstrap: zone created", "domain", seed.Domain)
 	} else {
-		slog.Info("northstar bootstrap: base zone already present", "domain", domain)
+		slog.Info("northstar bootstrap: zone already present", "domain", seed.Domain)
 	}
 	return nil
 }

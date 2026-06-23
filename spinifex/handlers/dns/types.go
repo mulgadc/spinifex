@@ -11,6 +11,10 @@ const (
 	// SubjectRecordsetChange is the request-reply subject lifecycle handlers
 	// publish DNS changes on.
 	SubjectRecordsetChange = "dns.recordset.change"
+	// SubjectZoneReload is the fan-out subject the writer publishes after a zone
+	// PUT so every northstar instance reloads just that zone immediately, instead
+	// of waiting for the next S3 sync poll. No queue group: all servers consume.
+	SubjectZoneReload = "dns.zone.reload"
 	// QueueGroup serialises producers to exactly one writer per message.
 	QueueGroup = "spinifex-workers"
 	// PrivateZone is the fixed AWS-parity private DNS zone (IMDS synthHostname).
@@ -50,4 +54,10 @@ type ChangeBatch struct {
 type ChangeResult struct {
 	Applied int      `json:"applied"`
 	Zones   []string `json:"zones,omitempty"`
+}
+
+// ZoneReload is the fan-out event published on SubjectZoneReload after a zone is
+// written, telling northstar servers to reload just that zone from S3.
+type ZoneReload struct {
+	Zone string `json:"zone"`
 }

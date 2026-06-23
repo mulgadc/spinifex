@@ -13,6 +13,13 @@ tls_key    = ""
 # Authoritative base domain for internal resource names.
 default_domain = "{{.NorthstarDefaultDomain}}"
 
+# AWS-parity private DNS zone for instance ip-<addr> records (IMDS hostname).
+internal_domain = "compute.internal"
+
+# NATS URL for live zone-reload events: the control plane publishes after a zone
+# write so the change is served immediately instead of after the next S3 poll.
+nats_url = "nats://{{.NatsToken}}@{{if eq .BindIP "0.0.0.0"}}localhost{{else}}{{.BindIP}}{{end}}:4222"
+
 # Seconds between S3 zone re-scans (anti-entropy; live changes arrive via NATS).
 sync_interval = 30
 

@@ -2,6 +2,7 @@ package northstar
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,7 +12,9 @@ import (
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	nsserver "github.com/mulgadc/northstar/pkg/server"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 )
 
 var serviceName = "northstar"
@@ -29,6 +32,7 @@ type Config struct {
 type Service struct {
 	Config *Config
 	server *nsserver.Server
+	nc     *nats.Conn
 }
 
 // New creates a new northstar service.
@@ -70,9 +74,14 @@ func (svc *Service) Start() (int, error) {
 		return 0, err
 	}
 
+	svc.subscribeReload(serverCfg.NatsURL)
+
 	<-ctx.Done()
 
 	slog.Info("Shutting down northstar service")
+	if svc.nc != nil {
+		svc.nc.Close()
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -80,6 +89,39 @@ func (svc *Service) Start() (int, error) {
 	}
 
 	return os.Getpid(), nil
+}
+
+// subscribeReload connects to NATS (when nats_url is set) and reloads a single
+// zone on each fan-out event, so a control-plane record change is served almost
+// immediately instead of after the next S3 sync poll. Best-effort: a connect
+// failure is logged and the poll remains the backstop.
+func (svc *Service) subscribeReload(natsURL string) {
+	if natsURL == "" {
+		slog.Info("northstar: nats_url not set, relying on S3 poll for zone updates")
+		return
+	}
+	nc, err := nats.Connect(natsURL, nats.Name("northstar-reload"))
+	if err != nil {
+		slog.Warn("northstar: connect NATS for zone reload", "url", natsURL, "error", err)
+		return
+	}
+	svc.nc = nc
+
+	if _, err := nc.Subscribe(handlers_dns.SubjectZoneReload, func(msg *nats.Msg) {
+		var evt handlers_dns.ZoneReload
+		if err := json.Unmarshal(msg.Data, &evt); err != nil || evt.Zone == "" {
+			return
+		}
+		if err := svc.server.ReloadZone(evt.Zone); err != nil {
+			slog.Warn("northstar: reload zone", "zone", evt.Zone, "error", err)
+			return
+		}
+		slog.Info("northstar: zone reloaded via NATS", "zone", evt.Zone)
+	}); err != nil {
+		slog.Warn("northstar: subscribe zone reload", "error", err)
+		return
+	}
+	slog.Info("northstar: subscribed to live zone reload", "subject", handlers_dns.SubjectZoneReload)
 }
 
 // Stop signals a running northstar service via its PID file.

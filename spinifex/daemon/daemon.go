@@ -1152,7 +1152,7 @@ func (d *Daemon) startCluster() error {
 	// Create services before loading/launching instances, since LaunchInstance depends on them
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
-	d.dnsWriter = handlers_dns.NewWriter(d.config)
+	d.dnsWriter = handlers_dns.NewWriter(d.config, d.natsConn)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
 	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
 

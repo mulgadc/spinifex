@@ -28,6 +28,7 @@ func northstarSettings() admin.ConfigSettings {
 		BindIP:                 "0.0.0.0",
 		AccessKey:              "AKIASYSTEM",
 		SecretKey:              "SYSTEMSECRET",
+		NatsToken:              "NATSTOKEN",
 		PoolDNSServers:         []string{"1.1.1.1", "8.8.8.8"},
 		NorthstarAccessKey:     "AKIANORTHSTAR",
 		NorthstarSecretKey:     "NORTHSTARSECRET",
@@ -46,6 +47,9 @@ func TestNorthstarTomlTemplate(t *testing.T) {
 	// 0.0.0.0 bind must resolve to a loopback S3 endpoint, not a dial to 0.0.0.0.
 	assert.Contains(t, content, `endpoint   = "https://127.0.0.1:8443"`)
 	assert.Contains(t, content, `nameservers = ["1.1.1.1:53", "8.8.8.8:53"]`)
+	assert.Contains(t, content, `internal_domain = "compute.internal"`)
+	// nats_url carries the token and resolves 0.0.0.0 to localhost for the dial.
+	assert.Contains(t, content, `nats_url = "nats://NATSTOKEN@localhost:4222"`)
 }
 
 // When provisioned, predastore.toml gains the northstar bucket plus a scoped

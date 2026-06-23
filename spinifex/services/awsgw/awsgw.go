@@ -234,12 +234,16 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	ecrAudience := "ecr." + nodeConfig.Region + "." + config.AWS.InternalSuffix
 
-	// The ECR registry is served on this gateway's own port; advertise it so
-	// docker login/tag/push dial the right port (a SplitHostPort failure leaves
-	// it empty, rendering a port-less, 443-style host).
-	registryPort := ""
-	if _, port, err := net.SplitHostPort(nodeConfig.AWSGW.Host); err == nil {
+	// The ECR registry is served on this gateway's own host:port; advertise both
+	// so docker login/tag/push reach it without DNS — the account comes from the
+	// auth token. A SplitHostPort failure or an unspecified bind address leaves
+	// the host empty, falling back to the per-account parity name.
+	registryHost, registryPort := "", ""
+	if host, port, err := net.SplitHostPort(nodeConfig.AWSGW.Host); err == nil {
 		registryPort = port
+		if host != "" && host != "0.0.0.0" && host != "::" {
+			registryHost = host
+		}
 	}
 
 	gw := gateway.GatewayConfig{
@@ -251,6 +255,7 @@ func launchService(config *config.ClusterConfig) error {
 		Region:           nodeConfig.Region,
 		InternalSuffix:   config.AWS.InternalSuffix,
 		RegistryPort:     registryPort,
+		RegistryHost:     registryHost,
 		AZ:               nodeConfig.AZ,
 		IAMService:       iamService,
 		STSService:       stsService,

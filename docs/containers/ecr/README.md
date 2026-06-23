@@ -30,11 +30,13 @@ resources:
 
 ## Overview
 
-ECR on Spinifex gives every account a private container registry reachable at a per-account endpoint, served on the Spinifex gateway port (`9999`):
+ECR on Spinifex serves a private container registry on the Spinifex gateway endpoint — the same `host:9999` you already use for the AWS API. Authentication is account-scoped by token, so you push and pull at the gateway host and never need extra DNS:
 
 ```
-<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999
+<spinifex-gateway-host>:9999/<repository>
 ```
+
+`aws ecr describe-repositories` and `aws ecr get-login-password` return the exact host to use — always prefer that value. Where real DNS is configured, the AWS-parity per-account host `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999` also works.
 
 Each repository holds image manifests and their layers. Images are stored in object storage ([Predastore](https://github.com/mulgadc/predastore)) in a per-account bucket, with blobs content-addressed and de-duplicated across repositories. Authentication is token-based: `aws ecr get-login-password` mints a short-lived bearer token that `docker login` uses against the registry's `/v2/` endpoint.
 
@@ -63,7 +65,7 @@ sudo update-ca-certificates
 sudo systemctl restart docker
 ```
 
-- **The registry endpoint** for your deployment — `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999`. `aws ecr get-login-password` and `aws ecr describe-repositories` return the exact `host:port` for your account.
+- **The registry endpoint** — the Spinifex gateway `host:9999`. `aws ecr get-login-password` and `aws ecr describe-repositories` return the exact `host:port`; copy it from there rather than constructing it by hand.
 - **For EKS pulls:** worker nodes need the `AmazonEC2ContainerRegistryReadOnly` policy on their node IAM role (the EKS prerequisites already include this) and network egress to the registry endpoint.
 
 ## Instructions
@@ -176,7 +178,7 @@ Then authenticate Docker and push using the `repository_url` output, following s
 
 **`docker login` fails with an authorization error.** The token is account-scoped and short-lived. Re-run `aws ecr get-login-password` to mint a fresh token, and confirm the registry host in `docker login` matches your account's endpoint (`aws ecr describe-repositories` returns it).
 
-**`docker push` cannot reach the registry.** Confirm you are using the per-account endpoint with the `:9999` port — `<account-id>.dkr.ecr.<region>.<your-spinifex-domain>:9999`. Docker dials the host directly (no mirror), so without the port it tries `:443` and fails. The registry routes by Host header, so the hostname must also match your account and your deployment's domain.
+**`docker push` cannot reach the registry.** Use the exact host from `aws ecr describe-repositories` — the Spinifex gateway `host:9999`. Docker dials it directly, so the `:9999` port must be present (without it docker tries `:443` and fails). If you are using the AWS-parity `<account-id>.dkr.ecr…` hostname instead, that path needs DNS resolving it to the gateway — prefer the gateway host the API returns.
 
 **EKS workers cannot pull an image.** Confirm the node IAM role has `AmazonEC2ContainerRegistryReadOnly` and that the workers have egress to the registry endpoint (an Internet Gateway or NAT Gateway route). See the [EKS prerequisites](/docs/eks).
 

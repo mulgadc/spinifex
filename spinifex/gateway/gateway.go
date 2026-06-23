@@ -81,6 +81,11 @@ type GatewayConfig struct {
 	// registry host so docker login/tag/push dial the right port. Empty or
 	// "443" renders a port-less host (standard HTTPS parity).
 	RegistryPort string
+	// RegistryHost is the gateway's advertised registry host. When set, ECR URIs
+	// use it (account comes from the auth token), so docker needs no DNS — it is
+	// the same reachable, cert-covered host clients use for the AWS API. Empty
+	// falls back to the per-account <acct>.dkr.ecr.<region>.<suffix> name.
+	RegistryHost string
 	AZ           string // Availability zone this gateway is running in
 	IAMService   handlers_iam.IAMService
 	STSService   handlers_sts.STSService

@@ -87,11 +87,16 @@ func (gw *GatewayConfig) ecrRepositoryArn(accountID, name string) string {
 	return "arn:aws:ecr:" + gw.Region + ":" + accountID + ":repository/" + name
 }
 
-// ecrRegistryHost builds the account-scoped registry host, appending the
-// gateway's advertised port so docker dials the right port. The port is omitted
-// for 443 (standard HTTPS parity).
+// ecrRegistryHost builds the registry host, appending the gateway's advertised
+// port so docker dials the right port (omitted for 443). When the gateway
+// advertises a reachable host it is used directly — the account comes from the
+// auth token, so docker needs no DNS; otherwise the per-account
+// <acct>.dkr.ecr.<region>.<suffix> parity name is used.
 func (gw *GatewayConfig) ecrRegistryHost(accountID string) string {
-	host := accountID + ".dkr.ecr." + gw.Region + "." + gw.InternalSuffix
+	host := gw.RegistryHost
+	if host == "" {
+		host = accountID + ".dkr.ecr." + gw.Region + "." + gw.InternalSuffix
+	}
 	if gw.RegistryPort != "" && gw.RegistryPort != "443" {
 		return host + ":" + gw.RegistryPort
 	}

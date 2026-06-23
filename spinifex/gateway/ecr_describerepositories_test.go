@@ -99,19 +99,25 @@ func TestDescribeRepositories_ListsAccountScoped(t *testing.T) {
 }
 
 func TestECRRegistryHost_AppendsAdvertisedPort(t *testing.T) {
-	base := ecrTestAccount + ".dkr.ecr." + ecrTestRegion + "." + ecrTestSuffix
+	parity := ecrTestAccount + ".dkr.ecr." + ecrTestRegion + "." + ecrTestSuffix
 	cases := []struct {
-		name string
-		port string
-		want string
+		name         string
+		registryHost string
+		port         string
+		want         string
 	}{
-		{"empty renders port-less", "", base},
-		{"443 renders port-less", "443", base},
-		{"9999 is appended for docker", "9999", base + ":9999"},
+		{"parity, port-less", "", "", parity},
+		{"parity, 443 port-less", "", "443", parity},
+		{"parity, 9999 appended", "", "9999", parity + ":9999"},
+		{"gateway host, 9999 appended", "10.0.0.5", "9999", "10.0.0.5:9999"},
+		{"gateway host, port-less", "registry.example.com", "", "registry.example.com"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gw := &GatewayConfig{Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, RegistryPort: tc.port}
+			gw := &GatewayConfig{
+				Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+				RegistryHost: tc.registryHost, RegistryPort: tc.port,
+			}
 			assert.Equal(t, tc.want, gw.ecrRegistryHost(ecrTestAccount))
 			assert.Equal(t, tc.want+"/team/app", gw.ecrRepositoryUri(ecrTestAccount, "team/app"))
 		})

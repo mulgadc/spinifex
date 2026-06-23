@@ -26,6 +26,7 @@ func northstarSettings() admin.ConfigSettings {
 	return admin.ConfigSettings{
 		Region:                 "ap-southeast-2",
 		BindIP:                 "0.0.0.0",
+		AdvertiseIP:            "192.168.1.31",
 		AccessKey:              "AKIASYSTEM",
 		SecretKey:              "SYSTEMSECRET",
 		NatsToken:              "NATSTOKEN",
@@ -40,8 +41,9 @@ func northstarSettings() admin.ConfigSettings {
 func TestNorthstarTomlTemplate(t *testing.T) {
 	content := renderTemplate(t, northstarTomlTemplate, northstarSettings())
 
-	// Northstar binds both :5300 and the privileged :53 by default.
-	assert.Contains(t, content, `listen     = "0.0.0.0:5300,0.0.0.0:53"`)
+	// Northstar binds :5300 on the wildcard and the privileged :53 on the node
+	// WAN IP (avoids the systemd-resolved stub on 127.0.0.53:53).
+	assert.Contains(t, content, `listen     = "0.0.0.0:5300,192.168.1.31:53"`)
 	assert.Contains(t, content, `default_domain = "spx3.net"`)
 	assert.Contains(t, content, `bucket     = "northstar"`)
 	assert.Contains(t, content, `access_key = "AKIANORTHSTAR"`)

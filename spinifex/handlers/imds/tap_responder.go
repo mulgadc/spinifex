@@ -31,11 +31,8 @@ type activeTapResponder struct {
 }
 
 // tapResponderManager runs one IMDS responder per local primary-ENI tap. Each
-// responder binds the shared handler to the tap's endpoint on br-imds with
-// SO_BINDTODEVICE and serves it with the tap's ENI identity, resolved once at
-// start and threaded into every request. Identity is the tap (its endpoint →
-// ENI), so no per-request source-IP lookup is needed and overlapping guest CIDRs
-// never collide.
+// binds the shared handler to the tap's endpoint via SO_BINDTODEVICE and serves
+// it with the tap's ENI (resolved once), so overlapping guest CIDRs never collide.
 type tapResponderManager struct {
 	handler http.Handler
 	resolve resolveENIFunc
@@ -55,9 +52,8 @@ func newTapResponderManager(handler http.Handler, resolve resolveENIFunc, listen
 }
 
 // start resolves the tap's ENI once, binds a listener to its endpoint, and serves
-// the shared handler with that identity threaded into every request. Idempotent
-// per ENI. A missing ENI record is an error so the caller can retry — the record
-// is written before the tap exists, so a miss is a transient ordering gap.
+// the shared handler with that identity. Idempotent per ENI. A missing ENI record
+// is a retryable error — it is written before the tap exists, so a miss is transient.
 func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string) error {
 	if eniID == "" || endpoint == "" {
 		return errors.New("tap responder: eniID and endpoint required")
@@ -105,9 +101,8 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 		if errors.Is(err, http.ErrServerClosed) {
 			return // clean stop/shutdown already removed the entry
 		}
-		// Unexpected exit: drop ourselves from the active set so the next reconcile
-		// re-starts this tap. Without this the stale entry makes start a no-op and
-		// the tap never serves again.
+		// Unexpected exit: drop ourselves so the next reconcile re-starts this tap;
+		// otherwise the stale entry makes start a no-op and the tap never serves again.
 		slog.Error("IMDS: tap responder serve exited", "eni_id", eniID, "endpoint", endpoint, "err", err)
 		m.removeIfCurrent(eniID, server)
 	}()
@@ -116,12 +111,9 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	return nil
 }
 
-// reconcile converges the active responders to the live tap set: starts a
-// responder for every (eniID → endpoint) not yet serving and stops any whose tap
-// has gone. start is idempotent, so an already-serving tap is a no-op. A start
-// failure (e.g. the ENI record not yet visible, or the endpoint not yet bindable)
-// is logged and retried on the next reconcile, not propagated — one stalled tap
-// must not block the rest.
+// reconcile converges active responders to the live tap set: starts one for every
+// (eniID → endpoint) not yet serving and stops any whose tap has gone. A start
+// failure is logged and retried next reconcile so one stalled tap can't block the rest.
 func (m *tapResponderManager) reconcile(ctx context.Context, live map[string]string) {
 	for eniID, endpoint := range live {
 		if err := m.start(ctx, eniID, endpoint); err != nil {
@@ -161,9 +153,8 @@ func (m *tapResponderManager) stop(eniID string) {
 }
 
 // removeIfCurrent deletes eniID from the active set only if it still maps to
-// server. A Serve goroutine that exits unexpectedly calls this so the next
-// reconcile re-starts the tap; the identity check avoids evicting a newer
-// responder that replaced this one after a stop/start.
+// server, so a Serve goroutine exiting unexpectedly cannot evict a newer responder
+// that replaced it after a stop/start.
 func (m *tapResponderManager) removeIfCurrent(eniID string, server *http.Server) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -184,11 +175,9 @@ func (m *tapResponderManager) shutdown() {
 	}
 }
 
-// bindTapListener opens 169.254.169.254:80 bound to the tap's endpoint device via
-// SO_BINDTODEVICE — the per-tap serving socket. No netns: the endpoint lives in
-// the root netns on br-imds and SO_BINDTODEVICE scopes the listener to it, so no
-// setns and no CAP_SYS_ADMIN. The endpoint owns the .254 address (added by the
-// host per-tap datapath installer), so the bind targets the address the guest does.
+// bindTapListener opens 169.254.169.254:80 on the tap's endpoint via SO_BINDTODEVICE
+// — the per-tap serving socket. No netns/CAP_SYS_ADMIN: the endpoint is in the root
+// netns on br-imds and owns .254, so the bind targets the address the guest does.
 func bindTapListener(ctx context.Context, endpoint string) (net.Listener, error) {
 	lc := net.ListenConfig{Control: bindToDeviceControl(endpoint)}
 	return lc.Listen(ctx, "tcp4", net.JoinHostPort(MetaDataServerIP, "80"))

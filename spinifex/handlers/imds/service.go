@@ -142,11 +142,9 @@ func (s *IMDSServiceImpl) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// reconcileTaps reconciles the per-tap responders against the live OVS tap set on
-// a ticker (plus once at start), so a freshly launched guest's responder begins
-// serving within one interval and a vpcd restart re-binds every existing tap.
-// This is the serving owner: the daemon installs the host datapath at SetupTap,
-// but the responder lives here in vpcd and binds on the next reconcile.
+// reconcileTaps reconciles the per-tap responders against the live OVS tap set on a
+// ticker (plus once at start), so a freshly launched guest serves within one interval
+// and a vpcd restart re-binds every tap. The daemon installs the datapath; this serves.
 func (s *IMDSServiceImpl) reconcileTaps(ctx context.Context) {
 	s.reconcileTapsOnce(ctx)
 	ticker := time.NewTicker(tapReconcileInterval)

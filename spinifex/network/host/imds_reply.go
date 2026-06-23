@@ -8,29 +8,24 @@ import (
 	"strconv"
 )
 
-// imdsReplyNexthop is a synthetic, host-only next-hop for the per-tap reply
-// route. It never appears on the wire: the egress OVS flow rewrites the reply's
-// L2 (see installIMDSTapFlows), so this only gives the kernel a fixed neigh to
-// resolve instead of ARPing the guest IP, which the secure IMDSBridge would
-// drop. Any guest source IP routes to it, so the responder needs no guest IP.
+// imdsReplyNexthop is a synthetic, host-only next-hop for the per-tap reply route.
+// It never appears on the wire — the egress OVS flow rewrites the reply's L2 — so it
+// only gives the kernel a fixed neigh to resolve instead of ARPing the guest IP.
 const imdsReplyNexthop = "169.254.1.1"
 
-// imdsReplyTable returns the per-tap policy-routing table ID for an endpoint.
-// Mapped into [256, 2^31): clear of the reserved tables (unspec/default/main/
-// local, all < 256) and within iproute2's positive range. Same per-tap entropy
-// as imdsFlowCookie, so two endpoints collide here only if they collide there.
+// imdsReplyTable returns the per-tap policy-routing table ID for an endpoint, mapped
+// into [256, 2^31): clear of the reserved tables (all < 256) and within iproute2's
+// positive range. Same entropy as imdsFlowCookie, so collisions here mirror there.
 func imdsReplyTable(endpoint string) int {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(endpoint))
 	return 256 + int(h.Sum32()%(1<<31-256))
 }
 
-// InstallTapReplyRouting installs the per-tap reply path: a dedicated routing
-// table holding one default route out the endpoint, selected by an `ip rule`
-// matching the reply's oif (SO_BINDTODEVICE pins it to the endpoint). This is
-// the netns-free resolution of the overlapping-CIDR main-table collision — a
-// per-device route for a shared guest IP cannot live in the main table twice.
-// Idempotent. The endpoint must already exist (see InstallTapDatapath).
+// InstallTapReplyRouting installs the per-tap reply path: a dedicated routing table
+// with one default route out the endpoint, selected by an `ip rule` matching the
+// reply's oif. This is the netns-free fix for the overlapping-CIDR main-table
+// collision. Idempotent. The endpoint must already exist (see InstallTapDatapath).
 func InstallTapReplyRouting(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if d.Endpoint == "" {
 		return fmt.Errorf("InstallTapReplyRouting: Endpoint required")
@@ -40,10 +35,9 @@ func InstallTapReplyRouting(ctx context.Context, r Runner, d IMDSTapDatapath) er
 	}
 	table := strconv.Itoa(imdsReplyTable(d.Endpoint))
 
-	// One default route out the endpoint. onlink because the synthetic next-hop
-	// is not covered by any on-endpoint subnet; a permanent neigh resolves it so
-	// the kernel emits the frame without ARPing. lladdr is cosmetic — the egress
-	// OVS flow rewrites dl_dst to the guest.
+	// One default route out the endpoint. onlink because the synthetic next-hop is
+	// off-subnet; a permanent neigh resolves it so the kernel emits without ARPing.
+	// lladdr is cosmetic — the egress OVS flow rewrites dl_dst to the guest.
 	if _, err := r.Run(ctx, "ip", "route", "replace", "default", "via", imdsReplyNexthop,
 		"dev", d.Endpoint, "onlink", "table", table); err != nil {
 		return fmt.Errorf("install IMDS reply route (table %s): %w", table, err)
@@ -63,10 +57,9 @@ func InstallTapReplyRouting(ctx context.Context, r Runner, d IMDSTapDatapath) er
 	return nil
 }
 
-// RemoveTapReplyRouting tears down the per-tap reply path. Best-effort: deleting
-// the endpoint port (RemoveTapDatapath) also drops routes and neigh bound to it,
-// but the `ip rule` is keyed by name and would leak, so this must run while the
-// endpoint still exists. Idempotent.
+// RemoveTapReplyRouting tears down the per-tap reply path. Best-effort: deleting the
+// endpoint drops its routes and neigh, but the `ip rule` is keyed by name and would
+// leak, so this must run while the endpoint still exists. Idempotent.
 func RemoveTapReplyRouting(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if d.Endpoint == "" {
 		return fmt.Errorf("RemoveTapReplyRouting: Endpoint required")

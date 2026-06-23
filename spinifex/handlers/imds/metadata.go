@@ -126,11 +126,9 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 	s.dispatch(w, r, eni)
 }
 
-// resolveCaller maps a request to its owning ENI. The per-tap responder resolves
-// the ENI from the tap's bound device once at start and threads it in via
-// ctxKeyENI, so that identity is authoritative — the tap is unique, so source IP
-// is never consulted and overlapping guest CIDRs cannot collide. Returns nil on
-// miss, producing a 404 instead of 500.
+// resolveCaller returns the request's owning ENI, threaded in via ctxKeyENI by the
+// per-tap responder (resolved once from the tap's bound device). The tap is unique,
+// so source IP is never consulted. Returns nil on miss, producing a 404 not a 500.
 func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
 	eni, _ := r.Context().Value(ctxKeyENI).(*eniFacts)
 	return eni

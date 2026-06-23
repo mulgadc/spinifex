@@ -67,10 +67,9 @@ func VPCTapSpec(eniID, mac string) TapSpec {
 // the reverse); a cross-package test in network/host asserts they match.
 const IMDSBridgeName = "br-imds"
 
-// IMDSPrimaryTapSpec returns the TapSpec for a primary ENI's tap on br-imds. The
-// tap lives on br-imds so its egress meets the IMDS demux flows on the same
-// bridge; it carries no external_ids because the br-imds<->br-int patch's br-int
-// end (installed by AttachIMDSDatapath) carries the OVN iface-id binding instead.
+// IMDSPrimaryTapSpec returns the TapSpec for a primary ENI's tap on br-imds, where
+// its egress meets the IMDS demux flows. It carries no external_ids — the
+// br-imds<->br-int patch's br-int end carries the OVN iface-id binding instead.
 func IMDSPrimaryTapSpec(eniID string) TapSpec {
 	return TapSpec{
 		Name:   TapDeviceName(eniID),
@@ -94,14 +93,9 @@ func GenerateMgmtMAC(instanceID string) string {
 
 // attachPrimaryIMDSDatapath installs the per-tap IMDS datapath for the instance's
 // primary ENI once its tap is up, before QEMU starts the guest. Only the primary
-// ENI serves IMDS, so extra ENIs are skipped; serving is wired separately by the
-// IMDS responder's reconcile-from-taps.
-//
-// The primary tap is already on the secure br-imds, so the attach is NOT
-// best-effort: a serving-only failure (vm.ErrIMDSServingDegraded) leaves the guest
-// fully connected and is logged-and-continued, but a connectivity-critical failure
-// would strand the guest with no L2 path to OVN, so the tap is rolled back to
-// br-int. A nil error means the datapath (or the rollback) is in a connected state.
+// ENI serves IMDS. A serving-only failure (ErrIMDSServingDegraded) leaves the guest
+// connected and is logged-and-continued; a connectivity-critical failure would
+// strand the tap on br-imds, so it is rolled back to br-int.
 func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) error {
 	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
 		return nil
@@ -127,23 +121,18 @@ func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) error {
 			"instance", instance.ID, "eni", instance.ENIId, "err", err)
 		return nil
 	}
-	// Connectivity-critical failure: the primary tap is stranded on the secure
-	// br-imds with no patch/forward path to OVN, so the guest would boot
-	// black-holed (no gateway, DHCP renewal, or off-subnet traffic). Roll the tap
-	// back to br-int — losing IMDS but restoring full connectivity, the pre-cutover
-	// behaviour — and fail the launch only if even that fails.
+	// Connectivity-critical failure: the tap is stranded on br-imds with no path to
+	// OVN, so the guest would boot black-holed. Roll it back to br-int — losing IMDS
+	// but restoring connectivity — and fail the launch only if even that fails.
 	slog.Error("IMDS: per-tap connectivity install failed; rolling primary tap back to br-int",
 		"instance", instance.ID, "eni", instance.ENIId, "err", err)
 	return m.rollbackPrimaryTapToBrInt(instance)
 }
 
-// rollbackPrimaryTapToBrInt moves the primary tap off the secure br-imds back onto
-// br-int after a connectivity-critical IMDS datapath failure, restoring the guest's
-// L2 path to OVN at the cost of IMDS. It tears down any partial datapath (freeing
-// the patch's br-int iface-id so the tap can reclaim it), removes the stranded tap
-// from br-imds, then re-plumbs it on br-int with the OVN binding. Detach and
-// cleanup are best-effort, but a failure to re-plumb onto br-int leaves the guest
-// with no connected path, so that fails the launch.
+// rollbackPrimaryTapToBrInt moves the primary tap off br-imds back onto br-int after
+// a connectivity-critical IMDS failure, restoring the guest's L2 path to OVN at the
+// cost of IMDS. It detaches any partial datapath (freeing the iface-id), removes the
+// tap from br-imds, then re-plumbs it on br-int. Only the re-plumb failing is fatal.
 func (m *Manager) rollbackPrimaryTapToBrInt(instance *VM) error {
 	if err := m.deps.NetworkPlumber.DetachIMDSDatapath(instance.ENIId); err != nil {
 		slog.Warn("IMDS: rollback detach failed (continuing)",
@@ -162,10 +151,9 @@ func (m *Manager) rollbackPrimaryTapToBrInt(instance *VM) error {
 	return nil
 }
 
-// detachPrimaryIMDSDatapath removes the per-tap IMDS datapath for the instance's
-// primary ENI at terminate, the inverse of attachPrimaryIMDSDatapath. Best-effort:
-// a failure is logged and never fails teardown. Only the primary ENI carries the
-// datapath; teardown keys off the ENI-derived port names, so no subnet is needed.
+// detachPrimaryIMDSDatapath removes the primary ENI's per-tap IMDS datapath at
+// terminate, the inverse of attachPrimaryIMDSDatapath. Best-effort: a failure is
+// logged and never fails teardown. Teardown keys off ENI-derived names, no subnet.
 func (m *Manager) detachPrimaryIMDSDatapath(instance *VM) {
 	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
 		return

@@ -11,13 +11,9 @@ import (
 )
 
 // EffectiveCapsForUnit returns the effective-capability bitmask (CapEff) of a
-// systemd unit's MainPID on the local host. ok is false when the unit has no
-// live MainPID or its /proc status is unreadable, letting the caller skip a
-// capability assertion where the daemon is not local (multinode / remote runner).
-//
-// MainPID comes from `systemctl show` (no privilege needed); CapEff is read with
-// `sudo -n` because the hardened unit may run ProtectProc=invisible, hiding its
-// /proc entry from non-root.
+// systemd unit's MainPID. ok is false when the unit has no live MainPID or its
+// /proc status is unreadable, so the caller can skip the assertion off-node. CapEff
+// is read with `sudo -n` since the hardened unit may hide /proc with ProtectProc.
 func EffectiveCapsForUnit(t *testing.T, unit string) (caps uint64, ok bool) {
 	t.Helper()
 

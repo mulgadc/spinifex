@@ -7,10 +7,9 @@ import (
 	"strings"
 )
 
-// ovsIfaceIDPrefix is the "port-" prefix topology.Port / vm.OVSIfaceID prepend to
-// an ENI to form its OVS iface-id. Mirrored here (not imported) to recover the
-// full ENI from a port's iface-id — the cross-package name-contract convention
-// the IMDS host code already follows (see imdsPortLSPName) to avoid an import cycle.
+// ovsIfaceIDPrefix is the "port-" prefix vm.OVSIfaceID prepends to an ENI to form
+// its OVS iface-id. Mirrored here (not imported, to avoid an import cycle) to
+// recover the full ENI from a port's iface-id.
 const ovsIfaceIDPrefix = "port-"
 
 // IMDSTapEndpoint pairs a local primary-ENI's full ID with its br-imds endpoint
@@ -20,16 +19,11 @@ type IMDSTapEndpoint struct {
 	Endpoint string
 }
 
-// ListIMDSTaps enumerates the local primary-ENI IMDS datapaths from live OVS
-// state, the source of truth vpcd reconciles its responders against. The br-int
-// patch ports (IMDSIntPatchPort, "imi-*") carry the OVN iface-id
-// (vm.OVSIfaceID(eniID) = "port-<eniID>"), the only place the *full* ENI survives
-// on the chassis — the br-imds endpoint name hashes it to 8 hex chars.
-// OVS on this chassis holds only local ports, so the result is inherently the
-// local tap set. A port with an unexpected (malformed) iface-id is skipped; a
-// port whose iface-id cannot be read aborts the pass so the caller retries next
-// tick, since a transient read error must not drop a live tap and let reconcile
-// stop its healthy responder.
+// ListIMDSTaps enumerates the local primary-ENI IMDS datapaths from live OVS state,
+// the source vpcd reconciles its responders against. The br-int patch ports ("imi-*")
+// carry the OVN iface-id, the only place the full ENI survives on the chassis. A
+// malformed iface-id is skipped; an unreadable one aborts the pass so a transient
+// read error can't drop a live tap and make reconcile stop its healthy responder.
 func ListIMDSTaps(ctx context.Context, r Runner) ([]IMDSTapEndpoint, error) {
 	out, err := r.Run(ctx, "ovs-vsctl", "list-ports", "br-int")
 	if err != nil {
@@ -42,11 +36,8 @@ func ListIMDSTaps(ctx context.Context, r Runner) ([]IMDSTapEndpoint, error) {
 		}
 		eniID, err := imdsPatchENI(ctx, r, port)
 		if err != nil {
-			// A read error (ovsdb busy, or the port deleted mid-read by a concurrent
-			// terminate) must not drop a live tap from the set: reconcile would treat
-			// its healthy responder as stale and stop it. Abort the pass so the next
-			// tick retries with every responder intact — a genuinely-gone port simply
-			// will not list next time.
+			// Abort rather than drop a live tap: a transient read error would make
+			// reconcile treat its healthy responder as stale and stop it.
 			return nil, fmt.Errorf("read iface-id for %s: %w", port, err)
 		}
 		if eniID == "" {

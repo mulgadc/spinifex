@@ -6,17 +6,11 @@ import (
 	"log/slog"
 )
 
-// installTapPatch creates the IMDSBridge<->br-int patch pair for a primary tap
-// and the per-tap FORWARD flows that bridge non-IMDS traffic between the tap and
-// the patch. The primary tap lives on IMDSBridge so its egress meets the demux
-// flows on the same bridge; everything that is not IMDS must still reach OVN, so
-// it is carried over the patch to br-int.
-//
-// The br-int patch end carries the OVN iface-id + attached-mac, so ovn-controller
-// (which manages only br-int) binds the guest LSP to it exactly as it bound the
-// tap on br-int before. The forward flows share the tap's OpenFlow cookie and sit
-// below the demux flows in priority, so .254/.253 are intercepted and everything
-// else is bridged. Idempotent.
+// installTapPatch creates the IMDSBridge<->br-int patch pair for a primary tap and
+// the per-tap forward flows bridging non-IMDS traffic between the tap and the patch
+// — everything that is not .254/.253 must still reach OVN. The br-int patch end
+// carries the OVN iface-id + attached-mac so ovn-controller binds the guest LSP to
+// it exactly as it bound the tap. Forward flows sit below the demux. Idempotent.
 func installTapPatch(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if err := d.validatePatch(); err != nil {
 		return err

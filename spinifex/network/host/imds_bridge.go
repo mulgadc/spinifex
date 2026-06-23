@@ -6,10 +6,9 @@ import (
 	"log/slog"
 )
 
-// IMDSBridge is the dedicated OVS bridge that carries the per-tap IMDS / VPC-DNS
-// redirect and ARP-responder flows. ovn-controller flushes foreign br-int flows
-// wholesale on restart regardless of cookie or table; a bridge absent from
-// ovn-bridge-mappings and not named br-int is never touched, so flows here survive.
+// IMDSBridge is the dedicated OVS bridge carrying the per-tap IMDS / VPC-DNS flows.
+// ovn-controller flushes foreign br-int flows wholesale on restart; a bridge absent
+// from ovn-bridge-mappings and not named br-int is never touched, so flows survive.
 const IMDSBridge = "br-imds"
 
 // imdsCookiePrefix tags every flow the IMDS datapath installs on IMDSBridge.

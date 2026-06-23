@@ -27,11 +27,9 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	} else {
 		cmd = exec.CommandContext(ctx, "sudo", append([]string{name}, args...)...)
 	}
-	// Capture stdout and stderr separately. Callers parse the returned bytes as
-	// the command's stdout, so stderr must not be folded in: under a restrictive
-	// CapabilityBoundingSet (no CAP_AUDIT_WRITE) sudo prints "unable to send audit
-	// message" to stderr while still succeeding, which CombinedOutput would prepend
-	// to the value and break prefix/equality parsing.
+	// Capture stdout and stderr separately so stderr is not folded into parsed
+	// output: under a restrictive CapabilityBoundingSet (no CAP_AUDIT_WRITE) sudo
+	// prints "unable to send audit message" to stderr while still succeeding.
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

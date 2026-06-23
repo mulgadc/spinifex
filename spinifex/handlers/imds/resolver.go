@@ -75,12 +75,10 @@ type metadataResolver struct {
 
 var _ eniResolver = (*metadataResolver)(nil)
 
-// resolveENIByID returns ENI facts for an ENI located by its ID alone — the
-// per-tap identity path. The tap maps one-to-one to an ENI, so the ENI ID is the
-// identity and no (vpcID, srcIP) reverse lookup is needed. The owning account is
-// recovered by suffix-scanning the ENI bucket (keyed "{accountID}.{eniID}").
-// Returns (nil, nil) on miss. Per-tap serving resolves once per responder, so the
-// scan is amortised over the tap's lifetime rather than paid per request.
+// resolveENIByID returns ENI facts for an ENI located by its ID alone — the per-tap
+// identity path, where the tap maps one-to-one to an ENI so no (vpcID, srcIP) lookup
+// is needed. The owning account is recovered by suffix-scanning the ENI bucket
+// (keyed "{accountID}.{eniID}"). Returns (nil, nil) on miss.
 func (r *metadataResolver) resolveENIByID(eniID string) (*eniFacts, error) {
 	if eniID == "" {
 		return nil, nil

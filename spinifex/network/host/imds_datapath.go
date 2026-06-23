@@ -74,10 +74,9 @@ func imdsFlowCookie(endpoint string) string {
 	return fmt.Sprintf("%s%08x", imdsCookiePrefix, h.Sum32())
 }
 
-// IMDSTapDatapath parameterises a single tap's IMDS datapath on IMDSBridge. Tap
-// is the guest's port on IMDSBridge; Endpoint is its internal-port responder
-// target. The egress flow rewrites L2 so the reply looks like it came from the
-// guest's gateway (the guest reaches .254 off-link via GatewayMAC).
+// IMDSTapDatapath parameterises a single tap's IMDS datapath on IMDSBridge. Tap is
+// the guest's port; Endpoint is its internal-port responder target. The egress flow
+// rewrites L2 so the reply looks like it came from the guest's gateway (GatewayMAC).
 type IMDSTapDatapath struct {
 	Tap         string
 	Endpoint    string
@@ -85,10 +84,9 @@ type IMDSTapDatapath struct {
 	GuestMAC    string
 	GatewayMAC  string
 
-	// Patch ports bridging non-IMDS traffic between the primary tap (on
-	// IMDSBridge) and br-int. PatchIMDS is the IMDSBridge end; PatchInt is the
-	// br-int end and carries the OVN binding (IfaceID + GuestMAC), so
-	// ovn-controller binds the guest LSP to it exactly as it bound the tap.
+	// Patch ports bridging non-IMDS traffic between the primary tap and br-int.
+	// PatchIMDS is the IMDSBridge end; PatchInt is the br-int end and carries the OVN
+	// binding (IfaceID + GuestMAC) so ovn-controller binds the guest LSP to it.
 	PatchIMDS string
 	PatchInt  string
 	IfaceID   string
@@ -128,10 +126,9 @@ func (d IMDSTapDatapath) validatePatch() error {
 	return nil
 }
 
-// InstallTapDatapath realises a tap's IMDS datapath on IMDSBridge: a per-tap
-// internal endpoint owning the captured addresses, the ingress demux flows that
-// rewrite the gateway dst MAC to the endpoint, and the egress flow back to the
-// tap. Idempotent. Reply routing (ip rule/route/neigh) is installed separately.
+// InstallTapDatapath realises a tap's IMDS datapath on IMDSBridge: the per-tap
+// endpoint owning the captured addresses, the ingress demux flows, and the egress
+// flow back to the tap. Idempotent. Reply routing is installed separately.
 func InstallTapDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if err := d.validate(); err != nil {
 		return err
@@ -156,10 +153,9 @@ func RemoveTapDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if err := clearIMDSFlowsByCookie(ctx, r, imdsFlowCookie(d.Endpoint)); err != nil {
 		slog.Warn("Failed to clear IMDS tap flows", "endpoint", d.Endpoint, "err", err)
 	}
-	// Every port is deleted regardless of an earlier failure: a del-port error on
-	// the br-int patch end must not skip the endpoint delete, or teardown leaks the
-	// endpoint (and its captured .254/.253 addresses) on br-imds. The IMDSBridge
-	// patch end is best-effort; the br-int end and endpoint surface their errors.
+	// Every port is deleted regardless of an earlier failure, or teardown leaks the
+	// endpoint (and its captured .254/.253 addresses) on br-imds. The IMDSBridge patch
+	// end is best-effort; the br-int end and endpoint surface their errors.
 	if d.PatchIMDS != "" {
 		if _, err := r.Run(ctx, "ovs-vsctl", "--if-exists", "del-port", IMDSBridge, d.PatchIMDS); err != nil {
 			slog.Warn("Failed to delete IMDS patch (br-imds end)", "port", d.PatchIMDS, "err", err)
@@ -215,10 +211,9 @@ func setEndpointSysctl(ctx context.Context, r Runner, endpoint, suffix, val stri
 	return nil
 }
 
-// installIMDSTapFlows installs the per-tap ingress demux and egress flows under
-// the tap's cookie. Stale flows are cleared by the caller (installIMDSDatapath)
-// before the forward flows are installed, so this does not clear — clearing here
-// would wipe the forward flows the patch installer added under the same cookie.
+// installIMDSTapFlows installs the per-tap ingress demux and egress flows under the
+// tap's cookie. The caller clears stale flows before any installer runs; clearing
+// here would wipe the forward flows the patch installer added under the same cookie.
 func installIMDSTapFlows(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	cookie := imdsFlowCookie(d.Endpoint)
 	// Ingress: guest -> endpoint. The guest addresses the frame to its gateway

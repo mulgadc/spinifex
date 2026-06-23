@@ -84,7 +84,11 @@ describe("RepositoryDetailPage", () => {
       seed([IMAGE]),
     )
     openImagesTab()
-    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0])
+    const [deleteButton] = screen.getAllByRole("button", { name: "Delete" })
+    if (!deleteButton) {
+      throw new Error("expected a Delete button")
+    }
+    fireEvent.click(deleteButton)
     expect(
       screen.getByText(/permanently deletes the image manifest/),
     ).toBeInTheDocument()

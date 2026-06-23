@@ -3,10 +3,7 @@
 package multinode
 
 import (
-	"context"
 	"testing"
-
-	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
 // Top-level Test* wrappers, each delegating to a runX function. Parallel tests
@@ -56,14 +53,6 @@ func TestMultinodeVolumeLifecycle(t *testing.T) {
 // Touches predastore state.
 func TestMultinodeVolumeDurability(t *testing.T) {
 	runVolumeDurability(t, requireMultiNodeFixture(t))
-}
-
-// TestPredastoreCompaction is sequential and declared before the destructive node
-// tests so it measures shard-store reclaim on a pristine, fully-converged cluster;
-// node failure/recovery leaves node2 settling and skews the du baseline.
-func TestPredastoreCompaction(t *testing.T) {
-	fix := requireMultiNodeFixture(t)
-	harness.AssertPredastoreCompaction(context.Background(), t, fix.Cluster)
 }
 
 // TestMultinodeCrossNodeGateway is sequential: asserts a stable per-gateway instance count

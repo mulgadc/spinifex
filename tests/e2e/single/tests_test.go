@@ -50,6 +50,13 @@ func TestAccountScoping(t *testing.T) {
 	runAccountScoping(t, requireSingleNodeFixture(t))
 }
 
+// TestPredastoreObjectLifecycle owns a dedicated bucket and never touches the
+// singleton VM or default VPC/SG, so it is parallel-safe.
+func TestPredastoreObjectLifecycle(t *testing.T) {
+	t.Parallel()
+	runPredastoreObjectLifecycle(t, requireSingleNodeFixture(t))
+}
+
 func TestVPCSubnetE2E(t *testing.T) {
 	t.Parallel()
 	runVPCSubnetE2E(t, requireSingleNodeFixture(t))

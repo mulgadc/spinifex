@@ -437,16 +437,15 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// parity, and it keeps image pulls off the etcd disk).
 	assert.Contains(t, udata, "node-taint:")
 	assert.Contains(t, udata, "  - CriticalAddonsOnly=true:NoExecute")
-	// Parity default (BuiltinIngress=false): K3s' bundled traefik + servicelb are
-	// disabled; Service type=LoadBalancer / Ingress are the AWS LB Controller's job.
-	// local-storage is disabled too so its local-path provisioner does not add a
-	// second default StorageClass racing the EBS CSI one.
-	// With built-in ingress off there is nothing to defer, so EKS_DEFER_TRAEFIK=0.
+	// AWS parity: K3s' bundled traefik + servicelb are always disabled; Service
+	// type=LoadBalancer / Ingress are the AWS LB Controller's job. local-storage is
+	// disabled too so its local-path provisioner does not add a second default
+	// StorageClass racing the EBS CSI one.
 	assert.Contains(t, udata, "disable:")
 	assert.Contains(t, udata, "  - traefik")
 	assert.Contains(t, udata, "  - servicelb")
 	assert.Contains(t, udata, "  - local-storage")
-	assert.Contains(t, udata, "EKS_DEFER_TRAEFIK=0")
+	assert.NotContains(t, udata, "EKS_DEFER_TRAEFIK")
 	assert.Contains(t, udata, "tls-san:")
 	assert.Contains(t, udata, "  - eks-alpha-lb-001.us-east-1.elb.spinifex.local")
 	// service-account-key-file must point at the PUBLIC key; the signing key
@@ -483,27 +482,6 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// drop a block under yaml.safe_load (last key wins).
 	assert.Equal(t, 1, strings.Count(udata, "\nwrite_files:"))
 	assert.Equal(t, 1, strings.Count(udata, "\nruncmd:"))
-}
-
-func TestLaunchK3sServerVM_BuiltinIngressOptInDefersTraefik(t *testing.T) {
-	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
-
-	in := validK3sInput()
-	in.BuiltinIngress = true
-	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
-	require.NoError(t, err)
-	require.Len(t, inst.launchCalls, 1)
-
-	udata := inst.launchCalls[0].UserData
-	// Opted in: traefik stays ENABLED in config so k3s writes traefik.yaml, but
-	// it is deferred — k3s.initd stages a .skip marker and the state-reporter
-	// removes it once the apiserver is stable, gated by EKS_DEFER_TRAEFIK=1.
-	// Disabling traefik would leave no manifest to un-skip, so the config must
-	// carry no disable block at all. servicelb is lazy and likewise enabled.
-	assert.NotContains(t, udata, "disable:")
-	assert.NotContains(t, udata, "  - traefik")
-	assert.NotContains(t, udata, "  - servicelb")
-	assert.Contains(t, udata, "EKS_DEFER_TRAEFIK=1")
 }
 
 func TestLaunchK3sServerVM_UsesEmbeddedEtcd(t *testing.T) {

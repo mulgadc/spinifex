@@ -299,15 +299,6 @@ func logCreateErr(name, accountID, stage string, err error) error {
 	return fmt.Errorf("%s: %w", stage, err)
 }
 
-// managedIngressTagKey controls K3s built-in traefik+servicelb; "false" opts out for AWS parity.
-const managedIngressTagKey = "spinifex.io/managed-ingress"
-
-// builtinIngressEnabled reports whether a cluster keeps the K3s built-in ingress
-// stack. Default ON; the tag opts out with "false".
-func builtinIngressEnabled(tags map[string]*string) bool {
-	return !strings.EqualFold(aws.StringValue(tags[managedIngressTagKey]), "false")
-}
-
 func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error) {
 	if err := s.requireOrchestrationDeps("CreateCluster"); err != nil {
 		return nil, err
@@ -354,9 +345,8 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 			EndpointPrivateAccess: privateAccess,
 			PublicAccessCidrs:     publicCidrs,
 		},
-		BuiltinIngress: builtinIngressEnabled(input.Tags),
-		Tags:           aws.StringValueMap(input.Tags),
-		CreatedAt:      time.Now().UTC(),
+		Tags:      aws.StringValueMap(input.Tags),
+		CreatedAt: time.Now().UTC(),
 	}
 	// Claim the cluster name before any launching; duplicate/retry handlers lose the claim.
 	if err := s.claimClusterName(accountID, acctKV, meta); err != nil {
@@ -626,7 +616,6 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		AccessKey:         s.deps.SystemAccessKey,
 		SecretKey:         s.deps.SystemSecretKey,
 		GatewayCACert:     s.deps.GatewayCACert,
-		BuiltinIngress:    meta.BuiltinIngress,
 		JoinToken:         joinToken,
 	})
 	if err != nil {

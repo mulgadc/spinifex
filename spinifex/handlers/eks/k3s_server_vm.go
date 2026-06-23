@@ -139,9 +139,6 @@ type K3sServerInput struct {
 	// ServerURL boots this VM as a JOIN server joining the quorum at the given endpoint.
 	// Empty = first server (cluster-init). Non-empty requires JoinToken.
 	ServerURL string
-	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled.
-	// When false, both are disabled for AWS parity (ingress via the LB Controller).
-	BuiltinIngress bool
 }
 
 // K3sServerOutput carries identifiers to persist in ClusterMeta and register with the NLB.
@@ -398,14 +395,6 @@ func k3sServerJoinURL(ip string) string {
 	return "https://" + net.JoinHostPort(ip, "6443")
 }
 
-// boolFlag renders a bool as the "1"/"0" string the shell first-boot env reads.
-func boolFlag(b bool) string {
-	if b {
-		return "1"
-	}
-	return "0"
-}
-
 // userDataFile is one entry in the cloud-config write_files block.
 type userDataFile struct {
 	Path  string
@@ -439,15 +428,12 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_CLUSTER_NAME=" + in.ClusterName,
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
 		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,
-		// Deferred ingress: k3s.initd stages a traefik .skip marker; state-reporter removes it once stable.
-		"EKS_DEFER_TRAEFIK=" + boolFlag(in.BuiltinIngress),
 	}, "\n")
 
 	// First server uses cluster-init (embedded etcd); join servers set `server: <first>` + token.
 	// etcd-expose-metrics: surfaces etcd fsync/commit latency on 127.0.0.1:2381/metrics.
 	// anonymous-auth=true: reconciler probes /healthz unauthenticated to gate ACTIVE; RBAC limits exposure.
-	// When BuiltinIngress=false, traefik+servicelb+local-storage are disabled for AWS LB Controller parity.
-	// When true, traefik is deferred (not disabled) to avoid hammering etcd during bootstrap.
+	// traefik+servicelb+local-storage are always disabled for AWS LB Controller parity.
 	var configLines []string
 	if in.ServerURL == "" {
 		configLines = append(configLines, "cluster-init: true")
@@ -468,17 +454,15 @@ func buildK3sUserData(in K3sServerInput) string {
 		"node-taint:",
 		"  - CriticalAddonsOnly=true:NoExecute",
 	)
-	if !in.BuiltinIngress {
-		configLines = append(configLines,
-			"disable:",
-			"  - traefik",
-			"  - servicelb",
-			// EKS has no local-path provisioner; leaving it enabled gives the
-			// cluster a second default StorageClass that races ebs-gp3. Disable
-			// it so the EBS CSI StorageClass is the sole default.
-			"  - local-storage",
-		)
-	}
+	configLines = append(configLines,
+		"disable:",
+		"  - traefik",
+		"  - servicelb",
+		// EKS has no local-path provisioner; leaving it enabled gives the
+		// cluster a second default StorageClass that races ebs-gp3. Disable
+		// it so the EBS CSI StorageClass is the sole default.
+		"  - local-storage",
+	)
 	configLines = append(configLines, "tls-san:", "  - "+in.NLBDNS)
 	// EndpointIP must be a cert SAN for TLS validation via https://<EndpointIP>:443.
 	if in.EndpointIP != "" {

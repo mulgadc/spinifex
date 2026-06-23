@@ -34,22 +34,6 @@ start_pre() {
         fi
     fi
 
-    # Deferred built-in ingress: when this cluster wants traefik
-    # (EKS_DEFER_TRAEFIK=1) but the control plane has not yet stabilised (no
-    # traefik-enabled sentinel), stage a deploy-controller .skip marker so k3s
-    # writes traefik.yaml/traefik-crd.yaml but does NOT apply them. Staged here,
-    # pre-start, so the marker exists before the deploy controller first scans —
-    # racing it post-start could apply traefik (and crash etcd) anyway.
-    # mulga-eks-state-report removes the marker once the apiserver is healthy.
-    if [ -f /etc/spinifex-eks/first-boot.env ]; then
-        defer=$(. /etc/spinifex-eks/first-boot.env 2>/dev/null; echo "${EKS_DEFER_TRAEFIK:-0}")
-        if [ "${defer}" = "1" ] && [ ! -f /var/lib/spinifex-eks/traefik-enabled ]; then
-            mkdir -p /var/lib/rancher/k3s/server/manifests
-            : > /var/lib/rancher/k3s/server/manifests/traefik.yaml.skip
-            : > /var/lib/rancher/k3s/server/manifests/traefik-crd.yaml.skip
-        fi
-    fi
-
     # Node-local CoreDNS: suppress k3s's bundled CoreDNS (a single Deployment that
     # tolerates the CP taint and strands itself on the control-plane node) and
     # deploy the Mulga DaemonSet variant so every node resolves via its own

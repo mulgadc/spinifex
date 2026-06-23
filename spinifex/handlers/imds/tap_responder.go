@@ -107,6 +107,33 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	return nil
 }
 
+// reconcile converges the active responders to the live tap set: starts a
+// responder for every (eniID → endpoint) not yet serving and stops any whose tap
+// has gone. start is idempotent, so an already-serving tap is a no-op. A start
+// failure (e.g. the ENI record not yet visible, or the endpoint not yet bindable)
+// is logged and retried on the next reconcile, not propagated — one stalled tap
+// must not block the rest.
+func (m *tapResponderManager) reconcile(ctx context.Context, live map[string]string) {
+	for eniID, endpoint := range live {
+		if err := m.start(ctx, eniID, endpoint); err != nil {
+			slog.Warn("IMDS: tap responder start failed during reconcile", "eni_id", eniID, "endpoint", endpoint, "err", err)
+		}
+	}
+
+	m.mu.Lock()
+	var stale []string
+	for eniID := range m.active {
+		if _, ok := live[eniID]; !ok {
+			stale = append(stale, eniID)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, eniID := range stale {
+		m.stop(eniID)
+	}
+}
+
 // stop closes the tap's responder. Idempotent; the endpoint port itself is torn
 // down separately by RemoveTapDatapath.
 func (m *tapResponderManager) stop(eniID string) {

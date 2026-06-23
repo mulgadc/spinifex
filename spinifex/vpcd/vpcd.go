@@ -473,6 +473,19 @@ func launchService(cfg *Config) error {
 	// vpcd holds the network capabilities needed for IMDS; STS/IAM stay in awsgw over NATS.
 	imdsCtx, cancelIMDS := context.WithCancel(ctx)
 	defer cancelIMDS()
+	// listTaps drives the per-tap responder reconcile from the live OVS tap set on
+	// this chassis (the IMDS patch ports on br-int carry the full ENI).
+	listTaps := func(ctx context.Context) (map[string]string, error) {
+		taps, err := host.ListIMDSTaps(ctx, host.NewExecRunner())
+		if err != nil {
+			return nil, err
+		}
+		live := make(map[string]string, len(taps))
+		for _, t := range taps {
+			live[t.ENIID] = t.Endpoint
+		}
+		return live, nil
+	}
 	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
 		nc,
 		handlers_imds.NewNATSSTSAssumer(nc),
@@ -480,6 +493,7 @@ func launchService(cfg *Config) error {
 		handlers_imds.NewNATSPublicKeyLookup(nc),
 		max(len(chassisNames), 1),
 		host.EnsureIMDSVeth, host.RemoveIMDSVeth,
+		listTaps,
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)

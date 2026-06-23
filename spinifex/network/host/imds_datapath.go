@@ -49,10 +49,14 @@ func IMDSEndpointName(eniID string) string { return "ime-" + shortENIID(eniID) }
 // "imp-" + 8-char short ENI = 12 chars.
 func IMDSPatchPort(eniID string) string { return "imp-" + shortENIID(eniID) }
 
+// imdsIntPatchPrefix tags the br-int end of every per-tap patch. vpcd's
+// reconcile-from-taps keys off it to find the local IMDS taps (see ListIMDSTaps).
+const imdsIntPatchPrefix = "imi-"
+
 // IMDSIntPatchPort returns the br-int end of the per-tap patch. It carries the
 // OVN iface-id binding so ovn-controller binds the guest LSP to it. "imi-" +
 // 8-char short ENI = 12 chars.
-func IMDSIntPatchPort(eniID string) string { return "imi-" + shortENIID(eniID) }
+func IMDSIntPatchPort(eniID string) string { return imdsIntPatchPrefix + shortENIID(eniID) }
 
 // IMDSEndpointMAC returns the deterministic MAC for an ENI's endpoint. The
 // endpoint owns this MAC so the ingress demux can rewrite the guest's gateway

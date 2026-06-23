@@ -114,6 +114,35 @@ func TestTapResponder_IMDSv2PerTapIdentity(t *testing.T) {
 		"token must not validate against another tap's ENI")
 }
 
+// reconcile converges the active responders to the live tap set: it starts a
+// responder for a newly attached tap, leaves an unchanged one alone, and stops a
+// responder whose tap has gone — the vpcd reconcile-from-taps contract.
+func TestTapResponder_ReconcileConvergesToLiveSet(t *testing.T) {
+	table := map[string]*eniFacts{
+		"eni-aaa11111": {eniID: "eni-aaa11111", instanceID: "i-aaaa1111"},
+		"eni-bbb22222": {eniID: "eni-bbb22222", instanceID: "i-bbbb2222"},
+	}
+	var addrs sync.Map
+	m := newTapResponderManager(http.NewServeMux(), staticResolve(table), loopbackTapListen(&addrs))
+	ctx := context.Background()
+
+	// First pass: only A is live, so only A serves.
+	m.reconcile(ctx, map[string]string{"eni-aaa11111": "ime-aaa11111"})
+	assertActive(t, m, "eni-aaa11111")
+	assertNotActive(t, m, "eni-bbb22222")
+
+	// Second pass: A stays, B is added. A must not be re-bound (idempotent), B starts.
+	addrA := mustAddr(t, &addrs, "ime-aaa11111")
+	m.reconcile(ctx, map[string]string{"eni-aaa11111": "ime-aaa11111", "eni-bbb22222": "ime-bbb22222"})
+	assertActive(t, m, "eni-aaa11111", "eni-bbb22222")
+	assert.Equal(t, addrA, mustAddr(t, &addrs, "ime-aaa11111"), "A's listener must not be rebound")
+
+	// Third pass: A's tap is gone (terminate). Its responder is stopped; B stays.
+	m.reconcile(ctx, map[string]string{"eni-bbb22222": "ime-bbb22222"})
+	assertNotActive(t, m, "eni-aaa11111")
+	assertActive(t, m, "eni-bbb22222")
+}
+
 func TestTapResponder_StartRejectsMissAndError(t *testing.T) {
 	var addrs sync.Map
 	listen := loopbackTapListen(&addrs)
@@ -159,6 +188,30 @@ func TestResolveCaller_PerTapENIWins(t *testing.T) {
 type tapResult struct {
 	code int
 	body string
+}
+
+// assertActive asserts exactly the given ENIs have a running responder.
+func assertActive(t *testing.T, m *tapResponderManager, eniIDs ...string) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range eniIDs {
+		if _, ok := m.active[id]; !ok {
+			t.Errorf("responder for %s must be active", id)
+		}
+	}
+}
+
+// assertNotActive asserts none of the given ENIs have a running responder.
+func assertNotActive(t *testing.T, m *tapResponderManager, eniIDs ...string) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range eniIDs {
+		if _, ok := m.active[id]; ok {
+			t.Errorf("responder for %s must not be active", id)
+		}
+	}
 }
 
 func mustAddr(t *testing.T, addrs *sync.Map, endpoint string) string {

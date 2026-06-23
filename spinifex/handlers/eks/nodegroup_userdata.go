@@ -19,14 +19,29 @@ type agentUserDataInput struct {
 	// ECR registry wiring for the kubelet credential provider. GatewayURL is the
 	// worker-reachable gateway base URL; GatewayCACert is the inline CA PEM;
 	// RegistryHost is the precomputed <acct>.dkr.ecr.<region>.<suffix>; GatewayIP
-	// is the IP host parsed from GatewayURL used as the registry mirror endpoint
-	// (empty when the gateway is a hostname, in which case DNS must resolve it).
+	// is the IP host parsed from GatewayURL, dialed as the registry mirror endpoint
+	// and keyed (with :9999) for both the mirror and matchImages so a port-ful pull
+	// resolves without DNS (empty when the gateway is a hostname needing DNS).
 	GatewayURL    string
 	GatewayCACert string
 	Region        string
 	AccountID     string
 	RegistryHost  string
 	GatewayIP     string
+}
+
+// registryMirrorHosts returns the distinct registry hosts a worker must accept on
+// a pod image ref: the port-less parity name, the port-ful parity name (the value
+// DescribeRepositories returns), and the gateway IP:port when the gateway
+// advertises an IP. containerd matches mirror keys and the credential provider
+// matches matchImages verbatim against the image host, so every form must be
+// listed; all resolve to the single dialed gateway endpoint.
+func registryMirrorHosts(registryHost, endpointHost string) []string {
+	hosts := []string{registryHost, registryHost + ":9999"}
+	if endpointHost != registryHost {
+		hosts = append(hosts, endpointHost+":9999")
+	}
+	return hosts
 }
 
 // buildAgentUserData renders the cloud-config YAML for a nodegroup worker VM.
@@ -56,23 +71,31 @@ func buildAgentUserData(in agentUserDataInput) string {
 
 	// The mirror endpoint is dialed by IP when the gateway IP is known: the gateway
 	// cert carries an IP SAN, so TLS validates without DNS, and there is no internal
-	// resolver yet (cloud-init manage_etc_hosts rewrites /etc/hosts each boot). The
-	// pod image ref stays the port-less RegistryHost; the configs tls block must key
-	// the endpoint host:port actually dialed so the CA trust applies.
+	// resolver yet (cloud-init manage_etc_hosts rewrites /etc/hosts each boot). A pod
+	// image ref may carry any host the API hands out — the port-less parity name, the
+	// port-ful parity name (the repositoryUri value), or the gateway IP:port — so each
+	// is keyed as a mirror redirecting to the one endpoint host:port actually dialed,
+	// whose CA the configs tls block trusts.
 	endpointHost := in.RegistryHost
 	if in.GatewayIP != "" {
 		endpointHost = in.GatewayIP
 	}
-	registriesYAML := strings.Join([]string{
-		"mirrors:",
-		"  \"" + in.RegistryHost + "\":",
-		"    endpoint:",
-		"      - \"https://" + endpointHost + ":9999\"",
+	endpoint := "https://" + endpointHost + ":9999"
+	registryLines := []string{"mirrors:"}
+	for _, host := range registryMirrorHosts(in.RegistryHost, endpointHost) {
+		registryLines = append(registryLines,
+			"  \""+host+"\":",
+			"    endpoint:",
+			"      - \""+endpoint+"\"",
+		)
+	}
+	registryLines = append(registryLines,
 		"configs:",
-		"  \"" + endpointHost + ":9999\":",
+		"  \""+endpointHost+":9999\":",
 		"    tls:",
-		"      ca_file: " + k3sGatewayCAPath,
-	}, "\n")
+		"      ca_file: "+k3sGatewayCAPath,
+	)
+	registriesYAML := strings.Join(registryLines, "\n")
 
 	credProviderDropin := strings.Join([]string{
 		"kubelet-arg:",
@@ -80,18 +103,22 @@ func buildAgentUserData(in agentUserDataInput) string {
 		"  - \"image-credential-provider-bin-dir=/usr/local/bin\"",
 	}, "\n")
 
-	credProviderConfig := strings.Join([]string{
+	credLines := []string{
 		"apiVersion: kubelet.config.k8s.io/v1",
 		"kind: CredentialProviderConfig",
 		"providers:",
 		"  - name: ecr-credential-provider",
 		"    matchImages:",
-		"      - \"" + in.RegistryHost + "\"",
-		"      - \"" + in.RegistryHost + ":9999\"",
+	}
+	for _, host := range registryMirrorHosts(in.RegistryHost, endpointHost) {
+		credLines = append(credLines, "      - \""+host+"\"")
+	}
+	credLines = append(credLines,
 		"    defaultCacheDuration: \"10h\"",
 		"    apiVersion: credentialprovider.kubelet.k8s.io/v1",
 		"    args: []",
-	}, "\n")
+	)
+	credProviderConfig := strings.Join(credLines, "\n")
 
 	files := []userDataFile{
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},

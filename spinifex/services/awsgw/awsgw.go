@@ -234,16 +234,21 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	ecrAudience := "ecr." + nodeConfig.Region + "." + config.AWS.InternalSuffix
 
-	// The ECR registry is served on this gateway's own host:port; advertise both
-	// so docker login/tag/push reach it without DNS — the account comes from the
-	// auth token. A SplitHostPort failure or an unspecified bind address leaves
-	// the host empty, falling back to the per-account parity name.
+	// The ECR registry is served on this gateway's own host:port; advertise both so
+	// docker login/tag/push reach it without DNS — the account comes from the auth
+	// token. Prefer a concrete AWSGW bind host; when it is unspecified (0.0.0.0/::)
+	// fall back to AdvertiseIP, the off-host dial target carried in the server cert
+	// SANs (the same host EKS workers dial), so the returned URI resolves without
+	// DNS. Only when neither is concrete does the per-account parity name apply.
 	registryHost, registryPort := "", ""
 	if host, port, err := net.SplitHostPort(nodeConfig.AWSGW.Host); err == nil {
 		registryPort = port
-		if host != "" && host != "0.0.0.0" && host != "::" {
+		if isConcreteRegistryHost(host) {
 			registryHost = host
 		}
+	}
+	if registryHost == "" && isConcreteRegistryHost(nodeConfig.AdvertiseIP) {
+		registryHost = nodeConfig.AdvertiseIP
 	}
 
 	gw := gateway.GatewayConfig{
@@ -376,4 +381,11 @@ func findBootstrapFile(baseDir string) string {
 		}
 	}
 	return candidates[0]
+}
+
+// isConcreteRegistryHost reports whether host is a dialable address to advertise
+// as the ECR registry host — a non-empty, non-unspecified literal. The wildcard
+// bind addresses are rejected so the registry URI never hands back 0.0.0.0/::.
+func isConcreteRegistryHost(host string) bool {
+	return host != "" && host != "0.0.0.0" && host != "::"
 }

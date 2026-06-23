@@ -23,10 +23,12 @@ func TestBuildAgentUserData_ECRWiring(t *testing.T) {
 	got := buildAgentUserData(in)
 
 	wantContains := []string{
-		// registries.yaml: pod ref stays the port-less host, mirror endpoint and
-		// tls config key the gateway IP actually dialed.
+		// registries.yaml: every host a pod ref may carry (port-less parity, port-ful
+		// parity, gateway IP:port) is a mirror keyed to the gateway IP actually dialed,
+		// whose tls config keys the same host:port.
 		"/etc/rancher/k3s/registries.yaml",
 		"\"123456789012.dkr.ecr.ap-southeast-2.spinifex.internal\":",
+		"\"123456789012.dkr.ecr.ap-southeast-2.spinifex.internal:9999\":",
 		"\"https://10.15.8.1:9999\"",
 		"\"10.15.8.1:9999\":",
 		"ca_file: /etc/spinifex-eks/gateway-ca.pem",
@@ -34,9 +36,11 @@ func TestBuildAgentUserData_ECRWiring(t *testing.T) {
 		"/etc/rancher/k3s/config.yaml.d/20-ecr-credential-provider.yaml",
 		"image-credential-provider-config=/etc/spinifex-eks/credential-provider-config.yaml",
 		"image-credential-provider-bin-dir=/usr/local/bin",
-		// credential-provider config.
+		// credential-provider config: matchImages covers the gateway IP:port too, so
+		// a port-ful pull from the API-returned URI authenticates.
 		"/etc/spinifex-eks/credential-provider-config.yaml",
 		"name: ecr-credential-provider",
+		"- \"10.15.8.1:9999\"",
 		// EKS env in agent.env.
 		"EKS_GATEWAY_URL=https://10.15.8.1:9999",
 		"EKS_ACCOUNT_ID=123456789012",

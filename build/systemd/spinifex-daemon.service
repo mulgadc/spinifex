@@ -34,7 +34,9 @@ DeviceAllow=/dev/net/tun rw
 DeviceAllow=char-vfio rw
 DeviceAllow=/dev/vfio/vfio rw
 ReadOnlyPaths=/etc/spinifex/spinifex.toml /etc/spinifex/server.pem /etc/spinifex/server.key /etc/spinifex/ca.pem
-ReadWritePaths=/var/lib/spinifex/spinifex /var/log/spinifex /run/spinifex /run/spinifex/nbd
+# /proc/sys/net/ipv4/conf: per-tap IMDS endpoints set rp_filter/accept_local, which
+# ProtectKernelTunables=yes would otherwise keep read-only.
+ReadWritePaths=/var/lib/spinifex/spinifex /var/log/spinifex /run/spinifex /run/spinifex/nbd /proc/sys/net/ipv4/conf
 
 # RG-9: hardening baseline
 ProtectHome=yes

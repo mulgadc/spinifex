@@ -183,8 +183,11 @@ install_sudoers() {
     stage "installing scoped sudoers rules"
     $SUDO tee /etc/sudoers.d/spinifex-network > /dev/null << 'SUDOERS'
 # Spinifex daemon: tap devices, OVS bridge management, and DHCP for external IPs
+# ovs-ofctl installs the per-tap IMDS datapath flows on br-imds; sysctl sets the
+# per-endpoint rp_filter/accept_local the asymmetric reply path needs.
 spinifex-daemon ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
-spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl
+spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl, /usr/bin/ovs-ofctl
+spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/sysctl -qw net.ipv4.conf.*
 spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
 spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/systemctl is-active openvswitch-ipsec.service
 spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl set NB_Global . ipsec=true

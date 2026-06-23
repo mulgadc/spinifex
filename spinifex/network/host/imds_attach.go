@@ -69,8 +69,15 @@ func imdsDetachSpec(eniID string) IMDSTapDatapath {
 // the endpoint + demux/egress flows, and reply routing. Ordering matters: the
 // bridge holds the ports, and the endpoint must exist before reply routing
 // references it. The primary tap is already on br-imds (SetupTap) before this runs.
+//
+// The forward, demux, and egress flows all share the tap's cookie, so stale flows
+// are cleared once here — before any installer adds its flows — rather than inside
+// each installer, where a later clear would wipe an earlier installer's flows.
 func installIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if err := EnsureIMDSBridge(ctx, r); err != nil {
+		return err
+	}
+	if err := clearIMDSFlowsByCookie(ctx, r, imdsFlowCookie(d.Endpoint)); err != nil {
 		return err
 	}
 	if err := installTapPatch(ctx, r, d); err != nil {

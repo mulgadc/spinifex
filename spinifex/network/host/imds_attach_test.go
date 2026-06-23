@@ -89,6 +89,45 @@ func TestInstallIMDSDatapath(t *testing.T) {
 	if bridge >= patch || bridge >= endpoint || endpoint >= rule {
 		t.Errorf("install order wrong: bridge=%d patch=%d endpoint=%d rule=%d (want bridge<patch, bridge<endpoint<rule)", bridge, patch, endpoint, rule)
 	}
+
+	// Regression: the forward, demux, and egress flows all share the tap's cookie,
+	// so the single up-front clear must precede every add-flow. A clear inside any
+	// installer would wipe an earlier installer's flows under the same cookie —
+	// notably the patch's forward flows, leaving the guest with no non-IMDS path.
+	cookie := imdsFlowCookie(d.Endpoint)
+	clear := cmdIndex(s.calls, "ovs-ofctl del-flows "+IMDSBridge+" cookie="+cookie+"/-1")
+	firstAdd := cmdIndex(s.calls, "ovs-ofctl add-flow")
+	if clear < 0 {
+		t.Errorf("missing up-front cookie clear; calls: %v", s.calls)
+	}
+	if firstAdd < 0 || clear >= firstAdd {
+		t.Errorf("cookie clear must precede all add-flows: clear=%d firstAdd=%d (calls: %v)", clear, firstAdd, s.calls)
+	}
+	// And exactly one clear: a second would mean an installer re-cleared the cookie.
+	if n := countCalls(s.calls, "ovs-ofctl del-flows "+IMDSBridge+" cookie="+cookie+"/-1"); n != 1 {
+		t.Errorf("cookie cleared %d times, want exactly 1 (calls: %v)", n, s.calls)
+	}
+
+	// Both forward (priority=100, from installTapPatch) and demux (priority=200,
+	// from InstallTapDatapath) flows must survive the shared-cookie clear.
+	forward := "ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=100,in_port=" + d.Tap + ",actions=output:" + d.PatchIMDS
+	demux := "ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=200,in_port=" + d.Tap + ",ip,nw_dst=" + imdsMetaAddr + ",actions=mod_dl_dst:" + d.EndpointMAC + ",output:" + d.Endpoint
+	for _, w := range []string{forward, demux} {
+		if !s.called(w) {
+			t.Errorf("missing flow after shared-cookie clear:\n  %q\ncalls: %v", w, s.calls)
+		}
+	}
+}
+
+// countCalls returns how many recorded calls start with prefix.
+func countCalls(calls []string, prefix string) int {
+	n := 0
+	for _, c := range calls {
+		if len(c) >= len(prefix) && c[:len(prefix)] == prefix {
+			n++
+		}
+	}
+	return n
 }
 
 func TestIMDSDetachSpec(t *testing.T) {

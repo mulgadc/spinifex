@@ -1,6 +1,7 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -26,11 +27,21 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	} else {
 		cmd = exec.CommandContext(ctx, "sudo", append([]string{name}, args...)...)
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	// Capture stdout and stderr separately. Callers parse the returned bytes as
+	// the command's stdout, so stderr must not be folded in: under a restrictive
+	// CapabilityBoundingSet (no CAP_AUDIT_WRITE) sudo prints "unable to send audit
+	// message" to stderr while still succeeding, which CombinedOutput would prepend
+	// to the value and break prefix/equality parsing.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// On failure hand back stdout+stderr so callers matching diagnostics on the
+		// error path (e.g. "File exists" idempotency) still see them.
+		out := append(stdout.Bytes(), stderr.Bytes()...)
 		return out, fmt.Errorf("%s %s: %s: %w", name, strings.Join(args, " "), strings.TrimSpace(string(out)), err)
 	}
-	return out, nil
+	return stdout.Bytes(), nil
 }
 
 // kernelReader satisfies InterfaceReader via the live kernel.

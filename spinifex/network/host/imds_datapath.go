@@ -210,12 +210,11 @@ func setEndpointSysctl(ctx context.Context, r Runner, endpoint, suffix, val stri
 }
 
 // installIMDSTapFlows installs the per-tap ingress demux and egress flows under
-// the tap's cookie, clearing any stale flows for the endpoint first.
+// the tap's cookie. Stale flows are cleared by the caller (installIMDSDatapath)
+// before the forward flows are installed, so this does not clear — clearing here
+// would wipe the forward flows the patch installer added under the same cookie.
 func installIMDSTapFlows(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	cookie := imdsFlowCookie(d.Endpoint)
-	if err := clearIMDSFlowsByCookie(ctx, r, cookie); err != nil {
-		return err
-	}
 	// Ingress: guest -> endpoint. The guest addresses the frame to its gateway
 	// MAC (.254/.253 are off-link, routed via the default gateway), so rewrite
 	// the dst MAC to the endpoint or the kernel drops it as OTHERHOST.

@@ -111,8 +111,8 @@ func TestInstallTapDatapath(t *testing.T) {
 		"ip addr add " + imdsDNSAddr + "/32 dev " + d.Endpoint,
 		"sysctl -qw net.ipv4.conf." + d.Endpoint + ".rp_filter=0",
 		"sysctl -qw net.ipv4.conf." + d.Endpoint + ".accept_local=1",
-		// Stale flows cleared before re-install.
-		"ovs-ofctl del-flows " + IMDSBridge + " cookie=" + cookie + "/-1",
+		// Flows are not cleared here: installIMDSDatapath clears the shared cookie
+		// once up front so this install does not wipe the patch's forward flows.
 		// Ingress demux (gateway dst MAC -> endpoint MAC), one per captured addr.
 		"ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=200,in_port=" + d.Tap + ",ip,nw_dst=" + imdsMetaAddr + ",actions=mod_dl_dst:" + d.EndpointMAC + ",output:" + d.Endpoint,
 		"ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=200,in_port=" + d.Tap + ",ip,nw_dst=" + imdsDNSAddr + ",actions=mod_dl_dst:" + d.EndpointMAC + ",output:" + d.Endpoint,
@@ -123,6 +123,12 @@ func TestInstallTapDatapath(t *testing.T) {
 		if !s.called(w) {
 			t.Errorf("missing command:\n  %q\ncalls: %v", w, s.calls)
 		}
+	}
+
+	// InstallTapDatapath must not clear flows: installIMDSDatapath owns the single
+	// up-front clear, so a clear here would wipe the patch's forward flows.
+	if s.called("ovs-ofctl del-flows") {
+		t.Errorf("InstallTapDatapath must not clear flows; calls: %v", s.calls)
 	}
 }
 

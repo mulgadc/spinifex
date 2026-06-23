@@ -58,23 +58,31 @@ func imdsDetachSpec(eniID string) IMDSTapDatapath {
 }
 
 // installIMDSDatapath ensures br-imds exists, then realises the per-tap datapath:
-// patch, endpoint + demux/egress flows, and reply routing. Stale flows are cleared
+// endpoint, patch, demux/egress flows, and reply routing. Stale flows are cleared
 // once here (all installers share the tap's cookie) before any flow is added.
 //
-// The bridge, cookie clear, and patch are connectivity-critical — until they exist
-// the guest has no L2 path to OVN — so their errors return bare. The demux/egress
-// flows and reply routing only enable serving, so theirs wrap ErrIMDSServingDegraded.
+// Bridge, cookie clear, endpoint, and patch are connectivity-critical (error bare):
+// ListIMDSTaps advertises the tap off the patch and vpcd binds the endpoint, so the
+// endpoint must exist whenever the patch does, else vpcd binds a missing device every
+// reconcile forever. The flows and reply routing only serve, so theirs wrap
+// ErrIMDSServingDegraded — the endpoint is already bound, so the caller logs on.
 func installIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
+	if err := d.validate(); err != nil {
+		return err
+	}
 	if err := EnsureIMDSBridge(ctx, r); err != nil {
 		return err
 	}
 	if err := clearIMDSFlowsByCookie(ctx, r, imdsFlowCookie(d.Endpoint)); err != nil {
 		return err
 	}
+	if err := ensureIMDSEndpoint(ctx, r, d); err != nil {
+		return err
+	}
 	if err := installTapPatch(ctx, r, d); err != nil {
 		return err
 	}
-	if err := InstallTapDatapath(ctx, r, d); err != nil {
+	if err := installIMDSTapFlows(ctx, r, d); err != nil {
 		return fmt.Errorf("%w: %w", vm.ErrIMDSServingDegraded, err)
 	}
 	if err := InstallTapReplyRouting(ctx, r, d); err != nil {

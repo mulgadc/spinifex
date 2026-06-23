@@ -71,7 +71,7 @@ func TestInstallIMDSDatapath(t *testing.T) {
 		"ovs-vsctl --may-exist add-br " + IMDSBridge,                       // EnsureIMDSBridge
 		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.PatchIMDS, // installTapPatch (br-imds end)
 		"ovs-vsctl --may-exist add-port br-int " + d.PatchInt,              // installTapPatch (br-int end)
-		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint,  // InstallTapDatapath endpoint
+		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint,  // ensureIMDSEndpoint
 		"ovs-ofctl add-flow " + IMDSBridge,                                 // demux/egress/forward flow
 		"ip route replace default via " + imdsReplyNexthop,                 // InstallTapReplyRouting route
 		"ip rule add oif " + d.Endpoint,                                    // InstallTapReplyRouting rule
@@ -110,7 +110,7 @@ func TestInstallIMDSDatapath(t *testing.T) {
 	}
 
 	// Both forward (priority=100, from installTapPatch) and demux (priority=200,
-	// from InstallTapDatapath) flows must survive the shared-cookie clear.
+	// from installIMDSTapFlows) flows must survive the shared-cookie clear.
 	forward := "ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=100,in_port=" + d.Tap + ",actions=output:" + d.PatchIMDS
 	demux := "ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=200,in_port=" + d.Tap + ",ip,nw_dst=" + imdsMetaAddr + ",actions=mod_dl_dst:" + d.EndpointMAC + ",output:" + d.Endpoint
 	for _, w := range []string{forward, demux} {
@@ -136,34 +136,64 @@ func TestInstallIMDSDatapath_ConnectivityFailureNotWrapped(t *testing.T) {
 	}
 }
 
-// A serving-stage failure (after the patch + forward flows are in place) must be
-// wrapped as ErrIMDSServingDegraded — the guest is connected, only IMDS is down,
-// so the caller logs and continues instead of rolling the tap back.
+// A serving-stage failure (after the endpoint, patch, and forward flows are in
+// place) must be wrapped as ErrIMDSServingDegraded — the guest is connected and the
+// endpoint is bound, only IMDS demux is down, so the caller logs and continues.
 func TestInstallIMDSDatapath_ServingFailureWrapped(t *testing.T) {
+	d := imdsDatapathSpec("eni-0abc1234", "02:00:00:00:01:05", "subnet-0fedcba9")
+	cookie := imdsFlowCookie(d.Endpoint)
+
+	s := newStubRunner()
+	s.expect("ovs-vsctl", nil, nil)
+	s.expect("ip", nil, nil)
+	s.expect("sysctl", nil, nil)
+	s.expect("ovs-ofctl del-flows", nil, nil)
+	// Forward flows (priority=100) are connectivity and must succeed; the demux/egress
+	// flows (priority=200) are serving — fail those to land in the serving stage.
+	s.expect("ovs-ofctl add-flow "+IMDSBridge+" cookie="+cookie+",table=0,priority=100", nil, nil)
+	s.expect("ovs-ofctl add-flow "+IMDSBridge+" cookie="+cookie+",table=0,priority=200", nil, errors.New("flow install failed"))
+
+	err := installIMDSDatapath(context.Background(), s, d)
+	if err == nil {
+		t.Fatal("expected the demux flow failure to surface")
+	}
+	if !errors.Is(err, vm.ErrIMDSServingDegraded) {
+		t.Errorf("serving-stage failure must be ErrIMDSServingDegraded, got %v", err)
+	}
+	// The endpoint (vpcd's bind target) and the patch's br-int end (OVN binding) were
+	// installed before the failure, so the guest keeps connectivity and vpcd can bind.
+	if !s.called("ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint) {
+		t.Errorf("endpoint must be installed before the serving stage; calls: %v", s.calls)
+	}
+	if !s.called("ovs-vsctl --may-exist add-port br-int " + d.PatchInt) {
+		t.Errorf("patch br-int end must be installed before the serving stage; calls: %v", s.calls)
+	}
+}
+
+// The endpoint is vpcd's bind target and is installed before the patch that
+// advertises the tap to ListIMDSTaps, so an endpoint-create failure is
+// connectivity-critical: it surfaces bare (not ErrIMDSServingDegraded) and the patch
+// is never installed, so the caller rolls the tap back to br-int instead of stranding
+// a patch with no endpoint that vpcd would bind against forever.
+func TestInstallIMDSDatapath_EndpointFailureIsConnectivityCritical(t *testing.T) {
 	d := imdsDatapathSpec("eni-0abc1234", "02:00:00:00:01:05", "subnet-0fedcba9")
 
 	s := newStubRunner()
 	s.expect("ovs-vsctl --may-exist add-br", nil, nil)
 	s.expect("ovs-vsctl set Bridge", nil, nil)
 	s.expect("ip", nil, nil)
-	s.expect("ovs-ofctl", nil, nil)
-	s.expect("ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.PatchIMDS, nil, nil)
-	s.expect("ovs-vsctl --may-exist add-port br-int "+d.PatchInt, nil, nil)
-	// The endpoint create is the first command past the connectivity-critical
-	// patch — fail it to land in the serving stage.
+	s.expect("ovs-ofctl del-flows", nil, nil)
 	s.expect("ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.Endpoint, nil, errors.New("ovsdb busy"))
 
 	err := installIMDSDatapath(context.Background(), s, d)
 	if err == nil {
 		t.Fatal("expected the endpoint failure to surface")
 	}
-	if !errors.Is(err, vm.ErrIMDSServingDegraded) {
-		t.Errorf("serving-stage failure must be ErrIMDSServingDegraded, got %v", err)
+	if errors.Is(err, vm.ErrIMDSServingDegraded) {
+		t.Errorf("endpoint failure must be connectivity-critical (bare), got %v", err)
 	}
-	// Connectivity (the patch's br-int end carrying the OVN binding) was installed
-	// before the failure, proving the guest keeps its path to OVN.
-	if !s.called("ovs-vsctl --may-exist add-port br-int " + d.PatchInt) {
-		t.Errorf("patch br-int end must be installed before the serving stage; calls: %v", s.calls)
+	if s.called("ovs-vsctl --may-exist add-port br-int " + d.PatchInt) {
+		t.Errorf("patch must not be installed when the endpoint failed; calls: %v", s.calls)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"strings"
 	"testing"
@@ -484,15 +485,13 @@ func imdsAssertVpcdFileCaps(t *testing.T) {
 	}
 }
 
-// imdsShortENI mirrors host.shortENIID: the last 8 chars of the ENI (sans eni-
-// prefix) that the per-tap port names key off (inlined, as this suite inlines the
-// other OVS/OVN names).
+// imdsShortENI mirrors host.shortENIID: the FNV-32a hash of the full ENI ID as 8
+// hex chars, which the per-tap port names key off (inlined, as this suite inlines
+// the other OVS/OVN names). A hash, NOT a truncation — suffix-sharing ENIs differ.
 func imdsShortENI(eniID string) string {
-	id := strings.TrimPrefix(eniID, "eni-")
-	if len(id) > 8 {
-		id = id[len(id)-8:]
-	}
-	return id
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(eniID))
+	return fmt.Sprintf("%08x", h.Sum32())
 }
 
 // imdsTapName mirrors vm.TapDeviceName: "tap" + the ENI (sans eni- prefix),

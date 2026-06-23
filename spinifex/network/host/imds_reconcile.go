@@ -26,8 +26,10 @@ type IMDSTapEndpoint struct {
 // (vm.OVSIfaceID(eniID) = "port-<eniID>"), the only place the *full* ENI survives
 // on the chassis — the br-imds endpoint name hashes it to 8 hex chars.
 // OVS on this chassis holds only local ports, so the result is inherently the
-// local tap set. A port with an unreadable or unexpected iface-id is skipped, not
-// fatal: one malformed port must not stall serving for the rest.
+// local tap set. A port with an unexpected (malformed) iface-id is skipped; a
+// port whose iface-id cannot be read aborts the pass so the caller retries next
+// tick, since a transient read error must not drop a live tap and let reconcile
+// stop its healthy responder.
 func ListIMDSTaps(ctx context.Context, r Runner) ([]IMDSTapEndpoint, error) {
 	out, err := r.Run(ctx, "ovs-vsctl", "list-ports", "br-int")
 	if err != nil {
@@ -40,8 +42,12 @@ func ListIMDSTaps(ctx context.Context, r Runner) ([]IMDSTapEndpoint, error) {
 		}
 		eniID, err := imdsPatchENI(ctx, r, port)
 		if err != nil {
-			slog.Warn("IMDS: skipping IMDS patch port with unreadable iface-id", "port", port, "err", err)
-			continue
+			// A read error (ovsdb busy, or the port deleted mid-read by a concurrent
+			// terminate) must not drop a live tap from the set: reconcile would treat
+			// its healthy responder as stale and stop it. Abort the pass so the next
+			// tick retries with every responder intact — a genuinely-gone port simply
+			// will not list next time.
+			return nil, fmt.Errorf("read iface-id for %s: %w", port, err)
 		}
 		if eniID == "" {
 			slog.Warn("IMDS: skipping IMDS patch port with unexpected iface-id", "port", port)

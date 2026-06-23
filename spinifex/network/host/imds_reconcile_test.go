@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -57,21 +58,18 @@ func TestListIMDSTaps_RecoversENIFromPatchIfaceID(t *testing.T) {
 	}
 }
 
-// A patch port whose iface-id is unreadable or unexpected is skipped, not fatal:
-// one malformed port must not stall serving for the rest of the chassis.
-func TestListIMDSTaps_SkipsBadPorts(t *testing.T) {
+// A patch port whose iface-id is unexpected (missing the "port-" prefix) is
+// skipped, not fatal: one malformed port must not stall serving for the rest.
+func TestListIMDSTaps_SkipsUnexpectedIfaceID(t *testing.T) {
 	const (
 		eniOK    = "eni-0aaa1111deadbeef"
-		eniErr   = "eni-0bbb2222cafef00d"
 		eniWrong = "eni-0ccc3333beeff00d"
 	)
 	s := newStubRunner()
 	s.expect("ovs-vsctl list-ports br-int",
-		[]byte(IMDSIntPatchPort(eniOK)+"\n"+IMDSIntPatchPort(eniErr)+"\n"+IMDSIntPatchPort(eniWrong)+"\n"), nil)
+		[]byte(IMDSIntPatchPort(eniOK)+"\n"+IMDSIntPatchPort(eniWrong)+"\n"), nil)
 	s.expect("ovs-vsctl get Interface "+IMDSIntPatchPort(eniOK)+" external_ids:iface-id",
 		[]byte("\""+vm.OVSIfaceID(eniOK)+"\"\n"), nil)
-	s.expect("ovs-vsctl get Interface "+IMDSIntPatchPort(eniErr)+" external_ids:iface-id",
-		nil, errors.New("ovs-vsctl: no key iface-id"))
 	// Missing the "port-" prefix — recovered ENI would be wrong, so it is dropped.
 	s.expect("ovs-vsctl get Interface "+IMDSIntPatchPort(eniWrong)+" external_ids:iface-id",
 		[]byte("\"bogus\"\n"), nil)
@@ -82,6 +80,41 @@ func TestListIMDSTaps_SkipsBadPorts(t *testing.T) {
 	}
 	if len(taps) != 1 || taps[0].ENIID != eniOK {
 		t.Fatalf("ListIMDSTaps = %v, want only %s", taps, eniOK)
+	}
+}
+
+// A patch port whose iface-id cannot be READ aborts the reconcile pass rather
+// than silently dropping the tap. Dropping it would leave the ENI out of the live
+// set, so reconcile would treat the guest's healthy responder as stale and stop
+// it — flapping IMDS on a transient OVS read error. The caller retries next tick.
+func TestListIMDSTaps_UnreadableIfaceIDAbortsPass(t *testing.T) {
+	const (
+		eniOK  = "eni-0aaa1111deadbeef"
+		eniErr = "eni-0bbb2222cafef00d"
+	)
+	s := newStubRunner()
+	s.expect("ovs-vsctl list-ports br-int",
+		[]byte(IMDSIntPatchPort(eniOK)+"\n"+IMDSIntPatchPort(eniErr)+"\n"), nil)
+	s.expect("ovs-vsctl get Interface "+IMDSIntPatchPort(eniOK)+" external_ids:iface-id",
+		[]byte("\""+vm.OVSIfaceID(eniOK)+"\"\n"), nil)
+	s.expect("ovs-vsctl get Interface "+IMDSIntPatchPort(eniErr)+" external_ids:iface-id",
+		nil, errors.New("ovs-vsctl: connection refused"))
+
+	if _, err := ListIMDSTaps(context.Background(), s); err == nil {
+		t.Fatal("expected error when a patch port's iface-id cannot be read; a silent drop would stop the tap's healthy responder")
+	}
+}
+
+// TestOVSIfaceIDPrefixMatchesVM keeps the "port-" prefix ListIMDSTaps strips to
+// recover the full ENI in sync with the prefix vm.OVSIfaceID / topology.Port
+// prepend. host inlines the constant (it cannot import the value without an
+// import cycle); if the prefix drifted, ListIMDSTaps would recover no ENIs and
+// every IMDS responder would silently stop.
+func TestOVSIfaceIDPrefixMatchesVM(t *testing.T) {
+	const sentinel = "SENTINEL"
+	got := strings.TrimSuffix(vm.OVSIfaceID(sentinel), sentinel)
+	if got != ovsIfaceIDPrefix {
+		t.Fatalf("ovsIfaceIDPrefix (%q) != vm.OVSIfaceID prefix (%q): ListIMDSTaps would recover no ENIs and all IMDS responders would stop", ovsIfaceIDPrefix, got)
 	}
 }
 

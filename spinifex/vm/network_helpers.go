@@ -115,6 +115,20 @@ func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) {
 	}
 }
 
+// detachPrimaryIMDSDatapath removes the per-tap IMDS datapath for the instance's
+// primary ENI at terminate, the inverse of attachPrimaryIMDSDatapath. Best-effort:
+// a failure is logged and never fails teardown. Only the primary ENI carries the
+// datapath; teardown keys off the ENI-derived port names, so no subnet is needed.
+func (m *Manager) detachPrimaryIMDSDatapath(instance *VM) {
+	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
+		return
+	}
+	if err := m.deps.NetworkPlumber.DetachIMDSDatapath(instance.ENIId); err != nil {
+		slog.Warn("IMDS: per-tap datapath detach failed (continuing)",
+			"instance", instance.ID, "eni", instance.ENIId, "err", err)
+	}
+}
+
 // setupExtraENINICs creates tap devices on br-int and appends matching QEMU
 // virtio-net device entries to instance.Config for each additional ENI a
 // system VM spans. The primary ENI is handled separately by the launch

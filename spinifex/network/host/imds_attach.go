@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -15,6 +16,15 @@ import (
 // separately by the IMDS responder.
 func (p *OVSPlumber) AttachIMDSDatapath(eniID, mac, subnetID string) error {
 	return installIMDSDatapath(context.Background(), NewExecRunner(), imdsDatapathSpec(eniID, mac, subnetID))
+}
+
+// DetachIMDSDatapath tears down the per-tap IMDS datapath for a primary-ENI tap:
+// reply routing, the demux/egress/forward flows, the br-imds<->br-int patch, and
+// the endpoint — the inverse of AttachIMDSDatapath. The shared br-imds bridge is
+// left in place. Wired into the tap lifecycle at terminate. Idempotent (safe for
+// an ENI whose datapath was never installed).
+func (p *OVSPlumber) DetachIMDSDatapath(eniID string) error {
+	return removeIMDSDatapath(context.Background(), NewExecRunner(), imdsDetachSpec(eniID))
 }
 
 // EnsureIMDSDatapathBridge idempotently creates the dedicated IMDS bridge. The
@@ -43,6 +53,17 @@ func imdsDatapathSpec(eniID, mac, subnetID string) IMDSTapDatapath {
 	}
 }
 
+// imdsDetachSpec derives the identifiers teardown keys off: the endpoint (its
+// flow cookie + reply table) and the patch pair. RemoveTapDatapath and
+// RemoveTapReplyRouting need no guest/gateway MAC, so those are omitted.
+func imdsDetachSpec(eniID string) IMDSTapDatapath {
+	return IMDSTapDatapath{
+		Endpoint:  IMDSEndpointName(eniID),
+		PatchIMDS: IMDSPatchPort(eniID),
+		PatchInt:  IMDSIntPatchPort(eniID),
+	}
+}
+
 // installIMDSDatapath ensures br-imds exists, then realises the per-tap datapath:
 // the br-imds<->br-int patch (so the guest's non-IMDS traffic still reaches OVN),
 // the endpoint + demux/egress flows, and reply routing. Ordering matters: the
@@ -59,4 +80,15 @@ func installIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error
 		return err
 	}
 	return InstallTapReplyRouting(ctx, r, d)
+}
+
+// removeIMDSDatapath reverses installIMDSDatapath. Reply routing goes first: its
+// ip rule is keyed by the endpoint name and must be dropped while the endpoint
+// exists, before RemoveTapDatapath deletes the endpoint port. Both run regardless
+// of the other's outcome so a partial install still tears fully down. The shared
+// br-imds bridge is never removed here.
+func removeIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
+	replyErr := RemoveTapReplyRouting(ctx, r, d)
+	dpErr := RemoveTapDatapath(ctx, r, d)
+	return errors.Join(replyErr, dpErr)
 }

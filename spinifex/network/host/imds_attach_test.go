@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -87,6 +88,60 @@ func TestInstallIMDSDatapath(t *testing.T) {
 	rule := cmdIndex(s.calls, "ip rule add oif "+d.Endpoint)
 	if bridge >= patch || bridge >= endpoint || endpoint >= rule {
 		t.Errorf("install order wrong: bridge=%d patch=%d endpoint=%d rule=%d (want bridge<patch, bridge<endpoint<rule)", bridge, patch, endpoint, rule)
+	}
+}
+
+func TestIMDSDetachSpec(t *testing.T) {
+	const eniID = "eni-0abc1234deadbeef"
+	d := imdsDetachSpec(eniID)
+
+	// Teardown keys off the endpoint (flow cookie + reply table) and the patch
+	// pair, all derived from the ENI — matching what the attach spec installs.
+	if d.Endpoint != IMDSEndpointName(eniID) {
+		t.Errorf("Endpoint = %q, want %q", d.Endpoint, IMDSEndpointName(eniID))
+	}
+	if d.PatchIMDS != IMDSPatchPort(eniID) {
+		t.Errorf("PatchIMDS = %q, want %q", d.PatchIMDS, IMDSPatchPort(eniID))
+	}
+	if d.PatchInt != IMDSIntPatchPort(eniID) {
+		t.Errorf("PatchInt = %q, want %q", d.PatchInt, IMDSIntPatchPort(eniID))
+	}
+}
+
+func TestRemoveIMDSDatapath(t *testing.T) {
+	s := newStubRunner()
+	s.expect("ip", nil, nil)
+	s.expect("ovs-ofctl", nil, nil)
+	s.expect("ovs-vsctl", nil, nil)
+
+	d := imdsDetachSpec("eni-0abc1234")
+	if err := removeIMDSDatapath(context.Background(), s, d); err != nil {
+		t.Fatalf("removeIMDSDatapath: %v", err)
+	}
+	cookie := imdsFlowCookie(d.Endpoint)
+	table := strconv.Itoa(imdsReplyTable(d.Endpoint))
+
+	for _, w := range []string{
+		// Reply routing removed first (rule keyed by endpoint, table flushed).
+		"ip rule del oif " + d.Endpoint + " lookup " + table,
+		"ip route flush table " + table,
+		// Then flows (by cookie), the patch pair, and the endpoint port.
+		"ovs-ofctl del-flows " + IMDSBridge + " cookie=" + cookie + "/-1",
+		"ovs-vsctl --if-exists del-port " + IMDSBridge + " " + d.PatchIMDS,
+		"ovs-vsctl --if-exists del-port br-int " + d.PatchInt,
+		"ovs-vsctl --if-exists del-port " + IMDSBridge + " " + d.Endpoint,
+	} {
+		if !s.called(w) {
+			t.Errorf("missing command:\n  %q\ncalls: %v", w, s.calls)
+		}
+	}
+
+	// Ordering: the reply rule must be dropped before the endpoint port is
+	// deleted (the rule is keyed by the endpoint name).
+	rule := cmdIndex(s.calls, "ip rule del oif "+d.Endpoint)
+	endpoint := cmdIndex(s.calls, "ovs-vsctl --if-exists del-port "+IMDSBridge+" "+d.Endpoint)
+	if rule < 0 || endpoint < 0 || rule >= endpoint {
+		t.Errorf("teardown order wrong: rule=%d endpoint=%d (want rule<endpoint)", rule, endpoint)
 	}
 }
 

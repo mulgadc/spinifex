@@ -17,4 +17,10 @@ type NetworkPlumber interface {
 	// realises only the host datapath — serving is wired separately by the IMDS
 	// responder's reconcile-from-taps.
 	AttachIMDSDatapath(eniID, mac, subnetID string) error
+
+	// DetachIMDSDatapath tears down the per-tap IMDS datapath installed by
+	// AttachIMDSDatapath (reply routing, flows, patch pair, endpoint), leaving
+	// the shared br-imds bridge in place. Called at terminate; idempotent, so
+	// safe for an ENI that never had a datapath installed.
+	DetachIMDSDatapath(eniID string) error
 }

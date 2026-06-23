@@ -15,10 +15,12 @@ type fakeNetworkPlumber struct {
 	setupCalls        []TapSpec
 	cleanupCalls      []string
 	imdsAttachCalls   []imdsAttachCall
+	imdsDetachCalls   []string
 	ensureBridgeCalls int
 	setupErr          error
 	cleanupErr        error
 	imdsAttachErr     error
+	imdsDetachErr     error
 	ensureBridgeErr   error
 }
 
@@ -42,6 +44,11 @@ func (p *fakeNetworkPlumber) CleanupTap(name string) error {
 func (p *fakeNetworkPlumber) AttachIMDSDatapath(eniID, mac, subnetID string) error {
 	p.imdsAttachCalls = append(p.imdsAttachCalls, imdsAttachCall{eniID: eniID, mac: mac, subnetID: subnetID})
 	return p.imdsAttachErr
+}
+
+func (p *fakeNetworkPlumber) DetachIMDSDatapath(eniID string) error {
+	p.imdsDetachCalls = append(p.imdsDetachCalls, eniID)
+	return p.imdsDetachErr
 }
 
 func (p *fakeNetworkPlumber) EnsureIMDSDatapathBridge() error {
@@ -191,6 +198,52 @@ func TestAttachPrimaryIMDSDatapath_AttachErrorIsNonFatal(t *testing.T) {
 	})
 	if len(plumber.imdsAttachCalls) != 1 {
 		t.Errorf("expected the attach to be attempted once, got %d calls", len(plumber.imdsAttachCalls))
+	}
+}
+
+func TestDetachPrimaryIMDSDatapath(t *testing.T) {
+	tests := []struct {
+		name     string
+		instance *VM
+		want     []string
+	}{
+		{
+			name:     "primary ENI detaches once by ENI ID",
+			instance: &VM{ID: "i-primary", ENIId: "eni-abc123"},
+			want:     []string{"eni-abc123"},
+		},
+		{
+			name:     "no primary ENI is a no-op",
+			instance: &VM{ID: "i-no-eni"},
+			want:     nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plumber := &fakeNetworkPlumber{}
+			m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+			m.detachPrimaryIMDSDatapath(tt.instance)
+			if !reflect.DeepEqual(plumber.imdsDetachCalls, tt.want) {
+				t.Errorf("imdsDetachCalls = %+v, want %+v", plumber.imdsDetachCalls, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetachPrimaryIMDSDatapath_NilPlumber_NoOp(t *testing.T) {
+	m := NewManagerWithDeps(Deps{})
+	// Must not panic without a plumber.
+	m.detachPrimaryIMDSDatapath(&VM{ID: "i-no-plumber", ENIId: "eni-abc123"})
+}
+
+func TestDetachPrimaryIMDSDatapath_DetachErrorIsNonFatal(t *testing.T) {
+	plumber := &fakeNetworkPlumber{imdsDetachErr: errors.New("simulated detach failure")}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	// Best-effort: a failing detach must not panic or surface — teardown
+	// continues so the tap and remaining state are still cleaned up.
+	m.detachPrimaryIMDSDatapath(&VM{ID: "i-detach-err", ENIId: "eni-abc123"})
+	if len(plumber.imdsDetachCalls) != 1 {
+		t.Errorf("expected the detach to be attempted once, got %d calls", len(plumber.imdsDetachCalls))
 	}
 }
 

@@ -619,7 +619,8 @@ func TestHTTP_NetworkInterfacePublicAbsent(t *testing.T) {
 }
 
 // On a CIDR miss the CIDR leaves 404 and drop from the listing; a resolver error
-// is a 500, never an empty CIDR a guest would mis-render into its network config.
+// is a 500 on both the leaf and the listing, never an empty/dropped CIDR a guest
+// would mis-render into its network config.
 func TestHTTP_NetworkInterfaceCidrMiss(t *testing.T) {
 	res := &fakeResolver{eni: testENI()} // no canned CIDRs → miss
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
@@ -639,10 +640,12 @@ func TestHTTP_NetworkInterfaceCidrMiss(t *testing.T) {
 	errSvc, _ := newTestService(errRes, &fakeIAM{}, &fakeAssumer{})
 	errH := withTapENI(errSvc.httpHandler(), testENI())
 	errToken := issueToken(t, errH)
-	for _, key := range []string{"subnet-ipv4-cidr-block", "vpc-ipv4-cidr-block"} {
+	for _, key := range []string{"subnet-ipv4-cidr-block", "vpc-ipv4-cidr-block", "vpc-ipv4-cidr-blocks"} {
 		rec := get(t, errH, macPath(mac, key), errToken)
 		assert.Equal(t, http.StatusInternalServerError, rec.Code, "key=%s", key)
 	}
+	listingRec := get(t, errH, macPath(mac, ""), errToken)
+	assert.Equal(t, http.StatusInternalServerError, listingRec.Code, "listing under resolver error")
 }
 
 // A MAC that is not the caller's is 404: the per-tap responder only serves its own ENI.

@@ -417,7 +417,13 @@ func (s *IMDSServiceImpl) serveNetworkInterface(w http.ResponseWriter, eni *eniF
 	}
 	switch key {
 	case "": // "<mac>" or "<mac>/" — the per-interface key listing
-		writeText(w, strings.Join(s.macKeys(eni), "\n"))
+		keys, err := s.macKeys(eni)
+		if err != nil {
+			slog.Error("IMDS: network-interface listing failed", "account_id", eni.accountID, "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		writeText(w, strings.Join(keys, "\n"))
 	case "mac":
 		writeText(w, eni.mac)
 	case "device-number":
@@ -453,27 +459,35 @@ func (s *IMDSServiceImpl) serveNetworkInterface(w http.ResponseWriter, eni *eniF
 	}
 }
 
-// macKeys lists exactly the leaf keys served under macs/<mac>/, so cloud-init's
-// recursive crawl never lists a key that 404s: the CIDR keys appear only when the
-// CIDR resolves, the public keys only when the ENI has a public IP. Sorted for a
-// deterministic, AWS-shaped listing.
-func (s *IMDSServiceImpl) macKeys(eni *eniFacts) []string {
+// macKeys lists exactly the leaf keys served under macs/<mac>/ so cloud-init's
+// recursive crawl never lists a key that 404s: CIDR keys appear only when the CIDR
+// resolves, public keys only with a public IP. A resolver fault is propagated so the
+// listing 500s like the leaf, never silently dropping a key on a transient KV blip.
+func (s *IMDSServiceImpl) macKeys(eni *eniFacts) ([]string, error) {
 	keys := []string{
 		"device-number", "interface-id", "local-hostname", "local-ipv4s",
 		"mac", "owner-id", "security-group-ids", "security-groups",
 		"subnet-id", "vpc-id",
 	}
-	if cidr, err := s.resolver.resolveSubnetCIDR(eni.accountID, eni.subnetID); err == nil && cidr != "" {
+	subnetCIDR, err := s.resolver.resolveSubnetCIDR(eni.accountID, eni.subnetID)
+	if err != nil {
+		return nil, err
+	}
+	if subnetCIDR != "" {
 		keys = append(keys, "subnet-ipv4-cidr-block")
 	}
-	if cidr, err := s.resolver.resolveVPCCIDR(eni.accountID, eni.vpcID); err == nil && cidr != "" {
+	vpcCIDR, err := s.resolver.resolveVPCCIDR(eni.accountID, eni.vpcID)
+	if err != nil {
+		return nil, err
+	}
+	if vpcCIDR != "" {
 		keys = append(keys, "vpc-ipv4-cidr-block", "vpc-ipv4-cidr-blocks")
 	}
 	if eni.publicIP != "" {
 		keys = append(keys, "public-hostname", "public-ipv4s")
 	}
 	sort.Strings(keys)
-	return keys
+	return keys, nil
 }
 
 // serveCIDR resolves and writes a subnet/VPC CIDR: 404 on miss, 500 on a backend

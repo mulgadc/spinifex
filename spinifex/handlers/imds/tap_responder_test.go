@@ -166,21 +166,19 @@ func TestTapResponder_StartValidatesArgs(t *testing.T) {
 	require.Error(t, m.start(context.Background(), "eni-x", ""))
 }
 
-// resolveCaller treats a context-threaded ENI as authoritative, ignoring the
-// (vpcID, srcIP) localport keys entirely — even a bogus VPC in context.
+// resolveCaller reads the per-tap ENI threaded into the request context as the
+// authoritative caller identity.
 func TestResolveCaller_PerTapENIWins(t *testing.T) {
 	svc, _ := newTestService(&fakeResolver{eniErr: errors.New("must not be called")}, &fakeIAM{}, &fakeAssumer{})
 	want := &eniFacts{eniID: "eni-tap", instanceID: "i-tap"}
 
 	req := httptest.NewRequest(http.MethodGet, "http://"+MetaDataServerIP+prefixMetaData, nil)
 	req.RemoteAddr = "10.9.9.9:40000"
-	ctx := context.WithValue(req.Context(), ctxKeyVPCID, "vpc-bogus")
-	ctx = context.WithValue(ctx, ctxKeyENI, want)
-	req = req.WithContext(ctx)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyENI, want))
 
 	got := svc.resolveCaller(req)
 	require.NotNil(t, got)
-	assert.Equal(t, "eni-tap", got.eniID, "threaded ENI must win over the localport path")
+	assert.Equal(t, "eni-tap", got.eniID, "threaded ENI must be the caller identity")
 }
 
 // ----- helpers ----------------------------------------------------------

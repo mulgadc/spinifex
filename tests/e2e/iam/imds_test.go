@@ -621,10 +621,10 @@ func imdsEnsureRoleProfile(t *testing.T, fix *Fixture, adminAccount string) {
 }
 
 // imdsAwaitToken PUTs an IMDSv2 token from inside the guest, retrying to ride
-// out the cold-start window before BindManager.Sync + the ENI reverse-index
-// land. Returns the token. On timeout it dumps the per-subnet IMDS datapath
-// (OVN realisation + host veth route/neigh + conntrack) before failing, so a
-// reachability timeout (exit 28) is triaged as request-path vs reply-path
+// out the cold-start window before vpcd's reconcile-from-taps binds the per-tap
+// responder. Returns the token. On timeout it dumps the per-tap IMDS datapath
+// (br-imds flows/ports + reply routing + listener + conntrack) before failing,
+// so a reachability timeout (exit 28) is triaged as request-path vs reply-path
 // rather than a bare "condition not met".
 func imdsAwaitToken(t *testing.T, fix *Fixture, tgt harness.SSHTarget, subnetID, guestIP string) string {
 	t.Helper()

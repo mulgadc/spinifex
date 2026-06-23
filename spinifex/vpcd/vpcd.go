@@ -459,17 +459,6 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	// Create IMDS KV at replica=1; daemon upgrades replicas later. Using chassis count here
-	// could exceed the NATS node count and fail bucket creation.
-	imdsVethKV, _, err := handlers_imds.InitBuckets(js, 1)
-	if err != nil {
-		return fmt.Errorf("init imds buckets: %w", err)
-	}
-	imdsTopoMgr, err := external.NewIMDSTopologyManager(liveClient, handlers_imds.NewVethStore(imdsVethKV))
-	if err != nil {
-		return fmt.Errorf("construct IMDS topology manager: %w", err)
-	}
-
 	// vpcd holds the network capabilities needed for IMDS; STS/IAM stay in awsgw over NATS.
 	imdsCtx, cancelIMDS := context.WithCancel(ctx)
 	defer cancelIMDS()
@@ -492,7 +481,6 @@ func launchService(cfg *Config) error {
 		handlers_imds.NewNATSProfileLookup(nc),
 		handlers_imds.NewNATSPublicKeyLookup(nc),
 		max(len(chassisNames), 1),
-		host.EnsureIMDSVeth, host.RemoveIMDSVeth,
 		listTaps,
 	)
 	if err != nil {
@@ -551,7 +539,6 @@ func launchService(cfg *Config) error {
 		EIP:      eipMgr,
 		NATGW:    natgwMgr,
 		IGW:      igwMgr,
-		IMDS:     imdsTopoMgr,
 	})
 	if err != nil {
 		return fmt.Errorf("construct subscriber: %w", err)
@@ -574,7 +561,6 @@ func launchService(cfg *Config) error {
 		Routes:       routeMgr,
 		IGW:          igwMgr,
 		Topology:     topoMgr,
-		IMDS:         imdsTopoMgr,
 		LocalAZ:      cfg.AZ,
 		NodeHostname: holder,
 		Chassis:      chassisNames,

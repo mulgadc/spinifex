@@ -23,18 +23,15 @@ type Subscriber struct {
 	eip      external.EIPManager
 	natgw    external.NATGWManager
 	igw      external.IGWManager
-	imds     external.IMDSTopologyManager
 }
 
-// Config: all fields required except IMDS.
+// Config: all fields required.
 type Config struct {
 	Topology topology.Manager
 	SG       policy.SecurityGroupManager
 	EIP      external.EIPManager
 	NATGW    external.NATGWManager
 	IGW      external.IGWManager
-	// IMDS installs/removes IMDS OVN topology on vpc.create/delete. Optional.
-	IMDS external.IMDSTopologyManager
 }
 
 // New constructs a Subscriber, returning an error when any manager is nil.
@@ -57,7 +54,6 @@ func New(cfg Config) (*Subscriber, error) {
 		eip:      cfg.EIP,
 		natgw:    cfg.NATGW,
 		igw:      cfg.IGW,
-		imds:     cfg.IMDS,
 	}, nil
 }
 

@@ -8,7 +8,10 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // tapListenFunc binds a TCP listener on 169.254.169.254:80 to the per-tap
@@ -171,4 +174,22 @@ func (m *tapResponderManager) shutdown() {
 func bindTapListener(ctx context.Context, endpoint string) (net.Listener, error) {
 	lc := net.ListenConfig{Control: bindToDeviceControl(endpoint)}
 	return lc.Listen(ctx, "tcp4", net.JoinHostPort(MetaDataServerIP, "80"))
+}
+
+// bindToDeviceControl returns a ListenConfig.Control that scopes the socket to
+// dev via SO_BINDTODEVICE and sets SO_REUSEADDR — the per-tap responder's serving
+// socket binds the .254 address but accepts only frames arriving on its endpoint.
+func bindToDeviceControl(dev string) func(string, string, syscall.RawConn) error {
+	return func(_, _ string, c syscall.RawConn) error {
+		var sockErr error
+		if err := c.Control(func(fd uintptr) {
+			if sockErr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, dev); sockErr != nil {
+				return
+			}
+			sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+		}); err != nil {
+			return err
+		}
+		return sockErr
+	}
 }

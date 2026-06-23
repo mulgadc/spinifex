@@ -44,34 +44,30 @@ type IMDSService interface {
 
 var _ IMDSService = (*IMDSServiceImpl)(nil)
 
-// eniResolver maps a request to ENI + instance facts, either from a datapath-
-// attested (vpcID, srcIP) (per-subnet localport) or from the tap's ENI ID
-// (per-tap responder).
+// eniResolver maps a tap's ENI ID to ENI + instance facts.
 type eniResolver interface {
-	resolveENI(vpcID, srcIP string) (*eniFacts, error)
 	resolveENIByID(eniID string) (*eniFacts, error)
 	resolveInstance(eni *eniFacts) (*instanceFacts, error)
 	resolveSGNames(accountID string, sgIDs []string) []string
 }
 
-// IMDSServiceImpl is the in-process IMDS implementation. It carries both the
-// per-subnet localport listener stack (live) and the per-tap responder manager
-// (built but off the production path until the Phase 3 cutover).
+// IMDSServiceImpl is the in-process IMDS implementation. It runs one per-tap
+// responder per local primary-ENI tap, each serving the shared mux with the
+// tap's ENI identity.
 type IMDSServiceImpl struct {
 	resolver eniResolver
 	tokens   *tokenStore
 	creds    *credCache
 	iam      profileLookup
 	pubKeys  publicKeyLookup
-	bind     *bindManager
 	tapResp  *tapResponderManager
 	listTaps listTapsFunc
 	now      func() time.Time
 }
 
-// NewIMDSServiceImpl wires the IMDS service. ensureVeth/removeVeth and listTaps
-// are injected to avoid a network/host import cycle.
-func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, ensureVeth ensureVethFunc, removeVeth removeVethFunc, listTaps listTapsFunc) (*IMDSServiceImpl, error) {
+// NewIMDSServiceImpl wires the IMDS service. listTaps is injected to avoid a
+// network/host import cycle.
+func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -84,9 +80,6 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 	if pubKeys == nil {
 		return nil, errors.New("nil public key service")
 	}
-	if ensureVeth == nil || removeVeth == nil {
-		return nil, errors.New("nil veth lifecycle hooks")
-	}
 	if listTaps == nil {
 		return nil, errors.New("nil tap enumerator")
 	}
@@ -96,17 +89,9 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	indexKV, err := js.KeyValue(KVBucketENIByVPCIP)
-	if err != nil {
-		return nil, fmt.Errorf("open %s bucket: %w", KVBucketENIByVPCIP, err)
-	}
 	eniKV, err := js.KeyValue(kvBucketENIs)
 	if err != nil {
 		return nil, fmt.Errorf("open %s bucket: %w", kvBucketENIs, err)
-	}
-	vethKV, err := js.KeyValue(KVBucketIMDSSubnetVeth)
-	if err != nil {
-		return nil, fmt.Errorf("open %s bucket: %w", KVBucketIMDSSubnetVeth, err)
 	}
 
 	// Open SG bucket best-effort; IMDS starts fine without it, degrading to raw IDs.
@@ -118,7 +103,6 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 
 	svc := &IMDSServiceImpl{
 		resolver: &metadataResolver{
-			index:  indexKV,
 			eniKV:  eniKV,
 			sgKV:   sgKV,
 			lookup: &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
@@ -130,19 +114,15 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 		listTaps: listTaps,
 		now:      time.Now,
 	}
-	// One shared mux serves both stacks: the per-subnet localport listeners and
-	// the per-tap responders thread their respective identities via BaseContext.
-	handler := svc.httpHandler()
-	svc.bind = newBindManager(vethKV, handler, ensureVeth, removeVeth, bindLocalListener)
-	svc.tapResp = newTapResponderManager(handler, svc.resolver.resolveENIByID, bindTapListener)
+	// Each per-tap responder serves the shared mux, threading its tap's ENI
+	// identity into every request via BaseContext.
+	svc.tapResp = newTapResponderManager(svc.httpHandler(), svc.resolver.resolveENIByID, bindTapListener)
 
-	slog.Info("IMDS service initialized",
-		"index_bucket", KVBucketENIByVPCIP,
-		"veth_bucket", KVBucketIMDSSubnetVeth)
+	slog.Info("IMDS service initialized", "eni_bucket", kvBucketENIs)
 	return svc, nil
 }
 
-// httpHandler builds the shared mux for every per-subnet listener.
+// httpHandler builds the shared mux for every per-tap responder.
 func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(pathToken, s.handleToken)
@@ -150,19 +130,14 @@ func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	return rejectForwarded(normalizeVersion(mux))
 }
 
-// Run starts the bind manager (sync + watch), the per-tap reconcile loop, and the
-// token-sweep ticker, then blocks until ctx is done. Initial failures are
-// non-fatal; vpcd readiness must not be gated on IMDS.
+// Run starts the per-tap reconcile loop and the token-sweep ticker, then blocks
+// until ctx is done. Initial failures are non-fatal; vpcd readiness must not be
+// gated on IMDS.
 func (s *IMDSServiceImpl) Run(ctx context.Context) error {
-	if err := s.bind.sync(ctx); err != nil {
-		slog.Warn("IMDS: initial bind sync failed, continuing", "err", err)
-	}
-	go s.bind.watch(ctx)
 	go s.reconcileTaps(ctx)
 	go s.sweepExpired(ctx)
 
 	<-ctx.Done()
-	s.bind.shutdown()
 	s.tapResp.shutdown()
 	return ctx.Err()
 }

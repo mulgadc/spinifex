@@ -47,12 +47,6 @@ type instanceLookup interface {
 	describe(accountID, instanceID string) (*instanceFacts, error)
 }
 
-// eniIndexValue mirrors the eni-by-vpc-ip row shape, duplicated to avoid an import cycle.
-type eniIndexValue struct {
-	ENIId     string `json:"eni_id"`
-	AccountID string `json:"account_id"`
-}
-
 // sgNameRecord holds the human-readable group name for the /security-groups path.
 type sgNameRecord struct {
 	GroupName string `json:"group_name"`
@@ -71,50 +65,15 @@ type eniRecord struct {
 	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
 }
 
-// metadataResolver maps a datapath-attested (vpcID, srcIP) to ENI + instance facts.
-// Resolution chain: (vpcID,ip)→eniID via reverse index → ENIRecord → instanceFacts.
+// metadataResolver resolves a tap's ENI ID to ENI + instance facts.
+// Resolution chain: eniID → ENIRecord (account recovered from the bucket key) → instanceFacts.
 type metadataResolver struct {
-	index  nats.KeyValue // spinifex-network-eni-by-vpc-ip
 	eniKV  nats.KeyValue // spinifex-vpc-enis
 	sgKV   nats.KeyValue // spinifex-vpc-security-groups (nil-safe: degrades to IDs)
 	lookup instanceLookup
 }
 
 var _ eniResolver = (*metadataResolver)(nil)
-
-// resolveENI returns ENI facts for (vpcID, srcIP), or (nil, nil) on miss.
-func (r *metadataResolver) resolveENI(vpcID, srcIP string) (*eniFacts, error) {
-	entry, err := r.index.Get(vpcID + "/" + srcIP)
-	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get eni-by-ip index %s/%s: %w", vpcID, srcIP, err)
-	}
-
-	var idx eniIndexValue
-	if err := json.Unmarshal(entry.Value(), &idx); err != nil {
-		return nil, fmt.Errorf("unmarshal eni-by-ip index %s/%s: %w", vpcID, srcIP, err)
-	}
-	if idx.ENIId == "" || idx.AccountID == "" {
-		return nil, nil
-	}
-
-	raw, err := r.eniKV.Get(idx.AccountID + "." + idx.ENIId)
-	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get eni record %s.%s: %w", idx.AccountID, idx.ENIId, err)
-	}
-
-	var rec eniRecord
-	if err := json.Unmarshal(raw.Value(), &rec); err != nil {
-		return nil, fmt.Errorf("unmarshal eni record %s: %w", idx.ENIId, err)
-	}
-
-	return eniFactsFromRecord(idx.AccountID, &rec), nil
-}
 
 // resolveENIByID returns ENI facts for an ENI located by its ID alone — the
 // per-tap identity path. The tap maps one-to-one to an ENI, so the ENI ID is the

@@ -95,13 +95,13 @@ func TestInstallIMDSDatapath(t *testing.T) {
 	// installer would wipe an earlier installer's flows under the same cookie —
 	// notably the patch's forward flows, leaving the guest with no non-IMDS path.
 	cookie := imdsFlowCookie(d.Endpoint)
-	clear := cmdIndex(s.calls, "ovs-ofctl del-flows "+IMDSBridge+" cookie="+cookie+"/-1")
+	clearIdx := cmdIndex(s.calls, "ovs-ofctl del-flows "+IMDSBridge+" cookie="+cookie+"/-1")
 	firstAdd := cmdIndex(s.calls, "ovs-ofctl add-flow")
-	if clear < 0 {
+	if clearIdx < 0 {
 		t.Errorf("missing up-front cookie clear; calls: %v", s.calls)
 	}
-	if firstAdd < 0 || clear >= firstAdd {
-		t.Errorf("cookie clear must precede all add-flows: clear=%d firstAdd=%d (calls: %v)", clear, firstAdd, s.calls)
+	if firstAdd < 0 || clearIdx >= firstAdd {
+		t.Errorf("cookie clear must precede all add-flows: clear=%d firstAdd=%d (calls: %v)", clearIdx, firstAdd, s.calls)
 	}
 	// And exactly one clear: a second would mean an installer re-cleared the cookie.
 	if n := countCalls(s.calls, "ovs-ofctl del-flows "+IMDSBridge+" cookie="+cookie+"/-1"); n != 1 {

@@ -86,12 +86,6 @@ func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	// IMDS localport lives on every subnet switch. Best-effort; reconciler re-ensures it.
-	if s.imds != nil {
-		if _, err := s.imds.EnsureForSubnet(ctx, evt.SubnetId, evt.VpcId, cidr); err != nil {
-			slog.Warn("subscribers: IMDS EnsureForSubnet failed; reconciler will converge", "subnet_id", evt.SubnetId, "err", err)
-		}
-	}
 	respond(msg, nil)
 }
 
@@ -109,14 +103,6 @@ func (s *Subscriber) handleSubnetDelete(msg *nats.Msg) {
 		}
 	}
 	ctx := context.Background()
-	// Remove the IMDS localport before the subnet switch goes away.
-	if s.imds != nil {
-		if err := s.imds.RemoveForSubnet(ctx, evt.SubnetId); err != nil {
-			slog.Error("subscribers: IMDS RemoveForSubnet failed", "subnet_id", evt.SubnetId, "err", err)
-			respond(msg, err)
-			return
-		}
-	}
 	if err := s.topology.DeleteSubnet(ctx, spec); err != nil {
 		slog.Error("subscribers: DeleteSubnet failed", "subnet_id", evt.SubnetId, "err", err)
 		respond(msg, err)

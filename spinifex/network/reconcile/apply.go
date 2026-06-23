@@ -124,13 +124,6 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			}
 		}
 
-		// IMDS localport rides on the subnet switch; idempotent.
-		if r.imds != nil {
-			if _, err := r.imds.EnsureForSubnet(ctx, subnetID, spec.VPCID, spec.CIDR); err != nil {
-				slog.Error("reconcile/apply: IMDS EnsureForSubnet failed", "subnet_id", subnetID, "err", err)
-			}
-		}
-
 		if existing, err := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", subnetID); err != nil || existing == nil {
 			opts := &nbdb.DHCPOptions{
 				CIDR:    spec.CIDR.String(),

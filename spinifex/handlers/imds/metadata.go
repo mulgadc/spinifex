@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 const (
@@ -127,26 +126,11 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 	s.dispatch(w, r, eni)
 }
 
-// resolveCaller maps (vpcID-from-context, source-IP) to the owning ENI.
-// Returns nil on miss or backend error, producing a 404 instead of 500.
+// resolveCaller returns the request's owning ENI, threaded in via ctxKeyENI by the
+// per-tap responder (resolved once from the tap's bound device). The tap is unique,
+// so source IP is never consulted. Returns nil on miss, producing a 404 not a 500.
 func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
-	vpcID, _ := r.Context().Value(ctxKeyVPCID).(string)
-	subnetID, _ := r.Context().Value(ctxKeySubnetID).(string)
-	srcIP := utils.ClientIP(r.RemoteAddr)
-	if vpcID == "" || srcIP == "" {
-		slog.Warn("IMDS: request missing VPC context or source IP", "vpc_id", vpcID, "subnet_id", subnetID, "remote_addr", r.RemoteAddr)
-		return nil
-	}
-
-	eni, err := s.resolver.resolveENI(vpcID, srcIP)
-	if err != nil {
-		slog.Error("IMDS: ENI resolution failed", "vpc_id", vpcID, "subnet_id", subnetID, "src_ip", srcIP, "err", err)
-		return nil
-	}
-	if eni == nil {
-		slog.Warn("IMDS: no ENI for source IP", "vpc_id", vpcID, "subnet_id", subnetID, "src_ip", srcIP)
-		return nil
-	}
+	eni, _ := r.Context().Value(ctxKeyENI).(*eniFacts)
 	return eni
 }
 
@@ -511,10 +495,10 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_, _ = w.Write(data)
 }
 
-// ctxKey is the unexported context-key type used to thread subnet and VPC into each request.
+// ctxKey is the unexported context-key type used to thread the per-tap ENI
+// identity into each request.
 type ctxKey int
 
-const (
-	ctxKeyVPCID ctxKey = iota
-	ctxKeySubnetID
-)
+// ctxKeyENI carries a *eniFacts resolved once per per-tap responder — the
+// authoritative caller identity for every request it serves.
+const ctxKeyENI ctxKey = iota

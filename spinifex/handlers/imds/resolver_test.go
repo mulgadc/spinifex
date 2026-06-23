@@ -25,20 +25,18 @@ func (f *fakeLookup) describe(_, _ string) (*instanceFacts, error) {
 }
 
 // newTestResolver wires a metadataResolver onto a live test JetStream with the
-// three buckets it reads (eni-by-vpc-ip index, ENI source-of-truth, SG names)
-// created empty, plus a fake instance lookup the caller can program.
+// two buckets it reads (ENI source-of-truth, SG names) created empty, plus a
+// fake instance lookup the caller can program.
 func newTestResolver(t *testing.T) (*metadataResolver, *fakeLookup) {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	index, err := InitENIByIPBucket(js, 1)
-	require.NoError(t, err)
 	eniKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: kvBucketENIs, History: 1})
 	require.NoError(t, err)
 	sgKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: kvBucketSecurityGroups, History: 1})
 	require.NoError(t, err)
 
 	lookup := &fakeLookup{}
-	return &metadataResolver{index: index, eniKV: eniKV, sgKV: sgKV, lookup: lookup}, lookup
+	return &metadataResolver{eniKV: eniKV, sgKV: sgKV, lookup: lookup}, lookup
 }
 
 func putJSON(t *testing.T, kv nats.KeyValue, key string, v any) {
@@ -49,12 +47,18 @@ func putJSON(t *testing.T, kv nats.KeyValue, key string, v any) {
 	require.NoError(t, err)
 }
 
-// seedENI writes a complete index → ENI chain for (testVPC, testIP) and returns
-// the resolver ready to serve it.
-func seedENI(t *testing.T, r *metadataResolver) {
+// seedENIByID writes an ENI record keyed "{accountID}.{eniID}" — the per-tap
+// path's source of truth.
+func seedENIByID(t *testing.T, r *metadataResolver, accountID, eniID string, rec eniRecord) {
 	t.Helper()
-	putJSON(t, r.index, testVPC+"/"+testIP, eniIndexValue{ENIId: "eni-aaa", AccountID: "111122223333"})
-	putJSON(t, r.eniKV, "111122223333.eni-aaa", eniRecord{
+	putJSON(t, r.eniKV, accountID+"."+eniID, rec)
+}
+
+// The per-tap path resolves an ENI from its ID alone and recovers the owning
+// account from the bucket key, with no reverse-index lookup.
+func TestResolveENIByID_Hit(t *testing.T) {
+	r, _ := newTestResolver(t)
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{
 		NetworkInterfaceId: "eni-aaa",
 		SubnetId:           "subnet-1",
 		VpcId:              testVPC,
@@ -65,13 +69,8 @@ func seedENI(t *testing.T, r *metadataResolver) {
 		PublicIpAddress:    "203.0.113.7",
 		SecurityGroupIds:   []string{"sg-1", "sg-2"},
 	})
-}
 
-func TestResolveENI_Hit(t *testing.T) {
-	r, _ := newTestResolver(t)
-	seedENI(t, r)
-
-	eni, err := r.resolveENI(testVPC, testIP)
+	eni, err := r.resolveENIByID("eni-aaa")
 	require.NoError(t, err)
 	require.NotNil(t, eni)
 	assert.Equal(t, "eni-aaa", eni.eniID)
@@ -86,52 +85,83 @@ func TestResolveENI_Hit(t *testing.T) {
 	assert.Equal(t, []string{"sg-1", "sg-2"}, eni.securityGroupIDs)
 }
 
-// A source IP with no reverse-index row is a miss, not an error — the caller
-// maps it to 404 per AWS's "eventually available during boot" posture.
-func TestResolveENI_IndexMissIsNilNil(t *testing.T) {
+// The tap identity is unambiguous even when two tenants share a CIDR and IP: the
+// ENI ID selects exactly one record, and its key supplies the right account.
+func TestResolveENIByID_RecoversAccountAcrossTenants(t *testing.T) {
 	r, _ := newTestResolver(t)
-	eni, err := r.resolveENI(testVPC, "10.9.9.9")
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{
+		NetworkInterfaceId: "eni-aaa", VpcId: testVPC, PrivateIpAddress: testIP, InstanceId: "i-aaaa1111",
+	})
+	seedENIByID(t, r, "444455556666", "eni-bbb", eniRecord{
+		NetworkInterfaceId: "eni-bbb", VpcId: testVPC, PrivateIpAddress: testIP, InstanceId: "i-bbbb2222",
+	})
+
+	a, err := r.resolveENIByID("eni-aaa")
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	assert.Equal(t, "111122223333", a.accountID)
+	assert.Equal(t, "i-aaaa1111", a.instanceID)
+
+	b, err := r.resolveENIByID("eni-bbb")
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, "444455556666", b.accountID)
+	assert.Equal(t, "i-bbbb2222", b.instanceID)
+}
+
+// An unknown ENI ID (or empty bucket) is a miss, not an error — the caller maps
+// it to a 404, matching the boot-time "not yet visible" posture.
+func TestResolveENIByID_MissIsNilNil(t *testing.T) {
+	r, _ := newTestResolver(t)
+	eni, err := r.resolveENIByID("eni-nope")
+	require.NoError(t, err)
+	assert.Nil(t, eni)
+
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{NetworkInterfaceId: "eni-aaa"})
+	eni, err = r.resolveENIByID("eni-other")
 	require.NoError(t, err)
 	assert.Nil(t, eni)
 }
 
-func TestResolveENI_IndexBadJSONErrors(t *testing.T) {
+// An empty ENI ID short-circuits to a miss without scanning the bucket.
+func TestResolveENIByID_EmptyIDIsNilNil(t *testing.T) {
 	r, _ := newTestResolver(t)
-	_, err := r.index.Put(testVPC+"/"+testIP, []byte("not json"))
-	require.NoError(t, err)
-
-	_, err = r.resolveENI(testVPC, testIP)
-	require.Error(t, err)
-}
-
-// An index row missing either identity field is treated as a miss rather than
-// being chased into a malformed ENI Get.
-func TestResolveENI_EmptyIndexFieldsIsNilNil(t *testing.T) {
-	r, _ := newTestResolver(t)
-	putJSON(t, r.index, testVPC+"/"+testIP, eniIndexValue{ENIId: "eni-aaa"}) // no account
-	eni, err := r.resolveENI(testVPC, testIP)
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{NetworkInterfaceId: "eni-aaa"})
+	eni, err := r.resolveENIByID("")
 	require.NoError(t, err)
 	assert.Nil(t, eni)
 }
 
-// A dangling index pointing at an ENI record that no longer exists is a miss,
-// matching a mid-teardown race.
-func TestResolveENI_ENIRecordMissIsNilNil(t *testing.T) {
+func TestResolveENIByID_BadJSONErrors(t *testing.T) {
 	r, _ := newTestResolver(t)
-	putJSON(t, r.index, testVPC+"/"+testIP, eniIndexValue{ENIId: "eni-gone", AccountID: "111122223333"})
-	eni, err := r.resolveENI(testVPC, testIP)
-	require.NoError(t, err)
-	assert.Nil(t, eni)
-}
-
-func TestResolveENI_ENIRecordBadJSONErrors(t *testing.T) {
-	r, _ := newTestResolver(t)
-	putJSON(t, r.index, testVPC+"/"+testIP, eniIndexValue{ENIId: "eni-aaa", AccountID: "111122223333"})
 	_, err := r.eniKV.Put("111122223333.eni-aaa", []byte("not json"))
 	require.NoError(t, err)
 
-	_, err = r.resolveENI(testVPC, testIP)
+	_, err = r.resolveENIByID("eni-aaa")
 	require.Error(t, err)
+}
+
+// End-to-end identity chain: tap-supplied ENI ID → ENI facts → instance facts,
+// surfacing the account and the IAM instance-profile ARN with no srcIP lookup.
+func TestResolveENIByID_ChainsToInstanceProfile(t *testing.T) {
+	r, lookup := newTestResolver(t)
+	lookup.facts = &instanceFacts{
+		iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile",
+	}
+	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{
+		NetworkInterfaceId: "eni-aaa", InstanceId: "i-0123456789",
+	})
+
+	eni, err := r.resolveENIByID("eni-aaa")
+	require.NoError(t, err)
+	require.NotNil(t, eni)
+	assert.Equal(t, "111122223333", eni.accountID)
+
+	inst, err := r.resolveInstance(eni)
+	require.NoError(t, err)
+	require.NotNil(t, inst)
+	assert.Equal(t, "arn:aws:iam::111122223333:instance-profile/app-profile", inst.iamInstanceProfileArn)
+	assert.Equal(t, 1, lookup.calls)
 }
 
 func TestResolveInstance_NoAttachedInstance(t *testing.T) {

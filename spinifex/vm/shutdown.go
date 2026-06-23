@@ -381,6 +381,9 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 // the management TAP/IP allocation. Errors are logged and tolerated.
 func (m *Manager) cleanupTapDevices(instance *VM) {
 	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
+		// Detach the primary ENI's IMDS datapath before removing its tap, the
+		// inverse of the launch-time attach-after-SetupTap order.
+		m.detachPrimaryIMDSDatapath(instance)
 		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(instance.ENIId)); err != nil {
 			slog.Warn("Failed to clean up tap device", "eni", instance.ENIId, "err", err)
 		}

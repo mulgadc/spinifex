@@ -24,7 +24,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -68,21 +67,19 @@ ca_certs:
 {{.UserDataCloudConfig}}
 {{end}}
 
-{{if or .RHELWriteFiles .AlpineWriteFiles .UserDataScript}}
+{{if or .RHELWriteFiles .UserDataScript}}
 write_files:
 {{- if .RHELWriteFiles}}
-{{.RHELWriteFiles}}{{end}}{{if .AlpineWriteFiles}}
-{{.AlpineWriteFiles}}{{end}}{{if .UserDataScript}}
+{{.RHELWriteFiles}}{{end}}{{if .UserDataScript}}
   - path: /tmp/cloud-init-startup.sh
     permissions: '0755'
     content: |
 {{.UserDataScript}}{{end}}
 {{end}}
-{{if or .RHELRunCmd .AlpineRunCmd .UserDataScript}}
+{{if or .RHELRunCmd .UserDataScript}}
 runcmd:
 {{- if .RHELRunCmd}}
-{{.RHELRunCmd}}{{end}}{{if .AlpineRunCmd}}
-{{.AlpineRunCmd}}{{end}}{{if .UserDataScript}}
+{{.RHELRunCmd}}{{end}}{{if .UserDataScript}}
   - [ "/bin/bash", "/tmp/cloud-init-startup.sh" ]
 {{end}}
 {{end}}
@@ -120,17 +117,13 @@ func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP 
 	if distroFamily == "rhel" {
 		return cloudInitNetworkConfigDisabled
 	}
-	// Alpine renders via cloud-init's eni backend, which cannot emit a
-	// gateway-less route; the IMDS on-link route is delivered via
-	// buildAlpineCloudInit instead. Debian/Ubuntu render via netplan, which
-	// handles the on-link route natively.
-	return generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP, extraENIMACs, distroFamily != "alpine")
+	return generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP, extraENIMACs)
 }
 
 // generateNetworkConfig produces the cloud-init network-config for the instance.
 // Emits per-interface blocks when eniMAC is set; falls back to wildcard DHCP
 // when eniMAC is empty.
-func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string, emitIMDSRoute bool) string {
+func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
 	if eniMAC == "" {
 		return cloudInitNetworkConfigWildcard
 	}
@@ -143,14 +136,6 @@ func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs 
       dhcp4: true
       dhcp-identifier: mac
 `, eniMAC)
-	// Alpine's eni renderer crashes on gateway-less routes; omit here and
-	// deliver via buildAlpineCloudInit instead (emitIMDSRoute=false).
-	if emitIMDSRoute {
-		cfg += fmt.Sprintf(`      routes:
-        - to: %s/32
-          scope: link
-`, handlers_imds.MetaDataServerIP)
-	}
 
 	for i, mac := range extraENIMACs {
 		if mac == "" {
@@ -207,11 +192,6 @@ type CloudInitData struct {
 	// RHELRunCmd is the pre-indented runcmd YAML (restorecon + nmcli reload/up).
 	// Empty on non-RHEL guests.
 	RHELRunCmd string
-	// AlpineWriteFiles / AlpineRunCmd deliver the IMDS on-link route via a
-	// local.d script (eni renderer can't emit gateway-less routes).
-	// Empty on non-Alpine or non-VPC instances.
-	AlpineWriteFiles string
-	AlpineRunCmd     string
 	// AlpineUnlockPasswd renders the user with a disabled-but-unlocked password
 	// (lock_passwd: false, hashed_passwd: "*"). Alpine's sshd is built without
 	// PAM and rejects any login for a locked ("!") account; "*" keeps password
@@ -232,7 +212,7 @@ func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []s
 	rc.WriteString("  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]\n")
 	rc.WriteString("  - [ nmcli, connection, reload ]\n")
 
-	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false, true)
+	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false)
 	rc.WriteString("  - [ nmcli, connection, up, vpc0 ]\n")
 
 	for i, mac := range extraENIMACs {
@@ -240,12 +220,12 @@ func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []s
 			continue
 		}
 		name := fmt.Sprintf("vpc%d", i+1)
-		appendRHELDHCPKeyfile(&wf, name, mac, false, false)
+		appendRHELDHCPKeyfile(&wf, name, mac, false)
 		fmt.Fprintf(&rc, "  - [ nmcli, connection, up, %s ]\n", name)
 	}
 
 	if devMAC != "" {
-		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true, false)
+		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true)
 		rc.WriteString("  - [ nmcli, connection, up, dev0 ]\n")
 	}
 
@@ -260,7 +240,7 @@ func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []s
 	return strings.TrimRight(wf.String(), "\n"), strings.TrimRight(rc.String(), "\n")
 }
 
-func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults, imdsRoute bool) {
+func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults bool) {
 	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
 	b.WriteString("    owner: root:root\n")
 	b.WriteString("    permissions: '0600'\n")
@@ -277,10 +257,6 @@ func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefault
 		// Dev NIC gets DHCP IP for hostfwd but must not install routes or DNS.
 		b.WriteString("      never-default=true\n")
 		b.WriteString("      ignore-auto-dns=true\n")
-	}
-	if imdsRoute {
-		// On-link IMDS route so guest ARPs 169.254.169.254 on this NIC (link scope).
-		fmt.Fprintf(b, "      route1=%s/32\n", handlers_imds.MetaDataServerIP)
 	}
 	b.WriteString("      [ipv6]\n")
 	b.WriteString("      method=disabled\n")
@@ -301,32 +277,6 @@ func appendRHELStaticKeyfile(b *strings.Builder, name, mac, ip string) {
 	fmt.Fprintf(b, "      addresses=%s/24\n", ip)
 	b.WriteString("      [ipv6]\n")
 	b.WriteString("      method=disabled\n")
-}
-
-// buildAlpineCloudInit produces the write_files + runcmd blocks that install the
-// IMDS on-link route on Alpine guests. Alpine's eni renderer crashes on
-// gateway-less routes, so the route is delivered via a persistent local.d script.
-func buildAlpineCloudInit(eniMAC string) (writeFiles, runCmd string) {
-	if eniMAC == "" {
-		return "", ""
-	}
-
-	var wf strings.Builder
-	wf.WriteString("  - path: /etc/local.d/imds-onlink-route.start\n")
-	wf.WriteString("    owner: root:root\n")
-	wf.WriteString("    permissions: '0755'\n")
-	wf.WriteString("    content: |\n")
-	wf.WriteString("      #!/bin/sh\n")
-	// Resolve via default route: udev rename to vpc0 hasn't run yet at first boot;
-	// the mgmt NIC has no default route so this always selects the VPC egress NIC.
-	wf.WriteString("      dev=$(ip route show default | awk '{print $5; exit}')\n")
-	fmt.Fprintf(&wf, "      [ -n \"$dev\" ] && ip route replace %s/32 dev \"$dev\" scope link\n", handlers_imds.MetaDataServerIP)
-
-	var rc strings.Builder
-	rc.WriteString("  - [ rc-update, add, local, default ]\n")
-	rc.WriteString("  - [ rc-service, local, start ]\n")
-
-	return strings.TrimRight(wf.String(), "\n"), strings.TrimRight(rc.String(), "\n")
 }
 
 type CloudInitMetaData struct {
@@ -1952,12 +1902,6 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 				userData.UserDataScript = indented.String()
 			}
 		}
-	}
-
-	// Inject Alpine IMDS route only when no #cloud-config user-data is present;
-	// a caller-supplied payload already owns write_files/runcmd and a second key collides.
-	if distroFamily == "alpine" && userData.UserDataCloudConfig == "" {
-		userData.AlpineWriteFiles, userData.AlpineRunCmd = buildAlpineCloudInit(instance.ENIMac)
 	}
 
 	var buf bytes.Buffer

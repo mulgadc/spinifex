@@ -2,17 +2,34 @@ package vm
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 )
 
 // fakeNetworkPlumber records calls so tests can assert per-spec behaviour.
 type fakeNetworkPlumber struct {
-	setupCalls   []TapSpec
-	cleanupCalls []string
-	setupErr     error
-	cleanupErr   error
+	setupCalls        []TapSpec
+	cleanupCalls      []string
+	imdsAttachCalls   []imdsAttachCall
+	imdsDetachCalls   []string
+	ensureBridgeCalls int
+	setupErr          error
+	cleanupErr        error
+	imdsAttachErr     error
+	imdsDetachErr     error
+	ensureBridgeErr   error
+}
+
+// imdsAttachCall captures the args of one AttachIMDSDatapath invocation.
+type imdsAttachCall struct {
+	eniID    string
+	mac      string
+	subnetID string
 }
 
 func (p *fakeNetworkPlumber) SetupTap(spec TapSpec) error {
@@ -23,6 +40,21 @@ func (p *fakeNetworkPlumber) SetupTap(spec TapSpec) error {
 func (p *fakeNetworkPlumber) CleanupTap(name string) error {
 	p.cleanupCalls = append(p.cleanupCalls, name)
 	return p.cleanupErr
+}
+
+func (p *fakeNetworkPlumber) AttachIMDSDatapath(eniID, mac, subnetID string) error {
+	p.imdsAttachCalls = append(p.imdsAttachCalls, imdsAttachCall{eniID: eniID, mac: mac, subnetID: subnetID})
+	return p.imdsAttachErr
+}
+
+func (p *fakeNetworkPlumber) DetachIMDSDatapath(eniID string) error {
+	p.imdsDetachCalls = append(p.imdsDetachCalls, eniID)
+	return p.imdsDetachErr
+}
+
+func (p *fakeNetworkPlumber) EnsureIMDSDatapathBridge() error {
+	p.ensureBridgeCalls++
+	return p.ensureBridgeErr
 }
 
 var _ NetworkPlumber = (*fakeNetworkPlumber)(nil)
@@ -79,6 +111,209 @@ func TestVPCTapSpec(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("VPCTapSpec = %+v, want %+v", got, want)
+	}
+}
+
+func TestIMDSPrimaryTapSpec(t *testing.T) {
+	got := IMDSPrimaryTapSpec("eni-abc123")
+	want := TapSpec{
+		Name:   "tapabc123",
+		Bridge: IMDSBridgeName,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("IMDSPrimaryTapSpec = %+v, want %+v", got, want)
+	}
+	// The primary tap carries no OVN binding — the patch's br-int end does.
+	if got.ExternalIDs != nil {
+		t.Errorf("IMDSPrimaryTapSpec must carry no external_ids, got %v", got.ExternalIDs)
+	}
+	if got.Bridge == "br-int" {
+		t.Error("IMDSPrimaryTapSpec must not place the primary tap on br-int")
+	}
+}
+
+func TestAttachPrimaryIMDSDatapath(t *testing.T) {
+	primary := &VM{
+		ID:       "i-primary",
+		ENIId:    "eni-abc123",
+		ENIMac:   "02:00:00:aa:bb:cc",
+		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	}
+
+	tests := []struct {
+		name     string
+		instance *VM
+		plumber  *fakeNetworkPlumber
+		want     []imdsAttachCall
+	}{
+		{
+			name:     "primary ENI with subnet attaches once",
+			instance: primary,
+			plumber:  &fakeNetworkPlumber{},
+			want:     []imdsAttachCall{{eniID: "eni-abc123", mac: "02:00:00:aa:bb:cc", subnetID: "subnet-xyz"}},
+		},
+		{
+			name:     "no primary ENI is a no-op",
+			instance: &VM{ID: "i-no-eni", Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")}},
+			plumber:  &fakeNetworkPlumber{},
+			want:     nil,
+		},
+		{
+			name:     "missing subnet is a no-op",
+			instance: &VM{ID: "i-no-subnet", ENIId: "eni-abc123", ENIMac: "02:00:00:aa:bb:cc"},
+			plumber:  &fakeNetworkPlumber{},
+			want:     nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManagerWithDeps(Deps{NetworkPlumber: tt.plumber})
+			if err := m.attachPrimaryIMDSDatapath(tt.instance); err != nil {
+				t.Fatalf("attachPrimaryIMDSDatapath returned %v, want nil", err)
+			}
+			if !reflect.DeepEqual(tt.plumber.imdsAttachCalls, tt.want) {
+				t.Errorf("imdsAttachCalls = %+v, want %+v", tt.plumber.imdsAttachCalls, tt.want)
+			}
+			// A clean attach (or a no-op) must never roll the tap back to br-int.
+			if len(tt.plumber.imdsDetachCalls) != 0 || len(tt.plumber.cleanupCalls) != 0 || len(tt.plumber.setupCalls) != 0 {
+				t.Errorf("unexpected rollback: detach=%d cleanup=%d setup=%d",
+					len(tt.plumber.imdsDetachCalls), len(tt.plumber.cleanupCalls), len(tt.plumber.setupCalls))
+			}
+		})
+	}
+}
+
+func TestAttachPrimaryIMDSDatapath_NilPlumber_NoOp(t *testing.T) {
+	m := NewManagerWithDeps(Deps{})
+	// Must not panic without a plumber.
+	if err := m.attachPrimaryIMDSDatapath(&VM{
+		ID:       "i-no-plumber",
+		ENIId:    "eni-abc123",
+		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	}); err != nil {
+		t.Fatalf("attachPrimaryIMDSDatapath without plumber should be a no-op, got %v", err)
+	}
+}
+
+func TestAttachPrimaryIMDSDatapath_ServingDegradedIsNonFatal(t *testing.T) {
+	// Serving-only failure: connectivity (patch + forward flows) is intact, only
+	// the IMDS demux/reply stage failed. The guest stays connected, so the launch
+	// proceeds and the tap is NOT rolled back to br-int.
+	plumber := &fakeNetworkPlumber{
+		imdsAttachErr: fmt.Errorf("%w: install endpoint: ovsdb busy", ErrIMDSServingDegraded),
+	}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	if err := m.attachPrimaryIMDSDatapath(&VM{
+		ID:       "i-serving-degraded",
+		ENIId:    "eni-abc123",
+		ENIMac:   "02:00:00:aa:bb:cc",
+		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	}); err != nil {
+		t.Fatalf("serving-degraded attach must not fail the launch, got %v", err)
+	}
+	if len(plumber.imdsAttachCalls) != 1 {
+		t.Errorf("expected the attach to be attempted once, got %d calls", len(plumber.imdsAttachCalls))
+	}
+	if len(plumber.imdsDetachCalls) != 0 || len(plumber.cleanupCalls) != 0 || len(plumber.setupCalls) != 0 {
+		t.Errorf("serving-degraded must not roll back: detach=%d cleanup=%d setup=%d",
+			len(plumber.imdsDetachCalls), len(plumber.cleanupCalls), len(plumber.setupCalls))
+	}
+}
+
+func TestAttachPrimaryIMDSDatapath_ConnectivityFailureRollsBack(t *testing.T) {
+	// Connectivity-critical failure: the primary tap is stranded on the secure
+	// br-imds. The tap must be rolled back to br-int (detach partial datapath,
+	// remove the stranded tap, re-plumb on br-int) so the guest is not black-holed.
+	plumber := &fakeNetworkPlumber{imdsAttachErr: errors.New("ovsdb lock held")}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	instance := &VM{
+		ID:       "i-conn-err",
+		ENIId:    "eni-abc123",
+		ENIMac:   "02:00:00:aa:bb:cc",
+		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	}
+	if err := m.attachPrimaryIMDSDatapath(instance); err != nil {
+		t.Fatalf("a successful rollback must not fail the launch, got %v", err)
+	}
+	if len(plumber.imdsDetachCalls) != 1 {
+		t.Errorf("expected one rollback detach, got %d", len(plumber.imdsDetachCalls))
+	}
+	wantTap := TapDeviceName(instance.ENIId)
+	if !reflect.DeepEqual(plumber.cleanupCalls, []string{wantTap}) {
+		t.Errorf("cleanupCalls = %v, want [%q]", plumber.cleanupCalls, wantTap)
+	}
+	// The tap must be re-plumbed onto br-int with the OVN binding, not br-imds.
+	wantSpec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+	if !reflect.DeepEqual(plumber.setupCalls, []TapSpec{wantSpec}) {
+		t.Errorf("setupCalls = %+v, want [%+v]", plumber.setupCalls, wantSpec)
+	}
+}
+
+func TestAttachPrimaryIMDSDatapath_RollbackFailureFailsLaunch(t *testing.T) {
+	// If even the roll-back onto br-int fails, the guest has no connected path at
+	// all, so the launch must fail rather than boot a black-holed guest.
+	plumber := &fakeNetworkPlumber{
+		imdsAttachErr: errors.New("ovsdb lock held"),
+		setupErr:      errors.New("br-int add-port failed"),
+	}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	err := m.attachPrimaryIMDSDatapath(&VM{
+		ID:       "i-rollback-err",
+		ENIId:    "eni-abc123",
+		ENIMac:   "02:00:00:aa:bb:cc",
+		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	})
+	if err == nil {
+		t.Fatal("expected a failed rollback to fail the launch, got nil")
+	}
+	if !strings.Contains(err.Error(), "br-int") {
+		t.Errorf("error = %v, want it to mention the failing br-int re-plumb", err)
+	}
+}
+
+func TestDetachPrimaryIMDSDatapath(t *testing.T) {
+	tests := []struct {
+		name     string
+		instance *VM
+		want     []string
+	}{
+		{
+			name:     "primary ENI detaches once by ENI ID",
+			instance: &VM{ID: "i-primary", ENIId: "eni-abc123"},
+			want:     []string{"eni-abc123"},
+		},
+		{
+			name:     "no primary ENI is a no-op",
+			instance: &VM{ID: "i-no-eni"},
+			want:     nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plumber := &fakeNetworkPlumber{}
+			m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+			m.detachPrimaryIMDSDatapath(tt.instance)
+			if !reflect.DeepEqual(plumber.imdsDetachCalls, tt.want) {
+				t.Errorf("imdsDetachCalls = %+v, want %+v", plumber.imdsDetachCalls, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetachPrimaryIMDSDatapath_NilPlumber_NoOp(t *testing.T) {
+	m := NewManagerWithDeps(Deps{})
+	// Must not panic without a plumber.
+	m.detachPrimaryIMDSDatapath(&VM{ID: "i-no-plumber", ENIId: "eni-abc123"})
+}
+
+func TestDetachPrimaryIMDSDatapath_DetachErrorIsNonFatal(t *testing.T) {
+	plumber := &fakeNetworkPlumber{imdsDetachErr: errors.New("simulated detach failure")}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	// Best-effort: a failing detach must not panic or surface — teardown
+	// continues so the tap and remaining state are still cleaned up.
+	m.detachPrimaryIMDSDatapath(&VM{ID: "i-detach-err", ENIId: "eni-abc123"})
+	if len(plumber.imdsDetachCalls) != 1 {
+		t.Errorf("expected the detach to be attempted once, got %d calls", len(plumber.imdsDetachCalls))
 	}
 }
 

@@ -157,6 +157,40 @@ func TestMarkFailed_AlreadyTerminated_NoOp(t *testing.T) {
 		"MarkFailed must not transition an already-terminated instance")
 }
 
+// TestCleanupTapDevices_DetachesPrimaryIMDSBeforeTap confirms terminate detaches
+// the primary ENI's per-tap IMDS datapath and then removes its tap, plus every
+// extra ENI tap. The detach is the inverse of the launch-time attach.
+func TestCleanupTapDevices_DetachesPrimaryIMDSBeforeTap(t *testing.T) {
+	plumber := &fakeNetworkPlumber{}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	instance := &VM{
+		ID:        "i-term",
+		ENIId:     "eni-primary",
+		ExtraENIs: []ExtraENI{{ENIID: "eni-extra"}},
+	}
+
+	m.cleanupTapDevices(instance)
+
+	assert.Equal(t, []string{"eni-primary"}, plumber.imdsDetachCalls,
+		"primary ENI IMDS datapath must be detached exactly once")
+	assert.Equal(t,
+		[]string{TapDeviceName("eni-primary"), TapDeviceName("eni-extra")},
+		plumber.cleanupCalls,
+		"primary then extra ENI taps must be cleaned up")
+}
+
+// TestCleanupTapDevices_NoPrimaryENI_NoDetach confirms an instance with no
+// primary ENI neither detaches an IMDS datapath nor cleans up a tap.
+func TestCleanupTapDevices_NoPrimaryENI_NoDetach(t *testing.T) {
+	plumber := &fakeNetworkPlumber{}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+
+	m.cleanupTapDevices(&VM{ID: "i-no-eni"})
+
+	assert.Empty(t, plumber.imdsDetachCalls, "no ENI must not detach an IMDS datapath")
+	assert.Empty(t, plumber.cleanupCalls, "no ENI must not clean up a tap")
+}
+
 // TestStop_DoesNotCallDeleteVolumes locks down the architectural
 // invariant that Stop must never delete volumes — a regression here
 // would silently destroy user data on every stop.

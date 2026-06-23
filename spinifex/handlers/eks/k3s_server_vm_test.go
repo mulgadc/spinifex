@@ -288,6 +288,9 @@ func TestLaunchK3sServerVM_HappyPath(t *testing.T) {
 	assert.Equal(t, "000000000000", runIn.AccountID, "VM launches under the infra (system) account")
 	assert.Equal(t, "eni-aaa111", runIn.ENIID)
 	assert.Equal(t, "10.0.1.42", runIn.ENIIP)
+	// The subnet must reach the launch input so the daemon can build the per-tap
+	// IMDS datapath; without it the primary tap is stranded on br-imds (no patch).
+	assert.Equal(t, "subnet-aaa", runIn.SubnetID)
 
 	assert.Empty(t, vpc.deleteCalls, "no rollback on success")
 }
@@ -465,23 +468,15 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "-----BEGIN CERTIFICATE-----")
 	assert.Contains(t, udata, "FAKECA")
 
-	// IMDS on-link route delivered out-of-band (Alpine's eni renderer can't emit
-	// the gateway-less route in network-config). It rides this payload's own
-	// write_files/runcmd, enabled via the OpenRC local service.
-	assert.Contains(t, udata, "path: /etc/local.d/imds-onlink-route.start")
-	assert.Contains(t, udata, "ip route show default")
-	assert.Contains(t, udata, `ip route replace 169.254.169.254/32 dev "$dev" scope link`)
-	assert.Contains(t, udata, "runcmd:")
-	assert.Contains(t, udata, "[ rc-update, add, local, default ]")
-	// Route script is run directly, not via `rc-service local start` — that would
-	// deadlock against cloud-final and stall the boot ~50s on the OpenRC timeout.
-	assert.Contains(t, udata, "[ /etc/local.d/imds-onlink-route.start ]")
-	assert.NotContains(t, udata, "rc-service, local, start")
+	// IMDS is served at the host tap, so no in-guest on-link route is emitted —
+	// no local.d route script and no runcmd block to enable/run it.
+	assert.NotContains(t, udata, "169.254.169.254")
+	assert.NotContains(t, udata, "/etc/local.d/imds-onlink-route.start")
+	assert.NotContains(t, udata, "runcmd:")
 
-	// Exactly one write_files / runcmd key — a second would collide and silently
+	// Exactly one write_files key — a second would collide and silently
 	// drop a block under yaml.safe_load (last key wins).
 	assert.Equal(t, 1, strings.Count(udata, "\nwrite_files:"))
-	assert.Equal(t, 1, strings.Count(udata, "\nruncmd:"))
 }
 
 func TestLaunchK3sServerVM_UsesEmbeddedEtcd(t *testing.T) {

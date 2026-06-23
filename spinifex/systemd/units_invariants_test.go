@@ -116,11 +116,20 @@ func TestRG9_TierConfinement(t *testing.T) {
 		}
 	}
 
-	// Network tier (vpcd): privileged for in-process netns; a documented exception,
-	// not the locked-down tier. It deliberately runs NoNewPrivileges=no.
+	// Network tier (vpcd): per-tap IMDS dropped the in-process setns, so CAP_SYS_ADMIN
+	// is gone and the cap set is exactly the network minimum. NoNewPrivileges stays off
+	// (RG-10: vpcd shells out to sudo for ip/ovs-vsctl/dhcpcd, like the daemon).
 	vpcd := readUnit(t, dir, "spinifex-vpcd.service")
+	for _, want := range []string{
+		"AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID",
+		"CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID",
+	} {
+		if !hasDirective(vpcd, want) {
+			t.Errorf("RG-9: vpcd must carry exactly %q — CAP_SYS_ADMIN dropped with the per-tap cutover", want)
+		}
+	}
 	if !hasDirective(vpcd, "NoNewPrivileges=no") {
-		t.Error("RG-9: vpcd (network tier) is the documented NoNewPrivileges=no exception")
+		t.Error("RG-9/RG-10: vpcd (network tier) keeps NoNewPrivileges=no while it shells out to sudo (ip/ovs-vsctl/dhcpcd)")
 	}
 	if !hasDirective(vpcd, "SystemCallArchitectures=native") {
 		t.Error("RG-9: vpcd must keep SystemCallArchitectures=native")

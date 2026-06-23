@@ -51,7 +51,6 @@ import (
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -1246,15 +1245,6 @@ func (d *Daemon) startCluster() error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
-	}
-
-	// Wire eni-by-vpc-ip reverse index for IMDS source-IP→ENI lookup.
-	if vpcJS, jsErr := d.natsConn.JetStream(); jsErr != nil {
-		slog.Warn("Failed to get JetStream for eni-by-ip index", "err", jsErr)
-	} else if eniByIPKV, kvErr := handlers_imds.InitENIByIPBucket(vpcJS, 1); kvErr != nil {
-		slog.Warn("Failed to init eni-by-ip index bucket", "err", kvErr)
-	} else {
-		d.vpcService.SetENIByIPIndex(handlers_ec2_vpc.NewENIByIPIndex(eniByIPKV))
 	}
 
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {

@@ -114,21 +114,23 @@ export function isValidCidr(
   minPrefix = 16,
   maxPrefix = 28,
 ): boolean {
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(
-    cidr,
-  )
-  if (!match) {
+  const match =
+    /^(?<octet1>\d{1,3})\.(?<octet2>\d{1,3})\.(?<octet3>\d{1,3})\.(?<octet4>\d{1,3})\/(?<prefix>\d{1,2})$/.exec(
+      cidr,
+    )
+  if (!match?.groups) {
     return false
   }
+  const { octet1, octet2, octet3, octet4, prefix } = match.groups
   const octets = [
-    Number.parseInt(match[1] ?? "0", 10),
-    Number.parseInt(match[2] ?? "0", 10),
-    Number.parseInt(match[3] ?? "0", 10),
-    Number.parseInt(match[4] ?? "0", 10),
+    Number.parseInt(octet1 ?? "0", 10),
+    Number.parseInt(octet2 ?? "0", 10),
+    Number.parseInt(octet3 ?? "0", 10),
+    Number.parseInt(octet4 ?? "0", 10),
   ]
   if (octets.some((o) => o > 255)) {
     return false
   }
-  const prefix = Number.parseInt(match[5] ?? "0", 10)
-  return prefix >= minPrefix && prefix <= maxPrefix
+  const prefixBits = Number.parseInt(prefix ?? "0", 10)
+  return prefixBits >= minPrefix && prefixBits <= maxPrefix
 }

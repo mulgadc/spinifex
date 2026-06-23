@@ -61,6 +61,22 @@ func VPCTapSpec(eniID, mac string) TapSpec {
 	}
 }
 
+// IMDSBridgeName is the dedicated, OVN-unmanaged bridge that carries the per-tap
+// IMDS datapath. Kept in sync with network/host.IMDSBridge (host imports vm, not
+// the reverse); a cross-package test in network/host asserts they match.
+const IMDSBridgeName = "br-imds"
+
+// IMDSPrimaryTapSpec returns the TapSpec for a primary ENI's tap on br-imds. The
+// tap lives on br-imds so its egress meets the IMDS demux flows on the same
+// bridge; it carries no external_ids because the br-imds<->br-int patch's br-int
+// end (installed by AttachIMDSDatapath) carries the OVN iface-id binding instead.
+func IMDSPrimaryTapSpec(eniID string) TapSpec {
+	return TapSpec{
+		Name:   TapDeviceName(eniID),
+		Bridge: IMDSBridgeName,
+	}
+}
+
 // GenerateDevMAC returns the locally-administered unicast MAC for the
 // dev/hostfwd NIC. The "dev:" tag disambiguates from the mgmt NIC of the
 // same instance (which shares instanceID).

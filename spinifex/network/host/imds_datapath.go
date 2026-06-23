@@ -22,16 +22,37 @@ const (
 // Kept in one place so the endpoint addresses and the ingress flows stay in sync.
 var imdsCaptureAddrs = []string{imdsMetaAddr, imdsDNSAddr}
 
-// IMDSEndpointName returns the per-tap endpoint port on IMDSBridge — the
-// SO_BINDTODEVICE target the responder binds. "ime-" + 8-char short ENI = 12
-// chars, within the 15-char IFNAMSIZ limit.
-func IMDSEndpointName(eniID string) string {
+// Per-tap OpenFlow priorities on IMDSBridge. Demux (.254/.253 interception) and
+// egress sit above the forward flows so IMDS traffic is captured and everything
+// else is bridged tap<->patch to br-int.
+const (
+	imdsDemuxPriority   = 200
+	imdsForwardPriority = 100
+)
+
+// shortENIID returns the last 8 chars of the ENI (sans eni- prefix), the short
+// form per-tap port names key off to stay within the 15-char IFNAMSIZ limit.
+func shortENIID(eniID string) string {
 	id := strings.TrimPrefix(eniID, "eni-")
 	if len(id) > 8 {
 		id = id[len(id)-8:]
 	}
-	return "ime-" + id
+	return id
 }
+
+// IMDSEndpointName returns the per-tap endpoint port on IMDSBridge — the
+// SO_BINDTODEVICE target the responder binds. "ime-" + 8-char short ENI = 12
+// chars, within the 15-char IFNAMSIZ limit.
+func IMDSEndpointName(eniID string) string { return "ime-" + shortENIID(eniID) }
+
+// IMDSPatchPort returns the IMDSBridge end of the per-tap patch to br-int.
+// "imp-" + 8-char short ENI = 12 chars.
+func IMDSPatchPort(eniID string) string { return "imp-" + shortENIID(eniID) }
+
+// IMDSIntPatchPort returns the br-int end of the per-tap patch. It carries the
+// OVN iface-id binding so ovn-controller binds the guest LSP to it. "imi-" +
+// 8-char short ENI = 12 chars.
+func IMDSIntPatchPort(eniID string) string { return "imi-" + shortENIID(eniID) }
 
 // IMDSEndpointMAC returns the deterministic MAC for an ENI's endpoint. The
 // endpoint owns this MAC so the ingress demux can rewrite the guest's gateway
@@ -59,6 +80,14 @@ type IMDSTapDatapath struct {
 	EndpointMAC string
 	GuestMAC    string
 	GatewayMAC  string
+
+	// Patch ports bridging non-IMDS traffic between the primary tap (on
+	// IMDSBridge) and br-int. PatchIMDS is the IMDSBridge end; PatchInt is the
+	// br-int end and carries the OVN binding (IfaceID + GuestMAC), so
+	// ovn-controller binds the guest LSP to it exactly as it bound the tap.
+	PatchIMDS string
+	PatchInt  string
+	IfaceID   string
 }
 
 func (d IMDSTapDatapath) validate() error {
@@ -73,6 +102,24 @@ func (d IMDSTapDatapath) validate() error {
 		return fmt.Errorf("IMDSTapDatapath: GuestMAC required")
 	case d.GatewayMAC == "":
 		return fmt.Errorf("IMDSTapDatapath: GatewayMAC required")
+	}
+	return nil
+}
+
+// validatePatch checks the fields installTapPatch needs (independent of the
+// demux/egress fields validate covers, since the patch needs no GatewayMAC).
+func (d IMDSTapDatapath) validatePatch() error {
+	switch {
+	case d.Tap == "":
+		return fmt.Errorf("IMDSTapDatapath: Tap required")
+	case d.PatchIMDS == "":
+		return fmt.Errorf("IMDSTapDatapath: PatchIMDS required")
+	case d.PatchInt == "":
+		return fmt.Errorf("IMDSTapDatapath: PatchInt required")
+	case d.IfaceID == "":
+		return fmt.Errorf("IMDSTapDatapath: IfaceID required")
+	case d.GuestMAC == "":
+		return fmt.Errorf("IMDSTapDatapath: GuestMAC required")
 	}
 	return nil
 }
@@ -104,6 +151,18 @@ func RemoveTapDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	}
 	if err := clearIMDSFlowsByCookie(ctx, r, imdsFlowCookie(d.Endpoint)); err != nil {
 		slog.Warn("Failed to clear IMDS tap flows", "endpoint", d.Endpoint, "err", err)
+	}
+	// Patch ports (primary ENI only). Best-effort on the IMDSBridge end; the
+	// br-int end carries the OVN binding, so a failure there is surfaced.
+	if d.PatchIMDS != "" {
+		if _, err := r.Run(ctx, "ovs-vsctl", "--if-exists", "del-port", IMDSBridge, d.PatchIMDS); err != nil {
+			slog.Warn("Failed to delete IMDS patch (br-imds end)", "port", d.PatchIMDS, "err", err)
+		}
+	}
+	if d.PatchInt != "" {
+		if _, err := r.Run(ctx, "ovs-vsctl", "--if-exists", "del-port", "br-int", d.PatchInt); err != nil {
+			return fmt.Errorf("delete IMDS patch %s on br-int: %w", d.PatchInt, err)
+		}
 	}
 	if _, err := r.Run(ctx, "ovs-vsctl", "--if-exists", "del-port", IMDSBridge, d.Endpoint); err != nil {
 		return fmt.Errorf("delete IMDS endpoint %s: %w", d.Endpoint, err)
@@ -157,15 +216,15 @@ func installIMDSTapFlows(ctx context.Context, r Runner, d IMDSTapDatapath) error
 	// MAC (.254/.253 are off-link, routed via the default gateway), so rewrite
 	// the dst MAC to the endpoint or the kernel drops it as OTHERHOST.
 	for _, addr := range imdsCaptureAddrs {
-		spec := fmt.Sprintf("table=0,priority=200,in_port=%s,ip,nw_dst=%s,actions=mod_dl_dst:%s,output:%s",
-			d.Tap, addr, d.EndpointMAC, d.Endpoint)
+		spec := fmt.Sprintf("table=0,priority=%d,in_port=%s,ip,nw_dst=%s,actions=mod_dl_dst:%s,output:%s",
+			imdsDemuxPriority, d.Tap, addr, d.EndpointMAC, d.Endpoint)
 		if err := installIMDSFlow(ctx, r, cookie, spec); err != nil {
 			return err
 		}
 	}
 	// Egress: endpoint -> guest, rewriting L2 so the reply looks like it came
 	// from the gateway. Steered by flow, not the host routing table.
-	egress := fmt.Sprintf("table=0,priority=200,in_port=%s,ip,actions=mod_dl_src:%s,mod_dl_dst:%s,output:%s",
-		d.Endpoint, d.GatewayMAC, d.GuestMAC, d.Tap)
+	egress := fmt.Sprintf("table=0,priority=%d,in_port=%s,ip,actions=mod_dl_src:%s,mod_dl_dst:%s,output:%s",
+		imdsDemuxPriority, d.Endpoint, d.GatewayMAC, d.GuestMAC, d.Tap)
 	return installIMDSFlow(ctx, r, cookie, egress)
 }

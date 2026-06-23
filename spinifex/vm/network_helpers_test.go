@@ -12,12 +12,14 @@ import (
 
 // fakeNetworkPlumber records calls so tests can assert per-spec behaviour.
 type fakeNetworkPlumber struct {
-	setupCalls      []TapSpec
-	cleanupCalls    []string
-	imdsAttachCalls []imdsAttachCall
-	setupErr        error
-	cleanupErr      error
-	imdsAttachErr   error
+	setupCalls        []TapSpec
+	cleanupCalls      []string
+	imdsAttachCalls   []imdsAttachCall
+	ensureBridgeCalls int
+	setupErr          error
+	cleanupErr        error
+	imdsAttachErr     error
+	ensureBridgeErr   error
 }
 
 // imdsAttachCall captures the args of one AttachIMDSDatapath invocation.
@@ -40,6 +42,11 @@ func (p *fakeNetworkPlumber) CleanupTap(name string) error {
 func (p *fakeNetworkPlumber) AttachIMDSDatapath(eniID, mac, subnetID string) error {
 	p.imdsAttachCalls = append(p.imdsAttachCalls, imdsAttachCall{eniID: eniID, mac: mac, subnetID: subnetID})
 	return p.imdsAttachErr
+}
+
+func (p *fakeNetworkPlumber) EnsureIMDSDatapathBridge() error {
+	p.ensureBridgeCalls++
+	return p.ensureBridgeErr
 }
 
 var _ NetworkPlumber = (*fakeNetworkPlumber)(nil)
@@ -96,6 +103,24 @@ func TestVPCTapSpec(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("VPCTapSpec = %+v, want %+v", got, want)
+	}
+}
+
+func TestIMDSPrimaryTapSpec(t *testing.T) {
+	got := IMDSPrimaryTapSpec("eni-abc123")
+	want := TapSpec{
+		Name:   "tapabc123",
+		Bridge: IMDSBridgeName,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("IMDSPrimaryTapSpec = %+v, want %+v", got, want)
+	}
+	// The primary tap carries no OVN binding — the patch's br-int end does.
+	if got.ExternalIDs != nil {
+		t.Errorf("IMDSPrimaryTapSpec must carry no external_ids, got %v", got.ExternalIDs)
+	}
+	if got.Bridge == "br-int" {
+		t.Error("IMDSPrimaryTapSpec must not place the primary tap on br-int")
 	}
 }
 

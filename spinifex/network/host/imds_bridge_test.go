@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
 // TestIMDSBridgeIsNotBrInt locks in the coexistence decision: the IMDS redirect
@@ -17,6 +19,16 @@ func TestIMDSBridgeIsNotBrInt(t *testing.T) {
 	}
 	if IMDSBridge == "" {
 		t.Fatal("IMDSBridge must be a non-empty bridge name")
+	}
+}
+
+// TestIMDSBridgeNameMatchesVM keeps the vm-package bridge constant (used by
+// IMDSPrimaryTapSpec to place the primary tap) in sync with the host-package
+// bridge the datapath installs on. vm cannot import host, so the name is
+// duplicated; this test guards against drift.
+func TestIMDSBridgeNameMatchesVM(t *testing.T) {
+	if vm.IMDSBridgeName != IMDSBridge {
+		t.Fatalf("vm.IMDSBridgeName (%q) != host.IMDSBridge (%q): the primary tap would be placed on a different bridge than the datapath", vm.IMDSBridgeName, IMDSBridge)
 	}
 }
 

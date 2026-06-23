@@ -14,6 +14,9 @@ func testDatapath() IMDSTapDatapath {
 		EndpointMAC: "02:00:00:00:01:fe",
 		GuestMAC:    "02:00:00:00:01:05",
 		GatewayMAC:  "02:aa:aa:aa:aa:aa",
+		PatchIMDS:   "imp-12345678",
+		PatchInt:    "imi-12345678",
+		IfaceID:     "port-eni-12345678",
 	}
 }
 
@@ -28,6 +31,23 @@ func TestIMDSEndpointName(t *testing.T) {
 	// Short ENIs are not truncated.
 	if n := IMDSEndpointName("eni-abc"); n != "ime-abc" {
 		t.Errorf("short ENI: got %q want ime-abc", n)
+	}
+}
+
+func TestIMDSPatchPortNames(t *testing.T) {
+	const eni = "eni-0abc1234deadbeef"
+	imds := IMDSPatchPort(eni)
+	intp := IMDSIntPatchPort(eni)
+	if len(imds) > 15 || len(intp) > 15 {
+		t.Errorf("patch names exceed IFNAMSIZ-1 (15): %q %q", imds, intp)
+	}
+	if !strings.HasPrefix(imds, "imp-") || !strings.HasPrefix(intp, "imi-") {
+		t.Errorf("patch name prefixes wrong: %q %q", imds, intp)
+	}
+	// Endpoint and both patch ports must be distinct for the same ENI.
+	ep := IMDSEndpointName(eni)
+	if imds == intp || imds == ep || intp == ep {
+		t.Errorf("per-tap port names collide: endpoint=%q patch_imds=%q patch_int=%q", ep, imds, intp)
 	}
 }
 

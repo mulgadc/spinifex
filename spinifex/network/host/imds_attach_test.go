@@ -34,8 +34,22 @@ func TestIMDSDatapathSpec(t *testing.T) {
 	if want := utils.HashMAC(subnetID); d.GatewayMAC != want {
 		t.Errorf("GatewayMAC = %q, want %q (utils.HashMAC(subnetID))", d.GatewayMAC, want)
 	}
+	if d.PatchIMDS != IMDSPatchPort(eniID) {
+		t.Errorf("PatchIMDS = %q, want %q", d.PatchIMDS, IMDSPatchPort(eniID))
+	}
+	if d.PatchInt != IMDSIntPatchPort(eniID) {
+		t.Errorf("PatchInt = %q, want %q", d.PatchInt, IMDSIntPatchPort(eniID))
+	}
+	// IfaceID must equal the OVN LSP name so ovn-controller binds the guest LSP
+	// to the patch's br-int end exactly as it bound the tap.
+	if want := vm.OVSIfaceID(eniID); d.IfaceID != want {
+		t.Errorf("IfaceID = %q, want %q (vm.OVSIfaceID(eniID))", d.IfaceID, want)
+	}
 	if err := d.validate(); err != nil {
 		t.Errorf("derived spec must be valid: %v", err)
+	}
+	if err := d.validatePatch(); err != nil {
+		t.Errorf("derived spec must pass patch validation: %v", err)
 	}
 }
 
@@ -52,24 +66,27 @@ func TestInstallIMDSDatapath(t *testing.T) {
 	}
 
 	for _, w := range []string{
-		"ovs-vsctl --may-exist add-br " + IMDSBridge,                      // EnsureIMDSBridge
-		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint, // InstallTapDatapath endpoint
-		"ovs-ofctl add-flow " + IMDSBridge,                                // demux/egress flow
-		"ip route replace default via " + imdsReplyNexthop,                // InstallTapReplyRouting route
-		"ip rule add oif " + d.Endpoint,                                   // InstallTapReplyRouting rule
+		"ovs-vsctl --may-exist add-br " + IMDSBridge,                       // EnsureIMDSBridge
+		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.PatchIMDS, // installTapPatch (br-imds end)
+		"ovs-vsctl --may-exist add-port br-int " + d.PatchInt,              // installTapPatch (br-int end)
+		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint,  // InstallTapDatapath endpoint
+		"ovs-ofctl add-flow " + IMDSBridge,                                 // demux/egress/forward flow
+		"ip route replace default via " + imdsReplyNexthop,                 // InstallTapReplyRouting route
+		"ip rule add oif " + d.Endpoint,                                    // InstallTapReplyRouting rule
 	} {
 		if !s.called(w) {
 			t.Errorf("missing command:\n  %q\ncalls: %v", w, s.calls)
 		}
 	}
 
-	// Ordering: the bridge must exist before its endpoint, and the endpoint
-	// before the reply rule that selects out it.
+	// Ordering: the bridge must exist before its ports (patch, endpoint), and the
+	// endpoint before the reply rule that selects out it.
 	bridge := cmdIndex(s.calls, "ovs-vsctl --may-exist add-br "+IMDSBridge)
+	patch := cmdIndex(s.calls, "ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.PatchIMDS)
 	endpoint := cmdIndex(s.calls, "ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.Endpoint)
 	rule := cmdIndex(s.calls, "ip rule add oif "+d.Endpoint)
-	if bridge >= endpoint || endpoint >= rule {
-		t.Errorf("install order wrong: bridge=%d endpoint=%d rule=%d (want bridge<endpoint<rule)", bridge, endpoint, rule)
+	if bridge >= patch || bridge >= endpoint || endpoint >= rule {
+		t.Errorf("install order wrong: bridge=%d patch=%d endpoint=%d rule=%d (want bridge<patch, bridge<endpoint<rule)", bridge, patch, endpoint, rule)
 	}
 }
 

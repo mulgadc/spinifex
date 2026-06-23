@@ -237,12 +237,17 @@ func (m *Manager) startQEMU(instance *VM) error {
 		// the pre-built Config. Only create host-side tap devices for VPC ENIs
 		// so the kernel tap interfaces exist before QEMU opens them.
 		if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-			tapSpec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+			// Primary tap goes on br-imds (so its egress meets the IMDS demux
+			// flows); the bridge must exist before SetupTap can attach to it.
+			if err := m.deps.NetworkPlumber.EnsureIMDSDatapathBridge(); err != nil {
+				slog.Warn("Failed to ensure IMDS bridge (direct-boot); primary tap attach may fail", "eni", instance.ENIId, "err", err)
+			}
+			tapSpec := IMDSPrimaryTapSpec(instance.ENIId)
 			if err := m.deps.NetworkPlumber.SetupTap(tapSpec); err != nil {
 				slog.Error("Failed to set up tap device (direct-boot)", "eni", instance.ENIId, "err", err)
 				return fmt.Errorf("setup tap device: %w", err)
 			}
-			slog.Info("VPC tap configured (direct-boot)", "tap", tapSpec.Name, "eni", instance.ENIId, "mac", instance.ENIMac)
+			slog.Info("VPC tap configured (direct-boot)", "tap", tapSpec.Name, "bridge", tapSpec.Bridge, "eni", instance.ENIId, "mac", instance.ENIMac)
 			m.attachPrimaryIMDSDatapath(instance)
 			for _, extra := range instance.ExtraENIs {
 				extraSpec := VPCTapSpec(extra.ENIID, extra.ENIMac)
@@ -263,7 +268,12 @@ func (m *Manager) startQEMU(instance *VM) error {
 		}
 	} else {
 		if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-			spec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+			// Primary tap goes on br-imds (so its egress meets the IMDS demux
+			// flows); the bridge must exist before SetupTap can attach to it.
+			if err := m.deps.NetworkPlumber.EnsureIMDSDatapathBridge(); err != nil {
+				slog.Warn("Failed to ensure IMDS bridge; primary tap attach may fail", "eni", instance.ENIId, "err", err)
+			}
+			spec := IMDSPrimaryTapSpec(instance.ENIId)
 			if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 				slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)
 				return fmt.Errorf("setup tap device: %w", err)
@@ -274,7 +284,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 				Value: fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
 			})
 			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", instance.ENIMac))
-			slog.Info("VPC networking configured", "tap", tapName, "eni", instance.ENIId, "mac", instance.ENIMac)
+			slog.Info("VPC networking configured", "tap", tapName, "bridge", spec.Bridge, "eni", instance.ENIId, "mac", instance.ENIMac)
 			m.attachPrimaryIMDSDatapath(instance)
 
 			if err := m.setupExtraENINICs(instance); err != nil {

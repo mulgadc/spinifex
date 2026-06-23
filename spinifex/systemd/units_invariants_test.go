@@ -116,6 +116,23 @@ func TestRG9_TierConfinement(t *testing.T) {
 		}
 	}
 
+	// Northstar: locked-down baseline plus exactly CAP_NET_BIND_SERVICE so the
+	// unprivileged user binds :53 without root. No broader; ambient caps stay
+	// compatible with NoNewPrivileges=yes.
+	northstar := readUnit(t, dir, "spinifex-northstar.service")
+	for _, want := range []string{
+		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
+		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+		"NoNewPrivileges=yes",
+		"ProtectSystem=strict",
+		"MemoryDenyWriteExecute=yes",
+		"SystemCallArchitectures=native",
+	} {
+		if !hasDirective(northstar, want) {
+			t.Errorf("RG-9: northstar must carry %q (exactly CAP_NET_BIND_SERVICE for :53)", want)
+		}
+	}
+
 	// Network tier (vpcd): privileged for in-process netns; a documented exception,
 	// not the locked-down tier. It deliberately runs NoNewPrivileges=no.
 	vpcd := readUnit(t, dir, "spinifex-vpcd.service")

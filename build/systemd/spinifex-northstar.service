@@ -39,7 +39,9 @@ ProtectProc=invisible
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-CapabilityBoundingSet=
+# RG-9: exactly CAP_NET_BIND_SERVICE so the unprivileged user binds :53 (no root).
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 ProtectHostname=yes
 KeyringMode=private
 RemoveIPC=yes

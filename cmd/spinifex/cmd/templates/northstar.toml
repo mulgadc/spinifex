@@ -2,9 +2,10 @@
 # Written by `spx admin init`; read by the spinifex northstar service.
 # Contains bucket-scoped S3 credentials — keep mode 0600.
 
-# UDP+TCP bind addresses (comma separated). Northstar binds :5300 on the host;
-# the per-VPC resolver VIP (:53) is fronted by OVN and remapped to :5300.
-listen     = "0.0.0.0:5300"
+# UDP+TCP bind addresses (comma separated). Northstar binds :5300 and the
+# privileged :53 (via CAP_NET_BIND_SERVICE) so instances can resolve against the
+# node WAN directly. A future per-VPC resolver VIP (OVN) will front :53.
+listen     = "0.0.0.0:5300,0.0.0.0:53"
 dot_listen = ""
 doh_listen = ""
 tls_cert   = ""

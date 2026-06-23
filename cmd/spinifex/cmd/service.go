@@ -784,6 +784,7 @@ var vpcdStartCmd = &cobra.Command{
 			BridgeMode:          nodeConfig.VPCD.BridgeMode,
 			AZ:                  nodeConfig.AZ,
 			NorthstarBaseDomain: handlers_dns.ResolveBaseDomain(&nodeConfig),
+			ResolverNameservers: northstar.ResolverNameserverIPs(clusterConfig),
 		})
 		if err != nil {
 			fmt.Println("Error starting vpcd service:", err)

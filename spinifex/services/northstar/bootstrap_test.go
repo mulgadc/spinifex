@@ -55,6 +55,24 @@ func TestBuildNameserverSeeds(t *testing.T) {
 	assert.Equal(t, "10.0.0.2", seeds[1].IP)
 }
 
+func TestResolverNameserverIPs(t *testing.T) {
+	// Multi-node: WAN IPs of the northstar nodes, ordered, non-northstar excluded.
+	multi := &config.ClusterConfig{
+		Node: "node1",
+		Nodes: map[string]config.Config{
+			"node2": {AdvertiseIP: "192.168.1.32", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
+			"node1": {AdvertiseIP: "192.168.1.31", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
+			"node3": {AdvertiseIP: "192.168.1.33"}, // no northstar → excluded
+		},
+	}
+	assert.Equal(t, []string{"192.168.1.31", "192.168.1.32"}, ResolverNameserverIPs(multi))
+
+	// Loopback-only (single-node dev fallback) yields an empty list so the caller
+	// falls back to the upstream pool DNS.
+	dev := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{"node1": {Host: "0.0.0.0"}}}
+	assert.Empty(t, ResolverNameserverIPs(dev))
+}
+
 // fakeS3 is a minimal mutable path-style S3 endpoint (HEAD/PUT/GET) for the
 // bootstrap happy-path test.
 func fakeS3(t *testing.T, bucket string) (endpoint string, objects map[string]string) {

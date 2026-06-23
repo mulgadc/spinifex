@@ -40,6 +40,8 @@ func northstarSettings() admin.ConfigSettings {
 func TestNorthstarTomlTemplate(t *testing.T) {
 	content := renderTemplate(t, northstarTomlTemplate, northstarSettings())
 
+	// Northstar binds both :5300 and the privileged :53 by default.
+	assert.Contains(t, content, `listen     = "0.0.0.0:5300,0.0.0.0:53"`)
 	assert.Contains(t, content, `default_domain = "spx3.net"`)
 	assert.Contains(t, content, `bucket     = "northstar"`)
 	assert.Contains(t, content, `access_key = "AKIANORTHSTAR"`)

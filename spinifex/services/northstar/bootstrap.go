@@ -144,6 +144,23 @@ func nodeNames(cluster *config.ClusterConfig) []string {
 	return names
 }
 
+// ResolverNameserverIPs returns the WAN IPs of cluster nodes running northstar,
+// in the same deterministic order as the seeded nameservers. Instances use these
+// as their DHCP-advertised DNS resolvers, so internal names resolve
+// authoritatively and external names via northstar's upstream forwarders.
+// Loopback is skipped: a dev/misconfig node with no reachable IP yields an empty
+// list, letting the caller fall back to the upstream pool DNS.
+func ResolverNameserverIPs(cluster *config.ClusterConfig) []string {
+	seeds := buildNameserverSeeds(cluster)
+	ips := make([]string, 0, len(seeds))
+	for _, s := range seeds {
+		if s.IP != "" && s.IP != "127.0.0.1" {
+			ips = append(ips, s.IP)
+		}
+	}
+	return ips
+}
+
 // buildNameserverSeeds derives one nameserver (nsN → node IP) per cluster node
 // that runs northstar, ordered deterministically. Falls back to the local node
 // when no node advertises a northstar config (single-node / dev).

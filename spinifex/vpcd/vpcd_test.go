@@ -458,3 +458,20 @@ func TestEnsureExternalCIDRReady_PropagatesError(t *testing.T) {
 		t.Fatal("expected error when resolveExternalCIDR fails")
 	}
 }
+
+func TestResolverDNSServer(t *testing.T) {
+	// Node-local northstar resolvers take precedence and render as an OVN list.
+	cfg := &Config{
+		ResolverNameservers: []string{"192.168.1.31", "192.168.1.32"},
+		ExternalPools:       []ExternalPoolConfig{{DNSServers: []string{"8.8.8.8"}}},
+	}
+	if got := resolverDNSServer(cfg); got != "{192.168.1.31, 192.168.1.32}" {
+		t.Errorf("resolverDNSServer = %q, want node resolvers", got)
+	}
+
+	// Without resolvers, fall back to the upstream pool DNS.
+	cfg = &Config{ExternalPools: []ExternalPoolConfig{{DNSServers: []string{"8.8.8.8", "1.1.1.1"}}}}
+	if got := resolverDNSServer(cfg); got != "{8.8.8.8, 1.1.1.1}" {
+		t.Errorf("resolverDNSServer fallback = %q, want pool DNS", got)
+	}
+}

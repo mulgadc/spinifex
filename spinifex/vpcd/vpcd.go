@@ -121,6 +121,11 @@ type Config struct {
 	// default_domain, e.g. "spx3.net"). IMDS uses it to serve public-hostname.
 	// Empty disables the public-hostname metadata key.
 	NorthstarBaseDomain string
+	// ResolverNameservers are the WAN IPs of cluster nodes running northstar.
+	// When set, they become the DHCP dns_server advertised to instances, so the
+	// guests resolve via the node-local DNS instead of the upstream pool DNS. A
+	// future OVN per-VPC resolver VIP will supersede this.
+	ResolverNameservers []string
 }
 
 // ExternalPoolConfig mirrors config.ExternalPool for vpcd's internal use.
@@ -436,7 +441,7 @@ func launchService(cfg *Config) error {
 	natMode := policy.NATModeFromUplinkMode(uplinkMode)
 
 	var topoOpts []topology.Option
-	if dns := pickDNSServer(cfg.ExternalPools); dns != "" {
+	if dns := resolverDNSServer(cfg); dns != "" {
 		topoOpts = append(topoOpts, topology.WithDNSServer(func() string { return dns }))
 	}
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
@@ -570,7 +575,7 @@ func launchService(cfg *Config) error {
 		NodeHostname: holder,
 		Chassis:      chassisNames,
 		GatewayClaim: host.NewGatewayClaimProber(cfg.OVNSBAddr),
-		DNSServer:    pickDNSServer(cfg.ExternalPools),
+		DNSServer:    resolverDNSServer(cfg),
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)
@@ -609,6 +614,17 @@ func launchService(cfg *Config) error {
 	loopCancel()
 	<-loopDone
 	return nil
+}
+
+// resolverDNSServer returns the OVN dhcp_options dns_server advertised to
+// instances. The node-local northstar resolvers take precedence so guests
+// resolve internal names authoritatively; absent those it falls back to the
+// upstream pool DNS.
+func resolverDNSServer(cfg *Config) string {
+	if len(cfg.ResolverNameservers) > 0 {
+		return topology.FormatDNSServerList(cfg.ResolverNameservers)
+	}
+	return pickDNSServer(cfg.ExternalPools)
 }
 
 // pickDNSServer returns the OVN dhcp_options dns_server from the first unscoped pool with DNS servers.

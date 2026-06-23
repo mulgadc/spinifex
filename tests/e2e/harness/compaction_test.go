@@ -44,7 +44,7 @@ func TestChurnObjectCount_ScalesWithBaseline(t *testing.T) {
 }
 
 func TestShardStoreUsage_TargetsShardDirsNotIndex(t *testing.T) {
-	ssh := &stubSSH{out: []byte("123\n")}
+	ssh := &stubSSH{out: []byte("123\n" + duSentinel + "\n")}
 
 	total, err := shardStoreUsageBytes(context.Background(), ssh, oneNodeCluster())
 
@@ -52,10 +52,33 @@ func TestShardStoreUsage_TargetsShardDirsNotIndex(t *testing.T) {
 	assert.Equal(t, int64(123), total)
 	assert.Contains(t, ssh.lastCmd, "distributed/nodes/node-*")
 	assert.NotContains(t, ssh.lastCmd, "/db")
+	assert.Contains(t, ssh.lastCmd, duSentinel, "command must carry the transport sentinel")
+}
+
+// An empty du measurement is anomalous (awk floors to "0") but must not crash
+// the gate: the sentinel proves the output arrived, so empty counts as 0.
+func TestShardStoreUsage_EmptyMeasurementIsZero(t *testing.T) {
+	ssh := &stubSSH{out: []byte(duSentinel + "\n")}
+
+	total, err := shardStoreUsageBytes(context.Background(), ssh, oneNodeCluster())
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), total)
+}
+
+// A missing sentinel means the output was lost in SSH retrieval — surface that
+// as a transport error rather than a bare ParseInt failure.
+func TestShardStoreUsage_MissingSentinelIsTransportError(t *testing.T) {
+	ssh := &stubSSH{out: []byte("")}
+
+	_, err := shardStoreUsageBytes(context.Background(), ssh, oneNodeCluster())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lost in SSH retrieval")
 }
 
 func TestPollUntilSettled_FailsAtDeadline(t *testing.T) {
-	ssh := &stubSSH{out: []byte("1000\n")}
+	ssh := &stubSSH{out: []byte("1000\n" + duSentinel + "\n")}
 
 	_, err := pollUntilSettled(context.Background(), ssh, oneNodeCluster(), 500, 50*time.Millisecond, 10*time.Millisecond)
 

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +30,12 @@ const (
 	predastoreBasePathDefault = "/var/lib/spinifex/predastore"
 	shardNodesGlob            = "distributed/nodes/node-*"
 	churnKeyPrefix            = "compaction-churn/"
+
+	// duSentinel terminates the remote du command. Its presence in the combined
+	// output proves the command ran to completion and the output made it back
+	// intact, letting the harness tell a genuinely empty measurement apart from
+	// output lost in SSH retrieval.
+	duSentinel = "__SPX_DU_OK__"
 
 	// churnBucketPrefix names the per-run bucket the churn creates. A dedicated
 	// bucket the harness identity owns sidesteps the config-defined system bucket,
@@ -132,7 +139,7 @@ func churnObjectCount(baseline int64) int {
 // SSH, returning a single aggregate byte count. Excludes the badger index dir.
 func shardStoreUsageBytes(ctx context.Context, ssh SSH, cluster *Cluster) (int64, error) {
 	glob := filepath.Join(predastoreBasePath(), shardNodesGlob)
-	cmd := fmt.Sprintf("du -sb %s 2>/dev/null | awk '{s+=$1} END{print s+0}'", glob)
+	cmd := fmt.Sprintf("du -sb %s 2>/dev/null | awk '{s+=$1} END{print s+0}'; echo %s", glob, duSentinel)
 
 	var total int64
 	for _, n := range cluster.Nodes {
@@ -140,13 +147,35 @@ func shardStoreUsageBytes(ctx context.Context, ssh SSH, cluster *Cluster) (int64
 		if err != nil {
 			return 0, fmt.Errorf("du on %s: %w", n.Name, err)
 		}
-		v, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+		v, err := parseShardUsage(n.Name, out)
 		if err != nil {
-			return 0, fmt.Errorf("du parse on %s (%q): %w", n.Name, out, err)
+			return 0, err
 		}
 		total += v
 	}
 	return total, nil
+}
+
+// parseShardUsage extracts the byte count from the du+sentinel output. A missing
+// sentinel means the output was truncated in transit (transport-layer drop). A
+// present sentinel with no number means the remote measurement was genuinely
+// empty, which counts as 0 — awk normally floors to "0", so empty is anomalous
+// and logged for the next investigation.
+func parseShardUsage(node string, out []byte) (int64, error) {
+	s := string(out)
+	if !strings.Contains(s, duSentinel) {
+		return 0, fmt.Errorf("du on %s: sentinel %q absent, output lost in SSH retrieval (got %q)", node, duSentinel, s)
+	}
+	num := strings.TrimSpace(strings.Replace(s, duSentinel, "", 1))
+	if num == "" {
+		slog.Warn("compaction: empty du measurement, treating as 0", "node", node, "raw", s)
+		return 0, nil
+	}
+	v, err := strconv.ParseInt(num, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("du parse on %s (%q): %w", node, num, err)
+	}
+	return v, nil
 }
 
 // churnPredastore writes then deletes a self-sized batch of objects under

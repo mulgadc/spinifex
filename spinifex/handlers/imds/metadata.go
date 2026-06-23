@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ const (
 	pathSecurityCredsDir = "/latest/meta-data/iam/security-credentials"  //nolint:gosec // URL path, not a credential
 	prefixPublicKeys     = "/latest/meta-data/public-keys/"
 	pathPublicKeysDir    = "/latest/meta-data/public-keys"
+	prefixNetworkMacs    = "/latest/meta-data/network/interfaces/macs/"
 
 	prefixDynamic        = "/latest/dynamic"
 	pathIdentityDir      = "/latest/dynamic/instance-identity"
@@ -148,6 +150,11 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		return
 	}
 
+	if sub, ok := strings.CutPrefix(path, prefixNetworkMacs); ok {
+		s.serveNetworkInterface(w, eni, sub) // sub: "", "<mac>", "<mac>/", "<mac>/<key>"
+		return
+	}
+
 	switch path {
 	case "/":
 		writeText(w, strings.Join(supportedVersions, "\n"))
@@ -160,7 +167,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case pathIdentityDocument:
 		s.serveInstanceIdentityDocument(w, eni)
 	case pathMetaDataRoot, prefixMetaData:
-		writeText(w, "ami-id\nami-launch-index\nhostname\niam/\ninstance-id\ninstance-life-cycle\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nplacement/\npublic-hostname\npublic-ipv4\npublic-keys/\nreservation-id\nsecurity-groups\nservices/")
+		writeText(w, "ami-id\nami-launch-index\nhostname\niam/\ninstance-id\ninstance-life-cycle\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nnetwork/\nplacement/\npublic-hostname\npublic-ipv4\npublic-keys/\nreservation-id\nsecurity-groups\nservices/")
 	case prefixMetaData + "instance-id":
 		writeText(w, eni.instanceID)
 	case prefixMetaData + "instance-life-cycle":
@@ -177,6 +184,12 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		writeText(w, eni.publicIP) // mirror public-ipv4 until public DNS exists
 	case prefixMetaData + "mac":
 		writeText(w, eni.mac)
+	case prefixMetaData + "network", prefixMetaData + "network/":
+		writeText(w, "interfaces/")
+	case prefixMetaData + "network/interfaces", prefixMetaData + "network/interfaces/":
+		writeText(w, "macs/")
+	case prefixMetaData + "network/interfaces/macs":
+		writeText(w, eni.mac+"/")
 	case prefixMetaData + "security-groups":
 		writeText(w, strings.Join(s.resolver.resolveSGNames(eni.accountID, eni.securityGroupIDs), "\n"))
 	case prefixMetaData + "hostname", prefixMetaData + "local-hostname":
@@ -386,6 +399,97 @@ func (s *IMDSServiceImpl) servePublicKeys(w http.ResponseWriter, eni *eniFacts, 
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// serveNetworkInterface serves the single primary ENI's subtree under
+// /network/interfaces/macs/. sub is the path after the macs/ prefix. An empty sub
+// is the macs/ directory listing; a MAC that is not the caller's is 404, since the
+// per-tap responder only ever resolves its own ENI (single-NIC; multi-ENI deferred).
+func (s *IMDSServiceImpl) serveNetworkInterface(w http.ResponseWriter, eni *eniFacts, sub string) {
+	if sub == "" {
+		writeText(w, eni.mac+"/")
+		return
+	}
+	mac, key, _ := strings.Cut(sub, "/")
+	if mac != eni.mac {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	switch key {
+	case "": // "<mac>" or "<mac>/" — the per-interface key listing
+		writeText(w, strings.Join(s.macKeys(eni), "\n"))
+	case "mac":
+		writeText(w, eni.mac)
+	case "device-number":
+		writeText(w, "0") // primary ENI
+	case "interface-id":
+		writeText(w, eni.eniID)
+	case "owner-id":
+		writeText(w, eni.accountID)
+	case "subnet-id":
+		writeText(w, eni.subnetID)
+	case "vpc-id":
+		writeText(w, eni.vpcID)
+	case "local-ipv4s":
+		writeText(w, eni.privateIP)
+	case "local-hostname":
+		writeText(w, synthHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
+	case "security-group-ids":
+		writeText(w, strings.Join(eni.securityGroupIDs, "\n"))
+	case "security-groups":
+		writeText(w, strings.Join(s.resolver.resolveSGNames(eni.accountID, eni.securityGroupIDs), "\n"))
+	case "subnet-ipv4-cidr-block":
+		s.serveCIDR(w, eni.accountID, eni.subnetID, s.resolver.resolveSubnetCIDR)
+	case "vpc-ipv4-cidr-block", "vpc-ipv4-cidr-blocks":
+		s.serveCIDR(w, eni.accountID, eni.vpcID, s.resolver.resolveVPCCIDR)
+	case "public-ipv4s", "public-hostname":
+		if eni.publicIP == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeText(w, eni.publicIP)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// macKeys lists exactly the leaf keys served under macs/<mac>/, so cloud-init's
+// recursive crawl never lists a key that 404s: the CIDR keys appear only when the
+// CIDR resolves, the public keys only when the ENI has a public IP. Sorted for a
+// deterministic, AWS-shaped listing.
+func (s *IMDSServiceImpl) macKeys(eni *eniFacts) []string {
+	keys := []string{
+		"device-number", "interface-id", "local-hostname", "local-ipv4s",
+		"mac", "owner-id", "security-group-ids", "security-groups",
+		"subnet-id", "vpc-id",
+	}
+	if cidr, err := s.resolver.resolveSubnetCIDR(eni.accountID, eni.subnetID); err == nil && cidr != "" {
+		keys = append(keys, "subnet-ipv4-cidr-block")
+	}
+	if cidr, err := s.resolver.resolveVPCCIDR(eni.accountID, eni.vpcID); err == nil && cidr != "" {
+		keys = append(keys, "vpc-ipv4-cidr-block", "vpc-ipv4-cidr-blocks")
+	}
+	if eni.publicIP != "" {
+		keys = append(keys, "public-hostname", "public-ipv4s")
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// serveCIDR resolves and writes a subnet/VPC CIDR: 404 on miss, 500 on a backend
+// fault, so a guest never renders network config from an empty CIDR.
+func (s *IMDSServiceImpl) serveCIDR(w http.ResponseWriter, accountID, id string, resolve func(string, string) (string, error)) {
+	cidr, err := resolve(accountID, id)
+	if err != nil {
+		slog.Error("IMDS: network-interface CIDR resolution failed", "account_id", accountID, "id", id, "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if cidr == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	writeText(w, cidr)
 }
 
 // instanceFor resolves the instance record for an ENI, writing the appropriate

@@ -153,9 +153,14 @@ resource "kubernetes_manifest" "demo_app" {
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
 
+    # The resources finalizer makes deleting this Application cascade-prune the
+    # synced resources (Deployment, Service, PVC). Without it, tofu destroy drops
+    # the Application CR but orphans the live PVC, whose Delete-reclaim PV then
+    # leaks an EBS volume once the cluster (and ebs-csi) is torn down.
     metadata = {
-      name      = "spinifex-demo"
-      namespace = "argocd"
+      name       = "spinifex-demo"
+      namespace  = "argocd"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
 
     spec = {

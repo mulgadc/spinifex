@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"testing"
@@ -116,6 +117,53 @@ func TestInstallIMDSDatapath(t *testing.T) {
 		if !s.called(w) {
 			t.Errorf("missing flow after shared-cookie clear:\n  %q\ncalls: %v", w, s.calls)
 		}
+	}
+}
+
+// A connectivity-critical failure (here the bridge create) must surface bare, so
+// the caller rolls the tap back to br-int rather than treating it as best-effort.
+func TestInstallIMDSDatapath_ConnectivityFailureNotWrapped(t *testing.T) {
+	s := newStubRunner()
+	s.expect("ovs-vsctl --may-exist add-br", nil, errors.New("ovsdb lock held"))
+
+	d := imdsDatapathSpec("eni-0abc1234", "02:00:00:00:01:05", "subnet-0fedcba9")
+	err := installIMDSDatapath(context.Background(), s, d)
+	if err == nil {
+		t.Fatal("expected the bridge failure to surface")
+	}
+	if errors.Is(err, vm.ErrIMDSServingDegraded) {
+		t.Errorf("connectivity-critical failure must not be ErrIMDSServingDegraded: %v", err)
+	}
+}
+
+// A serving-stage failure (after the patch + forward flows are in place) must be
+// wrapped as ErrIMDSServingDegraded — the guest is connected, only IMDS is down,
+// so the caller logs and continues instead of rolling the tap back.
+func TestInstallIMDSDatapath_ServingFailureWrapped(t *testing.T) {
+	d := imdsDatapathSpec("eni-0abc1234", "02:00:00:00:01:05", "subnet-0fedcba9")
+
+	s := newStubRunner()
+	s.expect("ovs-vsctl --may-exist add-br", nil, nil)
+	s.expect("ovs-vsctl set Bridge", nil, nil)
+	s.expect("ip", nil, nil)
+	s.expect("ovs-ofctl", nil, nil)
+	s.expect("ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.PatchIMDS, nil, nil)
+	s.expect("ovs-vsctl --may-exist add-port br-int "+d.PatchInt, nil, nil)
+	// The endpoint create is the first command past the connectivity-critical
+	// patch — fail it to land in the serving stage.
+	s.expect("ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.Endpoint, nil, errors.New("ovsdb busy"))
+
+	err := installIMDSDatapath(context.Background(), s, d)
+	if err == nil {
+		t.Fatal("expected the endpoint failure to surface")
+	}
+	if !errors.Is(err, vm.ErrIMDSServingDegraded) {
+		t.Errorf("serving-stage failure must be ErrIMDSServingDegraded, got %v", err)
+	}
+	// Connectivity (the patch's br-int end carrying the OVN binding) was installed
+	// before the failure, proving the guest keeps its path to OVN.
+	if !s.called("ovs-vsctl --may-exist add-port br-int " + d.PatchInt) {
+		t.Errorf("patch br-int end must be installed before the serving stage; calls: %v", s.calls)
 	}
 }
 

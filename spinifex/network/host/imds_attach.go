@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -73,6 +74,14 @@ func imdsDetachSpec(eniID string) IMDSTapDatapath {
 // The forward, demux, and egress flows all share the tap's cookie, so stale flows
 // are cleared once here — before any installer adds its flows — rather than inside
 // each installer, where a later clear would wipe an earlier installer's flows.
+//
+// Two failure classes are distinguished. The bridge, cookie clear, and patch are
+// connectivity-critical: the primary tap sits on the secure br-imds, so until the
+// patch + forward flows exist the guest has no L2 path to OVN at all — a failure
+// there is returned bare for the caller to roll the tap back to br-int (or fail the
+// launch). The demux/egress flows and reply routing only enable IMDS serving; their
+// failure leaves the guest fully connected, so it is wrapped as
+// vm.ErrIMDSServingDegraded for the caller to log and continue.
 func installIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if err := EnsureIMDSBridge(ctx, r); err != nil {
 		return err
@@ -84,9 +93,12 @@ func installIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error
 		return err
 	}
 	if err := InstallTapDatapath(ctx, r, d); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", vm.ErrIMDSServingDegraded, err)
 	}
-	return InstallTapReplyRouting(ctx, r, d)
+	if err := InstallTapReplyRouting(ctx, r, d); err != nil {
+		return fmt.Errorf("%w: %w", vm.ErrIMDSServingDegraded, err)
+	}
+	return nil
 }
 
 // removeIMDSDatapath reverses installIMDSDatapath. Reply routing goes first: its

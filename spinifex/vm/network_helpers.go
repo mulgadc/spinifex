@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -92,13 +93,18 @@ func GenerateMgmtMAC(instanceID string) string {
 }
 
 // attachPrimaryIMDSDatapath installs the per-tap IMDS datapath for the instance's
-// primary ENI once its tap is up, before QEMU starts the guest. Best-effort: a
-// failure is logged and never fails the launch, since IMDS readiness must not
-// gate boot. Only the primary ENI serves IMDS, so extra ENIs are skipped.
-// Serving is wired separately by the IMDS responder's reconcile-from-taps.
-func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) {
+// primary ENI once its tap is up, before QEMU starts the guest. Only the primary
+// ENI serves IMDS, so extra ENIs are skipped; serving is wired separately by the
+// IMDS responder's reconcile-from-taps.
+//
+// The primary tap is already on the secure br-imds, so the attach is NOT
+// best-effort: a serving-only failure (vm.ErrIMDSServingDegraded) leaves the guest
+// fully connected and is logged-and-continued, but a connectivity-critical failure
+// would strand the guest with no L2 path to OVN, so the tap is rolled back to
+// br-int. A nil error means the datapath (or the rollback) is in a connected state.
+func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) error {
 	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
-		return
+		return nil
 	}
 	subnetID := ""
 	if instance.Instance != nil {
@@ -107,12 +113,53 @@ func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) {
 	if subnetID == "" {
 		slog.Debug("IMDS: no subnet for primary ENI, skipping per-tap datapath",
 			"instance", instance.ID, "eni", instance.ENIId)
-		return
+		return nil
 	}
-	if err := m.deps.NetworkPlumber.AttachIMDSDatapath(instance.ENIId, instance.ENIMac, subnetID); err != nil {
-		slog.Warn("IMDS: per-tap datapath attach failed (continuing)",
+	err := m.deps.NetworkPlumber.AttachIMDSDatapath(instance.ENIId, instance.ENIMac, subnetID)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrIMDSServingDegraded) {
+		// Connectivity is intact (the patch + forward flows installed); only the
+		// IMDS demux/egress/reply stage failed. The guest keeps full VPC
+		// connectivity, so log and continue — boot is not gated on IMDS readiness.
+		slog.Error("IMDS: per-tap serving install failed; guest keeps connectivity but IMDS is unavailable",
+			"instance", instance.ID, "eni", instance.ENIId, "err", err)
+		return nil
+	}
+	// Connectivity-critical failure: the primary tap is stranded on the secure
+	// br-imds with no patch/forward path to OVN, so the guest would boot
+	// black-holed (no gateway, DHCP renewal, or off-subnet traffic). Roll the tap
+	// back to br-int — losing IMDS but restoring full connectivity, the pre-cutover
+	// behaviour — and fail the launch only if even that fails.
+	slog.Error("IMDS: per-tap connectivity install failed; rolling primary tap back to br-int",
+		"instance", instance.ID, "eni", instance.ENIId, "err", err)
+	return m.rollbackPrimaryTapToBrInt(instance)
+}
+
+// rollbackPrimaryTapToBrInt moves the primary tap off the secure br-imds back onto
+// br-int after a connectivity-critical IMDS datapath failure, restoring the guest's
+// L2 path to OVN at the cost of IMDS. It tears down any partial datapath (freeing
+// the patch's br-int iface-id so the tap can reclaim it), removes the stranded tap
+// from br-imds, then re-plumbs it on br-int with the OVN binding. Detach and
+// cleanup are best-effort, but a failure to re-plumb onto br-int leaves the guest
+// with no connected path, so that fails the launch.
+func (m *Manager) rollbackPrimaryTapToBrInt(instance *VM) error {
+	if err := m.deps.NetworkPlumber.DetachIMDSDatapath(instance.ENIId); err != nil {
+		slog.Warn("IMDS: rollback detach failed (continuing)",
 			"instance", instance.ID, "eni", instance.ENIId, "err", err)
 	}
+	tapName := TapDeviceName(instance.ENIId)
+	if err := m.deps.NetworkPlumber.CleanupTap(tapName); err != nil {
+		slog.Warn("IMDS: rollback tap cleanup failed (continuing)",
+			"instance", instance.ID, "tap", tapName, "err", err)
+	}
+	if err := m.deps.NetworkPlumber.SetupTap(VPCTapSpec(instance.ENIId, instance.ENIMac)); err != nil {
+		return fmt.Errorf("roll primary tap %s back to br-int: %w", tapName, err)
+	}
+	slog.Warn("IMDS: primary tap rolled back to br-int; guest connected, IMDS unavailable",
+		"instance", instance.ID, "tap", tapName, "eni", instance.ENIId)
+	return nil
 }
 
 // detachPrimaryIMDSDatapath removes the per-tap IMDS datapath for the instance's

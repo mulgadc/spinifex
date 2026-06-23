@@ -26,6 +26,7 @@ import {
 import { LifecyclePolicyEditor } from "./lifecycle-policy-editor"
 import { RepositoryPolicyEditor } from "./repository-policy-editor"
 import { RepositorySummary } from "./repository-summary"
+import { ScanFindings } from "./scan-findings"
 
 interface RepositoryDetailPageProps {
   repositoryName: string
@@ -82,6 +83,7 @@ export function RepositoryDetailPage({
           <TabsTab value="summary">Summary</TabsTab>
           <TabsTab value="images">Images</TabsTab>
           <TabsTab value="lifecycle">Lifecycle</TabsTab>
+          <TabsTab value="scan">Scan</TabsTab>
           <TabsTab value="permissions">Permissions</TabsTab>
         </TabsList>
 
@@ -152,6 +154,10 @@ export function RepositoryDetailPage({
 
         <TabsPanel value="lifecycle">
           <LifecyclePolicyEditor repositoryName={repositoryName} />
+        </TabsPanel>
+
+        <TabsPanel value="scan">
+          <ScanFindings />
         </TabsPanel>
 
         <TabsPanel value="permissions">

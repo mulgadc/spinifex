@@ -35,12 +35,12 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         name: Checkout Spinifex
         with:
           path: spinifex
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         name: Checkout Mulga (tofu-cluster)
         with:
           repository: mulgadc/mulga

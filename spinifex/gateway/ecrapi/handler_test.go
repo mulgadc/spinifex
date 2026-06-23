@@ -34,6 +34,29 @@ func TestActions_CoreRegisteredAsStub(t *testing.T) {
 	}
 }
 
+func TestScanningNotSupported(t *testing.T) {
+	out, err := ScanningNotSupported(nil, "123456789012", []byte("{}"))
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error())
+}
+
+func TestActions_ScanSurfaceUnsupported(t *testing.T) {
+	scan := []string{
+		"PutImageScanningConfiguration", "GetImageScanningConfiguration",
+		"StartImageScan", "DescribeImageScanFindings",
+		"GetRegistryScanningConfiguration", "PutRegistryScanningConfiguration",
+		"BatchGetRepositoryScanningConfiguration",
+	}
+	for _, action := range scan {
+		h, ok := Actions[action]
+		require.True(t, ok, "action %q should be registered", action)
+		_, err := h(nil, "123456789012", nil)
+		assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error(),
+			"action %q should resolve to the OperationNotSupported stub", action)
+	}
+}
+
 func TestWriteJSONResponse(t *testing.T) {
 	type repo struct {
 		RepositoryName *string `locationName:"repositoryName" type:"string"`

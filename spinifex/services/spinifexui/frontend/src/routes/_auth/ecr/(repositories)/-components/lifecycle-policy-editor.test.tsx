@@ -45,7 +45,7 @@ describe("LifecyclePolicyEditor", () => {
     fireEvent.change(textarea, { target: { value: `${POLICY} ` } })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(send).toHaveBeenCalled())
-    expect(send.mock.calls[0]?.[0].input).toStrictEqual({
+    expect(send.mock.calls[0]![0].input).toStrictEqual({
       repositoryName: REPO,
       lifecyclePolicyText: `${POLICY} `,
     })
@@ -73,9 +73,7 @@ describe("LifecyclePolicyEditor", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
     await waitFor(() => expect(send).toHaveBeenCalled())
-    expect(send.mock.calls[0]?.[0].input).toStrictEqual({
-      repositoryName: REPO,
-    })
+    expect(send.mock.calls[0]![0].input).toStrictEqual({ repositoryName: REPO })
   })
 
   it("previews the saved policy and renders the expiry table", async () => {
@@ -97,9 +95,7 @@ describe("LifecyclePolicyEditor", () => {
     await waitFor(() =>
       expect(screen.getByText(/1 image would expire/)).toBeInTheDocument(),
     )
-    expect(send.mock.calls[0]?.[0].input).toStrictEqual({
-      repositoryName: REPO,
-    })
+    expect(send.mock.calls[0]![0].input).toStrictEqual({ repositoryName: REPO })
     expect(screen.getByText("old")).toBeInTheDocument()
   })
 })

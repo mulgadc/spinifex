@@ -231,6 +231,27 @@ assert_nginx_webserver() {
     wait_for_http_200 "http://${ip}/"
 }
 
+# dump_s3_webapp_guest SSHes into the webapp instance and tails cloud-init's
+# output log plus the s3-webapp unit status, so a first-boot apt/pip/egress
+# failure is distinguishable from a control-plane regression in the bundle.
+# Best-effort: a missing key or unreachable SSH just logs and returns.
+dump_s3_webapp_guest() {
+    local host="$1" key="$(pwd)/s3-webapp-demo.pem"
+    if [ ! -f "$key" ]; then
+        log "  s3-webapp: ${key} missing, skipping guest cloud-init dump"
+        return 0
+    fi
+    chmod 600 "$key" 2>/dev/null || true
+    log "--- s3-webapp guest: cloud-init status + output log + unit status ---"
+    ssh "${SSH_OPTS[@]}" -i "$key" "ec2-user@${host}" '
+        echo "== cloud-init status =="; cloud-init status --long 2>/dev/null || true
+        echo "== /var/log/cloud-init-output.log (tail 80) =="
+        sudo tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
+        echo "== s3-webapp.service =="
+        systemctl status s3-webapp --no-pager 2>/dev/null | head -20 || true
+    ' 2>&1 | sed "s|^|    |" || log "  s3-webapp: guest SSH unreachable for cloud-init dump"
+}
+
 assert_s3_webapp() {
     # Prove the INSTANCE wrote to S3 with IMDS-sourced STS creds: upload a file
     # through the app (PutObject), then read it back from the listing (ListBucket
@@ -241,8 +262,12 @@ assert_s3_webapp() {
     ip=$(tofu output -raw public_ip)
     sentinel="spinifex-nightly-$(date +%s).txt"
 
-    wait_for_http_200 "http://${ip}/" || {
-        log "  s3-webapp: webapp not reachable on http://${ip}/"
+    # 420s budget: this is the heaviest first-boot of any workbook — cloud-init
+    # runs apt-get install python3-pip/venv + pip install flask boto3 before the
+    # listener binds :80. The default 150s isn't enough on a slow runner / PyPI.
+    wait_for_http_200 "http://${ip}/" 420 || {
+        log "  s3-webapp: webapp not reachable on http://${ip}/ after 420s"
+        dump_s3_webapp_guest "$ip"
         return 1
     }
 

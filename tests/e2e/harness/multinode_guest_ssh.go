@@ -59,6 +59,39 @@ func GuestSSHReady(t *testing.T, host string, port int, user, pemfile string, op
 	}, cfg.timeout, cfg.interval)
 }
 
+// TryGuestSSHReady is the non-fatal twin of GuestSSHReady: it polls SSH up to
+// timeout and returns whether the probe ever succeeded instead of t.Fatal-ing.
+// Callers use a false return to dump datapath diagnostics before failing — a
+// fresh cross-node public-IP guest unreachable for the full window is the
+// SNAT/DNAT flow-install flake signature, only diagnosable from CI artifacts.
+func TryGuestSSHReady(host string, port int, user, pemfile string, timeout time.Duration) bool {
+	target := fmt.Sprintf("%s@%s", user, host)
+	args := []string{
+		"-i", pemfile,
+		"-p", strconv.Itoa(port),
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=2",
+		"-o", "BatchMode=yes",
+		"-o", "LogLevel=ERROR",
+		target,
+		"echo ready",
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		err := runSSH(ctx, args)
+		cancel()
+		if err == nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 func runSSH(ctx context.Context, args []string) error {
 	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
 	if err != nil {

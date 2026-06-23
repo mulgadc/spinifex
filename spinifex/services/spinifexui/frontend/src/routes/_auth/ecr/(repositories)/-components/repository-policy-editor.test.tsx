@@ -46,7 +46,7 @@ describe("RepositoryPolicyEditor", () => {
     // First send is SetRepositoryPolicy; a second GetRepositoryPolicy fires from
     // the onSuccess cache invalidation, so assert the first call's payload.
     await waitFor(() => expect(send).toHaveBeenCalled())
-    expect(send.mock.calls[0]?.[0].input).toStrictEqual({
+    expect(send.mock.calls[0]![0].input).toStrictEqual({
       repositoryName: REPO,
       policyText: `${POLICY} `,
     })
@@ -72,7 +72,7 @@ describe("RepositoryPolicyEditor", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
     await waitFor(() => expect(send).toHaveBeenCalled())
-    expect(send.mock.calls[0]?.[0].input).toStrictEqual({
+    expect(send.mock.calls[0]![0].input).toStrictEqual({
       repositoryName: REPO,
     })
   })

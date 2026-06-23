@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -156,20 +157,26 @@ func RemoveTapDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if err := clearIMDSFlowsByCookie(ctx, r, imdsFlowCookie(d.Endpoint)); err != nil {
 		slog.Warn("Failed to clear IMDS tap flows", "endpoint", d.Endpoint, "err", err)
 	}
-	// Patch ports (primary ENI only). Best-effort on the IMDSBridge end; the
-	// br-int end carries the OVN binding, so a failure there is surfaced.
+	// Every port is deleted regardless of an earlier failure: a del-port error on
+	// the br-int patch end must not skip the endpoint delete, or teardown leaks the
+	// endpoint (and its captured .254/.253 addresses) on br-imds. The IMDSBridge
+	// patch end is best-effort; the br-int end and endpoint surface their errors.
 	if d.PatchIMDS != "" {
 		if _, err := r.Run(ctx, "ovs-vsctl", "--if-exists", "del-port", IMDSBridge, d.PatchIMDS); err != nil {
 			slog.Warn("Failed to delete IMDS patch (br-imds end)", "port", d.PatchIMDS, "err", err)
 		}
 	}
+	var errs []error
 	if d.PatchInt != "" {
 		if _, err := r.Run(ctx, "ovs-vsctl", "--if-exists", "del-port", "br-int", d.PatchInt); err != nil {
-			return fmt.Errorf("delete IMDS patch %s on br-int: %w", d.PatchInt, err)
+			errs = append(errs, fmt.Errorf("delete IMDS patch %s on br-int: %w", d.PatchInt, err))
 		}
 	}
 	if _, err := r.Run(ctx, "ovs-vsctl", "--if-exists", "del-port", IMDSBridge, d.Endpoint); err != nil {
-		return fmt.Errorf("delete IMDS endpoint %s: %w", d.Endpoint, err)
+		errs = append(errs, fmt.Errorf("delete IMDS endpoint %s: %w", d.Endpoint, err))
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	slog.Info("IMDS tap datapath removed", "endpoint", d.Endpoint)
 	return nil

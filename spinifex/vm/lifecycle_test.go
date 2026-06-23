@@ -747,6 +747,29 @@ func TestStartQEMU_DirectBoot_PrimaryTapError(t *testing.T) {
 	require.Len(t, plumber.setupCalls, 1)
 }
 
+// TestStartQEMU_DirectBoot_BridgeEnsureError verifies that a failure to ensure
+// br-imds aborts the launch before the primary tap is created: the tap would
+// otherwise be placed on a missing (or wrong) bridge, black-holing the guest.
+func TestStartQEMU_DirectBoot_BridgeEnsureError(t *testing.T) {
+	plumber := &fakeNetworkPlumber{ensureBridgeErr: errors.New("add-br failed")}
+	m := directBootManager(t, plumber)
+
+	instance := &VM{
+		ID:           "i-db-bridge-err",
+		InstanceType: "t3.nano",
+		DirectBoot:   true,
+		ENIId:        "eni-000000000000dddd",
+		ENIMac:       "02:aa:bb:cc:dd:04",
+	}
+
+	err := m.startQEMU(instance)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ensure IMDS bridge")
+	// The tap must not be created when the bridge could not be ensured.
+	assert.Empty(t, plumber.setupCalls)
+}
+
 // TestStartQEMU_DirectBoot_ExtraENITapError verifies that a tap failure on a
 // secondary ENI returns an error without starting QEMU.
 func TestStartQEMU_DirectBoot_ExtraENITapError(t *testing.T) {

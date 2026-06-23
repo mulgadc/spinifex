@@ -164,3 +164,27 @@ func TestRemoveTapDatapath(t *testing.T) {
 		}
 	}
 }
+
+// TestRemoveTapDatapathDeletesEndpointDespitePatchError guards against the
+// teardown leaking the endpoint when the br-int patch delete fails: every
+// del-port must run regardless, and the surfaced error must join both failures.
+func TestRemoveTapDatapathDeletesEndpointDespitePatchError(t *testing.T) {
+	s := newStubRunner()
+	s.expect("ovs-ofctl", nil, nil)
+	d := testDatapath()
+	s.expect("ovs-vsctl --if-exists del-port "+IMDSBridge+" "+d.PatchIMDS, nil, nil)
+	s.expect("ovs-vsctl --if-exists del-port br-int "+d.PatchInt, []byte("boom"), errors.New("exit 1"))
+	s.expect("ovs-vsctl --if-exists del-port "+IMDSBridge+" "+d.Endpoint, nil, nil)
+
+	err := RemoveTapDatapath(context.Background(), s, d)
+	if err == nil {
+		t.Fatal("expected error when br-int patch delete fails")
+	}
+	if !strings.Contains(err.Error(), d.PatchInt) {
+		t.Errorf("error must mention failed br-int patch %q, got: %v", d.PatchInt, err)
+	}
+	// The endpoint delete must still have run, or it leaks on br-imds.
+	if !s.called("ovs-vsctl --if-exists del-port " + IMDSBridge + " " + d.Endpoint) {
+		t.Errorf("endpoint must be deleted even after a patch delete failure; calls: %v", s.calls)
+	}
+}

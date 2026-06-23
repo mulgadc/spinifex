@@ -240,7 +240,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 			// Primary tap goes on br-imds (so its egress meets the IMDS demux
 			// flows); the bridge must exist before SetupTap can attach to it.
 			if err := m.deps.NetworkPlumber.EnsureIMDSDatapathBridge(); err != nil {
-				slog.Warn("Failed to ensure IMDS bridge (direct-boot); primary tap attach may fail", "eni", instance.ENIId, "err", err)
+				slog.Error("Failed to ensure IMDS bridge (direct-boot)", "eni", instance.ENIId, "err", err)
+				return fmt.Errorf("ensure IMDS bridge: %w", err)
 			}
 			tapSpec := IMDSPrimaryTapSpec(instance.ENIId)
 			if err := m.deps.NetworkPlumber.SetupTap(tapSpec); err != nil {
@@ -273,7 +274,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 			// Primary tap goes on br-imds (so its egress meets the IMDS demux
 			// flows); the bridge must exist before SetupTap can attach to it.
 			if err := m.deps.NetworkPlumber.EnsureIMDSDatapathBridge(); err != nil {
-				slog.Warn("Failed to ensure IMDS bridge; primary tap attach may fail", "eni", instance.ENIId, "err", err)
+				slog.Error("Failed to ensure IMDS bridge", "eni", instance.ENIId, "err", err)
+				return fmt.Errorf("ensure IMDS bridge: %w", err)
 			}
 			spec := IMDSPrimaryTapSpec(instance.ENIId)
 			if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {

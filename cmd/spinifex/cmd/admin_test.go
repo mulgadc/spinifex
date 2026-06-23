@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	s3 "github.com/mulgadc/predastore/s3"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	toml "github.com/pelletier/go-toml/v2"
+	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -206,7 +210,7 @@ func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
 		{ID: 3, Host: "10.0.0.3"},
 	}
 	content, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "0.0.0.0",
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "0.0.0.0", 0,
 	)
 	require.NoError(t, err)
 	assert.Contains(t, content, `nats_url = "nats://localhost:4222"`)
@@ -214,7 +218,7 @@ func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
 
 	// Specific bind IP → stays as-is.
 	content2, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "10.11.12.1",
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "10.11.12.1", 0,
 	)
 	require.NoError(t, err)
 	assert.Contains(t, content2, `nats_url = "nats://10.11.12.1:4222"`)
@@ -453,4 +457,82 @@ func TestApplyNetworkConfig_PropagatesPoolBindBridge(t *testing.T) {
 	applyNetworkConfig(settings, nc)
 	assert.Equal(t, "dhcp", settings.PoolSource)
 	assert.Equal(t, "br-wan", settings.PoolBindBridge)
+}
+
+func renderSingleNodePredastore(t *testing.T, settings admin.ConfigSettings) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "predastore.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, predastoreTomlTemplate, settings))
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func predastoreMultinodeNodes() []admin.PredastoreNodeConfig {
+	return []admin.PredastoreNodeConfig{
+		{ID: 1, Host: "10.0.0.1"}, {ID: 2, Host: "10.0.0.2"}, {ID: 3, Host: "10.0.0.3"},
+	}
+}
+
+// Unset knob must leave production config byte-identical: no [compaction] block
+// and the original trailing bytes unchanged (single-node has no trailing
+// newline, multinode keeps one).
+func TestPredastoreTemplates_UnsetCompactionEmitsNoBlock(t *testing.T) {
+	single := renderSingleNodePredastore(t, admin.ConfigSettings{
+		Region: "ap-southeast-2", BindIP: "0.0.0.0", ConfigDir: "/cfg",
+		AccessKey: "AK", SecretKey: "SK", NatsToken: "tok",
+	})
+	assert.NotContains(t, single, "[compaction]")
+	assert.True(t, strings.HasSuffix(single, `access_keys_bucket = "spinifex-iam-access-keys"`),
+		"unset single-node tail changed: %q", single[len(single)-40:])
+
+	multi, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0,
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, multi, "[compaction]")
+	assert.True(t, strings.HasSuffix(multi, "access_keys_bucket = \"spinifex-iam-access-keys\"\n"),
+		"unset multinode tail changed: %q", multi[len(multi)-40:])
+}
+
+func TestPredastoreTemplates_SetCompactionEmitsParseableBlock(t *testing.T) {
+	const interval = 30
+
+	single := renderSingleNodePredastore(t, admin.ConfigSettings{
+		Region: "ap-southeast-2", BindIP: "0.0.0.0", ConfigDir: "/cfg",
+		AccessKey: "AK", SecretKey: "SK", NatsToken: "tok", CompactionIntervalSeconds: interval,
+	})
+	assert.Contains(t, single, "[compaction]")
+	var singleCfg s3.Config
+	require.NoError(t, toml.Unmarshal([]byte(single), &singleCfg))
+	assert.Equal(t, interval, singleCfg.Compaction.IntervalSeconds)
+
+	multi, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", interval,
+	)
+	require.NoError(t, err)
+	var multiCfg s3.Config
+	require.NoError(t, toml.Unmarshal([]byte(multi), &multiCfg))
+	assert.Equal(t, interval, multiCfg.Compaction.IntervalSeconds)
+}
+
+// The init/join flag must register with an unset (0) default and flow into the
+// rendered config via ConfigSettings.
+func TestAdminInitFlag_CompactionIntervalReachesRenderedConfig(t *testing.T) {
+	for _, c := range []*cobra.Command{adminInitCmd, adminJoinCmd} {
+		f := c.Flags().Lookup("predastore-compaction-interval")
+		require.NotNil(t, f, "%s missing --predastore-compaction-interval", c.Name())
+		assert.Equal(t, "0", f.DefValue)
+	}
+
+	require.NoError(t, adminInitCmd.Flags().Set("predastore-compaction-interval", "45"))
+	defer func() { _ = adminInitCmd.Flags().Set("predastore-compaction-interval", "0") }()
+
+	v, _ := adminInitCmd.Flags().GetInt("predastore-compaction-interval")
+	require.Equal(t, 45, v)
+
+	out := renderSingleNodePredastore(t, admin.ConfigSettings{
+		Region: "ap-southeast-2", BindIP: "0.0.0.0", CompactionIntervalSeconds: v,
+	})
+	assert.Contains(t, out, "interval_seconds = 45")
 }

@@ -298,6 +298,7 @@ func init() {
 	adminInitCmd.Flags().String("predastore-nodes", "", "Comma-separated IPs for multi-node Predastore cluster (e.g., 10.11.12.1,10.11.12.2,10.11.12.3). Requires >= 3 nodes.")
 	adminInitCmd.Flags().String("formation-timeout", "10m", "Timeout for cluster formation (e.g., 5m, 30s)")
 	adminInitCmd.Flags().String("token-ttl", "30m", "Join token validity duration (e.g. 30m, 1h, 2h)")
+	adminInitCmd.Flags().Int("predastore-compaction-interval", 0, "Predastore compactor interval in seconds (0 = unset, uses built-in default). Test clusters set a short interval.")
 	adminInitCmd.Flags().String("cluster-name", "spinifex", "NATS cluster name")
 	adminInitCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during init (default: enabled)")
 	adminInitCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
@@ -331,6 +332,7 @@ func init() {
 	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
 	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
 	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
+	adminJoinCmd.Flags().Int("predastore-compaction-interval", 0, "Predastore compactor interval in seconds (0 = unset, uses built-in default). Test clusters set a short interval.")
 	adminJoinCmd.MarkFlagRequired("node")
 	adminJoinCmd.MarkFlagRequired("host")
 	adminJoinCmd.MarkFlagRequired("token")
@@ -846,6 +848,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	predastoreNodesStr, _ := cmd.Flags().GetString("predastore-nodes")
 	formationTimeoutStr, _ := cmd.Flags().GetString("formation-timeout")
 	tokenTTLStr, _ := cmd.Flags().GetString("token-ttl")
+	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
 	clusterName, _ := cmd.Flags().GetString("cluster-name")
 	services, _ := cmd.Flags().GetStringSlice("services")
 
@@ -1256,7 +1259,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		}
 
 		// Generate multi-node predastore.toml
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1297,8 +1300,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		ClusterRoutes: clusterRoutes,
 		ClusterName:   clusterName,
 
-		PredastoreNodeID: predastoreNodeID,
-		Services:         services,
+		PredastoreNodeID:          predastoreNodeID,
+		CompactionIntervalSeconds: compactionInterval,
+		Services:                  services,
 
 		OVNNBAddr: "tcp:127.0.0.1:6641",
 		OVNSBAddr: "tcp:127.0.0.1:6642",
@@ -1402,6 +1406,8 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		fmt.Fprintf(os.Stderr, "❌ Error: --token-ttl (%s) must be >= --formation-timeout + 1m (%s)\n", tokenTTL, formationTimeout+1*time.Minute)
 		os.Exit(1)
 	}
+
+	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
 
 	joinToken, err := formation.GenerateJoinToken()
 	if err != nil {
@@ -1546,7 +1552,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	var predastoreNodeID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1583,9 +1589,10 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		ClusterRoutes: clusterRoutes,
 		ClusterName:   clusterName,
 
-		PredastoreNodeID: predastoreNodeID,
-		Services:         services,
-		RemoteNodes:      buildRemoteNodes(allNodes, node),
+		PredastoreNodeID:          predastoreNodeID,
+		CompactionIntervalSeconds: compactionInterval,
+		Services:                  services,
+		RemoteNodes:               buildRemoteNodes(allNodes, node),
 
 		OperatorEmail: email,
 
@@ -1655,6 +1662,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	configDir, _ := cmd.Flags().GetString("config-dir")
 	clusterBind, _ := cmd.Flags().GetString("cluster-bind")
 	services, _ := cmd.Flags().GetStringSlice("services")
+	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
 
 	email, _ := cmd.Flags().GetString("email")
 	email = strings.TrimSpace(email)
@@ -2002,7 +2010,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP, compactionInterval)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -2043,9 +2051,10 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		ClusterRoutes: clusterRoutes,
 		ClusterName:   creds.ClusterName,
 
-		PredastoreNodeID: predastoreNodeID,
-		Services:         services,
-		RemoteNodes:      buildRemoteNodes(statusResp.Nodes, node),
+		PredastoreNodeID:          predastoreNodeID,
+		CompactionIntervalSeconds: compactionInterval,
+		Services:                  services,
+		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node),
 
 		OperatorEmail: email,
 

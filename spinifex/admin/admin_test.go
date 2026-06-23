@@ -745,7 +745,7 @@ host = "{{.Host}}"
 		{ID: 3, Host: "10.0.0.3"},
 	}
 
-	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1")
+	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0)
 	require.NoError(t, err)
 	assert.Contains(t, result, `host = "10.0.0.1"`)
 	assert.Contains(t, result, `host = "10.0.0.3"`)
@@ -756,7 +756,7 @@ func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 
 	_, err := GenerateMultiNodePredastoreConfig(tmpl, []PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
-	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1")
+	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "at least 2 nodes")
 }
@@ -764,7 +764,7 @@ func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 func TestGenerateMultiNodePredastoreConfig_InvalidTemplate(t *testing.T) {
 	_, err := GenerateMultiNodePredastoreConfig("{{.Unclosed", []PredastoreNodeConfig{
 		{ID: 1, Host: "a"}, {ID: 2, Host: "b"}, {ID: 3, Host: "c"},
-	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1")
+	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to parse")
 }

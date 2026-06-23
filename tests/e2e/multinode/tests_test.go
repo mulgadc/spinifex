@@ -2,7 +2,9 @@
 
 package multinode
 
-import "testing"
+import (
+	"testing"
+)
 
 // Top-level Test* wrappers, each delegating to a runX function. Parallel tests
 // share the read-only singleton trio; sequential tests mutate cluster state

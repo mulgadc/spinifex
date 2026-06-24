@@ -167,7 +167,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case pathIdentityDocument:
 		s.serveInstanceIdentityDocument(w, eni)
 	case pathMetaDataRoot, prefixMetaData:
-		writeText(w, "ami-id\nami-launch-index\nhostname\niam/\ninstance-id\ninstance-life-cycle\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nnetwork/\nplacement/\npublic-hostname\npublic-ipv4\npublic-keys/\nreservation-id\nsecurity-groups\nservices/")
+		s.serveMetaDataRoot(w, eni)
 	case prefixMetaData + "instance-id":
 		writeText(w, eni.instanceID)
 	case prefixMetaData + "instance-life-cycle":
@@ -217,6 +217,10 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "services/partition":
 		writeText(w, "aws")
 	case prefixMetaData + "iam", prefixMetaData + "iam/":
+		if !s.hasInstanceProfile(eni) {
+			w.WriteHeader(http.StatusNotFound) // no profile → no iam/ subtree, as on real EC2
+			return
+		}
 		writeText(w, "info\nsecurity-credentials/")
 	case prefixMetaData + "iam/info":
 		s.serveIAMInfo(w, eni)
@@ -229,6 +233,19 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// serveMetaDataRoot writes the meta-data/ index. iam/ is listed only when an
+// instance profile is attached, matching real EC2 — otherwise cloud-init descends
+// into iam/ and fails its whole metadata crawl on the 404ing leaves.
+func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts) {
+	const head = "ami-id\nami-launch-index\nhostname\n"
+	const tail = "instance-id\ninstance-life-cycle\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nnetwork/\nplacement/\npublic-hostname\npublic-ipv4\npublic-keys/\nreservation-id\nsecurity-groups\nservices/"
+	if s.hasInstanceProfile(eni) {
+		writeText(w, head+"iam/\n"+tail)
+		return
+	}
+	writeText(w, head+tail)
 }
 
 // serveInstanceField resolves the instance record and writes one of its
@@ -545,6 +562,15 @@ func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 		return nil, nil
 	}
 	return &resolvedProfile{ARN: profile.ARN, InstanceProfileID: profile.InstanceProfileID, RoleName: profile.RoleName}, nil
+}
+
+// hasInstanceProfile reports whether a resolvable instance profile is attached. A
+// backend error counts as "no profile" so the iam/ subtree stays self-consistent —
+// omitted from the meta-data/ listing and 404 at the directory — rather than
+// advertised with 404ing leaves, which fails cloud-init's metadata crawl.
+func (s *IMDSServiceImpl) hasInstanceProfile(eni *eniFacts) bool {
+	profile, err := s.profileFor(eni)
+	return err == nil && profile != nil
 }
 
 // resolvedProfile is the slice of an IAM instance profile served by the metadata surface.

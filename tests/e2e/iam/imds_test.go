@@ -221,6 +221,9 @@ func runIMDS(t *testing.T, fix *Fixture) {
 			"no public IP → public-hostname must 404")
 	}
 
+	// VM X is profile-bound, so meta-data/ lists iam/ and cloud-init descends.
+	require.Contains(t, imdsGet(t, tgtX, tokenX, "/latest/meta-data/"), "iam/",
+		"profile-bound meta-data/ listing must include iam/")
 	// iam/info → InstanceProfileArn ends with the bound profile.
 	iamInfo := imdsGet(t, tgtX, tokenX, "/latest/meta-data/iam/info")
 	require.Containsf(t, iamInfo, ":instance-profile/"+imdsProfileName,
@@ -336,6 +339,19 @@ func runIMDS(t *testing.T, fix *Fixture) {
 		imdsCode(tgtY, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, freshTokenX),
 			"/latest/meta-data/instance-id"),
 		"a token bound to VM X's ENI must not authorise VM Y")
+
+	// VM Y has no instance profile, so the whole iam/ subtree is absent: real EC2
+	// omits iam/ from the meta-data/ listing and 404s the iam/ directory, so
+	// cloud-init never descends and never trips on a 404ing iam/info that would fail
+	// its metadata crawl and zombie the guest.
+	harness.Step(t, "VM Y meta-data/ omits iam/; iam/ directory 404s")
+	require.NotContains(t, imdsGet(t, tgtY, tokenY, "/latest/meta-data/"), "iam/",
+		"no-profile meta-data/ listing must omit iam/")
+	for _, p := range []string{"/latest/meta-data/iam", "/latest/meta-data/iam/"} {
+		require.Equalf(t, "404",
+			imdsCode(tgtY, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, tokenY), p),
+			"no-profile %s must 404 (real-EC2 parity)", p)
+	}
 
 	// VM Y has no instance profile: iam/info is 404 and the credential listing is
 	// an empty 200 (absence is not an error, matching AWS).

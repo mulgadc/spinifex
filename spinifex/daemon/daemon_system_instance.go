@@ -383,16 +383,16 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 }
 
 // launchAMISystemInstance is the BootAMI branch of LaunchSystemInstance: a full
-// AMI boot (root volume cloned from an AMI, cloud-init user-data + network
-// config seed) for a system-managed VM, with a management-bridge NIC so the
+// AMI boot (root volume cloned from an AMI, bootstrapped from the Ec2 IMDS
+// datasource) for a system-managed VM, with a management-bridge NIC so the
 // guest can reach the daemon (NATS/AWSGW) off its tenant VPC subnet.
 //
 // It mirrors the daemon RunInstances handler's Prepare → Insert → Launch split,
 // allocating the mgmt NIC on the VM record between Insert and Launch so the
-// cloud-init network-config rendered during Launch carries a static mgmt0
-// interface. The instance is owned by input.AccountID (the account its
-// pre-created ENI lives in) and tagged input.ManagedBy so customer listings
-// hide it.
+// fw_cfg netcfg blob built during Launch carries the static mgmt0 address (the
+// Ec2 datasource only renders the primary ENI). The instance is owned by
+// input.AccountID (the account its pre-created ENI lives in) and tagged
+// input.ManagedBy so customer listings hide it.
 func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
 	if d.instanceService == nil {
 		return nil, errors.New("sysinstance: instance service not initialized")

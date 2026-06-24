@@ -1,6 +1,7 @@
 // Package sysinstance holds the boot-agnostic contract for system-managed VMs.
 // Hidden from DescribeInstances; supports two boot styles: BootDirect (fw_cfg microVM)
-// and BootAMI (AMI + cloud-init). Types live here to avoid an eks→elbv2 import cycle.
+// and BootAMI (AMI booting from the Ec2 IMDS datasource). Types live here to avoid an
+// eks→elbv2 import cycle.
 package sysinstance
 
 import "errors"
@@ -15,7 +16,8 @@ type BootMode string
 const (
 	// BootDirect is the direct-boot microVM path (fw_cfg-delivered config).
 	BootDirect BootMode = "direct"
-	// BootAMI is the AMI + cloud-init path (root volume + seed ISO).
+	// BootAMI boots a root volume cloned from an AMI off the Ec2 IMDS datasource;
+	// its mgmt NIC is configured from a fw_cfg netcfg blob.
 	BootAMI BootMode = "ami"
 )
 

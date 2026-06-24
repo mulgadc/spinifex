@@ -110,6 +110,7 @@ var supportedServices = map[string]bool{
 	"account":              true,
 	"elasticloadbalancing": true,
 	"eks":                  true,
+	"ecs":                  true,
 	"ecr":                  true,
 	"acm":                  true,
 	"tagging":              true,
@@ -335,6 +336,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ELBv2_Request(w, r)
 	case "eks":
 		err = gw.EKS_Request(w, r)
+	case "ecs":
+		err = gw.ECS_Request(w, r)
 	case "ecr":
 		err = gw.ECR_Request(w, r)
 	case "acm":

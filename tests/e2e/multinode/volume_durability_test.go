@@ -101,7 +101,7 @@ func pickCrossNodePair(t *testing.T, fix *Fixture, trio []string) (srcID, dstID,
 func guestTarget(t *testing.T, fix *Fixture, instanceID, pemPath string) harness.SSHTarget {
 	t.Helper()
 	host, port := harness.GuestSSHEndpoint(t, fix.AWS, fix.Cluster, instanceID)
-	if !harness.TryGuestSSHReady(host, port, "ec2-user", pemPath, 2*time.Minute) {
+	if !harness.TryGuestSSHReady(host, port, "ubuntu", pemPath, 2*time.Minute) {
 		privIP := harness.InstancePrivateIP(t, fix.AWS, instanceID)
 		harness.DumpVPCFlowDiagnostics(t, fix.AWS, instanceID,
 			fmt.Sprintf("volume-durability guest SSH timeout — instance=%s pub=%s priv=%s",
@@ -114,5 +114,5 @@ func guestTarget(t *testing.T, fix *Fixture, instanceID, pemPath string) harness
 		t.Fatalf("guest %s SSH %s:%d never became reachable within 2min (see diagnostics above)",
 			instanceID, host, port)
 	}
-	return harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: pemPath}
+	return harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: pemPath}
 }

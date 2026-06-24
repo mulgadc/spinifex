@@ -103,11 +103,11 @@ func runSSHProbe(t *testing.T, fix *Fixture) {
 	waitForSSHHandshake(t, host, port, keyPath)
 	_ = addr
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 	harness.Step(t, "ssh id")
 	idOut := runSSH(t, tgt, "id")
-	assert.Containsf(t, idOut, "ec2-user", "ssh id should report ec2-user\n%s", idOut)
+	assert.Containsf(t, idOut, "ubuntu", "ssh id should report ubuntu\n%s", idOut)
 
 	harness.Step(t, "lsblk root-volume cross-check vs API")
 	guestGiB := harness.LsblkRootGiB(t, tgt)

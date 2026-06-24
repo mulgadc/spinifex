@@ -31,8 +31,8 @@ func GuestSSHEndpoint(t *testing.T, c *AWSClient, cluster *Cluster, instanceID s
 
 // GuestSSHReady polls SSH into the named instance until a probe command
 // succeeds. Pemfile is the test-scoped private key written by EnsureKeyPair;
-// user defaults to ec2-user (the cloud-init account that spinifex injects
-// regardless of distro family — see handlers/ec2/instance/service_impl.go).
+// user is the AMI's stock default user (e.g. ubuntu for Ubuntu cloud images),
+// which stock cloud-init wires the IMDS launch key to once the seed is retired.
 func GuestSSHReady(t *testing.T, host string, port int, user, pemfile string, opts ...PollOpt) {
 	t.Helper()
 	cfg := applyOpts(pollCfg{timeout: 60 * time.Second, interval: 1 * time.Second}, opts...)

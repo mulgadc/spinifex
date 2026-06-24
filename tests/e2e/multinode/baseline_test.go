@@ -137,12 +137,12 @@ func runMultinodeDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 
 	harness.Step(t, "authorizing tcp/22, expecting reachability")
 	harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-	harness.GuestSSHReady(t, pubIP, 22, "ec2-user", keyPath,
+	harness.GuestSSHReady(t, pubIP, 22, "ubuntu", keyPath,
 		harness.WithTimeout(3*time.Minute), harness.WithPoll(3*time.Second))
 
-	out, err := sshCapture(keyPath, "ec2-user", pubIP, 22, "id")
+	out, err := sshCapture(keyPath, "ubuntu", pubIP, 22, "id")
 	require.NoErrorf(t, err, "ssh id after authorize: %s", out)
-	assert.Containsf(t, out, "ec2-user", "ssh id after authorize\n%s", out)
+	assert.Containsf(t, out, "ubuntu", "ssh id after authorize\n%s", out)
 }
 
 // runMultinodeSameSGCrossHostComms launches two instances on different nodes sharing
@@ -197,11 +197,11 @@ func runMultinodeSameSGCrossHostComms(t *testing.T, fix *Fixture) {
 
 	// Shell into the source instance via its dedicated runner-SSH SG.
 	host, port := harness.GuestSSHEndpoint(t, fix.AWS, fix.Cluster, src.id)
-	harness.GuestSSHReady(t, host, port, "ec2-user", keyPath,
+	harness.GuestSSHReady(t, host, port, "ubuntu", keyPath,
 		harness.WithTimeout(3*time.Minute), harness.WithPoll(3*time.Second))
 
 	harness.Step(t, "ping %s (%s) from %s across hosts via default-SG self-ingress", dst.id, dstPriv, src.id)
-	out, err := sshCapture(keyPath, "ec2-user", host, port,
+	out, err := sshCapture(keyPath, "ubuntu", host, port,
 		fmt.Sprintf("ping -c 3 -W 2 %s", dstPriv))
 	require.NoErrorf(t, err,
 		"cross-host ping %s -> %s failed; default SG self-ingress not enforced across chassis\n%s",

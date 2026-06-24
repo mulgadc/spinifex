@@ -183,9 +183,9 @@ func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 		"tcp/22 to %s never became reachable after authorizing ingress — "+
 			"default subnet egress/IGW datapath is broken", pubIP)
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 	idOut := runSSH(t, tgt, "id")
-	assert.Containsf(t, idOut, "ec2-user", "ssh id after authorize\n%s", idOut)
+	assert.Containsf(t, idOut, "ubuntu", "ssh id after authorize\n%s", idOut)
 }
 
 // mainRouteTableID returns the main (implicitly-associated) route table for
@@ -311,9 +311,9 @@ func runNewVPCEgressBaseline(t *testing.T, fix *Fixture) {
 			"after the main-RT IGW route existed", pubIP, subnetID)
 	}
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 	idOut := runSSH(t, tgt, "id")
-	assert.Containsf(t, idOut, "ec2-user", "ssh id in fresh-VPC subnet\n%s", idOut)
+	assert.Containsf(t, idOut, "ubuntu", "ssh id in fresh-VPC subnet\n%s", idOut)
 }
 
 // runSameSGComms verifies that two instances in the default SG can ICMP-ping
@@ -341,7 +341,7 @@ func runSameSGComms(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "src", srcID, "dst", dstID, "dst_private_ip", dstPriv, "ssh_host", host)
 	waitForSSHHandshake(t, host, port, keyPath)
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 	harness.Step(t, "ping %s (%s) from %s via default-SG self-ingress", dstID, dstPriv, srcID)
 	out, converged := pingConverged(tgt, dstPriv, 45*time.Second)
 	require.Truef(t, converged,

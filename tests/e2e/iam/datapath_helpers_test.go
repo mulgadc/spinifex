@@ -142,7 +142,7 @@ func trySSHReady(host string, port int, keyPath string, timeout time.Duration) b
 			"-o", "BatchMode=yes",
 			"-p", strconv.Itoa(port),
 			"-i", keyPath,
-			"ec2-user@"+host,
+			"ubuntu@"+host,
 			"true")
 		if cmd.Run() == nil {
 			return true

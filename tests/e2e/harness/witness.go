@@ -53,7 +53,7 @@ type Witness struct {
 // NewWitness constructs a Witness from environment variables. Required:
 // AWS_REGION, DDIL_GUEST_SSH_KEY. Optional: DDIL_WITNESS_AMI,
 // DDIL_WITNESS_INSTANCE_TYPE (defaults to smallest registered type),
-// DDIL_WITNESS_KEY_NAME (default spinifex-key), DDIL_GUEST_SSH_USER (default ec2-user).
+// DDIL_WITNESS_KEY_NAME (default spinifex-key), DDIL_GUEST_SSH_USER (default ubuntu).
 func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 	region := os.Getenv("AWS_REGION")
 	if region == "" {
@@ -98,7 +98,7 @@ func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 		ssh:          transport,
 		hostSigner:   hostSigner,
 		guestSigner:  guestSigner,
-		guestUser:    envDefault("DDIL_GUEST_SSH_USER", "ec2-user"),
+		guestUser:    envDefault("DDIL_GUEST_SSH_USER", "ubuntu"),
 		ami:          os.Getenv("DDIL_WITNESS_AMI"),
 		instanceType: os.Getenv("DDIL_WITNESS_INSTANCE_TYPE"),
 		keyName:      envDefault("DDIL_WITNESS_KEY_NAME", "spinifex-key"),

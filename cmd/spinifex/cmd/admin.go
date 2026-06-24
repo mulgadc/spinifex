@@ -661,15 +661,21 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 
 // caBakeRunCommand installs the uploaded CA into the guest trust store. The
 // try-both covers Debian/Ubuntu/Alpine (update-ca-certificates) and RHEL/Rocky
-// (update-ca-trust) in one run, then removes the staged copy.
-const caBakeRunCommand = `{ install -m644 /tmp/spinifex-ca.pem /usr/local/share/ca-certificates/spinifex.crt && update-ca-certificates; } || ` +
-	`{ install -m644 /tmp/spinifex-ca.pem /etc/pki/ca-trust/source/anchors/spinifex.crt && update-ca-trust; }; ` +
-	`rm -f /tmp/spinifex-ca.pem`
+// (update-ca-trust) in one run, then removes the staged copy. The install
+// group's exit code is preserved past the cleanup rm so a failure to install
+// into either trust store surfaces a non-zero exit instead of a false success.
+const caBakeRunCommand = `( { install -m644 /tmp/spinifex-ca.pem /usr/local/share/ca-certificates/spinifex.crt && update-ca-certificates; } || ` +
+	`{ install -m644 /tmp/spinifex-ca.pem /etc/pki/ca-trust/source/anchors/spinifex.crt && update-ca-trust; } ); ` +
+	`rc=$?; rm -f /tmp/spinifex-ca.pem; exit $rc`
+
+// caBakeTimeout bounds the virt-customize run so a stalled libguestfs appliance
+// cannot hang the import indefinitely; on timeout the bake degrades to a skip.
+const caBakeTimeout = 10 * time.Minute
 
 // caBakeCmd builds the virt-customize invocation that uploads the deployment CA
 // into the disk image at imagePath and installs it into the guest trust store.
-func caBakeCmd(imagePath, caCertPath string) *exec.Cmd {
-	return exec.Command("virt-customize", "-a", imagePath,
+func caBakeCmd(ctx context.Context, imagePath, caCertPath string) *exec.Cmd {
+	return exec.CommandContext(ctx, "virt-customize", "-a", imagePath,
 		"--upload", caCertPath+":/tmp/spinifex-ca.pem",
 		"--run-command", caBakeRunCommand)
 }
@@ -679,7 +685,9 @@ var caBakeRunner = func(imagePath, caCertPath string) ([]byte, error) {
 	if _, err := exec.LookPath("virt-customize"); err != nil {
 		return nil, fmt.Errorf("virt-customize not found: %w", err)
 	}
-	return caBakeCmd(imagePath, caCertPath).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), caBakeTimeout)
+	defer cancel()
+	return caBakeCmd(ctx, imagePath, caCertPath).CombinedOutput()
 }
 
 // bakeCACertIntoImage uploads the deployment CA into the image's trust store via

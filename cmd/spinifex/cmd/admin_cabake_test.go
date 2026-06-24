@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 )
 
 func TestCABakeCmd_Args(t *testing.T) {
-	cmd := caBakeCmd("/img/disk.raw", "/data/config/ca.pem")
+	cmd := caBakeCmd(context.Background(), "/img/disk.raw", "/data/config/ca.pem")
 	args := cmd.Args
 
 	assert.Equal(t, "virt-customize", filepath.Base(args[0]))

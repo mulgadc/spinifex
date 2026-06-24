@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/remotes"
@@ -14,6 +15,9 @@ import (
 // "moby"/"k8s.io" convention other runtimes use.
 const ecsNamespace = "ecs"
 
+// servingProbeTimeout bounds the boot-time daemon liveness check.
+const servingProbeTimeout = 3 * time.Second
+
 // containerdPuller drives a real containerd daemon over its unix socket.
 type containerdPuller struct {
 	client *containerd.Client
@@ -22,11 +26,23 @@ type containerdPuller struct {
 var _ ImagePuller = (*containerdPuller)(nil)
 
 // New connects to the containerd daemon at socket (e.g.
-// "/run/containerd/containerd.sock") and returns an ImagePuller.
+// "/run/containerd/containerd.sock") and returns an ImagePuller. The containerd
+// client dials lazily, so New actively probes the daemon with IsServing and
+// returns an error if it is unreachable — otherwise a dead socket would only
+// surface on the first pull, and the agent's boot-time "containerd unavailable"
+// log would never fire.
 func New(socket string) (ImagePuller, error) {
 	client, err := containerd.New(socket, containerd.WithDefaultNamespace(ecsNamespace))
 	if err != nil {
 		return nil, fmt.Errorf("connect containerd %s: %w", socket, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), servingProbeTimeout)
+	defer cancel()
+	serving, err := client.IsServing(ctx)
+	if err != nil || !serving {
+		_ = client.Close()
+		return nil, fmt.Errorf("containerd %s not serving: %w", socket, err)
 	}
 	return &containerdPuller{client: client}, nil
 }

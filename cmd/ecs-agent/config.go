@@ -65,6 +65,11 @@ func loadConfig(envFile string) config {
 		cfg.ClusterName = "default"
 	}
 	cfg.Heartbeat = defaultHeartbeat
+	if v := get("ECS_HEARTBEAT_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.Heartbeat = d
+		}
+	}
 	return cfg
 }
 

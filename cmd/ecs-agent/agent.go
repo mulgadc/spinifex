@@ -16,7 +16,6 @@ import (
 
 	"github.com/mulgadc/spinifex/cmd/ecs-agent/credentials"
 	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
-	"github.com/mulgadc/spinifex/internal/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
@@ -58,11 +57,9 @@ func newAgent(cfg config, id identity, pub publisher, puller ctrruntime.ImagePul
 // connects to NATS, builds the ECR resolver and (best-effort) the containerd
 // runtime. A containerd connect failure is logged, not fatal — registration and
 // heartbeat still run so the instance is visible while the runtime recovers.
+// The ECR gateway client is built lazily on first image pull (not here), so a
+// missing or malformed gateway CA does not stop the agent from registering.
 func New(cfg config) (*Agent, error) {
-	gwClient, err := ecrauth.GatewayHTTPClient(cfg.GatewayCA)
-	if err != nil {
-		return nil, fmt.Errorf("gateway client: %w", err)
-	}
 	imdsClient := &http.Client{Timeout: 5 * time.Second}
 
 	meta, err := fetchInstanceMetadata(imdsClient, cfg.IMDSBase)
@@ -81,7 +78,7 @@ func New(cfg config) (*Agent, error) {
 	}
 
 	creds := credentials.NewIMDSProvider(imdsClient, cfg.IMDSBase)
-	resolver := newECRResolver(creds, cfg.Region, cfg.GatewayURL, gwClient)
+	resolver := newLazyECRResolver(creds, cfg.Region, cfg.GatewayURL, cfg.GatewayCA)
 
 	var puller ctrruntime.ImagePuller
 	if p, perr := ctrruntime.New(cfg.ContainerdSocket); perr != nil {

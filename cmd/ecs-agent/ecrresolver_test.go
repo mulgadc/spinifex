@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -88,5 +89,14 @@ func TestECRResolver_GatewayError(t *testing.T) {
 	r := newECRResolver(creds, "us-east-1", srv.URL, trusting(srv))
 	if _, _, _, err := r.Authorize(context.Background(), "ref"); err == nil {
 		t.Fatal("expected gateway error")
+	}
+}
+
+func TestECRResolver_LazyClient_BadCADeferredToAuthorize(t *testing.T) {
+	creds := stubCreds{c: credentials.Credentials{AccessKeyID: "A", SecretAccessKey: "B"}}
+	// Construction with a bogus CA path must not fail — only Authorize does.
+	r := newLazyECRResolver(creds, "us-east-1", "https://gw", filepath.Join(t.TempDir(), "absent.pem"))
+	if _, _, _, err := r.Authorize(context.Background(), "ref"); err == nil {
+		t.Fatal("expected lazy gateway-client build to fail on missing CA")
 	}
 }

@@ -4,12 +4,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_Defaults(t *testing.T) {
 	// Ensure env vars don't leak in from the host.
 	for _, k := range []string{"ECS_GATEWAY_URL", "ECS_GATEWAY_CA", "ECS_REGION",
-		"ECS_CLUSTER", "ECS_NATS_URL", "ECS_IMDS_BASE", "ECS_CONTAINERD_SOCKET"} {
+		"ECS_CLUSTER", "ECS_NATS_URL", "ECS_IMDS_BASE", "ECS_CONTAINERD_SOCKET",
+		"ECS_HEARTBEAT_INTERVAL"} {
 		t.Setenv(k, "")
 	}
 	cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env"))
@@ -55,6 +57,18 @@ func TestLoadConfig_FileThenEnvOverride(t *testing.T) {
 	}
 	if cfg.NATSURL != "nats://10.0.0.1:4222" {
 		t.Errorf("NATSURL = %q, want env", cfg.NATSURL)
+	}
+}
+
+func TestLoadConfig_HeartbeatOverride(t *testing.T) {
+	t.Setenv("ECS_HEARTBEAT_INTERVAL", "5s")
+	if cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env")); cfg.Heartbeat != 5*time.Second {
+		t.Errorf("Heartbeat = %v, want 5s", cfg.Heartbeat)
+	}
+	// Garbage value falls back to the default, not zero.
+	t.Setenv("ECS_HEARTBEAT_INTERVAL", "not-a-duration")
+	if cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env")); cfg.Heartbeat != defaultHeartbeat {
+		t.Errorf("Heartbeat = %v, want default on bad value", cfg.Heartbeat)
 	}
 }
 

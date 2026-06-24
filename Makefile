@@ -94,6 +94,12 @@ import-eks-node-image: ## Build + register the eks-node AMI (requires a running 
 publish-eks-node-image: ## Build + publish the eks-node AMI to Cloudflare R2 (needs R2_ENDPOINT + AWS_* env)
 	./scripts/publish-system-image.sh scripts/images/eks-node/manifest.conf --build
 
+build-ecs-node-image: ## Build the spinifex-ecs-node AMI (Alpine + containerd + ecs-agent; IMPORT=1 to register)
+	$(MAKE) build-system-image IMAGE=ecs-agent
+
+import-ecs-node-image: ## Build + register the ecs-node AMI (requires a running cluster)
+	$(MAKE) build-system-image IMAGE=ecs-agent IMPORT=1
+
 MICROVM_OUT_DIR := build/microvm
 MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
 MICROVM_INPUTS := scripts/build-microvm-image.sh $(MICROVM_OUT_DIR)/init.sh $(MICROVM_OUT_DIR)/inittab bin/lb-agent
@@ -291,7 +297,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check manifest-lint manifest-lint-update \
+.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

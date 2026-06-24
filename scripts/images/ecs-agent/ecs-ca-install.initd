@@ -1,0 +1,33 @@
+#!/sbin/openrc-run
+# ecs-ca-install — first-boot oneshot that installs the cloud-init-delivered
+# gateway CA into the system trust store, so containerd trusts the internal ECR
+# registry's TLS when pulling task images. Ordered before containerd + ecs-agent.
+#
+# The CA is delivered per-instance (not baked) at /etc/spinifex-ecs/gateway-ca.pem
+# by cloud-init user-data, mirroring how EKS delivers EKS_GATEWAY_CA. No-op when
+# the file is absent — containerd then relies on the stock system trust.
+
+description="Install Spinifex gateway CA into the system trust (first boot)"
+
+GATEWAY_CA="/etc/spinifex-ecs/gateway-ca.pem"
+TRUST_DST="/usr/local/share/ca-certificates/spinifex-gateway.crt"
+
+depend() {
+    before containerd ecs-agent
+    after localmount
+}
+
+start() {
+    if [ ! -f "${GATEWAY_CA}" ]; then
+        einfo "no gateway CA at ${GATEWAY_CA}; using stock system trust"
+        return 0
+    fi
+    ebegin "Installing gateway CA into system trust"
+    install -D -m 0644 "${GATEWAY_CA}" "${TRUST_DST}"
+    update-ca-certificates >/dev/null 2>&1
+    eend $?
+}
+
+stop() {
+    return 0
+}

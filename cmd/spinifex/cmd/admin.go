@@ -643,6 +643,10 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		EncryptionEnabled: mkey != nil,
 	}
 
+	// Bake the deployment CA into the image trust store so a stock cloud image
+	// trusts the gateway from first boot. Best-effort: never fails the import.
+	bakeCACertIntoImage(extractedImagePath, filepath.Join(appConfig.NodeBaseDir(), "config", "ca.pem"))
+
 	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath)
 
 	if err != nil {
@@ -653,6 +657,45 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	defer os.RemoveAll(tmpDir)
 
 	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
+}
+
+// caBakeRunCommand installs the uploaded CA into the guest trust store. The
+// try-both covers Debian/Ubuntu/Alpine (update-ca-certificates) and RHEL/Rocky
+// (update-ca-trust) in one run, then removes the staged copy.
+const caBakeRunCommand = `{ install -m644 /tmp/spinifex-ca.pem /usr/local/share/ca-certificates/spinifex.crt && update-ca-certificates; } || ` +
+	`{ install -m644 /tmp/spinifex-ca.pem /etc/pki/ca-trust/source/anchors/spinifex.crt && update-ca-trust; }; ` +
+	`rm -f /tmp/spinifex-ca.pem`
+
+// caBakeCmd builds the virt-customize invocation that uploads the deployment CA
+// into the disk image at imagePath and installs it into the guest trust store.
+func caBakeCmd(imagePath, caCertPath string) *exec.Cmd {
+	return exec.Command("virt-customize", "-a", imagePath,
+		"--upload", caCertPath+":/tmp/spinifex-ca.pem",
+		"--run-command", caBakeRunCommand)
+}
+
+// caBakeRunner resolves virt-customize and runs the CA bake; overridable in tests.
+var caBakeRunner = func(imagePath, caCertPath string) ([]byte, error) {
+	if _, err := exec.LookPath("virt-customize"); err != nil {
+		return nil, fmt.Errorf("virt-customize not found: %w", err)
+	}
+	return caBakeCmd(imagePath, caCertPath).CombinedOutput()
+}
+
+// bakeCACertIntoImage uploads the deployment CA into the image's trust store via
+// virt-customize so an imported stock image trusts the gateway from first boot.
+// Best-effort: a missing CA, an absent virt-customize, or an image libguestfs
+// cannot inspect logs and continues — image import never fails on the CA.
+func bakeCACertIntoImage(imagePath, caCertPath string) {
+	if _, err := os.Stat(caCertPath); err != nil {
+		slog.Warn("CA bake skipped: deployment CA not found; imported image will not auto-trust the gateway", "ca", caCertPath, "err", err)
+		return
+	}
+	if out, err := caBakeRunner(imagePath, caCertPath); err != nil {
+		slog.Warn("CA bake skipped: virt-customize could not customize image; imported image will not auto-trust the gateway", "err", err, "output", string(out))
+		return
+	}
+	slog.Info("Baked deployment CA into imported image trust store", "image", imagePath)
 }
 
 func runimagesRemoveCmd(cmd *cobra.Command, args []string) {

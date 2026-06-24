@@ -2,6 +2,8 @@ package vm
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -724,6 +726,14 @@ func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
 // EBS hot-plug, matching the /dev/sd[f-p] range. Cannot grow without QEMU restart.
 const EBSHotPlugSlotCount = 11
 
+// ec2SMBIOSUUID derives a deterministic, "ec2"-prefixed system UUID from the
+// instance ID so cloud-init's Ec2 datasource activates (stable across reboot).
+func ec2SMBIOSUUID(instanceID string) string {
+	sum := sha256.Sum256([]byte("ec2-smbios:" + instanceID))
+	h := "ec2" + hex.EncodeToString(sum[:])[3:32]
+	return fmt.Sprintf("%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+}
+
 // buildBaseVMConfig creates a Config with base QEMU settings and two pre-allocated
 // PCIe root-port pools: hotplug-ebs{1..N} for EBS (/dev/sd[f-p]) and
 // hotplug-eni{1..M} for ENI hot-plug. bootMode "uefi"/"uefi-preferred" sets UseUEFI.
@@ -742,6 +752,12 @@ func buildBaseVMConfig(instanceID, instanceType, pidFile, consoleLogPath, serial
 		Architecture:   architecture,
 		InstanceType:   instanceType,
 		UseUEFI:        bootMode == "uefi" || bootMode == "uefi-preferred",
+
+		// Present EC2-shaped DMI so stock cloud-init activates the Ec2 datasource.
+		// Lands dark: the seed still bootstraps the guest until the Phase 2 cutover.
+		SMBIOSUUID:         ec2SMBIOSUUID(instanceID),
+		SMBIOSManufacturer: "Amazon EC2",
+		SMBIOSAssetTag:     "Amazon EC2",
 	}
 
 	for i := 1; i <= EBSHotPlugSlotCount; i++ {

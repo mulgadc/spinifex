@@ -220,6 +220,13 @@ type Config struct {
 	// returns an error if no pair is found — no silent SeaBIOS fallback.
 	UseUEFI bool `json:"use_uefi,omitempty"`
 
+	// SMBIOSUUID, SMBIOSManufacturer, SMBIOSAssetTag emit EC2-shaped DMI so a stock
+	// cloud image's cloud-init activates the Ec2 datasource. An "ec2"-prefixed
+	// SMBIOSUUID is the field cloud-init keys on (Phase 0 validation).
+	SMBIOSUUID         string `json:"smbios_uuid,omitempty"`
+	SMBIOSManufacturer string `json:"smbios_manufacturer,omitempty"`
+	SMBIOSAssetTag     string `json:"smbios_asset_tag,omitempty"`
+
 	KernelImage   string       `json:"kernel_image,omitempty"`   // path to vmlinuz; emits -kernel when set
 	Initrd        string       `json:"initrd,omitempty"`         // path to initramfs; emits -initrd when set
 	KernelCmdline string       `json:"kernel_cmdline,omitempty"` // emits -append when set
@@ -241,6 +248,18 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 
 	if cfg.QMPSocket != "" {
 		args = append(args, "-qmp", fmt.Sprintf("unix:%s,server,nowait", cfg.QMPSocket))
+	}
+
+	// EC2-shaped SMBIOS so a stock cloud image's cloud-init selects the Ec2
+	// datasource. -uuid sets the system UUID cloud-init's identify_aws keys on.
+	if cfg.SMBIOSUUID != "" {
+		args = append(args, "-uuid", cfg.SMBIOSUUID)
+	}
+	if cfg.SMBIOSManufacturer != "" {
+		args = append(args, "-smbios", fmt.Sprintf("type=1,manufacturer=%s,serial=%s", cfg.SMBIOSManufacturer, cfg.SMBIOSUUID))
+	}
+	if cfg.SMBIOSAssetTag != "" {
+		args = append(args, "-smbios", fmt.Sprintf("type=3,asset=%s", cfg.SMBIOSAssetTag))
 	}
 
 	// Validate native kvm support

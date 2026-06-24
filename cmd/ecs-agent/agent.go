@@ -25,12 +25,14 @@ var version = "dev"
 
 // Agent wires the ecs-agent's runtime seams: a NATS publisher for the Layer-2
 // bus, a container runtime, and an ECR resolver. It registers the host as a
-// container instance at boot and heartbeats while alive. Task assignment and
-// container lifecycle land in Sprint 4e.
+// container instance at boot, heartbeats while alive, and (Sprint 4e) runs
+// assigned tasks through containerd, reporting their state back on the bus.
 type Agent struct {
 	cfg      config
 	id       identity
+	pub      publisher
 	puller   ctrruntime.ImagePuller
+	runner   ctrruntime.Runner
 	resolver ctrruntime.Resolver
 
 	reg *registrar
@@ -41,12 +43,16 @@ type Agent struct {
 }
 
 // newAgent assembles an Agent from already-built seams. Tests use this directly
-// with fakes; New builds the production seams and delegates here.
-func newAgent(cfg config, id identity, pub publisher, puller ctrruntime.ImagePuller, resolver ctrruntime.Resolver) *Agent {
+// with fakes; New builds the production seams and delegates here. runner may be
+// nil when containerd is unavailable; the assign path then reports the task
+// STOPPED rather than crashing.
+func newAgent(cfg config, id identity, pub publisher, puller ctrruntime.ImagePuller, runner ctrruntime.Runner, resolver ctrruntime.Resolver) *Agent {
 	return &Agent{
 		cfg:      cfg,
 		id:       id,
+		pub:      pub,
 		puller:   puller,
+		runner:   runner,
 		resolver: resolver,
 		reg:      newRegistrar(pub, id),
 		hb:       newHeartbeater(pub, id, cfg.Heartbeat, nil),
@@ -81,10 +87,12 @@ func New(cfg config) (*Agent, error) {
 	resolver := newLazyECRResolver(creds, cfg.Region, cfg.GatewayURL, cfg.GatewayCA)
 
 	var puller ctrruntime.ImagePuller
-	if p, perr := ctrruntime.New(cfg.ContainerdSocket); perr != nil {
+	var runner ctrruntime.Runner
+	if rt, perr := ctrruntime.New(cfg.ContainerdSocket); perr != nil {
 		slog.Warn("ecs-agent: containerd unavailable at boot, image pulls disabled", "err", perr)
 	} else {
-		puller = p
+		puller = rt
+		runner = rt
 	}
 
 	nc, err := nats.Connect(cfg.NATSURL, nats.Name("ecs-agent/"+id.InstanceID))
@@ -92,7 +100,7 @@ func New(cfg config) (*Agent, error) {
 		return nil, fmt.Errorf("connect nats %s: %w", cfg.NATSURL, err)
 	}
 
-	a := newAgent(cfg, id, nc, puller, resolver)
+	a := newAgent(cfg, id, nc, puller, runner, resolver)
 	a.nc = nc
 	if puller != nil {
 		a.closers = append(a.closers, puller.Close)
@@ -112,6 +120,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	go a.hb.Run(ctx)
+
+	if err := a.subscribeAssign(ctx); err != nil {
+		slog.Error("ecs-agent: assign subscription failed; task assignment disabled", "err", err)
+	}
 
 	<-ctx.Done()
 	return a.Stop()

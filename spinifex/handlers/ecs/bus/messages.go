@@ -39,3 +39,71 @@ const (
 	StatusActive   = "ACTIVE"
 	StatusDraining = "DRAINING"
 )
+
+// Task lifecycle status values, matching the AWS ECS task status enum, reported
+// in TaskState.LastStatus and per-container in ContainerStatus.Status.
+const (
+	TaskStatusPending = "PENDING"
+	TaskStatusRunning = "RUNNING"
+	TaskStatusStopped = "STOPPED"
+)
+
+// PortMapping is a container port exposed on the host (bridge mode v1).
+type PortMapping struct {
+	ContainerPort int    `json:"containerPort"`
+	HostPort      int    `json:"hostPort,omitempty"`
+	Protocol      string `json:"protocol,omitempty"` // tcp | udp (default tcp)
+}
+
+// AssignContainer is one container the agent must pull and run for a task.
+type AssignContainer struct {
+	Name         string            `json:"name"`
+	Image        string            `json:"image"`
+	CPU          int               `json:"cpu,omitempty"`
+	MemoryMiB    int               `json:"memoryMiB,omitempty"`
+	Essential    bool              `json:"essential"`
+	Command      []string          `json:"command,omitempty"`
+	Environment  map[string]string `json:"environment,omitempty"`
+	PortMappings []PortMapping     `json:"portMappings,omitempty"`
+}
+
+// Assign is published on AssignSubject when the scheduler places a task on this
+// instance (scheduler → agent). The agent pulls each container image, creates and
+// starts the containers via containerd, then reports progress on TaskStateSubject.
+type Assign struct {
+	AccountID       string            `json:"accountId"`
+	ClusterName     string            `json:"clusterName"`
+	InstanceID      string            `json:"instanceId"`
+	TaskID          string            `json:"taskId"`
+	TaskARN         string            `json:"taskArn"`
+	TaskDefFamily   string            `json:"taskDefFamily"`
+	TaskDefRevision int               `json:"taskDefRevision"`
+	Containers      []AssignContainer `json:"containers"`
+	// CredID + TaskRoleARN are placeholders for the Sprint 4g IAM credential
+	// endpoint; the agent ignores them in 4e.
+	CredID      string    `json:"credId,omitempty"`
+	TaskRoleARN string    `json:"taskRoleArn,omitempty"`
+	AssignedAt  time.Time `json:"assignedAt"`
+}
+
+// ContainerStatus is a single container's reported lifecycle state.
+type ContainerStatus struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"` // PENDING | RUNNING | STOPPED
+	ContainerID string `json:"containerId,omitempty"`
+	ExitCode    *int   `json:"exitCode,omitempty"`
+}
+
+// TaskState is published on TaskStateSubject as the agent drives a task through
+// its lifecycle (agent → scheduler). The scheduler updates the task record and
+// recomputes the instance's remaining capacity.
+type TaskState struct {
+	AccountID   string            `json:"accountId"`
+	ClusterName string            `json:"clusterName"`
+	InstanceID  string            `json:"instanceId"`
+	TaskID      string            `json:"taskId"`
+	LastStatus  string            `json:"lastStatus"` // PENDING | RUNNING | STOPPED
+	Containers  []ContainerStatus `json:"containers,omitempty"`
+	Reason      string            `json:"reason,omitempty"`
+	ReportedAt  time.Time         `json:"reportedAt"`
+}

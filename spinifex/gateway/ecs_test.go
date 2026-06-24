@@ -32,7 +32,7 @@ func TestECSActionFromTarget(t *testing.T) {
 
 // The Actions map is the v1 API contract (ecs-v1.md §1): every action across the
 // Cluster / TaskDefinition / Task / Service / ContainerInstance / Account / Tags
-// surfaces must be registered, even though each is a 501 stub in this sprint.
+// surfaces must be registered, whether wired to the daemon or a 501 stub.
 func TestECSActionsMap_NamespaceRegistered(t *testing.T) {
 	namespace := []string{
 		// Cluster
@@ -76,12 +76,11 @@ func TestECSRequest_UnknownAction(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
 
-// Every registered action resolves to the 501 stub until its real handler lands
-// in a later Phase 4 sprint.
+// An action whose real handler has not yet landed still resolves to the 501 stub.
 func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 	err := gw.ECS_Request(httptest.NewRecorder(),
-		setupECSRequest("AmazonEC2ContainerServiceV20141113.RunTask", "{}"))
+		setupECSRequest("AmazonEC2ContainerServiceV20141113.DeleteCluster", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }

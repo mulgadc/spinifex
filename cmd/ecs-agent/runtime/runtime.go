@@ -34,3 +34,34 @@ type ImagePuller interface {
 	Pull(ctx context.Context, spec PullSpec, r Resolver) (Image, error)
 	Close() error
 }
+
+// RunSpec describes a single container the agent must create and start. v1 runs
+// the container in the host network namespace (bridge/CNI task networking lands
+// in a later sprint); Labels carry the mulga.ecs.* task identity for the reboot
+// reconciler.
+type RunSpec struct {
+	Image   string
+	Command []string
+	Env     map[string]string
+	Labels  map[string]string
+}
+
+// RunStatus is a finished container's outcome.
+type RunStatus struct {
+	ExitCode int
+}
+
+// Runner creates and starts containers from already-pulled images. id is a
+// caller-unique container ID; Wait blocks until the container exits; Remove
+// tears down the container + its task.
+type Runner interface {
+	Run(ctx context.Context, id string, spec RunSpec) (containerID string, err error)
+	Wait(ctx context.Context, containerID string) (RunStatus, error)
+	Remove(ctx context.Context, containerID string) error
+}
+
+// Runtime is the full container runtime the ecs-agent drives: pull + run.
+type Runtime interface {
+	ImagePuller
+	Runner
+}

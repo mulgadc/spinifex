@@ -17,13 +17,26 @@ func TestNotImplemented(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
 
-// Every registered action is the NotImplemented stub in this sprint.
-func TestActions_AllNotImplemented(t *testing.T) {
+// wiredActions are dispatched to the daemon over NATS; the rest are still the
+// NotImplemented stub. Wired actions error here because the nil NATS conn cannot
+// reach the daemon — that they no longer return NotImplemented is the assertion.
+var wiredActions = map[string]bool{
+	"CreateCluster": true, "DescribeClusters": true, "ListClusters": true,
+	"RegisterTaskDefinition": true, "DescribeTaskDefinition": true, "ListTaskDefinitions": true,
+	"RegisterContainerInstance": true, "DescribeContainerInstances": true, "ListContainerInstances": true,
+	"RunTask": true, "DescribeTasks": true, "ListTasks": true,
+}
+
+func TestActions_StubsReturnNotImplemented(t *testing.T) {
 	require.NotEmpty(t, Actions)
 	for action, h := range Actions {
 		_, err := h(nil, "123456789012", []byte("{}"))
 		require.Error(t, err, "action %q", action)
-		assert.Equal(t, awserrors.ErrorNotImplemented, err.Error(), "action %q", action)
+		if wiredActions[action] {
+			assert.NotEqual(t, awserrors.ErrorNotImplemented, err.Error(), "wired action %q should not be a stub", action)
+			continue
+		}
+		assert.Equal(t, awserrors.ErrorNotImplemented, err.Error(), "stub action %q", action)
 	}
 }
 

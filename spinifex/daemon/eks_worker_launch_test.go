@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 	"time"
@@ -106,4 +107,43 @@ func TestWorkerLauncher_NilInstanceService(t *testing.T) {
 	require.Error(t, err)
 
 	require.Error(t, d.TerminateWorkerInstances([]string{"i-1"}, "111122223333"))
+}
+
+// A node-targeted worker launch publishes the ec2.RunInstances.<type>.<node>
+// request the owning node handles, base64-encoding user-data on the way out, so
+// nodegroup workers spread across hosts instead of all landing locally.
+func TestRunWorkerInstanceOnNode_RoutesToTargetNode(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	d := &Daemon{natsConn: nc}
+
+	gotUserData := make(chan string, 1)
+	sub, err := nc.Subscribe("ec2.RunInstances.t3.medium.nodeX", func(msg *nats.Msg) {
+		var in ec2.RunInstancesInput
+		_ = json.Unmarshal(msg.Data, &in)
+		gotUserData <- aws.StringValue(in.UserData)
+		res, _ := json.Marshal(ec2.Reservation{Instances: []*ec2.Instance{{InstanceId: aws.String("i-spread1")}}})
+		_ = msg.Respond(res)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	in := &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.medium"),
+		ImageId:      aws.String("ami-1"),
+		UserData:     aws.String("#cloud-config\n"),
+	}
+	res, err := d.RunWorkerInstanceOnNode("nodeX", in, "111122223333")
+	require.NoError(t, err)
+	require.Len(t, res.Instances, 1)
+	assert.Equal(t, "i-spread1", aws.StringValue(res.Instances[0].InstanceId))
+
+	select {
+	case ud := <-gotUserData:
+		assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("#cloud-config\n")), ud,
+			"user-data must be base64-encoded for the node-targeted launch")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the worker launch routed to ec2.RunInstances.t3.medium.nodeX")
+	}
 }

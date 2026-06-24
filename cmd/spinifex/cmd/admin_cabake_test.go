@@ -23,10 +23,13 @@ func TestCABakeCmd_Args(t *testing.T) {
 	assert.Contains(t, args, "/data/config/ca.pem:/tmp/spinifex-ca.pem")
 	assert.Contains(t, args, "--run-command")
 
-	// The run-command covers both Debian/Ubuntu/Alpine and RHEL/Rocky trust stores.
+	// The run-command covers Debian/Ubuntu (update-ca-certificates), RHEL/Rocky
+	// (update-ca-trust), and the stock-Alpine fallback that appends to the static
+	// ca-certificates bundle when no updater is present.
 	joined := strings.Join(args, " ")
 	assert.Contains(t, joined, "update-ca-certificates")
 	assert.Contains(t, joined, "update-ca-trust")
+	assert.Contains(t, joined, "/etc/ssl/certs/ca-certificates.crt")
 }
 
 func TestBakeCACertIntoImage_SkipsWhenCAMissing(t *testing.T) {

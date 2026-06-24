@@ -662,13 +662,17 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
 }
 
-// caBakeRunCommand installs the uploaded CA into the guest trust store. The
-// try-both covers Debian/Ubuntu/Alpine (update-ca-certificates) and RHEL/Rocky
-// (update-ca-trust) in one run, then removes the staged copy. The install
-// group's exit code is preserved past the cleanup rm so a failure to install
-// into either trust store surfaces a non-zero exit instead of a false success.
-const caBakeRunCommand = `( { install -m644 /tmp/spinifex-ca.pem /usr/local/share/ca-certificates/spinifex.crt && update-ca-certificates; } || ` +
-	`{ install -m644 /tmp/spinifex-ca.pem /etc/pki/ca-trust/source/anchors/spinifex.crt && update-ca-trust; } ); ` +
+// caBakeRunCommand installs the uploaded CA into the guest trust store across
+// the distro families, then removes the staged copy. Each branch is gated on its
+// updater existing so only the matching distro's branch writes anything (install
+// -D creates the anchor dir on minimal images). Debian/Ubuntu use
+// update-ca-certificates, RHEL/Rocky use update-ca-trust, and stock Alpine ships
+// only ca-certificates-bundle (no updater, no anchor dir) so it falls back to
+// appending the PEM to the static bundle. The install chain's exit code is
+// preserved past the cleanup rm so a failure surfaces instead of a false success.
+const caBakeRunCommand = `( { command -v update-ca-certificates >/dev/null && install -D -m644 /tmp/spinifex-ca.pem /usr/local/share/ca-certificates/spinifex.crt && update-ca-certificates; } || ` +
+	`{ command -v update-ca-trust >/dev/null && install -D -m644 /tmp/spinifex-ca.pem /etc/pki/ca-trust/source/anchors/spinifex.crt && update-ca-trust; } || ` +
+	`{ cat /tmp/spinifex-ca.pem >> /etc/ssl/certs/ca-certificates.crt; } ); ` +
 	`rc=$?; rm -f /tmp/spinifex-ca.pem; exit $rc`
 
 // caBakeTimeout bounds the virt-customize run so a stalled libguestfs appliance

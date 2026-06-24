@@ -78,6 +78,7 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 		VPCSG:            sg,
 		VPCK3s:           vpc,
 		VPCSubnet:        fakeSubnetResolver{},
+		IAM:              newFakeEnsurer(),
 		NLB:              nlb,
 		Instance:         inst,
 		Image:            ami,

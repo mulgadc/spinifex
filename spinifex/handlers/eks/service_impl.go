@@ -280,6 +280,13 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 	if len(s.deps.MasterKey) == 0 {
 		missing = append(missing, "MasterKey")
 	}
+	// IAM is built from MasterKey but can stay nil when its KV backend was not
+	// ready at boot. Gate on the service itself so a node without it rejects
+	// nodegroup orchestration instead of launching workers with no instance
+	// profile (no IMDS role, so the load-balancer controller cannot create an ALB).
+	if s.deps.IAM == nil {
+		missing = append(missing, "IAM")
+	}
 	if s.deps.GatewayBaseURL == "" {
 		missing = append(missing, "GatewayBaseURL")
 	}

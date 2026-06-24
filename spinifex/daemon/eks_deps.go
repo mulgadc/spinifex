@@ -73,8 +73,8 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		if d.clusterConfig != nil {
 			clusterSize = len(d.clusterConfig.Nodes)
 		}
-		if iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.natsConn, masterKey, clusterSize); iamErr != nil {
-			slog.Warn("EKS: IAM service init failed; nodegroup workers launch without an instance profile, internal ECR pulls will fail",
+		if iamSvc, iamErr := handlers_iam.NewIAMServiceWithRetry(d.natsConn, masterKey, clusterSize); iamErr != nil {
+			slog.Warn("EKS: IAM service init failed; nodegroup orchestration rejects until a daemon with a ready IAM service handles it",
 				"err", iamErr)
 		} else {
 			deps.IAM = iamSvc

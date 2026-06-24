@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	s3 "github.com/mulgadc/predastore/s3"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -503,7 +502,7 @@ func TestPredastoreTemplates_SetCompactionEmitsParseableBlock(t *testing.T) {
 		AccessKey: "AK", SecretKey: "SK", NatsToken: "tok", CompactionIntervalSeconds: interval,
 	})
 	assert.Contains(t, single, "[compaction]")
-	var singleCfg s3.Config
+	var singleCfg compactionConfig
 	require.NoError(t, toml.Unmarshal([]byte(single), &singleCfg))
 	assert.Equal(t, interval, singleCfg.Compaction.IntervalSeconds)
 
@@ -511,9 +510,18 @@ func TestPredastoreTemplates_SetCompactionEmitsParseableBlock(t *testing.T) {
 		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", interval,
 	)
 	require.NoError(t, err)
-	var multiCfg s3.Config
+	var multiCfg compactionConfig
 	require.NoError(t, toml.Unmarshal([]byte(multi), &multiCfg))
 	assert.Equal(t, interval, multiCfg.Compaction.IntervalSeconds)
+}
+
+// compactionConfig parses just the rendered [compaction] block. Predastore's
+// s3.Config dropped its Compaction field, so this asserts the spinifex template
+// still emits a valid, parseable block carrying the interval.
+type compactionConfig struct {
+	Compaction struct {
+		IntervalSeconds int `toml:"interval_seconds"`
+	} `toml:"compaction"`
 }
 
 // The init/join flag must register with an unset (0) default and flow into the

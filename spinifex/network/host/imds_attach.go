@@ -65,7 +65,8 @@ func imdsDetachSpec(eniID string) IMDSTapDatapath {
 // ListIMDSTaps advertises the tap off the patch and vpcd binds the endpoint, so the
 // endpoint must exist whenever the patch does, else vpcd binds a missing device every
 // reconcile forever. The flows and reply routing only serve, so theirs wrap
-// ErrIMDSServingDegraded — the endpoint is already bound, so the caller logs on.
+// ErrIMDSServingDegraded to mark that connectivity is intact — but the launch caller
+// aborts on it all the same, since guest bootstrap now depends on IMDS.
 func installIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if err := d.validate(); err != nil {
 		return err

@@ -1,7 +1,6 @@
 package vm
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -93,9 +92,12 @@ func GenerateMgmtMAC(instanceID string) string {
 
 // attachPrimaryIMDSDatapath installs the per-tap IMDS datapath for the instance's
 // primary ENI once its tap is up, before QEMU starts the guest. Only the primary
-// ENI serves IMDS. A serving-only failure (ErrIMDSServingDegraded) leaves the guest
-// connected and is logged-and-continued; a connectivity-critical failure would
-// strand the tap on br-imds, so it is rolled back to br-int.
+// ENI serves IMDS. Any failure is launch-fatal: guest bootstrap (SSH key, user-data,
+// network, hostname) now comes from IMDS, so a guest without it would boot
+// unconfigured while reporting success. A serving-only failure
+// (ErrIMDSServingDegraded) and a connectivity-critical failure are treated alike —
+// there is no roll back to br-int, since a rolled-back tap is equally unreachable for
+// IMDS. The error surfaces to RunInstances.
 func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) error {
 	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
 		return nil
@@ -109,45 +111,11 @@ func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) error {
 			"instance", instance.ID, "eni", instance.ENIId)
 		return nil
 	}
-	err := m.deps.NetworkPlumber.AttachIMDSDatapath(instance.ENIId, instance.ENIMac, subnetID)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, ErrIMDSServingDegraded) {
-		// Connectivity is intact (the patch + forward flows installed); only the
-		// IMDS demux/egress/reply stage failed. The guest keeps full VPC
-		// connectivity, so log and continue — boot is not gated on IMDS readiness.
-		slog.Error("IMDS: per-tap serving install failed; guest keeps connectivity but IMDS is unavailable",
+	if err := m.deps.NetworkPlumber.AttachIMDSDatapath(instance.ENIId, instance.ENIMac, subnetID); err != nil {
+		slog.Error("IMDS: per-tap datapath install failed; aborting launch",
 			"instance", instance.ID, "eni", instance.ENIId, "err", err)
-		return nil
+		return fmt.Errorf("install IMDS datapath for primary ENI %s: %w", instance.ENIId, err)
 	}
-	// Connectivity-critical failure: the tap is stranded on br-imds with no path to
-	// OVN, so the guest would boot black-holed. Roll it back to br-int — losing IMDS
-	// but restoring connectivity — and fail the launch only if even that fails.
-	slog.Error("IMDS: per-tap connectivity install failed; rolling primary tap back to br-int",
-		"instance", instance.ID, "eni", instance.ENIId, "err", err)
-	return m.rollbackPrimaryTapToBrInt(instance)
-}
-
-// rollbackPrimaryTapToBrInt moves the primary tap off br-imds back onto br-int after
-// a connectivity-critical IMDS failure, restoring the guest's L2 path to OVN at the
-// cost of IMDS. It detaches any partial datapath (freeing the iface-id), removes the
-// tap from br-imds, then re-plumbs it on br-int. Only the re-plumb failing is fatal.
-func (m *Manager) rollbackPrimaryTapToBrInt(instance *VM) error {
-	if err := m.deps.NetworkPlumber.DetachIMDSDatapath(instance.ENIId); err != nil {
-		slog.Warn("IMDS: rollback detach failed (continuing)",
-			"instance", instance.ID, "eni", instance.ENIId, "err", err)
-	}
-	tapName := TapDeviceName(instance.ENIId)
-	if err := m.deps.NetworkPlumber.CleanupTap(tapName); err != nil {
-		slog.Warn("IMDS: rollback tap cleanup failed (continuing)",
-			"instance", instance.ID, "tap", tapName, "err", err)
-	}
-	if err := m.deps.NetworkPlumber.SetupTap(VPCTapSpec(instance.ENIId, instance.ENIMac)); err != nil {
-		return fmt.Errorf("roll primary tap %s back to br-int: %w", tapName, err)
-	}
-	slog.Warn("IMDS: primary tap rolled back to br-int; guest connected, IMDS unavailable",
-		"instance", instance.ID, "tap", tapName, "eni", instance.ENIId)
 	return nil
 }
 

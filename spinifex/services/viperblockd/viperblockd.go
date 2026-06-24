@@ -984,13 +984,14 @@ func nbdkitInUse(vol MountedVolume) bool {
 	if err != nil {
 		return true
 	}
+	// ss -H rows are: <netid> <state> <recvq> <sendq> <local-addr> ...
+	// LISTEN is the idle server socket; ESTAB means a client is attached.
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 0 {
+		if len(fields) < 2 {
 			continue
 		}
-		// LISTEN is the idle server socket; ESTAB means a client is attached.
-		if fields[0] == "ESTAB" && strings.Contains(line, vol.Socket) {
+		if fields[1] == "ESTAB" && strings.Contains(line, vol.Socket) {
 			return true
 		}
 	}

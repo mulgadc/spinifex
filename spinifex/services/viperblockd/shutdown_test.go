@@ -1,7 +1,9 @@
 package viperblockd
 
 import (
+	"net"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 )
@@ -46,5 +48,60 @@ func TestShutdownVolumes_IdleKilled(t *testing.T) {
 
 	if alive(pid) {
 		t.Fatal("idle nbdkit was not reaped on SIGTERM")
+	}
+}
+
+// TestNbdkitInUse_ConnectedClientDetected proves nbdkitInUse parses ss output
+// and detects a live client on the unix socket — a guest still attached. The
+// state column is field[1] (field[0] is the netid), so a wrong index here
+// would silently report "idle" and let the SIGTERM path kill an in-use nbdkit.
+func TestNbdkitInUse_ConnectedClientDetected(t *testing.T) {
+	if _, err := exec.LookPath("ss"); err != nil {
+		t.Skip("ss not available")
+	}
+	sock := filepath.Join(t.TempDir(), "nbd.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			accepted <- c
+		}
+	}()
+	client, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	srvConn := <-accepted
+	defer srvConn.Close()
+
+	if !nbdkitInUse(MountedVolume{Name: "vol-attached", Socket: sock}) {
+		t.Fatal("nbdkitInUse returned false for a socket with a connected client")
+	}
+}
+
+// TestNbdkitInUse_NoSocketNotInUse: a path with no socket has no ESTAB row, so
+// an idle nbdkit is reapable.
+func TestNbdkitInUse_NoSocketNotInUse(t *testing.T) {
+	if _, err := exec.LookPath("ss"); err != nil {
+		t.Skip("ss not available")
+	}
+	sock := filepath.Join(t.TempDir(), "absent.sock")
+	if nbdkitInUse(MountedVolume{Name: "vol-idle", Socket: sock}) {
+		t.Fatal("nbdkitInUse returned true for a socket with no connections")
+	}
+}
+
+// TestNbdkitInUse_TCPAssumedInUse: TCP transport can't be cheaply confirmed
+// idle, so it defaults to in-use (safe — never kill under a guest).
+func TestNbdkitInUse_TCPAssumedInUse(t *testing.T) {
+	if !nbdkitInUse(MountedVolume{Name: "vol-tcp", Port: 10809}) {
+		t.Fatal("nbdkitInUse must assume TCP transport is in use")
 	}
 }

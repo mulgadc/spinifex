@@ -38,9 +38,10 @@ const clusterEKSAccountTagKey = "spinifex:eks-cluster-account"
 const clusterEKSNodegroupTagKey = "spinifex:eks-nodegroup"
 
 const (
-	clusterEKSRoleControlPlane    = "control-plane"
-	clusterEKSRoleNodegroup       = "nodegroup"
-	clusterEKSRolePrivateEndpoint = "private-endpoint"
+	clusterEKSRoleControlPlane        = "control-plane"
+	clusterEKSRoleNodegroup           = "nodegroup"
+	clusterEKSRolePrivateEndpoint     = "private-endpoint"
+	clusterEKSRoleControlPlaneOverlay = "control-plane-overlay"
 )
 
 // ClusterPrivateEndpointSGName returns the deterministic customer-VPC SG name for
@@ -52,6 +53,12 @@ func ClusterPrivateEndpointSGName(clusterName string) string {
 // ClusterControlPlaneSGName returns the deterministic control-plane SG name for a cluster.
 func ClusterControlPlaneSGName(clusterName string) string {
 	return fmt.Sprintf("eks-cluster-%s-control-plane-sg", clusterName)
+}
+
+// ClusterControlPlaneOverlaySGName returns the deterministic worker-VPC SG name for
+// the cluster's per-CP-server overlay ENIs (the flannel re-home NICs).
+func ClusterControlPlaneOverlaySGName(clusterName string) string {
+	return fmt.Sprintf("eks-cluster-%s-control-plane-overlay-sg", clusterName)
 }
 
 // ClusterNodegroupSGName returns the deterministic SG name used for the
@@ -364,6 +371,92 @@ func EnsureNodegroupSGRules(sgp sgProvisioner, accountID, clusterName, cpSGID, n
 			}
 			return fmt.Errorf("authorize %s ingress on %s: %w", r.desc, r.targetSG, err)
 		}
+	}
+	return nil
+}
+
+// EnsureControlPlaneOverlaySG creates (or reuses) the worker-VPC SG for the CP
+// servers' overlay ENIs (the flannel re-home NICs). Rules are authorized against
+// the nodegroup SG by EnsureControlPlaneOverlaySGRules once that SG exists.
+// Idempotent: lookup-or-create by deterministic name.
+func EnsureControlPlaneOverlaySG(sgp sgProvisioner, accountID, clusterName, vpcID string) (string, error) {
+	if clusterName == "" {
+		return "", errors.New("eks: EnsureControlPlaneOverlaySG empty cluster name")
+	}
+	if vpcID == "" {
+		return "", errors.New("eks: EnsureControlPlaneOverlaySG empty vpc id")
+	}
+	return ensureClusterSG(sgp, accountID, vpcID, clusterName,
+		ClusterControlPlaneOverlaySGName(clusterName),
+		fmt.Sprintf("EKS control-plane overlay SG for cluster %s", clusterName),
+		clusterEKSRoleControlPlaneOverlay)
+}
+
+// EnsureControlPlaneOverlaySGRules authorizes the flannel re-home datapath between
+// the CP overlay SG and the nodegroup SG (both in the worker VPC): VXLAN 8472/udp
+// both ways (apiserver<->pod overlay) and kubelet 10250/tcp overlay->node
+// (egress-selector-mode disabled dials kubelet directly). Idempotent.
+func EnsureControlPlaneOverlaySGRules(sgp sgProvisioner, accountID, overlaySGID, ngSGID string) error {
+	if overlaySGID == "" || ngSGID == "" {
+		return errors.New("eks: EnsureControlPlaneOverlaySGRules empty SG id")
+	}
+
+	type rule struct {
+		targetSG string
+		sourceSG string
+		proto    string
+		from     int64
+		to       int64
+		desc     string
+	}
+	rules := []rule{
+		{ngSGID, overlaySGID, "udp", 8472, 8472, "EKS flannel VXLAN control-plane overlay to node"},
+		{overlaySGID, ngSGID, "udp", 8472, 8472, "EKS flannel VXLAN node to control-plane overlay"},
+		{ngSGID, overlaySGID, "tcp", 10250, 10250, "EKS kubelet control-plane overlay to node"},
+	}
+
+	for _, r := range rules {
+		perm := &ec2.IpPermission{
+			IpProtocol: aws.String(r.proto),
+			FromPort:   aws.Int64(r.from),
+			ToPort:     aws.Int64(r.to),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{
+				GroupId:     aws.String(r.sourceSG),
+				Description: aws.String(r.desc),
+			}},
+		}
+		_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       aws.String(r.targetSG),
+			IpPermissions: []*ec2.IpPermission{perm},
+		}, accountID)
+		if err != nil {
+			if awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+				continue
+			}
+			return fmt.Errorf("authorize %s ingress on %s: %w", r.desc, r.targetSG, err)
+		}
+	}
+	return nil
+}
+
+// DeleteControlPlaneOverlaySG removes the cluster's worker-VPC overlay SG. Missing
+// SG is a no-op. The overlay ENIs must be deleted first (they reference this SG).
+func DeleteControlPlaneOverlaySG(sgp sgProvisioner, accountID, clusterName, vpcID string) error {
+	if clusterName == "" {
+		return errors.New("eks: DeleteControlPlaneOverlaySG empty cluster name")
+	}
+	if vpcID == "" {
+		return errors.New("eks: DeleteControlPlaneOverlaySG empty vpc id")
+	}
+	id, err := lookupSGByName(sgp, accountID, vpcID, ClusterControlPlaneOverlaySGName(clusterName))
+	if err != nil {
+		return err
+	}
+	if id == "" {
+		return nil
+	}
+	if _, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}, accountID); err != nil && !awserrors.IsNotFound(err) {
+		return fmt.Errorf("delete control-plane overlay SG %s: %w", id, err)
 	}
 	return nil
 }

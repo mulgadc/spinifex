@@ -297,11 +297,13 @@ func haSpreadGroupName(accountID, clusterName string) string {
 
 func controlPlaneNode(nodeID string, out *K3sServerOutput) ControlPlaneNode {
 	return ControlPlaneNode{
-		NodeID:     nodeID,
-		InstanceID: out.InstanceID,
-		ENIID:      out.ENIID,
-		ENIIP:      out.ENIIP,
-		MgmtIP:     out.MgmtIP,
+		NodeID:       nodeID,
+		InstanceID:   out.InstanceID,
+		ENIID:        out.ENIID,
+		ENIIP:        out.ENIIP,
+		MgmtIP:       out.MgmtIP,
+		OverlayENIID: out.OverlayENIID,
+		OverlayENIIP: out.OverlayENIIP,
 	}
 }
 

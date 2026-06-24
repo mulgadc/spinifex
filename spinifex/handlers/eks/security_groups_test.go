@@ -187,6 +187,43 @@ func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSe
 	return &ec2.AuthorizeSecurityGroupIngressOutput{}, nil
 }
 
+func TestEnsureControlPlaneOverlaySGRules_AuthorizesVXLANAndKubelet(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+
+	require.NoError(t, EnsureControlPlaneOverlaySGRules(sgp, "111122223333", "sg-overlay", "sg-ng"))
+	require.Len(t, sgp.authorizeCalls, 3, "VXLAN both ways + kubelet overlay->node")
+
+	type key struct {
+		target string
+		source string
+		proto  string
+		port   int64
+	}
+	got := map[key]bool{}
+	for _, in := range sgp.authorizeCalls {
+		require.Len(t, in.IpPermissions, 1)
+		p := in.IpPermissions[0]
+		require.Len(t, p.UserIdGroupPairs, 1)
+		got[key{
+			target: aws.StringValue(in.GroupId),
+			source: aws.StringValue(p.UserIdGroupPairs[0].GroupId),
+			proto:  aws.StringValue(p.IpProtocol),
+			port:   aws.Int64Value(p.FromPort),
+		}] = true
+	}
+	assert.True(t, got[key{"sg-ng", "sg-overlay", "udp", 8472}], "CP overlay -> node VXLAN")
+	assert.True(t, got[key{"sg-overlay", "sg-ng", "udp", 8472}], "node -> CP overlay VXLAN")
+	assert.True(t, got[key{"sg-ng", "sg-overlay", "tcp", 10250}], "apiserver -> kubelet via overlay")
+}
+
+func TestEnsureControlPlaneOverlaySGRules_EmptyInputsRejected(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+
+	require.Error(t, EnsureControlPlaneOverlaySGRules(sgp, "111122223333", "", "sg-ng"))
+	require.Error(t, EnsureControlPlaneOverlaySGRules(sgp, "111122223333", "sg-overlay", ""))
+	assert.Empty(t, sgp.authorizeCalls)
+}
+
 func TestEnsureClusterSGs_EmptyInputsRejected(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 

@@ -136,6 +136,17 @@ type K3sServerInput struct {
 	// ServerURL boots this VM as a JOIN server joining the quorum at the given endpoint.
 	// Empty = first server (cluster-init). Non-empty requires JoinToken.
 	ServerURL string
+	// WorkerSubnetID / WorkerVPCAccountID / OverlaySGID drive the flannel re-home
+	// (A′): a cross-account ENI in the worker (customer) VPC, threaded onto this CP
+	// VM as a second NIC. flannel binds its VXLAN to that NIC so all CP + worker
+	// nodes share the worker subnet and the apiserver reaches pod IPs directly.
+	// Empty WorkerSubnetID disables the overlay (single-node / legacy path).
+	WorkerSubnetID     string
+	WorkerVPCAccountID string
+	OverlaySGID        string
+	// OverlayMAC is set internally after the overlay ENI is created; surfaced as
+	// EKS_OVERLAY_MAC so the appliance resolves the NIC and sets --flannel-iface.
+	OverlayMAC string
 }
 
 // K3sServerOutput carries identifiers to persist in ClusterMeta and register with the NLB.
@@ -144,6 +155,10 @@ type K3sServerOutput struct {
 	ENIID      string
 	ENIIP      string
 	MgmtIP     string
+	// OverlayENIID/OverlayENIIP are the customer-VPC overlay ENI (flannel re-home).
+	// Empty when the overlay is disabled. Persisted on ControlPlaneNode for teardown.
+	OverlayENIID string
+	OverlayENIIP string
 }
 
 // LaunchK3sServerVM provisions the K3s CP VM: resolves the AMI, pre-creates the
@@ -193,6 +208,50 @@ func LaunchK3sServerVM(
 	eniID := aws.StringValue(eniOut.NetworkInterface.NetworkInterfaceId)
 	eniIP := aws.StringValue(eniOut.NetworkInterface.PrivateIpAddress)
 
+	// Flannel re-home (A′): a second ENI in the worker (customer) VPC, threaded on
+	// as NIC 1 so flannel binds VXLAN to the worker subnet. Created under the
+	// customer account; the OverlayMAC seeds --flannel-iface resolution on the VM.
+	var (
+		overlayENIID string
+		overlayENIIP string
+		extraENIs    []sysinstance.ExtraENIInput
+	)
+	if in.WorkerSubnetID != "" {
+		oOut, oErr := vpcSvc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+			SubnetId:    aws.String(in.WorkerSubnetID),
+			Description: aws.String("EKS K3s server overlay ENI for " + in.ClusterName),
+			Groups:      aws.StringSlice([]string{in.OverlaySGID}),
+			TagSpecifications: []*ec2.TagSpecification{{
+				ResourceType: aws.String("network-interface"),
+				Tags: []*ec2.Tag{
+					{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+					{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(in.ClusterName)},
+					{Key: aws.String(clusterEKSAccountTagKey), Value: aws.String(in.ClusterAccountID)},
+					{Key: aws.String(clusterEKSRoleTagKey), Value: aws.String(clusterEKSRoleControlPlaneOverlay)},
+				},
+			}},
+		}, in.WorkerVPCAccountID)
+		if oErr != nil {
+			rollbackK3sENI(vpcSvc, in.AccountID, eniID)
+			return nil, fmt.Errorf("create K3s overlay ENI in subnet %s: %w", in.WorkerSubnetID, oErr)
+		}
+		if oOut == nil || oOut.NetworkInterface == nil ||
+			aws.StringValue(oOut.NetworkInterface.NetworkInterfaceId) == "" {
+			rollbackK3sENI(vpcSvc, in.AccountID, eniID)
+			return nil, errors.New("eks: CreateNetworkInterface returned incomplete overlay ENI")
+		}
+		overlayENIID = aws.StringValue(oOut.NetworkInterface.NetworkInterfaceId)
+		overlayENIIP = aws.StringValue(oOut.NetworkInterface.PrivateIpAddress)
+		in.OverlayMAC = aws.StringValue(oOut.NetworkInterface.MacAddress)
+		extraENIs = []sysinstance.ExtraENIInput{{
+			ENIID:     overlayENIID,
+			ENIMac:    in.OverlayMAC,
+			ENIIP:     overlayENIIP,
+			SubnetID:  in.WorkerSubnetID,
+			AccountID: in.WorkerVPCAccountID,
+		}}
+	}
+
 	userData := buildK3sUserData(in)
 
 	sysOut, err := instSvc.LaunchSystemInstanceOnNode(in.TargetNodeID, &sysinstance.SystemInstanceInput{
@@ -205,14 +264,17 @@ func LaunchK3sServerVM(
 		ENIMac:       aws.StringValue(eniOut.NetworkInterface.MacAddress),
 		ENIIP:        eniIP,
 		SubnetID:     in.SubnetID,
+		ExtraENIs:    extraENIs,
 		UserData:     userData,
 	})
 	if err != nil {
 		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
+		rollbackOverlayENI(vpcSvc, in.WorkerVPCAccountID, overlayENIID)
 		return nil, fmt.Errorf("run K3s server instance for cluster %s: %w", in.ClusterName, err)
 	}
 	if sysOut == nil || sysOut.InstanceID == "" {
 		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
+		rollbackOverlayENI(vpcSvc, in.WorkerVPCAccountID, overlayENIID)
 		return nil, fmt.Errorf("eks: LaunchSystemInstance returned no instance for cluster %s", in.ClusterName)
 	}
 	instanceID := sysOut.InstanceID
@@ -223,13 +285,17 @@ func LaunchK3sServerVM(
 		"instanceId", instanceID,
 		"eniId", eniID,
 		"eniIp", eniIP,
+		"overlayEniId", overlayENIID,
+		"overlayEniIp", overlayENIIP,
 	)
 
 	return &K3sServerOutput{
-		InstanceID: instanceID,
-		ENIID:      eniID,
-		ENIIP:      eniIP,
-		MgmtIP:     sysOut.MgmtIP,
+		InstanceID:   instanceID,
+		ENIID:        eniID,
+		ENIIP:        eniIP,
+		MgmtIP:       sysOut.MgmtIP,
+		OverlayENIID: overlayENIID,
+		OverlayENIIP: overlayENIIP,
 	}, nil
 }
 
@@ -342,6 +408,19 @@ func rollbackK3sENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) {
 	}
 }
 
+// rollbackOverlayENI best-effort deletes the customer-VPC overlay ENI on a failed
+// launch. No-op when the overlay is disabled (empty eniID).
+func rollbackOverlayENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) {
+	if eniID == "" {
+		return
+	}
+	if _, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+		NetworkInterfaceId: aws.String(eniID),
+	}, accountID); err != nil && !awserrors.IsNotFound(err) {
+		slog.Warn("LaunchK3sServerVM: rollback overlay ENI delete failed", "eniId", eniID, "err", err)
+	}
+}
+
 func validateK3sServerInput(in K3sServerInput) error {
 	switch {
 	case in.AccountID == "":
@@ -427,6 +506,11 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
 		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,
 	}, "\n")
+	// Flannel re-home (A′): the appliance resolves the overlay NIC by this MAC and
+	// sets --flannel-iface so VXLAN binds to the worker subnet. Absent = no overlay.
+	if in.OverlayMAC != "" {
+		envBody += "\nEKS_OVERLAY_MAC=" + in.OverlayMAC
+	}
 
 	// First server uses cluster-init (embedded etcd); join servers set `server: <first>` + token.
 	// etcd-expose-metrics: surfaces etcd fsync/commit latency on 127.0.0.1:2381/metrics.
@@ -441,13 +525,19 @@ func buildK3sUserData(in K3sServerInput) string {
 	if in.JoinToken != "" {
 		configLines = append(configLines, "token: "+in.JoinToken)
 	}
+	configLines = append(configLines, "etcd-expose-metrics: true")
+	// Egress selector: with the flannel re-home (A′) the apiserver shares the worker
+	// subnet via the overlay NIC and reaches pod IPs directly, so `disabled` is the
+	// EKS-parity path (no tunnel). Without the overlay the apiserver VM has no route
+	// to the worker pod network, so fall back to `cluster`, which routes apiserver->
+	// pod/service traffic through the agent's outbound tunnel. The appliance pins
+	// --flannel-iface to the overlay NIC (resolved from EKS_OVERLAY_MAC).
+	if in.OverlayMAC != "" {
+		configLines = append(configLines, "egress-selector-mode: disabled")
+	} else {
+		configLines = append(configLines, "egress-selector-mode: cluster")
+	}
 	configLines = append(configLines,
-		"etcd-expose-metrics: true",
-		// Managed-CP: the apiserver VM sits in the system CP VPC with no route to
-		// the worker pod network. `cluster` routes apiserver->pod/service traffic
-		// (admission webhooks, aggregated APIs) through the agent's outbound tunnel;
-		// the default `agent` mode tunnels only kubelet, leaving webhooks unreachable.
-		"egress-selector-mode: cluster",
 		// Prevent user workloads on the CP (EKS parity). k3s packaged addons tolerate CriticalAddonsOnly.
 		"node-taint:",
 		"  - CriticalAddonsOnly=true:NoExecute",

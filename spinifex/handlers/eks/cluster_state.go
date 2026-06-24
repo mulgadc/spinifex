@@ -48,8 +48,12 @@ type ClusterMeta struct {
 	// cluster NLB's LB VM when EndpointPrivateAccess is on. In-VPC workers + kubectl
 	// reach the control plane here on :443 (no public hairpin / NAT GW). SANed on
 	// the apiserver cert. PrivateEndpointENIID is its ENI, kept for teardown.
-	PrivateEndpointIP       string            `json:"privateEndpointIp,omitempty"`
-	PrivateEndpointENIID    string            `json:"privateEndpointEniId,omitempty"`
+	PrivateEndpointIP    string `json:"privateEndpointIp,omitempty"`
+	PrivateEndpointENIID string `json:"privateEndpointEniId,omitempty"`
+	// ControlPlaneOverlaySGID is the customer-VPC SG for the per-CP-server overlay
+	// ENIs (the flannel re-home NICs). Created at cluster launch; the nodegroup SG
+	// rules authorize VXLAN/kubelet between it and the worker SG. Torn down last.
+	ControlPlaneOverlaySGID string            `json:"controlPlaneOverlaySgId,omitempty"`
 	OIDCIssuer              string            `json:"oidcIssuer,omitempty"`
 	CertificateAuthorityB64 string            `json:"certificateAuthorityB64,omitempty"`
 	ResourcesVpcConfig      *ClusterVpcConfig `json:"resourcesVpcConfig,omitempty"`
@@ -125,6 +129,12 @@ type ControlPlaneNode struct {
 	ENIID      string `json:"eniId,omitempty"`
 	ENIIP      string `json:"eniIp,omitempty"`
 	MgmtIP     string `json:"mgmtIp,omitempty"`
+	// OverlayENIID/OverlayENIIP are the cross-account customer-VPC ENI threaded
+	// onto this CP VM as a second NIC, re-homing flannel's VXLAN onto the worker
+	// subnet so the apiserver reaches worker pod IPs directly. Customer-account
+	// owned; deleted at teardown so it does not pin the customer VPC undeletable.
+	OverlayENIID string `json:"overlayEniId,omitempty"`
+	OverlayENIIP string `json:"overlayEniIp,omitempty"`
 }
 
 // ErrClusterNotFound is returned when the cluster meta key is absent.

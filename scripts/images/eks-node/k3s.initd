@@ -34,6 +34,40 @@ start_pre() {
         fi
     fi
 
+    # Flannel re-home: when an overlay ENI was threaded on (EKS_OVERLAY_MAC set in
+    # first-boot.env), resolve its interface by MAC, wait for its DHCP lease, then
+    # pin --flannel-iface to it so flannel binds VXLAN to the worker subnet. This
+    # is what lets the apiserver reach worker pod IPs across the CP<->worker
+    # boundary. Absent MAC = no overlay; flannel keeps the default interface.
+    overlay_mac=$(awk -F= '/^EKS_OVERLAY_MAC=/{print tolower($2)}' \
+        /etc/spinifex-eks/first-boot.env 2>/dev/null)
+    if [ -n "${overlay_mac}" ]; then
+        iface=""
+        i=0
+        while [ "${i}" -lt 60 ]; do
+            for d in /sys/class/net/*; do
+                [ -r "${d}/address" ] || continue
+                [ "$(cat "${d}/address")" = "${overlay_mac}" ] || continue
+                iface=$(basename "${d}")
+                break
+            done
+            # Require the lease too: flannel reads the iface address at startup.
+            if [ -n "${iface}" ] && ip -4 addr show dev "${iface}" 2>/dev/null | grep -q 'inet '; then
+                break
+            fi
+            iface=""
+            i=$((i + 2))
+            sleep 2
+        done
+        if [ -n "${iface}" ]; then
+            grep -q '^flannel-iface:' /etc/rancher/k3s/config.yaml || \
+                echo "flannel-iface: ${iface}" >> /etc/rancher/k3s/config.yaml
+            einfo "flannel pinned to overlay iface ${iface} (mac ${overlay_mac})"
+        else
+            ewarn "overlay NIC ${overlay_mac} has no lease after ${i}s; apiserver->pod may fail"
+        fi
+    fi
+
     # Node-local CoreDNS: suppress k3s's bundled CoreDNS (a single Deployment that
     # tolerates the CP taint and strands itself on the control-plane node) and
     # deploy the Mulga DaemonSet variant so every node resolves via its own

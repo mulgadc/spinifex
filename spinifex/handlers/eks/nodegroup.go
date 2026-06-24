@@ -312,6 +312,14 @@ func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
 		s.markNodegroupFailed(acctKV, cluster, ng, "ensure nodegroup SG rules: "+err.Error())
 		return
 	}
+	// Flannel re-home (A′): authorize VXLAN/kubelet between the CP overlay ENIs and
+	// the worker SG (both worker-VPC) so the apiserver reaches pod IPs directly.
+	if meta.ControlPlaneOverlaySGID != "" {
+		if err := EnsureControlPlaneOverlaySGRules(s.deps.VPCSG, accountID, meta.ControlPlaneOverlaySGID, ngSGID); err != nil {
+			s.markNodegroupFailed(acctKV, cluster, ng, "ensure control-plane overlay SG rules: "+err.Error())
+			return
+		}
+	}
 
 	token, err := s.decryptNodeToken(acctKV, cluster)
 	if err != nil {

@@ -85,3 +85,16 @@ func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
+
+// A request that clears auth but carries no account ID in context is an internal
+// fault, not a client error.
+func TestECSRequest_MissingAccountID(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
+	req.Header.Set("X-Amz-Target", "AmazonEC2ContainerServiceV20141113.ListClusters")
+	req = req.WithContext(context.WithValue(req.Context(), ctxService, "ecs"))
+
+	gw := &GatewayConfig{DisableLogging: true}
+	err := gw.ECS_Request(httptest.NewRecorder(), req)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}

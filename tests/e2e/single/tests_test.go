@@ -123,6 +123,14 @@ func TestENIHotplug(t *testing.T) {
 	runENIHotplug(t, requireSingleNodeFixture(t))
 }
 
+// TestENIHotplugReconcile attaches a secondary ENI, restarts spinifex-daemon,
+// and asserts the hot-plug reconciler keeps the ENI attached + manageable
+// (detach succeeds) across the restart. Runs after TestENIHotplug so the
+// singleton is known running + SSH-healthy.
+func TestENIHotplugReconcile(t *testing.T) {
+	runENIHotplugReconcile(t, requireSingleNodeFixture(t))
+}
+
 func TestVolumeLifecycle(t *testing.T) {
 	runVolumeLifecycle(t, requireSingleNodeFixture(t))
 }

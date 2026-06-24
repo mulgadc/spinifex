@@ -13,9 +13,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,11 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ecr"
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/spinifex/internal/ecrauth"
+	"github.com/mulgadc/spinifex/internal/imdscreds"
 
 	_ "github.com/mulgadc/spinifex/internal/fipsboot"
 )
@@ -44,7 +38,6 @@ const (
 	defaultEnvFile   = "/etc/spinifex-eks/agent.env"
 	defaultGatewayCA = "/etc/spinifex-eks/gateway-ca.pem"
 	defaultIMDSBase  = "http://169.254.169.254/latest"
-	imdsTokenTTL     = "21600"
 )
 
 // CredentialProviderRequest is the kubelet exec-provider request on STDIN.
@@ -80,7 +73,7 @@ type config struct {
 func main() {
 	cfg := loadConfig(defaultEnvFile)
 
-	httpClient, err := gatewayHTTPClient(cfg.GatewayCA)
+	httpClient, err := ecrauth.GatewayHTTPClient(cfg.GatewayCA)
 	if err != nil {
 		slog.Error("ecr-credential-provider: build gateway client", "err", err)
 		emitEmpty(os.Stdout)
@@ -106,153 +99,33 @@ func run(in io.Reader, out io.Writer, cfg config, httpClient *http.Client) error
 	if req.Image == "" {
 		return fmt.Errorf("request image is empty")
 	}
-	imageHost := hostFromImage(req.Image)
+	imageHost := ecrauth.HostFromImage(req.Image)
 
-	creds, err := fetchIMDSCredentials(httpClient, cfg.IMDSBase)
+	creds, err := imdscreds.Fetch(httpClient, cfg.IMDSBase)
 	if err != nil {
 		return fmt.Errorf("fetch IMDS credentials: %w", err)
 	}
 
-	username, password, proxyHost, expiresAt, err := getAuthToken(cfg, httpClient, creds)
+	tok, err := ecrauth.GetAuthorizationToken(cfg.Region, cfg.GatewayURL, httpClient,
+		creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken)
 	if err != nil {
 		return fmt.Errorf("get authorization token: %w", err)
 	}
 
-	auth := AuthConfig{Username: username, Password: password}
+	auth := AuthConfig{Username: tok.Username, Password: tok.Password}
 	authMap := map[string]AuthConfig{imageHost: auth}
-	if proxyHost != "" && proxyHost != imageHost {
-		authMap[proxyHost] = auth
+	if tok.ProxyHost != "" && tok.ProxyHost != imageHost {
+		authMap[tok.ProxyHost] = auth
 	}
 
 	resp := CredentialProviderResponse{
 		APIVersion:    credProviderAPIVersion,
 		Kind:          "CredentialProviderResponse",
 		CacheKeyType:  "Registry",
-		CacheDuration: cacheDurationFrom(expiresAt),
+		CacheDuration: cacheDurationFrom(tok.ExpiresAt),
 		Auth:          authMap,
 	}
 	return json.NewEncoder(out).Encode(&resp)
-}
-
-// imdsCreds mirrors the IMDS security-credentials JSON shape.
-type imdsCreds struct {
-	Code            string `json:"Code"`
-	AccessKeyID     string `json:"AccessKeyId"`
-	SecretAccessKey string `json:"SecretAccessKey"`
-	Token           string `json:"Token"`
-	Expiration      string `json:"Expiration"`
-}
-
-// fetchIMDSCredentials resolves the node role name then its credentials via
-// IMDSv2 (PUT token, then GET with the token header).
-func fetchIMDSCredentials(client *http.Client, base string) (imdsCreds, error) {
-	base = strings.TrimRight(base, "/")
-	token := imdsV2Token(client, base)
-
-	roleName, err := imdsGet(client, base+"/meta-data/iam/security-credentials/", token)
-	if err != nil {
-		return imdsCreds{}, fmt.Errorf("fetch role name: %w", err)
-	}
-	roleName = strings.TrimSpace(roleName)
-	if roleName == "" {
-		return imdsCreds{}, fmt.Errorf("IMDS returned empty role name")
-	}
-
-	body, err := imdsGet(client, base+"/meta-data/iam/security-credentials/"+roleName, token)
-	if err != nil {
-		return imdsCreds{}, fmt.Errorf("fetch role credentials: %w", err)
-	}
-	var creds imdsCreds
-	if err := json.Unmarshal([]byte(body), &creds); err != nil {
-		return imdsCreds{}, fmt.Errorf("decode role credentials: %w", err)
-	}
-	if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-		return imdsCreds{}, fmt.Errorf("IMDS credentials missing access/secret key")
-	}
-	return creds, nil
-}
-
-// imdsV2Token requests an IMDSv2 session token; returns "" if the service does
-// not enforce v2 (tokenless v1 then applies).
-func imdsV2Token(client *http.Client, base string) string {
-	req, err := http.NewRequest(http.MethodPut, base+"/api/token", nil)
-	if err != nil {
-		return ""
-	}
-	req.Header.Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", imdsTokenTTL)
-	resp, err := client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	body, _ := io.ReadAll(resp.Body)
-	return strings.TrimSpace(string(body))
-}
-
-func imdsGet(client *http.Client, url, token string) (string, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	if token != "" {
-		req.Header.Set("X-Aws-Ec2-Metadata-Token", token)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("IMDS %s returned %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return string(body), nil
-}
-
-// getAuthToken builds an aws-sdk ECR client pointed at the gateway and calls
-// GetAuthorizationToken, decoding the AWS:<jwt> token into Basic-auth parts. It
-// returns the username, password, the ProxyEndpoint host, and the token expiry.
-func getAuthToken(cfg config, httpClient *http.Client, creds imdsCreds) (username, password, proxyHost string, expiresAt time.Time, err error) {
-	region := cfg.Region
-	if region == "" {
-		region = "us-east-1"
-	}
-	sess, serr := session.NewSession(&aws.Config{
-		Region:      aws.String(region),
-		Endpoint:    aws.String(cfg.GatewayURL),
-		Credentials: credentials.NewStaticCredentials(creds.AccessKeyID, creds.SecretAccessKey, creds.Token),
-		HTTPClient:  httpClient,
-		DisableSSL:  aws.Bool(false),
-	})
-	if serr != nil {
-		return "", "", "", time.Time{}, fmt.Errorf("new session: %w", serr)
-	}
-
-	out, gerr := ecr.New(sess).GetAuthorizationToken(&ecr.GetAuthorizationTokenInput{})
-	if gerr != nil {
-		return "", "", "", time.Time{}, fmt.Errorf("GetAuthorizationToken: %w", gerr)
-	}
-	if len(out.AuthorizationData) == 0 || out.AuthorizationData[0].AuthorizationToken == nil {
-		return "", "", "", time.Time{}, fmt.Errorf("GetAuthorizationToken returned no authorization data")
-	}
-	data := out.AuthorizationData[0]
-
-	raw, derr := base64.StdEncoding.DecodeString(aws.StringValue(data.AuthorizationToken))
-	if derr != nil {
-		return "", "", "", time.Time{}, fmt.Errorf("decode authorization token: %w", derr)
-	}
-	user, pass, ok := strings.Cut(string(raw), ":")
-	if !ok {
-		return "", "", "", time.Time{}, fmt.Errorf("authorization token not in user:password form")
-	}
-
-	if data.ExpiresAt != nil {
-		expiresAt = aws.TimeValue(data.ExpiresAt)
-	}
-	return user, pass, hostFromImage(aws.StringValue(data.ProxyEndpoint)), expiresAt, nil
 }
 
 // cacheDurationFrom derives a Go-duration string from the token expiry minus a
@@ -266,30 +139,6 @@ func cacheDurationFrom(expiresAt time.Time) string {
 		return defaultCacheDuration
 	}
 	return d.Round(time.Second).String()
-}
-
-// gatewayHTTPClient builds an HTTP client trusting the gateway CA at caPath.
-// When caPath is empty it relies on the system trust store.
-func gatewayHTTPClient(caPath string) (*http.Client, error) {
-	tlsCfg := &tls.Config{
-		MinVersion:       tls.VersionTLS13,
-		CurvePreferences: tlsconfig.Curves,
-	}
-	if caPath != "" {
-		pem, err := os.ReadFile(caPath)
-		if err != nil {
-			return nil, fmt.Errorf("read gateway CA %q: %w", caPath, err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("gateway CA %q has no usable certificates", caPath)
-		}
-		tlsCfg.RootCAs = pool
-	}
-	return &http.Client{
-		Timeout:   15 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg, MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second},
-	}, nil
 }
 
 // loadConfig reads the cloud-init env file then lets real env vars override. The
@@ -339,18 +188,6 @@ func parseEnvFile(path string) map[string]string {
 		out[strings.TrimSpace(key)] = strings.TrimSpace(val)
 	}
 	return out
-}
-
-// hostFromImage returns the host[:port] portion of an image ref or URL. It strips
-// any scheme and trims at the first path separator.
-func hostFromImage(image string) string {
-	if i := strings.Index(image, "://"); i >= 0 {
-		image = image[i+3:]
-	}
-	if i := strings.IndexByte(image, '/'); i >= 0 {
-		image = image[:i]
-	}
-	return image
 }
 
 // emitEmpty writes a valid CredentialProviderResponse with no auth entries.

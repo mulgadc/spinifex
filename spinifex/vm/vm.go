@@ -85,8 +85,8 @@ type VM struct {
 	PublicIPAllocID string `json:"public_ip_alloc_id,omitempty"`
 	PublicIPAssocID string `json:"public_ip_assoc_id,omitempty"`
 
-	// DevMAC is the MAC for the dev/hostfwd NIC (DEV_NETWORKING mode).
-	// Set before cloud-init ISO generation so netplan can suppress its default route.
+	// DevMAC is the MAC for the dev/hostfwd NIC (DEV_NETWORKING mode), used by
+	// appendDevHostfwdNIC to give the user-mode NIC a stable address.
 	DevMAC string `json:"dev_mac,omitempty"`
 
 	// Management NIC for system instance control plane (reaches host via br-mgmt).

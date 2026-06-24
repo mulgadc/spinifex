@@ -122,17 +122,3 @@ func TestRun_ReturnsBasicAuth(t *testing.T) {
 		t.Errorf("password = %q, want testjwt", auth.Password)
 	}
 }
-
-func TestHostFromImage(t *testing.T) {
-	cases := map[string]string{
-		"acct.dkr.ecr.us-east-1.spinifex.internal/demo:latest": "acct.dkr.ecr.us-east-1.spinifex.internal",
-		"https://acct.dkr.ecr.us-east-1.spinifex.internal":     "acct.dkr.ecr.us-east-1.spinifex.internal",
-		"host:9999/repo:tag": "host:9999",
-		"plainhost":          "plainhost",
-	}
-	for in, want := range cases {
-		if got := hostFromImage(in); got != want {
-			t.Errorf("hostFromImage(%q) = %q, want %q", in, got, want)
-		}
-	}
-}

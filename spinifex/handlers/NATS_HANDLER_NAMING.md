@@ -266,8 +266,12 @@ ecs.bus.<accountID>.<clusterName>.instance-register.<instanceID>  # agent → sc
 ecs.bus.<accountID>.<clusterName>.service-reconcile               # scheduler-internal tick
 ```
 
-This layer lands with the scheduler + agent bodies. The Phase 5 per-AZ NATS
-cutover inserts `{azID}` after `ecs.` → `ecs.<azID>.bus.<accountID>.<clusterName>.*`.
+Sprint 4c lands the agent-side publishers for `instance-register` (at boot) and
+`instance-heartbeat` (every 30s); the scheduler-side subscribers, `assign`, and
+`task-state` land in Sprint 4e. Subject builders and wire payloads live in
+`spinifex/handlers/ecs/bus` so both the agent and the scheduler share one source
+of truth. The Phase 5 per-AZ NATS cutover inserts `{azID}` after `ecs.` →
+`ecs.<azID>.bus.<accountID>.<clusterName>.*`.
 
 ### Cross-service calls
 

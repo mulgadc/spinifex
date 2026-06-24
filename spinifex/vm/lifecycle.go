@@ -754,7 +754,6 @@ func buildBaseVMConfig(instanceID, instanceType, pidFile, consoleLogPath, serial
 		UseUEFI:        bootMode == "uefi" || bootMode == "uefi-preferred",
 
 		// Present EC2-shaped DMI so stock cloud-init activates the Ec2 datasource.
-		// Lands dark: the seed still bootstraps the guest until the Phase 2 cutover.
 		SMBIOSUUID:         ec2SMBIOSUUID(instanceID),
 		SMBIOSManufacturer: "Amazon EC2",
 		SMBIOSAssetTag:     "Amazon EC2",

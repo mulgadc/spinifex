@@ -234,11 +234,11 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 	return vb, nil
 }
 
-// isAuxVolume reports whether a volume is an -efi/-cloudinit auxiliary volume.
-// Auxiliary volumes are recreated on launch and carry no durable guest data, so
-// they never need sealing to predastore.
+// isAuxVolume reports whether a volume is an -efi auxiliary volume. Auxiliary
+// volumes are recreated on launch and carry no durable guest data, so they
+// never need sealing to predastore.
 func isAuxVolume(volumeName string) bool {
-	return strings.HasSuffix(volumeName, "-efi") || strings.HasSuffix(volumeName, "-cloudinit")
+	return strings.HasSuffix(volumeName, "-efi")
 }
 
 // volumeNeedsSeal reports whether an unmounted volume must be sealed to
@@ -712,10 +712,10 @@ func launchService(cfg *Config) (err error) {
 
 		vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
 
-		// Enable 128MB cache for main volumes, disable for cloudinit/efi (small, rarely read)
+		// Enable 128MB cache for main volumes, disable for efi (small, rarely read)
 		// This cacheSize is passed to nbdkit plugin (separate viperblock instance)
 		var nbdCacheSize int
-		if strings.HasSuffix(ebsRequest.Name, "-cloudinit") || strings.HasSuffix(ebsRequest.Name, "-efi") {
+		if strings.HasSuffix(ebsRequest.Name, "-efi") {
 			slog.Info("Disabling cache for auxiliary volume", "volume", ebsRequest.Name)
 			if err := vb.SetCacheSize(0, 0); err != nil {
 				slog.Error("Failed to set cache size", "err", err)

@@ -35,42 +35,6 @@ func mgrWith(vms map[string]*vm.VM) *vm.Manager {
 	return m
 }
 
-func TestGenerateHostname(t *testing.T) {
-	tests := []struct {
-		name       string
-		instanceID string
-		want       string
-	}{
-		{
-			name:       "Normal instance ID",
-			instanceID: "i-0123456789abcdef0",
-			want:       "spinifex-vm-01234567",
-		},
-		{
-			name:       "Too short (2 chars)",
-			instanceID: "ab",
-			want:       "spinifex-vm-unknown",
-		},
-		{
-			name:       "Empty string",
-			instanceID: "",
-			want:       "spinifex-vm-unknown",
-		},
-		{
-			name:       "Exactly 10 chars",
-			instanceID: "i-abcdef01",
-			want:       "spinifex-vm-abcdef01",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := generateHostname(tt.instanceID)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
 func TestRunInstance_Success(t *testing.T) {
 	instanceTypes := map[string]*ec2.InstanceTypeInfo{
 		"t3.micro": {InstanceType: aws.String("t3.micro")},

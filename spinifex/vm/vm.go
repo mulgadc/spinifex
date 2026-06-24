@@ -221,8 +221,9 @@ type Config struct {
 	UseUEFI bool `json:"use_uefi,omitempty"`
 
 	// SMBIOSUUID, SMBIOSManufacturer, SMBIOSAssetTag emit EC2-shaped DMI so a stock
-	// cloud image's cloud-init activates the Ec2 datasource. An "ec2"-prefixed
-	// SMBIOSUUID is the field cloud-init keys on (Phase 0 validation).
+	// cloud image's cloud-init activates the Ec2 datasource. cloud-init's identify_aws
+	// keys on /sys/class/dmi/id/product_uuid starting with "ec2", so SMBIOSUUID must
+	// carry that prefix.
 	SMBIOSUUID         string `json:"smbios_uuid,omitempty"`
 	SMBIOSManufacturer string `json:"smbios_manufacturer,omitempty"`
 	SMBIOSAssetTag     string `json:"smbios_asset_tag,omitempty"`

@@ -1528,15 +1528,6 @@ func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
 	return *it.ProcessorInfo.SupportedArchitectures[0]
 }
 
-// generateHostname creates a hostname based on instance ID
-func generateHostname(instanceID string) string {
-	if len(instanceID) > 2 {
-		uniquePart := instanceID[2:10] // Take first 8 chars after "i-"
-		return fmt.Sprintf("spinifex-vm-%s", uniquePart)
-	}
-	return "spinifex-vm-unknown"
-}
-
 // DescribeInstancesValidFilters lists the filter names accepted by DescribeInstances
 // (and the stopped/terminated variants, which share the same filter shape).
 var DescribeInstancesValidFilters = map[string]bool{

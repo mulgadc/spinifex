@@ -185,10 +185,10 @@ const (
 	defaultNbdkitAuxMiB  = 96
 )
 
-// Default volume layout: one main root volume + two aux volumes (cloud-init, efi).
+// Default volume layout: one main root volume + one aux volume (efi).
 const (
 	defaultMainVolumes = 1
-	defaultAuxVolumes  = 2
+	defaultAuxVolumes  = 1
 )
 
 // resolveNbdkitCharge returns per-volume nbdkit charges, overridable via env.

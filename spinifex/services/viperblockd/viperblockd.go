@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -945,15 +946,53 @@ func launchService(cfg *Config) (err error) {
 	cfg.MountedVolumes = nil
 	cfg.mu.Unlock()
 
+	shutdownVolumes(volumes, nbdkitInUse)
+
+	return nil
+}
+
+// shutdownVolumes flushes each mounted volume's WAL on SIGTERM but only reaps
+// nbdkit for volumes with no attached guest (inUse false). Killing an nbdkit a
+// guest is still writing through corrupts that guest's filesystem; the graceful
+// drain (or unmount) path owns reaping in-use nbdkit after the guest is gone.
+func shutdownVolumes(volumes []MountedVolume, inUse func(MountedVolume) bool) {
 	for _, volume := range volumes {
 		if volume.VB != nil {
 			volume.VB.StopWALSyncer()
 		}
-		slog.Info("Killing nbdkit process", "pid", volume.PID)
+		if inUse(volume) {
+			slog.Warn("nbdkit still serving a guest; leaving it for the drain/unmount path",
+				"pid", volume.PID, "name", volume.Name, "socket", volume.Socket)
+			continue
+		}
+		slog.Info("Killing idle nbdkit process", "pid", volume.PID, "name", volume.Name)
 		if err := utils.KillProcess(volume.PID); err != nil {
 			slog.Error("Failed to kill nbdkit process", "pid", volume.PID, "err", err)
 		}
 	}
+}
 
-	return nil
+// nbdkitInUse best-effort reports whether nbdkit's NBD endpoint still has a
+// connected client (a guest). On any uncertainty it returns true so the
+// shutdown path never tears a backing store out from under a running guest.
+func nbdkitInUse(vol MountedVolume) bool {
+	if vol.Socket == "" {
+		// TCP transport: cannot cheaply confirm idle — assume in use.
+		return true
+	}
+	out, err := exec.Command("ss", "-H", "-x", "-a").Output()
+	if err != nil {
+		return true
+	}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		// LISTEN is the idle server socket; ESTAB means a client is attached.
+		if fields[0] == "ESTAB" && strings.Contains(line, vol.Socket) {
+			return true
+		}
+	}
+	return false
 }

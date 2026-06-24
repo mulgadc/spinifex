@@ -1,0 +1,18 @@
+[Unit]
+Description=Spinifex graceful guest drain
+PartOf=spinifex.target
+# After= all services so it stops FIRST on target/host shutdown: the drain runs
+# while nats/predastore/viperblock/daemon are still up (QMP, unmount, WAL flush).
+After=spinifex-nats.service spinifex-predastore.service spinifex-viperblock.service spinifex-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+# ExecStop only runs when the target/host goes down, not on a single-service
+# restart — so a daemon restart still leaves guests running (DDIL).
+ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120
+TimeoutStopSec=180
+
+[Install]
+WantedBy=spinifex.target

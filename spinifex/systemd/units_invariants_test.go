@@ -136,6 +136,49 @@ func TestRG9_TierConfinement(t *testing.T) {
 	}
 }
 
+// TestGracefulDrainOrdering asserts the graceful-shutdown contract: the drain
+// oneshot orders After= the storage/daemon units (so a target/host stop runs its
+// ExecStop drain first, while those services are still up), the daemon keeps
+// KillMode=process (guests survive a daemon restart — DDIL reattach), and the
+// drain is wired into the target so a target/host stop triggers it.
+func TestGracefulDrainOrdering(t *testing.T) {
+	dir := unitsDir(t)
+
+	drain := readUnit(t, dir, "spinifex-shutdown.service")
+	var afterLine string
+	for l := range strings.SplitSeq(drain, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "After=") {
+			afterLine = strings.TrimSpace(l)
+		}
+	}
+	if afterLine == "" {
+		t.Fatal("spinifex-shutdown.service must declare After= the storage/daemon units")
+	}
+	for _, dep := range []string{
+		"spinifex-nats.service",
+		"spinifex-predastore.service",
+		"spinifex-viperblock.service",
+		"spinifex-daemon.service",
+	} {
+		if !strings.Contains(afterLine, dep) {
+			t.Errorf("spinifex-shutdown.service After= must include %s so the drain stops before it", dep)
+		}
+	}
+	if !hasDirective(drain, "ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120") {
+		t.Error("spinifex-shutdown.service must drain the local node on stop via ExecStop")
+	}
+
+	daemon := readUnit(t, dir, "spinifex-daemon.service")
+	if !hasDirective(daemon, "KillMode=process") {
+		t.Error("spinifex-daemon.service must keep KillMode=process — guests survive daemon restart (DDIL)")
+	}
+
+	target := readUnit(t, dir, "spinifex.target")
+	if !strings.Contains(target, "spinifex-shutdown.service") {
+		t.Error("spinifex.target Wants= must include spinifex-shutdown.service")
+	}
+}
+
 // TestRG11_LeanUnits asserts the RG-11 contract: unit/slice files carry settings
 // plus terse # RG-n references, not paragraphs of rationale, and never reference
 // a plan doc, bead, or CI run (project policy — reasoning lives in the ADR).

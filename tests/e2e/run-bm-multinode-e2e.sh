@@ -731,7 +731,7 @@ for idx in "${!INSTANCE_IDS[@]}"; do
                -o LogLevel=ERROR \
                -p "$SSH_PORT" \
                -i "$SSH_KEY" \
-               ec2-user@"$SSH_HOST" 'echo ready' > /dev/null 2>&1; then
+               ubuntu@"$SSH_HOST" 'echo ready' > /dev/null 2>&1; then
             SSH_READY=true
             break
         fi
@@ -755,17 +755,17 @@ for idx in "${!INSTANCE_IDS[@]}"; do
         -o LogLevel=ERROR \
         -p "$SSH_PORT" \
         -i "$SSH_KEY" \
-        ec2-user@"$SSH_HOST" 'id' 2>&1) || {
+        ubuntu@"$SSH_HOST" 'id' 2>&1) || {
         echo "  ERROR: SSH 'id' command failed"
         fail_test "Guest SSH ($instance_id)"
         continue
     }
 
     echo "  SSH 'id' output: $ID_OUTPUT"
-    if echo "$ID_OUTPUT" | grep -q "ec2-user"; then
-        echo "  ec2-user confirmed"
+    if echo "$ID_OUTPUT" | grep -q "ubuntu"; then
+        echo "  ubuntu confirmed"
     else
-        echo "  ERROR: Expected 'ec2-user' in id output"
+        echo "  ERROR: Expected 'ubuntu' in id output"
         fail_test "Guest SSH ($instance_id)"
         continue
     fi
@@ -778,7 +778,7 @@ for idx in "${!INSTANCE_IDS[@]}"; do
         -o LogLevel=ERROR \
         -p "$SSH_PORT" \
         -i "$SSH_KEY" \
-        ec2-user@"$SSH_HOST" 'lsblk' 2>&1) || true
+        ubuntu@"$SSH_HOST" 'lsblk' 2>&1) || true
     echo "  lsblk: $(echo "$LSBLK_OUTPUT" | head -5)"
 
     pass_test "Guest SSH ($instance_id)"
@@ -1490,7 +1490,7 @@ BASTION_OK=false
 for attempt in $(seq 1 30); do
     if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
            -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes \
-           -i "$HOME/.ssh/spinifex-key" "ec2-user@$NATGW_BASTION_PUB_IP" "true" 2>/dev/null; then
+           -i "$HOME/.ssh/spinifex-key" "ubuntu@$NATGW_BASTION_PUB_IP" "true" 2>/dev/null; then
         BASTION_OK=true
         break
     fi
@@ -1515,19 +1515,19 @@ else
     # Copy SSH key to bastion for private instance hops
     scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
         -i "$HOME/.ssh/spinifex-key" "$HOME/.ssh/spinifex-key" \
-        "ec2-user@$NATGW_BASTION_PUB_IP:/tmp/key.pem" 2>/dev/null
+        "ubuntu@$NATGW_BASTION_PUB_IP:/tmp/key.pem" 2>/dev/null
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -i "$HOME/.ssh/spinifex-key" "ec2-user@$NATGW_BASTION_PUB_IP" "chmod 600 /tmp/key.pem" 2>/dev/null
+        -i "$HOME/.ssh/spinifex-key" "ubuntu@$NATGW_BASTION_PUB_IP" "chmod 600 /tmp/key.pem" 2>/dev/null
 
     # Bastion SSH helper
     bastion_ssh() {
         ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 \
-            -i "$HOME/.ssh/spinifex-key" "ec2-user@$NATGW_BASTION_PUB_IP" "$@"
+            -i "$HOME/.ssh/spinifex-key" "ubuntu@$NATGW_BASTION_PUB_IP" "$@"
     }
     priv_hop_cmd() {
         local priv_ip="$1"; shift
-        echo "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o BatchMode=yes -i /tmp/key.pem ec2-user@${priv_ip} '$*'"
+        echo "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o BatchMode=yes -i /tmp/key.pem ubuntu@${priv_ip} '$*'"
     }
 
     echo ""

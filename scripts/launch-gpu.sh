@@ -6,7 +6,7 @@ export AWS_PROFILE=spinifex
 # Resolve the actual user's home — $HOME is /root when run under sudo.
 _USER_HOME=$(getent passwd "${SUDO_USER:-$(id -un)}" | cut -d: -f6)
 SSH_KEY="${SSH_KEY:-${_USER_HOME}/.ssh/spinifex-key}"
-SSH_USER="${SSH_USER:-ec2-user}"
+SSH_USER="${SSH_USER:-ubuntu}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-300}"
 
 usage() {
@@ -28,7 +28,7 @@ Options:
 
 Env overrides:
   SSH_KEY      Path to SSH private key (default: ~/.ssh/spinifex-key)
-  SSH_USER     SSH user inside guest  (default: ec2-user)
+  SSH_USER     SSH user inside guest  (default: ubuntu)
   SSH_TIMEOUT  Seconds to wait for initial SSH (default: 300)
 EOF
 }

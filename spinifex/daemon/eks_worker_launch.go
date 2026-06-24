@@ -20,19 +20,35 @@ import (
 // Compile-time check that Daemon satisfies the EKS worker-launch surface.
 var _ handlers_eks.WorkerLauncher = (*Daemon)(nil)
 
-// RunWorkerInstance launches a nodegroup worker via the normal RunInstances path.
-// UserData is base64-encoded before forwarding; the worker is customer-visible.
+// RunWorkerInstance launches a nodegroup worker on the local node.
 func (d *Daemon) RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
-	if d.instanceService == nil {
-		return nil, errors.New("eks worker: instance service not initialized")
-	}
+	return d.RunWorkerInstanceOnNode("", input, accountID)
+}
+
+// RunWorkerInstanceOnNode launches a nodegroup worker via the normal RunInstances
+// path. UserData is base64-encoded before forwarding; the worker is
+// customer-visible. A non-empty nodeID pins the worker to that host for nodegroup
+// spread by publishing the node-targeted ec2.RunInstances.<type>.<node> request
+// (the node stays subscribed even at capacity); an empty nodeID launches on the
+// local node in process, preserving the original behaviour.
+func (d *Daemon) RunWorkerInstanceOnNode(nodeID string, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
 	if input == nil {
 		return nil, errors.New("eks worker: nil RunInstancesInput")
 	}
 	if input.UserData != nil && *input.UserData != "" {
 		input.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(*input.UserData)))
 	}
-	return d.instanceService.RunInstances(input, accountID)
+	if nodeID == "" {
+		if d.instanceService == nil {
+			return nil, errors.New("eks worker: instance service not initialized")
+		}
+		return d.instanceService.RunInstances(input, accountID)
+	}
+	if d.natsConn == nil {
+		return nil, errors.New("eks worker: NATS connection not initialized")
+	}
+	subject := fmt.Sprintf("ec2.RunInstances.%s.%s", aws.StringValue(input.InstanceType), nodeID)
+	return utils.NATSRequest[ec2.Reservation](d.natsConn, subject, input, 5*time.Minute, accountID)
 }
 
 // TerminateWorkerInstances terminates nodegroup workers by routing a terminate

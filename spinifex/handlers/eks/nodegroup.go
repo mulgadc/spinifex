@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math/rand/v2"
 	"net"
 	"net/url"
 	"slices"
@@ -484,7 +485,12 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 			"nodegroup", rec.Name, "nodeRole", rec.NodeRole)
 	}
 
-	res, err := s.deps.Worker.RunWorkerInstance(runInput, accountID)
+	// Spread workers across hosts: target the eligible host holding the fewest of
+	// this nodegroup's existing workers (round-robin that packs once hosts <
+	// desired). An empty host (no scheduler / no node data) falls back to a local
+	// launch inside RunWorkerInstanceOnNode, never worse than the un-spread path.
+	host := s.selectWorkerHost(instanceType, rec.InstanceIDs)
+	res, err := s.deps.Worker.RunWorkerInstanceOnNode(host, runInput, accountID)
 	if err != nil {
 		return "", err
 	}
@@ -494,6 +500,40 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 		}
 	}
 	return "", errors.New("run worker returned no instance id")
+}
+
+// selectWorkerHost picks the host for the next worker: the eligible host (one
+// with free capacity for instanceType) holding the fewest of this nodegroup's
+// existing workers, so workers spread across hosts and pack evenly once the
+// worker count exceeds the host count. Ties break randomly for fair placement.
+// Returns "" when no scheduler is wired or no host has capacity, in which case
+// the caller falls back to a local launch.
+func (s *EKSServiceImpl) selectWorkerHost(instanceType string, existingWorkerIDs []string) string {
+	if s.deps.Scheduler == nil {
+		return ""
+	}
+	hosts := s.deps.Scheduler.SchedulableHosts(instanceType)
+	if len(hosts) == 0 {
+		return ""
+	}
+	// Count this nodegroup's workers already placed per host.
+	counts := make(map[string]int, len(hosts))
+	for _, h := range hosts {
+		counts[h] = 0
+	}
+	for _, host := range s.deps.Scheduler.InstanceHosts(existingWorkerIDs) {
+		if _, eligible := counts[host]; eligible {
+			counts[host]++
+		}
+	}
+	rand.Shuffle(len(hosts), func(i, j int) { hosts[i], hosts[j] = hosts[j], hosts[i] })
+	best := hosts[0]
+	for _, h := range hosts[1:] {
+		if counts[h] < counts[best] {
+			best = h
+		}
+	}
+	return best
 }
 
 // gatewayHostIP returns the IP literal of the gateway base URL's host, or "" when

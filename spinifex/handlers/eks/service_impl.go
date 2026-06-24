@@ -90,6 +90,9 @@ type EKSServiceDeps struct {
 // Workers use the customer-owned RunInstances path (no ManagedBy tag, no mgmt NIC).
 type WorkerLauncher interface {
 	RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
+	// RunWorkerInstanceOnNode launches the worker on a specific host for nodegroup
+	// host spread. An empty nodeID launches on the local node like RunWorkerInstance.
+	RunWorkerInstanceOnNode(nodeID string, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
 	TerminateWorkerInstances(instanceIDs []string, accountID string) error
 }
 

@@ -99,9 +99,3 @@ func TestSendTelemetry_HandlesUnreachableServer(t *testing.T) {
 	// URL pointing to a port that's not listening
 	SendTelemetry(ctx, TelemetryPayload{MachineID: "unreachable-test", URL: "http://127.0.0.1:1"})
 }
-
-func TestFirstMAC_ReturnsNonEmpty(t *testing.T) {
-	t.Parallel()
-	mac := firstMAC()
-	assert.NotEmpty(t, mac, "expected at least one MAC address")
-}

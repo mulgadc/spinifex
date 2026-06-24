@@ -580,8 +580,6 @@ Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`, 
 
 Available at `169.254.169.254` from inside every running guest VM, matching AWS. The endpoint is reached from within a guest over plain HTTP, exactly as on EC2, with no in-VM agent to install. DHCP and fully static guests reach it identically, with no in-guest route configuration.
 
-**Guests bootstrap from the `Ec2` datasource — no seed, no in-guest route.** A stock cloud image boots on Spinifex exactly as on EC2: the host emits EC2-shaped SMBIOS so cloud-init selects its `Ec2` datasource, reaches `169.254.169.254`, and self-configures the SSH launch key, primary NIC, hostname, and user-data from IMDS. There is no NoCloud seed ISO and no per-VM out-of-band file. Two consequences are visible inside the guest: the login account is the **AMI's stock default user** (`ubuntu`, `ec2-user`, `rocky`, …) — whichever the image ships, not a Spinifex-forced one — and the hostname is the AWS form `ip-a-b-c-d.<region>.compute.internal`. The deployment CA is **not** needed to boot (IMDS is plain HTTP); it is baked into the image trust store at `spx admin images import` so in-guest SDK-over-TLS calls to Spinifex endpoints trust the gateway from first boot (see *Image Management*).
-
 **IMDSv2-only.** Every read requires a session token. A tokenless (v1-style) `GET` returns `401 Unauthorized` with an empty body. Obtain a token with a `PUT /latest/api/token` carrying `X-aws-ec2-metadata-token-ttl-seconds` (1–21600), then send it back in `X-aws-ec2-metadata-token` on every read.
 
 ```bash

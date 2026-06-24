@@ -115,6 +115,23 @@ Each phase waits for all nodes to ACK before proceeding to the next.`,
 	Run: runClusterShutdown,
 }
 
+var nodeCmd = &cobra.Command{
+	Use:   "node",
+	Short: "Node-local operations",
+	Long:  `Node-local administrative operations such as a graceful local guest drain.`,
+}
+
+var nodeDrainCmd = &cobra.Command{
+	Use:   "drain",
+	Short: "Gracefully drain guests on the local node",
+	Long: `Run the GATE and DRAIN shutdown phases against the local node only: power down
+its guests via QMP and unmount their volumes (flushing the viperblock WAL) while
+every service is still running. STORAGE/PERSIST/INFRA are left to systemd's
+ordered unit teardown. This is the ExecStop of spinifex-shutdown.service, so a
+systemctl stop or host reboot drains guests before any storage service stops.`,
+	Run: runNodeDrainLocal,
+}
+
 var clusterDrainDHCPCmd = &cobra.Command{
 	Use:   "drain-dhcp",
 	Short: "Release all upstream DHCP leases held by vpcd",
@@ -257,6 +274,11 @@ func init() {
 
 	clusterCmd.AddCommand(clusterDrainDHCPCmd)
 	clusterDrainDHCPCmd.Flags().Duration("timeout", 30*time.Second, "Reply-collection window for vpcd drain responders")
+
+	adminCmd.AddCommand(nodeCmd)
+	nodeCmd.AddCommand(nodeDrainCmd)
+	nodeDrainCmd.Flags().Bool("local", false, "Drain the local node only (required)")
+	nodeDrainCmd.Flags().Duration("timeout", 120*time.Second, "Maximum time to wait per phase")
 
 	adminCmd.AddCommand(imagesCmd)
 	imagesCmd.AddCommand(imagesImportCmd)

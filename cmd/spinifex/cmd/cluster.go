@@ -161,6 +161,93 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 	fmt.Printf("Cluster shutdown complete (%s)\n", time.Since(start).Round(time.Millisecond))
 }
 
+// runNodeDrainLocal runs the GATE and DRAIN shutdown phases against the local
+// node only, leaving STORAGE/PERSIST/INFRA to systemd's ordered unit teardown.
+// It is the ExecStop of spinifex-shutdown.service: guests are powered down and
+// their volumes unmounted while every service is still up, so the subsequent
+// service stops never tear storage out from under a running guest.
+func runNodeDrainLocal(cmd *cobra.Command, args []string) {
+	local, _ := cmd.Flags().GetBool("local")
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	if !local {
+		fmt.Fprintln(os.Stderr, "Error: node drain currently supports only --local")
+		os.Exit(1)
+	}
+
+	cfg, nc, err := loadConfigAndConnect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	node := cfg.Node
+	fmt.Printf("Draining local node %q (gate -> drain), timeout %s/phase\n", node, timeout)
+
+	for _, phase := range []string{"gate", "drain"} {
+		topic := "spinifex.cluster.shutdown." + phase
+		req := daemon.ShutdownRequest{Phase: phase, Timeout: int(timeout.Seconds())}
+		reqData, err := json.Marshal(req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error marshaling request: %v\n", err)
+			os.Exit(1)
+		}
+
+		ack, err := collectLocalShutdownACK(nc, topic, reqData, node, timeout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] %v\n", strings.ToUpper(phase), err)
+			os.Exit(1)
+		}
+		if ack.Error != "" {
+			fmt.Fprintf(os.Stderr, "[%s] %s: ERROR - %s\n", strings.ToUpper(phase), ack.Node, ack.Error)
+			os.Exit(1)
+		}
+		if len(ack.Stopped) > 0 {
+			fmt.Printf("[%s] %s: stopped %s\n", strings.ToUpper(phase), ack.Node, strings.Join(ack.Stopped, ", "))
+		} else {
+			fmt.Printf("[%s] %s: OK\n", strings.ToUpper(phase), ack.Node)
+		}
+	}
+
+	fmt.Printf("Local node %q drained; systemd may now stop storage services\n", node)
+}
+
+// collectLocalShutdownACK publishes a shutdown-phase request and returns the ACK
+// from the local node, ignoring ACKs from any other node. Returns an error if
+// the local node does not respond within timeout.
+func collectLocalShutdownACK(nc *nats.Conn, topic string, reqData []byte, node string, timeout time.Duration) (daemon.ShutdownACK, error) {
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		return daemon.ShutdownACK{}, fmt.Errorf("failed to subscribe to inbox: %w", err)
+	}
+	defer sub.Unsubscribe()
+
+	if err := nc.PublishRequest(topic, inbox, reqData); err != nil {
+		return daemon.ShutdownACK{}, fmt.Errorf("failed to publish request: %w", err)
+	}
+	nc.Flush()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return daemon.ShutdownACK{}, fmt.Errorf("timeout waiting for local node %q ACK", node)
+		}
+		msg, err := sub.NextMsg(remaining)
+		if err != nil {
+			return daemon.ShutdownACK{}, fmt.Errorf("timeout waiting for local node %q ACK", node)
+		}
+		var ack daemon.ShutdownACK
+		if err := json.Unmarshal(msg.Data, &ack); err != nil {
+			continue
+		}
+		if ack.Node == node {
+			return ack, nil
+		}
+	}
+}
+
 // runClusterDrainDHCP asks every vpcd to DHCPRELEASE all external-pool leases
 // it currently holds, returning them to the upstream DHCP server. Intended for
 // the teardown path: an env reset otherwise strands held leases until TTL

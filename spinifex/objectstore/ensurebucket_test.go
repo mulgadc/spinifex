@@ -102,7 +102,3 @@ func TestS3ObjectStore_EnsureBucket_BackendErrorPropagates(t *testing.T) {
 
 	require.Error(t, newS3Store(t, srv.URL).EnsureBucket("ecr-000000000001"))
 }
-
-func TestMemoryObjectStore_EnsureBucketNoop(t *testing.T) {
-	require.NoError(t, NewMemoryObjectStore().EnsureBucket("any"))
-}

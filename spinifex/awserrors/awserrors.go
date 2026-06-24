@@ -371,9 +371,13 @@ var (
 	ErrorResourceCountLimitExceeded                           = "ResourceCountLimitExceeded"
 	ErrorResourceLimitExceeded                                = "ResourceLimitExceeded"
 	// ErrorResourceNotFound is the ACM not-found code. EKS must use ErrorEKSResourceNotFound — do not cross-wire.
-	ErrorResourceNotFound                               = "ResourceNotFound"
-	ErrorEKSResourceInUse                               = "ResourceInUseException"
-	ErrorEKSResourceNotFound                            = "ResourceNotFoundException"
+	ErrorResourceNotFound    = "ResourceNotFound"
+	ErrorEKSResourceInUse    = "ResourceInUseException"
+	ErrorEKSResourceNotFound = "ResourceNotFoundException"
+	// ECS JSON-1.1 exception codes. ECS clients key on the "Exception"-suffixed
+	// __type; do not cross-wire with the EC2/ACM not-found codes above.
+	ErrorECSClusterNotFound                             = "ClusterNotFoundException"
+	ErrorECSInvalidParameter                            = "InvalidParameterException"
 	ErrorRetryableError                                 = "RetryableError"
 	ErrorRouteAlreadyExists                             = "RouteAlreadyExists"
 	ErrorRouteLimitExceeded                             = "RouteLimitExceeded"
@@ -894,6 +898,8 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
 	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
 	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
+	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "The specified cluster was not found. You can view your available clusters with ListClusters. Amazon ECS clusters are Region specific."},
+	ErrorECSInvalidParameter:                                   {HTTPCode: 400, Message: "The specified parameter is not valid. Review the available parameters for the API request."},
 	ErrorRetryableError:                                        {HTTPCode: 400, Message: "A request submitted by an AWS service on your behalf could not be completed. The requesting service might automatically retry the request."},
 	ErrorRouteAlreadyExists:                                    {HTTPCode: 409, Message: "A route for the specified CIDR block already exists in this route table."},
 	ErrorRouteLimitExceeded:                                    {HTTPCode: 400, Message: "You've reached the limit on the number of routes that you can add to a route table."},

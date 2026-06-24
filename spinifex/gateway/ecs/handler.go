@@ -3,9 +3,9 @@
 // (AmazonEC2ContainerServiceV20141113.<Action>), matching aws-sdk-go's
 // service/ecs request shape.
 //
-// The full v1 action namespace (ecs-v1.md §1) is registered as the API contract;
-// every action resolves to the shared NotImplemented stub until its real handler
-// lands in a later Phase 4 sprint.
+// The full v1 action namespace (ecs-v1.md §1) is registered as the API contract.
+// Cluster, task-definition, container-instance and task actions dispatch to the
+// daemon over NATS; the remaining actions resolve to the NotImplemented stub.
 package gateway_ecs
 
 import (
@@ -37,30 +37,30 @@ func NotImplemented(_ *nats.Conn, _ string, _ []byte) (any, error) {
 }
 
 // Actions is the authoritative ECS control-plane action namespace (ecs-v1.md §1).
-// Real implementations replace the NotImplemented value as each action lands; the
-// key set is the v1 API contract.
+// Wired actions point at their handler; unimplemented actions keep the
+// NotImplemented value. The key set is the v1 API contract.
 var Actions = map[string]Handler{
 	// Cluster. PutClusterCapacityProviders is a no-op stub in v1 (Q15).
-	"CreateCluster":               NotImplemented,
-	"DescribeClusters":            NotImplemented,
-	"ListClusters":                NotImplemented,
+	"CreateCluster":               CreateCluster,
+	"DescribeClusters":            DescribeClusters,
+	"ListClusters":                ListClusters,
 	"DeleteCluster":               NotImplemented,
 	"UpdateCluster":               NotImplemented,
 	"PutClusterCapacityProviders": NotImplemented,
 
 	// Task definition.
-	"RegisterTaskDefinition":     NotImplemented,
+	"RegisterTaskDefinition":     RegisterTaskDefinition,
 	"DeregisterTaskDefinition":   NotImplemented,
-	"DescribeTaskDefinition":     NotImplemented,
-	"ListTaskDefinitions":        NotImplemented,
+	"DescribeTaskDefinition":     DescribeTaskDefinition,
+	"ListTaskDefinitions":        ListTaskDefinitions,
 	"ListTaskDefinitionFamilies": NotImplemented,
 
-	// Task.
-	"RunTask":       NotImplemented,
+	// Task. StartTask/StopTask land with the 4f service controller + reaper.
+	"RunTask":       RunTask,
 	"StartTask":     NotImplemented,
 	"StopTask":      NotImplemented,
-	"DescribeTasks": NotImplemented,
-	"ListTasks":     NotImplemented,
+	"DescribeTasks": DescribeTasks,
+	"ListTasks":     ListTasks,
 
 	// Service. ListServicesByNamespace is a no-op stub in v1.
 	"CreateService":           NotImplemented,
@@ -71,10 +71,10 @@ var Actions = map[string]Handler{
 	"ListServicesByNamespace": NotImplemented,
 
 	// Container instance.
-	"RegisterContainerInstance":     NotImplemented,
+	"RegisterContainerInstance":     RegisterContainerInstance,
 	"DeregisterContainerInstance":   NotImplemented,
-	"DescribeContainerInstances":    NotImplemented,
-	"ListContainerInstances":        NotImplemented,
+	"DescribeContainerInstances":    DescribeContainerInstances,
+	"ListContainerInstances":        ListContainerInstances,
 	"UpdateContainerInstancesState": NotImplemented,
 
 	// Account settings (passthrough; no enforcement v1).

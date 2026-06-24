@@ -31,7 +31,7 @@ var _ ImagePuller = (*containerdPuller)(nil)
 // returns an error if it is unreachable — otherwise a dead socket would only
 // surface on the first pull, and the agent's boot-time "containerd unavailable"
 // log would never fire.
-func New(socket string) (ImagePuller, error) {
+func New(socket string) (Runtime, error) {
 	client, err := containerd.New(socket, containerd.WithDefaultNamespace(ecsNamespace))
 	if err != nil {
 		return nil, fmt.Errorf("connect containerd %s: %w", socket, err)

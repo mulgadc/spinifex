@@ -1,0 +1,149 @@
+package handlers_ecs
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+)
+
+// Lifecycle status constants matching the AWS ECS enums. Task statuses are
+// re-exported from the bus package so the scheduler and the wire payloads agree.
+const (
+	ClusterStatusActive = "ACTIVE"
+
+	InstanceStatusActive   = "ACTIVE"
+	InstanceStatusDraining = "DRAINING"
+
+	TaskDefStatusActive = "ACTIVE"
+
+	TaskStatusPending = bus.TaskStatusPending
+	TaskStatusRunning = bus.TaskStatusRunning
+	TaskStatusStopped = bus.TaskStatusStopped
+)
+
+// ARN builders for the ECS resource shapes (ecs-v1.md §1). Region + accountID
+// scope every ARN; the partition is fixed to "aws" to match the rest of the
+// stack.
+func ClusterARN(region, accountID, name string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:cluster/%s", region, accountID, name)
+}
+
+func TaskDefARN(region, accountID, family string, rev int) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s:%d", region, accountID, family, rev)
+}
+
+func TaskARN(region, accountID, cluster, taskID string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:task/%s/%s", region, accountID, cluster, taskID)
+}
+
+func ContainerInstanceARN(region, accountID, cluster, ciID string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:container-instance/%s/%s", region, accountID, cluster, ciID)
+}
+
+// ClusterRecord is the persisted cluster meta at ClusterMetaKey.
+type ClusterRecord struct {
+	Name      string            `json:"name"`
+	ARN       string            `json:"arn"`
+	Status    string            `json:"status"`
+	Tags      map[string]string `json:"tags,omitempty"`
+	CreatedAt time.Time         `json:"createdAt"`
+}
+
+// ContainerDef is the persisted subset of an ecs.ContainerDefinition needed to
+// pull and run a container (bridge mode v1).
+type ContainerDef struct {
+	Name         string            `json:"name"`
+	Image        string            `json:"image"`
+	CPU          int               `json:"cpu,omitempty"`
+	MemoryMiB    int               `json:"memoryMiB,omitempty"`
+	Essential    bool              `json:"essential"`
+	Command      []string          `json:"command,omitempty"`
+	Environment  map[string]string `json:"environment,omitempty"`
+	PortMappings []bus.PortMapping `json:"portMappings,omitempty"`
+}
+
+// TaskDefRecord is the persisted task definition revision at TaskDefRevKey.
+type TaskDefRecord struct {
+	Family       string         `json:"family"`
+	Revision     int            `json:"revision"`
+	ARN          string         `json:"arn"`
+	NetworkMode  string         `json:"networkMode,omitempty"`
+	CPU          string         `json:"cpu,omitempty"`
+	Memory       string         `json:"memory,omitempty"`
+	Containers   []ContainerDef `json:"containers"`
+	Status       string         `json:"status"`
+	RegisteredAt time.Time      `json:"registeredAt"`
+}
+
+// reservedCPU/reservedMemory sum the task definition's per-container reservations
+// used for bin-pack placement. A taskdef-level cpu/memory is not modelled in v1;
+// placement uses the container sums.
+func (t *TaskDefRecord) reservedCPU() int {
+	total := 0
+	for _, c := range t.Containers {
+		total += c.CPU
+	}
+	return total
+}
+
+func (t *TaskDefRecord) reservedMemory() int {
+	total := 0
+	for _, c := range t.Containers {
+		total += c.MemoryMiB
+	}
+	return total
+}
+
+// InstanceRecord is the persisted container-instance state at InstanceKey. The
+// scheduler writes it from the Layer-2 bus (register/heartbeat) and reserves
+// capacity by appending placed task IDs.
+type InstanceRecord struct {
+	InstanceID     string `json:"instanceId"`
+	ARN            string `json:"arn"`
+	Cluster        string `json:"cluster"`
+	AZ             string `json:"availabilityZone,omitempty"`
+	Hostname       string `json:"hostname,omitempty"`
+	Status         string `json:"status"`
+	TotalCPU       int    `json:"totalCpu"`
+	TotalMemoryMiB int    `json:"totalMemoryMiB"`
+	// ReservedCPU/ReservedMemoryMiB track capacity committed to placed tasks;
+	// placement increments them under a KV CAS and the task-state STOPPED path
+	// releases them. Remaining = Total - Reserved.
+	ReservedCPU       int       `json:"reservedCpu"`
+	ReservedMemoryMiB int       `json:"reservedMemoryMiB"`
+	AgentVersion      string    `json:"agentVersion,omitempty"`
+	PlacedTasks       []string  `json:"placedTasks,omitempty"`
+	RegisteredAt      time.Time `json:"registeredAt"`
+	LastSeen          time.Time `json:"lastSeen"`
+}
+
+// ContainerState is a container's last-reported status within a task record.
+type ContainerState struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	ContainerID string `json:"containerId,omitempty"`
+	ExitCode    *int   `json:"exitCode,omitempty"`
+}
+
+// TaskRecord is the persisted task state at TaskKey; source of truth for
+// DescribeTasks and the placement/capacity accounting.
+type TaskRecord struct {
+	TaskID               string           `json:"taskId"`
+	ARN                  string           `json:"arn"`
+	Cluster              string           `json:"cluster"`
+	TaskDefFamily        string           `json:"taskDefFamily"`
+	TaskDefRevision      int              `json:"taskDefRevision"`
+	TaskDefARN           string           `json:"taskDefArn"`
+	ContainerInstanceID  string           `json:"containerInstanceId,omitempty"`
+	ContainerInstanceARN string           `json:"containerInstanceArn,omitempty"`
+	DesiredStatus        string           `json:"desiredStatus"`
+	LastStatus           string           `json:"lastStatus"`
+	StoppedReason        string           `json:"stoppedReason,omitempty"`
+	ReservedCPU          int              `json:"reservedCpu"`
+	ReservedMemoryMiB    int              `json:"reservedMemoryMiB"`
+	Containers           []ContainerState `json:"containers,omitempty"`
+	CreatedAt            time.Time        `json:"createdAt"`
+	StartedAt            time.Time        `json:"startedAt,omitzero"`
+	StoppedAt            time.Time        `json:"stoppedAt,omitzero"`
+}

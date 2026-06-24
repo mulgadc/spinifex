@@ -692,8 +692,12 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 // only ca-certificates-bundle (no updater, no anchor dir) so it falls back to
 // appending the PEM to the static bundle. The install chain's exit code is
 // preserved past the cleanup rm so a failure surfaces instead of a false success.
+// The RHEL branch restorecon's only the trust-store paths it touched so the cert
+// is correctly labelled without the image-wide --no-selinux-relabel (below)
+// leaving an unlabelled bundle; restorecon is best-effort and never fails the bake.
 const caBakeRunCommand = `( { command -v update-ca-certificates >/dev/null && install -D -m644 /tmp/spinifex-ca.pem /usr/local/share/ca-certificates/spinifex.crt && update-ca-certificates; } || ` +
-	`{ command -v update-ca-trust >/dev/null && install -D -m644 /tmp/spinifex-ca.pem /etc/pki/ca-trust/source/anchors/spinifex.crt && update-ca-trust; } || ` +
+	`{ command -v update-ca-trust >/dev/null && install -D -m644 /tmp/spinifex-ca.pem /etc/pki/ca-trust/source/anchors/spinifex.crt && update-ca-trust && ` +
+	`{ command -v restorecon >/dev/null 2>&1 && restorecon -RF /etc/pki/ca-trust/source/anchors/spinifex.crt /etc/pki/ca-trust/extracted >/dev/null 2>&1; true; }; } || ` +
 	`{ cat /tmp/spinifex-ca.pem >> /etc/ssl/certs/ca-certificates.crt; } ); ` +
 	`rc=$?; rm -f /tmp/spinifex-ca.pem; exit $rc`
 
@@ -703,8 +707,12 @@ const caBakeTimeout = 10 * time.Minute
 
 // caBakeCmd builds the virt-customize invocation that uploads the deployment CA
 // into the disk image at imagePath and installs it into the guest trust store.
+// --no-selinux-relabel stops virt-customize flagging the image for a first-boot
+// SELinux autorelabel: that relabel+reboot corrupts XFS roots (RHEL/Rocky) on the
+// reboot, so the run-command relabels only the touched trust paths instead.
 func caBakeCmd(ctx context.Context, imagePath, caCertPath string) *exec.Cmd {
 	return exec.CommandContext(ctx, "virt-customize", "-a", imagePath,
+		"--no-selinux-relabel",
 		"--upload", caCertPath+":/tmp/spinifex-ca.pem",
 		"--run-command", caBakeRunCommand)
 }

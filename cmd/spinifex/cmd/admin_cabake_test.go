@@ -23,12 +23,18 @@ func TestCABakeCmd_Args(t *testing.T) {
 	assert.Contains(t, args, "/data/config/ca.pem:/tmp/spinifex-ca.pem")
 	assert.Contains(t, args, "--run-command")
 
+	// --no-selinux-relabel stops virt-customize forcing a first-boot autorelabel,
+	// whose relabel+reboot corrupts XFS roots on RHEL/Rocky.
+	assert.Contains(t, args, "--no-selinux-relabel")
+
 	// The run-command covers Debian/Ubuntu (update-ca-certificates), RHEL/Rocky
 	// (update-ca-trust), and the stock-Alpine fallback that appends to the static
-	// ca-certificates bundle when no updater is present.
+	// ca-certificates bundle when no updater is present. The RHEL branch relabels
+	// only the touched trust paths so the cert is labelled without a full relabel.
 	joined := strings.Join(args, " ")
 	assert.Contains(t, joined, "update-ca-certificates")
 	assert.Contains(t, joined, "update-ca-trust")
+	assert.Contains(t, joined, "restorecon")
 	assert.Contains(t, joined, "/etc/ssl/certs/ca-certificates.crt")
 }
 

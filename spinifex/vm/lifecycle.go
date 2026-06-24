@@ -330,6 +330,9 @@ func (m *Manager) startQEMU(instance *VM) error {
 				Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 			})
 			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC))
+			if err := m.appendMgmtNetcfgFwCfg(instance); err != nil {
+				return fmt.Errorf("attach mgmt netcfg: %w", err)
+			}
 			slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 		}
 
@@ -725,6 +728,27 @@ func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
 // EBSHotPlugSlotCount is the fixed number of PCIe root ports pre-allocated for
 // EBS hot-plug, matching the /dev/sd[f-p] range. Cannot grow without QEMU restart.
 const EBSHotPlugSlotCount = 11
+
+// appendMgmtNetcfgFwCfg attaches a one-NIC fw_cfg netcfg blob describing the
+// management interface so a BootAMI system VM (e.g. an EKS control-plane node)
+// can bring mgmt0 up with its static IP. These guests boot from the Ec2 IMDS
+// datasource, which renders only the primary ENI; the mgmt NIC lives on br-mgmt
+// with no DHCP, so its address is delivered out-of-band via fw_cfg and applied
+// by the system image's mgmt-net init. The blob key format matches
+// daemon.buildNetcfgBlob and build/microvm/init.sh; mgmt0 is never the default
+// route (NIC0_DEFAULT=0) — that comes from the primary ENI.
+func (m *Manager) appendMgmtNetcfgFwCfg(instance *VM) error {
+	if instance.MgmtMAC == "" || instance.MgmtIP == "" {
+		return nil
+	}
+	blob := fmt.Sprintf("NIC0_MAC=%s\nNIC0_CIDR=%s/24\nNIC0_DEFAULT=0\n", instance.MgmtMAC, instance.MgmtIP)
+	path := filepath.Join(utils.RuntimeDir(), fmt.Sprintf("fwcfg-%s-netcfg.tmp", instance.ID))
+	if err := os.WriteFile(path, []byte(blob), 0o600); err != nil {
+		return fmt.Errorf("write mgmt netcfg blob: %w", err)
+	}
+	instance.Config.FwCfg = append(instance.Config.FwCfg, FwCfgEntry{Name: "opt/spinifex/netcfg", File: path})
+	return nil
+}
 
 // ec2SMBIOSUUID derives a deterministic, "ec2"-prefixed system UUID from the
 // instance ID so cloud-init's Ec2 datasource activates (stable across reboot).

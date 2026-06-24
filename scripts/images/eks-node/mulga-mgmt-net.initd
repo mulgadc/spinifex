@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# mulga-mgmt-net — boot oneshot that configures the management NIC from the
+# fw_cfg netcfg blob before K3s starts. BootAMI system VMs (EKS control plane)
+# reach the AWS gateway over mgmt0; the Ec2 datasource only renders the primary
+# ENI, so mgmt0's static address is applied here from fw_cfg. Role-agnostic and
+# enabled on every node — a no-op when no mgmt netcfg blob is present.
+
+description="Configure the management NIC from fw_cfg netcfg"
+
+depend() {
+    before k3s k3s-agent
+}
+
+start() {
+    ebegin "Configuring management NIC from fw_cfg netcfg"
+    /usr/local/sbin/mulga-mgmt-net
+    eend $?
+}

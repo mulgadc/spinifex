@@ -11,7 +11,7 @@ RemainAfterExit=yes
 ExecStart=/bin/true
 # ExecStop only runs when the target/host goes down, not on a single-service
 # restart — so a daemon restart still leaves guests running (DDIL).
-ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120
+ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s
 TimeoutStopSec=180
 
 [Install]

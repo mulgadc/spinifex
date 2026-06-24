@@ -164,7 +164,7 @@ func TestGracefulDrainOrdering(t *testing.T) {
 			t.Errorf("spinifex-shutdown.service After= must include %s so the drain stops before it", dep)
 		}
 	}
-	if !hasDirective(drain, "ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120") {
+	if !hasDirective(drain, "ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s") {
 		t.Error("spinifex-shutdown.service must drain the local node on stop via ExecStop")
 	}
 

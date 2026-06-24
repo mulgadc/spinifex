@@ -546,21 +546,6 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		}}
 	}
 
-	// Flannel re-home (A′): a worker-VPC SG for the per-CP-server overlay ENIs,
-	// created before the CP VMs so each overlay ENI lands in it. The nodegroup SG
-	// rules (added at nodegroup launch) authorize VXLAN/kubelet against it. Persist
-	// the ID immediately so teardown reclaims the SG on any later failure.
-	overlaySG, err := EnsureControlPlaneOverlaySG(s.deps.VPCSG, accountID, name, lc.vpcID)
-	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure control-plane overlay SG", err)
-		return
-	}
-	meta.ControlPlaneOverlaySGID = overlaySG
-	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, meta, "persist control-plane overlay SG", err)
-		return
-	}
-
 	// The cluster NLB lives in the CP VPC public subnet. publicAccess selects the
 	// scheme (internet-facing external-pool IP vs internal VPC IP); the CP VPC IGW
 	// (attached by EnsureClusterCPVPC) makes an internet-facing front-end IP
@@ -584,6 +569,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	}
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
+	meta.KonnTargetGroupArn = nlb.KonnTargetGroupArn
 
 	// Persist NLB ARNs early so DeleteCluster can reclaim them on any later failure.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
@@ -623,29 +609,26 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	elbSubnets := dedupSubnetsByAZ(s.deps.VPCSubnet, accountID, lc.subnetIDs)
 
 	cpNodes, spreadGroup, err := s.placeControlPlane(sysAcct, name, K3sServerInput{
-		AccountID:          sysAcct,
-		ClusterAccountID:   accountID,
-		ClusterName:        name,
-		Region:             region,
-		SubnetID:           cpRefs.PrivateSubnetIDs[0],
-		VpcID:              meta.ResourcesVpcConfig.VpcId,
-		ELBSubnetIDs:       elbSubnets,
-		ControlPlaneSGID:   cpSG,
-		NLBDNS:             nlb.DNSName,
-		EndpointIP:         nlb.FrontendIP,
-		PrivateEndpointIP:  meta.PrivateEndpointIP,
-		OIDCIssuer:         oidcIssuer,
-		OIDCPrivateKeyPEM:  privPEM,
-		OIDCPublicKeyPEM:   pubPEM,
-		GatewayURL:         s.deps.SystemGatewayURL,
-		AddonGatewayURL:    s.deps.GatewayBaseURL,
-		AccessKey:          s.deps.SystemAccessKey,
-		SecretKey:          s.deps.SystemSecretKey,
-		GatewayCACert:      s.deps.GatewayCACert,
-		JoinToken:          joinToken,
-		WorkerSubnetID:     lc.subnetIDs[0],
-		WorkerVPCAccountID: accountID,
-		OverlaySGID:        overlaySG,
+		AccountID:         sysAcct,
+		ClusterAccountID:  accountID,
+		ClusterName:       name,
+		Region:            region,
+		SubnetID:          cpRefs.PrivateSubnetIDs[0],
+		VpcID:             meta.ResourcesVpcConfig.VpcId,
+		ELBSubnetIDs:      elbSubnets,
+		ControlPlaneSGID:  cpSG,
+		NLBDNS:            nlb.DNSName,
+		EndpointIP:        nlb.FrontendIP,
+		PrivateEndpointIP: meta.PrivateEndpointIP,
+		OIDCIssuer:        oidcIssuer,
+		OIDCPrivateKeyPEM: privPEM,
+		OIDCPublicKeyPEM:  pubPEM,
+		GatewayURL:        s.deps.SystemGatewayURL,
+		AddonGatewayURL:   s.deps.GatewayBaseURL,
+		AccessKey:         s.deps.SystemAccessKey,
+		SecretKey:         s.deps.SystemSecretKey,
+		GatewayCACert:     s.deps.GatewayCACert,
+		JoinToken:         joinToken,
 	})
 	if err != nil {
 		if errors.Is(err, ErrEKSServerAMINotFound) {
@@ -683,8 +666,14 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	for _, n := range cpNodes {
 		cpENIIPs = append(cpENIIPs, n.ENIIP)
 	}
-	if err := RegisterClusterTargets(s.deps.NLB, sysAcct, nlb.TargetGroupArn, cpENIIPs); err != nil {
+	if err := RegisterClusterTargets(s.deps.NLB, sysAcct, nlb.TargetGroupArn, cpENIIPs, k3sAPIServerPort); err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, meta, "register NLB targets", err)
+		return
+	}
+	// Register the same CP ENIs on the konnectivity TG (:8132): worker agents dial
+	// the NLB private endpoint and the NLB fans them to every apiserver's konn-server.
+	if err := RegisterClusterTargets(s.deps.NLB, sysAcct, nlb.KonnTargetGroupArn, cpENIIPs, konnectivityAgentPort); err != nil {
+		s.failClusterLaunch(acctKV, name, accountID, meta, "register konnectivity NLB targets", err)
 		return
 	}
 
@@ -968,7 +957,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		// Deregister is best-effort: DeleteClusterNLB tears down the whole NLB
 		// + target group, so a stale target registration cannot leak past it.
 		if meta.NLBTargetGroupArn != "" && meta.ControlPlaneENIIP != "" {
-			if err := DeregisterClusterTarget(s.deps.NLB, infraAcct, meta.NLBTargetGroupArn, meta.ControlPlaneENIIP); err != nil {
+			if err := DeregisterClusterTarget(s.deps.NLB, infraAcct, meta.NLBTargetGroupArn, meta.ControlPlaneENIIP, k3sAPIServerPort); err != nil {
 				slog.Warn("purgeClusterInfra: deregister NLB target failed", "cluster", name, "err", err)
 			}
 		}
@@ -993,15 +982,6 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		if err := TerminateK3sServerVM(s.deps.VPCK3s, s.deps.Instance,
 			infraAcct, cp.InstanceID, cp.ENIID); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("terminate K3s VM %s: %w", cp.InstanceID, err))
-		}
-		// Flannel re-home (A′): the overlay ENI lives in the customer VPC under the
-		// customer account (an extra NIC, never reclaimed by the VM-terminate
-		// cascade). Detach-then-delete so a leftover does not pin the customer VPC
-		// undeletable. Best-effort detach; the delete is the authoritative gate.
-		if cp.OverlayENIID != "" {
-			if err := detachAndDeleteServerENI(s.deps.VPCK3s, accountID, cp.OverlayENIID); err != nil {
-				teardownErrs = append(teardownErrs, fmt.Errorf("delete overlay ENI %s: %w", cp.OverlayENIID, err))
-			}
 		}
 	}
 
@@ -1067,13 +1047,6 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 			if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
 				teardownErrs = append(teardownErrs, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
 			}
-			// Flannel re-home (A′): reclaim the worker-VPC overlay SG. Must follow the
-			// customer-VPC cluster SG delete above — the nodegroup SG carries an ingress
-			// rule sourced from the overlay SG, so AWS refuses to delete the overlay SG
-			// until the nodegroup SG (and its referencing rule) is gone.
-			if err := DeleteControlPlaneOverlaySG(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
-				slog.Warn("purgeClusterInfra: delete control-plane overlay SG failed", "cluster", name, "err", err)
-			}
 		}
 		if err := DeleteClusterCPVPC(s.cpVPCDeps(), infraAcct, name); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", err))
@@ -1084,11 +1057,6 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		// intact). IGW delete must precede any VPC delete to avoid DependencyViolation.
 		if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", err))
-		}
-		// Flannel re-home (A′): reclaim the overlay SG after the nodegroup SG that
-		// references it is gone (see new-topology branch above for the ordering).
-		if err := DeleteControlPlaneOverlaySG(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
-			slog.Warn("purgeClusterInfra: delete control-plane overlay SG failed", "cluster", name, "err", err)
 		}
 		if s.deps.IGW != nil {
 			if err := DeleteClusterIGW(s.deps.IGW, accountID, meta.ResourcesVpcConfig.VpcId, name); err != nil {

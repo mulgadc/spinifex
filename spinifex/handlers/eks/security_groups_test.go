@@ -187,64 +187,6 @@ func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSe
 	return &ec2.AuthorizeSecurityGroupIngressOutput{}, nil
 }
 
-func TestEnsureControlPlaneOverlaySGRules_AuthorizesVXLANAndKubelet(t *testing.T) {
-	sgp := newFakeSGProvisioner()
-
-	require.NoError(t, EnsureControlPlaneOverlaySGRules(sgp, "111122223333", "sg-overlay", "sg-ng"))
-	require.Len(t, sgp.authorizeCalls, 3, "VXLAN both ways + kubelet overlay->node")
-
-	type key struct {
-		target string
-		source string
-		proto  string
-		port   int64
-	}
-	got := map[key]bool{}
-	for _, in := range sgp.authorizeCalls {
-		require.Len(t, in.IpPermissions, 1)
-		p := in.IpPermissions[0]
-		require.Len(t, p.UserIdGroupPairs, 1)
-		got[key{
-			target: aws.StringValue(in.GroupId),
-			source: aws.StringValue(p.UserIdGroupPairs[0].GroupId),
-			proto:  aws.StringValue(p.IpProtocol),
-			port:   aws.Int64Value(p.FromPort),
-		}] = true
-	}
-	assert.True(t, got[key{"sg-ng", "sg-overlay", "udp", 8472}], "CP overlay -> node VXLAN")
-	assert.True(t, got[key{"sg-overlay", "sg-ng", "udp", 8472}], "node -> CP overlay VXLAN")
-	assert.True(t, got[key{"sg-ng", "sg-overlay", "tcp", 10250}], "apiserver -> kubelet via overlay")
-}
-
-func TestEnsureControlPlaneOverlaySG_AuthorizesSelfMeshVXLAN(t *testing.T) {
-	sgp := newFakeSGProvisioner()
-	sgp.createIDs = []string{"sg-overlay"}
-
-	id, err := EnsureControlPlaneOverlaySG(sgp, "111122223333", "toc", "vpc-aaa")
-	require.NoError(t, err)
-	require.Equal(t, "sg-overlay", id)
-
-	// The CP flannel mesh rule must be authorized at SG creation (cluster launch),
-	// not at nodegroup time, so the CP nodes can go Ready before ACTIVE.
-	require.Len(t, sgp.authorizeCalls, 1, "self-referencing VXLAN mesh rule")
-	in := sgp.authorizeCalls[0]
-	assert.Equal(t, "sg-overlay", aws.StringValue(in.GroupId))
-	require.Len(t, in.IpPermissions, 1)
-	p := in.IpPermissions[0]
-	assert.Equal(t, "udp", aws.StringValue(p.IpProtocol))
-	assert.Equal(t, int64(8472), aws.Int64Value(p.FromPort))
-	require.Len(t, p.UserIdGroupPairs, 1)
-	assert.Equal(t, "sg-overlay", aws.StringValue(p.UserIdGroupPairs[0].GroupId))
-}
-
-func TestEnsureControlPlaneOverlaySGRules_EmptyInputsRejected(t *testing.T) {
-	sgp := newFakeSGProvisioner()
-
-	require.Error(t, EnsureControlPlaneOverlaySGRules(sgp, "111122223333", "", "sg-ng"))
-	require.Error(t, EnsureControlPlaneOverlaySGRules(sgp, "111122223333", "sg-overlay", ""))
-	assert.Empty(t, sgp.authorizeCalls)
-}
-
 func TestEnsureClusterSGs_EmptyInputsRejected(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 
@@ -468,16 +410,21 @@ func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) 
 	err := EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
 	require.NoError(t, err)
 
-	require.Len(t, sgp.authorizeCalls, 1)
-	in := sgp.authorizeCalls[0]
-	assert.Equal(t, "sg-cp-001", aws.StringValue(in.GroupId))
-	require.Len(t, in.IpPermissions, 1)
-	perm := in.IpPermissions[0]
-	assert.Equal(t, "tcp", aws.StringValue(perm.IpProtocol))
-	assert.Equal(t, k3sAPIServerPort, aws.Int64Value(perm.FromPort))
-	assert.Equal(t, k3sAPIServerPort, aws.Int64Value(perm.ToPort))
-	require.Len(t, perm.IpRanges, 1)
-	assert.Equal(t, "10.0.0.0/16", aws.StringValue(perm.IpRanges[0].CidrIp))
+	// NLB → apiserver (:6443) and NLB → konnectivity-server (:8132).
+	require.Len(t, sgp.authorizeCalls, 2)
+	ports := map[int64]bool{}
+	for _, in := range sgp.authorizeCalls {
+		assert.Equal(t, "sg-cp-001", aws.StringValue(in.GroupId))
+		require.Len(t, in.IpPermissions, 1)
+		perm := in.IpPermissions[0]
+		assert.Equal(t, "tcp", aws.StringValue(perm.IpProtocol))
+		assert.Equal(t, aws.Int64Value(perm.FromPort), aws.Int64Value(perm.ToPort))
+		require.Len(t, perm.IpRanges, 1)
+		assert.Equal(t, "10.0.0.0/16", aws.StringValue(perm.IpRanges[0].CidrIp))
+		ports[aws.Int64Value(perm.FromPort)] = true
+	}
+	assert.True(t, ports[k3sAPIServerPort], "admits :6443")
+	assert.True(t, ports[konnectivityAgentPort], "admits :8132")
 }
 
 func TestEnsureControlPlaneIngress_EmptyInputsRejected(t *testing.T) {

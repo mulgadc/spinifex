@@ -130,6 +130,7 @@ func (s *EKSServiceImpl) placeControlPlane(accountID, clusterName string, tmpl K
 func (s *EKSServiceImpl) launchSingleControlPlane(tmpl K3sServerInput) ([]ControlPlaneNode, string, error) {
 	in := tmpl
 	in.TargetNodeID = ""
+	in.KonnServerCount = 1
 	out, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, in)
 	if err != nil {
 		return nil, "", err
@@ -149,6 +150,7 @@ type cpLaunchResult struct {
 func (s *EKSServiceImpl) launchControlPlaneSpread(tmpl K3sServerInput, nodes []string) []cpLaunchResult {
 	results := make([]cpLaunchResult, len(nodes))
 
+	tmpl.KonnServerCount = len(nodes)
 	first := tmpl
 	first.TargetNodeID = nodes[0]
 	out, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, first)
@@ -297,13 +299,11 @@ func haSpreadGroupName(accountID, clusterName string) string {
 
 func controlPlaneNode(nodeID string, out *K3sServerOutput) ControlPlaneNode {
 	return ControlPlaneNode{
-		NodeID:       nodeID,
-		InstanceID:   out.InstanceID,
-		ENIID:        out.ENIID,
-		ENIIP:        out.ENIIP,
-		MgmtIP:       out.MgmtIP,
-		OverlayENIID: out.OverlayENIID,
-		OverlayENIIP: out.OverlayENIIP,
+		NodeID:     nodeID,
+		InstanceID: out.InstanceID,
+		ENIID:      out.ENIID,
+		ENIIP:      out.ENIIP,
+		MgmtIP:     out.MgmtIP,
 	}
 }
 

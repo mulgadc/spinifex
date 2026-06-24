@@ -378,67 +378,45 @@ func TestBuildK3sUserData_AdvertiseAddressFallsBackToEndpoint(t *testing.T) {
 	assert.Contains(t, ud, "advertise-address: 203.0.113.9")
 }
 
-func TestBuildK3sUserData_EgressSelectorClusterMode(t *testing.T) {
+func TestBuildK3sUserData_EgressSelectorDisabledWithKonnConfig(t *testing.T) {
 	ud := buildK3sUserData(validK3sInput())
-	assert.Contains(t, ud, "egress-selector-mode: cluster",
-		"managed-CP apiserver must tunnel pod/service traffic (webhooks) through the agent")
+	assert.Contains(t, ud, "egress-selector-mode: disabled",
+		"k3s remotedialer is off; the apiserver egress rides upstream konnectivity")
+	assert.NotContains(t, ud, "egress-selector-mode: cluster")
+	assert.Contains(t, ud, "egress-selector-config-file="+k3sEgressSelectorConfigPath,
+		"apiserver cluster egress must point at the konnectivity UDS")
+	assert.Contains(t, ud, "udsName: "+konnectivityUDSPath,
+		"the EgressSelectorConfiguration file routes the cluster egress to the konn socket")
 }
 
-func TestBuildK3sUserData_OverlayDisablesEgressSelectorAndSeedsMAC(t *testing.T) {
+func TestBuildK3sUserData_KonnectivityEnv(t *testing.T) {
 	in := validK3sInput()
-	in.OverlayMAC = "0a:bb:cc:dd:ee:ff"
-	in.NodeIP = "10.255.21.4"
+	in.PrivateEndpointIP = "10.32.100.4"
+	in.EndpointIP = "203.0.113.9"
+	in.KonnServerCount = 3
 
 	ud := buildK3sUserData(in)
-	assert.Contains(t, ud, "egress-selector-mode: disabled",
-		"with the overlay NIC the apiserver shares the worker subnet and reaches pods directly")
-	assert.NotContains(t, ud, "egress-selector-mode: cluster")
-	assert.Contains(t, ud, "EKS_OVERLAY_MAC=0a:bb:cc:dd:ee:ff",
-		"appliance resolves --flannel-iface from this MAC")
-	assert.Contains(t, ud, "node-ip: 10.255.21.4",
-		"node-ip pinned to the CP-VPC primary so the control plane stays off the overlay subnet")
+	assert.Contains(t, ud, "EKS_KONNECTIVITY_HOST=10.32.100.4",
+		"agents dial the private-endpoint IP to reach the konnectivity-server")
+	assert.Contains(t, ud, "EKS_KONNECTIVITY_SERVER_COUNT=3",
+		"agents must learn the apiserver replica count to tunnel to every replica")
+	assert.Contains(t, ud, "EKS_KONNECTIVITY_SANS=10.32.100.4,203.0.113.9,"+in.NLBDNS)
 }
 
-func TestLaunchK3sServerVM_OverlayENIThreadedOnWorkerSubnet(t *testing.T) {
-	vpc := &fakeK3sVPC{createOut: &ec2.CreateNetworkInterfaceOutput{
-		NetworkInterface: &ec2.NetworkInterface{
-			NetworkInterfaceId: aws.String("eni-ovl1"),
-			PrivateIpAddress:   aws.String("10.32.100.20"),
-			MacAddress:         aws.String("0a:bb:cc:dd:ee:ff"),
-		},
-	}}
-	inst, ami := &fakeK3sInst{}, &fakeK3sAMI{}
+func TestBuildK3sUserData_KonnServerCountDefaultsToOne(t *testing.T) {
 	in := validK3sInput()
-	in.WorkerSubnetID = "subnet-worker"
-	in.WorkerVPCAccountID = "111122223333"
-	in.OverlaySGID = "sg-overlay"
-
-	out, err := LaunchK3sServerVM(vpc, inst, ami, in)
-	require.NoError(t, err)
-	assert.Equal(t, "eni-ovl1", out.OverlayENIID)
-	assert.Equal(t, "10.32.100.20", out.OverlayENIIP)
-
-	require.Len(t, vpc.createCalls, 2, "primary CP ENI + worker-VPC overlay ENI")
-	ovl := vpc.createCalls[1]
-	assert.Equal(t, "subnet-worker", aws.StringValue(ovl.SubnetId))
-	assert.Equal(t, []string{"sg-overlay"}, aws.StringValueSlice(ovl.Groups))
-
-	require.Len(t, inst.launchCalls, 1)
-	require.Len(t, inst.launchCalls[0].ExtraENIs, 1, "overlay ENI threaded as a second NIC")
-	extra := inst.launchCalls[0].ExtraENIs[0]
-	assert.Equal(t, "eni-ovl1", extra.ENIID)
-	assert.Equal(t, "0a:bb:cc:dd:ee:ff", extra.ENIMac)
-	assert.Equal(t, "111122223333", extra.AccountID, "overlay ENI is cross-account (customer VPC)")
-	assert.Contains(t, inst.launchCalls[0].UserData, "egress-selector-mode: disabled")
+	in.KonnServerCount = 0
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "EKS_KONNECTIVITY_SERVER_COUNT=1",
+		"a zero/unset count means a single apiserver")
 }
 
-func TestLaunchK3sServerVM_NoOverlayWhenWorkerSubnetEmpty(t *testing.T) {
+func TestLaunchK3sServerVM_SingleControlPlaneENI(t *testing.T) {
 	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
 
-	out, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
 	require.NoError(t, err)
-	assert.Empty(t, out.OverlayENIID)
-	require.Len(t, vpc.createCalls, 1, "only the primary CP ENI when no worker subnet")
+	require.Len(t, vpc.createCalls, 1, "only the primary CP ENI; konnectivity needs no extra NIC")
 	require.Len(t, inst.launchCalls, 1)
 	assert.Empty(t, inst.launchCalls[0].ExtraENIs)
 }

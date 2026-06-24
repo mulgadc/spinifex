@@ -38,10 +38,9 @@ const clusterEKSAccountTagKey = "spinifex:eks-cluster-account"
 const clusterEKSNodegroupTagKey = "spinifex:eks-nodegroup"
 
 const (
-	clusterEKSRoleControlPlane        = "control-plane"
-	clusterEKSRoleNodegroup           = "nodegroup"
-	clusterEKSRolePrivateEndpoint     = "private-endpoint"
-	clusterEKSRoleControlPlaneOverlay = "control-plane-overlay"
+	clusterEKSRoleControlPlane    = "control-plane"
+	clusterEKSRoleNodegroup       = "nodegroup"
+	clusterEKSRolePrivateEndpoint = "private-endpoint"
 )
 
 // ClusterPrivateEndpointSGName returns the deterministic customer-VPC SG name for
@@ -53,12 +52,6 @@ func ClusterPrivateEndpointSGName(clusterName string) string {
 // ClusterControlPlaneSGName returns the deterministic control-plane SG name for a cluster.
 func ClusterControlPlaneSGName(clusterName string) string {
 	return fmt.Sprintf("eks-cluster-%s-control-plane-sg", clusterName)
-}
-
-// ClusterControlPlaneOverlaySGName returns the deterministic worker-VPC SG name for
-// the cluster's per-CP-server overlay ENIs (the flannel re-home NICs).
-func ClusterControlPlaneOverlaySGName(clusterName string) string {
-	return fmt.Sprintf("eks-cluster-%s-control-plane-overlay-sg", clusterName)
 }
 
 // ClusterNodegroupSGName returns the deterministic SG name used for the
@@ -253,7 +246,9 @@ func EnsurePrivateEndpointSG(sgp sgProvisioner, accountID, clusterName, vpcID, v
 		return "", err
 	}
 
-	for _, port := range []int64{clusterNLBListenPort, k3sAPIServerPort} {
+	// :443/:6443 carry kubectl/SDK + the in-cluster `kubernetes` Endpoints; :8132
+	// carries the worker konnectivity-agents' tunnel dial to the CP servers.
+	for _, port := range []int64{clusterNLBListenPort, k3sAPIServerPort, konnectivityAgentPort} {
 		perm := &ec2.IpPermission{
 			IpProtocol: aws.String("tcp"),
 			FromPort:   aws.Int64(port),
@@ -375,120 +370,10 @@ func EnsureNodegroupSGRules(sgp sgProvisioner, accountID, clusterName, cpSGID, n
 	return nil
 }
 
-// EnsureControlPlaneOverlaySG creates (or reuses) the worker-VPC SG for the CP
-// servers' overlay ENIs (the flannel re-home NICs). Rules are authorized against
-// the nodegroup SG by EnsureControlPlaneOverlaySGRules once that SG exists.
-// Idempotent: lookup-or-create by deterministic name.
-func EnsureControlPlaneOverlaySG(sgp sgProvisioner, accountID, clusterName, vpcID string) (string, error) {
-	if clusterName == "" {
-		return "", errors.New("eks: EnsureControlPlaneOverlaySG empty cluster name")
-	}
-	if vpcID == "" {
-		return "", errors.New("eks: EnsureControlPlaneOverlaySG empty vpc id")
-	}
-	sgID, err := ensureClusterSG(sgp, accountID, vpcID, clusterName,
-		ClusterControlPlaneOverlaySGName(clusterName),
-		fmt.Sprintf("EKS control-plane overlay SG for cluster %s", clusterName),
-		clusterEKSRoleControlPlaneOverlay)
-	if err != nil {
-		return "", err
-	}
-
-	// The 3 CP servers' mutual flannel VXLAN rides this overlay subnet (flannel
-	// re-home), so the SG must admit itself on 8472/udp. This is authorized at SG
-	// creation (cluster launch) — not with the nodegroup rules — because the CP
-	// flannel mesh must form for the CP nodes to go Ready, which gates the cluster
-	// reaching ACTIVE, which in turn gates nodegroup creation.
-	perm := &ec2.IpPermission{
-		IpProtocol: aws.String("udp"),
-		FromPort:   aws.Int64(8472),
-		ToPort:     aws.Int64(8472),
-		UserIdGroupPairs: []*ec2.UserIdGroupPair{{
-			GroupId:     aws.String(sgID),
-			Description: aws.String("EKS flannel VXLAN control-plane overlay mesh"),
-		}},
-	}
-	_, err = sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-		GroupId:       aws.String(sgID),
-		IpPermissions: []*ec2.IpPermission{perm},
-	}, accountID)
-	if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
-		return "", fmt.Errorf("authorize overlay mesh VXLAN ingress on %s: %w", sgID, err)
-	}
-	return sgID, nil
-}
-
-// EnsureControlPlaneOverlaySGRules authorizes the flannel re-home datapath between
-// the CP overlay SG and the nodegroup SG (both in the worker VPC): VXLAN 8472/udp
-// both ways (apiserver<->pod overlay) and kubelet 10250/tcp overlay->node
-// (egress-selector-mode disabled dials kubelet directly). Idempotent.
-func EnsureControlPlaneOverlaySGRules(sgp sgProvisioner, accountID, overlaySGID, ngSGID string) error {
-	if overlaySGID == "" || ngSGID == "" {
-		return errors.New("eks: EnsureControlPlaneOverlaySGRules empty SG id")
-	}
-
-	type rule struct {
-		targetSG string
-		sourceSG string
-		proto    string
-		from     int64
-		to       int64
-		desc     string
-	}
-	rules := []rule{
-		{ngSGID, overlaySGID, "udp", 8472, 8472, "EKS flannel VXLAN control-plane overlay to node"},
-		{overlaySGID, ngSGID, "udp", 8472, 8472, "EKS flannel VXLAN node to control-plane overlay"},
-		{ngSGID, overlaySGID, "tcp", 10250, 10250, "EKS kubelet control-plane overlay to node"},
-	}
-
-	for _, r := range rules {
-		perm := &ec2.IpPermission{
-			IpProtocol: aws.String(r.proto),
-			FromPort:   aws.Int64(r.from),
-			ToPort:     aws.Int64(r.to),
-			UserIdGroupPairs: []*ec2.UserIdGroupPair{{
-				GroupId:     aws.String(r.sourceSG),
-				Description: aws.String(r.desc),
-			}},
-		}
-		_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-			GroupId:       aws.String(r.targetSG),
-			IpPermissions: []*ec2.IpPermission{perm},
-		}, accountID)
-		if err != nil {
-			if awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
-				continue
-			}
-			return fmt.Errorf("authorize %s ingress on %s: %w", r.desc, r.targetSG, err)
-		}
-	}
-	return nil
-}
-
-// DeleteControlPlaneOverlaySG removes the cluster's worker-VPC overlay SG. Missing
-// SG is a no-op. The overlay ENIs must be deleted first (they reference this SG).
-func DeleteControlPlaneOverlaySG(sgp sgProvisioner, accountID, clusterName, vpcID string) error {
-	if clusterName == "" {
-		return errors.New("eks: DeleteControlPlaneOverlaySG empty cluster name")
-	}
-	if vpcID == "" {
-		return errors.New("eks: DeleteControlPlaneOverlaySG empty vpc id")
-	}
-	id, err := lookupSGByName(sgp, accountID, vpcID, ClusterControlPlaneOverlaySGName(clusterName))
-	if err != nil {
-		return err
-	}
-	if id == "" {
-		return nil
-	}
-	if _, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}, accountID); err != nil && !awserrors.IsNotFound(err) {
-		return fmt.Errorf("delete control-plane overlay SG %s: %w", id, err)
-	}
-	return nil
-}
-
-// EnsureControlPlaneIngress admits the NLB→apiserver hop from the VPC CIDR on k3sAPIServerPort.
-// Public access is gated separately at the NLB front-end. Idempotent.
+// EnsureControlPlaneIngress admits the NLB→CP hops from the VPC CIDR: the
+// apiserver (k3sAPIServerPort) and the konnectivity-server agent port
+// (konnectivityAgentPort). Public access is gated separately at the NLB
+// front-end. Idempotent.
 func EnsureControlPlaneIngress(sgp sgProvisioner, accountID, cpSGID, vpcCIDR string) error {
 	if cpSGID == "" {
 		return errors.New("eks: EnsureControlPlaneIngress empty control-plane SG id")
@@ -497,21 +382,29 @@ func EnsureControlPlaneIngress(sgp sgProvisioner, accountID, cpSGID, vpcCIDR str
 		return errors.New("eks: EnsureControlPlaneIngress empty vpc cidr")
 	}
 
-	perm := &ec2.IpPermission{
-		IpProtocol: aws.String("tcp"),
-		FromPort:   aws.Int64(k3sAPIServerPort),
-		ToPort:     aws.Int64(k3sAPIServerPort),
-		IpRanges: []*ec2.IpRange{{
-			CidrIp:      aws.String(vpcCIDR),
-			Description: aws.String("EKS NLB to apiserver"),
-		}},
-	}
-	_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-		GroupId:       aws.String(cpSGID),
-		IpPermissions: []*ec2.IpPermission{perm},
-	}, accountID)
-	if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
-		return fmt.Errorf("authorize control-plane apiserver ingress on %s: %w", cpSGID, err)
+	for _, p := range []struct {
+		port int64
+		desc string
+	}{
+		{k3sAPIServerPort, "EKS NLB to apiserver"},
+		{konnectivityAgentPort, "EKS NLB to konnectivity-server"},
+	} {
+		perm := &ec2.IpPermission{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(p.port),
+			ToPort:     aws.Int64(p.port),
+			IpRanges: []*ec2.IpRange{{
+				CidrIp:      aws.String(vpcCIDR),
+				Description: aws.String(p.desc),
+			}},
+		}
+		_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       aws.String(cpSGID),
+			IpPermissions: []*ec2.IpPermission{perm},
+		}, accountID)
+		if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+			return fmt.Errorf("authorize control-plane %s ingress on %s: %w", p.desc, cpSGID, err)
+		}
 	}
 	return nil
 }

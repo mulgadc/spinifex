@@ -820,13 +820,6 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			devices = append(devices, BlkDevice(machineType, drive.ID, iothreadID, cpuCount, 1))
 		}
 
-		if v.CloudInit {
-			drive.Format = "raw"
-			drive.If = "virtio"
-			drive.Media = "cdrom"
-			drive.ID = "cloudinit"
-		}
-
 		if v.EFI {
 			drive.Format = "raw"
 			drive.If = "pflash"

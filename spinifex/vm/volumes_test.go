@@ -306,7 +306,7 @@ func TestDetachVolume_VolumeNotAttached(t *testing.T) {
 
 // TestDetachVolume_DeviceGuards covers the four cross-check and undetachable
 // guards at the head of DetachVolume. Bypassing any of these is destructive:
-// detaching a boot/EFI/CloudInit volume kills the instance, and a device-name
+// detaching a boot/EFI volume kills the instance, and a device-name
 // mismatch silently rips out the wrong disk. The mismatch case additionally
 // pins the error text so an operator-visible diagnostic stays intact.
 func TestDetachVolume_DeviceGuards(t *testing.T) {
@@ -327,12 +327,6 @@ func TestDetachVolume_DeviceGuards(t *testing.T) {
 		{
 			name:          "EFI volume rejected",
 			req:           types.EBSRequest{Name: "vol-efi", EFI: true, DeviceName: "/dev/sdf"},
-			requestDevice: "",
-			wantErr:       ErrVolumeNotDetachable,
-		},
-		{
-			name:          "CloudInit volume rejected",
-			req:           types.EBSRequest{Name: "vol-ci", CloudInit: true, DeviceName: "/dev/sdf"},
 			requestDevice: "",
 			wantErr:       ErrVolumeNotDetachable,
 		},

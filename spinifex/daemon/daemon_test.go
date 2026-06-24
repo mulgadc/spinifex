@@ -1619,7 +1619,7 @@ func TestResourceManager_ConcurrentAccess(t *testing.T) {
 
 // TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination tests that
 // the instanceCleanerAdapter correctly handles DeleteOnTermination for each
-// volume type: internal volumes (EFI, cloud-init) always go through
+// volume type: internal volumes (EFI) always go through
 // ebs.delete; user volumes only when DeleteOnTermination is true.
 func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) {
 	natsURL := sharedNATSURL
@@ -1628,7 +1628,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 
 	var mu sync.Mutex
 	ebsDeletedVolumes := make(map[string]bool)
-	const expectedDeletes = 2 // EFI + cloud-init; vol-root has no S3 backend
+	const expectedDeletes = 1 // EFI; vol-root has no S3 backend
 	allDeletes := make(chan struct{})
 
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
@@ -1655,7 +1655,6 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 			Requests: []types.EBSRequest{
 				{Name: "vol-root", Boot: true, DeleteOnTermination: true},
 				{Name: "vol-root-efi", EFI: true},
-				{Name: "vol-root-cloudinit", CloudInit: true},
 			},
 		},
 	}
@@ -1672,9 +1671,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Internal volumes (EFI, cloud-init) should receive ebs.delete
+	// Internal volumes (EFI) should receive ebs.delete
 	assert.True(t, ebsDeletedVolumes["vol-root-efi"], "EFI volume should receive ebs.delete")
-	assert.True(t, ebsDeletedVolumes["vol-root-cloudinit"], "Cloud-init volume should receive ebs.delete")
 }
 
 // TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False verifies
@@ -1687,7 +1685,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 
 	var mu sync.Mutex
 	ebsDeletedVolumes := make(map[string]bool)
-	const expectedDeletes = 2 // only the two internal volumes; vol-keep is skipped
+	const expectedDeletes = 1 // only the EFI internal volume; vol-keep is skipped
 	allDeletes := make(chan struct{})
 
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
@@ -1714,7 +1712,6 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 			Requests: []types.EBSRequest{
 				{Name: "vol-keep", Boot: true, DeleteOnTermination: false},
 				{Name: "vol-keep-efi", EFI: true},
-				{Name: "vol-keep-cloudinit", CloudInit: true},
 			},
 		},
 	}
@@ -1733,7 +1730,6 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 
 	// Internal volumes still get ebs.delete (always cleaned up)
 	assert.True(t, ebsDeletedVolumes["vol-keep-efi"], "EFI volume should receive ebs.delete even when root has DeleteOnTermination=false")
-	assert.True(t, ebsDeletedVolumes["vol-keep-cloudinit"], "Cloud-init volume should receive ebs.delete even when root has DeleteOnTermination=false")
 
 	// Root volume with DeleteOnTermination=false should NOT receive ebs.delete
 	assert.False(t, ebsDeletedVolumes["vol-keep"], "Root volume with DeleteOnTermination=false should NOT be deleted")
@@ -2007,40 +2003,6 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 			},
 			DetachVolumeData: &types.DetachVolumeData{
 				VolumeID: efiVolumeID,
-			},
-		}
-		data, _ := json.Marshal(command)
-
-		resp, err := natsRequest(daemon.natsConn,
-			fmt.Sprintf("ec2.cmd.%s", instanceID),
-			data,
-			5*time.Second,
-		)
-		require.NoError(t, err)
-		assert.Contains(t, string(resp.Data), "OperationNotPermitted")
-
-		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = instance.EBSRequests.Requests[:len(instance.EBSRequests.Requests)-1]
-		instance.EBSRequests.Mu.Unlock()
-	})
-
-	t.Run("CloudInitVolumeProtection", func(t *testing.T) {
-		ciVolumeID := "vol-cloudinit-protected"
-
-		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, types.EBSRequest{
-			Name:      ciVolumeID,
-			CloudInit: true,
-		})
-		instance.EBSRequests.Mu.Unlock()
-
-		command := types.EC2InstanceCommand{
-			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
-				DetachVolume: true,
-			},
-			DetachVolumeData: &types.DetachVolumeData{
-				VolumeID: ciVolumeID,
 			},
 		}
 		data, _ := json.Marshal(command)

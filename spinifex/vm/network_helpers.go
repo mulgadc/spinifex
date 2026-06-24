@@ -167,8 +167,7 @@ func (m *Manager) detachPrimaryIMDSDatapath(instance *VM) {
 // setupExtraENINICs creates tap devices on br-int and appends matching QEMU
 // virtio-net device entries to instance.Config for each additional ENI a
 // system VM spans. The primary ENI is handled separately by the launch
-// caller. Cloud-init brings the guest interfaces up via per-MAC DHCP blocks
-// written by generateNetworkConfig.
+// caller. The guest brings each interface up via per-MAC DHCP.
 func (m *Manager) setupExtraENINICs(instance *VM) error {
 	if m.deps.NetworkPlumber == nil {
 		return nil

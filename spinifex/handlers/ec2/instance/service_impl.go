@@ -1,24 +1,18 @@
 package handlers_ec2_instance
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	awss3 "github.com/aws/aws-sdk-go/service/s3"
-	"github.com/kdomanski/iso9660"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
@@ -35,169 +29,6 @@ import (
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
 )
-
-const cloudInitUserDataTemplate = `#cloud-config
-{{if .SSHKey}}
-users:
-  - name: {{.Username}}
-    shell: /bin/sh
-{{- if .AlpineUnlockPasswd}}
-    lock_passwd: false
-    hashed_passwd: "*"
-{{- end}}
-    groups:
-      - {{.SudoGroup}}
-    sudo: "ALL=(ALL) NOPASSWD:ALL"
-    ssh_authorized_keys:
-      - {{.SSHKey}}
-{{end}}
-ssh_pwauth: false
-
-hostname: {{.Hostname}}
-manage_etc_hosts: true
-
-{{if .CACertPEM}}
-ca_certs:
-  trusted:
-    - |
-{{.CACertPEM}}
-{{end}}
-
-{{if .UserDataCloudConfig}}
-{{.UserDataCloudConfig}}
-{{end}}
-
-{{if or .RHELWriteFiles .UserDataScript}}
-write_files:
-{{- if .RHELWriteFiles}}
-{{.RHELWriteFiles}}{{end}}{{if .UserDataScript}}
-  - path: /tmp/cloud-init-startup.sh
-    permissions: '0755'
-    content: |
-{{.UserDataScript}}{{end}}
-{{end}}
-{{if or .RHELRunCmd .UserDataScript}}
-runcmd:
-{{- if .RHELRunCmd}}
-{{.RHELRunCmd}}{{end}}{{if .UserDataScript}}
-  - [ "/bin/bash", "/tmp/cloud-init-startup.sh" ]
-{{end}}
-{{end}}
-`
-
-const cloudInitMetaTemplate = `# meta-data
-instance-id: {{.InstanceID}}
-local-hostname: {{.Hostname}}
-`
-
-// cloudInitNetworkConfigWildcard enables DHCP on all NICs via "e*" glob,
-// covering both traditional (eth0) and predictable (ens3) names.
-// Used when there is no dual-NIC setup (non-VPC or no DEV_NETWORKING).
-const cloudInitNetworkConfigWildcard = `network:
-  version: 2
-  ethernets:
-    allnics:
-      match:
-        name: "e*"
-      dhcp4: true
-      dhcp-identifier: mac
-`
-
-// cloudInitNetworkConfigDisabled suppresses cloud-init network rendering.
-// Used on RHEL guests where NM keyfiles are written via write_files;
-// without this stub cloud-init would drop a competing autoconnect keyfile.
-const cloudInitNetworkConfigDisabled = `network:
-  config: disabled
-`
-
-// selectNetworkConfigForFamily returns the cloud-init network-config for the distro.
-// RHEL gets "config: disabled" to prevent cloud-init from dropping a competing
-// NM keyfile alongside the ones written via user-data write_files.
-func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
-	if distroFamily == "rhel" {
-		return cloudInitNetworkConfigDisabled
-	}
-	return generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP, extraENIMACs)
-}
-
-// generateNetworkConfig produces the cloud-init network-config for the instance.
-// Emits per-interface blocks when eniMAC is set; falls back to wildcard DHCP
-// when eniMAC is empty.
-func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
-	if eniMAC == "" {
-		return cloudInitNetworkConfigWildcard
-	}
-	cfg := fmt.Sprintf(`network:
-  version: 2
-  ethernets:
-    vpc0:
-      match:
-        macaddress: "%s"
-      dhcp4: true
-      dhcp-identifier: mac
-`, eniMAC)
-
-	for i, mac := range extraENIMACs {
-		if mac == "" {
-			continue
-		}
-		cfg += fmt.Sprintf(`    vpc%d:
-      match:
-        macaddress: "%s"
-      dhcp4: true
-      dhcp-identifier: mac
-`, i+1, mac)
-	}
-
-	if devMAC != "" {
-		cfg += fmt.Sprintf(`    dev0:
-      match:
-        macaddress: "%s"
-      dhcp4: true
-      dhcp-identifier: mac
-      dhcp4-overrides:
-        use-routes: false
-        use-dns: false
-`, devMAC)
-	}
-
-	if mgmtMAC != "" && mgmtIP != "" {
-		cfg += fmt.Sprintf(`    mgmt0:
-      match:
-        macaddress: "%s"
-      addresses:
-        - "%s/24"
-`, mgmtMAC, mgmtIP)
-		// LB mgmt route is delivered via fw_cfg netcfg, not here.
-	}
-
-	return cfg
-}
-
-type CloudInitData struct {
-	Username            string
-	SSHKey              string
-	Hostname            string
-	UserDataCloudConfig string
-	UserDataScript      string
-	CACertPEM           string
-	// DistroFamily selects per-distro rendering: "debian" | "rhel" | "alpine".
-	// Empty falls through to debian (legacy AMIs without this field).
-	DistroFamily string
-	// SudoGroup is "sudo" on debian/ubuntu/alpine, "wheel" on RHEL-family.
-	SudoGroup string
-	// RHELWriteFiles is the pre-indented YAML NM keyfile block (one per NIC).
-	// Empty on non-RHEL guests; those use the network-config ISO instead.
-	RHELWriteFiles string
-	// RHELRunCmd is the pre-indented runcmd YAML (restorecon + nmcli reload/up).
-	// Empty on non-RHEL guests.
-	RHELRunCmd string
-	// AlpineUnlockPasswd renders the user with a disabled-but-unlocked password
-	// (lock_passwd: false, hashed_passwd: "*"). Alpine's sshd is built without
-	// PAM and rejects any login for a locked ("!") account; "*" keeps password
-	// auth disabled while letting pubkey auth through.
-	AlpineUnlockPasswd bool
-}
 
 // buildRHELCloudInit produces the cloud-init write_files (NM keyfiles) and
 // runcmd blocks for RHEL networking. Returns empty strings when eniMAC is empty.
@@ -277,11 +108,6 @@ func appendRHELStaticKeyfile(b *strings.Builder, name, mac, ip string) {
 	fmt.Fprintf(b, "      addresses=%s/24\n", ip)
 	b.WriteString("      [ipv6]\n")
 	b.WriteString("      method=disabled\n")
-}
-
-type CloudInitMetaData struct {
-	InstanceID string
-	Hostname   string
 }
 
 // VolumeInfo holds volume information returned from GenerateVolumes
@@ -1444,15 +1270,7 @@ func (s *InstanceServiceImpl) GenerateVolumes(input *ec2.RunInstancesInput, inst
 		}
 	}
 
-	// Step 3: Create cloud-init volume if needed
-	if input.KeyName != nil && *input.KeyName != "" || (input.UserData != nil && *input.UserData != "") {
-		err = s.prepareCloudInitVolume(input, imageId, volumeConfig, instance)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Return volume info for the root volume only (EFI and cloud-init are internal)
+	// Return volume info for the root volume only (EFI is internal)
 	volumeInfos := []VolumeInfo{
 		{
 			VolumeId:            imageId,
@@ -1708,307 +1526,6 @@ func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
 		return ""
 	}
 	return *it.ProcessorInfo.SupportedArchitectures[0]
-}
-
-// prepareCloudInitVolume creates the cloud-init ISO with SSH keys and user data.
-// Uses rootVolumeId (not AMI ID) so each instance gets its own volume.
-func (s *InstanceServiceImpl) prepareCloudInitVolume(input *ec2.RunInstancesInput, rootVolumeId string, volumeConfig viperblock.VolumeConfig, instance *vm.VM) error {
-	slog.Info("Creating cloud-init volume")
-
-	cloudInitVolumeName := fmt.Sprintf("%s-cloudinit", rootVolumeId)
-	cloudInitSize := 1 * 1024 * 1024 // 1MB
-
-	// Update VolumeID to match the cloud-init volume name
-	cloudInitVolumeConfig := volumeConfig
-	cloudInitVolumeConfig.VolumeMetadata.VolumeID = cloudInitVolumeName
-
-	cloudInitVb, err := s.newViperblock(cloudInitVolumeName, cloudInitSize, cloudInitVolumeConfig)
-	if err != nil {
-		slog.Error("Could not create cloudinit viperblock", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Initialize the backend
-	slog.Debug("Initializing cloud-init Viperblock store backend")
-	err = cloudInitVb.Backend.Init()
-	if err != nil {
-		slog.Error("Could not init backend", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Always create a fresh cloud-init ISO — never reuse a cached volume.
-	// Each instance needs its own SSH key, hostname, and user data.
-
-	// Open the chunk WAL (sharded or legacy)
-	if cloudInitVb.UseShardedWAL {
-		err = cloudInitVb.OpenShardedWAL()
-	} else {
-		err = cloudInitVb.OpenWAL(&cloudInitVb.WAL, fmt.Sprintf("%s/%s", cloudInitVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALChunk, cloudInitVb.WAL.WallNum.Load(), cloudInitVb.GetVolume())))
-	}
-	if err != nil {
-		slog.Error("Failed to load WAL", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = cloudInitVb.OpenWAL(&cloudInitVb.BlockToObjectWAL, fmt.Sprintf("%s/%s", cloudInitVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALBlock, cloudInitVb.BlockToObjectWAL.WallNum.Load(), cloudInitVb.GetVolume())))
-	if err != nil {
-		slog.Error("Failed to load block WAL", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Create the cloud-init ISO
-	err = s.createCloudInitISO(input, instance, cloudInitVb)
-	if err != nil {
-		return err
-	}
-
-	err = cloudInitVb.Close()
-	if err != nil {
-		slog.Error("Failed to close cloud-init Viperblock store", "err", err)
-	}
-
-	err = cloudInitVb.RemoveLocalFiles()
-	if err != nil {
-		slog.Error("Failed to remove local files", "err", err)
-	}
-
-	instance.EBSRequests.Mu.Lock()
-	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
-		Name:      cloudInitVolumeName,
-		Boot:      false,
-		CloudInit: true,
-	})
-	instance.EBSRequests.Mu.Unlock()
-
-	return nil
-}
-
-// createCloudInitISO generates the cloud-init ISO image
-func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, instance *vm.VM, cloudInitVb *viperblock.VB) error {
-	// Create ISO writer
-	writer, err := iso9660.NewWriter()
-	if err != nil {
-		slog.Error("failed to create writer", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	defer writer.Cleanup()
-
-	// Generate instance metadata
-	hostname := generateHostname(instance.ID)
-
-	// Retrieve SSH pubkey from S3 — password auth is not supported.
-	keyName := ""
-	if input.KeyName != nil {
-		keyName = *input.KeyName
-	}
-
-	var sshKey []byte
-	if keyName != "" {
-		keyPath := fmt.Sprintf("keys/%s/%s", instance.AccountID, keyName)
-		result, err := s.objectStore.GetObject(&awss3.GetObjectInput{
-			Bucket: aws.String(s.config.Predastore.Bucket),
-			Key:    aws.String(keyPath),
-		})
-		if err != nil {
-			if objectstore.IsNoSuchKeyError(err) {
-				slog.Error("key pair not found", "keyName", keyName, "err", err)
-				return errors.New(awserrors.ErrorInvalidKeyPairNotFound)
-			}
-			slog.Error("failed to read SSH key", "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-
-		sshKey, err = io.ReadAll(result.Body)
-		if err != nil {
-			slog.Error("failed to read SSH key body", "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-	}
-
-	// Read CA cert from <data-root>/config/ca.pem and inject into guest cloud-init.
-	var caCertPEM string
-	dataRoot := filepath.Dir(strings.TrimSuffix(s.config.BaseDir, "/"))
-	caCertPath := filepath.Join(dataRoot, "config", "ca.pem")
-	if caBytes, err := os.ReadFile(caCertPath); err == nil {
-		// Indent each line by 6 spaces for YAML block scalar in ca_certs.trusted.
-		var indented strings.Builder
-		for line := range strings.SplitSeq(string(caBytes), "\n") {
-			if line != "" {
-				indented.WriteString("      ")
-				indented.WriteString(line)
-				indented.WriteByte('\n')
-			}
-		}
-		caCertPEM = indented.String()
-	} else if os.IsNotExist(err) {
-		slog.Warn("CA cert not found, guest VMs will not trust Spinifex services", "path", caCertPath)
-	} else {
-		slog.Error("failed to read CA cert for guest cloud-init injection", "path", caCertPath, "error", err)
-	}
-
-	// Re-read AMI metadata for DistroFamily; not persisted on VM since the ISO is sealed once.
-	var distroFamily string
-	if s.amiLoader != nil && input.ImageId != nil && *input.ImageId != "" {
-		amiMeta, err := s.amiLoader.GetAMIConfig(*input.ImageId)
-		if err != nil {
-			slog.Warn("createCloudInitISO: AMI metadata fetch failed; cloud-init will render with debian-family defaults (RHEL guests will boot without networking and with wrong sudo group)", "imageId", *input.ImageId, "err", err)
-		} else {
-			distroFamily = amiMeta.DistroFamily
-		}
-	}
-
-	extraMACs := make([]string, 0, len(instance.ExtraENIs))
-	for _, extra := range instance.ExtraENIs {
-		extraMACs = append(extraMACs, extra.ENIMac)
-	}
-
-	sudoGroup := "sudo"
-	var rhelWriteFiles, rhelRunCmd string
-	switch distroFamily {
-	case "rhel":
-		sudoGroup = "wheel"
-		rhelWriteFiles, rhelRunCmd = buildRHELCloudInit(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
-	}
-
-	userData := CloudInitData{
-		Username:           "ec2-user",
-		SSHKey:             string(sshKey),
-		Hostname:           hostname,
-		CACertPEM:          caCertPEM,
-		DistroFamily:       distroFamily,
-		SudoGroup:          sudoGroup,
-		RHELWriteFiles:     rhelWriteFiles,
-		RHELRunCmd:         rhelRunCmd,
-		AlpineUnlockPasswd: distroFamily == "alpine",
-	}
-
-	// Decode and classify user-data from RunInstances (base64-encoded).
-	if input.UserData != nil && *input.UserData != "" {
-		decoded, decErr := base64.StdEncoding.DecodeString(*input.UserData)
-		if decErr != nil {
-			slog.Warn("Failed to decode user-data, ignoring", "err", decErr)
-		} else {
-			raw := string(decoded)
-			if after, ok := strings.CutPrefix(raw, "#cloud-config"); ok {
-				// Strip the #cloud-config header — the template already has it
-				stripped := after
-				userData.UserDataCloudConfig = strings.TrimSpace(stripped)
-			} else {
-				// Script — indent each line by 4 spaces for YAML write_files block
-				var indented strings.Builder
-				for line := range strings.SplitSeq(raw, "\n") {
-					indented.WriteString("      " + line + "\n")
-				}
-				userData.UserDataScript = indented.String()
-			}
-		}
-	}
-
-	var buf bytes.Buffer
-	t := template.Must(template.New("cloud-init").Parse(cloudInitUserDataTemplate))
-
-	if err := t.Execute(&buf, userData); err != nil {
-		slog.Error("failed to render template", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Add user-data
-	err = writer.AddFile(&buf, "user-data")
-	if err != nil {
-		slog.Error("failed to add file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Add meta-data
-	metaData := CloudInitMetaData{
-		InstanceID: instance.ID,
-		Hostname:   hostname,
-	}
-
-	t = template.Must(template.New("meta-data").Parse(cloudInitMetaTemplate))
-	buf.Reset()
-
-	if err := t.Execute(&buf, metaData); err != nil {
-		slog.Error("failed to render template", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = writer.AddFile(&buf, "meta-data")
-	if err != nil {
-		slog.Error("failed to add file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Add network-config: per-interface for VPC+dev, wildcard DHCP otherwise.
-	// RHEL gets "config: disabled" to prevent a competing NM keyfile.
-	networkConfig := selectNetworkConfigForFamily(distroFamily, instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
-	err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
-	if err != nil {
-		slog.Error("failed to add network-config file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Store temp file
-	tempFile, err := os.CreateTemp("", "cloud-init-*.iso")
-	if err != nil {
-		slog.Error("Could not create cloud-init temp file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	slog.Info("Created temp ISO file", "file", tempFile.Name())
-
-	outputFile, err := os.OpenFile(tempFile.Name(), os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0600)
-	if err != nil {
-		slog.Error("failed to create file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Requires cidata volume label for cloud-init to recognize
-	err = writer.WriteTo(outputFile, "cidata")
-	if err != nil {
-		slog.Error("failed to write ISO image", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = writer.Cleanup()
-	if err != nil {
-		slog.Error("failed to cleanup writer", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = outputFile.Close()
-	if err != nil {
-		slog.Error("failed to close output file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	isoData, err := os.ReadFile(tempFile.Name())
-	if err != nil {
-		slog.Error("failed to read ISO image:", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = cloudInitVb.WriteAt(0, isoData)
-	if err != nil {
-		slog.Error("failed to write ISO image to viperblock volume", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Flush
-	if err := cloudInitVb.Flush(); err != nil {
-		slog.Error("Failed to flush cloud-init volume", "err", err)
-	}
-	if err := cloudInitVb.WriteWALToChunk(true); err != nil {
-		slog.Error("Failed to write WAL to chunk", "err", err)
-	}
-
-	// Remove the temp ISO file
-	err = os.Remove(tempFile.Name())
-	if err != nil {
-		slog.Error("Failed to remove temp file", "err", err)
-	}
-
-	return nil
 }
 
 // generateHostname creates a hostname based on instance ID
@@ -2642,8 +2159,8 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(instance *vm.VM, instanceID 
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		// Internal volumes (EFI, cloud-init) are always cleaned up via ebs.delete.
-		if ebsRequest.EFI || ebsRequest.CloudInit {
+		// Internal volumes (EFI) are always cleaned up via ebs.delete.
+		if ebsRequest.EFI {
 			ebsDeleteData, err := json.Marshal(spxtypes.EBSDeleteRequest{Volume: ebsRequest.Name})
 			if err != nil {
 				slog.Error("TerminateStoppedInstance: failed to marshal ebs.delete request", "name", ebsRequest.Name, "err", err)

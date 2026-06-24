@@ -177,7 +177,7 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 				"instance", instance.ID, "volume", ebsRequest.Name, "data", string(msg.Data))
 		}
 
-		if sealed && !ebsRequest.EFI && !ebsRequest.CloudInit && a.volState != nil {
+		if sealed && !ebsRequest.EFI && a.volState != nil {
 			if err := a.volState.UpdateVolumeState(ebsRequest.Name, "available", "", ""); err != nil {
 				slog.Error("Failed to update volume state to available after unmount",
 					"volumeId", ebsRequest.Name, "err", err)
@@ -561,8 +561,8 @@ func newInstanceCleanerAdapter(d *Daemon) *instanceCleanerAdapter {
 	return &instanceCleanerAdapter{d: d}
 }
 
-// DeleteVolumes deletes EFI / cloud-init internal volumes via ebs.delete
-// and user volumes flagged DeleteOnTermination via the volume service.
+// DeleteVolumes deletes EFI internal volumes via ebs.delete and user volumes
+// flagged DeleteOnTermination via the volume service.
 // Errors are logged per volume; partial failure is tolerated.
 func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 	instance.EBSRequests.Mu.Lock()
@@ -570,11 +570,10 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 
 	var firstErr error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		// Internal volumes (EFI, cloud-init) always go through ebs.delete to
-		// stop their viperblockd processes. S3 data is cleaned up via the
-		// parent root volume's DeleteVolume (which removes -efi/ and
-		// -cloudinit/ prefixes).
-		if ebsRequest.EFI || ebsRequest.CloudInit {
+		// Internal volumes (EFI) always go through ebs.delete to stop their
+		// viperblockd processes. S3 data is cleaned up via the parent root
+		// volume's DeleteVolume (which removes the -efi/ prefix).
+		if ebsRequest.EFI {
 			ebsDeleteData, err := json.Marshal(types.EBSDeleteRequest{Volume: ebsRequest.Name})
 			if err != nil {
 				slog.Error("Failed to marshal ebs.delete request for internal volume",

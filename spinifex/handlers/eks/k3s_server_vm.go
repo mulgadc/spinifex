@@ -147,6 +147,12 @@ type K3sServerInput struct {
 	// OverlayMAC is set internally after the overlay ENI is created; surfaced as
 	// EKS_OVERLAY_MAC so the appliance resolves the NIC and sets --flannel-iface.
 	OverlayMAC string
+	// NodeIP is the primary (CP-VPC) ENI IP, set internally before user-data build.
+	// With the flannel re-home the overlay NIC takes the default route, so k3s
+	// would auto-detect node-ip onto the overlay subnet and run etcd/apiserver over
+	// the overlay NICs (which the overlay SG does not admit). Pinning node-ip keeps
+	// the control plane on the CP VPC; only flannel VXLAN moves to the overlay.
+	NodeIP string
 }
 
 // K3sServerOutput carries identifiers to persist in ClusterMeta and register with the NLB.
@@ -252,6 +258,7 @@ func LaunchK3sServerVM(
 		}}
 	}
 
+	in.NodeIP = eniIP
 	userData := buildK3sUserData(in)
 
 	sysOut, err := instSvc.LaunchSystemInstanceOnNode(in.TargetNodeID, &sysinstance.SystemInstanceInput{
@@ -534,6 +541,14 @@ func buildK3sUserData(in K3sServerInput) string {
 	// --flannel-iface to the overlay NIC (resolved from EKS_OVERLAY_MAC).
 	if in.OverlayMAC != "" {
 		configLines = append(configLines, "egress-selector-mode: disabled")
+		// Pin node-ip to the CP-VPC primary so etcd/apiserver/supervisor stay on the
+		// CP VPC (cluster SG). The overlay NIC takes the default route, so without
+		// this k3s would auto-detect node-ip onto the overlay subnet and run the
+		// control plane over the overlay NICs, which the overlay SG does not admit —
+		// HA join fails and only the first server forms.
+		if in.NodeIP != "" {
+			configLines = append(configLines, "node-ip: "+in.NodeIP)
+		}
 	} else {
 		configLines = append(configLines, "egress-selector-mode: cluster")
 	}

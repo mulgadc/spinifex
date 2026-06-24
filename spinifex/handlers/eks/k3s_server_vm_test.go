@@ -387,6 +387,7 @@ func TestBuildK3sUserData_EgressSelectorClusterMode(t *testing.T) {
 func TestBuildK3sUserData_OverlayDisablesEgressSelectorAndSeedsMAC(t *testing.T) {
 	in := validK3sInput()
 	in.OverlayMAC = "0a:bb:cc:dd:ee:ff"
+	in.NodeIP = "10.255.21.4"
 
 	ud := buildK3sUserData(in)
 	assert.Contains(t, ud, "egress-selector-mode: disabled",
@@ -394,6 +395,8 @@ func TestBuildK3sUserData_OverlayDisablesEgressSelectorAndSeedsMAC(t *testing.T)
 	assert.NotContains(t, ud, "egress-selector-mode: cluster")
 	assert.Contains(t, ud, "EKS_OVERLAY_MAC=0a:bb:cc:dd:ee:ff",
 		"appliance resolves --flannel-iface from this MAC")
+	assert.Contains(t, ud, "node-ip: 10.255.21.4",
+		"node-ip pinned to the CP-VPC primary so the control plane stays off the overlay subnet")
 }
 
 func TestLaunchK3sServerVM_OverlayENIThreadedOnWorkerSubnet(t *testing.T) {

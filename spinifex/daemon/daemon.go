@@ -49,6 +49,7 @@ import (
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
+	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
@@ -149,6 +150,8 @@ type Daemon struct {
 	eipService            *handlers_ec2_eip.EIPServiceImpl
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
+	ecsService            *handlers_ecs.Service
+	ecsScheduler          *handlers_ecs.Scheduler
 	acmService            *handlers_acm.ACMServiceImpl
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
@@ -947,6 +950,24 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// ECS gateway → daemon subscriptions (control plane; per-account KV).
+	if d.ecsService != nil {
+		subs = append(subs,
+			natsSub{"ecs.CreateCluster", d.handleECSCreateCluster, "spinifex-workers"},
+			natsSub{"ecs.DescribeClusters", d.handleECSDescribeClusters, "spinifex-workers"},
+			natsSub{"ecs.ListClusters", d.handleECSListClusters, "spinifex-workers"},
+			natsSub{"ecs.RegisterTaskDefinition", d.handleECSRegisterTaskDefinition, "spinifex-workers"},
+			natsSub{"ecs.DescribeTaskDefinition", d.handleECSDescribeTaskDefinition, "spinifex-workers"},
+			natsSub{"ecs.ListTaskDefinitions", d.handleECSListTaskDefinitions, "spinifex-workers"},
+			natsSub{"ecs.RegisterContainerInstance", d.handleECSRegisterContainerInstance, "spinifex-workers"},
+			natsSub{"ecs.DescribeContainerInstances", d.handleECSDescribeContainerInstances, "spinifex-workers"},
+			natsSub{"ecs.ListContainerInstances", d.handleECSListContainerInstances, "spinifex-workers"},
+			natsSub{"ecs.RunTask", d.handleECSRunTask, "spinifex-workers"},
+			natsSub{"ecs.DescribeTasks", d.handleECSDescribeTasks, "spinifex-workers"},
+			natsSub{"ecs.ListTasks", d.handleECSListTasks, "spinifex-workers"},
+		)
+	}
+
 	// ACM gateway → daemon subscriptions (minimal certificate store).
 	if d.acmService != nil {
 		subs = append(subs,
@@ -1375,6 +1396,27 @@ func (d *Daemon) startCluster() error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize EKS service: %w", err)
+	}
+
+	// ECS control plane: per-account KV-backed handlers + a leader-elected
+	// scheduler goroutine that owns the Layer-2 bus subscriptions and heartbeat
+	// reaper. The scheduler is disabled (handlers still serve) when JetStream is
+	// unavailable.
+	d.ecsService = handlers_ecs.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.InternalSuffix)
+	if js, jsErr := d.natsConn.JetStream(); jsErr != nil {
+		slog.Warn("ECS scheduler disabled: JetStream unavailable", "err", jsErr)
+	} else if _, lbErr := handlers_ecs.InitLeaderBucket(js); lbErr != nil {
+		slog.Warn("ECS scheduler disabled: leader bucket init failed", "err", lbErr)
+	} else {
+		d.ecsScheduler = handlers_ecs.NewScheduler(d.natsConn, d.ecsService, d.node)
+		d.shutdownWg.Go(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("ECS scheduler goroutine panicked", "recover", r)
+				}
+			}()
+			d.ecsScheduler.Run(d.ctx)
+		})
 	}
 
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {

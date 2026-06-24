@@ -110,6 +110,7 @@ var supportedServices = map[string]bool{
 	"account":              true,
 	"elasticloadbalancing": true,
 	"eks":                  true,
+	"ecs":                  true,
 	"ecr":                  true,
 	"acm":                  true,
 	"tagging":              true,
@@ -228,8 +229,8 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.Request, svc string) {
 	requestID := uuid.NewString()
 
-	// EKS uses AWS REST-JSON 1.1.
-	if svc == "eks" {
+	// EKS and ECS use AWS JSON 1.1.
+	if svc == "eks" || svc == "ecs" {
 		body := GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -280,8 +281,8 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	}
 	errorMsg := awserrors.ErrorLookup[errorCode]
 
-	// EKS uses AWS REST-JSON 1.1.
-	if svc == "eks" {
+	// EKS and ECS use AWS JSON 1.1.
+	if svc == "eks" || svc == "ecs" {
 		body := GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(errorMsg.HTTPCode)
@@ -335,6 +336,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ELBv2_Request(w, r)
 	case "eks":
 		err = gw.EKS_Request(w, r)
+	case "ecs":
+		err = gw.ECS_Request(w, r)
 	case "ecr":
 		err = gw.ECR_Request(w, r)
 	case "acm":
@@ -494,8 +497,8 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	// EKS, ECR, ACM, and tagging use AWS JSON 1.1; query/XML services fall through.
-	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "tagging" {
+	// EKS, ECR, ACM, ECS, and tagging use AWS JSON 1.1; query/XML services fall through.
+	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" {
 		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err.Error(), "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)

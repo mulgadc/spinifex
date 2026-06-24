@@ -11,9 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runNodeFailure stops spinifex.target on node2 and asserts clean degradation:
-// surviving nodes still serve DescribeInstances and NATS reports 1 peer.
-// Unconditionally restarts node2 in t.Cleanup so downstream tests are unaffected.
+// runNodeFailure simulates a hard outage on node2 (stops its spinifex services,
+// guests keep running) and asserts clean degradation: surviving nodes still
+// serve DescribeInstances and NATS reports 1 peer. Unconditionally restarts
+// node2 in t.Cleanup so downstream tests are unaffected.
 func runNodeFailure(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Node Failure")
 
@@ -25,15 +26,16 @@ func runNodeFailure(t *testing.T, fix *Fixture) {
 	node3 := fix.Cluster.Nodes[2]
 	local := fix.Cluster.Nodes[0]
 
-	harness.Step(t, "stop spinifex.target on %s (%s)", node2.Name, node2.Addr)
+	harness.Step(t, "stop spinifex services on %s (%s) — guests stay running", node2.Name, node2.Addr)
 	harness.StopNode(t, node2)
 	t.Cleanup(func() {
 		harness.StartNode(t, node2) // idempotent; runNodeRecovery may also call this
 	})
 
 	// NATS peer-drop detection is delayed by heartbeat; poll so we converge faster than a fixed sleep.
+	// Skip node2 — StopNode stopped its NATS, so its monitor port is dead.
 	harness.Step(t, "wait NATS to report 1 peer (degraded)")
-	fix.Cluster.WaitNATSPeers(t, 1, harness.WithTimeout(30*time.Second), harness.WithPoll(2*time.Second))
+	fix.Cluster.WaitNATSPeers(t, 1, harness.WithTimeout(30*time.Second), harness.WithPoll(2*time.Second), harness.WithSkipNodes(node2.Name))
 
 	harness.Step(t, "DescribeInstanceTypes still answers via %s", local.Name)
 	localCli := harness.AWSClientForGateway(t, fix.Env, local)

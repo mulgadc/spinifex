@@ -386,10 +386,36 @@ func EnsureControlPlaneOverlaySG(sgp sgProvisioner, accountID, clusterName, vpcI
 	if vpcID == "" {
 		return "", errors.New("eks: EnsureControlPlaneOverlaySG empty vpc id")
 	}
-	return ensureClusterSG(sgp, accountID, vpcID, clusterName,
+	sgID, err := ensureClusterSG(sgp, accountID, vpcID, clusterName,
 		ClusterControlPlaneOverlaySGName(clusterName),
 		fmt.Sprintf("EKS control-plane overlay SG for cluster %s", clusterName),
 		clusterEKSRoleControlPlaneOverlay)
+	if err != nil {
+		return "", err
+	}
+
+	// The 3 CP servers' mutual flannel VXLAN rides this overlay subnet (flannel
+	// re-home), so the SG must admit itself on 8472/udp. This is authorized at SG
+	// creation (cluster launch) — not with the nodegroup rules — because the CP
+	// flannel mesh must form for the CP nodes to go Ready, which gates the cluster
+	// reaching ACTIVE, which in turn gates nodegroup creation.
+	perm := &ec2.IpPermission{
+		IpProtocol: aws.String("udp"),
+		FromPort:   aws.Int64(8472),
+		ToPort:     aws.Int64(8472),
+		UserIdGroupPairs: []*ec2.UserIdGroupPair{{
+			GroupId:     aws.String(sgID),
+			Description: aws.String("EKS flannel VXLAN control-plane overlay mesh"),
+		}},
+	}
+	_, err = sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId:       aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{perm},
+	}, accountID)
+	if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+		return "", fmt.Errorf("authorize overlay mesh VXLAN ingress on %s: %w", sgID, err)
+	}
+	return sgID, nil
 }
 
 // EnsureControlPlaneOverlaySGRules authorizes the flannel re-home datapath between
@@ -413,11 +439,6 @@ func EnsureControlPlaneOverlaySGRules(sgp sgProvisioner, accountID, overlaySGID,
 		{ngSGID, overlaySGID, "udp", 8472, 8472, "EKS flannel VXLAN control-plane overlay to node"},
 		{overlaySGID, ngSGID, "udp", 8472, 8472, "EKS flannel VXLAN node to control-plane overlay"},
 		{ngSGID, overlaySGID, "tcp", 10250, 10250, "EKS kubelet control-plane overlay to node"},
-		// CP servers' mutual flannel VXLAN now rides the overlay subnet (flannel
-		// re-home), not the CP VPC. Without a self-referencing rule the 3 servers
-		// cannot form their flannel mesh, every CP node goes NotReady, and the
-		// cluster never reports healthy (stuck CREATING).
-		{overlaySGID, overlaySGID, "udp", 8472, 8472, "EKS flannel VXLAN control-plane overlay mesh"},
 	}
 
 	for _, r := range rules {

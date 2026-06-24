@@ -191,7 +191,7 @@ func TestEnsureControlPlaneOverlaySGRules_AuthorizesVXLANAndKubelet(t *testing.T
 	sgp := newFakeSGProvisioner()
 
 	require.NoError(t, EnsureControlPlaneOverlaySGRules(sgp, "111122223333", "sg-overlay", "sg-ng"))
-	require.Len(t, sgp.authorizeCalls, 4, "VXLAN both ways + kubelet overlay->node + CP mesh self-VXLAN")
+	require.Len(t, sgp.authorizeCalls, 3, "VXLAN both ways + kubelet overlay->node")
 
 	type key struct {
 		target string
@@ -214,7 +214,27 @@ func TestEnsureControlPlaneOverlaySGRules_AuthorizesVXLANAndKubelet(t *testing.T
 	assert.True(t, got[key{"sg-ng", "sg-overlay", "udp", 8472}], "CP overlay -> node VXLAN")
 	assert.True(t, got[key{"sg-overlay", "sg-ng", "udp", 8472}], "node -> CP overlay VXLAN")
 	assert.True(t, got[key{"sg-ng", "sg-overlay", "tcp", 10250}], "apiserver -> kubelet via overlay")
-	assert.True(t, got[key{"sg-overlay", "sg-overlay", "udp", 8472}], "CP overlay mesh VXLAN")
+}
+
+func TestEnsureControlPlaneOverlaySG_AuthorizesSelfMeshVXLAN(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+	sgp.createIDs = []string{"sg-overlay"}
+
+	id, err := EnsureControlPlaneOverlaySG(sgp, "111122223333", "toc", "vpc-aaa")
+	require.NoError(t, err)
+	require.Equal(t, "sg-overlay", id)
+
+	// The CP flannel mesh rule must be authorized at SG creation (cluster launch),
+	// not at nodegroup time, so the CP nodes can go Ready before ACTIVE.
+	require.Len(t, sgp.authorizeCalls, 1, "self-referencing VXLAN mesh rule")
+	in := sgp.authorizeCalls[0]
+	assert.Equal(t, "sg-overlay", aws.StringValue(in.GroupId))
+	require.Len(t, in.IpPermissions, 1)
+	p := in.IpPermissions[0]
+	assert.Equal(t, "udp", aws.StringValue(p.IpProtocol))
+	assert.Equal(t, int64(8472), aws.Int64Value(p.FromPort))
+	require.Len(t, p.UserIdGroupPairs, 1)
+	assert.Equal(t, "sg-overlay", aws.StringValue(p.UserIdGroupPairs[0].GroupId))
 }
 
 func TestEnsureControlPlaneOverlaySGRules_EmptyInputsRejected(t *testing.T) {

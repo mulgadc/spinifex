@@ -11,9 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runNodeFailure stops spinifex.target on node2 and asserts clean degradation:
-// surviving nodes still serve DescribeInstances and NATS reports 1 peer.
-// Unconditionally restarts node2 in t.Cleanup so downstream tests are unaffected.
+// runNodeFailure simulates a hard outage on node2 (stops its spinifex services,
+// guests keep running) and asserts clean degradation: surviving nodes still
+// serve DescribeInstances and NATS reports 1 peer. Unconditionally restarts
+// node2 in t.Cleanup so downstream tests are unaffected.
 func runNodeFailure(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Node Failure")
 
@@ -25,7 +26,7 @@ func runNodeFailure(t *testing.T, fix *Fixture) {
 	node3 := fix.Cluster.Nodes[2]
 	local := fix.Cluster.Nodes[0]
 
-	harness.Step(t, "stop spinifex.target on %s (%s)", node2.Name, node2.Addr)
+	harness.Step(t, "stop spinifex services on %s (%s) — guests stay running", node2.Name, node2.Addr)
 	harness.StopNode(t, node2)
 	t.Cleanup(func() {
 		harness.StartNode(t, node2) // idempotent; runNodeRecovery may also call this

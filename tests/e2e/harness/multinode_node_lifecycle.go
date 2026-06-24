@@ -5,19 +5,36 @@ package harness
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
 
-// StopNode stops every spinifex unit on a remote node via systemctl. Non-fatal:
-// the cluster shutdown sequence can racily kill the SSH connection.
+// nodeServiceUnits are the PartOf=spinifex.target units StopNode stops to
+// simulate a node outage. spinifex-shutdown.service is deliberately excluded:
+// its ExecStop drains guests to stopped, which a hard outage must not do.
+var nodeServiceUnits = []string{
+	"spinifex-ui.service",
+	"spinifex-vpcd.service",
+	"spinifex-awsgw.service",
+	"spinifex-daemon.service",
+	"spinifex-viperblock.service",
+	"spinifex-predastore.service",
+	"spinifex-nats.service",
+}
+
+// StopNode simulates a hard node outage by stopping the spinifex service units
+// directly (not spinifex.target), so guests keep running (daemon
+// KillMode=process) and the target's drain ExecStop never fires. Non-fatal:
+// the shutdown sequence can racily kill the SSH connection.
 func StopNode(t *testing.T, node Node) {
 	t.Helper()
 	ssh := NewPeerSSH()
-	// 3min covers slow 6+ unit shutdowns (predastore, NATS, awsgw, vpcd, daemon, ui).
+	// 3min covers slow shutdowns of all seven units (predastore, NATS, awsgw, vpcd, daemon, ui).
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	if _, err := ssh.Run(ctx, node.Addr, "sudo systemctl stop spinifex.target"); err != nil {
+	cmd := "sudo systemctl stop " + strings.Join(nodeServiceUnits, " ")
+	if _, err := ssh.Run(ctx, node.Addr, cmd); err != nil {
 		t.Logf("StopNode %s: %v (proceeding — bash treats this as non-fatal)", node.Name, err)
 	}
 }

@@ -33,8 +33,9 @@ func runNodeFailure(t *testing.T, fix *Fixture) {
 	})
 
 	// NATS peer-drop detection is delayed by heartbeat; poll so we converge faster than a fixed sleep.
+	// Skip node2 — StopNode stopped its NATS, so its monitor port is dead.
 	harness.Step(t, "wait NATS to report 1 peer (degraded)")
-	fix.Cluster.WaitNATSPeers(t, 1, harness.WithTimeout(30*time.Second), harness.WithPoll(2*time.Second))
+	fix.Cluster.WaitNATSPeers(t, 1, harness.WithTimeout(30*time.Second), harness.WithPoll(2*time.Second), harness.WithSkipNodes(node2.Name))
 
 	harness.Step(t, "DescribeInstanceTypes still answers via %s", local.Name)
 	localCli := harness.AWSClientForGateway(t, fix.Env, local)

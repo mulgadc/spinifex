@@ -645,7 +645,10 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 
 	// Bake the deployment CA into the image trust store so a stock cloud image
 	// trusts the gateway from first boot. Best-effort: never fails the import.
-	bakeCACertIntoImage(extractedImagePath, filepath.Join(appConfig.NodeBaseDir(), "config", "ca.pem"))
+	// The CA path derives from the --spinifex-dir data root (its config/ symlink
+	// holds ca.pem), not NodeBaseDir(): node.BaseDir is unset in the import
+	// command, which would collapse the path to a relative config/ca.pem.
+	bakeCACertIntoImage(extractedImagePath, filepath.Join(baseDir, "config", "ca.pem"))
 
 	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath)
 

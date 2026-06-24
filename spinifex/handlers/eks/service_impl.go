@@ -1048,11 +1048,6 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		if err := DeletePrivateEndpointSG(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
 			slog.Warn("purgeClusterInfra: delete private-endpoint SG failed", "cluster", name, "err", err)
 		}
-		// Flannel re-home (A′): reclaim the worker-VPC overlay SG now its ENIs are
-		// gone. Best-effort — its billable dependants (the overlay ENIs) are deleted.
-		if err := DeleteControlPlaneOverlaySG(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
-			slog.Warn("purgeClusterInfra: delete control-plane overlay SG failed", "cluster", name, "err", err)
-		}
 	}
 
 	// SG / IGW / CP-VPC cleanup runs even when an earlier step failed: the cluster
@@ -1072,6 +1067,13 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 			if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
 				teardownErrs = append(teardownErrs, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
 			}
+			// Flannel re-home (A′): reclaim the worker-VPC overlay SG. Must follow the
+			// customer-VPC cluster SG delete above — the nodegroup SG carries an ingress
+			// rule sourced from the overlay SG, so AWS refuses to delete the overlay SG
+			// until the nodegroup SG (and its referencing rule) is gone.
+			if err := DeleteControlPlaneOverlaySG(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+				slog.Warn("purgeClusterInfra: delete control-plane overlay SG failed", "cluster", name, "err", err)
+			}
 		}
 		if err := DeleteClusterCPVPC(s.cpVPCDeps(), infraAcct, name); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", err))
@@ -1082,6 +1084,11 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		// intact). IGW delete must precede any VPC delete to avoid DependencyViolation.
 		if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", err))
+		}
+		// Flannel re-home (A′): reclaim the overlay SG after the nodegroup SG that
+		// references it is gone (see new-topology branch above for the ordering).
+		if err := DeleteControlPlaneOverlaySG(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+			slog.Warn("purgeClusterInfra: delete control-plane overlay SG failed", "cluster", name, "err", err)
 		}
 		if s.deps.IGW != nil {
 			if err := DeleteClusterIGW(s.deps.IGW, accountID, meta.ResourcesVpcConfig.VpcId, name); err != nil {

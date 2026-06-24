@@ -413,6 +413,11 @@ func EnsureControlPlaneOverlaySGRules(sgp sgProvisioner, accountID, overlaySGID,
 		{ngSGID, overlaySGID, "udp", 8472, 8472, "EKS flannel VXLAN control-plane overlay to node"},
 		{overlaySGID, ngSGID, "udp", 8472, 8472, "EKS flannel VXLAN node to control-plane overlay"},
 		{ngSGID, overlaySGID, "tcp", 10250, 10250, "EKS kubelet control-plane overlay to node"},
+		// CP servers' mutual flannel VXLAN now rides the overlay subnet (flannel
+		// re-home), not the CP VPC. Without a self-referencing rule the 3 servers
+		// cannot form their flannel mesh, every CP node goes NotReady, and the
+		// cluster never reports healthy (stuck CREATING).
+		{overlaySGID, overlaySGID, "udp", 8472, 8472, "EKS flannel VXLAN control-plane overlay mesh"},
 	}
 
 	for _, r := range rules {

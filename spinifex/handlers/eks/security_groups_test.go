@@ -191,7 +191,7 @@ func TestEnsureControlPlaneOverlaySGRules_AuthorizesVXLANAndKubelet(t *testing.T
 	sgp := newFakeSGProvisioner()
 
 	require.NoError(t, EnsureControlPlaneOverlaySGRules(sgp, "111122223333", "sg-overlay", "sg-ng"))
-	require.Len(t, sgp.authorizeCalls, 3, "VXLAN both ways + kubelet overlay->node")
+	require.Len(t, sgp.authorizeCalls, 4, "VXLAN both ways + kubelet overlay->node + CP mesh self-VXLAN")
 
 	type key struct {
 		target string
@@ -214,6 +214,7 @@ func TestEnsureControlPlaneOverlaySGRules_AuthorizesVXLANAndKubelet(t *testing.T
 	assert.True(t, got[key{"sg-ng", "sg-overlay", "udp", 8472}], "CP overlay -> node VXLAN")
 	assert.True(t, got[key{"sg-overlay", "sg-ng", "udp", 8472}], "node -> CP overlay VXLAN")
 	assert.True(t, got[key{"sg-ng", "sg-overlay", "tcp", 10250}], "apiserver -> kubelet via overlay")
+	assert.True(t, got[key{"sg-overlay", "sg-overlay", "udp", 8472}], "CP overlay mesh VXLAN")
 }
 
 func TestEnsureControlPlaneOverlaySGRules_EmptyInputsRejected(t *testing.T) {

@@ -441,8 +441,8 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		d.vmMgr.Insert(instance)
 	}
 
-	// Management NIC must be set before LaunchRunInstances so the cloud-init
-	// network-config (built during launch) renders a static mgmt0 interface.
+	// Management NIC must be set before LaunchRunInstances so the fw_cfg netcfg
+	// blob (built during launch) carries the static mgmt0 address.
 	if err := d.attachSystemMgmtNIC(inst); err != nil {
 		d.vmMgr.MarkFailed(inst, "mgmt_nic_setup_failed")
 		return nil, err

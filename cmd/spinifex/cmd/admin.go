@@ -703,7 +703,7 @@ const caBakeRunCommand = `( { command -v update-ca-certificates >/dev/null && in
 
 // caBakeTimeout bounds the virt-customize run so a stalled libguestfs appliance
 // cannot hang the import indefinitely; on timeout the bake degrades to a skip.
-const caBakeTimeout = 10 * time.Minute
+const caBakeTimeout = 5 * time.Minute
 
 // caBakeCmd builds the virt-customize invocation that uploads the deployment CA
 // into the disk image at imagePath and installs it into the guest trust store.

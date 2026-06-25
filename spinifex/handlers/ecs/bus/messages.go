@@ -86,8 +86,9 @@ type Assign struct {
 	ENIMacAddress string `json:"eniMac,omitempty"`
 	ENIPrivateIP  string `json:"eniPrivateIp,omitempty"`
 	ENISubnetID   string `json:"eniSubnetId,omitempty"`
-	// CredID + TaskRoleARN are placeholders for the Sprint 4g IAM credential
-	// endpoint; the agent ignores them in 4e.
+	// TaskRoleARN is the task's IAM role (from the taskdef); when set, the agent
+	// serves its credentials at 169.254.170.2 under CredID, defaulting CredID to
+	// the taskID when the scheduler leaves it empty.
 	CredID      string    `json:"credId,omitempty"`
 	TaskRoleARN string    `json:"taskRoleArn,omitempty"`
 	AssignedAt  time.Time `json:"assignedAt"`

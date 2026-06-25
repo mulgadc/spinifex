@@ -199,6 +199,7 @@ func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID
 		TaskARN:         rec.ARN,
 		TaskDefFamily:   td.Family,
 		TaskDefRevision: td.Revision,
+		TaskRoleARN:     td.TaskRoleArn,
 		ENIID:           rec.ENIID,
 		ENIMacAddress:   rec.ENIMacAddress,
 		ENIPrivateIP:    rec.ENIPrivateIP,

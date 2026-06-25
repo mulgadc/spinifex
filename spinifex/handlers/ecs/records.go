@@ -101,6 +101,7 @@ type TaskDefRecord struct {
 	NetworkMode  string         `json:"networkMode,omitempty"`
 	CPU          string         `json:"cpu,omitempty"`
 	Memory       string         `json:"memory,omitempty"`
+	TaskRoleArn  string         `json:"taskRoleArn,omitempty"`
 	Containers   []ContainerDef `json:"containers"`
 	Status       string         `json:"status"`
 	RegisteredAt time.Time      `json:"registeredAt"`

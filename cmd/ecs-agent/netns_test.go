@@ -83,17 +83,40 @@ func TestNetns_SetupSequence(t *testing.T) {
 	if path != netnsPathFor("t-001") {
 		t.Fatalf("want %q, got %q", netnsPathFor("t-001"), path)
 	}
+	hostIP, taskIP := credSubnet("t-001")
+	hostVeth := credVethName("t-001")
 	want := []string{
 		"ip netns add ecs-t-001",
 		"ip link set eth1 netns ecs-t-001",
 		"ip -n ecs-t-001 link set lo up",
 		"ip -n ecs-t-001 link set eth1 up",
 		"ip netns exec ecs-t-001 udhcpc -i eth1 -q -n",
+		"ip link add " + hostVeth + " type veth peer name ecsc0 netns ecs-t-001",
+		"ip addr add " + hostIP + "/30 dev " + hostVeth,
+		"ip -n ecs-t-001 addr add " + taskIP + "/30 dev ecsc0",
+		"ip -n ecs-t-001 route add 169.254.170.2/32 via " + hostIP,
 	}
 	for _, w := range want {
 		if !f.sawAny(w) {
 			t.Errorf("missing command %q in %v", w, f.joined())
 		}
+	}
+}
+
+func TestCredSubnet_UniquePer30(t *testing.T) {
+	hostA, taskA := credSubnet("task-a")
+	hostB, taskB := credSubnet("task-b")
+	if hostA == hostB {
+		t.Errorf("distinct tasks share a host IP: %s", hostA)
+	}
+	for _, ip := range []string{hostA, taskA, hostB, taskB} {
+		if !strings.HasPrefix(ip, "169.254.17") {
+			t.Errorf("cred IP %s outside 169.254.172.0/22", ip)
+		}
+	}
+	// host and task ends of one task sit in the same /30 (differ in last octet).
+	if hostA[:strings.LastIndexByte(hostA, '.')] != taskA[:strings.LastIndexByte(taskA, '.')] {
+		t.Errorf("host %s and task %s not in same /30", hostA, taskA)
 	}
 }
 

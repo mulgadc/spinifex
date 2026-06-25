@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,6 +33,8 @@ type config struct {
 	ContainerdSocket string
 	Heartbeat        time.Duration
 	PollInterval     time.Duration
+	CredEndpointIP   string
+	CredEndpointPort int
 }
 
 // loadConfig reads the cloud-init env file then lets real env vars override.
@@ -76,6 +79,16 @@ func loadConfig(envFile string) config {
 	if v := get("ECS_POLL_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			cfg.PollInterval = d
+		}
+	}
+	cfg.CredEndpointIP = get("ECS_CRED_ENDPOINT_IP")
+	if cfg.CredEndpointIP == "" {
+		cfg.CredEndpointIP = defaultCredEndpointIP
+	}
+	cfg.CredEndpointPort = defaultCredEndpointPort
+	if v := get("ECS_CRED_ENDPOINT_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			cfg.CredEndpointPort = p
 		}
 	}
 	return cfg

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"time"
 
 	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
@@ -62,6 +63,8 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 		return
 	}
 
+	credID := a.registerTaskCreds(as)
+
 	statuses := make([]bus.ContainerStatus, 0, len(as.Containers))
 	for _, c := range as.Containers {
 		if _, err := a.puller.Pull(ctx, ctrruntime.PullSpec{Ref: c.Image}, a.resolver); err != nil {
@@ -75,7 +78,7 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 		spec := ctrruntime.RunSpec{
 			Image:     c.Image,
 			Command:   c.Command,
-			Env:       c.Environment,
+			Env:       withCredEnv(c.Environment, credID),
 			Labels:    taskLabels(as, c.Name),
 			NetnsPath: netnsPath,
 		}
@@ -118,14 +121,56 @@ func (a *Agent) setupTaskNetns(as *bus.Assign) (string, error) {
 	return a.netns.Setup(as.TaskID, as.ENIMacAddress)
 }
 
-// teardownTaskNetns removes the awsvpc task netns; no-op for bridge/host tasks.
+// teardownTaskNetns releases the task's IAM credential registration, then removes
+// the awsvpc task netns (the latter is a no-op for bridge/host tasks). It runs at
+// every task-stop path so credentials never outlive the task that owns them.
 func (a *Agent) teardownTaskNetns(as *bus.Assign) {
+	if a.cred != nil {
+		a.cred.Deregister(taskCredID(as))
+	}
 	if as.ENIMacAddress == "" || a.netns == nil {
 		return
 	}
 	if err := a.netns.Teardown(as.TaskID); err != nil {
 		slog.Warn("ecs-agent: task netns teardown", "task", as.TaskID, "err", err)
 	}
+}
+
+// registerTaskCreds registers the task's credID -> role mapping with the
+// credential endpoint and returns the credID (empty when the task has no role).
+func (a *Agent) registerTaskCreds(as *bus.Assign) string {
+	credID := taskCredID(as)
+	if credID == "" || a.cred == nil {
+		return credID
+	}
+	a.cred.Register(credID, as.TaskRoleARN)
+	return credID
+}
+
+// taskCredID is the credential ID a task's containers fetch credentials under:
+// the scheduler-assigned CredID, falling back to the taskID. Empty when the task
+// carries no IAM role.
+func taskCredID(as *bus.Assign) string {
+	if as.TaskRoleARN == "" {
+		return ""
+	}
+	if as.CredID != "" {
+		return as.CredID
+	}
+	return as.TaskID
+}
+
+// withCredEnv returns env with AWS_CONTAINER_CREDENTIALS_RELATIVE_URI set for
+// credID, copying the map so the assign's container env is left untouched. A
+// blank credID (no task role) returns env unchanged.
+func withCredEnv(env map[string]string, credID string) map[string]string {
+	if credID == "" {
+		return env
+	}
+	out := make(map[string]string, len(env)+1)
+	maps.Copy(out, env)
+	out["AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"] = credRelativeURI(credID)
+	return out
 }
 
 // reportTaskState reports a task transition through the gateway's

@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -224,7 +225,7 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 		return err
 	}
 
-	// Release capacity once, on the transition into STOPPED.
+	// Release capacity + reclaim the task ENI once, on the transition into STOPPED.
 	if msg.LastStatus == TaskStatusStopped && prev != TaskStatusStopped {
 		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
 		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB)
@@ -274,9 +275,9 @@ func (s *Service) releaseReservation(kv nats.KeyValue, cluster, instanceID, task
 		if uerr := json.Unmarshal(entry.Value(), &rec); uerr != nil {
 			return uerr
 		}
-		rec.ReservedCPU = maxZero(rec.ReservedCPU - cpu)
-		rec.ReservedMemoryMiB = maxZero(rec.ReservedMemoryMiB - mem)
-		rec.PlacedTasks = removeString(rec.PlacedTasks, taskID)
+		rec.ReservedCPU = max(rec.ReservedCPU-cpu, 0)
+		rec.ReservedMemoryMiB = max(rec.ReservedMemoryMiB-mem, 0)
+		rec.PlacedTasks = slices.DeleteFunc(rec.PlacedTasks, func(v string) bool { return v == taskID })
 		data, merr := json.Marshal(&rec)
 		if merr != nil {
 			return merr
@@ -286,21 +287,4 @@ func (s *Service) releaseReservation(kv nats.KeyValue, cluster, instanceID, task
 		}
 	}
 	return nil
-}
-
-func maxZero(v int) int {
-	if v < 0 {
-		return 0
-	}
-	return v
-}
-
-func removeString(in []string, s string) []string {
-	out := in[:0]
-	for _, v := range in {
-		if v != s {
-			out = append(out, v)
-		}
-	}
-	return out
 }

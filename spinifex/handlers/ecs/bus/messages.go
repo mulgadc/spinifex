@@ -79,6 +79,13 @@ type Assign struct {
 	TaskDefFamily   string            `json:"taskDefFamily"`
 	TaskDefRevision int               `json:"taskDefRevision"`
 	Containers      []AssignContainer `json:"containers"`
+	// ENI* describe the awsvpc task ENI the scheduler already created + hot-plugged
+	// into this instance. The agent finds the NIC by ENIMacAddress, moves it into
+	// the task netns, and assigns ENIPrivateIP. Empty for bridge/host mode.
+	ENIID         string `json:"eniId,omitempty"`
+	ENIMacAddress string `json:"eniMac,omitempty"`
+	ENIPrivateIP  string `json:"eniPrivateIp,omitempty"`
+	ENISubnetID   string `json:"eniSubnetId,omitempty"`
 	// CredID + TaskRoleARN are placeholders for the Sprint 4g IAM credential
 	// endpoint; the agent ignores them in 4e.
 	CredID      string    `json:"credId,omitempty"`

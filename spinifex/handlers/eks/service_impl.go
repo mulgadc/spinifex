@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1399,11 +1400,7 @@ func (s *EKSServiceImpl) ListAssociatedAccessPolicies(input *eks.ListAssociatedA
 }
 
 func (s *EKSServiceImpl) ListAccessPolicies(_ *eks.ListAccessPoliciesInput, _ string) (*eks.ListAccessPoliciesOutput, error) {
-	arns := make([]string, 0, len(supportedAccessPolicies))
-	for arn := range supportedAccessPolicies {
-		arns = append(arns, arn)
-	}
-	sort.Strings(arns)
+	arns := slices.Sorted(maps.Keys(supportedAccessPolicies))
 	policies := make([]*eks.AccessPolicy, 0, len(arns))
 	for _, arn := range arns {
 		policies = append(policies, &eks.AccessPolicy{

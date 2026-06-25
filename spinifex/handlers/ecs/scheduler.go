@@ -228,7 +228,7 @@ func (sc *Scheduler) reap() {
 	}
 }
 
-func (sc *Scheduler) reapBucket(kv nats.KeyValue, _ string, now time.Time) {
+func (sc *Scheduler) reapBucket(kv nats.KeyValue, accountID string, now time.Time) {
 	keys, err := keysWithPrefix(kv, "clusters/")
 	if err != nil {
 		return
@@ -251,12 +251,13 @@ func (sc *Scheduler) reapBucket(kv nats.KeyValue, _ string, now time.Time) {
 		if perr := putJSON(kv, k, &inst); perr != nil {
 			continue
 		}
-		sc.stopInstanceTasks(kv, inst.Cluster, inst.InstanceID)
+		sc.stopInstanceTasks(kv, accountID, inst.Cluster, inst.InstanceID)
 	}
 }
 
-// stopInstanceTasks transitions a reaped instance's non-stopped tasks to STOPPED.
-func (sc *Scheduler) stopInstanceTasks(kv nats.KeyValue, cluster, instanceID string) {
+// stopInstanceTasks transitions a reaped instance's non-stopped tasks to STOPPED
+// and reclaims each awsvpc task's ENI (leak guard for a dead agent).
+func (sc *Scheduler) stopInstanceTasks(kv nats.KeyValue, accountID, cluster, instanceID string) {
 	keys, err := keysWithPrefix(kv, TasksPrefix(cluster))
 	if err != nil {
 		return
@@ -276,6 +277,7 @@ func (sc *Scheduler) stopInstanceTasks(kv nats.KeyValue, cluster, instanceID str
 		if perr := putJSON(kv, k, &task); perr != nil {
 			continue
 		}
+		sc.svc.reclaimTaskENI(accountID, &task)
 	}
 }
 

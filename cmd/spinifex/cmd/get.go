@@ -19,8 +19,10 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -206,11 +208,7 @@ func runGetNodes(cmd *cobra.Command, args []string) {
 	for name := range respondedNodes {
 		nodeSet[name] = struct{}{}
 	}
-	nodeNames := make([]string, 0, len(nodeSet))
-	for name := range nodeSet {
-		nodeNames = append(nodeNames, name)
-	}
-	sort.Strings(nodeNames)
+	nodeNames := slices.Sorted(maps.Keys(nodeSet))
 
 	for _, name := range nodeNames {
 		nodeCfg := cfg.Nodes[name]

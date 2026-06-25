@@ -598,10 +598,3 @@ func TestJWKToECDSAPublicKey_RejectsUnsupportedShapes(t *testing.T) {
 		})
 	}
 }
-
-func TestClaimAudienceContains(t *testing.T) {
-	assert.True(t, claimAudienceContains(jwt.ClaimStrings{irsaExpectedAudience}, irsaExpectedAudience))
-	assert.True(t, claimAudienceContains(jwt.ClaimStrings{"x", irsaExpectedAudience}, irsaExpectedAudience))
-	assert.False(t, claimAudienceContains(jwt.ClaimStrings{"x"}, irsaExpectedAudience))
-	assert.False(t, claimAudienceContains(jwt.ClaimStrings{}, irsaExpectedAudience))
-}

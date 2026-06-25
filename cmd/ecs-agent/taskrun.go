@@ -54,24 +54,35 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 		return
 	}
 
+	// awsvpc: build the task netns from the hot-plugged ENI before any container.
+	netnsPath, err := a.setupTaskNetns(as)
+	if err != nil {
+		slog.Error("ecs-agent: task netns setup failed", "task", as.TaskID, "err", err)
+		a.reportTaskState(as, bus.TaskStatusStopped, "network setup failed: "+err.Error(), nil)
+		return
+	}
+
 	statuses := make([]bus.ContainerStatus, 0, len(as.Containers))
 	for _, c := range as.Containers {
 		if _, err := a.puller.Pull(ctx, ctrruntime.PullSpec{Ref: c.Image}, a.resolver); err != nil {
 			slog.Error("ecs-agent: pull failed", "task", as.TaskID, "image", c.Image, "err", err)
+			a.teardownTaskNetns(as)
 			a.reportTaskState(as, bus.TaskStatusStopped, "image pull failed: "+err.Error(), statuses)
 			return
 		}
 
 		cid := containerID(as.TaskID, c.Name)
 		spec := ctrruntime.RunSpec{
-			Image:   c.Image,
-			Command: c.Command,
-			Env:     c.Environment,
-			Labels:  taskLabels(as, c.Name),
+			Image:     c.Image,
+			Command:   c.Command,
+			Env:       c.Environment,
+			Labels:    taskLabels(as, c.Name),
+			NetnsPath: netnsPath,
 		}
 		id, err := a.runner.Run(ctx, cid, spec)
 		if err != nil {
 			slog.Error("ecs-agent: run failed", "task", as.TaskID, "container", c.Name, "err", err)
+			a.teardownTaskNetns(as)
 			a.reportTaskState(as, bus.TaskStatusStopped, "container start failed: "+err.Error(), statuses)
 			return
 		}
@@ -92,6 +103,7 @@ func (a *Agent) waitContainer(ctx context.Context, as *bus.Assign, name, contain
 		return
 	}
 	exit := status.ExitCode
+	a.teardownTaskNetns(as)
 	statuses := []bus.ContainerStatus{{Name: name, Status: bus.TaskStatusStopped, ContainerID: containerID, ExitCode: &exit}}
 	a.reportTaskState(as, bus.TaskStatusStopped, fmt.Sprintf("container %s exited (%d)", name, exit), statuses)
 	slog.Info("ecs-agent: task stopped", "task", as.TaskID, "container", name, "exitCode", exit)

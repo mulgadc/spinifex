@@ -1,8 +1,8 @@
 package formation
 
 import (
+	"maps"
 	"slices"
-	"sort"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
 )
@@ -59,11 +59,7 @@ func BuildPredastoreNodes(nodes map[string]NodeInfo) []admin.PredastoreNodeConfi
 
 // sortedNodes returns nodes sorted by name.
 func sortedNodes(nodes map[string]NodeInfo) []NodeInfo {
-	names := make([]string, 0, len(nodes))
-	for name := range nodes {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(nodes))
 
 	sorted := make([]NodeInfo, len(names))
 	for i, name := range names {

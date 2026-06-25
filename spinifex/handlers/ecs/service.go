@@ -48,6 +48,9 @@ type Service struct {
 	nc     *nats.Conn
 	region string
 	suffix string
+	// eni owns the awsvpc task-ENI control-plane (create/attach/detach/delete).
+	// Defaults to the NATS-backed controller; tests substitute a stub.
+	eni eniController
 }
 
 var _ ECSService = (*Service)(nil)
@@ -56,7 +59,7 @@ var _ ECSService = (*Service)(nil)
 // ARNs it mints; suffix is the AWS-parity internal DNS suffix (reserved for ECR
 // endpoint composition).
 func NewService(nc *nats.Conn, region, suffix string) *Service {
-	return &Service{nc: nc, region: region, suffix: suffix}
+	return &Service{nc: nc, region: region, suffix: suffix, eni: newNATSENIController(nc)}
 }
 
 // defaultCluster is the implicit cluster name when a request omits one.

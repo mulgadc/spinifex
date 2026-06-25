@@ -51,6 +51,12 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 	strategy := placementStrategyFromAWS(input.PlacementStrategy)
 	cpu, mem := taskDef.reservedCPU(), taskDef.reservedMemory()
 
+	mode := resolveNetworkMode(taskDef)
+	netCfg, err := parseAwsvpcConfig(input, mode)
+	if err != nil {
+		return nil, err
+	}
+
 	out := &ecs.RunTaskOutput{}
 	for i := 0; i < count; i++ {
 		taskID := uuid.NewString()
@@ -64,6 +70,14 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 		}
 
 		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem)
+		rec.NetworkMode = mode
+		if mode == NetworkModeAwsvpc {
+			if failure := s.provisionTaskENI(kv, accountID, cluster, rec, netCfg); failure != nil {
+				out.Failures = append(out.Failures, failure)
+				continue
+			}
+		}
+
 		if err := putJSON(kv, TaskKey(cluster, taskID), rec); err != nil {
 			return nil, err
 		}
@@ -73,6 +87,37 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
 	}
 	return out, nil
+}
+
+// provisionTaskENI allocates and hot-plugs an awsvpc task's ENI, stamping its
+// identity onto rec. On any failure it rolls back (releases a half-allocated ENI
+// and the placement reservation) and returns a RunTask failure for this task —
+// the caller skips it without leaking the ENI or the reserved capacity.
+func (s *Service) provisionTaskENI(kv nats.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
+	rollback := func(reason string, err error) *ecs.Failure {
+		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB); rerr != nil {
+			slog.Error("ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
+		}
+		return &ecs.Failure{Reason: aws.String(reason), Detail: aws.String(err.Error())}
+	}
+
+	alloc, err := s.eni.Allocate(accountID, netCfg.firstSubnet(), netCfg.securityGroupPtrs())
+	if err != nil {
+		return rollback("RESOURCE:eni", err)
+	}
+	rec.ENIID = alloc.ENIID
+	rec.ENIMacAddress = alloc.MacAddress
+	rec.ENIPrivateIP = alloc.PrivateIP
+	rec.ENISubnetID = alloc.SubnetID
+
+	attachmentID, err := s.eni.Attach(accountID, rec.ContainerInstanceID, alloc.ENIID)
+	if err != nil {
+		s.reclaimTaskENI(accountID, rec)
+		rec.ENIID, rec.ENIMacAddress, rec.ENIPrivateIP, rec.ENISubnetID = "", "", "", ""
+		return rollback("RESOURCE:eni", err)
+	}
+	rec.ENIAttachmentID = attachmentID
+	return nil
 }
 
 // reservePlacement bin-packs a task onto an ACTIVE instance and commits the
@@ -152,6 +197,10 @@ func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID
 		TaskARN:         rec.ARN,
 		TaskDefFamily:   td.Family,
 		TaskDefRevision: td.Revision,
+		ENIID:           rec.ENIID,
+		ENIMacAddress:   rec.ENIMacAddress,
+		ENIPrivateIP:    rec.ENIPrivateIP,
+		ENISubnetID:     rec.ENISubnetID,
 		AssignedAt:      time.Now().UTC(),
 	}
 	for _, c := range td.Containers {
@@ -220,6 +269,19 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 	}
 	if r.StoppedReason != "" {
 		t.StoppedReason = aws.String(r.StoppedReason)
+	}
+	if r.ENIID != "" {
+		t.Attachments = append(t.Attachments, &ecs.Attachment{
+			Id:     aws.String(r.ENIAttachmentID),
+			Type:   aws.String("ElasticNetworkInterface"),
+			Status: aws.String(r.LastStatus),
+			Details: []*ecs.KeyValuePair{
+				{Name: aws.String("networkInterfaceId"), Value: aws.String(r.ENIID)},
+				{Name: aws.String("privateIPv4Address"), Value: aws.String(r.ENIPrivateIP)},
+				{Name: aws.String("macAddress"), Value: aws.String(r.ENIMacAddress)},
+				{Name: aws.String("subnetId"), Value: aws.String(r.ENISubnetID)},
+			},
+		})
 	}
 	for _, c := range r.Containers {
 		ctr := &ecs.Container{Name: aws.String(c.Name), LastStatus: aws.String(c.Status)}

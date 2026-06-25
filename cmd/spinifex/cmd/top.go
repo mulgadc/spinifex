@@ -19,8 +19,9 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"time"
 
@@ -81,11 +82,7 @@ func runTopNodes(cmd *cobra.Command, args []string) {
 	for name := range respondedNodes {
 		nodeSet[name] = struct{}{}
 	}
-	nodeNames := make([]string, 0, len(nodeSet))
-	for name := range nodeSet {
-		nodeNames = append(nodeNames, name)
-	}
-	sort.Strings(nodeNames)
+	nodeNames := slices.Sorted(maps.Keys(nodeSet))
 
 	nodeTable := pterm.TableData{
 		{"NAME", "CPU (used/total)", "MEM (used/total)", "GPU (used/total)", "VMs"},
@@ -141,11 +138,7 @@ func runTopNodes(cmd *cobra.Command, args []string) {
 
 	fmt.Println()
 
-	capNames := make([]string, 0, len(capacityMap))
-	for name := range capacityMap {
-		capNames = append(capNames, name)
-	}
-	sort.Strings(capNames)
+	capNames := slices.Sorted(maps.Keys(capacityMap))
 
 	capTable := pterm.TableData{
 		{"INSTANCE TYPE", "AVAILABLE", "VCPU", "MEMORY"},

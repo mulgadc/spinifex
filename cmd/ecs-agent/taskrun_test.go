@@ -182,6 +182,46 @@ func countStatus(states []bus.TaskState, taskID, status string) int {
 	return n
 }
 
+// awsvpc: an assign carrying an ENI MAC builds the task netns and passes its
+// path to the container RunSpec.
+func TestRunTask_AwsvpcBuildsNetns(t *testing.T) {
+	pub := &historyPub{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(pub, rt)
+	f := &fakeNetRunner{linkOut: linkWithENI}
+	a.netns = newTestNetns(f)
+
+	as := testAssign()
+	as.ENIMacAddress = "52:54:00:de:ad:01"
+	a.runTask(context.Background(), as)
+
+	if !f.sawAny("ip netns add ecs-t-001") {
+		t.Fatalf("expected task netns build, got %v", f.joined())
+	}
+	if len(rt.Runs) != 1 || rt.Runs[0].NetnsPath != netnsPathFor("t-001") {
+		t.Fatalf("want NetnsPath %q on RunSpec, got %+v", netnsPathFor("t-001"), rt.Runs)
+	}
+}
+
+// bridge/host: no ENI MAC means no netns is built and the container runs in the
+// host (VM) netns (empty NetnsPath).
+func TestRunTask_NoMacSkipsNetns(t *testing.T) {
+	pub := &historyPub{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(pub, rt)
+	f := &fakeNetRunner{linkOut: linkWithENI}
+	a.netns = newTestNetns(f)
+
+	a.runTask(context.Background(), testAssign())
+
+	if len(f.joined()) != 0 {
+		t.Fatalf("expected no netns commands, got %v", f.joined())
+	}
+	if len(rt.Runs) != 1 || rt.Runs[0].NetnsPath != "" {
+		t.Fatalf("want empty NetnsPath, got %+v", rt.Runs)
+	}
+}
+
 func TestContainerID(t *testing.T) {
 	if got := containerID("t-1", "web"); got != "t-1-web" {
 		t.Errorf("containerID = %q, want t-1-web", got)

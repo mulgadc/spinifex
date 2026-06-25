@@ -5,6 +5,7 @@ import {
   BookOpen,
   Boxes,
   Camera,
+  Container,
   Crosshair,
   Globe,
   HardDrive,
@@ -357,6 +358,17 @@ export function SidebarLayout() {
                 >
                   <Package className="size-4" />
                   <span>ECR</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <Link to="/ecs/list-clusters">
+                <SidebarMenuButton
+                  isActive={pathname.startsWith("/ecs/list-clusters")}
+                  tooltip="ECS clusters"
+                >
+                  <Container className="size-4" />
+                  <span>ECS</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

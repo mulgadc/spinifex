@@ -57,7 +57,6 @@ linters:
       check-type-assertions: true
       exclude-functions:
         - (*github.com/nats-io/nats.go.Subscription).Unsubscribe # cleanup-only, errors not actionable
-        - (*github.com/kdomanski/iso9660.ImageWriter).Cleanup # deferred cleanup, errors not actionable
 
     govet:
       enable-all: true

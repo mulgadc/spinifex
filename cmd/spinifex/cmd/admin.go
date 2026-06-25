@@ -740,7 +740,6 @@ func bakeCACertIntoImage(imagePath, caCertPath string) {
 		slog.Warn("CA bake skipped: virt-customize could not customize image; imported image will not auto-trust the gateway", "err", err, "output", string(out))
 		return
 	}
-	slog.Info("Baked deployment CA into imported image trust store", "image", imagePath)
 }
 
 func runimagesRemoveCmd(cmd *cobra.Command, args []string) {

@@ -2,44 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
 	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
-
-// historyPub records every published message in order (capturePub keeps only the
-// last per subject, which loses the RUNNING→STOPPED transition on one subject).
-type historyPub struct {
-	mu   sync.Mutex
-	msgs [][]byte
-}
-
-func (h *historyPub) Publish(_ string, data []byte) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	h.msgs = append(h.msgs, cp)
-	return nil
-}
-
-func (h *historyPub) states() []bus.TaskState {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	out := make([]bus.TaskState, 0, len(h.msgs))
-	for _, raw := range h.msgs {
-		var ts bus.TaskState
-		if err := json.Unmarshal(raw, &ts); err == nil {
-			out = append(out, ts)
-		}
-	}
-	return out
-}
 
 func testAssign() *bus.Assign {
 	return &bus.Assign{
@@ -54,17 +23,17 @@ func testAssign() *bus.Assign {
 	}
 }
 
-func newRunAgent(pub publisher, rt *ctrruntime.FakePuller) *Agent {
-	return newAgent(config{}, testIdentity(), pub, rt, rt, nil)
+func newRunAgent(cp controlPlane, rt *ctrruntime.FakePuller) *Agent {
+	return newAgent(config{}, testIdentity(), cp, rt, rt, nil)
 }
 
 // runTask with no runtime reports the task STOPPED instead of crashing.
 func TestRunTask_NoRuntimeReportsStopped(t *testing.T) {
-	pub := &historyPub{}
-	a := newAgent(config{}, testIdentity(), pub, nil, nil, nil)
+	cp := &fakeCP{}
+	a := newAgent(config{}, testIdentity(), cp, nil, nil, nil)
 	a.runTask(context.Background(), testAssign())
 
-	st := pub.states()
+	st := cp.taskStates()
 	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
 		t.Fatalf("want one STOPPED state, got %+v", st)
 	}
@@ -76,9 +45,9 @@ func TestRunTask_NoRuntimeReportsStopped(t *testing.T) {
 // Happy path: pull + run reports RUNNING with the container ID; Wait blocking
 // (forced error) means no STOPPED overwrite, so we can assert the RUNNING frame.
 func TestRunTask_PullRunReportsRunning(t *testing.T) {
-	pub := &historyPub{}
+	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
-	a := newRunAgent(pub, rt)
+	a := newRunAgent(cp, rt)
 	as := testAssign()
 	a.runTask(context.Background(), as)
 
@@ -92,7 +61,7 @@ func TestRunTask_PullRunReportsRunning(t *testing.T) {
 		t.Errorf("missing task label: %+v", rt.Runs[0].Labels)
 	}
 
-	st := pub.states()
+	st := cp.taskStates()
 	if len(st) == 0 || st[len(st)-1].LastStatus != bus.TaskStatusRunning {
 		t.Fatalf("want RUNNING final state, got %+v", st)
 	}
@@ -103,15 +72,15 @@ func TestRunTask_PullRunReportsRunning(t *testing.T) {
 
 // A pull failure reports STOPPED and never starts the container.
 func TestRunTask_PullFailureReportsStopped(t *testing.T) {
-	pub := &historyPub{}
+	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{Err: errors.New("pull denied")}
-	a := newRunAgent(pub, rt)
+	a := newRunAgent(cp, rt)
 	a.runTask(context.Background(), testAssign())
 
 	if len(rt.Runs) != 0 {
 		t.Errorf("container should not run after pull failure, got %+v", rt.Runs)
 	}
-	st := pub.states()
+	st := cp.taskStates()
 	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
 		t.Fatalf("want STOPPED, got %+v", st)
 	}
@@ -119,12 +88,12 @@ func TestRunTask_PullFailureReportsStopped(t *testing.T) {
 
 // A run failure reports STOPPED.
 func TestRunTask_RunFailureReportsStopped(t *testing.T) {
-	pub := &historyPub{}
+	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{RunErr: errors.New("start boom")}
-	a := newRunAgent(pub, rt)
+	a := newRunAgent(cp, rt)
 	a.runTask(context.Background(), testAssign())
 
-	st := pub.states()
+	st := cp.taskStates()
 	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
 		t.Fatalf("want STOPPED, got %+v", st)
 	}
@@ -132,14 +101,14 @@ func TestRunTask_RunFailureReportsStopped(t *testing.T) {
 
 // On container exit, waitContainer reports STOPPED with the exit code.
 func TestRunTask_ExitReportsStoppedWithCode(t *testing.T) {
-	pub := &historyPub{}
+	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitCode: 7}
-	a := newRunAgent(pub, rt)
+	a := newRunAgent(cp, rt)
 	a.runTask(context.Background(), testAssign())
 
 	deadline := time.After(time.Second)
 	for {
-		st := pub.states()
+		st := cp.taskStates()
 		if len(st) > 0 && st[len(st)-1].LastStatus == bus.TaskStatusStopped {
 			last := st[len(st)-1]
 			if len(last.Containers) != 1 || last.Containers[0].ExitCode == nil || *last.Containers[0].ExitCode != 7 {
@@ -149,18 +118,76 @@ func TestRunTask_ExitReportsStoppedWithCode(t *testing.T) {
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("no STOPPED state after exit; got %+v", pub.states())
+			t.Fatalf("no STOPPED state after exit; got %+v", cp.taskStates())
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
 }
 
+// pollAssignments dispatches each assign once and acks it on the next poll.
+func TestPollAssignments_DispatchesOnceAndAcks(t *testing.T) {
+	as := testAssign()
+	cp := &fakeCP{pollReplies: [][]bus.Assign{
+		{*as}, // poll 1: one pending assign
+		{*as}, // poll 2: still present (not yet acked when poll 2 was issued)
+		nil,   // poll 3: gateway dropped it after the ack
+	}}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go a.pollAssignments(ctx)
+
+	// runTask reports RUNNING through the (mutex-guarded) control plane. With the
+	// assign returned on two consecutive polls, dedup means exactly one dispatch →
+	// exactly one RUNNING report.
+	deadline := time.After(time.Second)
+	for {
+		if running := countStatus(cp.taskStates(), as.TaskID, bus.TaskStatusRunning); running >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("assign was never dispatched (no RUNNING report)")
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	if running := countStatus(cp.taskStates(), as.TaskID, bus.TaskStatusRunning); running != 1 {
+		t.Errorf("task dispatched %d times, want exactly 1 (dedup on taskID)", running)
+	}
+	// The taskID must appear in a later poll's ack list.
+	acked := false
+	for _, ack := range cp.acks() {
+		for _, id := range ack {
+			if id == as.TaskID {
+				acked = true
+			}
+		}
+	}
+	if !acked {
+		t.Errorf("task %s was never acked; acks=%v", as.TaskID, cp.acks())
+	}
+}
+
+func countStatus(states []bus.TaskState, taskID, status string) int {
+	n := 0
+	for _, st := range states {
+		if st.TaskID == taskID && st.LastStatus == status {
+			n++
+		}
+	}
+	return n
+}
+
 // awsvpc: an assign carrying an ENI MAC builds the task netns and passes its
 // path to the container RunSpec.
 func TestRunTask_AwsvpcBuildsNetns(t *testing.T) {
-	pub := &historyPub{}
+	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
-	a := newRunAgent(pub, rt)
+	a := newRunAgent(cp, rt)
 	f := &fakeNetRunner{linkOut: linkWithENI}
 	a.netns = newTestNetns(f)
 
@@ -179,9 +206,9 @@ func TestRunTask_AwsvpcBuildsNetns(t *testing.T) {
 // bridge/host: no ENI MAC means no netns is built and the container runs in the
 // host (VM) netns (empty NetnsPath).
 func TestRunTask_NoMacSkipsNetns(t *testing.T) {
-	pub := &historyPub{}
+	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
-	a := newRunAgent(pub, rt)
+	a := newRunAgent(cp, rt)
 	f := &fakeNetRunner{linkOut: linkWithENI}
 	a.netns = newTestNetns(f)
 

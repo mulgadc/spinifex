@@ -34,6 +34,11 @@ type ECSService interface {
 	RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error)
 	DescribeTasks(input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error)
 	ListTasks(input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error)
+
+	SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error)
+
+	// PollAssignments drains an instance's task-assignment inbox (agent → gateway).
+	PollAssignments(input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error)
 }
 
 // Service is the daemon-side ECS control-plane implementation, backed by the

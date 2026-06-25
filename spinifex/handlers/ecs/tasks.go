@@ -81,7 +81,7 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 		if err := putJSON(kv, TaskKey(cluster, taskID), rec); err != nil {
 			return nil, err
 		}
-		if err := s.publishAssign(accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
+		if err := s.publishAssign(kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
 			slog.Error("ECS RunTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
 		}
 		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
@@ -184,8 +184,11 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRe
 	return rec
 }
 
-// publishAssign sends the task assignment to the instance's agent over the bus.
-func (s *Service) publishAssign(accountID, cluster, instanceID string, rec *TaskRecord, td *TaskDefRecord) error {
+// publishAssign writes the task assignment into the instance's KV inbox. The
+// agent drains it by polling the gateway (PollAssignments) rather than
+// subscribing to NATS, so the bus stays host-internal. Durable + restart-safe:
+// an unacked assign survives an agent crash and is re-delivered on the next poll.
+func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID string, rec *TaskRecord, td *TaskDefRecord) error {
 	msg := bus.Assign{
 		AccountID:       accountID,
 		ClusterName:     cluster,
@@ -203,12 +206,7 @@ func (s *Service) publishAssign(accountID, cluster, instanceID string, rec *Task
 	for _, c := range td.Containers {
 		msg.Containers = append(msg.Containers, c.toAssignContainer())
 	}
-	data, err := json.Marshal(&msg)
-	if err != nil {
-		return err
-	}
-	subj := bus.AssignSubject(accountID, cluster, instanceID)
-	return s.nc.Publish(subj, data)
+	return putJSON(kv, AssignmentKey(cluster, instanceID, rec.TaskID), &msg)
 }
 
 // DescribeTasks returns task records for the named tasks in a cluster.

@@ -2,40 +2,47 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
-
-	"github.com/nats-io/nats.go"
 
 	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
-// subscribeAssign wires the per-instance assign subject to the task runner. It is
-// a no-op when the agent has no live NATS connection (unit tests drive runTask
-// directly).
-func (a *Agent) subscribeAssign(ctx context.Context) error {
-	if a.nc == nil {
-		return nil
-	}
-	subj := bus.AssignSubject(a.id.AccountID, a.id.ClusterName, a.id.InstanceID)
-	sub, err := a.nc.Subscribe(subj, func(msg *nats.Msg) {
-		var as bus.Assign
-		if err := json.Unmarshal(msg.Data, &as); err != nil {
-			slog.Error("ecs-agent: bad assign payload", "err", err)
+// pollAssignments drains the instance's assignment inbox on a ticker until ctx is
+// cancelled. Each assign is dispatched to runTask exactly once; the taskIDs seen
+// on a poll are acked on the next poll so the gateway can drop them — a crash
+// before ack re-delivers (at-least-once), matching ACS. A failed poll is logged
+// and retried on the next tick rather than killing the loop.
+func (a *Agent) pollAssignments(ctx context.Context) {
+	ticker := time.NewTicker(a.cfg.PollInterval)
+	defer ticker.Stop()
+
+	dispatched := map[string]bool{}
+	var ackNext []string
+	for {
+		select {
+		case <-ctx.Done():
 			return
+		case <-ticker.C:
+			assigns, err := a.cp.PollAssignments(a.id.ClusterName, a.id.InstanceID, ackNext)
+			if err != nil {
+				slog.Warn("ecs-agent: poll assignments failed", "err", err)
+				continue
+			}
+			ackNext = ackNext[:0]
+			for i := range assigns {
+				as := assigns[i]
+				if !dispatched[as.TaskID] {
+					dispatched[as.TaskID] = true
+					slog.Info("ecs-agent: task assigned", "task", as.TaskID, "containers", len(as.Containers))
+					go a.runTask(ctx, &as)
+				}
+				ackNext = append(ackNext, as.TaskID)
+			}
 		}
-		slog.Info("ecs-agent: task assigned", "task", as.TaskID, "containers", len(as.Containers))
-		go a.runTask(ctx, &as)
-	})
-	if err != nil {
-		return fmt.Errorf("subscribe %s: %w", subj, err)
 	}
-	a.closers = append(a.closers, sub.Unsubscribe)
-	slog.Info("ecs-agent: assign subscription active", "subject", subj)
-	return nil
 }
 
 // runTask pulls each container image, starts the containers, and reports task
@@ -102,9 +109,8 @@ func (a *Agent) waitContainer(ctx context.Context, as *bus.Assign, name, contain
 	slog.Info("ecs-agent: task stopped", "task", as.TaskID, "container", name, "exitCode", exit)
 }
 
-// setupTaskNetns builds the awsvpc task netns when the assign carries an ENI MAC.
-// Returns an empty path (host netns) for bridge/host tasks or when no netns
-// manager is configured.
+// setupTaskNetns builds the awsvpc task netns from the hot-plugged ENI. Bridge/
+// host tasks (no ENI MAC) and a nil controller are no-ops returning an empty path.
 func (a *Agent) setupTaskNetns(as *bus.Assign) (string, error) {
 	if as.ENIMacAddress == "" || a.netns == nil {
 		return "", nil
@@ -112,7 +118,7 @@ func (a *Agent) setupTaskNetns(as *bus.Assign) (string, error) {
 	return a.netns.Setup(as.TaskID, as.ENIMacAddress)
 }
 
-// teardownTaskNetns removes the awsvpc task netns; a no-op for bridge/host tasks.
+// teardownTaskNetns removes the awsvpc task netns; no-op for bridge/host tasks.
 func (a *Agent) teardownTaskNetns(as *bus.Assign) {
 	if as.ENIMacAddress == "" || a.netns == nil {
 		return
@@ -122,9 +128,10 @@ func (a *Agent) teardownTaskNetns(as *bus.Assign) {
 	}
 }
 
-// reportTaskState publishes a TaskState message on the task's state subject.
+// reportTaskState reports a task transition through the gateway's
+// SubmitTaskStateChange action.
 func (a *Agent) reportTaskState(as *bus.Assign, status, reason string, containers []bus.ContainerStatus) {
-	if a.pub == nil {
+	if a.cp == nil {
 		return
 	}
 	msg := bus.TaskState{
@@ -137,14 +144,8 @@ func (a *Agent) reportTaskState(as *bus.Assign, status, reason string, container
 		Reason:      reason,
 		ReportedAt:  time.Now().UTC(),
 	}
-	data, err := json.Marshal(&msg)
-	if err != nil {
-		slog.Error("ecs-agent: marshal task-state failed", "task", as.TaskID, "err", err)
-		return
-	}
-	subj := bus.TaskStateSubject(a.id.AccountID, a.id.ClusterName, as.TaskID)
-	if err := a.pub.Publish(subj, data); err != nil {
-		slog.Error("ecs-agent: publish task-state failed", "task", as.TaskID, "subject", subj, "err", err)
+	if err := a.cp.SubmitTaskState(msg); err != nil {
+		slog.Error("ecs-agent: report task-state failed", "task", as.TaskID, "err", err)
 	}
 }
 

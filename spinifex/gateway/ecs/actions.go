@@ -119,3 +119,26 @@ func ListTasks(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	}
 	return handlers_ecs.NewNATSECSService(nc).ListTasks(input, accountID)
 }
+
+// SubmitTaskStateChange is the agent's task-state report path over the gateway
+// (replaces the Layer-2 bus publish). The account is the SigV4 caller, so an
+// instance cannot report state for another account's task.
+func SubmitTaskStateChange(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.SubmitTaskStateChangeInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).SubmitTaskStateChange(input, accountID)
+}
+
+// PollAssignments drains the calling instance's assignment inbox (replaces the
+// Layer-2 assign subscribe). Internal agent↔gateway action, not an AWS SDK
+// shape; the response carries bus.Assign with an RFC3339 time, so the gateway
+// encodes it with encoding/json (RawJSONActions), not the jsonutil marshaler.
+func PollAssignments(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(handlers_ecs.PollAssignmentsInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).PollAssignments(input, accountID)
+}

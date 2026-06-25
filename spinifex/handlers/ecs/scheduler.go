@@ -22,6 +22,12 @@ const (
 	reconcileInterval   = 10 * time.Second
 	heartbeatTimeout    = 90 * time.Second
 	stoppedReasonReaped = "ContainerInstance disconnected"
+
+	// sweepInterval is how often the leader prunes stale STOPPED task records;
+	// stoppedTaskRetention keeps a just-stopped task describable (DescribeTasks /
+	// UI exit reason) before it is dropped, matching AWS's ~1h STOPPED window.
+	sweepInterval        = 60 * time.Second
+	stoppedTaskRetention = 1 * time.Hour
 )
 
 // Scheduler is the per-daemon ECS control loop. A single leader (elected via the
@@ -49,9 +55,11 @@ func (sc *Scheduler) Run(ctx context.Context) {
 	leaseTicker := time.NewTicker(leaseRefresh)
 	reaperTicker := time.NewTicker(reaperInterval)
 	reconcileTicker := time.NewTicker(reconcileInterval)
+	sweepTicker := time.NewTicker(sweepInterval)
 	defer leaseTicker.Stop()
 	defer reaperTicker.Stop()
 	defer reconcileTicker.Stop()
+	defer sweepTicker.Stop()
 
 	sc.evaluateLeadership(ctx)
 	for {
@@ -68,6 +76,10 @@ func (sc *Scheduler) Run(ctx context.Context) {
 		case <-reconcileTicker.C:
 			if sc.isLeader() {
 				sc.svc.reconcileAllServices()
+			}
+		case <-sweepTicker.C:
+			if sc.isLeader() {
+				sc.sweepStoppedTasks()
 			}
 		}
 	}

@@ -21,9 +21,13 @@ var _ Runner = (*containerdPuller)(nil)
 func (p *containerdPuller) Run(ctx context.Context, id string, spec RunSpec) (string, error) {
 	ctx = namespaces.WithNamespace(ctx, ecsNamespace)
 
-	image, err := p.client.GetImage(ctx, spec.Image)
+	ref, err := normalizeRef(spec.Image)
 	if err != nil {
-		return "", fmt.Errorf("get image %s: %w", spec.Image, err)
+		return "", err
+	}
+	image, err := p.client.GetImage(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("get image %s: %w", ref, err)
 	}
 
 	specOpts := []oci.SpecOpts{

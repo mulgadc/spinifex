@@ -9,6 +9,7 @@ import (
 	"github.com/containerd/containerd/v2/core/remotes"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/distribution/reference"
 )
 
 // ecsNamespace isolates ecs-agent images/containers in containerd, mirroring the
@@ -51,25 +52,42 @@ func New(socket string) (Runtime, error) {
 func (p *containerdPuller) Pull(ctx context.Context, spec PullSpec, r Resolver) (Image, error) {
 	ctx = namespaces.WithNamespace(ctx, ecsNamespace)
 
-	resolver, err := newDockerResolver(ctx, spec.Ref, r)
+	ref, err := normalizeRef(spec.Ref)
 	if err != nil {
 		return Image{}, err
 	}
 
-	img, err := p.client.Pull(ctx, spec.Ref,
+	resolver, err := newDockerResolver(ctx, ref, r)
+	if err != nil {
+		return Image{}, err
+	}
+
+	img, err := p.client.Pull(ctx, ref,
 		containerd.WithPullUnpack,
 		containerd.WithResolver(resolver),
 	)
 	if err != nil {
-		return Image{}, fmt.Errorf("pull %s: %w", spec.Ref, err)
+		return Image{}, fmt.Errorf("pull %s: %w", ref, err)
 	}
 
 	target := img.Target()
 	return Image{
-		Ref:    spec.Ref,
+		Ref:    ref,
 		Digest: target.Digest.String(),
 		Size:   target.Size,
 	}, nil
+}
+
+// normalizeRef expands a task-definition image string into the fully-qualified
+// reference containerd's resolver requires: a bare "nginx:alpine" becomes
+// "docker.io/library/nginx:alpine" and an untagged ref gets ":latest". Without
+// this, containerd parses the bare ref as "dummy://nginx:alpine" and rejects it.
+func normalizeRef(ref string) (string, error) {
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return "", fmt.Errorf("parse image ref %q: %w", ref, err)
+	}
+	return reference.TagNameOnly(named).String(), nil
 }
 
 // Close releases the containerd client connection.

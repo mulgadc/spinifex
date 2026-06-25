@@ -197,6 +197,92 @@ func TestService_DescribeAndList(t *testing.T) {
 	assert.Len(t, miss.Failures, 1)
 }
 
+// StartTask places one task per named container instance and assigns it.
+func TestService_StartTask_PlacesPerInstance(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+
+	out, err := svc.StartTask(&ecs.StartTaskInput{
+		Cluster:            aws.String("web"),
+		TaskDefinition:     aws.String("app"),
+		ContainerInstances: []*string{aws.String("i-1")},
+		Group:              aws.String("custom"),
+		StartedBy:          aws.String("operator"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Tasks, 1)
+	assert.Empty(t, out.Failures)
+	assert.Equal(t, TaskStatusPending, aws.StringValue(out.Tasks[0].LastStatus))
+
+	tasks, err := svc.listTaskRecords(kv, "web")
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "custom", tasks[0].Group)
+	assert.Equal(t, "operator", tasks[0].StartedBy)
+	assert.Equal(t, "i-1", tasks[0].ContainerInstanceID)
+}
+
+// StartTask onto an unknown / too-small instance returns a placement Failure,
+// not a hard error, and onto an unknown cluster a ClusterNotFound error.
+func TestService_StartTask_Failures(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+
+	out, err := svc.StartTask(&ecs.StartTaskInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("app"),
+		ContainerInstances: []*string{aws.String("i-absent")},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Tasks)
+	require.Len(t, out.Failures, 1)
+
+	_, err = svc.StartTask(&ecs.StartTaskInput{
+		Cluster: aws.String("ghost"), TaskDefinition: aws.String("app"),
+		ContainerInstances: []*string{aws.String("i-1")},
+	}, testAccountID)
+	require.Error(t, err)
+}
+
+// StopTask transitions a running service task to STOPPED, releases its
+// reservation, and deregisters its ELBv2 targets.
+func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
+	svc, reg, kv := serviceTestRig(t)
+	const tgARN = "arn:aws:elasticloadbalancing:ap-southeast-2:123456789012:targetgroup/web/abc"
+
+	_, err := svc.CreateService(&ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(0),
+		LoadBalancers: []*ecs.LoadBalancer{{
+			TargetGroupArn: aws.String(tgARN), ContainerName: aws.String("app"), ContainerPort: aws.Int64(80),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	task := &TaskRecord{
+		TaskID: "t-9", Cluster: "web", Group: serviceTaskGroup("web"),
+		ContainerInstanceID: "i-1", LastStatus: TaskStatusRunning,
+		NetworkMode: NetworkModeAwsvpc, ENIPrivateIP: "10.0.1.9",
+		ReservedCPU: 64, ReservedMemoryMiB: 64,
+	}
+	require.NoError(t, putJSON(kv, TaskKey("web", "t-9"), task))
+
+	out, err := svc.StopTask(&ecs.StopTaskInput{
+		Cluster: aws.String("web"), Task: aws.String("t-9"), Reason: aws.String("bye"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, TaskStatusStopped, aws.StringValue(out.Task.LastStatus))
+	assert.Equal(t, []string{key(tgARN, "10.0.1.9", 80)}, reg.deregistered)
+
+	// Idempotent: a second stop is a no-op (no extra deregister).
+	_, err = svc.StopTask(&ecs.StopTaskInput{Cluster: aws.String("web"), Task: aws.String("t-9")}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, reg.deregistered, 1)
+}
+
+func TestService_StopTask_NotFound(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	_, err := svc.StopTask(&ecs.StopTaskInput{Cluster: aws.String("web"), Task: aws.String("ghost")}, testAccountID)
+	require.Error(t, err)
+}
+
 // A service with a target group registers each task's ENI IP on RUNNING and
 // deregisters it on STOPPED (ecs-v1.md Q8, single-writer).
 func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) {

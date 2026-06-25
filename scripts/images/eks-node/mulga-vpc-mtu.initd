@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+# mulga-vpc-mtu — pin the VPC data NIC MTU (eth0 -> 1320) before k3s starts
+# flannel, so flannel's VXLAN overlay (flannel.1 -> 1270) fits the OVN geneve
+# underlay. Runs after the NICs are configured (networking + cloud-init, and
+# mulga-mgmt-net for multi-NIC system VMs) and before k3s/k3s-agent. Role-
+# agnostic and enabled on every node.
+
+description="Pin VPC data NIC MTU so flannel fits the OVN geneve underlay"
+
+depend() {
+    need net
+    after networking cloud-init mulga-mgmt-net
+    before k3s k3s-agent
+}
+
+start() {
+    ebegin "Pinning VPC data NIC MTU for flannel/OVN underlay"
+    /usr/local/sbin/mulga-vpc-mtu
+    eend $?
+}

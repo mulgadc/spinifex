@@ -40,6 +40,17 @@ for n in 0 1 2 3 4 5; do
 
     eval "cidr=\${NIC${n}_CIDR:-}"
     ip link set "$iface" up
-    [ -n "$cidr" ] && ip addr add "$cidr" dev "$iface" 2>/dev/null || true
-    echo "[mulga-mgmt-net] configured $iface ($mac)${cidr:+ with $cidr}"
+    if [ -z "$cidr" ]; then
+        echo "[mulga-mgmt-net] brought up $iface ($mac), no CIDR"
+        continue
+    fi
+    # `replace` is idempotent — adds the address if absent, no-op on a
+    # stop/start re-attach that reuses a surviving interface (`add` errored on
+    # the duplicate). A real failure must surface, not strand mgmt0 IP-less.
+    if ip addr replace "$cidr" dev "$iface"; then
+        echo "[mulga-mgmt-net] configured $iface ($mac) with $cidr"
+    else
+        echo "[mulga-mgmt-net] ERROR: failed to set $cidr on $iface ($mac)" >&2
+        exit 1
+    fi
 done

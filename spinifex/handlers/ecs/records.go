@@ -10,12 +10,14 @@ import (
 // Lifecycle status constants matching the AWS ECS enums. Task statuses are
 // re-exported from the bus package so the scheduler and the wire payloads agree.
 const (
-	ClusterStatusActive = "ACTIVE"
+	ClusterStatusActive   = "ACTIVE"
+	ClusterStatusInactive = "INACTIVE"
 
 	InstanceStatusActive   = "ACTIVE"
 	InstanceStatusDraining = "DRAINING"
 
-	TaskDefStatusActive = "ACTIVE"
+	TaskDefStatusActive   = "ACTIVE"
+	TaskDefStatusInactive = "INACTIVE"
 
 	TaskStatusPending = bus.TaskStatusPending
 	TaskStatusRunning = bus.TaskStatusRunning

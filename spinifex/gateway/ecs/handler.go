@@ -45,13 +45,13 @@ var Actions = map[string]Handler{
 	"CreateCluster":               CreateCluster,
 	"DescribeClusters":            DescribeClusters,
 	"ListClusters":                ListClusters,
-	"DeleteCluster":               NotImplemented,
+	"DeleteCluster":               DeleteCluster,
 	"UpdateCluster":               NotImplemented,
 	"PutClusterCapacityProviders": NotImplemented,
 
 	// Task definition.
 	"RegisterTaskDefinition":     RegisterTaskDefinition,
-	"DeregisterTaskDefinition":   NotImplemented,
+	"DeregisterTaskDefinition":   DeregisterTaskDefinition,
 	"DescribeTaskDefinition":     DescribeTaskDefinition,
 	"ListTaskDefinitions":        ListTaskDefinitions,
 	"ListTaskDefinitionFamilies": NotImplemented,
@@ -79,10 +79,10 @@ var Actions = map[string]Handler{
 
 	// Container instance.
 	"RegisterContainerInstance":     RegisterContainerInstance,
-	"DeregisterContainerInstance":   NotImplemented,
+	"DeregisterContainerInstance":   DeregisterContainerInstance,
 	"DescribeContainerInstances":    DescribeContainerInstances,
 	"ListContainerInstances":        ListContainerInstances,
-	"UpdateContainerInstancesState": NotImplemented,
+	"UpdateContainerInstancesState": UpdateContainerInstancesState,
 
 	// Account settings (passthrough; no enforcement v1).
 	"PutAccountSetting":   NotImplemented,

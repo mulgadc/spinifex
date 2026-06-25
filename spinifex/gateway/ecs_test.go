@@ -80,7 +80,7 @@ func TestECSRequest_UnknownAction(t *testing.T) {
 func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 	err := gw.ECS_Request(httptest.NewRecorder(),
-		setupECSRequest("AmazonEC2ContainerServiceV20141113.DeleteCluster", "{}"))
+		setupECSRequest("AmazonEC2ContainerServiceV20141113.UpdateCluster", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }

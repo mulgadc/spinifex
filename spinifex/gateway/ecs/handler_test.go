@@ -21,9 +21,12 @@ func TestNotImplemented(t *testing.T) {
 // NotImplemented stub. Wired actions error here because the nil NATS conn cannot
 // reach the daemon — that they no longer return NotImplemented is the assertion.
 var wiredActions = map[string]bool{
-	"CreateCluster": true, "DescribeClusters": true, "ListClusters": true,
-	"RegisterTaskDefinition": true, "DescribeTaskDefinition": true, "ListTaskDefinitions": true,
-	"RegisterContainerInstance": true, "DescribeContainerInstances": true, "ListContainerInstances": true,
+	"CreateCluster": true, "DeleteCluster": true, "DescribeClusters": true, "ListClusters": true,
+	"RegisterTaskDefinition": true, "DeregisterTaskDefinition": true,
+	"DescribeTaskDefinition": true, "ListTaskDefinitions": true,
+	"RegisterContainerInstance": true, "DeregisterContainerInstance": true,
+	"UpdateContainerInstancesState": true,
+	"DescribeContainerInstances":    true, "ListContainerInstances": true,
 	"RunTask": true, "StartTask": true, "StopTask": true, "DescribeTasks": true, "ListTasks": true,
 	"CreateService": true, "UpdateService": true, "DeleteService": true,
 	"DescribeServices": true, "ListServices": true,

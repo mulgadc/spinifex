@@ -8,6 +8,10 @@ func (d *Daemon) handleECSCreateCluster(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.CreateCluster)
 }
 
+func (d *Daemon) handleECSDeleteCluster(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.DeleteCluster)
+}
+
 func (d *Daemon) handleECSDescribeClusters(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.DescribeClusters)
 }
@@ -22,6 +26,10 @@ func (d *Daemon) handleECSRegisterTaskDefinition(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.RegisterTaskDefinition)
 }
 
+func (d *Daemon) handleECSDeregisterTaskDefinition(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.DeregisterTaskDefinition)
+}
+
 func (d *Daemon) handleECSDescribeTaskDefinition(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.DescribeTaskDefinition)
 }
@@ -34,6 +42,14 @@ func (d *Daemon) handleECSListTaskDefinitions(msg *nats.Msg) {
 
 func (d *Daemon) handleECSRegisterContainerInstance(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.RegisterContainerInstance)
+}
+
+func (d *Daemon) handleECSDeregisterContainerInstance(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.DeregisterContainerInstance)
+}
+
+func (d *Daemon) handleECSUpdateContainerInstancesState(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.UpdateContainerInstancesState)
 }
 
 func (d *Daemon) handleECSDescribeContainerInstances(msg *nats.Msg) {

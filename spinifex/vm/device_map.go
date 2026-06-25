@@ -154,8 +154,6 @@ func (m *Manager) UpdateGuestDeviceNames(instance *VM) {
 		var qemuID string
 		if req.Boot {
 			qemuID = "os"
-		} else if req.CloudInit {
-			qemuID = "cloudinit"
 		} else {
 			qemuID = fmt.Sprintf("vdisk-%s", req.Name)
 		}

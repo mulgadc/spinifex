@@ -100,6 +100,10 @@ func (s *IMDSServiceImpl) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// First-contact log: a guest reaching this proves its packets traverse the
+	// per-tap datapath; its absence (with the responder bound) points at the datapath.
+	slog.Info("IMDS: issued IMDSv2 token", "instance_id", eni.instanceID, "private_ip", eni.privateIP, "public_ip", eni.publicIP)
+
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set(hdrTokenTTL, strconv.Itoa(int(ttl.Seconds())))
 	_, _ = w.Write([]byte(token))
@@ -140,6 +144,11 @@ func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
 func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *eniFacts) {
 	path := r.URL.Path
 
+	// Boot-crawl access log: traces every metadata GET per ENI so a guest's
+	// cloud-init crawl is observable end-to-end (e.g. private vs public subnet).
+	slog.Info("IMDS: serving metadata request", "path", path,
+		"instance_id", eni.instanceID, "private_ip", eni.privateIP, "public_ip", eni.publicIP)
+
 	if strings.HasPrefix(path, prefixSecurityCreds) && len(path) > len(prefixSecurityCreds) {
 		s.serveRoleCredentials(w, eni, strings.TrimPrefix(path, prefixSecurityCreds))
 		return
@@ -167,7 +176,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case pathIdentityDocument:
 		s.serveInstanceIdentityDocument(w, eni)
 	case pathMetaDataRoot, prefixMetaData:
-		writeText(w, "ami-id\nami-launch-index\nhostname\niam/\ninstance-id\ninstance-life-cycle\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nnetwork/\nplacement/\npublic-hostname\npublic-ipv4\npublic-keys/\nreservation-id\nsecurity-groups\nservices/")
+		s.serveMetaDataRoot(w, eni)
 	case prefixMetaData + "instance-id":
 		writeText(w, eni.instanceID)
 	case prefixMetaData + "instance-life-cycle":
@@ -175,6 +184,10 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "local-ipv4":
 		writeText(w, eni.privateIP)
 	case prefixMetaData + "public-ipv4":
+		if eni.publicIP == "" {
+			w.WriteHeader(http.StatusNotFound) // no public IP → 404, as on real EC2
+			return
+		}
 		writeText(w, eni.publicIP)
 	case prefixMetaData + "public-hostname":
 		if eni.publicIP == "" {
@@ -217,6 +230,13 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "services/partition":
 		writeText(w, "aws")
 	case prefixMetaData + "iam", prefixMetaData + "iam/":
+		// A backend error counts as "no profile" so the iam/ subtree stays
+		// self-consistent — 404 here rather than advertised with 404ing leaves,
+		// which fails cloud-init's metadata crawl.
+		if profile, err := s.profileFor(eni); err != nil || profile == nil {
+			w.WriteHeader(http.StatusNotFound) // no profile → no iam/ subtree, as on real EC2
+			return
+		}
 		writeText(w, "info\nsecurity-credentials/")
 	case prefixMetaData + "iam/info":
 		s.serveIAMInfo(w, eni)
@@ -229,6 +249,38 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// serveMetaDataRoot writes the meta-data/ index, listing only children whose leaf
+// serves content for this instance so cloud-init's recursive crawl never 404s
+// mid-listing and falls back to DataSourceNone: public-hostname/public-ipv4 only
+// with a public IP, public-keys/ only with a key pair, iam/ only with an instance
+// profile — each omission matching real EC2, like the macs/ subtree in macKeys.
+func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts) {
+	keys := []string{
+		"ami-id", "ami-launch-index", "hostname", "instance-id",
+		"instance-life-cycle", "instance-type", "local-hostname", "local-ipv4",
+		"mac", "network/", "placement/", "reservation-id", "security-groups",
+		"services/",
+	}
+	if eni.publicIP != "" {
+		keys = append(keys, "public-hostname", "public-ipv4")
+	}
+	// Resolve the instance once: public-keys/ is listed only with a key pair, iam/
+	// only with a resolvable instance profile. A backend error counts as absent so
+	// the listing never advertises a child whose leaf would 404 and break the crawl.
+	if inst, err := s.resolver.resolveInstance(eni); err == nil && inst != nil {
+		if inst.keyName != "" {
+			keys = append(keys, "public-keys/")
+		}
+		if inst.iamInstanceProfileArn != "" {
+			if p, err := s.iam.ResolveInstanceProfile(eni.accountID, inst.iamInstanceProfileArn); err == nil && p != nil {
+				keys = append(keys, "iam/")
+			}
+		}
+	}
+	sort.Strings(keys)
+	writeText(w, strings.Join(keys, "\n"))
 }
 
 // serveInstanceField resolves the instance record and writes one of its
@@ -395,6 +447,7 @@ func (s *IMDSServiceImpl) servePublicKeys(w http.ResponseWriter, eni *eniFacts, 
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		slog.Info("IMDS: served SSH public key", "key_name", inst.keyName, "instance_id", eni.instanceID, "private_ip", eni.privateIP)
 		writeText(w, material+"\n")
 	default:
 		w.WriteHeader(http.StatusNotFound)

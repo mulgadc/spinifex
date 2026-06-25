@@ -192,6 +192,48 @@ func TestTapResponder_UnexpectedServeExitAllowsRestart(t *testing.T) {
 	m.shutdown()
 }
 
+// TestTapResponder_RebindsOnRecreatedEndpoint guards the fix for a stop/start
+// faster than the reconcile interval: the endpoint device is torn down and
+// re-added under the same ENI-derived name with a fresh ifindex, but reconcile
+// never sees the gap. The stale listener stays bound to the deleted device via
+// SO_BINDTODEVICE and serves nothing, so start must detect the new ifindex and
+// rebind rather than no-op on the still-present eniID.
+func TestTapResponder_RebindsOnRecreatedEndpoint(t *testing.T) {
+	const (
+		eniID    = "eni-aaa11111"
+		endpoint = "ime-aaa11111"
+	)
+	table := map[string]*eniFacts{eniID: {eniID: eniID, instanceID: "i-aaaa1111"}}
+
+	var addrs sync.Map
+	m := newTapResponderManager(http.NewServeMux(), staticResolve(table), loopbackTapListen(&addrs))
+	// Controllable endpoint ifindex; bumped to mimic a torn-down/recreated device.
+	ifindex := 10
+	m.ifindex = func(string) (int, error) { return ifindex, nil }
+	ctx := context.Background()
+
+	require.NoError(t, m.start(ctx, eniID, endpoint))
+	addrOld := mustAddr(t, &addrs, endpoint)
+
+	// Same endpoint, unchanged ifindex: idempotent no-op, listener not rebound.
+	require.NoError(t, m.start(ctx, eniID, endpoint))
+	assert.Equal(t, addrOld, mustAddr(t, &addrs, endpoint), "unchanged endpoint must not rebind")
+
+	// Endpoint recreated (new ifindex): start must drop the stale responder and
+	// rebind to a fresh listener on the live device.
+	ifindex = 20
+	require.NoError(t, m.start(ctx, eniID, endpoint))
+	addrNew := mustAddr(t, &addrs, endpoint)
+	assert.NotEqual(t, addrOld, addrNew, "recreated endpoint must rebind to a fresh listener")
+
+	// The stale listener bound to the old device must be closed.
+	client := http.Client{Timeout: 500 * time.Millisecond}
+	_, err := client.Get("http://" + addrOld + prefixMetaData)
+	assert.Error(t, err, "stale listener must be closed after rebind")
+
+	m.shutdown()
+}
+
 func TestTapResponder_StartRejectsMissAndError(t *testing.T) {
 	var addrs sync.Map
 	listen := loopbackTapListen(&addrs)

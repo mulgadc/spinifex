@@ -137,7 +137,7 @@ SSH_READY=false
 
 while [ $SSH_ATTEMPTS -lt $MAX_SSH_ATTEMPTS ]; do
     ssh-keyscan -p "$SSH_PORT" 127.0.0.1 >> ~/.ssh/known_hosts 2>/dev/null
-    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -p "$SSH_PORT" -i ~/.ssh/spinifex-key ec2-user@127.0.0.1 'echo ready' >/dev/null 2>&1; then
+    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -p "$SSH_PORT" -i ~/.ssh/spinifex-key ubuntu@127.0.0.1 'echo ready' >/dev/null 2>&1; then
         SSH_READY=true
         echo "SSH is ready!"
         break
@@ -156,7 +156,7 @@ if [ "$SSH_READY" != "true" ]; then
 fi
 
 echo "Copying benchmark script to instance..."
-scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$SSH_PORT" -i ~/.ssh/spinifex-key "$BENCH_SCRIPT" ec2-user@127.0.0.1:~/disk-performance.sh
+scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$SSH_PORT" -i ~/.ssh/spinifex-key "$BENCH_SCRIPT" ubuntu@127.0.0.1:~/disk-performance.sh
 
 if [ $? -ne 0 ]; then
     echo "Error: Failed to copy benchmark script to instance"
@@ -165,7 +165,7 @@ fi
 
 # Execute benchmark script
 echo "Running benchmark on instance..."
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$SSH_PORT" -i ~/.ssh/spinifex-key ec2-user@127.0.0.1 'chmod +x ~/disk-performance.sh && ~/disk-performance.sh' > /tmp/spinifex-vm-disk.log 2>&1
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$SSH_PORT" -i ~/.ssh/spinifex-key ubuntu@127.0.0.1 'chmod +x ~/disk-performance.sh && ~/disk-performance.sh' > /tmp/spinifex-vm-disk.log 2>&1
 
 if [ $? -ne 0 ]; then
     echo "Error: Benchmark execution failed, check /tmp/spinifex-vm-disk.log for details"

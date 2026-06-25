@@ -1339,7 +1339,7 @@ ls -l /var/lib/cloud/instances/*/sem/ 2>&1
 umask 077 && printf '%%s' '%s' | base64 -d > %s && chmod 600 %s
 ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ConnectTimeout=8 -o BatchMode=yes -o ServerAliveInterval=5 \
-    ec2-user@%s bash -s <<'EOFDIAG'
+    ubuntu@%s bash -s <<'EOFDIAG'
 %s
 EOFDIAG
 rm -f %s

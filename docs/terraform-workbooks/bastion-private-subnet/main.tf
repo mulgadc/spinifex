@@ -18,11 +18,11 @@
 #
 # After apply:
 #   # SSH to the bastion
-#   ssh -i bastion-demo.pem ec2-user@<bastion_ip>
+#   ssh -i bastion-demo.pem ubuntu@<bastion_ip>
 #
 #   # From the bastion, SSH to the private instance
 #   # (the key is pre-installed at ~/.ssh/bastion-demo.pem via cloud-init)
-#   ssh -i ~/.ssh/bastion-demo.pem ec2-user@<private_ip>
+#   ssh -i ~/.ssh/bastion-demo.pem ubuntu@<private_ip>
 
 terraform {
   required_version = ">= 1.6.0"
@@ -293,12 +293,12 @@ resource "aws_instance" "bastion" {
   user_data_base64 = base64encode(<<-USERDATA
     #!/bin/bash
     set -euo pipefail
-    mkdir -p /home/ec2-user/.ssh
-    cat > /home/ec2-user/.ssh/bastion-demo.pem <<'KEY'
+    mkdir -p /home/ubuntu/.ssh
+    cat > /home/ubuntu/.ssh/bastion-demo.pem <<'KEY'
     ${tls_private_key.bastion.private_key_openssh}
     KEY
-    chmod 600 /home/ec2-user/.ssh/bastion-demo.pem
-    chown -R ec2-user:ec2-user /home/ec2-user/.ssh
+    chmod 600 /home/ubuntu/.ssh/bastion-demo.pem
+    chown -R ubuntu:ubuntu /home/ubuntu/.ssh
   USERDATA
   )
 
@@ -342,10 +342,10 @@ output "private_instance_ip" {
 
 output "ssh_to_bastion" {
   description = "SSH to the bastion host"
-  value       = "ssh -i bastion-demo.pem ec2-user@${aws_instance.bastion.public_ip}"
+  value       = "ssh -i bastion-demo.pem ubuntu@${aws_instance.bastion.public_ip}"
 }
 
 output "ssh_to_private_from_bastion" {
   description = "From the bastion, SSH to the private instance (key is pre-installed via cloud-init)"
-  value       = "ssh -i ~/.ssh/bastion-demo.pem ec2-user@${aws_instance.private.private_ip}"
+  value       = "ssh -i ~/.ssh/bastion-demo.pem ubuntu@${aws_instance.private.private_ip}"
 }

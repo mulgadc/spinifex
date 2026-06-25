@@ -4,8 +4,11 @@ import "errors"
 
 // ErrIMDSServingDegraded marks an AttachIMDSDatapath failure after the
 // connectivity-critical datapath (patch + forward flows) was installed — only the
-// IMDS demux/egress/reply stage failed, so the guest keeps full VPC connectivity and
-// the caller logs and continues. Any other error means connectivity was not set up.
+// IMDS demux/egress/reply stage failed, so the guest keeps VPC connectivity but
+// cannot reach IMDS. Since guest bootstrap (SSH key, user-data, network, hostname)
+// now comes from IMDS, this is launch-fatal: the caller aborts rather than boot a
+// guest that would silently come up unconfigured. Any other error means connectivity
+// was not set up and is equally fatal.
 var ErrIMDSServingDegraded = errors.New("imds: per-tap serving install failed (guest connectivity intact)")
 
 // NetworkPlumber handles tap device and OVS bridge operations. Defined in vm

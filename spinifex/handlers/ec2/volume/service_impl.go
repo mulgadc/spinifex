@@ -842,7 +842,9 @@ func (s *VolumeServiceImpl) listAllVolumeIDs() ([]string, error) {
 
 		volumeID := strings.TrimSuffix(prefixStr, "/")
 
-		// Skip internal sub-volumes (EFI and cloud-init partitions)
+		// Skip internal sub-volumes: the EFI partition and the legacy cloud-init
+		// seed (no longer created post boot-from-IMDS, still filtered so any
+		// pre-cutover volume never surfaces as a user volume).
 		if strings.HasSuffix(volumeID, "-efi") || strings.HasSuffix(volumeID, "-cloudinit") {
 			continue
 		}
@@ -1367,7 +1369,6 @@ func (s *VolumeServiceImpl) DeleteVolume(input *ec2.DeleteVolumeInput, accountID
 	// available for retry if an auxiliary deletion fails.
 	prefixes := []string{
 		volumeID + "-efi/",
-		volumeID + "-cloudinit/",
 		volumeID + "/",
 	}
 

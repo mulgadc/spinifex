@@ -195,79 +195,58 @@ func TestAttachPrimaryIMDSDatapath_NilPlumber_NoOp(t *testing.T) {
 	}
 }
 
-func TestAttachPrimaryIMDSDatapath_ServingDegradedIsNonFatal(t *testing.T) {
-	// Serving-only failure: connectivity (patch + forward flows) is intact, only
-	// the IMDS demux/reply stage failed. The guest stays connected, so the launch
-	// proceeds and the tap is NOT rolled back to br-int.
+func TestAttachPrimaryIMDSDatapath_ServingDegradedIsFatal(t *testing.T) {
+	// Serving-only failure: connectivity (patch + forward flows) is intact, only the
+	// IMDS demux/reply stage failed. Guest bootstrap now comes from IMDS, so an
+	// unreachable IMDS would boot a silently-unconfigured guest — the launch must
+	// fail. No roll back to br-int (a rolled-back tap is equally unreachable for IMDS).
 	plumber := &fakeNetworkPlumber{
 		imdsAttachErr: fmt.Errorf("%w: install endpoint: ovsdb busy", ErrIMDSServingDegraded),
 	}
 	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
-	if err := m.attachPrimaryIMDSDatapath(&VM{
-		ID:       "i-serving-degraded",
-		ENIId:    "eni-abc123",
-		ENIMac:   "02:00:00:aa:bb:cc",
-		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
-	}); err != nil {
-		t.Fatalf("serving-degraded attach must not fail the launch, got %v", err)
-	}
-	if len(plumber.imdsAttachCalls) != 1 {
-		t.Errorf("expected the attach to be attempted once, got %d calls", len(plumber.imdsAttachCalls))
-	}
-	if len(plumber.imdsDetachCalls) != 0 || len(plumber.cleanupCalls) != 0 || len(plumber.setupCalls) != 0 {
-		t.Errorf("serving-degraded must not roll back: detach=%d cleanup=%d setup=%d",
-			len(plumber.imdsDetachCalls), len(plumber.cleanupCalls), len(plumber.setupCalls))
-	}
-}
-
-func TestAttachPrimaryIMDSDatapath_ConnectivityFailureRollsBack(t *testing.T) {
-	// Connectivity-critical failure: the primary tap is stranded on the secure
-	// br-imds. The tap must be rolled back to br-int (detach partial datapath,
-	// remove the stranded tap, re-plumb on br-int) so the guest is not black-holed.
-	plumber := &fakeNetworkPlumber{imdsAttachErr: errors.New("ovsdb lock held")}
-	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
-	instance := &VM{
-		ID:       "i-conn-err",
-		ENIId:    "eni-abc123",
-		ENIMac:   "02:00:00:aa:bb:cc",
-		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
-	}
-	if err := m.attachPrimaryIMDSDatapath(instance); err != nil {
-		t.Fatalf("a successful rollback must not fail the launch, got %v", err)
-	}
-	if len(plumber.imdsDetachCalls) != 1 {
-		t.Errorf("expected one rollback detach, got %d", len(plumber.imdsDetachCalls))
-	}
-	wantTap := TapDeviceName(instance.ENIId)
-	if !reflect.DeepEqual(plumber.cleanupCalls, []string{wantTap}) {
-		t.Errorf("cleanupCalls = %v, want [%q]", plumber.cleanupCalls, wantTap)
-	}
-	// The tap must be re-plumbed onto br-int with the OVN binding, not br-imds.
-	wantSpec := VPCTapSpec(instance.ENIId, instance.ENIMac)
-	if !reflect.DeepEqual(plumber.setupCalls, []TapSpec{wantSpec}) {
-		t.Errorf("setupCalls = %+v, want [%+v]", plumber.setupCalls, wantSpec)
-	}
-}
-
-func TestAttachPrimaryIMDSDatapath_RollbackFailureFailsLaunch(t *testing.T) {
-	// If even the roll-back onto br-int fails, the guest has no connected path at
-	// all, so the launch must fail rather than boot a black-holed guest.
-	plumber := &fakeNetworkPlumber{
-		imdsAttachErr: errors.New("ovsdb lock held"),
-		setupErr:      errors.New("br-int add-port failed"),
-	}
-	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
 	err := m.attachPrimaryIMDSDatapath(&VM{
-		ID:       "i-rollback-err",
+		ID:       "i-serving-degraded",
 		ENIId:    "eni-abc123",
 		ENIMac:   "02:00:00:aa:bb:cc",
 		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
 	})
 	if err == nil {
-		t.Fatal("expected a failed rollback to fail the launch, got nil")
+		t.Fatal("serving-degraded attach must fail the launch, got nil")
 	}
-	if !strings.Contains(err.Error(), "br-int") {
-		t.Errorf("error = %v, want it to mention the failing br-int re-plumb", err)
+	if !errors.Is(err, ErrIMDSServingDegraded) {
+		t.Errorf("error = %v, want it to wrap ErrIMDSServingDegraded", err)
+	}
+	if len(plumber.imdsAttachCalls) != 1 {
+		t.Errorf("expected the attach to be attempted once, got %d calls", len(plumber.imdsAttachCalls))
+	}
+	if len(plumber.imdsDetachCalls) != 0 || len(plumber.cleanupCalls) != 0 || len(plumber.setupCalls) != 0 {
+		t.Errorf("must not roll back: detach=%d cleanup=%d setup=%d",
+			len(plumber.imdsDetachCalls), len(plumber.cleanupCalls), len(plumber.setupCalls))
+	}
+}
+
+func TestAttachPrimaryIMDSDatapath_ConnectivityFailureIsFatal(t *testing.T) {
+	// Connectivity-critical failure: the primary tap is stranded on br-imds. The
+	// launch must fail — there is no roll back to br-int, since a rolled-back tap is
+	// equally unreachable for IMDS and a clear error beats a half-working box.
+	plumber := &fakeNetworkPlumber{imdsAttachErr: errors.New("ovsdb lock held")}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	err := m.attachPrimaryIMDSDatapath(&VM{
+		ID:       "i-conn-err",
+		ENIId:    "eni-abc123",
+		ENIMac:   "02:00:00:aa:bb:cc",
+		Instance: &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	})
+	if err == nil {
+		t.Fatal("connectivity-critical attach must fail the launch, got nil")
+	}
+	if !strings.Contains(err.Error(), "ovsdb lock held") {
+		t.Errorf("error = %v, want it to wrap the attach failure", err)
+	}
+	// No rollback: the tap is not detached, cleaned up, or re-plumbed onto br-int.
+	if len(plumber.imdsDetachCalls) != 0 || len(plumber.cleanupCalls) != 0 || len(plumber.setupCalls) != 0 {
+		t.Errorf("must not roll back: detach=%d cleanup=%d setup=%d",
+			len(plumber.imdsDetachCalls), len(plumber.cleanupCalls), len(plumber.setupCalls))
 	}
 }
 

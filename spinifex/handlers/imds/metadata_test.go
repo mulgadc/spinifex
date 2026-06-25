@@ -425,20 +425,58 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 	}
 }
 
-// An instance with no public IP has no public hostname: 404, not an empty 200.
-func TestHTTP_PublicHostnameAbsent404(t *testing.T) {
+// An instance with no public IP has no public hostname or public IPv4: both leaves
+// 404, not an empty 200, matching real EC2 and the meta-data/ listing that omits them.
+func TestHTTP_PublicFieldsAbsent404(t *testing.T) {
 	eni := testENI()
 	eni.publicIP = ""
 	svc, _ := newTestService(&fakeResolver{eni: eni}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), eni)
 	token := issueToken(t, h)
-	rec := get(t, h, prefixMetaData+"public-hostname", token)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
+	for _, leaf := range []string{"public-hostname", "public-ipv4"} {
+		rec := get(t, h, prefixMetaData+leaf, token)
+		assert.Equal(t, http.StatusNotFound, rec.Code, "leaf=%s", leaf)
+	}
 }
 
-// The meta-data root lists every served child, alphabetically, to match AWS.
+// The meta-data root lists every served child, alphabetically, to match AWS. With
+// no instance profile attached, iam/ is omitted entirely — real EC2 omits it so
+// cloud-init never descends into a subtree whose leaves would 404 and fail the crawl.
 func TestHTTP_DirectoryListing(t *testing.T) {
-	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "e2e-key"}}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	rec := get(t, h, pathMetaDataRoot, token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	want := strings.Join([]string{
+		"ami-id",
+		"ami-launch-index",
+		"hostname",
+		"instance-id",
+		"instance-life-cycle",
+		"instance-type",
+		"local-hostname",
+		"local-ipv4",
+		"mac",
+		"network/",
+		"placement/",
+		"public-hostname",
+		"public-ipv4",
+		"public-keys/",
+		"reservation-id",
+		"security-groups",
+		"services/",
+	}, "\n")
+	assert.Equal(t, want, rec.Body.String())
+	assert.NotContains(t, rec.Body.String(), "iam/")
+}
+
+// With an instance profile attached, iam/ appears in the listing (between hostname
+// and instance-id) so cloud-init can fetch the role credentials.
+func TestHTTP_DirectoryListingWithProfile(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "e2e-key", iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
+	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture()}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	token := issueToken(t, h)
 	rec := get(t, h, pathMetaDataRoot, token)
@@ -464,6 +502,36 @@ func TestHTTP_DirectoryListing(t *testing.T) {
 		"services/",
 	}, "\n")
 	assert.Equal(t, want, rec.Body.String())
+}
+
+// A private-subnet instance (no public IP) omits public-hostname and public-ipv4 from
+// the listing so cloud-init never fetches the 404ing leaves and falls back to
+// DataSourceNone — the regression that left private VMs keyless. public-keys/ stays:
+// it tracks the key pair, not the public IP.
+func TestHTTP_DirectoryListingNoPublicIP(t *testing.T) {
+	eni := testENI()
+	eni.publicIP = ""
+	res := &fakeResolver{eni: eni, inst: &instanceFacts{keyName: "e2e-key"}}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), eni)
+	token := issueToken(t, h)
+	rec := get(t, h, pathMetaDataRoot, token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.NotContains(t, body, "public-hostname")
+	assert.NotContains(t, body, "public-ipv4")
+	assert.Contains(t, body, "public-keys/")
+}
+
+// An instance launched without a key pair omits public-keys/, whose leaf would 404.
+func TestHTTP_DirectoryListingNoKeyPair(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	rec := get(t, h, pathMetaDataRoot, token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "public-keys/")
 }
 
 func TestHTTP_UserDataAbsent404(t *testing.T) {
@@ -790,6 +858,32 @@ func TestHTTP_IAMInfoNoProfile404(t *testing.T) {
 	token := issueToken(t, h)
 	rec := get(t, h, prefixMetaData+"iam/info", token)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// With an instance profile attached, the iam/ directory lists its children.
+func TestHTTP_IAMDir(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
+	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture()}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	for _, path := range []string{prefixMetaData + "iam", prefixMetaData + "iam/"} {
+		rec := get(t, h, path, token)
+		assert.Equal(t, http.StatusOK, rec.Code, path)
+		assert.Equal(t, "info\nsecurity-credentials/", rec.Body.String(), path)
+	}
+}
+
+// With no instance profile, the iam/ directory itself 404s — matching real EC2, so
+// cloud-init never descends and never trips on a 404ing iam/info that fails its crawl.
+func TestHTTP_IAMDirNoProfile404(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}} // no profile ARN
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	for _, path := range []string{prefixMetaData + "iam", prefixMetaData + "iam/"} {
+		rec := get(t, h, path, token)
+		assert.Equal(t, http.StatusNotFound, rec.Code, path)
+	}
 }
 
 func TestHTTP_SecurityCredentialsList(t *testing.T) {

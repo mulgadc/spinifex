@@ -137,7 +137,7 @@ In development mode, find the QEMU port forward and connect via localhost:
 
 ```bash
 ps auxw | grep $INSTANCE_ID
-ssh -i ~/.ssh/spinifex-key ec2-user@127.0.0.1 -p <port>
+ssh -i ~/.ssh/spinifex-key ubuntu@127.0.0.1 -p <port>
 ```
 
 For production SSH via public IPs, see [Setting Up Your Cluster](/docs/setting-up-your-cluster).

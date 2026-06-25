@@ -259,11 +259,11 @@ func runVPCSubnetE2E(t *testing.T, fix *Fixture) {
 		t.Fatalf("SSH handshake %s:22 never completed within %s (see diagnostics above)", pubIP, sshReadyBudget)
 	}
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 
 	harness.Step(t, "ssh id (smoke)")
 	idOut := runSSH(t, tgt, "id")
-	require.Containsf(t, idOut, "ec2-user", "ssh id did not report ec2-user\n%s", idOut)
+	require.Containsf(t, idOut, "ubuntu", "ssh id did not report ubuntu\n%s", idOut)
 
 	// Verify external connectivity through the IGW + 0.0.0.0/0 route. ping
 	// is treated the same way bash treats it: a soft check that prints a

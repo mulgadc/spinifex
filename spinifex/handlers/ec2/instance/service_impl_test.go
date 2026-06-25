@@ -1,13 +1,11 @@
 package handlers_ec2_instance
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
-	"text/template"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -35,42 +33,6 @@ func mgrWith(vms map[string]*vm.VM) *vm.Manager {
 		m.Replace(vms)
 	}
 	return m
-}
-
-func TestGenerateHostname(t *testing.T) {
-	tests := []struct {
-		name       string
-		instanceID string
-		want       string
-	}{
-		{
-			name:       "Normal instance ID",
-			instanceID: "i-0123456789abcdef0",
-			want:       "spinifex-vm-01234567",
-		},
-		{
-			name:       "Too short (2 chars)",
-			instanceID: "ab",
-			want:       "spinifex-vm-unknown",
-		},
-		{
-			name:       "Empty string",
-			instanceID: "",
-			want:       "spinifex-vm-unknown",
-		},
-		{
-			name:       "Exactly 10 chars",
-			instanceID: "i-abcdef01",
-			want:       "spinifex-vm-abcdef01",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := generateHostname(tt.instanceID)
-			assert.Equal(t, tt.want, got)
-		})
-	}
 }
 
 func TestRunInstance_Success(t *testing.T) {
@@ -309,109 +271,6 @@ func TestRunInstance_UniqueIDs(t *testing.T) {
 	assert.NotEqual(t, instance1.ID, instance2.ID, "Each instance should have a unique ID")
 }
 
-func TestCloudInitTemplateRendering(t *testing.T) {
-	tests := []struct {
-		name        string
-		data        CloudInitData
-		contains    []string
-		notContains []string
-	}{
-		{
-			name: "Basic SSH key and hostname",
-			data: CloudInitData{
-				Username: "ec2-user",
-				SSHKey:   "ssh-rsa AAAAB3... user@host",
-				Hostname: "spinifex-vm-01234567",
-			},
-			contains: []string{
-				"ec2-user",
-				"ssh-rsa AAAAB3... user@host",
-				"spinifex-vm-01234567",
-				"#cloud-config",
-			},
-		},
-		{
-			name: "With cloud-config userdata",
-			data: CloudInitData{
-				Username:            "ec2-user",
-				SSHKey:              "ssh-ed25519 AAAA...",
-				Hostname:            "spinifex-vm-abcdef01",
-				UserDataCloudConfig: "packages:\n  - nginx",
-			},
-			contains: []string{
-				"packages:",
-				"nginx",
-			},
-		},
-		{
-			name: "With script userdata",
-			data: CloudInitData{
-				Username:       "ec2-user",
-				SSHKey:         "ssh-rsa AAAA...",
-				Hostname:       "spinifex-vm-test",
-				UserDataScript: "    #!/bin/bash\n    echo hello",
-			},
-			contains: []string{
-				"write_files:",
-				"/tmp/cloud-init-startup.sh",
-				"runcmd:",
-				"echo hello",
-			},
-		},
-		{
-			name: "With CA certificate PEM",
-			data: CloudInitData{
-				Username: "ec2-user",
-				SSHKey:   "ssh-rsa AAAA...",
-				Hostname: "spinifex-vm-ca-test",
-				CACertPEM: "      -----BEGIN CERTIFICATE-----\n" +
-					"      MIIFazCCA1OgAwIBAgIUAbcdefg1234567890ABCDEFG=\n" +
-					"      -----END CERTIFICATE-----\n",
-			},
-			contains: []string{
-				"ca_certs:",
-				"trusted:",
-				"-----BEGIN CERTIFICATE-----",
-				"-----END CERTIFICATE-----",
-				"MIIFazCCA1OgAwIBAgIUAbcdefg1234567890ABCDEFG=",
-			},
-		},
-		{
-			name: "Without CA certificate PEM",
-			data: CloudInitData{
-				Username: "ec2-user",
-				SSHKey:   "ssh-rsa AAAA...",
-				Hostname: "spinifex-vm-no-ca",
-			},
-			contains: []string{
-				"#cloud-config",
-				"spinifex-vm-no-ca",
-			},
-			notContains: []string{
-				"ca_certs:",
-				"trusted:",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tmpl := template.Must(template.New("cloud-init").Parse(cloudInitUserDataTemplate))
-			var buf bytes.Buffer
-			err := tmpl.Execute(&buf, tt.data)
-			require.NoError(t, err)
-
-			rendered := buf.String()
-			for _, s := range tt.contains {
-				assert.Contains(t, rendered, s)
-			}
-			for _, s := range tt.notContains {
-				assert.NotContains(t, rendered, s)
-			}
-		})
-	}
-}
-
 func TestFloorVolumeSizeToAMI(t *testing.T) {
 	loader := &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
 		"ami-rocky":   {VolumeSizeGiB: 10},
@@ -445,213 +304,6 @@ func TestFloorVolumeSizeToAMI(t *testing.T) {
 	})
 }
 
-func TestBuildRHELCloudInit(t *testing.T) {
-	t.Run("empty eniMAC returns empty (wildcard path)", func(t *testing.T) {
-		wf, rc := buildRHELCloudInit("", "", "", "", nil)
-		assert.Empty(t, wf)
-		assert.Empty(t, rc)
-	})
-
-	t.Run("vpc0 only", func(t *testing.T) {
-		wf, rc := buildRHELCloudInit("02:00:00:00:00:01", "", "", "", nil)
-		// File mode + ownership are load-bearing — NM ignores anything else.
-		assert.Contains(t, wf, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
-		assert.Contains(t, wf, "owner: root:root")
-		assert.Contains(t, wf, "permissions: '0600'")
-		assert.Contains(t, wf, "mac-address=02:00:00:00:00:01")
-		assert.Contains(t, wf, "dhcp-client-id=mac")
-		assert.Contains(t, wf, "method=auto")
-		assert.NotContains(t, wf, "never-default")
-		// IMDS is served at the host tap, so the NM keyfile carries no on-link route.
-		assert.NotContains(t, wf, "route1=169.254.169.254/32", "vpc0 must not carry an in-guest IMDS route")
-		assert.Contains(t, rc, "  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]")
-		assert.Contains(t, rc, "  - [ nmcli, connection, reload ]")
-		assert.Contains(t, rc, "  - [ nmcli, connection, up, vpc0 ]")
-	})
-
-	t.Run("vpc0 + extra ENIs + dev + mgmt", func(t *testing.T) {
-		wf, rc := buildRHELCloudInit(
-			"02:00:00:00:00:01",
-			"02:00:00:00:00:99",
-			"02:00:00:00:00:aa", "10.250.0.5",
-			[]string{"02:00:00:00:00:02", "02:00:00:00:00:03"},
-		)
-		for _, name := range []string{"vpc0", "vpc1", "vpc2", "dev0", "mgmt0"} {
-			assert.Contains(t, wf, "/etc/NetworkManager/system-connections/"+name+".nmconnection", name)
-			assert.Contains(t, rc, "  - [ nmcli, connection, up, "+name+" ]", name)
-		}
-		// dev NIC must not install default route or DNS.
-		assert.Contains(t, wf, "never-default=true")
-		assert.Contains(t, wf, "ignore-auto-dns=true")
-		// mgmt NIC is static with the supplied IP.
-		assert.Contains(t, wf, "method=manual")
-		assert.Contains(t, wf, "addresses=10.250.0.5/24")
-	})
-
-	t.Run("empty extra MAC skipped", func(t *testing.T) {
-		wf, _ := buildRHELCloudInit(
-			"02:00:00:00:00:01", "", "", "",
-			[]string{"", "02:00:00:00:00:02"},
-		)
-		// Empty slot is skipped, but index advances — second valid MAC is vpc2.
-		assert.NotContains(t, wf, "vpc1.nmconnection")
-		assert.Contains(t, wf, "vpc2.nmconnection")
-	})
-
-	t.Run("no NIC carries an in-guest IMDS route", func(t *testing.T) {
-		wf, _ := buildRHELCloudInit(
-			"02:00:00:00:00:01",
-			"02:00:00:00:00:99",
-			"", "",
-			[]string{"02:00:00:00:00:02"},
-		)
-		// Served at the tap — no NM keyfile (primary, extra, or dev) emits a route.
-		assert.NotContains(t, wf, "route1=169.254.169.254/32")
-	})
-}
-
-func TestCloudInitTemplate_FamilyBranching(t *testing.T) {
-	rhelWF, rhelRC := buildRHELCloudInit("02:00:00:11:22:33", "", "", "", nil)
-
-	t.Run("debian family: sudo group, no NM keyfiles", func(t *testing.T) {
-		var buf bytes.Buffer
-		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
-		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
-			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-deb",
-			DistroFamily: "debian", SudoGroup: "sudo",
-		}))
-		out := buf.String()
-		assert.Contains(t, out, "- sudo")
-		assert.NotContains(t, out, "- wheel")
-		assert.NotContains(t, out, "NetworkManager/system-connections")
-		assert.NotContains(t, out, "nmcli")
-		assert.NotContains(t, out, "restorecon")
-	})
-
-	t.Run("rhel family: wheel group, NM keyfile write_files + runcmd", func(t *testing.T) {
-		var buf bytes.Buffer
-		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
-		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
-			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-rhel",
-			DistroFamily: "rhel", SudoGroup: "wheel",
-			RHELWriteFiles: rhelWF, RHELRunCmd: rhelRC,
-		}))
-		out := buf.String()
-		assert.Contains(t, out, "- wheel")
-		assert.NotContains(t, out, "- sudo\n")
-		assert.Contains(t, out, "write_files:")
-		assert.Contains(t, out, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
-		assert.Contains(t, out, "permissions: '0600'")
-		assert.Contains(t, out, "dhcp-client-id=mac")
-		assert.Contains(t, out, "runcmd:")
-		assert.Contains(t, out, "restorecon")
-		assert.Contains(t, out, "nmcli, connection, reload")
-		assert.Contains(t, out, "nmcli, connection, up, vpc0")
-	})
-
-	t.Run("alpine family: user rendered unlocked with disabled password", func(t *testing.T) {
-		var buf bytes.Buffer
-		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
-		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
-			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-alpine",
-			DistroFamily: "alpine", SudoGroup: "sudo", AlpineUnlockPasswd: true,
-		}))
-		out := buf.String()
-		// Alpine's no-PAM sshd denies a locked ("!") account; "*" keeps password
-		// auth disabled while letting pubkey auth through.
-		assert.Contains(t, out, "lock_passwd: false")
-		assert.Contains(t, out, `hashed_passwd: "*"`)
-	})
-
-	t.Run("non-alpine family: no password unlock lines", func(t *testing.T) {
-		var buf bytes.Buffer
-		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
-		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
-			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-deb",
-			DistroFamily: "debian", SudoGroup: "sudo",
-		}))
-		out := buf.String()
-		assert.NotContains(t, out, "lock_passwd")
-		assert.NotContains(t, out, "hashed_passwd")
-	})
-
-	t.Run("rhel + user script: both blocks merged under single write_files/runcmd", func(t *testing.T) {
-		var buf bytes.Buffer
-		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
-		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
-			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-rhel",
-			DistroFamily: "rhel", SudoGroup: "wheel",
-			RHELWriteFiles: rhelWF, RHELRunCmd: rhelRC,
-			UserDataScript: "      #!/bin/bash\n      echo hi\n",
-		}))
-		out := buf.String()
-		// YAML disallows duplicate top-level keys; assert each appears exactly once.
-		assert.Equal(t, 1, strings.Count(out, "\nwrite_files:"))
-		assert.Equal(t, 1, strings.Count(out, "\nruncmd:"))
-		assert.Contains(t, out, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
-		assert.Contains(t, out, "/tmp/cloud-init-startup.sh")
-		assert.Contains(t, out, "nmcli, connection, up, vpc0")
-		assert.Contains(t, out, `"/bin/bash", "/tmp/cloud-init-startup.sh"`)
-	})
-}
-
-func TestSelectNetworkConfigForFamily(t *testing.T) {
-	const eniMAC = "02:00:00:00:00:01"
-
-	t.Run("rhel returns disabled stub", func(t *testing.T) {
-		out := selectNetworkConfigForFamily("rhel", eniMAC, "", "", "", nil)
-		assert.Equal(t, cloudInitNetworkConfigDisabled, out)
-		assert.Contains(t, out, "config: disabled")
-		// Must not emit any netplan v2 keys — those would render alongside
-		// our NM keyfile and produce a competing cloud-init-enpXsY connection.
-		assert.NotContains(t, out, "ethernets:")
-		assert.NotContains(t, out, "version: 2")
-	})
-
-	t.Run("debian returns per-interface netplan", func(t *testing.T) {
-		out := selectNetworkConfigForFamily("debian", eniMAC, "", "", "", nil)
-		assert.Contains(t, out, "version: 2")
-		assert.Contains(t, out, "ethernets:")
-		assert.Contains(t, out, "vpc0:")
-		assert.Contains(t, out, "dhcp-identifier: mac")
-		assert.NotContains(t, out, "config: disabled")
-	})
-
-	t.Run("empty family falls through to netplan", func(t *testing.T) {
-		// Legacy AMIs without DistroFamily populated must keep today's behaviour.
-		out := selectNetworkConfigForFamily("", eniMAC, "", "", "", nil)
-		assert.Contains(t, out, "version: 2")
-		assert.NotContains(t, out, "config: disabled")
-	})
-
-	t.Run("alpine falls through to netplan", func(t *testing.T) {
-		// Alpine has no RHEL-style NM keyfile path; reuses netplan.
-		out := selectNetworkConfigForFamily("alpine", eniMAC, "", "", "", nil)
-		assert.Contains(t, out, "version: 2")
-		assert.NotContains(t, out, "config: disabled")
-	})
-}
-
-func TestCloudInitMetaTemplateRendering(t *testing.T) {
-	data := CloudInitMetaData{
-		InstanceID: "i-0123456789abcdef0",
-		Hostname:   "spinifex-vm-01234567",
-	}
-
-	tmpl := template.Must(template.New("meta-data").Parse(cloudInitMetaTemplate))
-	var buf bytes.Buffer
-	err := tmpl.Execute(&buf, data)
-	require.NoError(t, err)
-
-	rendered := buf.String()
-	assert.Contains(t, rendered, "i-0123456789abcdef0")
-	assert.Contains(t, rendered, "spinifex-vm-01234567")
-	assert.Contains(t, rendered, "instance-id:")
-	assert.Contains(t, rendered, "local-hostname:")
-}
-
-// TestCloudInitVolumeNamePerInstance verifies that each launch produces a unique
-// root volume ID so cloud-init ISOs are not shared across instances.
 func TestRunInstance_NoImageId(t *testing.T) {
 	instanceTypes := map[string]*ec2.InstanceTypeInfo{
 		"t3.micro": {InstanceType: aws.String("t3.micro")},
@@ -762,80 +414,6 @@ func TestParseVolumeParams_PartialEbs(t *testing.T) {
 	assert.True(t, p.deleteOnTermination, "deleteOnTermination should stay at default")
 }
 
-func TestCloudInitNetworkConfigWildcard(t *testing.T) {
-	// No MACs → wildcard config (non-VPC or VPC without DEV_NETWORKING)
-	cfg := generateNetworkConfig("", "", "", "", nil)
-	assert.Contains(t, cfg, "version: 2")
-	assert.Contains(t, cfg, "dhcp4: true")
-	assert.Contains(t, cfg, "dhcp-identifier: mac")
-	assert.Contains(t, cfg, `name: "e*"`, "wildcard should match both eth* and en* interfaces")
-	assert.NotContains(t, cfg, "use-routes")
-}
-
-func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
-	eniMAC := "02:00:00:61:ef:c2"
-	devMAC := "02:de:00:60:83:0d"
-
-	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil)
-
-	// Both MACs present in config
-	assert.Contains(t, cfg, eniMAC)
-	assert.Contains(t, cfg, devMAC)
-
-	// VPC NIC gets normal DHCP (with default route)
-	assert.Contains(t, cfg, "vpc0:")
-	assert.Contains(t, cfg, "dev0:")
-
-	// Dev NIC has route/DNS suppressed
-	assert.Contains(t, cfg, "use-routes: false")
-	assert.Contains(t, cfg, "use-dns: false")
-
-	// No wildcard match — per-interface only
-	assert.NotContains(t, cfg, `name: "e*"`)
-}
-
-func TestCloudInitNetworkConfigPartialMAC(t *testing.T) {
-	// Only ENI MAC (VPC without dev) → per-interface config with VPC NIC only
-	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil)
-	assert.Contains(t, cfg, "vpc0:")
-	assert.NotContains(t, cfg, "dev0:")
-
-	// Only dev MAC (shouldn't happen, but defensive) → wildcard
-	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil)
-	assert.Contains(t, cfg, `name: "e*"`)
-	assert.NotContains(t, cfg, "use-routes")
-}
-
-func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
-	// Multi-subnet ALB VM: primary ENI + two extras, each on a different AZ.
-	extras := []string{
-		"02:00:00:bb:bb:bb",
-		"02:00:00:cc:cc:cc",
-	}
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras)
-
-	assert.Contains(t, cfg, "vpc0:")
-	assert.Contains(t, cfg, "vpc1:")
-	assert.Contains(t, cfg, "vpc2:")
-	assert.Contains(t, cfg, `macaddress: "02:00:00:aa:aa:aa"`)
-	assert.Contains(t, cfg, `macaddress: "02:00:00:bb:bb:bb"`)
-	assert.Contains(t, cfg, `macaddress: "02:00:00:cc:cc:cc"`)
-	// Each extra NIC gets its own DHCP block with dhcp-identifier: mac.
-	assert.Equal(t, 3, strings.Count(cfg, "dhcp4: true"))
-	assert.Equal(t, 3, strings.Count(cfg, "dhcp-identifier: mac"))
-	// No dev0 / mgmt0 unless explicitly configured.
-	assert.NotContains(t, cfg, "dev0:")
-	assert.NotContains(t, cfg, "mgmt0:")
-}
-
-func TestCloudInitNetworkConfigEmptyExtraMACSkipped(t *testing.T) {
-	// Empty strings inside the extras slice are ignored rather than producing
-	// a malformed ethernets block.
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""})
-	assert.Contains(t, cfg, "vpc0:")
-	assert.NotContains(t, cfg, "vpc1:")
-}
-
 func TestRunInstance_WithTags(t *testing.T) {
 	instanceTypes := map[string]*ec2.InstanceTypeInfo{
 		"t3.micro": {InstanceType: aws.String("t3.micro")},
@@ -932,30 +510,6 @@ func TestParseVolumeParams_Io1WithIops(t *testing.T) {
 	assert.Equal(t, 100*1024*1024*1024, p.size)
 	assert.Equal(t, "io1", p.volumeType)
 	assert.Equal(t, 5000, p.iops)
-}
-
-func TestCloudInitVolumeNamePerInstance(t *testing.T) {
-	amiID := "ami-0abcdef1234567890"
-
-	seen := make(map[string]bool)
-	for range 100 {
-		// Simulate GenerateVolumes logic for AMI-based launches (line 194-195)
-		var rootVolumeId string
-		if strings.HasPrefix(amiID, "ami-") {
-			rootVolumeId = utils.GenerateResourceID("vol")
-		}
-
-		cloudInitName := fmt.Sprintf("%s-cloudinit", rootVolumeId)
-
-		assert.True(t, strings.HasPrefix(cloudInitName, "vol-"),
-			"cloud-init volume should be keyed by root volume ID, not AMI ID")
-		assert.True(t, strings.HasSuffix(cloudInitName, "-cloudinit"))
-		assert.False(t, strings.Contains(cloudInitName, "ami-"),
-			"cloud-init volume name must not contain the AMI ID")
-		assert.False(t, seen[cloudInitName],
-			"each instance must get a unique cloud-init volume name")
-		seen[cloudInitName] = true
-	}
 }
 
 // --- Describe* coverage -----------------------------------------------------
@@ -2123,7 +1677,6 @@ func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
 	v.EBSRequests.Requests = []spxtypes.EBSRequest{
 		{Name: "vol-efi-001", EFI: true},
-		{Name: "vol-ci-001", CloudInit: true},
 	}
 	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
 
@@ -2142,7 +1695,7 @@ func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
 
 	_, err = svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"vol-efi-001", "vol-ci-001"}, ebsDeleted)
+	assert.ElementsMatch(t, []string{"vol-efi-001"}, ebsDeleted)
 }
 
 func TestTerminateStoppedInstance_PublicIPReleased(t *testing.T) {

@@ -41,7 +41,7 @@ func runENIHotplug(t *testing.T, fix *Fixture) {
 	// completes; an unreachable singleton is a datapath bug, not test flake.
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	waitForSSHReady(t, host, port, keyPath)
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 	// Snapshot the guest's MAC inventory before the hotplug so we detect the
 	// brand-new interface rather than match a NIC that already existed.

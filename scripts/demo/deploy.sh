@@ -15,7 +15,7 @@
 #
 # Optional:
 #   SSH_KEY        (default: ~/.ssh/spinifex-key)
-#   SSH_USER       (default: ec2-user)
+#   SSH_USER       (default: ubuntu)
 
 set -euo pipefail
 
@@ -26,7 +26,7 @@ QWEN_IP="${QWEN_IP:?set QWEN_IP}"
 VIDEO_PATH="${VIDEO_PATH:?set VIDEO_PATH}"
 
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/spinifex-key}"
-SSH_USER="${SSH_USER:-ec2-user}"
+SSH_USER="${SSH_USER:-ubuntu}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

@@ -93,13 +93,13 @@ tofu apply
 SSH into the bastion:
 
 ```bash
-ssh -i bastion-demo.pem ec2-user@<bastion_public_ip>
+ssh -i bastion-demo.pem ubuntu@<bastion_public_ip>
 ```
 
 From the bastion, SSH to the private instance. The key is pre-installed at `~/.ssh/bastion-demo.pem` via cloud-init:
 
 ```bash
-ssh -i ~/.ssh/bastion-demo.pem ec2-user@<private_ip>
+ssh -i ~/.ssh/bastion-demo.pem ubuntu@<private_ip>
 ```
 
 ### Step 4. Verify Isolation
@@ -126,8 +126,8 @@ tofu destroy
 The private instance has no public IP — it is only reachable from the bastion. SSH to the bastion first, then use the pre-installed key to hop:
 
 ```bash
-ssh -i bastion-demo.pem ec2-user@<bastion_ip>
-ssh -i ~/.ssh/bastion-demo.pem ec2-user@<private_ip>
+ssh -i bastion-demo.pem ubuntu@<bastion_ip>
+ssh -i ~/.ssh/bastion-demo.pem ubuntu@<private_ip>
 ```
 
 If the key is missing on the bastion, check that cloud-init completed successfully:

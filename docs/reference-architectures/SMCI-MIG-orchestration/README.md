@@ -271,7 +271,7 @@ MIG is enabled inside each guest VM, not on the host. SSH into each VM and enabl
 
 ```bash
 # Repeat on each VM IP
-ssh -i ~/.ssh/spinifex-key ec2-user@<vm-ip>
+ssh -i ~/.ssh/spinifex-key ubuntu@<vm-ip>
 
 sudo nvidia-smi -mig 1
 nvidia-smi | grep "MIG M."

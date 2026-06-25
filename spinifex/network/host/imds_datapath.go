@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
-	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -191,9 +190,11 @@ func ensureIMDSEndpoint(ctx context.Context, r Runner, d IMDSTapDatapath) error 
 	if _, err := r.Run(ctx, "ip", "link", "set", d.Endpoint, "up"); err != nil {
 		return fmt.Errorf("bring up IMDS endpoint %s: %w", d.Endpoint, err)
 	}
+	// `replace` is idempotent — adds the /32 if absent, no-op if the endpoint
+	// already owns it (a recovery/stop re-attach reuses a surviving endpoint).
+	// `add` errored on the duplicate, and its kernel message varies by version.
 	for _, addr := range imdsCaptureAddrs {
-		out, err := r.Run(ctx, "ip", "addr", "add", addr+"/32", "dev", d.Endpoint)
-		if err != nil && !strings.Contains(string(out), "File exists") {
+		if _, err := r.Run(ctx, "ip", "addr", "replace", addr+"/32", "dev", d.Endpoint); err != nil {
 			return fmt.Errorf("add %s to IMDS endpoint %s: %w", addr, d.Endpoint, err)
 		}
 	}

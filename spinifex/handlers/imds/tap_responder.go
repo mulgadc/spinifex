@@ -23,11 +23,19 @@ type tapListenFunc func(ctx context.Context, endpoint string) (net.Listener, err
 // responder manager is unit-testable without a live ENI bucket.
 type resolveENIFunc func(eniID string) (*eniFacts, error)
 
+// ifindexFunc resolves an endpoint device's current kernel ifindex. Injected so
+// the recreated-endpoint check is unit-testable without real devices.
+type ifindexFunc func(dev string) (int, error)
+
 // activeTapResponder is one tap's realised serving state: a listener bound to the
 // tap's endpoint on br-imds and the http.Server serving it with the tap's ENI.
+// endpoint + ifindex pin which device the listener is bound to (via
+// SO_BINDTODEVICE), so reconcile can spot a torn-down/recreated endpoint.
 type activeTapResponder struct {
 	listener net.Listener
 	server   *http.Server
+	endpoint string
+	ifindex  int
 }
 
 // tapResponderManager runs one IMDS responder per local primary-ENI tap. Each
@@ -37,6 +45,7 @@ type tapResponderManager struct {
 	handler http.Handler
 	resolve resolveENIFunc
 	listen  tapListenFunc
+	ifindex ifindexFunc
 
 	mu     sync.Mutex
 	active map[string]*activeTapResponder // eniID → responder
@@ -47,6 +56,7 @@ func newTapResponderManager(handler http.Handler, resolve resolveENIFunc, listen
 		handler: handler,
 		resolve: resolve,
 		listen:  listen,
+		ifindex: deviceIfindex,
 		active:  make(map[string]*activeTapResponder),
 	}
 }
@@ -60,11 +70,19 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	}
 
 	m.mu.Lock()
-	if _, ok := m.active[eniID]; ok {
-		m.mu.Unlock()
-		return nil
-	}
+	cur, ok := m.active[eniID]
 	m.mu.Unlock()
+	if ok {
+		if !m.endpointRecreated(cur, endpoint) {
+			return nil
+		}
+		// A stop/start faster than the reconcile interval recreates the endpoint
+		// device (same ENI-derived name, fresh ifindex) without reconcile ever
+		// seeing the gap, so this stale listener stays bound to the deleted device
+		// via SO_BINDTODEVICE and serves nothing. Drop it and rebind to the live one.
+		slog.Info("IMDS: tap endpoint recreated, rebinding responder", "eni_id", eniID, "endpoint", endpoint)
+		m.stop(eniID)
+	}
 
 	eni, err := m.resolve(eniID)
 	if err != nil {
@@ -77,6 +95,10 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	listener, err := m.listen(ctx, endpoint)
 	if err != nil {
 		return fmt.Errorf("listen on endpoint %s: %w", endpoint, err)
+	}
+	ifindex, err := m.ifindex(endpoint)
+	if err != nil {
+		slog.Debug("IMDS: endpoint ifindex unavailable; recreated-endpoint detection degraded", "endpoint", endpoint, "err", err)
 	}
 
 	server := &http.Server{
@@ -93,7 +115,7 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 		_ = listener.Close()
 		return nil
 	}
-	m.active[eniID] = &activeTapResponder{listener: listener, server: server}
+	m.active[eniID] = &activeTapResponder{listener: listener, server: server, endpoint: endpoint, ifindex: ifindex}
 	m.mu.Unlock()
 
 	go func() {
@@ -109,6 +131,26 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 
 	slog.Info("IMDS: tap responder serving", "eni_id", eniID, "endpoint", endpoint, "addr", listener.Addr().String())
 	return nil
+}
+
+// endpointRecreated reports whether eniID's live endpoint device differs from the
+// one its responder is bound to — the fingerprint of a stop/start the reconcile
+// interval missed, where the endpoint port was torn down and re-added under the
+// same ENI-derived name with a fresh ifindex. An ifindex that is unresolvable now
+// or was unresolvable at bind (0) is treated as unchanged, so a transient lookup
+// miss never churns a healthy responder.
+func (m *tapResponderManager) endpointRecreated(cur *activeTapResponder, endpoint string) bool {
+	if cur.endpoint != endpoint {
+		return true
+	}
+	if cur.ifindex == 0 {
+		return false
+	}
+	idx, err := m.ifindex(endpoint)
+	if err != nil {
+		return false
+	}
+	return idx != cur.ifindex
 }
 
 // reconcile converges active responders to the live tap set: starts one for every
@@ -173,6 +215,17 @@ func (m *tapResponderManager) shutdown() {
 		}
 		delete(m.active, eniID)
 	}
+}
+
+// deviceIfindex resolves dev's current kernel ifindex. A torn-down/recreated
+// endpoint reappears under the same name with a fresh ifindex, which is how a
+// responder bound to the old device (via SO_BINDTODEVICE) is detected as stale.
+func deviceIfindex(dev string) (int, error) {
+	iface, err := net.InterfaceByName(dev)
+	if err != nil {
+		return 0, err
+	}
+	return iface.Index, nil
 }
 
 // bindTapListener opens 169.254.169.254:80 on the tap's endpoint via SO_BINDTODEVICE

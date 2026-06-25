@@ -38,7 +38,7 @@
 #
 # After apply:
 #   curl http://<public_ip>          # File browser UI
-#   ssh -i s3-webapp-demo.pem ec2-user@<public_ip>
+#   ssh -i s3-webapp-demo.pem ubuntu@<public_ip>
 
 terraform {
   required_version = ">= 1.6.0"
@@ -504,7 +504,7 @@ output "bucket_name" {
 }
 
 output "ssh_command" {
-  value = "ssh -i s3-webapp-demo.pem ec2-user@${aws_instance.webapp.public_ip}"
+  value = "ssh -i s3-webapp-demo.pem ubuntu@${aws_instance.webapp.public_ip}"
 }
 
 output "web_url" {

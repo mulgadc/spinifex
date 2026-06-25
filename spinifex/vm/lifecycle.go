@@ -2,6 +2,8 @@ package vm
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -328,6 +330,9 @@ func (m *Manager) startQEMU(instance *VM) error {
 				Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 			})
 			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC))
+			if err := m.appendSystemNetcfgFwCfg(instance); err != nil {
+				return fmt.Errorf("attach system netcfg: %w", err)
+			}
 			slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 		}
 
@@ -724,6 +729,48 @@ func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
 // EBS hot-plug, matching the /dev/sd[f-p] range. Cannot grow without QEMU restart.
 const EBSHotPlugSlotCount = 11
 
+// appendSystemNetcfgFwCfg attaches an fw_cfg netcfg blob describing a multi-NIC
+// BootAMI system VM's interfaces so the guest brings them up deterministically
+// by MAC. The EKS control plane is the case: cloud-init on a stock Alpine guest
+// cannot reliably pick the right NIC out of two, so it must be told which is
+// which. The primary data ENI is marked DHCP (OVN serves it; it carries the
+// default route, and bringing it up before cloud-init's network stage is what
+// lets the Ec2 datasource reach IMDS — without it cloud-init brings up the mgmt
+// NIC instead and falls to DataSourceNone). mgmt0 lives on br-mgmt with no DHCP,
+// so its static address is delivered here; it is never the default route. The
+// blob key format matches daemon.buildNetcfgBlob and build/microvm/init.sh.
+// No-op without a mgmt NIC, so single-NIC guests are untouched — cloud-init
+// brings their one NIC up.
+func (m *Manager) appendSystemNetcfgFwCfg(instance *VM) error {
+	if instance.MgmtMAC == "" || instance.MgmtIP == "" {
+		return nil
+	}
+	var b strings.Builder
+	n := 0
+	// Primary data ENI: DHCP (OVN-served) + default route.
+	if instance.ENIMac != "" {
+		fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_DHCP=1\nNIC%d_DEFAULT=1\n", n, instance.ENIMac, n, n)
+		n++
+	}
+	// Management NIC: static, off br-mgmt, never the default route.
+	fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_CIDR=%s/24\nNIC%d_DEFAULT=0\n", n, instance.MgmtMAC, n, instance.MgmtIP, n)
+
+	path := filepath.Join(utils.RuntimeDir(), fmt.Sprintf("fwcfg-%s-netcfg.tmp", instance.ID))
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write system netcfg blob: %w", err)
+	}
+	instance.Config.FwCfg = append(instance.Config.FwCfg, FwCfgEntry{Name: "opt/spinifex/netcfg", File: path})
+	return nil
+}
+
+// ec2SMBIOSUUID derives a deterministic, "ec2"-prefixed system UUID from the
+// instance ID so cloud-init's Ec2 datasource activates (stable across reboot).
+func ec2SMBIOSUUID(instanceID string) string {
+	sum := sha256.Sum256([]byte("ec2-smbios:" + instanceID))
+	h := "ec2" + hex.EncodeToString(sum[:])[3:32]
+	return fmt.Sprintf("%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+}
+
 // buildBaseVMConfig creates a Config with base QEMU settings and two pre-allocated
 // PCIe root-port pools: hotplug-ebs{1..N} for EBS (/dev/sd[f-p]) and
 // hotplug-eni{1..M} for ENI hot-plug. bootMode "uefi"/"uefi-preferred" sets UseUEFI.
@@ -742,6 +789,11 @@ func buildBaseVMConfig(instanceID, instanceType, pidFile, consoleLogPath, serial
 		Architecture:   architecture,
 		InstanceType:   instanceType,
 		UseUEFI:        bootMode == "uefi" || bootMode == "uefi-preferred",
+
+		// Present EC2-shaped DMI so stock cloud-init activates the Ec2 datasource.
+		SMBIOSUUID:         ec2SMBIOSUUID(instanceID),
+		SMBIOSManufacturer: "Amazon EC2",
+		SMBIOSAssetTag:     "Amazon EC2",
 	}
 
 	for i := 1; i <= EBSHotPlugSlotCount; i++ {
@@ -802,13 +854,6 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			iothreadID := "ioth-os"
 			iothreads = append(iothreads, IOThread{ID: iothreadID})
 			devices = append(devices, BlkDevice(machineType, drive.ID, iothreadID, cpuCount, 1))
-		}
-
-		if v.CloudInit {
-			drive.Format = "raw"
-			drive.If = "virtio"
-			drive.Media = "cdrom"
-			drive.ID = "cloudinit"
 		}
 
 		if v.EFI {

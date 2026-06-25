@@ -42,12 +42,17 @@ const (
 	// localport, no netns, no in-guest route.
 	metaURL = "http://169.254.169.254"
 
-	// imdsUserData is a no-op cloud-config carrying a unique marker so the
-	// /latest/user-data round-trip can assert the body the guest sees matches
-	// what RunInstances was given. A comment-only cloud-config is a valid empty
-	// config, so it doesn't perturb boot.
-	imdsUserData = "#cloud-config\n# imds-e2e-userdata-marker-7f3a91\n"
-	imdsUDMarker = "imds-e2e-userdata-marker-7f3a91"
+	// imdsUserData is a #cloud-config carrying a unique marker, used two ways: the
+	// /latest/user-data round-trip asserts the body the guest sees matches what
+	// RunInstances was given, and its runcmd writes imdsUDMarker to imdsUDDoneFile
+	// so the boot-from-IMDS guard can prove cloud-init actually RAN user-data from
+	// the Ec2 datasource, not just that the responder served it.
+	imdsUserData = "#cloud-config\n" +
+		"# imds-e2e-userdata-marker-7f3a91\n" +
+		"runcmd:\n" +
+		"  - [ sh, -c, \"echo imds-e2e-userdata-marker-7f3a91 > /run/imds-e2e-userdata.done\" ]\n"
+	imdsUDMarker   = "imds-e2e-userdata-marker-7f3a91"
+	imdsUDDoneFile = "/run/imds-e2e-userdata.done"
 
 	// imdsProbeVPCCIDR / imdsProbeSubnetCIDR are shared by BOTH isolation VPCs.
 	// Overlapping CIDRs across VPCs are legal (each VPC is its own routing
@@ -221,6 +226,9 @@ func runIMDS(t *testing.T, fix *Fixture) {
 			"no public IP → public-hostname must 404")
 	}
 
+	// VM X is profile-bound, so meta-data/ lists iam/ and cloud-init descends.
+	require.Contains(t, imdsGet(t, tgtX, tokenX, "/latest/meta-data/"), "iam/",
+		"profile-bound meta-data/ listing must include iam/")
 	// iam/info → InstanceProfileArn ends with the bound profile.
 	iamInfo := imdsGet(t, tgtX, tokenX, "/latest/meta-data/iam/info")
 	require.Containsf(t, iamInfo, ":instance-profile/"+imdsProfileName,
@@ -250,6 +258,13 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	harness.Step(t, "GET /latest/user-data round-trips launch user-data")
 	require.Contains(t, imdsGet(t, tgtX, tokenX, "/latest/user-data"), imdsUDMarker,
 		"user-data must round-trip the launch user-data")
+
+	// --- Boot-from-IMDS cutover guards ---------------------------------------
+	// The rest of this suite proves the guest can READ IMDS; this proves it BOOTED
+	// from it. The NoCloud seed is retired, so every guest now self-configures from
+	// the Ec2 datasource — and every other assertion here still passes if the seed
+	// silently comes back, so this is the only guard against that regression.
+	imdsAssertBootFromIMDS(t, tgtX, privX)
 
 	// --- Version discovery + dated-version alias (cloud-init parity) ----------
 	// cloud-init's EC2 datasource probes its OWN hardcoded dated versions
@@ -337,6 +352,19 @@ func runIMDS(t *testing.T, fix *Fixture) {
 			"/latest/meta-data/instance-id"),
 		"a token bound to VM X's ENI must not authorise VM Y")
 
+	// VM Y has no instance profile, so the whole iam/ subtree is absent: real EC2
+	// omits iam/ from the meta-data/ listing and 404s the iam/ directory, so
+	// cloud-init never descends and never trips on a 404ing iam/info that would fail
+	// its metadata crawl and zombie the guest.
+	harness.Step(t, "VM Y meta-data/ omits iam/; iam/ directory 404s")
+	require.NotContains(t, imdsGet(t, tgtY, tokenY, "/latest/meta-data/"), "iam/",
+		"no-profile meta-data/ listing must omit iam/")
+	for _, p := range []string{"/latest/meta-data/iam", "/latest/meta-data/iam/"} {
+		require.Equalf(t, "404",
+			imdsCode(tgtY, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, tokenY), p),
+			"no-profile %s must 404 (real-EC2 parity)", p)
+	}
+
 	// VM Y has no instance profile: iam/info is 404 and the credential listing is
 	// an empty 200 (absence is not an error, matching AWS).
 	harness.Step(t, "VM Y iam/info → 404; security-credentials/ → empty 200")
@@ -391,7 +419,7 @@ func imdsProbe(t *testing.T, fix *Fixture, keyPath string, spec imdsVMSpec) (str
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	harness.Step(t, "wait for %s SSH at %s:%d", id, host, port)
 	waitForSSHHandshake(t, host, port, keyPath)
-	return id, priv, eni, harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	return id, priv, eni, harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 }
 
 // imdsAssertPerTapDatapath asserts the per-tap IMDS datapath is realised on the
@@ -482,6 +510,60 @@ func imdsAssertVpcdFileCaps(t *testing.T) {
 	} {
 		require.NotZerof(t, caps&(uint64(1)<<c.bit),
 			"vpcd must retain %s to serve the per-tap datapath (CapEff=0x%x)", c.name, caps)
+	}
+}
+
+// imdsAssertBootFromIMDS proves VM X bootstrapped from the Ec2 IMDS datasource
+// with the NoCloud seed retired — a regression guard the rest of the suite can't
+// give: every other assertion still passes if the seed silently comes back and
+// cloud-init boots from NoCloud instead. Checks, all in-guest:
+//
+//   - cloud-init reports the aws platform / an Ec2 datasource (not NoCloud);
+//   - no cidata-labelled block device is attached (the seed ISO is gone);
+//   - the login is the AMI's stock default user (no Spinifex-forced account);
+//   - the hostname is the AWS form ip-<dashed-ip>;
+//   - the primary NIC carries the VPC IP rendered from IMDS;
+//   - the user-data runcmd executed (cloud-init processed user-data from IMDS).
+func imdsAssertBootFromIMDS(t *testing.T, tgt harness.SSHTarget, privIP string) {
+	t.Helper()
+	harness.Step(t, "boot-from-IMDS: cloud-init selected the aws (Ec2) datasource")
+	ds := strings.ToLower(strings.TrimSpace(
+		runSSH(t, tgt, "cloud-id 2>/dev/null || cloud-init query --format '{{datasource}}'")))
+	require.Truef(t, strings.Contains(ds, "aws") || strings.Contains(ds, "ec2"),
+		"cloud-init must report the aws/Ec2 datasource (got %q) — not the retired NoCloud seed", ds)
+
+	harness.Step(t, "boot-from-IMDS: no NoCloud cidata seed device attached")
+	labels := strings.ToLower(runSSH(t, tgt, "lsblk -no LABEL"))
+	require.NotContainsf(t, labels, "cidata",
+		"no cidata-labelled device may be attached — the seed ISO is retired (lsblk LABELs: %q)", labels)
+
+	harness.Step(t, "boot-from-IMDS: login is the AMI stock default user %q", tgt.User)
+	require.Equal(t, tgt.User, strings.TrimSpace(runSSH(t, tgt, "id -un")),
+		"in-guest login must be the AMI stock default user, not a Spinifex-forced account")
+
+	harness.Step(t, "boot-from-IMDS: AWS-form hostname ip-<dashed-ip>")
+	wantHost := "ip-" + strings.ReplaceAll(privIP, ".", "-")
+	gotHost := strings.TrimSpace(runSSH(t, tgt, "hostname"))
+	require.Truef(t, strings.HasPrefix(gotHost, wantHost),
+		"hostname must be the AWS form %q rendered from IMDS local-hostname (got %q)", wantHost, gotHost)
+
+	harness.Step(t, "boot-from-IMDS: primary NIC up with the VPC IP %s", privIP)
+	addrs := runSSH(t, tgt, "ip -4 -o addr show scope global")
+	require.Containsf(t, addrs, privIP,
+		"the Ec2 datasource must render the primary NIC with the VPC IP %s from IMDS (ip addr: %q)", privIP, addrs)
+
+	harness.Step(t, "boot-from-IMDS: user-data runcmd executed")
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		out, _ := runSSHCombined(tgt, "cat "+imdsUDDoneFile+" 2>/dev/null")
+		if strings.Contains(out, imdsUDMarker) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("user-data runcmd marker %s never appeared within 90s — "+
+				"cloud-init did not run user-data from the Ec2 datasource", imdsUDDoneFile)
+		}
+		time.Sleep(3 * time.Second)
 	}
 }
 

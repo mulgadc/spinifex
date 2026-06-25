@@ -49,6 +49,7 @@ chmod 0755 /usr/local/sbin/eks-node-role /usr/local/sbin/k3s-first-boot \
     /usr/local/sbin/mulga-eks-state-report /usr/local/sbin/mulga-eks-addon-sync
 chmod 0755 /etc/init.d/mulga-ebs-byid /usr/local/sbin/mulga-ebs-byid
 chmod 0755 /etc/init.d/mulga-eks-provider-id /usr/local/sbin/mulga-eks-provider-id
+chmod 0755 /etc/init.d/mulga-mgmt-net /usr/local/sbin/mulga-mgmt-net
 chmod 0755 /etc/periodic/daily/mulga-eks-etcd-snapshot
 
 # EBS by-id bridge: route every virtio-blk event through mulga-ebs-byid, which

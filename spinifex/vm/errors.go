@@ -20,7 +20,7 @@ var ErrAttachmentLimitExceeded = errors.New("attachment limit exceeded")
 var ErrVolumeNotAttached = errors.New("volume not attached to instance")
 
 // ErrVolumeNotDetachable is returned by DetachVolume when the target
-// volume is a boot, EFI, or cloud-init volume that cannot be hot-unplugged.
+// volume is a boot or EFI volume that cannot be hot-unplugged.
 var ErrVolumeNotDetachable = errors.New("volume cannot be detached")
 
 // ErrVolumeDeviceMismatch is returned by DetachVolume when the caller

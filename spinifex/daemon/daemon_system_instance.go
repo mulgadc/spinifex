@@ -383,16 +383,17 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 }
 
 // launchAMISystemInstance is the BootAMI branch of LaunchSystemInstance: a full
-// AMI boot (root volume cloned from an AMI, cloud-init user-data + network
-// config seed) for a system-managed VM, with a management-bridge NIC so the
+// AMI boot (root volume cloned from an AMI, bootstrapped from the Ec2 IMDS
+// datasource) for a system-managed VM, with a management-bridge NIC so the
 // guest can reach the daemon (NATS/AWSGW) off its tenant VPC subnet.
 //
 // It mirrors the daemon RunInstances handler's Prepare → Insert → Launch split,
 // allocating the mgmt NIC on the VM record between Insert and Launch so the
-// cloud-init network-config rendered during Launch carries a static mgmt0
-// interface. The instance is owned by input.AccountID (the account its
-// pre-created ENI lives in) and tagged input.ManagedBy so customer listings
-// hide it.
+// fw_cfg netcfg blob built during Launch enumerates both the primary data ENI
+// (DHCP) and the static mgmt0 address — a multi-NIC Alpine guest cannot pick the
+// right NIC for the Ec2 datasource on its own. The instance is owned by
+// input.AccountID (the account its pre-created ENI lives in) and tagged
+// input.ManagedBy so customer listings hide it.
 func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
 	if d.instanceService == nil {
 		return nil, errors.New("sysinstance: instance service not initialized")
@@ -441,8 +442,8 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		d.vmMgr.Insert(instance)
 	}
 
-	// Management NIC must be set before LaunchRunInstances so the cloud-init
-	// network-config (built during launch) renders a static mgmt0 interface.
+	// Management NIC must be set before LaunchRunInstances so the fw_cfg netcfg
+	// blob (built during launch) carries the static mgmt0 address.
 	if err := d.attachSystemMgmtNIC(inst); err != nil {
 		d.vmMgr.MarkFailed(inst, "mgmt_nic_setup_failed")
 		return nil, err

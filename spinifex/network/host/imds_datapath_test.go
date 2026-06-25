@@ -128,8 +128,8 @@ func TestInstallTapDatapath(t *testing.T) {
 		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint + " -- set Interface " + d.Endpoint + " type=internal",
 		"ip link set " + d.Endpoint + " address " + d.EndpointMAC,
 		"ip link set " + d.Endpoint + " up",
-		"ip addr add " + imdsMetaAddr + "/32 dev " + d.Endpoint,
-		"ip addr add " + imdsDNSAddr + "/32 dev " + d.Endpoint,
+		"ip addr replace " + imdsMetaAddr + "/32 dev " + d.Endpoint,
+		"ip addr replace " + imdsDNSAddr + "/32 dev " + d.Endpoint,
 		"sysctl -qw net.ipv4.conf." + d.Endpoint + ".rp_filter=0",
 		"sysctl -qw net.ipv4.conf." + d.Endpoint + ".accept_local=1",
 		// Flows are not cleared here: installIMDSDatapath clears the shared cookie
@@ -153,16 +153,26 @@ func TestInstallTapDatapath(t *testing.T) {
 	}
 }
 
-func TestInstallTapDatapathToleratesExistingAddr(t *testing.T) {
+// TestInstallTapDatapathReattachIsIdempotent guards the recovery/stop re-attach
+// path: captured addresses are added with `ip addr replace`, a no-op when the
+// surviving endpoint already owns them. `ip addr add` errored on the duplicate
+// ("Address already assigned"), aborting the launch.
+func TestInstallTapDatapathReattachIsIdempotent(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-vsctl", nil, nil)
-	s.expect("ip link set", nil, nil)
-	s.expect("ip addr add", []byte("RTNETLINK answers: File exists"), errors.New("exit status 2"))
+	s.expect("ip", nil, nil)
 	s.expect("sysctl", nil, nil)
 	s.expect("ovs-ofctl", nil, nil)
 
-	if err := InstallTapDatapath(context.Background(), s, testDatapath()); err != nil {
-		t.Fatalf("File exists on addr add must be tolerated, got: %v", err)
+	d := testDatapath()
+	if err := InstallTapDatapath(context.Background(), s, d); err != nil {
+		t.Fatalf("InstallTapDatapath: %v", err)
+	}
+	if !s.called("ip addr replace " + imdsMetaAddr + "/32 dev " + d.Endpoint) {
+		t.Errorf("captured addr must be added with idempotent `ip addr replace`; calls: %v", s.calls)
+	}
+	if s.called("ip addr add ") {
+		t.Errorf("`ip addr add` errors on a duplicate re-attach; use `ip addr replace`; calls: %v", s.calls)
 	}
 }
 

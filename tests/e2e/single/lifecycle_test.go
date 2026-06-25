@@ -259,7 +259,7 @@ func runModifyInstanceAttribute(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "ssh_host", host, "ssh_port", port)
 
 	waitForSSHReady(t, host, port, keyPath)
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 	harness.Step(t, "ssh nproc")
 	nprocOut := strings.TrimSpace(runSSH(t, tgt, "nproc"))
@@ -341,7 +341,7 @@ func runRebootInstance(t *testing.T, fix *Fixture) {
 	host, port = harness.InstancePublicSSHHost(t, postInst)
 	waitForSSHReady(t, host, port, keyPath)
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 	harness.Step(t, "ssh uptime")
 	uptimeOut := strings.TrimSpace(runSSH(t, tgt, "cat /proc/uptime | cut -d. -f1"))
 	uptimeSecs, err := strconv.ParseInt(uptimeOut, 10, 64)
@@ -461,7 +461,7 @@ func trySSHReady(host string, port int, keyPath string, timeout time.Duration) b
 			"-o", "BatchMode=yes",
 			"-p", strconv.Itoa(port),
 			"-i", keyPath,
-			"ec2-user@"+host,
+			"ubuntu@"+host,
 			"true")
 		if cmd.Run() == nil {
 			return true

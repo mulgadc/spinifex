@@ -40,7 +40,7 @@ func runVolumeDurability(t *testing.T, fix *Fixture) {
 
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	waitForSSHReady(t, host, port, keyPath)
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 	// 1. Create volume + assert the encryption-wiring signal.
 	harness.Step(t, "create-volume size=1 az=%s", az)
@@ -94,7 +94,7 @@ func runVolumeDurability(t *testing.T, fix *Fixture) {
 	// SSH endpoint may have rebound after the restart — re-discover.
 	host, port = harness.InstancePublicSSHHost(t, runInst)
 	waitForSSHReady(t, host, port, keyPath)
-	tgt = harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	tgt = harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 	gotSha = harness.GuestReadSentinelSha(t, tgt, "/dev/disk/by-label/"+volumeDataLabel, volumeDataLabel)
 	require.Equalf(t, wantSha, gotSha, "sha256 mismatch after stop/start")

@@ -298,7 +298,7 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 		return "", fmt.Errorf("%w: %s", ErrVolumeNotAttached, volumeID)
 	}
 
-	if ebsReq.Boot || ebsReq.EFI || ebsReq.CloudInit {
+	if ebsReq.Boot || ebsReq.EFI {
 		return "", fmt.Errorf("%w: %s", ErrVolumeNotDetachable, volumeID)
 	}
 

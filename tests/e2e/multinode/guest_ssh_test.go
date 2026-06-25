@@ -17,8 +17,9 @@ import (
 // runGuestSSH is the Go port of guest SSH probes
 // (run-multinode-e2e.sh:626-728). For every instance in the trio, resolve an
 // SSH endpoint (PublicIpAddress or hosting-node hostfwd), wait until SSH
-// answers, and assert `id` reports ec2-user. Also runs `lsblk` as a smoke
-// probe for the root-device wiring.
+// answers, and assert `id` reports ubuntu (the AMI's stock default user, now
+// that the seed is retired and cloud-init bootstraps from the Ec2 datasource).
+// Also asserts the AWS-form hostname and runs `lsblk` as a root-device smoke.
 func runGuestSSH(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Guest SSH")
 
@@ -30,16 +31,25 @@ func runGuestSSH(t *testing.T, fix *Fixture) {
 		host, port := harness.GuestSSHEndpoint(t, fix.AWS, fix.Cluster, id)
 		harness.Detail(t, "instance", id, "ssh_host", host, "ssh_port", port)
 
-		harness.GuestSSHReady(t, host, port, "ec2-user", pemPath,
+		harness.GuestSSHReady(t, host, port, "ubuntu", pemPath,
 			harness.WithTimeout(2*time.Minute), harness.WithPoll(2*time.Second))
 
-		idOut := sshRun(t, pemPath, "ec2-user", host, port, "id")
+		idOut := sshRun(t, pemPath, "ubuntu", host, port, "id")
 		harness.Detail(t, "instance", id, "id", strings.TrimSpace(idOut))
-		if !strings.Contains(idOut, "ec2-user") {
-			t.Fatalf("instance %s id output missing ec2-user:\n%s", id, idOut)
+		if !strings.Contains(idOut, "ubuntu") {
+			t.Fatalf("instance %s id output missing ubuntu:\n%s", id, idOut)
 		}
 
-		lsblk := sshRun(t, pemPath, "ec2-user", host, port, "lsblk")
+		// Cutover guard: cloud-init sets the AWS-form hostname ip-<dashed-ip> from
+		// IMDS local-hostname, not the retired seed's spinifex-vm-<id>.
+		hostname := strings.TrimSpace(sshRun(t, pemPath, "ubuntu", host, port, "hostname"))
+		harness.Detail(t, "instance", id, "hostname", hostname)
+		if !strings.HasPrefix(hostname, "ip-") {
+			t.Fatalf("instance %s hostname %q is not the AWS form ip-<dashed-ip> "+
+				"rendered from IMDS — seed may not be retired", id, hostname)
+		}
+
+		lsblk := sshRun(t, pemPath, "ubuntu", host, port, "lsblk")
 		// lsblk header line + at least one device row.
 		harness.Detail(t, "instance", id, "lsblk_lines", strings.Count(lsblk, "\n"))
 	}

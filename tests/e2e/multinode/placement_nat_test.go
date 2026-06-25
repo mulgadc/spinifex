@@ -632,7 +632,7 @@ func waitForBastionSSH(t *testing.T, host, keyPath string, timeout time.Duration
 			"-o", "ConnectTimeout=5",
 			"-o", "BatchMode=yes",
 			"-i", keyPath,
-			"ec2-user@" + host,
+			"ubuntu@" + host,
 			"true",
 		}
 		if out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput(); err != nil {
@@ -658,7 +658,7 @@ func scpKeyToBastion(t *testing.T, keyPath, host string) {
 		"-o", "BatchMode=yes",
 		"-i", keyPath,
 		keyPath,
-		"ec2-user@" + host + ":/tmp/key.pem",
+		"ubuntu@" + host + ":/tmp/key.pem",
 	}
 	if out, err := exec.CommandContext(ctx, "scp", scpArgs...).CombinedOutput(); err != nil {
 		t.Fatalf("scp %s -> %s:/tmp/key.pem: %v\n%s", keyPath, host, err, string(out))
@@ -673,7 +673,7 @@ func scpKeyToBastion(t *testing.T, keyPath, host string) {
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",
 		"-i", keyPath,
-		"ec2-user@" + host,
+		"ubuntu@" + host,
 		"chmod 600 /tmp/key.pem",
 	}
 	if out, err := exec.CommandContext(ctx2, "ssh", sshArgs...).CombinedOutput(); err != nil {
@@ -688,7 +688,7 @@ func sshViaBastion(keyPath, bastionHost, privIP, cmd string) (string, error) {
 	hop := fmt.Sprintf(
 		"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "+
 			"-o LogLevel=ERROR -o ConnectTimeout=10 -o BatchMode=yes "+
-			"-i /tmp/key.pem ec2-user@%s '%s'",
+			"-i /tmp/key.pem ubuntu@%s '%s'",
 		privIP, cmd,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -700,7 +700,7 @@ func sshViaBastion(keyPath, bastionHost, privIP, cmd string) (string, error) {
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",
 		"-i", keyPath,
-		"ec2-user@" + bastionHost,
+		"ubuntu@" + bastionHost,
 		hop,
 	}
 	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()

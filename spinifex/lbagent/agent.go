@@ -93,7 +93,7 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		return nil, fmt.Errorf("region is required")
 	}
 
-	// Use system CA trust store (CA cert injected via cloud-init ca_certs).
+	// Use system CA trust store (deployment CA provisioned via fw_cfg on the microvm).
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{

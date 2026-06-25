@@ -40,7 +40,7 @@ func runSecurityGroupEgress(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, def.SGID, "default SG ID required")
 
 	sshHost, sshPort := harness.InstancePublicSSHHost(t, inst)
-	tgt := harness.SSHTarget{User: "ec2-user", Host: sshHost, Port: sshPort, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: sshHost, Port: sshPort, KeyPath: keyPath}
 
 	// Restore allow-all egress no matter what — ignore Duplicate so a clean
 	// finish (test left the rule in place) doesn't poison later phases.

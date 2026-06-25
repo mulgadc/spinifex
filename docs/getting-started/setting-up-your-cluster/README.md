@@ -243,7 +243,7 @@ SSH directly to the instance's public IP:
 PUBLIC_IP=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID \
   --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
 
-ssh -i ~/.ssh/spinifex-key ec2-user@$PUBLIC_IP
+ssh -i ~/.ssh/spinifex-key ubuntu@$PUBLIC_IP
 ```
 
 > **Note:** cloud-init takes 30-60 seconds to configure the instance. If SSH is refused, wait and retry.

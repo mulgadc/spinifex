@@ -223,7 +223,7 @@ aws ec2 describe-nat-gateways --query 'NatGateways[].[NatGatewayId,State]'
 The Nginx instances have no public IP, so you can't SSH in directly from your host. If you need to inspect cloud-init logs, launch a small jump host in the same VPC or run commands via the Spinifex console, then:
 
 ```bash
-ssh -i nginx-alb-demo.pem ec2-user@<instance_private_ip>
+ssh -i nginx-alb-demo.pem ubuntu@<instance_private_ip>
 sudo journalctl -u cloud-init --no-pager
 sudo systemctl status nginx
 ```

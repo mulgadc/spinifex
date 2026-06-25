@@ -1493,6 +1493,9 @@ func (d *Daemon) startCluster() error {
 	// alarms — it never deletes volume data.
 	if d.jsManager != nil {
 		reapers := []vm.Reaper{d.vmMgr.NewTerminatedTeardownReaper()}
+		if eniRec := d.newENIReconciler(); eniRec != nil {
+			reapers = append(reapers, eniRec)
+		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
 		}

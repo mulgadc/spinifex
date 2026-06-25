@@ -1,7 +1,6 @@
 package handlers_ecs
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -116,14 +115,11 @@ func registerInstance(t *testing.T, svc *Service, cluster, id string, cpu, mem i
 }
 
 func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
-	svc, nc := newTestService(t)
+	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	registerTaskDef(t, svc, "app", 128, 256)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
-
-	sub, err := nc.SubscribeSync(bus.AssignSubject(testAccountID, "web", "i-1"))
-	require.NoError(t, err)
 
 	out, err := svc.RunTask(&ecs.RunTaskInput{
 		Cluster:        aws.String("web"),
@@ -135,11 +131,11 @@ func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
 	assert.Empty(t, out.Failures)
 	assert.Equal(t, "PENDING", aws.StringValue(out.Tasks[0].LastStatus))
 
-	// Assign published to the instance's agent.
-	msg, err := sub.NextMsg(2 * time.Second)
+	// Assign written to the instance's KV inbox, drained by polling the gateway.
+	poll, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
 	require.NoError(t, err)
-	var as bus.Assign
-	require.NoError(t, json.Unmarshal(msg.Data, &as))
+	require.Len(t, poll.Assignments, 1)
+	as := poll.Assignments[0]
 	assert.Equal(t, "i-1", as.InstanceID)
 	require.Len(t, as.Containers, 1)
 	assert.Equal(t, "registry/app:1", as.Containers[0].Image)
@@ -157,6 +153,46 @@ func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, lt.TaskArns, 1)
 	assert.Equal(t, as.TaskID, containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn)))
+}
+
+// PollAssignments is at-least-once: re-poll without ack re-delivers the assign;
+// acking it (then STOPPED) drains the inbox so it is never re-delivered.
+func TestService_PollAssignments_AckAndReclaim(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerTaskDef(t, svc, "app", 128, 256)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+	out, err := svc.RunTask(&ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
+	require.NoError(t, err)
+	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
+
+	// Unacked re-poll re-delivers.
+	p1, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, p1.Assignments, 1)
+	p2, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, p2.Assignments, 1)
+
+	// Ack drains the inbox.
+	p3, err := svc.PollAssignments(&PollAssignmentsInput{
+		Cluster: "web", ContainerInstance: "i-1", AckTaskIDs: []string{taskID},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, p3.Assignments)
+
+	// A fresh RunTask + STOPPED reclaims its inbox entry without an explicit ack.
+	out2, err := svc.RunTask(&ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
+	require.NoError(t, err)
+	task2 := containerInstanceShortID(aws.StringValue(out2.Tasks[0].TaskArn))
+	require.NoError(t, svc.recordTaskState(&bus.TaskState{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: task2,
+		LastStatus: bus.TaskStatusStopped,
+	}))
+	p4, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, p4.Assignments)
 }
 
 func TestService_RunTask_ClusterNotFound(t *testing.T) {

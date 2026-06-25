@@ -68,6 +68,19 @@ func TaskKey(cluster, taskID string) string {
 	return TasksPrefix(cluster) + taskID
 }
 
+// AssignmentsPrefix returns the KV key prefix under which a container instance's
+// pending task assignments (its "inbox") live. Kept in a sibling path to
+// instances/ + tasks/ so listing those records never picks up assignment keys.
+// The agent drains this inbox by polling the gateway (no direct NATS).
+func AssignmentsPrefix(cluster, instanceID string) string {
+	return fmt.Sprintf("clusters/%s/assignments/%s/", cluster, instanceID)
+}
+
+// AssignmentKey returns the KV key for one task's assignment in an instance inbox.
+func AssignmentKey(cluster, instanceID, taskID string) string {
+	return AssignmentsPrefix(cluster, instanceID) + taskID
+}
+
 // ServicesPrefix returns the KV key prefix under which all of a cluster's service
 // records live. Used by ListServices to enumerate.
 func ServicesPrefix(cluster string) string {

@@ -26,6 +26,7 @@ var wiredActions = map[string]bool{
 	"RegisterContainerInstance": true, "DescribeContainerInstances": true, "ListContainerInstances": true,
 	"RunTask": true, "DescribeTasks": true, "ListTasks": true,
 	"SubmitTaskStateChange": true,
+	"PollAssignments":       true,
 }
 
 func TestActions_StubsReturnNotImplemented(t *testing.T) {

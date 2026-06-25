@@ -226,6 +226,7 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 
 	// Release capacity once, on the transition into STOPPED.
 	if msg.LastStatus == TaskStatusStopped && prev != TaskStatusStopped {
+		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
 		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB)
 	}
 	return nil

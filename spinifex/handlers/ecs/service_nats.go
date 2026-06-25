@@ -82,3 +82,7 @@ func (s *NATSECSService) ListTasks(input *ecs.ListTasksInput, accountID string) 
 func (s *NATSECSService) SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error) {
 	return utils.NATSRequest[ecs.SubmitTaskStateChangeOutput](s.natsConn, "ecs.SubmitTaskStateChange", input, defaultTimeout, accountID)
 }
+
+func (s *NATSECSService) PollAssignments(input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error) {
+	return utils.NATSRequest[PollAssignmentsOutput](s.natsConn, "ecs.PollAssignments", input, defaultTimeout, accountID)
+}

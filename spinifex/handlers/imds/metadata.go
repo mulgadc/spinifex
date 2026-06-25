@@ -230,7 +230,10 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "services/partition":
 		writeText(w, "aws")
 	case prefixMetaData + "iam", prefixMetaData + "iam/":
-		if !s.hasInstanceProfile(eni) {
+		// A backend error counts as "no profile" so the iam/ subtree stays
+		// self-consistent — 404 here rather than advertised with 404ing leaves,
+		// which fails cloud-init's metadata crawl.
+		if profile, err := s.profileFor(eni); err != nil || profile == nil {
 			w.WriteHeader(http.StatusNotFound) // no profile → no iam/ subtree, as on real EC2
 			return
 		}
@@ -595,15 +598,6 @@ func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 		return nil, nil
 	}
 	return &resolvedProfile{ARN: profile.ARN, InstanceProfileID: profile.InstanceProfileID, RoleName: profile.RoleName}, nil
-}
-
-// hasInstanceProfile reports whether a resolvable instance profile is attached. A
-// backend error counts as "no profile" so the iam/ subtree stays self-consistent —
-// omitted from the meta-data/ listing and 404 at the directory — rather than
-// advertised with 404ing leaves, which fails cloud-init's metadata crawl.
-func (s *IMDSServiceImpl) hasInstanceProfile(eni *eniFacts) bool {
-	profile, err := s.profileFor(eni)
-	return err == nil && profile != nil
 }
 
 // resolvedProfile is the slice of an IAM instance profile served by the metadata surface.

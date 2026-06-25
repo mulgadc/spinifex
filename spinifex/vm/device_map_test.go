@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -325,4 +326,40 @@ func TestExtractHotplugPort(t *testing.T) {
 			assert.Equal(t, tt.want, extractHotplugPort(tt.qdev))
 		})
 	}
+}
+
+func TestFreeHotplugEBSPort(t *testing.T) {
+	mk := func(ports ...int) []types.EBSRequest {
+		reqs := make([]types.EBSRequest, 0, len(ports))
+		for _, p := range ports {
+			reqs = append(reqs, types.EBSRequest{HotplugPort: p})
+		}
+		return reqs
+	}
+
+	tests := []struct {
+		name string
+		reqs []types.EBSRequest
+		want int
+	}{
+		{name: "empty pool returns 1", reqs: nil, want: 1},
+		{name: "first port taken returns 2", reqs: mk(1), want: 2},
+		{name: "lowest gap is reused", reqs: mk(1, 3), want: 2},
+		{name: "boot/zero ports ignored", reqs: mk(0, 0), want: 1},
+		{name: "contiguous run returns next", reqs: mk(1, 2, 3), want: 4},
+		{name: "out-of-order still finds gap", reqs: mk(3, 1), want: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, freeHotplugEBSPort(tt.reqs))
+		})
+	}
+
+	t.Run("exhausted pool returns 0", func(t *testing.T) {
+		full := make([]types.EBSRequest, 0, EBSHotPlugSlotCount)
+		for p := 1; p <= EBSHotPlugSlotCount; p++ {
+			full = append(full, types.EBSRequest{HotplugPort: p})
+		}
+		assert.Equal(t, 0, freeHotplugEBSPort(full))
+	})
 }

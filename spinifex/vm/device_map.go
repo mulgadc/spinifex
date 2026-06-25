@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 // pciAddrRegexp extracts the device index from a boot-time QDev path.
@@ -260,30 +261,26 @@ func nextAvailableDevice(instance *VM) string {
 	return ""
 }
 
-// nextHotplugEBSPort picks the lowest free EBS hot-plug PCIe port
-// (1..EBSHotPlugSlotCount) from live QEMU state. The port is decoupled from the
-// AWS device name: callers (e.g. the EBS CSI driver) supply arbitrary names like
-// /dev/xvdaa that do not map onto the /dev/sd[f-p] slot range, so the physical
-// port is allocated independently. Returns 0 when the pool is exhausted.
-func nextHotplugEBSPort(qmpClient *qmp.QMPClient, instanceID string) (int, error) {
-	resp, err := sendQMPCommand(qmpClient, qmp.QMPCommand{Execute: "query-block"}, instanceID)
-	if err != nil {
-		return 0, fmt.Errorf("query-block failed: %w", err)
-	}
-	var devices []qmp.BlockDevice
-	if err := json.Unmarshal(resp.Return, &devices); err != nil {
-		return 0, fmt.Errorf("failed to parse query-block response: %w", err)
-	}
-	used := make(map[int]bool, len(devices))
-	for _, dev := range devices {
-		if port := extractHotplugPort(dev.QDev); port > 0 {
-			used[port] = true
+// freeHotplugEBSPort returns the lowest EBS hot-plug PCIe port
+// (1..EBSHotPlugSlotCount) not already claimed by an attached volume, or 0 when
+// the pool is exhausted. The port is decoupled from the AWS device name:
+// callers (e.g. the EBS CSI driver) supply arbitrary names like /dev/xvdaa that
+// do not map onto the /dev/sd[f-p] range, so the physical port is allocated
+// independently. Accounting is in-memory and authoritative: QEMU reports block
+// devices by id, not by bus, so a live query-block scan cannot tell which port
+// is occupied. Callers must hold the EBSRequests lock; serialize the matching
+// device_add under attachMu so allocation and use are atomic.
+func freeHotplugEBSPort(reqs []types.EBSRequest) int {
+	used := make(map[int]bool, len(reqs))
+	for _, r := range reqs {
+		if r.HotplugPort > 0 {
+			used[r.HotplugPort] = true
 		}
 	}
 	for p := 1; p <= EBSHotPlugSlotCount; p++ {
 		if !used[p] {
-			return p, nil
+			return p
 		}
 	}
-	return 0, nil
+	return 0
 }

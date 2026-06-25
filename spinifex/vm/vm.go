@@ -46,9 +46,9 @@ type VM struct {
 
 	QMPClient *qmp.QMPClient `json:"-"`
 
-	// attachMu serializes EBS volume hot-plug (attach/detach) for this instance.
-	// nextHotplugEBSPort derives the free PCIe root port from live QEMU state, so
-	// two concurrent attaches would otherwise pick the same port and the second
+	// attachMu serializes EBS volume hot-plug (attach/detach) for this instance
+	// so PCIe hot-plug port allocation and the matching device_add are atomic.
+	// Two concurrent attaches would otherwise pick the same port and the second
 	// device_add fails with "slot 0 ... already occupied". Non-persisted; the
 	// Manager hands out a stable *VM, so the lock is shared across calls.
 	attachMu sync.Mutex `json:"-"`

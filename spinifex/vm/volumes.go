@@ -65,9 +65,10 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 			ErrInvalidTransition, id, status)
 	}
 
-	// Serialize hot-plug per instance. nextHotplugEBSPort reads live QEMU state,
-	// so concurrent attaches would pick the same PCIe root port and the second
-	// device_add fails ("slot 0 already occupied"). Detach takes the same lock.
+	// Serialize hot-plug per instance so the port allocation below and the
+	// matching device_add are atomic; concurrent attaches would otherwise pick
+	// the same PCIe root port and the second device_add fails ("slot 0 already
+	// occupied"). Detach takes the same lock.
 	instance.attachMu.Lock()
 	defer instance.attachMu.Unlock()
 
@@ -114,21 +115,22 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	deviceID := fmt.Sprintf("vdisk-%s", volumeID)
 	iothreadID := fmt.Sprintf("ioth-%s", volumeID)
 
-	// Allocate the PCIe hot-plug port from live QEMU state before any QMP
-	// mutation, so an exhausted pool rolls back only the mount. virtio-blk-pci
-	// cannot land on pcie.0 (no hot-plug), so a free hotplug-ebs root port is
-	// required regardless of the AWS device name.
-	hotplugPort, err := nextHotplugEBSPort(instance.QMPClient, instance.ID)
-	if err != nil {
-		slog.Error("AttachVolume: failed to query hot-plug ports", "volumeId", volumeID, "err", err)
-		m.rollbackUnmount(ebsRequest)
-		return AttachVolumeResult{}, fmt.Errorf("query hot-plug ports: %w", err)
-	}
+	// Allocate the PCIe hot-plug port from in-memory accounting. QEMU reports
+	// block devices by id (/machine/peripheral/<id>/virtio-backend), not by bus,
+	// so a live query-block scan cannot tell which hotplug-ebs port is occupied
+	// and always returned the first one — every attach past the first collided
+	// on slot 0. The recorded HotplugPort per attached volume is authoritative;
+	// attachMu (held above) serializes allocation. virtio-blk-pci cannot land on
+	// pcie.0 (no hot-plug), so a free hotplug-ebs root port is always required.
+	instance.EBSRequests.Mu.Lock()
+	hotplugPort := freeHotplugEBSPort(instance.EBSRequests.Requests)
+	instance.EBSRequests.Mu.Unlock()
 	if hotplugPort == 0 {
 		slog.Error("AttachVolume: EBS hot-plug port pool exhausted", "volumeId", volumeID)
 		m.rollbackUnmount(ebsRequest)
 		return AttachVolumeResult{}, ErrAttachmentLimitExceeded
 	}
+	ebsRequest.HotplugPort = hotplugPort
 
 	if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
 		Execute: "object-add",

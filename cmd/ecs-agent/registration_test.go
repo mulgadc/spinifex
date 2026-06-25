@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -11,33 +10,72 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
-// capturePub records published messages; ErrOn forces Publish to fail.
-type capturePub struct {
-	mu    sync.Mutex
-	msgs  map[string][]byte
-	count int
-	errOn bool
+// fakeCP is a test double for the gateway control-plane. It records registers and
+// task-state reports, and replays a scripted queue of poll responses.
+type fakeCP struct {
+	mu sync.Mutex
+
+	registers   int
+	states      []bus.TaskState
+	pollAcks    [][]string
+	pollReplies [][]bus.Assign
+	pollCalls   int
+
+	registerErr bool
+	submitErr   bool
 }
 
-func newCapturePub() *capturePub { return &capturePub{msgs: map[string][]byte{}} }
+var _ controlPlane = (*fakeCP)(nil)
 
-func (c *capturePub) Publish(subject string, data []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.errOn {
-		return errors.New("publish boom")
+func (f *fakeCP) Register(_ identity) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.registerErr {
+		return errors.New("register boom")
 	}
-	c.count++
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	c.msgs[subject] = cp
+	f.registers++
 	return nil
 }
 
-func (c *capturePub) calls() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.count
+func (f *fakeCP) SubmitTaskState(st bus.TaskState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.submitErr {
+		return errors.New("submit boom")
+	}
+	f.states = append(f.states, st)
+	return nil
+}
+
+func (f *fakeCP) PollAssignments(_, _ string, ack []string) ([]bus.Assign, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := append([]string(nil), ack...)
+	f.pollAcks = append(f.pollAcks, cp)
+	var out []bus.Assign
+	if f.pollCalls < len(f.pollReplies) {
+		out = f.pollReplies[f.pollCalls]
+	}
+	f.pollCalls++
+	return out, nil
+}
+
+func (f *fakeCP) registerCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.registers
+}
+
+func (f *fakeCP) taskStates() []bus.TaskState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bus.TaskState(nil), f.states...)
+}
+
+func (f *fakeCP) acks() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]string(nil), f.pollAcks...)
 }
 
 func testIdentity() identity {
@@ -53,67 +91,42 @@ func testIdentity() identity {
 }
 
 func TestRegistrar_Register(t *testing.T) {
-	pub := newCapturePub()
-	id := testIdentity()
-	if err := newRegistrar(pub, id).Register(); err != nil {
+	cp := &fakeCP{}
+	if err := newRegistrar(cp, testIdentity()).Register(); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	subj := bus.RegisterSubject(id.AccountID, id.ClusterName, id.InstanceID)
-	raw, ok := pub.msgs[subj]
-	if !ok {
-		t.Fatalf("no message on %s; got %v", subj, pub.msgs)
-	}
-	var got bus.RegisterInstance
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.InstanceID != id.InstanceID || got.Capacity.CPU != 2048 {
-		t.Errorf("payload mismatch: %+v", got)
-	}
-	if got.RegisteredAt.IsZero() {
-		t.Error("RegisteredAt not set")
+	if cp.registerCount() != 1 {
+		t.Errorf("registers = %d, want 1", cp.registerCount())
 	}
 }
 
-func TestRegistrar_PublishError(t *testing.T) {
-	pub := newCapturePub()
-	pub.errOn = true
-	if err := newRegistrar(pub, testIdentity()).Register(); err == nil {
-		t.Fatal("expected publish error")
+func TestRegistrar_RegisterError(t *testing.T) {
+	cp := &fakeCP{registerErr: true}
+	if err := newRegistrar(cp, testIdentity()).Register(); err == nil {
+		t.Fatal("expected register error")
 	}
 }
 
 func TestHeartbeater_Beat(t *testing.T) {
-	pub := newCapturePub()
-	id := testIdentity()
-	h := newHeartbeater(pub, id, time.Second, func() int { return 3 })
-	if err := h.beat(); err != nil {
+	cp := &fakeCP{}
+	if err := newHeartbeater(cp, testIdentity(), time.Second).beat(); err != nil {
 		t.Fatalf("beat: %v", err)
 	}
-	subj := bus.HeartbeatSubject(id.AccountID, id.ClusterName, id.InstanceID)
-	var got bus.Heartbeat
-	if err := json.Unmarshal(pub.msgs[subj], &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.Status != bus.StatusActive || got.RunningTasks != 3 {
-		t.Errorf("payload mismatch: %+v", got)
+	if cp.registerCount() != 1 {
+		t.Errorf("beat should re-register once, got %d", cp.registerCount())
 	}
 }
 
-func TestHeartbeater_NilRunningTasksIsZero(t *testing.T) {
-	pub := newCapturePub()
-	h := newHeartbeater(pub, testIdentity(), 0, nil)
+func TestHeartbeater_DefaultInterval(t *testing.T) {
+	h := newHeartbeater(&fakeCP{}, testIdentity(), 0)
 	if h.interval != defaultHeartbeat {
 		t.Errorf("interval = %v, want default", h.interval)
-	}
-	if err := h.beat(); err != nil {
-		t.Fatal(err)
 	}
 }
 
 func TestHeartbeater_RunStopsOnContext(t *testing.T) {
-	pub := newCapturePub()
-	h := newHeartbeater(pub, testIdentity(), 5*time.Millisecond, nil)
+	cp := &fakeCP{}
+	h := newHeartbeater(cp, testIdentity(), 5*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
@@ -126,7 +139,7 @@ func TestHeartbeater_RunStopsOnContext(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Run did not stop on context cancel")
 	}
-	if pub.calls() == 0 {
-		t.Error("expected at least one heartbeat before cancel")
+	if cp.registerCount() == 0 {
+		t.Error("expected at least one re-register before cancel")
 	}
 }

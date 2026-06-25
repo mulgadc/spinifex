@@ -6,22 +6,20 @@ import (
 	"time"
 
 	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
 func TestAgent_RunRegistersThenStopsOnContext(t *testing.T) {
-	pub := newCapturePub()
-	cfg := config{Heartbeat: 5 * time.Millisecond}
-	id := testIdentity()
+	cp := &fakeCP{}
+	cfg := config{Heartbeat: 5 * time.Millisecond, PollInterval: 5 * time.Millisecond}
 	puller := &ctrruntime.FakePuller{}
-	a := newAgent(cfg, id, pub, puller, puller, nil)
+	a := newAgent(cfg, testIdentity(), cp, puller, puller, nil)
 	a.closers = append(a.closers, puller.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
 
-	// Give it time to register + emit a heartbeat or two.
+	// Give it time to register + re-register (heartbeat) a few times.
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 
@@ -34,13 +32,9 @@ func TestAgent_RunRegistersThenStopsOnContext(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 
-	regSubj := bus.RegisterSubject(id.AccountID, id.ClusterName, id.InstanceID)
-	if _, ok := pub.msgs[regSubj]; !ok {
-		t.Errorf("no register message on %s", regSubj)
-	}
-	hbSubj := bus.HeartbeatSubject(id.AccountID, id.ClusterName, id.InstanceID)
-	if _, ok := pub.msgs[hbSubj]; !ok {
-		t.Errorf("no heartbeat message on %s", hbSubj)
+	// One boot register + at least one heartbeat re-register.
+	if cp.registerCount() < 2 {
+		t.Errorf("registers = %d, want >= 2 (boot + heartbeat)", cp.registerCount())
 	}
 	if !puller.Closed {
 		t.Error("Stop did not close the puller")

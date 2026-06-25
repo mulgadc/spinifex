@@ -1,11 +1,7 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"time"
-
-	"github.com/nats-io/nats.go"
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
@@ -23,44 +19,21 @@ type identity struct {
 	AgentVersion string
 }
 
-// publisher is the subset of *nats.Conn the agent uses to emit bus messages.
-// Narrowed to an interface so tests can drive it without a live server.
-type publisher interface {
-	Publish(subject string, data []byte) error
-}
-
-var _ publisher = (*nats.Conn)(nil)
-
-// registrar emits the boot-time instance-register message.
+// registrar registers the host as a container instance through the gateway.
 type registrar struct {
-	pub publisher
-	id  identity
+	cp controlPlane
+	id identity
 }
 
-func newRegistrar(pub publisher, id identity) *registrar {
-	return &registrar{pub: pub, id: id}
+func newRegistrar(cp controlPlane, id identity) *registrar {
+	return &registrar{cp: cp, id: id}
 }
 
-// Register publishes the RegisterInstance message on the cluster's register
-// subject. The scheduler records the container instance on receipt (Sprint 4e).
+// Register calls the gateway's RegisterContainerInstance. The scheduler records
+// (or refreshes) the container instance on receipt.
 func (r *registrar) Register() error {
-	msg := bus.RegisterInstance{
-		AccountID:    r.id.AccountID,
-		ClusterName:  r.id.ClusterName,
-		InstanceID:   r.id.InstanceID,
-		AZ:           r.id.AZ,
-		Hostname:     r.id.Hostname,
-		Capacity:     r.id.Capacity,
-		AgentVersion: r.id.AgentVersion,
-		RegisteredAt: time.Now().UTC(),
-	}
-	data, err := json.Marshal(&msg)
-	if err != nil {
-		return fmt.Errorf("marshal register: %w", err)
-	}
-	subj := bus.RegisterSubject(r.id.AccountID, r.id.ClusterName, r.id.InstanceID)
-	if err := r.pub.Publish(subj, data); err != nil {
-		return fmt.Errorf("publish register %s: %w", subj, err)
+	if err := r.cp.Register(r.id); err != nil {
+		return fmt.Errorf("register instance %s: %w", r.id.InstanceID, err)
 	}
 	return nil
 }

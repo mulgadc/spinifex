@@ -17,6 +17,10 @@ const (
 	ResourceVPC    = "vpc"
 	ResourceSubnet = "subnet"
 	ResourceEIP    = "eip"
+	// ResourceStorage is counted in GiB summed across an account's volumes
+	// rather than as a resource count, but shares the same EnforceLive
+	// comparison against its configured cap.
+	ResourceStorage = "storage"
 )
 
 // EnforceLive rejects with ResourceLimitExceeded when an account already
@@ -43,6 +47,8 @@ func (s *Service) liveLimit(resourceType string) (int, bool) {
 		return s.limits.Subnets, true
 	case ResourceEIP:
 		return s.limits.EIPs, true
+	case ResourceStorage:
+		return s.limits.VolumesGiB, true
 	default:
 		return 0, false
 	}

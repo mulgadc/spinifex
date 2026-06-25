@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -197,9 +198,15 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_volume.DescribeVolumes(input, gw.NATSConn, accountID)
 	}),
 	"ModifyVolume": ec2Handler(func(input *ec2.ModifyVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceVolumeModify(gw.NATSConn, accountID, aws.StringValue(input.VolumeId), int(aws.Int64Value(input.Size))); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_volume.ModifyVolume(input, gw.NATSConn, accountID)
 	}),
 	"CreateVolume": ec2Handler(func(input *ec2.CreateVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceVolumeCreate(gw.NATSConn, accountID, int(aws.Int64Value(input.Size))); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_volume.CreateVolume(input, gw.NATSConn, accountID)
 	}),
 	"DeleteVolume": ec2Handler(func(input *ec2.DeleteVolumeInput, gw *GatewayConfig, accountID string) (any, error) {

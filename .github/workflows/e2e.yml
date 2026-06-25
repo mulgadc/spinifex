@@ -76,7 +76,8 @@ jobs:
     # both include single/cert/lb so the inputs.suites null-check keeps the
     # job running on plain PR pushes.
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-iam')
-    runs-on: [self-hosted, ci-single]
+    # TEMP: ci-pseudo (24 GiB) for a one-off e2e-eks dispatch — REVERT to ci-single.
+    runs-on: [self-hosted, ci-pseudo]
     timeout-minutes: 50
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log

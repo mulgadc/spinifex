@@ -352,11 +352,17 @@ func (s *Service) DescribeTaskDefinition(input *ecs.DescribeTaskDefinitionInput,
 	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: rec.toAWS()}, nil
 }
 
-// ListTaskDefinitions returns all revision ARNs, optionally filtered by family.
+// ListTaskDefinitions returns revision ARNs, optionally filtered by family and
+// by status. Matching AWS, the status defaults to ACTIVE when unset, so
+// deregistered (INACTIVE) revisions drop off the default listing.
 func (s *Service) ListTaskDefinitions(input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
+	}
+	wantStatus := aws.StringValue(input.Status)
+	if wantStatus == "" {
+		wantStatus = TaskDefStatusActive
 	}
 	prefix := TaskDefFamiliesPrefix()
 	if fam := aws.StringValue(input.FamilyPrefix); fam != "" {
@@ -376,7 +382,7 @@ func (s *Service) ListTaskDefinitions(input *ecs.ListTaskDefinitionsInput, accou
 		if err != nil {
 			return nil, err
 		}
-		if found {
+		if found && rec.Status == wantStatus {
 			out.TaskDefinitionArns = append(out.TaskDefinitionArns, aws.String(rec.ARN))
 		}
 	}

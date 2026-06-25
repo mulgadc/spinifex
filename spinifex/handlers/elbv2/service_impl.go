@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/url"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -741,11 +741,7 @@ func (s *ELBv2ServiceImpl) validateListenerCerts(certs []ListenerCertificate, ac
 func configCertHash(configContent string, certFiles map[string]string) string {
 	h := sha256.New()
 	h.Write([]byte(configContent))
-	paths := make([]string, 0, len(certFiles))
-	for p := range certFiles {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
+	paths := slices.Sorted(maps.Keys(certFiles))
 	for _, p := range paths {
 		h.Write([]byte(p))
 		h.Write([]byte{0})
@@ -914,11 +910,7 @@ func certFilesToSDK(certFiles map[string]string) []*CertFile {
 	if len(certFiles) == 0 {
 		return nil
 	}
-	paths := make([]string, 0, len(certFiles))
-	for p := range certFiles {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
+	paths := slices.Sorted(maps.Keys(certFiles))
 	out := make([]*CertFile, 0, len(paths))
 	for _, p := range paths {
 		out = append(out, &CertFile{Path: aws.String(p), PEM: aws.String(certFiles[p])})

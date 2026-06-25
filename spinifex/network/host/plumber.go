@@ -3,8 +3,9 @@ package host
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -56,11 +57,7 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 	if len(spec.ExternalIDs) > 0 {
 		addPortArgs = append(addPortArgs, "--", "set", "Interface", spec.Name)
 		// Sort keys for deterministic command construction (test assertions, log readability).
-		keys := make([]string, 0, len(spec.ExternalIDs))
-		for k := range spec.ExternalIDs {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
+		keys := slices.Sorted(maps.Keys(spec.ExternalIDs))
 		for _, k := range keys {
 			addPortArgs = append(addPortArgs, fmt.Sprintf("external_ids:%s=%s", k, spec.ExternalIDs[k]))
 		}

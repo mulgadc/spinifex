@@ -21,7 +21,9 @@
 package selectsuites
 
 import (
+	"maps"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -301,19 +303,9 @@ func subjectMatch(x, y string) bool {
 }
 
 func suiteNames(m *Manifest) []string {
-	out := make([]string, 0, len(m.Suites))
-	for k := range m.Suites {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(m.Suites))
 }
 
 func sortedKeys(s map[string]bool) []string {
-	out := make([]string, 0, len(s))
-	for k := range s {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(s))
 }

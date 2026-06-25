@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -536,12 +538,7 @@ func (m *MemoryMetaStore) GetRepo(accountID, repo string) (RepoMeta, error) {
 func (m *MemoryMetaStore) ListRepos(accountID string) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []string
-	for name := range m.repos[accountID] {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out, nil
+	return slices.Sorted(maps.Keys(m.repos[accountID])), nil
 }
 
 func (m *MemoryMetaStore) DeleteRepo(accountID, repo string) error {

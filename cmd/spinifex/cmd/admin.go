@@ -35,6 +35,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -880,17 +881,8 @@ func runimagesListCmd(cmd *cobra.Command, args []string) {
 		{"NAME", "DISTRO", "VERSION", "ARCH", "BOOT"},
 	}
 
-	// Sort A .. Z
-	// 1. Collect keys
-	keys := make([]string, 0, len(utils.AvailableImages))
-	for k := range utils.AvailableImages {
-		keys = append(keys, k)
-	}
-
-	// 2. Sort keys alphabetically (A→Z)
-	sort.Strings(keys)
-
-	// 3. Iterate in sorted order
+	// Sort A→Z then iterate.
+	keys := slices.Sorted(maps.Keys(utils.AvailableImages))
 	for _, k := range keys {
 		img := utils.AvailableImages[k]
 

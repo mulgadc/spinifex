@@ -1,7 +1,6 @@
 package viperblockd
 
-// Tests for NATS message handlers: ebs.delete, ebs.sync, ebs.unmount, ebs.snapshot
-// These extend the existing integration tests to cover untested handler paths.
+// Tests for NATS message handlers: ebs.delete, ebs.sync, ebs.unmount
 
 import (
 	"encoding/json"
@@ -58,18 +57,17 @@ func TestIntegration_EBSDeleteMountedVolume(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	snapSub, err := nc.Subscribe("ebs.snapshot.vol-del-test", func(msg *nats.Msg) {})
+	configSub, err := nc.Subscribe("ebs.config.vol-del-test", func(msg *nats.Msg) {})
 	require.NoError(t, err)
 
 	cfg := setupTestConfig(t, natsURL)
 	cfg.MountedVolumes = []MountedVolume{
 		{
-			Name:        "vol-del-test",
-			Port:        10809,
-			Socket:      socketPath,
-			PID:         99999, // Fake PID
-			SnapshotSub: snapSub,
-		},
+			Name:      "vol-del-test",
+			Port:      10809,
+			Socket:    socketPath,
+			PID:       99999,
+			ConfigSub: configSub,		},
 	}
 
 	go func() { launchService(cfg) }()
@@ -94,8 +92,8 @@ func TestIntegration_EBSDeleteMountedVolume(t *testing.T) {
 	// Verify socket file deleted
 	assert.False(t, fileExistsCheck(socketPath))
 
-	// Verify snapshot subscription was unsubscribed
-	assert.False(t, snapSub.IsValid())
+	// Verify config subscription was unsubscribed
+	assert.False(t, configSub.IsValid())
 }
 
 func TestIntegration_EBSDeleteUnmountedVolume(t *testing.T) {
@@ -568,17 +566,17 @@ func TestIntegration_EBSDeleteWithVBInstance(t *testing.T) {
 	socketPath := filepath.Join(tmpDir, "vol-del-vb.sock")
 	require.NoError(t, os.WriteFile(socketPath, []byte("fake"), 0600))
 
-	snapSub, err := nc.Subscribe("ebs.snapshot.vol-del-vb", func(msg *nats.Msg) {})
+	configSub, err := nc.Subscribe("ebs.config.vol-del-vb", func(msg *nats.Msg) {})
 	require.NoError(t, err)
 
 	cfg := setupTestConfig(t, natsURL)
 	cfg.MountedVolumes = []MountedVolume{
 		{
-			Name:        "vol-del-vb",
-			Socket:      socketPath,
-			PID:         99999,
-			VB:          vb,
-			SnapshotSub: snapSub,
+			Name:      "vol-del-vb",
+			Socket:    socketPath,
+			PID:       99999,
+			VB:        vb,
+			ConfigSub: configSub,
 		},
 	}
 
@@ -596,10 +594,10 @@ func TestIntegration_EBSDeleteWithVBInstance(t *testing.T) {
 
 	// Verify full cleanup
 	assert.False(t, fileExistsCheck(socketPath))
-	assert.False(t, snapSub.IsValid())
+	assert.False(t, configSub.IsValid())
 }
 
-// --- ebs.unmount with VB instance + SnapshotSub ---
+// --- ebs.unmount with VB instance + ConfigSub ---
 
 func TestIntegration_EBSUnmountWithVBInstance(t *testing.T) {
 	t.Parallel()
@@ -620,17 +618,17 @@ func TestIntegration_EBSUnmountWithVBInstance(t *testing.T) {
 	socketPath := filepath.Join(tmpDir, "vol-unmount-vb.sock")
 	require.NoError(t, os.WriteFile(socketPath, []byte("fake"), 0600))
 
-	snapSub, err := nc.Subscribe("ebs.snapshot.vol-unmount-vb", func(msg *nats.Msg) {})
+	configSub, err := nc.Subscribe("ebs.config.vol-unmount-vb", func(msg *nats.Msg) {})
 	require.NoError(t, err)
 
 	cfg := setupTestConfig(t, natsURL)
 	cfg.MountedVolumes = []MountedVolume{
 		{
-			Name:        "vol-unmount-vb",
-			Socket:      socketPath,
-			PID:         99999,
-			VB:          vb,
-			SnapshotSub: snapSub,
+			Name:      "vol-unmount-vb",
+			Socket:    socketPath,
+			PID:       99999,
+			VB:        vb,
+			ConfigSub: configSub,
 		},
 	}
 
@@ -649,7 +647,7 @@ func TestIntegration_EBSUnmountWithVBInstance(t *testing.T) {
 
 	// Verify cleanup
 	assert.False(t, fileExistsCheck(socketPath))
-	assert.False(t, snapSub.IsValid())
+	assert.False(t, configSub.IsValid())
 }
 
 // --- ebs.unmount dual-publish verification ---

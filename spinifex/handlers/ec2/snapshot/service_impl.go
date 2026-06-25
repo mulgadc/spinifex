@@ -21,9 +21,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
+	vbs3 "github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
 )
 
@@ -237,40 +237,15 @@ func (s *SnapshotServiceImpl) CreateSnapshot(input *ec2.CreateSnapshotInput, acc
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Trigger viperblock to flush data and create a frozen block map checkpoint.
-	// This sends a NATS message to the EBS daemon that owns the volume, which
-	// calls vb.CreateSnapshot() on the live viperblock instance.
-	if s.natsConn != nil {
-		snapReq := types.EBSSnapshotRequest{Volume: volumeID, SnapshotID: snapshotID}
-		snapData, err := json.Marshal(snapReq)
-		if err != nil {
-			slog.Error("CreateSnapshot: failed to marshal ebs.snapshot request", "volumeId", volumeID, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-
-		msg, err := s.natsConn.Request(fmt.Sprintf("ebs.snapshot.%s", volumeID), snapData, 5*time.Minute)
-		if errors.Is(err, nats.ErrNoResponders) {
-			// Volume is not mounted — data is already persisted to S3, proceed with metadata-only snapshot.
-			slog.Info("CreateSnapshot: volume not mounted, creating metadata-only snapshot", "volumeId", volumeID, "snapshotId", snapshotID)
-		} else if err != nil {
-			slog.Error("CreateSnapshot: ebs.snapshot NATS request failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		} else {
-			var snapResp types.EBSSnapshotResponse
-			if err := json.Unmarshal(msg.Data, &snapResp); err != nil {
-				slog.Error("CreateSnapshot: failed to unmarshal ebs.snapshot response", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			if !snapResp.Success || snapResp.Error != "" {
-				slog.Error("CreateSnapshot: viperblock snapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", snapResp.Error)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-
-			slog.Info("CreateSnapshot: viperblock snapshot created", "volumeId", volumeID, "snapshotId", snapshotID)
-		}
-	} else {
-		slog.Warn("CreateSnapshot: natsConn is nil, skipping viperblock snapshot (metadata-only)", "volumeId", volumeID)
+	// Snapshot the viperblock volume by reading the live checkpoint from S3.
+	// The live checkpoint is updated on every NBD Flush by the running nbdkit process.
+	// If the volume is not mounted (stopped), LoadLiveCheckpoint falls back to the
+	// numbered checkpoint written by Close. No IPC with nbdkit required.
+	if err := s.snapshotVolume(volumeID, snapshotID, volumeConfig.VolumeMetadata.SizeGiB*1024*1024*1024); err != nil {
+		slog.Error("CreateSnapshot: viperblock snapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	slog.Info("CreateSnapshot: viperblock snapshot created", "volumeId", volumeID, "snapshotId", snapshotID)
 
 	now := time.Now()
 
@@ -307,6 +282,59 @@ func (s *SnapshotServiceImpl) CreateSnapshot(input *ec2.CreateSnapshotInput, acc
 	slog.Info("CreateSnapshot completed", "snapshotId", snapshotID, "volumeId", volumeID)
 
 	return snapshotConfigToEC2(snapshotCfg), nil
+}
+
+// snapshotVolume opens a read-only viperblock instance, reads the live checkpoint from S3
+// (written by nbdkit on every NBD Flush), and calls CreateSnapshot. Falls back to the
+// numbered checkpoint from Close if no live checkpoint exists (stopped volume path).
+// If Predastore is not configured the snapshot proceeds as metadata-only.
+func (s *SnapshotServiceImpl) snapshotVolume(volumeID, snapshotID string, volumeSize uint64) error {
+	if s.config == nil || s.config.Predastore.Host == "" {
+		slog.Warn("snapshotVolume: Predastore not configured, skipping viperblock snapshot (metadata-only)", "volumeId", volumeID)
+		return nil
+	}
+
+	cfg := vbs3.S3Config{
+		VolumeName: volumeID,
+		VolumeSize: volumeSize,
+		Bucket:     s.config.Predastore.Bucket,
+		Region:     s.config.Predastore.Region,
+		AccessKey:  s.config.Predastore.AccessKey,
+		SecretKey:  s.config.Predastore.SecretKey,
+		Host:       s.config.Predastore.Host,
+	}
+
+	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+	if err != nil {
+		return fmt.Errorf("load encryption key: %w", err)
+	}
+
+	vbconfig := viperblock.VB{
+		VolumeName:        volumeID,
+		VolumeSize:        volumeSize,
+		BaseDir:           s.config.WalDir,
+		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
+		MasterKey:         mkey,
+		EncryptionEnabled: mkey != nil,
+	}
+
+	vb, err := viperblock.New(&vbconfig, "s3", cfg)
+	if err != nil {
+		return fmt.Errorf("new viperblock: %w", err)
+	}
+	if err := vb.Backend.Init(); err != nil {
+		return fmt.Errorf("backend init: %w", err)
+	}
+	if err := vb.LoadState(); err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	if err := vb.LoadLiveCheckpoint(); err != nil {
+		return fmt.Errorf("load live checkpoint: %w", err)
+	}
+	if _, err := vb.CreateSnapshot(snapshotID); err != nil {
+		return fmt.Errorf("create snapshot: %w", err)
+	}
+	return nil
 }
 
 // describeSnapshotsValidFilters defines the set of filter names accepted by DescribeSnapshots.

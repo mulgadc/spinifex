@@ -1249,7 +1249,7 @@ func (d *Daemon) startCluster() error {
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
-	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
+	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config)
 
 	type snapResult struct {
 		svc *handlers_ec2_snapshot.SnapshotServiceImpl

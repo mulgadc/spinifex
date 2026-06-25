@@ -82,3 +82,37 @@ func TestPromoteSystemImage_CorruptConfig_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
+
+func TestGetAMIMetadata_HappyPath(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	const id = "ami-meta-001"
+	putAMI(t, store, id, "ubuntu-24", testRemoveAccountID, "snap-meta-001")
+
+	meta, err := GetAMIMetadata(store, testRemoveBucket, id)
+	require.NoError(t, err)
+	assert.Equal(t, "ubuntu-24", meta.Name)
+	assert.Equal(t, testRemoveAccountID, meta.ImageOwnerAlias)
+}
+
+func TestGetAMIMetadata_MissingConfig_NotFound(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+
+	_, err := GetAMIMetadata(store, testRemoveBucket, "ami-missing-meta")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
+}
+
+func TestGetAMIMetadata_CorruptConfig_NotFound(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	const id = "ami-corrupt-meta"
+	_, err := store.PutObject(&awss3.PutObjectInput{
+		Bucket: aws.String(testRemoveBucket),
+		Key:    aws.String(id + "/config.json"),
+		Body:   bytes.NewReader([]byte("not json {")),
+	})
+	require.NoError(t, err)
+
+	_, err = GetAMIMetadata(store, testRemoveBucket, id)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
+}

@@ -40,6 +40,9 @@ type Agent struct {
 	// netns builds awsvpc task network namespaces (nil-safe; bridge/host skip it).
 	netns *taskNetns
 
+	// cred serves task IAM role credentials at 169.254.170.2 (nil in unit tests).
+	cred *credEndpoint
+
 	closers []func() error
 }
 
@@ -103,6 +106,8 @@ func New(cfg config) (*Agent, error) {
 	}
 
 	a := newAgent(cfg, id, cp, puller, runner, resolver)
+	a.cred = newCredEndpoint(creds, cfg.Region, cfg.GatewayURL, cfg.GatewayCA,
+		cfg.CredEndpointIP, cfg.CredEndpointPort, execNetRunner{})
 	if puller != nil {
 		a.closers = append(a.closers, puller.Close)
 	}
@@ -118,6 +123,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		slog.Info("ecs-agent: registered", "cluster", a.id.ClusterName, "instance", a.id.InstanceID)
 	}
 
+	if a.cred != nil {
+		if err := a.cred.Start(); err != nil {
+			slog.Error("ecs-agent: credential endpoint start failed", "err", err)
+		}
+	}
+
 	go a.hb.Run(ctx)
 	go a.pollAssignments(ctx)
 
@@ -128,6 +139,9 @@ func (a *Agent) Run(ctx context.Context) error {
 // Stop closes the runtime. Safe to call once.
 func (a *Agent) Stop() error {
 	var firstErr error
+	if a.cred != nil {
+		_ = a.cred.Stop()
+	}
 	for _, c := range a.closers {
 		if err := c(); err != nil && firstErr == nil {
 			firstErr = err

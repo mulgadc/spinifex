@@ -155,6 +155,38 @@ func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
 	assert.Equal(t, as.TaskID, containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn)))
 }
 
+func TestService_RunTask_AssignCarriesTaskRole(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	roleARN := "arn:aws:iam::123456789012:role/task-app"
+	_, err = svc.RegisterTaskDefinition(&ecs.RegisterTaskDefinitionInput{
+		Family:      aws.String("app"),
+		TaskRoleArn: aws.String(roleARN),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"),
+			Cpu: aws.Int64(128), Memory: aws.Int64(256), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	// Round-trips through DescribeTaskDefinition.
+	d, err := svc.DescribeTaskDefinition(&ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String("app")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, roleARN, aws.StringValue(d.TaskDefinition.TaskRoleArn))
+
+	_, err = svc.RunTask(&ecs.RunTaskInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("app"), Count: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	poll, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, poll.Assignments, 1)
+	assert.Equal(t, roleARN, poll.Assignments[0].TaskRoleARN)
+}
+
 // PollAssignments is at-least-once: re-poll without ack re-delivers the assign;
 // acking it (then STOPPED) drains the inbox so it is never re-delivered.
 func TestService_PollAssignments_AckAndReclaim(t *testing.T) {

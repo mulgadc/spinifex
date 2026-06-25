@@ -263,6 +263,7 @@ func (s *Service) RegisterTaskDefinition(input *ecs.RegisterTaskDefinitionInput,
 		NetworkMode:  aws.StringValue(input.NetworkMode),
 		CPU:          aws.StringValue(input.Cpu),
 		Memory:       aws.StringValue(input.Memory),
+		TaskRoleArn:  aws.StringValue(input.TaskRoleArn),
 		Status:       TaskDefStatusActive,
 		RegisteredAt: time.Now().UTC(),
 		Containers:   containerDefsFromAWS(input.ContainerDefinitions),
@@ -395,6 +396,9 @@ func (r *TaskDefRecord) toAWS() *ecs.TaskDefinition {
 	}
 	if r.Memory != "" {
 		td.Memory = aws.String(r.Memory)
+	}
+	if r.TaskRoleArn != "" {
+		td.TaskRoleArn = aws.String(r.TaskRoleArn)
 	}
 	for _, c := range r.Containers {
 		td.ContainerDefinitions = append(td.ContainerDefinitions, c.toAWS())

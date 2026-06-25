@@ -26,15 +26,15 @@ func instance(instanceType, stateName string) *ec2.Instance {
 	return inst
 }
 
-// staticLister returns an InstanceLister serving a fixed per-account map, and
-// records which accounts were described so a test can assert the system account
-// is never swept.
+// staticLister returns an InstanceLister serving a fixed per-account map as a
+// complete sweep, and records which accounts were described so a test can assert
+// the system account is never swept.
 func staticLister(byAccount map[string][]*ec2.Reservation, seen *[]string) InstanceLister {
-	return func(accountID string) ([]*ec2.Reservation, error) {
+	return func(accountID string) ([]*ec2.Reservation, bool, error) {
 		if seen != nil {
 			*seen = append(*seen, accountID)
 		}
-		return byAccount[accountID], nil
+		return byAccount[accountID], true, nil
 	}
 }
 
@@ -137,11 +137,11 @@ func TestReconcileContinuesOnDescribeError(t *testing.T) {
 		t.Fatalf("seed bad: %v", err)
 	}
 	sentinel := errors.New("describe boom")
-	lister := func(accountID string) ([]*ec2.Reservation, error) {
+	lister := func(accountID string) ([]*ec2.Reservation, bool, error) {
 		if accountID == bad {
-			return nil, sentinel
+			return nil, false, sentinel
 		}
-		return []*ec2.Reservation{reservation(instance("m5.xlarge", ec2.InstanceStateNameRunning))}, nil
+		return []*ec2.Reservation{reservation(instance("m5.xlarge", ec2.InstanceStateNameRunning))}, true, nil
 	}
 
 	err := s.Reconcile(context.Background(), accountList(bad, good), lister)
@@ -150,6 +150,39 @@ func TestReconcileContinuesOnDescribeError(t *testing.T) {
 	}
 	assertCounter(t, s, bad, 8) // unchanged: left for the next pass
 	assertCounter(t, s, good, 4)
+}
+
+// An incomplete sweep (a node down or a failed bucket query) must never lower a
+// counter: a short count is dropped and the counter left for the next clean pass.
+// A higher observed count still raises it, since those instances do exist.
+func TestReconcileIncompleteSweepDoesNotLower(t *testing.T) {
+	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
+
+	// Counter holds 8 (two m5.xlarge across two nodes); a partial sweep sees only
+	// one node's 4 vCPUs and reports complete=false.
+	if err := s.AddVCPU(testAccount, 8); err != nil {
+		t.Fatalf("seed AddVCPU: %v", err)
+	}
+	partial := func(accountID string) ([]*ec2.Reservation, bool, error) {
+		return []*ec2.Reservation{reservation(instance("m5.xlarge", ec2.InstanceStateNameRunning))}, false, nil
+	}
+	if err := s.Reconcile(context.Background(), accountList(testAccount), partial); err != nil {
+		t.Fatalf("Reconcile partial: %v", err)
+	}
+	assertCounter(t, s, testAccount, 8) // unchanged: a partial sweep cannot lower
+
+	// A partial sweep that observes more than the counter may still raise it.
+	higher := func(accountID string) ([]*ec2.Reservation, bool, error) {
+		return []*ec2.Reservation{reservation(
+			instance("m5.xlarge", ec2.InstanceStateNameRunning),
+			instance("m5.xlarge", ec2.InstanceStateNameRunning),
+			instance("m5.xlarge", ec2.InstanceStateNameRunning),
+		)}, false, nil
+	}
+	if err := s.Reconcile(context.Background(), accountList(testAccount), higher); err != nil {
+		t.Fatalf("Reconcile raise: %v", err)
+	}
+	assertCounter(t, s, testAccount, 12) // raised to the observed 3 x 4 = 12
 }
 
 // A disabled service never reaches the KV: Reconcile is a no-op even with a nil

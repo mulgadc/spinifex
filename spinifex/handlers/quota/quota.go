@@ -20,6 +20,11 @@ const ReconcileInterval = 30 * time.Second
 // dimension; the live-counted dimensions need no stored state.
 const KVBucketAccountUsage = "spinifex-account-usage"
 
+// KVBucketQuotaReconcile is the leader-lock bucket for the gateway quota
+// reconcile. It is deliberately distinct from vpcd's network-reconcile lock so
+// the two independent loops never share one mutex and block each other.
+const KVBucketQuotaReconcile = "spinifex-quota-reconcile"
+
 // Limits mirrors the [quota] block in awsgw.toml. The zero value (Enabled
 // false) is a valid no-op, so gateways without a [quota] block are unaffected.
 type Limits struct {

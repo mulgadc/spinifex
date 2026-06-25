@@ -17,22 +17,24 @@ import (
 // through its own account-filtered Describe* call.
 type AccountLister func() ([]string, error)
 
-// InstanceLister returns the reservations one account currently holds. The
-// production implementation is the account-filtered DescribeInstances fan-out,
-// which bundles running plus stopped plus terminated; reconcile drops the
-// terminal set so only the "existing" (running plus stopped) vCPUs are summed.
-type InstanceLister func(accountID string) ([]*ec2.Reservation, error)
+// InstanceLister returns the reservations one account currently holds and whether
+// the sweep was complete. The production implementation is the account-filtered
+// DescribeInstances fan-out, which bundles running plus stopped plus terminated;
+// reconcile drops the terminal set so only the "existing" (running plus stopped)
+// vCPUs are summed. complete is false when a node or instance bucket did not
+// answer, so reconcile must not lower a counter from that partial view.
+type InstanceLister func(accountID string) (reservations []*ec2.Reservation, complete bool, err error)
 
 // NATSInstanceLister builds the production InstanceLister from a NATS connection
-// and a live active-node count. activeNodes is re-evaluated per call so a node
-// joining or leaving between passes is reflected without a gateway restart.
-func NATSInstanceLister(natsConn *nats.Conn, activeNodes func() int) InstanceLister {
-	return func(accountID string) ([]*ec2.Reservation, error) {
-		out, err := gateway_ec2_instance.DescribeInstances(&ec2.DescribeInstancesInput{}, natsConn, activeNodes(), accountID)
-		if err != nil {
-			return nil, err
-		}
-		return out.Reservations, nil
+// and the configured cluster node count. The count is the expected node total,
+// not the live-active count, so a node that is down makes the sweep incomplete
+// rather than silently dropping its instances; reconcile then leaves the counter
+// untouched instead of lowering it. expectedNodes is re-evaluated per call so a
+// config change between passes is reflected without a gateway restart.
+func NATSInstanceLister(natsConn *nats.Conn, expectedNodes func() int) InstanceLister {
+	return func(accountID string) ([]*ec2.Reservation, bool, error) {
+		return gateway_ec2_instance.DescribeInstancesForReconcile(
+			&ec2.DescribeInstancesInput{}, natsConn, expectedNodes(), accountID)
 	}
 }
 
@@ -42,6 +44,9 @@ func NATSInstanceLister(natsConn *nats.Conn, activeNodes func() int) InstanceLis
 // behind and zeroes accounts that now hold nothing. The system account is exempt
 // and never charged. A per-account describe or write failure is logged and the
 // pass continues; the first such error is returned so the caller can surface it.
+// A counter is only lowered when the sweep was complete (every node and instance
+// bucket answered); a partial sweep may raise but never lower, so a transient
+// node outage cannot silently under-count usage and lift the cap.
 func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list InstanceLister) error {
 	if s == nil || !s.limits.Enabled {
 		return nil
@@ -58,7 +63,7 @@ func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list In
 		if accountID == utils.GlobalAccountID {
 			continue
 		}
-		reservations, err := list(accountID)
+		reservations, complete, err := list(accountID)
 		if err != nil {
 			slog.Warn("quota reconcile: describe failed, counter left unchanged", "account", accountID, "err", err)
 			if firstErr == nil {
@@ -66,7 +71,7 @@ func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list In
 			}
 			continue
 		}
-		if err := s.setVCPU(accountID, sumReservationVCPUs(reservations)); err != nil {
+		if err := s.reconcileVCPU(accountID, sumReservationVCPUs(reservations), complete); err != nil {
 			slog.Warn("quota reconcile: counter overwrite failed", "account", accountID, "err", err)
 			if firstErr == nil {
 				firstErr = err

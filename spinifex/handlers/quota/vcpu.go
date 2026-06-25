@@ -111,6 +111,26 @@ func (s *Service) setVCPU(accountID string, value int) error {
 	return fmt.Errorf("vcpu counter CAS exhausted for %s after %d attempts", accountID, vcpuCASRetries)
 }
 
+// reconcileVCPU writes accountID's counter from a reconcile sweep. A complete
+// sweep overwrites unconditionally (the only path that may lower a counter). An
+// incomplete sweep — a node down or a failed bucket query — may only raise the
+// counter: lowering from a partial view would under-count usage and lift the
+// cap, so a short count is dropped and left for the next clean pass. Raising is
+// always safe, since the instances actually observed do exist.
+func (s *Service) reconcileVCPU(accountID string, value int, complete bool) error {
+	if complete {
+		return s.setVCPU(accountID, value)
+	}
+	current, _, err := s.readVCPU(accountID)
+	if err != nil {
+		return err
+	}
+	if value <= current {
+		return nil
+	}
+	return s.setVCPU(accountID, value)
+}
+
 // isCASConflict reports whether err is a lost optimistic-concurrency race: a
 // Create on an existing key or an Update against a stale revision. Both map to
 // JetStream's wrong-last-sequence code and are retryable; any other error is a

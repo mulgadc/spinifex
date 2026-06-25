@@ -27,8 +27,9 @@ burst = 40
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := loadThrottleConfig(path)
+	parsed, err := loadAWSGWConfig(path)
 	require.NoError(t, err)
+	cfg := parsed.Ratelimit
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, 20, cfg.Rate)
 	assert.Equal(t, 100, cfg.Burst)
@@ -48,9 +49,9 @@ burst = 100
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := loadThrottleConfig(path)
+	parsed, err := loadAWSGWConfig(path)
 	require.NoError(t, err)
-	assert.False(t, cfg.Enabled)
+	assert.False(t, parsed.Ratelimit.Enabled)
 }
 
 func TestLoadThrottleConfig_NoSection(t *testing.T) {
@@ -63,15 +64,15 @@ debug = false
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := loadThrottleConfig(path)
+	parsed, err := loadAWSGWConfig(path)
 	require.NoError(t, err)
 	// Missing section → zero-value config (disabled, rate=0, burst=0).
-	assert.False(t, cfg.Enabled)
-	assert.Equal(t, 0, cfg.Rate)
+	assert.False(t, parsed.Ratelimit.Enabled)
+	assert.Equal(t, 0, parsed.Ratelimit.Rate)
 }
 
-func TestLoadThrottleConfig_MissingFile(t *testing.T) {
-	_, err := loadThrottleConfig("/nonexistent/awsgw.toml")
+func TestLoadAWSGWConfig_MissingFile(t *testing.T) {
+	_, err := loadAWSGWConfig("/nonexistent/awsgw.toml")
 	assert.Error(t, err)
 }
 
@@ -92,8 +93,9 @@ volumes_gib = 100
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := loadQuotaConfig(path)
+	parsed, err := loadAWSGWConfig(path)
 	require.NoError(t, err)
+	cfg := parsed.Quota
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, 8, cfg.VCPUs)
 	assert.Equal(t, 8, cfg.VPCs)
@@ -113,9 +115,9 @@ vcpus   = 8
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := loadQuotaConfig(path)
+	parsed, err := loadAWSGWConfig(path)
 	require.NoError(t, err)
-	assert.False(t, cfg.Enabled)
+	assert.False(t, parsed.Quota.Enabled)
 }
 
 func TestLoadQuotaConfig_NoSection(t *testing.T) {
@@ -128,14 +130,9 @@ debug = false
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := loadQuotaConfig(path)
+	parsed, err := loadAWSGWConfig(path)
 	require.NoError(t, err)
 	// Missing section → zero-value Limits, a disabled no-op.
-	assert.False(t, cfg.Enabled)
-	assert.Equal(t, 0, cfg.VCPUs)
-}
-
-func TestLoadQuotaConfig_MissingFile(t *testing.T) {
-	_, err := loadQuotaConfig("/nonexistent/awsgw.toml")
-	assert.Error(t, err)
+	assert.False(t, parsed.Quota.Enabled)
+	assert.Equal(t, 0, parsed.Quota.VCPUs)
 }

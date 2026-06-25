@@ -1,5 +1,5 @@
 # AWS Gateway configuration file in TOML format.
-version = "2"
+version = "3"
 region = "{{.Region}}"
 
 # Enable verbose debugging
@@ -26,3 +26,13 @@ burst = 40
 [ratelimit.action.StopInstances]
 rate = 2
 burst = 40
+
+# Per-account service quotas (caps standing infrastructure per account).
+# Default-off so existing gateways are unaffected; the sandbox config opts in.
+[quota]
+enabled     = false   # sandbox config sets true
+vcpus       = 8
+vpcs        = 8
+subnets     = 16
+eips        = 2
+volumes_gib = 100

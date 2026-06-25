@@ -8,11 +8,17 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 )
 
 // ReconcileInterval is how often the gateway recomputes vCPU counters. It is
 // fixed rather than configurable to keep the [quota] block simple.
 const ReconcileInterval = 30 * time.Second
+
+// KVBucketAccountUsage is the gateway-owned KV bucket holding one integer vCPU
+// counter per account, keyed by accountID. It is the only counter-backed
+// dimension; the live-counted dimensions need no stored state.
+const KVBucketAccountUsage = "spinifex-account-usage"
 
 // Limits mirrors the [quota] block in awsgw.toml. The zero value (Enabled
 // false) is a valid no-op, so gateways without a [quota] block are unaffected.
@@ -33,18 +39,24 @@ type QuotaService interface {
 	Exempt(accountID string) bool
 }
 
-// Service enforces quotas for one gateway. The vCPU counter, KV handle, and
-// instance-type catalog are wired in later steps; for now it holds only the
-// configured limits.
+// Service enforces quotas for one gateway. The instance-type catalog and the
+// enforcement methods are wired in later steps; for now it holds the configured
+// limits and the per-account vCPU counter bucket.
 type Service struct {
 	limits Limits
+	// usage holds the per-account vCPU counters (key {accountID}). Nil when
+	// quotas are disabled, in which case Exempt short-circuits every check
+	// before the counter is touched.
+	usage nats.KeyValue
 }
 
 var _ QuotaService = (*Service)(nil)
 
-// New constructs a quota Service from the configured limits.
-func New(limits Limits) *Service {
-	return &Service{limits: limits}
+// New constructs a quota Service from the configured limits and the gateway-owned
+// account-usage KV bucket. usage may be nil when quotas are disabled; Exempt then
+// short-circuits every check before the counter is read.
+func New(limits Limits, usage nats.KeyValue) *Service {
+	return &Service{limits: limits, usage: usage}
 }
 
 // Exempt returns true for the global/system account and whenever quotas are

@@ -80,7 +80,7 @@ func TestExempt(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := New(tt.limits)
+			s := New(tt.limits, nil)
 			if got := s.Exempt(tt.accountID); got != tt.want {
 				t.Errorf("Exempt(%q) = %v, want %v", tt.accountID, got, tt.want)
 			}

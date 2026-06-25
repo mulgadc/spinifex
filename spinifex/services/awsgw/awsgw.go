@@ -21,6 +21,7 @@ import (
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -88,9 +89,11 @@ func (svc *Service) Reload() (err error) {
 }
 
 // awsgwTOML is the top-level structure of awsgw.toml used to extract the
-// ratelimit section. Other fields are parsed elsewhere (e.g. region, debug).
+// ratelimit and quota sections. Other fields are parsed elsewhere (e.g. region,
+// debug).
 type awsgwTOML struct {
-	Ratelimit ratelimit.Config `toml:"ratelimit"`
+	Ratelimit ratelimit.Config      `toml:"ratelimit"`
+	Quota     handlers_quota.Limits `toml:"quota"`
 }
 
 // loadThrottleConfig parses the [ratelimit] section from the awsgw TOML config.
@@ -104,6 +107,41 @@ func loadThrottleConfig(path string) (ratelimit.Config, error) {
 		return ratelimit.Config{}, fmt.Errorf("parse awsgw config %s: %w", path, err)
 	}
 	return cfg.Ratelimit, nil
+}
+
+// loadQuotaConfig parses the [quota] section from the awsgw TOML config. An
+// absent block decodes to the zero value, a disabled no-op.
+func loadQuotaConfig(path string) (handlers_quota.Limits, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return handlers_quota.Limits{}, fmt.Errorf("read awsgw config %s: %w", path, err)
+	}
+	var cfg awsgwTOML
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return handlers_quota.Limits{}, fmt.Errorf("parse awsgw config %s: %w", path, err)
+	}
+	return cfg.Quota, nil
+}
+
+// openAccountUsageBucket opens (or idempotently creates) the gateway-owned
+// per-account vCPU usage bucket. History is 1: each account key holds a single
+// CAS-updated integer counter.
+func openAccountUsageBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
+	if replicas < 1 {
+		replicas = 1
+	}
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   handlers_quota.KVBucketAccountUsage,
+		History:  1,
+		Replicas: replicas,
+	})
+	if err != nil {
+		kv, err = js.KeyValue(handlers_quota.KVBucketAccountUsage)
+		if err != nil {
+			return nil, fmt.Errorf("open account usage bucket: %w", err)
+		}
+	}
+	return kv, nil
 }
 
 func launchService(config *config.ClusterConfig) error {
@@ -201,6 +239,12 @@ func launchService(config *config.ClusterConfig) error {
 		slog.Warn("Failed to load throttle config, throttling disabled", "err", err)
 	}
 
+	// Load per-account service quota config from awsgw.toml [quota] section.
+	quotaCfg, err := loadQuotaConfig(awsgwTomlPath)
+	if err != nil {
+		slog.Warn("Failed to load quota config, quotas disabled", "err", err)
+	}
+
 	// OCI Distribution v2 registry: blob/manifest bytes stream straight to
 	// predastore from the gateway; repo/tag/manifest metadata and in-progress
 	// uploads are owned by the daemon and reached over NATS request/reply. The
@@ -284,6 +328,18 @@ func launchService(config *config.ClusterConfig) error {
 		gw.Throttler = ratelimit.New(throttleCfg)
 		defer gw.Throttler.Stop()
 	}
+
+	// Per-account service quotas. Only the enabled path opens the gateway-owned
+	// usage KV bucket, leaving existing default-off gateways untouched; a disabled
+	// config builds a no-op Service whose Exempt short-circuits every check.
+	var usageBucket nats.KeyValue
+	if quotaCfg.Enabled {
+		usageBucket, err = openAccountUsageBucket(js, max(len(config.Nodes), 1))
+		if err != nil {
+			return fmt.Errorf("init account usage bucket: %w", err)
+		}
+	}
+	gw.Quota = handlers_quota.New(quotaCfg, usageBucket)
 
 	handler := gw.SetupRoutes()
 

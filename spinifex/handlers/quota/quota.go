@@ -40,6 +40,12 @@ type QuotaService interface {
 	// EnforceLive caps a live-counted dimension: it rejects when an account
 	// already holding count of resourceType would exceed its limit by want more.
 	EnforceLive(resourceType string, count, want int) error
+	// CheckVCPU rejects when charging want more vCPUs to accountID would exceed
+	// the vCPU cap. It reads the counter without reserving.
+	CheckVCPU(accountID string, want int) error
+	// AddVCPU increments accountID's vCPU counter by delta under JetStream CAS
+	// after a grow has succeeded. A non-positive delta is a no-op.
+	AddVCPU(accountID string, delta int) error
 }
 
 // Service enforces quotas for one gateway. The instance-type catalog and the

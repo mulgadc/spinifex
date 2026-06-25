@@ -14,7 +14,7 @@
 #   AWS_PROFILE=spinifex scripts/ecs-node-bringup.sh <cluster-name>
 #
 # Env overrides:
-#   GATEWAY_IP   gateway/mgmt IP the guest dials   (default 10.15.8.1)
+#   GATEWAY_IP   gateway IP the guest dials        (default: host WAN-bridge IP)
 #   GATEWAY_CA   host path to the gateway CA PEM   (default /etc/spinifex/ca.pem)
 #   AMI_ID       ECS-node AMI                      (default: latest spinifex-ecs-node)
 #   SUBNET_ID / SG_ID / KEY_NAME / INSTANCE_TYPE   (default: first available / t3.small)
@@ -23,6 +23,14 @@ set -euo pipefail
 CLUSTER="${1:?usage: ecs-node-bringup.sh <cluster-name>}"
 PROFILE="${AWS_PROFILE:-spinifex}"
 REGION="$(aws configure get region --profile "$PROFILE")"
+
+# VPC guests NAT out through the WAN and reach host-run services on the host's
+# WAN-bridge IP; the mgmt bridge (10.15.8.x) is not routable from a guest netns.
+# Default to the br-wan address, falling back to the mgmt IP if it can't be read.
+default_gateway_ip() {
+  ip -4 addr show br-wan 2>/dev/null | awk '/inet /{print $2; exit}' | cut -d/ -f1
+}
+GATEWAY_IP="${GATEWAY_IP:-$(default_gateway_ip)}"
 GATEWAY_IP="${GATEWAY_IP:-10.15.8.1}"
 GATEWAY_CA="${GATEWAY_CA:-/etc/spinifex/ca.pem}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t3.small}"

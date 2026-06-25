@@ -1996,21 +1996,41 @@ func (s *ELBv2ServiceImpl) DescribeTargetHealth(input *elbv2.DescribeTargetHealt
 		}
 	}
 
+	// A target group not forwarded to by any listener serves no traffic; its
+	// targets report "unused" (AWS Target.NotInUse), not "initial".
+	inUse, err := s.store.TargetGroupInUse(tg.TargetGroupArn)
+	if err != nil {
+		slog.Error("DescribeTargetHealth: failed to check TG association", "arn", tg.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	descriptions := make([]*elbv2.TargetHealthDescription, 0)
 	for _, t := range tg.Targets {
 		if len(targetFilter) > 0 && !targetFilter[t.Id] {
 			continue
 		}
 
+		state, healthDesc := t.HealthState, t.HealthDesc
+		var reason string
+		if !inUse && t.HealthState != TargetHealthDraining {
+			state = TargetHealthUnused
+			healthDesc = "Target group is not configured to receive traffic from a load balancer"
+			reason = "Target.NotInUse"
+		}
+
+		health := &elbv2.TargetHealth{
+			State:       aws.String(state),
+			Description: aws.String(healthDesc),
+		}
+		if reason != "" {
+			health.Reason = aws.String(reason)
+		}
 		desc := &elbv2.TargetHealthDescription{
 			Target: &elbv2.TargetDescription{
 				Id:   aws.String(t.Id),
 				Port: aws.Int64(t.Port),
 			},
-			TargetHealth: &elbv2.TargetHealth{
-				State:       aws.String(t.HealthState),
-				Description: aws.String(t.HealthDesc),
-			},
+			TargetHealth: health,
 		}
 		descriptions = append(descriptions, desc)
 	}

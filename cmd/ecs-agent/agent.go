@@ -38,6 +38,9 @@ type Agent struct {
 	reg *registrar
 	hb  *heartbeater
 
+	// netns builds awsvpc task network namespaces (nil-safe; bridge/host skip it).
+	netns *taskNetns
+
 	nc      *nats.Conn
 	closers []func() error
 }
@@ -56,6 +59,7 @@ func newAgent(cfg config, id identity, pub publisher, puller ctrruntime.ImagePul
 		resolver: resolver,
 		reg:      newRegistrar(pub, id),
 		hb:       newHeartbeater(pub, id, cfg.Heartbeat, nil),
+		netns:    newTaskNetns(execNetRunner{}),
 	}
 }
 

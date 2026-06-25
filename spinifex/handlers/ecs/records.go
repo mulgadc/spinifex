@@ -143,7 +143,17 @@ type TaskRecord struct {
 	ReservedCPU          int              `json:"reservedCpu"`
 	ReservedMemoryMiB    int              `json:"reservedMemoryMiB"`
 	Containers           []ContainerState `json:"containers,omitempty"`
-	CreatedAt            time.Time        `json:"createdAt"`
-	StartedAt            time.Time        `json:"startedAt,omitzero"`
-	StoppedAt            time.Time        `json:"stoppedAt,omitzero"`
+	// NetworkMode is the resolved task network mode (awsvpc|bridge|host). The
+	// STOPPED path consults it to decide whether an ENI must be reclaimed.
+	NetworkMode string `json:"networkMode,omitempty"`
+	// ENI* hold the per-task elastic network interface for awsvpc mode, allocated
+	// by the scheduler at placement and reclaimed at STOPPED. Empty otherwise.
+	ENIID           string    `json:"eniId,omitempty"`
+	ENIAttachmentID string    `json:"eniAttachmentId,omitempty"`
+	ENIPrivateIP    string    `json:"eniPrivateIp,omitempty"`
+	ENIMacAddress   string    `json:"eniMac,omitempty"`
+	ENISubnetID     string    `json:"eniSubnetId,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	StartedAt       time.Time `json:"startedAt,omitzero"`
+	StoppedAt       time.Time `json:"stoppedAt,omitzero"`
 }

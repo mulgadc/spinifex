@@ -28,9 +28,18 @@ func (p *containerdPuller) Run(ctx context.Context, id string, spec RunSpec) (st
 
 	specOpts := []oci.SpecOpts{
 		oci.WithImageConfig(image),
-		oci.WithHostNamespace(specs.NetworkNamespace),
 		oci.WithHostHostsFile,
 		oci.WithHostResolvconf,
+	}
+	if spec.NetnsPath != "" {
+		// awsvpc: join the task ENI netns built by the agent.
+		specOpts = append(specOpts, oci.WithLinuxNamespace(specs.LinuxNamespace{
+			Type: specs.NetworkNamespace,
+			Path: spec.NetnsPath,
+		}))
+	} else {
+		// bridge/host: share the VM (host) netns.
+		specOpts = append(specOpts, oci.WithHostNamespace(specs.NetworkNamespace))
 	}
 	if len(spec.Command) > 0 {
 		specOpts = append(specOpts, oci.WithProcessArgs(spec.Command...))

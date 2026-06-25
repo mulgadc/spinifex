@@ -74,6 +74,40 @@ func (s *Service) AddVCPU(accountID string, delta int) error {
 	return fmt.Errorf("vcpu counter CAS exhausted for %s after %d attempts", accountID, vcpuCASRetries)
 }
 
+// setVCPU overwrites accountID's counter to value under bounded CAS, the only
+// operation that lowers a counter. A counter already equal to value is left
+// untouched, so a steady-state pass writes nothing and an account with no usage
+// and no key is never created. Reconcile is the sole caller and runs under the
+// leader lock; contention is limited to an in-flight grow on the same account,
+// which a CAS conflict retries and the next pass reconciles.
+func (s *Service) setVCPU(accountID string, value int) error {
+	for range vcpuCASRetries {
+		current, revision, err := s.readVCPU(accountID)
+		if err != nil {
+			return err
+		}
+		if current == value {
+			return nil
+		}
+		data, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		if revision == 0 {
+			_, err = s.usage.Create(accountID, data)
+		} else {
+			_, err = s.usage.Update(accountID, data, revision)
+		}
+		if err == nil {
+			return nil
+		}
+		if !isCASConflict(err) {
+			return err
+		}
+	}
+	return fmt.Errorf("vcpu counter CAS exhausted for %s after %d attempts", accountID, vcpuCASRetries)
+}
+
 // isCASConflict reports whether err is a lost optimistic-concurrency race: a
 // Create on an existing key or an Update against a stale revision. Both map to
 // JetStream's wrong-last-sequence code and are retryable; any other error is a

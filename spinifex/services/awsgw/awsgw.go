@@ -23,6 +23,7 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -341,6 +342,14 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	gw.Quota = handlers_quota.New(quotaCfg, usageBucket)
 
+	// Leader-locked vCPU reconcile: the only path that lowers the counter,
+	// recomputing it from the running-plus-stopped sweep so out-of-band
+	// terminations free quota. Started only when quotas are enabled so default-off
+	// gateways spin no ticker.
+	if quotaCfg.Enabled {
+		go runQuotaReconcile(janitorCtx, gw.Quota, natsConn, activeAccountIDs(iamService), gw.DiscoverActiveNodes)
+	}
+
 	handler := gw.SetupRoutes()
 
 	// Load TLS certificate
@@ -397,6 +406,38 @@ func initIAMService(natsConn *nats.Conn, masterKey []byte, clusterSize int) (*ha
 		slog.Warn("IAM service not ready (waiting for JetStream cluster quorum)", "error", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second), "retryIn", retryDelay)
 		time.Sleep(retryDelay)
 		retryDelay = min(retryDelay*2, 10*time.Second)
+	}
+}
+
+// runQuotaReconcile drives the per-account vCPU reconcile: a startup pass plus a
+// ReconcileInterval ticker, each guarded by the cluster reconcile leader lock so
+// exactly one gateway sweeps at a time across a multi-gateway deployment. It runs
+// until ctx is cancelled.
+func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsConn *nats.Conn, accounts handlers_quota.AccountLister, activeNodes func() int) {
+	holder, _ := os.Hostname()
+	list := handlers_quota.NATSInstanceLister(natsConn, activeNodes)
+
+	runPass := func() {
+		release, elected := reconcile.AcquireLeader(natsConn, holder)
+		if !elected {
+			return
+		}
+		defer release()
+		if err := quota.Reconcile(ctx, accounts, list); err != nil {
+			slog.Warn("quota reconcile pass failed", "err", err)
+		}
+	}
+
+	runPass()
+	ticker := time.NewTicker(handlers_quota.ReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runPass()
+		}
 	}
 }
 

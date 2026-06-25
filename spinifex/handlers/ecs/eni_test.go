@@ -92,16 +92,13 @@ func awsvpcRunInput() *ecs.RunTaskInput {
 }
 
 func TestRunTask_Awsvpc_AllocatesAttachesAssigns(t *testing.T) {
-	svc, nc := newTestService(t)
+	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
 	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	registerAwsvpcTaskDef(t, svc, "app", 128, 256)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
-
-	sub, err := nc.SubscribeSync(bus.AssignSubject(testAccountID, "web", "i-1"))
-	require.NoError(t, err)
 
 	out, err := svc.RunTask(awsvpcRunInput(), testAccountID)
 	require.NoError(t, err)
@@ -120,11 +117,11 @@ func TestRunTask_Awsvpc_AllocatesAttachesAssigns(t *testing.T) {
 	assert.Equal(t, "eni-stub", detailValue(att, "networkInterfaceId"))
 	assert.Equal(t, "172.31.0.50", detailValue(att, "privateIPv4Address"))
 
-	// ENI plumbed into the assign payload.
-	msg, err := sub.NextMsg(2 * time.Second)
+	// ENI plumbed into the assign payload, delivered via the instance KV inbox.
+	poll, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
 	require.NoError(t, err)
-	var as bus.Assign
-	require.NoError(t, json.Unmarshal(msg.Data, &as))
+	require.Len(t, poll.Assignments, 1)
+	as := poll.Assignments[0]
 	assert.Equal(t, "eni-stub", as.ENIID)
 	assert.Equal(t, "02:aa:bb:cc:dd:ee", as.ENIMacAddress)
 	assert.Equal(t, "172.31.0.50", as.ENIPrivateIP)

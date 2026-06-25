@@ -228,6 +228,7 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 	// Release capacity + reclaim the task ENI once, on the transition into STOPPED.
 	if msg.LastStatus == TaskStatusStopped && prev != TaskStatusStopped {
 		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
+		s.reclaimTaskENI(msg.AccountID, &task)
 		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB)
 	}
 	return nil

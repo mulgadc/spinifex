@@ -185,9 +185,9 @@ func countStatus(states []bus.TaskState, taskID, status string) int {
 // awsvpc: an assign carrying an ENI MAC builds the task netns and passes its
 // path to the container RunSpec.
 func TestRunTask_AwsvpcBuildsNetns(t *testing.T) {
-	pub := &historyPub{}
+	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
-	a := newRunAgent(pub, rt)
+	a := newRunAgent(cp, rt)
 	f := &fakeNetRunner{linkOut: linkWithENI}
 	a.netns = newTestNetns(f)
 
@@ -206,9 +206,9 @@ func TestRunTask_AwsvpcBuildsNetns(t *testing.T) {
 // bridge/host: no ENI MAC means no netns is built and the container runs in the
 // host (VM) netns (empty NetnsPath).
 func TestRunTask_NoMacSkipsNetns(t *testing.T) {
-	pub := &historyPub{}
+	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
-	a := newRunAgent(pub, rt)
+	a := newRunAgent(cp, rt)
 	f := &fakeNetRunner{linkOut: linkWithENI}
 	a.netns = newTestNetns(f)
 

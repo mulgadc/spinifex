@@ -109,6 +109,25 @@ func (a *Agent) waitContainer(ctx context.Context, as *bus.Assign, name, contain
 	slog.Info("ecs-agent: task stopped", "task", as.TaskID, "container", name, "exitCode", exit)
 }
 
+// setupTaskNetns builds the awsvpc task netns from the hot-plugged ENI. Bridge/
+// host tasks (no ENI MAC) and a nil controller are no-ops returning an empty path.
+func (a *Agent) setupTaskNetns(as *bus.Assign) (string, error) {
+	if as.ENIMacAddress == "" || a.netns == nil {
+		return "", nil
+	}
+	return a.netns.Setup(as.TaskID, as.ENIMacAddress)
+}
+
+// teardownTaskNetns removes the awsvpc task netns; no-op for bridge/host tasks.
+func (a *Agent) teardownTaskNetns(as *bus.Assign) {
+	if as.ENIMacAddress == "" || a.netns == nil {
+		return
+	}
+	if err := a.netns.Teardown(as.TaskID); err != nil {
+		slog.Warn("ecs-agent: task netns teardown", "task", as.TaskID, "err", err)
+	}
+}
+
 // reportTaskState reports a task transition through the gateway's
 // SubmitTaskStateChange action.
 func (a *Agent) reportTaskState(as *bus.Assign, status, reason string, containers []bus.ContainerStatus) {

@@ -100,6 +100,10 @@ func (s *IMDSServiceImpl) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// First-contact log: a guest reaching this proves its packets traverse the
+	// per-tap datapath; its absence (with the responder bound) points at the datapath.
+	slog.Info("IMDS: issued IMDSv2 token", "instance_id", eni.instanceID, "private_ip", eni.privateIP, "public_ip", eni.publicIP)
+
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set(hdrTokenTTL, strconv.Itoa(int(ttl.Seconds())))
 	_, _ = w.Write([]byte(token))
@@ -139,6 +143,11 @@ func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
 // dispatch routes a token-validated GET to the right metadata producer.
 func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *eniFacts) {
 	path := r.URL.Path
+
+	// Boot-crawl access log: traces every metadata GET per ENI so a guest's
+	// cloud-init crawl is observable end-to-end (e.g. private vs public subnet).
+	slog.Info("IMDS: serving metadata request", "path", path,
+		"instance_id", eni.instanceID, "private_ip", eni.privateIP, "public_ip", eni.publicIP)
 
 	if strings.HasPrefix(path, prefixSecurityCreds) && len(path) > len(prefixSecurityCreds) {
 		s.serveRoleCredentials(w, eni, strings.TrimPrefix(path, prefixSecurityCreds))
@@ -412,6 +421,7 @@ func (s *IMDSServiceImpl) servePublicKeys(w http.ResponseWriter, eni *eniFacts, 
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		slog.Info("IMDS: served SSH public key", "key_name", inst.keyName, "instance_id", eni.instanceID, "private_ip", eni.privateIP)
 		writeText(w, material+"\n")
 	default:
 		w.WriteHeader(http.StatusNotFound)

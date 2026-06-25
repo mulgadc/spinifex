@@ -787,7 +787,7 @@ jobs:
     name: E2E suite blocks · summary
     if: always()
     needs: [single_suite, multi_suite]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Summarize

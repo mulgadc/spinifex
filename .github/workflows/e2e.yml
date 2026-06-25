@@ -38,7 +38,7 @@ jobs:
   # can compare predicted vs actual before flipping it on.
   select_suites:
     name: Select Suites (shadow)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -891,7 +891,7 @@ jobs:
     name: Report E2E Status
     if: always()
     needs: [e2e_single, e2e_multi]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Report Status to PR

@@ -65,6 +65,12 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 			ErrInvalidTransition, id, status)
 	}
 
+	// Serialize hot-plug per instance. nextHotplugEBSPort reads live QEMU state,
+	// so concurrent attaches would pick the same PCIe root port and the second
+	// device_add fails ("slot 0 already occupied"). Detach takes the same lock.
+	instance.attachMu.Lock()
+	defer instance.attachMu.Unlock()
+
 	if device == "" {
 		m.UpdateState(id, func(v *VM) { device = nextAvailableDevice(v) })
 		if device == "" {
@@ -281,6 +287,10 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 		return "", fmt.Errorf("%w: cannot detach from instance %s in state %s",
 			ErrInvalidTransition, id, status)
 	}
+
+	// Serialize against concurrent attach/detach on this instance's PCIe ports.
+	instance.attachMu.Lock()
+	defer instance.attachMu.Unlock()
 
 	instance.EBSRequests.Mu.Lock()
 	var ebsReq types.EBSRequest

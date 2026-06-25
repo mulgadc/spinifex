@@ -32,11 +32,14 @@ type Limits struct {
 }
 
 // QuotaService is the per-account quota enforcement surface used by the gateway.
-// Enforcement methods are added as the subsystem is built out; for now it is
-// just the exemption gate every check short-circuits on.
+// It exposes the exemption gate plus the live-counted enforcement check; the
+// counter-backed vCPU methods are added as the subsystem is built out.
 type QuotaService interface {
 	// Exempt reports whether quota checks should be skipped for accountID.
 	Exempt(accountID string) bool
+	// EnforceLive caps a live-counted dimension: it rejects when an account
+	// already holding count of resourceType would exceed its limit by want more.
+	EnforceLive(resourceType string, count, want int) error
 }
 
 // Service enforces quotas for one gateway. The instance-type catalog and the
@@ -60,9 +63,10 @@ func New(limits Limits, usage nats.KeyValue) *Service {
 }
 
 // Exempt returns true for the global/system account and whenever quotas are
-// disabled, so those callers bypass every quota check.
+// disabled, so those callers bypass every quota check. A nil Service (quotas
+// never built) is treated as disabled so callers need no nil guard.
 func (s *Service) Exempt(accountID string) bool {
-	if !s.limits.Enabled {
+	if s == nil || !s.limits.Enabled {
 		return true
 	}
 	return accountID == utils.GlobalAccountID

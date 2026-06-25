@@ -302,6 +302,9 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_capacityreservation.CancelCapacityReservation(input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"CreateVpc": ec2Handler(func(input *ec2.CreateVpcInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceVPCs(gw.NATSConn, accountID, 1); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_vpc.CreateVpc(input, gw.NATSConn, accountID)
 	}),
 	"DeleteVpc": ec2Handler(func(input *ec2.DeleteVpcInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -317,6 +320,9 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_vpc.DescribeVpcAttribute(input, gw.NATSConn, accountID)
 	}),
 	"CreateSubnet": ec2Handler(func(input *ec2.CreateSubnetInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceSubnets(gw.NATSConn, accountID, 1); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_vpc.CreateSubnet(input, gw.NATSConn, accountID)
 	}),
 	"DeleteSubnet": ec2Handler(func(input *ec2.DeleteSubnetInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -398,6 +404,9 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_vpc.RevokeSecurityGroupEgress(input, gw.NATSConn, accountID)
 	}),
 	"AllocateAddress": ec2Handler(func(input *ec2.AllocateAddressInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceEIPs(gw.NATSConn, accountID, 1); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_eip.AllocateAddress(input, gw.NATSConn, accountID)
 	}),
 	"ReleaseAddress": ec2Handler(func(input *ec2.ReleaseAddressInput, gw *GatewayConfig, accountID string) (any, error) {

@@ -32,8 +32,16 @@ type ECSService interface {
 	ListContainerInstances(input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error)
 
 	RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error)
+	StartTask(input *ecs.StartTaskInput, accountID string) (*ecs.StartTaskOutput, error)
+	StopTask(input *ecs.StopTaskInput, accountID string) (*ecs.StopTaskOutput, error)
 	DescribeTasks(input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error)
 	ListTasks(input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error)
+
+	CreateService(input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error)
+	UpdateService(input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error)
+	DeleteService(input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error)
+	DescribeServices(input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error)
+	ListServices(input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error)
 
 	SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error)
 
@@ -51,6 +59,9 @@ type Service struct {
 	// eni owns the awsvpc task-ENI control-plane (create/attach/detach/delete).
 	// Defaults to the NATS-backed controller; tests substitute a stub.
 	eni eniController
+	// targets registers/deregisters service tasks with ELBv2 target groups.
+	// Defaults to the NATS-backed registrar; tests substitute a stub.
+	targets targetRegistrar
 }
 
 var _ ECSService = (*Service)(nil)
@@ -59,7 +70,7 @@ var _ ECSService = (*Service)(nil)
 // ARNs it mints; suffix is the AWS-parity internal DNS suffix (reserved for ECR
 // endpoint composition).
 func NewService(nc *nats.Conn, region, suffix string) *Service {
-	return &Service{nc: nc, region: region, suffix: suffix, eni: newNATSENIController(nc)}
+	return &Service{nc: nc, region: region, suffix: suffix, eni: newNATSENIController(nc), targets: newNATSTargetRegistrar(nc)}
 }
 
 // defaultCluster is the implicit cluster name when a request omits one.

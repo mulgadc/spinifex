@@ -19,6 +19,7 @@ const (
 	schedulerLeaderKey  = "scheduler"
 	leaseRefresh        = 20 * time.Second
 	reaperInterval      = 30 * time.Second
+	reconcileInterval   = 10 * time.Second
 	heartbeatTimeout    = 90 * time.Second
 	stoppedReasonReaped = "ContainerInstance disconnected"
 )
@@ -47,8 +48,10 @@ func NewScheduler(nc *nats.Conn, svc *Service, holder string) *Scheduler {
 func (sc *Scheduler) Run(ctx context.Context) {
 	leaseTicker := time.NewTicker(leaseRefresh)
 	reaperTicker := time.NewTicker(reaperInterval)
+	reconcileTicker := time.NewTicker(reconcileInterval)
 	defer leaseTicker.Stop()
 	defer reaperTicker.Stop()
+	defer reconcileTicker.Stop()
 
 	sc.evaluateLeadership(ctx)
 	for {
@@ -61,6 +64,10 @@ func (sc *Scheduler) Run(ctx context.Context) {
 		case <-reaperTicker.C:
 			if sc.isLeader() {
 				sc.reap()
+			}
+		case <-reconcileTicker.C:
+			if sc.isLeader() {
+				sc.svc.reconcileAllServices()
 			}
 		}
 	}
@@ -271,13 +278,7 @@ func (sc *Scheduler) stopInstanceTasks(kv nats.KeyValue, accountID, cluster, ins
 		if task.ContainerInstanceID != instanceID || task.LastStatus == TaskStatusStopped {
 			continue
 		}
-		task.LastStatus = TaskStatusStopped
-		task.StoppedReason = stoppedReasonReaped
-		task.StoppedAt = time.Now().UTC()
-		if perr := putJSON(kv, k, &task); perr != nil {
-			continue
-		}
-		sc.svc.reclaimTaskENI(accountID, &task)
+		sc.svc.forceStopTask(kv, accountID, &task, stoppedReasonReaped)
 	}
 }
 

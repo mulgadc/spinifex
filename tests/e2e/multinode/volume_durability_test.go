@@ -113,4 +113,5 @@ func guestTarget(t *testing.T, fix *Fixture, instanceID, pemPath string) harness
 		t.Fatalf("guest %s SSH %s:%d never became reachable within 2min (see diagnostics above)",
 			instanceID, host, port)
 	}
-	return harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: pemPath}}
+	return harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: pemPath}
+}

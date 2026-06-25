@@ -206,12 +206,12 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {	s3cf
 	return vb, nil
 }
 
-// isAuxVolume reports whether a volume is an -efi/-cloudinit auxiliary volume.
-// Auxiliary volumes are recreated on launch and carry no durable guest data, so
-// they never need sealing to predastore.
+// isAuxVolume reports whether a volume is an -efi auxiliary volume. Auxiliary
+// volumes are recreated on launch and carry no durable guest data, so they
+// never need sealing to predastore.
 func isAuxVolume(volumeName string) bool {
-	return strings.HasSuffix(volumeName, "-efi") || strings.HasSuffix(volumeName, "-cloudinit")}
-
+	return strings.HasSuffix(volumeName, "-efi")
+}
 // volumeNeedsSeal reports whether an unmounted volume must be sealed to
 // predastore on this node: it carries durable guest data (not an auxiliary
 // volume) and has local viperblock state under baseDir/<volume> to flush. A

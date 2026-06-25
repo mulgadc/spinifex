@@ -93,10 +93,22 @@ var ec2Actions = map[string]EC2Handler{
 		return out, nil
 	}),
 	"RunInstances": ec2HandlerWithReq(func(input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
+		if err := gw.Quota.EnforceLaunch(accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount))); err != nil {
+			return nil, err
+		}
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
 		}
-		return gateway_ec2_instance.RunInstances(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, gw.ExpectedNodes)
+		reservation, err := gateway_ec2_instance.RunInstances(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, gw.ExpectedNodes)
+		if err != nil {
+			return nil, err
+		}
+		// Charge the actual launched vCPUs; a counter write failure is drift for
+		// reconcile to correct, so it must not fail the already-successful launch.
+		if err := gw.Quota.ChargeLaunch(accountID, &reservation); err != nil {
+			slog.Warn("RunInstances: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
+		}
+		return reservation, nil
 	}),
 	"AssociateIamInstanceProfile": ec2HandlerWithReq(func(input *ec2.AssociateIamInstanceProfileInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {

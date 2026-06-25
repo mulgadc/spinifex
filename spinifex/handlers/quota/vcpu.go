@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/nats-io/nats.go"
@@ -121,6 +122,29 @@ func isCASConflict(err error) bool {
 		return apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence
 	}
 	return false
+}
+
+// EnforceLaunch is the check-before gate for RunInstances: it rejects when the
+// worst-case charge of maxCount instances of instanceType would push accountID
+// over its vCPU cap. The actual launched count is charged afterwards via
+// ChargeLaunch. An unknown instance type contributes nothing and is left for the
+// daemon to reject as InvalidInstanceType; the Exempt short-circuit lives in
+// CheckVCPU.
+func (s *Service) EnforceLaunch(accountID, instanceType string, maxCount int) error {
+	perType, ok := TypeVCPUs(instanceType)
+	if !ok {
+		return nil
+	}
+	return s.CheckVCPU(accountID, perType*maxCount)
+}
+
+// ChargeLaunch is the increment-after for a successful RunInstances: it adds the
+// vCPUs actually launched, summed from the returned reservation, to accountID's
+// counter. The daemon may launch fewer than maxCount, so the charge is the real
+// reservation rather than the checked worst case. The caller treats a write
+// failure as drift for reconcile to correct, never failing the live launch.
+func (s *Service) ChargeLaunch(accountID string, reservation *ec2.Reservation) error {
+	return s.AddVCPU(accountID, sumReservationVCPUs([]*ec2.Reservation{reservation}))
 }
 
 // readVCPU returns accountID's current reserved vCPU count and the KV revision

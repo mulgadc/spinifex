@@ -161,9 +161,7 @@ func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, princip
 	if effectiveMax == 0 {
 		effectiveMax = defaultDurationSeconds
 	}
-	if effectiveMax > maxDurationSeconds {
-		effectiveMax = maxDurationSeconds
-	}
+	effectiveMax = min(effectiveMax, maxDurationSeconds)
 	if duration < minDurationSeconds || duration > effectiveMax {
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}

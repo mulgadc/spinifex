@@ -131,7 +131,7 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 		return nil, fmt.Errorf("store OIDC provider: %w", err)
 	}
 
-	arn := OIDCProviderARN(accountID, stripIssuerScheme(issuer))
+	arn := OIDCProviderARN(accountID, strings.TrimPrefix(issuer, "https://"))
 	slog.Info("IAM OIDC provider created", "accountID", accountID, "url", issuer, "arn", arn)
 	return &iam.CreateOpenIDConnectProviderOutput{
 		OpenIDConnectProviderArn: aws.String(arn),
@@ -145,7 +145,7 @@ func (s *IAMServiceImpl) GetOpenIDConnectProvider(accountID string, input *iam.G
 		return nil, err
 	}
 	return &iam.GetOpenIDConnectProviderOutput{
-		Url:            aws.String(stripIssuerScheme(record.Url)),
+		Url:            aws.String(strings.TrimPrefix(record.Url, "https://")),
 		ClientIDList:   aws.StringSlice(record.ClientIDList),
 		ThumbprintList: aws.StringSlice(record.ThumbprintList),
 		CreateDate:     aws.Time(parseCreatedAt(record.CreatedAt)),
@@ -193,7 +193,7 @@ func (s *IAMServiceImpl) ListOpenIDConnectProviders(accountID string, _ *iam.Lis
 		}
 		out.OpenIDConnectProviderList = append(out.OpenIDConnectProviderList,
 			&iam.OpenIDConnectProviderListEntry{
-				Arn: aws.String(OIDCProviderARN(accountID, stripIssuerScheme(record.Url))),
+				Arn: aws.String(OIDCProviderARN(accountID, strings.TrimPrefix(record.Url, "https://"))),
 			})
 	}
 	return out, nil
@@ -253,12 +253,6 @@ func (s *IAMServiceImpl) getOIDCProvider(accountID, arn string) (*OIDCProviderRe
 		return nil, fmt.Errorf("unmarshal OIDC provider: %w", err)
 	}
 	return &record, nil
-}
-
-// stripIssuerScheme drops the https:// prefix to produce the scheme-less
-// host/path form AWS uses in the oidc-provider ARN suffix.
-func stripIssuerScheme(issuer string) string {
-	return strings.TrimPrefix(issuer, "https://")
 }
 
 // tagsToSDK converts stored Tags into the SDK shape.

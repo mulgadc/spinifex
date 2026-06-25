@@ -69,7 +69,7 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 	if claims.Issuer == "" || claims.Subject == "" {
 		return nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 	}
-	if !claimAudienceContains(claims.Audience, irsaExpectedAudience) {
+	if !slices.Contains(claims.Audience, irsaExpectedAudience) {
 		slog.Warn("AssumeRoleWithWebIdentity: aud claim missing sts.amazonaws.com",
 			"role_arn", roleARN, "aud", []string(claims.Audience))
 		return nil, errors.New(awserrors.ErrorInvalidIdentityToken)
@@ -93,14 +93,12 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 	if effectiveMax == 0 {
 		effectiveMax = defaultDurationSeconds
 	}
-	if effectiveMax > maxDurationSeconds {
-		effectiveMax = maxDurationSeconds
-	}
+	effectiveMax = min(effectiveMax, maxDurationSeconds)
 	if duration < minDurationSeconds || duration > effectiveMax {
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 
-	issuerHostPath := stripIssuerScheme(claims.Issuer)
+	issuerHostPath := strings.TrimPrefix(claims.Issuer, "https://")
 	federatedARN := handlers_iam.OIDCProviderARN(roleAccountID, issuerHostPath)
 	ctx := webIdentityContext{
 		federatedPrincipalARN: federatedARN,
@@ -241,15 +239,4 @@ func jwkToECDSAPublicKey(jwk *JWK) (*ecdsa.PublicKey, error) {
 		return nil, errors.New("JWK x,y not on P-256 curve")
 	}
 	return pub, nil
-}
-
-// claimAudienceContains tests membership of want in the JWT aud claim.
-func claimAudienceContains(aud jwt.ClaimStrings, want string) bool {
-	return slices.Contains(aud, want)
-}
-
-// stripIssuerScheme drops the https:// prefix to produce the scheme-less form
-// AWS uses in oidc-provider ARN suffixes.
-func stripIssuerScheme(issuer string) string {
-	return strings.TrimPrefix(issuer, "https://")
 }

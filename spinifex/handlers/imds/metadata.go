@@ -184,6 +184,10 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "local-ipv4":
 		writeText(w, eni.privateIP)
 	case prefixMetaData + "public-ipv4":
+		if eni.publicIP == "" {
+			w.WriteHeader(http.StatusNotFound) // no public IP → 404, as on real EC2
+			return
+		}
 		writeText(w, eni.publicIP)
 	case prefixMetaData + "public-hostname":
 		if eni.publicIP == "" {
@@ -244,17 +248,36 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	}
 }
 
-// serveMetaDataRoot writes the meta-data/ index. iam/ is listed only when an
-// instance profile is attached, matching real EC2 — otherwise cloud-init descends
-// into iam/ and fails its whole metadata crawl on the 404ing leaves.
+// serveMetaDataRoot writes the meta-data/ index, listing only children whose leaf
+// serves content for this instance so cloud-init's recursive crawl never 404s
+// mid-listing and falls back to DataSourceNone: public-hostname/public-ipv4 only
+// with a public IP, public-keys/ only with a key pair, iam/ only with an instance
+// profile — each omission matching real EC2, like the macs/ subtree in macKeys.
 func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts) {
-	const head = "ami-id\nami-launch-index\nhostname\n"
-	const tail = "instance-id\ninstance-life-cycle\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nnetwork/\nplacement/\npublic-hostname\npublic-ipv4\npublic-keys/\nreservation-id\nsecurity-groups\nservices/"
-	if s.hasInstanceProfile(eni) {
-		writeText(w, head+"iam/\n"+tail)
-		return
+	keys := []string{
+		"ami-id", "ami-launch-index", "hostname", "instance-id",
+		"instance-life-cycle", "instance-type", "local-hostname", "local-ipv4",
+		"mac", "network/", "placement/", "reservation-id", "security-groups",
+		"services/",
 	}
-	writeText(w, head+tail)
+	if eni.publicIP != "" {
+		keys = append(keys, "public-hostname", "public-ipv4")
+	}
+	// Resolve the instance once: public-keys/ is listed only with a key pair, iam/
+	// only with a resolvable instance profile. A backend error counts as absent so
+	// the listing never advertises a child whose leaf would 404 and break the crawl.
+	if inst, err := s.resolver.resolveInstance(eni); err == nil && inst != nil {
+		if inst.keyName != "" {
+			keys = append(keys, "public-keys/")
+		}
+		if inst.iamInstanceProfileArn != "" {
+			if p, err := s.iam.ResolveInstanceProfile(eni.accountID, inst.iamInstanceProfileArn); err == nil && p != nil {
+				keys = append(keys, "iam/")
+			}
+		}
+	}
+	sort.Strings(keys)
+	writeText(w, strings.Join(keys, "\n"))
 }
 
 // serveInstanceField resolves the instance record and writes one of its

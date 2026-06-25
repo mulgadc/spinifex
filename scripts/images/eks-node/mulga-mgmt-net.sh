@@ -68,8 +68,14 @@ for n in 0 1 2 3 4 5; do
             echo "[mulga-mgmt-net] ERROR: no DHCP lease on data NIC $iface ($mac)" >&2
         fi
         # Pin IMDS to the data NIC so a link-local 169.254.0.0/16 route on another
-        # interface cannot steal the metadata path.
-        ip route replace "${IMDS_IP}/32" dev "$iface" 2>/dev/null || true
+        # interface cannot steal the metadata path. Route via the gateway, not
+        # on-link: the host demuxes IMDS sent to the gateway MAC, never ARP-answers .254.
+        gw=$(ip -4 route show default dev "$iface" 2>/dev/null | awk '{print $3; exit}')
+        if [ -n "$gw" ]; then
+            ip route replace "${IMDS_IP}/32" via "$gw" dev "$iface" 2>/dev/null || true
+        else
+            ip route replace "${IMDS_IP}/32" dev "$iface" 2>/dev/null || true
+        fi
         continue
     fi
 

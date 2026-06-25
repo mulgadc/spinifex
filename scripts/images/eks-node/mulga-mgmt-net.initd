@@ -1,18 +1,19 @@
 #!/sbin/openrc-run
-# mulga-mgmt-net — boot oneshot that configures the management NIC from the
-# fw_cfg netcfg blob before K3s starts. BootAMI system VMs (EKS control plane)
-# reach the AWS gateway over mgmt0; the Ec2 datasource only renders the primary
-# ENI, so mgmt0's static address is applied here from fw_cfg. Role-agnostic and
-# enabled on every node — a no-op when no mgmt netcfg blob is present.
+# mulga-mgmt-net — boot oneshot that configures a multi-NIC system VM's NICs from
+# the fw_cfg netcfg blob before cloud-init's network stage. BootAMI system VMs
+# (EKS control plane) are dual-NIC: the data ENI is DHCP'd here so the Ec2 IMDS
+# datasource can reach 169.254.169.254 (cloud-init can't pick the right NIC out
+# of two on Alpine), and mgmt0's static br-mgmt address is applied. Role-agnostic
+# and enabled on every node — a no-op when no netcfg blob is present.
 
-description="Configure the management NIC from fw_cfg netcfg"
+description="Configure system-VM NICs from fw_cfg netcfg (data DHCP + mgmt static)"
 
 depend() {
-    before k3s k3s-agent
+    before cloud-init k3s k3s-agent
 }
 
 start() {
-    ebegin "Configuring management NIC from fw_cfg netcfg"
+    ebegin "Configuring system-VM NICs from fw_cfg netcfg"
     /usr/local/sbin/mulga-mgmt-net
     eend $?
 }

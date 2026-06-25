@@ -389,8 +389,9 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 //
 // It mirrors the daemon RunInstances handler's Prepare → Insert → Launch split,
 // allocating the mgmt NIC on the VM record between Insert and Launch so the
-// fw_cfg netcfg blob built during Launch carries the static mgmt0 address (the
-// Ec2 datasource only renders the primary ENI). The instance is owned by
+// fw_cfg netcfg blob built during Launch enumerates both the primary data ENI
+// (DHCP) and the static mgmt0 address — a multi-NIC Alpine guest cannot pick the
+// right NIC for the Ec2 datasource on its own. The instance is owned by
 // input.AccountID (the account its pre-created ENI lives in) and tagged
 // input.ManagedBy so customer listings hide it.
 func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {

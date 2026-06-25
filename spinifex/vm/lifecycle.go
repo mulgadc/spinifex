@@ -330,8 +330,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 				Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 			})
 			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC))
-			if err := m.appendMgmtNetcfgFwCfg(instance); err != nil {
-				return fmt.Errorf("attach mgmt netcfg: %w", err)
+			if err := m.appendSystemNetcfgFwCfg(instance); err != nil {
+				return fmt.Errorf("attach system netcfg: %w", err)
 			}
 			slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 		}
@@ -729,22 +729,35 @@ func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
 // EBS hot-plug, matching the /dev/sd[f-p] range. Cannot grow without QEMU restart.
 const EBSHotPlugSlotCount = 11
 
-// appendMgmtNetcfgFwCfg attaches a one-NIC fw_cfg netcfg blob describing the
-// management interface so a BootAMI system VM (e.g. an EKS control-plane node)
-// can bring mgmt0 up with its static IP. These guests boot from the Ec2 IMDS
-// datasource, which renders only the primary ENI; the mgmt NIC lives on br-mgmt
-// with no DHCP, so its address is delivered out-of-band via fw_cfg and applied
-// by the system image's mgmt-net init. The blob key format matches
-// daemon.buildNetcfgBlob and build/microvm/init.sh; mgmt0 is never the default
-// route (NIC0_DEFAULT=0) — that comes from the primary ENI.
-func (m *Manager) appendMgmtNetcfgFwCfg(instance *VM) error {
+// appendSystemNetcfgFwCfg attaches an fw_cfg netcfg blob describing a multi-NIC
+// BootAMI system VM's interfaces so the guest brings them up deterministically
+// by MAC. The EKS control plane is the case: cloud-init on a stock Alpine guest
+// cannot reliably pick the right NIC out of two, so it must be told which is
+// which. The primary data ENI is marked DHCP (OVN serves it; it carries the
+// default route, and bringing it up before cloud-init's network stage is what
+// lets the Ec2 datasource reach IMDS — without it cloud-init brings up the mgmt
+// NIC instead and falls to DataSourceNone). mgmt0 lives on br-mgmt with no DHCP,
+// so its static address is delivered here; it is never the default route. The
+// blob key format matches daemon.buildNetcfgBlob and build/microvm/init.sh.
+// No-op without a mgmt NIC, so single-NIC guests are untouched — cloud-init
+// brings their one NIC up.
+func (m *Manager) appendSystemNetcfgFwCfg(instance *VM) error {
 	if instance.MgmtMAC == "" || instance.MgmtIP == "" {
 		return nil
 	}
-	blob := fmt.Sprintf("NIC0_MAC=%s\nNIC0_CIDR=%s/24\nNIC0_DEFAULT=0\n", instance.MgmtMAC, instance.MgmtIP)
+	var b strings.Builder
+	n := 0
+	// Primary data ENI: DHCP (OVN-served) + default route.
+	if instance.ENIMac != "" {
+		fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_DHCP=1\nNIC%d_DEFAULT=1\n", n, instance.ENIMac, n, n)
+		n++
+	}
+	// Management NIC: static, off br-mgmt, never the default route.
+	fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_CIDR=%s/24\nNIC%d_DEFAULT=0\n", n, instance.MgmtMAC, n, instance.MgmtIP, n)
+
 	path := filepath.Join(utils.RuntimeDir(), fmt.Sprintf("fwcfg-%s-netcfg.tmp", instance.ID))
-	if err := os.WriteFile(path, []byte(blob), 0o600); err != nil {
-		return fmt.Errorf("write mgmt netcfg blob: %w", err)
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write system netcfg blob: %w", err)
 	}
 	instance.Config.FwCfg = append(instance.Config.FwCfg, FwCfgEntry{Name: "opt/spinifex/netcfg", File: path})
 	return nil

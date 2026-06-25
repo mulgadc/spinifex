@@ -26,6 +26,14 @@ func CreateCluster(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	return handlers_ecs.NewNATSECSService(nc).CreateCluster(input, accountID)
 }
 
+func DeleteCluster(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DeleteClusterInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DeleteCluster(input, accountID)
+}
+
 func DescribeClusters(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	input := new(ecs.DescribeClustersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -52,6 +60,14 @@ func RegisterTaskDefinition(nc *nats.Conn, accountID string, body []byte) (any, 
 	return handlers_ecs.NewNATSECSService(nc).RegisterTaskDefinition(input, accountID)
 }
 
+func DeregisterTaskDefinition(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DeregisterTaskDefinitionInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DeregisterTaskDefinition(input, accountID)
+}
+
 func DescribeTaskDefinition(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	input := new(ecs.DescribeTaskDefinitionInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -76,6 +92,22 @@ func RegisterContainerInstance(nc *nats.Conn, accountID string, body []byte) (an
 		return nil, err
 	}
 	return handlers_ecs.NewNATSECSService(nc).RegisterContainerInstance(input, accountID)
+}
+
+func DeregisterContainerInstance(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DeregisterContainerInstanceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DeregisterContainerInstance(input, accountID)
+}
+
+func UpdateContainerInstancesState(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.UpdateContainerInstancesStateInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).UpdateContainerInstancesState(input, accountID)
 }
 
 func DescribeContainerInstances(nc *nats.Conn, accountID string, body []byte) (any, error) {

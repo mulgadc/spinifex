@@ -29,6 +29,10 @@ func (s *NATSECSService) CreateCluster(input *ecs.CreateClusterInput, accountID 
 	return utils.NATSRequest[ecs.CreateClusterOutput](s.natsConn, "ecs.CreateCluster", input, defaultTimeout, accountID)
 }
 
+func (s *NATSECSService) DeleteCluster(input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error) {
+	return utils.NATSRequest[ecs.DeleteClusterOutput](s.natsConn, "ecs.DeleteCluster", input, defaultTimeout, accountID)
+}
+
 func (s *NATSECSService) DescribeClusters(input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error) {
 	return utils.NATSRequest[ecs.DescribeClustersOutput](s.natsConn, "ecs.DescribeClusters", input, defaultTimeout, accountID)
 }
@@ -43,6 +47,10 @@ func (s *NATSECSService) RegisterTaskDefinition(input *ecs.RegisterTaskDefinitio
 	return utils.NATSRequest[ecs.RegisterTaskDefinitionOutput](s.natsConn, "ecs.RegisterTaskDefinition", input, defaultTimeout, accountID)
 }
 
+func (s *NATSECSService) DeregisterTaskDefinition(input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
+	return utils.NATSRequest[ecs.DeregisterTaskDefinitionOutput](s.natsConn, "ecs.DeregisterTaskDefinition", input, defaultTimeout, accountID)
+}
+
 func (s *NATSECSService) DescribeTaskDefinition(input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error) {
 	return utils.NATSRequest[ecs.DescribeTaskDefinitionOutput](s.natsConn, "ecs.DescribeTaskDefinition", input, defaultTimeout, accountID)
 }
@@ -55,6 +63,14 @@ func (s *NATSECSService) ListTaskDefinitions(input *ecs.ListTaskDefinitionsInput
 
 func (s *NATSECSService) RegisterContainerInstance(input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error) {
 	return utils.NATSRequest[ecs.RegisterContainerInstanceOutput](s.natsConn, "ecs.RegisterContainerInstance", input, defaultTimeout, accountID)
+}
+
+func (s *NATSECSService) DeregisterContainerInstance(input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error) {
+	return utils.NATSRequest[ecs.DeregisterContainerInstanceOutput](s.natsConn, "ecs.DeregisterContainerInstance", input, defaultTimeout, accountID)
+}
+
+func (s *NATSECSService) UpdateContainerInstancesState(input *ecs.UpdateContainerInstancesStateInput, accountID string) (*ecs.UpdateContainerInstancesStateOutput, error) {
+	return utils.NATSRequest[ecs.UpdateContainerInstancesStateOutput](s.natsConn, "ecs.UpdateContainerInstancesState", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DescribeContainerInstances(input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error) {

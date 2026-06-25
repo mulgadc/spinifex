@@ -90,6 +90,38 @@ func TestService_RegisterTaskDefinition_RevisionBump(t *testing.T) {
 	assert.Len(t, list.TaskDefinitionArns, 2)
 }
 
+func TestService_ListTaskDefinitions_StatusFilter(t *testing.T) {
+	svc, _ := newTestService(t)
+	registerTaskDef(t, svc, "keep", 128, 256)
+	registerTaskDef(t, svc, "gone", 128, 256)
+
+	_, err := svc.DeregisterTaskDefinition(&ecs.DeregisterTaskDefinitionInput{
+		TaskDefinition: aws.String("gone:1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Default (unset) status lists ACTIVE only; the deregistered revision drops.
+	active, err := svc.ListTaskDefinitions(&ecs.ListTaskDefinitionsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, active.TaskDefinitionArns, 1)
+	assert.Contains(t, aws.StringValue(active.TaskDefinitionArns[0]), "keep:1")
+
+	// Explicit ACTIVE matches the default.
+	activeExplicit, err := svc.ListTaskDefinitions(&ecs.ListTaskDefinitionsInput{
+		Status: aws.String(TaskDefStatusActive),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, activeExplicit.TaskDefinitionArns, 1)
+
+	// INACTIVE returns only the deregistered revision.
+	inactive, err := svc.ListTaskDefinitions(&ecs.ListTaskDefinitionsInput{
+		Status: aws.String(TaskDefStatusInactive),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, inactive.TaskDefinitionArns, 1)
+	assert.Contains(t, aws.StringValue(inactive.TaskDefinitionArns[0]), "gone:1")
+}
+
 func TestService_RegisterTaskDefinition_NoFamily(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(&ecs.RegisterTaskDefinitionInput{}, testAccountID)

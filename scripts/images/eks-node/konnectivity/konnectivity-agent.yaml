@@ -1,10 +1,11 @@
 # Konnectivity agent DaemonSet — the worker half of the apiserver egress proxy.
 # Each agent dials OUT to the konnectivity-server (fronted by the cluster NLB at
-# __KONN_HOST__:8132) and holds a reverse tunnel to EVERY apiserver replica
-# (--proxy-server-count). apiserver→pod/kubelet/webhook egress rides back down
-# that tunnel, so an HA control plane reaches worker pod IPs with no L4-VIP
-# fan-out gap. Staged into the K3s auto-deploy dir by k3s.initd, which fills the
-# __KONN_HOST__ / __KONN_SERVER_COUNT__ / __KONN_AGENT_IMAGE__ tokens at boot.
+# __KONN_HOST__:8132) and, via --sync-forever, opens a reverse tunnel to EVERY
+# apiserver replica (it learns the replica count from the server handshake).
+# apiserver→pod/kubelet/webhook egress rides back down that tunnel, so an HA
+# control plane reaches worker pod IPs with no L4-VIP fan-out gap. Staged into
+# the K3s auto-deploy dir by k3s.initd, which fills the __KONN_HOST__ /
+# __KONN_AGENT_IMAGE__ tokens at boot.
 #
 # Runs on workers only: it carries no toleration for the control-plane
 # CriticalAddonsOnly=true:NoExecute taint, so it is never scheduled onto the CP
@@ -53,7 +54,11 @@ spec:
             - --ca-cert=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
             - --proxy-server-host=__KONN_HOST__
             - --proxy-server-port=8132
-            - --proxy-server-count=__KONN_SERVER_COUNT__
+            # proxy-agent v0.30.3 has no server-count flag — it learns the
+            # replica count from the server handshake and keeps re-syncing
+            # (sync-forever) until it holds a tunnel to every apiserver, which
+            # is what makes the HA control plane reachable.
+            - --sync-forever=true
             - --service-account-token-path=/var/run/secrets/tokens/konnectivity-agent-token
             - --agent-identifiers=ipv4=$(HOST_IP)
             - --admin-server-port=8133

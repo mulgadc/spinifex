@@ -41,24 +41,21 @@ start_pre() {
 
     # Konnectivity agent: stage the worker-side DaemonSet into the auto-deploy dir
     # (the apiserver `cluster` egress selector tunnels through konnectivity-server,
-    # which the agents dial out to). __KONN_HOST__ is the NLB endpoint agents reach
-    # and __KONN_SERVER_COUNT__ the apiserver replica count, both seeded by the
-    # launcher in first-boot.env; __KONN_AGENT_IMAGE__ is pinned here. Guarded on
+    # which the agents dial out to). __KONN_HOST__ is the NLB endpoint agents reach,
+    # seeded by the launcher in first-boot.env; __KONN_AGENT_IMAGE__ is pinned here.
+    # The agent learns the apiserver replica count from the server handshake
+    # (--sync-forever), so no server-count token is substituted here. Guarded on
     # the baked manifest so an older image without it simply skips the agent.
     if [ -f /usr/share/spinifex-eks/konnectivity/konnectivity-agent.yaml ]; then
         konn_host=$(awk -F= '/^EKS_KONNECTIVITY_HOST=/{print $2}' \
             /etc/spinifex-eks/first-boot.env 2>/dev/null)
-        konn_count=$(awk -F= '/^EKS_KONNECTIVITY_SERVER_COUNT=/{print $2}' \
-            /etc/spinifex-eks/first-boot.env 2>/dev/null)
-        [ -n "${konn_count}" ] || konn_count=1
         if [ -n "${konn_host}" ]; then
             mkdir -p /var/lib/rancher/k3s/server/manifests
             sed -e "s|__KONN_HOST__|${konn_host}|g" \
-                -e "s|__KONN_SERVER_COUNT__|${konn_count}|g" \
                 -e "s|__KONN_AGENT_IMAGE__|${KONN_AGENT_IMAGE}|g" \
                 /usr/share/spinifex-eks/konnectivity/konnectivity-agent.yaml \
                 > /var/lib/rancher/k3s/server/manifests/konnectivity-agent.yaml
-            einfo "konnectivity-agent staged (host ${konn_host}, server-count ${konn_count})"
+            einfo "konnectivity-agent staged (host ${konn_host})"
         else
             ewarn "EKS_KONNECTIVITY_HOST empty; konnectivity-agent not staged, apiserver->pod egress will fail"
         fi

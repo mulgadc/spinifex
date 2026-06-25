@@ -71,6 +71,8 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 
 		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem)
 		rec.NetworkMode = mode
+		rec.Group = aws.StringValue(input.Group)
+		rec.StartedBy = aws.StringValue(input.StartedBy)
 		if mode == NetworkModeAwsvpc {
 			if failure := s.provisionTaskENI(kv, accountID, cluster, rec, netCfg); failure != nil {
 				out.Failures = append(out.Failures, failure)
@@ -266,6 +268,12 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		DesiredStatus:        aws.String(r.DesiredStatus),
 		LastStatus:           aws.String(r.LastStatus),
 		ContainerInstanceArn: aws.String(r.ContainerInstanceARN),
+	}
+	if r.Group != "" {
+		t.Group = aws.String(r.Group)
+	}
+	if r.StartedBy != "" {
+		t.StartedBy = aws.String(r.StartedBy)
 	}
 	if r.StoppedReason != "" {
 		t.StoppedReason = aws.String(r.StoppedReason)

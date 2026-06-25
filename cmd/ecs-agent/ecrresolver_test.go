@@ -78,7 +78,7 @@ func TestECRResolver_Authorize(t *testing.T) {
 
 func TestECRResolver_CredsError(t *testing.T) {
 	r := newECRResolver(stubCreds{err: errors.New("no imds")}, "us-east-1", "https://x", http.DefaultClient)
-	if _, _, _, err := r.Authorize(context.Background(), "ref"); err == nil {
+	if _, _, _, err := r.Authorize(context.Background(), "123456789012.dkr.ecr.us-east-1.spinifex.internal/app:1"); err == nil {
 		t.Fatal("expected creds error to propagate")
 	}
 }
@@ -87,7 +87,7 @@ func TestECRResolver_GatewayError(t *testing.T) {
 	srv := gatewayStub(t, "", "", http.StatusInternalServerError)
 	creds := stubCreds{c: credentials.Credentials{AccessKeyID: "A", SecretAccessKey: "B"}}
 	r := newECRResolver(creds, "us-east-1", srv.URL, trusting(srv))
-	if _, _, _, err := r.Authorize(context.Background(), "ref"); err == nil {
+	if _, _, _, err := r.Authorize(context.Background(), "123456789012.dkr.ecr.us-east-1.spinifex.internal/app:1"); err == nil {
 		t.Fatal("expected gateway error")
 	}
 }
@@ -96,7 +96,36 @@ func TestECRResolver_LazyClient_BadCADeferredToAuthorize(t *testing.T) {
 	creds := stubCreds{c: credentials.Credentials{AccessKeyID: "A", SecretAccessKey: "B"}}
 	// Construction with a bogus CA path must not fail — only Authorize does.
 	r := newLazyECRResolver(creds, "us-east-1", "https://gw", filepath.Join(t.TempDir(), "absent.pem"))
-	if _, _, _, err := r.Authorize(context.Background(), "ref"); err == nil {
+	if _, _, _, err := r.Authorize(context.Background(), "123456789012.dkr.ecr.us-east-1.spinifex.internal/app:1"); err == nil {
 		t.Fatal("expected lazy gateway-client build to fail on missing CA")
+	}
+}
+
+// TestECRResolver_NonECRAnonymous asserts that a public-registry ref pulls
+// anonymously: Authorize returns empty creds without ever touching IMDS, even
+// when the credentials provider would error.
+func TestECRResolver_NonECRAnonymous(t *testing.T) {
+	r := newECRResolver(stubCreds{err: errors.New("imds must not be called")}, "us-east-1", "https://x", http.DefaultClient)
+	for _, ref := range []string{"nginx:alpine", "docker.io/library/nginx:alpine", "ghcr.io/org/app:1"} {
+		user, pass, endpoint, err := r.Authorize(context.Background(), ref)
+		if err != nil || user != "" || pass != "" || endpoint != "" {
+			t.Errorf("ref %q: got (%q,%q,%q,%v), want anonymous", ref, user, pass, endpoint, err)
+		}
+	}
+}
+
+func TestIsECRRef(t *testing.T) {
+	cases := map[string]bool{
+		"nginx:alpine":            false,
+		"docker.io/library/nginx": false,
+		"ghcr.io/org/app:1":       false,
+		"registry:5000/app:1":     false,
+		"123456789012.dkr.ecr.us-east-1.spinifex.internal/app:1": true,
+		"123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/x":    true,
+	}
+	for ref, want := range cases {
+		if got := isECRRef(ref); got != want {
+			t.Errorf("isECRRef(%q) = %v, want %v", ref, got, want)
+		}
 	}
 }

@@ -225,8 +225,15 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 		return err
 	}
 
-	// Release capacity + reclaim the task ENI once, on the transition into STOPPED.
+	// Register the task's ELBv2 targets on the transition into RUNNING (Q8).
+	if msg.LastStatus == TaskStatusRunning && prev != TaskStatusRunning {
+		s.registerServiceTargets(kv, msg.AccountID, &task)
+	}
+
+	// Deregister targets, release capacity + reclaim the task ENI once, on the
+	// transition into STOPPED.
 	if msg.LastStatus == TaskStatusStopped && prev != TaskStatusStopped {
+		s.deregisterServiceTargets(kv, msg.AccountID, &task)
 		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
 		s.reclaimTaskENI(msg.AccountID, &task)
 		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB)

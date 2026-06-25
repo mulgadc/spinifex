@@ -764,10 +764,11 @@ func TestRegisterTargets(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, health.TargetHealthDescriptions, 2)
 
-	// First target should use TG default port
+	// First target should use TG default port. With no listener forwarding to the
+	// TG it serves no traffic, so health is "unused" (Target.NotInUse).
 	assert.Equal(t, "i-aaa111", *health.TargetHealthDescriptions[0].Target.Id)
 	assert.Equal(t, int64(80), *health.TargetHealthDescriptions[0].Target.Port)
-	assert.Equal(t, "initial", *health.TargetHealthDescriptions[0].TargetHealth.State)
+	assert.Equal(t, "unused", *health.TargetHealthDescriptions[0].TargetHealth.State)
 
 	// Second target should use override port
 	assert.Equal(t, "i-bbb222", *health.TargetHealthDescriptions[1].Target.Id)

@@ -206,3 +206,60 @@ func TestResetTargetHealthOnStartup_NilSafe(t *testing.T) {
 	svc2 := &ELBv2ServiceImpl{}
 	assert.NoError(t, svc2.ResetTargetHealthOnStartup(t.Context()))
 }
+
+// A target group not forwarded to by any listener serves no traffic, so its
+// targets report "unused" (Target.NotInUse) instead of stalling in "initial".
+func TestDescribeTargetHealth_UnusedWhenNoListener(t *testing.T) {
+	svc, _, _ := setupTestServiceWithInstance(t, "i-web001", "10.0.1.50")
+
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("detached-tg"), Port: aws.Int64(80),
+	}, testAccountID)
+	require.NoError(t, err)
+	tgArn := tgOut.TargetGroups[0].TargetGroupArn
+
+	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgArn,
+		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-web001")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	health, err := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, health.TargetHealthDescriptions, 1)
+	th := health.TargetHealthDescriptions[0].TargetHealth
+	assert.Equal(t, TargetHealthUnused, aws.StringValue(th.State))
+	assert.Equal(t, "Target.NotInUse", aws.StringValue(th.Reason))
+}
+
+// Once a listener forwards to the target group it is in use, so DescribeTargetHealth
+// reports the live health state ("initial" until a health report lands), not "unused".
+func TestDescribeTargetHealth_InUseWhenListenerForwards(t *testing.T) {
+	svc, _, _ := setupTestServiceWithInstance(t, "i-web001", "10.0.1.50")
+
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("attached-tg"), Port: aws.Int64(80),
+	}, testAccountID)
+	require.NoError(t, err)
+	tgArn := tgOut.TargetGroups[0].TargetGroupArn
+
+	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("attached-lb")}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"), Port: aws.Int64(80),
+		DefaultActions: []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgArn,
+		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-web001")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	health, err := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, health.TargetHealthDescriptions, 1)
+	assert.Equal(t, TargetHealthInitial, aws.StringValue(health.TargetHealthDescriptions[0].TargetHealth.State))
+}

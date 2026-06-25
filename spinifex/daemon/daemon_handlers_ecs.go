@@ -50,8 +50,38 @@ func (d *Daemon) handleECSRunTask(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.RunTask)
 }
 
+func (d *Daemon) handleECSStartTask(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.StartTask)
+}
+
+func (d *Daemon) handleECSStopTask(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.StopTask)
+}
+
 func (d *Daemon) handleECSDescribeTasks(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.DescribeTasks)
+}
+
+// --- Service ---
+
+func (d *Daemon) handleECSCreateService(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.CreateService)
+}
+
+func (d *Daemon) handleECSUpdateService(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.UpdateService)
+}
+
+func (d *Daemon) handleECSDeleteService(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.DeleteService)
+}
+
+func (d *Daemon) handleECSDescribeServices(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.DescribeServices)
+}
+
+func (d *Daemon) handleECSListServices(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.ListServices)
 }
 
 func (d *Daemon) handleECSSubmitTaskStateChange(msg *nats.Msg) {

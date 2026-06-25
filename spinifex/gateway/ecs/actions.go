@@ -104,6 +104,22 @@ func RunTask(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	return handlers_ecs.NewNATSECSService(nc).RunTask(input, accountID)
 }
 
+func StartTask(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.StartTaskInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).StartTask(input, accountID)
+}
+
+func StopTask(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.StopTaskInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).StopTask(input, accountID)
+}
+
 func DescribeTasks(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	input := new(ecs.DescribeTasksInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -118,6 +134,48 @@ func ListTasks(nc *nats.Conn, accountID string, body []byte) (any, error) {
 		return nil, err
 	}
 	return handlers_ecs.NewNATSECSService(nc).ListTasks(input, accountID)
+}
+
+// --- Service ---
+
+func CreateService(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.CreateServiceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).CreateService(input, accountID)
+}
+
+func UpdateService(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.UpdateServiceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).UpdateService(input, accountID)
+}
+
+func DeleteService(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DeleteServiceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DeleteService(input, accountID)
+}
+
+func DescribeServices(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DescribeServicesInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DescribeServices(input, accountID)
+}
+
+func ListServices(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.ListServicesInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).ListServices(input, accountID)
 }
 
 // SubmitTaskStateChange is the agent's task-state report path over the gateway

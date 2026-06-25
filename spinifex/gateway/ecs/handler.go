@@ -56,10 +56,10 @@ var Actions = map[string]Handler{
 	"ListTaskDefinitions":        ListTaskDefinitions,
 	"ListTaskDefinitionFamilies": NotImplemented,
 
-	// Task. StartTask/StopTask land with the 4f service controller + reaper.
+	// Task.
 	"RunTask":       RunTask,
-	"StartTask":     NotImplemented,
-	"StopTask":      NotImplemented,
+	"StartTask":     StartTask,
+	"StopTask":      StopTask,
 	"DescribeTasks": DescribeTasks,
 	"ListTasks":     ListTasks,
 
@@ -70,11 +70,11 @@ var Actions = map[string]Handler{
 	"PollAssignments": PollAssignments,
 
 	// Service. ListServicesByNamespace is a no-op stub in v1.
-	"CreateService":           NotImplemented,
-	"UpdateService":           NotImplemented,
-	"DeleteService":           NotImplemented,
-	"DescribeServices":        NotImplemented,
-	"ListServices":            NotImplemented,
+	"CreateService":           CreateService,
+	"UpdateService":           UpdateService,
+	"DeleteService":           DeleteService,
+	"DescribeServices":        DescribeServices,
+	"ListServices":            ListServices,
 	"ListServicesByNamespace": NotImplemented,
 
 	// Container instance.

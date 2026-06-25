@@ -134,7 +134,8 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, healthOut.TargetHealthDescriptions, 2)
-	assert.Equal(t, "initial", *healthOut.TargetHealthDescriptions[0].TargetHealth.State)
+	// No listener forwards here yet, so the targets are "unused" (Target.NotInUse).
+	assert.Equal(t, "unused", *healthOut.TargetHealthDescriptions[0].TargetHealth.State)
 
 	// 4. Create load balancer
 	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
@@ -157,6 +158,11 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, lstOut.Listeners, 1)
 	assert.Equal(t, int64(80), *lstOut.Listeners[0].Port)
+
+	// Now a listener forwards to the TG, so its targets are in use again ("initial").
+	healthOut, err = client.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "initial", *healthOut.TargetHealthDescriptions[0].TargetHealth.State)
 
 	// 6. Describe listeners
 	lstDesc, err := client.DescribeListeners(&elbv2.DescribeListenersInput{

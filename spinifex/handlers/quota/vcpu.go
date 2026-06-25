@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/nats-io/nats.go"
 )
@@ -145,6 +147,88 @@ func (s *Service) EnforceLaunch(accountID, instanceType string, maxCount int) er
 // failure as drift for reconcile to correct, never failing the live launch.
 func (s *Service) ChargeLaunch(accountID string, reservation *ec2.Reservation) error {
 	return s.AddVCPU(accountID, sumReservationVCPUs([]*ec2.Reservation{reservation}))
+}
+
+// InstanceTypeResolver returns the current instance type of instanceID owned by
+// accountID. ok is false when the instance does not exist for the account, in
+// which case the retype gate charges nothing and leaves the modify for the daemon
+// to reject. It mirrors reconcile's InstanceLister so unit tests can inject a
+// static type without a NATS round trip.
+type InstanceTypeResolver func(accountID, instanceID string) (instanceType string, ok bool, err error)
+
+// NATSInstanceTypeResolver builds the production resolver: an account-filtered,
+// single-instance DescribeInstances returning the live type of a running or
+// stopped instance. A retype is only valid on a stopped instance, which
+// DescribeInstances bundles with the running fan-out. activeNodes is re-evaluated
+// per call so the fan-out tracks cluster membership.
+func NATSInstanceTypeResolver(natsConn *nats.Conn, activeNodes func() int) InstanceTypeResolver {
+	return func(accountID, instanceID string) (string, bool, error) {
+		out, err := gateway_ec2_instance.DescribeInstances(
+			&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
+			natsConn, activeNodes(), accountID)
+		if err != nil {
+			return "", false, err
+		}
+		instanceType, ok := instanceTypeFromReservations(out.Reservations, instanceID)
+		return instanceType, ok, nil
+	}
+}
+
+// EnforceRetype is the check-before gate for a ModifyInstanceAttribute that
+// changes InstanceType: it rejects when retyping accountID's instance to newType
+// would push its vCPU counter over the cap. It returns the vCPU delta the caller
+// charges via AddVCPU once the daemon applies the retype. A retype-down or
+// same-size change yields a non-positive delta that charges nothing and is left
+// to reconcile. Exempt accounts, an unknown newType (the daemon rejects it), and
+// an instance the resolver cannot find (the daemon rejects the modify) all return
+// 0 with no check.
+func (s *Service) EnforceRetype(resolve InstanceTypeResolver, accountID, instanceID, newType string) (int, error) {
+	if s.Exempt(accountID) {
+		return 0, nil
+	}
+	newVCPUs, ok := TypeVCPUs(newType)
+	if !ok {
+		return 0, nil
+	}
+	oldType, ok, err := resolve(accountID, instanceID)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, nil
+	}
+	oldVCPUs, ok := TypeVCPUs(oldType)
+	if !ok {
+		return 0, nil
+	}
+	delta := newVCPUs - oldVCPUs
+	if delta <= 0 {
+		return delta, nil
+	}
+	if err := s.CheckVCPU(accountID, delta); err != nil {
+		return 0, err
+	}
+	return delta, nil
+}
+
+// instanceTypeFromReservations finds instanceID among reservations and returns
+// its type. ok is false when the instance is absent, terminal, or untyped, so the
+// retype gate charges nothing and defers to the daemon.
+func instanceTypeFromReservations(reservations []*ec2.Reservation, instanceID string) (string, bool) {
+	for _, res := range reservations {
+		if res == nil {
+			continue
+		}
+		for _, inst := range res.Instances {
+			if inst == nil || inst.InstanceType == nil || isTerminalState(inst.State) {
+				continue
+			}
+			if aws.StringValue(inst.InstanceId) == instanceID {
+				return *inst.InstanceType, true
+			}
+		}
+	}
+	return "", false
 }
 
 // readVCPU returns accountID's current reserved vCPU count and the KV revision

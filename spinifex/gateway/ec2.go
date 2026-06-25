@@ -27,6 +27,7 @@ import (
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
 	gateway_ec2_vpc "github.com/mulgadc/spinifex/spinifex/gateway/ec2/vpc"
 	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
+	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -150,7 +151,25 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_instance.GetConsoleOutput(input, gw.NATSConn, accountID)
 	}),
 	"ModifyInstanceAttribute": ec2Handler(func(input *ec2.ModifyInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.ModifyInstanceAttribute(input, gw.NATSConn, accountID)
+		var delta int
+		if input.InstanceType != nil {
+			resolve := handlers_quota.NATSInstanceTypeResolver(gw.NATSConn, gw.DiscoverActiveNodes)
+			d, err := gw.Quota.EnforceRetype(resolve, accountID, aws.StringValue(input.InstanceId), aws.StringValue(input.InstanceType.Value))
+			if err != nil {
+				return nil, err
+			}
+			delta = d
+		}
+		out, err := gateway_ec2_instance.ModifyInstanceAttribute(input, gw.NATSConn, accountID)
+		if err != nil {
+			return nil, err
+		}
+		// Charge the retype's vCPU growth; a counter write failure is drift for
+		// reconcile to correct, so it must not fail the applied retype.
+		if err := gw.Quota.AddVCPU(accountID, delta); err != nil {
+			slog.Warn("ModifyInstanceAttribute: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
+		}
+		return out, nil
 	}),
 	"DescribeInstanceAttribute": ec2Handler(func(input *ec2.DescribeInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.DescribeInstanceAttribute(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)

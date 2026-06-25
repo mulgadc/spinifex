@@ -39,6 +39,15 @@ func containerInstanceShortID(ref string) string {
 	return ref
 }
 
+// taskShortID extracts the task UUID from a bare id or a task ARN
+// (arn:...:task/{cluster}/{taskID}); the final path segment is the task id.
+func taskShortID(ref string) string {
+	if i := strings.LastIndexByte(ref, '/'); i >= 0 {
+		return ref[i+1:]
+	}
+	return ref
+}
+
 // containerDefsFromAWS maps SDK container definitions to the persisted subset.
 func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 	out := make([]ContainerDef, 0, len(in))

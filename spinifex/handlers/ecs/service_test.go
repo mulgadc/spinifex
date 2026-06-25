@@ -224,6 +224,44 @@ func TestService_RecordTaskState_ReleasesCapacityOnStop(t *testing.T) {
 	}
 }
 
+// The AWS-API SubmitTaskStateChange path (gateway-routed agent) converges on the
+// same task record + capacity release as the bus path, and resolves a task ARN.
+func TestService_SubmitTaskStateChange_StopsTask(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerTaskDef(t, svc, "app", 128, 256)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+	out, err := svc.RunTask(&ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
+	require.NoError(t, err)
+	taskARN := aws.StringValue(out.Tasks[0].TaskArn) // full ARN exercises taskShortID
+
+	exit := int64(0)
+	ack, err := svc.SubmitTaskStateChange(&ecs.SubmitTaskStateChangeInput{
+		Cluster: aws.String("web"), Task: aws.String(taskARN),
+		Status: aws.String(bus.TaskStatusStopped), Reason: aws.String("exited"),
+		Containers: []*ecs.ContainerStateChange{
+			{ContainerName: aws.String("app"), Status: aws.String(bus.TaskStatusStopped),
+				ExitCode: &exit, RuntimeId: aws.String("ctr-1")},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, ack.Acknowledgment)
+
+	dt, err := svc.DescribeTasks(&ecs.DescribeTasksInput{
+		Cluster: aws.String("web"), Tasks: []*string{aws.String(taskARN)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, dt.Tasks, 1)
+	assert.Equal(t, "STOPPED", aws.StringValue(dt.Tasks[0].LastStatus))
+
+	di, err := svc.DescribeContainerInstances(&ecs.DescribeContainerInstancesInput{
+		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), aws.Int64Value(di.ContainerInstances[0].RunningTasksCount))
+}
+
 func TestService_RecordHeartbeat_UpdatesStatus(t *testing.T) {
 	svc, _ := newTestService(t)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)

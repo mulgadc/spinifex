@@ -62,6 +62,9 @@ var Actions = map[string]Handler{
 	"DescribeTasks": DescribeTasks,
 	"ListTasks":     ListTasks,
 
+	// Agent task-state reporting (agent → gateway → recordTaskState).
+	"SubmitTaskStateChange": SubmitTaskStateChange,
+
 	// Service. ListServicesByNamespace is a no-op stub in v1.
 	"CreateService":           NotImplemented,
 	"UpdateService":           NotImplemented,

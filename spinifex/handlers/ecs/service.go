@@ -34,6 +34,8 @@ type ECSService interface {
 	RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error)
 	DescribeTasks(input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error)
 	ListTasks(input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error)
+
+	SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error)
 }
 
 // Service is the daemon-side ECS control-plane implementation, backed by the

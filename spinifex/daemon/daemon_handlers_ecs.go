@@ -54,6 +54,10 @@ func (d *Daemon) handleECSDescribeTasks(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.DescribeTasks)
 }
 
+func (d *Daemon) handleECSSubmitTaskStateChange(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.SubmitTaskStateChange)
+}
+
 func (d *Daemon) handleECSListTasks(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.ListTasks)
 }

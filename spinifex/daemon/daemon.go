@@ -965,6 +965,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.RunTask", d.handleECSRunTask, "spinifex-workers"},
 			natsSub{"ecs.DescribeTasks", d.handleECSDescribeTasks, "spinifex-workers"},
 			natsSub{"ecs.ListTasks", d.handleECSListTasks, "spinifex-workers"},
+			natsSub{"ecs.SubmitTaskStateChange", d.handleECSSubmitTaskStateChange, "spinifex-workers"},
 		)
 	}
 

@@ -119,3 +119,14 @@ func ListTasks(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	}
 	return handlers_ecs.NewNATSECSService(nc).ListTasks(input, accountID)
 }
+
+// SubmitTaskStateChange is the agent's task-state report path over the gateway
+// (replaces the Layer-2 bus publish). The account is the SigV4 caller, so an
+// instance cannot report state for another account's task.
+func SubmitTaskStateChange(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.SubmitTaskStateChangeInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).SubmitTaskStateChange(input, accountID)
+}

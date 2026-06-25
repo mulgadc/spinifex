@@ -231,6 +231,37 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 	return nil
 }
 
+// SubmitTaskStateChange is the AWS-API task-state path (agent → gateway → here).
+// It maps the SDK input onto the same bus.TaskState shape the Layer-2 bus
+// delivers and converges on recordTaskState, so a gateway-routed agent reports
+// state without touching NATS. The account is authoritative from accountID.
+func (s *Service) SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error) {
+	msg := bus.TaskState{
+		AccountID:   accountID,
+		ClusterName: clusterShortName(aws.StringValue(input.Cluster)),
+		TaskID:      taskShortID(aws.StringValue(input.Task)),
+		LastStatus:  aws.StringValue(input.Status),
+		Reason:      aws.StringValue(input.Reason),
+		ReportedAt:  time.Now().UTC(),
+	}
+	for _, c := range input.Containers {
+		cs := bus.ContainerStatus{
+			Name:        aws.StringValue(c.ContainerName),
+			Status:      aws.StringValue(c.Status),
+			ContainerID: aws.StringValue(c.RuntimeId),
+		}
+		if c.ExitCode != nil {
+			code := int(aws.Int64Value(c.ExitCode))
+			cs.ExitCode = &code
+		}
+		msg.Containers = append(msg.Containers, cs)
+	}
+	if err := s.recordTaskState(&msg); err != nil {
+		return nil, err
+	}
+	return &ecs.SubmitTaskStateChangeOutput{Acknowledgment: aws.String("OK")}, nil
+}
+
 // releaseReservation returns a stopped task's capacity to its instance under CAS.
 func (s *Service) releaseReservation(kv nats.KeyValue, cluster, instanceID, taskID string, cpu, mem int) error {
 	for range reservePlacementRetries {

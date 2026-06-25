@@ -51,7 +51,7 @@ jobs:
   # ---------------------------------------------------------------------------
   single_provision:
     name: Single env · provision
-    runs-on: [ self-hosted, ci-single ]
+    runs-on: [self-hosted, ci-single]
     timeout-minutes: 40
     outputs:
       wan_ip: ${{ steps.vm.outputs.wan_ip }}
@@ -199,7 +199,7 @@ jobs:
           ssh "${SSH_OPTS[@]}" "$VM" \
             "spx admin images import --file /tmp/eks-node-alpine.raw \
                --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
-               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null 2>&1
           ok "eks-node AMI imported"
 
       - name: Install kubectl on VM
@@ -266,7 +266,7 @@ jobs:
   single_suite:
     name: Single env · suite
     needs: single_provision
-    runs-on: [ self-hosted, ci-single ]
+    runs-on: [self-hosted, ci-single]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -373,9 +373,9 @@ jobs:
 
   single_teardown:
     name: Single env · teardown
-    needs: [ single_provision, single_suite ]
+    needs: [single_provision, single_suite]
     if: always()
-    runs-on: [ self-hosted, ci-single ]
+    runs-on: [self-hosted, ci-single]
     timeout-minutes: 20
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-td-${{ github.run_id }}.log
@@ -468,7 +468,7 @@ jobs:
   multi_provision:
     name: Multi env · provision
     if: ${{ inputs.run_multinode }}
-    runs-on: [ self-hosted, ci-multi ]
+    runs-on: [self-hosted, ci-multi]
     timeout-minutes: 45
     outputs:
       node1_ip: ${{ steps.cluster.outputs.node1_ip }}
@@ -615,12 +615,12 @@ jobs:
   multi_suite:
     name: Multi env · suite
     needs: multi_provision
-    runs-on: [ self-hosted, ci-multi ]
+    runs-on: [self-hosted, ci-multi]
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        suite: [ multinode ]
+        suite: [multinode]
     env:
       NODE1_IP: ${{ needs.multi_provision.outputs.node1_ip }}
       SSH_KEY: ${{ needs.multi_provision.outputs.ssh_key }}
@@ -723,9 +723,9 @@ jobs:
 
   multi_teardown:
     name: Multi env · teardown
-    needs: [ multi_provision, multi_suite ]
+    needs: [multi_provision, multi_suite]
     if: always() && inputs.run_multinode
-    runs-on: [ self-hosted, ci-multi ]
+    runs-on: [self-hosted, ci-multi]
     timeout-minutes: 20
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-td-${{ github.run_id }}.log
@@ -786,7 +786,7 @@ jobs:
   e2e_suites_status:
     name: E2E suite blocks · summary
     if: always()
-    needs: [ single_suite, multi_suite ]
+    needs: [single_suite, multi_suite]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

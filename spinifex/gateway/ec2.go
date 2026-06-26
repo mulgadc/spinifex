@@ -94,13 +94,13 @@ var ec2Actions = map[string]EC2Handler{
 		return out, nil
 	}),
 	"RunInstances": ec2HandlerWithReq(func(input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
-		if err := gw.Quota.EnforceLaunch(accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount))); err != nil {
-			return nil, err
-		}
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
 		}
-		reservation, err := gateway_ec2_instance.RunInstances(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, gw.ExpectedNodes)
+		launchQuotaCheck := func() error {
+			return gw.Quota.EnforceLaunch(accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
+		}
+		reservation, err := gateway_ec2_instance.RunInstances(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
 		if err != nil {
 			return nil, err
 		}

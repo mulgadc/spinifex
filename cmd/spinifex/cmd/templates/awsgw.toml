@@ -33,5 +33,5 @@ enabled = false
 vcpus = 8
 vpcs = 8
 subnets = 16
-eips = 2
-volumes_gib = 50
+eips = 4
+volumes_gib = 100

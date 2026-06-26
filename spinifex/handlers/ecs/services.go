@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 )
@@ -48,6 +50,68 @@ func (r *natsTargetRegistrar) Deregister(accountID, tgARN, ip string, port int) 
 		TargetGroupArn: aws.String(tgARN),
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String(ip), Port: aws.Int64(int64(port))}},
 	}, accountID)
+	return err
+}
+
+// eipManager gives an awsvpc task a public endpoint by allocating an Elastic IP
+// and associating it with the task ENI, and releases it on STOPPED. The
+// scheduler is the single writer, mirroring targetRegistrar.
+type eipManager interface {
+	AllocateAndAssociate(accountID, eniID string) (publicIP, allocationID string, err error)
+	Release(accountID, allocationID string) error
+}
+
+// natsEIPManager drives the existing ec2 EIP NATS handlers; no new surface is
+// added for ECS.
+type natsEIPManager struct {
+	nc *nats.Conn
+}
+
+var _ eipManager = (*natsEIPManager)(nil)
+
+func newNATSEIPManager(nc *nats.Conn) *natsEIPManager {
+	return &natsEIPManager{nc: nc}
+}
+
+func (m *natsEIPManager) AllocateAndAssociate(accountID, eniID string) (string, string, error) {
+	svc := handlers_ec2_eip.NewNATSEIPService(m.nc)
+	alloc, err := svc.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")}, accountID)
+	if err != nil {
+		return "", "", err
+	}
+	publicIP, allocationID := aws.StringValue(alloc.PublicIp), aws.StringValue(alloc.AllocationId)
+	if _, err = svc.AssociateAddress(&ec2.AssociateAddressInput{
+		AllocationId:       alloc.AllocationId,
+		NetworkInterfaceId: aws.String(eniID),
+	}, accountID); err != nil {
+		// Release the orphaned allocation so a failed associate leaks nothing.
+		if _, rerr := svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: alloc.AllocationId}, accountID); rerr != nil {
+			slog.Error("ECS auto-EIP: release after failed associate", "alloc", allocationID, "err", rerr)
+		}
+		return "", "", err
+	}
+	return publicIP, allocationID, nil
+}
+
+func (m *natsEIPManager) Release(accountID, allocationID string) error {
+	svc := handlers_ec2_eip.NewNATSEIPService(m.nc)
+	// Disassociate first (VPC EIPs cannot be released while associated); the
+	// association ID is resolved from the allocation.
+	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+		AllocationIds: []*string{aws.String(allocationID)},
+	}, accountID)
+	if err == nil {
+		for _, addr := range desc.Addresses {
+			if addr.AssociationId != nil && *addr.AssociationId != "" {
+				if _, derr := svc.DisassociateAddress(&ec2.DisassociateAddressInput{
+					AssociationId: addr.AssociationId,
+				}, accountID); derr != nil {
+					slog.Error("ECS auto-EIP: disassociate failed", "alloc", allocationID, "err", derr)
+				}
+			}
+		}
+	}
+	_, err = svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(allocationID)}, accountID)
 	return err
 }
 

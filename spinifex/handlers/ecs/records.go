@@ -186,14 +186,19 @@ type TaskRecord struct {
 	NetworkMode string `json:"networkMode,omitempty"`
 	// ENI* hold the per-task elastic network interface for awsvpc mode, allocated
 	// by the scheduler at placement and reclaimed at STOPPED. Empty otherwise.
-	ENIID           string    `json:"eniId,omitempty"`
-	ENIAttachmentID string    `json:"eniAttachmentId,omitempty"`
-	ENIPrivateIP    string    `json:"eniPrivateIp,omitempty"`
-	ENIMacAddress   string    `json:"eniMac,omitempty"`
-	ENISubnetID     string    `json:"eniSubnetId,omitempty"`
-	CreatedAt       time.Time `json:"createdAt"`
-	StartedAt       time.Time `json:"startedAt,omitzero"`
-	StoppedAt       time.Time `json:"stoppedAt,omitzero"`
+	ENIID           string `json:"eniId,omitempty"`
+	ENIAttachmentID string `json:"eniAttachmentId,omitempty"`
+	ENIPrivateIP    string `json:"eniPrivateIp,omitempty"`
+	ENIMacAddress   string `json:"eniMac,omitempty"`
+	ENISubnetID     string `json:"eniSubnetId,omitempty"`
+	// ENIPublicIP / ENIEIPAllocationID hold the auto-assigned Elastic IP for an
+	// awsvpc task whose service has AssignPublicIp=ENABLED. Set on the RUNNING
+	// transition and released on STOPPED. Empty otherwise.
+	ENIPublicIP        string    `json:"eniPublicIp,omitempty"`
+	ENIEIPAllocationID string    `json:"eniEipAllocationId,omitempty"`
+	CreatedAt          time.Time `json:"createdAt"`
+	StartedAt          time.Time `json:"startedAt,omitzero"`
+	StoppedAt          time.Time `json:"stoppedAt,omitzero"`
 }
 
 // LoadBalancerTarget is one ELBv2 target-group attachment on a service. On task

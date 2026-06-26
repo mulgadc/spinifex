@@ -88,6 +88,8 @@ import { Route as AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport }
 import { Route as AuthEc2instancesDescribeInstancesIdRouteImport } from './routes/_auth/ec2/(instances)/describe-instances/$id'
 import { Route as AuthEc2imagesDescribeImagesIdRouteImport } from './routes/_auth/ec2/(images)/describe-images/$id'
 import { Route as AuthEc2elasticIpsDescribeAddressesIdRouteImport } from './routes/_auth/ec2/(elastic-ips)/describe-addresses/$id'
+import { Route as AuthEcsclustersListClustersClusterNameTasksTaskIdRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId'
+import { Route as AuthEcsclustersListClustersClusterNameServicesServiceNameRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -549,6 +551,18 @@ const AuthEc2elasticIpsDescribeAddressesIdRoute =
     path: '/ec2/describe-addresses/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthEcsclustersListClustersClusterNameTasksTaskIdRoute =
+  AuthEcsclustersListClustersClusterNameTasksTaskIdRouteImport.update({
+    id: '/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId',
+    path: '/ecs/list-clusters/$clusterName/tasks/$taskId',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEcsclustersListClustersClusterNameServicesServiceNameRoute =
+  AuthEcsclustersListClustersClusterNameServicesServiceNameRouteImport.update({
+    id: '/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName',
+    path: '/ecs/list-clusters/$clusterName/services/$serviceName',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthIndexRoute
@@ -629,6 +643,8 @@ export interface FileRoutesByFullPath {
   '/iam/list-roles/': typeof AuthIamrolesListRolesIndexRoute
   '/iam/list-users/': typeof AuthIamusersListUsersIndexRoute
   '/s3/ls/$bucket/': typeof AuthS3LsBucketIndexRoute
+  '/ecs/list-clusters/$clusterName/services/$serviceName': typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
+  '/ecs/list-clusters/$clusterName/tasks/$taskId': typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
@@ -708,6 +724,8 @@ export interface FileRoutesByTo {
   '/iam/list-roles': typeof AuthIamrolesListRolesIndexRoute
   '/iam/list-users': typeof AuthIamusersListUsersIndexRoute
   '/s3/ls/$bucket': typeof AuthS3LsBucketIndexRoute
+  '/ecs/list-clusters/$clusterName/services/$serviceName': typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
+  '/ecs/list-clusters/$clusterName/tasks/$taskId': typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -790,6 +808,8 @@ export interface FileRoutesById {
   '/_auth/iam/(roles)/list-roles/': typeof AuthIamrolesListRolesIndexRoute
   '/_auth/iam/(users)/list-users/': typeof AuthIamusersListUsersIndexRoute
   '/_auth/s3/ls/$bucket/': typeof AuthS3LsBucketIndexRoute
+  '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName': typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
+  '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId': typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -872,6 +892,8 @@ export interface FileRouteTypes {
     | '/iam/list-roles/'
     | '/iam/list-users/'
     | '/s3/ls/$bucket/'
+    | '/ecs/list-clusters/$clusterName/services/$serviceName'
+    | '/ecs/list-clusters/$clusterName/tasks/$taskId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -951,6 +973,8 @@ export interface FileRouteTypes {
     | '/iam/list-roles'
     | '/iam/list-users'
     | '/s3/ls/$bucket'
+    | '/ecs/list-clusters/$clusterName/services/$serviceName'
+    | '/ecs/list-clusters/$clusterName/tasks/$taskId'
   id:
     | '__root__'
     | '/_auth'
@@ -1032,6 +1056,8 @@ export interface FileRouteTypes {
     | '/_auth/iam/(roles)/list-roles/'
     | '/_auth/iam/(users)/list-users/'
     | '/_auth/s3/ls/$bucket/'
+    | '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName'
+    | '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -1594,6 +1620,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEc2elasticIpsDescribeAddressesIdRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId': {
+      id: '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId'
+      path: '/ecs/list-clusters/$clusterName/tasks/$taskId'
+      fullPath: '/ecs/list-clusters/$clusterName/tasks/$taskId'
+      preLoaderRoute: typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName': {
+      id: '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName'
+      path: '/ecs/list-clusters/$clusterName/services/$serviceName'
+      fullPath: '/ecs/list-clusters/$clusterName/services/$serviceName'
+      preLoaderRoute: typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
   }
 }
 
@@ -1686,6 +1726,8 @@ interface AuthRouteRouteChildren {
   AuthIampoliciesListPoliciesIndexRoute: typeof AuthIampoliciesListPoliciesIndexRoute
   AuthIamrolesListRolesIndexRoute: typeof AuthIamrolesListRolesIndexRoute
   AuthIamusersListUsersIndexRoute: typeof AuthIamusersListUsersIndexRoute
+  AuthEcsclustersListClustersClusterNameServicesServiceNameRoute: typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
+  AuthEcsclustersListClustersClusterNameTasksTaskIdRoute: typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
 }
 
 const AuthRouteRouteChildren: AuthRouteRouteChildren = {
@@ -1802,6 +1844,10 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthIampoliciesListPoliciesIndexRoute: AuthIampoliciesListPoliciesIndexRoute,
   AuthIamrolesListRolesIndexRoute: AuthIamrolesListRolesIndexRoute,
   AuthIamusersListUsersIndexRoute: AuthIamusersListUsersIndexRoute,
+  AuthEcsclustersListClustersClusterNameServicesServiceNameRoute:
+    AuthEcsclustersListClustersClusterNameServicesServiceNameRoute,
+  AuthEcsclustersListClustersClusterNameTasksTaskIdRoute:
+    AuthEcsclustersListClustersClusterNameTasksTaskIdRoute,
 }
 
 const AuthRouteRouteWithChildren = AuthRouteRoute._addFileChildren(

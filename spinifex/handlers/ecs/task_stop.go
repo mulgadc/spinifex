@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -150,6 +151,9 @@ func (s *Service) forceStopTask(kv nats.KeyValue, accountID string, task *TaskRe
 	task.DesiredStatus = TaskStatusStopped
 	task.StoppedReason = reason
 	task.StoppedAt = now
+	// Release the auto-assigned EIP before persisting so the cleared public IP
+	// lands in this single write.
+	s.releaseTaskPublicIP(accountID, task)
 	if perr := putJSON(kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
 		slog.Error("ECS forceStopTask: persist failed", "task", task.TaskID, "err", perr)
 		return
@@ -208,4 +212,48 @@ func (s *Service) applyServiceTargets(kv nats.KeyValue, accountID string, task *
 				"register", register, "err", terr)
 		}
 	}
+}
+
+// assignTaskPublicIP allocates + associates an Elastic IP to a service task's
+// ENI when the owning service has AssignPublicIp=ENABLED, then persists the
+// public IP onto the task. No-op for non-service or non-awsvpc tasks, or when an
+// EIP is already assigned. Best-effort: a failure logs and leaves the task with
+// only its private endpoint.
+func (s *Service) assignTaskPublicIP(kv nats.KeyValue, accountID string, task *TaskRecord) {
+	if s.eips == nil || task.ENIID == "" || task.ENIPublicIP != "" {
+		return
+	}
+	name := serviceNameFromGroup(task.Group)
+	if name == "" {
+		return
+	}
+	var svc ServiceRecord
+	found, err := getJSON(kv, ServiceKey(task.Cluster, name), &svc)
+	if err != nil || !found || !strings.EqualFold(svc.AssignPublicIP, "ENABLED") {
+		return
+	}
+	publicIP, allocID, err := s.eips.AllocateAndAssociate(accountID, task.ENIID)
+	if err != nil {
+		slog.Error("ECS auto-EIP assign failed", "task", task.TaskID, "eni", task.ENIID, "err", err)
+		return
+	}
+	task.ENIPublicIP = publicIP
+	task.ENIEIPAllocationID = allocID
+	if perr := putJSON(kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
+		slog.Error("ECS auto-EIP: persist public IP failed", "task", task.TaskID, "err", perr)
+	}
+}
+
+// releaseTaskPublicIP disassociates + releases a task's auto-assigned Elastic IP
+// and clears the record. No-op when no EIP was assigned. The cleared record is
+// reflected back into task; callers on the STOPPED path persist it.
+func (s *Service) releaseTaskPublicIP(accountID string, task *TaskRecord) {
+	if s.eips == nil || task.ENIEIPAllocationID == "" {
+		return
+	}
+	if err := s.eips.Release(accountID, task.ENIEIPAllocationID); err != nil {
+		slog.Error("ECS auto-EIP release failed", "task", task.TaskID, "alloc", task.ENIEIPAllocationID, "err", err)
+	}
+	task.ENIPublicIP = ""
+	task.ENIEIPAllocationID = ""
 }

@@ -102,6 +102,10 @@ type Service struct {
 	// targets registers/deregisters service tasks with ELBv2 target groups.
 	// Defaults to the NATS-backed registrar; tests substitute a stub.
 	targets targetRegistrar
+	// eips allocates/associates and releases an Elastic IP for awsvpc tasks whose
+	// service has AssignPublicIp=ENABLED. Defaults to the NATS-backed manager;
+	// tests substitute a stub.
+	eips eipManager
 	// deps carries the collaborators ProvisionCapacity needs (gateway endpoint/CA,
 	// IAM service, image resolver, customer RunInstances path). Wired via WithDeps.
 	deps Deps
@@ -120,7 +124,7 @@ func (s *Service) WithDeps(d Deps) *Service {
 // ARNs it mints; suffix is the AWS-parity internal DNS suffix (reserved for ECR
 // endpoint composition).
 func NewService(nc *nats.Conn, region, suffix string) *Service {
-	return &Service{nc: nc, region: region, suffix: suffix, eni: newNATSENIController(nc), targets: newNATSTargetRegistrar(nc)}
+	return &Service{nc: nc, region: region, suffix: suffix, eni: newNATSENIController(nc), targets: newNATSTargetRegistrar(nc), eips: newNATSEIPManager(nc)}
 }
 
 // defaultCluster is the implicit cluster name when a request omits one.

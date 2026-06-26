@@ -280,7 +280,7 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		t.StoppedReason = aws.String(r.StoppedReason)
 	}
 	if r.ENIID != "" {
-		t.Attachments = append(t.Attachments, &ecs.Attachment{
+		att := &ecs.Attachment{
 			Id:     aws.String(r.ENIAttachmentID),
 			Type:   aws.String("ElasticNetworkInterface"),
 			Status: aws.String(r.LastStatus),
@@ -290,7 +290,12 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 				{Name: aws.String("macAddress"), Value: aws.String(r.ENIMacAddress)},
 				{Name: aws.String("subnetId"), Value: aws.String(r.ENISubnetID)},
 			},
-		})
+		}
+		if r.ENIPublicIP != "" {
+			att.Details = append(att.Details,
+				&ecs.KeyValuePair{Name: aws.String("publicIPv4Address"), Value: aws.String(r.ENIPublicIP)})
+		}
+		t.Attachments = append(t.Attachments, att)
 	}
 	for _, c := range r.Containers {
 		ctr := &ecs.Container{Name: aws.String(c.Name), LastStatus: aws.String(c.Status)}

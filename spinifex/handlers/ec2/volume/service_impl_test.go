@@ -1199,7 +1199,9 @@ func TestUpdateVolumeState_PreservesVBState(t *testing.T) {
 	err := svc.UpdateVolumeState("vol-vbstate", "in-use", "i-preserve", "/dev/nbd0")
 	require.NoError(t, err)
 
-	// Re-read the raw JSON to verify VBState fields survived
+	// config.json is owned by the live VB and must be left untouched: VBState
+	// fields survive and its embedded State is NOT rewritten (the control plane's
+	// attachment state lives in state.json now).
 	getResult, err := store.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("vol-vbstate/config.json"),
@@ -1214,8 +1216,14 @@ func TestUpdateVolumeState_PreservesVBState(t *testing.T) {
 
 	assert.Equal(t, uint32(4096), state.BlockSize)
 	assert.Equal(t, uint64(5), state.SeqNum)
-	assert.Equal(t, "in-use", state.VolumeConfig.VolumeMetadata.State)
-	assert.Equal(t, "i-preserve", state.VolumeConfig.VolumeMetadata.AttachedInstance)
+	assert.Equal(t, "available", state.VolumeConfig.VolumeMetadata.State,
+		"UpdateVolumeState must not rewrite config.json's embedded State")
+
+	// The attachment state is read back through the state.json overlay.
+	cfg, err := svc.GetVolumeConfig("vol-vbstate")
+	require.NoError(t, err)
+	assert.Equal(t, "in-use", cfg.VolumeMetadata.State)
+	assert.Equal(t, "i-preserve", cfg.VolumeMetadata.AttachedInstance)
 }
 
 // --- Group 6: listAllVolumeIDs tests ---

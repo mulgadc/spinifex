@@ -982,6 +982,66 @@ type volumeConfigWrapper struct {
 	VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
 }
 
+// volumeStateRecord is the control-plane-owned attachment state, persisted to a
+// per-volume state.json object kept out of config.json. config.json is rewritten
+// by the live nbdkit VB on every SaveState (clobbering any State the control
+// plane wrote there) and is a sealed object for encrypted volumes (a second
+// writer reuses the AES-GCM nonce). state.json is plaintext, viperblock never
+// touches it, so the control plane is its single writer.
+type volumeStateRecord struct {
+	State            string    `json:"state"`
+	AttachedInstance string    `json:"attachedInstance"`
+	DeviceName       string    `json:"deviceName"`
+	AttachedAt       time.Time `json:"attachedAt"`
+}
+
+// volumeStateKey is the S3 key for a volume's control-plane state object.
+func volumeStateKey(volumeID string) string { return volumeID + "/state.json" }
+
+// putVolumeState writes the control-plane attachment state to state.json.
+func (s *VolumeServiceImpl) putVolumeState(volumeID string, rec volumeStateRecord) error {
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshal volume state: %w", err)
+	}
+	_, err = s.store.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(volumeStateKey(volumeID)),
+		Body:   bytes.NewReader(data),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to write volume state to S3: %w", err)
+	}
+	return nil
+}
+
+// getVolumeState reads state.json. found=false with a nil error means the object
+// is absent (a volume predating the state.json split), in which case the caller
+// falls back to the State embedded in config.json.
+func (s *VolumeServiceImpl) getVolumeState(volumeID string) (volumeStateRecord, bool, error) {
+	getResult, err := s.store.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(volumeStateKey(volumeID)),
+	})
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) {
+			return volumeStateRecord{}, false, nil
+		}
+		return volumeStateRecord{}, false, fmt.Errorf("failed to get volume state: %w", err)
+	}
+	defer getResult.Body.Close()
+
+	body, err := io.ReadAll(getResult.Body)
+	if err != nil {
+		return volumeStateRecord{}, false, fmt.Errorf("failed to read volume state body: %w", err)
+	}
+	var rec volumeStateRecord
+	if err := json.Unmarshal(body, &rec); err != nil {
+		return volumeStateRecord{}, false, fmt.Errorf("failed to unmarshal volume state: %w", err)
+	}
+	return rec, true, nil
+}
+
 // GetVolumeConfig reads the raw VolumeConfig from S3 for a given volume ID.
 func (s *VolumeServiceImpl) GetVolumeConfig(volumeID string) (*viperblock.VolumeConfig, error) {
 	cfg, _, err := s.getVolumeConfigAndEncryption(volumeID)
@@ -1016,71 +1076,46 @@ func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(volumeID string) (*vipe
 	// Try full VBState first (matches mergeVolumeConfig's careful decode
 	// pattern). A populated BlockSize is the marker that the blob is a full
 	// state rather than a wrapper-only fallback.
+	var vc *viperblock.VolumeConfig
+	var encryptionEnabled bool
+
 	var state viperblock.VBState
 	if decodeErr := json.NewDecoder(bytes.NewReader(body)).Decode(&state); decodeErr == nil && state.BlockSize != 0 {
-		return &state.VolumeConfig, state.EncryptionEnabled, nil
+		vc = &state.VolumeConfig
+		encryptionEnabled = state.EncryptionEnabled
+	} else {
+		var wrapper volumeConfigWrapper
+		if err := json.Unmarshal(body, &wrapper); err != nil {
+			return nil, false, fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+		vc = &wrapper.VolumeConfig
 	}
 
-	var wrapper volumeConfigWrapper
-	if err := json.Unmarshal(body, &wrapper); err != nil {
-		return nil, false, fmt.Errorf("failed to unmarshal config: %w", err)
+	// Overlay the control-plane-owned attachment state from state.json. The State
+	// embedded in config.json is rewritten by the live nbdkit VB (stale
+	// "available") and is not authoritative; state.json is. Absent state.json
+	// keeps the embedded value (volumes predating the split).
+	if rec, found, stateErr := s.getVolumeState(volumeID); stateErr != nil {
+		return nil, false, stateErr
+	} else if found {
+		vc.VolumeMetadata.State = rec.State
+		vc.VolumeMetadata.AttachedInstance = rec.AttachedInstance
+		vc.VolumeMetadata.DeviceName = rec.DeviceName
+		vc.VolumeMetadata.AttachedAt = rec.AttachedAt
 	}
 
-	return &wrapper.VolumeConfig, false, nil
+	return vc, encryptionEnabled, nil
 }
 
 // putVolumeConfig writes a VolumeConfig back to S3 as config.json.
 // It performs a read-modify-write to preserve full VBState if viperblock
 // has already written state (BlockSize, SeqNum, WALNum, etc.) to config.json.
-// liveVBAttachWait bounds how long an in-use (attach) state update retries the
-// live-VB route while the mount's ebs.config responder comes up; liveVBAttachRetry
-// is the poll interval. Generous enough to cover nbdkit startup + the boot, short
-// enough not to stall a genuine detach (which never enters the retry loop).
-var (
-	liveVBAttachWait  = 30 * time.Second
-	liveVBAttachRetry = 500 * time.Millisecond
-)
-
+// Callers are the safe non-live writers only (CreateVolume pre-mount,
+// markVolumeOrphaned detached, ModifyVolume stopped-instance); the
+// control-plane attachment state of a live-mounted volume goes to state.json via
+// UpdateVolumeState, never here.
 func (s *VolumeServiceImpl) putVolumeConfig(volumeID string, cfg *viperblock.VolumeConfig) error {
 	configKey := volumeID + "/config.json"
-	start := time.Now()
-
-	// The live mounted VB is the single writer that owns the volume's
-	// StateSeqNum: SaveState authoritatively rewrites config.json from its
-	// in-memory VolumeConfig. Writing the object out-of-band here lets the live
-	// VB's next SaveState silently clobber the update, and for an encrypted
-	// volume opening a second writer reuses the AES-GCM nonce (catastrophic).
-	// Route to the live VB whenever the volume is mounted — encrypted and
-	// unencrypted alike — and only fall back when no node owns it.
-	if s.natsConn != nil {
-		// A volume being marked in-use (attached) is, by definition, mounted for
-		// an instance: its live VB responder is up or imminently coming up as the
-		// mount completes. ErrNoResponders there is a race (the in-use mark can
-		// fire seconds before the ebs.config.{volumeID} subscription propagates),
-		// not a genuinely detached volume — falling back to the out-of-band write
-		// would let the live VB's SaveState silently clobber the in-use state.
-		// Retry the live-VB route across the mount window before concluding the
-		// volume is detached. A detach (state available) has no live owner, so it
-		// takes ErrNoResponders immediately.
-		attaching := cfg.VolumeMetadata.State == "in-use" || cfg.VolumeMetadata.AttachedInstance != ""
-		err := s.putVolumeConfigViaLiveVB(volumeID, cfg)
-		for attaching && errors.Is(err, nats.ErrNoResponders) && time.Since(start) < liveVBAttachWait {
-			time.Sleep(liveVBAttachRetry)
-			err = s.putVolumeConfigViaLiveVB(volumeID, cfg)
-		}
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, nats.ErrNoResponders) {
-			return err
-		}
-		if attaching {
-			slog.Warn("putVolumeConfig: no live VB responder for an in-use volume after retry; writing out-of-band",
-				"volumeId", volumeID, "waited", time.Since(start))
-		}
-		// ErrNoResponders: no node owns the volume (genuinely detached); fall
-		// through to the detached/direct write below.
-	}
 
 	// config.json for an encrypted volume is a sealed VBState whose AES-GCM tag
 	// and StateSeqNum-derived nonce can only be advanced by the master-key holder.
@@ -1136,25 +1171,6 @@ func (s *VolumeServiceImpl) configIsEncrypted(volumeID string) (bool, error) {
 		return state.EncryptionEnabled, nil
 	}
 	return false, nil
-}
-
-// putVolumeConfigViaLiveVB routes a config update to the node that owns the live
-// mounted VB (ebs.config.{volumeID}). That VB is the single StateSeqNum writer,
-// so applyConfigUpdate updates its in-memory VolumeConfig and SaveState persists
-// it — no silent clobber, no concurrent writer. Returns nats.ErrNoResponders
-// when no node owns the volume (detached); the caller then takes the detached
-// path. Works for encrypted and unencrypted volumes alike.
-func (s *VolumeServiceImpl) putVolumeConfigViaLiveVB(volumeID string, cfg *viperblock.VolumeConfig) error {
-	reqData, err := marshalConfigUpdate(volumeID, cfg)
-	if err != nil {
-		return err
-	}
-	msg, err := s.natsConn.Request("ebs.config."+volumeID, reqData, 30*time.Second)
-	if err != nil {
-		// nats.ErrNoResponders propagates so the caller can fall back.
-		return err
-	}
-	return decodeConfigUpdateResponse(volumeID, msg)
 }
 
 // putVolumeConfigViaDetached hands an encrypted-volume config update to the
@@ -1249,10 +1265,15 @@ func (s *VolumeServiceImpl) mergeVolumeConfig(configKey string, cfg *viperblock.
 	return json.Marshal(state)
 }
 
-// UpdateVolumeState updates volume metadata (state, attachment, device) in the object store.
+// UpdateVolumeState updates the control-plane-owned attachment state (state,
+// attachment, device) by writing the per-volume state.json. It does NOT write
+// config.json: the live nbdkit VB owns that object and its next SaveState
+// clobbers any State written out-of-band (and for an encrypted volume a second
+// writer reuses the AES-GCM nonce). Readers overlay state.json in
+// getVolumeConfigAndEncryption. The config.json read here is a presence/ownership
+// gate so a missing volume still errors.
 func (s *VolumeServiceImpl) UpdateVolumeState(volumeID, state, attachedInstance, deviceName string) error {
-	cfg, err := s.GetVolumeConfig(volumeID)
-	if err != nil {
+	if _, err := s.GetVolumeConfig(volumeID); err != nil {
 		return fmt.Errorf("failed to get volume config for state update: %w", err)
 	}
 
@@ -1263,15 +1284,17 @@ func (s *VolumeServiceImpl) UpdateVolumeState(volumeID, state, attachedInstance,
 		state = "available"
 	}
 
-	cfg.VolumeMetadata.State = state
-	cfg.VolumeMetadata.AttachedInstance = attachedInstance
-	cfg.VolumeMetadata.DeviceName = deviceName
+	rec := volumeStateRecord{
+		State:            state,
+		AttachedInstance: attachedInstance,
+		DeviceName:       deviceName,
+	}
 	if attachedInstance != "" {
-		cfg.VolumeMetadata.AttachedAt = time.Now()
+		rec.AttachedAt = time.Now()
 	}
 
-	if err := s.putVolumeConfig(volumeID, cfg); err != nil {
-		return fmt.Errorf("failed to write volume config for state update: %w", err)
+	if err := s.putVolumeState(volumeID, rec); err != nil {
+		return fmt.Errorf("failed to write volume state: %w", err)
 	}
 
 	slog.Info("Updated volume state", "volumeId", volumeID, "state", state, "attachedInstance", attachedInstance, "deviceName", deviceName)

@@ -3,16 +3,12 @@ package handlers_ec2_volume
 import (
 	"encoding/json"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/viperblock/viperblock"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +20,7 @@ func seedUnencryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, v
 		VolumeName: volumeID,
 		VolumeSize: 10 * 1024 * 1024 * 1024,
 		BlockSize:  4096,
+		SeqNum:     7,
 		VolumeConfig: viperblock.VolumeConfig{
 			VolumeMetadata: viperblock.VolumeMetadata{VolumeID: volumeID, SizeGiB: 10, State: "available"},
 		},
@@ -38,117 +35,98 @@ func seedUnencryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, v
 	require.NoError(t, err)
 }
 
-// TestUpdateVolumeState_MountedRoutesToLiveVB locks the single-writer contract:
-// while a volume is mounted (a node answers
-// ebs.config.{volumeID}), every control-plane state update MUST be routed to
-// that live VB, never written to config.json out-of-band. The live mounted VB
-// owns the volume's StateSeqNum and its SaveState authoritatively rewrites
-// config.json from in-memory; an out-of-band object write is silently clobbered
-// by the next SaveState (and, for an encrypted volume, opening a second writer
-// reuses the AES-GCM nonce — catastrophic). This must hold for unencrypted
-// volumes too: the routing decision cannot depend on the racy on-disk
-// encryption check, only on whether a live owner exists.
-func TestUpdateVolumeState_MountedRoutesToLiveVB(t *testing.T) {
+// TestUpdateVolumeState_WritesStateJSONNotConfig locks the single-writer
+// contract: the live nbdkit VB owns config.json and rewrites it from its stale
+// in-memory State on every SaveState, so the control plane MUST persist
+// attachment state to the separate state.json object and leave config.json
+// byte-for-byte untouched. Writing State into config.json out-of-band is
+// silently clobbered under write load (the EKS-worker root-volume flip).
+func TestUpdateVolumeState_WritesStateJSONNotConfig(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-	svc.natsConn = startTestNATS(t)
 
-	volumeID := "vol-plain-live"
+	volumeID := "vol-single-writer"
 	seedUnencryptedConfig(t, store, volumeID)
 	before := getStoredConfig(t, store, volumeID)
 
-	var got atomic.Pointer[types.EBSConfigUpdateRequest]
-	sub, err := svc.natsConn.Subscribe("ebs.config."+volumeID, func(msg *nats.Msg) {
-		var req types.EBSConfigUpdateRequest
-		_ = json.Unmarshal(msg.Data, &req)
-		got.Store(&req)
-		data, _ := json.Marshal(types.EBSConfigUpdateResponse{Volume: volumeID, Success: true})
-		_ = msg.Respond(data)
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
+	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-abc", "/dev/nbd0"))
 
-	err = svc.UpdateVolumeState(volumeID, "in-use", "i-abc", "/dev/nbd0")
-	require.NoError(t, err)
-
-	req := got.Load()
-	require.NotNil(t, req,
-		"a mounted volume's state update MUST route to the live VB (ebs.config.{volumeID}), not an out-of-band object write")
-	var vc viperblock.VolumeConfig
-	require.NoError(t, json.Unmarshal(req.VolumeConfig, &vc))
-	assert.Equal(t, "in-use", vc.VolumeMetadata.State)
-	assert.Equal(t, "i-abc", vc.VolumeMetadata.AttachedInstance)
-
-	// The handler must NOT have rewritten the object: the live VB owns it and
-	// its SaveState would otherwise clobber the control-plane update.
 	after := getStoredConfig(t, store, volumeID)
 	assert.Equal(t, string(before), string(after),
-		"handler must not write config.json out-of-band while a live VB owns the volume")
+		"UpdateVolumeState must not write config.json; the live VB owns it")
+
+	rec := getStoredState(t, store, volumeID)
+	assert.Equal(t, "in-use", rec.State)
+	assert.Equal(t, "i-abc", rec.AttachedInstance)
+	assert.Equal(t, "/dev/nbd0", rec.DeviceName)
 }
 
-// TestUpdateVolumeState_DetachedUnencryptedWritesObject confirms the fallback is
-// preserved: detaching a volume (state available) has no live owner, so the
-// unencrypted update writes the object directly — there is no live VB to clobber.
-func TestUpdateVolumeState_DetachedUnencryptedWritesObject(t *testing.T) {
+// TestUpdateVolumeState_EncryptedConfigUntouched locks the corruption-safety
+// half of the contract: config.json for an encrypted volume is a sealed VBState
+// whose AES-GCM nonce is derived from StateSeqNum. A second out-of-band writer
+// advances the nonce and reuses it (catastrophic for AES-GCM — the decrypted
+// garbage image layers). UpdateVolumeState MUST never touch the sealed object.
+func TestUpdateVolumeState_EncryptedConfigUntouched(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-	svc.natsConn = startTestNATS(t)
 
-	volumeID := "vol-plain-detached"
-	seedUnencryptedConfig(t, store, volumeID)
-
-	// Detach (available): not "attaching", so no per-volume responder is expected
-	// and the handler falls back to the direct object write immediately.
-	err := svc.UpdateVolumeState(volumeID, "available", "", "")
-	require.NoError(t, err)
-
-	raw := getStoredConfig(t, store, volumeID)
-	var state viperblock.VBState
-	require.NoError(t, json.Unmarshal(viperblock.StateBody(raw), &state))
-	assert.Equal(t, "available", state.VolumeConfig.VolumeMetadata.State)
-	assert.Equal(t, "", state.VolumeConfig.VolumeMetadata.AttachedInstance)
-}
-
-// TestUpdateVolumeState_InUseRetriesUntilLiveVBAppears locks the race fix: an
-// in-use (attach) mark can fire seconds before the mount's
-// ebs.config.{volumeID} responder propagates. The handler MUST keep retrying the
-// live-VB route rather than fall back to an out-of-band object write that the
-// live VB's SaveState then silently clobbers. Here the responder is registered
-// shortly after the mark begins; the update must still reach the live VB and the
-// object must NOT be rewritten.
-func TestUpdateVolumeState_InUseRetriesUntilLiveVBAppears(t *testing.T) {
-	oldWait, oldRetry := liveVBAttachWait, liveVBAttachRetry
-	liveVBAttachWait, liveVBAttachRetry = 5*time.Second, 50*time.Millisecond
-	defer func() { liveVBAttachWait, liveVBAttachRetry = oldWait, oldRetry }()
-
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-	svc.natsConn = startTestNATS(t)
-
-	volumeID := "vol-race"
+	volumeID := "vol-enc-single-writer"
 	seedEncryptedConfig(t, store, volumeID)
 	before := getStoredConfig(t, store, volumeID)
 
-	// Responder comes up 300ms late — after the in-use mark has started and hit
-	// ErrNoResponders at least once.
-	var got atomic.Bool
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		sub, _ := svc.natsConn.Subscribe("ebs.config."+volumeID, func(msg *nats.Msg) {
-			got.Store(true)
-			data, _ := json.Marshal(types.EBSConfigUpdateResponse{Volume: volumeID, Success: true})
-			_ = msg.Respond(data)
-		})
-		_ = svc.natsConn.Flush()
-		t.Cleanup(func() { sub.Unsubscribe() })
-	}()
-
-	err := svc.UpdateVolumeState(volumeID, "in-use", "i-race", "/dev/nbd0")
-	require.NoError(t, err)
-	assert.True(t, got.Load(),
-		"in-use mark must retry the live VB until the late mount responder appears, not fall back to an out-of-band write")
+	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-enc", "/dev/nbd0"))
 
 	after := getStoredConfig(t, store, volumeID)
 	assert.Equal(t, string(before), string(after),
-		"the sealed object must not be rewritten out-of-band while the volume is (becoming) mounted")
+		"UpdateVolumeState must not rewrite the sealed config.json (AES-GCM nonce reuse)")
+	assert.Equal(t, "in-use", getStoredState(t, store, volumeID).State)
+}
+
+// TestGetVolumeConfig_OverlaysStateJSON locks the read side: the authoritative
+// attachment state is state.json, which MUST override the (stale) State the live
+// VB persisted into config.json.
+func TestGetVolumeConfig_OverlaysStateJSON(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+
+	volumeID := "vol-overlay"
+	seedUnencryptedConfig(t, store, volumeID) // config.json State == "available"
+	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-overlay", "/dev/nbd0"))
+
+	cfg, err := svc.GetVolumeConfig(volumeID)
+	require.NoError(t, err)
+	assert.Equal(t, "in-use", cfg.VolumeMetadata.State,
+		"state.json must override the stale State in config.json")
+	assert.Equal(t, "i-overlay", cfg.VolumeMetadata.AttachedInstance)
+	assert.Equal(t, "/dev/nbd0", cfg.VolumeMetadata.DeviceName)
+}
+
+// TestGetVolumeConfig_FallsBackWhenNoStateJSON locks the migration path: a volume
+// predating the state.json split has no state.json, so the State embedded in
+// config.json is used unchanged.
+func TestGetVolumeConfig_FallsBackWhenNoStateJSON(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+
+	volumeID := "vol-legacy"
+	seedUnencryptedConfig(t, store, volumeID) // State == "available", no state.json
+
+	cfg, err := svc.GetVolumeConfig(volumeID)
+	require.NoError(t, err)
+	assert.Equal(t, "available", cfg.VolumeMetadata.State,
+		"absent state.json must fall back to the State embedded in config.json")
+}
+
+// getStoredState reads and decodes the raw state.json from the memory store.
+func getStoredState(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) volumeStateRecord {
+	t.Helper()
+	res, err := store.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String(volumeID + "/state.json"),
+	})
+	require.NoError(t, err)
+	defer res.Body.Close()
+	var rec volumeStateRecord
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&rec))
+	return rec
 }

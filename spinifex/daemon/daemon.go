@@ -45,6 +45,7 @@ import (
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
+	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -146,6 +147,7 @@ type Daemon struct {
 	eigwService           *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
 	igwService            *handlers_ec2_igw.IGWServiceImpl
 	placementGroupService *handlers_ec2_placementgroup.PlacementGroupServiceImpl
+	spotInstanceService   *handlers_ec2_spotinstance.SpotInstanceServiceImpl
 	vpcService            *handlers_ec2_vpc.VPCServiceImpl
 	eipService            *handlers_ec2_eip.EIPServiceImpl
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
@@ -787,6 +789,9 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RemoveInstanceFromPlacementGroup", d.handleEC2RemoveInstanceFromPlacementGroup, "spinifex-workers"},
 		{"ec2.ReserveClusterNode", d.handleEC2ReserveClusterNode, "spinifex-workers"},
 		{"ec2.FinalizeClusterInstances", d.handleEC2FinalizeClusterInstances, "spinifex-workers"},
+		{"ec2.PutSpotInstanceRequests", d.handleEC2PutSpotInstanceRequests, "spinifex-workers"},
+		{"ec2.DescribeSpotInstanceRequests", d.handleEC2DescribeSpotInstanceRequests, "spinifex-workers"},
+		{"ec2.CancelSpotInstanceRequests", d.handleEC2CancelSpotInstanceRequests, "spinifex-workers"},
 		// Capacity reservations: Create is node-targeted (gateway pins one node);
 		// Describe fans out and Cancel broadcasts, so both use plain Subscribe.
 		{fmt.Sprintf("ec2.CreateCapacityReservation.%s", d.node), d.handleEC2CreateCapacityReservation, ""},
@@ -1165,6 +1170,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.igwService must be nil before startCluster")
 	case d.placementGroupService != nil:
 		return errors.New("d.placementGroupService must be nil before startCluster")
+	case d.spotInstanceService != nil:
+		return errors.New("d.spotInstanceService must be nil before startCluster")
 	case d.vpcService != nil:
 		return errors.New("d.vpcService must be nil before startCluster")
 	case d.routeTableService != nil:
@@ -1274,6 +1281,13 @@ func (d *Daemon) startCluster() error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize placement group service: %w", err)
+	}
+
+	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*handlers_ec2_spotinstance.SpotInstanceServiceImpl, error) {
+		return handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize spot instance service: %w", err)
 	}
 
 	d.vpcService, err = initServiceWithRetry("VPC service", func() (*handlers_ec2_vpc.VPCServiceImpl, error) {

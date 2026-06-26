@@ -124,6 +124,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 | `modify-instance-attribute` | `--instance-id`, `--instance-type`, `--user-data`, `--disable-api-termination` | `--ebs-optimized`, `--source-dest-check`, `--instance-initiated-shutdown-behavior`, `--block-device-mappings`, `--groups`, `--ena-support`, `--sriov-net-support` | **DONE** |
 | `get-console-output` | `--instance-id` | `--latest`, `--dry-run` | **DONE** |
 | `describe-instance-attribute` | `--instance-id`, `--attribute` (instanceType, userData, disableApiTermination, instanceInitiatedShutdownBehavior, disableApiStop, ebsOptimized, enaSupport, sourceDestCheck, rootDeviceName, kernel, ramdisk) | `--dry-run` | **DONE** |
+| `modify-instance-metadata-options` | `--instance-id`, `--http-put-response-hop-limit` (1–64), `--http-tokens` (`required`), `--http-endpoint` (`enabled`), `--http-protocol-ipv6`/`--instance-metadata-tags` (`disabled`) — secure values are no-ops, downgrades return `UnsupportedOperation` | `--dry-run` | **DONE** |
 | `describe-instance-credit-specifications` | `--instance-ids` | `--filters`, `--max-results`, `--dry-run` | **DONE** (stub — always returns `standard`) |
 | `describe-instance-status` | `--instance-ids`, `--include-all-instances`, `--filters` (availability-zone, instance-state-code, instance-state-name, tag:*) | `--max-results`, `--next-token`, `--dry-run`, event/instance-status/system-status filters | **DONE** (static health) |
 | `monitor-instances` | — | `--instance-ids` | **NOT STARTED** |
@@ -137,6 +138,13 @@ role ARN and rejects cross-account profile ARNs. Placement strategies: `spread`
 the node owning the targeted reservation (targeted-by-id only; `open`
 auto-matching is not supported). The combination with `--placement` (group) is
 rejected. `describe-instances` then reports the instance's `CapacityReservationId`.
+
+`modify-instance-metadata-options` is the only metadata-options mutator — AWS has
+no `get-instance-metadata-options` API, so the per-instance block is read through
+`describe-instances`. Only the hop limit is mutable; `--http-tokens optional` and
+the other posture-weakening values are refused with `UnsupportedOperation`, since
+the platform enforces IMDSv2 permanently. `run-instances --metadata-options` runs
+the same validation at launch.
 
 ### EC2 — IAM Instance Profile Associations
 
@@ -239,6 +247,11 @@ by downstream services.
 | `get-image-block-public-access-state` | — | `--dry-run` | **NOT STARTED** |
 | `modify-instance-metadata-defaults` | — | `--http-tokens`, `--http-put-response-hop-limit`, `--http-endpoint`, `--instance-metadata-tags` | **NOT STARTED** |
 | `get-instance-metadata-defaults` | — | `--dry-run` | **NOT STARTED** |
+
+The account-level `modify-/get-instance-metadata-defaults` are blocked on an
+`aws-sdk-go` bump: the `InstanceMetadataDefaultsResponse` type is absent from the
+pinned v1.44.266 (these APIs landed ~March 2024), and the gateway's generic
+handler needs the typed input struct to route them.
 
 ### EC2 — VPC Core
 
@@ -582,6 +595,8 @@ Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`, 
 Available at `169.254.169.254` from inside every running guest VM, matching AWS. The endpoint is reached from within a guest over plain HTTP, exactly as on EC2, with no in-VM agent to install. DHCP and fully static guests reach it identically, with no in-guest route configuration.
 
 **IMDSv2-only.** Every read requires a session token. A tokenless (v1-style) `GET` returns `401 Unauthorized` with an empty body. Obtain a token with a `PUT /latest/api/token` carrying `X-aws-ec2-metadata-token-ttl-seconds` (1–21600), then send it back in `X-aws-ec2-metadata-token` on every read.
+
+The EC2 control plane reports this posture faithfully: `describe-instances` returns `MetadataOptions.HttpTokens=required`, and `run-instances`/`modify-instance-metadata-options` reject `--http-tokens optional` (and `--http-endpoint disabled`) with `UnsupportedOperation` — exactly as AWS does under account-level IMDSv2 enforcement.
 
 ```bash
 # Inside the guest VM:

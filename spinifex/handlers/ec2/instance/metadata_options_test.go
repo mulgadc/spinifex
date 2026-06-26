@@ -6,6 +6,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,6 +43,86 @@ func TestValidateMetadataOptions(t *testing.T) {
 			assert.True(t, awserrors.IsErrorCode(err, tc.wantCode), "want %s, got %v", tc.wantCode, err)
 		})
 	}
+}
+
+// Re-enabling IMDSv1 is refused with UnsupportedOperation and the instance is
+// left untouched — no partial application of a rejected request.
+func TestModifyInstanceMetadataOptions_RejectV1(t *testing.T) {
+	owner := utils.GlobalAccountID
+	id := "i-imdsv1"
+	v := &vm.VM{
+		ID: id, AccountID: owner, Status: vm.StateRunning,
+		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil)},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+	_, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId: aws.String(id),
+		HttpTokens: aws.String(ec2.HttpTokensStateOptional),
+	}, owner)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorUnsupportedOperation), "got %v", err)
+	assert.Equal(t, ec2.HttpTokensStateRequired, aws.StringValue(v.Instance.MetadataOptions.HttpTokens))
+	assert.Equal(t, int64(1), aws.Int64Value(v.Instance.MetadataOptions.HttpPutResponseHopLimit))
+}
+
+// A hop-limit change on a running instance persists and is echoed back — AWS
+// allows this in any state, so it must not return IncorrectInstanceState. The
+// no-op http-tokens=required is accepted alongside it.
+func TestModifyInstanceMetadataOptions_HopLimitRunning(t *testing.T) {
+	owner := utils.GlobalAccountID
+	id := "i-hop-run"
+	v := &vm.VM{
+		ID: id, AccountID: owner, Status: vm.StateRunning,
+		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil)},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+	out, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId:              aws.String(id),
+		HttpTokens:              aws.String(ec2.HttpTokensStateRequired),
+		HttpPutResponseHopLimit: aws.Int64(2),
+	}, owner)
+	require.NoError(t, err)
+	require.NotNil(t, out.InstanceMetadataOptions)
+	assert.Equal(t, int64(2), aws.Int64Value(out.InstanceMetadataOptions.HttpPutResponseHopLimit))
+	assert.Equal(t, ec2.HttpTokensStateRequired, aws.StringValue(out.InstanceMetadataOptions.HttpTokens))
+	assert.Equal(t, int64(2), aws.Int64Value(v.Instance.MetadataOptions.HttpPutResponseHopLimit))
+}
+
+// The stopped-store fallback persists the hop-limit change too.
+func TestModifyInstanceMetadataOptions_HopLimitStopped(t *testing.T) {
+	owner := utils.GlobalAccountID
+	id := "i-hop-stop"
+	stored := &vm.VM{
+		ID: id, AccountID: owner, Status: vm.StateStopped,
+		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil)},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: stored}}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
+
+	out, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId:              aws.String(id),
+		HttpPutResponseHopLimit: aws.Int64(3),
+	}, owner)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), aws.Int64Value(out.InstanceMetadataOptions.HttpPutResponseHopLimit))
+	require.Contains(t, store.wroteStopped, id)
+	assert.Equal(t, int64(3), aws.Int64Value(store.wroteStopped[id].Instance.MetadataOptions.HttpPutResponseHopLimit))
+}
+
+// An unknown instance is reported absent, not a server error.
+func TestModifyInstanceMetadataOptions_NotFound(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		vmMgr:        mgrWith(map[string]*vm.VM{}),
+		stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}},
+	}
+	_, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId:              aws.String("i-ghost"),
+		HttpPutResponseHopLimit: aws.Int64(2),
+	}, utils.GlobalAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
 // The constant block reports the IMDSv2-only posture: required tokens, endpoint

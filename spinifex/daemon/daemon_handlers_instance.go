@@ -590,6 +590,10 @@ func (d *Daemon) handleEC2ModifyInstanceAttribute(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.ModifyInstanceAttribute)
 }
 
+func (d *Daemon) handleEC2ModifyInstanceMetadataOptions(msg *nats.Msg) {
+	handleNATSRequest(msg, d.instanceService.ModifyInstanceMetadataOptions)
+}
+
 // handleEC2DescribeInstanceAttribute returns a single requested attribute for an instance.
 func (d *Daemon) handleEC2DescribeInstanceAttribute(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.DescribeInstanceAttribute)

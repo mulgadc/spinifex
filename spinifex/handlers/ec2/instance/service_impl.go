@@ -1895,6 +1895,84 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
 }
 
+// ModifyInstanceMetadataOptions applies a metadata-options change. Only the hop
+// limit is mutable — validateMetadataOptions rejects any request that would
+// re-enable IMDSv1 or an unmodelled feature. It mirrors the running-first /
+// stopped-store path of DisableApiTermination: AWS permits this on running
+// instances, so there is deliberately no stopped-only guard that would wrongly
+// IncorrectInstanceState a hop-limit apply on a live node.
+func (s *InstanceServiceImpl) ModifyInstanceMetadataOptions(input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
+	if input.InstanceId == nil || *input.InstanceId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	instanceID := *input.InstanceId
+
+	if err := validateMetadataOptions(
+		aws.StringValue(input.HttpTokens),
+		aws.StringValue(input.HttpEndpoint),
+		aws.StringValue(input.HttpProtocolIpv6),
+		aws.StringValue(input.InstanceMetadataTags),
+		input.HttpPutResponseHopLimit,
+	); err != nil {
+		return nil, err
+	}
+
+	// Running-first: mutate the live instance's block, falling through to the
+	// stopped store only when the instance isn't running on this node.
+	var notVisible bool
+	var options *ec2.InstanceMetadataOptionsResponse
+	updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
+		if !IsInstanceVisible(accountID, v.AccountID) {
+			notVisible = true
+			return false
+		}
+		applyMetadataOptions(v.Instance, input.HttpPutResponseHopLimit)
+		options = v.Instance.MetadataOptions
+		return true
+	})
+	if notVisible {
+		slog.Warn("ModifyInstanceMetadataOptions: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if updated {
+		if persistErr != nil {
+			slog.Error("ModifyInstanceMetadataOptions: persist failed", "instanceId", instanceID, "err", persistErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.Info("ModifyInstanceMetadataOptions: updated running instance", "instanceId", instanceID)
+		return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: aws.String(instanceID), InstanceMetadataOptions: options}, nil
+	}
+
+	if s.stoppedStore == nil {
+		slog.Error("ModifyInstanceMetadataOptions: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.Error("ModifyInstanceMetadataOptions: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		slog.Warn("ModifyInstanceMetadataOptions: instance not found", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.Warn("ModifyInstanceMetadataOptions: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	applyMetadataOptions(instance.Instance, input.HttpPutResponseHopLimit)
+	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
+		slog.Error("ModifyInstanceMetadataOptions: failed to persist stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.Info("ModifyInstanceMetadataOptions: updated stopped instance", "instanceId", instanceID)
+	return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: aws.String(instanceID), InstanceMetadataOptions: instance.Instance.MetadataOptions}, nil
+}
+
 // StoppedInstanceNode returns the node that last hosted the stopped instance,
 // used to route start requests back to the original node when possible.
 func (s *InstanceServiceImpl) StoppedInstanceNode(instanceID string) string {

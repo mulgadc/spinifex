@@ -59,3 +59,22 @@ func validateMetadataOptions(httpTokens, httpEndpoint, ipv6, tags string, hopLim
 	}
 	return nil
 }
+
+// applyMetadataOptions applies a metadata-options change to an instance. A
+// legacy instance launched before the constant block (nil MetadataOptions) is
+// stamped with it now; otherwise only the hop limit moves. validateMetadataOptions
+// has already constrained hopLimit to 1-64 and rejected every other change, so
+// the remaining fields stay at their platform-invariant values. A nil hopLimit
+// (e.g. a no-op http-tokens=required) leaves the existing hop limit untouched.
+func applyMetadataOptions(instance *ec2.Instance, hopLimit *int64) {
+	if instance == nil {
+		return
+	}
+	if instance.MetadataOptions == nil {
+		instance.MetadataOptions = buildMetadataOptions(hopLimit)
+		return
+	}
+	if hopLimit != nil {
+		instance.MetadataOptions.HttpPutResponseHopLimit = hopLimit
+	}
+}

@@ -1033,8 +1033,18 @@ func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(volumeID string) (*vipe
 // putVolumeConfig writes a VolumeConfig back to S3 as config.json.
 // It performs a read-modify-write to preserve full VBState if viperblock
 // has already written state (BlockSize, SeqNum, WALNum, etc.) to config.json.
+// liveVBAttachWait bounds how long an in-use (attach) state update retries the
+// live-VB route while the mount's ebs.config responder comes up; liveVBAttachRetry
+// is the poll interval. Generous enough to cover nbdkit startup + the boot, short
+// enough not to stall a genuine detach (which never enters the retry loop).
+var (
+	liveVBAttachWait  = 30 * time.Second
+	liveVBAttachRetry = 500 * time.Millisecond
+)
+
 func (s *VolumeServiceImpl) putVolumeConfig(volumeID string, cfg *viperblock.VolumeConfig) error {
 	configKey := volumeID + "/config.json"
+	start := time.Now()
 
 	// The live mounted VB is the single writer that owns the volume's
 	// StateSeqNum: SaveState authoritatively rewrites config.json from its
@@ -1042,14 +1052,32 @@ func (s *VolumeServiceImpl) putVolumeConfig(volumeID string, cfg *viperblock.Vol
 	// VB's next SaveState silently clobber the update, and for an encrypted
 	// volume opening a second writer reuses the AES-GCM nonce (catastrophic).
 	// Route to the live VB whenever the volume is mounted — encrypted and
-	// unencrypted alike — and only fall back when no node owns it (mulga-siv-466).
+	// unencrypted alike — and only fall back when no node owns it.
 	if s.natsConn != nil {
+		// A volume being marked in-use (attached) is, by definition, mounted for
+		// an instance: its live VB responder is up or imminently coming up as the
+		// mount completes. ErrNoResponders there is a race (the in-use mark can
+		// fire seconds before the ebs.config.{volumeID} subscription propagates),
+		// not a genuinely detached volume — falling back to the out-of-band write
+		// would let the live VB's SaveState silently clobber the in-use state.
+		// Retry the live-VB route across the mount window before concluding the
+		// volume is detached. A detach (state available) has no live owner, so it
+		// takes ErrNoResponders immediately.
+		attaching := cfg.VolumeMetadata.State == "in-use" || cfg.VolumeMetadata.AttachedInstance != ""
 		err := s.putVolumeConfigViaLiveVB(volumeID, cfg)
+		for attaching && errors.Is(err, nats.ErrNoResponders) && time.Since(start) < liveVBAttachWait {
+			time.Sleep(liveVBAttachRetry)
+			err = s.putVolumeConfigViaLiveVB(volumeID, cfg)
+		}
 		if err == nil {
 			return nil
 		}
 		if !errors.Is(err, nats.ErrNoResponders) {
 			return err
+		}
+		if attaching {
+			slog.Warn("putVolumeConfig: no live VB responder for an in-use volume after retry; writing out-of-band",
+				"volumeId", volumeID, "waited", time.Since(start))
 		}
 		// ErrNoResponders: no node owns the volume (genuinely detached); fall
 		// through to the detached/direct write below.

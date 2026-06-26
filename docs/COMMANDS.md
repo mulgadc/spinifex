@@ -528,8 +528,10 @@ bypasses policy evaluation entirely.
 | `attach-role-policy` | `--role-name`, `--policy-arn` | — | **DONE** |
 | `detach-role-policy` | `--role-name`, `--policy-arn` | — | **DONE** |
 | `list-attached-role-policies` | `--role-name`, `--path-prefix` | `--max-items`, `--marker` | **DONE** |
-| `list-role-policies` | `--role-name` | `--max-items`, `--marker` | **DONE** (gateway stub — inline policies unsupported, always returns empty) |
-| `get-role-policy` / `put-role-policy` / `delete-role-policy` | — | inline role policies | **NOT STARTED** |
+| `list-role-policies` | `--role-name` | `--max-items`, `--marker` | **DONE** |
+| `put-role-policy` | `--role-name`, `--policy-name`, `--policy-document` | — | **DONE** |
+| `get-role-policy` | `--role-name`, `--policy-name` | — | **DONE** (document returned as raw JSON, not URL-encoded) |
+| `delete-role-policy` | `--role-name`, `--policy-name` | — | **DONE** |
 
 ### IAM — Instance Profiles
 

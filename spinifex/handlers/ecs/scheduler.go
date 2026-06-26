@@ -267,6 +267,7 @@ func (sc *Scheduler) reapBucket(kv nats.KeyValue, accountID string, now time.Tim
 		slog.Warn("ECS scheduler: reaping disconnected instance", "cluster", inst.Cluster, "instance", inst.InstanceID,
 			"lastSeen", inst.LastSeen.Format(time.RFC3339))
 		inst.Status = InstanceStatusDraining
+		inst.Reaped = true
 		if perr := putJSON(kv, k, &inst); perr != nil {
 			continue
 		}

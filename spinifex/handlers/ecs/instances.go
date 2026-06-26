@@ -54,6 +54,13 @@ func (s *Service) RegisterContainerInstance(input *ecs.RegisterContainerInstance
 				r.TotalMemoryMiB = int(aws.Int64Value(res.IntegerValue))
 			}
 		}
+		// The agent heartbeats by re-registering. A re-register from a reaped
+		// (involuntarily drained) instance proves the agent is back, so restore
+		// it to ACTIVE. An operator drain (Reaped=false) is left untouched.
+		if r.Status == InstanceStatusDraining && r.Reaped {
+			r.Status = InstanceStatusActive
+			r.Reaped = false
+		}
 	})
 	if err != nil {
 		return nil, err

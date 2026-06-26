@@ -146,6 +146,37 @@ the other posture-weakening values are refused with `UnsupportedOperation`, sinc
 the platform enforces IMDSv2 permanently. `run-instances --metadata-options` runs
 the same validation at launch.
 
+### EC2 — Spot Instances
+
+Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances`
+path: a request synchronously launches real VMs on the operator's own compute and
+is then reported `active`/`fulfilled`. There is no spot market — no bidding, price
+rejection, interruption, or reclamation, and instances are never reclaimed.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `request-spot-instances` | `--instance-count` (default 1), `--type` (`one-time`/`persistent` — stored, behaviour identical), `--spot-price` (echoed only), `--client-token`, `--launch-specification` (ImageId, InstanceType, KeyName, SubnetId, SecurityGroupIds, UserData, BlockDeviceMappings, IamInstanceProfile, Placement.GroupName, NetworkInterfaces), `--tag-specifications` (spot-instances-request) | `--valid-from`, `--valid-until`, `--launch-group`, `--availability-zone-group`, `--block-duration-minutes`, `--instance-interruption-behavior`, `--dry-run` | **DONE** (mock) |
+| `describe-spot-instance-requests` | `--spot-instance-request-ids`, `--filters` (spot-instance-request-id, state, instance-id, launch.image-id, launch.instance-type, launch.key-name, type, launched-availability-zone, tag-key, tag:*) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `cancel-spot-instance-requests` | `--spot-instance-request-ids` | `--dry-run` | **DONE** |
+
+`request-spot-instances` maps the single `--instance-count N` to
+`MinCount=MaxCount=N`, so fulfilment is **all-or-nothing**: on insufficient capacity
+the call returns `InsufficientInstanceCapacity` and **persists no SIRs**.
+`--client-token` is passed through to the on-demand idempotency path. The launched
+instances are plain on-demand VMs — v1 does **not** stamp `InstanceLifecycle=spot`
+or `SpotInstanceRequestId` on the instance; the instance↔request link lives only on
+the SIR (`SpotInstanceRequest.InstanceId`).
+
+`cancel-spot-instance-requests` flips the request to `cancelled`
+(`request-canceled-and-instance-running`) and **does not terminate** the instance —
+cancel ≠ terminate. Terminating the instance instead moves its SIR to `closed`
+(`instance-terminated-by-user`). Terminal (`cancelled`/`closed`) requests stay
+readable via `describe-spot-instance-requests` for **1 hour**, then auto-expire.
+
+`describe-spot-price-history` is **unsupported** (returns `InvalidAction`): on owned
+hardware there is no spot/on-demand price differential, so any synthetic price would
+be misleading rather than helpful.
+
 ### EC2 — IAM Instance Profile Associations
 
 Stored as `vm.VM.IamInstanceProfileArn` + `IamInstanceProfileAssociationId`

@@ -431,7 +431,7 @@ func (s *IAMServiceImpl) ListRolePolicies(accountID string, input *iam.ListRoleP
 	}, nil
 }
 
-// GetRolePolicies resolves the managed policy documents attached to a role.
+// GetRolePolicies resolves the managed and inline policy documents for a role.
 // Used by the gateway for policy evaluation. Fails closed: any unresolvable
 // policy returns an error so the caller denies access rather than using a partial set.
 func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDocument, error) {
@@ -452,11 +452,11 @@ func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDo
 	}
 
 	for name, raw := range role.InlinePolicies {
-		doc, err := ValidatePolicyDocument(raw)
-		if err != nil {
+		var doc PolicyDocument
+		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 			return nil, fmt.Errorf("parse inline policy %s: %w", name, err) // fail closed
 		}
-		docs = append(docs, *doc)
+		docs = append(docs, doc)
 	}
 
 	return docs, nil

@@ -20,13 +20,6 @@ import (
 // breaker, never on genuine contention.
 const vcpuCASRetries = 100
 
-// TypeVCPUs returns the vCPU count charged for an instance type, wrapping the
-// static instancetypes catalog so the gate handlers and reconcile share one
-// source of truth. ok is false for an unknown type.
-func TypeVCPUs(instanceType string) (int, bool) {
-	return instancetypes.VCPUsForType(instanceType)
-}
-
 // CheckVCPU rejects with ResourceLimitExceeded when charging want more vCPUs to
 // accountID would exceed the configured cap. It only reads the counter; the
 // caller increments via AddVCPU after the grow succeeds. Two concurrent checks
@@ -143,7 +136,7 @@ func isCASConflict(err error) bool {
 // daemon to reject as InvalidInstanceType; the Exempt short-circuit lives in
 // CheckVCPU.
 func (s *Service) EnforceLaunch(accountID, instanceType string, maxCount int) error {
-	perType, ok := TypeVCPUs(instanceType)
+	perType, ok := instancetypes.DefaultVCPUs(instanceType)
 	if !ok {
 		return nil
 	}
@@ -210,7 +203,7 @@ func (s *Service) EnforceRetype(resolve InstanceTypeResolver, accountID, instanc
 	if s.Exempt(accountID) {
 		return 0, nil
 	}
-	newVCPUs, ok := TypeVCPUs(newType)
+	newVCPUs, ok := instancetypes.DefaultVCPUs(newType)
 	if !ok {
 		return 0, nil
 	}
@@ -221,7 +214,7 @@ func (s *Service) EnforceRetype(resolve InstanceTypeResolver, accountID, instanc
 	if !ok {
 		return 0, nil
 	}
-	oldVCPUs, ok := TypeVCPUs(oldType)
+	oldVCPUs, ok := instancetypes.DefaultVCPUs(oldType)
 	if !ok {
 		return 0, nil
 	}

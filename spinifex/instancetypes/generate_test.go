@@ -31,7 +31,7 @@ func countFamily(types map[string]*ec2.InstanceTypeInfo, prefix string) int {
 	return count
 }
 
-func TestVCPUsForType(t *testing.T) {
+func TestDefaultVCPUs(t *testing.T) {
 	cases := []struct {
 		name  string
 		vcpus int
@@ -47,20 +47,20 @@ func TestVCPUsForType(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := VCPUsForType(tc.name)
+			got, ok := DefaultVCPUs(tc.name)
 			assert.Equal(t, tc.ok, ok)
 			assert.Equal(t, tc.vcpus, got)
 		})
 	}
 }
 
-func TestVCPUsForType_IndependentOfHostGeneration(t *testing.T) {
+func TestDefaultVCPUs_IndependentOfHostGeneration(t *testing.T) {
 	// Every family/size in the catalog resolves regardless of which CPU the
 	// host detects, so reconcile can size instances launched on other nodes.
 	for _, def := range instanceFamilyDefs {
 		for _, size := range def.sizes {
 			name := def.name + "." + size.suffix
-			got, ok := VCPUsForType(name)
+			got, ok := DefaultVCPUs(name)
 			require.True(t, ok, "%s must resolve", name)
 			assert.Equal(t, size.vcpus, got, "%s vCPUs", name)
 		}

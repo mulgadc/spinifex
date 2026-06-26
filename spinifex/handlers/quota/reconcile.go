@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -94,7 +95,7 @@ func sumReservationVCPUs(reservations []*ec2.Reservation) int {
 			if inst == nil || inst.InstanceType == nil || isTerminalState(inst.State) {
 				continue
 			}
-			if vcpus, ok := TypeVCPUs(*inst.InstanceType); ok {
+			if vcpus, ok := instancetypes.DefaultVCPUs(*inst.InstanceType); ok {
 				total += vcpus
 			}
 		}

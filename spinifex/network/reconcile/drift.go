@@ -36,7 +36,7 @@ func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, hold
 
 // runDriftCycle is one tick body, split out so tests can drive it directly.
 func runDriftCycle(ctx context.Context, rec Reconciler, nc *nats.Conn, js nats.JetStreamContext, localAZ, holder string) {
-	release, elected := AcquireLeader(nc, holder)
+	release, elected := AcquireLeader(nc, KVBucketVPCDReconcile, holder)
 	if !elected {
 		return
 	}

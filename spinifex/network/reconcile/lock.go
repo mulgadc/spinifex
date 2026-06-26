@@ -10,7 +10,7 @@ import (
 
 // Single CAS-elected leader key; TTL bounds crash-recovery.
 const (
-	reconcileLeaderBucket = "spinifex-vpcd-reconcile"
+	KVBucketVPCDReconcile = "spinifex-vpcd-reconcile"
 	reconcileLeaderKey    = "leader"
 	reconcileLeaderTTL    = 60 * time.Second
 )
@@ -22,18 +22,11 @@ var (
 	leaderRetryStep = 1 * time.Second
 )
 
-// AcquireLeader elects the single vpcd that runs the shared network reconcile,
-// returning (release, true) for the winner or (nil, false) for losers and
-// JetStream-unreachable cases.
-func AcquireLeader(nc *nats.Conn, holder string) (func(), bool) {
-	return AcquireLeaderForBucket(nc, reconcileLeaderBucket, holder)
-}
-
-// AcquireLeaderForBucket elects one leader on the named lock bucket. Independent
+// AcquireLeader elects one leader on the named lock bucket. Independent
 // reconcile loops pass distinct buckets so they never share a single mutex: the
 // gateway quota reconcile must not block vpcd's network reconcile, and vice
 // versa.
-func AcquireLeaderForBucket(nc *nats.Conn, bucket, holder string) (func(), bool) {
+func AcquireLeader(nc *nats.Conn, bucket, holder string) (func(), bool) {
 	js, _ := nc.JetStream()
 
 	var (

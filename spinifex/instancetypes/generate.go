@@ -32,11 +32,11 @@ func SpecForSystemType(name string) (vcpu int, memGB float64, ok bool) {
 		true
 }
 
-// vcpusByType maps every instance type name to its default vCPU count. vCPUs
-// depend only on the size suffix, not the CPU generation or architecture, so
-// this static map covers every family the cluster can run, including ones a
-// given host cannot itself detect.
-var vcpusByType = func() map[string]int {
+// defaultVCPUsByInstanceType maps every instance type name to its default vCPU
+// count. vCPUs depend only on the size suffix, not the CPU generation or
+// architecture, so this static map covers every family the cluster can run,
+// including ones a given host cannot itself detect.
+var defaultVCPUsByInstanceType = func() map[string]int {
 	m := make(map[string]int)
 	for _, def := range instanceFamilyDefs {
 		for _, size := range def.sizes {
@@ -46,12 +46,12 @@ var vcpusByType = func() map[string]int {
 	return m
 }()
 
-// VCPUsForType returns the default vCPU count for an instance type name (e.g.
+// DefaultVCPUs returns the default vCPU count for an instance type name (e.g.
 // "c5.large"); ok is false for an unknown type. The result is independent of
 // host CPU generation, so a gateway can size any account's instances even for
 // families its own host cannot run.
-func VCPUsForType(instanceType string) (vcpus int, ok bool) {
-	v, ok := vcpusByType[instanceType]
+func DefaultVCPUs(instanceType string) (vcpus int, ok bool) {
+	v, ok := defaultVCPUsByInstanceType[instanceType]
 	return v, ok
 }
 

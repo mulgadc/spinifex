@@ -27,25 +27,6 @@ func newVCPUService(t *testing.T, limits Limits) *Service {
 	return New(limits, kv)
 }
 
-func TestTypeVCPUs(t *testing.T) {
-	cases := []struct {
-		instanceType string
-		vcpus        int
-		ok           bool
-	}{
-		{"t3.micro", 2, true},
-		{"c5.large", 2, true},
-		{"m5.4xlarge", 16, true},
-		{"made.up", 0, false},
-	}
-	for _, tc := range cases {
-		got, ok := TypeVCPUs(tc.instanceType)
-		if got != tc.vcpus || ok != tc.ok {
-			t.Errorf("TypeVCPUs(%q) = (%d, %v), want (%d, %v)", tc.instanceType, got, ok, tc.vcpus, tc.ok)
-		}
-	}
-}
-
 func TestCheckVCPUBoundaries(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 

@@ -153,7 +153,7 @@ var ec2Actions = map[string]EC2Handler{
 	"ModifyInstanceAttribute": ec2Handler(func(input *ec2.ModifyInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		var delta int
 		if input.InstanceType != nil {
-			resolve := handlers_quota.NATSInstanceTypeResolver(gw.NATSConn, gw.DiscoverActiveNodes)
+			resolve := handlers_quota.NATSInstanceTypeResolver(gw.NATSConn, func() int { return gw.ExpectedNodes })
 			d, err := gw.Quota.EnforceRetype(resolve, accountID, aws.StringValue(input.InstanceId), aws.StringValue(input.InstanceType.Value))
 			if err != nil {
 				return nil, err

@@ -7,37 +7,32 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// liveLimits is a representative enabled tier with distinct caps per dimension
-// so each case confirms EnforceLive selects the matching limit.
+// liveLimits is a representative enabled tier with distinct caps per dimension.
 var liveLimits = Limits{Enabled: true, VPCs: 8, Subnets: 16, EIPs: 2, VolumesGiB: 100}
 
-func TestEnforceLive(t *testing.T) {
-	s := New(liveLimits, nil)
+// TestExceeds covers the shared comparison every live dimension runs after its
+// Describe* count: under the cap passes, at or over it rejects, and a single
+// oversized want is rejected on its own.
+func TestExceeds(t *testing.T) {
 	tests := []struct {
-		name         string
-		resourceType string
-		count, want  int
-		wantErr      string
+		name               string
+		count, want, limit int
+		wantErr            string
 	}{
-		{"vpc under limit", ResourceVPC, 7, 1, ""},
-		{"vpc at limit rejects", ResourceVPC, 8, 1, awserrors.ErrorResourceLimitExceeded},
-		{"vpc empty fills to limit", ResourceVPC, 0, 8, ""},
-		{"vpc want overshoots limit", ResourceVPC, 0, 9, awserrors.ErrorResourceLimitExceeded},
-		{"vpc count plus want overshoots", ResourceVPC, 6, 3, awserrors.ErrorResourceLimitExceeded},
-		{"subnet under limit", ResourceSubnet, 15, 1, ""},
-		{"subnet at limit rejects", ResourceSubnet, 16, 1, awserrors.ErrorResourceLimitExceeded},
-		{"eip under limit", ResourceEIP, 1, 1, ""},
-		{"eip at limit rejects", ResourceEIP, 2, 1, awserrors.ErrorResourceLimitExceeded},
-		{"unknown type errors", "subnetwork", 0, 1, awserrors.ErrorServerInternal},
+		{"under limit", 7, 1, 8, ""},
+		{"at limit rejects", 8, 1, 8, awserrors.ErrorResourceLimitExceeded},
+		{"empty fills to limit", 0, 8, 8, ""},
+		{"want overshoots limit", 0, 9, 8, awserrors.ErrorResourceLimitExceeded},
+		{"count plus want overshoots", 6, 3, 8, awserrors.ErrorResourceLimitExceeded},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := s.EnforceLive(tt.resourceType, tt.count, tt.want)
+			err := exceeds(tt.count, tt.want, tt.limit)
 			switch {
 			case tt.wantErr == "" && err != nil:
-				t.Fatalf("EnforceLive(%q, %d, %d) = %v, want nil", tt.resourceType, tt.count, tt.want, err)
+				t.Fatalf("exceeds(%d, %d, %d) = %v, want nil", tt.count, tt.want, tt.limit, err)
 			case tt.wantErr != "" && (err == nil || err.Error() != tt.wantErr):
-				t.Fatalf("EnforceLive(%q, %d, %d) = %v, want %q", tt.resourceType, tt.count, tt.want, err, tt.wantErr)
+				t.Fatalf("exceeds(%d, %d, %d) = %v, want %q", tt.count, tt.want, tt.limit, err, tt.wantErr)
 			}
 		})
 	}

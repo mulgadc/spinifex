@@ -19,7 +19,7 @@ func (s *Service) EnforceVolumeCreate(natsConn *nats.Conn, accountID string, req
 	if err != nil {
 		return err
 	}
-	return s.EnforceLive(ResourceStorage, total, requestedGiB)
+	return exceeds(total, requestedGiB, s.limits.VolumesGiB)
 }
 
 // EnforceVolumeModify gates ModifyVolume on the account's live storage usage.
@@ -34,7 +34,7 @@ func (s *Service) EnforceVolumeModify(natsConn *nats.Conn, accountID, volumeID s
 	if err != nil {
 		return err
 	}
-	return s.EnforceLive(ResourceStorage, total-oldGiB, newGiB)
+	return exceeds(total-oldGiB, newGiB, s.limits.VolumesGiB)
 }
 
 // volumeUsage sums the account's volume sizes in GiB via a single DescribeVolumes

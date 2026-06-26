@@ -46,8 +46,7 @@ func TestSumVolumeGiB(t *testing.T) {
 // resized volume's existing size is not double-counted. A snapshot restore is a
 // normal sized create, so it is gated identically.
 func TestEnforceStorage(t *testing.T) {
-	s := New(liveLimits, nil) // VolumesGiB: 100
-	const limit = 100
+	const limit = 100                                             // liveLimits.VolumesGiB
 	existing := []*ec2.Volume{vol("vol-a", 30), vol("vol-b", 30)} // 60 GiB in use
 
 	tests := []struct {
@@ -71,9 +70,9 @@ func TestEnforceStorage(t *testing.T) {
 			var err error
 			switch tt.op {
 			case "create":
-				err = s.EnforceLive(ResourceStorage, total, tt.want)
+				err = exceeds(total, tt.want, limit)
 			case "modify":
-				err = s.EnforceLive(ResourceStorage, total-target, tt.want)
+				err = exceeds(total-target, tt.want, limit)
 			}
 			switch {
 			case tt.wantErr == "" && err != nil:

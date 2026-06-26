@@ -36,26 +36,9 @@ type Limits struct {
 	VolumesGiB int  `toml:"volumes_gib"`
 }
 
-// QuotaService is the per-account quota enforcement surface used by the gateway.
-// It exposes the exemption gate plus the live-counted enforcement check; the
-// counter-backed vCPU methods are added as the subsystem is built out.
-type QuotaService interface {
-	// Exempt reports whether quota checks should be skipped for accountID.
-	Exempt(accountID string) bool
-	// EnforceLive caps a live-counted dimension: it rejects when an account
-	// already holding count of resourceType would exceed its limit by want more.
-	EnforceLive(resourceType string, count, want int) error
-	// CheckVCPU rejects when charging want more vCPUs to accountID would exceed
-	// the vCPU cap. It reads the counter without reserving.
-	CheckVCPU(accountID string, want int) error
-	// AddVCPU increments accountID's vCPU counter by delta under JetStream CAS
-	// after a grow has succeeded. A non-positive delta is a no-op.
-	AddVCPU(accountID string, delta int) error
-}
-
-// Service enforces quotas for one gateway. The instance-type catalog and the
-// enforcement methods are wired in later steps; for now it holds the configured
-// limits and the per-account vCPU counter bucket.
+// Service enforces per-account quotas for one gateway. It holds the configured
+// limits and the per-account vCPU counter bucket; the live-counted dimensions
+// derive their usage from account-filtered Describe* calls and need no state.
 type Service struct {
 	limits Limits
 	// usage holds the per-account vCPU counters (key {accountID}). Nil when
@@ -63,8 +46,6 @@ type Service struct {
 	// before the counter is touched.
 	usage nats.KeyValue
 }
-
-var _ QuotaService = (*Service)(nil)
 
 // New constructs a quota Service from the configured limits and the gateway-owned
 // account-usage KV bucket. usage may be nil when quotas are disabled; Exempt then

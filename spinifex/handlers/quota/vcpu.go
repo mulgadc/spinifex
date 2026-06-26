@@ -46,50 +46,18 @@ func (s *Service) CheckVCPU(accountID string, want int) error {
 	return nil
 }
 
-// AddVCPU adds delta vCPUs to accountID's counter under JetStream CAS so
-// concurrent grows cannot lose updates. A non-positive delta is a no-op: shrinks
-// are never charged and are left to reconcile to lower the counter.
-func (s *Service) AddVCPU(accountID string, delta int) error {
-	if s.Exempt(accountID) || delta <= 0 {
-		return nil
-	}
+// casVCPU applies next to accountID's counter under bounded JetStream CAS so
+// concurrent writers cannot lose updates. next maps the current value to the new
+// value and a skip flag; skip leaves the counter untouched and never creates a
+// key. A revision conflict is retried; exhausting the bound is a hard error.
+func (s *Service) casVCPU(accountID string, next func(current int) (value int, skip bool)) error {
 	for range vcpuCASRetries {
 		current, revision, err := s.readVCPU(accountID)
 		if err != nil {
 			return err
 		}
-		data, err := json.Marshal(current + delta)
-		if err != nil {
-			return err
-		}
-		if revision == 0 {
-			_, err = s.usage.Create(accountID, data)
-		} else {
-			_, err = s.usage.Update(accountID, data, revision)
-		}
-		if err == nil {
-			return nil
-		}
-		if !isCASConflict(err) {
-			return err
-		}
-	}
-	return fmt.Errorf("vcpu counter CAS exhausted for %s after %d attempts", accountID, vcpuCASRetries)
-}
-
-// setVCPU overwrites accountID's counter to value under bounded CAS, the only
-// operation that lowers a counter. A counter already equal to value is left
-// untouched, so a steady-state pass writes nothing and an account with no usage
-// and no key is never created. Reconcile is the sole caller and runs under the
-// leader lock; contention is limited to an in-flight grow on the same account,
-// which a CAS conflict retries and the next pass reconciles.
-func (s *Service) setVCPU(accountID string, value int) error {
-	for range vcpuCASRetries {
-		current, revision, err := s.readVCPU(accountID)
-		if err != nil {
-			return err
-		}
-		if current == value {
+		value, skip := next(current)
+		if skip {
 			return nil
 		}
 		data, err := json.Marshal(value)
@@ -109,6 +77,28 @@ func (s *Service) setVCPU(accountID string, value int) error {
 		}
 	}
 	return fmt.Errorf("vcpu counter CAS exhausted for %s after %d attempts", accountID, vcpuCASRetries)
+}
+
+// AddVCPU adds delta vCPUs to accountID's counter under CAS so concurrent grows
+// cannot lose updates. A non-positive delta is a no-op: shrinks are never charged
+// and are left to reconcile to lower the counter.
+func (s *Service) AddVCPU(accountID string, delta int) error {
+	if s.Exempt(accountID) || delta <= 0 {
+		return nil
+	}
+	return s.casVCPU(accountID, func(current int) (int, bool) {
+		return current + delta, false
+	})
+}
+
+// setVCPU overwrites accountID's counter to value, the only operation that lowers
+// a counter. A counter already equal to value is left untouched, so a steady-state
+// pass writes nothing and an account with no usage and no key is never created.
+// Reconcile is the sole caller and runs under the leader lock.
+func (s *Service) setVCPU(accountID string, value int) error {
+	return s.casVCPU(accountID, func(current int) (int, bool) {
+		return value, current == value
+	})
 }
 
 // reconcileVCPU writes accountID's counter from a reconcile sweep. A complete
@@ -177,21 +167,35 @@ func (s *Service) ChargeLaunch(accountID string, reservation *ec2.Reservation) e
 type InstanceTypeResolver func(accountID, instanceID string) (instanceType string, ok bool, err error)
 
 // NATSInstanceTypeResolver builds the production resolver: an account-filtered,
-// single-instance DescribeInstances returning the live type of a running or
-// stopped instance. A retype is only valid on a stopped instance, which
-// DescribeInstances bundles with the running fan-out. activeNodes is re-evaluated
-// per call so the fan-out tracks cluster membership.
-func NATSInstanceTypeResolver(natsConn *nats.Conn, activeNodes func() int) InstanceTypeResolver {
+// single-instance describe returning the live type of a running or stopped
+// instance. It uses the strict reconcile variant so an incomplete sweep does not
+// masquerade as "instance absent" and wave a retype past the cap (see
+// confirmInstanceType). expectedNodes is the configured node total, re-evaluated
+// per call so a config change is reflected without a restart.
+func NATSInstanceTypeResolver(natsConn *nats.Conn, expectedNodes func() int) InstanceTypeResolver {
 	return func(accountID, instanceID string) (string, bool, error) {
-		out, err := gateway_ec2_instance.DescribeInstances(
+		reservations, complete, err := gateway_ec2_instance.DescribeInstancesForReconcile(
 			&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
-			natsConn, activeNodes(), accountID)
+			natsConn, expectedNodes(), accountID)
 		if err != nil {
 			return "", false, err
 		}
-		instanceType, ok := instanceTypeFromReservations(out.Reservations, instanceID)
-		return instanceType, ok, nil
+		return confirmInstanceType(reservations, instanceID, complete)
 	}
+}
+
+// confirmInstanceType resolves instanceID's type from a describe sweep. A genuine
+// absence on a complete sweep returns ok false with no error, so the retype gate
+// charges nothing and the daemon rejects the modify. An instance that cannot be
+// found on an incomplete sweep (a node or bucket missed) fails closed with
+// ErrorServerInternal: a partial view must not be read as absent and let a retype
+// skip its cap check. The client retries once the sweep is clean.
+func confirmInstanceType(reservations []*ec2.Reservation, instanceID string, complete bool) (string, bool, error) {
+	instanceType, ok := instanceTypeFromReservations(reservations, instanceID)
+	if !ok && !complete {
+		return "", false, errors.New(awserrors.ErrorServerInternal)
+	}
+	return instanceType, ok, nil
 }
 
 // EnforceRetype is the check-before gate for a ModifyInstanceAttribute that

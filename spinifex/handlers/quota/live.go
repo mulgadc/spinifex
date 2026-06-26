@@ -10,48 +10,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Resource type identifiers for the live-counted quota dimensions. These hold
-// no stored state: usage is the current count from an account-filtered
-// Describe* sweep, so deletion frees quota on the next call.
-const (
-	ResourceVPC    = "vpc"
-	ResourceSubnet = "subnet"
-	ResourceEIP    = "eip"
-	// ResourceStorage is counted in GiB summed across an account's volumes
-	// rather than as a resource count, but shares the same EnforceLive
-	// comparison against its configured cap.
-	ResourceStorage = "storage"
-)
-
-// EnforceLive rejects with ResourceLimitExceeded when an account already
-// holding count of resourceType would exceed its configured limit by adding
-// want more. It is the pure comparison shared by every live-counted dimension;
-// the per-dimension methods supply count from the relevant Describe* call.
-func (s *Service) EnforceLive(resourceType string, count, want int) error {
-	limit, ok := s.liveLimit(resourceType)
-	if !ok {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
+// exceeds rejects with ResourceLimitExceeded when an account already holding
+// count of a live-counted dimension would pass its cap by adding want more. It is
+// the shared comparison for every live dimension; the per-dimension methods
+// supply count from the relevant Describe* call.
+func exceeds(count, want, limit int) error {
 	if count+want > limit {
 		return errors.New(awserrors.ErrorResourceLimitExceeded)
 	}
 	return nil
-}
-
-// liveLimit maps a live-counted resource type to its configured cap.
-func (s *Service) liveLimit(resourceType string) (int, bool) {
-	switch resourceType {
-	case ResourceVPC:
-		return s.limits.VPCs, true
-	case ResourceSubnet:
-		return s.limits.Subnets, true
-	case ResourceEIP:
-		return s.limits.EIPs, true
-	case ResourceStorage:
-		return s.limits.VolumesGiB, true
-	default:
-		return 0, false
-	}
 }
 
 // EnforceVPCs gates CreateVpc on the account's live DescribeVpcs count.
@@ -63,7 +30,7 @@ func (s *Service) EnforceVPCs(natsConn *nats.Conn, accountID string, want int) e
 	if err != nil {
 		return err
 	}
-	return s.EnforceLive(ResourceVPC, len(out.Vpcs), want)
+	return exceeds(len(out.Vpcs), want, s.limits.VPCs)
 }
 
 // EnforceSubnets gates CreateSubnet on the account's live DescribeSubnets count.
@@ -76,7 +43,7 @@ func (s *Service) EnforceSubnets(natsConn *nats.Conn, accountID string, want int
 	if err != nil {
 		return err
 	}
-	return s.EnforceLive(ResourceSubnet, len(out.Subnets), want)
+	return exceeds(len(out.Subnets), want, s.limits.Subnets)
 }
 
 // EnforceEIPs gates AllocateAddress on the account's live DescribeAddresses count.
@@ -88,5 +55,5 @@ func (s *Service) EnforceEIPs(natsConn *nats.Conn, accountID string, want int) e
 	if err != nil {
 		return err
 	}
-	return s.EnforceLive(ResourceEIP, len(out.Addresses), want)
+	return exceeds(len(out.Addresses), want, s.limits.EIPs)
 }

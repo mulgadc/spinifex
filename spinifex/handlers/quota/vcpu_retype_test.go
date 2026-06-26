@@ -182,3 +182,47 @@ func TestInstanceTypeFromReservations(t *testing.T) {
 		})
 	}
 }
+
+// TestConfirmInstanceType locks in the partial-view fix the production resolver
+// relies on. A found instance resolves regardless of sweep completeness. A
+// genuine absence on a complete sweep returns ok false with no error, so the gate
+// charges nothing and the daemon rejects the modify; but an absence on an
+// incomplete sweep fails closed with ErrorServerInternal, so a node or bucket that
+// missed the sweep cannot be read as "absent" and wave a retype past the cap.
+func TestConfirmInstanceType(t *testing.T) {
+	withID := func(id, instanceType, state string) *ec2.Instance {
+		inst := instance(instanceType, state)
+		inst.InstanceId = aws.String(id)
+		return inst
+	}
+	reservations := []*ec2.Reservation{
+		reservation(withID("i-stopped", "t3.micro", ec2.InstanceStateNameStopped)),
+	}
+	tests := []struct {
+		name       string
+		instanceID string
+		complete   bool
+		wantType   string
+		wantOK     bool
+		wantErr    string
+	}{
+		{"found on complete sweep", "i-stopped", true, "t3.micro", true, ""},
+		{"found on incomplete sweep", "i-stopped", false, "t3.micro", true, ""},
+		{"absent on complete sweep defers to daemon", "i-missing", true, "", false, ""},
+		{"absent on incomplete sweep fails closed", "i-missing", false, "", false, awserrors.ErrorServerInternal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotType, gotOK, err := confirmInstanceType(reservations, tt.instanceID, tt.complete)
+			if gotType != tt.wantType || gotOK != tt.wantOK {
+				t.Fatalf("confirmInstanceType() = (%q, %v), want (%q, %v)", gotType, gotOK, tt.wantType, tt.wantOK)
+			}
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Fatalf("confirmInstanceType() err = %v, want nil", err)
+			case tt.wantErr != "" && (err == nil || err.Error() != tt.wantErr):
+				t.Fatalf("confirmInstanceType() err = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}

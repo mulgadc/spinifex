@@ -174,6 +174,22 @@ func TestRunInstance_MetadataOptionsSeeded(t *testing.T) {
 	assert.Equal(t, int64(1), aws.Int64Value(ec2Instance.MetadataOptions.HttpPutResponseHopLimit))
 }
 
+// A run-instances launch that tries to re-enable IMDSv1 is rejected before any
+// capacity is allocated — the same UnsupportedOperation the modify path returns.
+// Validation precedes the instance-type lookup, so a bare service suffices.
+func TestPrepareRunInstances_RejectV1MetadataOptions(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		ImageId:         aws.String("ami-0abcdef1234567890"),
+		InstanceType:    aws.String("t3.micro"),
+		MinCount:        aws.Int64(1),
+		MaxCount:        aws.Int64(1),
+		MetadataOptions: &ec2.InstanceMetadataOptionsRequest{HttpTokens: aws.String(ec2.HttpTokensStateOptional)},
+	}, utils.GlobalAccountID, "")
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorUnsupportedOperation), "got %v", err)
+}
+
 // A requested hop limit is reflected on the instance; the rest stay invariant.
 func TestRunInstance_MetadataOptionsHopLimitFromRequest(t *testing.T) {
 	svc := &InstanceServiceImpl{

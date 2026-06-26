@@ -291,6 +291,21 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 		return nil, nil, nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	// Reject a metadata-options downgrade before allocating capacity: http-tokens=
+	// optional and other weakenings return UnsupportedOperation under IMDSv2
+	// enforcement. RunInstance seeds the hop limit onto the per-instance block.
+	if opts := input.MetadataOptions; opts != nil {
+		if err := validateMetadataOptions(
+			aws.StringValue(opts.HttpTokens),
+			aws.StringValue(opts.HttpEndpoint),
+			aws.StringValue(opts.HttpProtocolIpv6),
+			aws.StringValue(opts.InstanceMetadataTags),
+			opts.HttpPutResponseHopLimit,
+		); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
 	instanceType, exists := s.instanceTypes[*input.InstanceType]
 	if !exists {
 		slog.Error("PrepareRunInstances: invalid instance type", "InstanceType", *input.InstanceType)

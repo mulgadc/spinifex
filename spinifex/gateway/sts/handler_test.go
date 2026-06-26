@@ -169,6 +169,18 @@ func (s *stubIAMService) DetachRolePolicy(string, *iam.DetachRolePolicyInput) (*
 func (s *stubIAMService) ListAttachedRolePolicies(string, *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
 	panic("unexpected ListAttachedRolePolicies call")
 }
+func (s *stubIAMService) PutRolePolicy(string, *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	panic("unexpected PutRolePolicy call")
+}
+func (s *stubIAMService) GetRolePolicy(string, *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
+	panic("unexpected GetRolePolicy call")
+}
+func (s *stubIAMService) DeleteRolePolicy(string, *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
+	panic("unexpected DeleteRolePolicy call")
+}
+func (s *stubIAMService) ListRolePolicies(string, *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
+	panic("unexpected ListRolePolicies call")
+}
 func (s *stubIAMService) CreateInstanceProfile(string, *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
 	panic("unexpected CreateInstanceProfile call")
 }

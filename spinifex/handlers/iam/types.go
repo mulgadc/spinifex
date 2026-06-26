@@ -74,17 +74,18 @@ type Statement struct {
 // Role is an assumable IAM identity stored in JetStream KV.
 // AssumeRolePolicyDocument is stored opaque; parsed for shape validation only.
 type Role struct {
-	RoleName                 string   `json:"role_name"`
-	RoleID                   string   `json:"role_id"`
-	AccountID                string   `json:"account_id"`
-	ARN                      string   `json:"arn"`
-	Path                     string   `json:"path"`
-	Description              string   `json:"description,omitempty"`
-	AssumeRolePolicyDocument string   `json:"assume_role_policy_document"`
-	MaxSessionDuration       int64    `json:"max_session_duration,omitempty"`
-	CreatedAt                string   `json:"created_at"`
-	AttachedPolicies         []string `json:"attached_policies"` // policy ARNs
-	Tags                     []Tag    `json:"tags"`
+	RoleName                 string            `json:"role_name"`
+	RoleID                   string            `json:"role_id"`
+	AccountID                string            `json:"account_id"`
+	ARN                      string            `json:"arn"`
+	Path                     string            `json:"path"`
+	Description              string            `json:"description,omitempty"`
+	AssumeRolePolicyDocument string            `json:"assume_role_policy_document"`
+	MaxSessionDuration       int64             `json:"max_session_duration,omitempty"`
+	CreatedAt                string            `json:"created_at"`
+	AttachedPolicies         []string          `json:"attached_policies"`         // policy ARNs
+	InlinePolicies           map[string]string `json:"inline_policies,omitempty"` // policyName → document JSON
+	Tags                     []Tag             `json:"tags"`
 }
 
 // InstanceProfile is a container for at most one Role, attachable to EC2 instances.

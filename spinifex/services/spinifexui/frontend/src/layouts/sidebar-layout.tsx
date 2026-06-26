@@ -364,7 +364,7 @@ export function SidebarLayout() {
             <SidebarMenuItem>
               <Link to="/ecs/list-clusters">
                 <SidebarMenuButton
-                  isActive={pathname.startsWith("/ecs/list-clusters")}
+                  isActive={pathname.startsWith("/ecs/")}
                   tooltip="ECS clusters"
                 >
                   <Container className="size-4" />

@@ -15,7 +15,7 @@ vi.mock("@tanstack/react-router", async (orig) => ({
   Link: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-import { TaskDefinitionsTab } from "./task-definitions-tab"
+import { TaskDefinitionsList } from "./task-definitions-list"
 
 function seed(arns: string[]) {
   const qc = createTestQueryClient()
@@ -23,10 +23,10 @@ function seed(arns: string[]) {
   return qc
 }
 
-describe("TaskDefinitionsTab", () => {
+describe("TaskDefinitionsList", () => {
   it("renders family:revision from the ARN with a deregister action", () => {
     renderWithClient(
-      <TaskDefinitionsTab clusterName="web" />,
+      <TaskDefinitionsList clusterName="web" />,
       seed(["arn:aws:ecs:ap-southeast-2:123456789012:task-definition/app:3"]),
     )
     expect(screen.getByText("app:3")).toBeInTheDocument()
@@ -37,7 +37,7 @@ describe("TaskDefinitionsTab", () => {
 
   it("opens the deregister confirmation", () => {
     renderWithClient(
-      <TaskDefinitionsTab clusterName="web" />,
+      <TaskDefinitionsList clusterName="web" />,
       seed(["arn:aws:ecs:ap-southeast-2:123456789012:task-definition/app:3"]),
     )
     fireEvent.click(screen.getByRole("button", { name: "Deregister" }))
@@ -47,7 +47,7 @@ describe("TaskDefinitionsTab", () => {
   })
 
   it("shows empty state with no task definitions", () => {
-    renderWithClient(<TaskDefinitionsTab clusterName="web" />, seed([]))
+    renderWithClient(<TaskDefinitionsList clusterName="web" />, seed([]))
     expect(screen.getByText("No task definitions found.")).toBeInTheDocument()
   })
 })

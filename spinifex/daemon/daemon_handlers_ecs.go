@@ -111,3 +111,9 @@ func (d *Daemon) handleECSListTasks(msg *nats.Msg) {
 func (d *Daemon) handleECSPollAssignments(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.PollAssignments)
 }
+
+// --- Capacity ---
+
+func (d *Daemon) handleECSProvisionCapacity(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.ProvisionCapacity)
+}

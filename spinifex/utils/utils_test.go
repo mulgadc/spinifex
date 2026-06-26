@@ -1636,3 +1636,10 @@ func TestClientIP(t *testing.T) {
 		})
 	}
 }
+
+func TestAvailableImages_ECSNodeEntry(t *testing.T) {
+	img, ok := AvailableImages["spinifex-ecs-node"]
+	require.True(t, ok, "spinifex-ecs-node must be in the system image catalog")
+	assert.Equal(t, "ecs", img.Tags["spinifex:managed-by"],
+		"ECS node image must carry the managed-by=ecs tag the UI guard resolves on")
+}

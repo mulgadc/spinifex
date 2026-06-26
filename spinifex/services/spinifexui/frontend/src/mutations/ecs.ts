@@ -13,6 +13,11 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
 import { getEcsClient } from "@/lib/awsClient"
+import {
+  provisionCapacity,
+  type ProvisionCapacityRequest,
+} from "@/lib/ecs-provision"
+import { ecsContainerInstancesQueryOptions } from "@/queries/ecs"
 import type {
   CreateServiceFormData,
   RegisterTaskDefinitionFormData,
@@ -171,6 +176,22 @@ export function useRegisterTaskDefinition() {
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: ["ecs", "task-definitions"],
+      })
+    },
+  })
+}
+
+// useProvisionCapacity launches container instances into a cluster via the
+// custom ProvisionCapacity gateway action, then invalidates the cluster's
+// container-instance list so it re-polls until they register.
+export function useProvisionCapacity() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (req: ProvisionCapacityRequest) =>
+      await provisionCapacity(req),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ecsContainerInstancesQueryOptions(variables.Cluster).queryKey,
       })
     },
   })

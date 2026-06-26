@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/nats-io/nats.go"
 )
@@ -51,6 +53,40 @@ type ECSService interface {
 
 	// PollAssignments drains an instance's task-assignment inbox (agent → gateway).
 	PollAssignments(input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error)
+
+	// ProvisionCapacity launches container-instance EC2 capacity into a cluster.
+	ProvisionCapacity(input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error)
+}
+
+// ecsImageResolver is the narrow AMI surface for resolving the spinifex-ecs-node
+// AMI by tag.
+type ecsImageResolver interface {
+	DescribeImages(input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error)
+}
+
+// ecsIAM is the narrow IAM surface ProvisionCapacity needs to find-or-create the
+// ecsInstanceRole, its ecs:* policy, and the instance profile workers expose
+// over IMDS. Method signatures match the daemon IAM service implementation.
+type ecsIAM interface {
+	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
+	CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error)
+	CreatePolicy(accountID string, input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error)
+	AttachRolePolicy(accountID string, input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error)
+	GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
+	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
+	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
+}
+
+// Deps are the collaborators ProvisionCapacity needs: the gateway endpoint/CA to
+// seed the agent's config, the IAM service to back the instance profile, the
+// image resolver for the AMI, and the customer RunInstances path. Nil deps
+// disable capacity provisioning; the wired actions stay usable.
+type Deps struct {
+	GatewayBaseURL string
+	GatewayCACert  string
+	IAM            ecsIAM
+	Images         ecsImageResolver
+	RunInstances   func(*ec2.RunInstancesInput, string) (*ec2.Reservation, error)
 }
 
 // Service is the daemon-side ECS control-plane implementation, backed by the
@@ -66,9 +102,19 @@ type Service struct {
 	// targets registers/deregisters service tasks with ELBv2 target groups.
 	// Defaults to the NATS-backed registrar; tests substitute a stub.
 	targets targetRegistrar
+	// deps carries the collaborators ProvisionCapacity needs (gateway endpoint/CA,
+	// IAM service, image resolver, customer RunInstances path). Wired via WithDeps.
+	deps Deps
 }
 
 var _ ECSService = (*Service)(nil)
+
+// WithDeps attaches the ProvisionCapacity collaborators and returns the Service
+// for chaining. Non-breaking: NewService stays usable without deps.
+func (s *Service) WithDeps(d Deps) *Service {
+	s.deps = d
+	return s
+}
 
 // NewService constructs a Service bound to a NATS connection. region scopes the
 // ARNs it mints; suffix is the AWS-parity internal DNS suffix (reserved for ECR
@@ -257,7 +303,26 @@ func (r *ClusterRecord) toAWS() *ecs.Cluster {
 		ClusterName: aws.String(r.Name),
 		ClusterArn:  aws.String(r.ARN),
 		Status:      aws.String(r.Status),
+		Tags:        tagsToAWS(r.Tags),
 	}
+}
+
+// tagsToAWS converts a stored tag map into the AWS list form with a stable
+// key order so Describe output is deterministic.
+func tagsToAWS(tags map[string]string) []*ecs.Tag {
+	if len(tags) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]*ecs.Tag, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, &ecs.Tag{Key: aws.String(k), Value: aws.String(tags[k])})
+	}
+	return out
 }
 
 // --- Task definition ---

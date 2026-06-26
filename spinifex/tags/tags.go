@@ -15,6 +15,11 @@ const (
 	// their ENIs, the unified eks-node AMI, cluster + nodegroup SGs).
 	ManagedByEKS = "eks"
 
+	// ManagedByECS identifies the spinifex-ecs-node AMI for resolution.
+	// Container instances launched from it stay customer-owned and untagged,
+	// so this value is not added to IsSystemManaged.
+	ManagedByECS = "ecs"
+
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.
 	LBARNKey = "spinifex:lb-arn"
 )

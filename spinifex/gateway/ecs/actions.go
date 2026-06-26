@@ -94,6 +94,16 @@ func RegisterContainerInstance(nc *nats.Conn, accountID string, body []byte) (an
 	return handlers_ecs.NewNATSECSService(nc).RegisterContainerInstance(input, accountID)
 }
 
+// ProvisionCapacity launches container-instance EC2 capacity into a cluster.
+// Input/output are the custom handlers_ecs types, not aws-sdk-go ecs shapes.
+func ProvisionCapacity(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(handlers_ecs.ProvisionCapacityInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).ProvisionCapacity(input, accountID)
+}
+
 func DeregisterContainerInstance(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	input := new(ecs.DeregisterContainerInstanceInput)
 	if err := unmarshalIfBody(body, input); err != nil {

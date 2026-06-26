@@ -27,8 +27,9 @@ burst = 40
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := loadThrottleConfig(path)
+	parsed, err := loadAWSGWConfig(path)
 	require.NoError(t, err)
+	cfg := parsed.Ratelimit
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, 20, cfg.Rate)
 	assert.Equal(t, 100, cfg.Burst)
@@ -48,9 +49,9 @@ burst = 100
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := loadThrottleConfig(path)
+	parsed, err := loadAWSGWConfig(path)
 	require.NoError(t, err)
-	assert.False(t, cfg.Enabled)
+	assert.False(t, parsed.Ratelimit.Enabled)
 }
 
 func TestLoadThrottleConfig_NoSection(t *testing.T) {
@@ -63,14 +64,75 @@ debug = false
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := loadThrottleConfig(path)
+	parsed, err := loadAWSGWConfig(path)
 	require.NoError(t, err)
 	// Missing section → zero-value config (disabled, rate=0, burst=0).
-	assert.False(t, cfg.Enabled)
-	assert.Equal(t, 0, cfg.Rate)
+	assert.False(t, parsed.Ratelimit.Enabled)
+	assert.Equal(t, 0, parsed.Ratelimit.Rate)
 }
 
-func TestLoadThrottleConfig_MissingFile(t *testing.T) {
-	_, err := loadThrottleConfig("/nonexistent/awsgw.toml")
+func TestLoadAWSGWConfig_MissingFile(t *testing.T) {
+	_, err := loadAWSGWConfig("/nonexistent/awsgw.toml")
 	assert.Error(t, err)
+}
+
+func TestLoadQuotaConfig_Enabled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "awsgw.toml")
+	content := `
+version = "3"
+region = "us-east-1"
+
+[quota]
+enabled     = true
+vcpus       = 8
+vpcs        = 8
+subnets     = 16
+eips        = 2
+volumes_gib = 100
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	parsed, err := loadAWSGWConfig(path)
+	require.NoError(t, err)
+	cfg := parsed.Quota
+	assert.True(t, cfg.Enabled)
+	assert.Equal(t, 8, cfg.VCPUs)
+	assert.Equal(t, 8, cfg.VPCs)
+	assert.Equal(t, 16, cfg.Subnets)
+	assert.Equal(t, 2, cfg.EIPs)
+	assert.Equal(t, 100, cfg.VolumesGiB)
+}
+
+func TestLoadQuotaConfig_Disabled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "awsgw.toml")
+	content := `
+version = "3"
+[quota]
+enabled = false
+vcpus   = 8
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	parsed, err := loadAWSGWConfig(path)
+	require.NoError(t, err)
+	assert.False(t, parsed.Quota.Enabled)
+}
+
+func TestLoadQuotaConfig_NoSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "awsgw.toml")
+	content := `
+version = "3"
+region = "us-east-1"
+debug = false
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	parsed, err := loadAWSGWConfig(path)
+	require.NoError(t, err)
+	// Missing section → zero-value Limits, a disabled no-op.
+	assert.False(t, parsed.Quota.Enabled)
+	assert.Equal(t, 0, parsed.Quota.VCPUs)
 }

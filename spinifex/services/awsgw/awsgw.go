@@ -3,6 +3,7 @@ package awsgw
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,7 +22,9 @@ import (
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -88,22 +91,48 @@ func (svc *Service) Reload() (err error) {
 }
 
 // awsgwTOML is the top-level structure of awsgw.toml used to extract the
-// ratelimit section. Other fields are parsed elsewhere (e.g. region, debug).
+// ratelimit and quota sections. Other fields are parsed elsewhere (e.g. region,
+// debug).
 type awsgwTOML struct {
-	Ratelimit ratelimit.Config `toml:"ratelimit"`
+	Ratelimit ratelimit.Config      `toml:"ratelimit"`
+	Quota     handlers_quota.Limits `toml:"quota"`
 }
 
-// loadThrottleConfig parses the [ratelimit] section from the awsgw TOML config.
-func loadThrottleConfig(path string) (ratelimit.Config, error) {
+// loadAWSGWConfig reads and parses awsgw.toml once, returning the [ratelimit] and
+// [quota] sections together. Both sections default to their zero value (a
+// disabled no-op) when absent, so a config without either block stays valid.
+func loadAWSGWConfig(path string) (awsgwTOML, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ratelimit.Config{}, fmt.Errorf("read awsgw config %s: %w", path, err)
+		return awsgwTOML{}, fmt.Errorf("read awsgw config %s: %w", path, err)
 	}
 	var cfg awsgwTOML
 	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return ratelimit.Config{}, fmt.Errorf("parse awsgw config %s: %w", path, err)
+		return awsgwTOML{}, fmt.Errorf("parse awsgw config %s: %w", path, err)
 	}
-	return cfg.Ratelimit, nil
+	return cfg, nil
+}
+
+// openAccountUsageBucket opens (or idempotently creates) the gateway-owned
+// per-account vCPU usage bucket. History is 1: each account key holds a single
+// CAS-updated integer counter. It attaches first and creates only when the bucket
+// is genuinely absent, so a transient create error is not masked by the fallback.
+func openAccountUsageBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
+	if replicas < 1 {
+		replicas = 1
+	}
+	kv, err := js.KeyValue(handlers_quota.KVBucketAccountUsage)
+	if errors.Is(err, nats.ErrBucketNotFound) {
+		kv, err = js.CreateKeyValue(&nats.KeyValueConfig{
+			Bucket:   handlers_quota.KVBucketAccountUsage,
+			History:  1,
+			Replicas: replicas,
+		})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open account usage bucket: %w", err)
+	}
+	return kv, nil
 }
 
 func launchService(config *config.ClusterConfig) error {
@@ -194,12 +223,15 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("load bootstrap from %s: %w", bootstrapPath, err)
 	}
 
-	// Load API throttle config from awsgw.toml [ratelimit] section.
+	// Load the awsgw config once: [ratelimit] throttling and [quota] per-account
+	// service quotas. A load error leaves both at their zero value (disabled).
 	awsgwTomlPath := filepath.Join(nodeConfig.BaseDir, "config", "awsgw", "awsgw.toml")
-	throttleCfg, err := loadThrottleConfig(awsgwTomlPath)
+	awsgwCfg, err := loadAWSGWConfig(awsgwTomlPath)
 	if err != nil {
-		slog.Warn("Failed to load throttle config, throttling disabled", "err", err)
+		slog.Warn("Failed to load awsgw config, throttling and quotas disabled", "err", err)
 	}
+	throttleCfg := awsgwCfg.Ratelimit
+	quotaCfg := awsgwCfg.Quota
 
 	// OCI Distribution v2 registry: blob/manifest bytes stream straight to
 	// predastore from the gateway; repo/tag/manifest metadata and in-progress
@@ -285,6 +317,30 @@ func launchService(config *config.ClusterConfig) error {
 		defer gw.Throttler.Stop()
 	}
 
+	// Per-account service quotas. Only the enabled path opens the gateway-owned
+	// usage KV bucket, leaving existing default-off gateways untouched; a disabled
+	// config builds a no-op Service whose Exempt short-circuits every check.
+	var usageBucket nats.KeyValue
+	if quotaCfg.Enabled {
+		usageBucket, err = openAccountUsageBucket(js, max(len(config.Nodes), 1))
+		if err != nil {
+			return fmt.Errorf("init account usage bucket: %w", err)
+		}
+	}
+	gw.Quota = handlers_quota.New(quotaCfg, usageBucket)
+
+	// Leader-locked vCPU reconcile: the only path that lowers the counter,
+	// recomputing it from the running-plus-stopped sweep so out-of-band
+	// terminations free quota. Started only when quotas are enabled so default-off
+	// gateways spin no ticker.
+	if quotaCfg.Enabled {
+		// Sweep against the configured node total, not the live-active count: a
+		// node that is down must make the sweep incomplete so reconcile leaves
+		// the counter alone rather than lowering it from a partial view.
+		expectedNodes := func() int { return len(config.Nodes) }
+		go runQuotaReconcile(janitorCtx, gw.Quota, natsConn, activeAccountIDs(iamService), expectedNodes)
+	}
+
 	handler := gw.SetupRoutes()
 
 	// Load TLS certificate
@@ -341,6 +397,39 @@ func initIAMService(natsConn *nats.Conn, masterKey []byte, clusterSize int) (*ha
 		slog.Warn("IAM service not ready (waiting for JetStream cluster quorum)", "error", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second), "retryIn", retryDelay)
 		time.Sleep(retryDelay)
 		retryDelay = min(retryDelay*2, 10*time.Second)
+	}
+}
+
+// runQuotaReconcile drives the per-account vCPU reconcile: a startup pass plus a
+// ReconcileInterval ticker, each guarded by the dedicated quota reconcile leader
+// lock so exactly one gateway sweeps at a time across a multi-gateway deployment.
+// The lock is distinct from vpcd's network-reconcile lock so the two loops never
+// block each other. It runs until ctx is cancelled.
+func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsConn *nats.Conn, accounts handlers_quota.AccountLister, expectedNodes func() int) {
+	holder, _ := os.Hostname()
+	list := handlers_quota.NATSInstanceLister(natsConn, expectedNodes)
+
+	runPass := func() {
+		release, elected := reconcile.AcquireLeader(natsConn, handlers_quota.KVBucketQuotaReconcile, holder)
+		if !elected {
+			return
+		}
+		defer release()
+		if err := quota.Reconcile(ctx, accounts, list); err != nil {
+			slog.Warn("quota reconcile pass failed", "err", err)
+		}
+	}
+
+	runPass()
+	ticker := time.NewTicker(handlers_quota.ReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runPass()
+		}
 	}
 }
 

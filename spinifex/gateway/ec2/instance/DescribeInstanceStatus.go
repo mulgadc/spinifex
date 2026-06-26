@@ -77,7 +77,7 @@ func queryStoppedInstancesForStatus(natsConn *nats.Conn, input *ec2.DescribeInst
 		slog.Error("DescribeInstanceStatus: failed to marshal stopped query", "err", err)
 		return nil
 	}
-	reservations := queryInstanceBucket(natsConn, "ec2.DescribeStoppedInstances", jsonData, accountID)
+	reservations, _ := queryInstanceBucket(natsConn, "ec2.DescribeStoppedInstances", jsonData, accountID)
 	var statuses []*ec2.InstanceStatus
 	for _, res := range reservations {
 		if res == nil {

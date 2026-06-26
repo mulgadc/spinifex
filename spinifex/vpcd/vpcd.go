@@ -531,7 +531,7 @@ func launchService(cfg *Config) error {
 	// Elect one vpcd for startup reconcile; without this, concurrent Get-then-Create on Logical_Router
 	// produces duplicate rows that ovn-nbctl rejects. Runtime events still fan out via queue groups.
 	holder, _ := os.Hostname()
-	releaseLeader, isLeader := reconcile.AcquireLeader(nc, holder)
+	releaseLeader, isLeader := reconcile.AcquireLeader(nc, reconcile.KVBucketVPCDReconcile, holder)
 
 	subscriber, err := subscribers.New(subscribers.Config{
 		Topology: topoMgr,

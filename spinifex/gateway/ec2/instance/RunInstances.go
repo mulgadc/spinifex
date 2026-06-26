@@ -19,6 +19,10 @@ import (
 // Defined as a callback to avoid an import cycle with the gateway package.
 type PassRoleChecker func(roleARN string) error
 
+// LaunchQuotaChecker enforces any gateway-side quota that must run after input
+// validation and PassRole authorization, but before the launch is dispatched.
+type LaunchQuotaChecker func() error
+
 type RunInstancesResponse struct {
 	Reservation *ec2.Reservation `locationName:"RunInstancesResponse"`
 }
@@ -72,14 +76,16 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 // When ClientToken is set, wraps the launch in idempotency via the KV store.
 // iamSvc may be nil only when no IamInstanceProfile is supplied.
 // passRoleCheck may be nil to skip PassRole enforcement.
-func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+// launchQuotaCheck may be nil to skip quota enforcement; when present it runs
+// after validation and PassRole authorization, but before any launch dispatch.
+func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	if err = ValidateRunInstancesInput(input); err != nil {
 		return reservation, err
 	}
 
 	token := aws.StringValue(input.ClientToken)
 	if token == "" {
-		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, expectedNodes)
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	}
 
 	// ClientToken set: dedup concurrent/retried launches; store failure is fatal
@@ -92,16 +98,21 @@ func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc hand
 	// Hash before any mutation so the same token+params always matches.
 	paramHash := clientTokenParamHash(input)
 	return runInstancesWithClientToken(store, accountID, token, paramHash, func() (ec2.Reservation, error) {
-		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, expectedNodes)
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	})
 }
 
 // runInstancesInner performs the actual launch: profile resolution, placement
 // routing, and capacity-aware distribution. Wrapped by RunInstances for idempotency.
-func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	resolvedProfile, err := resolveAndAuthorizeInstanceProfile(input, iamSvc, accountID, passRoleCheck)
 	if err != nil {
 		return reservation, err
+	}
+	if launchQuotaCheck != nil {
+		if err := launchQuotaCheck(); err != nil {
+			return reservation, err
+		}
 	}
 
 	// Targeted capacity-reservation launch routes straight to the owning node's

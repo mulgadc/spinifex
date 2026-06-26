@@ -14,19 +14,19 @@ import (
 func TestAcquireLeader_GetOrCreateAcrossCalls(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	release, ok := AcquireLeader(nc, "node-1")
+	release, ok := AcquireLeader(nc, KVBucketVPCDReconcile, "node-1")
 	require.True(t, ok, "first acquire must win and create the bucket")
 	require.NotNil(t, release)
 
 	// Bucket now exists; the second acquire must reach the Create-key contention
 	// path (and lose) rather than dead-ending on CreateKeyValue.
-	loserRelease, ok := AcquireLeader(nc, "node-2")
+	loserRelease, ok := AcquireLeader(nc, KVBucketVPCDReconcile, "node-2")
 	assert.False(t, ok, "second acquire must lose while the lock is held")
 	assert.Nil(t, loserRelease)
 
 	// Releasing frees the key so a subsequent acquire can take over.
 	release()
-	release2, ok := AcquireLeader(nc, "node-3")
+	release2, ok := AcquireLeader(nc, KVBucketVPCDReconcile, "node-3")
 	require.True(t, ok, "acquire after release must win")
 	require.NotNil(t, release2)
 	release2()

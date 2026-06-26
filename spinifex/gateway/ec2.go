@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -26,6 +27,7 @@ import (
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
 	gateway_ec2_vpc "github.com/mulgadc/spinifex/spinifex/gateway/ec2/vpc"
 	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
+	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -95,7 +97,19 @@ var ec2Actions = map[string]EC2Handler{
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
 		}
-		return gateway_ec2_instance.RunInstances(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, gw.ExpectedNodes)
+		launchQuotaCheck := func() error {
+			return gw.Quota.EnforceLaunch(accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
+		}
+		reservation, err := gateway_ec2_instance.RunInstances(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
+		if err != nil {
+			return nil, err
+		}
+		// Charge the actual launched vCPUs; a counter write failure is drift for
+		// reconcile to correct, so it must not fail the already-successful launch.
+		if err := gw.Quota.ChargeLaunch(accountID, &reservation); err != nil {
+			slog.Warn("RunInstances: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
+		}
+		return reservation, nil
 	}),
 	"AssociateIamInstanceProfile": ec2HandlerWithReq(func(input *ec2.AssociateIamInstanceProfileInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
@@ -137,7 +151,25 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_instance.GetConsoleOutput(input, gw.NATSConn, accountID)
 	}),
 	"ModifyInstanceAttribute": ec2Handler(func(input *ec2.ModifyInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.ModifyInstanceAttribute(input, gw.NATSConn, accountID)
+		var delta int
+		if input.InstanceType != nil {
+			resolve := handlers_quota.NATSInstanceTypeResolver(gw.NATSConn, func() int { return gw.ExpectedNodes })
+			d, err := gw.Quota.EnforceRetype(resolve, accountID, aws.StringValue(input.InstanceId), aws.StringValue(input.InstanceType.Value))
+			if err != nil {
+				return nil, err
+			}
+			delta = d
+		}
+		out, err := gateway_ec2_instance.ModifyInstanceAttribute(input, gw.NATSConn, accountID)
+		if err != nil {
+			return nil, err
+		}
+		// Charge the retype's vCPU growth; a counter write failure is drift for
+		// reconcile to correct, so it must not fail the applied retype.
+		if err := gw.Quota.AddVCPU(accountID, delta); err != nil {
+			slog.Warn("ModifyInstanceAttribute: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
+		}
+		return out, nil
 	}),
 	"DescribeInstanceAttribute": ec2Handler(func(input *ec2.DescribeInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.DescribeInstanceAttribute(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
@@ -197,9 +229,15 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_volume.DescribeVolumes(input, gw.NATSConn, accountID)
 	}),
 	"ModifyVolume": ec2Handler(func(input *ec2.ModifyVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceVolumeModify(gw.NATSConn, accountID, aws.StringValue(input.VolumeId), int(aws.Int64Value(input.Size))); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_volume.ModifyVolume(input, gw.NATSConn, accountID)
 	}),
 	"CreateVolume": ec2Handler(func(input *ec2.CreateVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceVolumeCreate(gw.NATSConn, accountID, int(aws.Int64Value(input.Size))); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_volume.CreateVolume(input, gw.NATSConn, accountID)
 	}),
 	"DeleteVolume": ec2Handler(func(input *ec2.DeleteVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -302,6 +340,9 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_capacityreservation.CancelCapacityReservation(input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"CreateVpc": ec2Handler(func(input *ec2.CreateVpcInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceVPCs(gw.NATSConn, accountID, 1); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_vpc.CreateVpc(input, gw.NATSConn, accountID)
 	}),
 	"DeleteVpc": ec2Handler(func(input *ec2.DeleteVpcInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -317,6 +358,9 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_vpc.DescribeVpcAttribute(input, gw.NATSConn, accountID)
 	}),
 	"CreateSubnet": ec2Handler(func(input *ec2.CreateSubnetInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceSubnets(gw.NATSConn, accountID, 1); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_vpc.CreateSubnet(input, gw.NATSConn, accountID)
 	}),
 	"DeleteSubnet": ec2Handler(func(input *ec2.DeleteSubnetInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -398,6 +442,9 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_vpc.RevokeSecurityGroupEgress(input, gw.NATSConn, accountID)
 	}),
 	"AllocateAddress": ec2Handler(func(input *ec2.AllocateAddressInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceEIPs(gw.NATSConn, accountID, 1); err != nil {
+			return nil, err
+		}
 		return gateway_ec2_eip.AllocateAddress(input, gw.NATSConn, accountID)
 	}),
 	"ReleaseAddress": ec2Handler(func(input *ec2.ReleaseAddressInput, gw *GatewayConfig, accountID string) (any, error) {

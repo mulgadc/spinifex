@@ -372,6 +372,7 @@ func SetServiceOwnership() {
 	// so /etc/spinifex stays at 0750 (no group-write needed).
 	for path, mode := range map[string]os.FileMode{
 		"/etc/spinifex/spinifex.toml":             0640,
+		"/etc/spinifex/awsgw/awsgw.toml":          0640,
 		"/etc/spinifex/master.key":                0640,
 		"/etc/spinifex/viperblock/encryption.key": 0640,
 		"/etc/spinifex/server.pem":                0644,

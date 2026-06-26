@@ -16,17 +16,49 @@ import (
 )
 
 // DescribeInstances fans out to all nodes via NATS and aggregates the results.
+// It is lenient: partial results from a slow or unreachable node are returned
+// without error, which is correct for user-facing describes. Callers that must
+// not act on a partial view (the quota reconcile) use DescribeInstancesForReconcile.
 func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	reservations, _, firstClient4xx, err := gatherInstances(input, natsConn, expectedNodes, accountID)
+	if err != nil {
+		return nil, err
+	}
+	// Propagate a deterministic 4xx only when nothing was collected (fan-out + KV).
+	if firstClient4xx != "" && len(reservations) == 0 {
+		return nil, errors.New(firstClient4xx)
+	}
+	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// DescribeInstancesForReconcile is the strict variant the quota reconcile uses.
+// complete is true only when the sweep observed every expected node and both
+// instance buckets, so reconcile may lower a counter only from a provably
+// complete view. A partial sweep — a node down, a timed-out fan-out, or a failed
+// bucket query — returns complete=false, and reconcile leaves the counter for the
+// next clean pass rather than under-counting usage and lifting the cap.
+func DescribeInstancesForReconcile(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (reservations []*ec2.Reservation, complete bool, err error) {
+	reservations, complete, _, err = gatherInstances(input, natsConn, expectedNodes, accountID)
+	return reservations, complete, err
+}
+
+// gatherInstances runs the running-instance fan-out plus the stopped/terminated
+// KV bucket queries and aggregates every reservation. complete reports whether
+// the sweep saw a success frame from all expectedNodes without timing out and
+// both bucket queries succeeded — the precondition reconcile needs before it may
+// lower a counter. firstClient4xx carries the first deterministic 4xx for the
+// lenient caller to surface when nothing was collected.
+func gatherInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (reservations []*ec2.Reservation, complete bool, firstClient4xx string, err error) {
 	jsonData, err := json.Marshal(input)
 	if err != nil {
 		slog.Error("DescribeInstances: Failed to marshal input", "err", err)
-		return nil, fmt.Errorf("failed to marshal input: %w", err)
+		return nil, false, "", fmt.Errorf("failed to marshal input: %w", err)
 	}
 
 	frames, sum, err := utils.Gather(natsConn, "ec2.DescribeInstances", jsonData,
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
-		return nil, err
+		return nil, false, "", err
 	}
 
 	var allReservations []*ec2.Reservation
@@ -37,34 +69,32 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 		}
 	}
 
+	// The fan-out is complete only when every expected node answered with a
+	// success frame and the deadline was not hit; an error frame or a missing
+	// node leaves the view partial.
+	fanoutComplete := expectedNodes > 0 && !sum.TimedOut && sum.Successes >= expectedNodes
+
 	// Both topics use queue groups (single responder each); query in parallel.
 	var kvMu sync.Mutex
 	var kvWg sync.WaitGroup
+	bucketsOK := true
 	for _, topic := range []string{"ec2.DescribeStoppedInstances", "ec2.DescribeTerminatedInstances"} {
 		kvWg.Add(1)
 		go func(topic string) {
 			defer kvWg.Done()
-			reservations := queryInstanceBucket(natsConn, topic, jsonData, accountID)
-			if len(reservations) > 0 {
-				kvMu.Lock()
-				allReservations = append(allReservations, reservations...)
-				kvMu.Unlock()
+			reservations, ok := queryInstanceBucket(natsConn, topic, jsonData, accountID)
+			kvMu.Lock()
+			defer kvMu.Unlock()
+			if !ok {
+				bucketsOK = false
 			}
+			allReservations = append(allReservations, reservations...)
 		}(topic)
 	}
 	kvWg.Wait()
 
-	// Propagate a deterministic 4xx only when nothing was collected (fan-out + KV).
-	if sum.FirstClient4xx != "" && len(allReservations) == 0 {
-		return nil, errors.New(sum.FirstClient4xx)
-	}
-
-	output := &ec2.DescribeInstancesOutput{
-		Reservations: allReservations,
-	}
-
 	slog.Info("DescribeInstances: Aggregated response", "total_reservations", len(allReservations))
-	return output, nil
+	return allReservations, fanoutComplete && bucketsOK, sum.FirstClient4xx, nil
 }
 
 // EnrichInstanceProfileIDs resolves IamInstanceProfile.Id for every instance
@@ -107,27 +137,30 @@ func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc handlers_
 	}
 }
 
-// queryInstanceBucket queries a single describe topic and returns its reservations.
-func queryInstanceBucket(natsConn *nats.Conn, topic string, jsonData []byte, accountID string) []*ec2.Reservation {
+// queryInstanceBucket queries a single describe topic and returns its
+// reservations. ok is false when the query failed (request error or error
+// payload), so a reconcile caller can treat the sweep as incomplete rather than
+// silently dropping the bucket's instances.
+func queryInstanceBucket(natsConn *nats.Conn, topic string, jsonData []byte, accountID string) (reservations []*ec2.Reservation, ok bool) {
 	reqMsg := nats.NewMsg(topic)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
 	msg, err := natsConn.RequestMsg(reqMsg, 3*time.Second)
 	if err != nil {
 		slog.Warn("DescribeInstances: Failed to query instance bucket", "topic", topic, "err", err)
-		return nil
+		return nil, false
 	}
 	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
 		slog.Warn("DescribeInstances: Instance bucket query returned error", "topic", topic, "code", responseError.Code)
-		return nil
+		return nil, false
 	}
 	var output ec2.DescribeInstancesOutput
 	if err := json.Unmarshal(msg.Data, &output); err != nil {
 		slog.Error("DescribeInstances: Failed to unmarshal instance bucket response", "topic", topic, "err", err)
-		return nil
+		return nil, false
 	}
 	if len(output.Reservations) > 0 {
 		slog.Info("DescribeInstances: Collected reservations from bucket", "topic", topic, "count", len(output.Reservations))
 	}
-	return output.Reservations
+	return output.Reservations, true
 }

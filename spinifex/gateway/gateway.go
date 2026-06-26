@@ -23,6 +23,7 @@ import (
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -91,8 +92,12 @@ type GatewayConfig struct {
 	STSService   handlers_sts.STSService
 	RateLimiter  *AuthRateLimiter     // Per-IP auth failure rate limiter
 	Throttler    *ratelimit.Throttler // Per-account+action API request throttler
-	Version      string               // Build-time version string (set from cmd.Version)
-	Commit       string               // Build-time commit hash (set from cmd.Commit)
+	// Quota enforces per-account service quotas. Built unconditionally; a disabled
+	// config yields a no-op Service whose Exempt always returns true. Nil only in
+	// unit tests of unrelated routes, where no handler reaches the quota checks.
+	Quota   *handlers_quota.Service
+	Version string // Build-time version string (set from cmd.Version)
+	Commit  string // Build-time commit hash (set from cmd.Commit)
 	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
 	// to the 501 stub (e.g. in unit tests of unrelated routes).
 	ECRRegistry *gateway_ecr.Registry

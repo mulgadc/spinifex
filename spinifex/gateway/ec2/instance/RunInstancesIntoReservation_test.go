@@ -39,7 +39,7 @@ func TestCapacityReservationTargetID(t *testing.T) {
 
 // A malformed reservation id is rejected at the gateway before any NATS call.
 func TestRunInstancesInner_TargetedMalformedID(t *testing.T) {
-	_, err := runInstancesInner(crTargetedInput("bogus-id"), nil, nil, "123456789012", nil, 1)
+	_, err := runInstancesInner(crTargetedInput("bogus-id"), nil, nil, "123456789012", nil, nil, 1)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdMalformed, err.Error())
 }
@@ -48,7 +48,7 @@ func TestRunInstancesInner_TargetedMalformedID(t *testing.T) {
 func TestRunInstancesInner_TargetedWithPlacementGroup(t *testing.T) {
 	input := crTargetedInput(testCRID)
 	input.Placement = &ec2.Placement{GroupName: aws.String("pg-cluster")}
-	_, err := runInstancesInner(input, nil, nil, "123456789012", nil, 1)
+	_, err := runInstancesInner(input, nil, nil, "123456789012", nil, nil, 1)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
@@ -117,7 +117,7 @@ func TestRunInstancesInner_TargetedRoutesToCRSubject(t *testing.T) {
 	defer func() { _ = sub.Unsubscribe() }()
 	time.Sleep(50 * time.Millisecond)
 
-	reservation, err := runInstancesInner(crTargetedInput(testCRID), nc, nil, "123456789012", nil, 1)
+	reservation, err := runInstancesInner(crTargetedInput(testCRID), nc, nil, "123456789012", nil, nil, 1)
 	require.NoError(t, err)
 	require.Len(t, reservation.Instances, 1)
 	assert.Equal(t, "i-cr1", aws.StringValue(reservation.Instances[0].InstanceId))

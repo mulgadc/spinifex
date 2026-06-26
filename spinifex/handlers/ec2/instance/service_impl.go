@@ -218,6 +218,15 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		ec2Instance.SetArchitecture(arch)
 	}
 
+	// Stamp the constant IMDSv2-only metadata-options block so DescribeInstances
+	// and get-instance-metadata-options report the platform posture. Only the
+	// hop limit is request-driven; the rest are platform invariants.
+	var hopLimit *int64
+	if input.MetadataOptions != nil {
+		hopLimit = input.MetadataOptions.HttpPutResponseHopLimit
+	}
+	ec2Instance.MetadataOptions = buildMetadataOptions(hopLimit)
+
 	// IAM instance profile attached at launch: gateway has already resolved
 	// the reference to a canonical ARN and enforced iam:PassRole; here we
 	// just persist it on the VM and generate the association ID. Id is left

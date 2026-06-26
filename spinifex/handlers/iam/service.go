@@ -39,10 +39,14 @@ type IAMService interface {
 	UpdateRole(accountID string, input *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error)
 	UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error)
 
-	// Role policy attachment — account-scoped
+	// Role policies — managed + inline — account-scoped
 	AttachRolePolicy(accountID string, input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error)
 	DetachRolePolicy(accountID string, input *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error)
 	ListAttachedRolePolicies(accountID string, input *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error)
+	PutRolePolicy(accountID string, input *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error)
+	GetRolePolicy(accountID string, input *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error)
+	DeleteRolePolicy(accountID string, input *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error)
+	ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error)
 
 	// Instance profile CRUD — account-scoped
 	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
@@ -72,8 +76,8 @@ type IAMService interface {
 	// Policy evaluation (internal — used by gateway enforcement)
 	GetUserPolicies(accountID, userName string) ([]PolicyDocument, error)
 	// GetRolePolicies resolves an assumed-role session's permission policies for
-	// gateway enforcement. Managed policies only; inline policies are not yet
-	// supported.
+	// gateway enforcement. Resolves both managed attachments and embedded inline
+	// policies.
 	GetRolePolicies(accountID, roleName string) ([]PolicyDocument, error)
 
 	// Auth (internal — used by SigV4 middleware and bootstrap, not exposed via gateway)

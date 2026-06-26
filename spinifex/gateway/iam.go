@@ -124,6 +124,15 @@ var iamActions = map[string]IAMHandler{
 	"DetachRolePolicy": iamHandler(func(accountID string, input *iam.DetachRolePolicyInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.DetachRolePolicy(accountID, input, gw.IAMService)
 	}),
+	"PutRolePolicy": iamHandler(func(accountID string, input *iam.PutRolePolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.PutRolePolicy(accountID, input, gw.IAMService)
+	}),
+	"GetRolePolicy": iamHandler(func(accountID string, input *iam.GetRolePolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetRolePolicy(accountID, input, gw.IAMService)
+	}),
+	"DeleteRolePolicy": iamHandler(func(accountID string, input *iam.DeleteRolePolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeleteRolePolicy(accountID, input, gw.IAMService)
+	}),
 	"ListAttachedRolePolicies": iamHandler(func(accountID string, input *iam.ListAttachedRolePoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListAttachedRolePolicies(accountID, input, gw.IAMService)
 	}),

@@ -135,6 +135,18 @@ func (s *stubIAMService) DetachRolePolicy(_ string, _ *iam.DetachRolePolicyInput
 func (s *stubIAMService) ListAttachedRolePolicies(_ string, _ *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
 	return &iam.ListAttachedRolePoliciesOutput{}, nil
 }
+func (s *stubIAMService) PutRolePolicy(_ string, _ *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	return &iam.PutRolePolicyOutput{}, nil
+}
+func (s *stubIAMService) GetRolePolicy(_ string, _ *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
+	return &iam.GetRolePolicyOutput{}, nil
+}
+func (s *stubIAMService) DeleteRolePolicy(_ string, _ *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
+	return &iam.DeleteRolePolicyOutput{}, nil
+}
+func (s *stubIAMService) ListRolePolicies(_ string, _ *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
+	return &iam.ListRolePoliciesOutput{}, nil
+}
 func (s *stubIAMService) CreateInstanceProfile(_ string, _ *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
 	return &iam.CreateInstanceProfileOutput{}, nil
 }

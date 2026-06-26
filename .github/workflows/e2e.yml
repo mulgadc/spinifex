@@ -665,9 +665,6 @@ jobs:
             echo "=== systemctl is-active spinifex-* ==="
             ssh "${SSH_OPTS[@]}" "$VM" 'for s in spinifex-nats spinifex-predastore spinifex-awsgw spinifex-vpcd spinifex-daemon; do printf "%-22s %s\n" "$s" "$(systemctl is-active $s 2>&1)"; done'
             echo
-            echo "=== which spx + version ==="
-            ssh "${SSH_OPTS[@]}" "$VM" 'which spx; spx --version 2>&1 || true'
-            echo
             echo "=== spx get nodes (direct ssh, tf-user) ==="
             ssh "${SSH_OPTS[@]}" "$VM" 'spx get nodes --timeout 5s 2>&1; echo "exit=$?"'
             echo

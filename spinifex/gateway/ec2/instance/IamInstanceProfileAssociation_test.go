@@ -124,6 +124,18 @@ func (f *fakeIAMService) DetachRolePolicy(string, *iam.DetachRolePolicyInput) (*
 func (f *fakeIAMService) ListAttachedRolePolicies(string, *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
 	return &iam.ListAttachedRolePoliciesOutput{}, nil
 }
+func (f *fakeIAMService) PutRolePolicy(string, *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	return &iam.PutRolePolicyOutput{}, nil
+}
+func (f *fakeIAMService) GetRolePolicy(string, *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
+	return &iam.GetRolePolicyOutput{}, nil
+}
+func (f *fakeIAMService) DeleteRolePolicy(string, *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
+	return &iam.DeleteRolePolicyOutput{}, nil
+}
+func (f *fakeIAMService) ListRolePolicies(string, *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
+	return &iam.ListRolePoliciesOutput{}, nil
+}
 func (f *fakeIAMService) CreateInstanceProfile(string, *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
 	return &iam.CreateInstanceProfileOutput{}, nil
 }

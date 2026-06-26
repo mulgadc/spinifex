@@ -172,6 +172,10 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
+	if len(role.InlinePolicies) > 0 {
+		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	}
+
 	profiles, err := s.findInstanceProfilesForRole(accountID, roleName)
 	if err != nil {
 		return nil, fmt.Errorf("check role instance profiles: %w", err)
@@ -445,6 +449,14 @@ func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDo
 		if include {
 			docs = append(docs, doc)
 		}
+	}
+
+	for name, raw := range role.InlinePolicies {
+		doc, err := ValidatePolicyDocument(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse inline policy %s: %w", name, err) // fail closed
+		}
+		docs = append(docs, *doc)
 	}
 
 	return docs, nil

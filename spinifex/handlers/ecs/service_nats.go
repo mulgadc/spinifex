@@ -132,3 +132,9 @@ func (s *NATSECSService) ListServices(input *ecs.ListServicesInput, accountID st
 func (s *NATSECSService) PollAssignments(input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error) {
 	return utils.NATSRequest[PollAssignmentsOutput](s.natsConn, "ecs.PollAssignments", input, defaultTimeout, accountID)
 }
+
+// --- Capacity ---
+
+func (s *NATSECSService) ProvisionCapacity(input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error) {
+	return utils.NATSRequest[ProvisionCapacityOutput](s.natsConn, "ecs.ProvisionCapacity", input, defaultTimeout, accountID)
+}

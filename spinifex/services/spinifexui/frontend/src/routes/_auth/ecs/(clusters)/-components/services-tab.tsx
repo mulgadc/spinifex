@@ -51,7 +51,16 @@ export function ServicesTab({ clusterName }: { clusterName: string }) {
                   key={service.serviceArn ?? service.serviceName}
                 >
                   <td className="px-4 py-2 font-medium">
-                    {service.serviceName}
+                    <Link
+                      className="underline"
+                      params={{
+                        clusterName,
+                        serviceName: service.serviceName ?? "",
+                      }}
+                      to="/ecs/list-clusters/$clusterName/services/$serviceName"
+                    >
+                      {service.serviceName}
+                    </Link>
                   </td>
                   <td className="px-4 py-2">
                     <StateBadge state={service.status} />

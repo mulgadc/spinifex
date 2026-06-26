@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"encoding/json"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -225,17 +226,23 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 		return err
 	}
 
-	// Register the task's ELBv2 targets on the transition into RUNNING (Q8).
+	// Register ELBv2 targets and assign a public IP on the transition into
+	// RUNNING (Q8). assignTaskPublicIP persists the EIP onto the task itself.
 	if msg.LastStatus == TaskStatusRunning && prev != TaskStatusRunning {
 		s.registerServiceTargets(kv, msg.AccountID, &task)
+		s.assignTaskPublicIP(kv, msg.AccountID, &task)
 	}
 
-	// Deregister targets, release capacity + reclaim the task ENI once, on the
-	// transition into STOPPED.
+	// Deregister targets, release the public IP, release capacity + reclaim the
+	// task ENI once, on the transition into STOPPED.
 	if msg.LastStatus == TaskStatusStopped && prev != TaskStatusStopped {
 		s.deregisterServiceTargets(kv, msg.AccountID, &task)
+		s.releaseTaskPublicIP(msg.AccountID, &task)
 		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
 		s.reclaimTaskENI(msg.AccountID, &task)
+		if perr := putJSON(kv, TaskKey(msg.ClusterName, msg.TaskID), &task); perr != nil {
+			slog.Error("ECS task STOPPED: persist after EIP release failed", "task", msg.TaskID, "err", perr)
+		}
 		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB)
 	}
 	return nil

@@ -15,7 +15,9 @@ function familyRevision(arn: string): string {
   return idx === -1 ? arn : arn.slice(idx + 1)
 }
 
-export function TaskDefinitionsTab({ clusterName }: { clusterName: string }) {
+// TaskDefinitionsList renders the account-scoped task definitions. clusterName,
+// when present, is only the return target for the register wizard.
+export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
   const { data: arns } = useSuspenseQuery(ecsTaskDefinitionsQueryOptions)
   const deregister = useDeregisterTaskDefinition()
   const [target, setTarget] = useState<string | null>(null)
@@ -31,7 +33,7 @@ export function TaskDefinitionsTab({ clusterName }: { clusterName: string }) {
     <>
       <div className="mb-4 flex justify-end">
         <Link
-          search={{ cluster: clusterName }}
+          search={{ cluster: clusterName ?? "" }}
           to="/ecs/register-task-definition"
         >
           <Button size="sm">Register task definition</Button>

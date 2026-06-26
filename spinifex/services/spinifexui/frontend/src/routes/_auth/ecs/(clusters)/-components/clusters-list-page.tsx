@@ -1,5 +1,5 @@
 import type { Cluster } from "@aws-sdk/client-ecs"
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
 
@@ -8,17 +8,37 @@ import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
+import { isEcsSystemImage } from "@/lib/system-managed"
 import { useDeleteCluster } from "@/mutations/ecs"
+import { ec2ImagesQueryOptions } from "@/queries/ec2"
 import { ecsClustersQueryOptions } from "@/queries/ecs"
 
 import { CreateClusterDialog } from "./create-cluster-dialog"
+import { EcsSectionNav } from "./ecs-section-nav"
+import { EcsSystemImageRequired } from "./ecs-system-image-required"
 
 export function ClustersListPage() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { data: clusters } = useSuspenseQuery(ecsClustersQueryOptions)
+  const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
   const deleteCluster = useDeleteCluster()
   const [createOpen, setCreateOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [isRechecking, setIsRechecking] = useState(false)
+
+  const hasEcsSystemImage = (imagesData.Images ?? []).some(isEcsSystemImage)
+
+  async function handleRecheck() {
+    setIsRechecking(true)
+    try {
+      await queryClient.invalidateQueries({
+        queryKey: ec2ImagesQueryOptions.queryKey,
+      })
+    } finally {
+      setIsRechecking(false)
+    }
+  }
 
   function handleDelete() {
     if (!deleteTarget) {
@@ -33,10 +53,24 @@ export function ClustersListPage() {
     <>
       <PageHeading
         actions={
-          <Button onClick={() => setCreateOpen(true)}>Create Cluster</Button>
+          <Button
+            disabled={!hasEcsSystemImage}
+            onClick={() => setCreateOpen(true)}
+          >
+            Create Cluster
+          </Button>
         }
         title="Clusters"
       />
+
+      <EcsSectionNav />
+
+      {!hasEcsSystemImage && (
+        <EcsSystemImageRequired
+          isRechecking={isRechecking}
+          onRecheck={handleRecheck}
+        />
+      )}
 
       {deleteCluster.isError && (
         <ErrorBanner

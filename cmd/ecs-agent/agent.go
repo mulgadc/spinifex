@@ -100,7 +100,7 @@ func New(cfg config) (*Agent, error) {
 		runner = rt
 	}
 
-	cp, err := newGatewayControlPlane(cfg)
+	cp, err := newGatewayControlPlane(cfg, creds)
 	if err != nil {
 		return nil, fmt.Errorf("build gateway control-plane: %w", err)
 	}

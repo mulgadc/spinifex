@@ -1,6 +1,7 @@
 package ecsgw
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,9 +10,15 @@ import (
 	"time"
 )
 
+// testCreds returns a fixed temporary credential set (with a session token, as
+// IMDS instance-role creds carry).
+func testCreds(context.Context) (string, string, string, error) {
+	return "ASIATEST", "secret", "session-token-xyz", nil
+}
+
 func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 	t.Helper()
-	c, err := New(srv.URL, "", "AKIDTEST", "secret", "ap-southeast-2", time.Second)
+	c, err := New(srv.URL, "", testCreds, "ap-southeast-2", time.Second)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -22,10 +29,11 @@ func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 // Call signs for service "ecs", sets the X-Amz-Target action, and returns the
 // 2xx body.
 func TestClient_CallSignsAndTargets(t *testing.T) {
-	var gotTarget, gotAuth, gotBody string
+	var gotTarget, gotAuth, gotBody, gotToken string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotTarget = r.Header.Get("X-Amz-Target")
 		gotAuth = r.Header.Get("Authorization")
+		gotToken = r.Header.Get("X-Amz-Security-Token")
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		_, _ = w.Write([]byte(`{"ok":true}`))
@@ -49,6 +57,9 @@ func TestClient_CallSignsAndTargets(t *testing.T) {
 	if !strings.Contains(gotAuth, "AWS4-HMAC-SHA256") || !strings.Contains(gotAuth, "/ecs/aws4_request") {
 		t.Errorf("auth header not SigV4 for ecs: %q", gotAuth)
 	}
+	if gotToken != "session-token-xyz" {
+		t.Errorf("X-Amz-Security-Token = %q, want the IMDS session token", gotToken)
+	}
 }
 
 // A non-2xx gateway response surfaces as an error carrying status + body.
@@ -67,10 +78,10 @@ func TestClient_CallErrorStatus(t *testing.T) {
 }
 
 func TestNew_Validation(t *testing.T) {
-	if _, err := New("", "", "a", "b", "r", 0); err == nil {
+	if _, err := New("", "", testCreds, "r", 0); err == nil {
 		t.Error("want error for empty baseURL")
 	}
-	if _, err := New("https://gw:9999", "", "", "b", "r", 0); err == nil {
-		t.Error("want error for empty access key")
+	if _, err := New("https://gw:9999", "", nil, "r", 0); err == nil {
+		t.Error("want error for nil credentials func")
 	}
 }

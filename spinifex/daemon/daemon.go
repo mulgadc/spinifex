@@ -979,6 +979,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.ListServices", d.handleECSListServices, "spinifex-workers"},
 			natsSub{"ecs.SubmitTaskStateChange", d.handleECSSubmitTaskStateChange, "spinifex-workers"},
 			natsSub{"ecs.PollAssignments", d.handleECSPollAssignments, "spinifex-workers"},
+			natsSub{"ecs.ProvisionCapacity", d.handleECSProvisionCapacity, "spinifex-workers"},
 		)
 	}
 
@@ -1416,7 +1417,7 @@ func (d *Daemon) startCluster() error {
 	// scheduler goroutine that owns the Layer-2 bus subscriptions and heartbeat
 	// reaper. The scheduler is disabled (handlers still serve) when JetStream is
 	// unavailable.
-	d.ecsService = handlers_ecs.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.InternalSuffix)
+	d.ecsService = handlers_ecs.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.InternalSuffix).WithDeps(d.buildECSServiceDeps())
 	if js, jsErr := d.natsConn.JetStream(); jsErr != nil {
 		slog.Warn("ECS scheduler disabled: JetStream unavailable", "err", jsErr)
 	} else if _, lbErr := handlers_ecs.InitLeaderBucket(js); lbErr != nil {

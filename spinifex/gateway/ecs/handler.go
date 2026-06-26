@@ -80,6 +80,7 @@ var Actions = map[string]Handler{
 	// Container instance.
 	"RegisterContainerInstance":     RegisterContainerInstance,
 	"DeregisterContainerInstance":   DeregisterContainerInstance,
+	"ProvisionCapacity":             ProvisionCapacity,
 	"DescribeContainerInstances":    DescribeContainerInstances,
 	"ListContainerInstances":        ListContainerInstances,
 	"UpdateContainerInstancesState": UpdateContainerInstancesState,

@@ -70,7 +70,15 @@ export function TasksTab({ clusterName }: { clusterName: string }) {
                 const stoppable = task.lastStatus !== "STOPPED"
                 return (
                   <tr className="border-b last:border-0" key={id}>
-                    <td className="px-4 py-2 font-mono text-xs">{id}</td>
+                    <td className="px-4 py-2 font-mono text-xs">
+                      <Link
+                        className="underline"
+                        params={{ clusterName, taskId: id }}
+                        to="/ecs/list-clusters/$clusterName/tasks/$taskId"
+                      >
+                        {id}
+                      </Link>
+                    </td>
                     <td className="px-4 py-2">
                       <StateBadge state={task.lastStatus} />
                     </td>

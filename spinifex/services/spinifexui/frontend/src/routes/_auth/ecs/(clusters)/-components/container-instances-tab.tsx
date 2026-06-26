@@ -12,6 +12,8 @@ import {
 } from "@/mutations/ecs"
 import { ecsContainerInstancesQueryOptions } from "@/queries/ecs"
 
+import { ProvisionCapacityDialog } from "./provision-capacity-dialog"
+
 type Action = "drain" | "activate" | "deregister"
 
 interface PendingAction {
@@ -45,6 +47,7 @@ export function ContainerInstancesTab({
   const updateState = useUpdateContainerInstanceState()
   const deregister = useDeregisterContainerInstance()
   const [pending, setPending] = useState<PendingAction | null>(null)
+  const [showProvision, setShowProvision] = useState(false)
 
   function handleConfirm() {
     if (!pending) {
@@ -72,14 +75,14 @@ export function ContainerInstancesTab({
   const error = updateState.error ?? deregister.error
   const isPending = updateState.isPending || deregister.isPending
 
-  if (instances.length === 0) {
-    return (
-      <p className="text-muted-foreground">No container instances found.</p>
-    )
-  }
-
   return (
     <>
+      <div className="mb-4 flex justify-end">
+        <Button onClick={() => setShowProvision(true)} size="sm">
+          Provision EC2 capacity
+        </Button>
+      </div>
+
       {isError && (
         <ErrorBanner
           error={error instanceof Error ? error : undefined}
@@ -87,73 +90,83 @@ export function ContainerInstancesTab({
         />
       )}
 
-      <div className="overflow-x-auto rounded-lg border bg-card">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2 font-medium">EC2 Instance</th>
-              <th className="px-4 py-2 font-medium">Status</th>
-              <th className="px-4 py-2 font-medium">Running</th>
-              <th className="px-4 py-2 font-medium">Pending</th>
-              <th className="px-4 py-2 font-medium">
-                <span className="sr-only">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {instances.map((instance: ContainerInstance) => {
-              const arn = instance.containerInstanceArn ?? ""
-              const draining = instance.status === "DRAINING"
-              return (
-                <tr className="border-b last:border-0" key={arn}>
-                  <td className="px-4 py-2 font-mono text-xs">
-                    {instance.ec2InstanceId}
-                  </td>
-                  <td className="px-4 py-2">
-                    <StateBadge state={instance.status} />
-                  </td>
-                  <td className="px-4 py-2">
-                    {instance.runningTasksCount ?? 0}
-                  </td>
-                  <td className="px-4 py-2">
-                    {instance.pendingTasksCount ?? 0}
-                  </td>
-                  <td className="px-4 py-2 text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        aria-label={
-                          draining
-                            ? "Activate container instance"
-                            : "Drain container instance"
-                        }
-                        onClick={() =>
-                          setPending({
-                            arn,
-                            action: draining ? "activate" : "drain",
-                          })
-                        }
-                        size="sm"
-                        variant="outline"
-                      >
-                        {draining ? "Activate" : "Drain"}
-                      </Button>
-                      <Button
-                        onClick={() =>
-                          setPending({ arn, action: "deregister" })
-                        }
-                        size="sm"
-                        variant="destructive"
-                      >
-                        Deregister
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+      {instances.length === 0 ? (
+        <p className="text-muted-foreground">No container instances found.</p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border bg-card">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="px-4 py-2 font-medium">EC2 Instance</th>
+                <th className="px-4 py-2 font-medium">Status</th>
+                <th className="px-4 py-2 font-medium">Running</th>
+                <th className="px-4 py-2 font-medium">Pending</th>
+                <th className="px-4 py-2 font-medium">
+                  <span className="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {instances.map((instance: ContainerInstance) => {
+                const arn = instance.containerInstanceArn ?? ""
+                const draining = instance.status === "DRAINING"
+                return (
+                  <tr className="border-b last:border-0" key={arn}>
+                    <td className="px-4 py-2 font-mono text-xs">
+                      {instance.ec2InstanceId}
+                    </td>
+                    <td className="px-4 py-2">
+                      <StateBadge state={instance.status} />
+                    </td>
+                    <td className="px-4 py-2">
+                      {instance.runningTasksCount ?? 0}
+                    </td>
+                    <td className="px-4 py-2">
+                      {instance.pendingTasksCount ?? 0}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          aria-label={
+                            draining
+                              ? "Activate container instance"
+                              : "Drain container instance"
+                          }
+                          onClick={() =>
+                            setPending({
+                              arn,
+                              action: draining ? "activate" : "drain",
+                            })
+                          }
+                          size="sm"
+                          variant="outline"
+                        >
+                          {draining ? "Activate" : "Drain"}
+                        </Button>
+                        <Button
+                          onClick={() =>
+                            setPending({ arn, action: "deregister" })
+                          }
+                          size="sm"
+                          variant="destructive"
+                        >
+                          Deregister
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <ProvisionCapacityDialog
+        clusterName={clusterName}
+        onOpenChange={setShowProvision}
+        open={showProvision}
+      />
 
       <DeleteConfirmationDialog
         confirmLabel={pending ? ACTION_LABELS[pending.action] : "Confirm"}

@@ -27,9 +27,17 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
 import { ClustersListPage } from "./clusters-list-page"
 
-function seed(clusters: unknown[]) {
+const ECS_NODE_IMAGE = {
+  ImageId: "ami-ecs",
+  Tags: [{ Key: "spinifex:managed-by", Value: "ecs" }],
+}
+
+// seed wires both queries the page reads. By default an ECS node image is
+// present so the create flow is enabled; pass [] to exercise the guard.
+function seed(clusters: unknown[], images: unknown[] = [ECS_NODE_IMAGE]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecs", "clusters"], clusters)
+  qc.setQueryData(["ec2", "images"], { Images: images })
   return qc
 }
 
@@ -57,10 +65,18 @@ describe("ClustersListPage", () => {
     expect(screen.getByText("No ECS clusters found.")).toBeInTheDocument()
   })
 
-  it("opens the create dialog", () => {
+  it("opens the create dialog when an ECS node image is present", () => {
     renderWithClient(<ClustersListPage />, seed([]))
     fireEvent.click(screen.getByRole("button", { name: "Create Cluster" }))
     expect(screen.getByText(/A cluster groups/)).toBeInTheDocument()
+  })
+
+  it("blocks creation and warns when no ECS node image exists", () => {
+    renderWithClient(<ClustersListPage />, seed([], []))
+    expect(screen.getByText("ECS system image not found")).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Create Cluster" }),
+    ).toBeDisabled()
   })
 
   it("opens the delete confirmation for a cluster", () => {

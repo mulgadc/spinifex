@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 
+	"github.com/mulgadc/spinifex/cmd/ecs-agent/credentials"
 	"github.com/mulgadc/spinifex/internal/ecsgw"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
@@ -39,13 +41,26 @@ var _ controlPlane = (*gatewayControlPlane)(nil)
 // timeout to leave room for a future server-side long-poll.
 const pollTimeout = 30 * time.Second
 
-// newGatewayControlPlane builds the SigV4 client from seeded creds + pinned CA.
-func newGatewayControlPlane(cfg config) (*gatewayControlPlane, error) {
-	client, err := ecsgw.New(cfg.GatewayURL, cfg.GatewayCA, cfg.AccessKey, cfg.SecretKey, cfg.Region, pollTimeout)
+// newGatewayControlPlane builds the SigV4 client signing with the instance-role
+// credentials from IMDS (fetched per call so rotation is transparent) + pinned CA.
+func newGatewayControlPlane(cfg config, creds credentials.CredentialsProvider) (*gatewayControlPlane, error) {
+	client, err := ecsgw.New(cfg.GatewayURL, cfg.GatewayCA, credentialsFunc(creds), cfg.Region, pollTimeout)
 	if err != nil {
 		return nil, err
 	}
 	return &gatewayControlPlane{client: client}, nil
+}
+
+// credentialsFunc adapts the agent's IMDS CredentialsProvider to the ecsgw
+// per-call credentials hook.
+func credentialsFunc(p credentials.CredentialsProvider) ecsgw.CredentialsFunc {
+	return func(ctx context.Context) (string, string, string, error) {
+		c, err := p.Retrieve(ctx)
+		if err != nil {
+			return "", "", "", err
+		}
+		return c.AccessKeyID, c.SecretAccessKey, c.SessionToken, nil
+	}
 }
 
 func (g *gatewayControlPlane) Register(id identity) error {

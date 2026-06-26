@@ -17,7 +17,6 @@ import { ecsClusterQueryOptions } from "@/queries/ecs"
 
 import { ContainerInstancesTab } from "./container-instances-tab"
 import { ServicesTab } from "./services-tab"
-import { TaskDefinitionsTab } from "./task-definitions-tab"
 import { TasksTab } from "./tasks-tab"
 
 export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
@@ -38,6 +37,18 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
     })
   }
 
+  if (!cluster) {
+    return (
+      <>
+        <BackLink to="/ecs/list-clusters">Clusters</BackLink>
+        <PageHeading subtitle="Cluster Details" title={clusterName} />
+        <p className="text-muted-foreground">Cluster not found.</p>
+      </>
+    )
+  }
+
+  const tags = cluster.tags ?? []
+
   return (
     <>
       <BackLink to="/ecs/list-clusters">Clusters</BackLink>
@@ -53,7 +64,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
               <Trash2 className="size-4" />
               Delete
             </Button>
-            <StateBadge state={cluster?.status} />
+            <StateBadge state={cluster.status} />
           </div>
         }
         subtitle="Cluster Details"
@@ -71,40 +82,37 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
         />
       )}
 
-      <Tabs defaultValue="overview">
+      <DetailCard>
+        <DetailCard.Header>Overview</DetailCard.Header>
+        <DetailCard.Content>
+          <DetailRow label="ARN" value={cluster.clusterArn} />
+          <DetailRow label="Status" value={cluster.status} />
+          <DetailRow
+            label="Active services"
+            value={String(cluster.activeServicesCount ?? 0)}
+          />
+          <DetailRow
+            label="Running tasks"
+            value={String(cluster.runningTasksCount ?? 0)}
+          />
+          <DetailRow
+            label="Pending tasks"
+            value={String(cluster.pendingTasksCount ?? 0)}
+          />
+          <DetailRow
+            label="Registered instances"
+            value={String(cluster.registeredContainerInstancesCount ?? 0)}
+          />
+        </DetailCard.Content>
+      </DetailCard>
+
+      <Tabs className="mt-6" defaultValue="services">
         <TabsList>
-          <TabsTab value="overview">Overview</TabsTab>
           <TabsTab value="services">Services</TabsTab>
           <TabsTab value="tasks">Tasks</TabsTab>
-          <TabsTab value="task-definitions">Task Definitions</TabsTab>
-          <TabsTab value="instances">Container Instances</TabsTab>
+          <TabsTab value="infrastructure">Infrastructure</TabsTab>
+          <TabsTab value="tags">Tags</TabsTab>
         </TabsList>
-
-        <TabsPanel value="overview">
-          <DetailCard>
-            <DetailCard.Header>Cluster</DetailCard.Header>
-            <DetailCard.Content>
-              <DetailRow label="ARN" value={cluster?.clusterArn} />
-              <DetailRow label="Status" value={cluster?.status} />
-              <DetailRow
-                label="Active services"
-                value={String(cluster?.activeServicesCount ?? 0)}
-              />
-              <DetailRow
-                label="Running tasks"
-                value={String(cluster?.runningTasksCount ?? 0)}
-              />
-              <DetailRow
-                label="Pending tasks"
-                value={String(cluster?.pendingTasksCount ?? 0)}
-              />
-              <DetailRow
-                label="Registered instances"
-                value={String(cluster?.registeredContainerInstancesCount ?? 0)}
-              />
-            </DetailCard.Content>
-          </DetailCard>
-        </TabsPanel>
 
         <TabsPanel value="services">
           <ServicesTab clusterName={clusterName} />
@@ -114,12 +122,35 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
           <TasksTab clusterName={clusterName} />
         </TabsPanel>
 
-        <TabsPanel value="task-definitions">
-          <TaskDefinitionsTab clusterName={clusterName} />
+        <TabsPanel value="infrastructure">
+          <ContainerInstancesTab clusterName={clusterName} />
         </TabsPanel>
 
-        <TabsPanel value="instances">
-          <ContainerInstancesTab clusterName={clusterName} />
+        <TabsPanel value="tags">
+          {tags.length === 0 ? (
+            <p className="text-muted-foreground">No tags.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border bg-card">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="px-4 py-2 font-medium">Key</th>
+                    <th className="px-4 py-2 font-medium">Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tags.map((tag) => (
+                    <tr className="border-b last:border-0" key={tag.key}>
+                      <td className="px-4 py-2 font-mono text-xs">{tag.key}</td>
+                      <td className="px-4 py-2 font-mono text-xs">
+                        {tag.value}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </TabsPanel>
       </Tabs>
 

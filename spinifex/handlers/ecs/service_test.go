@@ -52,6 +52,32 @@ func TestService_DescribeClusters_DefaultAndMissing(t *testing.T) {
 	assert.Empty(t, miss.Clusters)
 }
 
+func TestService_DescribeClusters_ReturnsTags(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(&ecs.CreateClusterInput{
+		ClusterName: aws.String("web"),
+		Tags: []*ecs.Tag{
+			{Key: aws.String("team"), Value: aws.String("infra")},
+			{Key: aws.String("env"), Value: aws.String("prod")},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeClusters(&ecs.DescribeClustersInput{
+		Clusters: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Clusters, 1)
+
+	tags := out.Clusters[0].Tags
+	require.Len(t, tags, 2)
+	// Stable key order: sorted ascending.
+	assert.Equal(t, "env", aws.StringValue(tags[0].Key))
+	assert.Equal(t, "prod", aws.StringValue(tags[0].Value))
+	assert.Equal(t, "team", aws.StringValue(tags[1].Key))
+	assert.Equal(t, "infra", aws.StringValue(tags[1].Value))
+}
+
 func registerTaskDef(t *testing.T, svc *Service, family string, cpu, mem int) *ecs.RegisterTaskDefinitionOutput {
 	t.Helper()
 	out, err := svc.RegisterTaskDefinition(&ecs.RegisterTaskDefinitionInput{

@@ -43,7 +43,7 @@ export const ecsClusterQueryOptions = (clusterName: string) =>
       const described = await getEcsClient().send(
         new DescribeClustersCommand({ clusters: [clusterName] }),
       )
-      return described.clusters?.[0]
+      return described.clusters?.[0] ?? null
     },
     staleTime: CLUSTER_STALE_TIME,
   })

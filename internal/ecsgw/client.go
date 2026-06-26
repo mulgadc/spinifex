@@ -1,15 +1,15 @@
 // Package ecsgw is the on-VM SigV4 client the ecs-agent uses to reach the AWS
 // gateway over HTTPS instead of connecting to NATS directly. It signs requests
-// for service "ecs" with the instance's seeded IAM credentials, keeping the NATS
-// bus host-internal (the gateway relays agent calls onto ecs.bus.* host-side).
+// for service "ecs" with the instance's IMDS instance-role credentials (fetched
+// fresh per call so rotation is transparent), keeping the NATS bus host-internal
+// (the gateway relays agent calls onto ecs.bus.* host-side).
 package ecsgw
 
 import (
 	"bytes"
-	"crypto/sha256"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,7 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/predastore/auth"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
+
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 )
 
@@ -26,26 +28,31 @@ import (
 // suffix); this one mirrors the AWS JSON 1.1 convention.
 const targetPrefix = "AmazonEC2ContainerServiceV20141113."
 
+// CredentialsFunc yields the current SigV4 credentials. It is called once per
+// request so a provider backed by IMDS can rotate instance-role creds (and their
+// session token) transparently. Must be safe for concurrent use.
+type CredentialsFunc func(ctx context.Context) (accessKey, secretKey, sessionToken string, err error)
+
 // Client posts SigV4-signed AWS JSON 1.1 requests to the gateway for service
 // "ecs". One client is reused for register/heartbeat/state/poll.
 type Client struct {
 	baseURL    string
-	accessKey  string
-	secretKey  string
+	creds      CredentialsFunc
 	region     string
 	httpClient *http.Client
 }
 
 // New builds a client. caPath optionally pins the gateway TLS CA; empty relies on
-// the system trust store. region defaults to us-east-1 when empty (SigV4 requires
-// a non-empty region). timeout bounds a single call — callers needing a long-poll
-// pass a larger value than the default register/heartbeat timeout.
-func New(baseURL, caPath, accessKey, secretKey, region string, timeout time.Duration) (*Client, error) {
+// the system trust store. creds supplies the per-call instance-role credentials.
+// region defaults to us-east-1 when empty (SigV4 requires a non-empty region).
+// timeout bounds a single call — callers needing a long-poll pass a larger value
+// than the default register/heartbeat timeout.
+func New(baseURL, caPath string, creds CredentialsFunc, region string, timeout time.Duration) (*Client, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("ecsgw: baseURL is required")
 	}
-	if accessKey == "" || secretKey == "" {
-		return nil, fmt.Errorf("ecsgw: access key and secret key are required")
+	if creds == nil {
+		return nil, fmt.Errorf("ecsgw: credentials func is required")
 	}
 	if region == "" {
 		region = "us-east-1"
@@ -71,10 +78,9 @@ func New(baseURL, caPath, accessKey, secretKey, region string, timeout time.Dura
 	}
 
 	return &Client{
-		baseURL:   strings.TrimRight(baseURL, "/"),
-		accessKey: accessKey,
-		secretKey: secretKey,
-		region:    region,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		creds:   creds,
+		region:  region,
 		httpClient: &http.Client{
 			Timeout:   timeout,
 			Transport: &http.Transport{TLSClientConfig: tlsCfg, MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second},
@@ -83,8 +89,9 @@ func New(baseURL, caPath, accessKey, secretKey, region string, timeout time.Dura
 }
 
 // Call SigV4-signs and POSTs body under X-Amz-Target "<prefix><action>" to the
-// gateway root, returning the 2xx response body. Errors carry the gateway status
-// and body. No retry; callers wrap as needed.
+// gateway root, returning the 2xx response body. Credentials are fetched per call
+// and the v4 signer emits X-Amz-Security-Token for instance-role (temporary)
+// creds, so the gateway's ASIA path verifies them. No retry; callers wrap.
 func (c *Client) Call(action string, body []byte) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/", bytes.NewReader(body))
 	if err != nil {
@@ -93,8 +100,12 @@ func (c *Client) Call(action string, body []byte) ([]byte, error) {
 	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
 	req.Header.Set("X-Amz-Target", targetPrefix+action)
 
-	sum := sha256.Sum256(body)
-	if err := auth.SignReq(req, c.accessKey, c.secretKey, hex.EncodeToString(sum[:]), "ecs", c.region); err != nil {
+	akid, secret, token, err := c.creds(req.Context())
+	if err != nil {
+		return nil, fmt.Errorf("retrieve credentials: %w", err)
+	}
+	signer := v4.NewSigner(credentials.NewStaticCredentials(akid, secret, token))
+	if _, err := signer.Sign(req, bytes.NewReader(body), "ecs", c.region, time.Now()); err != nil {
 		return nil, fmt.Errorf("sign request: %w", err)
 	}
 

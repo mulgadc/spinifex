@@ -435,6 +435,23 @@ var AvailableImages = map[string]Images{
 		BootMode:     "bios",
 		Tags:         map[string]string{"spinifex:managed-by": "eks"},
 	},
+
+	// ECS container-instance system AMI. Resolved by spinifex:managed-by=ecs tag —
+	// importing this entry lets ECS launch container instances that register and run tasks.
+	"spinifex-ecs-node": {
+		Name:         "spinifex-ecs-node",
+		Description:  "Mulga ECS node image — Alpine 3.21.7 + containerd + ecs-agent (registers as a container instance at first boot)",
+		Distro:       "alpine",
+		Version:      "3.21.7",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/spinifex-ecs-node-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-ecs-node-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "bios",
+		Tags:         map[string]string{"spinifex:managed-by": "ecs"},
+	},
 }
 
 func ExtractDiskImageFromFile(imagepath string, tmpdir string) (diskimage string, err error) {

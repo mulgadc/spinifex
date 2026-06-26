@@ -20,8 +20,9 @@ const (
 // config holds the static settings the agent reads at boot. Cluster identity
 // (account ID, instance ID) is discovered at runtime from IMDS, not configured;
 // only the cluster *name* the instance was launched into is static. AccessKey /
-// SecretKey are the instance's seeded IAM credentials used to SigV4-sign gateway
-// calls — the agent never holds a NATS token.
+// SecretKey are legacy seeded creds, optional now that the agent SigV4-signs
+// gateway calls with instance-role credentials from IMDS; the agent never holds
+// a NATS token.
 type config struct {
 	GatewayURL       string
 	GatewayCA        string

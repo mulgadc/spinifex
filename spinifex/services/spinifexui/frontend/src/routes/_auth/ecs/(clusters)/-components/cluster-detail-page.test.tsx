@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react"
+import { fireEvent, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import {
@@ -23,35 +23,65 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
 vi.mock("./services-tab", () => ({ ServicesTab: () => null }))
 vi.mock("./tasks-tab", () => ({ TasksTab: () => null }))
-vi.mock("./task-definitions-tab", () => ({ TaskDefinitionsTab: () => null }))
 vi.mock("./container-instances-tab", () => ({
   ContainerInstancesTab: () => null,
 }))
 
 import { ClusterDetailPage } from "./cluster-detail-page"
 
+function seedCluster(extra: Record<string, unknown> = {}) {
+  const qc = createTestQueryClient()
+  qc.setQueryData(["ecs", "clusters", "web"], {
+    clusterName: "web",
+    clusterArn: "arn:aws:ecs:ap-southeast-2:123456789012:cluster/web",
+    status: "ACTIVE",
+    activeServicesCount: 2,
+    runningTasksCount: 3,
+    pendingTasksCount: 0,
+    registeredContainerInstancesCount: 1,
+    ...extra,
+  })
+  return qc
+}
+
 describe("ClusterDetailPage", () => {
-  it("renders the overview with cluster ARN and tab labels", () => {
-    const qc = createTestQueryClient()
-    qc.setQueryData(["ecs", "clusters", "web"], {
-      clusterName: "web",
-      clusterArn: "arn:aws:ecs:ap-southeast-2:123456789012:cluster/web",
-      status: "ACTIVE",
-      activeServicesCount: 2,
-      runningTasksCount: 3,
-      pendingTasksCount: 0,
-      registeredContainerInstancesCount: 1,
-    })
-    renderWithClient(<ClusterDetailPage clusterName="web" />, qc)
+  it("renders the AWS-aligned tab labels", () => {
+    renderWithClient(<ClusterDetailPage clusterName="web" />, seedCluster())
 
     expect(screen.getByRole("heading", { name: "web" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Delete/ })).toBeInTheDocument()
+    for (const label of ["Services", "Tasks", "Infrastructure", "Tags"]) {
+      expect(screen.getByRole("tab", { name: label })).toBeInTheDocument()
+    }
+    expect(
+      screen.queryByRole("tab", { name: "Configuration" }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("shows cluster ARN in the overview panel above the tabs", () => {
+    renderWithClient(<ClusterDetailPage clusterName="web" />, seedCluster())
+
     expect(
       screen.getByText("arn:aws:ecs:ap-southeast-2:123456789012:cluster/web"),
     ).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /Delete/ })).toBeInTheDocument()
-    expect(screen.getByRole("tab", { name: "Services" })).toBeInTheDocument()
-    expect(
-      screen.getByRole("tab", { name: "Container Instances" }),
-    ).toBeInTheDocument()
+  })
+
+  it("renders cluster tags on the Tags tab", () => {
+    renderWithClient(
+      <ClusterDetailPage clusterName="web" />,
+      seedCluster({ tags: [{ key: "env", value: "prod" }] }),
+    )
+
+    fireEvent.click(screen.getByRole("tab", { name: "Tags" }))
+    expect(screen.getByText("env")).toBeInTheDocument()
+    expect(screen.getByText("prod")).toBeInTheDocument()
+  })
+
+  it("shows a not-found message when the cluster is missing", () => {
+    const qc = createTestQueryClient()
+    qc.setQueryData(["ecs", "clusters", "web"], null)
+    renderWithClient(<ClusterDetailPage clusterName="web" />, qc)
+
+    expect(screen.getByText("Cluster not found.")).toBeInTheDocument()
   })
 })

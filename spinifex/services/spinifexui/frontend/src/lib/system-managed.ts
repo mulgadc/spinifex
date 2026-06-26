@@ -22,3 +22,17 @@ export function isEksSystemImage(image: Image): boolean {
     ) ?? false
   )
 }
+
+// Tag value identifying the ECS node system image (containerd + ecs-agent),
+// applied by `spx admin images import --tag spinifex:managed-by=ecs`.
+export const ECS_SYSTEM_IMAGE_TAG_VALUE = "ecs"
+
+export function isEcsSystemImage(image: Image): boolean {
+  return (
+    image.Tags?.some(
+      (tag) =>
+        tag.Key === SYSTEM_MANAGED_TAG_KEY &&
+        tag.Value === ECS_SYSTEM_IMAGE_TAG_VALUE,
+    ) ?? false
+  )
+}

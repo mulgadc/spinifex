@@ -44,6 +44,10 @@ type RunSpec struct {
 	Command []string
 	Env     map[string]string
 	Labels  map[string]string
+	// NetnsPath, when set, joins the container to a pre-built network namespace
+	// (awsvpc task ENI). Empty keeps the container in the host (VM) netns —
+	// bridge/host mode behaviour.
+	NetnsPath string
 }
 
 // RunStatus is a finished container's outcome.

@@ -51,6 +51,12 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 	strategy := placementStrategyFromAWS(input.PlacementStrategy)
 	cpu, mem := taskDef.reservedCPU(), taskDef.reservedMemory()
 
+	mode := resolveNetworkMode(taskDef)
+	netCfg, err := parseAwsvpcConfig(input, mode)
+	if err != nil {
+		return nil, err
+	}
+
 	out := &ecs.RunTaskOutput{}
 	for i := 0; i < count; i++ {
 		taskID := uuid.NewString()
@@ -64,15 +70,56 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 		}
 
 		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem)
+		rec.NetworkMode = mode
+		rec.Group = aws.StringValue(input.Group)
+		rec.StartedBy = aws.StringValue(input.StartedBy)
+		if mode == NetworkModeAwsvpc {
+			if failure := s.provisionTaskENI(kv, accountID, cluster, rec, netCfg); failure != nil {
+				out.Failures = append(out.Failures, failure)
+				continue
+			}
+		}
+
 		if err := putJSON(kv, TaskKey(cluster, taskID), rec); err != nil {
 			return nil, err
 		}
-		if err := s.publishAssign(accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
+		if err := s.publishAssign(kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
 			slog.Error("ECS RunTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
 		}
 		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
 	}
 	return out, nil
+}
+
+// provisionTaskENI allocates and hot-plugs an awsvpc task's ENI, stamping its
+// identity onto rec. On any failure it rolls back (releases a half-allocated ENI
+// and the placement reservation) and returns a RunTask failure for this task —
+// the caller skips it without leaking the ENI or the reserved capacity.
+func (s *Service) provisionTaskENI(kv nats.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
+	rollback := func(reason string, err error) *ecs.Failure {
+		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB); rerr != nil {
+			slog.Error("ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
+		}
+		return &ecs.Failure{Reason: aws.String(reason), Detail: aws.String(err.Error())}
+	}
+
+	alloc, err := s.eni.Allocate(accountID, netCfg.firstSubnet(), netCfg.securityGroupPtrs())
+	if err != nil {
+		return rollback("RESOURCE:eni", err)
+	}
+	rec.ENIID = alloc.ENIID
+	rec.ENIMacAddress = alloc.MacAddress
+	rec.ENIPrivateIP = alloc.PrivateIP
+	rec.ENISubnetID = alloc.SubnetID
+
+	attachmentID, err := s.eni.Attach(accountID, rec.ContainerInstanceID, alloc.ENIID)
+	if err != nil {
+		s.reclaimTaskENI(accountID, rec)
+		rec.ENIID, rec.ENIMacAddress, rec.ENIPrivateIP, rec.ENISubnetID = "", "", "", ""
+		return rollback("RESOURCE:eni", err)
+	}
+	rec.ENIAttachmentID = attachmentID
+	return nil
 }
 
 // reservePlacement bin-packs a task onto an ACTIVE instance and commits the
@@ -139,8 +186,11 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRe
 	return rec
 }
 
-// publishAssign sends the task assignment to the instance's agent over the bus.
-func (s *Service) publishAssign(accountID, cluster, instanceID string, rec *TaskRecord, td *TaskDefRecord) error {
+// publishAssign writes the task assignment into the instance's KV inbox. The
+// agent drains it by polling the gateway (PollAssignments) rather than
+// subscribing to NATS, so the bus stays host-internal. Durable + restart-safe:
+// an unacked assign survives an agent crash and is re-delivered on the next poll.
+func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID string, rec *TaskRecord, td *TaskDefRecord) error {
 	msg := bus.Assign{
 		AccountID:       accountID,
 		ClusterName:     cluster,
@@ -149,17 +199,17 @@ func (s *Service) publishAssign(accountID, cluster, instanceID string, rec *Task
 		TaskARN:         rec.ARN,
 		TaskDefFamily:   td.Family,
 		TaskDefRevision: td.Revision,
+		TaskRoleARN:     td.TaskRoleArn,
+		ENIID:           rec.ENIID,
+		ENIMacAddress:   rec.ENIMacAddress,
+		ENIPrivateIP:    rec.ENIPrivateIP,
+		ENISubnetID:     rec.ENISubnetID,
 		AssignedAt:      time.Now().UTC(),
 	}
 	for _, c := range td.Containers {
 		msg.Containers = append(msg.Containers, c.toAssignContainer())
 	}
-	data, err := json.Marshal(&msg)
-	if err != nil {
-		return err
-	}
-	subj := bus.AssignSubject(accountID, cluster, instanceID)
-	return s.nc.Publish(subj, data)
+	return putJSON(kv, AssignmentKey(cluster, instanceID, rec.TaskID), &msg)
 }
 
 // DescribeTasks returns task records for the named tasks in a cluster.
@@ -220,8 +270,27 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		LastStatus:           aws.String(r.LastStatus),
 		ContainerInstanceArn: aws.String(r.ContainerInstanceARN),
 	}
+	if r.Group != "" {
+		t.Group = aws.String(r.Group)
+	}
+	if r.StartedBy != "" {
+		t.StartedBy = aws.String(r.StartedBy)
+	}
 	if r.StoppedReason != "" {
 		t.StoppedReason = aws.String(r.StoppedReason)
+	}
+	if r.ENIID != "" {
+		t.Attachments = append(t.Attachments, &ecs.Attachment{
+			Id:     aws.String(r.ENIAttachmentID),
+			Type:   aws.String("ElasticNetworkInterface"),
+			Status: aws.String(r.LastStatus),
+			Details: []*ecs.KeyValuePair{
+				{Name: aws.String("networkInterfaceId"), Value: aws.String(r.ENIID)},
+				{Name: aws.String("privateIPv4Address"), Value: aws.String(r.ENIPrivateIP)},
+				{Name: aws.String("macAddress"), Value: aws.String(r.ENIMacAddress)},
+				{Name: aws.String("subnetId"), Value: aws.String(r.ENISubnetID)},
+			},
+		})
 	}
 	for _, c := range r.Containers {
 		ctr := &ecs.Container{Name: aws.String(c.Name), LastStatus: aws.String(c.Status)}

@@ -2,54 +2,30 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"time"
-
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
-// heartbeater periodically emits instance-heartbeat messages so the scheduler
-// can tell live instances from dead ones.
+// heartbeater keeps the container instance alive by periodically re-registering
+// it through the gateway. Real ECS folds liveness into ACS; v1 folds it into an
+// idempotent RegisterContainerInstance, which refreshes the instance's LastSeen
+// so the scheduler can tell live instances from dead ones (no bus.Heartbeat).
 type heartbeater struct {
-	pub      publisher
+	cp       controlPlane
 	id       identity
 	interval time.Duration
-	// runningTasks reports the current running-task count; nil means zero.
-	runningTasks func() int
 }
 
-func newHeartbeater(pub publisher, id identity, interval time.Duration, running func() int) *heartbeater {
+func newHeartbeater(cp controlPlane, id identity, interval time.Duration) *heartbeater {
 	if interval <= 0 {
 		interval = defaultHeartbeat
 	}
-	return &heartbeater{pub: pub, id: id, interval: interval, runningTasks: running}
+	return &heartbeater{cp: cp, id: id, interval: interval}
 }
 
-// beat publishes a single Heartbeat message.
+// beat re-registers the instance once, refreshing its LastSeen.
 func (h *heartbeater) beat() error {
-	n := 0
-	if h.runningTasks != nil {
-		n = h.runningTasks()
-	}
-	msg := bus.Heartbeat{
-		AccountID:    h.id.AccountID,
-		ClusterName:  h.id.ClusterName,
-		InstanceID:   h.id.InstanceID,
-		Status:       bus.StatusActive,
-		RunningTasks: n,
-		SentAt:       time.Now().UTC(),
-	}
-	data, err := json.Marshal(&msg)
-	if err != nil {
-		return fmt.Errorf("marshal heartbeat: %w", err)
-	}
-	subj := bus.HeartbeatSubject(h.id.AccountID, h.id.ClusterName, h.id.InstanceID)
-	if err := h.pub.Publish(subj, data); err != nil {
-		return fmt.Errorf("publish heartbeat %s: %w", subj, err)
-	}
-	return nil
+	return h.cp.Register(h.id)
 }
 
 // Run beats every interval until ctx is cancelled. A failed beat is logged and
@@ -63,7 +39,7 @@ func (h *heartbeater) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := h.beat(); err != nil {
-				slog.Warn("ecs-agent: heartbeat failed", "err", err)
+				slog.Warn("ecs-agent: heartbeat (re-register) failed", "err", err)
 			}
 		}
 	}

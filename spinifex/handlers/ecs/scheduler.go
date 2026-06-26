@@ -19,8 +19,15 @@ const (
 	schedulerLeaderKey  = "scheduler"
 	leaseRefresh        = 20 * time.Second
 	reaperInterval      = 30 * time.Second
+	reconcileInterval   = 10 * time.Second
 	heartbeatTimeout    = 90 * time.Second
 	stoppedReasonReaped = "ContainerInstance disconnected"
+
+	// sweepInterval is how often the leader prunes stale STOPPED task records;
+	// stoppedTaskRetention keeps a just-stopped task describable (DescribeTasks /
+	// UI exit reason) before it is dropped, matching AWS's ~1h STOPPED window.
+	sweepInterval        = 60 * time.Second
+	stoppedTaskRetention = 1 * time.Hour
 )
 
 // Scheduler is the per-daemon ECS control loop. A single leader (elected via the
@@ -47,8 +54,12 @@ func NewScheduler(nc *nats.Conn, svc *Service, holder string) *Scheduler {
 func (sc *Scheduler) Run(ctx context.Context) {
 	leaseTicker := time.NewTicker(leaseRefresh)
 	reaperTicker := time.NewTicker(reaperInterval)
+	reconcileTicker := time.NewTicker(reconcileInterval)
+	sweepTicker := time.NewTicker(sweepInterval)
 	defer leaseTicker.Stop()
 	defer reaperTicker.Stop()
+	defer reconcileTicker.Stop()
+	defer sweepTicker.Stop()
 
 	sc.evaluateLeadership(ctx)
 	for {
@@ -61,6 +72,14 @@ func (sc *Scheduler) Run(ctx context.Context) {
 		case <-reaperTicker.C:
 			if sc.isLeader() {
 				sc.reap()
+			}
+		case <-reconcileTicker.C:
+			if sc.isLeader() {
+				sc.svc.reconcileAllServices()
+			}
+		case <-sweepTicker.C:
+			if sc.isLeader() {
+				sc.sweepStoppedTasks()
 			}
 		}
 	}
@@ -228,7 +247,7 @@ func (sc *Scheduler) reap() {
 	}
 }
 
-func (sc *Scheduler) reapBucket(kv nats.KeyValue, _ string, now time.Time) {
+func (sc *Scheduler) reapBucket(kv nats.KeyValue, accountID string, now time.Time) {
 	keys, err := keysWithPrefix(kv, "clusters/")
 	if err != nil {
 		return
@@ -251,12 +270,13 @@ func (sc *Scheduler) reapBucket(kv nats.KeyValue, _ string, now time.Time) {
 		if perr := putJSON(kv, k, &inst); perr != nil {
 			continue
 		}
-		sc.stopInstanceTasks(kv, inst.Cluster, inst.InstanceID)
+		sc.stopInstanceTasks(kv, accountID, inst.Cluster, inst.InstanceID)
 	}
 }
 
-// stopInstanceTasks transitions a reaped instance's non-stopped tasks to STOPPED.
-func (sc *Scheduler) stopInstanceTasks(kv nats.KeyValue, cluster, instanceID string) {
+// stopInstanceTasks transitions a reaped instance's non-stopped tasks to STOPPED
+// and reclaims each awsvpc task's ENI (leak guard for a dead agent).
+func (sc *Scheduler) stopInstanceTasks(kv nats.KeyValue, accountID, cluster, instanceID string) {
 	keys, err := keysWithPrefix(kv, TasksPrefix(cluster))
 	if err != nil {
 		return
@@ -270,12 +290,7 @@ func (sc *Scheduler) stopInstanceTasks(kv nats.KeyValue, cluster, instanceID str
 		if task.ContainerInstanceID != instanceID || task.LastStatus == TaskStatusStopped {
 			continue
 		}
-		task.LastStatus = TaskStatusStopped
-		task.StoppedReason = stoppedReasonReaped
-		task.StoppedAt = time.Now().UTC()
-		if perr := putJSON(kv, k, &task); perr != nil {
-			continue
-		}
+		sc.svc.forceStopTask(kv, accountID, &task, stoppedReasonReaped)
 	}
 }
 

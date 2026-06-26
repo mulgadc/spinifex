@@ -1,7 +1,6 @@
 package handlers_ecs
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -91,6 +90,38 @@ func TestService_RegisterTaskDefinition_RevisionBump(t *testing.T) {
 	assert.Len(t, list.TaskDefinitionArns, 2)
 }
 
+func TestService_ListTaskDefinitions_StatusFilter(t *testing.T) {
+	svc, _ := newTestService(t)
+	registerTaskDef(t, svc, "keep", 128, 256)
+	registerTaskDef(t, svc, "gone", 128, 256)
+
+	_, err := svc.DeregisterTaskDefinition(&ecs.DeregisterTaskDefinitionInput{
+		TaskDefinition: aws.String("gone:1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Default (unset) status lists ACTIVE only; the deregistered revision drops.
+	active, err := svc.ListTaskDefinitions(&ecs.ListTaskDefinitionsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, active.TaskDefinitionArns, 1)
+	assert.Contains(t, aws.StringValue(active.TaskDefinitionArns[0]), "keep:1")
+
+	// Explicit ACTIVE matches the default.
+	activeExplicit, err := svc.ListTaskDefinitions(&ecs.ListTaskDefinitionsInput{
+		Status: aws.String(TaskDefStatusActive),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, activeExplicit.TaskDefinitionArns, 1)
+
+	// INACTIVE returns only the deregistered revision.
+	inactive, err := svc.ListTaskDefinitions(&ecs.ListTaskDefinitionsInput{
+		Status: aws.String(TaskDefStatusInactive),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, inactive.TaskDefinitionArns, 1)
+	assert.Contains(t, aws.StringValue(inactive.TaskDefinitionArns[0]), "gone:1")
+}
+
 func TestService_RegisterTaskDefinition_NoFamily(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(&ecs.RegisterTaskDefinitionInput{}, testAccountID)
@@ -116,14 +147,11 @@ func registerInstance(t *testing.T, svc *Service, cluster, id string, cpu, mem i
 }
 
 func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
-	svc, nc := newTestService(t)
+	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	registerTaskDef(t, svc, "app", 128, 256)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
-
-	sub, err := nc.SubscribeSync(bus.AssignSubject(testAccountID, "web", "i-1"))
-	require.NoError(t, err)
 
 	out, err := svc.RunTask(&ecs.RunTaskInput{
 		Cluster:        aws.String("web"),
@@ -135,11 +163,11 @@ func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
 	assert.Empty(t, out.Failures)
 	assert.Equal(t, "PENDING", aws.StringValue(out.Tasks[0].LastStatus))
 
-	// Assign published to the instance's agent.
-	msg, err := sub.NextMsg(2 * time.Second)
+	// Assign written to the instance's KV inbox, drained by polling the gateway.
+	poll, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
 	require.NoError(t, err)
-	var as bus.Assign
-	require.NoError(t, json.Unmarshal(msg.Data, &as))
+	require.Len(t, poll.Assignments, 1)
+	as := poll.Assignments[0]
 	assert.Equal(t, "i-1", as.InstanceID)
 	require.Len(t, as.Containers, 1)
 	assert.Equal(t, "registry/app:1", as.Containers[0].Image)
@@ -157,6 +185,78 @@ func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, lt.TaskArns, 1)
 	assert.Equal(t, as.TaskID, containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn)))
+}
+
+func TestService_RunTask_AssignCarriesTaskRole(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	roleARN := "arn:aws:iam::123456789012:role/task-app"
+	_, err = svc.RegisterTaskDefinition(&ecs.RegisterTaskDefinitionInput{
+		Family:      aws.String("app"),
+		TaskRoleArn: aws.String(roleARN),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"),
+			Cpu: aws.Int64(128), Memory: aws.Int64(256), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	// Round-trips through DescribeTaskDefinition.
+	d, err := svc.DescribeTaskDefinition(&ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String("app")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, roleARN, aws.StringValue(d.TaskDefinition.TaskRoleArn))
+
+	_, err = svc.RunTask(&ecs.RunTaskInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("app"), Count: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	poll, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, poll.Assignments, 1)
+	assert.Equal(t, roleARN, poll.Assignments[0].TaskRoleARN)
+}
+
+// PollAssignments is at-least-once: re-poll without ack re-delivers the assign;
+// acking it (then STOPPED) drains the inbox so it is never re-delivered.
+func TestService_PollAssignments_AckAndReclaim(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerTaskDef(t, svc, "app", 128, 256)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+	out, err := svc.RunTask(&ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
+	require.NoError(t, err)
+	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
+
+	// Unacked re-poll re-delivers.
+	p1, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, p1.Assignments, 1)
+	p2, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, p2.Assignments, 1)
+
+	// Ack drains the inbox.
+	p3, err := svc.PollAssignments(&PollAssignmentsInput{
+		Cluster: "web", ContainerInstance: "i-1", AckTaskIDs: []string{taskID},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, p3.Assignments)
+
+	// A fresh RunTask + STOPPED reclaims its inbox entry without an explicit ack.
+	out2, err := svc.RunTask(&ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
+	require.NoError(t, err)
+	task2 := containerInstanceShortID(aws.StringValue(out2.Tasks[0].TaskArn))
+	require.NoError(t, svc.recordTaskState(&bus.TaskState{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: task2,
+		LastStatus: bus.TaskStatusStopped,
+	}))
+	p4, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, p4.Assignments)
 }
 
 func TestService_RunTask_ClusterNotFound(t *testing.T) {
@@ -222,6 +322,44 @@ func TestService_RecordTaskState_ReleasesCapacityOnStop(t *testing.T) {
 			assert.Equal(t, int64(2048), aws.Int64Value(r.IntegerValue))
 		}
 	}
+}
+
+// The AWS-API SubmitTaskStateChange path (gateway-routed agent) converges on the
+// same task record + capacity release as the bus path, and resolves a task ARN.
+func TestService_SubmitTaskStateChange_StopsTask(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerTaskDef(t, svc, "app", 128, 256)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+	out, err := svc.RunTask(&ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
+	require.NoError(t, err)
+	taskARN := aws.StringValue(out.Tasks[0].TaskArn) // full ARN exercises taskShortID
+
+	exit := int64(0)
+	ack, err := svc.SubmitTaskStateChange(&ecs.SubmitTaskStateChangeInput{
+		Cluster: aws.String("web"), Task: aws.String(taskARN),
+		Status: aws.String(bus.TaskStatusStopped), Reason: aws.String("exited"),
+		Containers: []*ecs.ContainerStateChange{
+			{ContainerName: aws.String("app"), Status: aws.String(bus.TaskStatusStopped),
+				ExitCode: &exit, RuntimeId: aws.String("ctr-1")},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, ack.Acknowledgment)
+
+	dt, err := svc.DescribeTasks(&ecs.DescribeTasksInput{
+		Cluster: aws.String("web"), Tasks: []*string{aws.String(taskARN)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, dt.Tasks, 1)
+	assert.Equal(t, "STOPPED", aws.StringValue(dt.Tasks[0].LastStatus))
+
+	di, err := svc.DescribeContainerInstances(&ecs.DescribeContainerInstancesInput{
+		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), aws.Int64Value(di.ContainerInstances[0].RunningTasksCount))
 }
 
 func TestService_RecordHeartbeat_UpdatesStatus(t *testing.T) {

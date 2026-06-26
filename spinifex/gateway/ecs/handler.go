@@ -9,6 +9,7 @@
 package gateway_ecs
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -44,38 +45,44 @@ var Actions = map[string]Handler{
 	"CreateCluster":               CreateCluster,
 	"DescribeClusters":            DescribeClusters,
 	"ListClusters":                ListClusters,
-	"DeleteCluster":               NotImplemented,
+	"DeleteCluster":               DeleteCluster,
 	"UpdateCluster":               NotImplemented,
 	"PutClusterCapacityProviders": NotImplemented,
 
 	// Task definition.
 	"RegisterTaskDefinition":     RegisterTaskDefinition,
-	"DeregisterTaskDefinition":   NotImplemented,
+	"DeregisterTaskDefinition":   DeregisterTaskDefinition,
 	"DescribeTaskDefinition":     DescribeTaskDefinition,
 	"ListTaskDefinitions":        ListTaskDefinitions,
 	"ListTaskDefinitionFamilies": NotImplemented,
 
-	// Task. StartTask/StopTask land with the 4f service controller + reaper.
+	// Task.
 	"RunTask":       RunTask,
-	"StartTask":     NotImplemented,
-	"StopTask":      NotImplemented,
+	"StartTask":     StartTask,
+	"StopTask":      StopTask,
 	"DescribeTasks": DescribeTasks,
 	"ListTasks":     ListTasks,
 
+	// Agent task-state reporting (agent → gateway → recordTaskState).
+	"SubmitTaskStateChange": SubmitTaskStateChange,
+
+	// Agent assignment polling (agent drains its inbox over the gateway).
+	"PollAssignments": PollAssignments,
+
 	// Service. ListServicesByNamespace is a no-op stub in v1.
-	"CreateService":           NotImplemented,
-	"UpdateService":           NotImplemented,
-	"DeleteService":           NotImplemented,
-	"DescribeServices":        NotImplemented,
-	"ListServices":            NotImplemented,
+	"CreateService":           CreateService,
+	"UpdateService":           UpdateService,
+	"DeleteService":           DeleteService,
+	"DescribeServices":        DescribeServices,
+	"ListServices":            ListServices,
 	"ListServicesByNamespace": NotImplemented,
 
 	// Container instance.
 	"RegisterContainerInstance":     RegisterContainerInstance,
-	"DeregisterContainerInstance":   NotImplemented,
+	"DeregisterContainerInstance":   DeregisterContainerInstance,
 	"DescribeContainerInstances":    DescribeContainerInstances,
 	"ListContainerInstances":        ListContainerInstances,
-	"UpdateContainerInstancesState": NotImplemented,
+	"UpdateContainerInstancesState": UpdateContainerInstancesState,
 
 	// Account settings (passthrough; no enforcement v1).
 	"PutAccountSetting":   NotImplemented,
@@ -87,6 +94,14 @@ var Actions = map[string]Handler{
 	"ListTagsForResource": NotImplemented,
 }
 
+// RawJSONActions encode their response with encoding/json instead of jsonutil.
+// These are internal agent↔gateway shapes (not AWS SDK types) whose payloads
+// carry RFC3339 time fields the on-VM agent decodes with encoding/json; the
+// jsonutil marshaler would emit epoch-second floats and break the decode.
+var RawJSONActions = map[string]bool{
+	"PollAssignments": true,
+}
+
 // WriteJSONResponse serialises obj as a 200 AWS JSON 1.1 response using the
 // SDK's jsonutil marshaler (epoch-second time encoding), matching ECR/ACM/EKS.
 func WriteJSONResponse(w http.ResponseWriter, obj any) {
@@ -96,6 +111,22 @@ func WriteJSONResponse(w http.ResponseWriter, obj any) {
 		http.Error(w, awserrors.ErrorInternalError, http.StatusInternalServerError)
 		return
 	}
+	writeJSONBody(w, body)
+}
+
+// WriteRawJSONResponse serialises obj with encoding/json (RFC3339 times) for the
+// internal agent↔gateway actions in RawJSONActions.
+func WriteRawJSONResponse(w http.ResponseWriter, obj any) {
+	body, err := json.Marshal(obj)
+	if err != nil {
+		slog.Error("ECS: failed to marshal raw response JSON", "err", err)
+		http.Error(w, awserrors.ErrorInternalError, http.StatusInternalServerError)
+		return
+	}
+	writeJSONBody(w, body)
+}
+
+func writeJSONBody(w http.ResponseWriter, body []byte) {
 	w.Header().Set("Content-Type", JSONContentType)
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(body); err != nil {

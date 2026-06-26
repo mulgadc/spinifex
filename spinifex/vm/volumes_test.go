@@ -616,7 +616,7 @@ func TestAttachVolume_ObjectAddFailure_TriggersUnmountOne(t *testing.T) {
 	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "object-add")
-	assert.Equal(t, []string{"query-block", "object-add"}, recorder.executes(),
+	assert.Equal(t, []string{"object-add"}, recorder.executes(),
 		"object-add failure must short-circuit before blockdev-add")
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
 }
@@ -644,7 +644,7 @@ func TestAttachVolume_BlockdevAddFailure_TriggersUnmountOne(t *testing.T) {
 	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "blockdev-add")
-	assert.Equal(t, []string{"query-block", "object-add", "blockdev-add", "object-del"}, recorder.executes())
+	assert.Equal(t, []string{"object-add", "blockdev-add", "object-del"}, recorder.executes())
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
 }
 
@@ -671,7 +671,7 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelOK_Unmounts(t *testing.T) {
 	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device_add")
-	assert.Equal(t, []string{"query-block", "object-add", "blockdev-add", "device_add", "blockdev-del", "object-del"}, recorder.executes())
+	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del", "object-del"}, recorder.executes())
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne,
 		"successful blockdev-del rollback must be followed by UnmountOne")
 }
@@ -704,7 +704,7 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelFails_SkipsUnmountOne(t *testi
 	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device_add")
-	assert.Equal(t, []string{"query-block", "object-add", "blockdev-add", "device_add", "blockdev-del"}, recorder.executes())
+	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del"}, recorder.executes())
 	assert.Empty(t, mounter.unmountedOne,
 		"failed blockdev-del must skip UnmountOne — unmounting under a live block node crashes QEMU")
 }

@@ -20,20 +20,37 @@ import (
 // remaining actions stay NotImplemented at the gateway.
 type ECSService interface {
 	CreateCluster(input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error)
+	DeleteCluster(input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error)
 	DescribeClusters(input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error)
 	ListClusters(input *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error)
 
 	RegisterTaskDefinition(input *ecs.RegisterTaskDefinitionInput, accountID string) (*ecs.RegisterTaskDefinitionOutput, error)
+	DeregisterTaskDefinition(input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error)
 	DescribeTaskDefinition(input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error)
 	ListTaskDefinitions(input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error)
 
 	RegisterContainerInstance(input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error)
+	DeregisterContainerInstance(input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error)
+	UpdateContainerInstancesState(input *ecs.UpdateContainerInstancesStateInput, accountID string) (*ecs.UpdateContainerInstancesStateOutput, error)
 	DescribeContainerInstances(input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error)
 	ListContainerInstances(input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error)
 
 	RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error)
+	StartTask(input *ecs.StartTaskInput, accountID string) (*ecs.StartTaskOutput, error)
+	StopTask(input *ecs.StopTaskInput, accountID string) (*ecs.StopTaskOutput, error)
 	DescribeTasks(input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error)
 	ListTasks(input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error)
+
+	CreateService(input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error)
+	UpdateService(input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error)
+	DeleteService(input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error)
+	DescribeServices(input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error)
+	ListServices(input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error)
+
+	SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error)
+
+	// PollAssignments drains an instance's task-assignment inbox (agent → gateway).
+	PollAssignments(input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error)
 }
 
 // Service is the daemon-side ECS control-plane implementation, backed by the
@@ -43,6 +60,12 @@ type Service struct {
 	nc     *nats.Conn
 	region string
 	suffix string
+	// eni owns the awsvpc task-ENI control-plane (create/attach/detach/delete).
+	// Defaults to the NATS-backed controller; tests substitute a stub.
+	eni eniController
+	// targets registers/deregisters service tasks with ELBv2 target groups.
+	// Defaults to the NATS-backed registrar; tests substitute a stub.
+	targets targetRegistrar
 }
 
 var _ ECSService = (*Service)(nil)
@@ -51,7 +74,7 @@ var _ ECSService = (*Service)(nil)
 // ARNs it mints; suffix is the AWS-parity internal DNS suffix (reserved for ECR
 // endpoint composition).
 func NewService(nc *nats.Conn, region, suffix string) *Service {
-	return &Service{nc: nc, region: region, suffix: suffix}
+	return &Service{nc: nc, region: region, suffix: suffix, eni: newNATSENIController(nc), targets: newNATSTargetRegistrar(nc)}
 }
 
 // defaultCluster is the implicit cluster name when a request omits one.
@@ -98,6 +121,24 @@ func putJSON(kv nats.KeyValue, key string, v any) error {
 		return fmt.Errorf("put %s: %w", key, err)
 	}
 	return nil
+}
+
+// deleteKeysWithPrefix deletes every KV key under prefix. Used by DeleteCluster
+// to sweep a cluster's whole key subtree (meta/instances/tasks/services/
+// assignments) after its tasks are stopped. Best-effort per key; the first
+// delete error is returned after attempting the rest.
+func deleteKeysWithPrefix(kv nats.KeyValue, prefix string) error {
+	keys, err := keysWithPrefix(kv, prefix)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, k := range keys {
+		if derr := kv.Delete(k); derr != nil && firstErr == nil {
+			firstErr = derr
+		}
+	}
+	return firstErr
 }
 
 // keysWithPrefix returns all KV keys under prefix.
@@ -244,6 +285,7 @@ func (s *Service) RegisterTaskDefinition(input *ecs.RegisterTaskDefinitionInput,
 		NetworkMode:  aws.StringValue(input.NetworkMode),
 		CPU:          aws.StringValue(input.Cpu),
 		Memory:       aws.StringValue(input.Memory),
+		TaskRoleArn:  aws.StringValue(input.TaskRoleArn),
 		Status:       TaskDefStatusActive,
 		RegisteredAt: time.Now().UTC(),
 		Containers:   containerDefsFromAWS(input.ContainerDefinitions),
@@ -270,6 +312,33 @@ func (s *Service) nextRevision(kv nats.KeyValue, family string) (int, error) {
 	return latest + 1, nil
 }
 
+// DeregisterTaskDefinition marks a specific task-definition revision INACTIVE.
+// AWS requires an explicit family:revision (a bare family is rejected); the
+// revision stays describable, matching AWS. Idempotent.
+func (s *Service) DeregisterTaskDefinition(input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
+	family, rev := parseTaskDefRef(aws.StringValue(input.TaskDefinition))
+	if family == "" || rev == 0 {
+		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+	}
+	kv, err := s.bucket(accountID)
+	if err != nil {
+		return nil, err
+	}
+	var rec TaskDefRecord
+	found, err := getJSON(kv, TaskDefRevKey(family, rev), &rec)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+	}
+	rec.Status = TaskDefStatusInactive
+	if err := putJSON(kv, TaskDefRevKey(family, rev), &rec); err != nil {
+		return nil, err
+	}
+	return &ecs.DeregisterTaskDefinitionOutput{TaskDefinition: rec.toAWS()}, nil
+}
+
 // DescribeTaskDefinition resolves "family", "family:rev" or an ARN to a revision.
 func (s *Service) DescribeTaskDefinition(input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error) {
 	kv, err := s.bucket(accountID)
@@ -283,11 +352,17 @@ func (s *Service) DescribeTaskDefinition(input *ecs.DescribeTaskDefinitionInput,
 	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: rec.toAWS()}, nil
 }
 
-// ListTaskDefinitions returns all revision ARNs, optionally filtered by family.
+// ListTaskDefinitions returns revision ARNs, optionally filtered by family and
+// by status. Matching AWS, the status defaults to ACTIVE when unset, so
+// deregistered (INACTIVE) revisions drop off the default listing.
 func (s *Service) ListTaskDefinitions(input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
+	}
+	wantStatus := aws.StringValue(input.Status)
+	if wantStatus == "" {
+		wantStatus = TaskDefStatusActive
 	}
 	prefix := TaskDefFamiliesPrefix()
 	if fam := aws.StringValue(input.FamilyPrefix); fam != "" {
@@ -307,7 +382,7 @@ func (s *Service) ListTaskDefinitions(input *ecs.ListTaskDefinitionsInput, accou
 		if err != nil {
 			return nil, err
 		}
-		if found {
+		if found && rec.Status == wantStatus {
 			out.TaskDefinitionArns = append(out.TaskDefinitionArns, aws.String(rec.ARN))
 		}
 	}
@@ -376,6 +451,9 @@ func (r *TaskDefRecord) toAWS() *ecs.TaskDefinition {
 	}
 	if r.Memory != "" {
 		td.Memory = aws.String(r.Memory)
+	}
+	if r.TaskRoleArn != "" {
+		td.TaskRoleArn = aws.String(r.TaskRoleArn)
 	}
 	for _, c := range r.Containers {
 		td.ContainerDefinitions = append(td.ContainerDefinitions, c.toAWS())

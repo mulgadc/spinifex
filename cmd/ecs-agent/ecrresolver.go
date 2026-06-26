@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/mulgadc/spinifex/cmd/ecs-agent/credentials"
@@ -59,8 +60,24 @@ func (e *ecrResolver) client() (*http.Client, error) {
 	return c, nil
 }
 
+// isECRRef reports whether ref targets an ECR registry, i.e. its registry host
+// is "<acct>.dkr.ecr.<region>.<domain>". Only ECR pulls need a minted token;
+// public registries (docker.io and friends) pull anonymously, so refs without
+// an ECR host must not drag in IMDS host credentials.
+func isECRRef(ref string) bool {
+	host, _, _ := strings.Cut(ref, "/")
+	if !strings.Contains(host, ".") && !strings.Contains(host, ":") {
+		return false // no registry host -> docker.io default
+	}
+	return strings.Contains(host, ".dkr.ecr.")
+}
+
 // Authorize returns the ECR token's user/password and proxy endpoint for ref.
+// Non-ECR refs resolve to anonymous pull (empty credentials).
 func (e *ecrResolver) Authorize(ctx context.Context, ref string) (user, pass, endpoint string, err error) {
+	if !isECRRef(ref) {
+		return "", "", "", nil
+	}
 	c, err := e.creds.Retrieve(ctx)
 	if err != nil {
 		return "", "", "", err

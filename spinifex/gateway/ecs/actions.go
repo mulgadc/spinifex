@@ -26,6 +26,14 @@ func CreateCluster(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	return handlers_ecs.NewNATSECSService(nc).CreateCluster(input, accountID)
 }
 
+func DeleteCluster(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DeleteClusterInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DeleteCluster(input, accountID)
+}
+
 func DescribeClusters(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	input := new(ecs.DescribeClustersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -50,6 +58,14 @@ func RegisterTaskDefinition(nc *nats.Conn, accountID string, body []byte) (any, 
 		return nil, err
 	}
 	return handlers_ecs.NewNATSECSService(nc).RegisterTaskDefinition(input, accountID)
+}
+
+func DeregisterTaskDefinition(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DeregisterTaskDefinitionInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DeregisterTaskDefinition(input, accountID)
 }
 
 func DescribeTaskDefinition(nc *nats.Conn, accountID string, body []byte) (any, error) {
@@ -78,6 +94,22 @@ func RegisterContainerInstance(nc *nats.Conn, accountID string, body []byte) (an
 	return handlers_ecs.NewNATSECSService(nc).RegisterContainerInstance(input, accountID)
 }
 
+func DeregisterContainerInstance(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DeregisterContainerInstanceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DeregisterContainerInstance(input, accountID)
+}
+
+func UpdateContainerInstancesState(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.UpdateContainerInstancesStateInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).UpdateContainerInstancesState(input, accountID)
+}
+
 func DescribeContainerInstances(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	input := new(ecs.DescribeContainerInstancesInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -104,6 +136,22 @@ func RunTask(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	return handlers_ecs.NewNATSECSService(nc).RunTask(input, accountID)
 }
 
+func StartTask(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.StartTaskInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).StartTask(input, accountID)
+}
+
+func StopTask(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.StopTaskInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).StopTask(input, accountID)
+}
+
 func DescribeTasks(nc *nats.Conn, accountID string, body []byte) (any, error) {
 	input := new(ecs.DescribeTasksInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -118,4 +166,69 @@ func ListTasks(nc *nats.Conn, accountID string, body []byte) (any, error) {
 		return nil, err
 	}
 	return handlers_ecs.NewNATSECSService(nc).ListTasks(input, accountID)
+}
+
+// --- Service ---
+
+func CreateService(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.CreateServiceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).CreateService(input, accountID)
+}
+
+func UpdateService(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.UpdateServiceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).UpdateService(input, accountID)
+}
+
+func DeleteService(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DeleteServiceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DeleteService(input, accountID)
+}
+
+func DescribeServices(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DescribeServicesInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DescribeServices(input, accountID)
+}
+
+func ListServices(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.ListServicesInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).ListServices(input, accountID)
+}
+
+// SubmitTaskStateChange is the agent's task-state report path over the gateway
+// (replaces the Layer-2 bus publish). The account is the SigV4 caller, so an
+// instance cannot report state for another account's task.
+func SubmitTaskStateChange(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.SubmitTaskStateChangeInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).SubmitTaskStateChange(input, accountID)
+}
+
+// PollAssignments drains the calling instance's assignment inbox (replaces the
+// Layer-2 assign subscribe). Internal agent↔gateway action, not an AWS SDK
+// shape; the response carries bus.Assign with an RFC3339 time, so the gateway
+// encodes it with encoding/json (RawJSONActions), not the jsonutil marshaler.
+func PollAssignments(nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(handlers_ecs.PollAssignmentsInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).PollAssignments(input, accountID)
 }

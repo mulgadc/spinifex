@@ -57,6 +57,10 @@ func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
+	if gateway_ecs.RawJSONActions[action] {
+		gateway_ecs.WriteRawJSONResponse(w, output)
+		return nil
+	}
 	gateway_ecs.WriteJSONResponse(w, output)
 	return nil
 }

@@ -10,16 +10,27 @@ import (
 // Lifecycle status constants matching the AWS ECS enums. Task statuses are
 // re-exported from the bus package so the scheduler and the wire payloads agree.
 const (
-	ClusterStatusActive = "ACTIVE"
+	ClusterStatusActive   = "ACTIVE"
+	ClusterStatusInactive = "INACTIVE"
 
 	InstanceStatusActive   = "ACTIVE"
 	InstanceStatusDraining = "DRAINING"
 
-	TaskDefStatusActive = "ACTIVE"
+	TaskDefStatusActive   = "ACTIVE"
+	TaskDefStatusInactive = "INACTIVE"
 
 	TaskStatusPending = bus.TaskStatusPending
 	TaskStatusRunning = bus.TaskStatusRunning
 	TaskStatusStopped = bus.TaskStatusStopped
+
+	ServiceStatusActive   = "ACTIVE"
+	ServiceStatusDraining = "DRAINING"
+	ServiceStatusInactive = "INACTIVE"
+
+	// SchedulingStrategyReplica is the only strategy supported in v1 (Q15);
+	// DAEMON is rejected at CreateService.
+	SchedulingStrategyReplica = "REPLICA"
+	SchedulingStrategyDaemon  = "DAEMON"
 )
 
 // ARN builders for the ECS resource shapes (ecs-v1.md §1). Region + accountID
@@ -39,6 +50,27 @@ func TaskARN(region, accountID, cluster, taskID string) string {
 
 func ContainerInstanceARN(region, accountID, cluster, ciID string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:container-instance/%s/%s", region, accountID, cluster, ciID)
+}
+
+func ServiceARN(region, accountID, cluster, name string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:service/%s/%s", region, accountID, cluster, name)
+}
+
+// serviceTaskGroup is the AWS task-group label a service stamps on its tasks
+// ("service:{name}"). The reconciler counts a service's tasks by this group and
+// the task-state hook resolves a task back to its owning service through it.
+func serviceTaskGroup(name string) string {
+	return "service:" + name
+}
+
+// serviceNameFromGroup returns the service name encoded in a task group, or ""
+// when the group is not a service group.
+func serviceNameFromGroup(group string) string {
+	const p = "service:"
+	if len(group) > len(p) && group[:len(p)] == p {
+		return group[len(p):]
+	}
+	return ""
 }
 
 // ClusterRecord is the persisted cluster meta at ClusterMetaKey.
@@ -71,6 +103,7 @@ type TaskDefRecord struct {
 	NetworkMode  string         `json:"networkMode,omitempty"`
 	CPU          string         `json:"cpu,omitempty"`
 	Memory       string         `json:"memory,omitempty"`
+	TaskRoleArn  string         `json:"taskRoleArn,omitempty"`
 	Containers   []ContainerDef `json:"containers"`
 	Status       string         `json:"status"`
 	RegisteredAt time.Time      `json:"registeredAt"`
@@ -129,9 +162,14 @@ type ContainerState struct {
 // TaskRecord is the persisted task state at TaskKey; source of truth for
 // DescribeTasks and the placement/capacity accounting.
 type TaskRecord struct {
-	TaskID               string           `json:"taskId"`
-	ARN                  string           `json:"arn"`
-	Cluster              string           `json:"cluster"`
+	TaskID  string `json:"taskId"`
+	ARN     string `json:"arn"`
+	Cluster string `json:"cluster"`
+	// Group / StartedBy mirror the AWS task fields. A service's tasks carry
+	// Group="service:{name}" so the reconciler counts them and the task-state
+	// hook resolves a RUNNING/STOPPED task back to its owning service.
+	Group                string           `json:"group,omitempty"`
+	StartedBy            string           `json:"startedBy,omitempty"`
 	TaskDefFamily        string           `json:"taskDefFamily"`
 	TaskDefRevision      int              `json:"taskDefRevision"`
 	TaskDefARN           string           `json:"taskDefArn"`
@@ -143,7 +181,53 @@ type TaskRecord struct {
 	ReservedCPU          int              `json:"reservedCpu"`
 	ReservedMemoryMiB    int              `json:"reservedMemoryMiB"`
 	Containers           []ContainerState `json:"containers,omitempty"`
-	CreatedAt            time.Time        `json:"createdAt"`
-	StartedAt            time.Time        `json:"startedAt,omitzero"`
-	StoppedAt            time.Time        `json:"stoppedAt,omitzero"`
+	// NetworkMode is the resolved task network mode (awsvpc|bridge|host). The
+	// STOPPED path consults it to decide whether an ENI must be reclaimed.
+	NetworkMode string `json:"networkMode,omitempty"`
+	// ENI* hold the per-task elastic network interface for awsvpc mode, allocated
+	// by the scheduler at placement and reclaimed at STOPPED. Empty otherwise.
+	ENIID           string    `json:"eniId,omitempty"`
+	ENIAttachmentID string    `json:"eniAttachmentId,omitempty"`
+	ENIPrivateIP    string    `json:"eniPrivateIp,omitempty"`
+	ENIMacAddress   string    `json:"eniMac,omitempty"`
+	ENISubnetID     string    `json:"eniSubnetId,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	StartedAt       time.Time `json:"startedAt,omitzero"`
+	StoppedAt       time.Time `json:"stoppedAt,omitzero"`
+}
+
+// LoadBalancerTarget is one ELBv2 target-group attachment on a service. On task
+// RUNNING the scheduler registers the task's ENI IP at ContainerPort; on STOPPED
+// it deregisters (ecs-v1.md Q8, single-writer).
+type LoadBalancerTarget struct {
+	TargetGroupARN string `json:"targetGroupArn"`
+	ContainerName  string `json:"containerName,omitempty"`
+	ContainerPort  int    `json:"containerPort"`
+}
+
+// ServiceRecord is the persisted service state at ServiceKey. The captured
+// network config + placement strategy let the reconciler launch replacement
+// tasks identically to the original RunTask.
+type ServiceRecord struct {
+	Name               string               `json:"name"`
+	ARN                string               `json:"arn"`
+	Cluster            string               `json:"cluster"`
+	TaskDefFamily      string               `json:"taskDefFamily"`
+	TaskDefRevision    int                  `json:"taskDefRevision"`
+	TaskDefARN         string               `json:"taskDefArn"`
+	DesiredCount       int                  `json:"desiredCount"`
+	Status             string               `json:"status"`
+	SchedulingStrategy string               `json:"schedulingStrategy"`
+	LaunchType         string               `json:"launchType,omitempty"`
+	NetworkMode        string               `json:"networkMode,omitempty"`
+	Subnets            []string             `json:"subnets,omitempty"`
+	SecurityGroups     []string             `json:"securityGroups,omitempty"`
+	AssignPublicIP     string               `json:"assignPublicIp,omitempty"`
+	PlacementStrategy  string               `json:"placementStrategy,omitempty"`
+	LoadBalancers      []LoadBalancerTarget `json:"loadBalancers,omitempty"`
+	DeploymentID       string               `json:"deploymentId"`
+	RunningCount       int                  `json:"runningCount"`
+	PendingCount       int                  `json:"pendingCount"`
+	CreatedAt          time.Time            `json:"createdAt"`
+	UpdatedAt          time.Time            `json:"updatedAt"`
 }

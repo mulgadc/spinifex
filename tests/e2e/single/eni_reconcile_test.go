@@ -41,7 +41,7 @@ func runENIHotplugReconcile(t *testing.T, fix *Fixture) {
 
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	waitForSSHReady(t, host, port, keyPath)
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 	before := guestMACSet(t, tgt)
 

@@ -1036,16 +1036,35 @@ func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(volumeID string) (*vipe
 func (s *VolumeServiceImpl) putVolumeConfig(volumeID string, cfg *viperblock.VolumeConfig) error {
 	configKey := volumeID + "/config.json"
 
+	// The live mounted VB is the single writer that owns the volume's
+	// StateSeqNum: SaveState authoritatively rewrites config.json from its
+	// in-memory VolumeConfig. Writing the object out-of-band here lets the live
+	// VB's next SaveState silently clobber the update, and for an encrypted
+	// volume opening a second writer reuses the AES-GCM nonce (catastrophic).
+	// Route to the live VB whenever the volume is mounted — encrypted and
+	// unencrypted alike — and only fall back when no node owns it (mulga-siv-466).
+	if s.natsConn != nil {
+		err := s.putVolumeConfigViaLiveVB(volumeID, cfg)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, nats.ErrNoResponders) {
+			return err
+		}
+		// ErrNoResponders: no node owns the volume (genuinely detached); fall
+		// through to the detached/direct write below.
+	}
+
 	// config.json for an encrypted volume is a sealed VBState whose AES-GCM tag
-	// and StateSeqNum-derived nonce can only be advanced by the master-key holder
-	// that owns the volume. Rewriting it here would strip the tag or — racing the
-	// live VB — reuse a nonce, so route the update through viperblockd instead.
+	// and StateSeqNum-derived nonce can only be advanced by the master-key holder.
+	// With no live owner, hand it to a viperblockd worker that opens the detached
+	// volume exclusively and reseals — a detached volume has no concurrent writer.
 	encrypted, err := s.configIsEncrypted(volumeID)
 	if err != nil {
 		return err
 	}
 	if encrypted {
-		return s.putVolumeConfigViaKeyholder(volumeID, cfg)
+		return s.putVolumeConfigViaDetached(volumeID, cfg)
 	}
 
 	data, err := s.mergeVolumeConfig(configKey, cfg)
@@ -1092,35 +1111,59 @@ func (s *VolumeServiceImpl) configIsEncrypted(volumeID string) (bool, error) {
 	return false, nil
 }
 
-// putVolumeConfigViaKeyholder routes an encrypted-volume config update through
-// viperblockd, the master-key holder. The owning node answers
-// ebs.config.{volumeID} and updates its live VB. If no node owns the volume
-// (detached), ErrNoResponders routes to the ebs.config queue group, where a
-// worker opens the volume exclusively and reseals. A detached volume has no
-// concurrent writer, so the reopen is nonce-safe.
-func (s *VolumeServiceImpl) putVolumeConfigViaKeyholder(volumeID string, cfg *viperblock.VolumeConfig) error {
+// putVolumeConfigViaLiveVB routes a config update to the node that owns the live
+// mounted VB (ebs.config.{volumeID}). That VB is the single StateSeqNum writer,
+// so applyConfigUpdate updates its in-memory VolumeConfig and SaveState persists
+// it — no silent clobber, no concurrent writer. Returns nats.ErrNoResponders
+// when no node owns the volume (detached); the caller then takes the detached
+// path. Works for encrypted and unencrypted volumes alike.
+func (s *VolumeServiceImpl) putVolumeConfigViaLiveVB(volumeID string, cfg *viperblock.VolumeConfig) error {
+	reqData, err := marshalConfigUpdate(volumeID, cfg)
+	if err != nil {
+		return err
+	}
+	msg, err := s.natsConn.Request("ebs.config."+volumeID, reqData, 30*time.Second)
+	if err != nil {
+		// nats.ErrNoResponders propagates so the caller can fall back.
+		return err
+	}
+	return decodeConfigUpdateResponse(volumeID, msg)
+}
+
+// putVolumeConfigViaDetached hands an encrypted-volume config update to the
+// ebs.config queue group, where a viperblockd worker opens the detached volume
+// exclusively and reseals. Safe only when no node owns the volume: a detached
+// volume has no concurrent writer, so the reopen is nonce-safe.
+func (s *VolumeServiceImpl) putVolumeConfigViaDetached(volumeID string, cfg *viperblock.VolumeConfig) error {
 	if s.natsConn == nil {
 		return fmt.Errorf("encrypted volume %s requires NATS to reach the viperblock keyholder, but no connection is configured", volumeID)
 	}
-
-	cfgData, err := json.Marshal(cfg)
+	reqData, err := marshalConfigUpdate(volumeID, cfg)
 	if err != nil {
-		return fmt.Errorf("marshal VolumeConfig: %w", err)
+		return err
 	}
-	reqData, err := json.Marshal(types.EBSConfigUpdateRequest{Volume: volumeID, VolumeConfig: cfgData})
-	if err != nil {
-		return fmt.Errorf("marshal config update request: %w", err)
-	}
-
-	msg, err := s.natsConn.Request("ebs.config."+volumeID, reqData, 30*time.Second)
-	if errors.Is(err, nats.ErrNoResponders) {
-		// Volume not mounted anywhere -- fall back to the queue group.
-		msg, err = s.natsConn.Request("ebs.config", reqData, 30*time.Second)
-	}
+	msg, err := s.natsConn.Request("ebs.config", reqData, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("ebs.config request for %s: %w", volumeID, err)
 	}
+	return decodeConfigUpdateResponse(volumeID, msg)
+}
 
+// marshalConfigUpdate wraps a VolumeConfig as an EBSConfigUpdateRequest payload.
+func marshalConfigUpdate(volumeID string, cfg *viperblock.VolumeConfig) ([]byte, error) {
+	cfgData, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal VolumeConfig: %w", err)
+	}
+	reqData, err := json.Marshal(types.EBSConfigUpdateRequest{Volume: volumeID, VolumeConfig: cfgData})
+	if err != nil {
+		return nil, fmt.Errorf("marshal config update request: %w", err)
+	}
+	return reqData, nil
+}
+
+// decodeConfigUpdateResponse turns an ebs.config reply into an error or nil.
+func decodeConfigUpdateResponse(volumeID string, msg *nats.Msg) error {
 	var resp types.EBSConfigUpdateResponse
 	if err := json.Unmarshal(msg.Data, &resp); err != nil {
 		return fmt.Errorf("unmarshal config update response: %w", err)

@@ -332,7 +332,7 @@ var instanceFamilyDefs = []instanceFamilyDef{
 	// System (internal-only, not exposed via DescribeInstanceTypes)
 	{name: "sys", sizes: systemSizes, currentGen: true},
 
-	// GPU Accelerated — not emitted by generateForGeneration; used by generateGPUTypes.
+	// GPU Accelerated — not emitted by generateForGeneration; used by GenerateGPUTypes.
 	{name: "g4dn", sizes: g4dnSizes, currentGen: true},
 	{name: "g4ad", sizes: g4adSizes, currentGen: true},
 	{name: "g5", sizes: g5Sizes, currentGen: true},

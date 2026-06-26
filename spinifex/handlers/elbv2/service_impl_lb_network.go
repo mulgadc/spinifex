@@ -108,7 +108,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	desired := desiredSubnetSet(input)
+	desired := flattenSubnetIDs(input.Subnets, input.SubnetMappings)
 	if len(desired) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -235,11 +235,6 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 
 	slog.Info("SetSubnets completed", "arn", *input.LoadBalancerArn, "subnets", len(desired), "added", len(toAdd), "removed", len(toRemove), "state", lb.State)
 	return s.setSubnetsOutput(lb), nil
-}
-
-// desiredSubnetSet flattens Subnets and SubnetMappings into a deduplicated, ordered list.
-func desiredSubnetSet(input *elbv2.SetSubnetsInput) []string {
-	return flattenSubnetIDs(input.Subnets, input.SubnetMappings)
 }
 
 // flattenSubnetIDs deduplicates the explicit Subnets list and the SubnetMappings

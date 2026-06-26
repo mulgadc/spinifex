@@ -134,7 +134,7 @@ func (reg *Registry) GetManifest(account, repo, ref string, acceptedTypes []stri
 		}
 		return nil, "", "", err
 	}
-	if len(acceptedTypes) > 0 && !mediaTypeAccepted(acceptedTypes, meta.MediaType) {
+	if len(acceptedTypes) > 0 && !slices.Contains(acceptedTypes, meta.MediaType) {
 		return nil, "", "", ErrImageNotFound
 	}
 	out, err := scoped.Store.GetObject(&s3.GetObjectInput{
@@ -325,9 +325,4 @@ func (reg *Registry) referencedDigests(account string) (map[string]bool, error) 
 		}
 	}
 	return referenced, nil
-}
-
-// mediaTypeAccepted reports whether mediaType is in the accepted set.
-func mediaTypeAccepted(accepted []string, mediaType string) bool {
-	return slices.Contains(accepted, mediaType)
 }

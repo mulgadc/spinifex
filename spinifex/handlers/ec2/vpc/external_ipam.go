@@ -103,7 +103,7 @@ func (m *ExternalIPAM) AllocateIP(region, az, purpose, allocID, eniID, instanceI
 	if pool == nil {
 		return "", "", fmt.Errorf("InsufficientAddressCapacity: no external pool available for region=%q az=%q", region, az)
 	}
-	ip, err := m.allocateFromPool(pool.Name, purpose, allocID, eniID, instanceID)
+	ip, err := m.AllocateFromPool(pool.Name, purpose, allocID, eniID, instanceID)
 	if err != nil {
 		return "", "", err
 	}
@@ -112,10 +112,6 @@ func (m *ExternalIPAM) AllocateIP(region, az, purpose, allocID, eniID, instanceI
 
 // AllocateFromPool allocates an IP from a specific named pool.
 func (m *ExternalIPAM) AllocateFromPool(poolName, purpose, allocID, eniID, instanceID string) (string, error) {
-	return m.allocateFromPool(poolName, purpose, allocID, eniID, instanceID)
-}
-
-func (m *ExternalIPAM) allocateFromPool(poolName, purpose, allocID, eniID, instanceID string) (string, error) {
 	alloc, err := m.allocatorFor(poolName)
 	if err != nil {
 		return "", err

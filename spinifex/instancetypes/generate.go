@@ -113,12 +113,7 @@ func generateSystemTypes(arch string) map[string]*ec2.InstanceTypeInfo {
 }
 
 // GenerateGPUTypes returns InstanceTypeInfo entries for each GPU model with GpuInfo populated.
-// Exported for use by the daemon's hot-reload path.
 func GenerateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTypeInfo {
-	return generateGPUTypes(models, arch)
-}
-
-func generateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTypeInfo {
 	types := make(map[string]*ec2.InstanceTypeInfo)
 	seen := make(map[string]bool)
 
@@ -262,7 +257,7 @@ func DetectAndGenerate(cpu CPUInfo, arch string, gpuModels []GPUModel) map[strin
 
 	// Merge in GPU instance types if the host has recognized GPUs.
 	if len(gpuModels) > 0 {
-		maps.Copy(types, generateGPUTypes(gpuModels, arch))
+		maps.Copy(types, GenerateGPUTypes(gpuModels, arch))
 	}
 
 	if len(types) == 0 {

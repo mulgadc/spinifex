@@ -116,7 +116,7 @@ func TestCreateCluster_PostPlacementFailedThenDeleteTerminatesControlPlane(t *te
 // same-name retry ever fires the FAILED-cluster reclaim, and the internet-facing
 // LB VM would otherwise keep its allocated+associated EIP indefinitely. The
 // FAILED meta is retained for observability; purge is idempotent so a later
-// DeleteCluster re-purge is a no-op (mulga-siv-293).
+// DeleteCluster re-purge is a no-op.
 func TestCreateCluster_FailedLaunchEagerlyPurgesInfra(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.inst.launchErr = errors.New("no capacity")

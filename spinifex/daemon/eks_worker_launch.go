@@ -56,7 +56,7 @@ func (d *Daemon) RunWorkerInstanceOnNode(nodeID string, input *ec2.RunInstancesI
 // the gateway TerminateInstances path. The owning daemon runs the full teardown
 // — detach + force-delete the worker's primary ENI and clear its
 // spinifex-vpc-enis record — so a dangling in-use ENI cannot pin the customer
-// VPC/subnet undeletable (mulga-siv-408). A local-only vmMgr.Get would skip any
+// VPC/subnet undeletable. A local-only vmMgr.Get would skip any
 // worker placed on another node, stranding both the VM and its ENI. An instance
 // with no owner (no responder, not found) is already gone, so a retried
 // DeleteNodegroup stays idempotent.

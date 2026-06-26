@@ -1333,7 +1333,7 @@ func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 	svc.snapshotKV = kv
 
 	// Drift: a detach/terminate left State empty with no attachment. The volume
-	// is not in use and must be deletable, not VolumeInUse (mulga-siv-409).
+	// is not in use and must be deletable, not VolumeInUse.
 	createVolumeInStoreWithMeta(t, store, "vol-drift", viperblock.VolumeMetadata{
 		VolumeID: "vol-drift",
 		SizeGiB:  10,
@@ -1362,7 +1362,7 @@ func TestDescribeVolumes_EmptyStateDerivedFromAttachment(t *testing.T) {
 		got[aws.StringValue(v.VolumeId)] = aws.StringValue(v.State)
 	}
 	assert.Equal(t, "available", got["vol-empty-unattached"], "empty state + no attachment renders available")
-	assert.Equal(t, "in-use", got["vol-empty-attached"], "empty state + attachment must not be masked as available (mulga-siv-409)")
+	assert.Equal(t, "in-use", got["vol-empty-attached"], "empty state + attachment must not be masked as available")
 }
 
 func TestUpdateVolumeState_EmptyUnattachedNormalizesToAvailable(t *testing.T) {
@@ -1371,7 +1371,7 @@ func TestUpdateVolumeState_EmptyUnattachedNormalizesToAvailable(t *testing.T) {
 	seedVolume(t, svc, "vol-norm", "in-use", "i-x")
 
 	// A detach writeback that clears the attachment without a state must not
-	// strand the volume with an empty State (mulga-siv-409).
+	// strand the volume with an empty State.
 	require.NoError(t, svc.UpdateVolumeState("vol-norm", "", "", ""))
 	cfg, err := svc.GetVolumeConfig("vol-norm")
 	require.NoError(t, err)

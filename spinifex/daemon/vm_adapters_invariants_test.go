@@ -17,7 +17,7 @@ import (
 // (vm/crash_recovery.go), where the instance keeps its attachment and restarts —
 // only DetachVolume and terminate release a boot volume. Releasing it here while
 // the instance still owns it splits the volume-state record (describe-instances
-// "attached" vs describe-volumes "available", mulga-siv-462). EFI is not a
+// "attached" vs describe-volumes "available"). EFI is not a
 // sufficient proxy for "boot": BIOS-boot roots are Boot && !EFI, so the gate must
 // also exclude Boot. Only non-boot data volumes may be released by Unmount.
 func TestUnmountNeverReleasesBootVolume(t *testing.T) {
@@ -50,7 +50,7 @@ func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 
 	calls := volState.snapshot()
 	assert.NotContains(t, calls, "vol-bios-root:available",
-		"a BIOS-boot root volume (Boot && !EFI) must stay attached across stop/crash unmount, not be released to available (mulga-siv-462)")
+		"a BIOS-boot root volume (Boot && !EFI) must stay attached across stop/crash unmount, not be released to available")
 	assert.NotContains(t, calls, "vol-efi-root:available",
 		"an EFI-boot root volume must stay attached across stop/crash unmount")
 	assert.Contains(t, calls, "vol-data:available",

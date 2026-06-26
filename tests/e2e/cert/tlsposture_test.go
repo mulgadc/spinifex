@@ -14,7 +14,7 @@ import (
 
 // TestTLSPosture asserts the deployed awsgw listeners actually negotiate
 // TLS 1.3 and a PQ-hybrid curve from the pinned policy. This is the live
-// proof for the PQC Phase 2.1 work (docs/development/improvements/pqc-roadmap.md):
+// proof for the PQC Phase 2.1 work:
 // it runs under the production FIPS build (GOFIPS140=v1.0.0,
 // GODEBUG=fips140=on) and catches regressions where unit tests pass but
 // something in the deploy path silently disables ML-KEM.

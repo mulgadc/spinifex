@@ -659,7 +659,7 @@ func TestTerminateK3sServerVM_ENINotFoundIsIdempotent(t *testing.T) {
 }
 
 func TestTerminateK3sServerVM_ENIInUseDetachedThenDeletes(t *testing.T) {
-	// mulga-siv-407: the ENI record still shows the attachment (VM gone but
+	// The ENI record still shows the attachment (VM gone but
 	// fields never cleared), so a plain force=false delete returns InUse forever
 	// and wedges EKSDeletingReaper. Teardown owns the ENI: detach clears the
 	// stale attachment, then the delete succeeds — no retry loop.

@@ -285,7 +285,7 @@ func TerminateK3sServerVM(
 // owns this ENI and has already terminated its VM, so the attachment is
 // authoritatively dead even if the record still shows it in-use — a state a
 // plain force=false delete would reject as InvalidNetworkInterface.InUse
-// forever, wedging EKSDeletingReaper in a no-progress loop (mulga-siv-407).
+// forever, wedging EKSDeletingReaper in a no-progress loop.
 // Detach first to clear the stale attachment fields, then delete. Both calls
 // tolerate an already-gone ENI (NotFound), so a race with the async
 // instance-terminate cascade that removes the same ENI resolves to idempotent

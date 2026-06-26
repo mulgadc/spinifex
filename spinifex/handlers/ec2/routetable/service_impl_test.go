@@ -79,7 +79,7 @@ func TestCreateRouteTable(t *testing.T) {
 	assert.Equal(t, "active", *rtb.Routes[0].State)
 }
 
-// TestCreateRouteTable_PersistsTagsForTagFilterDiscovery locks mulga-siv-303:
+// TestCreateRouteTable_PersistsTagsForTagFilterDiscovery locks the contract:
 // CreateRouteTable must persist TagSpecifications so the tag-driven CP-VPC
 // teardown can find the private route table, clear its NAT-GW route, and let
 // the NAT gateway (and its billable EIP) be reclaimed.
@@ -104,7 +104,7 @@ func TestCreateRouteTable_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 		},
 	}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, out.RouteTables, 1, "tagged route table must be discoverable by tag filter (mulga-siv-303)")
+	require.Len(t, out.RouteTables, 1, "tagged route table must be discoverable by tag filter")
 
 	tags := map[string]string{}
 	for _, tg := range out.RouteTables[0].Tags {

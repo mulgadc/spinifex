@@ -65,8 +65,8 @@ func TestCreateNatGateway(t *testing.T) {
 	assert.Equal(t, "203.0.113.50", *ngw.NatGatewayAddresses[0].PublicIp)
 }
 
-// TestCreateNatGateway_PersistsTagsForTagFilterDiscovery locks the mulga-siv-303
-// fix: CreateNatGateway must persist TagSpecifications so DeleteClusterCPVPC can
+// TestCreateNatGateway_PersistsTagsForTagFilterDiscovery locks the
+// contract: CreateNatGateway must persist TagSpecifications so DeleteClusterCPVPC can
 // find the cluster NAT gateway by tag filter and release its EIP. A dropped tag
 // makes the tag-filtered describe return empty, leaking the NAT-GW EIP.
 func TestCreateNatGateway_PersistsTagsForTagFilterDiscovery(t *testing.T) {
@@ -91,7 +91,7 @@ func TestCreateNatGateway_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 		},
 	}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, out.NatGateways, 1, "tagged NAT GW must be discoverable by tag filter (mulga-siv-303)")
+	require.Len(t, out.NatGateways, 1, "tagged NAT GW must be discoverable by tag filter")
 	tags := filterutil.EC2TagsToMap(out.NatGateways[0].Tags)
 	assert.Equal(t, "alpha", tags["spinifex:eks-cluster"])
 	assert.Equal(t, "cp-natgw", tags["spinifex:eks-role"])

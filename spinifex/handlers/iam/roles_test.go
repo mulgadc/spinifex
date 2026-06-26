@@ -720,7 +720,7 @@ func TestGetRolePolicies_UnresolvablePolicy(t *testing.T) {
 // TestGetRolePolicies_AWSManagedResolved proves a stock EKS node role — whose
 // grants come entirely from AWS-managed policies — resolves to the builtin
 // grant documents, so assumed-role authorization honours them instead of
-// denying every call (the regression behind mulga-siv-297).
+// denying every call.
 func TestGetRolePolicies_AWSManagedResolved(t *testing.T) {
 	svc := setupTestIAMService(t)
 	role := createTestRole(t, svc, "eks-node-role")

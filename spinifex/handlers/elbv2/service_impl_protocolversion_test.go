@@ -12,7 +12,7 @@ import (
 // An HTTP/HTTPS target group must default ProtocolVersion to HTTP1 and round-trip
 // it through both the Create output and DescribeTargetGroups. The load balancer
 // controller always sends ProtocolVersion and recreates the TG (DuplicateTargetGroupName
-// loop) if Describe reads it back empty — see mulga-siv-416.
+// loop) if Describe reads it back empty.
 func TestCreateTargetGroup_ProtocolVersionDefaultsAndRoundTrips(t *testing.T) {
 	svc := setupTestService(t)
 

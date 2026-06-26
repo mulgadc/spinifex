@@ -60,7 +60,7 @@ func TestOnInstanceUpHook_ReArmsSystemTerminateForELBv2(t *testing.T) {
 	assert.Equal(t, "system.TerminateInstance.i-up-sys", sub.Subject)
 }
 
-// TestOnInstanceUpHook_ReArmsSystemTerminateForEKS locks mulga-siv-295.10: an EKS
+// TestOnInstanceUpHook_ReArmsSystemTerminateForEKS locks the contract: an EKS
 // K3s control-plane VM placed on the coordinator's own node (local launch, no
 // remote-launch handler) must still bind system.TerminateInstance.{id} via the
 // OnInstanceUp funnel — otherwise a cluster-wide teardown invoked on another node

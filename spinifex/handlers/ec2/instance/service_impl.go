@@ -2169,7 +2169,7 @@ func (s *InstanceServiceImpl) deleteInstanceENI(instance *vm.VM, instanceID stri
 	// still show Status=in-use/AttachmentId set; without the detach the
 	// force=false DeleteNetworkInterface below fails InvalidNetworkInterface.InUse,
 	// stranding the ENI record after the instance is already gone from the store
-	// and blocking VPC/subnet delete (mulga-siv-408). Best-effort: the delete is
+	// and blocking VPC/subnet delete. Best-effort: the delete is
 	// the authoritative gate.
 	if s.eniCreator != nil {
 		if err := s.eniCreator.DetachENI(instance.AccountID, instance.ENIId); err != nil {

@@ -33,7 +33,7 @@ func TestTerminateWorkerInstances_NotFoundIsIdempotent(t *testing.T) {
 
 // Worker terminate must route to whichever node owns the VM via ec2.cmd.<id>,
 // not a local-only vmMgr lookup; the owner runs the full teardown (incl. ENI
-// detach+delete) so no dangling ENI pins the VPC undeletable (mulga-siv-408).
+// detach+delete) so no dangling ENI pins the VPC undeletable.
 func TestTerminateWorkerInstances_RoutesToOwner(t *testing.T) {
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)

@@ -923,8 +923,7 @@ func (s *VolumeServiceImpl) getVolumeByID(volumeID string) (*volumeResult, error
 
 	// An empty State is internal drift, not a valid AWS state. Derive the
 	// effective state from ground truth (the attachment) rather than blindly
-	// rendering "available", which would hide an empty-but-attached volume
-	// (mulga-siv-409).
+	// rendering "available", which would hide an empty-but-attached volume.
 	state := volMeta.State
 	if state == "" {
 		if volMeta.AttachedInstance != "" {
@@ -1259,8 +1258,7 @@ func (s *VolumeServiceImpl) UpdateVolumeState(volumeID, state, attachedInstance,
 
 	// A detached volume is "available": never persist an empty State for an
 	// unattached volume, so a detach/terminate writeback that omits the state
-	// cannot strand the volume in drift that later reads as undeletable
-	// (mulga-siv-409).
+	// cannot strand the volume in drift that later reads as undeletable.
 	if state == "" && attachedInstance == "" {
 		state = "available"
 	}
@@ -1399,7 +1397,7 @@ func (s *VolumeServiceImpl) DeleteVolume(input *ec2.DeleteVolumeInput, accountID
 	// empty: a detach/terminate that failed to write back "available" leaves the
 	// State drifted to empty with no attachment, and gating on State=="available"
 	// exactly would return VolumeInUse for a volume nothing is using, stranding it
-	// undeletable and blocking stack teardown (mulga-siv-409).
+	// undeletable and blocking stack teardown.
 	state := cfg.VolumeMetadata.State
 	if cfg.VolumeMetadata.AttachedInstance != "" || (state != "available" && state != "") {
 		slog.Error("DeleteVolume: volume is in use", "volumeId", volumeID, "state", state, "attachedInstance", cfg.VolumeMetadata.AttachedInstance)

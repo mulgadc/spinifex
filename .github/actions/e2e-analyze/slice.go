@@ -1,7 +1,6 @@
 package main
 
-// Stage 2 of docs/development/improvements/e2e-go-failure-analysis.md:
-// per-failure log slicers used by bundle.go to materialise time-window /
+// Stage 2: per-failure log slicers used by bundle.go to materialise time-window /
 // testcase-window log excerpts next to each named failure.
 
 import (

@@ -345,7 +345,7 @@ func TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete(t *testing.T) {
 	assert.True(t, deleted["sg-cp"] && deleted["sg-ng"], "both cluster SGs removed")
 }
 
-// TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers guards mulga-siv-410:
+// TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers guards the contract:
 // a cluster SG is pinned by ANY referencing rule in the VPC, including an egress
 // rule on a non-cluster SG (LBC/ALB, user/TF). The teardown must revoke both
 // directions on every non-default SG so the cluster SGs delete, must NOT delete

@@ -1734,7 +1734,7 @@ func TestTerminateStoppedInstance_ENIDeleted(t *testing.T) {
 	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 	// Detach must precede the delete so a stale in-use attachment can't strand
-	// the ENI record after the instance is gone (mulga-siv-408).
+	// the ENI record after the instance is gone.
 	assert.Equal(t, 1, ec.detachCalls, "ENI must be detached before delete")
 	assert.Equal(t, []string{"eni-1234"}, ed.calls)
 }

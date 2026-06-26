@@ -113,6 +113,8 @@ func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
 	return p
 }
 
+var _ InstanceService = (*InstanceServiceImpl)(nil)
+
 // InstanceServiceImpl handles daemon-side EC2 instance operations
 type InstanceServiceImpl struct {
 	config        *config.Config
@@ -218,9 +220,8 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		ec2Instance.SetArchitecture(arch)
 	}
 
-	// Stamp the constant IMDSv2-only metadata-options block so DescribeInstances
-	// and get-instance-metadata-options report the platform posture. Only the
-	// hop limit is request-driven; the rest are platform invariants.
+	// Stamp the constant IMDSv2-only block so DescribeInstances reports the
+	// posture; only the hop limit is request-driven.
 	var hopLimit *int64
 	if input.MetadataOptions != nil {
 		hopLimit = input.MetadataOptions.HttpPutResponseHopLimit
@@ -1910,12 +1911,9 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
 }
 
-// ModifyInstanceMetadataOptions applies a metadata-options change. Only the hop
-// limit is mutable — validateMetadataOptions rejects any request that would
-// re-enable IMDSv1 or an unmodelled feature. It mirrors the running-first /
-// stopped-store path of DisableApiTermination: AWS permits this on running
-// instances, so there is deliberately no stopped-only guard that would wrongly
-// IncorrectInstanceState a hop-limit apply on a live node.
+// ModifyInstanceMetadataOptions applies a metadata-options change; only the hop
+// limit is mutable. It mirrors DisableApiTermination's running-first/stopped path
+// — no stopped-only guard, since AWS permits this on running instances.
 func (s *InstanceServiceImpl) ModifyInstanceMetadataOptions(input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
 	if input.InstanceId == nil || *input.InstanceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1934,21 +1932,30 @@ func (s *InstanceServiceImpl) ModifyInstanceMetadataOptions(input *ec2.ModifyIns
 
 	// Running-first: mutate the live instance's block, falling through to the
 	// stopped store only when the instance isn't running on this node.
-	var notVisible bool
+	var notVisible, integrityErr bool
 	var options *ec2.InstanceMetadataOptionsResponse
 	updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
 		if !IsInstanceVisible(accountID, v.AccountID) {
 			notVisible = true
 			return false
 		}
+		if v.Instance == nil {
+			integrityErr = true
+			return false
+		}
 		applyMetadataOptions(v.Instance, input.HttpPutResponseHopLimit)
-		options = v.Instance.MetadataOptions
+		opt := *v.Instance.MetadataOptions
+		options = &opt
 		return true
 	})
 	if notVisible {
 		slog.Warn("ModifyInstanceMetadataOptions: instance not visible",
 			"instanceId", instanceID, "callerAccount", accountID)
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if integrityErr {
+		slog.Error("ModifyInstanceMetadataOptions: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if updated {
 		if persistErr != nil {
@@ -1977,6 +1984,10 @@ func (s *InstanceServiceImpl) ModifyInstanceMetadataOptions(input *ec2.ModifyIns
 		slog.Warn("ModifyInstanceMetadataOptions: instance not visible",
 			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Instance == nil {
+		slog.Error("ModifyInstanceMetadataOptions: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	applyMetadataOptions(instance.Instance, input.HttpPutResponseHopLimit)

@@ -122,7 +122,58 @@ func TestModifyInstanceMetadataOptions_NotFound(t *testing.T) {
 		HttpPutResponseHopLimit: aws.Int64(2),
 	}, utils.GlobalAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound), "got %v", err)
+}
+
+// A nil Instance (data-integrity case the sibling ModifyInstanceAttribute also
+// guards) returns ServerInternal rather than panicking the daemon — on both the
+// running and stopped paths.
+func TestModifyInstanceMetadataOptions_NilInstance(t *testing.T) {
+	owner := utils.GlobalAccountID
+
+	t.Run("running", func(t *testing.T) {
+		id := "i-nil-run"
+		v := &vm.VM{ID: id, AccountID: owner, Status: vm.StateRunning, Instance: nil}
+		svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+		_, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+			InstanceId: aws.String(id), HttpPutResponseHopLimit: aws.Int64(2),
+		}, owner)
+		require.Error(t, err)
+		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorServerInternal), "got %v", err)
+	})
+
+	t.Run("stopped", func(t *testing.T) {
+		id := "i-nil-stop"
+		stored := &vm.VM{ID: id, AccountID: owner, Status: vm.StateStopped, Instance: nil}
+		store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: stored}}
+		svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
+		_, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+			InstanceId: aws.String(id), HttpPutResponseHopLimit: aws.Int64(2),
+		}, owner)
+		require.Error(t, err)
+		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorServerInternal), "got %v", err)
+	})
+}
+
+// A legacy instance launched before the constant block (nil MetadataOptions) is
+// stamped with the full IMDSv2-only block on the first modify, not just the hop.
+func TestModifyInstanceMetadataOptions_LegacyNilBlockStamped(t *testing.T) {
+	owner := utils.GlobalAccountID
+	id := "i-legacy"
+	v := &vm.VM{
+		ID: id, AccountID: owner, Status: vm.StateRunning,
+		Instance: &ec2.Instance{InstanceId: aws.String(id)},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+	out, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId: aws.String(id), HttpPutResponseHopLimit: aws.Int64(2),
+	}, owner)
+	require.NoError(t, err)
+	require.NotNil(t, out.InstanceMetadataOptions)
+	assert.Equal(t, ec2.HttpTokensStateRequired, aws.StringValue(out.InstanceMetadataOptions.HttpTokens))
+	assert.Equal(t, int64(2), aws.Int64Value(out.InstanceMetadataOptions.HttpPutResponseHopLimit))
+	require.NotNil(t, v.Instance.MetadataOptions, "the legacy instance must be stamped in place")
 }
 
 // The constant block reports the IMDSv2-only posture: required tokens, endpoint

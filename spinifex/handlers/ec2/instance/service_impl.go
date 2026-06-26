@@ -113,6 +113,8 @@ func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
 	return p
 }
 
+var _ InstanceService = (*InstanceServiceImpl)(nil)
+
 // InstanceServiceImpl handles daemon-side EC2 instance operations
 type InstanceServiceImpl struct {
 	config        *config.Config
@@ -218,6 +220,14 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		ec2Instance.SetArchitecture(arch)
 	}
 
+	// Stamp the constant IMDSv2-only block so DescribeInstances reports the
+	// posture; only the hop limit is request-driven.
+	var hopLimit *int64
+	if input.MetadataOptions != nil {
+		hopLimit = input.MetadataOptions.HttpPutResponseHopLimit
+	}
+	ec2Instance.MetadataOptions = buildMetadataOptions(hopLimit)
+
 	// IAM instance profile attached at launch: gateway has already resolved
 	// the reference to a canonical ARN and enforced iam:PassRole; here we
 	// just persist it on the VM and generate the association ID. Id is left
@@ -280,6 +290,21 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	}
 	if input == nil || input.InstanceType == nil {
 		return nil, nil, nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	// Reject a metadata-options downgrade before allocating capacity: http-tokens=
+	// optional and other weakenings return UnsupportedOperation under IMDSv2
+	// enforcement. RunInstance seeds the hop limit onto the per-instance block.
+	if opts := input.MetadataOptions; opts != nil {
+		if err := validateMetadataOptions(
+			aws.StringValue(opts.HttpTokens),
+			aws.StringValue(opts.HttpEndpoint),
+			aws.StringValue(opts.HttpProtocolIpv6),
+			aws.StringValue(opts.InstanceMetadataTags),
+			opts.HttpPutResponseHopLimit,
+		); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
 	instanceType, exists := s.instanceTypes[*input.InstanceType]
@@ -1884,6 +1909,94 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 
 	slog.Info("ModifyInstanceAttribute: completed successfully", "instanceId", instanceID)
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
+}
+
+// ModifyInstanceMetadataOptions applies a metadata-options change; only the hop
+// limit is mutable. It mirrors DisableApiTermination's running-first/stopped path
+// — no stopped-only guard, since AWS permits this on running instances.
+func (s *InstanceServiceImpl) ModifyInstanceMetadataOptions(input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
+	if input.InstanceId == nil || *input.InstanceId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	instanceID := *input.InstanceId
+
+	if err := validateMetadataOptions(
+		aws.StringValue(input.HttpTokens),
+		aws.StringValue(input.HttpEndpoint),
+		aws.StringValue(input.HttpProtocolIpv6),
+		aws.StringValue(input.InstanceMetadataTags),
+		input.HttpPutResponseHopLimit,
+	); err != nil {
+		return nil, err
+	}
+
+	// Running-first: mutate the live instance's block, falling through to the
+	// stopped store only when the instance isn't running on this node.
+	var notVisible, integrityErr bool
+	var options *ec2.InstanceMetadataOptionsResponse
+	updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
+		if !IsInstanceVisible(accountID, v.AccountID) {
+			notVisible = true
+			return false
+		}
+		if v.Instance == nil {
+			integrityErr = true
+			return false
+		}
+		applyMetadataOptions(v.Instance, input.HttpPutResponseHopLimit)
+		opt := *v.Instance.MetadataOptions
+		options = &opt
+		return true
+	})
+	if notVisible {
+		slog.Warn("ModifyInstanceMetadataOptions: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if integrityErr {
+		slog.Error("ModifyInstanceMetadataOptions: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if updated {
+		if persistErr != nil {
+			slog.Error("ModifyInstanceMetadataOptions: persist failed", "instanceId", instanceID, "err", persistErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.Info("ModifyInstanceMetadataOptions: updated running instance", "instanceId", instanceID)
+		return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: aws.String(instanceID), InstanceMetadataOptions: options}, nil
+	}
+
+	if s.stoppedStore == nil {
+		slog.Error("ModifyInstanceMetadataOptions: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.Error("ModifyInstanceMetadataOptions: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		slog.Warn("ModifyInstanceMetadataOptions: instance not found", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.Warn("ModifyInstanceMetadataOptions: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Instance == nil {
+		slog.Error("ModifyInstanceMetadataOptions: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	applyMetadataOptions(instance.Instance, input.HttpPutResponseHopLimit)
+	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
+		slog.Error("ModifyInstanceMetadataOptions: failed to persist stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.Info("ModifyInstanceMetadataOptions: updated stopped instance", "instanceId", instanceID)
+	return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: aws.String(instanceID), InstanceMetadataOptions: instance.Instance.MetadataOptions}, nil
 }
 
 // StoppedInstanceNode returns the node that last hosted the stopped instance,

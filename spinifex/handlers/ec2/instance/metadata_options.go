@@ -1,8 +1,11 @@
 package handlers_ec2_instance
 
 import (
+	"errors"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 // defaultMetadataHopLimit is the IMDS PUT-response hop limit applied at launch
@@ -29,4 +32,30 @@ func buildMetadataOptions(hopLimit *int64) *ec2.InstanceMetadataOptionsResponse 
 		InstanceMetadataTags:    aws.String(ec2.InstanceMetadataTagsStateDisabled),
 		HttpPutResponseHopLimit: aws.Int64(limit),
 	}
+}
+
+// validateMetadataOptions rejects any metadata-options request that would weaken
+// the IMDSv2-only posture or enable a feature the platform does not model. It is
+// shared by RunInstances and ModifyInstanceMetadataOptions. Empty values carry
+// AWS "leave unchanged" semantics and pass as idempotent no-ops; only the hop
+// limit is mutable, accepted across the AWS-valid 1-64 range. Under permanent
+// IMDSv2 enforcement, rejecting http-tokens=optional with UnsupportedOperation is
+// AWS-faithful, not a divergence.
+func validateMetadataOptions(httpTokens, httpEndpoint, ipv6, tags string, hopLimit *int64) error {
+	if httpTokens != "" && httpTokens != ec2.HttpTokensStateRequired {
+		return errors.New(awserrors.ErrorUnsupportedOperation)
+	}
+	if httpEndpoint != "" && httpEndpoint != ec2.InstanceMetadataEndpointStateEnabled {
+		return errors.New(awserrors.ErrorUnsupportedOperation)
+	}
+	if ipv6 != "" && ipv6 != ec2.InstanceMetadataProtocolStateDisabled {
+		return errors.New(awserrors.ErrorUnsupportedOperation)
+	}
+	if tags != "" && tags != ec2.InstanceMetadataTagsStateDisabled {
+		return errors.New(awserrors.ErrorUnsupportedOperation)
+	}
+	if hopLimit != nil && (*hopLimit < 1 || *hopLimit > 64) {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	return nil
 }

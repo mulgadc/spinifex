@@ -120,6 +120,7 @@ func (s *Service) UpdateContainerInstancesState(input *ecs.UpdateContainerInstan
 			continue
 		}
 		rec.Status = status
+		rec.Reaped = false
 		if perr := putJSON(kv, InstanceKey(cluster, id), &rec); perr != nil {
 			return nil, perr
 		}

@@ -149,6 +149,11 @@ type InstanceRecord struct {
 	PlacedTasks       []string  `json:"placedTasks,omitempty"`
 	RegisteredAt      time.Time `json:"registeredAt"`
 	LastSeen          time.Time `json:"lastSeen"`
+	// Reaped marks a DRAINING caused by the heartbeat reaper (involuntary), as
+	// opposed to an operator UpdateContainerInstancesState drain. A reaped
+	// instance is restored to ACTIVE when its agent re-registers; an operator
+	// drain persists.
+	Reaped bool `json:"reaped,omitempty"`
 }
 
 // ContainerState is a container's last-reported status within a task record.

@@ -32,6 +32,10 @@ type fakeSGProvisioner struct {
 	perms       map[string][]*ec2.IpPermission
 	permsEgress map[string][]*ec2.IpPermission
 
+	// tagsByID maps groupId → its tags, served on the VPC sweep so the LBC-SG reap
+	// can match the ownership tag.
+	tagsByID map[string][]*ec2.Tag
+
 	// enforceDepViolation models AWS refusing to delete an SG that still has
 	// ingress rules (e.g. a sibling cross-reference), so a test proves the
 	// revoke-before-delete ordering.
@@ -124,6 +128,7 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(input *ec2.DescribeSecurityGr
 				VpcId:               aws.String(vpc),
 				IpPermissions:       f.perms[id],
 				IpPermissionsEgress: f.permsEgress[id],
+				Tags:                f.tagsByID[id],
 			})
 		}
 		return out, nil
@@ -261,6 +266,35 @@ func TestDeleteClusterSGs_DeletesBothExisting(t *testing.T) {
 	require.Len(t, sgp.deleteCalls, 2)
 	assert.Equal(t, "sg-existing-cp", aws.StringValue(sgp.deleteCalls[0].GroupId))
 	assert.Equal(t, "sg-existing-ng", aws.StringValue(sgp.deleteCalls[1].GroupId))
+}
+
+// An LBC-orphaned SG (k8s-traffic-toc-*) carrying this cluster's ownership tag is
+// deleted alongside the named cluster SGs, while an untagged third-party SG in the
+// same VPC has its rules revoked but is left intact.
+func TestDeleteClusterSGs_ReapsLBCTaggedSGs(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cp"
+	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
+	sgp.existing["k8s-traffic-toc-abc|vpc-aaa"] = "sg-lbc"
+	sgp.existing["k8s-traffic-toc-other|vpc-aaa"] = "sg-lbc-other"
+	sgp.existing["user-app-sg|vpc-aaa"] = "sg-user"
+	sgp.tagsByID = map[string][]*ec2.Tag{
+		"sg-lbc":       {{Key: aws.String(lbcClusterOwnershipTagKey), Value: aws.String("alpha")}},
+		"sg-lbc-other": {{Key: aws.String(lbcClusterOwnershipTagKey), Value: aws.String("beta")}},
+	}
+
+	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	require.NoError(t, err)
+
+	deleted := map[string]bool{}
+	for _, c := range sgp.deleteCalls {
+		deleted[aws.StringValue(c.GroupId)] = true
+	}
+	assert.True(t, deleted["sg-cp"], "control-plane SG deleted")
+	assert.True(t, deleted["sg-ng"], "nodegroup SG deleted")
+	assert.True(t, deleted["sg-lbc"], "LBC SG owned by alpha deleted")
+	assert.False(t, deleted["sg-lbc-other"], "LBC SG owned by beta left intact")
+	assert.False(t, deleted["sg-user"], "untagged third-party SG left intact")
 }
 
 func TestDeleteClusterSGs_MissingSGsNoOp(t *testing.T) {

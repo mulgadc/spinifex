@@ -1013,6 +1013,17 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		}
 	}
 
+	// Reap LBC-orphaned ALBs (k8s-toc-*) in the customer VPC before the SG sweep:
+	// the in-cluster AWS LoadBalancer Controller runs under the customer account and
+	// spinifex never tracks its ALBs, so nothing else deletes them and they pin the
+	// VPC (and their k8s-traffic-toc-* SGs) undeletable. Must precede DeleteClusterSGs
+	// so the ALB no longer references the SG it reaps.
+	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
+		if err := ReapLBCLoadBalancers(s.deps.NLB, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+			teardownErrs = append(teardownErrs, fmt.Errorf("reap LBC ALBs: %w", err))
+		}
+	}
+
 	// SG / IGW / CP-VPC cleanup runs even when an earlier step failed: the cluster
 	// SGs sit in the customer VPC, so skipping them would pin the VPC. Failures are
 	// joined into teardownErrs (not swallowed) so the meta survives for a retry.

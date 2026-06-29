@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
@@ -20,6 +21,7 @@ type nlbProvisioner interface {
 	CreateClusterNLBSync(input *elbv2.CreateLoadBalancerInput, accountID string, crossAccountENIs []sysinstance.ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error)
 	DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error)
 	DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error)
+	DescribeTags(input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error)
 
 	CreateTargetGroup(input *elbv2.CreateTargetGroupInput, accountID string) (*elbv2.CreateTargetGroupOutput, error)
 	DescribeTargetGroups(input *elbv2.DescribeTargetGroupsInput, accountID string) (*elbv2.DescribeTargetGroupsOutput, error)
@@ -43,6 +45,12 @@ const k3sAPIServerPort int64 = 6443
 // clusterNLBListenPort is the customer-facing port the cluster NLB exposes.
 // kubectl + the AWS SDK both expect TLS on 443.
 const clusterNLBListenPort int64 = 443
+
+// lbcClusterOwnershipTagKey is the AWS-standard ownership tag the in-cluster AWS
+// LoadBalancer Controller stamps on every ALB and SG it provisions. Spinifex
+// passes it through verbatim, so it reliably discriminates LBC-orphaned
+// resources from spinifex-owned ones (which use spinifex:eks-cluster).
+const lbcClusterOwnershipTagKey = "elbv2.k8s.aws/cluster"
 
 // ClusterNLB is the NLB resource tuple produced by EnsureClusterNLB; ARNs are persisted to ClusterMeta.
 type ClusterNLB struct {
@@ -437,6 +445,69 @@ func lookupTGByName(nlbp nlbProvisioner, accountID, name string) (*elbv2.TargetG
 		}
 	}
 	return nil, nil
+}
+
+// ReapLBCLoadBalancers deletes ALBs the in-cluster AWS LoadBalancer Controller
+// provisioned in the customer VPC (k8s-toc-*) but spinifex never tracked, so the
+// cluster's own teardown would otherwise leave them pinning the VPC undeletable
+// on DependencyViolation. Match is by AWS-standard ownership tag scoped to this
+// cluster + VPC; the cluster's own NLB is already torn down before this runs, so
+// it is not re-matched. A raced-away LB (NotFound) is skipped. Errors are joined
+// so a failed reap keeps the cluster in DELETING for a retry rather than
+// completing with a leaked ALB.
+func ReapLBCLoadBalancers(nlbp nlbProvisioner, accountID, clusterName, vpcID string) error {
+	if clusterName == "" || vpcID == "" {
+		return nil
+	}
+	out, err := nlbp.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{}, accountID)
+	if err != nil {
+		return fmt.Errorf("describe LBs for LBC reap: %w", err)
+	}
+	var errs []error
+	for _, lb := range out.LoadBalancers {
+		if lb == nil || lb.LoadBalancerArn == nil || aws.StringValue(lb.VpcId) != vpcID {
+			continue
+		}
+		arn := aws.StringValue(lb.LoadBalancerArn)
+		owned, ownErr := lbOwnedByCluster(nlbp, accountID, arn, clusterName)
+		if ownErr != nil {
+			errs = append(errs, ownErr)
+			continue
+		}
+		if !owned {
+			continue
+		}
+		if _, err := nlbp.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lb.LoadBalancerArn}, accountID); err != nil && !awserrors.IsNotFound(err) {
+			slog.Warn("ReapLBCLoadBalancers: delete LBC ALB failed", "arn", arn, "err", err)
+			errs = append(errs, fmt.Errorf("delete LBC ALB %s: %w", arn, err))
+			continue
+		}
+		slog.Info("ReapLBCLoadBalancers: reaped orphan LBC ALB", "arn", arn, "cluster", clusterName)
+	}
+	return errors.Join(errs...)
+}
+
+// lbOwnedByCluster reports whether the LB carries the LBC ownership tag for this
+// cluster. A NotFound (raced-away LB) is treated as not-owned so the reap skips it.
+func lbOwnedByCluster(nlbp nlbProvisioner, accountID, arn, clusterName string) (bool, error) {
+	out, err := nlbp.DescribeTags(&elbv2.DescribeTagsInput{ResourceArns: aws.StringSlice([]string{arn})}, accountID)
+	if err != nil {
+		if awserrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("describe tags for %s: %w", arn, err)
+	}
+	for _, desc := range out.TagDescriptions {
+		if desc == nil {
+			continue
+		}
+		for _, tag := range desc.Tags {
+			if tag != nil && aws.StringValue(tag.Key) == lbcClusterOwnershipTagKey && aws.StringValue(tag.Value) == clusterName {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func lookupListenerByPort(nlbp nlbProvisioner, accountID, lbArn string, port int64) (*elbv2.Listener, error) {

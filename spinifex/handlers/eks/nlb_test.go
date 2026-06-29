@@ -37,6 +37,10 @@ type fakeNLBProvisioner struct {
 	lbByName       map[string]*elbv2.LoadBalancer
 	tgByName       map[string]*elbv2.TargetGroup
 	listenerByPort map[string]map[int64]*elbv2.Listener // lbArn → port → listener
+	tagsByArn      map[string][]*elbv2.Tag              // lb arn → tags (LBC ownership reap)
+
+	describeTagsCalls []*elbv2.DescribeTagsInput
+	describeTagsErr   error
 
 	createLBOut       *elbv2.CreateLoadBalancerOutput
 	createTGOut       *elbv2.CreateTargetGroupOutput
@@ -63,6 +67,7 @@ func newFakeNLBProvisioner() *fakeNLBProvisioner {
 		lbByName:       map[string]*elbv2.LoadBalancer{},
 		tgByName:       map[string]*elbv2.TargetGroup{},
 		listenerByPort: map[string]map[int64]*elbv2.Listener{},
+		tagsByArn:      map[string][]*elbv2.Tag{},
 	}
 }
 
@@ -124,6 +129,14 @@ func (f *fakeNLBProvisioner) CreateLoadBalancer(input *elbv2.CreateLoadBalancerI
 func (f *fakeNLBProvisioner) DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, _ string) (*elbv2.DescribeLoadBalancersOutput, error) {
 	f.describeLBCalls = append(f.describeLBCalls, input)
 	out := &elbv2.DescribeLoadBalancersOutput{}
+	// No name/arn filter: list every LB (account-scoped in the real impl), as the
+	// LBC ALB reap relies on to enumerate untracked load balancers.
+	if len(input.Names) == 0 && len(input.LoadBalancerArns) == 0 {
+		for _, lb := range f.lbByName {
+			out.LoadBalancers = append(out.LoadBalancers, lb)
+		}
+		return out, nil
+	}
 	for _, n := range input.Names {
 		if n == nil {
 			continue
@@ -131,6 +144,24 @@ func (f *fakeNLBProvisioner) DescribeLoadBalancers(input *elbv2.DescribeLoadBala
 		if lb, ok := f.lbByName[*n]; ok {
 			out.LoadBalancers = append(out.LoadBalancers, lb)
 		}
+	}
+	return out, nil
+}
+
+func (f *fakeNLBProvisioner) DescribeTags(input *elbv2.DescribeTagsInput, _ string) (*elbv2.DescribeTagsOutput, error) {
+	f.describeTagsCalls = append(f.describeTagsCalls, input)
+	if f.describeTagsErr != nil {
+		return nil, f.describeTagsErr
+	}
+	out := &elbv2.DescribeTagsOutput{}
+	for _, arn := range input.ResourceArns {
+		if arn == nil {
+			continue
+		}
+		out.TagDescriptions = append(out.TagDescriptions, &elbv2.TagDescription{
+			ResourceArn: arn,
+			Tags:        f.tagsByArn[*arn],
+		})
 	}
 	return out, nil
 }
@@ -607,4 +638,59 @@ func assertELBv2TaggedAsEKS(t *testing.T, tgs []*elbv2.Tag, clusterName string) 
 	}
 	assert.Equal(t, tags.ManagedByEKS, got[tags.ManagedByKey])
 	assert.Equal(t, clusterName, got[clusterEKSClusterTagKey])
+}
+
+// seedLBCALB registers an LBC-style ALB in the fake with the given VPC and an
+// optional ownership-tag cluster value (empty = untagged); returns its ARN.
+func (f *fakeNLBProvisioner) seedLBCALB(name, vpcID, ownerCluster string) string {
+	arn := "arn:aws:elasticloadbalancing:us-east-1:111122223333:loadbalancer/app/" + name + "/lbc-" + name
+	f.lbByName[name] = &elbv2.LoadBalancer{
+		LoadBalancerArn:  aws.String(arn),
+		LoadBalancerName: aws.String(name),
+		VpcId:            aws.String(vpcID),
+	}
+	if ownerCluster != "" {
+		f.tagsByArn[arn] = []*elbv2.Tag{{
+			Key:   aws.String(lbcClusterOwnershipTagKey),
+			Value: aws.String(ownerCluster),
+		}}
+	}
+	return arn
+}
+
+// Only an LBC ALB in the customer VPC carrying this cluster's ownership tag is
+// reaped — a different VPC, a different cluster, or no ownership tag is left alone.
+func TestReapLBCLoadBalancers_DeletesOnlyOwnedInVPC(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	owned := nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
+	nlbp.seedLBCALB("k8s-toc-othervpc", "vpc-other", "alpha")   // wrong VPC
+	nlbp.seedLBCALB("k8s-toc-othercluster", "vpc-cust", "beta") // wrong cluster
+	nlbp.seedLBCALB("k8s-toc-untagged", "vpc-cust", "")         // no ownership tag
+
+	require.NoError(t, ReapLBCLoadBalancers(nlbp, "111122223333", "alpha", "vpc-cust"))
+
+	require.Len(t, nlbp.deleteLBCalls, 1)
+	assert.Equal(t, owned, aws.StringValue(nlbp.deleteLBCalls[0].LoadBalancerArn))
+}
+
+// Empty cluster name or VPC id is a no-op (nothing to scope the reap to).
+func TestReapLBCLoadBalancers_EmptyArgsNoop(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
+
+	require.NoError(t, ReapLBCLoadBalancers(nlbp, "111122223333", "", "vpc-cust"))
+	require.NoError(t, ReapLBCLoadBalancers(nlbp, "111122223333", "alpha", ""))
+	assert.Empty(t, nlbp.deleteLBCalls)
+}
+
+// A delete failure surfaces so the teardown backstop retries rather than leaking
+// the ALB (which would pin the VPC undeletable).
+func TestReapLBCLoadBalancers_DeleteErrorSurfaces(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
+	nlbp.deleteLBErr = errors.New("boom")
+
+	err := ReapLBCLoadBalancers(nlbp, "111122223333", "alpha", "vpc-cust")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
 }

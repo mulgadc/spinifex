@@ -530,7 +530,11 @@ type fakeResourceCapacityProvider struct {
 	reservationAllocated []*ec2.InstanceTypeInfo
 	reservationReleased  []*ec2.InstanceTypeInfo
 	reservationAvailFn   func(string, string, *ec2.InstanceTypeInfo) int
+
+	memPressure bool
 }
+
+func (f *fakeResourceCapacityProvider) HostUnderMemoryPressure() bool { return f.memPressure }
 
 func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
 	f.calls++
@@ -3186,6 +3190,104 @@ func TestDescribeInstanceStatus_TagFilter(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-tag", *out.InstanceStatuses[0].InstanceId)
+}
+
+func TestDescribeInstanceStatus_QMPUnresponsiveImpaired(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-imp", owner)
+	since := time.Now().Add(-90 * time.Second)
+	v.Health.QMPConsecutiveFailures = vm.QMPMaxConsecutiveFailures
+	v.Health.ImpairedSince = since
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	s := out.InstanceStatuses[0]
+	assert.Equal(t, "running", *s.InstanceState.Name)
+	assert.Equal(t, "impaired", *s.InstanceStatus.Status)
+	require.Len(t, s.InstanceStatus.Details, 1)
+	assert.Equal(t, "failed", *s.InstanceStatus.Details[0].Status)
+	require.NotNil(t, s.InstanceStatus.Details[0].ImpairedSince)
+	assert.WithinDuration(t, since, *s.InstanceStatus.Details[0].ImpairedSince, time.Second)
+	// SystemStatus is host-level: the node is still reachable.
+	assert.Equal(t, "ok", *s.SystemStatus.Status)
+}
+
+func TestDescribeInstanceStatus_BelowThresholdStaysOK(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-ok", owner)
+	v.Health.QMPConsecutiveFailures = vm.QMPMaxConsecutiveFailures - 1
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "ok", *out.InstanceStatuses[0].InstanceStatus.Status)
+	assert.Equal(t, "passed", *out.InstanceStatuses[0].InstanceStatus.Details[0].Status)
+}
+
+func TestDescribeInstanceStatus_RecentLaunchInitializing(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-new", owner)
+	now := time.Now()
+	v.Instance.LaunchTime = &now
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "initializing", *out.InstanceStatuses[0].InstanceStatus.Status)
+	assert.Equal(t, "initializing", *out.InstanceStatuses[0].InstanceStatus.Details[0].Status)
+}
+
+func TestDescribeInstanceStatus_PastGraceOK(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-old", owner)
+	old := time.Now().Add(-5 * time.Minute)
+	v.Instance.LaunchTime = &old
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "ok", *out.InstanceStatuses[0].InstanceStatus.Status)
+}
+
+func TestDescribeInstanceStatus_MemoryPressureSystemImpaired(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-press", owner)
+	svc := &InstanceServiceImpl{
+		config:      &config.Config{AZ: "az-a"},
+		vmMgr:       mgrWith(map[string]*vm.VM{v.ID: v}),
+		resourceMgr: &fakeResourceCapacityProvider{memPressure: true},
+	}
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	s := out.InstanceStatuses[0]
+	// Instance itself is healthy; only the host system status is impaired.
+	assert.Equal(t, "ok", *s.InstanceStatus.Status)
+	assert.Equal(t, "impaired", *s.SystemStatus.Status)
+	assert.Equal(t, "failed", *s.SystemStatus.Details[0].Status)
+}
+
+func TestDescribeInstanceStatus_NoPressureSystemOK(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-fine", owner)
+	svc := &InstanceServiceImpl{
+		config:      &config.Config{AZ: "az-a"},
+		vmMgr:       mgrWith(map[string]*vm.VM{v.ID: v}),
+		resourceMgr: &fakeResourceCapacityProvider{memPressure: false},
+	}
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "ok", *out.InstanceStatuses[0].SystemStatus.Status)
 }
 
 // TestInstanceArchitecture pins the safe-extraction contract: malformed

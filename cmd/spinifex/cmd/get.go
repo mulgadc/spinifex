@@ -289,7 +289,7 @@ func runGetVMs(cmd *cobra.Command, args []string) {
 	})
 
 	tableData := pterm.TableData{
-		{"INSTANCE", "STATUS", "TYPE", "VCPU", "MEM", "NODE", "IP", "AGE"},
+		{"INSTANCE", "STATUS", "HEALTH", "CRASHES", "TYPE", "VCPU", "MEM", "NODE", "IP", "AGE"},
 	}
 
 	for _, v := range allVMs {
@@ -297,9 +297,15 @@ func runGetVMs(cmd *cobra.Command, args []string) {
 		if v.LaunchTime > 0 {
 			age = formatUptime(time.Now().Unix() - v.LaunchTime)
 		}
+		health := v.Health
+		if health == "" {
+			health = "-"
+		}
 		tableData = append(tableData, []string{
 			v.InstanceID,
 			v.Status,
+			health,
+			strconv.Itoa(v.CrashCount),
 			v.InstanceType,
 			strconv.Itoa(v.VCPU),
 			formatMemGB(v.MemoryGB),

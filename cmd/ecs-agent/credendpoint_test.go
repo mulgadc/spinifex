@@ -151,6 +151,45 @@ func TestCredEndpoint_StartServesOverLoopback(t *testing.T) {
 	}
 }
 
+func TestCredEndpoint_RedirectInstallsAndRemovesDNAT(t *testing.T) {
+	// failOn the -C existence check so addRedirect falls through to -A.
+	f := &fakeNetRunner{failOn: "-t nat -C"}
+	c := newCredEndpoint(nil, "us-east-1", "https://gw", "", "169.254.170.2", 80, f)
+	if c.listenPort() != defaultCredProxyPort {
+		t.Fatalf("listenPort = %d, want %d (proxy)", c.listenPort(), defaultCredProxyPort)
+	}
+	if err := c.addRedirect(); err != nil {
+		t.Fatalf("addRedirect: %v", err)
+	}
+	target := "-d 169.254.170.2 -p tcp --dport 80 -j DNAT --to-destination 169.254.170.2:51679"
+	for _, chain := range []string{"-A OUTPUT", "-A PREROUTING"} {
+		if !f.sawAny("iptables -t nat " + chain + " " + target) {
+			t.Errorf("missing add rule for %s; calls=%v", chain, f.joined())
+		}
+	}
+	c.delRedirect()
+	for _, chain := range []string{"-D OUTPUT", "-D PREROUTING"} {
+		if !f.sawAny("iptables -t nat " + chain + " " + target) {
+			t.Errorf("missing delete rule for %s; calls=%v", chain, f.joined())
+		}
+	}
+}
+
+func TestCredEndpoint_RedirectSkippedOnLoopback(t *testing.T) {
+	f := &fakeNetRunner{}
+	c := newCredEndpoint(nil, "us-east-1", "https://gw", "", "127.0.0.1", 0, f)
+	if err := c.addRedirect(); err != nil {
+		t.Fatalf("addRedirect: %v", err)
+	}
+	c.delRedirect()
+	if f.sawAny("iptables") {
+		t.Errorf("loopback mode must not touch iptables; calls=%v", f.joined())
+	}
+	if c.listenPort() != c.port {
+		t.Errorf("loopback listenPort = %d, want caller port %d", c.listenPort(), c.port)
+	}
+}
+
 func TestCredRelativeURI(t *testing.T) {
 	if got := credRelativeURI("abc"); got != "/v2/credentials/abc" {
 		t.Errorf("credRelativeURI = %q", got)

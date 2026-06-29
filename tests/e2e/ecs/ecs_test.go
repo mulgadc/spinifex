@@ -32,12 +32,12 @@ const (
 	ecsSubnetBCIDR = "10.41.2.0/24"
 	ecsClusterPfx  = "ecs-e2e"
 	ecsInstanceTyp = "t3.small"
-	// awsvpc tasks serve HTTP on 80 (isolated ENI netns) so the ALB target group
-	// health check (GET /) passes. bridge/host tasks share the host netns, where
-	// the agent credential endpoint owns 169.254.170.2:80, so they run a durable
-	// no-port command instead and only assert placement + mode, not serving.
-	ecsTaskImage    = "docker.io/library/nginx:1.27-alpine"
-	ecsHostNetnsCmd = "sleep 600"
+	// All three network modes run nginx serving on :80. The agent credential
+	// endpoint no longer holds 169.254.170.2:80 (it binds a high proxy port and
+	// DNATs :80 to it), so bridge/host tasks sharing the host netns can bind :80
+	// without colliding; the settle guard in waitTaskRunning catches a regression
+	// (a crash-looping :80 bind flaps RUNNING then STOPPED).
+	ecsTaskImage = "docker.io/library/nginx:1.27-alpine"
 )
 
 // TestECS drives the ECS data plane end-to-end against the local awsgw: a
@@ -86,13 +86,13 @@ func TestECS(t *testing.T) {
 	})
 
 	t.Run("TaskBridge", func(t *testing.T) {
-		tdArn := registerTaskDef(t, c, fx, "bridge", strings.Fields(ecsHostNetnsCmd))
+		tdArn := registerTaskDef(t, c, fx, "bridge", nil)
 		task := runStandaloneTask(t, c, fx, tdArn, nil)
 		assert.Empty(t, task.Attachments, "bridge task must not allocate an ENI")
 	})
 
 	t.Run("TaskHost", func(t *testing.T) {
-		tdArn := registerTaskDef(t, c, fx, "host", strings.Fields(ecsHostNetnsCmd))
+		tdArn := registerTaskDef(t, c, fx, "host", nil)
 		task := runStandaloneTask(t, c, fx, tdArn, nil)
 		assert.Empty(t, task.Attachments, "host task must not allocate an ENI")
 	})
@@ -513,9 +513,9 @@ func waitContainerInstanceActive(t *testing.T, c *harness.AWSClient, cluster, ec
 // --- Task definitions & standalone tasks ----------------------------------
 
 // registerTaskDef registers a one-container task definition. command overrides
-// the image entrypoint; when set the container exposes no port (used by the
-// host-netns modes to avoid the credential endpoint's :80). When command is nil
-// the container runs nginx and publishes 80 for ALB/awsvpc serving.
+// the image entrypoint and exposes no port; when command is nil the container
+// runs nginx and publishes 80, which every network mode now does (the
+// credential endpoint no longer owns the host-netns :80).
 func registerTaskDef(t *testing.T, c *harness.AWSClient, fx *ecsFixture, networkMode string, command []string) string {
 	t.Helper()
 	family := fmt.Sprintf("%s-%s", fx.ClusterName, networkMode)

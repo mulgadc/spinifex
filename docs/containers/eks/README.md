@@ -36,6 +36,10 @@ An EKS cluster on Spinifex has two parts: a **control plane** (the managed Kuber
 
 Authentication uses **EKS access entries** (the API authentication mode) — IAM principals are mapped to Kubernetes RBAC groups, and `kubectl` authenticates with `aws eks get-token` exactly as it does on AWS.
 
+<p align="center">
+  <img src="../../../.github/assets/diagrams/eks-topology.svg" alt="EKS on Spinifex — a managed control plane (public API NLB plus apiserver VM) fronts a managed node group of eks-node worker VMs running pods across two subnets, pulling images from ECR" width="900">
+</p>
+
 **What you'll create:**
 
 | Resource | Purpose |
@@ -56,6 +60,21 @@ Authentication uses **EKS access entries** (the API authentication mode) — IAM
 - **Default Kubernetes version is `1.32`.**
 
 ## Prerequisites
+
+> [!IMPORTANT]
+> **Prerequisite — `eks-node` image required.**
+>
+> Node groups always boot Spinifex's **`eks-node`** image, and it **must** be registered before you create a cluster — the console blocks cluster creation until it is present. Import it during `spx admin init` (or via the image catalogue) ahead of time.
+>
+> **Verify before continuing:**
+>
+> ```bash
+> aws ec2 describe-images \
+>   --filters 'Name=tag:spinifex:managed-by,Values=eks' \
+>   --query 'Images[].[ImageId,Name]' --output text
+> ```
+>
+> No rows means the image is not imported — register it before continuing.
 
 Before creating a cluster you need the supporting infrastructure in place. The Terraform workbooks build all of this for you; if you are using the CLI or console, create it first.
 

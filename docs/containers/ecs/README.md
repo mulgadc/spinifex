@@ -34,6 +34,10 @@ There is **no ECS-specific launch API** — this is AWS-faithful. You add capaci
 
 A **task definition** describes one or more containers (image, CPU/memory, ports, environment, and an optional task IAM role). A **task** is a running instantiation of a task definition; the scheduler bin-packs tasks onto instances with free capacity. A **service** keeps a desired number of tasks running, replaces failed ones, and — when configured — registers each task's IP with an Application Load Balancer target group.
 
+<p align="center">
+  <img src="../../../.github/assets/diagrams/ecs-topology.svg" alt="ECS on Spinifex — an Application Load Balancer fronts awsvpc tasks running on container instances booted from the spinifex-ecs-node AMI; the ECS agent registers with the Spinifex gateway over TLS and SigV4 and serves task-role credentials to containers" width="900">
+</p>
+
 **What you'll create:**
 
 | Resource | Purpose |
@@ -65,6 +69,21 @@ ECS v1 is deliberately minimal. Keep these in mind:
 - **`secrets[]` are silently dropped**, and tags set via `TagResource` are not persisted. Health-check settings beyond the target group default are not forwarded.
 
 ## Prerequisites
+
+> [!IMPORTANT]
+> **Prerequisite — `spinifex-ecs-node` image required.**
+>
+> Container instances **must** boot Spinifex's **`spinifex-ecs-node`** image — it carries the ECS agent. Import it before provisioning capacity (during `spx admin init` or via the image catalogue); the console's provision-capacity action and the Terraform workbook both resolve it by tag.
+>
+> **Verify before continuing:**
+>
+> ```bash
+> aws ec2 describe-images \
+>   --filters 'Name=tag:spinifex:managed-by,Values=ecs' \
+>   --query 'Images[].[ImageId,Name]' --output text
+> ```
+>
+> No rows means the image is not imported — register it before continuing.
 
 The Terraform workbook builds all of this for you. For the CLI or console paths, have it in place first.
 

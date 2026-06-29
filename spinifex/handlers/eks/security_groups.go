@@ -140,6 +140,24 @@ func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) e
 		}
 	}
 
+	// Reap LBC-orphaned SGs (k8s-traffic-toc-*): the in-cluster AWS LoadBalancer
+	// Controller creates these in the customer VPC and spinifex never tracks them,
+	// so nothing else deletes them and they pin the VPC on DependencyViolation.
+	// Match by the LBC ownership tag; rules were already revoked above. Runs after
+	// the matching ALB reap, so the LB no longer references the SG.
+	for _, g := range out.SecurityGroups {
+		if g == nil || g.GroupId == nil || aws.StringValue(g.GroupName) == "default" {
+			continue
+		}
+		if !sgHasLBCClusterTag(g, clusterName) {
+			continue
+		}
+		if delErr := deleteSGAwaitingDetach(sgp, accountID, aws.StringValue(g.GroupId)); delErr != nil {
+			slog.Warn("DeleteClusterSGs: LBC SG delete failed", "sg", aws.StringValue(g.GroupId), "err", delErr)
+			record(fmt.Errorf("delete LBC SG %s: %w", aws.StringValue(g.GroupId), delErr))
+		}
+	}
+
 	// Delete only the cluster-owned SGs.
 	for _, name := range []string{ClusterControlPlaneSGName(clusterName), ClusterNodegroupSGName(clusterName)} {
 		id, lookupErr := lookupSGByName(sgp, accountID, vpcID, name)
@@ -437,6 +455,17 @@ func EnsureControlPlaneHAIngress(sgp sgProvisioner, accountID, cpSGID string) er
 		}
 	}
 	return nil
+}
+
+// sgHasLBCClusterTag reports whether the SG carries the AWS LoadBalancer
+// Controller ownership tag for this cluster.
+func sgHasLBCClusterTag(g *ec2.SecurityGroup, clusterName string) bool {
+	for _, tag := range g.Tags {
+		if tag != nil && aws.StringValue(tag.Key) == lbcClusterOwnershipTagKey && aws.StringValue(tag.Value) == clusterName {
+			return true
+		}
+	}
+	return false
 }
 
 func lookupSGByName(sgp sgProvisioner, accountID, vpcID, name string) (string, error) {

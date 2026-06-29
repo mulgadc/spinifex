@@ -22,6 +22,10 @@ const (
 	// container credentials; defaultCredEndpointPort is the standard HTTP port.
 	defaultCredEndpointIP   = "169.254.170.2"
 	defaultCredEndpointPort = 80
+	// defaultCredProxyPort is the high port the listener actually binds; a nat
+	// DNAT rule rewrites 169.254.170.2:80 to it so nothing holds a socket on :80
+	// and host/bridge tasks sharing the netns can bind :80 themselves.
+	defaultCredProxyPort = 51679
 	// credRefreshMargin refreshes a cached credential set this long before expiry
 	// so a container never starts a request with a token about to lapse.
 	credRefreshMargin = 5 * time.Minute
@@ -58,6 +62,7 @@ type credEndpoint struct {
 	caPath     string
 	ip         string
 	port       int
+	proxyPort  int
 	run        netCmdRunner
 
 	// assume mints fresh credentials for a role; defaults to AssumeRole over the
@@ -90,6 +95,7 @@ func newCredEndpoint(provider credentials.CredentialsProvider, region, gatewayUR
 		caPath:     caPath,
 		ip:         ip,
 		port:       port,
+		proxyPort:  defaultCredProxyPort,
 		run:        run,
 		roles:      map[string]string{},
 		cache:      map[string]credEntry{},
@@ -217,16 +223,21 @@ func (c *credEndpoint) client() (*http.Client, error) {
 	return hc, nil
 }
 
-// Start adds the endpoint IP to a dummy interface in the host netns and serves
-// HTTP on it. A bind or address failure is returned so the caller can log it
-// without aborting register/heartbeat.
+// Start adds the endpoint IP to a dummy interface in the host netns, serves HTTP
+// on the high proxy port, and DNATs the advertised :80 to it. A bind, address,
+// or nat failure is returned so the caller can log it without aborting
+// register/heartbeat.
 func (c *credEndpoint) Start() error {
 	if err := c.addEndpointAddr(); err != nil {
 		return err
 	}
-	ln, err := net.Listen("tcp", net.JoinHostPort(c.ip, strconv.Itoa(c.port)))
+	ln, err := net.Listen("tcp", net.JoinHostPort(c.ip, strconv.Itoa(c.listenPort())))
 	if err != nil {
-		return fmt.Errorf("listen %s:%d: %w", c.ip, c.port, err)
+		return fmt.Errorf("listen %s:%d: %w", c.ip, c.listenPort(), err)
+	}
+	if err := c.addRedirect(); err != nil {
+		_ = ln.Close()
+		return err
 	}
 	c.ln = ln
 	c.srv = &http.Server{Handler: c, ReadHeaderTimeout: 5 * time.Second}
@@ -250,8 +261,58 @@ func (c *credEndpoint) Stop() error {
 		defer cancel()
 		_ = c.srv.Shutdown(ctx)
 	}
+	c.delRedirect()
 	c.delEndpointAddr()
 	return nil
+}
+
+// listenPort is the port the socket binds. Loopback test mode binds the
+// caller-supplied (ephemeral) port directly; the real endpoint binds the high
+// proxy port and reaches :80 via the DNAT rules.
+func (c *credEndpoint) listenPort() int {
+	if c.ip == "127.0.0.1" {
+		return c.port
+	}
+	return c.proxyPort
+}
+
+// addRedirect installs nat DNAT rules rewriting the advertised :80 to the proxy
+// port, for both locally generated traffic (host/bridge task containers, OUTPUT)
+// and traffic arriving over the awsvpc credential veth (PREROUTING). The dst IP
+// is left on the endpoint IP so no route_localnet handling is needed. Skipped in
+// loopback test mode, which binds the port directly.
+func (c *credEndpoint) addRedirect() error {
+	if c.run == nil || c.ip == "127.0.0.1" {
+		return nil
+	}
+	for _, chain := range []string{"OUTPUT", "PREROUTING"} {
+		if _, err := c.run.Run("iptables", c.natArgs("-C", chain)...); err == nil {
+			continue // rule already present
+		}
+		if _, err := c.run.Run("iptables", c.natArgs("-A", chain)...); err != nil {
+			return fmt.Errorf("add nat redirect %s: %w", chain, err)
+		}
+	}
+	return nil
+}
+
+func (c *credEndpoint) delRedirect() {
+	if c.run == nil || c.ip == "127.0.0.1" {
+		return
+	}
+	for _, chain := range []string{"OUTPUT", "PREROUTING"} {
+		_, _ = c.run.Run("iptables", c.natArgs("-D", chain)...)
+	}
+}
+
+// natArgs builds the iptables nat rule for op (-A/-C/-D) on chain: DNAT the
+// advertised endpoint :80 to the proxy port on the same IP.
+func (c *credEndpoint) natArgs(op, chain string) []string {
+	return []string{
+		"-t", "nat", op, chain,
+		"-d", c.ip, "-p", "tcp", "--dport", strconv.Itoa(c.port),
+		"-j", "DNAT", "--to-destination", net.JoinHostPort(c.ip, strconv.Itoa(c.proxyPort)),
+	}
 }
 
 // addEndpointAddr brings up the dummy interface holding the endpoint IP. Skipped

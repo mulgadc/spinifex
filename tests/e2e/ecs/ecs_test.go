@@ -32,10 +32,14 @@ const (
 	ecsSubnetBCIDR = "10.41.2.0/24"
 	ecsClusterPfx  = "ecs-e2e"
 	ecsInstanceTyp = "t3.small"
-	// awsvpc tasks serve HTTP on 80 (isolated ENI netns) so the ALB target group
-	// health check (GET /) passes. bridge/host tasks share the host netns, where
-	// the agent credential endpoint owns 169.254.170.2:80, so they run a durable
-	// no-port command instead and only assert placement + mode, not serving.
+	// awsvpc and bridge tasks serve nginx on :80. bridge shares the VM host netns
+	// where the agent credential endpoint used to own 169.254.170.2:80; it now
+	// binds :80 cleanly because the endpoint moved to a high proxy port + DNAT, so
+	// the bridge subtest is the regression proof (the settle guard in
+	// waitTaskRunning catches a crash-looping :80 bind that flaps RUNNING then
+	// STOPPED). host mode also shares that netns, so only one host-netns task can
+	// hold :80 at a time (one :80 per host, as on AWS); the host subtest runs a
+	// durable no-port command to assert placement without contending for :80.
 	ecsTaskImage    = "docker.io/library/nginx:1.27-alpine"
 	ecsHostNetnsCmd = "sleep 600"
 )
@@ -86,7 +90,7 @@ func TestECS(t *testing.T) {
 	})
 
 	t.Run("TaskBridge", func(t *testing.T) {
-		tdArn := registerTaskDef(t, c, fx, "bridge", strings.Fields(ecsHostNetnsCmd))
+		tdArn := registerTaskDef(t, c, fx, "bridge", nil)
 		task := runStandaloneTask(t, c, fx, tdArn, nil)
 		assert.Empty(t, task.Attachments, "bridge task must not allocate an ENI")
 	})
@@ -513,9 +517,9 @@ func waitContainerInstanceActive(t *testing.T, c *harness.AWSClient, cluster, ec
 // --- Task definitions & standalone tasks ----------------------------------
 
 // registerTaskDef registers a one-container task definition. command overrides
-// the image entrypoint; when set the container exposes no port (used by the
-// host-netns modes to avoid the credential endpoint's :80). When command is nil
-// the container runs nginx and publishes 80 for ALB/awsvpc serving.
+// the image entrypoint and exposes no port (the host subtest uses it so two
+// host-netns tasks don't contend for :80); when command is nil the container
+// runs nginx and publishes 80 for awsvpc/bridge serving.
 func registerTaskDef(t *testing.T, c *harness.AWSClient, fx *ecsFixture, networkMode string, command []string) string {
 	t.Helper()
 	family := fmt.Sprintf("%s-%s", fx.ClusterName, networkMode)

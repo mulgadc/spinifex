@@ -1,0 +1,22 @@
+[Unit]
+Description=Spinifex NATS JetStream liveness watchdog
+PartOf=spinifex.target
+After=spinifex-nats.service
+
+[Service]
+Type=oneshot
+# Runs as root: the probe is a local curl to the NATS monitoring port, and the
+# remedy is `systemctl try-restart spinifex-nats` when JetStream is disabled while
+# the process stays alive (which Restart=on-failure cannot catch).
+ExecStart=/var/lib/spinifex/nats-js-watchdog.sh
+
+# Hardening (kept compatible with talking to PID1 over /run/systemd).
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes

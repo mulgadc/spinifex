@@ -300,6 +300,16 @@ suites:
     # spinifex_daemon. docker/crane/skopeo data-plane subtests skip when the
     # client binary or registry-host resolution is absent.
 
+  e2e-ecs:
+    path: tests/e2e/ecs
+    covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+    # ECS data plane end-to-end: cluster + a real container instance launched
+    # from the spinifex-ecs-node AMI (boots, registers over the gateway, runs
+    # tasks through containerd), standalone tasks in awsvpc/bridge/host modes,
+    # and an awsvpc service fronted by an ELBv2 target group. Boots a guest VM,
+    # so vpcd (OVN + awsvpc ENI), viperblockd (root volume), predastore (AMI)
+    # are all in the path.
+
   e2e-ddil:
     path: tests/e2e/ddil
     covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]

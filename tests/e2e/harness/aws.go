@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	"github.com/aws/aws-sdk-go/service/ecr"
+	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -37,6 +38,7 @@ type AWSClient struct {
 	EKS     *eks.EKS
 	ACM     *acm.ACM
 	ECR     *ecr.ECR
+	ECS     *ecs.ECS
 }
 
 // NewAWSClient builds clients pointed at the spinifex gateway using the
@@ -134,6 +136,7 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 		EKS:     eks.New(sess),
 		ACM:     acm.New(sess),
 		ECR:     ecr.New(sess),
+		ECS:     ecs.New(sess),
 	}
 }
 

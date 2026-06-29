@@ -130,7 +130,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	go a.hb.Run(ctx)
-	go a.pollAssignments(ctx)
+
+	// Re-adopt containers still running from before this restart, then poll with
+	// their tasks pre-seeded so re-delivered assignments are acked, not re-run.
+	go a.pollAssignments(ctx, a.reconcile(ctx))
 
 	<-ctx.Done()
 	return a.Stop()

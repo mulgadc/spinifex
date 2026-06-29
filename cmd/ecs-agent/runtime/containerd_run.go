@@ -94,6 +94,30 @@ func (p *containerdPuller) Wait(ctx context.Context, containerID string) (RunSta
 	return RunStatus{ExitCode: int(code)}, err
 }
 
+// List enumerates every container in the ecs namespace with its labels and
+// whether its task is running, so the agent can re-adopt live containers after a
+// restart. Per-container label/task errors are treated as "not running" rather
+// than failing the whole list.
+func (p *containerdPuller) List(ctx context.Context) ([]Container, error) {
+	ctx = namespaces.WithNamespace(ctx, ecsNamespace)
+	containers, err := p.client.Containers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list containers: %w", err)
+	}
+	out := make([]Container, 0, len(containers))
+	for _, c := range containers {
+		labels, _ := c.Labels(ctx)
+		running := false
+		if task, terr := c.Task(ctx, nil); terr == nil {
+			if status, serr := task.Status(ctx); serr == nil {
+				running = status.Status == containerd.Running
+			}
+		}
+		out = append(out, Container{ID: c.ID(), Labels: labels, Running: running})
+	}
+	return out, nil
+}
+
 // Remove kills and deletes the container's task, then the container + snapshot.
 func (p *containerdPuller) Remove(ctx context.Context, containerID string) error {
 	ctx = namespaces.WithNamespace(ctx, ecsNamespace)

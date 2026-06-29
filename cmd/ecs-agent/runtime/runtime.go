@@ -55,13 +55,24 @@ type RunStatus struct {
 	ExitCode int
 }
 
+// Container is a container the runtime already knows about, discovered by List.
+// Labels carry the mulga.ecs.* task identity so the agent can re-adopt running
+// containers after a restart; Running reports whether its task is live.
+type Container struct {
+	ID      string
+	Labels  map[string]string
+	Running bool
+}
+
 // Runner creates and starts containers from already-pulled images. id is a
 // caller-unique container ID; Wait blocks until the container exits; Remove
-// tears down the container + its task.
+// tears down the container + its task; List enumerates known containers so the
+// reboot reconciler can re-adopt the ones still running.
 type Runner interface {
 	Run(ctx context.Context, id string, spec RunSpec) (containerID string, err error)
 	Wait(ctx context.Context, containerID string) (RunStatus, error)
 	Remove(ctx context.Context, containerID string) error
+	List(ctx context.Context) ([]Container, error)
 }
 
 // Runtime is the full container runtime the ecs-agent drives: pull + run.

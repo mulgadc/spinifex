@@ -1507,7 +1507,10 @@ func (d *Daemon) startCluster() error {
 	// data-safety reaper (ADR-0005 §3) rides the same backstop but only marks +
 	// alarms — it never deletes volume data.
 	if d.jsManager != nil {
-		reapers := []vm.Reaper{d.vmMgr.NewTerminatedTeardownReaper()}
+		reapers := []vm.Reaper{
+			d.vmMgr.NewTerminatedTeardownReaper(),
+			d.vmMgr.NewOrphanQEMUReaper(),
+		}
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)
 		}

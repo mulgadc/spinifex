@@ -36,7 +36,9 @@ KUBECONFIG=${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}
 export KUBECONFIG
 
 publish_report() {
-    if curl -sk --max-time 3 https://127.0.0.1:6443/healthz | grep -q '^ok$'; then
+    # Probe /healthz through the node's admin kubeconfig (apiserver runs
+    # anonymous-auth=false, CIS): an unauthenticated curl would return 401.
+    if kubectl get --raw='/healthz' 2>/dev/null | grep -q '^ok$'; then
         health=ok
         # Count Ready nodes only — k3s retains terminated workers as NotReady
         # until manually pruned, so a raw node count never drops on scale-down.

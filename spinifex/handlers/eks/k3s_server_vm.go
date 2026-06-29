@@ -430,7 +430,9 @@ func buildK3sUserData(in K3sServerInput) string {
 
 	// First server uses cluster-init (embedded etcd); join servers set `server: <first>` + token.
 	// etcd-expose-metrics: surfaces etcd fsync/commit latency on 127.0.0.1:2381/metrics.
-	// anonymous-auth=true: reconciler probes /healthz unauthenticated to gate ACTIVE; RBAC limits exposure.
+	// anonymous-auth=false (CIS): cluster health rides the authenticated NATS
+	// state-report (probes /healthz via the node's admin kubeconfig), not an
+	// unauthenticated apiserver probe; the NLB target group uses a TCP health check.
 	// traefik+servicelb+local-storage are always disabled for AWS LB Controller parity.
 	var configLines []string
 	if in.ServerURL == "" {
@@ -486,7 +488,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		"  - service-account-signing-key-file="+k3sOIDCSigningKeyPath,
 		"  - service-account-issuer="+in.OIDCIssuer,
 		"  - api-audiences=sts.amazonaws.com",
-		"  - anonymous-auth=true",
+		"  - anonymous-auth=false",
 		"  - authentication-token-webhook-config-file="+k3sTokenWebhookKubeconfigPath,
 		"  - authentication-token-webhook-cache-ttl=5m",
 		// v1: default v1beta1 rejects authentication.k8s.io/v1 TokenReview response (401).

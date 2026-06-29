@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -96,8 +97,14 @@ func (d *Daemon) terminateWorkerInstance(instanceID, accountID string) error {
 		}
 	}
 	if errors.Is(err, nats.ErrNoResponders) {
-		slog.Debug("TerminateWorkerInstances: no owner for instance, already gone", "instanceId", instanceID)
-		return nil
+		// No live ec2.cmd owner: the worker is stopped — its per-instance
+		// subscription is torn down at stop, including a stopped+wedged VM whose
+		// volume remount broke. Fall back to the ec2.terminate queue group, which
+		// runs TerminateStoppedInstance against shared KV (deleting the worker's
+		// volumes, IP, and ENI) so the ENI cannot pin the customer subnet/VPC
+		// undeletable. Without this a DeleteCluster wedges in DELETING on
+		// DependencyViolation until the operator manually terminates the node.
+		return d.terminateStoppedWorker(instanceID, accountID)
 	}
 	if err != nil {
 		return err
@@ -109,5 +116,38 @@ func (d *Daemon) terminateWorkerInstance(instanceID, accountID string) error {
 		}
 		return errors.New(*errPayload.Code)
 	}
+	return nil
+}
+
+// terminateStoppedWorker tears down a worker that has no live ec2.cmd owner via
+// the ec2.terminate queue group, mirroring the gateway TerminateInstances
+// fallback. Any worker daemon services it from shared KV, so a stopped (incl.
+// stopped+wedged) worker is reaped regardless of which node ran the teardown. A
+// NotFound payload — or no responder at all — means the instance is already
+// gone, which a retried teardown treats as idempotent success.
+func (d *Daemon) terminateStoppedWorker(instanceID, accountID string) error {
+	req, err := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: instanceID})
+	if err != nil {
+		return fmt.Errorf("marshal stopped-terminate request: %w", err)
+	}
+	reqMsg := nats.NewMsg("ec2.terminate")
+	reqMsg.Data = req
+	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	msg, err := d.natsConn.RequestMsg(reqMsg, 30*time.Second)
+	if errors.Is(err, nats.ErrNoResponders) {
+		slog.Debug("TerminateWorkerInstances: no ec2.terminate responder, instance already gone", "instanceId", instanceID)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("ec2.terminate stopped worker %s: %w", instanceID, err)
+	}
+	if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+		if *errPayload.Code == awserrors.ErrorInvalidInstanceIDNotFound {
+			slog.Debug("TerminateWorkerInstances: stopped worker already gone, idempotent", "instanceId", instanceID)
+			return nil
+		}
+		return errors.New(*errPayload.Code)
+	}
+	slog.Info("TerminateWorkerInstances: terminated stopped worker via ec2.terminate", "instanceId", instanceID)
 	return nil
 }

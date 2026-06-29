@@ -136,7 +136,7 @@ func TestPollAssignments_DispatchesOnceAndAcks(t *testing.T) {
 	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go a.pollAssignments(ctx)
+	go a.pollAssignments(ctx, map[string]bool{})
 
 	// runTask reports RUNNING through the (mutex-guarded) control plane. With the
 	// assign returned on two consecutive polls, dedup means exactly one dispatch →

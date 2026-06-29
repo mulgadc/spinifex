@@ -15,12 +15,13 @@ import (
 // cancelled. Each assign is dispatched to runTask exactly once; the taskIDs seen
 // on a poll are acked on the next poll so the gateway can drop them — a crash
 // before ack re-delivers (at-least-once), matching ACS. A failed poll is logged
-// and retried on the next tick rather than killing the loop.
-func (a *Agent) pollAssignments(ctx context.Context) {
+// and retried on the next tick rather than killing the loop. dispatched is seeded
+// by the startup reconcile with tasks already adopted from running containers, so
+// their re-delivered assignments are acked but not re-run.
+func (a *Agent) pollAssignments(ctx context.Context, dispatched map[string]bool) {
 	ticker := time.NewTicker(a.cfg.PollInterval)
 	defer ticker.Stop()
 
-	dispatched := map[string]bool{}
 	var ackNext []string
 	for {
 		select {
@@ -199,12 +200,35 @@ func containerID(taskID, name string) string {
 	return fmt.Sprintf("%s-%s", taskID, name)
 }
 
-// taskLabels are the mulga.ecs.* labels stamped on every container so the reboot
-// reconciler can re-associate running containers with their task on restart.
+// mulga.ecs.* label keys stamped on every container. The reboot reconciler reads
+// them back to re-associate running containers with their task on restart; the
+// cred/role/MAC labels make a container self-describing enough to re-register its
+// credentials and tear down its netns without the original assignment.
+const (
+	labelTaskID        = "mulga.ecs.taskID"
+	labelContainerName = "mulga.ecs.containerName"
+	labelClusterName   = "mulga.ecs.clusterName"
+	labelCredID        = "mulga.ecs.credID"
+	labelTaskRoleARN   = "mulga.ecs.taskRoleArn"
+	labelENIMac        = "mulga.ecs.eniMac"
+)
+
+// taskLabels are the mulga.ecs.* labels stamped on a container. The cred/role/MAC
+// labels are omitted when empty so a container carries only what it needs.
 func taskLabels(as *bus.Assign, name string) map[string]string {
-	return map[string]string{
-		"mulga.ecs.taskID":        as.TaskID,
-		"mulga.ecs.containerName": name,
-		"mulga.ecs.clusterName":   as.ClusterName,
+	labels := map[string]string{
+		labelTaskID:        as.TaskID,
+		labelContainerName: name,
+		labelClusterName:   as.ClusterName,
 	}
+	if credID := taskCredID(as); credID != "" {
+		labels[labelCredID] = credID
+	}
+	if as.TaskRoleARN != "" {
+		labels[labelTaskRoleARN] = as.TaskRoleARN
+	}
+	if as.ENIMacAddress != "" {
+		labels[labelENIMac] = as.ENIMacAddress
+	}
+	return labels
 }

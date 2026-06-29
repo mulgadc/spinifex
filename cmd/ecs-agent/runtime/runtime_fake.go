@@ -22,8 +22,15 @@ type FakePuller struct {
 	RunErr   error
 	WaitCode int
 	WaitErr  error
+	Waited   []string
 	Removed  []string
 	OnRun    func(string, RunSpec) (string, error)
+
+	// List bookkeeping: Containers is replayed by List; ListErr forces a failure;
+	// Listed records that List was called.
+	Containers []Container
+	ListErr    error
+	Listed     bool
 }
 
 var (
@@ -83,8 +90,11 @@ func (f *FakePuller) Run(_ context.Context, id string, spec RunSpec) (string, er
 	return id, nil
 }
 
-// Wait returns the programmed exit code/error.
-func (f *FakePuller) Wait(_ context.Context, _ string) (RunStatus, error) {
+// Wait records the container ID and returns the programmed exit code/error.
+func (f *FakePuller) Wait(_ context.Context, containerID string) (RunStatus, error) {
+	f.mu.Lock()
+	f.Waited = append(f.Waited, containerID)
+	f.mu.Unlock()
 	return RunStatus{ExitCode: f.WaitCode}, f.WaitErr
 }
 
@@ -94,4 +104,22 @@ func (f *FakePuller) Remove(_ context.Context, containerID string) error {
 	defer f.mu.Unlock()
 	f.Removed = append(f.Removed, containerID)
 	return nil
+}
+
+// Waits returns a copy of the container IDs passed to Wait, for assertions.
+func (f *FakePuller) Waits() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.Waited...)
+}
+
+// List replays the programmed container set (or error).
+func (f *FakePuller) List(_ context.Context) ([]Container, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Listed = true
+	if f.ListErr != nil {
+		return nil, f.ListErr
+	}
+	return f.Containers, nil
 }

@@ -885,6 +885,35 @@ func TestReconnectInstance(t *testing.T) {
 		assert.NotNil(t, saved["i-no-hook"], "the reconnected instance must appear in the persisted snapshot")
 	})
 
+	t.Run("reconnect re-asserts boot-volume in-use, skips non-boot", func(t *testing.T) {
+		stateUpdater := &fakeVolumeStateUpdater{}
+		m := NewManager()
+		m.SetDeps(Deps{
+			NodeID:             "test-node",
+			StateStore:         newFakeStateStore(),
+			VolumeStateUpdater: stateUpdater,
+		})
+
+		orig := attachQMPForReconnect
+		t.Cleanup(func() { attachQMPForReconnect = orig })
+		attachQMPForReconnect = func(_ *Manager, v *VM) error { fakeAttachQMP(t, v); return nil }
+
+		instance := &VM{ID: "i-reconnect-vol", Status: StatePending}
+		instance.EBSRequests.Requests = []types.EBSRequest{
+			{Name: "vol-root", Boot: true},
+			{Name: "vol-data", Boot: false},
+		}
+		m.Insert(instance)
+
+		require.NoError(t, m.reconnectInstance(instance))
+
+		calls := stateUpdater.snapshot()
+		require.Len(t, calls, 1,
+			"reconnect must re-assert exactly the boot volume — a daemon restart otherwise leaves the root volume 'available' while the VM runs (siv-464)")
+		assert.Equal(t, volumeStateUpdate{VolumeID: "vol-root", State: "in-use", InstanceID: "i-reconnect-vol"}, calls[0],
+			"the boot volume must be marked in-use under the running instance; non-boot volumes are owned by their own attach flow")
+	})
+
 	t.Run("AttachQMP succeeds, OnInstanceUp errors: QMP closed and nil'd", func(t *testing.T) {
 		m := NewManager()
 		hookErr := errors.New("nats subscribe failed")

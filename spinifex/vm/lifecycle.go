@@ -160,17 +160,7 @@ func (m *Manager) launch(instance *VM) error {
 	}
 
 	// Mark boot volumes as "in-use" now that instance is confirmed running.
-	if m.deps.VolumeStateUpdater != nil {
-		instance.EBSRequests.Mu.Lock()
-		for _, ebsReq := range instance.EBSRequests.Requests {
-			if ebsReq.Boot {
-				if err := m.deps.VolumeStateUpdater.UpdateVolumeState(ebsReq.Name, "in-use", instance.ID, ""); err != nil {
-					slog.Error("Failed to update volume state to in-use", "volumeId", ebsReq.Name, "err", err)
-				}
-			}
-		}
-		instance.EBSRequests.Mu.Unlock()
-	}
+	m.markBootVolumesInUse(instance)
 
 	if m.deps.Hooks.OnInstanceUp != nil {
 		// Launch path: per-instance subscribe failures are logged and the
@@ -184,6 +174,26 @@ func (m *Manager) launch(instance *VM) error {
 	}
 
 	return nil
+}
+
+// markBootVolumesInUse re-asserts "in-use" status for an instance's boot
+// volumes once it is confirmed running. Used by the launch path and the
+// daemon-restart reconnect path so both keep volume state consistent with a
+// running instance. Errors are logged, not fatal.
+func (m *Manager) markBootVolumesInUse(instance *VM) {
+	if m.deps.VolumeStateUpdater == nil {
+		return
+	}
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+	for _, ebsReq := range instance.EBSRequests.Requests {
+		if !ebsReq.Boot {
+			continue
+		}
+		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(ebsReq.Name, "in-use", instance.ID, ""); err != nil {
+			slog.Error("Failed to update volume state to in-use", "volumeId", ebsReq.Name, "err", err)
+		}
+	}
 }
 
 const (

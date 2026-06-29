@@ -448,6 +448,8 @@ func (d *Daemon) handleNodeVMs(msg *nats.Msg) {
 			Status:       string(v.Status),
 			InstanceType: v.InstanceType,
 			ManagedBy:    v.ManagedBy,
+			Health:       vmHealthLabel(v),
+			CrashCount:   v.Health.CrashCount,
 		}
 		if it, ok := d.resourceMgr.instanceTypes[v.InstanceType]; ok {
 			info.VCPU = int(instanceTypeVCPUs(it))
@@ -469,4 +471,20 @@ func (d *Daemon) handleNodeVMs(msg *nats.Msg) {
 	}
 
 	respondWithJSON(msg, resp)
+}
+
+// vmHealthLabel derives the display health for spx get vms. Only running VMs
+// carry health: QMP-unresponsive past the failure gate is impaired, a VM that
+// has crashed before but is running again is recovering, otherwise ok.
+func vmHealthLabel(v *vm.VM) string {
+	if v.Status != vm.StateRunning {
+		return "-"
+	}
+	if v.Health.QMPConsecutiveFailures >= vm.QMPMaxConsecutiveFailures {
+		return "impaired"
+	}
+	if v.Health.CrashCount > 0 {
+		return "recovering"
+	}
+	return "ok"
 }

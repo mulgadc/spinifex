@@ -585,11 +585,23 @@ func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
 	return client, nil
 }
 
-// qmpHeartbeat sends query-status every 30s. Exits and closes the QMP
-// connection when the instance reaches a terminal or transitional state.
+const (
+	// qmpHeartbeatInterval is the QMP query-status poll period.
+	qmpHeartbeatInterval = 30 * time.Second
+	// QMPMaxConsecutiveFailures is how many back-to-back query-status failures
+	// mark an instance impaired and trigger a process-liveness check (90s of
+	// unresponsiveness). Exported so DescribeInstanceStatus uses the same gate.
+	QMPMaxConsecutiveFailures = 3
+)
+
+// qmpHeartbeat polls query-status every qmpHeartbeatInterval and acts on
+// failures: it tracks consecutive failures, and once they reach
+// QMPMaxConsecutiveFailures it checks process liveness. A dead process triggers
+// crash recovery; an alive-but-wedged QEMU stays impaired for an operator. The
+// goroutine exits and closes the QMP connection on any terminal/transitional state.
 func (m *Manager) qmpHeartbeat(instance *VM) {
 	for {
-		time.Sleep(30 * time.Second)
+		time.Sleep(qmpHeartbeatInterval)
 
 		status := m.Status(instance)
 
@@ -607,11 +619,49 @@ func (m *Manager) qmpHeartbeat(instance *VM) {
 		slog.Debug("QMP heartbeat", "instance", instance.ID)
 		qmpStatus, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{Execute: "query-status"}, instance.ID)
 		if err != nil {
-			slog.Warn("QMP heartbeat failed", "instance", instance.ID, "err", err)
+			failures := m.recordQMPFailure(instance)
+			slog.Warn("QMP heartbeat failed", "instance", instance.ID, "consecutiveFailures", failures, "err", err)
+			if failures < QMPMaxConsecutiveFailures {
+				continue
+			}
+			if !isInstanceProcessRunning(instance) {
+				slog.Error("QEMU process dead and QMP unresponsive, triggering crash recovery",
+					"instance", instance.ID, "consecutiveFailures", failures)
+				m.HandleCrash(instance, fmt.Errorf("qmp unresponsive (%d failures), process dead", failures))
+				return
+			}
+			slog.Error("QEMU process alive but QMP unresponsive", "instance", instance.ID, "consecutiveFailures", failures)
 			continue
 		}
+
+		m.recordQMPSuccess(instance)
 		slog.Debug("QMP status", "instance", instance.ID, "status", string(qmpStatus.Return))
 	}
+}
+
+// recordQMPFailure increments the consecutive QMP failure counter, stamping
+// ImpairedSince when the count first reaches QMPMaxConsecutiveFailures. Returns
+// the new count.
+func (m *Manager) recordQMPFailure(instance *VM) int {
+	var count int
+	m.UpdateState(instance.ID, func(v *VM) {
+		v.Health.QMPConsecutiveFailures++
+		count = v.Health.QMPConsecutiveFailures
+		if count == QMPMaxConsecutiveFailures {
+			v.Health.ImpairedSince = time.Now()
+		}
+	})
+	return count
+}
+
+// recordQMPSuccess clears the failure counter and impaired marker after a
+// healthy poll and records the success time.
+func (m *Manager) recordQMPSuccess(instance *VM) {
+	m.UpdateState(instance.ID, func(v *VM) {
+		v.Health.QMPConsecutiveFailures = 0
+		v.Health.ImpairedSince = time.Time{}
+		v.Health.LastQMPSuccess = time.Now()
+	})
 }
 
 // sendQMPCommand encodes cmd and decodes the response, skipping event messages.

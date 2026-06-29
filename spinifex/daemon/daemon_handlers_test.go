@@ -4133,3 +4133,24 @@ func TestRespondWithJSON_RespondFailureLogs(t *testing.T) {
 	assert.Contains(t, logged, "Failed to respond to NATS request")
 	assert.NotContains(t, logged, "Failed to marshal response")
 }
+
+func TestVMHealthLabel(t *testing.T) {
+	tests := []struct {
+		name   string
+		status vm.InstanceState
+		health vm.InstanceHealthState
+		want   string
+	}{
+		{"stopped", vm.StateStopped, vm.InstanceHealthState{}, "-"},
+		{"running clean", vm.StateRunning, vm.InstanceHealthState{}, "ok"},
+		{"running after crash", vm.StateRunning, vm.InstanceHealthState{CrashCount: 2}, "recovering"},
+		{"qmp impaired", vm.StateRunning, vm.InstanceHealthState{QMPConsecutiveFailures: vm.QMPMaxConsecutiveFailures}, "impaired"},
+		{"qmp impaired wins over crash", vm.StateRunning, vm.InstanceHealthState{CrashCount: 5, QMPConsecutiveFailures: vm.QMPMaxConsecutiveFailures}, "impaired"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &vm.VM{ID: "i-x", Status: tc.status, Health: tc.health}
+			assert.Equal(t, tc.want, vmHealthLabel(v))
+		})
+	}
+}

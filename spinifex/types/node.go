@@ -87,6 +87,11 @@ type VMInfo struct {
 	// system-managed resources out of customer-facing listings.
 	ManagedBy string     `json:"managed_by,omitempty"`
 	GPU       *VMGPUInfo `json:"gpu,omitempty"`
+	// Health is a display label for instance health: "ok", "impaired",
+	// "recovering", or "-" for non-running VMs. CrashCount is the lifetime
+	// crash tally within the current restart window.
+	Health     string `json:"health,omitempty"`
+	CrashCount int    `json:"crash_count,omitempty"`
 }
 
 // NodeVMsResponse is returned by the spinifex.node.vms NATS topic (fan-out).

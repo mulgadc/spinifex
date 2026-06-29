@@ -2429,7 +2429,23 @@ var (
 	}
 )
 
-func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM) *ec2.InstanceStatus {
+// hostHealthReporter is an optional capability on the resource manager that
+// reports node-level memory pressure, surfaced as DescribeInstanceStatus
+// SystemStatus. Implemented by daemon.ResourceManager.
+type hostHealthReporter interface {
+	HostUnderMemoryPressure() bool
+}
+
+// hostUnderMemoryPressure reports whether the node is under memory pressure when
+// the resource manager supports the check, false otherwise (fail open).
+func (s *InstanceServiceImpl) hostUnderMemoryPressure() bool {
+	if hr, ok := s.resourceMgr.(hostHealthReporter); ok {
+		return hr.HostUnderMemoryPressure()
+	}
+	return false
+}
+
+func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM, systemImpaired bool) *ec2.InstanceStatus {
 	state := &ec2.InstanceState{}
 	if info, ok := vm.EC2StateCodes[v.Status]; ok {
 		state.SetCode(info.Code)
@@ -2439,11 +2455,25 @@ func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM) *ec2.InstanceStatus 
 		state.SetName(vm.EC2StateCodes[vm.StatePending].Name)
 	}
 
-	status := instanceStatusNotApplicable
-	reachability := instanceStatusNotApplicable
-	if v.Status == vm.StateRunning {
-		status = instanceStatusOK
-		reachability = instanceStatusPassed
+	status, reachability, impairedSince := instanceHealthSummary(v)
+
+	instDetail := &ec2.InstanceStatusDetails{
+		Name:   aws.String(reachabilityDetailName),
+		Status: aws.String(reachability),
+	}
+	if impairedSince != nil {
+		instDetail.ImpairedSince = impairedSince
+	}
+
+	// SystemStatus reflects host/node health, independent of the VM process: a
+	// running VM's host is reachable unless under memory pressure; non-running
+	// instances are not-applicable.
+	systemStatus, systemReach := instanceStatusOK, instanceStatusPassed
+	switch {
+	case v.Status != vm.StateRunning:
+		systemStatus, systemReach = instanceStatusNotApplicable, instanceStatusNotApplicable
+	case systemImpaired:
+		systemStatus, systemReach = instanceStatusImpaired, instanceStatusFailed
 	}
 
 	return &ec2.InstanceStatus{
@@ -2451,26 +2481,58 @@ func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM) *ec2.InstanceStatus 
 		InstanceId:       aws.String(v.ID),
 		InstanceState:    state,
 		InstanceStatus: &ec2.InstanceStatusSummary{
-			Status: aws.String(status),
-			Details: []*ec2.InstanceStatusDetails{{
-				Name:   aws.String(reachabilityDetailName),
-				Status: aws.String(reachability),
-			}},
+			Status:  aws.String(status),
+			Details: []*ec2.InstanceStatusDetails{instDetail},
 		},
 		SystemStatus: &ec2.InstanceStatusSummary{
-			Status: aws.String(status),
+			Status: aws.String(systemStatus),
 			Details: []*ec2.InstanceStatusDetails{{
 				Name:   aws.String(reachabilityDetailName),
-				Status: aws.String(reachability),
+				Status: aws.String(systemReach),
 			}},
 		},
 	}
+}
+
+// instanceInitializingGrace is the post-launch window during which a running VM
+// reports initializing, matching AWS's status-check grace period.
+const instanceInitializingGrace = 2 * time.Minute
+
+// instanceHealthSummary maps a VM's runtime and QMP health into AWS
+// InstanceStatus fields: the status label, the reachability detail status, and
+// an optional ImpairedSince timestamp. Only running VMs carry real health; all
+// other states are not-applicable per AWS behavior.
+func instanceHealthSummary(v *vm.VM) (status, reachability string, impairedSince *time.Time) {
+	if v.Status != vm.StateRunning {
+		return instanceStatusNotApplicable, instanceStatusNotApplicable, nil
+	}
+
+	// QMP unresponsive past the failure gate → impaired/failed.
+	if v.Health.QMPConsecutiveFailures >= vm.QMPMaxConsecutiveFailures {
+		var impPtr *time.Time
+		if !v.Health.ImpairedSince.IsZero() {
+			since := v.Health.ImpairedSince
+			impPtr = &since
+		}
+		return instanceStatusImpaired, instanceStatusFailed, impPtr
+	}
+
+	// Grace period: freshly launched VMs report initializing until reachable.
+	if v.Instance != nil && v.Instance.LaunchTime != nil &&
+		time.Since(*v.Instance.LaunchTime) < instanceInitializingGrace {
+		return instanceStatusInitializing, instanceStatusInitializing, nil
+	}
+
+	return instanceStatusOK, instanceStatusPassed, nil
 }
 
 const (
 	instanceStatusOK            = "ok"
 	instanceStatusPassed        = "passed"
 	instanceStatusNotApplicable = "not-applicable"
+	instanceStatusImpaired      = "impaired"
+	instanceStatusFailed        = "failed"
+	instanceStatusInitializing  = "initializing"
 	reachabilityDetailName      = "reachability"
 )
 
@@ -2536,6 +2598,10 @@ func (s *InstanceServiceImpl) DescribeInstanceStatus(input *ec2.DescribeInstance
 		includedStates = describeInstanceStatusAllIncluded
 	}
 
+	// SystemStatus is node-wide: evaluate host memory pressure once per request
+	// rather than per instance.
+	systemImpaired := s.hostUnderMemoryPressure()
+
 	var statuses []*ec2.InstanceStatus
 	s.vmMgr.View(func(vms map[string]*vm.VM) {
 		for _, v := range vms {
@@ -2548,7 +2614,7 @@ func (s *InstanceServiceImpl) DescribeInstanceStatus(input *ec2.DescribeInstance
 			if !includedStates[v.Status] {
 				continue
 			}
-			is := s.buildInstanceStatus(v)
+			is := s.buildInstanceStatus(v, systemImpaired)
 			if len(parsedFilters) > 0 && !instanceStatusMatchesFilters(v, is, parsedFilters) {
 				continue
 			}

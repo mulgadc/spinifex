@@ -508,3 +508,37 @@ func TestRestartCrashedInstance_RunFailureRollback(t *testing.T) {
 	assert.Equal(t, StateError, m.Status(instance),
 		"instance must end in StateError after Run-failure rollback")
 }
+
+func TestRecordQMPFailure_StampsImpairedAtThreshold(t *testing.T) {
+	m := NewManager()
+	instance := &VM{ID: "i-qmp", Status: StateRunning}
+	m.Insert(instance)
+
+	for i := 1; i < QMPMaxConsecutiveFailures; i++ {
+		count := m.recordQMPFailure(instance)
+		assert.Equal(t, i, count)
+		assert.True(t, instance.Health.ImpairedSince.IsZero(),
+			"must not stamp ImpairedSince before threshold")
+	}
+
+	count := m.recordQMPFailure(instance)
+	assert.Equal(t, QMPMaxConsecutiveFailures, count)
+	assert.False(t, instance.Health.ImpairedSince.IsZero(),
+		"must stamp ImpairedSince at threshold")
+}
+
+func TestRecordQMPSuccess_ClearsFailureState(t *testing.T) {
+	m := NewManager()
+	instance := &VM{ID: "i-qmp", Status: StateRunning}
+	m.Insert(instance)
+
+	for range QMPMaxConsecutiveFailures {
+		m.recordQMPFailure(instance)
+	}
+	require.False(t, instance.Health.ImpairedSince.IsZero())
+
+	m.recordQMPSuccess(instance)
+	assert.Zero(t, instance.Health.QMPConsecutiveFailures)
+	assert.True(t, instance.Health.ImpairedSince.IsZero(), "success must clear ImpairedSince")
+	assert.False(t, instance.Health.LastQMPSuccess.IsZero(), "success must stamp LastQMPSuccess")
+}

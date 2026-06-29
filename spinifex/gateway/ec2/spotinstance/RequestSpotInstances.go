@@ -17,6 +17,7 @@ import (
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -62,10 +63,10 @@ func ValidateRequestSpotInstancesInput(input *ec2.RequestSpotInstancesInput) err
 
 // RequestSpotInstances validates the request, launches real VMs via the shared
 // on-demand RunInstances path (all-or-nothing: MinCount=MaxCount=InstanceCount,
-// ClientToken passed through), then builds and persists one active/fulfilled
-// SpotInstanceRequest per launched instance. On a launch failure (including
-// InsufficientInstanceCapacity) it returns the error and persists nothing.
-func RequestSpotInstances(input *ec2.RequestSpotInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID, az string, passRoleCheck gateway_ec2_instance.PassRoleChecker, expectedNodes int) (ec2.RequestSpotInstancesOutput, error) {
+// ClientToken passed through, same vCPU quota gate), then builds and persists one
+// active/fulfilled SpotInstanceRequest per launched instance. On a launch failure
+// (including InsufficientInstanceCapacity) it returns the error and persists nothing.
+func RequestSpotInstances(input *ec2.RequestSpotInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID, az string, passRoleCheck gateway_ec2_instance.PassRoleChecker, quota *handlers_quota.Service, expectedNodes int) (ec2.RequestSpotInstancesOutput, error) {
 	var output ec2.RequestSpotInstancesOutput
 
 	if err := ValidateRequestSpotInstancesInput(input); err != nil {
@@ -75,11 +76,23 @@ func RequestSpotInstances(input *ec2.RequestSpotInstancesInput, natsConn *nats.C
 	count := spotInstanceCount(input)
 	runInput := runInputFromLaunchSpec(input, count)
 
+	// Gate on the per-account vCPU cap exactly like the on-demand path; spot
+	// launches are real VMs and must not slip past the quota.
+	launchQuotaCheck := func() error {
+		return quota.EnforceLaunch(accountID, aws.StringValue(runInput.InstanceType), int(count))
+	}
+
 	// RunInstances normalises runInput in place (e.g. instance profile to ARN),
 	// so the launch spec echoed back is built from runInput afterwards.
-	reservation, err := gateway_ec2_instance.RunInstances(runInput, natsConn, iamSvc, accountID, passRoleCheck, nil, expectedNodes)
+	reservation, err := gateway_ec2_instance.RunInstances(runInput, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	if err != nil {
 		return output, err
+	}
+
+	// Charge the actual launched vCPUs; a counter write failure is drift for
+	// reconcile to correct, so it must not fail the already-successful launch.
+	if err := quota.ChargeLaunch(accountID, &reservation); err != nil {
+		slog.Warn("RequestSpotInstances: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
 	}
 
 	requests := buildSpotRequests(input, runInput, reservation.Instances, az)

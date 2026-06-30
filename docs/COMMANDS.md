@@ -546,16 +546,16 @@ bypasses policy evaluation entirely.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-group` | — | `--group-name`, `--path` | **NOT STARTED** |
-| `get-group` | — | `--group-name` | **NOT STARTED** |
-| `list-groups` | — | `--path-prefix`, `--max-items`, `--marker` | **NOT STARTED** |
-| `delete-group` | — | `--group-name` | **NOT STARTED** |
-| `add-user-to-group` | — | `--group-name`, `--user-name` | **NOT STARTED** |
-| `remove-user-from-group` | — | `--group-name`, `--user-name` | **NOT STARTED** |
-| `list-groups-for-user` | — | `--user-name`, `--max-items`, `--marker` | **NOT STARTED** |
-| `attach-group-policy` | — | `--group-name`, `--policy-arn` | **NOT STARTED** |
-| `detach-group-policy` | — | `--group-name`, `--policy-arn` | **NOT STARTED** |
-| `list-attached-group-policies` | — | `--group-name`, `--path-prefix`, `--max-items`, `--marker` | **NOT STARTED** |
+| `create-group` | `--group-name`, `--path` | — | **DONE** |
+| `get-group` | `--group-name` | — | **DONE** |
+| `list-groups` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
+| `delete-group` | `--group-name` | — | **DONE** |
+| `add-user-to-group` | `--group-name`, `--user-name` | — | **DONE** |
+| `remove-user-from-group` | `--group-name`, `--user-name` | — | **DONE** |
+| `list-groups-for-user` | `--user-name` | `--max-items`, `--marker` | **DONE** |
+| `attach-group-policy` | `--group-name`, `--policy-arn` | — | **DONE** |
+| `detach-group-policy` | `--group-name`, `--policy-arn` | — | **DONE** |
+| `list-attached-group-policies` | `--group-name`, `--path-prefix` | `--max-items`, `--marker` | **DONE** |
 
 ---
 

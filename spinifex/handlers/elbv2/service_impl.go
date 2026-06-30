@@ -1117,8 +1117,10 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		}
 	}
 
-	// NLBs do not support security groups.
-	if lbType == LoadBalancerTypeNetwork && len(input.SecurityGroups) > 0 {
+	// AWS caps a load balancer at 5 security groups (ALBs always; NLBs since Aug
+	// 2023). NLBs with customer SGs skip the managed SG and let the caller own the
+	// listener-port rules; NLBs without SGs keep the managed-SG default below.
+	if len(input.SecurityGroups) > maxLBSecurityGroups {
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
@@ -1170,11 +1172,12 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	vpcID := ""
 	var nlbManagedSGID string
 	if s.VPCService != nil && len(subnets) > 0 {
-		// NLBs reject customer SGs, so mint a dedicated managed SG for all LB ENIs;
-		// CreateListener opens listener ports on it. Without this, ENIs fall back
-		// to the VPC default SG and inbound listener traffic is dropped.
+		// An NLB without customer SGs gets a dedicated managed SG on all its ENIs
+		// and CreateListener opens listener ports on it; otherwise the ENIs fall
+		// back to the VPC default SG and inbound listener traffic is dropped. When
+		// the caller supplies SGs they replace the managed SG and own the rules.
 		eniGroups := securityGroups
-		if lbType == LoadBalancerTypeNetwork {
+		if lbType == LoadBalancerTypeNetwork && len(securityGroups) == 0 {
 			sgID, sgErr := s.createNLBManagedSG(lbID, lbArn, subnets[0], accountID)
 			if sgErr != nil {
 				slog.Error("CreateLoadBalancer: failed to create managed NLB SG", "lbId", lbID, "err", sgErr)

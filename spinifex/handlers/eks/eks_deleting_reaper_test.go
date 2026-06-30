@@ -20,7 +20,7 @@ func markDeleting(t *testing.T, f *deleteClusterFixture, name string, age time.D
 	require.NoError(t, PutClusterMeta(f.kv, meta))
 }
 
-// TestRLC4_DeletingReaperReDrivesWedgedTeardown locks mulga-siv-295.11: a cluster
+// TestRLC4_DeletingReaperReDrivesWedgedTeardown locks the contract: a cluster
 // stuck in DELETING past min-age (its synchronous DeleteCluster failed and no
 // client re-issued) must be re-driven to completion by the backstop reaper —
 // infra torn down and meta swept — so its billable EIP is never stranded.

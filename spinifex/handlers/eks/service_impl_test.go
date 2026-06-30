@@ -53,6 +53,20 @@ func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 }
 
+// A daemon that loaded its master key but whose IAM service was not ready at
+// boot (KV quorum still forming) must reject nodegroup orchestration rather than
+// launch workers with no instance profile, which leaves IMDS roleless and blocks
+// ALB creation. The gate reports IAM even though MasterKey is present.
+func TestMissingOrchestrationDeps_NilIAMRejectsNodegroup(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.svc.deps.IAM = nil
+
+	require.Equal(t, []string{"IAM"}, f.svc.missingOrchestrationDeps())
+
+	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
+	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
+}
+
 // EKS only supports the API authentication mode here; CONFIG_MAP (and the
 // API_AND_CONFIG_MAP hybrid) must be rejected with InvalidParameterException.
 func TestValidateCreateClusterInput_RejectsConfigMapAuthMode(t *testing.T) {

@@ -728,7 +728,7 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 // Terraform AWS provider's aws_volume_attachment polls DescribeVolumes
 // with attachment.device=/dev/sdf — storing the guest path makes that
 // filter reject every attached volume and the wait loop times out with
-// "couldn't find resource". This regression is mulga-siv-154.
+// "couldn't find resource".
 //
 // The QMP responder returns a query-block payload where vdisk-vol-1
 // maps to /dev/vdc (the third virtio slot after os + cloudinit), so the

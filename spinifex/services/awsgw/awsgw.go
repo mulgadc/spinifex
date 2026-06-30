@@ -159,7 +159,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Initialize IAM service with NATS KV backend (required for auth).
 	// On multi-node clusters, JetStream KV requires cluster quorum which may
 	// not be available yet if nodes start concurrently. Retry with backoff.
-	iamService, err := initIAMService(natsConn, masterKey, len(config.Nodes))
+	iamService, err := handlers_iam.NewIAMServiceWithRetry(natsConn, masterKey, len(config.Nodes))
 	if err != nil {
 		return fmt.Errorf("initialize IAM service: %w", err)
 	}
@@ -368,36 +368,6 @@ func launchService(config *config.ClusterConfig) error {
 	}
 
 	return nil
-}
-
-// initIAMService initializes the IAM service with retry/backoff. On multi-node
-// clusters, JetStream requires NATS cluster quorum before KV buckets can be
-// created. This retries for up to 5 minutes to allow late-joining nodes.
-func initIAMService(natsConn *nats.Conn, masterKey []byte, clusterSize int) (*handlers_iam.IAMServiceImpl, error) {
-	const maxWait = 5 * time.Minute
-	retryDelay := 500 * time.Millisecond
-	start := time.Now()
-	attempt := 0
-
-	for {
-		attempt++
-		svc, err := handlers_iam.NewIAMServiceImpl(natsConn, masterKey, clusterSize)
-		if err == nil {
-			if attempt > 1 {
-				slog.Info("IAM service initialized after retry", "attempts", attempt, "elapsed", time.Since(start).Round(time.Second))
-			}
-			return svc, nil
-		}
-
-		elapsed := time.Since(start)
-		if elapsed >= maxWait {
-			return nil, fmt.Errorf("IAM service unavailable after %s (%d attempts): %w", elapsed.Round(time.Second), attempt, err)
-		}
-
-		slog.Warn("IAM service not ready (waiting for JetStream cluster quorum)", "error", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second), "retryIn", retryDelay)
-		time.Sleep(retryDelay)
-		retryDelay = min(retryDelay*2, 10*time.Second)
-	}
 }
 
 // runQuotaReconcile drives the per-account vCPU reconcile: a startup pass plus a

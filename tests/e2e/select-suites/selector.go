@@ -5,8 +5,7 @@
 // optional per-suite -test.run regex (RUN_PATTERN) when AST analysis can prove
 // a strict subtest subset is sufficient.
 //
-// Selection model (see docs/development/improvements/
-// e2e-targeted-suite-selection.md):
+// Selection model:
 //
 //	changed_services = { s | s.path (or additional_paths) prefixes a changed file }
 //	covered_services = changed_services plus the transitive closure of

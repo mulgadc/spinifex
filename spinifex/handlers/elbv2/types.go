@@ -395,5 +395,9 @@ var (
 		"load_balancing.cross_zone.enabled":     "use_load_balancer_configuration",
 		"load_balancing.algorithm.type":         "round_robin",
 		"slow_start.duration_seconds":           "0",
+		// NLB target-group default. The AWS Load Balancer Controller always
+		// writes this on NLB target groups (e.g. ingress-nginx); without it as a
+		// known key the modify is rejected and LBC loops on the Service forever.
+		"proxy_protocol_v2.enabled": "false",
 	}
 )

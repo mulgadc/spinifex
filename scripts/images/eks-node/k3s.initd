@@ -8,6 +8,11 @@ command="/usr/local/bin/k3s"
 command_args="server --config /etc/rancher/k3s/config.yaml"
 pidfile="/run/k3s.pid"
 
+# Konnectivity agent image (apiserver-network-proxy). Pinned alongside the
+# konnectivity-server version baked by setup.sh; staged into the worker
+# DaemonSet by start_pre.
+KONN_AGENT_IMAGE="registry.k8s.io/kas-network-proxy/proxy-agent:v0.30.3"
+
 # Supervise the apiserver. A transient k3s crash must self-heal: without a
 # supervisor a single exit leaves the control plane permanently dead, the NLB
 # target never recovers, and the cluster wedges ACTIVE-but-unreachable.
@@ -31,6 +36,28 @@ start_pre() {
         else
             eerror "no /etc/rancher/k3s/config.yaml and no .skel to derive from"
             return 1
+        fi
+    fi
+
+    # Konnectivity agent: stage the worker-side DaemonSet into the auto-deploy dir
+    # (the apiserver `cluster` egress selector tunnels through konnectivity-server,
+    # which the agents dial out to). __KONN_HOST__ is the NLB endpoint agents reach,
+    # seeded by the launcher in first-boot.env; __KONN_AGENT_IMAGE__ is pinned here.
+    # The agent learns the apiserver replica count from the server handshake
+    # (--sync-forever), so no server-count token is substituted here. Guarded on
+    # the baked manifest so an older image without it simply skips the agent.
+    if [ -f /usr/share/spinifex-eks/konnectivity/konnectivity-agent.yaml ]; then
+        konn_host=$(awk -F= '/^EKS_KONNECTIVITY_HOST=/{print $2}' \
+            /etc/spinifex-eks/first-boot.env 2>/dev/null)
+        if [ -n "${konn_host}" ]; then
+            mkdir -p /var/lib/rancher/k3s/server/manifests
+            sed -e "s|__KONN_HOST__|${konn_host}|g" \
+                -e "s|__KONN_AGENT_IMAGE__|${KONN_AGENT_IMAGE}|g" \
+                /usr/share/spinifex-eks/konnectivity/konnectivity-agent.yaml \
+                > /var/lib/rancher/k3s/server/manifests/konnectivity-agent.yaml
+            einfo "konnectivity-agent staged (host ${konn_host})"
+        else
+            ewarn "EKS_KONNECTIVITY_HOST empty; konnectivity-agent not staged, apiserver->pod egress will fail"
         fi
     fi
 

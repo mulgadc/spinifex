@@ -379,7 +379,7 @@ func TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete(t *testing.T) {
 	assert.True(t, deleted["sg-cp"] && deleted["sg-ng"], "both cluster SGs removed")
 }
 
-// TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers guards mulga-siv-410:
+// TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers guards the contract:
 // a cluster SG is pinned by ANY referencing rule in the VPC, including an egress
 // rule on a non-cluster SG (LBC/ALB, user/TF). The teardown must revoke both
 // directions on every non-default SG so the cluster SGs delete, must NOT delete
@@ -444,16 +444,21 @@ func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) 
 	err := EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
 	require.NoError(t, err)
 
-	require.Len(t, sgp.authorizeCalls, 1)
-	in := sgp.authorizeCalls[0]
-	assert.Equal(t, "sg-cp-001", aws.StringValue(in.GroupId))
-	require.Len(t, in.IpPermissions, 1)
-	perm := in.IpPermissions[0]
-	assert.Equal(t, "tcp", aws.StringValue(perm.IpProtocol))
-	assert.Equal(t, k3sAPIServerPort, aws.Int64Value(perm.FromPort))
-	assert.Equal(t, k3sAPIServerPort, aws.Int64Value(perm.ToPort))
-	require.Len(t, perm.IpRanges, 1)
-	assert.Equal(t, "10.0.0.0/16", aws.StringValue(perm.IpRanges[0].CidrIp))
+	// NLB → apiserver (:6443) and NLB → konnectivity-server (:8132).
+	require.Len(t, sgp.authorizeCalls, 2)
+	ports := map[int64]bool{}
+	for _, in := range sgp.authorizeCalls {
+		assert.Equal(t, "sg-cp-001", aws.StringValue(in.GroupId))
+		require.Len(t, in.IpPermissions, 1)
+		perm := in.IpPermissions[0]
+		assert.Equal(t, "tcp", aws.StringValue(perm.IpProtocol))
+		assert.Equal(t, aws.Int64Value(perm.FromPort), aws.Int64Value(perm.ToPort))
+		require.Len(t, perm.IpRanges, 1)
+		assert.Equal(t, "10.0.0.0/16", aws.StringValue(perm.IpRanges[0].CidrIp))
+		ports[aws.Int64Value(perm.FromPort)] = true
+	}
+	assert.True(t, ports[k3sAPIServerPort], "admits :6443")
+	assert.True(t, ports[konnectivityAgentPort], "admits :8132")
 }
 
 func TestEnsureControlPlaneIngress_EmptyInputsRejected(t *testing.T) {

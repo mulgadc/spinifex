@@ -264,7 +264,9 @@ func EnsurePrivateEndpointSG(sgp sgProvisioner, accountID, clusterName, vpcID, v
 		return "", err
 	}
 
-	for _, port := range []int64{clusterNLBListenPort, k3sAPIServerPort} {
+	// :443/:6443 carry kubectl/SDK + the in-cluster `kubernetes` Endpoints; :8132
+	// carries the worker konnectivity-agents' tunnel dial to the CP servers.
+	for _, port := range []int64{clusterNLBListenPort, k3sAPIServerPort, konnectivityAgentPort} {
 		perm := &ec2.IpPermission{
 			IpProtocol: aws.String("tcp"),
 			FromPort:   aws.Int64(port),
@@ -386,8 +388,10 @@ func EnsureNodegroupSGRules(sgp sgProvisioner, accountID, clusterName, cpSGID, n
 	return nil
 }
 
-// EnsureControlPlaneIngress admits the NLB→apiserver hop from the VPC CIDR on k3sAPIServerPort.
-// Public access is gated separately at the NLB front-end. Idempotent.
+// EnsureControlPlaneIngress admits the NLB→CP hops from the VPC CIDR: the
+// apiserver (k3sAPIServerPort) and the konnectivity-server agent port
+// (konnectivityAgentPort). Public access is gated separately at the NLB
+// front-end. Idempotent.
 func EnsureControlPlaneIngress(sgp sgProvisioner, accountID, cpSGID, vpcCIDR string) error {
 	if cpSGID == "" {
 		return errors.New("eks: EnsureControlPlaneIngress empty control-plane SG id")
@@ -396,21 +400,29 @@ func EnsureControlPlaneIngress(sgp sgProvisioner, accountID, cpSGID, vpcCIDR str
 		return errors.New("eks: EnsureControlPlaneIngress empty vpc cidr")
 	}
 
-	perm := &ec2.IpPermission{
-		IpProtocol: aws.String("tcp"),
-		FromPort:   aws.Int64(k3sAPIServerPort),
-		ToPort:     aws.Int64(k3sAPIServerPort),
-		IpRanges: []*ec2.IpRange{{
-			CidrIp:      aws.String(vpcCIDR),
-			Description: aws.String("EKS NLB to apiserver"),
-		}},
-	}
-	_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-		GroupId:       aws.String(cpSGID),
-		IpPermissions: []*ec2.IpPermission{perm},
-	}, accountID)
-	if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
-		return fmt.Errorf("authorize control-plane apiserver ingress on %s: %w", cpSGID, err)
+	for _, p := range []struct {
+		port int64
+		desc string
+	}{
+		{k3sAPIServerPort, "EKS NLB to apiserver"},
+		{konnectivityAgentPort, "EKS NLB to konnectivity-server"},
+	} {
+		perm := &ec2.IpPermission{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(p.port),
+			ToPort:     aws.Int64(p.port),
+			IpRanges: []*ec2.IpRange{{
+				CidrIp:      aws.String(vpcCIDR),
+				Description: aws.String(p.desc),
+			}},
+		}
+		_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       aws.String(cpSGID),
+			IpPermissions: []*ec2.IpPermission{perm},
+		}, accountID)
+		if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+			return fmt.Errorf("authorize control-plane %s ingress on %s: %w", p.desc, cpSGID, err)
+		}
 	}
 	return nil
 }

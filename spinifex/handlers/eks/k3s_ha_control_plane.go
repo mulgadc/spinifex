@@ -130,6 +130,7 @@ func (s *EKSServiceImpl) placeControlPlane(accountID, clusterName string, tmpl K
 func (s *EKSServiceImpl) launchSingleControlPlane(tmpl K3sServerInput) ([]ControlPlaneNode, string, error) {
 	in := tmpl
 	in.TargetNodeID = ""
+	in.KonnServerCount = 1
 	out, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, in)
 	if err != nil {
 		return nil, "", err
@@ -149,6 +150,7 @@ type cpLaunchResult struct {
 func (s *EKSServiceImpl) launchControlPlaneSpread(tmpl K3sServerInput, nodes []string) []cpLaunchResult {
 	results := make([]cpLaunchResult, len(nodes))
 
+	tmpl.KonnServerCount = len(nodes)
 	first := tmpl
 	first.TargetNodeID = nodes[0]
 	out, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, first)
@@ -324,12 +326,19 @@ func NewNATSHostScheduler(nc *nats.Conn) HostScheduler {
 
 func (h *natsHostScheduler) SchedulableHosts(instanceType string) []string {
 	// sys.* types are hidden from customers in node.status but still consume
-	// vCPU/memory, so fit is checked against raw schedulable headroom.
-	vcpu, memGB, ok := instancetypes.SpecForSystemType(instanceType)
-	if !ok {
-		slog.Warn("SchedulableHosts: unknown system instance type, no schedulable hosts",
-			"instanceType", instanceType)
-		return nil
+	// vCPU/memory, so their fit is checked against raw schedulable headroom.
+	// Customer types (e.g. nodegroup workers) advertise per-type Available in
+	// node.status, so fit reads that directly.
+	isSystem := instancetypes.IsSystemType(instanceType)
+	var vcpu int
+	var memGB float64
+	if isSystem {
+		var ok bool
+		if vcpu, memGB, ok = instancetypes.SpecForSystemType(instanceType); !ok {
+			slog.Warn("SchedulableHosts: unknown system instance type, no schedulable hosts",
+				"instanceType", instanceType)
+			return nil
+		}
 	}
 
 	var hosts []string
@@ -339,12 +348,27 @@ func (h *natsHostScheduler) SchedulableHosts(instanceType string) []string {
 		if json.Unmarshal(data, &st) != nil || st.Node == "" || seen[st.Node] {
 			return
 		}
-		if nodeFitsSystemInstance(st, vcpu, memGB) {
+		fits := nodeFitsCustomerInstance(st, instanceType)
+		if isSystem {
+			fits = nodeFitsSystemInstance(st, vcpu, memGB)
+		}
+		if fits {
 			seen[st.Node] = true
 			hosts = append(hosts, st.Node)
 		}
 	})
 	return hosts
+}
+
+// nodeFitsCustomerInstance reports whether a node advertises at least one free
+// slot for the given customer instance type in its node.status capacity.
+func nodeFitsCustomerInstance(st types.NodeStatusResponse, instanceType string) bool {
+	for _, c := range st.InstanceTypes {
+		if c.Name == instanceType && c.Available >= 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // nodeFitsSystemInstance reports whether a node's headroom (Total - Reserved - Alloc)

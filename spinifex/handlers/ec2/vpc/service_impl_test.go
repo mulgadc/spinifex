@@ -1743,7 +1743,7 @@ func TestGetSubnet_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "subnet-missing")
 }
 
-// --- CreateTags write-through (mulga-siv-347) ---
+// --- CreateTags write-through ---
 
 func TestApplyRecordTags_SubnetTagFilteredDescribe(t *testing.T) {
 	svc := setupTestVPCService(t)

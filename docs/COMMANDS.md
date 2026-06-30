@@ -464,8 +464,7 @@ EIP commands are only registered when an external IPAM pool is configured.
 
 ## IAM
 
-All IAM operations are account-scoped. Root user (account `000000000000`)
-bypasses policy evaluation entirely.
+All IAM operations are account-scoped. Root user (account `000000000000`) bypasses policy evaluation entirely.
 
 ### IAM — Users
 
@@ -475,6 +474,7 @@ bypasses policy evaluation entirely.
 | `get-user` | `--user-name` | — | **DONE** |
 | `list-users` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
 | `delete-user` | `--user-name` | — | **DONE** |
+| `update-user` | — | `--user-name`, `--new-path`, `--new-user-name` | **NOT STARTED** |
 
 ### IAM — Access Keys
 
@@ -550,6 +550,7 @@ bypasses policy evaluation entirely.
 | `get-group` | `--group-name` | — | **DONE** |
 | `list-groups` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
 | `delete-group` | `--group-name` | — | **DONE** |
+| `update-group` | — | `--group-name`, `--new-path`, `--new-group-name` | **NOT STARTED** |
 | `add-user-to-group` | `--group-name`, `--user-name` | — | **DONE** |
 | `remove-user-from-group` | `--group-name`, `--user-name` | — | **DONE** |
 | `list-groups-for-user` | `--user-name` | `--max-items`, `--marker` | **DONE** |

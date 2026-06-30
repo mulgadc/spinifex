@@ -290,8 +290,6 @@ func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts
 func (s *IMDSServiceImpl) serveInstanceLifecycle(w http.ResponseWriter, eni *eniFacts) {
 	inst, err := s.resolver.resolveInstance(eni)
 	if err != nil {
-		// Log but still default to on-demand: this leaf is advertised
-		// unconditionally and must never 404 on a backend fault.
 		slog.Error("IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
 	}
 	if err == nil && inst != nil && inst.lifecycleType == "spot" {

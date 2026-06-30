@@ -339,15 +339,15 @@ func sirMatchesFilters(req *ec2.SpotInstanceRequest, filters map[string][]string
 				return false
 			}
 		case name == "launch.image-id":
-			if !filterutil.MatchesAny(values, launchSpecImageID(req)) {
+			if !filterutil.MatchesAny(values, aws.StringValue(launchSpec(req).ImageId)) {
 				return false
 			}
 		case name == "launch.instance-type":
-			if !filterutil.MatchesAny(values, launchSpecInstanceType(req)) {
+			if !filterutil.MatchesAny(values, aws.StringValue(launchSpec(req).InstanceType)) {
 				return false
 			}
 		case name == "launch.key-name":
-			if !filterutil.MatchesAny(values, launchSpecKeyName(req)) {
+			if !filterutil.MatchesAny(values, aws.StringValue(launchSpec(req).KeyName)) {
 				return false
 			}
 		case name == "tag-key":
@@ -372,23 +372,11 @@ func sirMatchesTagKey(tags []*ec2.Tag, values []string) bool {
 	return false
 }
 
-func launchSpecImageID(req *ec2.SpotInstanceRequest) string {
-	if req.LaunchSpecification == nil {
-		return ""
+// launchSpec returns the request's launch specification, or an empty one when
+// absent, so field reads in filter matching need no nil guard.
+func launchSpec(req *ec2.SpotInstanceRequest) *ec2.LaunchSpecification {
+	if req.LaunchSpecification != nil {
+		return req.LaunchSpecification
 	}
-	return aws.StringValue(req.LaunchSpecification.ImageId)
-}
-
-func launchSpecInstanceType(req *ec2.SpotInstanceRequest) string {
-	if req.LaunchSpecification == nil {
-		return ""
-	}
-	return aws.StringValue(req.LaunchSpecification.InstanceType)
-}
-
-func launchSpecKeyName(req *ec2.SpotInstanceRequest) string {
-	if req.LaunchSpecification == nil {
-		return ""
-	}
-	return aws.StringValue(req.LaunchSpecification.KeyName)
+	return &ec2.LaunchSpecification{}
 }

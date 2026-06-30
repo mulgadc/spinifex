@@ -1337,6 +1337,15 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 				docs = append(docs, doc)
 			}
 		}
+		// Group-inherited inline policies. A malformed document within a
+		// resolvable group fails closed, mirroring GetRolePolicies.
+		for name, raw := range group.InlinePolicies {
+			var doc PolicyDocument
+			if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+				return nil, fmt.Errorf("parse group inline policy %s/%s: %w", groupName, name, err) // fail closed
+			}
+			docs = append(docs, doc)
+		}
 	}
 
 	return docs, nil

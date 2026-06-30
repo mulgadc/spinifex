@@ -115,6 +115,8 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		d.handleDetachNetworkInterface(msg, command, instance)
 	case command.Attributes.AssociateIamInstanceProfile:
 		d.handleAssociateIamInstanceProfile(msg, command, instance)
+	case command.Attributes.SetSpotLineage:
+		d.handleSetSpotLineage(msg, command)
 	case command.Attributes.StartInstance:
 		if err := d.instanceService.StartInstance(instance, command); err != nil {
 			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))

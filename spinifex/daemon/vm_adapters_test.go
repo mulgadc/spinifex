@@ -354,6 +354,17 @@ func TestReleaseGPU_ManagerError_LogsWarning(t *testing.T) {
 	a.ReleaseGPU(instance)
 }
 
+// --- RemoveFromSpotRequest ---
+
+// RemoveFromSpotRequest is a no-op when the spot instance service is not
+// configured. The service-present path is just a delegation to the spot
+// service's CloseForInstance, which is covered by the service's own tests.
+func TestRemoveFromSpotRequest_NoService_NoOp(t *testing.T) {
+	d := &Daemon{}
+	a := newInstanceCleanerAdapter(d)
+	require.NoError(t, a.RemoveFromSpotRequest(&vm.VM{ID: "i-x", AccountID: "111111111111"}))
+}
+
 // TestBuildVMManagerDeps_WiresBeforeInstanceRelaunch guards the single line
 // in buildVMManagerDeps that routes the recovery hook to
 // refreshSystemInstanceState. Dropping it would surface only in cell-18.

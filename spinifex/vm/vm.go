@@ -159,6 +159,14 @@ type VM struct {
 	// was launched into (targeted launch). Empty for instances on general
 	// capacity. Drives slot restore to the reservation on stop/terminate.
 	CapacityReservationId string `json:"capacity_reservation_id,omitempty"`
+
+	// InstanceLifecycle is "spot" when launched via RequestSpotInstances, empty
+	// for on-demand (matching AWS, which sets it only for spot/scheduled/
+	// capacity-block). SpotInstanceRequestId links the VM back to its SIR. Both
+	// are stamped post-launch by the spot write-back; absence on old records is
+	// tolerated by migrate.
+	InstanceLifecycle     string `json:"instance_lifecycle,omitempty"`
+	SpotInstanceRequestId string `json:"spot_instance_request_id,omitempty"`
 }
 
 // ResetNodeLocalState zeroes node-specific fields after deserializing a VM

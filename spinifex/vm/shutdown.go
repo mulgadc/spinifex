@@ -335,6 +335,13 @@ func (m *Manager) terminateCleanup(instance *VM) {
 		if instance.PlacementGroupName != "" {
 			m.markTeardownResult(instance, TeardownPlacement, placementErr)
 		}
+
+		// Spot Instance Requests carry no VM-side marker, so this is a best-effort
+		// scan that no-ops for non-spot instances. It is not a tracked teardown
+		// dependency: without a marker we cannot stamp it only when it applies.
+		if err := m.deps.InstanceCleaner.RemoveFromSpotRequest(instance); err != nil {
+			slog.Warn("Failed to close spot request on termination", "id", instance.ID, "err", err)
+		}
 	}
 
 	m.deallocateResources(instance)

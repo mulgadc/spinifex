@@ -39,6 +39,7 @@ type instanceFacts struct {
 	keyName               string
 	architecture          string
 	reservationID         string
+	lifecycleType         string // "spot" for spot-launched instances, else empty (on-demand)
 	amiLaunchIndex        int64
 	pendingTime           time.Time
 	userData              []byte

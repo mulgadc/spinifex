@@ -27,6 +27,12 @@ type InstanceCleaner interface {
 	// group, if one is set. Called only on Terminate.
 	RemoveFromPlacementGroup(v *VM) error
 
+	// RemoveFromSpotRequest closes the Spot Instance Request fulfilled by this
+	// instance, if any, by scanning the active spot bucket for its ID. The VM
+	// carries no spot marker, so this is best-effort and untracked (no teardown
+	// stamp): a no-match is the common case. Called only on Terminate.
+	RemoveFromSpotRequest(v *VM) error
+
 	// ReleaseGPU unbinds the instance's GPU from vfio-pci and rebinds to
 	// its original host driver. Called on both Stop and Terminate. No-op
 	// when the instance has no GPU allocation.

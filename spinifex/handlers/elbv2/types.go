@@ -10,6 +10,9 @@ const (
 	LoadBalancerTypeApplication = "application"
 	LoadBalancerTypeNetwork     = "network"
 
+	// maxLBSecurityGroups is the AWS cap on security groups per load balancer.
+	maxLBSecurityGroups = 5
+
 	// LoadBalancer schemes
 	SchemeInternetFacing = "internet-facing"
 	SchemeInternal       = "internal"
@@ -116,9 +119,10 @@ type LoadBalancerRecord struct {
 	State           string   `json:"state"`  // "provisioning", "active", "failed"
 	VpcId           string   `json:"vpc_id"`
 	SecurityGroups  []string `json:"security_groups"`
-	// NLBManagedSGID is the managed SG minted for NLBs (customer SGs are rejected).
-	// Attached to every LB ENI; listener-port ingress is authorized on it.
-	// Not surfaced by DescribeLoadBalancers.
+	// NLBManagedSGID is the managed SG minted for an NLB created without customer
+	// SGs; attached to every LB ENI with listener-port ingress authorized on it.
+	// Empty when the NLB was created with customer SGs (which replace it). Not
+	// surfaced by DescribeLoadBalancers.
 	NLBManagedSGID string `json:"nlb_managed_sg_id,omitempty"`
 	// NLBIngressCIDRs overrides the scheme-based default client CIDRs that
 	// listener ports are opened to on NLBManagedSGID. Empty ⇒ default

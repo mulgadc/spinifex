@@ -64,8 +64,11 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 
-	// NLBs do not support security groups (mirrors CreateLoadBalancer).
-	if lb.Type == LoadBalancerTypeNetwork {
+	// SGs are fixed at create time on NLBs: they can be replaced on an NLB created
+	// with SGs, but not added to one created without (it carries the managed SG
+	// instead). ALBs always allow SetSecurityGroups. The empty-input case is
+	// already rejected above, so this never strips an SG-NLB to zero.
+	if lb.Type == LoadBalancerTypeNetwork && len(lb.SecurityGroups) == 0 {
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
@@ -75,6 +78,9 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 		sgs = append(sgs, *sg)
+	}
+	if len(sgs) > maxLBSecurityGroups {
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
 	// Re-attach to each ENI; failure aborts before the record is persisted.

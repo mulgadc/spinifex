@@ -1,6 +1,10 @@
-import type { AccessKeyMetadata, AttachedPolicy } from "@aws-sdk/client-iam"
+import type {
+  AccessKeyMetadata,
+  AttachedPolicy,
+  Group,
+} from "@aws-sdk/client-iam"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
 
@@ -19,11 +23,13 @@ import {
   useDeleteAccessKey,
   useDeleteUser,
   useDetachUserPolicy,
+  useRemoveUserFromGroup,
   useUpdateAccessKey,
 } from "@/mutations/iam"
 import {
   iamAccessKeysQueryOptions,
   iamAttachedUserPoliciesQueryOptions,
+  iamGroupsForUserQueryOptions,
   iamPoliciesQueryOptions,
   iamUserQueryOptions,
 } from "@/queries/iam"
@@ -44,6 +50,9 @@ export const Route = createFileRoute("/_auth/iam/(users)/list-users/$userName")(
           iamAttachedUserPoliciesQueryOptions(params.userName),
         ),
         context.queryClient.ensureQueryData(iamPoliciesQueryOptions),
+        context.queryClient.ensureQueryData(
+          iamGroupsForUserQueryOptions(params.userName),
+        ),
       ])
     },
     head: ({ params }) => ({
@@ -64,6 +73,9 @@ function UserDetail() {
     iamAttachedUserPoliciesQueryOptions(userName),
   )
   const { data: allPoliciesData } = useSuspenseQuery(iamPoliciesQueryOptions)
+  const { data: groupsData } = useSuspenseQuery(
+    iamGroupsForUserQueryOptions(userName),
+  )
 
   const deleteMutation = useDeleteUser()
   const createAccessKeyMutation = useCreateAccessKey()
@@ -71,6 +83,7 @@ function UserDetail() {
   const updateAccessKeyMutation = useUpdateAccessKey()
   const attachPolicyMutation = useAttachUserPolicy()
   const detachPolicyMutation = useDetachUserPolicy()
+  const removeFromGroupMutation = useRemoveUserFromGroup()
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [newAccessKey, setNewAccessKey] = useState<{
@@ -82,11 +95,15 @@ function UserDetail() {
   const [pendingPolicyAction, setPendingPolicyAction] = useState<string | null>(
     null,
   )
+  const [pendingGroupAction, setPendingGroupAction] = useState<string | null>(
+    null,
+  )
 
   const user = userData.User
   const accessKeys = accessKeysData.AccessKeyMetadata ?? []
   const attachedPolicies = attachedPoliciesData.AttachedPolicies ?? []
   const allPolicies = allPoliciesData.Policies ?? []
+  const groups = groupsData.Groups ?? []
 
   const attachedArns = new Set(attachedPolicies.map((p) => p.PolicyArn))
   const availablePolicies = allPolicies.filter(
@@ -151,6 +168,15 @@ function UserDetail() {
     }
   }
 
+  const handleRemoveFromGroup = async (groupName: string) => {
+    setPendingGroupAction(groupName)
+    try {
+      await removeFromGroupMutation.mutateAsync({ groupName, userName })
+    } finally {
+      setPendingGroupAction(null)
+    }
+  }
+
   if (!user) {
     return (
       <>
@@ -189,6 +215,12 @@ function UserDetail() {
         <ErrorBanner
           error={detachPolicyMutation.error}
           msg="Failed to detach policy"
+        />
+      )}
+      {removeFromGroupMutation.error && (
+        <ErrorBanner
+          error={removeFromGroupMutation.error}
+          msg="Failed to remove from group"
         />
       )}
 
@@ -363,6 +395,47 @@ function UserDetail() {
             ) : (
               <p className="col-span-2 text-sm text-muted-foreground">
                 No attached policies.
+              </p>
+            )}
+          </DetailCard.Content>
+        </DetailCard>
+
+        {/* Groups */}
+        <DetailCard>
+          <DetailCard.Header>Groups</DetailCard.Header>
+          <DetailCard.Content>
+            {groups.length > 0 ? (
+              <div className="col-span-2 space-y-3">
+                {groups.map((group: Group) => (
+                  <div
+                    className="flex items-center justify-between rounded-md border p-3"
+                    key={group.GroupName}
+                  >
+                    <Link
+                      className="text-sm font-medium hover:underline"
+                      params={{ groupName: group.GroupName ?? "" }}
+                      to="/iam/list-groups/$groupName"
+                    >
+                      {group.GroupName}
+                    </Link>
+                    <Button
+                      disabled={pendingGroupAction === group.GroupName}
+                      onClick={() => {
+                        if (group.GroupName) {
+                          void handleRemoveFromGroup(group.GroupName)
+                        }
+                      }}
+                      size="sm"
+                      variant="outline"
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="col-span-2 text-sm text-muted-foreground">
+                Not a member of any group.
               </p>
             )}
           </DetailCard.Content>

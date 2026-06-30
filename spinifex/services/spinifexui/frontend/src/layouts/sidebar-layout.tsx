@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   UserCog,
   Users,
+  UsersRound,
   Waypoints,
 } from "lucide-react"
 
@@ -389,6 +390,21 @@ export function SidebarLayout() {
                 >
                   <Users className="size-4" />
                   <span>Users</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/iam/list-groups">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/iam/list-groups") ||
+                    pathname.startsWith("/iam/create-group")
+                  }
+                  tooltip="Groups"
+                >
+                  <UsersRound className="size-4" />
+                  <span>Groups</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

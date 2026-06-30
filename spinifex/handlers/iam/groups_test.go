@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -641,6 +642,285 @@ func TestListAttachedGroupPolicies_GroupNotFound(t *testing.T) {
 }
 
 // ============================================================================
+// Group Inline Policy Tests (Put / Get / Delete / List)
+// ============================================================================
+
+func TestPutGroupPolicy_RoundTrip(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "inline-group")
+
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("inline-group"),
+		PolicyName:     aws.String("AllowDescribe"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.GetGroupPolicy(testAccountID, &iam.GetGroupPolicyInput{
+		GroupName:  aws.String("inline-group"),
+		PolicyName: aws.String("AllowDescribe"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "inline-group", *out.GroupName)
+	assert.Equal(t, "AllowDescribe", *out.PolicyName)
+	assert.Equal(t, validPolicyDocument(), *out.PolicyDocument)
+}
+
+func TestPutGroupPolicy_IdempotentOverwrite(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "overwrite-group")
+
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("overwrite-group"),
+		PolicyName:     aws.String("Policy"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("overwrite-group"),
+		PolicyName:     aws.String("Policy"),
+		PolicyDocument: aws.String(inlineDenyDocument()),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.GetGroupPolicy(testAccountID, &iam.GetGroupPolicyInput{
+		GroupName:  aws.String("overwrite-group"),
+		PolicyName: aws.String("Policy"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, inlineDenyDocument(), *out.PolicyDocument)
+
+	list, err := svc.ListGroupPolicies(testAccountID, &iam.ListGroupPoliciesInput{
+		GroupName: aws.String("overwrite-group"),
+	})
+	require.NoError(t, err)
+	assert.Len(t, list.PolicyNames, 1, "overwrite must not duplicate the name")
+}
+
+func TestPutGroupPolicy_InvalidName(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "badname-group")
+
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("badname-group"),
+		PolicyName:     aws.String("bad name"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+}
+
+func TestPutGroupPolicy_MalformedDocument(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "malformed-group")
+
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("malformed-group"),
+		PolicyName:     aws.String("Bad"),
+		PolicyDocument: aws.String(`{not valid json`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestPutGroupPolicy_OversizedDocument(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "oversized-group")
+
+	huge := strings.Repeat("a", maxPolicyDocumentSize+1)
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("oversized-group"),
+		PolicyName:     aws.String("Huge"),
+		PolicyDocument: aws.String(huge),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestPutGroupPolicy_GroupNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("ghost"),
+		PolicyName:     aws.String("Policy"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestGetGroupPolicy_UnknownName(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "get-unknown")
+
+	_, err := svc.GetGroupPolicy(testAccountID, &iam.GetGroupPolicyInput{
+		GroupName:  aws.String("get-unknown"),
+		PolicyName: aws.String("missing"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestGetGroupPolicy_GroupNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.GetGroupPolicy(testAccountID, &iam.GetGroupPolicyInput{
+		GroupName:  aws.String("ghost"),
+		PolicyName: aws.String("Policy"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestListGroupPolicies_Sorted(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "list-group")
+
+	for _, name := range []string{"Charlie", "Alpha", "Bravo"} {
+		_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+			GroupName:      aws.String("list-group"),
+			PolicyName:     aws.String(name),
+			PolicyDocument: aws.String(validPolicyDocument()),
+		})
+		require.NoError(t, err)
+	}
+
+	out, err := svc.ListGroupPolicies(testAccountID, &iam.ListGroupPoliciesInput{
+		GroupName: aws.String("list-group"),
+	})
+	require.NoError(t, err)
+	require.False(t, *out.IsTruncated)
+	got := make([]string, 0, len(out.PolicyNames))
+	for _, n := range out.PolicyNames {
+		got = append(got, *n)
+	}
+	assert.Equal(t, []string{"Alpha", "Bravo", "Charlie"}, got)
+}
+
+func TestListGroupPolicies_Empty(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "empty-inline-group")
+
+	out, err := svc.ListGroupPolicies(testAccountID, &iam.ListGroupPoliciesInput{
+		GroupName: aws.String("empty-inline-group"),
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, out.PolicyNames)
+	assert.Len(t, out.PolicyNames, 0)
+	assert.False(t, *out.IsTruncated)
+}
+
+func TestListGroupPolicies_GroupNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.ListGroupPolicies(testAccountID, &iam.ListGroupPoliciesInput{
+		GroupName: aws.String("ghost"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeleteGroupPolicy(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "del-inline-group")
+
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("del-inline-group"),
+		PolicyName:     aws.String("Doomed"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteGroupPolicy(testAccountID, &iam.DeleteGroupPolicyInput{
+		GroupName:  aws.String("del-inline-group"),
+		PolicyName: aws.String("Doomed"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.GetGroupPolicy(testAccountID, &iam.GetGroupPolicyInput{
+		GroupName:  aws.String("del-inline-group"),
+		PolicyName: aws.String("Doomed"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+
+	list, err := svc.ListGroupPolicies(testAccountID, &iam.ListGroupPoliciesInput{
+		GroupName: aws.String("del-inline-group"),
+	})
+	require.NoError(t, err)
+	assert.Len(t, list.PolicyNames, 0)
+}
+
+func TestDeleteGroupPolicy_DoubleDelete(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "double-del-group")
+
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("double-del-group"),
+		PolicyName:     aws.String("Once"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteGroupPolicy(testAccountID, &iam.DeleteGroupPolicyInput{
+		GroupName:  aws.String("double-del-group"),
+		PolicyName: aws.String("Once"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteGroupPolicy(testAccountID, &iam.DeleteGroupPolicyInput{
+		GroupName:  aws.String("double-del-group"),
+		PolicyName: aws.String("Once"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeleteGroupPolicy_GroupNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.DeleteGroupPolicy(testAccountID, &iam.DeleteGroupPolicyInput{
+		GroupName:  aws.String("ghost"),
+		PolicyName: aws.String("Policy"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+// TestDeleteGroup_WithInlinePolicy proves a group carrying an inline policy
+// refuses deletion until the inline policy is removed, mirroring DeleteRole.
+func TestDeleteGroup_WithInlinePolicy(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "inline-conflict-group")
+
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("inline-conflict-group"),
+		PolicyName:     aws.String("Blocker"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteGroup(testAccountID, &iam.DeleteGroupInput{
+		GroupName: aws.String("inline-conflict-group"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	// Succeeds once the inline policy is removed.
+	_, err = svc.DeleteGroupPolicy(testAccountID, &iam.DeleteGroupPolicyInput{
+		GroupName:  aws.String("inline-conflict-group"),
+		PolicyName: aws.String("Blocker"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteGroup(testAccountID, &iam.DeleteGroupInput{
+		GroupName: aws.String("inline-conflict-group"),
+	})
+	require.NoError(t, err)
+}
+
+// ============================================================================
 // Authorization Integration — the linchpin (GetUserPolicies resolves groups)
 // ============================================================================
 
@@ -763,6 +1043,123 @@ func TestGetUserPolicies_SkipsMissingGroup(t *testing.T) {
 		UserName:  aws.String("kim"),
 	})
 	require.NoError(t, err)
+}
+
+// putRawGroupInlinePolicy writes an inline policy document into a group record
+// directly via the bucket, bypassing PutGroupPolicy validation. Used to plant a
+// corrupt stored document that the write path would otherwise reject.
+func putRawGroupInlinePolicy(t *testing.T, svc *IAMServiceImpl, groupName, policyName, raw string) {
+	t.Helper()
+	group, err := svc.getGroup(testAccountID, groupName)
+	require.NoError(t, err)
+	if group.InlinePolicies == nil {
+		group.InlinePolicies = map[string]string{}
+	}
+	group.InlinePolicies[policyName] = raw
+	data, err := json.Marshal(group)
+	require.NoError(t, err)
+	_, err = svc.groupsBucket.Put(testAccountID+"."+groupName, data)
+	require.NoError(t, err)
+}
+
+// TestGetUserPolicies_GroupInlineInheritance is the linchpin: an inline policy
+// embedded in a group must contribute its grant to every member's effective
+// permission set, and stop contributing once the inline policy is removed.
+// Without this, group inline policies are cosmetic and grant nothing.
+func TestGetUserPolicies_GroupInlineInheritance(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "inline-grantor")
+	createTestUser(t, svc, "nora")
+
+	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("inline-grantor"),
+		PolicyName:     aws.String("InlineGrant"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	// Before joining: the group's inline grant is absent.
+	docs, err := svc.GetUserPolicies(testAccountID, "nora")
+	require.NoError(t, err)
+	assert.False(t, policiesGrant(docs, "ec2:DescribeInstances"), "grant must be absent before joining")
+
+	_, err = svc.AddUserToGroup(testAccountID, &iam.AddUserToGroupInput{
+		GroupName: aws.String("inline-grantor"),
+		UserName:  aws.String("nora"),
+	})
+	require.NoError(t, err)
+
+	// After joining: the inline grant flows through to the member.
+	docs, err = svc.GetUserPolicies(testAccountID, "nora")
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+	assert.True(t, policiesGrant(docs, "ec2:DescribeInstances"), "group inline grant must flow to the member")
+
+	// After removing the inline policy: the grant disappears again.
+	_, err = svc.DeleteGroupPolicy(testAccountID, &iam.DeleteGroupPolicyInput{
+		GroupName:  aws.String("inline-grantor"),
+		PolicyName: aws.String("InlineGrant"),
+	})
+	require.NoError(t, err)
+
+	docs, err = svc.GetUserPolicies(testAccountID, "nora")
+	require.NoError(t, err)
+	assert.False(t, policiesGrant(docs, "ec2:DescribeInstances"), "grant must vanish after the inline policy is deleted")
+}
+
+// TestGetUserPolicies_GroupManagedAndInline proves a group's managed attachment
+// and its inline document both surface in a member's combined effective set —
+// inline grants supplement managed grants rather than replacing them.
+func TestGetUserPolicies_GroupManagedAndInline(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "combined-inline-group")
+	createTestUser(t, svc, "omar")
+	managed := createTestPolicy(t, svc, "ManagedGrant")
+
+	_, err := svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{
+		GroupName: aws.String("combined-inline-group"),
+		PolicyArn: managed.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
+		GroupName:      aws.String("combined-inline-group"),
+		PolicyName:     aws.String("InlineDeny"),
+		PolicyDocument: aws.String(inlineDenyDocument()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.AddUserToGroup(testAccountID, &iam.AddUserToGroupInput{
+		GroupName: aws.String("combined-inline-group"),
+		UserName:  aws.String("omar"),
+	})
+	require.NoError(t, err)
+
+	docs, err := svc.GetUserPolicies(testAccountID, "omar")
+	require.NoError(t, err)
+	require.Len(t, docs, 2, "both the managed attachment and the inline document must resolve")
+	assert.True(t, policiesGrant(docs, "ec2:DescribeInstances"), "managed Allow surfaced")
+	assert.True(t, policiesGrant(docs, "s3:DeleteObject"), "inline doc surfaced")
+}
+
+// TestGetUserPolicies_GroupInlineMalformedFailsClosed proves a corrupt inline
+// document on a resolvable group fails the whole resolution closed rather than
+// silently dropping the grant source, mirroring GetRolePolicies.
+func TestGetUserPolicies_GroupInlineMalformedFailsClosed(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestGroup(t, svc, "corrupt-inline-group")
+	createTestUser(t, svc, "pam")
+
+	_, err := svc.AddUserToGroup(testAccountID, &iam.AddUserToGroupInput{
+		GroupName: aws.String("corrupt-inline-group"),
+		UserName:  aws.String("pam"),
+	})
+	require.NoError(t, err)
+
+	putRawGroupInlinePolicy(t, svc, "corrupt-inline-group", "Bad", `{not valid json`)
+
+	_, err = svc.GetUserPolicies(testAccountID, "pam")
+	assert.Error(t, err, "a malformed inline doc on a resolvable group must fail closed")
 }
 
 // ============================================================================

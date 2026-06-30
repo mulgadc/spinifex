@@ -217,6 +217,20 @@ var iamActions = map[string]IAMHandler{
 	"ListAttachedGroupPolicies": iamHandler(func(accountID string, input *iam.ListAttachedGroupPoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListAttachedGroupPolicies(accountID, input, gw.IAMService)
 	}),
+
+	// Group inline policies
+	"PutGroupPolicy": iamHandler(func(accountID string, input *iam.PutGroupPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.PutGroupPolicy(accountID, input, gw.IAMService)
+	}),
+	"GetGroupPolicy": iamHandler(func(accountID string, input *iam.GetGroupPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetGroupPolicy(accountID, input, gw.IAMService)
+	}),
+	"DeleteGroupPolicy": iamHandler(func(accountID string, input *iam.DeleteGroupPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeleteGroupPolicy(accountID, input, gw.IAMService)
+	}),
+	"ListGroupPolicies": iamHandler(func(accountID string, input *iam.ListGroupPoliciesInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListGroupPolicies(accountID, input, gw.IAMService)
+	}),
 }
 
 func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) error {

@@ -205,6 +205,18 @@ func (s *stubIAMService) DetachGroupPolicy(_ string, _ *iam.DetachGroupPolicyInp
 func (s *stubIAMService) ListAttachedGroupPolicies(_ string, _ *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
 	return &iam.ListAttachedGroupPoliciesOutput{}, nil
 }
+func (s *stubIAMService) PutGroupPolicy(_ string, _ *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	return &iam.PutGroupPolicyOutput{}, nil
+}
+func (s *stubIAMService) GetGroupPolicy(_ string, _ *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	return &iam.GetGroupPolicyOutput{}, nil
+}
+func (s *stubIAMService) DeleteGroupPolicy(_ string, _ *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	return &iam.DeleteGroupPolicyOutput{}, nil
+}
+func (s *stubIAMService) ListGroupPolicies(_ string, _ *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	return &iam.ListGroupPoliciesOutput{}, nil
+}
 
 func TestCreateUser(t *testing.T) {
 	svc := &stubIAMService{}

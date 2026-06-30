@@ -86,3 +86,43 @@ func ListAttachedGroupPolicies(accountID string, input *iam.ListAttachedGroupPol
 	}
 	return svc.ListAttachedGroupPolicies(accountID, input)
 }
+
+func PutGroupPolicy(accountID string, input *iam.PutGroupPolicyInput, svc handlers_iam.IAMService) (*iam.PutGroupPolicyOutput, error) {
+	if input.GroupName == nil || *input.GroupName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyName == nil || *input.PolicyName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyDocument == nil || *input.PolicyDocument == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.PutGroupPolicy(accountID, input)
+}
+
+func GetGroupPolicy(accountID string, input *iam.GetGroupPolicyInput, svc handlers_iam.IAMService) (*iam.GetGroupPolicyOutput, error) {
+	if input.GroupName == nil || *input.GroupName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyName == nil || *input.PolicyName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.GetGroupPolicy(accountID, input)
+}
+
+func DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput, svc handlers_iam.IAMService) (*iam.DeleteGroupPolicyOutput, error) {
+	if input.GroupName == nil || *input.GroupName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyName == nil || *input.PolicyName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.DeleteGroupPolicy(accountID, input)
+}
+
+func ListGroupPolicies(accountID string, input *iam.ListGroupPoliciesInput, svc handlers_iam.IAMService) (*iam.ListGroupPoliciesOutput, error) {
+	if input.GroupName == nil || *input.GroupName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.ListGroupPolicies(accountID, input)
+}

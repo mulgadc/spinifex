@@ -19,10 +19,15 @@ const (
 	grpLifecycleGroup  = "grp-e2e-developers"
 	grpLifecycleUser   = "grp-e2e-lc-user"
 	grpLifecyclePolicy = "grp-e2e-lc-describe-regions"
+	grpLifecycleInline = "grp-e2e-lc-inline-describe-regions"
 
 	grpEnforceGroup  = "grp-e2e-enforce"
 	grpEnforceUser   = "grp-e2e-enf-user"
 	grpEnforcePolicy = "grp-e2e-enf-describe-regions"
+
+	grpInlineEnforceGroup = "grp-e2e-inline-enforce"
+	grpInlineEnforceUser  = "grp-e2e-inl-enf-user"
+	grpInlineEnforceName  = "grp-e2e-inl-enf-describe-regions"
 
 	// A single-action grant so the enforcement positive case proves a specific
 	// group-attached policy was resolved and evaluated — not a blanket allow.
@@ -30,9 +35,10 @@ const (
 )
 
 // runIAMGroupsLifecycle exercises the full group surface: CRUD, membership,
-// group-policy attachment, the listing reverse-lookups, and every deletion guard
-// (delete-group while attached, delete-group while non-empty, delete-user while
-// in a group), then a clean teardown. Mirrors runIAMRolesAndProfiles in shape.
+// group-policy attachment, inline group policies (put/get/list), the listing
+// reverse-lookups, and every deletion guard (delete-group while attached, while
+// inline-policied, while non-empty, delete-user while in a group), then a clean
+// teardown. Mirrors runIAMRolesAndProfiles in shape.
 func runIAMGroupsLifecycle(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — IAM Groups Lifecycle")
 	adminAccount := harness.IAMAccountID(t, fix.AWS)
@@ -213,6 +219,73 @@ func runIAMGroupsLifecycle(t *testing.T, fix *Fixture) {
 		return e
 	})
 
+	// --- Inline group policies (put / get / list) ---
+
+	harness.Step(t, "put-group-policy ghost group (expect NoSuchEntity)")
+	harness.ExpectError(t, "NoSuchEntity", func() error {
+		_, e := fix.AWS.IAM.PutGroupPolicy(&iam.PutGroupPolicyInput{
+			GroupName:      aws.String("ghost-group"),
+			PolicyName:     aws.String(grpLifecycleInline),
+			PolicyDocument: aws.String(grpPolicyDoc),
+		})
+		return e
+	})
+
+	// PutGroupPolicy — upsert; re-put with the same name must overwrite, not add.
+	harness.Step(t, "put-group-policy %s/%s (grants ec2:DescribeRegions)", grpLifecycleGroup, grpLifecycleInline)
+	_, err = fix.AWS.IAM.PutGroupPolicy(&iam.PutGroupPolicyInput{
+		GroupName:      aws.String(grpLifecycleGroup),
+		PolicyName:     aws.String(grpLifecycleInline),
+		PolicyDocument: aws.String(grpPolicyDoc),
+	})
+	require.NoError(t, err, "put-group-policy")
+
+	_, err = fix.AWS.IAM.PutGroupPolicy(&iam.PutGroupPolicyInput{
+		GroupName:      aws.String(grpLifecycleGroup),
+		PolicyName:     aws.String(grpLifecycleInline),
+		PolicyDocument: aws.String(grpPolicyDoc),
+	})
+	require.NoError(t, err, "idempotent re-put")
+
+	// GetGroupPolicy — round-trips the stored document (raw, not URL-encoded).
+	harness.Step(t, "get-group-policy %s/%s (round-trip)", grpLifecycleGroup, grpLifecycleInline)
+	inlineGot, err := fix.AWS.IAM.GetGroupPolicy(&iam.GetGroupPolicyInput{
+		GroupName:  aws.String(grpLifecycleGroup),
+		PolicyName: aws.String(grpLifecycleInline),
+	})
+	require.NoError(t, err, "get-group-policy")
+	require.Equal(t, grpLifecycleGroup, aws.StringValue(inlineGot.GroupName))
+	require.Equal(t, grpLifecycleInline, aws.StringValue(inlineGot.PolicyName))
+	require.JSONEq(t, grpPolicyDoc, aws.StringValue(inlineGot.PolicyDocument),
+		"get-group-policy must round-trip the stored document")
+
+	harness.Step(t, "get-group-policy unknown name (expect NoSuchEntity)")
+	harness.ExpectError(t, "NoSuchEntity", func() error {
+		_, e := fix.AWS.IAM.GetGroupPolicy(&iam.GetGroupPolicyInput{
+			GroupName:  aws.String(grpLifecycleGroup),
+			PolicyName: aws.String("ghost-inline"),
+		})
+		return e
+	})
+
+	// ListGroupPolicies — surfaces exactly the one inline name, never truncated.
+	harness.Step(t, "list-group-policies %s (expect 1)", grpLifecycleGroup)
+	inlineList, err := fix.AWS.IAM.ListGroupPolicies(&iam.ListGroupPoliciesInput{
+		GroupName: aws.String(grpLifecycleGroup),
+	})
+	require.NoError(t, err, "list-group-policies")
+	require.Len(t, inlineList.PolicyNames, 1, "exactly one inline policy expected")
+	require.Equal(t, grpLifecycleInline, aws.StringValue(inlineList.PolicyNames[0]))
+	require.False(t, aws.BoolValue(inlineList.IsTruncated), "list-group-policies is never truncated")
+
+	harness.Step(t, "list-group-policies ghost group (expect NoSuchEntity)")
+	harness.ExpectError(t, "NoSuchEntity", func() error {
+		_, e := fix.AWS.IAM.ListGroupPolicies(&iam.ListGroupPoliciesInput{
+			GroupName: aws.String("ghost-group"),
+		})
+		return e
+	})
+
 	// --- Deletion guards ---
 
 	// delete-user while still a group member → DeleteConflict.
@@ -261,6 +334,37 @@ func runIAMGroupsLifecycle(t *testing.T, fix *Fixture) {
 		PolicyArn: aws.String(policyARN),
 	})
 	require.NoError(t, err, "detach-group-policy")
+
+	// With the managed policy gone, the inline policy alone must still block the
+	// delete — the new inline guard, symmetric with the attached-policy guard.
+	harness.Step(t, "delete-group while only inline policy present (expect DeleteConflict)")
+	harness.ExpectError(t, "DeleteConflict", func() error {
+		_, e := fix.AWS.IAM.DeleteGroup(&iam.DeleteGroupInput{GroupName: aws.String(grpLifecycleGroup)})
+		return e
+	})
+
+	harness.Step(t, "delete-group-policy unknown name (expect NoSuchEntity)")
+	harness.ExpectError(t, "NoSuchEntity", func() error {
+		_, e := fix.AWS.IAM.DeleteGroupPolicy(&iam.DeleteGroupPolicyInput{
+			GroupName:  aws.String(grpLifecycleGroup),
+			PolicyName: aws.String("ghost-inline"),
+		})
+		return e
+	})
+
+	harness.Step(t, "delete-group-policy %s", grpLifecycleInline)
+	_, err = fix.AWS.IAM.DeleteGroupPolicy(&iam.DeleteGroupPolicyInput{
+		GroupName:  aws.String(grpLifecycleGroup),
+		PolicyName: aws.String(grpLifecycleInline),
+	})
+	require.NoError(t, err, "delete-group-policy")
+
+	harness.Step(t, "list-group-policies after delete (expect 0)")
+	emptyInline, err := fix.AWS.IAM.ListGroupPolicies(&iam.ListGroupPoliciesInput{
+		GroupName: aws.String(grpLifecycleGroup),
+	})
+	require.NoError(t, err, "list-group-policies after delete")
+	require.Empty(t, emptyInline.PolicyNames, "inline policy must be gone after delete-group-policy")
 
 	harness.Step(t, "delete-group %s", grpLifecycleGroup)
 	_, err = fix.AWS.IAM.DeleteGroup(&iam.DeleteGroupInput{GroupName: aws.String(grpLifecycleGroup)})
@@ -355,6 +459,84 @@ func runIAMGroupEnforcement(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "remove-user-from-group")
 
 	harness.Step(t, "describe-regions after leaving group (expect AccessDenied)")
+	harness.ExpectError(t, "AccessDenied", func() error {
+		_, e := memberCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
+		return e
+	})
+}
+
+// runIAMGroupInlineEnforcement proves the inline-policy linchpin: an inline
+// policy embedded in a group grants its permission to every member, exactly as a
+// managed attachment does. A user with its own access key is denied a guarded
+// action; once an inline policy granting that action is put on a group the user
+// joins, the same live credentials are allowed (policies resolved per request);
+// after the inline policy is deleted — with the user still a member — the action
+// is denied again, proving the inline document was the grant source. Mirrors
+// runIAMGroupEnforcement with put-group-policy in place of attach-group-policy.
+func runIAMGroupInlineEnforcement(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — IAM Group inline-policy authorization enforcement")
+
+	// No managed policy here — the inline doc lives in the group record, so the
+	// best-effort sweep clears it via ListGroupPolicies/DeleteGroupPolicy.
+	sweep := func() {
+		harness.IAMDeleteGroupBestEffort(fix.AWS, grpInlineEnforceGroup, []string{grpInlineEnforceUser})
+		iamDeleteUserBestEffort(fix, grpInlineEnforceUser)
+	}
+	sweep()
+	fix.Harness.RegisterCleanup(sweep)
+
+	// Member with its own static credentials.
+	harness.Step(t, "create-user %q + access key", grpInlineEnforceUser)
+	_, err := fix.AWS.IAM.CreateUser(&iam.CreateUserInput{UserName: aws.String(grpInlineEnforceUser)})
+	require.NoError(t, err, "create-user")
+	key, err := fix.AWS.IAM.CreateAccessKey(&iam.CreateAccessKeyInput{UserName: aws.String(grpInlineEnforceUser)})
+	require.NoError(t, err, "create-access-key")
+	memberCli := harness.NewAWSClientWithCreds(t, fix.Env,
+		aws.StringValue(key.AccessKey.AccessKeyId),
+		aws.StringValue(key.AccessKey.SecretAccessKey))
+
+	// No grant anywhere yet: the active key authenticates, then default-denies.
+	harness.Step(t, "describe-regions with no grant (expect AccessDenied)")
+	harness.ExpectError(t, "AccessDenied", func() error {
+		_, e := memberCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
+		return e
+	})
+
+	// Group with an inline policy granting ec2:DescribeRegions, then join the user.
+	harness.Step(t, "create-group %q", grpInlineEnforceGroup)
+	_, err = fix.AWS.IAM.CreateGroup(&iam.CreateGroupInput{GroupName: aws.String(grpInlineEnforceGroup)})
+	require.NoError(t, err, "create-group")
+
+	harness.Step(t, "put-group-policy %q (grants ec2:DescribeRegions)", grpInlineEnforceName)
+	_, err = fix.AWS.IAM.PutGroupPolicy(&iam.PutGroupPolicyInput{
+		GroupName:      aws.String(grpInlineEnforceGroup),
+		PolicyName:     aws.String(grpInlineEnforceName),
+		PolicyDocument: aws.String(grpPolicyDoc),
+	})
+	require.NoError(t, err, "put-group-policy")
+
+	harness.Step(t, "add-user-to-group %s <- %s", grpInlineEnforceGroup, grpInlineEnforceUser)
+	_, err = fix.AWS.IAM.AddUserToGroup(&iam.AddUserToGroupInput{
+		GroupName: aws.String(grpInlineEnforceGroup),
+		UserName:  aws.String(grpInlineEnforceUser),
+	})
+	require.NoError(t, err, "add-user-to-group")
+
+	// Same live credentials are now allowed — the inline grant flows through the group.
+	harness.Step(t, "describe-regions after inline group grant (expect success)")
+	_, err = memberCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
+	require.NoError(t, err, "describe-regions must be allowed once the group inline policy grants it")
+
+	// Delete the inline policy while the user is still a member — the grant must
+	// evaporate, isolating the inline document as the sole grant source.
+	harness.Step(t, "delete-group-policy %s (user stays a member)", grpInlineEnforceName)
+	_, err = fix.AWS.IAM.DeleteGroupPolicy(&iam.DeleteGroupPolicyInput{
+		GroupName:  aws.String(grpInlineEnforceGroup),
+		PolicyName: aws.String(grpInlineEnforceName),
+	})
+	require.NoError(t, err, "delete-group-policy")
+
+	harness.Step(t, "describe-regions after inline policy removed (expect AccessDenied)")
 	harness.ExpectError(t, "AccessDenied", func() error {
 		_, e := memberCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
 		return e

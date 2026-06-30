@@ -210,6 +210,18 @@ func (m *mockIAMService) DetachGroupPolicy(_ string, _ *iam.DetachGroupPolicyInp
 func (m *mockIAMService) ListAttachedGroupPolicies(_ string, _ *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
 	return &iam.ListAttachedGroupPoliciesOutput{}, nil
 }
+func (m *mockIAMService) PutGroupPolicy(_ string, _ *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	return &iam.PutGroupPolicyOutput{}, nil
+}
+func (m *mockIAMService) GetGroupPolicy(_ string, _ *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	return &iam.GetGroupPolicyOutput{}, nil
+}
+func (m *mockIAMService) DeleteGroupPolicy(_ string, _ *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	return &iam.DeleteGroupPolicyOutput{}, nil
+}
+func (m *mockIAMService) ListGroupPolicies(_ string, _ *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	return &iam.ListGroupPoliciesOutput{}, nil
+}
 
 // testMasterKey is a fixed 32-byte key for deterministic tests.
 var testMasterKey []byte

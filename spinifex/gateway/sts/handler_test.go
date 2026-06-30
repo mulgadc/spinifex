@@ -260,6 +260,18 @@ func (s *stubIAMService) DetachGroupPolicy(string, *iam.DetachGroupPolicyInput) 
 func (s *stubIAMService) ListAttachedGroupPolicies(string, *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
 	panic("unexpected ListAttachedGroupPolicies call")
 }
+func (s *stubIAMService) PutGroupPolicy(string, *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	panic("unexpected PutGroupPolicy call")
+}
+func (s *stubIAMService) GetGroupPolicy(string, *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	panic("unexpected GetGroupPolicy call")
+}
+func (s *stubIAMService) DeleteGroupPolicy(string, *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	panic("unexpected DeleteGroupPolicy call")
+}
+func (s *stubIAMService) ListGroupPolicies(string, *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	panic("unexpected ListGroupPolicies call")
+}
 
 func TestAssumeRole_HappyPath(t *testing.T) {
 	var calledWith struct {

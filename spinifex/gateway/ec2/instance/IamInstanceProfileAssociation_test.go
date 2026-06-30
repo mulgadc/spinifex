@@ -200,6 +200,18 @@ func (f *fakeIAMService) DetachGroupPolicy(string, *iam.DetachGroupPolicyInput) 
 func (f *fakeIAMService) ListAttachedGroupPolicies(string, *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
 	return &iam.ListAttachedGroupPoliciesOutput{}, nil
 }
+func (f *fakeIAMService) PutGroupPolicy(string, *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	return &iam.PutGroupPolicyOutput{}, nil
+}
+func (f *fakeIAMService) GetGroupPolicy(string, *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	return &iam.GetGroupPolicyOutput{}, nil
+}
+func (f *fakeIAMService) DeleteGroupPolicy(string, *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	return &iam.DeleteGroupPolicyOutput{}, nil
+}
+func (f *fakeIAMService) ListGroupPolicies(string, *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	return &iam.ListGroupPoliciesOutput{}, nil
+}
 
 var _ handlers_iam.IAMService = (*fakeIAMService)(nil)
 

@@ -31,14 +31,15 @@ type User struct {
 // Members are NOT stored here; membership is canonical on the User record
 // (User.Groups) so the authorization hot path never scans the groups bucket.
 type Group struct {
-	GroupName        string   `json:"group_name"`
-	GroupID          string   `json:"group_id"`
-	AccountID        string   `json:"account_id"`
-	ARN              string   `json:"arn"`
-	Path             string   `json:"path"`
-	CreatedAt        string   `json:"created_at"`
-	AttachedPolicies []string `json:"attached_policies"` // policy ARNs
-	Tags             []Tag    `json:"tags"`
+	GroupName        string            `json:"group_name"`
+	GroupID          string            `json:"group_id"`
+	AccountID        string            `json:"account_id"`
+	ARN              string            `json:"arn"`
+	Path             string            `json:"path"`
+	CreatedAt        string            `json:"created_at"`
+	AttachedPolicies []string          `json:"attached_policies"`         // policy ARNs
+	InlinePolicies   map[string]string `json:"inline_policies,omitempty"` // policyName → document JSON
+	Tags             []Tag             `json:"tags"`
 }
 
 // AccessKey represents an IAM access key stored in JetStream KV.

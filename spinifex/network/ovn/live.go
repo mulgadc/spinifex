@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/model"
@@ -23,6 +24,16 @@ const ensureRefetchInterval = 20 * time.Millisecond
 // ensureWaitTimeoutMS=0 makes the wait-op fail fast so we fall through to the
 // refetch path on conflict.
 const ensureWaitTimeoutMS = 0
+
+// inactivityTimeout is the Echo-probe cadence; a missed probe marks the NB peer
+// dead and triggers reconnect. Must exceed reconnectTimeout (libovsdb invariant).
+const inactivityTimeout = 10 * time.Second
+
+// reconnectTimeout bounds each reconnect attempt's Connect context.
+const reconnectTimeout = 5 * time.Second
+
+// reconnectMaxInterval caps exponential backoff between reconnect attempts.
+const reconnectMaxInterval = 30 * time.Second
 
 // ensureNamedRowOps returns ops that insert createObj unless a row with the same
 // Name exists. The wait-op serialises concurrent writers; `until=!=` is required
@@ -106,7 +117,17 @@ func (c *LiveClient) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to create database model: %w", err)
 	}
 
-	ovn, err := client.NewOVSDBClient(dbModel, client.WithEndpoint(c.endpoint))
+	// Infinite backoff (MaxElapsedTime=0) so a daemon keeps reconnecting across a
+	// long NB outage. WithInactivityCheck enables reconnect and adds the Echo
+	// probe that detects a dead/half-open socket the OS never reports.
+	bo := backoff.NewExponentialBackOff(
+		backoff.WithMaxElapsedTime(0),
+		backoff.WithMaxInterval(reconnectMaxInterval),
+	)
+	ovn, err := client.NewOVSDBClient(dbModel,
+		client.WithEndpoint(c.endpoint),
+		client.WithInactivityCheck(inactivityTimeout, reconnectTimeout, bo),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create OVSDB client: %w", err)
 	}

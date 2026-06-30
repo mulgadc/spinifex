@@ -48,6 +48,22 @@ type IAMService interface {
 	DeleteRolePolicy(accountID string, input *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error)
 	ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error)
 
+	// Group CRUD — account-scoped
+	CreateGroup(accountID string, input *iam.CreateGroupInput) (*iam.CreateGroupOutput, error)
+	GetGroup(accountID string, input *iam.GetGroupInput) (*iam.GetGroupOutput, error)
+	ListGroups(accountID string, input *iam.ListGroupsInput) (*iam.ListGroupsOutput, error)
+	DeleteGroup(accountID string, input *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error)
+
+	// Group membership — account-scoped
+	AddUserToGroup(accountID string, input *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error)
+	RemoveUserFromGroup(accountID string, input *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error)
+	ListGroupsForUser(accountID string, input *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error)
+
+	// Group policy attachment — account-scoped
+	AttachGroupPolicy(accountID string, input *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error)
+	DetachGroupPolicy(accountID string, input *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error)
+	ListAttachedGroupPolicies(accountID string, input *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error)
+
 	// Instance profile CRUD — account-scoped
 	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
 	GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)

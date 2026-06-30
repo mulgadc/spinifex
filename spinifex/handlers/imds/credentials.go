@@ -64,7 +64,7 @@ func (c *credCache) get(eni *eniFacts, roleName, roleARN string, now time.Time) 
 	}
 	c.mu.Unlock()
 
-	out, err := c.sts.AssumeRoleForInstance(eni.accountID, roleARN, eni.instanceID, credDurationSeconds)
+	out, err := c.sts.AssumeRoleForInstance(eni.iamAccountID(), roleARN, eni.instanceID, credDurationSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +81,7 @@ func (c *credCache) get(eni *eniFacts, roleName, roleARN string, now time.Time) 
 		SecretAccessKey: aws.StringValue(out.Credentials.SecretAccessKey),
 		Token:           aws.StringValue(out.Credentials.SessionToken),
 		Expiration:      expiration.UTC().Format(time.RFC3339),
-		AccountId:       eni.accountID,
+		AccountId:       eni.iamAccountID(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal instance credential: %w", err)

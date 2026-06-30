@@ -59,6 +59,29 @@ func TestEnsureCPInstanceProfile_NilIAMFallsBack(t *testing.T) {
 	assert.Equal(t, "", s.ensureCPInstanceProfile(testSysAcct))
 }
 
+// TestEnsureCPInstanceProfile_UsesLazyProvider asserts the CP profile is created
+// via the lazily-resolved IAMProvider when the eager deps.IAM is unset — the
+// daemon wires only the provider so the build cannot race the NATS KV backend.
+func TestEnsureCPInstanceProfile_UsesLazyProvider(t *testing.T) {
+	f := newFakeEnsurer()
+	s := &EKSServiceImpl{deps: EKSServiceDeps{
+		IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return f },
+	}}
+	arn := s.ensureCPInstanceProfile(testSysAcct)
+	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+eksServerSystemRoleName, arn)
+	assert.Equal(t, 1, f.createRoleCalls)
+}
+
+// TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack asserts a provider that
+// returns nil (NATS KV backend not yet up) yields "" so the launch falls back to
+// static creds and retries on the next call rather than bricking the cluster.
+func TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack(t *testing.T) {
+	s := &EKSServiceImpl{deps: EKSServiceDeps{
+		IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return nil },
+	}}
+	assert.Equal(t, "", s.ensureCPInstanceProfile(testSysAcct))
+}
+
 // TestEKSServerTrustPolicyIsAssumable guards that the trust doc the CP role
 // ships with is exactly the EC2 service-principal shape AssumeRoleForInstance
 // matches; a drift here silently breaks IMDS credential minting.

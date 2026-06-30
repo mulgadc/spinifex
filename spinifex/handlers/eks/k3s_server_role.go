@@ -27,11 +27,12 @@ const (
 // failure both fall back rather than brick a cluster launch — the static-key
 // path still authenticates (it is what shipped before IMDS creds).
 func (s *EKSServiceImpl) ensureCPInstanceProfile(accountID string) string {
-	if s.deps.IAM == nil {
+	iam := s.iamEnsurer()
+	if iam == nil {
 		slog.Warn("EKS: IAM service unwired; CP VM falls back to baked static gateway creds")
 		return ""
 	}
-	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(s.deps.IAM, accountID,
+	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(iam, accountID,
 		eksServerSystemRoleName, eksServerInlinePolicyName, eksServerInlinePolicy)
 	if err != nil {
 		slog.Warn("EKS: ensure CP instance profile failed; falling back to baked static gateway creds",

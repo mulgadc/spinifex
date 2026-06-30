@@ -91,21 +91,24 @@ var _ ELBv2Service = (*ELBv2ServiceImpl)(nil)
 
 // ELBv2ServiceImpl implements ELBv2 operations with NATS JetStream persistence.
 type ELBv2ServiceImpl struct {
-	config                     *config.Config
-	store                      *Store
-	acmStore                   *handlers_acm.Store                    // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
-	nc                         *nats.Conn                             // NATS connection for JetStream KV store
-	VPCService                 *handlers_ec2_vpc.VPCServiceImpl       // nil-safe: ENI ops skipped when nil (e.g. in tests)
-	InstanceLauncher           SystemInstanceLauncher                 // nil-safe: system VM ops skipped when nil
-	IAM                        handlers_iam.SystemInstanceRoleEnsurer // nil-safe: LB VM falls back to baked static creds when nil
-	SystemAccessKey            string                                 // System account access key for ALB agent SigV4 auth
-	SystemSecretKey            string                                 // System account secret key for ALB agent SigV4 auth
-	GatewayURL                 string                                 // AWS gateway URL for ALB agent outbound connections
-	MgmtRouteGateway           string                                 // br-mgmt IP (next-hop for mgmt route); empty when AWSGW is on 0.0.0.0
-	MgmtRouteTarget            string                                 // AWSGW bind IP to route via mgmt NIC
-	MgmtBridgeIP               string                                 // br-mgmt IP, populated whenever br-mgmt exists (single + multi node) for the internal-scheme fallback route
-	AdvertiseIP                string                                 // AdvertiseIP / WAN gateway, populated whenever set; used as the internal-scheme fallback route target on single-node
-	CACert                     string                                 // PEM-encoded CA certificate delivered to microvm guests via fw_cfg
+	config           *config.Config
+	store            *Store
+	acmStore         *handlers_acm.Store                    // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
+	nc               *nats.Conn                             // NATS connection for JetStream KV store
+	VPCService       *handlers_ec2_vpc.VPCServiceImpl       // nil-safe: ENI ops skipped when nil (e.g. in tests)
+	InstanceLauncher SystemInstanceLauncher                 // nil-safe: system VM ops skipped when nil
+	IAM              handlers_iam.SystemInstanceRoleEnsurer // nil-safe: LB VM falls back to baked static creds when nil (tests set directly)
+	// IAMProvider lazily resolves the IAM ensurer at launch time so it cannot
+	// race the NATS KV backend at daemon startup. Preferred over IAM when set.
+	IAMProvider                func() handlers_iam.SystemInstanceRoleEnsurer
+	SystemAccessKey            string // System account access key for ALB agent SigV4 auth
+	SystemSecretKey            string // System account secret key for ALB agent SigV4 auth
+	GatewayURL                 string // AWS gateway URL for ALB agent outbound connections
+	MgmtRouteGateway           string // br-mgmt IP (next-hop for mgmt route); empty when AWSGW is on 0.0.0.0
+	MgmtRouteTarget            string // AWSGW bind IP to route via mgmt NIC
+	MgmtBridgeIP               string // br-mgmt IP, populated whenever br-mgmt exists (single + multi node) for the internal-scheme fallback route
+	AdvertiseIP                string // AdvertiseIP / WAN gateway, populated whenever set; used as the internal-scheme fallback route target on single-node
+	CACert                     string // PEM-encoded CA certificate delivered to microvm guests via fw_cfg
 	nodeID                     string
 	region                     string
 	systemInstanceType         string        // instance type for system VMs; resolved lazily via systemInstanceTypeFunc
@@ -462,7 +465,9 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 	// Prefer IMDS instance-role creds: attach a system instance profile so the
 	// lb-agent authenticates with scoped, rotating credentials and no static
 	// secret rides in fw_cfg. Falls back to baked system keys when IAM is unwired.
-	profileARN := s.ensureLBInstanceProfile(accountID)
+	// The role lives in the system account because the LB VM (and its ENI) run
+	// there — IMDS resolves the profile under the instance's account.
+	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
 
 	nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
 	launchInput := &SystemInstanceInput{
@@ -566,8 +571,9 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 	}
 
 	// Re-ensure the instance profile so a recovered LB VM keeps IMDS creds; the
-	// ensure is idempotent and converges on the existing role/profile.
-	profileARN := s.ensureLBInstanceProfile(lb.AccountID)
+	// ensure is idempotent and converges on the existing role/profile. The role
+	// lives in the system account where the LB VM runs, not the LB owner account.
+	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
 
 	return &SystemInstanceInput{
 		InstanceType:          ctx.InstanceType,

@@ -34,6 +34,23 @@ func resolveENIAccount(owner, fallback string) string {
 	return fallback
 }
 
+// recordENIInstanceOwner stamps the attached instance's owning account onto the
+// ENI record. System VMs run in the system account but plug into a customer ENI,
+// so without this IMDS would resolve the instance and its IAM role under the ENI
+// account and serve no credentials. Best-effort: a miss leaves IMDS falling back
+// to the ENI account, which only matters for the cross-account system path.
+func (d *Daemon) recordENIInstanceOwner(eniAccountID, eniID, instanceOwnerID string) {
+	if d.vpcService == nil || eniID == "" || instanceOwnerID == eniAccountID {
+		return
+	}
+	if err := d.vpcService.UpdateENI(eniAccountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+		r.InstanceOwnerId = instanceOwnerID
+	}); err != nil {
+		slog.Warn("LaunchSystemInstance: failed to record ENI instance owner",
+			"eniId", eniID, "instanceOwner", instanceOwnerID, "err", err)
+	}
+}
+
 // LaunchSystemInstance creates and starts a system-managed VM (ELBv2 LB).
 // The VM is owned by the system account (GlobalAccountID), is not visible to
 // customer DescribeInstances calls, and always boots via direct kernel boot
@@ -130,6 +147,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			if _, attachErr := d.vpcService.AttachENI(eniAccountID, instance.ENIId, instance.ID, 0); attachErr != nil {
 				slog.Warn("LaunchSystemInstance: failed to attach ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
 			}
+			d.recordENIInstanceOwner(eniAccountID, instance.ENIId, accountID)
 		}
 		// Attach any additional pre-created ENIs (multi-subnet ALB VMs).
 		// Use the launcher input slice as the source of truth so the VM
@@ -146,6 +164,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 					d.cleanupFailedSystemInstance(instance, instanceType)
 					return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
 				}
+				d.recordENIInstanceOwner(extraAccount, extra.ENIID, accountID)
 			}
 			instance.ExtraENIs = append(instance.ExtraENIs, vm.ExtraENI{
 				ENIID:    extra.ENIID,
@@ -175,6 +194,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		if _, attachErr := d.vpcService.AttachENI(accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
 			slog.Warn("LaunchSystemInstance: failed to attach auto-created ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
 		}
+		d.recordENIInstanceOwner(accountID, instance.ENIId, accountID)
 	}
 
 	// Allocate public IP for internet-facing ALBs. Route through the EIP

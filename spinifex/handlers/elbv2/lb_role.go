@@ -23,16 +23,22 @@ const (
 )
 
 // ensureLBInstanceProfile returns the LB instance-profile ARN, or "" to signal
-// the caller should fall back to static creds. The role is created in the LB's
-// owner account so IMDS credentials resolve to that account and satisfy the
-// LBAgentHeartbeat / GetLBConfig owner-account guard. IAM unwired or a transient
-// failure both fall back rather than block an LB launch.
+// the caller should fall back to static creds. accountID must be the account the
+// LB VM runs under (the system account) — IMDS resolves the profile under the
+// instance's account, so a role created anywhere else is invisible to it. The
+// resulting system-account principal satisfies the LBAgentHeartbeat / GetLBConfig
+// guard via its GlobalAccountID branch. IAM unwired or a transient failure both
+// fall back rather than block an LB launch.
 func (s *ELBv2ServiceImpl) ensureLBInstanceProfile(accountID string) string {
-	if s.IAM == nil {
+	iam := s.IAM
+	if iam == nil && s.IAMProvider != nil {
+		iam = s.IAMProvider()
+	}
+	if iam == nil {
 		slog.Warn("ELBv2: IAM service unwired; LB VM falls back to baked static gateway creds")
 		return ""
 	}
-	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(s.IAM, accountID,
+	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(iam, accountID,
 		lbAgentSystemRoleName, lbAgentInlinePolicyName, lbAgentInlinePolicy)
 	if err != nil {
 		slog.Warn("ELBv2: ensure LB instance profile failed; falling back to baked static gateway creds",

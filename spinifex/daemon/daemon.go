@@ -52,6 +52,7 @@ import (
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -249,6 +250,10 @@ type Daemon struct {
 	reconciling atomic.Bool
 	// stateWriteMu: serialises WriteState to prevent races on the .tmp staging file.
 	stateWriteMu sync.Mutex
+
+	// iamEnsurerMu guards the lazily-built system-role IAM service (systemRoleEnsurer).
+	iamEnsurerMu     sync.Mutex
+	iamEnsurerCached handlers_iam.SystemInstanceRoleEnsurer
 
 	mu sync.Mutex
 }
@@ -1394,12 +1399,12 @@ func (d *Daemon) startCluster() error {
 	// Route system VM launches through NATS so they fan out across the cluster.
 	d.elbv2Service.InstanceLauncher = handlers_elbv2.NewNATSSystemInstanceLauncher(d.natsConn, 0)
 
-	// Wire a KV-backed IAM service so an LB VM gets a system instance profile and
-	// authenticates with IMDS instance-role creds; absent (no master key), the LB
-	// VM falls back to baked static creds.
-	if iamSvc := d.newSystemRoleEnsurer(); iamSvc != nil {
-		d.elbv2Service.IAM = iamSvc
-	}
+	// Provide a lazily-built KV-backed IAM service so an LB VM gets a system
+	// instance profile and authenticates with IMDS instance-role creds. The
+	// provider is resolved at LB-launch time, not now, so it cannot race the
+	// NATS KV backend coming up; absent (no master key) the LB VM falls back to
+	// baked static creds.
+	d.elbv2Service.IAMProvider = d.systemRoleEnsurer
 
 	d.wireLBAgentConfig()
 

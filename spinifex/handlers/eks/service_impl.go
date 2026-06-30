@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -67,7 +68,13 @@ type EKSServiceDeps struct {
 	// IAM backs a nodegroup's node role with an instance profile so workers expose
 	// the role over IMDS for the ECR credential provider. Nil disables the wiring
 	// (workers launch without a profile and cannot pull from the internal ECR).
+	// Tests set this directly; production prefers IAMProvider.
 	IAM instanceProfileEnsurer
+
+	// IAMProvider lazily resolves the IAM ensurer at cluster-launch time so it
+	// cannot race the NATS KV backend at daemon startup. Preferred over IAM when
+	// set; its concrete service satisfies instanceProfileEnsurer.
+	IAMProvider func() handlers_iam.SystemInstanceRoleEnsurer
 
 	// VPCMgr / NATGW / RouteTable compose the managed control-plane VPC ("Set B")
 	// from the real EC2 VPC-family APIs under the system account. The daemon
@@ -91,6 +98,23 @@ type EKSServiceDeps struct {
 type WorkerLauncher interface {
 	RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
 	TerminateWorkerInstances(instanceIDs []string, accountID string) error
+}
+
+// iamEnsurer resolves the IAM ensurer, preferring the test-injected deps.IAM,
+// then the lazy IAMProvider (built at launch time to dodge the daemon-startup
+// NATS-KV race). Returns nil when neither yields a service, so callers fall back
+// to static creds / skip the profile. The provider's concrete service satisfies
+// instanceProfileEnsurer (identical method set to SystemInstanceRoleEnsurer).
+func (s *EKSServiceImpl) iamEnsurer() instanceProfileEnsurer {
+	if s.deps.IAM != nil {
+		return s.deps.IAM
+	}
+	if s.deps.IAMProvider != nil {
+		if e := s.deps.IAMProvider(); e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // instanceProfileEnsurer is the narrow IAM surface EKS needs to find-or-create the

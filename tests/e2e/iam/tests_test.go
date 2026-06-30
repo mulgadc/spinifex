@@ -64,6 +64,20 @@ func TestAssumedRoleControlPlaneEnforcement(t *testing.T) {
 	runAssumedRoleControlPlaneEnforcement(t, requireIAMFixture(t))
 }
 
+// TestIAMGroupsLifecycle exercises group CRUD, membership, group-policy
+// attachment, the reverse-lookup listings, and every deletion guard. Sequential:
+// it creates/destroys its own dedicated group/user/policy graph.
+func TestIAMGroupsLifecycle(t *testing.T) {
+	runIAMGroupsLifecycle(t, requireIAMFixture(t))
+}
+
+// TestIAMGroupEnforcement proves a group-attached policy grants its permission
+// to members: denied with no grant, allowed once in the group, denied again
+// after leaving. Sequential to avoid racing the mid-test grant.
+func TestIAMGroupEnforcement(t *testing.T) {
+	runIAMGroupEnforcement(t, requireIAMFixture(t))
+}
+
 // TestIAMInstanceProfileAssociation exercises the EC2 IAM instance-profile
 // association lifecycle (associate/replace/disassociate, RunInstances
 // --iam-instance-profile, auto-disassociate on terminate). It boots its own

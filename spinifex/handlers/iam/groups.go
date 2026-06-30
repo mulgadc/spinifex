@@ -167,6 +167,10 @@ func (s *IAMServiceImpl) DeleteGroup(accountID string, input *iam.DeleteGroupInp
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
+	if len(group.InlinePolicies) > 0 {
+		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	}
+
 	members, err := s.findGroupMembers(accountID, groupName)
 	if err != nil {
 		return nil, fmt.Errorf("check group members: %w", err)

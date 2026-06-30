@@ -464,8 +464,7 @@ EIP commands are only registered when an external IPAM pool is configured.
 
 ## IAM
 
-All IAM operations are account-scoped. Root user (account `000000000000`)
-bypasses policy evaluation entirely.
+All IAM operations are account-scoped. Root user (account `000000000000`) bypasses policy evaluation entirely.
 
 ### IAM — Users
 
@@ -475,6 +474,21 @@ bypasses policy evaluation entirely.
 | `get-user` | `--user-name` | — | **DONE** |
 | `list-users` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
 | `delete-user` | `--user-name` | — | **DONE** |
+| `update-user` | — | `--user-name`, `--new-path`, `--new-user-name` | **NOT STARTED** |
+| `put-user-policy` | — | `--user-name`, `--policy-name`, `--policy-document` | **NOT STARTED** |
+| `get-user-policy` | — | `--user-name`, `--policy-name` | **NOT STARTED** |
+| `delete-user-policy` | — | `--user-name`, `--policy-name` | **NOT STARTED** |
+| `list-user-policies` | — | `--user-name` | **NOT STARTED** |
+| `tag-user` | — | `--user-name`, `--tags` | **NOT STARTED** |
+| `untag-user` | — | `--user-name`, `--tag-keys` | **NOT STARTED** |
+| `list-user-tags` | — | `--user-name` | **NOT STARTED** |
+| `put-user-permissions-boundary` | — | `--user-name`, `--permissions-boundary` | **NOT STARTED** |
+| `delete-user-permissions-boundary` | — | `--user-name` | **NOT STARTED** |
+| `create-login-profile` | — | `--user-name`, `--password` | **NOT STARTED** |
+| `get-login-profile` | — | `--user-name` | **NOT STARTED** |
+| `update-login-profile` | — | `--user-name`, `--password` | **NOT STARTED** |
+| `delete-login-profile` | — | `--user-name` | **NOT STARTED** |
+| `change-password` | — | `--old-password`, `--new-password` | **NOT STARTED** |
 
 ### IAM — Access Keys
 
@@ -484,6 +498,7 @@ bypasses policy evaluation entirely.
 | `list-access-keys` | `--user-name` | `--max-items`, `--marker` | **DONE** |
 | `delete-access-key` | `--access-key-id`, `--user-name` | — | **DONE** |
 | `update-access-key` | `--access-key-id`, `--user-name`, `--status` (Active/Inactive) | — | **DONE** |
+| `get-access-key-last-used` | — | `--access-key-id` | **NOT STARTED** |
 
 ### IAM — Policies
 
@@ -498,6 +513,17 @@ bypasses policy evaluation entirely.
 | `attach-user-policy` | `--user-name`, `--policy-arn` | — | **DONE** |
 | `detach-user-policy` | `--user-name`, `--policy-arn` | — | **DONE** |
 | `list-attached-user-policies` | `--user-name` | `--path-prefix`, `--max-items`, `--marker` | **DONE** |
+| `create-policy-version` | — | `--policy-arn`, `--policy-document`, `--set-as-default` | **NOT STARTED** |
+| `delete-policy-version` | — | `--policy-arn`, `--version-id` | **NOT STARTED** |
+| `set-default-policy-version` | — | `--policy-arn`, `--version-id` | **NOT STARTED** |
+| `list-entities-for-policy` | — | `--policy-arn`, `--entity-filter`, `--path-prefix`, `--policy-usage-filter` | **NOT STARTED** |
+| `tag-policy` | — | `--policy-arn`, `--tags` | **NOT STARTED** |
+| `untag-policy` | — | `--policy-arn`, `--tag-keys` | **NOT STARTED** |
+| `list-policy-tags` | — | `--policy-arn` | **NOT STARTED** |
+| `generate-service-last-accessed-details` | — | `--arn`, `--granularity` | **NOT STARTED** |
+| `get-service-last-accessed-details` | — | `--job-id` | **NOT STARTED** |
+| `get-service-last-accessed-details-with-entities` | — | `--job-id`, `--service-namespace` | **NOT STARTED** |
+| `list-policies-granting-service-access` | — | `--arn`, `--service-namespaces` | **NOT STARTED** |
 
 ### IAM — Roles
 
@@ -516,6 +542,12 @@ bypasses policy evaluation entirely.
 | `put-role-policy` | `--role-name`, `--policy-name`, `--policy-document` | — | **DONE** |
 | `get-role-policy` | `--role-name`, `--policy-name` | — | **DONE** (document returned as raw JSON, not URL-encoded) |
 | `delete-role-policy` | `--role-name`, `--policy-name` | — | **DONE** |
+| `put-role-permissions-boundary` | — | `--role-name`, `--permissions-boundary` | **NOT STARTED** |
+| `delete-role-permissions-boundary` | — | `--role-name` | **NOT STARTED** |
+| `tag-role` | — | `--role-name`, `--tags` | **NOT STARTED** |
+| `untag-role` | — | `--role-name`, `--tag-keys` | **NOT STARTED** |
+| `list-role-tags` | — | `--role-name` | **NOT STARTED** |
+| `update-role-description` | — | `--role-name`, `--description` | **NOT STARTED** |
 
 ### IAM — Instance Profiles
 
@@ -528,6 +560,9 @@ bypasses policy evaluation entirely.
 | `delete-instance-profile` | `--instance-profile-name` | — | **DONE** |
 | `add-role-to-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
 | `remove-role-from-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
+| `tag-instance-profile` | — | `--instance-profile-name`, `--tags` | **NOT STARTED** |
+| `untag-instance-profile` | — | `--instance-profile-name`, `--tag-keys` | **NOT STARTED** |
+| `list-instance-profile-tags` | — | `--instance-profile-name` | **NOT STARTED** |
 
 ### IAM — OIDC Providers
 
@@ -541,21 +576,27 @@ bypasses policy evaluation entirely.
 | `remove-client-id-from-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--client-id` | **NOT STARTED** |
 | `update-open-id-connect-provider-thumbprint` | — | `--open-id-connect-provider-arn`, `--thumbprint-list` | **NOT STARTED** |
 | `tag-open-id-connect-provider` / `untag-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--tags`/`--tag-keys` | **NOT STARTED** |
+| `list-open-id-connect-provider-tags` | — | `--open-id-connect-provider-arn` | **NOT STARTED** |
 
 ### IAM — Groups
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-group` | — | `--group-name`, `--path` | **NOT STARTED** |
-| `get-group` | — | `--group-name` | **NOT STARTED** |
-| `list-groups` | — | `--path-prefix`, `--max-items`, `--marker` | **NOT STARTED** |
-| `delete-group` | — | `--group-name` | **NOT STARTED** |
-| `add-user-to-group` | — | `--group-name`, `--user-name` | **NOT STARTED** |
-| `remove-user-from-group` | — | `--group-name`, `--user-name` | **NOT STARTED** |
-| `list-groups-for-user` | — | `--user-name`, `--max-items`, `--marker` | **NOT STARTED** |
-| `attach-group-policy` | — | `--group-name`, `--policy-arn` | **NOT STARTED** |
-| `detach-group-policy` | — | `--group-name`, `--policy-arn` | **NOT STARTED** |
-| `list-attached-group-policies` | — | `--group-name`, `--path-prefix`, `--max-items`, `--marker` | **NOT STARTED** |
+| `create-group` | `--group-name`, `--path` | — | **DONE** |
+| `get-group` | `--group-name` | — | **DONE** |
+| `list-groups` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
+| `delete-group` | `--group-name` | — | **DONE** |
+| `update-group` | — | `--group-name`, `--new-path`, `--new-group-name` | **NOT STARTED** |
+| `add-user-to-group` | `--group-name`, `--user-name` | — | **DONE** |
+| `remove-user-from-group` | `--group-name`, `--user-name` | — | **DONE** |
+| `list-groups-for-user` | `--user-name` | `--max-items`, `--marker` | **DONE** |
+| `attach-group-policy` | `--group-name`, `--policy-arn` | — | **DONE** |
+| `detach-group-policy` | `--group-name`, `--policy-arn` | — | **DONE** |
+| `list-attached-group-policies` | `--group-name`, `--path-prefix` | `--max-items`, `--marker` | **DONE** |
+| `put-group-policy` | — | `--group-name`, `--policy-name`, `--policy-document` | **NOT STARTED** |
+| `get-group-policy` | — | `--group-name`, `--policy-name` | **NOT STARTED** |
+| `delete-group-policy` | — | `--group-name`, `--policy-name` | **NOT STARTED** |
+| `list-group-policies` | — | `--group-name` | **NOT STARTED** |
 
 ---
 

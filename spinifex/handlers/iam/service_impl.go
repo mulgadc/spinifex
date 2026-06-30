@@ -29,6 +29,7 @@ const (
 	KVBucketAccountCounter   = "spinifex-account-counter"
 	KVBucketRoles            = "spinifex-iam-roles"
 	KVBucketInstanceProfiles = "spinifex-iam-instance-profiles"
+	KVBucketGroups           = "spinifex-iam-groups"
 
 	KVBucketUsersVersion            = 1
 	KVBucketAccessKeysVersion       = 1
@@ -37,6 +38,7 @@ const (
 	KVBucketAccountCounterVersion   = 1
 	KVBucketRolesVersion            = 1
 	KVBucketInstanceProfilesVersion = 1
+	KVBucketGroupsVersion           = 1
 
 	maxAccessKeysPerUser = 2
 
@@ -82,6 +84,7 @@ type IAMServiceImpl struct {
 	accountCounterBucket   nats.KeyValue
 	rolesBucket            nats.KeyValue
 	instanceProfilesBucket nats.KeyValue
+	groupsBucket           nats.KeyValue
 	masterKey              []byte
 	decrypter              *Decrypter
 	// replicas is the JetStream replication factor for lazily-created per-account buckets.
@@ -160,6 +163,14 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketInstanceProfiles, err)
 	}
 
+	groupsBucket, err := getOrCreateBucket(js, KVBucketGroups, 10, replicas)
+	if err != nil {
+		return nil, fmt.Errorf("init groups bucket: %w", err)
+	}
+	if err := migrate.DefaultRegistry.RunKV(KVBucketGroups, groupsBucket, KVBucketGroupsVersion); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", KVBucketGroups, err)
+	}
+
 	decrypter, err := NewDecrypter(masterKey)
 	if err != nil {
 		return nil, fmt.Errorf("init decrypter: %w", err)
@@ -172,6 +183,7 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		"accounts_bucket", KVBucketAccounts,
 		"roles_bucket", KVBucketRoles,
 		"instance_profiles_bucket", KVBucketInstanceProfiles,
+		"groups_bucket", KVBucketGroups,
 		"replicas", replicas)
 
 	return &IAMServiceImpl{
@@ -184,6 +196,7 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		accountCounterBucket:   accountCounterBucket,
 		rolesBucket:            rolesBucket,
 		instanceProfilesBucket: instanceProfilesBucket,
+		groupsBucket:           groupsBucket,
 		masterKey:              masterKey,
 		decrypter:              decrypter,
 		replicas:               replicas,
@@ -251,6 +264,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 		AccessKeys:       []string{},
 		Tags:             copyTags(input.Tags),
 		AttachedPolicies: []string{},
+		Groups:           []string{},
 	}
 
 	data, err := json.Marshal(user)
@@ -374,6 +388,9 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 	if len(user.AttachedPolicies) > 0 {
+		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	}
+	if len(user.Groups) > 0 {
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
@@ -642,6 +659,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 		AccessKeys:       []string{data.AccessKeyID},
 		Tags:             []Tag{},
 		AttachedPolicies: []string{},
+		Groups:           []string{},
 	}
 
 	userData, err := json.Marshal(rootUser)
@@ -759,6 +777,7 @@ func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
 		AccessKeys:       []string{admin.AccessKeyID},
 		Tags:             []Tag{},
 		AttachedPolicies: []string{policyARN},
+		Groups:           []string{},
 	}
 
 	userData, err := json.Marshal(adminUser)
@@ -1282,6 +1301,7 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 	}
 
 	var docs []PolicyDocument
+	// Direct user-attached managed policies.
 	for _, arn := range user.AttachedPolicies {
 		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
 		if err != nil {
@@ -1290,6 +1310,32 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 		}
 		if include {
 			docs = append(docs, doc)
+		}
+	}
+
+	// Group-inherited managed policies. A membership to a deleted group is inert
+	// (AWS makes that state impossible by refusing to delete a non-empty group),
+	// so a missing group is skipped with a warn and the user keeps their other
+	// grants — never over-permitting. A missing/corrupt policy within a
+	// resolvable group still fails closed, mirroring the direct-policy handling.
+	for _, groupName := range user.Groups {
+		group, err := s.getGroup(accountID, groupName)
+		if err != nil {
+			if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+				slog.Warn("GetUserPolicies: member references missing group; skipping",
+					"accountID", accountID, "user", userName, "group", groupName)
+				continue
+			}
+			return nil, err // transient/corrupt → fail closed
+		}
+		for _, arn := range group.AttachedPolicies {
+			doc, include, err := s.resolveAttachedPolicy(accountID, arn)
+			if err != nil {
+				return nil, err // fail closed
+			}
+			if include {
+				docs = append(docs, doc)
+			}
 		}
 	}
 

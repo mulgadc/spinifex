@@ -1394,6 +1394,13 @@ func (d *Daemon) startCluster() error {
 	// Route system VM launches through NATS so they fan out across the cluster.
 	d.elbv2Service.InstanceLauncher = handlers_elbv2.NewNATSSystemInstanceLauncher(d.natsConn, 0)
 
+	// Wire a KV-backed IAM service so an LB VM gets a system instance profile and
+	// authenticates with IMDS instance-role creds; absent (no master key), the LB
+	// VM falls back to baked static creds.
+	if iamSvc := d.newSystemRoleEnsurer(); iamSvc != nil {
+		d.elbv2Service.IAM = iamSvc
+	}
+
 	d.wireLBAgentConfig()
 
 	d.elbv2Service.SetSystemInstanceTypeFunc(func() string {

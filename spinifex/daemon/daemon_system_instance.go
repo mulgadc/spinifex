@@ -78,6 +78,9 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	if input.SubnetID != "" {
 		runInput.SubnetId = aws.String(input.SubnetID)
 	}
+	if input.IamInstanceProfileArn != "" {
+		runInput.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{Arn: aws.String(input.IamInstanceProfileArn)}
+	}
 
 	// Create VM via instance service
 	instance, ec2Instance, err := d.instanceService.RunInstance(runInput)
@@ -420,6 +423,9 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 	}
 	if input.UserData != "" {
 		runInput.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(input.UserData)))
+	}
+	if input.IamInstanceProfileArn != "" {
+		runInput.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{Arn: aws.String(input.IamInstanceProfileArn)}
 	}
 	if input.ManagedBy != "" {
 		runInput.TagSpecifications = []*ec2.TagSpecification{{

@@ -217,6 +217,39 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 	}
 }
 
+func TestValidateK3sServerInput_ProfileOnlyAccepted(t *testing.T) {
+	in := validK3sInput()
+	in.AccessKey = ""
+	in.SecretKey = ""
+	in.IamInstanceProfileArn = "arn:aws:iam::000000000000:instance-profile/spinifex-eks-server"
+	require.NoError(t, validateK3sServerInput(in))
+}
+
+func TestValidateK3sServerInput_NoCredsNoProfileRejected(t *testing.T) {
+	in := validK3sInput()
+	in.AccessKey = ""
+	in.SecretKey = ""
+	require.Error(t, validateK3sServerInput(in))
+}
+
+func TestBuildK3sUserData_StaticCredsBakeKeys(t *testing.T) {
+	ud := buildK3sUserData(validK3sInput())
+	assert.Contains(t, ud, "EKS_ACCESS_KEY=AKIAEXAMPLE")
+	assert.Contains(t, ud, "EKS_SECRET_KEY=s3cr3t-key")
+}
+
+func TestBuildK3sUserData_ProfileModeOmitsKeys(t *testing.T) {
+	in := validK3sInput()
+	in.AccessKey = ""
+	in.SecretKey = ""
+	in.IamInstanceProfileArn = "arn:aws:iam::000000000000:instance-profile/spinifex-eks-server"
+	ud := buildK3sUserData(in)
+	assert.NotContains(t, ud, "EKS_ACCESS_KEY=")
+	assert.NotContains(t, ud, "EKS_SECRET_KEY=")
+	// Non-credential env still present.
+	assert.Contains(t, ud, "EKS_CLUSTER_NAME=alpha")
+}
+
 func TestLaunchK3sServerVM_AMINotFound(t *testing.T) {
 	vpc, inst := &fakeK3sVPC{}, &fakeK3sInst{}
 	ami := &fakeK3sAMI{describeOut: &ec2.DescribeImagesOutput{}}

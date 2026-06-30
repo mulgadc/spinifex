@@ -11,6 +11,30 @@ import (
 	"log/slog"
 )
 
+// newSystemRoleEnsurer builds a KV-backed IAM service for find-or-creating the
+// system instance roles/profiles that back IMDS instance-role credentials.
+// Returns nil (caller falls back to static creds) when the master key is absent
+// or the service fails to init — the same gating buildEKSServiceDeps applies.
+func (d *Daemon) newSystemRoleEnsurer() handlers_iam.SystemInstanceRoleEnsurer {
+	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+	if err != nil || masterKey == nil {
+		slog.Warn("System role ensurer: master key unavailable; system VMs fall back to baked static creds",
+			"err", err)
+		return nil
+	}
+	clusterSize := 1
+	if d.clusterConfig != nil {
+		clusterSize = len(d.clusterConfig.Nodes)
+	}
+	iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.natsConn, masterKey, clusterSize)
+	if iamErr != nil {
+		slog.Warn("System role ensurer: IAM service init failed; system VMs fall back to baked static creds",
+			"err", iamErr)
+		return nil
+	}
+	return iamSvc
+}
+
 // buildEKSServiceDeps assembles the EKSServiceDeps. All collaborators must
 // already be initialised. MasterKey is loaded best-effort from the config dir.
 func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {

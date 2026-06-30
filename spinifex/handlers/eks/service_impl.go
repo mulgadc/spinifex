@@ -100,6 +100,13 @@ type instanceProfileEnsurer interface {
 	GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
 	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
 	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
+
+	// Role find-or-create surface for the system-managed control-plane role.
+	// Unlike worker node roles (customer-supplied), the k3s server role is
+	// created by Spinifex with the IMDS-scoped gateway permissions it needs.
+	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
+	CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error)
+	PutRolePolicy(accountID string, input *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error)
 }
 
 // eipProvisioner is the narrow EIP surface for allocating a CP VM egress IP.
@@ -597,7 +604,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	// an unresolved AZ falls back to auto-discovery rather than risk a dup-AZ error.
 	elbSubnets := dedupSubnetsByAZ(s.deps.VPCSubnet, accountID, lc.subnetIDs)
 
-	cpNodes, spreadGroup, err := s.placeControlPlane(sysAcct, name, K3sServerInput{
+	serverIn := K3sServerInput{
 		AccountID:         sysAcct,
 		ClusterAccountID:  accountID,
 		ClusterName:       name,
@@ -614,11 +621,21 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		OIDCPublicKeyPEM:  pubPEM,
 		GatewayURL:        s.deps.SystemGatewayURL,
 		AddonGatewayURL:   s.deps.GatewayBaseURL,
-		AccessKey:         s.deps.SystemAccessKey,
-		SecretKey:         s.deps.SystemSecretKey,
 		GatewayCACert:     s.deps.GatewayCACert,
 		JoinToken:         joinToken,
-	})
+	}
+
+	// Prefer IMDS instance-role creds: attach a system instance profile so the
+	// CP VM authenticates with scoped, rotating credentials and no static secret
+	// rides in user-data. Falls back to baked system keys when IAM is unwired.
+	if profileARN := s.ensureCPInstanceProfile(sysAcct); profileARN != "" {
+		serverIn.IamInstanceProfileArn = profileARN
+	} else {
+		serverIn.AccessKey = s.deps.SystemAccessKey
+		serverIn.SecretKey = s.deps.SystemSecretKey
+	}
+
+	cpNodes, spreadGroup, err := s.placeControlPlane(sysAcct, name, serverIn)
 	if err != nil {
 		if errors.Is(err, ErrEKSServerAMINotFound) {
 			s.failClusterLaunch(acctKV, name, accountID, meta, "eks-server AMI not found", err)

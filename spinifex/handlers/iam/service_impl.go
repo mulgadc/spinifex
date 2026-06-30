@@ -390,6 +390,9 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 	if len(user.AttachedPolicies) > 0 {
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
+	if len(user.Groups) > 0 {
+		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	}
 
 	if err := s.usersBucket.Delete(kvKey); err != nil {
 		return nil, fmt.Errorf("delete user: %w", err)

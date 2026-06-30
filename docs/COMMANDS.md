@@ -572,7 +572,7 @@ bypasses policy evaluation entirely.
 | `get-federation-token` | — | `--name`, `--policy`, `--policy-arns`, `--duration-seconds`, `--tags` | **NOT STARTED** |
 | `decode-authorization-message` | — | `--encoded-message` | **NOT STARTED** |
 
-Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`, `NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty `Principal` blocks at write time (`MalformedPolicyDocument`) — v1 has no Condition evaluator so accepting them would silently allow.
+Trust policies (`AssumeRolePolicyDocument`) reject `NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty `Principal` blocks at write time (`MalformedPolicyDocument`). `Condition` blocks are rejected except on `sts:AssumeRoleWithWebIdentity` with `StringEquals` (IRSA), which v1 evaluates at assume time (`{iss}:sub`, `{iss}:aud`); anything wider is rejected to avoid silent over-grant.
 
 ---
 

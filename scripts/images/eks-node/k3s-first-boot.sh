@@ -48,7 +48,9 @@ set -a
 . "${ENVFILE}"
 set +a
 
-for v in EKS_GATEWAY_URL EKS_ACCESS_KEY EKS_SECRET_KEY EKS_ACCOUNT_ID EKS_CLUSTER_NAME EKS_NLB_ENDPOINT; do
+# EKS_ACCESS_KEY/EKS_SECRET_KEY are intentionally not required: when absent,
+# eks-gateway-publish signs with IMDS instance-role creds via the SDK chain.
+for v in EKS_GATEWAY_URL EKS_ACCOUNT_ID EKS_CLUSTER_NAME EKS_NLB_ENDPOINT; do
     eval "val=\${$v:-}"
     [ -n "${val}" ] || die "env ${v} not set"
 done

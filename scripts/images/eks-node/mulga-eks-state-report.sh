@@ -26,9 +26,9 @@ set -a
 . "${ENVFILE}"
 set +a
 
+# EKS_ACCESS_KEY/EKS_SECRET_KEY are optional: when absent, eks-gateway-publish
+# signs with IMDS instance-role credentials via the AWS SDK default chain.
 : "${EKS_GATEWAY_URL:?}"
-: "${EKS_ACCESS_KEY:?}"
-: "${EKS_SECRET_KEY:?}"
 : "${EKS_ACCOUNT_ID:?}"
 : "${EKS_CLUSTER_NAME:?}"
 

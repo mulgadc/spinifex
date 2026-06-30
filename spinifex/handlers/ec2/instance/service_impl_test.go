@@ -2121,6 +2121,41 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 	}
 }
 
+// An instance profile passed at launch is persisted on every prepared VM and
+// echoed on the ec2.Instance so the in-VM IMDS endpoint resolves a role and
+// serves its credentials (mirrors the RunInstance singular path).
+func TestPrepareRunInstances_PersistsIamInstanceProfile(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	const profileARN = "arn:aws:iam::000000000000:instance-profile/spinifex-eks-server"
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType:       aws.String("t3.micro"),
+		ImageId:            aws.String("ami-1"),
+		MinCount:           aws.Int64(2),
+		MaxCount:           aws.Int64(2),
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(profileARN)},
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 2)
+	for _, inst := range instances {
+		assert.Equal(t, profileARN, inst.IamInstanceProfileArn)
+		assert.NotEmpty(t, inst.IamInstanceProfileAssociationId)
+		require.NotNil(t, inst.Instance.IamInstanceProfile)
+		assert.Equal(t, profileARN, aws.StringValue(inst.Instance.IamInstanceProfile.Arn))
+	}
+}
+
 // A targeted launch consumes slots from the reservation (not the general pool)
 // and stamps the reservation id onto every prepared VM so terminate can restore.
 func TestPrepareRunInstances_ConsumesReservation(t *testing.T) {

@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -67,7 +68,13 @@ type EKSServiceDeps struct {
 	// IAM backs a nodegroup's node role with an instance profile so workers expose
 	// the role over IMDS for the ECR credential provider. Nil disables the wiring
 	// (workers launch without a profile and cannot pull from the internal ECR).
+	// Tests set this directly; production prefers IAMProvider.
 	IAM instanceProfileEnsurer
+
+	// IAMProvider lazily resolves the IAM ensurer at cluster-launch time so it
+	// cannot race the NATS KV backend at daemon startup. Preferred over IAM when
+	// set; its concrete service satisfies instanceProfileEnsurer.
+	IAMProvider func() handlers_iam.SystemInstanceRoleEnsurer
 
 	// VPCMgr / NATGW / RouteTable compose the managed control-plane VPC ("Set B")
 	// from the real EC2 VPC-family APIs under the system account. The daemon
@@ -93,6 +100,23 @@ type WorkerLauncher interface {
 	TerminateWorkerInstances(instanceIDs []string, accountID string) error
 }
 
+// iamEnsurer resolves the IAM ensurer, preferring the test-injected deps.IAM,
+// then the lazy IAMProvider (built at launch time to dodge the daemon-startup
+// NATS-KV race). Returns nil when neither yields a service, so callers fall back
+// to static creds / skip the profile. The provider's concrete service satisfies
+// instanceProfileEnsurer (identical method set to SystemInstanceRoleEnsurer).
+func (s *EKSServiceImpl) iamEnsurer() instanceProfileEnsurer {
+	if s.deps.IAM != nil {
+		return s.deps.IAM
+	}
+	if s.deps.IAMProvider != nil {
+		if e := s.deps.IAMProvider(); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
 // instanceProfileEnsurer is the narrow IAM surface EKS needs to find-or-create the
 // instance profile that fronts a nodegroup's node role. Real EKS creates this
 // profile implicitly for a node role; Spinifex does the same at worker launch.
@@ -100,6 +124,13 @@ type instanceProfileEnsurer interface {
 	GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
 	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
 	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
+
+	// Role find-or-create surface for the system-managed control-plane role.
+	// Unlike worker node roles (customer-supplied), the k3s server role is
+	// created by Spinifex with the IMDS-scoped gateway permissions it needs.
+	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
+	CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error)
+	PutRolePolicy(accountID string, input *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error)
 }
 
 // eipProvisioner is the narrow EIP surface for allocating a CP VM egress IP.
@@ -597,7 +628,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	// an unresolved AZ falls back to auto-discovery rather than risk a dup-AZ error.
 	elbSubnets := dedupSubnetsByAZ(s.deps.VPCSubnet, accountID, lc.subnetIDs)
 
-	cpNodes, spreadGroup, err := s.placeControlPlane(sysAcct, name, K3sServerInput{
+	serverIn := K3sServerInput{
 		AccountID:         sysAcct,
 		ClusterAccountID:  accountID,
 		ClusterName:       name,
@@ -614,11 +645,21 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		OIDCPublicKeyPEM:  pubPEM,
 		GatewayURL:        s.deps.SystemGatewayURL,
 		AddonGatewayURL:   s.deps.GatewayBaseURL,
-		AccessKey:         s.deps.SystemAccessKey,
-		SecretKey:         s.deps.SystemSecretKey,
 		GatewayCACert:     s.deps.GatewayCACert,
 		JoinToken:         joinToken,
-	})
+	}
+
+	// Prefer IMDS instance-role creds: attach a system instance profile so the
+	// CP VM authenticates with scoped, rotating credentials and no static secret
+	// rides in user-data. Falls back to baked system keys when IAM is unwired.
+	if profileARN := s.ensureCPInstanceProfile(sysAcct); profileARN != "" {
+		serverIn.IamInstanceProfileArn = profileARN
+	} else {
+		serverIn.AccessKey = s.deps.SystemAccessKey
+		serverIn.SecretKey = s.deps.SystemSecretKey
+	}
+
+	cpNodes, spreadGroup, err := s.placeControlPlane(sysAcct, name, serverIn)
 	if err != nil {
 		if errors.Is(err, ErrEKSServerAMINotFound) {
 			s.failClusterLaunch(acctKV, name, accountID, meta, "eks-server AMI not found", err)

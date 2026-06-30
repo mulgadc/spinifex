@@ -473,7 +473,7 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 
 	// Attach the node role's instance profile so IMDS serves the role to the ECR
 	// credential provider; without it worker pulls from the internal ECR get 401.
-	if s.deps.IAM != nil && rec.NodeRole != "" {
+	if s.iamEnsurer() != nil && rec.NodeRole != "" {
 		profileARN, perr := s.ensureNodeInstanceProfile(accountID, rec.NodeRole)
 		if perr != nil {
 			return "", fmt.Errorf("ensure node instance profile: %w", perr)
@@ -526,7 +526,7 @@ func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string
 	}
 	profileName := roleName
 
-	out, err := s.deps.IAM.GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
+	out, err := s.iamEnsurer().GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
 		InstanceProfileName: aws.String(profileName),
 	})
 	if err == nil {
@@ -537,7 +537,7 @@ func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string
 		return "", fmt.Errorf("get instance profile %q: %w", profileName, err)
 	}
 
-	created, err := s.deps.IAM.CreateInstanceProfile(accountID, &iam.CreateInstanceProfileInput{
+	created, err := s.iamEnsurer().CreateInstanceProfile(accountID, &iam.CreateInstanceProfileInput{
 		InstanceProfileName: aws.String(profileName),
 	})
 	if err != nil {
@@ -545,7 +545,7 @@ func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string
 		if err.Error() != awserrors.ErrorIAMEntityAlreadyExists {
 			return "", fmt.Errorf("create instance profile %q: %w", profileName, err)
 		}
-		got, gerr := s.deps.IAM.GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
+		got, gerr := s.iamEnsurer().GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
 			InstanceProfileName: aws.String(profileName),
 		})
 		if gerr != nil {
@@ -565,7 +565,7 @@ func (s *EKSServiceImpl) attachRoleToProfile(accountID, profileName, roleName, p
 	if alreadyAttached {
 		return profileARN, nil
 	}
-	_, err := s.deps.IAM.AddRoleToInstanceProfile(accountID, &iam.AddRoleToInstanceProfileInput{
+	_, err := s.iamEnsurer().AddRoleToInstanceProfile(accountID, &iam.AddRoleToInstanceProfileInput{
 		InstanceProfileName: aws.String(profileName),
 		RoleName:            aws.String(roleName),
 	})

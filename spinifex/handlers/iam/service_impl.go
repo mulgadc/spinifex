@@ -1342,7 +1342,7 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 		for name, raw := range group.InlinePolicies {
 			var doc PolicyDocument
 			if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-				return nil, fmt.Errorf("parse group inline policy %s/%s: %w", groupName, name, err) // fail closed
+				return nil, fmt.Errorf("parse group inline policy %s/%s: %w", groupName, name, err)
 			}
 			docs = append(docs, doc)
 		}

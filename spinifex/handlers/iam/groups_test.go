@@ -1139,6 +1139,7 @@ func TestGetUserPolicies_GroupManagedAndInline(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, docs, 2, "both the managed attachment and the inline document must resolve")
 	assert.True(t, policiesGrant(docs, "ec2:DescribeInstances"), "managed Allow surfaced")
+	assert.True(t, policiesGrant(docs, "s3:DeleteObject"), "inline doc surfaced")
 }
 
 // TestGetUserPolicies_GroupInlineMalformedFailsClosed proves a corrupt inline

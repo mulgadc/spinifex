@@ -1298,6 +1298,7 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 	}
 
 	var docs []PolicyDocument
+	// Direct user-attached managed policies.
 	for _, arn := range user.AttachedPolicies {
 		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
 		if err != nil {
@@ -1306,6 +1307,32 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 		}
 		if include {
 			docs = append(docs, doc)
+		}
+	}
+
+	// Group-inherited managed policies. A membership to a deleted group is inert
+	// (AWS makes that state impossible by refusing to delete a non-empty group),
+	// so a missing group is skipped with a warn and the user keeps their other
+	// grants — never over-permitting. A missing/corrupt policy within a
+	// resolvable group still fails closed, mirroring the direct-policy handling.
+	for _, groupName := range user.Groups {
+		group, err := s.getGroup(accountID, groupName)
+		if err != nil {
+			if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+				slog.Warn("GetUserPolicies: member references missing group; skipping",
+					"accountID", accountID, "user", userName, "group", groupName)
+				continue
+			}
+			return nil, err // transient/corrupt → fail closed
+		}
+		for _, arn := range group.AttachedPolicies {
+			doc, include, err := s.resolveAttachedPolicy(accountID, arn)
+			if err != nil {
+				return nil, err // fail closed
+			}
+			if include {
+				docs = append(docs, doc)
+			}
 		}
 	}
 

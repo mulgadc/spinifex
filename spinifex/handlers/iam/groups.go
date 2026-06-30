@@ -391,6 +391,127 @@ func (s *IAMServiceImpl) ListAttachedGroupPolicies(accountID string, input *iam.
 }
 
 // ---------------------------------------------------------------------------
+// Group inline policies
+// ---------------------------------------------------------------------------
+
+// PutGroupPolicy embeds an inline policy document in a group, keyed by PolicyName.
+// Idempotent upsert: a same-name policy is overwritten, mirroring AWS. Uses a
+// blind read-modify-write Put like the other group writers (no CAS).
+func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	groupName := *input.GroupName
+	policyName := *input.PolicyName
+	policyDoc := *input.PolicyDocument
+	kvKey := accountID + "." + groupName
+
+	if err := validatePolicyName(policyName); err != nil {
+		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	}
+	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
+		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+	}
+
+	group, err := s.getGroup(accountID, groupName)
+	if err != nil {
+		return nil, err
+	}
+
+	if group.InlinePolicies == nil {
+		group.InlinePolicies = map[string]string{}
+	}
+	group.InlinePolicies[policyName] = policyDoc
+
+	data, err := json.Marshal(group)
+	if err != nil {
+		return nil, fmt.Errorf("marshal group: %w", err)
+	}
+
+	if _, err := s.groupsBucket.Put(kvKey, data); err != nil {
+		return nil, fmt.Errorf("update group: %w", err)
+	}
+
+	slog.Info("IAM inline policy put on group", "accountID", accountID, "groupName", groupName, "policyName", policyName)
+	return &iam.PutGroupPolicyOutput{}, nil
+}
+
+// GetGroupPolicy returns a group's inline policy document by name as a raw JSON
+// string, matching the in-repo convention used by GetRolePolicy.
+func (s *IAMServiceImpl) GetGroupPolicy(accountID string, input *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	groupName := *input.GroupName
+	policyName := *input.PolicyName
+
+	group, err := s.getGroup(accountID, groupName)
+	if err != nil {
+		return nil, err
+	}
+
+	doc, ok := group.InlinePolicies[policyName]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+
+	return &iam.GetGroupPolicyOutput{
+		GroupName:      aws.String(groupName),
+		PolicyName:     aws.String(policyName),
+		PolicyDocument: aws.String(doc),
+	}, nil
+}
+
+// DeleteGroupPolicy removes a group's inline policy by name. A missing name
+// yields NoSuchEntity, matching AWS. Blind Put like the other group writers.
+func (s *IAMServiceImpl) DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	groupName := *input.GroupName
+	policyName := *input.PolicyName
+	kvKey := accountID + "." + groupName
+
+	group, err := s.getGroup(accountID, groupName)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, ok := group.InlinePolicies[policyName]; !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	delete(group.InlinePolicies, policyName)
+
+	data, err := json.Marshal(group)
+	if err != nil {
+		return nil, fmt.Errorf("marshal group: %w", err)
+	}
+
+	if _, err := s.groupsBucket.Put(kvKey, data); err != nil {
+		return nil, fmt.Errorf("update group: %w", err)
+	}
+
+	slog.Info("IAM inline policy deleted from group", "accountID", accountID, "groupName", groupName, "policyName", policyName)
+	return &iam.DeleteGroupPolicyOutput{}, nil
+}
+
+// ListGroupPolicies returns the names of a group's inline policies, sorted for
+// deterministic output. Pagination is not implemented: IsTruncated is always false.
+func (s *IAMServiceImpl) ListGroupPolicies(accountID string, input *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	group, err := s.getGroup(accountID, *input.GroupName)
+	if err != nil {
+		return nil, err
+	}
+
+	rawNames := make([]string, 0, len(group.InlinePolicies))
+	for name := range group.InlinePolicies {
+		rawNames = append(rawNames, name)
+	}
+	slices.Sort(rawNames)
+
+	names := make([]*string, 0, len(rawNames))
+	for _, name := range rawNames {
+		names = append(names, aws.String(name))
+	}
+
+	return &iam.ListGroupPoliciesOutput{
+		PolicyNames: names,
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

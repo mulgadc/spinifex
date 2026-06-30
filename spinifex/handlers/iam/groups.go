@@ -272,11 +272,14 @@ func (s *IAMServiceImpl) ListGroupsForUser(accountID string, input *iam.ListGrou
 	for _, name := range user.Groups {
 		group, err := s.getGroup(accountID, name)
 		if err != nil {
-			// Skip a membership whose group has vanished, consistent with
-			// GetUserPolicies; a dangling pointer is inert, not an error.
-			slog.Warn("ListGroupsForUser: member references missing group; skipping",
-				"accountID", accountID, "user", *input.UserName, "group", name)
-			continue
+			if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+				// A dangling pointer to a vanished group is inert; skip it.
+				// Mirrors GetUserPolicies — transient/corrupt errors fail closed.
+				slog.Warn("ListGroupsForUser: member references missing group; skipping",
+					"accountID", accountID, "user", *input.UserName, "group", name)
+				continue
+			}
+			return nil, err
 		}
 		groups = append(groups, groupToSDK(group))
 	}

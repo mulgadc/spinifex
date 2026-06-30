@@ -3,7 +3,8 @@
 package multinode
 
 import (
-	"fmt"	"testing"
+	"fmt"
+	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"

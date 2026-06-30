@@ -253,7 +253,8 @@ func TestBuildArgs_EncryptionKeyFileForwarded(t *testing.T) {
 }
 
 func TestBuildArgs_EncryptionKeyFileOmittedWhenEmpty(t *testing.T) {
-	cfg := &NBDKitConfig{		Socket:     "/tmp/nbd.sock",
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
 		PidFile:    "/tmp/nbd.pid",
 		PluginPath: "/plugin.so",
 	}
@@ -266,7 +267,8 @@ func TestBuildArgs_EncryptionKeyFileOmittedWhenEmpty(t *testing.T) {
 	for _, arg := range args {
 		if len(arg) >= 19 && arg[:19] == "encryption_key_file" {
 			t.Errorf("encryption_key_file must be absent when unset, got: %q", arg)
-		}	}
+		}
+	}
 }
 
 func indexOf(args []string, s string) int {

@@ -177,7 +177,8 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 // encryption state. Callers that Close() the VB MUST go through
 // openLoadedVolumeVB instead, so the block map is restored before Close()
 // flushes it back to predastore.
-func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {	s3cfg := s3.S3Config{
+func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
+	s3cfg := s3.S3Config{
 		VolumeName: volumeName,
 		Bucket:     cfg.Bucket,
 		Region:     cfg.Region,
@@ -212,6 +213,7 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {	s3cf
 func isAuxVolume(volumeName string) bool {
 	return strings.HasSuffix(volumeName, "-efi")
 }
+
 // volumeNeedsSeal reports whether an unmounted volume must be sealed to
 // predastore on this node: it carries durable guest data (not an auxiliary
 // volume) and has local viperblock state under baseDir/<volume> to flush. A
@@ -268,6 +270,7 @@ func sealVolumeVB(cfg *Config, volumeName string) error {
 	}
 	return nil
 }
+
 // respondJSON marshals data and sends it as a NATS response. On marshal
 // failure a raw JSON error string is sent instead.
 func respondJSON(msg *nats.Msg, data any) {
@@ -590,7 +593,8 @@ func launchService(cfg *Config) (err error) {
 		}
 
 		vb, err := openLoadedVolumeVB(cfg, req.Volume)
-		if err != nil {			slog.Error("ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
+		if err != nil {
+			slog.Error("ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
 			return
 		}
@@ -866,7 +870,8 @@ func launchService(cfg *Config) (err error) {
 			PID:       pid,
 			VB:        vb,
 			ConfigSub: configSub,
-		})		cfg.mu.Unlock()
+		})
+		cfg.mu.Unlock()
 
 		respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
 		slog.Debug("Sent ebs.mount response")

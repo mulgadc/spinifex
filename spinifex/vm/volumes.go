@@ -50,6 +50,7 @@ func (m *Manager) delIothreadBestEffort(instance *VM, iothreadID, volumeID strin
 		slog.Warn("AttachVolume: rollback object-del iothread failed", "volumeId", volumeID, "err", err)
 	}
 }
+
 // AttachVolume hot-plugs a volume via the QMP pipeline (mount → blockdev-add →
 // device_add). Partial state is rolled back on failure. If device is empty, the
 // next free /dev/sd[f-p] slot is allocated. Instance must be in StateRunning.
@@ -154,7 +155,8 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		},
 	}, instance.ID); err != nil {
 		slog.Error("AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)
-		m.delIothreadBestEffort(instance, iothreadID, volumeID)		m.rollbackUnmount(ebsRequest)
+		m.delIothreadBestEffort(instance, iothreadID, volumeID)
+		m.rollbackUnmount(ebsRequest)
 		return AttachVolumeResult{}, fmt.Errorf("QMP blockdev-add: %w", err)
 	}
 
@@ -189,7 +191,8 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 			slog.Error("AttachVolume: rollback blockdev-del failed, skipping EBS unmount",
 				"volumeId", volumeID, "err", delErr)
 		} else {
-			m.delIothreadBestEffort(instance, iothreadID, volumeID)			m.rollbackUnmount(ebsRequest)
+			m.delIothreadBestEffort(instance, iothreadID, volumeID)
+			m.rollbackUnmount(ebsRequest)
 		}
 		return AttachVolumeResult{}, fmt.Errorf("QMP device_add: %w", err)
 	}

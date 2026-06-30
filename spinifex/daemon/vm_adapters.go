@@ -178,7 +178,8 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 		}
 
 		if sealed && !ebsRequest.EFI && a.volState != nil {
-			if err := a.volState.UpdateVolumeState(ebsRequest.Name, "available", "", ""); err != nil {				slog.Error("Failed to update volume state to available after unmount",
+			if err := a.volState.UpdateVolumeState(ebsRequest.Name, "available", "", ""); err != nil {
+				slog.Error("Failed to update volume state to available after unmount",
 					"volumeId", ebsRequest.Name, "err", err)
 			}
 		}

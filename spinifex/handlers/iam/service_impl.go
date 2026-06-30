@@ -251,6 +251,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 		AccessKeys:       []string{},
 		Tags:             copyTags(input.Tags),
 		AttachedPolicies: []string{},
+		Groups:           []string{},
 	}
 
 	data, err := json.Marshal(user)
@@ -642,6 +643,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 		AccessKeys:       []string{data.AccessKeyID},
 		Tags:             []Tag{},
 		AttachedPolicies: []string{},
+		Groups:           []string{},
 	}
 
 	userData, err := json.Marshal(rootUser)
@@ -759,6 +761,7 @@ func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
 		AccessKeys:       []string{admin.AccessKeyID},
 		Tags:             []Tag{},
 		AttachedPolicies: []string{policyARN},
+		Groups:           []string{},
 	}
 
 	userData, err := json.Marshal(adminUser)

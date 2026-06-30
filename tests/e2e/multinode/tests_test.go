@@ -75,6 +75,12 @@ func TestMultinodeNodeRecovery(t *testing.T) {
 	runNodeRecovery(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeOVNRaft is sequential: stops ovn-central on the NB leader to
+// prove DB failover, restoring it in cleanup before later tests run.
+func TestMultinodeOVNRaft(t *testing.T) {
+	runOVNRaft(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeSpread is sequential after NodeRecovery; owns 10.100.0.0/16 + EIP pool.
 func TestMultinodeSpread(t *testing.T) {
 	runSpread(t, requireMultiNodeFixture(t))

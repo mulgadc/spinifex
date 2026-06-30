@@ -103,12 +103,20 @@ func RequestSpotInstances(input *ec2.RequestSpotInstancesInput, natsConn *nats.C
 		return output, err
 	}
 
-	// Stamp spot lineage back onto each launched VM (best-effort): the VMs run
-	// and the SIRs persist regardless, so a write-back miss only drops the
-	// instance-side projection, never the request.
-	stampSpotLineage(natsConn, requests, accountID)
-
 	output.SpotInstanceRequests = requests
+
+	// Stamp spot lineage onto each launched VM in the background: it is
+	// best-effort (a miss only drops the projection, never the request), so it
+	// must not block the response.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("RequestSpotInstances: spot lineage write-back panic", "panic", r)
+			}
+		}()
+		stampSpotLineage(natsConn, requests, accountID)
+	}()
+
 	return output, nil
 }
 

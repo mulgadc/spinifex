@@ -288,7 +288,13 @@ func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts
 // advertised unconditionally in serveMetaDataRoot, so a resolution miss or error
 // defaults to "on-demand" rather than breaking cloud-init's crawl mid-listing.
 func (s *IMDSServiceImpl) serveInstanceLifecycle(w http.ResponseWriter, eni *eniFacts) {
-	if inst, err := s.resolver.resolveInstance(eni); err == nil && inst != nil && inst.lifecycleType == "spot" {
+	inst, err := s.resolver.resolveInstance(eni)
+	if err != nil {
+		// Log but still default to on-demand: this leaf is advertised
+		// unconditionally and must never 404 on a backend fault.
+		slog.Error("IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
+	}
+	if err == nil && inst != nil && inst.lifecycleType == "spot" {
 		writeText(w, "spot")
 		return
 	}

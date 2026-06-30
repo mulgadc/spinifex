@@ -23,7 +23,7 @@ func ValidateCreateVolumeInput(input *ec2.CreateVolumeInput) error {
 	}
 
 	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != "gp3" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return errors.New(awserrors.ErrorUnknownVolumeType)
 	}
 
 	return nil

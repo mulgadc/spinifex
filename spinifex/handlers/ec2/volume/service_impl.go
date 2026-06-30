@@ -28,7 +28,13 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-const defaultGP3IOPS = 3000
+const (
+	// gp3 IOPS envelope (AWS): 3000 baseline on any size, up to 500 IOPS/GiB,
+	// capped at 16000.
+	defaultGP3IOPS = 3000
+	maxGP3IOPS     = 16000
+	gp3IOPSPerGiB  = 500
+)
 
 // Ensure VolumeServiceImpl implements VolumeService
 var _ VolumeService = (*VolumeServiceImpl)(nil)
@@ -92,7 +98,7 @@ func (s *VolumeServiceImpl) CreateVolume(input *ec2.CreateVolumeInput, accountID
 
 	// Validate volume type: only gp3 supported (or empty defaults to gp3)
 	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != "gp3" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, errors.New(awserrors.ErrorUnknownVolumeType)
 	}
 	volumeType := "gp3"
 
@@ -141,7 +147,17 @@ func (s *VolumeServiceImpl) CreateVolume(input *ec2.CreateVolumeInput, accountID
 	now := time.Now()
 	volumeID := utils.GenerateResourceID("vol")
 
+	// Honor caller-supplied Iops for gp3, else the 3000 baseline. The ceiling is
+	// min(16000, 500*size) but never below the free baseline, so small volumes
+	// still get 3000.
 	iops := defaultGP3IOPS
+	if input.Iops != nil {
+		iops = int(*input.Iops)
+	}
+	maxIOPS := min(max(int(size)*gp3IOPSPerGiB, defaultGP3IOPS), maxGP3IOPS)
+	if iops < defaultGP3IOPS || iops > maxIOPS {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
 
 	slog.Info("CreateVolume", "volumeId", volumeID, "size", size, "type", volumeType,
 		"az", *input.AvailabilityZone, "snapshotId", snapshotID)

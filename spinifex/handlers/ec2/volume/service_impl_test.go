@@ -92,7 +92,7 @@ func TestCreateVolume_Validation(t *testing.T) {
 				AvailabilityZone: aws.String("ap-southeast-2a"),
 				VolumeType:       aws.String("io1"),
 			},
-			wantErr: awserrors.ErrorInvalidParameterValue,
+			wantErr: awserrors.ErrorUnknownVolumeType,
 		},
 		{
 			name: "UnsupportedVolumeType_GP2",
@@ -102,7 +102,7 @@ func TestCreateVolume_Validation(t *testing.T) {
 				AvailabilityZone: aws.String("ap-southeast-2a"),
 				VolumeType:       aws.String("gp2"),
 			},
-			wantErr: awserrors.ErrorInvalidParameterValue,
+			wantErr: awserrors.ErrorUnknownVolumeType,
 		},
 		{
 			name: "UnsupportedVolumeType_ST1",
@@ -111,6 +111,36 @@ func TestCreateVolume_Validation(t *testing.T) {
 				Size:             aws.Int64(80),
 				AvailabilityZone: aws.String("ap-southeast-2a"),
 				VolumeType:       aws.String("st1"),
+			},
+			wantErr: awserrors.ErrorUnknownVolumeType,
+		},
+		{
+			name: "Iops_BelowBaseline",
+			az:   "ap-southeast-2a",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				Iops:             aws.Int64(2999),
+			},
+			wantErr: awserrors.ErrorInvalidParameterValue,
+		},
+		{
+			name: "Iops_AboveCeiling",
+			az:   "ap-southeast-2a",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				Iops:             aws.Int64(16001),
+			},
+			wantErr: awserrors.ErrorInvalidParameterValue,
+		},
+		{
+			name: "Iops_AboveRatioForSmallVolume",
+			az:   "ap-southeast-2a",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(10),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				Iops:             aws.Int64(6000),
 			},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
@@ -178,6 +208,14 @@ func TestCreateVolume_PassesValidation(t *testing.T) {
 			input: &ec2.CreateVolumeInput{
 				Size:             aws.Int64(80),
 				AvailabilityZone: aws.String("ap-southeast-2a"),
+			},
+		},
+		{
+			name: "ExplicitIopsInRange",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				Iops:             aws.Int64(8000),
 			},
 		},
 	}

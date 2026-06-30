@@ -29,6 +29,7 @@ const (
 	KVBucketAccountCounter   = "spinifex-account-counter"
 	KVBucketRoles            = "spinifex-iam-roles"
 	KVBucketInstanceProfiles = "spinifex-iam-instance-profiles"
+	KVBucketGroups           = "spinifex-iam-groups"
 
 	KVBucketUsersVersion            = 1
 	KVBucketAccessKeysVersion       = 1
@@ -37,6 +38,7 @@ const (
 	KVBucketAccountCounterVersion   = 1
 	KVBucketRolesVersion            = 1
 	KVBucketInstanceProfilesVersion = 1
+	KVBucketGroupsVersion           = 1
 
 	maxAccessKeysPerUser = 2
 
@@ -82,6 +84,7 @@ type IAMServiceImpl struct {
 	accountCounterBucket   nats.KeyValue
 	rolesBucket            nats.KeyValue
 	instanceProfilesBucket nats.KeyValue
+	groupsBucket           nats.KeyValue
 	masterKey              []byte
 	decrypter              *Decrypter
 	// replicas is the JetStream replication factor for lazily-created per-account buckets.
@@ -160,6 +163,14 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketInstanceProfiles, err)
 	}
 
+	groupsBucket, err := getOrCreateBucket(js, KVBucketGroups, 10, replicas)
+	if err != nil {
+		return nil, fmt.Errorf("init groups bucket: %w", err)
+	}
+	if err := migrate.DefaultRegistry.RunKV(KVBucketGroups, groupsBucket, KVBucketGroupsVersion); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", KVBucketGroups, err)
+	}
+
 	decrypter, err := NewDecrypter(masterKey)
 	if err != nil {
 		return nil, fmt.Errorf("init decrypter: %w", err)
@@ -172,6 +183,7 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		"accounts_bucket", KVBucketAccounts,
 		"roles_bucket", KVBucketRoles,
 		"instance_profiles_bucket", KVBucketInstanceProfiles,
+		"groups_bucket", KVBucketGroups,
 		"replicas", replicas)
 
 	return &IAMServiceImpl{
@@ -184,6 +196,7 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		accountCounterBucket:   accountCounterBucket,
 		rolesBucket:            rolesBucket,
 		instanceProfilesBucket: instanceProfilesBucket,
+		groupsBucket:           groupsBucket,
 		masterKey:              masterKey,
 		decrypter:              decrypter,
 		replicas:               replicas,

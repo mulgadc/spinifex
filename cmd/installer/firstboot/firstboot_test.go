@@ -66,6 +66,54 @@ func TestWriteScriptEmbedsCurlWhenCallbackSet(t *testing.T) {
 	}
 }
 
+func TestWriteScriptRunsOVNWhenFormationOwned(t *testing.T) {
+	root := t.TempDir()
+	makeRootDirs(t, root)
+
+	cfg := Config{Hostname: "test-node", ClusterRole: "init"}
+	if err := Write(root, cfg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	content := readScript(t, root)
+
+	if !strings.Contains(content, "setup-ovn.sh --management") {
+		t.Error("script should run setup-ovn --management when firstboot owns formation")
+	}
+	if !strings.Contains(content, "systemctl start ovn-central") {
+		t.Error("script should pre-start ovn-central when firstboot owns formation")
+	}
+}
+
+func TestWriteScriptDefersOVNWhenSkipFormation(t *testing.T) {
+	root := t.TempDir()
+	makeRootDirs(t, root)
+
+	cfg := Config{Hostname: "test-node", ClusterRole: "init", SkipFormation: true}
+	if err := Write(root, cfg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	content := readScript(t, root)
+
+	if strings.Contains(content, "setup-ovn.sh --management") {
+		t.Error("script must not run setup-ovn --management when a controller owns OVN")
+	}
+	if strings.Contains(content, "systemctl start ovn-central") {
+		t.Error("script must not pre-start ovn-central when a controller owns OVN")
+	}
+	if !strings.Contains(content, "setup-ovn deferred") {
+		t.Error("script should note setup-ovn is deferred under SkipFormation")
+	}
+}
+
+func readScript(t *testing.T, root string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, "usr/local/bin/spinifex-firstboot.sh"))
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	return string(b)
+}
+
 func TestWriteScriptCallbackAfterDoneMarker(t *testing.T) {
 	root := t.TempDir()
 	makeRootDirs(t, root)

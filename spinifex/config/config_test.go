@@ -783,3 +783,24 @@ shardwal = true
 	require.NotNil(t, n.Viperblock.ShardWAL)
 	assert.True(t, *n.Viperblock.ShardWAL)
 }
+
+func TestParseEndpoints(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"single", "tcp:127.0.0.1:6641", []string{"tcp:127.0.0.1:6641"}},
+		{"cluster", "tcp:ip1:6641,tcp:ip2:6641,tcp:ip3:6641",
+			[]string{"tcp:ip1:6641", "tcp:ip2:6641", "tcp:ip3:6641"}},
+		{"whitespace and trailing comma", " tcp:ip1:6641 , tcp:ip2:6641 ,",
+			[]string{"tcp:ip1:6641", "tcp:ip2:6641"}},
+		{"only commas", ",,", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ParseEndpoints(tc.in))
+		})
+	}
+}

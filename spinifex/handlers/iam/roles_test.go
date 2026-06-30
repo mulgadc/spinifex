@@ -1099,6 +1099,7 @@ func TestGetRolePolicies_ManagedAndInline(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, docs, 2)
 	assert.True(t, policiesGrant(docs, "ec2:DescribeInstances"), "managed Allow surfaced")
+	assert.True(t, policiesGrant(docs, "s3:DeleteObject"), "inline doc surfaced")
 }
 
 // ============================================================================

@@ -593,10 +593,10 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `attach-group-policy` | `--group-name`, `--policy-arn` | — | **DONE** |
 | `detach-group-policy` | `--group-name`, `--policy-arn` | — | **DONE** |
 | `list-attached-group-policies` | `--group-name`, `--path-prefix` | `--max-items`, `--marker` | **DONE** |
-| `put-group-policy` | — | `--group-name`, `--policy-name`, `--policy-document` | **NOT STARTED** |
-| `get-group-policy` | — | `--group-name`, `--policy-name` | **NOT STARTED** |
-| `delete-group-policy` | — | `--group-name`, `--policy-name` | **NOT STARTED** |
-| `list-group-policies` | — | `--group-name` | **NOT STARTED** |
+| `put-group-policy` | `--group-name`, `--policy-name`, `--policy-document` | — | **DONE** |
+| `get-group-policy` | `--group-name`, `--policy-name` | — | **DONE** |
+| `delete-group-policy` | `--group-name`, `--policy-name` | — | **DONE** |
+| `list-group-policies` | `--group-name` | `--max-items`, `--marker` | **DONE** |
 
 ---
 

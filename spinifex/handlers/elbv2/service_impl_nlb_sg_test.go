@@ -119,6 +119,55 @@ func TestCreateNLB_MintsManagedSGAttachedToENI(t *testing.T) {
 	assert.Equal(t, rec.NLBManagedSGID, *eni.Groups[0].GroupId)
 }
 
+// TestLBENIGroups_Precedence checks the ENI-group selector: an NLB prefers its
+// customer SGs over the managed SG, falls back to the managed SG without them, and
+// an ALB always uses its customer SGs.
+func TestLBENIGroups_Precedence(t *testing.T) {
+	assert.Equal(t, []string{"sg-a"}, lbENIGroups(&LoadBalancerRecord{
+		Type: LoadBalancerTypeNetwork, SecurityGroups: []string{"sg-a"}, NLBManagedSGID: "sg-mgd",
+	}))
+	assert.Equal(t, []string{"sg-mgd"}, lbENIGroups(&LoadBalancerRecord{
+		Type: LoadBalancerTypeNetwork, NLBManagedSGID: "sg-mgd",
+	}))
+	assert.Equal(t, []string{"sg-x"}, lbENIGroups(&LoadBalancerRecord{
+		Type: LoadBalancerTypeApplication, SecurityGroups: []string{"sg-x"},
+	}))
+}
+
+// TestCreateNLB_WithCustomerSGs_AttachesThemNoManagedSG verifies an NLB created
+// with customer SGs joins those SGs on its ENI and skips the managed SG entirely;
+// the caller then owns the listener-port ingress rules.
+func TestCreateNLB_WithCustomerSGs_AttachesThemNoManagedSG(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+	subnetID, vpcID := firstSubnet(t, vpcSvc)
+
+	sgOut, err := vpcSvc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("nlb-customer-sg"),
+		Description: aws.String("NLB ingress"),
+		VpcId:       aws.String(vpcID),
+	}, testAccountID)
+	require.NoError(t, err)
+	sgID := *sgOut.GroupId
+
+	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:           aws.String("nlb-customer-sg"),
+		Type:           aws.String("network"),
+		Subnets:        []*string{aws.String(subnetID)},
+		SecurityGroups: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rec, err := svc.store.GetLoadBalancerByArn(*out.LoadBalancers[0].LoadBalancerArn)
+	require.NoError(t, err)
+	assert.Equal(t, []string{sgID}, rec.SecurityGroups)
+	assert.Empty(t, rec.NLBManagedSGID, "NLB with customer SGs must not mint a managed SG")
+
+	eni := managedENI(t, vpcSvc)
+	require.NotNil(t, eni)
+	require.Len(t, eni.Groups, 1, "NLB ENI must join exactly the customer SG")
+	assert.Equal(t, sgID, *eni.Groups[0].GroupId)
+}
+
 // TestCreateALB_NoManagedSG verifies the managed-SG behavior is NLB-only: an ALB
 // keeps the existing customer-SG / default-SG semantics.
 func TestCreateALB_NoManagedSG(t *testing.T) {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/nbd"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -75,8 +76,8 @@ type MountedVolume struct {
 	NBDURI    string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
 	PID       int
 	VB        *viperblock.VB     // Reference to viperblock instance for state sync/flush
-	ConfigSub *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})}
-
+	ConfigSub *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})
+}
 type Config struct {
 	ConfigPath     string
 	PluginPath     string
@@ -456,13 +457,6 @@ func launchService(cfg *Config) (err error) {
 			ebsResponse = types.EBSUnMountResponse{
 				Volume:  matched.Name,
 				Mounted: false,
-			}
-
-			// Unsubscribe from volume-specific config-update topic
-			if matched.ConfigSub != nil {
-				if err := matched.ConfigSub.Unsubscribe(); err != nil {
-					slog.Error("Failed to unsubscribe config topic", "volume", ebsRequest.Name, "err", err)
-				}
 			}
 
 			// Unsubscribe from volume-specific config-update topic

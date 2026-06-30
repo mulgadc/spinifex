@@ -75,10 +75,10 @@ func IAMDeleteRoleAndProfilesBestEffort(c *AWSClient, roleName string, profileNa
 }
 
 // IAMDeleteGroupBestEffort tears down a group: removes any members, detaches all
-// attached policies, then deletes the group. Each step swallows errors so a
-// missing fragment never cascades; usable both as a pre-test sweep and as a
-// fixture-teardown cleanup. Order matters: a group cannot be deleted while it
-// still has members or attached policies.
+// attached policies, deletes any inline policies, then deletes the group. Each
+// step swallows errors so a missing fragment never cascades; usable both as a
+// pre-test sweep and as a fixture-teardown cleanup. Order matters: a group cannot
+// be deleted while it still has members, attached policies, or inline policies.
 func IAMDeleteGroupBestEffort(c *AWSClient, groupName string, memberUsers []string, policyARNs ...string) {
 	for _, u := range memberUsers {
 		_, _ = c.IAM.RemoveUserFromGroup(&iam.RemoveUserFromGroupInput{
@@ -101,6 +101,18 @@ func IAMDeleteGroupBestEffort(c *AWSClient, groupName string, memberUsers []stri
 			_, _ = c.IAM.DetachGroupPolicy(&iam.DetachGroupPolicyInput{
 				GroupName: aws.String(groupName),
 				PolicyArn: p.PolicyArn,
+			})
+		}
+	}
+	// Defensive: delete any inline policies so the inline-policy guard can't block
+	// the final DeleteGroup after a partial run.
+	if inline, err := c.IAM.ListGroupPolicies(&iam.ListGroupPoliciesInput{
+		GroupName: aws.String(groupName),
+	}); err == nil {
+		for _, name := range inline.PolicyNames {
+			_, _ = c.IAM.DeleteGroupPolicy(&iam.DeleteGroupPolicyInput{
+				GroupName:  aws.String(groupName),
+				PolicyName: name,
 			})
 		}
 	}

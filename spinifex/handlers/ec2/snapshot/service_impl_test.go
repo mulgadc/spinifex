@@ -2,6 +2,8 @@ package handlers_ec2_snapshot
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1059,4 +1061,32 @@ func TestDescribeSnapshots_FilterNoFilters(t *testing.T) {
 	out, err := svc.DescribeSnapshots(&ec2.DescribeSnapshotsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.Snapshots, 2)
+}
+
+// TestCreateSnapshot_PredastoreInitFails exercises snapshotVolume past the nil-host guard.
+// The viperblock S3 backend fails at Init() when the test server returns 403, covering the
+// snapshotVolume body (S3Config build, LoadViperblockMasterKey, viperblock.New, Backend.Init)
+// and the CreateSnapshot error return path.
+func TestCreateSnapshot_PredastoreInitFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	cfg := &config.Config{
+		Predastore: config.PredastoreConfig{
+			Host:   srv.URL,
+			Region: "us-east-1",
+			Bucket: "test-bucket",
+		},
+	}
+	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
+	createTestVolume(t, store, "vol-initfail", 10)
+
+	_, err := svc.CreateSnapshot(&ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-initfail"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

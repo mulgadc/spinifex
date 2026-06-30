@@ -170,6 +170,36 @@ func (f *fakeIAMService) IsEmpty() (bool, error)                                
 func (f *fakeIAMService) CreateAccount(string) (*handlers_iam.Account, error)     { return nil, nil }
 func (f *fakeIAMService) GetAccount(string) (*handlers_iam.Account, error)        { return nil, nil }
 func (f *fakeIAMService) ListAccounts() ([]*handlers_iam.Account, error)          { return nil, nil }
+func (f *fakeIAMService) CreateGroup(string, *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
+	return &iam.CreateGroupOutput{}, nil
+}
+func (f *fakeIAMService) GetGroup(string, *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
+	return &iam.GetGroupOutput{}, nil
+}
+func (f *fakeIAMService) ListGroups(string, *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
+	return &iam.ListGroupsOutput{}, nil
+}
+func (f *fakeIAMService) DeleteGroup(string, *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
+	return &iam.DeleteGroupOutput{}, nil
+}
+func (f *fakeIAMService) AddUserToGroup(string, *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
+	return &iam.AddUserToGroupOutput{}, nil
+}
+func (f *fakeIAMService) RemoveUserFromGroup(string, *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
+	return &iam.RemoveUserFromGroupOutput{}, nil
+}
+func (f *fakeIAMService) ListGroupsForUser(string, *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
+	return &iam.ListGroupsForUserOutput{}, nil
+}
+func (f *fakeIAMService) AttachGroupPolicy(string, *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
+	return &iam.AttachGroupPolicyOutput{}, nil
+}
+func (f *fakeIAMService) DetachGroupPolicy(string, *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
+	return &iam.DetachGroupPolicyOutput{}, nil
+}
+func (f *fakeIAMService) ListAttachedGroupPolicies(string, *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
+	return &iam.ListAttachedGroupPoliciesOutput{}, nil
+}
 
 var _ handlers_iam.IAMService = (*fakeIAMService)(nil)
 

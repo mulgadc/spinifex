@@ -230,6 +230,36 @@ func (s *stubIAMService) GetAccount(string) (*handlers_iam.Account, error) {
 func (s *stubIAMService) ListAccounts() ([]*handlers_iam.Account, error) {
 	panic("unexpected ListAccounts call")
 }
+func (s *stubIAMService) CreateGroup(string, *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
+	panic("unexpected CreateGroup call")
+}
+func (s *stubIAMService) GetGroup(string, *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
+	panic("unexpected GetGroup call")
+}
+func (s *stubIAMService) ListGroups(string, *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
+	panic("unexpected ListGroups call")
+}
+func (s *stubIAMService) DeleteGroup(string, *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
+	panic("unexpected DeleteGroup call")
+}
+func (s *stubIAMService) AddUserToGroup(string, *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
+	panic("unexpected AddUserToGroup call")
+}
+func (s *stubIAMService) RemoveUserFromGroup(string, *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
+	panic("unexpected RemoveUserFromGroup call")
+}
+func (s *stubIAMService) ListGroupsForUser(string, *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
+	panic("unexpected ListGroupsForUser call")
+}
+func (s *stubIAMService) AttachGroupPolicy(string, *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
+	panic("unexpected AttachGroupPolicy call")
+}
+func (s *stubIAMService) DetachGroupPolicy(string, *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
+	panic("unexpected DetachGroupPolicy call")
+}
+func (s *stubIAMService) ListAttachedGroupPolicies(string, *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
+	panic("unexpected ListAttachedGroupPolicies call")
+}
 
 func TestAssumeRole_HappyPath(t *testing.T) {
 	var calledWith struct {

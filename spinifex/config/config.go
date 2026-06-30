@@ -116,10 +116,25 @@ type ViperblockConfig struct {
 
 // VPCDConfig holds the VPC daemon (vpcd) configuration.
 type VPCDConfig struct {
-	OVNNBAddr         string `json:"OVNNBAddr" mapstructure:"ovn_nb_addr"`                // OVN Northbound DB address (e.g., "tcp:127.0.0.1:6641")
-	OVNSBAddr         string `json:"OVNSBAddr" mapstructure:"ovn_sb_addr"`                // OVN Southbound DB address (e.g., "tcp:127.0.0.1:6642")
+	OVNNBAddr         string `json:"OVNNBAddr" mapstructure:"ovn_nb_addr"`                // OVN Northbound DB address; comma-separated list for a RAFT cluster (e.g., "tcp:127.0.0.1:6641" or "tcp:ip1:6641,tcp:ip2:6641,tcp:ip3:6641")
+	OVNSBAddr         string `json:"OVNSBAddr" mapstructure:"ovn_sb_addr"`                // OVN Southbound DB address; comma-separated list for a RAFT cluster (e.g., "tcp:127.0.0.1:6642" or "tcp:ip1:6642,tcp:ip2:6642,tcp:ip3:6642")
 	ExternalInterface string `json:"ExternalInterface" mapstructure:"external_interface"` // WAN NIC name (e.g., "eth1", "enp0s3") — the physical NIC on the WAN bridge
 	BridgeMode        string `json:"BridgeMode" mapstructure:"bridge_mode"`               // "direct" or "veth" (auto-detected if empty)
+}
+
+// ParseEndpoints splits a comma-separated OVSDB endpoint list (NB/SB RAFT
+// cluster) into individual endpoints, trimming whitespace and dropping empties.
+// A single endpoint yields a one-element slice; empty input yields nil. Both the
+// libovsdb NB client (one WithEndpoint each) and ovn-sbctl --db= (which also
+// accepts the raw comma list) consume the cluster form.
+func ParseEndpoints(addr string) []string {
+	var out []string
+	for p := range strings.SplitSeq(addr, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 type PredastoreConfig struct {

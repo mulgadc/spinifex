@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/model"
@@ -124,10 +125,19 @@ func (c *LiveClient) Connect(ctx context.Context) error {
 		backoff.WithMaxElapsedTime(0),
 		backoff.WithMaxInterval(reconnectMaxInterval),
 	)
-	ovn, err := client.NewOVSDBClient(dbModel,
-		client.WithEndpoint(c.endpoint),
-		client.WithInactivityCheck(inactivityTimeout, reconnectTimeout, bo),
-	)
+	// One WithEndpoint per RAFT cluster member; libovsdb tries them in order,
+	// fails over on disconnect, and follows leader redirects. A single-endpoint
+	// string yields one endpoint (single-node dev, backward compatible).
+	endpoints := config.ParseEndpoints(c.endpoint)
+	if len(endpoints) == 0 {
+		endpoints = []string{c.endpoint}
+	}
+	opts := make([]client.Option, 0, len(endpoints)+1)
+	for _, ep := range endpoints {
+		opts = append(opts, client.WithEndpoint(ep))
+	}
+	opts = append(opts, client.WithInactivityCheck(inactivityTimeout, reconnectTimeout, bo))
+	ovn, err := client.NewOVSDBClient(dbModel, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create OVSDB client: %w", err)
 	}

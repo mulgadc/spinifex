@@ -180,7 +180,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "instance-id":
 		writeText(w, eni.instanceID)
 	case prefixMetaData + "instance-life-cycle":
-		writeText(w, "on-demand") // Spot is not modelled yet
+		s.serveInstanceLifecycle(w, eni)
 	case prefixMetaData + "local-ipv4":
 		writeText(w, eni.privateIP)
 	case prefixMetaData + "public-ipv4":
@@ -281,6 +281,18 @@ func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts
 	}
 	sort.Strings(keys)
 	writeText(w, strings.Join(keys, "\n"))
+}
+
+// serveInstanceLifecycle reports "spot" for a spot-launched instance and
+// "on-demand" otherwise. Unlike serveInstanceField it never 404s: the leaf is
+// advertised unconditionally in serveMetaDataRoot, so a resolution miss or error
+// defaults to "on-demand" rather than breaking cloud-init's crawl mid-listing.
+func (s *IMDSServiceImpl) serveInstanceLifecycle(w http.ResponseWriter, eni *eniFacts) {
+	if inst, err := s.resolver.resolveInstance(eni); err == nil && inst != nil && inst.lifecycleType == "spot" {
+		writeText(w, "spot")
+		return
+	}
+	writeText(w, "on-demand")
 }
 
 // serveInstanceField resolves the instance record and writes one of its

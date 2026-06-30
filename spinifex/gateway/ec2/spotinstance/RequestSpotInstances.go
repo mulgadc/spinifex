@@ -103,6 +103,11 @@ func RequestSpotInstances(input *ec2.RequestSpotInstancesInput, natsConn *nats.C
 		return output, err
 	}
 
+	// Stamp spot lineage back onto each launched VM (best-effort): the VMs run
+	// and the SIRs persist regardless, so a write-back miss only drops the
+	// instance-side projection, never the request.
+	stampSpotLineage(natsConn, requests, accountID)
+
 	output.SpotInstanceRequests = requests
 	return output, nil
 }

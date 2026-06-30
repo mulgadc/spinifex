@@ -10,6 +10,7 @@ type EC2InstanceCommand struct {
 	AttachENIData             *AttachENIData             `json:"attach_eni_data,omitempty"`
 	DetachENIData             *DetachENIData             `json:"detach_eni_data,omitempty"`
 	IamProfileAssociationData *IamProfileAssociationData `json:"iam_profile_association_data,omitempty"`
+	SpotLineageData           *SpotLineageData           `json:"spot_lineage_data,omitempty"`
 }
 
 // EC2CommandAttributes indicates which action the daemon should perform.
@@ -23,6 +24,7 @@ type EC2CommandAttributes struct {
 	AttachENI                   bool `json:"attach_eni"`
 	DetachENI                   bool `json:"detach_eni"`
 	AssociateIamInstanceProfile bool `json:"associate_iam_instance_profile,omitempty"`
+	SetSpotLineage              bool `json:"set_spot_lineage,omitempty"`
 }
 
 // AttachVolumeData carries parameters for an attach-volume command.
@@ -56,4 +58,10 @@ type DetachENIData struct {
 // only needs the ARN to persist on vm.VM.
 type IamProfileAssociationData struct {
 	InstanceProfileArn string `json:"instance_profile_arn"`
+}
+
+// SpotLineageData carries the SIR id stamped onto a spot-launched instance.
+// Lifecycle is always "spot" for this command, so only the SIR id travels.
+type SpotLineageData struct {
+	SpotInstanceRequestId string `json:"spot_instance_request_id"`
 }

@@ -95,9 +95,15 @@ func runSpotInstanceLifecycle(t *testing.T, fix *Fixture) {
 		launchedIDs = append(launchedIDs, instID)
 	}
 
-	// Both backing VMs are real on-demand launches — wait for running.
-	for _, instID := range sirInstance {
-		harness.WaitForInstanceState(t, fix.AWS, instID, "running")
+	// Both backing VMs are real on-demand launches — wait for running, then assert
+	// full spot lineage: each VM reports InstanceLifecycle=spot and links back to
+	// its originating SIR via SpotInstanceRequestId (stamped by the write-back).
+	for sirID, instID := range sirInstance {
+		inst := harness.WaitForInstanceState(t, fix.AWS, instID, "running")
+		assert.Equal(t, ec2.InstanceLifecycleTypeSpot, aws.StringValue(inst.InstanceLifecycle),
+			"instance %s should report InstanceLifecycle=spot", instID)
+		assert.Equal(t, sirID, aws.StringValue(inst.SpotInstanceRequestId),
+			"instance %s should link back to SIR %s", instID, sirID)
 	}
 
 	cancelSIR, termSIR := sirIDs[0], sirIDs[1]

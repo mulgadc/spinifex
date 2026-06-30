@@ -44,14 +44,15 @@ func TestNew_EmptyGatewayURL(t *testing.T) {
 	}
 }
 
-func TestNew_EmptyCredentials(t *testing.T) {
-	_, err := New("lb-test", "https://gw:9999", "", "SECRET", "us-east-1")
-	if err == nil {
-		t.Fatal("expected error for empty access key")
+func TestNew_EmptyCredentials_SelectsIMDS(t *testing.T) {
+	// Empty static keys fall back to the IMDS instance-role credential chain;
+	// construction succeeds (the chain resolves lazily at first sign).
+	agent, err := New("lb-test", "https://gw:9999", "", "", "us-east-1")
+	if err != nil {
+		t.Fatalf("New with empty keys (IMDS mode): %v", err)
 	}
-	_, err = New("lb-test", "https://gw:9999", "AKID", "", "us-east-1")
-	if err == nil {
-		t.Fatal("expected error for empty secret key")
+	if agent.signer == nil {
+		t.Fatal("expected signer to be set in IMDS mode")
 	}
 }
 

@@ -1,10 +1,23 @@
 package formation
 
 import (
+	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+)
+
+// ovnDBQuorum is the number of nodes that host the clustered OVN NB/SB
+// databases. The first ovnDBQuorum nodes (by sorted name) form the RAFT
+// quorum; every other node is OVN compute-only and dials these endpoints.
+const ovnDBQuorum = 3
+
+// OVN database client ports served by each RAFT quorum node.
+const (
+	ovnNBPort = 6641
+	ovnSBPort = 6642
 )
 
 // hasService reports whether the node's service list includes name.
@@ -55,6 +68,24 @@ func BuildPredastoreNodes(nodes map[string]NodeInfo) []admin.PredastoreNodeConfi
 		}
 	}
 	return out
+}
+
+// BuildOVNDBAddrs returns comma-separated OVN NB and SB endpoint lists for the
+// RAFT quorum nodes (first ovnDBQuorum by sorted name). Every node — quorum and
+// compute alike — points its OVN client at the full list so libovsdb fails over
+// across the cluster. BindIP is the cross-node dial address.
+func BuildOVNDBAddrs(nodes map[string]NodeInfo) (nbAddr, sbAddr string) {
+	sorted := sortedNodes(nodes)
+	if len(sorted) > ovnDBQuorum {
+		sorted = sorted[:ovnDBQuorum]
+	}
+	nb := make([]string, len(sorted))
+	sb := make([]string, len(sorted))
+	for i, n := range sorted {
+		nb[i] = fmt.Sprintf("tcp:%s:%d", n.BindIP, ovnNBPort)
+		sb[i] = fmt.Sprintf("tcp:%s:%d", n.BindIP, ovnSBPort)
+	}
+	return strings.Join(nb, ","), strings.Join(sb, ",")
 }
 
 // sortedNodes returns nodes sorted by name.

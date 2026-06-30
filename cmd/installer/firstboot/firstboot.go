@@ -91,6 +91,31 @@ func writeScript(root string, cfg Config) error {
 		setupOVN += fmt.Sprintf(" --encap-ip=%s", cfg.EncapIP)
 	}
 
+	// Pre-start OVS and OVN central so their databases are initialised before
+	// setup-ovn.sh runs. On physical hardware, first-boot DB initialisation takes
+	// longer than setup-ovn.sh's internal 15-second timeout allows. Starting them
+	// here and waiting until the NB DB is ready means setup-ovn.sh sees a live DB
+	// the moment it starts — no races, no timeout failures.
+	ovnPrestart := `systemctl start openvswitch-switch
+systemctl start ovn-central
+echo "Waiting for OVN NB DB to initialise..."
+for _i in $(seq 1 120); do
+    if ovn-nbctl --timeout=2 get-connection >/dev/null 2>&1; then
+        echo "OVN NB DB ready (${_i}s)"
+        break
+    fi
+    sleep 1
+done`
+
+	// When a provisioning controller owns formation (SkipFormation) it also owns
+	// the clustered OVN bring-up via setup-ovn.sh's RAFT flags. firstboot must
+	// not start a standalone ovn-central here: the single-node .db it would leave
+	// blocks ovn-ctl's create/join (which require a clean DB). Defer both.
+	if cfg.SkipFormation {
+		ovnPrestart = `echo "[firstboot] OVN bring-up deferred to provisioning controller"`
+		setupOVN = `echo "[firstboot] setup-ovn deferred to provisioning controller"`
+	}
+
 	callbackBlock := ""
 	if cfg.InstallCallback != "" {
 		callbackBlock = fmt.Sprintf(
@@ -123,21 +148,7 @@ fi
 # Set hostname
 hostnamectl set-hostname %s
 
-# Pre-start OVS and OVN central so their databases are initialised before
-# setup-ovn.sh runs. On physical hardware, first-boot DB initialisation takes
-# longer than setup-ovn.sh's internal 15-second timeout allows. Starting them
-# here and waiting until the NB DB is ready means setup-ovn.sh sees a live DB
-# the moment it starts — no races, no timeout failures.
-systemctl start openvswitch-switch
-systemctl start ovn-central
-echo "Waiting for OVN NB DB to initialise..."
-for _i in $(seq 1 120); do
-    if ovn-nbctl --timeout=2 get-connection >/dev/null 2>&1; then
-        echo "OVN NB DB ready (${_i}s)"
-        break
-    fi
-    sleep 1
-done
+%s
 
 # Create default nameservers if DHCP server returns blank
 printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolvconf/resolv.conf.d/base
@@ -229,7 +240,7 @@ if grep -q 'external_mode.*pool' /etc/spinifex/spinifex.toml 2>/dev/null; then
         echo "[firstboot] warning: br-ext not up after 30s — external networking may be delayed"
     fi
 fi
-`, cfg.Hostname, setupOVN, clusterCmd, callbackBlock)
+`, cfg.Hostname, ovnPrestart, setupOVN, clusterCmd, callbackBlock)
 
 	path := filepath.Join(root, "usr/local/bin/spinifex-firstboot.sh")
 	return os.WriteFile(path, []byte(script), 0o755)

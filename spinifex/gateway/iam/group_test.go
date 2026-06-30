@@ -241,3 +241,109 @@ func TestListAttachedGroupPolicies(t *testing.T) {
 		})
 	}
 }
+
+const validGroupInlineDoc = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:DescribeInstances","Resource":"*"}]}`
+
+func TestPutGroupPolicy(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.PutGroupPolicyInput
+		wantErr string
+	}{
+		{"nil GroupName", &iam.PutGroupPolicyInput{PolicyName: aws.String("p"), PolicyDocument: aws.String(validGroupInlineDoc)}, awserrors.ErrorMissingParameter},
+		{"empty GroupName", &iam.PutGroupPolicyInput{GroupName: aws.String(""), PolicyName: aws.String("p"), PolicyDocument: aws.String(validGroupInlineDoc)}, awserrors.ErrorMissingParameter},
+		{"nil PolicyName", &iam.PutGroupPolicyInput{GroupName: aws.String("g"), PolicyDocument: aws.String(validGroupInlineDoc)}, awserrors.ErrorMissingParameter},
+		{"empty PolicyName", &iam.PutGroupPolicyInput{GroupName: aws.String("g"), PolicyName: aws.String(""), PolicyDocument: aws.String(validGroupInlineDoc)}, awserrors.ErrorMissingParameter},
+		{"nil PolicyDocument", &iam.PutGroupPolicyInput{GroupName: aws.String("g"), PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"empty PolicyDocument", &iam.PutGroupPolicyInput{GroupName: aws.String("g"), PolicyName: aws.String("p"), PolicyDocument: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.PutGroupPolicyInput{GroupName: aws.String("g"), PolicyName: aws.String("p"), PolicyDocument: aws.String(validGroupInlineDoc)}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := PutGroupPolicy(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestGetGroupPolicy(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.GetGroupPolicyInput
+		wantErr string
+	}{
+		{"nil GroupName", &iam.GetGroupPolicyInput{PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"empty GroupName", &iam.GetGroupPolicyInput{GroupName: aws.String(""), PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"nil PolicyName", &iam.GetGroupPolicyInput{GroupName: aws.String("g")}, awserrors.ErrorMissingParameter},
+		{"empty PolicyName", &iam.GetGroupPolicyInput{GroupName: aws.String("g"), PolicyName: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.GetGroupPolicyInput{GroupName: aws.String("g"), PolicyName: aws.String("p")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := GetGroupPolicy(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestDeleteGroupPolicy(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.DeleteGroupPolicyInput
+		wantErr string
+	}{
+		{"nil GroupName", &iam.DeleteGroupPolicyInput{PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"empty GroupName", &iam.DeleteGroupPolicyInput{GroupName: aws.String(""), PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"nil PolicyName", &iam.DeleteGroupPolicyInput{GroupName: aws.String("g")}, awserrors.ErrorMissingParameter},
+		{"empty PolicyName", &iam.DeleteGroupPolicyInput{GroupName: aws.String("g"), PolicyName: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.DeleteGroupPolicyInput{GroupName: aws.String("g"), PolicyName: aws.String("p")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DeleteGroupPolicy(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestListGroupPolicies(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.ListGroupPoliciesInput
+		wantErr string
+	}{
+		{"nil GroupName", &iam.ListGroupPoliciesInput{}, awserrors.ErrorMissingParameter},
+		{"empty GroupName", &iam.ListGroupPoliciesInput{GroupName: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.ListGroupPoliciesInput{GroupName: aws.String("g")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ListGroupPolicies(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

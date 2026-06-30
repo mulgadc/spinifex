@@ -73,6 +73,32 @@ func TestBuildPredastoreNodes_EmptyServicesIncludesAll(t *testing.T) {
 	require.Len(t, pnodes, 3)
 }
 
+func TestBuildOVNDBAddrs_CapsAtQuorum(t *testing.T) {
+	t.Parallel()
+	nodes := map[string]NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2"},
+		"node3": {Name: "node3", BindIP: "10.0.0.3"},
+		"node4": {Name: "node4", BindIP: "10.0.0.4"},
+	}
+
+	nb, sb := BuildOVNDBAddrs(nodes)
+	assert.Equal(t, "tcp:10.0.0.1:6641,tcp:10.0.0.2:6641,tcp:10.0.0.3:6641", nb)
+	assert.Equal(t, "tcp:10.0.0.1:6642,tcp:10.0.0.2:6642,tcp:10.0.0.3:6642", sb)
+}
+
+func TestBuildOVNDBAddrs_FewerThanQuorum(t *testing.T) {
+	t.Parallel()
+	nodes := map[string]NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2"},
+	}
+
+	nb, sb := BuildOVNDBAddrs(nodes)
+	assert.Equal(t, "tcp:10.0.0.1:6641,tcp:10.0.0.2:6641", nb)
+	assert.Equal(t, "tcp:10.0.0.1:6642,tcp:10.0.0.2:6642", sb)
+}
+
 func TestBuildClusterRoutes_MixedServicesAndEmpty(t *testing.T) {
 	t.Parallel()
 	nodes := map[string]NodeInfo{

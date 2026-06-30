@@ -1616,6 +1616,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	allNodes := fs.Nodes()
 	clusterRoutes := formation.BuildClusterRoutes(allNodes)
 	predastoreNodes := formation.BuildPredastoreNodes(allNodes)
+	ovnNBAddr, ovnSBAddr := formation.BuildOVNDBAddrs(allNodes)
 
 	fmt.Println("\n📝 Creating configuration files...")
 
@@ -1677,9 +1678,10 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 		EncryptionKeyFile: viperblockKeyPath,
 
-		// Init node runs ovn-central locally
-		OVNNBAddr: "tcp:127.0.0.1:6641",
-		OVNSBAddr: "tcp:127.0.0.1:6642",
+		// Multi-endpoint OVN NB/SB list across the RAFT quorum; the init node's
+		// own address leads, the rest provide failover.
+		OVNNBAddr: ovnNBAddr,
+		OVNSBAddr: ovnSBAddr,
 	}
 
 	if networkConfig != nil {
@@ -1762,13 +1764,6 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	if leaderHost == "" {
 		fmt.Fprintf(os.Stderr, "❌ Error: --host is required\n")
 		os.Exit(1)
-	}
-
-	// Extract leader IP for OVN NB/SB DB address (strip port from host:port)
-	leaderIP, _, err := net.SplitHostPort(leaderHost)
-	if err != nil {
-		// leaderHost might be an IP without port
-		leaderIP = leaderHost
 	}
 
 	// Validate IP address format
@@ -2073,6 +2068,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	// Build cluster topology from formation data
 	clusterRoutes := formation.BuildClusterRoutes(statusResp.Nodes)
 	predastoreNodes := formation.BuildPredastoreNodes(statusResp.Nodes)
+	ovnNBAddr, ovnSBAddr := formation.BuildOVNDBAddrs(statusResp.Nodes)
 
 	fmt.Println("📝 Creating configuration files...")
 
@@ -2139,9 +2135,10 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 
 		EncryptionKeyFile: viperblockKeyPath,
 
-		// Joining nodes connect to the init node's OVN NB/SB DB
-		OVNNBAddr: fmt.Sprintf("tcp:%s:6641", leaderIP),
-		OVNSBAddr: fmt.Sprintf("tcp:%s:6642", leaderIP),
+		// Multi-endpoint OVN NB/SB list across the RAFT quorum so the client
+		// fails over instead of pinning to a single init node.
+		OVNNBAddr: ovnNBAddr,
+		OVNSBAddr: ovnSBAddr,
 	}
 
 	if statusResp.NetworkConfig != nil {

@@ -483,13 +483,16 @@ These are different things:
 
 ```toml
 [nodes.spx1.vpcd]
-ovn_nb_addr        = "tcp:10.1.3.181:6641"   # OVN Northbound DB
-ovn_sb_addr        = "tcp:10.1.3.181:6642"   # OVN Southbound DB
+# Comma-separated list of the OVN NB/SB quorum endpoints (3 DB nodes). vpcd and
+# ovn-controller fail over across them and follow the RAFT leader.
+ovn_nb_addr        = "tcp:10.1.3.181:6641,tcp:10.1.3.182:6641,tcp:10.1.3.183:6641"
+ovn_sb_addr        = "tcp:10.1.3.181:6642,tcp:10.1.3.182:6642,tcp:10.1.3.183:6642"
 external_interface = "br-wan"                 # WAN Linux bridge name
 ```
 
 | Field                | Description                                                                                                                                                                          |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ovn_nb_addr` / `ovn_sb_addr` | OVN Northbound / Southbound DB endpoint(s). The NB and SB databases run clustered via OVSDB RAFT across the first three nodes (client ports 6641/6642, RAFT ports 6643/6644). Each node's config lists all three quorum endpoints so the loss of one DB node does not stall the control plane. A single `tcp:IP:6641` string remains valid for single-node dev. |
 | `external_interface` | Linux bridge that owns the WAN uplink on this node (e.g. `br-wan`, `br-public`). The physical NIC is enslaved to this bridge — not configured here. Different nodes may differ. |
 
 ## Pool Selection Logic
@@ -1045,6 +1048,27 @@ sudo ovn-trace ext-vpc-{vpcId} \
   'inport=="ext-port-vpc-{vpcId}" && eth.dst==ff:ff:ff:ff:ff:ff && \
    arp.op==1 && arp.spa==192.168.1.13 && arp.tpa==192.168.1.201'
 ```
+
+### OVN DB RAFT cluster (NB/SB replication)
+
+The NB and SB databases run clustered across the first three nodes via native
+OVSDB RAFT. A 3-node quorum tolerates the loss of one DB node; check status when
+the control plane stalls.
+
+```bash
+# NB cluster status: expect 3 servers and exactly one "Role: leader"
+sudo ovn-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound
+
+# SB cluster status
+sudo ovn-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound
+
+# Drive a CLI at the whole quorum (fails over past a dead node)
+sudo ovn-nbctl --db=tcp:10.1.3.181:6641,tcp:10.1.3.182:6641,tcp:10.1.3.183:6641 show
+```
+
+A node showing only itself under `Servers:` never joined the cluster — confirm
+it was bootstrapped with `--db-cluster-remote-addr` pointing at the creator and
+that RAFT ports 6643/6644 are reachable between DB nodes.
 
 ### OVS (datapath / physical wiring)
 

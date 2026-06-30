@@ -11,6 +11,41 @@ import (
 	"log/slog"
 )
 
+// systemRoleEnsurer lazily builds — and memoizes — the KV-backed IAM service
+// that find-or-creates the system instance roles/profiles backing IMDS
+// instance-role credentials. It is built on first use, NOT at daemon startup:
+// the NATS KV backend has no responders until JetStream is ready, so an eager
+// build races boot and, on a node that loses, fails permanently with no retry,
+// silently dropping every system VM it launches to baked static creds. By
+// first-use (an LB/cluster create) the backend is up. Returns nil (caller falls
+// back to static creds) until a build succeeds; retried on each call until then,
+// cached once it works.
+func (d *Daemon) systemRoleEnsurer() handlers_iam.SystemInstanceRoleEnsurer {
+	d.iamEnsurerMu.Lock()
+	defer d.iamEnsurerMu.Unlock()
+	if d.iamEnsurerCached != nil {
+		return d.iamEnsurerCached
+	}
+	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+	if err != nil || masterKey == nil {
+		slog.Warn("System role ensurer: master key unavailable; system VMs fall back to baked static creds",
+			"err", err)
+		return nil
+	}
+	clusterSize := 1
+	if d.clusterConfig != nil {
+		clusterSize = len(d.clusterConfig.Nodes)
+	}
+	iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.natsConn, masterKey, clusterSize)
+	if iamErr != nil {
+		slog.Warn("System role ensurer: IAM service init failed (retried on next launch); system VMs fall back to baked static creds",
+			"err", iamErr)
+		return nil
+	}
+	d.iamEnsurerCached = iamSvc
+	return iamSvc
+}
+
 // buildEKSServiceDeps assembles the EKSServiceDeps. All collaborators must
 // already be initialised. MasterKey is loaded best-effort from the config dir.
 func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
@@ -65,21 +100,10 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 	}
 
 	// A KV-backed IAM service (sharing the gateway's buckets over NATS) lets EKS
-	// find-or-create the node-role instance profile workers need for ECR pulls.
-	// Only wired when the master key is present; a typed-nil would defeat the
-	// service's own nil guard.
-	if masterKey != nil {
-		clusterSize := 1
-		if d.clusterConfig != nil {
-			clusterSize = len(d.clusterConfig.Nodes)
-		}
-		if iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.natsConn, masterKey, clusterSize); iamErr != nil {
-			slog.Warn("EKS: IAM service init failed; nodegroup workers launch without an instance profile, internal ECR pulls will fail",
-				"err", iamErr)
-		} else {
-			deps.IAM = iamSvc
-		}
-	}
+	// find-or-create the node-role + CP instance profiles. Provided lazily so it
+	// resolves at cluster-launch time rather than racing the NATS KV backend at
+	// daemon startup; absent (no master key) workers/CP fall back accordingly.
+	deps.IAMProvider = d.systemRoleEnsurer
 
 	return deps
 }

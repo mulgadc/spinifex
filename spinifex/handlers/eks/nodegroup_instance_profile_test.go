@@ -19,10 +19,48 @@ type fakeInstanceProfileEnsurer struct {
 	addRoleErr  error
 	createCalls int
 	addCalls    int
+
+	// Role store + capture for the system-role path (ensureSystemRole).
+	roles           map[string]*iam.Role
+	createRoleCalls int
+	lastTrustDoc    string
+	rolePolicies    map[string]string // roleName -> last PutRolePolicy document
 }
 
 func newFakeEnsurer() *fakeInstanceProfileEnsurer {
-	return &fakeInstanceProfileEnsurer{profiles: map[string]*iam.InstanceProfile{}}
+	return &fakeInstanceProfileEnsurer{
+		profiles:     map[string]*iam.InstanceProfile{},
+		roles:        map[string]*iam.Role{},
+		rolePolicies: map[string]string{},
+	}
+}
+
+func (f *fakeInstanceProfileEnsurer) GetRole(accountID string, in *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	r, ok := f.roles[aws.StringValue(in.RoleName)]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	return &iam.GetRoleOutput{Role: r}, nil
+}
+
+func (f *fakeInstanceProfileEnsurer) CreateRole(accountID string, in *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
+	f.createRoleCalls++
+	f.lastTrustDoc = aws.StringValue(in.AssumeRolePolicyDocument)
+	name := aws.StringValue(in.RoleName)
+	if _, ok := f.roles[name]; ok {
+		return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+	}
+	r := &iam.Role{
+		RoleName: aws.String(name),
+		Arn:      aws.String("arn:aws:iam::" + accountID + ":role/" + name),
+	}
+	f.roles[name] = r
+	return &iam.CreateRoleOutput{Role: r}, nil
+}
+
+func (f *fakeInstanceProfileEnsurer) PutRolePolicy(_ string, in *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	f.rolePolicies[aws.StringValue(in.RoleName)] = aws.StringValue(in.PolicyDocument)
+	return &iam.PutRolePolicyOutput{}, nil
 }
 
 func (f *fakeInstanceProfileEnsurer) GetInstanceProfile(_ string, in *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {

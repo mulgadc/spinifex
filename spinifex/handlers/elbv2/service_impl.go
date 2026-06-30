@@ -23,6 +23,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -90,20 +91,24 @@ var _ ELBv2Service = (*ELBv2ServiceImpl)(nil)
 
 // ELBv2ServiceImpl implements ELBv2 operations with NATS JetStream persistence.
 type ELBv2ServiceImpl struct {
-	config                     *config.Config
-	store                      *Store
-	acmStore                   *handlers_acm.Store              // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
-	nc                         *nats.Conn                       // NATS connection for JetStream KV store
-	VPCService                 *handlers_ec2_vpc.VPCServiceImpl // nil-safe: ENI ops skipped when nil (e.g. in tests)
-	InstanceLauncher           SystemInstanceLauncher           // nil-safe: system VM ops skipped when nil
-	SystemAccessKey            string                           // System account access key for ALB agent SigV4 auth
-	SystemSecretKey            string                           // System account secret key for ALB agent SigV4 auth
-	GatewayURL                 string                           // AWS gateway URL for ALB agent outbound connections
-	MgmtRouteGateway           string                           // br-mgmt IP (next-hop for mgmt route); empty when AWSGW is on 0.0.0.0
-	MgmtRouteTarget            string                           // AWSGW bind IP to route via mgmt NIC
-	MgmtBridgeIP               string                           // br-mgmt IP, populated whenever br-mgmt exists (single + multi node) for the internal-scheme fallback route
-	AdvertiseIP                string                           // AdvertiseIP / WAN gateway, populated whenever set; used as the internal-scheme fallback route target on single-node
-	CACert                     string                           // PEM-encoded CA certificate delivered to microvm guests via fw_cfg
+	config           *config.Config
+	store            *Store
+	acmStore         *handlers_acm.Store                    // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
+	nc               *nats.Conn                             // NATS connection for JetStream KV store
+	VPCService       *handlers_ec2_vpc.VPCServiceImpl       // nil-safe: ENI ops skipped when nil (e.g. in tests)
+	InstanceLauncher SystemInstanceLauncher                 // nil-safe: system VM ops skipped when nil
+	IAM              handlers_iam.SystemInstanceRoleEnsurer // nil-safe: LB VM falls back to baked static creds when nil (tests set directly)
+	// IAMProvider lazily resolves the IAM ensurer at launch time so it cannot
+	// race the NATS KV backend at daemon startup. Preferred over IAM when set.
+	IAMProvider                func() handlers_iam.SystemInstanceRoleEnsurer
+	SystemAccessKey            string // System account access key for ALB agent SigV4 auth
+	SystemSecretKey            string // System account secret key for ALB agent SigV4 auth
+	GatewayURL                 string // AWS gateway URL for ALB agent outbound connections
+	MgmtRouteGateway           string // br-mgmt IP (next-hop for mgmt route); empty when AWSGW is on 0.0.0.0
+	MgmtRouteTarget            string // AWSGW bind IP to route via mgmt NIC
+	MgmtBridgeIP               string // br-mgmt IP, populated whenever br-mgmt exists (single + multi node) for the internal-scheme fallback route
+	AdvertiseIP                string // AdvertiseIP / WAN gateway, populated whenever set; used as the internal-scheme fallback route target on single-node
+	CACert                     string // PEM-encoded CA certificate delivered to microvm guests via fw_cfg
 	nodeID                     string
 	region                     string
 	systemInstanceType         string        // instance type for system VMs; resolved lazily via systemInstanceTypeFunc
@@ -251,7 +256,13 @@ func (s *ELBv2ServiceImpl) getSystemInstanceType() string {
 // br-mgmt NIC (the mgmt-bridge URL): the heartbeat is control-plane and must
 // survive a host reboot that strands the OVN/EIP data plane, so it never rides
 // the WAN. mgmtGatewayURL falls back to the WAN URL when no mgmt bridge exists.
-func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID string) string {
+func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID string, staticCreds bool) string {
+	// staticCreds false ⇒ no LB_ACCESS_KEY/LB_SECRET_KEY: the agent's signer
+	// falls back to the AWS SDK chain, which reads IMDS instance-role creds.
+	if !staticCreds {
+		return fmt.Sprintf("LB_LB_ID=%s\nLB_GATEWAY_URL=%s\nLB_REGION=%s\n",
+			lbID, s.mgmtGatewayURL(), s.region)
+	}
 	return fmt.Sprintf("LB_LB_ID=%s\nLB_GATEWAY_URL=%s\nLB_ACCESS_KEY=%s\nLB_SECRET_KEY=%s\nLB_REGION=%s\n",
 		lbID, s.mgmtGatewayURL(), s.SystemAccessKey, s.SystemSecretKey, s.region)
 }
@@ -451,19 +462,27 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 		return res
 	}
 
+	// Prefer IMDS instance-role creds: attach a system instance profile so the
+	// lb-agent authenticates with scoped, rotating credentials and no static
+	// secret rides in fw_cfg. Falls back to baked system keys when IAM is unwired.
+	// The role lives in the system account because the LB VM (and its ENI) run
+	// there — IMDS resolves the profile under the instance's account.
+	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
+
 	nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
 	launchInput := &SystemInstanceInput{
-		InstanceType: s.getSystemInstanceType(),
-		SubnetID:     subnets[0],
-		ENIID:        eniIDs[0],
-		ENIMac:       primaryMAC,
-		ENIIP:        primaryIP,
-		ExtraENIs:    extraENIInputs,
-		Scheme:       scheme,
-		AccountID:    accountID,
-		NICs:         nics,
-		LBAgentEnv:   s.buildLBAgentEnv(lbID),
-		CACert:       s.CACert,
+		InstanceType:          s.getSystemInstanceType(),
+		SubnetID:              subnets[0],
+		ENIID:                 eniIDs[0],
+		ENIMac:                primaryMAC,
+		ENIIP:                 primaryIP,
+		ExtraENIs:             extraENIInputs,
+		Scheme:                scheme,
+		AccountID:             accountID,
+		NICs:                  nics,
+		LBAgentEnv:            s.buildLBAgentEnv(lbID, profileARN == ""),
+		CACert:                s.CACert,
+		IamInstanceProfileArn: profileARN,
 	}
 	// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
 	// In production (VPC networking), traffic reaches the LB VM's VPC IP directly.
@@ -551,18 +570,24 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 		}
 	}
 
+	// Re-ensure the instance profile so a recovered LB VM keeps IMDS creds; the
+	// ensure is idempotent and converges on the existing role/profile. The role
+	// lives in the system account where the LB VM runs, not the LB owner account.
+	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
+
 	return &SystemInstanceInput{
-		InstanceType: ctx.InstanceType,
-		SubnetID:     lb.Subnets[0],
-		ENIID:        lb.ENIs[0],
-		ENIMac:       primaryMAC,
-		ENIIP:        lb.VPCIP,
-		ExtraENIs:    extraENIs,
-		Scheme:       lb.Scheme,
-		AccountID:    lb.AccountID,
-		NICs:         nics,
-		LBAgentEnv:   s.buildLBAgentEnv(lb.LoadBalancerID),
-		CACert:       s.CACert,
+		InstanceType:          ctx.InstanceType,
+		SubnetID:              lb.Subnets[0],
+		ENIID:                 lb.ENIs[0],
+		ENIMac:                primaryMAC,
+		ENIIP:                 lb.VPCIP,
+		ExtraENIs:             extraENIs,
+		Scheme:                lb.Scheme,
+		AccountID:             lb.AccountID,
+		NICs:                  nics,
+		LBAgentEnv:            s.buildLBAgentEnv(lb.LoadBalancerID, profileARN == ""),
+		CACert:                s.CACert,
+		IamInstanceProfileArn: profileARN,
 	}, nil
 }
 

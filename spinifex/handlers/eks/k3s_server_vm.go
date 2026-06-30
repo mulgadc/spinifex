@@ -124,10 +124,17 @@ type K3sServerInput struct {
 	// addon pod specs (EKS_ADDON_GATEWAY_URL). Those pods run on workers, which
 	// cannot reach the mgmt GatewayURL, so they target this public address.
 	AddonGatewayURL string
-	AccessKey       string
-	SecretKey       string
-	GatewayCACert   string
-	InstanceType    string
+	// AccessKey/SecretKey are the static system SigV4 creds baked into the VM's
+	// first-boot env. Empty selects IMDS instance-role creds instead, which
+	// requires IamInstanceProfileArn to be set so IMDS serves a role.
+	AccessKey string
+	SecretKey string
+	// IamInstanceProfileArn attaches a system instance profile to the CP VM so
+	// the in-VM IMDS endpoint serves rotating role credentials. When set, the
+	// static AccessKey/SecretKey are omitted from user-data.
+	IamInstanceProfileArn string
+	GatewayCACert         string
+	InstanceType          string
 	// TargetNodeID pins the VM to a specific host for HA spread; empty = local node.
 	TargetNodeID string
 	// JoinToken is the shared k3s cluster token so HA servers join the etcd quorum.
@@ -196,16 +203,17 @@ func LaunchK3sServerVM(
 	userData := buildK3sUserData(in)
 
 	sysOut, err := instSvc.LaunchSystemInstanceOnNode(in.TargetNodeID, &sysinstance.SystemInstanceInput{
-		BootMode:     sysinstance.BootAMI,
-		ManagedBy:    tags.ManagedByEKS,
-		InstanceType: instanceType,
-		ImageID:      amiID,
-		AccountID:    in.AccountID,
-		ENIID:        eniID,
-		ENIMac:       aws.StringValue(eniOut.NetworkInterface.MacAddress),
-		ENIIP:        eniIP,
-		SubnetID:     in.SubnetID,
-		UserData:     userData,
+		BootMode:              sysinstance.BootAMI,
+		ManagedBy:             tags.ManagedByEKS,
+		InstanceType:          instanceType,
+		ImageID:               amiID,
+		AccountID:             in.AccountID,
+		ENIID:                 eniID,
+		ENIMac:                aws.StringValue(eniOut.NetworkInterface.MacAddress),
+		ENIIP:                 eniIP,
+		SubnetID:              in.SubnetID,
+		UserData:              userData,
+		IamInstanceProfileArn: in.IamInstanceProfileArn,
 	})
 	if err != nil {
 		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
@@ -366,10 +374,10 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput empty GatewayURL")
 	case in.AddonGatewayURL == "":
 		return errors.New("eks: K3sServerInput empty AddonGatewayURL")
-	case in.AccessKey == "":
-		return errors.New("eks: K3sServerInput empty AccessKey")
-	case in.SecretKey == "":
-		return errors.New("eks: K3sServerInput empty SecretKey")
+	case in.AccessKey == "" && in.IamInstanceProfileArn == "":
+		return errors.New("eks: K3sServerInput needs static creds (AccessKey/SecretKey) or an instance profile (IamInstanceProfileArn)")
+	case (in.AccessKey == "") != (in.SecretKey == ""):
+		return errors.New("eks: K3sServerInput AccessKey and SecretKey must both be set or both empty")
 	case strings.TrimSpace(in.GatewayCACert) == "":
 		return errors.New("eks: K3sServerInput empty GatewayCACert")
 	case in.ServerURL != "" && in.JoinToken == "":
@@ -412,21 +420,30 @@ func buildK3sUserData(in K3sServerInput) string {
 		role = "server-join"
 	}
 
-	envBody := strings.Join([]string{
+	envLines := []string{
 		"SPINIFEX_K3S_ROLE=" + role,
 		"EKS_GATEWAY_URL=" + in.GatewayURL,
 		"EKS_ADDON_GATEWAY_URL=" + in.AddonGatewayURL,
 		"EKS_GATEWAY_CA=" + k3sGatewayCAPath,
-		"EKS_ACCESS_KEY=" + in.AccessKey,
-		"EKS_SECRET_KEY=" + in.SecretKey,
-		"EKS_REGION=" + in.Region,
-		"EKS_VPC_ID=" + in.VpcID,
-		"EKS_ELB_SUBNET_IDS=" + strings.Join(in.ELBSubnetIDs, ","),
-		"EKS_ACCOUNT_ID=" + in.ClusterAccountID,
-		"EKS_CLUSTER_NAME=" + in.ClusterName,
-		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
-		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,
-	}, "\n")
+	}
+	// Static SigV4 creds only when supplied; otherwise the gateway helpers fall
+	// back to the AWS SDK chain, which reads IMDS instance-role credentials.
+	if in.AccessKey != "" {
+		envLines = append(envLines,
+			"EKS_ACCESS_KEY="+in.AccessKey,
+			"EKS_SECRET_KEY="+in.SecretKey,
+		)
+	}
+	envLines = append(envLines,
+		"EKS_REGION="+in.Region,
+		"EKS_VPC_ID="+in.VpcID,
+		"EKS_ELB_SUBNET_IDS="+strings.Join(in.ELBSubnetIDs, ","),
+		"EKS_ACCOUNT_ID="+in.ClusterAccountID,
+		"EKS_CLUSTER_NAME="+in.ClusterName,
+		"EKS_NLB_ENDPOINT="+nlbEndpoint,
+		"EKS_OIDC_ISSUER="+in.OIDCIssuer,
+	)
+	envBody := strings.Join(envLines, "\n")
 
 	// First server uses cluster-init (embedded etcd); join servers set `server: <first>` + token.
 	// etcd-expose-metrics: surfaces etcd fsync/commit latency on 127.0.0.1:2381/metrics.
@@ -497,7 +514,7 @@ func buildK3sUserData(in K3sServerInput) string {
 	k3sConfig := strings.Join(configLines, "\n")
 
 	files := []userDataFile{
-		// 0600: contains system SigV4 secret key.
+		// 0600: may contain a system SigV4 secret key (static-cred mode).
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
 		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},

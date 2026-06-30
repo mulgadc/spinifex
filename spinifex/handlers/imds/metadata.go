@@ -274,7 +274,7 @@ func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts
 			keys = append(keys, "public-keys/")
 		}
 		if inst.iamInstanceProfileArn != "" {
-			if p, err := s.iam.ResolveInstanceProfile(eni.accountID, inst.iamInstanceProfileArn); err == nil && p != nil {
+			if p, err := s.iam.ResolveInstanceProfile(eni.iamAccountID(), inst.iamInstanceProfileArn); err == nil && p != nil {
 				keys = append(keys, "iam/")
 			}
 		}
@@ -339,7 +339,7 @@ func (s *IMDSServiceImpl) serveInstanceIdentityDocument(w http.ResponseWriter, e
 		return
 	}
 	doc := instanceIdentityDocument{
-		AccountID:        eni.accountID,
+		AccountID:        eni.iamAccountID(),
 		Architecture:     inst.architecture,
 		AvailabilityZone: eni.availabilityZone,
 		ImageID:          inst.imageID,
@@ -412,9 +412,9 @@ func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFa
 		return
 	}
 
-	role, err := s.iam.GetRole(eni.accountID, &iam.GetRoleInput{RoleName: aws.String(profile.RoleName)})
+	role, err := s.iam.GetRole(eni.iamAccountID(), &iam.GetRoleInput{RoleName: aws.String(profile.RoleName)})
 	if err != nil || role == nil || role.Role == nil || role.Role.Arn == nil {
-		slog.Error("IMDS: resolve role ARN failed", "account_id", eni.accountID, "role", profile.RoleName, "err", err)
+		slog.Error("IMDS: resolve role ARN failed", "account_id", eni.iamAccountID(), "role", profile.RoleName, "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -422,7 +422,7 @@ func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFa
 	body, err := s.creds.get(eni, profile.RoleName, *role.Role.Arn, s.now())
 	if err != nil {
 		// Mirror the AWS Code:"Failed" JSON body so SDKs report a recognisable error.
-		slog.Warn("IMDS: AssumeRoleForInstance failed", "account_id", eni.accountID, "role", profile.RoleName, "instance_id", eni.instanceID, "err", err)
+		slog.Warn("IMDS: AssumeRoleForInstance failed", "account_id", eni.iamAccountID(), "role", profile.RoleName, "instance_id", eni.instanceID, "err", err)
 		writeJSON(w, map[string]string{
 			"Code":        "Failed",
 			"LastUpdated": s.now().UTC().Format(time.RFC3339),
@@ -453,13 +453,13 @@ func (s *IMDSServiceImpl) servePublicKeys(w http.ResponseWriter, eni *eniFacts, 
 	case "0", "0/":
 		writeText(w, "openssh-key")
 	case "0/openssh-key":
-		material, err := s.pubKeys.GetPublicKey(eni.accountID, inst.keyName)
+		material, err := s.pubKeys.GetPublicKey(eni.iamAccountID(), inst.keyName)
 		if err != nil {
 			if err.Error() == awserrors.ErrorInvalidKeyPairNotFound {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			slog.Error("IMDS: public key material fetch failed", "account_id", eni.accountID, "key_name", inst.keyName, "instance_id", eni.instanceID, "err", err)
+			slog.Error("IMDS: public key material fetch failed", "account_id", eni.iamAccountID(), "key_name", inst.keyName, "instance_id", eni.instanceID, "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -602,12 +602,12 @@ func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 	if inst == nil || inst.iamInstanceProfileArn == "" {
 		return nil, nil
 	}
-	profile, err := s.iam.ResolveInstanceProfile(eni.accountID, inst.iamInstanceProfileArn)
+	profile, err := s.iam.ResolveInstanceProfile(eni.iamAccountID(), inst.iamInstanceProfileArn)
 	if err != nil {
 		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
 			return nil, nil // profile deleted; treat as no role
 		}
-		slog.Error("IMDS: resolve instance profile failed", "account_id", eni.accountID, "arn", inst.iamInstanceProfileArn, "err", err)
+		slog.Error("IMDS: resolve instance profile failed", "account_id", eni.iamAccountID(), "arn", inst.iamInstanceProfileArn, "err", err)
 		return nil, err
 	}
 	if profile == nil {

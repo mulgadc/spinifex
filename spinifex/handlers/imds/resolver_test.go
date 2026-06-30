@@ -14,13 +14,15 @@ import (
 // fakeLookup is a programmable instanceLookup so resolver tests never need the
 // account-scoped instance fan-out.
 type fakeLookup struct {
-	facts *instanceFacts
-	err   error
-	calls int
+	facts       *instanceFacts
+	err         error
+	calls       int
+	lastAccount string
 }
 
-func (f *fakeLookup) describe(_, _ string) (*instanceFacts, error) {
+func (f *fakeLookup) describe(accountID, _ string) (*instanceFacts, error) {
 	f.calls++
+	f.lastAccount = accountID
 	return f.facts, f.err
 }
 

@@ -24,22 +24,27 @@ const (
 
 // ENIRecord represents a stored Elastic Network Interface
 type ENIRecord struct {
-	NetworkInterfaceId string            `json:"network_interface_id"`
-	SubnetId           string            `json:"subnet_id"`
-	VpcId              string            `json:"vpc_id"`
-	AvailabilityZone   string            `json:"availability_zone"`
-	PrivateIpAddress   string            `json:"private_ip_address"`
-	MacAddress         string            `json:"mac_address"`
-	Description        string            `json:"description"`
-	Status             string            `json:"status"` // available, in-use
-	AttachmentId       string            `json:"attachment_id,omitempty"`
-	InstanceId         string            `json:"instance_id,omitempty"`
-	DeviceIndex        int64             `json:"device_index"`
-	PublicIpAddress    string            `json:"public_ip_address,omitempty"` // Auto-assigned or EIP
-	PublicIpPool       string            `json:"public_ip_pool,omitempty"`    // Pool name the public IP came from
-	SecurityGroupIds   []string          `json:"security_group_ids,omitempty"`
-	Tags               map[string]string `json:"tags"`
-	CreatedAt          time.Time         `json:"created_at"`
+	NetworkInterfaceId string `json:"network_interface_id"`
+	SubnetId           string `json:"subnet_id"`
+	VpcId              string `json:"vpc_id"`
+	AvailabilityZone   string `json:"availability_zone"`
+	PrivateIpAddress   string `json:"private_ip_address"`
+	MacAddress         string `json:"mac_address"`
+	Description        string `json:"description"`
+	Status             string `json:"status"` // available, in-use
+	AttachmentId       string `json:"attachment_id,omitempty"`
+	InstanceId         string `json:"instance_id,omitempty"`
+	// InstanceOwnerId is the account that owns the attached instance, mirroring
+	// AWS's Attachment.InstanceOwnerId. It differs from the ENI's own account only
+	// for system VMs (LB/EKS) that plug into a customer-account ENI; IMDS resolves
+	// the instance and its IAM role under this account. Empty means same-account.
+	InstanceOwnerId  string            `json:"instance_owner_id,omitempty"`
+	DeviceIndex      int64             `json:"device_index"`
+	PublicIpAddress  string            `json:"public_ip_address,omitempty"` // Auto-assigned or EIP
+	PublicIpPool     string            `json:"public_ip_pool,omitempty"`    // Pool name the public IP came from
+	SecurityGroupIds []string          `json:"security_group_ids,omitempty"`
+	Tags             map[string]string `json:"tags"`
+	CreatedAt        time.Time         `json:"created_at"`
 
 	// AttachmentStatus carries the hot-plug transition state independent of
 	// Status. AWS-parity field: "" (not transitioning), "attaching",

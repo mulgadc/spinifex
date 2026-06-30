@@ -19,16 +19,28 @@ const kvBucketVPCs = "spinifex-vpc-vpcs"
 
 // eniFacts is the ENI fields served by the IMDS metadata surface, read live from the ENI record.
 type eniFacts struct {
-	eniID            string
-	accountID        string
-	instanceID       string
-	vpcID            string
-	subnetID         string
-	privateIP        string
-	publicIP         string
-	mac              string
-	availabilityZone string
-	securityGroupIDs []string
+	eniID             string
+	accountID         string
+	instanceAccountID string
+	instanceID        string
+	vpcID             string
+	subnetID          string
+	privateIP         string
+	publicIP          string
+	mac               string
+	availabilityZone  string
+	securityGroupIDs  []string
+}
+
+// iamAccountID is the account that owns this ENI's attached instance and its IAM
+// resources. System VMs (LB/EKS) run in the system account but plug into a
+// customer-account ENI, so the instance and its role live in a different account
+// than the ENI; falls back to the ENI account for the same-account common case.
+func (e *eniFacts) iamAccountID() string {
+	if e.instanceAccountID != "" {
+		return e.instanceAccountID
+	}
+	return e.accountID
 }
 
 // instanceFacts carries metadata fields not present on the ENI record, fetched via instanceLookup.
@@ -64,6 +76,7 @@ type eniRecord struct {
 	PrivateIpAddress   string   `json:"private_ip_address"`
 	MacAddress         string   `json:"mac_address"`
 	InstanceId         string   `json:"instance_id,omitempty"`
+	InstanceOwnerId    string   `json:"instance_owner_id,omitempty"`
 	PublicIpAddress    string   `json:"public_ip_address,omitempty"`
 	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
 }
@@ -136,16 +149,17 @@ func (r *metadataResolver) findENIByID(eniID string) (string, []byte, error) {
 // fact subset the metadata surface serves.
 func eniFactsFromRecord(accountID string, rec *eniRecord) *eniFacts {
 	return &eniFacts{
-		eniID:            rec.NetworkInterfaceId,
-		accountID:        accountID,
-		instanceID:       rec.InstanceId,
-		vpcID:            rec.VpcId,
-		subnetID:         rec.SubnetId,
-		privateIP:        rec.PrivateIpAddress,
-		publicIP:         rec.PublicIpAddress,
-		mac:              rec.MacAddress,
-		availabilityZone: rec.AvailabilityZone,
-		securityGroupIDs: rec.SecurityGroupIds,
+		eniID:             rec.NetworkInterfaceId,
+		accountID:         accountID,
+		instanceAccountID: rec.InstanceOwnerId,
+		instanceID:        rec.InstanceId,
+		vpcID:             rec.VpcId,
+		subnetID:          rec.SubnetId,
+		privateIP:         rec.PrivateIpAddress,
+		publicIP:          rec.PublicIpAddress,
+		mac:               rec.MacAddress,
+		availabilityZone:  rec.AvailabilityZone,
+		securityGroupIDs:  rec.SecurityGroupIds,
 	}
 }
 
@@ -154,7 +168,7 @@ func (r *metadataResolver) resolveInstance(eni *eniFacts) (*instanceFacts, error
 	if eni.instanceID == "" {
 		return nil, nil
 	}
-	return r.lookup.describe(eni.accountID, eni.instanceID)
+	return r.lookup.describe(eni.iamAccountID(), eni.instanceID)
 }
 
 // resolveSGNames maps SG IDs to group names for /security-groups. Best-effort; falls back to IDs.

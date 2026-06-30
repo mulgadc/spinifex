@@ -213,6 +213,7 @@ type recordingInstanceCleaner struct {
 	releasePublicIP     []string
 	detachAndDeleteENI  []string
 	removeFromPlacement []string
+	removeFromSpot      []string
 	releaseGPU          []string
 
 	// Injectable per-method errors so tests can drive failed-teardown marks.
@@ -220,6 +221,7 @@ type recordingInstanceCleaner struct {
 	releasePublicIPErr error
 	detachENIErr       error
 	removePlacementErr error
+	removeSpotErr      error
 	releaseGPUErr      error
 }
 
@@ -255,6 +257,13 @@ func (c *recordingInstanceCleaner) RemoveFromPlacementGroup(v *VM) error {
 	defer c.mu.Unlock()
 	c.removeFromPlacement = append(c.removeFromPlacement, v.ID)
 	return c.removePlacementErr
+}
+
+func (c *recordingInstanceCleaner) RemoveFromSpotRequest(v *VM) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.removeFromSpot = append(c.removeFromSpot, v.ID)
+	return c.removeSpotErr
 }
 
 func (c *recordingInstanceCleaner) ReleaseGPU(v *VM) error {

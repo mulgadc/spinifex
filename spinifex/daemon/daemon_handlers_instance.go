@@ -348,6 +348,15 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 					}
 				}
 
+				// Project spot lineage stamped by the post-launch write-back.
+				// Both empty for on-demand, so the fields stay absent there.
+				if instance.InstanceLifecycle != "" {
+					instanceCopy.InstanceLifecycle = aws.String(instance.InstanceLifecycle)
+				}
+				if instance.SpotInstanceRequestId != "" {
+					instanceCopy.SpotInstanceRequestId = aws.String(instance.SpotInstanceRequestId)
+				}
+
 				// Apply filters against the fully-built instance copy
 				if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, &instanceCopy, parsedFilters) {
 					continue

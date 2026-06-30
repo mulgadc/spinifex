@@ -41,6 +41,7 @@ import (
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
+	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
@@ -4251,6 +4252,7 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 		{name: "eigwService", set: func(d *Daemon) { d.eigwService = &handlers_ec2_eigw.EgressOnlyIGWServiceImpl{} }, wantMsg: "eigwService"},
 		{name: "igwService", set: func(d *Daemon) { d.igwService = &handlers_ec2_igw.IGWServiceImpl{} }, wantMsg: "igwService"},
 		{name: "placementGroupService", set: func(d *Daemon) { d.placementGroupService = &handlers_ec2_placementgroup.PlacementGroupServiceImpl{} }, wantMsg: "placementGroupService"},
+		{name: "spotInstanceService", set: func(d *Daemon) { d.spotInstanceService = &handlers_ec2_spotinstance.SpotInstanceServiceImpl{} }, wantMsg: "spotInstanceService"},
 		{name: "vpcService", set: func(d *Daemon) { d.vpcService = &handlers_ec2_vpc.VPCServiceImpl{} }, wantMsg: "vpcService"},
 		{name: "routeTableService", set: func(d *Daemon) { d.routeTableService = &handlers_ec2_routetable.RouteTableServiceImpl{} }, wantMsg: "routeTableService"},
 		{name: "natGatewayService", set: func(d *Daemon) { d.natGatewayService = &handlers_ec2_natgw.NatGatewayServiceImpl{} }, wantMsg: "natGatewayService"},

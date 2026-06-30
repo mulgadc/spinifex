@@ -180,6 +180,13 @@ func TestRunInstancesMultiCount(t *testing.T) {
 	runRunInstancesMultiCount(t, requireSingleNodeFixture(t))
 }
 
+// TestSpotInstanceLifecycle drives the Spot Instance Request mock: request ->
+// fulfilled -> running -> cancel/terminate terminal transitions. Sequential: it
+// consumes node capacity for its own short-lived VMs like the multi-count test.
+func TestSpotInstanceLifecycle(t *testing.T) {
+	runSpotInstanceLifecycle(t, requireSingleNodeFixture(t))
+}
+
 // --- Sequential: shared-state / sub-test-parallel Tests ---
 
 func TestNegativeErrorPaths(t *testing.T) {

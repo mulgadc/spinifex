@@ -69,6 +69,17 @@ export type CreateInstanceProfileFormData = z.infer<
   typeof createInstanceProfileSchema
 >
 
+export const createGroupSchema = z.object({
+  groupName: z
+    .string()
+    .min(1, "Group name is required")
+    .max(128, "Group name must be 128 characters or less")
+    .regex(/^[\w+=,.@-]+$/, "Group name contains invalid characters"),
+  path: z.string().optional(),
+})
+
+export type CreateGroupFormData = z.infer<typeof createGroupSchema>
+
 export interface DeleteAccessKeyParams {
   userName: string
   accessKeyId: string
@@ -98,4 +109,14 @@ export interface AddRoleToProfileParams {
 export interface AssociateInstanceProfileParams {
   instanceId: string
   instanceProfileName: string
+}
+
+export interface GroupPolicyParams {
+  groupName: string
+  policyArn: string
+}
+
+export interface GroupMembershipParams {
+  groupName: string
+  userName: string
 }

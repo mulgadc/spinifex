@@ -20,6 +20,7 @@ import { Route as AuthIamusersCreateUserRouteImport } from './routes/_auth/iam/(
 import { Route as AuthIamrolesCreateRoleRouteImport } from './routes/_auth/iam/(roles)/create-role'
 import { Route as AuthIampoliciesCreatePolicyRouteImport } from './routes/_auth/iam/(policies)/create-policy'
 import { Route as AuthIaminstanceProfilesCreateInstanceProfileRouteImport } from './routes/_auth/iam/(instance-profiles)/create-instance-profile'
+import { Route as AuthIamgroupsCreateGroupRouteImport } from './routes/_auth/iam/(groups)/create-group'
 import { Route as AuthEksclustersCreateClusterRouteImport } from './routes/_auth/eks/(clusters)/create-cluster'
 import { Route as AuthEcsclustersTaskDefinitionsRouteImport } from './routes/_auth/ecs/(clusters)/task-definitions'
 import { Route as AuthEcsclustersRunTaskRouteImport } from './routes/_auth/ecs/(clusters)/run-task'
@@ -46,6 +47,7 @@ import { Route as AuthIamusersListUsersIndexRouteImport } from './routes/_auth/i
 import { Route as AuthIamrolesListRolesIndexRouteImport } from './routes/_auth/iam/(roles)/list-roles/index'
 import { Route as AuthIampoliciesListPoliciesIndexRouteImport } from './routes/_auth/iam/(policies)/list-policies/index'
 import { Route as AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport } from './routes/_auth/iam/(instance-profiles)/list-instance-profiles/index'
+import { Route as AuthIamgroupsListGroupsIndexRouteImport } from './routes/_auth/iam/(groups)/list-groups/index'
 import { Route as AuthEksclustersListClustersIndexRouteImport } from './routes/_auth/eks/(clusters)/list-clusters/index'
 import { Route as AuthEcsclustersListClustersIndexRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/index'
 import { Route as AuthEcrrepositoriesListRepositoriesIndexRouteImport } from './routes/_auth/ecr/(repositories)/list-repositories/index'
@@ -69,6 +71,7 @@ import { Route as AuthIamusersListUsersUserNameRouteImport } from './routes/_aut
 import { Route as AuthIamrolesListRolesRoleNameRouteImport } from './routes/_auth/iam/(roles)/list-roles/$roleName'
 import { Route as AuthIampoliciesListPoliciesPolicyArnRouteImport } from './routes/_auth/iam/(policies)/list-policies/$policyArn'
 import { Route as AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRouteImport } from './routes/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName'
+import { Route as AuthIamgroupsListGroupsGroupNameRouteImport } from './routes/_auth/iam/(groups)/list-groups/$groupName'
 import { Route as AuthEksclustersListClustersClusterNameRouteImport } from './routes/_auth/eks/(clusters)/list-clusters/$clusterName'
 import { Route as AuthEcsclustersListClustersClusterNameRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/$clusterName'
 import { Route as AuthEcrrepositoriesListRepositoriesIdRouteImport } from './routes/_auth/ecr/(repositories)/list-repositories/$id'
@@ -146,6 +149,12 @@ const AuthIaminstanceProfilesCreateInstanceProfileRoute =
   AuthIaminstanceProfilesCreateInstanceProfileRouteImport.update({
     id: '/iam/(instance-profiles)/create-instance-profile',
     path: '/iam/create-instance-profile',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthIamgroupsCreateGroupRoute =
+  AuthIamgroupsCreateGroupRouteImport.update({
+    id: '/iam/(groups)/create-group',
+    path: '/iam/create-group',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthEksclustersCreateClusterRoute =
@@ -298,6 +307,12 @@ const AuthIaminstanceProfilesListInstanceProfilesIndexRoute =
     path: '/iam/list-instance-profiles/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthIamgroupsListGroupsIndexRoute =
+  AuthIamgroupsListGroupsIndexRouteImport.update({
+    id: '/iam/(groups)/list-groups/',
+    path: '/iam/list-groups/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthEksclustersListClustersIndexRoute =
   AuthEksclustersListClustersIndexRouteImport.update({
     id: '/eks/(clusters)/list-clusters/',
@@ -437,6 +452,12 @@ const AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute =
       getParentRoute: () => AuthRouteRoute,
     } as any,
   )
+const AuthIamgroupsListGroupsGroupNameRoute =
+  AuthIamgroupsListGroupsGroupNameRouteImport.update({
+    id: '/iam/(groups)/list-groups/$groupName',
+    path: '/iam/list-groups/$groupName',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthEksclustersListClustersClusterNameRoute =
   AuthEksclustersListClustersClusterNameRouteImport.update({
     id: '/eks/(clusters)/list-clusters/$clusterName',
@@ -590,6 +611,7 @@ export interface FileRoutesByFullPath {
   '/ecs/run-task': typeof AuthEcsclustersRunTaskRoute
   '/ecs/task-definitions': typeof AuthEcsclustersTaskDefinitionsRoute
   '/eks/create-cluster': typeof AuthEksclustersCreateClusterRoute
+  '/iam/create-group': typeof AuthIamgroupsCreateGroupRoute
   '/iam/create-instance-profile': typeof AuthIaminstanceProfilesCreateInstanceProfileRoute
   '/iam/create-policy': typeof AuthIampoliciesCreatePolicyRoute
   '/iam/create-role': typeof AuthIamrolesCreateRoleRoute
@@ -615,6 +637,7 @@ export interface FileRoutesByFullPath {
   '/ecr/list-repositories/$id': typeof AuthEcrrepositoriesListRepositoriesIdRoute
   '/ecs/list-clusters/$clusterName': typeof AuthEcsclustersListClustersClusterNameRoute
   '/eks/list-clusters/$clusterName': typeof AuthEksclustersListClustersClusterNameRoute
+  '/iam/list-groups/$groupName': typeof AuthIamgroupsListGroupsGroupNameRoute
   '/iam/list-instance-profiles/$instanceProfileName': typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute
   '/iam/list-policies/$policyArn': typeof AuthIampoliciesListPoliciesPolicyArnRoute
   '/iam/list-roles/$roleName': typeof AuthIamrolesListRolesRoleNameRoute
@@ -638,6 +661,7 @@ export interface FileRoutesByFullPath {
   '/ecr/list-repositories/': typeof AuthEcrrepositoriesListRepositoriesIndexRoute
   '/ecs/list-clusters/': typeof AuthEcsclustersListClustersIndexRoute
   '/eks/list-clusters/': typeof AuthEksclustersListClustersIndexRoute
+  '/iam/list-groups/': typeof AuthIamgroupsListGroupsIndexRoute
   '/iam/list-instance-profiles/': typeof AuthIaminstanceProfilesListInstanceProfilesIndexRoute
   '/iam/list-policies/': typeof AuthIampoliciesListPoliciesIndexRoute
   '/iam/list-roles/': typeof AuthIamrolesListRolesIndexRoute
@@ -671,6 +695,7 @@ export interface FileRoutesByTo {
   '/ecs/run-task': typeof AuthEcsclustersRunTaskRoute
   '/ecs/task-definitions': typeof AuthEcsclustersTaskDefinitionsRoute
   '/eks/create-cluster': typeof AuthEksclustersCreateClusterRoute
+  '/iam/create-group': typeof AuthIamgroupsCreateGroupRoute
   '/iam/create-instance-profile': typeof AuthIaminstanceProfilesCreateInstanceProfileRoute
   '/iam/create-policy': typeof AuthIampoliciesCreatePolicyRoute
   '/iam/create-role': typeof AuthIamrolesCreateRoleRoute
@@ -696,6 +721,7 @@ export interface FileRoutesByTo {
   '/ecr/list-repositories/$id': typeof AuthEcrrepositoriesListRepositoriesIdRoute
   '/ecs/list-clusters/$clusterName': typeof AuthEcsclustersListClustersClusterNameRoute
   '/eks/list-clusters/$clusterName': typeof AuthEksclustersListClustersClusterNameRoute
+  '/iam/list-groups/$groupName': typeof AuthIamgroupsListGroupsGroupNameRoute
   '/iam/list-instance-profiles/$instanceProfileName': typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute
   '/iam/list-policies/$policyArn': typeof AuthIampoliciesListPoliciesPolicyArnRoute
   '/iam/list-roles/$roleName': typeof AuthIamrolesListRolesRoleNameRoute
@@ -719,6 +745,7 @@ export interface FileRoutesByTo {
   '/ecr/list-repositories': typeof AuthEcrrepositoriesListRepositoriesIndexRoute
   '/ecs/list-clusters': typeof AuthEcsclustersListClustersIndexRoute
   '/eks/list-clusters': typeof AuthEksclustersListClustersIndexRoute
+  '/iam/list-groups': typeof AuthIamgroupsListGroupsIndexRoute
   '/iam/list-instance-profiles': typeof AuthIaminstanceProfilesListInstanceProfilesIndexRoute
   '/iam/list-policies': typeof AuthIampoliciesListPoliciesIndexRoute
   '/iam/list-roles': typeof AuthIamrolesListRolesIndexRoute
@@ -755,6 +782,7 @@ export interface FileRoutesById {
   '/_auth/ecs/(clusters)/run-task': typeof AuthEcsclustersRunTaskRoute
   '/_auth/ecs/(clusters)/task-definitions': typeof AuthEcsclustersTaskDefinitionsRoute
   '/_auth/eks/(clusters)/create-cluster': typeof AuthEksclustersCreateClusterRoute
+  '/_auth/iam/(groups)/create-group': typeof AuthIamgroupsCreateGroupRoute
   '/_auth/iam/(instance-profiles)/create-instance-profile': typeof AuthIaminstanceProfilesCreateInstanceProfileRoute
   '/_auth/iam/(policies)/create-policy': typeof AuthIampoliciesCreatePolicyRoute
   '/_auth/iam/(roles)/create-role': typeof AuthIamrolesCreateRoleRoute
@@ -780,6 +808,7 @@ export interface FileRoutesById {
   '/_auth/ecr/(repositories)/list-repositories/$id': typeof AuthEcrrepositoriesListRepositoriesIdRoute
   '/_auth/ecs/(clusters)/list-clusters/$clusterName': typeof AuthEcsclustersListClustersClusterNameRoute
   '/_auth/eks/(clusters)/list-clusters/$clusterName': typeof AuthEksclustersListClustersClusterNameRoute
+  '/_auth/iam/(groups)/list-groups/$groupName': typeof AuthIamgroupsListGroupsGroupNameRoute
   '/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName': typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute
   '/_auth/iam/(policies)/list-policies/$policyArn': typeof AuthIampoliciesListPoliciesPolicyArnRoute
   '/_auth/iam/(roles)/list-roles/$roleName': typeof AuthIamrolesListRolesRoleNameRoute
@@ -803,6 +832,7 @@ export interface FileRoutesById {
   '/_auth/ecr/(repositories)/list-repositories/': typeof AuthEcrrepositoriesListRepositoriesIndexRoute
   '/_auth/ecs/(clusters)/list-clusters/': typeof AuthEcsclustersListClustersIndexRoute
   '/_auth/eks/(clusters)/list-clusters/': typeof AuthEksclustersListClustersIndexRoute
+  '/_auth/iam/(groups)/list-groups/': typeof AuthIamgroupsListGroupsIndexRoute
   '/_auth/iam/(instance-profiles)/list-instance-profiles/': typeof AuthIaminstanceProfilesListInstanceProfilesIndexRoute
   '/_auth/iam/(policies)/list-policies/': typeof AuthIampoliciesListPoliciesIndexRoute
   '/_auth/iam/(roles)/list-roles/': typeof AuthIamrolesListRolesIndexRoute
@@ -839,6 +869,7 @@ export interface FileRouteTypes {
     | '/ecs/run-task'
     | '/ecs/task-definitions'
     | '/eks/create-cluster'
+    | '/iam/create-group'
     | '/iam/create-instance-profile'
     | '/iam/create-policy'
     | '/iam/create-role'
@@ -864,6 +895,7 @@ export interface FileRouteTypes {
     | '/ecr/list-repositories/$id'
     | '/ecs/list-clusters/$clusterName'
     | '/eks/list-clusters/$clusterName'
+    | '/iam/list-groups/$groupName'
     | '/iam/list-instance-profiles/$instanceProfileName'
     | '/iam/list-policies/$policyArn'
     | '/iam/list-roles/$roleName'
@@ -887,6 +919,7 @@ export interface FileRouteTypes {
     | '/ecr/list-repositories/'
     | '/ecs/list-clusters/'
     | '/eks/list-clusters/'
+    | '/iam/list-groups/'
     | '/iam/list-instance-profiles/'
     | '/iam/list-policies/'
     | '/iam/list-roles/'
@@ -920,6 +953,7 @@ export interface FileRouteTypes {
     | '/ecs/run-task'
     | '/ecs/task-definitions'
     | '/eks/create-cluster'
+    | '/iam/create-group'
     | '/iam/create-instance-profile'
     | '/iam/create-policy'
     | '/iam/create-role'
@@ -945,6 +979,7 @@ export interface FileRouteTypes {
     | '/ecr/list-repositories/$id'
     | '/ecs/list-clusters/$clusterName'
     | '/eks/list-clusters/$clusterName'
+    | '/iam/list-groups/$groupName'
     | '/iam/list-instance-profiles/$instanceProfileName'
     | '/iam/list-policies/$policyArn'
     | '/iam/list-roles/$roleName'
@@ -968,6 +1003,7 @@ export interface FileRouteTypes {
     | '/ecr/list-repositories'
     | '/ecs/list-clusters'
     | '/eks/list-clusters'
+    | '/iam/list-groups'
     | '/iam/list-instance-profiles'
     | '/iam/list-policies'
     | '/iam/list-roles'
@@ -1003,6 +1039,7 @@ export interface FileRouteTypes {
     | '/_auth/ecs/(clusters)/run-task'
     | '/_auth/ecs/(clusters)/task-definitions'
     | '/_auth/eks/(clusters)/create-cluster'
+    | '/_auth/iam/(groups)/create-group'
     | '/_auth/iam/(instance-profiles)/create-instance-profile'
     | '/_auth/iam/(policies)/create-policy'
     | '/_auth/iam/(roles)/create-role'
@@ -1028,6 +1065,7 @@ export interface FileRouteTypes {
     | '/_auth/ecr/(repositories)/list-repositories/$id'
     | '/_auth/ecs/(clusters)/list-clusters/$clusterName'
     | '/_auth/eks/(clusters)/list-clusters/$clusterName'
+    | '/_auth/iam/(groups)/list-groups/$groupName'
     | '/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName'
     | '/_auth/iam/(policies)/list-policies/$policyArn'
     | '/_auth/iam/(roles)/list-roles/$roleName'
@@ -1051,6 +1089,7 @@ export interface FileRouteTypes {
     | '/_auth/ecr/(repositories)/list-repositories/'
     | '/_auth/ecs/(clusters)/list-clusters/'
     | '/_auth/eks/(clusters)/list-clusters/'
+    | '/_auth/iam/(groups)/list-groups/'
     | '/_auth/iam/(instance-profiles)/list-instance-profiles/'
     | '/_auth/iam/(policies)/list-policies/'
     | '/_auth/iam/(roles)/list-roles/'
@@ -1142,6 +1181,13 @@ declare module '@tanstack/react-router' {
       path: '/iam/create-instance-profile'
       fullPath: '/iam/create-instance-profile'
       preLoaderRoute: typeof AuthIaminstanceProfilesCreateInstanceProfileRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(groups)/create-group': {
+      id: '/_auth/iam/(groups)/create-group'
+      path: '/iam/create-group'
+      fullPath: '/iam/create-group'
+      preLoaderRoute: typeof AuthIamgroupsCreateGroupRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/eks/(clusters)/create-cluster': {
@@ -1326,6 +1372,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/iam/(groups)/list-groups/': {
+      id: '/_auth/iam/(groups)/list-groups/'
+      path: '/iam/list-groups'
+      fullPath: '/iam/list-groups/'
+      preLoaderRoute: typeof AuthIamgroupsListGroupsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/eks/(clusters)/list-clusters/': {
       id: '/_auth/eks/(clusters)/list-clusters/'
       path: '/eks/list-clusters'
@@ -1485,6 +1538,13 @@ declare module '@tanstack/react-router' {
       path: '/iam/list-instance-profiles/$instanceProfileName'
       fullPath: '/iam/list-instance-profiles/$instanceProfileName'
       preLoaderRoute: typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(groups)/list-groups/$groupName': {
+      id: '/_auth/iam/(groups)/list-groups/$groupName'
+      path: '/iam/list-groups/$groupName'
+      fullPath: '/iam/list-groups/$groupName'
+      preLoaderRoute: typeof AuthIamgroupsListGroupsGroupNameRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/eks/(clusters)/list-clusters/$clusterName': {
@@ -1675,6 +1735,7 @@ interface AuthRouteRouteChildren {
   AuthEcsclustersRunTaskRoute: typeof AuthEcsclustersRunTaskRoute
   AuthEcsclustersTaskDefinitionsRoute: typeof AuthEcsclustersTaskDefinitionsRoute
   AuthEksclustersCreateClusterRoute: typeof AuthEksclustersCreateClusterRoute
+  AuthIamgroupsCreateGroupRoute: typeof AuthIamgroupsCreateGroupRoute
   AuthIaminstanceProfilesCreateInstanceProfileRoute: typeof AuthIaminstanceProfilesCreateInstanceProfileRoute
   AuthIampoliciesCreatePolicyRoute: typeof AuthIampoliciesCreatePolicyRoute
   AuthIamrolesCreateRoleRoute: typeof AuthIamrolesCreateRoleRoute
@@ -1700,6 +1761,7 @@ interface AuthRouteRouteChildren {
   AuthEcrrepositoriesListRepositoriesIdRoute: typeof AuthEcrrepositoriesListRepositoriesIdRoute
   AuthEcsclustersListClustersClusterNameRoute: typeof AuthEcsclustersListClustersClusterNameRoute
   AuthEksclustersListClustersClusterNameRoute: typeof AuthEksclustersListClustersClusterNameRoute
+  AuthIamgroupsListGroupsGroupNameRoute: typeof AuthIamgroupsListGroupsGroupNameRoute
   AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute: typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute
   AuthIampoliciesListPoliciesPolicyArnRoute: typeof AuthIampoliciesListPoliciesPolicyArnRoute
   AuthIamrolesListRolesRoleNameRoute: typeof AuthIamrolesListRolesRoleNameRoute
@@ -1722,6 +1784,7 @@ interface AuthRouteRouteChildren {
   AuthEcrrepositoriesListRepositoriesIndexRoute: typeof AuthEcrrepositoriesListRepositoriesIndexRoute
   AuthEcsclustersListClustersIndexRoute: typeof AuthEcsclustersListClustersIndexRoute
   AuthEksclustersListClustersIndexRoute: typeof AuthEksclustersListClustersIndexRoute
+  AuthIamgroupsListGroupsIndexRoute: typeof AuthIamgroupsListGroupsIndexRoute
   AuthIaminstanceProfilesListInstanceProfilesIndexRoute: typeof AuthIaminstanceProfilesListInstanceProfilesIndexRoute
   AuthIampoliciesListPoliciesIndexRoute: typeof AuthIampoliciesListPoliciesIndexRoute
   AuthIamrolesListRolesIndexRoute: typeof AuthIamrolesListRolesIndexRoute
@@ -1763,6 +1826,7 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthEcsclustersRunTaskRoute: AuthEcsclustersRunTaskRoute,
   AuthEcsclustersTaskDefinitionsRoute: AuthEcsclustersTaskDefinitionsRoute,
   AuthEksclustersCreateClusterRoute: AuthEksclustersCreateClusterRoute,
+  AuthIamgroupsCreateGroupRoute: AuthIamgroupsCreateGroupRoute,
   AuthIaminstanceProfilesCreateInstanceProfileRoute:
     AuthIaminstanceProfilesCreateInstanceProfileRoute,
   AuthIampoliciesCreatePolicyRoute: AuthIampoliciesCreatePolicyRoute,
@@ -1802,6 +1866,7 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthEcsclustersListClustersClusterNameRoute,
   AuthEksclustersListClustersClusterNameRoute:
     AuthEksclustersListClustersClusterNameRoute,
+  AuthIamgroupsListGroupsGroupNameRoute: AuthIamgroupsListGroupsGroupNameRoute,
   AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute:
     AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute,
   AuthIampoliciesListPoliciesPolicyArnRoute:
@@ -1839,6 +1904,7 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthEcrrepositoriesListRepositoriesIndexRoute,
   AuthEcsclustersListClustersIndexRoute: AuthEcsclustersListClustersIndexRoute,
   AuthEksclustersListClustersIndexRoute: AuthEksclustersListClustersIndexRoute,
+  AuthIamgroupsListGroupsIndexRoute: AuthIamgroupsListGroupsIndexRoute,
   AuthIaminstanceProfilesListInstanceProfilesIndexRoute:
     AuthIaminstanceProfilesListInstanceProfilesIndexRoute,
   AuthIampoliciesListPoliciesIndexRoute: AuthIampoliciesListPoliciesIndexRoute,

@@ -130,28 +130,19 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 | `monitor-instances` | — | `--instance-ids` | **NOT STARTED** |
 | `unmonitor-instances` | — | `--instance-ids` | **NOT STARTED** |
 
-`run-instances --iam-instance-profile` enforces `iam:PassRole` on the contained
-role ARN and rejects cross-account profile ARNs. Placement strategies: `spread`
-(1 per node, atomic CAS) and `cluster` (pin all to one node).
+### EC2 — Spot Instances
 
-`run-instances --capacity-reservation-specification` consumes a reserved slot on
-the node owning the targeted reservation (targeted-by-id only; `open`
-auto-matching is not supported). The combination with `--placement` (group) is
-rejected. `describe-instances` then reports the instance's `CapacityReservationId`.
+Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` path: a request synchronously launches real VMs on the operator's own compute and is then reported `active`/`fulfilled`. There is no spot market — no bidding, price rejection, interruption, or reclamation, and instances are never reclaimed.
 
-`modify-instance-metadata-options` is the only metadata-options mutator — AWS has
-no `get-instance-metadata-options` API, so the per-instance block is read through
-`describe-instances`. Only the hop limit is mutable; `--http-tokens optional` and
-the other posture-weakening values are refused with `UnsupportedOperation`, since
-the platform enforces IMDSv2 permanently. `run-instances --metadata-options` runs
-the same validation at launch.
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `request-spot-instances` | `--instance-count` (default 1), `--type` (`one-time`/`persistent` — stored, behaviour identical), `--spot-price` (echoed only), `--client-token`, `--launch-specification` (ImageId, InstanceType, KeyName, SubnetId, SecurityGroupIds, UserData, BlockDeviceMappings, IamInstanceProfile, Placement.GroupName, NetworkInterfaces), `--tag-specifications` (spot-instances-request) | `--valid-from`, `--valid-until`, `--launch-group`, `--availability-zone-group`, `--block-duration-minutes`, `--instance-interruption-behavior`, `--dry-run` | **DONE** (mock) |
+| `describe-spot-instance-requests` | `--spot-instance-request-ids`, `--filters` (spot-instance-request-id, state, instance-id, launch.image-id, launch.instance-type, launch.key-name, type, launched-availability-zone, tag-key, tag:*) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `cancel-spot-instance-requests` | `--spot-instance-request-ids` | `--dry-run` | **DONE** |
+
+`describe-spot-price-history` is **unsupported** (returns `InvalidAction`): on owned hardware there is no spot/on-demand price differential, so any synthetic price would be misleading rather than helpful.
 
 ### EC2 — IAM Instance Profile Associations
-
-Stored as `vm.VM.IamInstanceProfileArn` + `IamInstanceProfileAssociationId`
-(one ARN per instance). Association IDs (`iip-assoc-`) are regenerated on every
-Associate/Replace and never reused. Auto-disassociated on terminate; preserved
-across stop/start.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -183,9 +174,7 @@ across stop/start.
 | `reset-image-attribute` | `--image-id`, `--attribute description` | `--attribute launchPermission`, `--dry-run` | **DONE** |
 | `import-image` | — | `--disk-containers`, `--description`, `--architecture`, `--platform` | **NOT STARTED** |
 
-`copy-image` is metadata-only — no block copy. The new snapshot inherits the
-source `VolumeID`. `register-image`/`copy-image` accept `uefi-preferred` as
-input but treat it as `uefi` at launch.
+`copy-image` is metadata-only — no block copy. The new snapshot inherits the. source `VolumeID`.
 
 ### EC2 — Volumes (EBS)
 
@@ -228,8 +217,7 @@ input but treat it as `uefi` at launch.
 
 ### EC2 — Account Settings
 
-Persistence works (NATS JetStream KV) but stored values are not yet enforced
-by downstream services.
+Persistence works but stored values are not yet enforced by downstream services.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -248,10 +236,7 @@ by downstream services.
 | `modify-instance-metadata-defaults` | — | `--http-tokens`, `--http-put-response-hop-limit`, `--http-endpoint`, `--instance-metadata-tags` | **NOT STARTED** |
 | `get-instance-metadata-defaults` | — | `--dry-run` | **NOT STARTED** |
 
-The account-level `modify-/get-instance-metadata-defaults` are blocked on an
-`aws-sdk-go` bump: the `InstanceMetadataDefaultsResponse` type is absent from the
-pinned v1.44.266 (these APIs landed ~March 2024), and the gateway's generic
-handler needs the typed input struct to route them.
+The account-level `modify-/get-instance-metadata-defaults` are blocked on an `aws-sdk-go` bump: the `InstanceMetadataDefaultsResponse` type is absent from our version (these APIs landed ~March 2024), and the gateway's generic handler needs the typed input struct to route them.
 
 ### EC2 — VPC Core
 
@@ -296,8 +281,7 @@ handler needs the typed input struct to route them.
 
 ### EC2 — Egress-Only Internet Gateway
 
-KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on
-network topology.
+KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on network topology.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -588,7 +572,7 @@ bypasses policy evaluation entirely.
 | `get-federation-token` | — | `--name`, `--policy`, `--policy-arns`, `--duration-seconds`, `--tags` | **NOT STARTED** |
 | `decode-authorization-message` | — | `--encoded-message` | **NOT STARTED** |
 
-Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`, `NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty `Principal` blocks at write time (`MalformedPolicyDocument`) — v1 has no Condition evaluator so accepting them would silently allow.
+Trust policies (`AssumeRolePolicyDocument`) reject `NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty `Principal` blocks at write time (`MalformedPolicyDocument`). `Condition` blocks are rejected except on `sts:AssumeRoleWithWebIdentity` with `StringEquals` (IRSA), which v1 evaluates at assume time (`{iss}:sub`, `{iss}:aud`); anything wider is rejected to avoid silent over-grant.
 
 ---
 
@@ -625,7 +609,7 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | `/latest/meta-data/ami-id` | GET | launch `ImageId` | **DONE** |
 | `/latest/meta-data/ami-launch-index` | GET | Per-instance launch index (`0..n-1`), contiguous on partial failure | **DONE** |
 | `/latest/meta-data/reservation-id` | GET | `DescribeInstances` `Reservation.ReservationId` | **DONE** |
-| `/latest/meta-data/instance-life-cycle` | GET | `on-demand` (Spot not modelled) | **DONE** |
+| `/latest/meta-data/instance-life-cycle` | GET | `spot` for a spot-launched instance, else `on-demand`; defaults to `on-demand` on a resolution miss (never 404, the leaf is always advertised) | **DONE** |
 | `/latest/meta-data/local-ipv4` | GET | `ENIRecord.PrivateIpAddress` (== request source IP) | **DONE** |
 | `/latest/meta-data/public-ipv4` | GET | EIP, else instance public IP; empty body if none | **DONE** |
 | `/latest/meta-data/public-hostname` | GET | Mirrors `public-ipv4`; 404 when no public IP | **DONE** |
@@ -651,7 +635,7 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | `/latest/meta-data/block-device-mapping/...` | GET | `ami`/`root`/`ebsN`/`ephemeralN` device map | **NOT STARTED** (404) |
 | `/latest/meta-data/placement/{group-name,partition-number,availability-zone-id,host-id}` | GET | Placement extras beyond `availability-zone`/`region` | **NOT STARTED** (404) |
 | `/latest/meta-data/instance-action` | GET | `none` unless interruptible instances ship | **NOT STARTED** (404) |
-| `/latest/meta-data/spot/{instance-action,termination-time}` | GET | Only meaningful once Spot is modelled | **NOT STARTED** (404) |
+| `/latest/meta-data/spot/{instance-action,termination-time}` | GET | 404 is the faithful steady state for a never-interrupted spot instance ("no action scheduled"); a 200 body would trigger interruption handling in pollers (AWS Node Termination Handler / Karpenter). Not advertised in the `spot/` listing | **DONE** (404 by contract) |
 
 ---
 

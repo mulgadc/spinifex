@@ -710,6 +710,22 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) error
 	return nil
 }
 
+// RemoveFromSpotRequest closes the Spot Instance Request fulfilled by this
+// instance, if any. The VM carries no spot marker, so the service scans the
+// active bucket by instance ID; a non-spot instance is a cheap no-op. No-op
+// when the spot instance service is not configured.
+func (a *instanceCleanerAdapter) RemoveFromSpotRequest(instance *vm.VM) error {
+	if a.d.spotInstanceService == nil {
+		return nil
+	}
+	if err := a.d.spotInstanceService.CloseForInstance(instance.ID, instance.AccountID); err != nil {
+		slog.Error("Failed to close spot request for instance",
+			"instanceId", instance.ID, "err", err)
+		return err
+	}
+	return nil
+}
+
 // ReleaseGPU unbinds the instance's GPU from vfio-pci and rebinds to its
 // original host driver. No-op for instances without a GPU allocation or
 // when GPU passthrough is disabled.

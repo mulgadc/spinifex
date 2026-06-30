@@ -39,6 +39,7 @@ func (l *natsInstanceLookup) describe(accountID, instanceID string) (*instanceFa
 		architecture:   aws.StringValue(inst.Architecture),
 		amiLaunchIndex: aws.Int64Value(inst.AmiLaunchIndex),
 		reservationID:  aws.StringValue(res.ReservationId),
+		lifecycleType:  aws.StringValue(inst.InstanceLifecycle),
 		pendingTime:    aws.TimeValue(inst.LaunchTime),
 	}
 	if inst.IamInstanceProfile != nil {

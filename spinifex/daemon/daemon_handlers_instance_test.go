@@ -674,3 +674,77 @@ func TestHandleEC2DescribeInstances_NoCapacityReservationEcho(t *testing.T) {
 	assert.Empty(t, aws.StringValue(got.CapacityReservationId))
 	assert.Nil(t, got.CapacityReservationSpecification)
 }
+
+// A spot-launched instance projects InstanceLifecycle + SpotInstanceRequestId.
+func TestHandleEC2DescribeInstances_SpotLineageEcho(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+
+	reservation := &ec2.Reservation{}
+	reservation.SetReservationId("r-spot-echo")
+	reservation.SetOwnerId(testAccountID)
+	instance := &ec2.Instance{}
+	instance.SetInstanceId("i-spot-echo")
+	instance.SetInstanceType("t3.micro")
+
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:                    "i-spot-echo",
+		Status:                vm.StateRunning,
+		AccountID:             testAccountID,
+		InstanceLifecycle:     ec2.InstanceLifecycleTypeSpot,
+		SpotInstanceRequestId: "sir-0123456789abcdef0",
+		Reservation:           reservation,
+		Instance:              instance,
+	})
+
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances", daemon.handleEC2DescribeInstances)
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	reqData, _ := json.Marshal(&ec2.DescribeInstancesInput{})
+	reply, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", reqData, 5*time.Second)
+	require.NoError(t, err)
+	var out ec2.DescribeInstancesOutput
+	require.NoError(t, json.Unmarshal(reply.Data, &out))
+	require.Len(t, out.Reservations, 1)
+	require.Len(t, out.Reservations[0].Instances, 1)
+
+	got := out.Reservations[0].Instances[0]
+	assert.Equal(t, ec2.InstanceLifecycleTypeSpot, aws.StringValue(got.InstanceLifecycle))
+	assert.Equal(t, "sir-0123456789abcdef0", aws.StringValue(got.SpotInstanceRequestId))
+}
+
+// An on-demand instance reports no spot-lineage fields.
+func TestHandleEC2DescribeInstances_NoSpotLineageEcho(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+
+	reservation := &ec2.Reservation{}
+	reservation.SetReservationId("r-ondemand")
+	reservation.SetOwnerId(testAccountID)
+	instance := &ec2.Instance{}
+	instance.SetInstanceId("i-ondemand")
+	instance.SetInstanceType("t3.micro")
+
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:          "i-ondemand",
+		Status:      vm.StateRunning,
+		AccountID:   testAccountID,
+		Reservation: reservation,
+		Instance:    instance,
+	})
+
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances", daemon.handleEC2DescribeInstances)
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	reqData, _ := json.Marshal(&ec2.DescribeInstancesInput{})
+	reply, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", reqData, 5*time.Second)
+	require.NoError(t, err)
+	var out ec2.DescribeInstancesOutput
+	require.NoError(t, json.Unmarshal(reply.Data, &out))
+	require.Len(t, out.Reservations, 1)
+	require.Len(t, out.Reservations[0].Instances, 1)
+
+	got := out.Reservations[0].Instances[0]
+	assert.Empty(t, aws.StringValue(got.InstanceLifecycle))
+	assert.Empty(t, aws.StringValue(got.SpotInstanceRequestId))
+}

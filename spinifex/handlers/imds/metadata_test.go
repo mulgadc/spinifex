@@ -439,6 +439,46 @@ func TestHTTP_PublicFieldsAbsent404(t *testing.T) {
 	}
 }
 
+// instance-life-cycle is "spot" only for a spot-launched instance; it defaults to
+// "on-demand" for on-demand instances and — crucially — for a resolution miss or
+// error, since the leaf is advertised unconditionally and a 404 would break the crawl.
+func TestHTTP_InstanceLifecycle(t *testing.T) {
+	cases := []struct {
+		name string
+		res  *fakeResolver
+		want string
+	}{
+		{"Spot", &fakeResolver{eni: testENI(), inst: &instanceFacts{lifecycleType: "spot"}}, "spot"},
+		{"OnDemand", &fakeResolver{eni: testENI(), inst: &instanceFacts{}}, "on-demand"},
+		{"ResolutionMiss", &fakeResolver{eni: testENI()}, "on-demand"},
+		{"ResolutionError", &fakeResolver{eni: testENI(), instErr: errors.New("backend down")}, "on-demand"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			svc, _ := newTestService(c.res, &fakeIAM{}, &fakeAssumer{})
+			h := withTapENI(svc.httpHandler(), testENI())
+			token := issueToken(t, h)
+			rec := get(t, h, prefixMetaData+"instance-life-cycle", token)
+			assert.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, c.want, rec.Body.String())
+		})
+	}
+}
+
+// A never-interrupted spot instance has no scheduled action, so spot/instance-action
+// and spot/termination-time 404 (the dispatch default) — a 200 body would trigger
+// interruption handling in pollers like the AWS Node Termination Handler.
+func TestHTTP_SpotPathsReturn404(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{lifecycleType: "spot"}}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	for _, leaf := range []string{"spot/instance-action", "spot/termination-time"} {
+		rec := get(t, h, prefixMetaData+leaf, token)
+		assert.Equal(t, http.StatusNotFound, rec.Code, "leaf=%s", leaf)
+	}
+}
+
 // The meta-data root lists every served child, alphabetically, to match AWS. With
 // no instance profile attached, iam/ is omitted entirely — real EC2 omits it so
 // cloud-init never descends into a subtree whose leaves would 404 and fail the crawl.

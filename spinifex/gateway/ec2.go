@@ -23,6 +23,7 @@ import (
 	gateway_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/gateway/ec2/placementgroup"
 	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
+	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
 	gateway_ec2_tags "github.com/mulgadc/spinifex/spinifex/gateway/ec2/tags"
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
 	gateway_ec2_vpc "github.com/mulgadc/spinifex/spinifex/gateway/ec2/vpc"
@@ -341,6 +342,18 @@ var ec2Actions = map[string]EC2Handler{
 	}),
 	"CancelCapacityReservation": ec2Handler(func(input *ec2.CancelCapacityReservationInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_capacityreservation.CancelCapacityReservation(input, gw.NATSConn, gw.ExpectedNodes, accountID)
+	}),
+	"RequestSpotInstances": ec2HandlerWithReq(func(input *ec2.RequestSpotInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
+		passRoleCheck := func(roleARN string) error {
+			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+		}
+		return gateway_ec2_spotinstance.RequestSpotInstances(input, gw.NATSConn, gw.IAMService, accountID, gw.AZ, passRoleCheck, gw.Quota, gw.ExpectedNodes)
+	}),
+	"DescribeSpotInstanceRequests": ec2Handler(func(input *ec2.DescribeSpotInstanceRequestsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_spotinstance.DescribeSpotInstanceRequests(input, gw.NATSConn, accountID)
+	}),
+	"CancelSpotInstanceRequests": ec2Handler(func(input *ec2.CancelSpotInstanceRequestsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_spotinstance.CancelSpotInstanceRequests(input, gw.NATSConn, accountID)
 	}),
 	"CreateVpc": ec2Handler(func(input *ec2.CreateVpcInput, gw *GatewayConfig, accountID string) (any, error) {
 		if err := gw.Quota.EnforceVPCs(gw.NATSConn, accountID, 1); err != nil {

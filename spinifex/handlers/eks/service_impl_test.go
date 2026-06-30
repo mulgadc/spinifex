@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -65,6 +66,18 @@ func TestMissingOrchestrationDeps_NilIAMRejectsNodegroup(t *testing.T) {
 
 	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
+}
+
+// Production wires the lazy IAMProvider and leaves deps.IAM nil. The gate must
+// resolve the ensurer (provider included), not read deps.IAM directly, or it
+// rejects every CreateCluster/CreateNodegroup with missing=[IAM] forever even
+// though the IAM service is fully available via the provider.
+func TestMissingOrchestrationDeps_IAMProviderSatisfiesGate(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.svc.deps.IAM = nil
+	f.svc.deps.IAMProvider = func() handlers_iam.SystemInstanceRoleEnsurer { return newFakeEnsurer() }
+
+	require.Empty(t, f.svc.missingOrchestrationDeps())
 }
 
 // EKS only supports the API authentication mode here; CONFIG_MAP (and the

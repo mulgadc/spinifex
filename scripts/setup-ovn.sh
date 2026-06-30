@@ -22,8 +22,16 @@
 #   --mgmt-cidr=CIDR     IPv4 CIDR to assign on the mgmt bridge (default: 10.15.8.1/24)
 #   --mgmt-iface=NAME    Physical/virtual NIC to enslave to the mgmt bridge (multi-node only)
 #   --no-mgmt-bridge     Skip mgmt bridge provisioning (for dev-networking hosts)
-#   --ovn-remote=ADDR    OVN SB DB address (default: tcp:127.0.0.1:6642)
+#   --ovn-remote=ADDR    OVN SB DB address; accepts a comma-separated list of
+#                        SB endpoints for compute nodes pointing at a RAFT
+#                        cluster (default: tcp:127.0.0.1:6642)
 #   --encap-ip=IP        Geneve tunnel endpoint IP (default: auto-detect)
+#   --db-cluster-local-addr=IP   This DB node's own IP for OVSDB RAFT clustering.
+#                        Enables clustered NB(6643)/SB(6644) DBs (requires
+#                        --management). Empty --db-cluster-remote-addr ⇒ create
+#                        the cluster; set ⇒ join it.
+#   --db-cluster-remote-addr=IP  An existing cluster DB node's IP to join. Omit
+#                        on the first (init) DB node that forms the cluster.
 #
 # WAN Bridge Auto-Detection:
 #   When no --wan-bridge is given, the script checks the default route interface:
@@ -42,6 +50,16 @@
 #   # Compute node joining an existing cluster:
 #   ./scripts/setup-ovn.sh --ovn-remote=tcp:10.0.0.1:6642 --encap-ip=10.0.0.2
 #
+#   # DB node 1 — create an OVSDB RAFT cluster (init):
+#   ./scripts/setup-ovn.sh --management --db-cluster-local-addr=10.0.0.1
+#
+#   # DB nodes 2,3 — join the cluster:
+#   ./scripts/setup-ovn.sh --management --db-cluster-local-addr=10.0.0.2 \
+#       --db-cluster-remote-addr=10.0.0.1
+#
+#   # Compute node pointing at all 3 clustered SB endpoints:
+#   ./scripts/setup-ovn.sh --ovn-remote=tcp:10.0.0.1:6642,tcp:10.0.0.2:6642,tcp:10.0.0.3:6642
+#
 #   # No WAN bridge (overlay-only, no public subnet):
 #   ./scripts/setup-ovn.sh --management --encap-ip=10.0.0.1
 
@@ -58,6 +76,11 @@ MGMT_CIDR="10.15.8.1/24"
 MGMT_IFACE=""
 OVN_REMOTE="tcp:127.0.0.1:6642"
 ENCAP_IP=""
+# OVSDB RAFT clustering. Empty by default ⇒ single, non-clustered ovn-central
+# (dev box, existing single-node clusters). When LOCAL_ADDR is set, the NB/SB
+# DBs run clustered; REMOTE_ADDR empty ⇒ create the cluster, set ⇒ join it.
+DB_CLUSTER_LOCAL_ADDR=""
+DB_CLUSTER_REMOTE_ADDR=""
 # NODE_NAME is left empty by default. The chassis-id pin block at Step 4
 # only runs when --node-name=NAME is explicitly given. Passing nothing
 # preserves whatever system-id already lives in OVS (gold-image UUID,
@@ -80,9 +103,11 @@ for arg in "$@"; do
         --no-mgmt-bridge)   MGMT_BRIDGE_ENABLED=false ;;
         --ovn-remote=*)     OVN_REMOTE="${arg#*=}" ;;
         --encap-ip=*)       ENCAP_IP="${arg#*=}" ;;
+        --db-cluster-local-addr=*)  DB_CLUSTER_LOCAL_ADDR="${arg#*=}" ;;
+        --db-cluster-remote-addr=*) DB_CLUSTER_REMOTE_ADDR="${arg#*=}" ;;
         --node-name=*)      NODE_NAME="${arg#*=}" ;;
         --help|-h)
-            head -50 "$0" | tail -48
+            sed -n '3,/^set -e/{/^set -e/!p}' "$0"
             exit 0
             ;;
         *)
@@ -91,6 +116,18 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# OVSDB RAFT clustering runs the NB/SB DBs, so it only applies to management
+# (DB) nodes. A remote addr without a local addr is meaningless (nothing to
+# join with). Fail loudly rather than silently starting a single-node DB.
+if [ -n "$DB_CLUSTER_LOCAL_ADDR" ] && [ "$MANAGEMENT" != true ]; then
+    echo "ERROR: --db-cluster-local-addr requires --management (clustered DBs run on management nodes)"
+    exit 1
+fi
+if [ -n "$DB_CLUSTER_REMOTE_ADDR" ] && [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
+    echo "ERROR: --db-cluster-remote-addr requires --db-cluster-local-addr"
+    exit 1
+fi
 
 # --- WAN bridge auto-detection ---
 # Determine the WAN bridge name and how to set it up.
@@ -195,6 +232,13 @@ fi
 
 echo "=== Spinifex OVN Compute Node Setup ==="
 echo "  Management node:  $MANAGEMENT"
+if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
+    if [ -n "$DB_CLUSTER_REMOTE_ADDR" ]; then
+        echo "  DB RAFT role:     join (local=$DB_CLUSTER_LOCAL_ADDR remote=$DB_CLUSTER_REMOTE_ADDR)"
+    else
+        echo "  DB RAFT role:     create (local=$DB_CLUSTER_LOCAL_ADDR)"
+    fi
+fi
 if [ -n "$WAN_BRIDGE" ]; then
     echo "  WAN bridge:       $WAN_BRIDGE ($WAN_BRIDGE_MODE)"
     if [ -n "$LINUX_BRIDGE" ]; then
@@ -246,8 +290,33 @@ echo "  openvswitch-switch: started"
 
 if [ "$MANAGEMENT" = true ]; then
     sudo systemctl enable ovn-central
-    sudo systemctl start ovn-central
-    echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
+
+    if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
+        # Clustered NB/SB via native OVSDB RAFT. Both per-DB units source one
+        # shared OVN_CTL_OPTS from /etc/default/ovn-central; each run_*_ovsdb
+        # consumes only its own --db-{nb,sb}-* flags. RAFT ports default to NB
+        # 6643 / SB 6644. ovn-ctl creates the cluster when no remote-addr is
+        # given (and no existing .db file), joins when one is.
+        OVN_CTL_OPTS="--db-nb-cluster-local-addr=$DB_CLUSTER_LOCAL_ADDR --db-sb-cluster-local-addr=$DB_CLUSTER_LOCAL_ADDR"
+        if [ -n "$DB_CLUSTER_REMOTE_ADDR" ]; then
+            OVN_CTL_OPTS="$OVN_CTL_OPTS --db-nb-cluster-remote-addr=$DB_CLUSTER_REMOTE_ADDR --db-sb-cluster-remote-addr=$DB_CLUSTER_REMOTE_ADDR"
+            echo "  ovn-central: joining RAFT cluster (local=$DB_CLUSTER_LOCAL_ADDR remote=$DB_CLUSTER_REMOTE_ADDR)"
+        else
+            echo "  ovn-central: creating RAFT cluster (local=$DB_CLUSTER_LOCAL_ADDR)"
+        fi
+
+        echo "OVN_CTL_OPTS=\"$OVN_CTL_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
+        echo "  wrote /etc/default/ovn-central"
+
+        # The ovn-central aggregator is ExecStart=/bin/true, so restarting it
+        # won't restart the children — restart the per-DB units directly to
+        # pick up the new OVN_CTL_OPTS.
+        sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd
+        echo "  ovn-central: started clustered (NB DB + SB DB + ovn-northd)"
+    else
+        sudo systemctl start ovn-central
+        echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
+    fi
 
     # Wait for OVN NB DB socket to become available
     for i in $(seq 1 15); do
@@ -258,11 +327,15 @@ if [ "$MANAGEMENT" = true ]; then
         sleep 1
     done
 
-    # Allow remote connections to NB and SB databases
-    sudo ovn-nbctl set-connection ptcp:6641
-    sudo ovn-sbctl set-connection ptcp:6642
-    echo "  OVN NB DB listening on tcp:6641"
-    echo "  OVN SB DB listening on tcp:6642"
+    # Set the NB/SB client listen addresses. set-connection writes through RAFT
+    # (replicated cluster-wide), so it only runs on the create node — a joining
+    # node would redirect to the leader, which the init node already configured.
+    if [ -z "$DB_CLUSTER_REMOTE_ADDR" ]; then
+        sudo ovn-nbctl set-connection ptcp:6641
+        sudo ovn-sbctl set-connection ptcp:6642
+        echo "  OVN NB DB listening on tcp:6641"
+        echo "  OVN SB DB listening on tcp:6642"
+    fi
 fi
 
 # --- Step 3: Create and configure br-int ---

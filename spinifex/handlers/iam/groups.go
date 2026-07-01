@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -498,11 +499,7 @@ func (s *IAMServiceImpl) ListGroupPolicies(accountID string, input *iam.ListGrou
 		return nil, err
 	}
 
-	rawNames := make([]string, 0, len(group.InlinePolicies))
-	for name := range group.InlinePolicies {
-		rawNames = append(rawNames, name)
-	}
-	slices.Sort(rawNames)
+	rawNames := slices.Sorted(maps.Keys(group.InlinePolicies))
 
 	names := make([]*string, 0, len(rawNames))
 	for _, name := range rawNames {

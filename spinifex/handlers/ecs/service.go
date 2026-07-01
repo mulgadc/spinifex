@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -206,7 +207,7 @@ func keysWithPrefix(kv nats.KeyValue, prefix string) ([]string, error) {
 			out = append(out, k)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out, nil
 }
 
@@ -317,11 +318,7 @@ func tagsToAWS(tags map[string]string) []*ecs.Tag {
 	if len(tags) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(tags))
-	for k := range tags {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(tags))
 	out := make([]*ecs.Tag, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, &ecs.Tag{Key: aws.String(k), Value: aws.String(tags[k])})

@@ -2752,11 +2752,7 @@ func tagsMapToSDK(tags map[string]string) []*elbv2.Tag {
 	if len(tags) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(tags))
-	for k := range tags {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
+	keys := slices.Sorted(maps.Keys(tags))
 	out := make([]*elbv2.Tag, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, &elbv2.Tag{Key: aws.String(k), Value: aws.String(tags[k])})

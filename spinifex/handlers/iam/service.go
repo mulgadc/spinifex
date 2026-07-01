@@ -31,6 +31,12 @@ type IAMService interface {
 	DetachUserPolicy(accountID string, input *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error)
 	ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error)
 
+	// User inline policies — account-scoped
+	PutUserPolicy(accountID string, input *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error)
+	GetUserPolicy(accountID string, input *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error)
+	DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error)
+	ListUserPolicies(accountID string, input *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error)
+
 	// Role CRUD — account-scoped
 	CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error)
 	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)

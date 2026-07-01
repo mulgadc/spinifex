@@ -475,10 +475,10 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `list-users` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
 | `delete-user` | `--user-name` | — | **DONE** |
 | `update-user` | — | `--user-name`, `--new-path`, `--new-user-name` | **NOT STARTED** |
-| `put-user-policy` | — | `--user-name`, `--policy-name`, `--policy-document` | **NOT STARTED** |
-| `get-user-policy` | — | `--user-name`, `--policy-name` | **NOT STARTED** |
-| `delete-user-policy` | — | `--user-name`, `--policy-name` | **NOT STARTED** |
-| `list-user-policies` | — | `--user-name` | **NOT STARTED** |
+| `put-user-policy` | `--user-name`, `--policy-name`, `--policy-document` | — | **DONE** |
+| `get-user-policy` | `--user-name`, `--policy-name` | — | **DONE** |
+| `delete-user-policy` | `--user-name`, `--policy-name` | — | **DONE** |
+| `list-user-policies` | `--user-name` | `--max-items`, `--marker` | **DONE** |
 | `tag-user` | — | `--user-name`, `--tags` | **NOT STARTED** |
 | `untag-user` | — | `--user-name`, `--tag-keys` | **NOT STARTED** |
 | `list-user-tags` | — | `--user-name` | **NOT STARTED** |

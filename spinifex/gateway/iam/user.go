@@ -32,3 +32,43 @@ func DeleteUser(accountID string, input *iam.DeleteUserInput, svc handlers_iam.I
 	}
 	return svc.DeleteUser(accountID, input)
 }
+
+func PutUserPolicy(accountID string, input *iam.PutUserPolicyInput, svc handlers_iam.IAMService) (*iam.PutUserPolicyOutput, error) {
+	if input.UserName == nil || *input.UserName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyName == nil || *input.PolicyName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyDocument == nil || *input.PolicyDocument == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.PutUserPolicy(accountID, input)
+}
+
+func GetUserPolicy(accountID string, input *iam.GetUserPolicyInput, svc handlers_iam.IAMService) (*iam.GetUserPolicyOutput, error) {
+	if input.UserName == nil || *input.UserName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyName == nil || *input.PolicyName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.GetUserPolicy(accountID, input)
+}
+
+func DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput, svc handlers_iam.IAMService) (*iam.DeleteUserPolicyOutput, error) {
+	if input.UserName == nil || *input.UserName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyName == nil || *input.PolicyName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.DeleteUserPolicy(accountID, input)
+}
+
+func ListUserPolicies(accountID string, input *iam.ListUserPoliciesInput, svc handlers_iam.IAMService) (*iam.ListUserPoliciesOutput, error) {
+	if input.UserName == nil || *input.UserName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.ListUserPolicies(accountID, input)
+}

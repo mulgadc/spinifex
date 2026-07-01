@@ -212,6 +212,18 @@ func (f *fakeIAMService) DeleteGroupPolicy(string, *iam.DeleteGroupPolicyInput) 
 func (f *fakeIAMService) ListGroupPolicies(string, *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
 	return &iam.ListGroupPoliciesOutput{}, nil
 }
+func (f *fakeIAMService) PutUserPolicy(string, *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+	return &iam.PutUserPolicyOutput{}, nil
+}
+func (f *fakeIAMService) GetUserPolicy(string, *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
+	return &iam.GetUserPolicyOutput{}, nil
+}
+func (f *fakeIAMService) DeleteUserPolicy(string, *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+	return &iam.DeleteUserPolicyOutput{}, nil
+}
+func (f *fakeIAMService) ListUserPolicies(string, *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
+	return &iam.ListUserPoliciesOutput{}, nil
+}
 
 var _ handlers_iam.IAMService = (*fakeIAMService)(nil)
 

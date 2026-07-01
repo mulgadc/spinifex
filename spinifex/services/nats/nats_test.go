@@ -39,7 +39,7 @@ func TestRenderedConfig_EnforcesAuth(t *testing.T) {
 	require.NoError(t, admin.GenerateCACert(caCertPath, caKeyPath))
 	serverCertPath := filepath.Join(tmpDir, "server.pem")
 	serverKeyPath := filepath.Join(tmpDir, "server.key")
-	require.NoError(t, admin.GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, "127.0.0.1"))
+	require.NoError(t, admin.GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{"127.0.0.1"}, nil))
 
 	// Read and render the production template.
 	raw, err := os.ReadFile(templatePath(t))

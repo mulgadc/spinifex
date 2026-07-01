@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,8 +16,8 @@ import (
 
 const testAccountID = "123456789012"
 
-func testPool() handlers_ec2_vpc.ExternalPoolConfig {
-	return handlers_ec2_vpc.ExternalPoolConfig{
+func testPool() external.ExternalPoolConfig {
+	return external.ExternalPoolConfig{
 		Name:       "test-pool",
 		RangeStart: "198.51.100.10",
 		RangeEnd:   "198.51.100.20",
@@ -30,7 +31,7 @@ func setupTestEIP(t *testing.T) (*EIPServiceImpl, *handlers_ec2_vpc.ExternalIPAM
 	_, nc, js := testutil.StartTestJetStream(t)
 
 	pool := testPool()
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []handlers_ec2_vpc.ExternalPoolConfig{pool})
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
 	svc, err := NewEIPServiceImpl(nc, ipam, nil)

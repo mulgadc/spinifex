@@ -55,6 +55,7 @@ import (
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -1307,10 +1308,10 @@ func (d *Daemon) startCluster() error {
 		if jsErr != nil {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
-			var pools []handlers_ec2_vpc.ExternalPoolConfig
+			var pools []external.ExternalPoolConfig
 			anyDHCP := false
 			for _, p := range d.clusterConfig.Network.ExternalPools {
-				pools = append(pools, handlers_ec2_vpc.ExternalPoolConfig{
+				pools = append(pools, external.ExternalPoolConfig{
 					Name:            p.Name,
 					Source:          p.Source,
 					BindBridge:      p.BindBridge,

@@ -19,7 +19,7 @@ require (
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
 	github.com/klauspost/cpuid/v2 v2.3.0
 	github.com/mulgadc/predastore v1.10.0
-	github.com/mulgadc/viperblock v1.10.0
+	github.com/mulgadc/viperblock v1.10.1-0.20260701000414-53f6e80c8f4e
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/runtime-spec v1.3.0

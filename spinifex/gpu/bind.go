@@ -14,12 +14,6 @@ func BindVFIO(addr string) (string, error) {
 	return bindVFIO("/sys", addr)
 }
 
-// UnbindVFIO unbinds addr from vfio-pci, clears driver_override, and rebinds
-// to originalDriver. If originalDriver is empty the device is left unbound.
-func UnbindVFIO(addr, originalDriver string) error {
-	return unbindVFIO("/sys", addr, originalDriver)
-}
-
 // CurrentDriver returns the name of the driver currently bound to addr,
 // or "" if the device is unbound.
 func CurrentDriver(addr string) (string, error) {

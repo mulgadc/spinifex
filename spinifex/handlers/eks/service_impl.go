@@ -191,11 +191,6 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	}, nil
 }
 
-// NewEKSServiceImplWithNATS is a back-compat shim for tests that only need NATS wiring.
-func NewEKSServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*EKSServiceImpl, error) {
-	return NewEKSServiceImpl(EKSServiceDeps{Config: cfg, NATSConn: nc})
-}
-
 // Shutdown stops the per-cluster reconciler goroutines and cancels every
 // background bootstrap goroutine. Safe to call multiple times.
 func (s *EKSServiceImpl) Shutdown() {

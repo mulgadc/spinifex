@@ -988,38 +988,6 @@ func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {
 		"Expected no URL-encoded padding remaining")
 }
 
-func TestParseArgsToStruct(t *testing.T) {
-	// ParseArgsToStruct wraps QueryParamsToStruct errors as ErrorInvalidParameter.
-	// The *any parameter causes a reflection kind mismatch, so this always errors.
-	type simpleInput struct {
-		Action string `locationName:"Action"`
-	}
-
-	t.Run("struct pointer wrapped in any returns InvalidParameter", func(t *testing.T) {
-		args := map[string]string{"Action": "RunInstances"}
-		var input any = &simpleInput{}
-		err := ParseArgsToStruct(&input, args)
-		assert.Error(t, err)
-		assert.Equal(t, "InvalidParameter", err.Error())
-	})
-
-	t.Run("non-pointer input returns InvalidParameter", func(t *testing.T) {
-		args := map[string]string{"Action": "Test"}
-		var input any = "not a struct"
-		err := ParseArgsToStruct(&input, args)
-		assert.Error(t, err)
-		assert.Equal(t, "InvalidParameter", err.Error())
-	})
-
-	t.Run("empty args still returns InvalidParameter", func(t *testing.T) {
-		args := map[string]string{}
-		var input any = &simpleInput{}
-		err := ParseArgsToStruct(&input, args)
-		assert.Error(t, err)
-		assert.Equal(t, "InvalidParameter", err.Error())
-	})
-}
-
 // --- Throttle middleware integration tests ---
 
 func TestThrottleKeyFuncs_ExtractsAccountAndAction(t *testing.T) {

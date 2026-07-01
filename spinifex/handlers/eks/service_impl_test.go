@@ -16,14 +16,14 @@ import (
 func setupTestService(t *testing.T) *EKSServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewEKSServiceImplWithNATS(nil, nc)
+	svc, err := NewEKSServiceImpl(EKSServiceDeps{NATSConn: nc})
 	require.NoError(t, err)
 	return svc
 }
 
 // TestEKSServiceImpl_ClusterLifecycleShimMode covers the four lifecycle
-// methods when the service is constructed via NewEKSServiceImplWithNATS
-// (the shim path the daemon-handler routing test uses): orchestration deps
+// methods when the service is constructed with only NATS wiring (the path the
+// daemon-handler routing test uses): orchestration deps
 // are absent so CreateCluster/DeleteCluster short-circuit to ServiceUnavailable
 // (the missing deps are logged at ERROR), DescribeCluster hits an empty
 // per-account bucket and surfaces ResourceNotFoundException, and ListClusters

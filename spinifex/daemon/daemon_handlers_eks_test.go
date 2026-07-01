@@ -20,7 +20,7 @@ import (
 func setupEKSDaemon(t *testing.T) (*Daemon, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := handlers_eks.NewEKSServiceImplWithNATS(nil, nc)
+	svc, err := handlers_eks.NewEKSServiceImpl(handlers_eks.EKSServiceDeps{NATSConn: nc})
 	require.NoError(t, err)
 	return &Daemon{eksService: svc}, nc
 }

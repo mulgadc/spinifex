@@ -17,7 +17,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/predastore/ratelimit"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
@@ -622,17 +621,6 @@ func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
 
 	output = append([]byte(xml.Header), output...)
 	return output
-}
-
-func ParseArgsToStruct(input *any, args map[string]string) (err error) {
-	// Generated from input shape: RunInstancesRequest
-	err = awsec2query.QueryParamsToStruct(args, input)
-
-	if err != nil {
-		return errors.New(awserrors.ErrorInvalidParameter)
-	}
-
-	return nil
 }
 
 // DiscoverActiveNodes discovers the number of active spinifex daemon nodes in the cluster

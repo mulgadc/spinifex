@@ -73,19 +73,3 @@ func WriteJSONError(w http.ResponseWriter, code, message string, httpStatus int)
 		slog.Error("Failed to write EKS error response", "err", err)
 	}
 }
-
-// WriteErrorFromCode looks up an awserrors code and writes the JSON error
-// envelope. Falls back to 500 InternalError for unknown codes.
-func WriteErrorFromCode(w http.ResponseWriter, code string) {
-	msg, ok := awserrors.ErrorLookup[code]
-	if !ok {
-		slog.Warn("Unknown EKS error code", "code", code)
-		WriteJSONError(w, awserrors.ErrorInternalError, "Internal error", http.StatusInternalServerError)
-		return
-	}
-	httpStatus := msg.HTTPCode
-	if httpStatus == 0 {
-		httpStatus = http.StatusInternalServerError
-	}
-	WriteJSONError(w, code, msg.Message, httpStatus)
-}

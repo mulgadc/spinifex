@@ -327,6 +327,28 @@ if [ "$MANAGEMENT" = true ]; then
         sleep 1
     done
 
+    # Wait for the Southbound DB to be serving before ovn-controller (Step 5)
+    # dials it. On a single node ovn-controller races a fresh SB RAFT election
+    # with no join step to absorb the window — attaching before the leader is
+    # elected (and before northd writes the gateway logical flows) leaves it with
+    # a partial datapath that never reconverges. Gate on SB reachable and, when
+    # clustered, an elected leader.
+    for i in $(seq 1 30); do
+        if sudo ovn-sbctl --timeout=2 show >/dev/null 2>&1; then
+            if [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
+                break
+            fi
+            SB_LEADER=$(sudo ovs-appctl -t /var/run/ovn/ovnsb_db.ctl \
+                cluster/status OVN_Southbound 2>/dev/null \
+                | awk '/^Leader:/{print $2; exit}')
+            if [ -n "$SB_LEADER" ] && [ "$SB_LEADER" != "unknown" ]; then
+                break
+            fi
+        fi
+        echo "  Waiting for OVN SB DB leader... ($i/30)"
+        sleep 1
+    done
+
     # Set the NB/SB client listen addresses. set-connection writes through RAFT
     # (replicated cluster-wide), so it only runs on the create node — a joining
     # node would redirect to the leader, which the init node already configured.
@@ -700,6 +722,25 @@ echo "  ovn-controller log level: file:warn (via systemd drop-in)"
 
 sudo systemctl restart ovn-controller
 echo "  ovn-controller: started"
+
+# Force a full datapath recompute once ovn-controller has connected to the SB.
+# On a fresh single-node RAFT the controller can attach mid-election and program
+# a partial datapath (SNAT ct-commit without output/delivery), then never
+# reconverge. Recomputing after the SB connection is up rebuilds all OpenFlow
+# from the converged Southbound. Compute nodes race a remote SB too, so this
+# runs on every node.
+for i in $(seq 1 30); do
+    CTRL_STATUS=$(sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-controller \
+        connection-status 2>/dev/null)
+    if [ "$CTRL_STATUS" = "connected" ]; then
+        break
+    fi
+    echo "  Waiting for ovn-controller SB connection... ($i/30)"
+    sleep 1
+done
+sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-controller inc-engine/recompute \
+    2>/dev/null || true
+echo "  ovn-controller: forced datapath recompute"
 
 # --- Step 6: Sysctl tuning ---
 echo ""

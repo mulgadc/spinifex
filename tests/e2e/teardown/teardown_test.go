@@ -1,6 +1,6 @@
 //go:build e2e
 
-// Package teardown is the run-scoped cleanup sweep (mulga-siv-277). It runs as
+// Package teardown is the run-scoped cleanup sweep. It runs as
 // the final suite of an e2e run: every resource the Ensure* fixtures created
 // carries the e2e:run=<run-id> tag, and this suite reclaims anything still
 // tagged — covering leaks from a crashed suite, an interrupted run, or a

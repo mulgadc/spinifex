@@ -97,6 +97,9 @@ type EKSServiceDeps struct {
 // Workers use the customer-owned RunInstances path (no ManagedBy tag, no mgmt NIC).
 type WorkerLauncher interface {
 	RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
+	// RunWorkerInstanceOnNode launches the worker on a specific host for nodegroup
+	// host spread. An empty nodeID launches on the local node like RunWorkerInstance.
+	RunWorkerInstanceOnNode(nodeID string, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
 	TerminateWorkerInstances(instanceIDs []string, accountID string) error
 }
 
@@ -305,6 +308,14 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 	}
 	if len(s.deps.MasterKey) == 0 {
 		missing = append(missing, "MasterKey")
+	}
+	// IAM is built from MasterKey but can stay nil when its KV backend was not
+	// ready at boot. Gate on the resolved ensurer (deps.IAM or the lazy
+	// IAMProvider) so a node without it rejects nodegroup orchestration instead
+	// of launching workers with no instance profile (no IMDS role, so the
+	// load-balancer controller cannot create an ALB).
+	if s.iamEnsurer() == nil {
+		missing = append(missing, "IAM")
 	}
 	if s.deps.GatewayBaseURL == "" {
 		missing = append(missing, "GatewayBaseURL")
@@ -585,6 +596,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	}
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
+	meta.KonnTargetGroupArn = nlb.KonnTargetGroupArn
 
 	// Persist NLB ARNs early so DeleteCluster can reclaim them on any later failure.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
@@ -691,8 +703,14 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	for _, n := range cpNodes {
 		cpENIIPs = append(cpENIIPs, n.ENIIP)
 	}
-	if err := RegisterClusterTargets(s.deps.NLB, sysAcct, nlb.TargetGroupArn, cpENIIPs); err != nil {
+	if err := RegisterClusterTargets(s.deps.NLB, sysAcct, nlb.TargetGroupArn, cpENIIPs, k3sAPIServerPort); err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, meta, "register NLB targets", err)
+		return
+	}
+	// Register the same CP ENIs on the konnectivity TG (:8132): worker agents dial
+	// the NLB private endpoint and the NLB fans them to every apiserver's konn-server.
+	if err := RegisterClusterTargets(s.deps.NLB, sysAcct, nlb.KonnTargetGroupArn, cpENIIPs, konnectivityAgentPort); err != nil {
+		s.failClusterLaunch(acctKV, name, accountID, meta, "register konnectivity NLB targets", err)
 		return
 	}
 
@@ -976,7 +994,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		// Deregister is best-effort: DeleteClusterNLB tears down the whole NLB
 		// + target group, so a stale target registration cannot leak past it.
 		if meta.NLBTargetGroupArn != "" && meta.ControlPlaneENIIP != "" {
-			if err := DeregisterClusterTarget(s.deps.NLB, infraAcct, meta.NLBTargetGroupArn, meta.ControlPlaneENIIP); err != nil {
+			if err := DeregisterClusterTarget(s.deps.NLB, infraAcct, meta.NLBTargetGroupArn, meta.ControlPlaneENIIP, k3sAPIServerPort); err != nil {
 				slog.Warn("purgeClusterInfra: deregister NLB target failed", "cluster", name, "err", err)
 			}
 		}

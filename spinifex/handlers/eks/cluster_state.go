@@ -78,6 +78,7 @@ type ClusterMeta struct {
 	EgressEIPPublicIP     string    `json:"egressEipPublicIp,omitempty"`
 	NLBArn                string    `json:"nlbArn,omitempty"`
 	NLBTargetGroupArn     string    `json:"nlbTargetGroupArn,omitempty"`
+	KonnTargetGroupArn    string    `json:"konnTargetGroupArn,omitempty"`
 	CreatedAt             time.Time `json:"createdAt"`
 	// DeletingSince stamps when the cluster entered DELETING. The teardown
 	// backstop reaper waits out a healthy synchronous DeleteCluster (min-age)

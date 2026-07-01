@@ -30,6 +30,10 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 	policy := f.rolePolicies[eksServerSystemRoleName]
 	assert.Contains(t, policy, "eks:PublishInternal")
 	assert.Contains(t, policy, "eks:ListInternalAddons")
+	// The eks-token-webhook relays get-token bearer tokens to the token-review
+	// broker with these IMDS creds; without this action the gateway 403s the
+	// relay and every external `kubectl` gets 401.
+	assert.Contains(t, policy, "eks:WebhookTokenReview")
 
 	require.NotNil(t, f.profiles[eksServerSystemRoleName])
 	assert.Len(t, f.profiles[eksServerSystemRoleName].Roles, 1)

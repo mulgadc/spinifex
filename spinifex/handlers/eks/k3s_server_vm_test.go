@@ -411,10 +411,47 @@ func TestBuildK3sUserData_AdvertiseAddressFallsBackToEndpoint(t *testing.T) {
 	assert.Contains(t, ud, "advertise-address: 203.0.113.9")
 }
 
-func TestBuildK3sUserData_EgressSelectorClusterMode(t *testing.T) {
+func TestBuildK3sUserData_EgressSelectorDisabledWithKonnConfig(t *testing.T) {
 	ud := buildK3sUserData(validK3sInput())
-	assert.Contains(t, ud, "egress-selector-mode: cluster",
-		"managed-CP apiserver must tunnel pod/service traffic (webhooks) through the agent")
+	assert.Contains(t, ud, "egress-selector-mode: disabled",
+		"k3s remotedialer is off; the apiserver egress rides upstream konnectivity")
+	assert.NotContains(t, ud, "egress-selector-mode: cluster")
+	assert.Contains(t, ud, "egress-selector-config-file="+k3sEgressSelectorConfigPath,
+		"apiserver cluster egress must point at the konnectivity UDS")
+	assert.Contains(t, ud, "udsName: "+konnectivityUDSPath,
+		"the EgressSelectorConfiguration file routes the cluster egress to the konn socket")
+}
+
+func TestBuildK3sUserData_KonnectivityEnv(t *testing.T) {
+	in := validK3sInput()
+	in.PrivateEndpointIP = "10.32.100.4"
+	in.EndpointIP = "203.0.113.9"
+	in.KonnServerCount = 3
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "EKS_KONNECTIVITY_HOST=10.32.100.4",
+		"agents dial the private-endpoint IP to reach the konnectivity-server")
+	assert.Contains(t, ud, "EKS_KONNECTIVITY_SERVER_COUNT=3",
+		"agents must learn the apiserver replica count to tunnel to every replica")
+	assert.Contains(t, ud, "EKS_KONNECTIVITY_SANS=10.32.100.4,203.0.113.9,"+in.NLBDNS)
+}
+
+func TestBuildK3sUserData_KonnServerCountDefaultsToOne(t *testing.T) {
+	in := validK3sInput()
+	in.KonnServerCount = 0
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "EKS_KONNECTIVITY_SERVER_COUNT=1",
+		"a zero/unset count means a single apiserver")
+}
+
+func TestLaunchK3sServerVM_SingleControlPlaneENI(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
+	require.NoError(t, err)
+	require.Len(t, vpc.createCalls, 1, "only the primary CP ENI; konnectivity needs no extra NIC")
+	require.Len(t, inst.launchCalls, 1)
+	assert.Empty(t, inst.launchCalls[0].ExtraENIs)
 }
 
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
@@ -655,7 +692,7 @@ func TestTerminateK3sServerVM_ENINotFoundIsIdempotent(t *testing.T) {
 }
 
 func TestTerminateK3sServerVM_ENIInUseDetachedThenDeletes(t *testing.T) {
-	// mulga-siv-407: the ENI record still shows the attachment (VM gone but
+	// The ENI record still shows the attachment (VM gone but
 	// fields never cleared), so a plain force=false delete returns InUse forever
 	// and wedges EKSDeletingReaper. Teardown owns the ENI: detach clears the
 	// stale attachment, then the delete succeeds — no retry loop.

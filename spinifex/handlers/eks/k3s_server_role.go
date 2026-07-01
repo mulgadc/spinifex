@@ -17,9 +17,11 @@ const (
 	eksServerInlinePolicyName = "spinifex-eks-server-internal"
 
 	// eksServerInlinePolicy grants only the internal gateway actions the CP VM
-	// calls: PublishInternal (bootstrap/state) and ListInternalAddons (addon
-	// fetch). The gateway evaluates these per request against the role's policies.
-	eksServerInlinePolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["eks:PublishInternal","eks:ListInternalAddons"],"Resource":"*"}]}`
+	// calls: PublishInternal (bootstrap/state), ListInternalAddons (addon fetch),
+	// and WebhookTokenReview (the eks-token-webhook relays `aws eks get-token`
+	// bearer tokens to the token-review broker for host-side STS verification).
+	// The gateway evaluates these per request against the role's policies.
+	eksServerInlinePolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["eks:PublishInternal","eks:ListInternalAddons","eks:WebhookTokenReview"],"Resource":"*"}]}`
 )
 
 // ensureCPInstanceProfile returns the CP instance-profile ARN, or "" to signal

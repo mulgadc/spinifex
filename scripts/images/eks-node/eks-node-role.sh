@@ -53,6 +53,9 @@ case "${ROLE}" in
         log "configuring server role"
         rc-update add eks-token-webhook default
         rc-update add k3s default
+        # konnectivity-server fronts apiserver egress; every server replica runs
+        # one so the agent's per-replica tunnel always lands a live server.
+        rc-update add konnectivity-server default
         rc-update add k3s-first-boot default
         rc-update add mulga-eks-state-report default
         # Managed-addon delivery runs only on the primary server: it renders
@@ -62,6 +65,7 @@ case "${ROLE}" in
         rc-update add mulga-eks-addon-sync default
         rc-service eks-token-webhook start
         rc-service k3s start
+        rc-service konnectivity-server start
         rc-service k3s-first-boot start
         rc-service mulga-eks-state-report start
         rc-service mulga-eks-addon-sync start
@@ -70,9 +74,11 @@ case "${ROLE}" in
         log "configuring server-join role"
         rc-update add eks-token-webhook default
         rc-update add k3s default
+        rc-update add konnectivity-server default
         rc-update add mulga-eks-state-report default
         rc-service eks-token-webhook start
         rc-service k3s start
+        rc-service konnectivity-server start
         rc-service mulga-eks-state-report start
         ;;
     agent)

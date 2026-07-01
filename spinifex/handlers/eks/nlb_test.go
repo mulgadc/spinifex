@@ -186,10 +186,13 @@ func (f *fakeNLBProvisioner) CreateTargetGroup(input *elbv2.CreateTargetGroupInp
 	if f.createTGErr != nil {
 		return nil, f.createTGErr
 	}
-	if f.createTGOut == nil {
+	out := f.createTGOut
+	if out == nil {
+		// Build per-call so distinct names (cp + konn) get distinct ARNs and both
+		// register for idempotent re-entry — a single cached output mis-serves both.
 		name := aws.StringValue(input.Name)
 		arn := "arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/" + name + "/tg-001"
-		f.createTGOut = &elbv2.CreateTargetGroupOutput{
+		out = &elbv2.CreateTargetGroupOutput{
 			TargetGroups: []*elbv2.TargetGroup{{
 				TargetGroupArn:  aws.String(arn),
 				TargetGroupName: aws.String(name),
@@ -199,7 +202,6 @@ func (f *fakeNLBProvisioner) CreateTargetGroup(input *elbv2.CreateTargetGroupInp
 			}},
 		}
 	}
-	out := f.createTGOut
 	if len(out.TargetGroups) > 0 {
 		name := aws.StringValue(out.TargetGroups[0].TargetGroupName)
 		f.tgByName[name] = out.TargetGroups[0]
@@ -333,15 +335,20 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	assert.Equal(t, []string{"subnet-aaa", "subnet-bbb"}, aws.StringValueSlice(lbIn.Subnets))
 	assertELBv2TaggedAsEKS(t, lbIn.Tags, "alpha")
 
-	require.Len(t, nlbp.createTGCalls, 1)
+	require.Len(t, nlbp.createTGCalls, 2)
 	tgIn := nlbp.createTGCalls[0]
 	assert.Equal(t, "eks-alpha-cp", aws.StringValue(tgIn.Name))
 	assert.Equal(t, elbv2.ProtocolEnumTcp, aws.StringValue(tgIn.Protocol))
 	assert.Equal(t, k3sAPIServerPort, aws.Int64Value(tgIn.Port))
 	assert.Equal(t, elbv2.TargetTypeEnumIp, aws.StringValue(tgIn.TargetType))
 	assertELBv2TaggedAsEKS(t, tgIn.Tags, "alpha")
+	// Second TG is the konnectivity :8132 group fronting the CP konnectivity-servers.
+	konnTGIn := nlbp.createTGCalls[1]
+	assert.Equal(t, "eks-alpha-konn", aws.StringValue(konnTGIn.Name))
+	assert.Equal(t, konnectivityAgentPort, aws.Int64Value(konnTGIn.Port))
+	assert.NotEmpty(t, out.KonnTargetGroupArn)
 
-	require.Len(t, nlbp.createListenerCalls, 2)
+	require.Len(t, nlbp.createListenerCalls, 3)
 	lstIn := nlbp.createListenerCalls[0]
 	assert.Equal(t, out.LoadBalancerArn, aws.StringValue(lstIn.LoadBalancerArn))
 	assert.Equal(t, elbv2.ProtocolEnumTcp, aws.StringValue(lstIn.Protocol))
@@ -355,6 +362,11 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	assert.Equal(t, elbv2.ProtocolEnumTcp, aws.StringValue(apiLstIn.Protocol))
 	require.Len(t, apiLstIn.DefaultActions, 1)
 	assert.Equal(t, out.TargetGroupArn, aws.StringValue(apiLstIn.DefaultActions[0].TargetGroupArn))
+	// Third listener serves :8132 to the konnectivity TG.
+	konnLstIn := nlbp.createListenerCalls[2]
+	assert.Equal(t, konnectivityAgentPort, aws.Int64Value(konnLstIn.Port))
+	require.Len(t, konnLstIn.DefaultActions, 1)
+	assert.Equal(t, out.KonnTargetGroupArn, aws.StringValue(konnLstIn.DefaultActions[0].TargetGroupArn))
 }
 
 func TestEnsureClusterNLB_NoFrontendIPFailsLoud(t *testing.T) {
@@ -516,7 +528,7 @@ func TestEnsureClusterNLB_SetIngressErrorSurfaced(t *testing.T) {
 func TestRegisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	err := RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42")
+	err := RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.registerCalls, 1)
 
@@ -529,8 +541,8 @@ func TestRegisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 
 func TestRegisterClusterTarget_EmptyInputsRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "", "10.0.1.42"))
-	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", ""))
+	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "", "10.0.1.42", k3sAPIServerPort))
+	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "", k3sAPIServerPort))
 	assert.Empty(t, nlbp.registerCalls)
 }
 
@@ -538,7 +550,7 @@ func TestRegisterClusterTargets_RegistersEveryENIIPInOneCall(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
 	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha",
-		[]string{"10.0.1.10", "10.0.2.11", "10.0.3.12"})
+		[]string{"10.0.1.10", "10.0.2.11", "10.0.3.12"}, k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.registerCalls, 1)
 
@@ -555,7 +567,7 @@ func TestRegisterClusterTargets_SkipsEmptyIPs(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
 	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha",
-		[]string{"10.0.1.10", "", "10.0.3.12"})
+		[]string{"10.0.1.10", "", "10.0.3.12"}, k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.registerCalls, 1)
 	require.Len(t, nlbp.registerCalls[0].Targets, 2)
@@ -565,9 +577,9 @@ func TestRegisterClusterTargets_SkipsEmptyIPs(t *testing.T) {
 
 func TestRegisterClusterTargets_EmptyInputsRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "", []string{"10.0.1.10"}))
-	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", nil))
-	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"", ""}))
+	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "", []string{"10.0.1.10"}, k3sAPIServerPort))
+	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", nil, k3sAPIServerPort))
+	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"", ""}, k3sAPIServerPort))
 	assert.Empty(t, nlbp.registerCalls)
 }
 
@@ -575,7 +587,7 @@ func TestRegisterClusterTargets_RegisterErrorSurfaced(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 	nlbp.registerErr = errors.New("TargetGroupNotFound")
 
-	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"10.0.1.10"})
+	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"10.0.1.10"}, k3sAPIServerPort)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "arn:tg/alpha")
 }
@@ -583,7 +595,7 @@ func TestRegisterClusterTargets_RegisterErrorSurfaced(t *testing.T) {
 func TestDeregisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	err := DeregisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42")
+	err := DeregisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.deregisterCalls, 1)
 
@@ -602,8 +614,13 @@ func TestDeleteClusterNLB_DeletesBoth(t *testing.T) {
 	require.NoError(t, DeleteClusterNLB(nlbp, "111122223333", "alpha"))
 	require.Len(t, nlbp.deleteLBCalls, 1)
 	assert.Equal(t, out.LoadBalancerArn, aws.StringValue(nlbp.deleteLBCalls[0].LoadBalancerArn))
-	require.Len(t, nlbp.deleteTGCalls, 1)
-	assert.Equal(t, out.TargetGroupArn, aws.StringValue(nlbp.deleteTGCalls[0].TargetGroupArn))
+	require.Len(t, nlbp.deleteTGCalls, 2, "control-plane TG + konnectivity TG")
+	deletedTGs := map[string]bool{}
+	for _, d := range nlbp.deleteTGCalls {
+		deletedTGs[aws.StringValue(d.TargetGroupArn)] = true
+	}
+	assert.True(t, deletedTGs[out.TargetGroupArn], "control-plane TG deleted")
+	assert.True(t, deletedTGs[out.KonnTargetGroupArn], "konnectivity TG deleted")
 }
 
 func TestDeleteClusterNLB_MissingResourcesNoOp(t *testing.T) {
@@ -624,7 +641,7 @@ func TestDeleteClusterNLB_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delete NLB eks-alpha")
 	assert.Len(t, nlbp.deleteLBCalls, 1)
-	assert.Len(t, nlbp.deleteTGCalls, 1, "TG delete should still be attempted after LB delete fails")
+	assert.Len(t, nlbp.deleteTGCalls, 2, "both TG deletes still attempted after LB delete fails")
 }
 
 func assertELBv2TaggedAsEKS(t *testing.T, tgs []*elbv2.Tag, clusterName string) {

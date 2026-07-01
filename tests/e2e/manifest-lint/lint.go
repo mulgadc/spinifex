@@ -1,5 +1,4 @@
-// Package manifestlint implements the e2e manifest drift guards (Bead 5 of
-// docs/development/improvements/e2e-targeted-suite-selection.md):
+// Package manifestlint implements the e2e manifest drift guards:
 //
 //   - Fixture lint: every direct resource-create AWS call in a suite test
 //     (e.g. c.EC2.RunInstances) should go through a harness.Ensure* fixture so

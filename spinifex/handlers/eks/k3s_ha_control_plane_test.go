@@ -1,8 +1,10 @@
 package handlers_eks
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -13,10 +15,54 @@ import (
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// serveNodeStatus replies to spinifex.node.status fan-outs with the given node
+// snapshots so the NATS host scheduler can be exercised end-to-end.
+func serveNodeStatus(t *testing.T, nc *nats.Conn, nodes []types.NodeStatusResponse) {
+	t.Helper()
+	sub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
+		for _, n := range nodes {
+			data, _ := json.Marshal(n)
+			_ = nc.Publish(msg.Reply, data)
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+}
+
+// TestNATSHostScheduler_SchedulableHosts covers both fit paths: customer types
+// fit on advertised per-type Available; system types fit on raw headroom.
+func TestNATSHostScheduler_SchedulableHosts(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	serveNodeStatus(t, nc, []types.NodeStatusResponse{
+		{
+			Node: "nodeA", TotalVCPU: 32, TotalMemGB: 128,
+			InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 3}},
+		},
+		{
+			Node: "nodeB", TotalVCPU: 0, TotalMemGB: 0,
+			InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 0}},
+		},
+	})
+	sched := NewNATSHostScheduler(nc)
+
+	// Customer type: only the node advertising free capacity is schedulable.
+	require.Equal(t, []string{"nodeA"}, sched.SchedulableHosts("t3.medium"))
+
+	// System type: fit is decided by raw headroom, so the drained node drops out.
+	sysHosts := sched.SchedulableHosts(defaultK3sServerInstanceType)
+	sort.Strings(sysHosts)
+	require.Equal(t, []string{"nodeA"}, sysHosts)
+
+	// Unknown system type yields no hosts.
+	require.Empty(t, sched.SchedulableHosts("sys.bogus"))
+}
 
 // --- HA control-plane orchestrator test doubles ---
 

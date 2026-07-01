@@ -24,6 +24,7 @@ import (
 type fakeWorkerLauncher struct {
 	mu             sync.Mutex
 	runCalls       []*ec2.RunInstancesInput
+	runNodes       []string
 	terminateCalls [][]string
 
 	nextID  int
@@ -37,10 +38,15 @@ func newFakeWorkerLauncher() *fakeWorkerLauncher {
 	return &fakeWorkerLauncher{}
 }
 
-func (f *fakeWorkerLauncher) RunWorkerInstance(input *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
+func (f *fakeWorkerLauncher) RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
+	return f.RunWorkerInstanceOnNode("", input, accountID)
+}
+
+func (f *fakeWorkerLauncher) RunWorkerInstanceOnNode(nodeID string, input *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runCalls = append(f.runCalls, input)
+	f.runNodes = append(f.runNodes, nodeID)
 	if f.runErr != nil {
 		return nil, f.runErr
 	}
@@ -550,4 +556,61 @@ func TestUpdateNodegroupVersion_NotImplemented(t *testing.T) {
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+}
+
+// TestSelectWorkerHost_NoSchedulerOrCapacity returns "" so the caller falls back
+// to a local launch when no scheduler is wired or no host has free capacity.
+func TestSelectWorkerHost_NoSchedulerOrCapacity(t *testing.T) {
+	s := &EKSServiceImpl{deps: EKSServiceDeps{}}
+	require.Equal(t, "", s.selectWorkerHost("t3.medium", nil))
+
+	s = &EKSServiceImpl{deps: EKSServiceDeps{Scheduler: &fakeHostScheduler{}}}
+	require.Equal(t, "", s.selectWorkerHost("t3.medium", nil))
+}
+
+// mapHostScheduler is a HostScheduler stub with an explicit instance->host map,
+// so a test can give every worker a distinct ID (which the fakeHostScheduler's
+// "i-<node>" convention cannot, collapsing same-host workers).
+type mapHostScheduler struct {
+	hosts     []string
+	placement map[string]string
+}
+
+var _ HostScheduler = (*mapHostScheduler)(nil)
+
+func (m *mapHostScheduler) SchedulableHosts(string) []string { return m.hosts }
+
+func (m *mapHostScheduler) InstanceHosts(ids []string) map[string]string {
+	out := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if h, ok := m.placement[id]; ok {
+			out[id] = h
+		}
+	}
+	return out
+}
+
+// TestSelectWorkerHost_SpreadsThenPacks confirms sequential single-worker
+// launches fan out one-per-host before doubling up, the fix for all workers
+// landing on a single node.
+func TestSelectWorkerHost_SpreadsThenPacks(t *testing.T) {
+	hosts := []string{"nodeA", "nodeB", "nodeC"}
+	sched := &mapHostScheduler{hosts: hosts, placement: map[string]string{}}
+	s := &EKSServiceImpl{deps: EKSServiceDeps{Scheduler: sched}}
+
+	placed := map[string]int{}
+	var workerIDs []string
+	for i := range 6 {
+		host := s.selectWorkerHost("t3.medium", workerIDs)
+		require.Contains(t, hosts, host)
+		placed[host]++
+		id := "i-w" + strconv.Itoa(i)
+		sched.placement[id] = host
+		workerIDs = append(workerIDs, id)
+	}
+
+	// 6 workers across 3 hosts spread evenly: exactly 2 per host, none starved.
+	for _, h := range hosts {
+		require.Equal(t, 2, placed[h], "host %s should hold 2 of 6 workers", h)
+	}
 }

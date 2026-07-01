@@ -595,7 +595,7 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 // its pool and clear the instance's EIP fields. The vm.Manager teardown
 // (Terminate/MarkFailed → ReleasePublicIP) only knows the externalIPAM path, so
 // without this an internet-facing system VM's allocated+associated EIP would
-// leak when its instance is torn down (mulga-siv-293).
+// leak when its instance is torn down.
 func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
 	d := createVPCTestDaemon(t)
 

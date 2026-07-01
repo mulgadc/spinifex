@@ -1237,7 +1237,9 @@ func TestUpdateVolumeState_PreservesVBState(t *testing.T) {
 	err := svc.UpdateVolumeState("vol-vbstate", "in-use", "i-preserve", "/dev/nbd0")
 	require.NoError(t, err)
 
-	// Re-read the raw JSON to verify VBState fields survived
+	// config.json is owned by the live VB and must be left untouched: VBState
+	// fields survive and its embedded State is NOT rewritten (the control plane's
+	// attachment state lives in state.json now).
 	getResult, err := store.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("vol-vbstate/config.json"),
@@ -1252,8 +1254,14 @@ func TestUpdateVolumeState_PreservesVBState(t *testing.T) {
 
 	assert.Equal(t, uint32(4096), state.BlockSize)
 	assert.Equal(t, uint64(5), state.SeqNum)
-	assert.Equal(t, "in-use", state.VolumeConfig.VolumeMetadata.State)
-	assert.Equal(t, "i-preserve", state.VolumeConfig.VolumeMetadata.AttachedInstance)
+	assert.Equal(t, "available", state.VolumeConfig.VolumeMetadata.State,
+		"UpdateVolumeState must not rewrite config.json's embedded State")
+
+	// The attachment state is read back through the state.json overlay.
+	cfg, err := svc.GetVolumeConfig("vol-vbstate")
+	require.NoError(t, err)
+	assert.Equal(t, "in-use", cfg.VolumeMetadata.State)
+	assert.Equal(t, "i-preserve", cfg.VolumeMetadata.AttachedInstance)
 }
 
 // --- Group 6: listAllVolumeIDs tests ---
@@ -1371,7 +1379,7 @@ func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 	svc.snapshotKV = kv
 
 	// Drift: a detach/terminate left State empty with no attachment. The volume
-	// is not in use and must be deletable, not VolumeInUse (mulga-siv-409).
+	// is not in use and must be deletable, not VolumeInUse.
 	createVolumeInStoreWithMeta(t, store, "vol-drift", viperblock.VolumeMetadata{
 		VolumeID: "vol-drift",
 		SizeGiB:  10,
@@ -1400,7 +1408,7 @@ func TestDescribeVolumes_EmptyStateDerivedFromAttachment(t *testing.T) {
 		got[aws.StringValue(v.VolumeId)] = aws.StringValue(v.State)
 	}
 	assert.Equal(t, "available", got["vol-empty-unattached"], "empty state + no attachment renders available")
-	assert.Equal(t, "in-use", got["vol-empty-attached"], "empty state + attachment must not be masked as available (mulga-siv-409)")
+	assert.Equal(t, "in-use", got["vol-empty-attached"], "empty state + attachment must not be masked as available")
 }
 
 func TestUpdateVolumeState_EmptyUnattachedNormalizesToAvailable(t *testing.T) {
@@ -1409,7 +1417,7 @@ func TestUpdateVolumeState_EmptyUnattachedNormalizesToAvailable(t *testing.T) {
 	seedVolume(t, svc, "vol-norm", "in-use", "i-x")
 
 	// A detach writeback that clears the attachment without a state must not
-	// strand the volume with an empty State (mulga-siv-409).
+	// strand the volume with an empty State.
 	require.NoError(t, svc.UpdateVolumeState("vol-norm", "", "", ""))
 	cfg, err := svc.GetVolumeConfig("vol-norm")
 	require.NoError(t, err)

@@ -1,0 +1,94 @@
+#!/sbin/openrc-run
+# Konnectivity server (apiserver-network-proxy) — the apiserver egress proxy for
+# the Mulga EKS control plane. The kube-apiserver's `cluster` egress selector
+# (egress-selector-config.yaml) routes pod/kubelet/webhook traffic to this
+# server's UDS; konnectivity-agents on the workers dial in over :8132 and the
+# egress rides back down the agent-initiated reverse tunnel. Server-role only;
+# enabled by eks-node-role. Runs as root to bind the UDS the apiserver reads.
+
+description="Konnectivity server (Mulga EKS apiserver egress proxy)"
+
+KONN_DIR=/var/lib/spinifex-eks/konnectivity
+KONN_UDS=/run/konnectivity/konnectivity-server.socket
+ENVFILE=/etc/spinifex-eks/first-boot.env
+K3S_CA=/var/lib/rancher/k3s/server/tls/server-ca.crt
+K3S_CA_KEY=/var/lib/rancher/k3s/server/tls/server-ca.key
+KUBECONFIG_FILE=/etc/rancher/k3s/k3s.yaml
+
+# server-count is the apiserver replica count: each agent holds a tunnel to every
+# replica, so egress from any apiserver always resolves (the HA-correct fan-out).
+# Seeded by the launcher in first-boot.env; default 1 for a single control plane.
+_server_count=1
+if [ -f "${ENVFILE}" ]; then
+    _sc=$(awk -F= '/^EKS_KONNECTIVITY_SERVER_COUNT=/{print $2}' "${ENVFILE}")
+    [ -n "${_sc}" ] && _server_count="${_sc}"
+fi
+
+command="/usr/local/bin/konnectivity-server"
+command_args="--logtostderr=true
+ --uds-name=${KONN_UDS}
+ --delete-existing-uds-file
+ --cluster-cert=${KONN_DIR}/tls.crt
+ --cluster-key=${KONN_DIR}/tls.key
+ --server-count=${_server_count}
+ --mode=grpc
+ --server-port=0
+ --agent-port=8132
+ --admin-port=8093
+ --health-port=8092
+ --kubeconfig=${KUBECONFIG_FILE}
+ --authentication-audience=system:konnectivity-server
+ --agent-namespace=kube-system
+ --agent-service-account=konnectivity-agent
+ --proxy-strategies=destHost,default"
+pidfile="/run/konnectivity-server.pid"
+
+# Supervise: a transient exit must self-heal, or apiserver egress (webhooks,
+# exec, logs) stays broken until the next boot and the cluster wedges.
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+output_log="/var/log/konnectivity-server.log"
+error_log="/var/log/konnectivity-server.log"
+
+depend() {
+    need net
+    after k3s
+}
+
+start_pre() {
+    mkdir -p /run/konnectivity "${KONN_DIR}"
+
+    # Wait for k3s to write the server CA (+ key) and admin kubeconfig: the CA
+    # signs the serving cert agents validate, the kubeconfig is the TokenReview
+    # client for agent SA-token auth. Bounded; without them konnectivity is inert.
+    i=0
+    while [ "${i}" -lt 120 ]; do
+        if [ -r "${K3S_CA}" ] && [ -r "${K3S_CA_KEY}" ] && [ -r "${KUBECONFIG_FILE}" ]; then
+            break
+        fi
+        i=$((i + 2))
+        sleep 2
+    done
+    if [ ! -r "${K3S_CA}" ] || [ ! -r "${K3S_CA_KEY}" ] || [ ! -r "${KUBECONFIG_FILE}" ]; then
+        eerror "k3s server CA / admin kubeconfig not present after ${i}s"
+        return 1
+    fi
+
+    # Mint (or reuse) the serving cert from the k3s server CA, SANed to the NLB
+    # endpoints agents dial. That CA is the in-pod ca.crt the agent already trusts,
+    # so no separate CA distribution is needed.
+    sans=""
+    if [ -f "${ENVFILE}" ]; then
+        sans=$(awk -F= '/^EKS_KONNECTIVITY_SANS=/{print $2}' "${ENVFILE}")
+    fi
+    if [ -z "${sans}" ]; then
+        eerror "EKS_KONNECTIVITY_SANS empty; agents would fail server cert validation"
+        return 1
+    fi
+    if ! eks-konnectivity-cert -dir "${KONN_DIR}" -ca-cert "${K3S_CA}" \
+            -ca-key "${K3S_CA_KEY}" -cn konnectivity-server -sans "${sans}" >/dev/null; then
+        eerror "failed to mint konnectivity serving cert"
+        return 1
+    fi
+}

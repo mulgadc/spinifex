@@ -57,8 +57,9 @@ func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROnAPIServerPorts(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, "sg-pe-001", sgID)
 
-	// :443 for kubectl/SDK; :6443 for worker pods hitting the in-cluster kubernetes Endpoints.
-	require.Len(t, sgp.authorizeCalls, 2)
+	// :443 for kubectl/SDK; :6443 for worker pods hitting the in-cluster kubernetes
+	// Endpoints; :8132 for worker konnectivity-agents dialing the konnectivity-server.
+	require.Len(t, sgp.authorizeCalls, 3)
 	ports := map[int64]bool{}
 	for _, in := range sgp.authorizeCalls {
 		assert.Equal(t, "sg-pe-001", aws.StringValue(in.GroupId))
@@ -72,6 +73,7 @@ func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROnAPIServerPorts(t *testing.T)
 	}
 	assert.True(t, ports[clusterNLBListenPort], "admits :443")
 	assert.True(t, ports[k3sAPIServerPort], "admits :6443")
+	assert.True(t, ports[konnectivityAgentPort], "admits :8132")
 }
 
 func TestEnsurePrivateEndpointSG_EmptyInputsRejected(t *testing.T) {

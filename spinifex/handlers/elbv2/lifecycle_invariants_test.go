@@ -181,7 +181,7 @@ func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
 // dependency guard): DeleteTargetGroup may block on ResourceInUse ONLY when a
 // LIVE listener/rule (one whose owning LB still exists) forwards to the TG. A
 // rule orphaned by a vanished LB must NOT pin the TG — that is the permanent
-// trap mulga-siv-172 reported. Locks the liveLB/liveListener skip both ways so a
+// trap this guard prevents. Locks the liveLB/liveListener skip both ways so a
 // maintainer cannot regress the in-use scan back to a global rule sweep.
 func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
 	svc := setupTestService(t)
@@ -202,7 +202,7 @@ func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
 	}))
 
 	_, err = svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: aws.String(orphanTGArn)}, testAccountID)
-	require.NoErrorf(t, err, "ADR-0002 §3 live-only guard: a rule orphaned by a vanished LB must NOT pin the TG as ResourceInUse (mulga-siv-172 regression)")
+	require.NoErrorf(t, err, "ADR-0002 §3 live-only guard: a rule orphaned by a vanished LB must NOT pin the TG as ResourceInUse")
 
 	// Live-rule TG: forwarded to by a listener whose LB still exists → ResourceInUse.
 	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("rlc3-lb")}, testAccountID)

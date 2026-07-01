@@ -1,7 +1,6 @@
 package main
 
-// Stage 2 of docs/development/improvements/e2e-go-failure-analysis.md:
-// for each failure surfaced by Stage 1, materialise a per-failure bundle
+// Stage 2: for each failure surfaced by Stage 1, materialise a per-failure bundle
 // directory containing the failure summary, a time-window slice of the
 // daemon journal, a testcase-window slice of the suite's stdout log, and
 // any per-test artifacts the harness already dumped at run-time.

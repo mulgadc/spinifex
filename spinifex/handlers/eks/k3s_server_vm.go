@@ -74,6 +74,16 @@ const (
 	// k3sConfigPath is the K3s server config file written by cloud-init.
 	k3sConfigPath = "/etc/rancher/k3s/config.yaml"
 
+	// k3sEgressSelectorConfigPath is the EgressSelectorConfiguration the apiserver
+	// loads via --egress-selector-config-file. It points the `cluster` egress at the
+	// konnectivity-server UDS, so apiserver→pod/kubelet traffic (exec/logs/webhooks)
+	// rides the agent-initiated reverse tunnel instead of a direct (unroutable) IP.
+	k3sEgressSelectorConfigPath = "/etc/rancher/k3s/egress-selector-config.yaml"
+
+	// konnectivityUDSPath is the unix socket the konnectivity-server listens on for
+	// apiserver egress. Must match the udsName in the EgressSelectorConfiguration.
+	konnectivityUDSPath = "/run/konnectivity/konnectivity-server.socket"
+
 	// k3sResolvConfPath is the on-VM resolver path. The Alpine AMI's dhcpcd hook
 	// cannot create /etc/resolv.conf, so cloud-init writes a static resolver here.
 	k3sResolvConfPath = "/etc/resolv.conf"
@@ -143,6 +153,11 @@ type K3sServerInput struct {
 	// ServerURL boots this VM as a JOIN server joining the quorum at the given endpoint.
 	// Empty = first server (cluster-init). Non-empty requires JoinToken.
 	ServerURL string
+	// KonnServerCount is the number of apiserver replicas in this cluster (1 for a
+	// single CP, len(nodes) for an HA spread). Surfaced as
+	// EKS_KONNECTIVITY_SERVER_COUNT so the konnectivity-server advertises
+	// --server-count=N and every agent holds a tunnel to every replica (HA-correct).
+	KonnServerCount int
 }
 
 // K3sServerOutput carries identifiers to persist in ClusterMeta and register with the NLB.
@@ -278,7 +293,7 @@ func TerminateK3sServerVM(
 // owns this ENI and has already terminated its VM, so the attachment is
 // authoritatively dead even if the record still shows it in-use — a state a
 // plain force=false delete would reject as InvalidNetworkInterface.InUse
-// forever, wedging EKSDeletingReaper in a no-progress loop (mulga-siv-407).
+// forever, wedging EKSDeletingReaper in a no-progress loop.
 // Detach first to clear the stale attachment fields, then delete. Both calls
 // tolerate an already-gone ENI (NotFound), so a race with the async
 // instance-terminate cascade that removes the same ENI resolves to idempotent
@@ -401,6 +416,41 @@ func k3sServerJoinURL(ip string) string {
 	return "https://" + net.JoinHostPort(ip, "6443")
 }
 
+// egressSelectorConfigYAML renders the EgressSelectorConfiguration that wires the
+// apiserver `cluster` egress to the konnectivity-server UDS. v1beta1 is the schema
+// k3s/kube-apiserver accept for --egress-selector-config-file.
+func egressSelectorConfigYAML() string {
+	return strings.Join([]string{
+		"apiVersion: apiserver.k8s.io/v1beta1",
+		"kind: EgressSelectorConfiguration",
+		"egressSelections:",
+		"  - name: cluster",
+		"    connection:",
+		"      proxyProtocol: GRPC",
+		"      transport:",
+		"        uds:",
+		"          udsName: " + konnectivityUDSPath,
+	}, "\n")
+}
+
+// dedupeNonEmpty returns the input with empty strings dropped and duplicates
+// removed, preserving first-seen order.
+func dedupeNonEmpty(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
 // userDataFile is one entry in the cloud-config write_files block.
 type userDataFile struct {
 	Path  string
@@ -419,6 +469,17 @@ func buildK3sUserData(in K3sServerInput) string {
 	if in.ServerURL != "" {
 		role = "server-join"
 	}
+
+	// Konnectivity wiring (apiserver-network-proxy). HOST is the worker-reachable
+	// address agents dial (the Set A private-endpoint, else the public endpoint);
+	// SANS are the konnectivity-server cert SANs the appliance mints from the k3s CA.
+	// SERVER_COUNT advertises --server-count=N so every agent tunnels to every replica.
+	konnHost := in.PrivateEndpointIP
+	if konnHost == "" {
+		konnHost = in.EndpointIP
+	}
+	konnSANs := dedupeNonEmpty([]string{in.PrivateEndpointIP, in.EndpointIP, in.NLBDNS})
+	konnCount := max(in.KonnServerCount, 1)
 
 	envLines := []string{
 		"SPINIFEX_K3S_ROLE=" + role,
@@ -442,6 +503,9 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_CLUSTER_NAME="+in.ClusterName,
 		"EKS_NLB_ENDPOINT="+nlbEndpoint,
 		"EKS_OIDC_ISSUER="+in.OIDCIssuer,
+		"EKS_KONNECTIVITY_HOST="+konnHost,
+		"EKS_KONNECTIVITY_SANS="+strings.Join(konnSANs, ","),
+		"EKS_KONNECTIVITY_SERVER_COUNT="+strconv.Itoa(konnCount),
 	)
 	envBody := strings.Join(envLines, "\n")
 
@@ -460,13 +524,14 @@ func buildK3sUserData(in K3sServerInput) string {
 	if in.JoinToken != "" {
 		configLines = append(configLines, "token: "+in.JoinToken)
 	}
+	configLines = append(configLines, "etcd-expose-metrics: true")
+	// Egress selector: disable k3s's own remotedialer and point the apiserver's
+	// `cluster` egress at the upstream konnectivity-server UDS via the injected
+	// EgressSelectorConfiguration. konnectivity-agents (DaemonSet on workers) dial
+	// out and hold a tunnel to every apiserver replica, so apiserver→pod/kubelet
+	// egress is HA-correct (no single-VIP fan-out 502). EKS-parity datapath.
+	configLines = append(configLines, "egress-selector-mode: disabled")
 	configLines = append(configLines,
-		"etcd-expose-metrics: true",
-		// Managed-CP: the apiserver VM sits in the system CP VPC with no route to
-		// the worker pod network. `cluster` routes apiserver->pod/service traffic
-		// (admission webhooks, aggregated APIs) through the agent's outbound tunnel;
-		// the default `agent` mode tunnels only kubelet, leaving webhooks unreachable.
-		"egress-selector-mode: cluster",
 		// Prevent user workloads on the CP (EKS parity). k3s packaged addons tolerate CriticalAddonsOnly.
 		"node-taint:",
 		"  - CriticalAddonsOnly=true:NoExecute",
@@ -510,6 +575,8 @@ func buildK3sUserData(in K3sServerInput) string {
 		"  - authentication-token-webhook-cache-ttl=5m",
 		// v1: default v1beta1 rejects authentication.k8s.io/v1 TokenReview response (401).
 		"  - authentication-token-webhook-version=v1",
+		// Route the apiserver `cluster` egress through konnectivity (see config file).
+		"  - egress-selector-config-file="+k3sEgressSelectorConfigPath,
 	)
 	k3sConfig := strings.Join(configLines, "\n")
 
@@ -519,6 +586,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
 		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},
+		{Path: k3sEgressSelectorConfigPath, Perms: "0644", Body: egressSelectorConfigYAML()},
 		{Path: k3sGatewayCAPath, Perms: "0644", Body: strings.TrimRight(in.GatewayCACert, "\n")},
 	}
 

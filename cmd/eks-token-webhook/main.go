@@ -10,6 +10,9 @@
 // On startup it writes the apiserver webhook kubeconfig (with its self-signed
 // serving CA) so k3s can be pointed at it via
 // --authentication-token-webhook-config-file.
+//
+// SigV4 creds come from the AWS SDK chain (IMDS instance-role) when static
+// EKS_ACCESS_KEY/EKS_SECRET_KEY are absent, matching the sibling helpers.
 package main
 
 import (
@@ -56,11 +59,13 @@ func loadConfig() (config, error) {
 		keyPath:     envOr("EKS_WEBHOOK_KEY", "/etc/spinifex-eks/token-webhook.key"),
 		kubeconfig:  envOr("EKS_WEBHOOK_KUBECONFIG", "/etc/spinifex-eks/token-webhook.kubeconfig"),
 	}
+	// Static SigV4 creds are optional: when absent, eksgw.New signs with the
+	// AWS SDK chain (IMDS instance-role creds), the same path the CP VM's
+	// sibling helpers use. The CP VM launches on an instance profile, so
+	// buildK3sUserData omits EKS_ACCESS_KEY/EKS_SECRET_KEY by design.
 	switch {
 	case c.gatewayURL == "":
 		return c, errors.New("EKS_GATEWAY_URL not set")
-	case c.accessKey == "" || c.secretKey == "":
-		return c, errors.New("EKS_ACCESS_KEY / EKS_SECRET_KEY not set")
 	case c.accountID == "":
 		return c, errors.New("EKS_ACCOUNT_ID not set")
 	case c.clusterName == "":

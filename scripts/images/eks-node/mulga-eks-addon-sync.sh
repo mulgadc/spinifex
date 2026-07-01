@@ -46,6 +46,15 @@ RENDER_PREFIX=spinifex-addon-
 # re-apply the addon every tick).
 WEBHOOK_CERT_DIR=/var/lib/spinifex-eks/webhook-certs
 
+# Grace before the gvks readiness gate falls back to a workload-rollout check.
+# A large bundle (e.g. the 1.45 MB argocd manifest) applies and runs but K3s'
+# auto-deploy controller never records its addon.k3s.cattle.io/gvks annotation,
+# so the gvks-only gate would report applied forever. After this many seconds
+# with the annotation still empty, readiness is decided by the bundle's
+# workloads being rolled out instead. Kept generous so fast addons settle on the
+# gvks path and slow-rolling workloads are not called ready prematurely.
+ADDON_READY_GRACE=${ADDON_READY_GRACE:-90}
+
 # log mirrors to syslog (on-VM /var/log) and, best-effort, to the serial
 # console — the host captures ttyS0 to a per-instance log, so this is the only
 # delivery diagnostics channel reachable from the host (the VM has no
@@ -263,6 +272,53 @@ addon_gvks() {
         | grep -v '^$' | head -1 || true
 }
 
+# addon_apply_age ADDON — seconds since this process first saw ADDON delivered
+# but not yet gvks-ready, recorded in a per-addon sentinel. A gvks-ready tick (or
+# an unstage) clears the sentinel via addon_apply_clear so a later re-apply
+# restarts the grace window.
+addon_apply_age() {
+    _s=/tmp/.addon-firstapply-"$1"
+    _now=$(date +%s)
+    if [ -f "${_s}" ]; then
+        _t=$(cat "${_s}" 2>/dev/null || echo "${_now}")
+    else
+        _t=${_now}
+        echo "${_now}" > "${_s}"
+    fi
+    echo $(( _now - _t ))
+}
+
+addon_apply_clear() {
+    rm -f /tmp/.addon-firstapply-"$1"
+}
+
+# addon_workloads_ready ADDON — fallback readiness when the gvks annotation never
+# lands: true only when the rendered bundle carries at least one workload and
+# every Deployment/StatefulSet/DaemonSet in it is fully rolled out. Reads the live
+# status of exactly the objects this agent applied (kubectl get -f on the rendered
+# file), so it is addon-agnostic. A bundle whose CRDs are not yet established makes
+# kubectl get -f error out, yielding "not ready" — safe, the next tick retries.
+addon_workloads_ready() {
+    _wf="${DEPLOY_DIR}/${RENDER_PREFIX}$1.yaml"
+    [ -e "${_wf}" ] || return 1
+    kubectl get -f "${_wf}" -o json --ignore-not-found 2>/dev/null \
+        | jq -e '
+            [ .items[]? ]
+            | map(select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet"))
+            | (length > 0)
+              and all(.[];
+                (.kind == "Deployment"
+                  and (.status.observedGeneration // 0) >= (.metadata.generation // 0)
+                  and (.status.availableReplicas // 0) >= (.spec.replicas // 1))
+                or (.kind == "StatefulSet"
+                  and (.status.observedGeneration // 0) >= (.metadata.generation // 0)
+                  and (.status.readyReplicas // 0) >= (.spec.replicas // 1))
+                or (.kind == "DaemonSet"
+                  and (.status.desiredNumberScheduled // 0) > 0
+                  and (.status.numberReady // 0) >= (.status.desiredNumberScheduled // 0)))
+        ' >/dev/null 2>&1
+}
+
 # diag_addon ADDON — one-shot console dump of the live K3s state for a stuck
 # add-on, so a delivery that never reaches ready is diagnosable from the
 # host-captured serial console (the VM is otherwise unreachable). Fires once per
@@ -304,12 +360,21 @@ sync_once() {
         if render_addon "${_addon}" "${_version}" "${_role}"; then
             _gvks=$(addon_gvks "${_addon}")
             if [ -n "${_gvks}" ]; then
+                addon_apply_clear "${_addon}"
                 log "addon ${_addon}/${_version}: applied + ready (gvks=${_gvks})"
                 report ready "${_addon}" "${_version}"
             else
-                log "addon ${_addon}/${_version}: applied, not ready yet (no K3s Addon CR for ${RENDER_PREFIX}${_addon}.yaml with populated .status.gvks)"
-                diag_addon "${_addon}"
-                report applied "${_addon}" "${_version}"
+                # gvks absent: fall back to workload rollout once past the grace
+                # window, so a large bundle K3s never annotates still reaches ready.
+                _age=$(addon_apply_age "${_addon}")
+                if [ "${_age}" -ge "${ADDON_READY_GRACE}" ] && addon_workloads_ready "${_addon}"; then
+                    log "addon ${_addon}/${_version}: applied + ready (workloads rolled out; gvks absent after ${_age}s)"
+                    report ready "${_addon}" "${_version}"
+                else
+                    log "addon ${_addon}/${_version}: applied, not ready yet (gvks empty, age=${_age}s)"
+                    diag_addon "${_addon}"
+                    report applied "${_addon}" "${_version}"
+                fi
             fi
         fi
     done < "${_staged}"
@@ -325,6 +390,7 @@ sync_once() {
         _name=${_name%.yaml}
         if ! printf '%s\n' "${_names}" | grep -qx "${_name}"; then
             log "unstaging addon ${_name} (no longer staged)"
+            addon_apply_clear "${_name}"
             # Copy the manifest aside, drop the original so K3s stops tracking it
             # (and never re-applies), then delete the objects it rendered.
             # --wait=false so namespace finalizers don't stall the sync loop.

@@ -475,6 +475,27 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		return nil, err
 	}
 
+	// Pre-created extra ENIs (e.g. an EKS CP server's flannel-overlay ENI in the
+	// worker VPC) must be attached and recorded on the VM before LaunchRunInstances
+	// so the launch builds their taps/virtio NICs and cloud-init renders a DHCP
+	// stanza per extra MAC. A cross-account ENI is keyed by its own account.
+	for idx, extra := range input.ExtraENIs {
+		if d.vpcService != nil {
+			extraAccount := resolveENIAccount(extra.AccountID, input.AccountID)
+			if _, attachErr := d.vpcService.AttachENI(extraAccount, extra.ENIID, inst.ID, int64(idx+1)); attachErr != nil {
+				slog.Error("launchAMISystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", inst.ID, "err", attachErr)
+				d.vmMgr.MarkFailed(inst, "extra_eni_attach_failed")
+				return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
+			}
+		}
+		inst.ExtraENIs = append(inst.ExtraENIs, vm.ExtraENI{
+			ENIID:    extra.ENIID,
+			ENIMac:   extra.ENIMac,
+			ENIIP:    extra.ENIIP,
+			SubnetID: extra.SubnetID,
+		})
+	}
+
 	d.instanceService.LaunchRunInstances(instances, runInput, instanceType)
 
 	privateIP := input.ENIIP

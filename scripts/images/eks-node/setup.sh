@@ -44,12 +44,13 @@ ln -sf /usr/local/bin/k3s /usr/local/bin/ctr
 # role's services are baked; the selector enables the right ones at first boot.
 chmod 0755 /etc/init.d/eks-node-role /etc/init.d/k3s /etc/init.d/k3s-agent \
     /etc/init.d/eks-token-webhook /etc/init.d/k3s-first-boot /etc/init.d/mulga-eks-state-report \
-    /etc/init.d/mulga-eks-addon-sync
+    /etc/init.d/mulga-eks-addon-sync /etc/init.d/konnectivity-server
 chmod 0755 /usr/local/sbin/eks-node-role /usr/local/sbin/k3s-first-boot \
     /usr/local/sbin/mulga-eks-state-report /usr/local/sbin/mulga-eks-addon-sync
 chmod 0755 /etc/init.d/mulga-ebs-byid /usr/local/sbin/mulga-ebs-byid
 chmod 0755 /etc/init.d/mulga-eks-provider-id /usr/local/sbin/mulga-eks-provider-id
 chmod 0755 /etc/init.d/mulga-mgmt-net /usr/local/sbin/mulga-mgmt-net
+chmod 0755 /etc/init.d/mulga-vpc-mtu /usr/local/sbin/mulga-vpc-mtu
 chmod 0755 /etc/periodic/daily/mulga-eks-etcd-snapshot
 
 # EBS by-id bridge: route every virtio-blk event through mulga-ebs-byid, which
@@ -118,5 +119,18 @@ sed -i \
 # kept so the menu stays interruptible over serial; TIMEOUT 0 would wait forever.
 sed -i 's/^timeout=.*/timeout=1/' /etc/update-extlinux.conf
 sed -i 's/^TIMEOUT[[:space:]].*/TIMEOUT 10/' /boot/extlinux.conf
+
+# Disable dhcpcd IPv4LL so it never hijacks IMDS on a multi-NIC system VM. The
+# EKS control plane is dual-NIC; the mgmt NIC sits on br-mgmt (no DHCP server),
+# so dhcpcd's no-lease fallback would assign a 169.254.x.x address and a
+# 169.254.0.0/16 route on it. That /16 captures 169.254.169.254 and steers IMDS
+# off the data NIC (away from the per-tap br-imds datapath) and onto the mgmt
+# NIC, where the host RSTs it. noipv4ll turns off only the no-lease fallback:
+# real DHCP leases (workers, the data ENI) are unaffected, and IMDS reaches .254
+# through the data NIC's default route and the br-imds demux, as single-NIC
+# instances already do.
+if ! grep -qxF 'noipv4ll' /etc/dhcpcd.conf 2>/dev/null; then
+    echo 'noipv4ll' >> /etc/dhcpcd.conf
+fi
 
 echo "[eks-node-setup] done"

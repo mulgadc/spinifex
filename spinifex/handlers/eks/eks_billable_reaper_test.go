@@ -36,8 +36,8 @@ func cpVM(id, eniID string) *vm.VM {
 // TestRLC5_EKSBillableReaperTerminatesOrphanCPVM enforces ADR-0006 §5
 // meta-independent billable cleanup: a running EKS control-plane VM whose
 // cluster meta is DEFINITIVELY GONE is a billable orphan and must be terminated
-// by the GC backstop — the real fix for mulga-siv-294 (orphan CP VM surviving a
-// daemon restart after DeleteCluster swept the meta).
+// by the GC backstop — the real fix for the orphan CP VM surviving a
+// daemon restart after DeleteCluster swept the meta.
 func TestRLC5_EKSBillableReaperTerminatesOrphanCPVM(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.vpc.describeByENI = map[string]*ec2.NetworkInterface{
@@ -47,7 +47,7 @@ func TestRLC5_EKSBillableReaperTerminatesOrphanCPVM(t *testing.T) {
 
 	// Seed the orphan cluster's name/tag-driven billable infra the swept meta no
 	// longer anchors: an NLB front-end and a tagged NAT gateway holding a billable
-	// EIP. The reaper's post-terminate reclaim must sweep both (mulga-siv-302).
+	// EIP. The reaper's post-terminate reclaim must sweep both.
 	nlbName := ClusterNLBName("gone-cluster")
 	f.nlb.lbByName[nlbName] = &elbv2.LoadBalancer{
 		LoadBalancerArn:  aws.String("arn:lb-orphan"),
@@ -69,7 +69,7 @@ func TestRLC5_EKSBillableReaperTerminatesOrphanCPVM(t *testing.T) {
 	require.Len(t, f.vpc.deleteCalls, 1, "the orphan CP ENI must be deleted")
 	assert.Equal(t, "eni-orphan", aws.StringValue(f.vpc.deleteCalls[0].NetworkInterfaceId))
 
-	// mulga-siv-302: the orphan's billable NLB + NAT-GW EIP must also be reclaimed.
+	// The orphan's billable NLB + NAT-GW EIP must also be reclaimed.
 	assert.NotContains(t, f.nlb.lbByName, nlbName, "the orphan NLB front-end must be reclaimed")
 	require.Len(t, f.eip.releaseCalls, 1, "the orphan NAT-GW EIP must be released")
 	assert.Equal(t, "eipalloc-orphan", aws.StringValue(f.eip.releaseCalls[0].AllocationId))

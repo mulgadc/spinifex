@@ -92,4 +92,13 @@ for n in 0 1 2 3 4 5; do
         echo "[mulga-mgmt-net] ERROR: failed to set $cidr on $iface ($mac)" >&2
         exit 1
     fi
+
+    # NIC<n>_DEFAULT=0 means this NIC must never carry the default route: the
+    # mgmt NIC reaches the gateway on-link and a default via it would blackhole
+    # egress and (with a link-local /16) hijack IMDS. Enforce it — a DHCP client
+    # racing this NIC may have added one before we set it static.
+    eval "isdefault=\${NIC${n}_DEFAULT:-}"
+    if [ "$isdefault" != "1" ]; then
+        ip route del default dev "$iface" 2>/dev/null || true
+    fi
 done

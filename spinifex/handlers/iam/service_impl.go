@@ -529,22 +529,13 @@ func (s *IAMServiceImpl) DeleteAccessKey(accountID string, input *iam.DeleteAcce
 		return nil, err
 	}
 
-	found := false
-	remaining := make([]string, 0, len(user.AccessKeys))
-	for _, keyID := range user.AccessKeys {
-		if keyID == accessKeyID {
-			found = true
-		} else {
-			remaining = append(remaining, keyID)
-		}
-	}
-
-	if !found {
+	idx := slices.Index(user.AccessKeys, accessKeyID)
+	if idx < 0 {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 
 	// Update user record first to avoid orphaning the reference on crash.
-	user.AccessKeys = remaining
+	user.AccessKeys = slices.Delete(user.AccessKeys, idx, idx+1)
 	userData, err := json.Marshal(user)
 	if err != nil {
 		return nil, fmt.Errorf("marshal user: %w", err)
@@ -1239,21 +1230,12 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 		return nil, err
 	}
 
-	found := false
-	remaining := make([]string, 0, len(user.AttachedPolicies))
-	for _, arn := range user.AttachedPolicies {
-		if arn == policyARN {
-			found = true
-		} else {
-			remaining = append(remaining, arn)
-		}
-	}
-
-	if !found {
+	idx := slices.Index(user.AttachedPolicies, policyARN)
+	if idx < 0 {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 
-	user.AttachedPolicies = remaining
+	user.AttachedPolicies = slices.Delete(user.AttachedPolicies, idx, idx+1)
 	userData, err := json.Marshal(user)
 	if err != nil {
 		return nil, fmt.Errorf("marshal user: %w", err)

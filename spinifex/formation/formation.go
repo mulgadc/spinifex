@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -295,11 +296,10 @@ func (fs *FormationServer) validateToken(r *http.Request) error {
 		return fmt.Errorf("missing Authorization header")
 	}
 
-	const prefix = "Bearer "
-	if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
+	token, ok := strings.CutPrefix(auth, "Bearer ")
+	if !ok {
 		return fmt.Errorf("invalid Authorization header format")
 	}
-	token := auth[len(prefix):]
 
 	if subtle.ConstantTimeCompare([]byte(token), []byte(fs.joinToken)) != 1 {
 		return fmt.Errorf("invalid join token")

@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
@@ -66,11 +67,11 @@ func serviceTaskGroup(name string) string {
 // serviceNameFromGroup returns the service name encoded in a task group, or ""
 // when the group is not a service group.
 func serviceNameFromGroup(group string) string {
-	const p = "service:"
-	if len(group) > len(p) && group[:len(p)] == p {
-		return group[len(p):]
+	name, ok := strings.CutPrefix(group, "service:")
+	if !ok {
+		return ""
 	}
-	return ""
+	return name
 }
 
 // ClusterRecord is the persisted cluster meta at ClusterMetaKey.

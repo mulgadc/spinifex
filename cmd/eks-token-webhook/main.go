@@ -125,7 +125,12 @@ func run(cfg config) error {
 	})
 	mux.HandleFunc("/authenticate", authr.handle)
 
-	server := newServer(cfg.addr, mux, tlsCert)
+	server := &http.Server{
+		Addr:              cfg.addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		TLSConfig:         tlsCert.serverTLSConfig(),
+	}
 	slog.Info("eks-token-webhook listening", "addr", cfg.addr, "cluster", cfg.clusterName)
 	if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve: %w", err)
@@ -212,16 +217,5 @@ func (a *authenticator) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("encode TokenReview response", "err", err)
-	}
-}
-
-// newServer builds the loopback TLS server. Split out so tests can construct it
-// without binding a port.
-func newServer(addr string, handler http.Handler, cert tlsCertificate) *http.Server {
-	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		TLSConfig:         cert.serverTLSConfig(),
 	}
 }

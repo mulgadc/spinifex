@@ -64,24 +64,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-type BlockDeviceMapping struct {
-	DeviceName string `json:"DeviceName"`
-	EBS        EBS    `json:"EBS"`
-}
-
-type EBS struct {
-	DeleteOnTermination      bool
-	Encrypted                bool
-	Iops                     int
-	KmsKeyId                 string
-	OutpostArn               string
-	SnapshotId               string
-	Throughput               int
-	VolumeInitializationRate int
-	VolumeSize               int
-	VolumeType               string
-}
-
 // ResourceManager handles the allocation and tracking of system resources.
 // It dynamically manages per-instance-type NATS subscriptions: when capacity
 // is available for a type, the node subscribes to ec2.RunInstances.{type};

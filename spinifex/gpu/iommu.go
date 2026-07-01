@@ -7,12 +7,8 @@ import (
 	"strconv"
 )
 
-// GroupMembers returns all PCI devices in the given IOMMU group.
+// groupMembers returns all PCI devices in the given IOMMU group.
 // All members must be bound to vfio-pci together for passthrough.
-func GroupMembers(groupNum int) ([]IOMMUGroupMember, error) {
-	return groupMembers("/sys", groupNum)
-}
-
 func groupMembers(sysfsRoot string, groupNum int) ([]IOMMUGroupMember, error) {
 	devicesPath := filepath.Join(sysfsRoot, "kernel/iommu_groups", strconv.Itoa(groupNum), "devices")
 	entries, err := os.ReadDir(devicesPath)

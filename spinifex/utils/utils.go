@@ -20,13 +20,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/pterm/pterm"
 )
 
@@ -158,18 +154,6 @@ func ValidateKeyPairName(name string) error {
 	}
 
 	return nil
-}
-
-func CreateS3Client(cfg *config.Config) *s3.S3 {
-	sess := session.Must(session.NewSession(&aws.Config{
-		Region:           aws.String(cfg.Predastore.Region),
-		Endpoint:         aws.String(fmt.Sprintf("https://%s", cfg.Predastore.Host)),
-		Credentials:      credentials.NewStaticCredentials(cfg.Predastore.AccessKey, cfg.Predastore.SecretKey, ""),
-		S3ForcePathStyle: aws.Bool(true),
-		DisableSSL:       aws.Bool(false),
-	}))
-
-	return s3.New(sess)
 }
 
 func DownloadFileWithProgress(url string, name string, filename string, timeout time.Duration) (err error) {

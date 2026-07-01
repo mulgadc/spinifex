@@ -326,7 +326,7 @@ func TestGenerateSignedCert(t *testing.T) {
 		certPath := filepath.Join(dir, "server.pem")
 		keyPath := filepath.Join(dir, "server.key")
 
-		require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath))
+		require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath, nil, nil))
 
 		certPEM, _ := os.ReadFile(certPath)
 		block, _ := pem.Decode(certPEM)
@@ -368,7 +368,7 @@ func TestGenerateSignedCert(t *testing.T) {
 		certPath := filepath.Join(dir, "server.pem")
 		keyPath := filepath.Join(dir, "server.key")
 
-		require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath, "192.168.1.100"))
+		require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath, []string{"192.168.1.100"}, nil))
 
 		certPEM, _ := os.ReadFile(certPath)
 		block, _ := pem.Decode(certPEM)
@@ -389,7 +389,7 @@ func TestGenerateSignedCert(t *testing.T) {
 		certPath := filepath.Join(dir, "server.pem")
 		keyPath := filepath.Join(dir, "server.key")
 
-		require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath, "127.0.0.1", "::1", "0.0.0.0", ""))
+		require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath, []string{"127.0.0.1", "::1", "0.0.0.0", ""}, nil))
 
 		certPEM, _ := os.ReadFile(certPath)
 		block, _ := pem.Decode(certPEM)
@@ -401,7 +401,7 @@ func TestGenerateSignedCert(t *testing.T) {
 		baseDir := t.TempDir()
 		baseCert := filepath.Join(baseDir, "server.pem")
 		baseKey := filepath.Join(baseDir, "server.key")
-		require.NoError(t, GenerateSignedCert(baseCert, baseKey, caCertPath, caKeyPath))
+		require.NoError(t, GenerateSignedCert(baseCert, baseKey, caCertPath, caKeyPath, nil, nil))
 		basePEM, _ := os.ReadFile(baseCert)
 		baseBlock, _ := pem.Decode(basePEM)
 		baseParsed, _ := x509.ParseCertificate(baseBlock.Bytes)
@@ -416,7 +416,7 @@ func TestGenerateSignedCert(t *testing.T) {
 		badCACert := filepath.Join(dir, "bad-ca.pem")
 		require.NoError(t, os.WriteFile(badCACert, []byte("not-a-cert"), 0600))
 
-		err := GenerateSignedCert(filepath.Join(dir, "s.pem"), filepath.Join(dir, "s.key"), badCACert, caKeyPath)
+		err := GenerateSignedCert(filepath.Join(dir, "s.pem"), filepath.Join(dir, "s.key"), badCACert, caKeyPath, nil, nil)
 		assert.Error(t, err)
 	})
 }
@@ -452,7 +452,7 @@ func TestDiscoverHostname(t *testing.T) {
 	}
 }
 
-func TestGenerateSignedCertWithDNS_DedupDNS(t *testing.T) {
+func TestGenerateSignedCert_DedupDNS(t *testing.T) {
 	t.Parallel()
 	caDir := t.TempDir()
 	caCertPath := filepath.Join(caDir, "ca.pem")
@@ -466,7 +466,7 @@ func TestGenerateSignedCertWithDNS_DedupDNS(t *testing.T) {
 	// Pass "localhost" as extra DNS — should not duplicate the built-in entry.
 	// Also pass empty strings and duplicates — should be ignored.
 	extraDNS := []string{"localhost", "", "example.local", "example.local", ""}
-	require.NoError(t, GenerateSignedCertWithDNS(certPath, keyPath, caCertPath, caKeyPath, nil, extraDNS))
+	require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath, nil, extraDNS))
 
 	certPEM, _ := os.ReadFile(certPath)
 	block, _ := pem.Decode(certPEM)
@@ -488,7 +488,7 @@ func TestGenerateSignedCertWithDNS_DedupDNS(t *testing.T) {
 	assert.Contains(t, cert.DNSNames, "example.local")
 }
 
-func TestGenerateSignedCertWithDNS_NilSlices(t *testing.T) {
+func TestGenerateSignedCert_NilSlices(t *testing.T) {
 	t.Parallel()
 	caDir := t.TempDir()
 	caCertPath := filepath.Join(caDir, "ca.pem")
@@ -500,7 +500,7 @@ func TestGenerateSignedCertWithDNS_NilSlices(t *testing.T) {
 	keyPath := filepath.Join(dir, "server.key")
 
 	// Both slices nil — should still produce a valid cert with defaults.
-	require.NoError(t, GenerateSignedCertWithDNS(certPath, keyPath, caCertPath, caKeyPath, nil, nil))
+	require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath, nil, nil))
 
 	certPEM, _ := os.ReadFile(certPath)
 	block, _ := pem.Decode(certPEM)
@@ -510,12 +510,12 @@ func TestGenerateSignedCertWithDNS_NilSlices(t *testing.T) {
 	assert.GreaterOrEqual(t, len(cert.IPAddresses), 2, "should have at least loopback IPs")
 }
 
-func TestGenerateSignedCertWithDNS_InvalidCA(t *testing.T) {
+func TestGenerateSignedCert_InvalidCA(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
 	// Missing CA cert file.
-	err := GenerateSignedCertWithDNS(
+	err := GenerateSignedCert(
 		filepath.Join(dir, "s.pem"), filepath.Join(dir, "s.key"),
 		filepath.Join(dir, "missing-ca.pem"), filepath.Join(dir, "missing-ca.key"),
 		nil, nil,
@@ -526,7 +526,7 @@ func TestGenerateSignedCertWithDNS_InvalidCA(t *testing.T) {
 	// Corrupt CA cert.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bad-ca.pem"), []byte("not-pem"), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bad-ca.key"), []byte("not-pem"), 0600))
-	err = GenerateSignedCertWithDNS(
+	err = GenerateSignedCert(
 		filepath.Join(dir, "s.pem"), filepath.Join(dir, "s.key"),
 		filepath.Join(dir, "bad-ca.pem"), filepath.Join(dir, "bad-ca.key"),
 		nil, nil,
@@ -534,7 +534,7 @@ func TestGenerateSignedCertWithDNS_InvalidCA(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestGenerateSignedCertWithDNS_ExtraDNS(t *testing.T) {
+func TestGenerateSignedCert_ExtraDNS(t *testing.T) {
 	t.Parallel()
 	caDir := t.TempDir()
 	caCertPath := filepath.Join(caDir, "ca.pem")
@@ -547,7 +547,7 @@ func TestGenerateSignedCertWithDNS_ExtraDNS(t *testing.T) {
 
 	extraIPs := []string{"10.0.0.42"}
 	extraDNS := []string{"spinifex.local", "node1.spinifex.local"}
-	require.NoError(t, GenerateSignedCertWithDNS(certPath, keyPath, caCertPath, caKeyPath, extraIPs, extraDNS))
+	require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath, extraIPs, extraDNS))
 
 	certPEM, _ := os.ReadFile(certPath)
 	block, _ := pem.Decode(certPEM)
@@ -579,7 +579,7 @@ func TestGenerateSignedCert_IncludesHostname(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "server.pem")
 	keyPath := filepath.Join(dir, "server.key")
-	require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath))
+	require.NoError(t, GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath, nil, nil))
 
 	certPEM, _ := os.ReadFile(certPath)
 	block, _ := pem.Decode(certPEM)
@@ -591,26 +591,6 @@ func TestGenerateSignedCert_IncludesHostname(t *testing.T) {
 		assert.Contains(t, cert.DNSNames, hostname,
 			"cert DNS SANs should include the machine hostname")
 	}
-}
-
-func TestGenerateSelfSignedCert_CreatesValidCert(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	certPath := filepath.Join(dir, "self.pem")
-	keyPath := filepath.Join(dir, "self.key")
-
-	require.NoError(t, GenerateSelfSignedCert(certPath, keyPath))
-
-	certPEM, _ := os.ReadFile(certPath)
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-
-	cert, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-	assert.Contains(t, cert.DNSNames, "localhost")
-
-	info, _ := os.Stat(keyPath)
-	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
 }
 
 // --- Certificate orchestrator ---

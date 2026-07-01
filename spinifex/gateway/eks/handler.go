@@ -5,9 +5,7 @@ package gateway_eks
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -90,24 +88,4 @@ func WriteErrorFromCode(w http.ResponseWriter, code string) {
 		httpStatus = http.StatusInternalServerError
 	}
 	WriteJSONError(w, code, msg.Message, httpStatus)
-}
-
-// ParseJSONBody decodes the request body into an aws-sdk-go input struct.
-// Empty bodies (valid for GET/DELETE) return a zero-valued struct.
-func ParseJSONBody[T any](r *http.Request) (*T, error) {
-	out := new(T)
-	if r.Body == nil {
-		return out, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-	if len(body) == 0 {
-		return out, nil
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	return out, nil
 }

@@ -2407,7 +2407,7 @@ func runCertRenew(cmd *cobra.Command, _ []string) {
 	serverCertPath := filepath.Join(configDir, "server.pem")
 	serverKeyPath := filepath.Join(configDir, "server.key")
 
-	if err := admin.GenerateSignedCertWithDNS(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS); err != nil {
+	if err := admin.GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS); err != nil {
 		fmt.Fprintf(os.Stderr, "Error regenerating server certificate: %v\n", err)
 		os.Exit(1)
 	}

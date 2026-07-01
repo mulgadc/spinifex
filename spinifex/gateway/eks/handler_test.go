@@ -1,7 +1,6 @@
 package gateway_eks
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -110,28 +109,4 @@ func TestWriteJSONResponse_ListClustersWireShape(t *testing.T) {
 	assert.Contains(t, body, `"nextToken"`)
 	assert.NotContains(t, body, `"Clusters"`)
 	assert.NotContains(t, body, `"NextToken"`)
-}
-
-type sampleInput struct {
-	Name string `json:"name"`
-}
-
-func TestParseJSONBody_EmptyBodyOK(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
-	got, err := ParseJSONBody[sampleInput](req)
-	require.NoError(t, err)
-	assert.Empty(t, got.Name)
-}
-
-func TestParseJSONBody_DecodesBody(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/clusters", bytes.NewReader([]byte(`{"name":"alpha"}`)))
-	got, err := ParseJSONBody[sampleInput](req)
-	require.NoError(t, err)
-	assert.Equal(t, "alpha", got.Name)
-}
-
-func TestParseJSONBody_InvalidJSONErrors(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/clusters", bytes.NewReader([]byte(`{not-json}`)))
-	_, err := ParseJSONBody[sampleInput](req)
-	require.Error(t, err)
 }

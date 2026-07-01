@@ -197,7 +197,7 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, a
 		fmt.Printf("   CA Key: %s\n", caKeyPath)
 
 		extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
-		if err := GenerateSignedCertWithDNS(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS); err != nil {
+		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
 			os.Exit(1)
 		}
@@ -233,7 +233,7 @@ func GenerateServerCertOnly(configDir string, bindIP, awsRegion, internalSuffix 
 	}
 
 	extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
-	return GenerateSignedCertWithDNS(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS)
+	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS)
 }
 
 func CreateServiceDirectories(spxRoot string) {
@@ -613,16 +613,9 @@ func DiscoverHostname() string {
 }
 
 // GenerateSignedCert generates a server certificate signed by the CA.
-// extraIPs are additional IP addresses to include in the certificate's SANs.
-// All non-loopback interface IPs on the local machine are automatically included.
-func GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath string, extraIPs ...string) error {
-	return GenerateSignedCertWithDNS(certPath, keyPath, caCertPath, caKeyPath, extraIPs, nil)
-}
-
-// GenerateSignedCertWithDNS generates a server certificate signed by the CA.
 // All non-loopback interface IPs and the machine hostname are automatically
 // included. extraIPs and extraDNS allow adding additional SANs.
-func GenerateSignedCertWithDNS(certPath, keyPath, caCertPath, caKeyPath string, extraIPs, extraDNS []string) error {
+func GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath string, extraIPs, extraDNS []string) error {
 	caCertPEM, err := os.ReadFile(caCertPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA cert: %w", err)
@@ -745,69 +738,6 @@ func GenerateSignedCertWithDNS(certPath, keyPath, caCertPath, caKeyPath string, 
 	if err != nil {
 		return fmt.Errorf("failed to marshal private key: %w", err)
 	}
-	if err := pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}); err != nil {
-		return fmt.Errorf("failed to write key: %w", err)
-	}
-
-	return nil
-}
-
-// GenerateSelfSignedCert generates a self-signed SSL certificate (legacy, kept for compatibility).
-func GenerateSelfSignedCert(certPath, keyPath string) error {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return fmt.Errorf("failed to generate private key: %w", err)
-	}
-
-	notBefore := time.Now()
-	notAfter := notBefore.Add(3650 * 24 * time.Hour) // 10 years
-
-	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return fmt.Errorf("failed to generate serial number: %w", err)
-	}
-
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			CommonName:   "localhost",
-			Organization: []string{"Spinifex Platform"},
-		},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost"},
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
-	if err != nil {
-		return fmt.Errorf("failed to create certificate: %w", err)
-	}
-
-	certOut, err := os.Create(certPath)
-	if err != nil {
-		return fmt.Errorf("failed to create cert file: %w", err)
-	}
-	defer certOut.Close()
-
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return fmt.Errorf("failed to write cert: %w", err)
-	}
-
-	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to create key file: %w", err)
-	}
-	defer keyOut.Close()
-
-	privBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		return fmt.Errorf("failed to marshal private key: %w", err)
-	}
-
 	if err := pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}); err != nil {
 		return fmt.Errorf("failed to write key: %w", err)
 	}

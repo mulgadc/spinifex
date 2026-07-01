@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -85,8 +86,7 @@ type IAMServiceImpl struct {
 	rolesBucket            nats.KeyValue
 	instanceProfilesBucket nats.KeyValue
 	groupsBucket           nats.KeyValue
-	masterKey              []byte
-	decrypter              *Decrypter
+	key                    *masterkey.Key
 	// replicas is the JetStream replication factor for lazily-created per-account buckets.
 	replicas int
 }
@@ -171,9 +171,9 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketGroups, err)
 	}
 
-	decrypter, err := NewDecrypter(masterKey)
+	key, err := masterkey.New(masterKey)
 	if err != nil {
-		return nil, fmt.Errorf("init decrypter: %w", err)
+		return nil, fmt.Errorf("init master key: %w", err)
 	}
 
 	slog.Info("IAM service initialized",
@@ -197,8 +197,7 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		rolesBucket:            rolesBucket,
 		instanceProfilesBucket: instanceProfilesBucket,
 		groupsBucket:           groupsBucket,
-		masterKey:              masterKey,
-		decrypter:              decrypter,
+		key:                    key,
 		replicas:               replicas,
 	}, nil
 }
@@ -428,7 +427,7 @@ func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAcce
 		return nil, fmt.Errorf("generate secret key: %w", err)
 	}
 
-	encryptedSecret, err := EncryptSecret(secretAccessKey, s.masterKey)
+	encryptedSecret, err := s.key.Encrypt(secretAccessKey)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt secret: %w", err)
 	}
@@ -625,9 +624,9 @@ func (s *IAMServiceImpl) LookupAccessKey(accessKeyID string) (*AccessKey, error)
 }
 
 // DecryptSecret decrypts a base64-encoded AES-256-GCM ciphertext using the
-// pre-computed cipher initialized at startup.
+// master key loaded at startup.
 func (s *IAMServiceImpl) DecryptSecret(ciphertext string) (string, error) {
-	return s.decrypter.Decrypt(ciphertext)
+	return s.key.Decrypt(ciphertext)
 }
 
 // SeedBootstrap seeds the system root user and optional admin account into NATS KV.

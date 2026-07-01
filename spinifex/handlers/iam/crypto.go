@@ -58,26 +58,6 @@ func EncryptSecret(plaintext string, key []byte) (string, error) {
 	return k.Encrypt(plaintext)
 }
 
-// Decrypter holds a pre-computed AES-256-GCM cipher for repeated decryption.
-// Create once at startup with NewDecrypter and reuse across requests.
-type Decrypter struct {
-	key *masterkey.Key
-}
-
-// NewDecrypter creates a Decrypter with a pre-computed AES-GCM cipher from the given key.
-func NewDecrypter(key []byte) (*Decrypter, error) {
-	k, err := masterkey.New(key)
-	if err != nil {
-		return nil, err
-	}
-	return &Decrypter{key: k}, nil
-}
-
-// Decrypt decrypts a base64-encoded AES-256-GCM ciphertext using the pre-computed cipher.
-func (d *Decrypter) Decrypt(ciphertext string) (string, error) {
-	return d.key.Decrypt(ciphertext)
-}
-
 // DecryptSecret decrypts a base64-encoded AES-256-GCM ciphertext.
 func DecryptSecret(ciphertext string, key []byte) (string, error) {
 	k, err := masterkey.New(key)

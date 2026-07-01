@@ -151,10 +151,12 @@ func dumpOVNState(t *testing.T, instanceID string) {
 	}
 }
 
-// dumpDatapathState captures OVS / kernel-side state keyed on the external IP:
-// conntrack, upstream ARP, and OF flow install. Each capture is also written
-// to opts.ArtifactDir when set. Skipped silently when inputs or shell tools
-// are unavailable.
+// dumpDatapathState captures OVS / kernel + OVN control state keyed on the
+// external IP: OF flows, conntrack, upstream ARP, plus the gateway router's
+// per-stage logical-flow packet counts, MAC_Binding, static routes and the
+// VM's logical port — enough to locate a pre-SNAT egress drop. Each capture
+// is also written to opts.ArtifactDir when set. Skipped silently when inputs
+// or shell tools are unavailable.
 func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 	t.Helper()
 	if opts.ExternalIP == "" {
@@ -197,6 +199,45 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 			label:    "ovn-nbctl find NAT external_ip",
 			argv: []string{"ovn-nbctl", "--bare", "--columns=_uuid,type,external_ip,logical_ip,external_mac,logical_port",
 				"find", "NAT", "external_ip=" + opts.ExternalIP},
+		},
+		{
+			// Per-stage packet counts across the whole gateway pipeline. The
+			// SNAT flow reading n_packets=0 while the guest transmits means
+			// packets die upstream of lr_out_snat; this grep shows which
+			// stage (lr_in_ip_routing, lr_in_arp_resolve, ...) still counts
+			// the packets and which one drops to zero — the exact drop point.
+			filename: "ovn-lflows-extip.txt",
+			label:    "ovn-sbctl --stats lflow-list (filtered)",
+			argv:     []string{"ovn-sbctl", "--stats", "lflow-list"},
+			grepFor:  []string{opts.ExternalIP, opts.LogicalIP},
+		},
+		{
+			// The default route's next-hop must resolve to a MAC before the
+			// router can deliver egress. An empty / stale MAC_Binding for the
+			// uplink next-hop strands the packet in lr_in_arp_resolve, exactly
+			// the pre-SNAT drop we are chasing.
+			filename: "ovn-mac-binding.txt",
+			label:    "ovn-sbctl list MAC_Binding (next-hop ARP)",
+			argv:     []string{"ovn-sbctl", "list", "MAC_Binding"},
+		},
+		{
+			// Is 0.0.0.0/0 → <uplink next-hop> actually programmed, and does
+			// its output_port match the gateway router port? A missing or
+			// mis-pointed default route drops egress in lr_in_ip_routing.
+			filename: "ovn-lr-static-routes.txt",
+			label:    "ovn-nbctl list Logical_Router_Static_Route",
+			argv:     []string{"ovn-nbctl", "list", "Logical_Router_Static_Route"},
+		},
+		{
+			// Maps the VM's private IP to its logical switch port (addresses
+			// column holds "MAC IP") and shows up-state; a down or missing
+			// port would blackhole egress before it reaches the gateway
+			// router. Complements the chassis view in dumpOVNState.
+			filename: "ovn-lsp-logical.txt",
+			label:    "ovn-nbctl list Logical_Switch_Port (VM port)",
+			argv: []string{"ovn-nbctl", "--bare",
+				"--columns=name,addresses,up,type", "list", "Logical_Switch_Port"},
+			grepFor: []string{opts.LogicalIP},
 		},
 	})
 }

@@ -239,21 +239,12 @@ func (s *IAMServiceImpl) RemoveUserFromGroup(accountID string, input *iam.Remove
 
 	// Operate purely on the membership reference so a dangling pointer to an
 	// already-deleted group is still cleanable; never fetch the group here.
-	found := false
-	remaining := make([]string, 0, len(user.Groups))
-	for _, name := range user.Groups {
-		if name == groupName {
-			found = true
-		} else {
-			remaining = append(remaining, name)
-		}
-	}
-
-	if !found {
+	idx := slices.Index(user.Groups, groupName)
+	if idx < 0 {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 
-	user.Groups = remaining
+	user.Groups = slices.Delete(user.Groups, idx, idx+1)
 	userData, err := json.Marshal(user)
 	if err != nil {
 		return nil, fmt.Errorf("marshal user: %w", err)

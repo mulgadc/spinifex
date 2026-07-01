@@ -293,8 +293,9 @@ func respondWithSystemTerminateError(msg *nats.Msg, errMsg string) {
 // string if subject does not start with prefix. Helper kept local to avoid
 // touching utils for a one-liner.
 func splitSubjectTail(subject, prefix string) string {
-	if len(subject) <= len(prefix) || subject[:len(prefix)] != prefix {
+	tail, ok := strings.CutPrefix(subject, prefix)
+	if !ok {
 		return ""
 	}
-	return subject[len(prefix):]
+	return tail
 }

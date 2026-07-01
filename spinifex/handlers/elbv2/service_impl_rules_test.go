@@ -559,7 +559,7 @@ func TestHAProxyRender_PathPatternRule(t *testing.T) {
 		"arn:aws:elbv2:tg/rule":    {Name: "rule", TargetGroupArn: "arn:aws:elbv2:tg/rule", Protocol: ProtocolHTTP, HealthCheck: HealthCheckConfig{Path: "/", Matcher: "200", IntervalSeconds: 30, UnhealthyThreshold: 2, HealthyThreshold: 5}},
 	}
 
-	cfg, err := GenerateHAProxyConfig(lb, []*ListenerRecord{listener}, tgByArn, map[string][]*RuleRecord{"arn:lst1": {rule}}, "0.0.0.0")
+	cfg, _, err := GenerateHAProxyConfigWithCerts(lb, []*ListenerRecord{listener}, tgByArn, map[string][]*RuleRecord{"arn:lst1": {rule}}, "0.0.0.0", nil)
 	require.NoError(t, err)
 	assert.Contains(t, cfg, "acl rrule1_c0 path -m beg /api/")
 	assert.Contains(t, cfg, "use_backend bk_rule if rrule1_c0")
@@ -583,7 +583,7 @@ func TestHAProxyRender_HostHeaderWildcardSuffix(t *testing.T) {
 		"arn:aws:elbv2:tg/rule":    {Name: "r", TargetGroupArn: "arn:aws:elbv2:tg/rule", Protocol: ProtocolHTTP, HealthCheck: HealthCheckConfig{Path: "/", Matcher: "200", IntervalSeconds: 30, UnhealthyThreshold: 2, HealthyThreshold: 5}},
 	}
 
-	cfg, err := GenerateHAProxyConfig(lb, []*ListenerRecord{listener}, tgByArn, map[string][]*RuleRecord{"arn:lst1": {rule}}, "0.0.0.0")
+	cfg, _, err := GenerateHAProxyConfigWithCerts(lb, []*ListenerRecord{listener}, tgByArn, map[string][]*RuleRecord{"arn:lst1": {rule}}, "0.0.0.0", nil)
 	require.NoError(t, err)
 	assert.Contains(t, cfg, "hdr(host) -i -m end .example.com")
 }
@@ -612,9 +612,9 @@ func TestHAProxyRender_RulesOrderedByPriority(t *testing.T) {
 	}
 
 	// Pass rules unsorted; rendering must order them by priority.
-	cfg, err := GenerateHAProxyConfig(lb, []*ListenerRecord{listener}, tgByArn, map[string][]*RuleRecord{
+	cfg, _, err := GenerateHAProxyConfigWithCerts(lb, []*ListenerRecord{listener}, tgByArn, map[string][]*RuleRecord{
 		"arn:lst1": sortByPriority([]*RuleRecord{low, high}),
-	}, "0.0.0.0")
+	}, "0.0.0.0", nil)
 	require.NoError(t, err)
 	hiIdx := strings.Index(cfg, "use_backend bk_high")
 	loIdx := strings.Index(cfg, "use_backend bk_low")

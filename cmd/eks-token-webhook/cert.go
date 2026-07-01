@@ -18,14 +18,10 @@ import (
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 )
 
-// tlsCertificate is the webhook's loopback serving certificate.
-type tlsCertificate struct {
-	cert tls.Certificate
-}
-
-func (c tlsCertificate) serverTLSConfig() *tls.Config {
+// serverTLSConfig is the webhook's loopback serving TLS config.
+func serverTLSConfig(cert tls.Certificate) *tls.Config {
 	return &tls.Config{
-		Certificates:     []tls.Certificate{c.cert},
+		Certificates:     []tls.Certificate{cert},
 		MinVersion:       tls.VersionTLS13,
 		CurvePreferences: tlsconfig.Curves,
 	}
@@ -36,30 +32,30 @@ func (c tlsCertificate) serverTLSConfig() *tls.Config {
 // across restarts keeps the CA the apiserver loaded into its webhook kubeconfig
 // valid even if the webhook process is restarted. Returns the parsed cert and
 // the certificate PEM (for embedding as the kubeconfig CA bundle).
-func ensureServingCert(certPath, keyPath string) (tlsCertificate, []byte, error) {
+func ensureServingCert(certPath, keyPath string) (tls.Certificate, []byte, error) {
 	if certPEM, keyPEM, ok := readCertPair(certPath, keyPath); ok {
 		cert, err := tls.X509KeyPair(certPEM, keyPEM)
 		if err == nil {
-			return tlsCertificate{cert: cert}, certPEM, nil
+			return cert, certPEM, nil
 		}
 		// Fall through to regenerate on a corrupt/incompatible persisted pair.
 	}
 
 	certPEM, keyPEM, err := generateSelfSigned()
 	if err != nil {
-		return tlsCertificate{}, nil, err
+		return tls.Certificate{}, nil, err
 	}
 	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
-		return tlsCertificate{}, nil, fmt.Errorf("write cert %s: %w", certPath, err)
+		return tls.Certificate{}, nil, fmt.Errorf("write cert %s: %w", certPath, err)
 	}
 	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
-		return tlsCertificate{}, nil, fmt.Errorf("write key %s: %w", keyPath, err)
+		return tls.Certificate{}, nil, fmt.Errorf("write key %s: %w", keyPath, err)
 	}
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
-		return tlsCertificate{}, nil, fmt.Errorf("parse minted keypair: %w", err)
+		return tls.Certificate{}, nil, fmt.Errorf("parse minted keypair: %w", err)
 	}
-	return tlsCertificate{cert: cert}, certPEM, nil
+	return cert, certPEM, nil
 }
 
 func readCertPair(certPath, keyPath string) (certPEM, keyPEM []byte, ok bool) {

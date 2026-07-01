@@ -44,7 +44,7 @@ func TestGenerateHAProxyConfig_SingleListenerAndBackend(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "10.0.1.5")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "10.0.1.5", nil)
 	require.NoError(t, err)
 
 	// Verify global section
@@ -92,7 +92,7 @@ func TestGenerateHAProxyConfig_HTTPSBackendReencrypts(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "10.0.2.5")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "10.0.2.5", nil)
 	require.NoError(t, err)
 	assert.Contains(t, config, "10.0.2.10:30081 check check-ssl ssl verify none inter 10s")
 }
@@ -131,7 +131,7 @@ func TestGenerateHAProxyConfig_MultipleListeners(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "bind *:80")
@@ -163,7 +163,7 @@ func TestGenerateHAProxyConfig_SkipsDrainingTargets(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "10.0.0.1:80")
@@ -188,7 +188,7 @@ func TestGenerateHAProxyConfig_SharedTargetGroup(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	// Backend should only appear once
@@ -238,7 +238,7 @@ func TestGenerateHAProxyConfig_FixedResponseDefault(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, rulesByListener, "10.42.0.13")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, rulesByListener, "10.42.0.13", nil)
 	require.NoError(t, err)
 
 	// No dangling default backend.
@@ -270,7 +270,7 @@ func TestGenerateHAProxyConfig_FixedResponseRejectsUnsafeBody(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, nil, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "http-request return status 200")
@@ -301,7 +301,7 @@ func TestGenerateHAProxyConfig_RedirectSchemeDefault(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, nil, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "default_backend bkdefault_lst-aa")
@@ -331,7 +331,7 @@ func TestGenerateHAProxyConfig_RedirectLocation(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, nil, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "http-request redirect location https://www.example.com%[path]?%[query] code 302")
@@ -361,7 +361,7 @@ func TestGenerateHAProxyConfig_RedirectCustomAll(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, nil, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "http-request redirect location https://alt.example.com:8443/moved?ref=1 code 302")
@@ -401,7 +401,7 @@ func TestGenerateHAProxyConfig_RedirectRule(t *testing.T) {
 		appTG: {TargetGroupArn: appTG, HealthCheck: DefaultHealthCheck()},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, rulesByListener, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, rulesByListener, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "use_backend bkrule_ruleR if")
@@ -427,13 +427,13 @@ func TestGenerateHAProxyConfig_RedirectRejectsInjection(t *testing.T) {
 		},
 	}
 
-	_, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	_, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, nil, nil, "0.0.0.0", nil)
 	require.Error(t, err)
 }
 
 func TestGenerateHAProxyConfig_NoListeners(t *testing.T) {
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-empty"}
-	config, err := GenerateHAProxyConfig(lb, nil, nil, nil, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, nil, nil, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	// Should still produce a valid config (global + defaults, no frontends/backends)
@@ -499,7 +499,7 @@ func TestGenerateALBConfig_StillWorks(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "0.0.0.0")
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "mode http")

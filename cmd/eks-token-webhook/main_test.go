@@ -99,7 +99,7 @@ func TestEnsureServingCert_PersistsAndReuses(t *testing.T) {
 	c1, pem1, err := ensureServingCert(certPath, keyPath)
 	require.NoError(t, err)
 	require.NotEmpty(t, pem1)
-	require.NotNil(t, c1.serverTLSConfig())
+	require.NotNil(t, serverTLSConfig(c1))
 
 	// Second call reuses the persisted pair (same cert bytes).
 	_, pem2, err := ensureServingCert(certPath, keyPath)

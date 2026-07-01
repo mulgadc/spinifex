@@ -352,8 +352,8 @@ func TestHAProxyRender_AllConditionFields(t *testing.T) {
 			Actions:    []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: "arn:aws:elbv2:tg/ip"}}},
 	}
 
-	cfg, err := GenerateHAProxyConfig(lb, []*ListenerRecord{listener}, tgByArn,
-		map[string][]*RuleRecord{"arn:lst1": rules}, "0.0.0.0")
+	cfg, _, err := GenerateHAProxyConfigWithCerts(lb, []*ListenerRecord{listener}, tgByArn,
+		map[string][]*RuleRecord{"arn:lst1": rules}, "0.0.0.0", nil)
 	require.NoError(t, err)
 
 	for _, want := range []string{

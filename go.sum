@@ -1301,6 +1301,8 @@ github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
 github.com/mulgadc/predastore v1.10.0 h1:kMBI31HTYV0fxXYY+XiLgxO6rJd4WPPDXswDgJaK8HY=
 github.com/mulgadc/predastore v1.10.0/go.mod h1:j2DOdAOj/c42MRI6SkZrfh9KFbIyDDJLmf63SJ2yizw=
+github.com/mulgadc/predastore v1.11.0-dev h1:GMkwHWEANG9Oazf5Fxk8IATDNlNLcbJ15/tJ0JrdIeE=
+github.com/mulgadc/predastore v1.11.0-dev/go.mod h1:j2DOdAOj/c42MRI6SkZrfh9KFbIyDDJLmf63SJ2yizw=
 github.com/mulgadc/viperblock v1.10.0 h1:a8KKJ/qgeYsInlnOJ5S/o+HCfqTIklgzz/FpzdeXAEY=
 github.com/mulgadc/viperblock v1.10.0/go.mod h1:2ArCxLXJjSN4Idx9g8Pdq5n1Kp7HFHs2vWMZgKJT9dI=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=

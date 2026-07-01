@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -390,6 +391,9 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 	if len(user.Groups) > 0 {
+		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	}
+	if len(user.InlinePolicies) > 0 {
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
@@ -1274,6 +1278,123 @@ func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.L
 	}, nil
 }
 
+// ---------------------------------------------------------------------------
+// User inline policies
+// ---------------------------------------------------------------------------
+
+// PutUserPolicy embeds an inline policy document in a user, keyed by PolicyName.
+// Idempotent upsert: a same-name policy is overwritten, mirroring AWS. Uses a
+// blind read-modify-write Put like the other user writers (no CAS).
+func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+	userName := *input.UserName
+	policyName := *input.PolicyName
+	policyDoc := *input.PolicyDocument
+	userKVKey := accountID + "." + userName
+
+	if err := validatePolicyName(policyName); err != nil {
+		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	}
+	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
+		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+	}
+
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	if user.InlinePolicies == nil {
+		user.InlinePolicies = map[string]string{}
+	}
+	user.InlinePolicies[policyName] = policyDoc
+
+	userData, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+
+	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM inline policy put on user", "accountID", accountID, "userName", userName, "policyName", policyName)
+	return &iam.PutUserPolicyOutput{}, nil
+}
+
+// GetUserPolicy returns a user's inline policy document by name as a raw JSON
+// string, matching the in-repo convention used by GetGroupPolicy.
+func (s *IAMServiceImpl) GetUserPolicy(accountID string, input *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
+	userName := *input.UserName
+	policyName := *input.PolicyName
+
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	doc, ok := user.InlinePolicies[policyName]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+
+	return &iam.GetUserPolicyOutput{
+		UserName:       aws.String(userName),
+		PolicyName:     aws.String(policyName),
+		PolicyDocument: aws.String(doc),
+	}, nil
+}
+
+// DeleteUserPolicy removes a user's inline policy by name. A missing name
+// yields NoSuchEntity, matching AWS. Blind Put like the other user writers.
+func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+	userName := *input.UserName
+	policyName := *input.PolicyName
+	userKVKey := accountID + "." + userName
+
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, ok := user.InlinePolicies[policyName]; !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	delete(user.InlinePolicies, policyName)
+
+	userData, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+
+	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM inline policy deleted from user", "accountID", accountID, "userName", userName, "policyName", policyName)
+	return &iam.DeleteUserPolicyOutput{}, nil
+}
+
+// ListUserPolicies returns the names of a user's inline policies, sorted for
+// deterministic output. Pagination is not implemented: IsTruncated is always false.
+func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
+	user, err := s.getUser(accountID, *input.UserName)
+	if err != nil {
+		return nil, err
+	}
+
+	rawNames := slices.Sorted(maps.Keys(user.InlinePolicies))
+
+	names := make([]*string, 0, len(rawNames))
+	for _, name := range rawNames {
+		names = append(names, aws.String(name))
+	}
+
+	return &iam.ListUserPoliciesOutput{
+		PolicyNames: names,
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
 // GetUserPolicies resolves all policy documents attached to a user.
 // Used internally by the gateway for policy evaluation.
 func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDocument, error) {
@@ -1293,6 +1414,17 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 		if include {
 			docs = append(docs, doc)
 		}
+	}
+
+	// Direct user-inline policies. A malformed document fails closed so a broken
+	// inline grant denies rather than silently permitting, mirroring the
+	// group-inline handling below.
+	for name, raw := range user.InlinePolicies {
+		var doc PolicyDocument
+		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+			return nil, fmt.Errorf("parse user inline policy %s/%s: %w", userName, name, err)
+		}
+		docs = append(docs, doc)
 	}
 
 	// Group-inherited managed policies. A membership to a deleted group is inert

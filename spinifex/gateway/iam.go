@@ -97,6 +97,20 @@ var iamActions = map[string]IAMHandler{
 		return gateway_iam.ListAttachedUserPolicies(accountID, input, gw.IAMService)
 	}),
 
+	// User inline policies
+	"PutUserPolicy": iamHandler(func(accountID string, input *iam.PutUserPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.PutUserPolicy(accountID, input, gw.IAMService)
+	}),
+	"GetUserPolicy": iamHandler(func(accountID string, input *iam.GetUserPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetUserPolicy(accountID, input, gw.IAMService)
+	}),
+	"DeleteUserPolicy": iamHandler(func(accountID string, input *iam.DeleteUserPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeleteUserPolicy(accountID, input, gw.IAMService)
+	}),
+	"ListUserPolicies": iamHandler(func(accountID string, input *iam.ListUserPoliciesInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListUserPolicies(accountID, input, gw.IAMService)
+	}),
+
 	// Role CRUD
 	"CreateRole": iamHandler(func(accountID string, input *iam.CreateRoleInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.CreateRole(accountID, input, gw.IAMService)

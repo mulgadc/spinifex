@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/predastore/pkg/iampolicy"
 	"github.com/mulgadc/predastore/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
@@ -475,7 +476,7 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	if policy.EvaluateAccess(logIdentity, iamAction, resource, policies) == policy.Deny {
+	if iampolicy.Evaluate(iamAction, resource, policies) == iampolicy.Deny {
 		slog.Info("checkPolicy: access denied", "identity", logIdentity, "action", iamAction, "resource", resource)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}

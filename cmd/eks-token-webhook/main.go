@@ -134,7 +134,7 @@ func run(cfg config) error {
 		Addr:              cfg.addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-		TLSConfig:         tlsCert.serverTLSConfig(),
+		TLSConfig:         serverTLSConfig(tlsCert),
 	}
 	slog.Info("eks-token-webhook listening", "addr", cfg.addr, "cluster", cfg.clusterName)
 	if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {

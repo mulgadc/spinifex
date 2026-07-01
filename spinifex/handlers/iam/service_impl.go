@@ -1046,10 +1046,11 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 		return nil, err
 	}
 
-	attachmentCount, err := s.countPolicyAttachments(accountID, policy.ARN)
+	counts, err := s.buildAttachmentCounts(accountID)
 	if err != nil {
 		return nil, fmt.Errorf("check policy attachments: %w", err)
 	}
+	attachmentCount := counts[policy.ARN]
 
 	createdAt := parseCreatedAt(policy.CreatedAt)
 	return &iam.GetPolicyOutput{
@@ -1175,11 +1176,11 @@ func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyI
 		return nil, err
 	}
 
-	attachCount, err := s.countPolicyAttachments(accountID, policy.ARN)
+	counts, err := s.buildAttachmentCounts(accountID)
 	if err != nil {
 		return nil, fmt.Errorf("check policy attachments: %w", err)
 	}
-	if attachCount > 0 {
+	if counts[policy.ARN] > 0 {
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
@@ -1387,8 +1388,8 @@ func (s *IAMServiceImpl) getPolicyByARN(accountID, policyARN string) (*Policy, e
 }
 
 // buildAttachmentCounts fetches all users for the account once and returns a
-// map of policyARN -> number of users that have it attached. This avoids the
-// N+1 pattern of calling countPolicyAttachments per policy in ListPolicies.
+// map of policyARN -> number of users that have it attached, avoiding a
+// per-policy full scan when listing or inspecting policies.
 func (s *IAMServiceImpl) buildAttachmentCounts(accountID string) (map[string]int64, error) {
 	keys, err := s.usersBucket.Keys()
 	if err != nil {
@@ -1427,47 +1428,6 @@ func (s *IAMServiceImpl) buildAttachmentCounts(accountID string) (map[string]int
 		}
 	}
 	return counts, nil
-}
-
-// countPolicyAttachments counts how many users in this account have this policy attached.
-func (s *IAMServiceImpl) countPolicyAttachments(accountID, policyARN string) (int64, error) {
-	keys, err := s.usersBucket.Keys()
-	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("count policy attachments: %w", err)
-	}
-
-	keyPrefix := accountID + "."
-	var count int64
-	for _, key := range keys {
-		if key == utils.VersionKey {
-			continue
-		}
-		if !strings.HasPrefix(key, keyPrefix) {
-			continue
-		}
-
-		entry, err := s.usersBucket.Get(key)
-		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
-				slog.Debug("countPolicyAttachments: user key disappeared", "key", key)
-				continue
-			}
-			slog.Warn("countPolicyAttachments: failed to get user", "key", key, "err", err)
-			continue
-		}
-		var user User
-		if err := json.Unmarshal(entry.Value(), &user); err != nil {
-			slog.Warn("countPolicyAttachments: failed to unmarshal user", "key", key, "err", err)
-			continue
-		}
-		if slices.Contains(user.AttachedPolicies, policyARN) {
-			count++
-		}
-	}
-	return count, nil
 }
 
 func (s *IAMServiceImpl) getUser(accountID, userName string) (*User, error) {

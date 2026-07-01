@@ -133,16 +133,10 @@ type HAProxyServer struct {
 	Secure bool
 }
 
-// GenerateHAProxyConfig builds an HAProxy config from the LB, listeners, and
-// target groups. No TLS — use GenerateHAProxyConfigWithCerts for HTTPS listeners.
-func GenerateHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string) (string, error) {
-	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, rulesByListener, bindAddr, nil)
-	return config, err
-}
-
-// GenerateHAProxyConfigWithCerts is GenerateHAProxyConfig plus TLS termination.
-// certPEMByArn maps certificate ARNs to combined PEMs; secure frontends emit
-// `ssl crt <path>` and the returned certFiles carries path→PEM for the LB agent.
+// GenerateHAProxyConfigWithCerts builds an HAProxy config from the LB,
+// listeners, and target groups, with optional TLS termination. certPEMByArn
+// maps certificate ARNs to combined PEMs; secure frontends emit `ssl crt
+// <path>` and the returned certFiles carries path→PEM for the LB agent.
 func GenerateHAProxyConfigWithCerts(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string, certPEMByArn map[string]string) (string, map[string]string, error) {
 	// NLBs (L4) render an nginx `stream` config — HAProxy load-balances no UDP.
 	if lb.Type == LoadBalancerTypeNetwork {

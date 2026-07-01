@@ -28,16 +28,17 @@ type (
 
 // User represents an IAM user stored in JetStream KV.
 type User struct {
-	UserName         string   `json:"user_name"`
-	UserID           string   `json:"user_id"`
-	AccountID        string   `json:"account_id"`
-	ARN              string   `json:"arn"`
-	Path             string   `json:"path"`
-	CreatedAt        string   `json:"created_at"`
-	AccessKeys       []string `json:"access_keys"`
-	Tags             []Tag    `json:"tags"`
-	AttachedPolicies []string `json:"attached_policies"` // policy ARNs
-	Groups           []string `json:"groups"`            // group NAMES the user belongs to (≤10)
+	UserName         string            `json:"user_name"`
+	UserID           string            `json:"user_id"`
+	AccountID        string            `json:"account_id"`
+	ARN              string            `json:"arn"`
+	Path             string            `json:"path"`
+	CreatedAt        string            `json:"created_at"`
+	AccessKeys       []string          `json:"access_keys"`
+	Tags             []Tag             `json:"tags"`
+	AttachedPolicies []string          `json:"attached_policies"`         // policy ARNs
+	Groups           []string          `json:"groups"`                    // group NAMES the user belongs to (≤10)
+	InlinePolicies   map[string]string `json:"inline_policies,omitempty"` // policyName → document JSON
 }
 
 // Group is a permission-grouping IAM identity stored in JetStream KV.

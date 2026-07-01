@@ -776,6 +776,18 @@ func iamDeleteUserBestEffort(fix *Fixture, user string) {
 			})
 		}
 	}
+	// Delete any inline policies so the inline-policy guard can't block the final
+	// DeleteUser after a partial run.
+	if inline, err := fix.AWS.IAM.ListUserPolicies(&iam.ListUserPoliciesInput{
+		UserName: aws.String(user),
+	}); err == nil {
+		for _, name := range inline.PolicyNames {
+			_, _ = fix.AWS.IAM.DeleteUserPolicy(&iam.DeleteUserPolicyInput{
+				UserName:   aws.String(user),
+				PolicyName: name,
+			})
+		}
+	}
 	// Delete every access key for this user.
 	keys, err := fix.AWS.IAM.ListAccessKeys(&iam.ListAccessKeysInput{
 		UserName: aws.String(user),

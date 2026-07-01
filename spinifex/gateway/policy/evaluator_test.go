@@ -217,61 +217,9 @@ func TestEvaluateAccess_CaseInsensitiveAction(t *testing.T) {
 	}
 }
 
-// --- wildcard matching tests (via matchesAny) ---
-
-func TestMatchesAny_Wildcard(t *testing.T) {
-	tests := []struct {
-		pattern string
-		value   string
-		want    bool
-	}{
-		// Global wildcard
-		{"*", "anything", true},
-		{"*", "", true},
-
-		// Service wildcard
-		{"ec2:*", "ec2:RunInstances", true},
-		{"ec2:*", "ec2:DescribeInstances", true},
-		{"ec2:*", "s3:GetObject", false},
-		{"EC2:*", "ec2:RunInstances", true},
-
-		// Prefix wildcard
-		{"s3:Get*", "s3:GetObject", true},
-		{"s3:Get*", "s3:GetBucketPolicy", true},
-		{"s3:Get*", "s3:PutObject", false},
-		{"S3:get*", "s3:GetObject", true},
-
-		// Exact match
-		{"ec2:RunInstances", "ec2:RunInstances", true},
-		{"ec2:RunInstances", "ec2:StopInstances", false},
-
-		// Case insensitive exact match
-		{"EC2:RunInstances", "ec2:RunInstances", true},
-		{"ec2:runinstances", "ec2:RunInstances", true},
-
-		// Embedded wildcards (AWS IAM-style — required for iam:PassRole ARN matching).
-		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::123456789012:role/app-foo", true},
-		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::999999999999:role/app-bar", true},
-		{"arn:aws:iam::*:role/*", "arn:aws:iam::123456789012:role/anything", true},
-		{"arn:aws:iam::123456789012:role/app-*", "arn:aws:iam::123456789012:role/app-foo", true},
-		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::123456789012:role/admin-foo", false},
-		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::123456789012:user/app-foo", false},
-		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::123456789012:role/app-", true},
-		{"a*b*c", "axxbyyc", true},
-		{"a*b*c", "axxbyy", false},
-
-		// Edge cases
-		{"", "", true},
-		{"", "something", false},
-	}
-
-	for _, tt := range tests {
-		got := matchesAny([]string{tt.pattern}, tt.value)
-		if got != tt.want {
-			t.Errorf("matchesAny([%q], %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
-		}
-	}
-}
+// Wildcard matching (infix, case-insensitive actions, case-sensitive resources)
+// is unit-tested in predastore's pkg/iampolicy; here we exercise it end to end
+// through EvaluateAccess.
 
 // TestEvaluateAccess_PassRoleResourceARN exercises the resource-ARN matching
 // path used by iam:PassRole enforcement. The caller's policy will typically

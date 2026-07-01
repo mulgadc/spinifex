@@ -1,13 +1,12 @@
 package handlers_iam
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/mulgadc/predastore/pkg/masterkey"
 )
 
 const masterKeySize = 32 // AES-256
@@ -48,75 +47,44 @@ func SaveMasterKey(path string, key []byte) error {
 	return nil
 }
 
-// EncryptSecret encrypts a plaintext secret with AES-256-GCM.
-// Returns base64(nonce + ciphertext + tag).
+// EncryptSecret encrypts a plaintext secret with AES-256-GCM, returning
+// base64(nonce + ciphertext + tag). It delegates to predastore's masterkey so
+// the wire format stays byte-for-byte identical across services.
 func EncryptSecret(plaintext string, key []byte) (string, error) {
-	block, err := aes.NewCipher(key)
+	k, err := masterkey.New(key)
 	if err != nil {
-		return "", fmt.Errorf("create cipher: %w", err)
+		return "", err
 	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("create GCM: %w", err)
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", fmt.Errorf("generate nonce: %w", err)
-	}
-
-	// Seal appends ciphertext+tag to nonce
-	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
+	return k.Encrypt(plaintext)
 }
 
 // Decrypter holds a pre-computed AES-256-GCM cipher for repeated decryption.
 // Create once at startup with NewDecrypter and reuse across requests.
 type Decrypter struct {
-	gcm cipher.AEAD
+	key *masterkey.Key
 }
 
 // NewDecrypter creates a Decrypter with a pre-computed AES-GCM cipher from the given key.
 func NewDecrypter(key []byte) (*Decrypter, error) {
-	block, err := aes.NewCipher(key)
+	k, err := masterkey.New(key)
 	if err != nil {
-		return nil, fmt.Errorf("create cipher: %w", err)
+		return nil, err
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("create GCM: %w", err)
-	}
-	return &Decrypter{gcm: gcm}, nil
+	return &Decrypter{key: k}, nil
 }
 
 // Decrypt decrypts a base64-encoded AES-256-GCM ciphertext using the pre-computed cipher.
 func (d *Decrypter) Decrypt(ciphertext string) (string, error) {
-	data, err := base64.StdEncoding.DecodeString(ciphertext)
-	if err != nil {
-		return "", fmt.Errorf("base64 decode: %w", err)
-	}
-
-	nonceSize := d.gcm.NonceSize()
-	if len(data) < nonceSize {
-		return "", fmt.Errorf("ciphertext too short")
-	}
-
-	nonce, sealed := data[:nonceSize], data[nonceSize:]
-	plaintext, err := d.gcm.Open(nil, nonce, sealed, nil)
-	if err != nil {
-		return "", fmt.Errorf("decrypt: %w", err)
-	}
-	return string(plaintext), nil
+	return d.key.Decrypt(ciphertext)
 }
 
 // DecryptSecret decrypts a base64-encoded AES-256-GCM ciphertext.
 func DecryptSecret(ciphertext string, key []byte) (string, error) {
-	d, err := NewDecrypter(key)
+	k, err := masterkey.New(key)
 	if err != nil {
 		return "", err
 	}
-	return d.Decrypt(ciphertext)
+	return k.Decrypt(ciphertext)
 }
 
 // SaveBootstrapData writes bootstrap data as JSON to disk with 0600 permissions.

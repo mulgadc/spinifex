@@ -183,10 +183,24 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 			argv:     []string{"ovs-ofctl", "dump-flows", "br-ext"},
 		},
 		{
+			// dpctl/dump-conntrack reads the OVS-owned conntrack zone directly,
+			// so it works on hosts without the standalone `conntrack` binary
+			// (absent on the baremetal runner). Shows whether a SNAT ct entry
+			// for the external IP was ever committed.
 			filename: "conntrack-extip.txt",
-			label:    "conntrack -L (filtered)",
-			argv:     []string{"conntrack", "-L"},
+			label:    "ovs-appctl dpctl/dump-conntrack (filtered)",
+			argv:     []string{"ovs-appctl", "dpctl/dump-conntrack"},
 			grepFor:  []string{opts.ExternalIP},
+		},
+		{
+			// Kernel megaflows with hit counters. Shows where the guest's
+			// packets actually land in the datapath and whether any megaflow
+			// carries them toward the uplink, cross-checking the logical-flow
+			// view against real forwarding.
+			filename: "dp-flows.txt",
+			label:    "ovs-appctl dpctl/dump-flows -m (filtered)",
+			argv:     []string{"ovs-appctl", "dpctl/dump-flows", "-m"},
+			grepFor:  []string{opts.ExternalIP, opts.LogicalIP},
 		},
 		{
 			filename: "ip-neigh-extip.txt",
@@ -199,17 +213,6 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 			label:    "ovn-nbctl find NAT external_ip",
 			argv: []string{"ovn-nbctl", "--bare", "--columns=_uuid,type,external_ip,logical_ip,external_mac,logical_port",
 				"find", "NAT", "external_ip=" + opts.ExternalIP},
-		},
-		{
-			// Per-stage packet counts across the whole gateway pipeline. The
-			// SNAT flow reading n_packets=0 while the guest transmits means
-			// packets die upstream of lr_out_snat; this grep shows which
-			// stage (lr_in_ip_routing, lr_in_arp_resolve, ...) still counts
-			// the packets and which one drops to zero — the exact drop point.
-			filename: "ovn-lflows-extip.txt",
-			label:    "ovn-sbctl --stats lflow-list (filtered)",
-			argv:     []string{"ovn-sbctl", "--stats", "lflow-list"},
-			grepFor:  []string{opts.ExternalIP, opts.LogicalIP},
 		},
 		{
 			// The default route's next-hop must resolve to a MAC before the
@@ -238,6 +241,18 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 			argv: []string{"ovn-nbctl", "--bare",
 				"--columns=name,addresses,up,type", "list", "Logical_Switch_Port"},
 			grepFor: []string{opts.LogicalIP},
+		},
+		{
+			// Full, unfiltered per-stage packet counts. An IP-filtered lflow
+			// dump hides the default-drop ACL flow (its match carries no IP),
+			// so when the guest's egress dies at ls_out_acl a filtered view
+			// shows the allow-flows at n_packets=0 but not the deny that ate
+			// the packets. This full dump names the exact drop flow and its
+			// hit count. Echoed in full so it survives in the CI stdout log
+			// even when the artifact directory is not bundled.
+			filename: "ovn-lflows-full.txt",
+			label:    "ovn-sbctl --stats lflow-list (full)",
+			argv:     []string{"ovn-sbctl", "--stats", "lflow-list"},
 		},
 	})
 }

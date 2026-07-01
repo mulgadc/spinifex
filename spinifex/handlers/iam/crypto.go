@@ -55,7 +55,7 @@ func EncryptSecret(plaintext string, key []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return k.Encrypt(plaintext)
+	return k.EncryptBase64(plaintext)
 }
 
 // DecryptSecret decrypts a base64-encoded AES-256-GCM ciphertext.
@@ -64,7 +64,7 @@ func DecryptSecret(ciphertext string, key []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return k.Decrypt(ciphertext)
+	return k.DecryptBase64(ciphertext)
 }
 
 // SaveBootstrapData writes bootstrap data as JSON to disk with 0600 permissions.

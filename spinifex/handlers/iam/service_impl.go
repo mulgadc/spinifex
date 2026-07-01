@@ -427,7 +427,7 @@ func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAcce
 		return nil, fmt.Errorf("generate secret key: %w", err)
 	}
 
-	encryptedSecret, err := s.key.Encrypt(secretAccessKey)
+	encryptedSecret, err := s.key.EncryptBase64(secretAccessKey)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt secret: %w", err)
 	}
@@ -626,7 +626,7 @@ func (s *IAMServiceImpl) LookupAccessKey(accessKeyID string) (*AccessKey, error)
 // DecryptSecret decrypts a base64-encoded AES-256-GCM ciphertext using the
 // master key loaded at startup.
 func (s *IAMServiceImpl) DecryptSecret(ciphertext string) (string, error) {
-	return s.key.Decrypt(ciphertext)
+	return s.key.DecryptBase64(ciphertext)
 }
 
 // SeedBootstrap seeds the system root user and optional admin account into NATS KV.

@@ -350,7 +350,7 @@ func TestCrossAccount_LookupAccessKeyReturnsCorrectAccount(t *testing.T) {
 func TestSeedBootstrap_AccountScoped(t *testing.T) {
 	svc := setupTestIAMService(t)
 
-	encryptedSecret, err := svc.key.Encrypt("root-secret")
+	encryptedSecret, err := svc.key.EncryptBase64("root-secret")
 	require.NoError(t, err)
 
 	err = svc.SeedBootstrap(&BootstrapData{

@@ -173,6 +173,14 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 			grepFor:  []string{opts.ExternalIP, opts.LogicalIP},
 		},
 		{
+			// br-int flows miss the localnet egress hop; br-ext is where
+			// SNAT'd traffic leaves for the physical uplink, so a dropped
+			// or absent flow here pinpoints an egress black-hole.
+			filename: "ovs-flows-brext.txt",
+			label:    "ovs-ofctl dump-flows br-ext (egress localnet)",
+			argv:     []string{"ovs-ofctl", "dump-flows", "br-ext"},
+		},
+		{
 			filename: "conntrack-extip.txt",
 			label:    "conntrack -L (filtered)",
 			argv:     []string{"conntrack", "-L"},

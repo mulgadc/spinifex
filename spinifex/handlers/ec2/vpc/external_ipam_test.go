@@ -4,12 +4,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func setupTestExternalIPAM(t *testing.T, pools []ExternalPoolConfig) *ExternalIPAM {
+func setupTestExternalIPAM(t *testing.T, pools []external.ExternalPoolConfig) *ExternalIPAM {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
 
@@ -18,8 +19,8 @@ func setupTestExternalIPAM(t *testing.T, pools []ExternalPoolConfig) *ExternalIP
 	return ipam
 }
 
-func testPool() ExternalPoolConfig {
-	return ExternalPoolConfig{
+func testPool() external.ExternalPoolConfig {
+	return external.ExternalPoolConfig{
 		Name:       "wan",
 		RangeStart: "192.168.1.150",
 		RangeEnd:   "192.168.1.160",
@@ -30,7 +31,7 @@ func testPool() ExternalPoolConfig {
 
 func TestExternalIPAM_AllocateSequential(t *testing.T) {
 	pool := testPool()
-	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
+	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
 	// .150 is reserved for gateway, so first allocable is .151
 	ip1, poolName, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-1", "i-1")
@@ -49,7 +50,7 @@ func TestExternalIPAM_AllocateSequential(t *testing.T) {
 
 func TestExternalIPAM_GatewayIPReserved(t *testing.T) {
 	pool := testPool()
-	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
+	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
 	record, err := ipam.GetPoolRecord("wan")
 	require.NoError(t, err)
@@ -67,7 +68,7 @@ func TestExternalIPAM_GatewayIPReserved(t *testing.T) {
 func TestExternalIPAM_ExplicitGatewayIP(t *testing.T) {
 	pool := testPool()
 	pool.GatewayIP = "192.168.1.155"
-	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
+	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
 	record, err := ipam.GetPoolRecord("wan")
 	require.NoError(t, err)
@@ -86,7 +87,7 @@ func TestExternalIPAM_ExplicitGatewayIP(t *testing.T) {
 
 func TestExternalIPAM_Release(t *testing.T) {
 	pool := testPool()
-	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
+	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
 	ip1, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-1", "i-1")
 	require.NoError(t, err)
@@ -108,14 +109,14 @@ func TestExternalIPAM_Release(t *testing.T) {
 }
 
 func TestExternalIPAM_Exhaustion(t *testing.T) {
-	pool := ExternalPoolConfig{
+	pool := external.ExternalPoolConfig{
 		Name:       "tiny",
 		RangeStart: "10.0.0.1",
 		RangeEnd:   "10.0.0.3",
 		Gateway:    "10.0.0.254",
 		PrefixLen:  24,
 	}
-	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
+	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
 	// .1 reserved for gateway, .2 and .3 allocable
 	ip1, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-1", "i-1")
@@ -133,7 +134,7 @@ func TestExternalIPAM_Exhaustion(t *testing.T) {
 
 func TestExternalIPAM_CASConflict(t *testing.T) {
 	pool := testPool()
-	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
+	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
 	// Concurrent allocations should all succeed (CAS retry handles conflicts)
 	var wg sync.WaitGroup
@@ -165,7 +166,7 @@ func TestExternalIPAM_CASConflict(t *testing.T) {
 }
 
 func TestExternalIPAM_MultiPool(t *testing.T) {
-	pools := []ExternalPoolConfig{
+	pools := []external.ExternalPoolConfig{
 		{
 			Name:       "us-east",
 			RangeStart: "203.0.113.2",
@@ -201,7 +202,7 @@ func TestExternalIPAM_MultiPool(t *testing.T) {
 }
 
 func TestExternalIPAM_PoolFallback(t *testing.T) {
-	pools := []ExternalPoolConfig{
+	pools := []external.ExternalPoolConfig{
 		{
 			Name:       "az-pool",
 			RangeStart: "10.0.0.1",
@@ -249,7 +250,7 @@ func TestExternalIPAM_PoolFallback(t *testing.T) {
 }
 
 func TestExternalIPAM_SpecificPool(t *testing.T) {
-	pools := []ExternalPoolConfig{
+	pools := []external.ExternalPoolConfig{
 		{
 			Name:       "pool-a",
 			RangeStart: "10.0.0.1",
@@ -276,47 +277,47 @@ func TestExternalIPAM_SpecificPool(t *testing.T) {
 func TestExternalIPAM_RangeValidation(t *testing.T) {
 	tests := []struct {
 		name    string
-		pool    ExternalPoolConfig
+		pool    external.ExternalPoolConfig
 		wantErr string
 	}{
 		{
 			name:    "empty name",
-			pool:    ExternalPoolConfig{RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10", Gateway: "10.0.0.254"},
+			pool:    external.ExternalPoolConfig{RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10", Gateway: "10.0.0.254"},
 			wantErr: "pool name is required",
 		},
 		{
 			name:    "bad range_start",
-			pool:    ExternalPoolConfig{Name: "bad", RangeStart: "not-an-ip", RangeEnd: "10.0.0.10", Gateway: "10.0.0.254"},
+			pool:    external.ExternalPoolConfig{Name: "bad", RangeStart: "not-an-ip", RangeEnd: "10.0.0.10", Gateway: "10.0.0.254"},
 			wantErr: "invalid range_start",
 		},
 		{
 			name:    "bad range_end",
-			pool:    ExternalPoolConfig{Name: "bad", RangeStart: "10.0.0.1", RangeEnd: "not-an-ip", Gateway: "10.0.0.254"},
+			pool:    external.ExternalPoolConfig{Name: "bad", RangeStart: "10.0.0.1", RangeEnd: "not-an-ip", Gateway: "10.0.0.254"},
 			wantErr: "invalid range_end",
 		},
 		{
 			name:    "start > end",
-			pool:    ExternalPoolConfig{Name: "bad", RangeStart: "10.0.0.10", RangeEnd: "10.0.0.1", Gateway: "10.0.0.254"},
+			pool:    external.ExternalPoolConfig{Name: "bad", RangeStart: "10.0.0.10", RangeEnd: "10.0.0.1", Gateway: "10.0.0.254"},
 			wantErr: "greater than range_end",
 		},
 		{
 			name:    "missing gateway",
-			pool:    ExternalPoolConfig{Name: "bad", RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10"},
+			pool:    external.ExternalPoolConfig{Name: "bad", RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10"},
 			wantErr: "gateway is required",
 		},
 		{
 			name:    "bad gateway",
-			pool:    ExternalPoolConfig{Name: "bad", RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10", Gateway: "nope"},
+			pool:    external.ExternalPoolConfig{Name: "bad", RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10", Gateway: "nope"},
 			wantErr: "invalid gateway IP",
 		},
 		{
 			name:    "bad gateway_ip",
-			pool:    ExternalPoolConfig{Name: "ok", RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10", Gateway: "10.0.0.254", GatewayIP: "nope"},
+			pool:    external.ExternalPoolConfig{Name: "ok", RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10", Gateway: "10.0.0.254", GatewayIP: "nope"},
 			wantErr: "invalid gateway_ip",
 		},
 		{
 			name: "valid",
-			pool: ExternalPoolConfig{Name: "ok", RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10", Gateway: "10.0.0.254"},
+			pool: external.ExternalPoolConfig{Name: "ok", RangeStart: "10.0.0.1", RangeEnd: "10.0.0.10", Gateway: "10.0.0.254"},
 		},
 	}
 
@@ -338,7 +339,7 @@ func TestExternalIPAM_InitFromConfig(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
 	// First init
-	ipam1, err := NewExternalIPAM(js, []ExternalPoolConfig{pool})
+	ipam1, err := NewExternalIPAM(js, []external.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
 	// Allocate an IP
@@ -347,7 +348,7 @@ func TestExternalIPAM_InitFromConfig(t *testing.T) {
 	assert.Equal(t, "192.168.1.151", ip)
 
 	// Second init (simulating restart) — should not lose allocation
-	ipam2, err := NewExternalIPAM(js, []ExternalPoolConfig{pool})
+	ipam2, err := NewExternalIPAM(js, []external.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
 	record, err := ipam2.GetPoolRecord("wan")
@@ -358,14 +359,14 @@ func TestExternalIPAM_InitFromConfig(t *testing.T) {
 
 func TestExternalIPAM_ReleaseNotAllocated(t *testing.T) {
 	pool := testPool()
-	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
+	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
 	err := ipam.ReleaseIP("wan", "192.168.1.200", "")
 	assert.ErrorContains(t, err, "not allocated")
 }
 
 func TestExternalIPAM_NoPoolAvailable(t *testing.T) {
-	pool := ExternalPoolConfig{
+	pool := external.ExternalPoolConfig{
 		Name:       "us-only",
 		RangeStart: "10.0.0.1",
 		RangeEnd:   "10.0.0.10",
@@ -374,7 +375,7 @@ func TestExternalIPAM_NoPoolAvailable(t *testing.T) {
 		Region:     "us-east-1",
 		AZ:         "us-east-1a",
 	}
-	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
+	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
 	// No pool matches eu-west
 	_, _, err := ipam.AllocateIP("eu-west-1", "eu-west-1a", PurposeENIPublic, "", "eni-1", "i-1")
@@ -383,19 +384,19 @@ func TestExternalIPAM_NoPoolAvailable(t *testing.T) {
 
 func TestExternalIPAM_FindPoolByName_NotFound(t *testing.T) {
 	pool := testPool()
-	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
+	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
 	// AllocateFromPool with a non-existent pool name: the pool "nonexistent"
 	// has no KV record, so getRecord fails.
 	kv := ipam.kv
-	ipam2 := NewExternalIPAMWithKV(kv, []ExternalPoolConfig{pool})
+	ipam2 := NewExternalIPAMWithKV(kv, []external.ExternalPoolConfig{pool})
 	_, err := ipam2.AllocateFromPool("nonexistent", PurposeENIPublic, "", "eni-1", "i-1")
 	assert.Error(t, err)
 }
 
 func TestValidatePoolConfig(t *testing.T) {
-	base := func() ExternalPoolConfig {
-		return ExternalPoolConfig{
+	base := func() external.ExternalPoolConfig {
+		return external.ExternalPoolConfig{
 			Name:       "wan",
 			Gateway:    "192.168.1.1",
 			RangeStart: "192.168.1.100",
@@ -405,37 +406,37 @@ func TestValidatePoolConfig(t *testing.T) {
 	}
 	cases := []struct {
 		name    string
-		mutate  func(*ExternalPoolConfig)
+		mutate  func(*external.ExternalPoolConfig)
 		wantErr string
 	}{
-		{name: "ok", mutate: func(p *ExternalPoolConfig) {}},
-		{name: "no name", mutate: func(p *ExternalPoolConfig) { p.Name = "" }, wantErr: "pool name is required"},
-		{name: "no gateway", mutate: func(p *ExternalPoolConfig) { p.Gateway = "" }, wantErr: "gateway is required"},
-		{name: "bad gateway", mutate: func(p *ExternalPoolConfig) { p.Gateway = "x" }, wantErr: "invalid gateway IP"},
-		{name: "bad gateway_ip", mutate: func(p *ExternalPoolConfig) { p.GatewayIP = "x" }, wantErr: "invalid gateway_ip"},
-		{name: "bad range_start", mutate: func(p *ExternalPoolConfig) { p.RangeStart = "x" }, wantErr: "invalid range_start"},
-		{name: "bad range_end", mutate: func(p *ExternalPoolConfig) { p.RangeEnd = "x" }, wantErr: "invalid range_end"},
-		{name: "range reversed", mutate: func(p *ExternalPoolConfig) {
+		{name: "ok", mutate: func(p *external.ExternalPoolConfig) {}},
+		{name: "no name", mutate: func(p *external.ExternalPoolConfig) { p.Name = "" }, wantErr: "pool name is required"},
+		{name: "no gateway", mutate: func(p *external.ExternalPoolConfig) { p.Gateway = "" }, wantErr: "gateway is required"},
+		{name: "bad gateway", mutate: func(p *external.ExternalPoolConfig) { p.Gateway = "x" }, wantErr: "invalid gateway IP"},
+		{name: "bad gateway_ip", mutate: func(p *external.ExternalPoolConfig) { p.GatewayIP = "x" }, wantErr: "invalid gateway_ip"},
+		{name: "bad range_start", mutate: func(p *external.ExternalPoolConfig) { p.RangeStart = "x" }, wantErr: "invalid range_start"},
+		{name: "bad range_end", mutate: func(p *external.ExternalPoolConfig) { p.RangeEnd = "x" }, wantErr: "invalid range_end"},
+		{name: "range reversed", mutate: func(p *external.ExternalPoolConfig) {
 			p.RangeStart = "192.168.1.200"
 			p.RangeEnd = "192.168.1.100"
 		}, wantErr: "greater than range_end"},
-		{name: "bad gw_lrp_start", mutate: func(p *ExternalPoolConfig) {
+		{name: "bad gw_lrp_start", mutate: func(p *external.ExternalPoolConfig) {
 			p.GwLrpRangeStart = "x"
 			p.GwLrpRangeEnd = "192.168.1.20"
 		}, wantErr: "invalid gw_lrp_range_start"},
-		{name: "bad gw_lrp_end", mutate: func(p *ExternalPoolConfig) {
+		{name: "bad gw_lrp_end", mutate: func(p *external.ExternalPoolConfig) {
 			p.GwLrpRangeStart = "192.168.1.20"
 			p.GwLrpRangeEnd = "x"
 		}, wantErr: "invalid gw_lrp_range_end"},
-		{name: "gw_lrp reversed", mutate: func(p *ExternalPoolConfig) {
+		{name: "gw_lrp reversed", mutate: func(p *external.ExternalPoolConfig) {
 			p.GwLrpRangeStart = "192.168.1.30"
 			p.GwLrpRangeEnd = "192.168.1.20"
 		}, wantErr: "greater than gw_lrp_range_end"},
-		{name: "gw_lrp overlaps range", mutate: func(p *ExternalPoolConfig) {
+		{name: "gw_lrp overlaps range", mutate: func(p *external.ExternalPoolConfig) {
 			p.GwLrpRangeStart = "192.168.1.105"
 			p.GwLrpRangeEnd = "192.168.1.108"
 		}, wantErr: "overlaps range"},
-		{name: "gw_lrp valid below range", mutate: func(p *ExternalPoolConfig) {
+		{name: "gw_lrp valid below range", mutate: func(p *external.ExternalPoolConfig) {
 			p.GwLrpRangeStart = "192.168.1.20"
 			p.GwLrpRangeEnd = "192.168.1.29"
 		}},

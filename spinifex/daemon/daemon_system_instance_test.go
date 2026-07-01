@@ -14,6 +14,7 @@ import (
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -496,7 +497,7 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 
 	js, err := jsNC.JetStream()
 	require.NoError(t, err)
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []handlers_ec2_vpc.ExternalPoolConfig{
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
@@ -618,7 +619,7 @@ func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
 
 	js, err := jsNC.JetStream()
 	require.NoError(t, err)
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []handlers_ec2_vpc.ExternalPoolConfig{
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)

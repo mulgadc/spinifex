@@ -1,11 +1,11 @@
 package handlers_ec2_vpc
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/big"
 	"net"
 
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -188,16 +188,14 @@ func (m *IPAM) nextAvailableIP(record *IPAMRecord) (string, error) {
 	}
 
 	ones, bits := ipNet.Mask.Size()
-	hostBits := bits - ones                                     // always 0-32 for IPv4 CIDRs, safe for uint conversion
-	totalIPs := new(big.Int).Lsh(big.NewInt(1), uint(hostBits)) //#nosec G115 - hostBits is 0-32 for IPv4
+	hostBits := bits - ones           // 0-32 for IPv4 CIDRs
+	totalIPs := uint64(1) << hostBits // fits uint64 (max 2^32)
 
 	// Start at offset 4 (.0=network, .1=gateway, .2=DNS, .3=reserved)
 	networkIP := ipToInt(ipNet.IP)
 
-	for offset := int64(4); offset < totalIPs.Int64()-1; offset++ { // -1 for broadcast
-		candidateInt := new(big.Int).Add(networkIP, big.NewInt(offset))
-		candidate := intToIP(candidateInt).String()
-
+	for offset := uint64(4); offset < totalIPs-1; offset++ { // -1 for broadcast
+		candidate := intToIP(networkIP + uint32(offset)).String()
 		if !allocated[candidate] {
 			return candidate, nil
 		}
@@ -206,20 +204,18 @@ func (m *IPAM) nextAvailableIP(record *IPAMRecord) (string, error) {
 	return "", fmt.Errorf("subnet %s exhausted, no IPs available", record.CidrBlock)
 }
 
-// ipToInt converts a net.IP to a big.Int.
-func ipToInt(ip net.IP) *big.Int {
+// ipToInt converts an IPv4 net.IP to its uint32 representation.
+func ipToInt(ip net.IP) uint32 {
 	ip = ip.To4()
 	if ip == nil {
-		return big.NewInt(0)
+		return 0
 	}
-	return new(big.Int).SetBytes(ip)
+	return binary.BigEndian.Uint32(ip)
 }
 
-// intToIP converts a big.Int back to a net.IP (IPv4).
-func intToIP(n *big.Int) net.IP {
-	b := n.Bytes()
-	// Pad to 4 bytes for IPv4
-	ip := make(net.IP, 4)
-	copy(ip[4-len(b):], b)
+// intToIP converts a uint32 back to an IPv4 net.IP.
+func intToIP(n uint32) net.IP {
+	ip := make(net.IP, net.IPv4len)
+	binary.BigEndian.PutUint32(ip, n)
 	return ip
 }

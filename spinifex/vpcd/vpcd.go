@@ -103,7 +103,7 @@ type Config struct {
 	// ExternalMode is "pool" or "" (disabled).
 	ExternalMode string
 	// ExternalPools holds the cluster-wide external IP pool configs.
-	ExternalPools []ExternalPoolConfig
+	ExternalPools []external.ExternalPoolConfig
 	// Bootstrap holds the default VPC config from spinifex.toml for first-boot reconciliation.
 	Bootstrap *BootstrapVPC
 	// ExternalInterface is the WAN NIC name (e.g., "enp0s3"). Used by
@@ -117,23 +117,6 @@ type Config struct {
 	// to scope its IntentState scan to local-AZ KV records; new VPC records
 	// are stamped with this value at create time.
 	AZ string
-}
-
-// ExternalPoolConfig mirrors config.ExternalPool for vpcd's internal use.
-type ExternalPoolConfig struct {
-	Name            string
-	Source          string // "static" (default) or "dhcp"
-	BindBridge      string // Linux bridge for DHCP DORA (source=dhcp only)
-	RangeStart      string
-	RangeEnd        string
-	Gateway         string
-	GatewayIP       string
-	PrefixLen       int
-	DNSServers      []string
-	Region          string
-	AZ              string
-	GwLrpRangeStart string // Sub-range for OVN gateway LRP IPs in centralized NAT mode.
-	GwLrpRangeEnd   string
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -450,7 +433,7 @@ func launchService(cfg *Config) error {
 
 	var igwPool *external.ExternalPoolConfig
 	if cfg.ExternalMode != "" && len(cfg.ExternalPools) > 0 {
-		p := externalPoolConfigToShared(cfg.ExternalPools[0])
+		p := cfg.ExternalPools[0]
 		igwPool = &p
 	}
 
@@ -608,7 +591,7 @@ func launchService(cfg *Config) error {
 
 // pickDNSServer returns the OVN dhcp_options dns_server from the first unscoped pool with DNS servers.
 // Empty falls back to topology.NewLiveManager's default.
-func pickDNSServer(pools []ExternalPoolConfig) string {
+func pickDNSServer(pools []external.ExternalPoolConfig) string {
 	for _, p := range pools {
 		if p.Region == "" && p.AZ == "" && len(p.DNSServers) > 0 {
 			return "{" + strings.Join(p.DNSServers, ", ") + "}"
@@ -663,25 +646,6 @@ func pickGatewayAllocator(pool *external.ExternalPoolConfig, ovnClient ovn.Clien
 		return dhcp.NewDHCPGatewayLRPAllocator(mgr)
 	}
 	return external.NewStaticRangeAllocator(ovnClient)
-}
-
-// externalPoolConfigToShared translates vpcd's ExternalPoolConfig into the network/external shared type.
-func externalPoolConfigToShared(p ExternalPoolConfig) external.ExternalPoolConfig {
-	return external.ExternalPoolConfig{
-		Name:            p.Name,
-		Source:          p.Source,
-		BindBridge:      p.BindBridge,
-		RangeStart:      p.RangeStart,
-		RangeEnd:        p.RangeEnd,
-		Gateway:         p.Gateway,
-		GatewayIP:       p.GatewayIP,
-		PrefixLen:       p.PrefixLen,
-		DNSServers:      p.DNSServers,
-		Region:          p.Region,
-		AZ:              p.AZ,
-		GwLrpRangeStart: p.GwLrpRangeStart,
-		GwLrpRangeEnd:   p.GwLrpRangeEnd,
-	}
 }
 
 // resolveBridgeConfig picks bridge mode (auto-detecting when unset) and always uses "br-wan" as the WAN bridge.

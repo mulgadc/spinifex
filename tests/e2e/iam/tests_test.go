@@ -86,6 +86,14 @@ func TestIAMGroupInlineEnforcement(t *testing.T) {
 	runIAMGroupInlineEnforcement(t, requireIAMFixture(t))
 }
 
+// TestIAMUserInlineEnforcement proves a user's own inline policy grants its
+// permission with no group or managed attachment: denied with no grant, allowed
+// once the inline policy is put, denied again after it is deleted. Sequential to
+// avoid racing the mid-test grant.
+func TestIAMUserInlineEnforcement(t *testing.T) {
+	runIAMUserInlineEnforcement(t, requireIAMFixture(t))
+}
+
 // TestIAMInstanceProfileAssociation exercises the EC2 IAM instance-profile
 // association lifecycle (associate/replace/disassociate, RunInstances
 // --iam-instance-profile, auto-disassociate on terminate). It boots its own

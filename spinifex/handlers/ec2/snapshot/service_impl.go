@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -328,6 +330,26 @@ func (s *SnapshotServiceImpl) snapshotVolume(volumeID, snapshotID string, volume
 	if err := vb.LoadState(); err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
+
+	// Signal a running viperblock instance to flush WAL chunks and the live
+	// checkpoint to S3 before we read them. If the socket is absent the instance
+	// is stopped and its Close() already drained.
+	// DataDir is always set (from data_dir in spinifex.toml); viperblock volumes
+	// live under {DataDir}/viperblock/{volumeID}/ which is where the NBD plugin
+	// creates the socket.
+	sockPath := filepath.Join(s.config.DataDir, "viperblock", volumeID, "snapshot.sock")
+	if conn, err := net.DialTimeout("unix", sockPath, time.Second); err == nil {
+		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+		buf := make([]byte, 8)
+		n, _ := conn.Read(buf)
+		conn.Close()
+		if !strings.HasPrefix(string(buf[:n]), "OK") {
+			slog.Warn("snapshotVolume: drain did not ack OK", "volumeId", volumeID, "resp", string(buf[:n]))
+		}
+	} else {
+		slog.Debug("snapshotVolume: no snapshot socket, proceeding (stopped instance path)", "volumeId", volumeID)
+	}
+
 	if err := vb.LoadLiveCheckpoint(); err != nil {
 		return fmt.Errorf("load live checkpoint: %w", err)
 	}

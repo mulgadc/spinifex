@@ -7,29 +7,30 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// fakeCPController stubs the daemon instance service surface the CP-control
-// adapter binds to, recording calls and returning configurable responses.
+// fakeCPController stubs the NATS-backed instance surface the CP-control adapter
+// binds to, recording calls and returning configurable responses.
 type fakeCPController struct {
 	describeOut  *ec2.DescribeInstancesOutput
 	describeErr  error
-	startErr     error
-	startedID    string
-	startAccount string
+	recoverErr   error
+	recoveredID  string
+	recoverAcct  string
+	recoverCalls int
 }
 
 func (f *fakeCPController) DescribeInstances(_ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
 	return f.describeOut, f.describeErr
 }
 
-func (f *fakeCPController) StartStoppedInstance(input *handlers_ec2_instance.StartStoppedInstanceInput, accountID string) (*handlers_ec2_instance.StartStoppedInstanceOutput, error) {
-	f.startedID = input.InstanceID
-	f.startAccount = accountID
-	return &handlers_ec2_instance.StartStoppedInstanceOutput{Status: "pending"}, f.startErr
+func (f *fakeCPController) RecoverInstance(instanceID, accountID string) error {
+	f.recoverCalls++
+	f.recoveredID = instanceID
+	f.recoverAcct = accountID
+	return f.recoverErr
 }
 
 func describeWithState(instanceID, state string) *ec2.DescribeInstancesOutput {
@@ -76,13 +77,14 @@ func TestCPControlAdapter_StartInstanceForwardsIDAndAccount(t *testing.T) {
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
 	require.NoError(t, a.StartInstance(context.Background(), "i-cp"))
-	assert.Equal(t, "i-cp", ctl.startedID)
-	assert.Equal(t, testAccountID, ctl.startAccount)
+	assert.Equal(t, 1, ctl.recoverCalls)
+	assert.Equal(t, "i-cp", ctl.recoveredID)
+	assert.Equal(t, testAccountID, ctl.recoverAcct)
 }
 
 func TestCPControlAdapter_StartInstancePropagatesError(t *testing.T) {
-	ctl := &fakeCPController{startErr: errors.New("not stopped")}
+	ctl := &fakeCPController{recoverErr: errors.New("no owner")}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
-	require.ErrorContains(t, a.StartInstance(context.Background(), "i-cp"), "not stopped")
+	require.ErrorContains(t, a.StartInstance(context.Background(), "i-cp"), "no owner")
 }

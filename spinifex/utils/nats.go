@@ -419,13 +419,21 @@ type natEvent struct {
 	MAC        string `json:"mac"`
 }
 
-// AddNAT requests vpcd commit the OVN dnat_and_snat rule via NATS request-reply (10 s timeout).
+// addNATTimeout bounds the vpc.add-nat request-reply. vpcd's handler holds the
+// reply until the flows barrier (ovn-nbctl --wait=hv sync, bounded 30 s) confirms
+// every chassis realised the rule. On a cold multi-node cluster the gateway SB
+// chassisredirect binding can take most of that budget to converge, so the caller
+// deadline must exceed 30 s or it abandons a still-committing rule and rolls back
+// the EIP mid-launch — surfacing as a spurious ServerInternal on RunInstances.
+const addNATTimeout = 45 * time.Second
+
+// AddNAT requests vpcd commit the OVN dnat_and_snat rule via NATS request-reply.
 // A non-nil return means the rule may not be committed; callers must roll back and publish vpc.delete-nat.
 func AddNAT(nc *nats.Conn, vpcID, externalIP, logicalIP, portName, mac string) error {
 	return RequestEvent(nc, "vpc.add-nat", natEvent{
 		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
 		PortName: portName, MAC: mac,
-	}, 10*time.Second)
+	}, addNATTimeout)
 }
 
 // PublishNATEvent sends a NAT lifecycle event. vpc.add-nat uses request-reply (prevents ARP races);
@@ -437,7 +445,7 @@ func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portNam
 	}
 
 	if topic == "vpc.add-nat" {
-		if err := RequestEvent(nc, topic, evt, 10*time.Second); err != nil {
+		if err := RequestEvent(nc, topic, evt, addNATTimeout); err != nil {
 			slog.Warn("PublishNATEvent: failed to add NAT rule — OVN dnat_and_snat rule not created; restart vpcd or re-associate EIP to recover",
 				"topic", topic, "externalIP", externalIP, "logicalIP", logicalIP, "err", err)
 		}

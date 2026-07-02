@@ -321,6 +321,19 @@ if [ "$MANAGEMENT" = true ]; then
         echo "OVN_CTL_OPTS=\"$OVN_CTL_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
         echo "  wrote /etc/default/ovn-central"
 
+        # The packaged ovn-northd.service ExecStop runs `ovn-ctl stop_northd`
+        # without --ovn-manage-ovsdb=no, so restarting northd also tears down the
+        # NB/SB ovsdb-server units. With the split clustered units those DBs are
+        # owned by their own units, so override ExecStop to leave them alone —
+        # otherwise the restart below races and kills the freshly-started DBs.
+        sudo mkdir -p /etc/systemd/system/ovn-northd.service.d
+        sudo tee /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf >/dev/null <<'EOF'
+[Service]
+ExecStop=
+ExecStop=/usr/share/ovn/scripts/ovn-ctl stop_northd --no-monitor --ovn-manage-ovsdb=no
+EOF
+        sudo systemctl daemon-reload
+
         # The ovn-central aggregator is ExecStart=/bin/true, so restarting it
         # won't restart the children — restart the per-DB units directly to
         # pick up the new OVN_CTL_OPTS.

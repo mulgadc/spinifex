@@ -254,15 +254,3 @@ func (s *IAMServiceImpl) getOIDCProvider(accountID, arn string) (*OIDCProviderRe
 	}
 	return &record, nil
 }
-
-// tagsToSDK converts stored Tags into the SDK shape.
-func tagsToSDK(tags []Tag) []*iam.Tag {
-	if len(tags) == 0 {
-		return nil
-	}
-	out := make([]*iam.Tag, 0, len(tags))
-	for _, t := range tags {
-		out = append(out, &iam.Tag{Key: aws.String(t.Key), Value: aws.String(t.Value)})
-	}
-	return out
-}

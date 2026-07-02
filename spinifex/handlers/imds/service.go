@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -70,8 +71,10 @@ type IMDSServiceImpl struct {
 
 // NewIMDSServiceImpl wires the IMDS service. listTaps is injected to avoid a
 // network/host import cycle. baseDomain is the cluster's authoritative DNS
-// domain used for public-hostname.
-func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc, baseDomain string) (*IMDSServiceImpl, error) {
+// domain used for public-hostname. resolverIPs are the WAN IPs of nodes running
+// northstar: when non-empty, each per-tap responder also serves the VPC DNS shim
+// on 169.254.169.253:53, relaying to northstar's unprivileged wildcard listener.
+func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc, baseDomain string, resolverIPs []string) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -137,6 +140,14 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 	// Each per-tap responder serves the shared mux, threading its tap's ENI
 	// identity into every request via BaseContext.
 	svc.tapResp = newTapResponderManager(svc.httpHandler(), svc.resolver.resolveENIByID, bindTapListener)
+	if len(resolverIPs) > 0 {
+		targets := make([]string, 0, len(resolverIPs))
+		for _, ip := range resolverIPs {
+			targets = append(targets, net.JoinHostPort(ip, northstarResolverPort))
+		}
+		svc.tapResp.enableDNS(bindTapDNS, newDNSForwarder(targets))
+		slog.Info("IMDS: VPC DNS shim enabled", "addr", VPCDNSServerIP, "backends", targets)
+	}
 
 	slog.Info("IMDS service initialized", "eni_bucket", kvBucketENIs)
 	return svc, nil

@@ -475,6 +475,7 @@ func launchService(cfg *Config) error {
 		max(len(chassisNames), 1),
 		listTaps,
 		cfg.NorthstarBaseDomain,
+		cfg.ResolverNameservers,
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)

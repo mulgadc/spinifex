@@ -36,6 +36,20 @@ type activeTapResponder struct {
 	server   *http.Server
 	endpoint string
 	ifindex  int
+	// DNS shim sockets on 169.254.169.253:53, nil until bound (the shim is
+	// optional and its bind failures retry without affecting IMDS serving).
+	dnsUDP net.PacketConn
+	dnsTCP net.Listener
+}
+
+// closeDNS closes the responder's DNS shim sockets, if bound.
+func (r *activeTapResponder) closeDNS() {
+	if r.dnsUDP != nil {
+		_ = r.dnsUDP.Close()
+	}
+	if r.dnsTCP != nil {
+		_ = r.dnsTCP.Close()
+	}
 }
 
 // tapResponderManager runs one IMDS responder per local primary-ENI tap. Each
@@ -46,6 +60,10 @@ type tapResponderManager struct {
 	resolve resolveENIFunc
 	listen  tapListenFunc
 	ifindex ifindexFunc
+
+	// DNS shim (VPC DNS co-tenant). Both nil unless enableDNS was called.
+	dnsListen dnsListenFunc
+	dnsFwd    *dnsForwarder
 
 	mu     sync.Mutex
 	active map[string]*activeTapResponder // eniID → responder
@@ -74,6 +92,7 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	m.mu.Unlock()
 	if ok {
 		if !m.endpointRecreated(cur, endpoint) {
+			m.ensureDNS(ctx, eniID, endpoint)
 			return nil
 		}
 		// A stop/start faster than the reconcile interval recreates the endpoint
@@ -130,7 +149,55 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	}()
 
 	slog.Info("IMDS: tap responder serving", "eni_id", eniID, "endpoint", endpoint, "addr", listener.Addr().String())
+	m.ensureDNS(ctx, eniID, endpoint)
 	return nil
+}
+
+// enableDNS turns on the per-tap VPC DNS shim: every responder additionally
+// binds 169.254.169.253:53 on its endpoint and relays queries via fwd. Must be
+// called before the manager starts reconciling.
+func (m *tapResponderManager) enableDNS(listen dnsListenFunc, fwd *dnsForwarder) {
+	m.dnsListen = listen
+	m.dnsFwd = fwd
+}
+
+// ensureDNS binds the tap's DNS shim sockets if the shim is enabled and not yet
+// bound. A bind failure is logged and retried on the next reconcile; it never
+// blocks or tears down IMDS serving on the same endpoint.
+func (m *tapResponderManager) ensureDNS(ctx context.Context, eniID, endpoint string) {
+	if m.dnsFwd == nil {
+		return
+	}
+	m.mu.Lock()
+	cur, ok := m.active[eniID]
+	bound := ok && cur.dnsUDP != nil
+	m.mu.Unlock()
+	if !ok || bound {
+		return
+	}
+
+	pc, ln, err := m.dnsListen(ctx, endpoint)
+	if err != nil {
+		slog.Warn("IMDS: tap DNS shim bind failed, retrying next reconcile", "eni_id", eniID, "endpoint", endpoint, "err", err)
+		return
+	}
+
+	m.mu.Lock()
+	cur, ok = m.active[eniID]
+	if !ok || cur.dnsUDP != nil || cur.endpoint != endpoint {
+		// The responder was stopped, replaced, or raced us to a bind: this
+		// socket pair has no owner to close it later, so drop it now.
+		m.mu.Unlock()
+		_ = pc.Close()
+		_ = ln.Close()
+		return
+	}
+	cur.dnsUDP, cur.dnsTCP = pc, ln
+	m.mu.Unlock()
+
+	go m.dnsFwd.serveUDP(pc)
+	go m.dnsFwd.serveTCP(ln)
+	slog.Info("IMDS: tap DNS shim serving", "eni_id", eniID, "endpoint", endpoint, "addr", pc.LocalAddr().String())
 }
 
 // endpointRecreated reports whether eniID's live endpoint device differs from the
@@ -188,6 +255,7 @@ func (m *tapResponderManager) stop(eniID string) {
 	if responder == nil {
 		return
 	}
+	responder.closeDNS()
 	if err := responder.server.Close(); err != nil {
 		slog.Warn("IMDS: tap responder close failed", "eni_id", eniID, "err", err)
 	}
@@ -201,6 +269,8 @@ func (m *tapResponderManager) removeIfCurrent(eniID string, server *http.Server)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if cur, ok := m.active[eniID]; ok && cur.server == server {
+		// Close the DNS shim too: a dangling bind would EADDRINUSE the re-start.
+		cur.closeDNS()
 		delete(m.active, eniID)
 	}
 }
@@ -210,6 +280,7 @@ func (m *tapResponderManager) shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for eniID, responder := range m.active {
+		responder.closeDNS()
 		if err := responder.server.Close(); err != nil {
 			slog.Warn("IMDS: tap responder close failed during shutdown", "eni_id", eniID, "err", err)
 		}

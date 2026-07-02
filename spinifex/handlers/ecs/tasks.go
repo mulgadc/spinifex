@@ -192,19 +192,20 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRe
 // an unacked assign survives an agent crash and is re-delivered on the next poll.
 func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID string, rec *TaskRecord, td *TaskDefRecord) error {
 	msg := bus.Assign{
-		AccountID:       accountID,
-		ClusterName:     cluster,
-		InstanceID:      instanceID,
-		TaskID:          rec.TaskID,
-		TaskARN:         rec.ARN,
-		TaskDefFamily:   td.Family,
-		TaskDefRevision: td.Revision,
-		TaskRoleARN:     td.TaskRoleArn,
-		ENIID:           rec.ENIID,
-		ENIMacAddress:   rec.ENIMacAddress,
-		ENIPrivateIP:    rec.ENIPrivateIP,
-		ENISubnetID:     rec.ENISubnetID,
-		AssignedAt:      time.Now().UTC(),
+		AccountID:        accountID,
+		ClusterName:      cluster,
+		InstanceID:       instanceID,
+		TaskID:           rec.TaskID,
+		TaskARN:          rec.ARN,
+		TaskDefFamily:    td.Family,
+		TaskDefRevision:  td.Revision,
+		TaskRoleARN:      td.TaskRoleArn,
+		ExecutionRoleARN: td.ExecutionRoleArn,
+		ENIID:            rec.ENIID,
+		ENIMacAddress:    rec.ENIMacAddress,
+		ENIPrivateIP:     rec.ENIPrivateIP,
+		ENISubnetID:      rec.ENISubnetID,
+		AssignedAt:       time.Now().UTC(),
 	}
 	for _, c := range td.Containers {
 		msg.Containers = append(msg.Containers, c.toAssignContainer())

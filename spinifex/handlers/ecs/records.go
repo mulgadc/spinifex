@@ -32,7 +32,44 @@ const (
 	// DAEMON is rejected at CreateService.
 	SchedulingStrategyReplica = "REPLICA"
 	SchedulingStrategyDaemon  = "DAEMON"
+
+	// Deployment status: PRIMARY is the deployment being rolled out (or steady);
+	// ACTIVE is a superseded deployment still draining its tasks.
+	DeploymentStatusPrimary = "PRIMARY"
+	DeploymentStatusActive  = "ACTIVE"
+
+	// Deployment rollout state (AWS deploymentController rollout enum subset).
+	RolloutStateInProgress = "IN_PROGRESS"
+	RolloutStateCompleted  = "COMPLETED"
+	RolloutStateFailed     = "FAILED"
+
+	// deploymentConfiguration defaults for a REPLICA service when unset.
+	defaultMinimumHealthyPercent = 100
+	defaultMaximumPercent        = 200
+
+	// circuitBreakerFailureThreshold trips the breaker once this many of the
+	// primary deployment's task launches stop before ever reaching RUNNING.
+	circuitBreakerFailureThreshold = 3
 )
+
+// Deployment is one rollout of a service's task definition. A service has exactly
+// one PRIMARY deployment plus zero or more ACTIVE (superseded, draining) ones
+// while a rolling update is in flight; steady state is a single PRIMARY.
+type Deployment struct {
+	ID              string    `json:"id"`
+	Status          string    `json:"status"`
+	TaskDefARN      string    `json:"taskDefArn"`
+	TaskDefFamily   string    `json:"taskDefFamily"`
+	TaskDefRevision int       `json:"taskDefRevision"`
+	DesiredCount    int       `json:"desiredCount"`
+	RunningCount    int       `json:"runningCount"`
+	PendingCount    int       `json:"pendingCount"`
+	FailedTasks     int       `json:"failedTasks"`
+	RolloutState    string    `json:"rolloutState"`
+	RolloutReason   string    `json:"rolloutStateReason,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
 
 // ARN builders for the ECS resource shapes (ecs-v1.md §1). Region + accountID
 // scope every ARN; the partition is fixed to "aws" to match the rest of the
@@ -94,20 +131,30 @@ type ContainerDef struct {
 	Command      []string          `json:"command,omitempty"`
 	Environment  map[string]string `json:"environment,omitempty"`
 	PortMappings []bus.PortMapping `json:"portMappings,omitempty"`
+	// LogDriver / LogOptions capture the container's logConfiguration. Only the
+	// host-side json-file default is honored; any other driver is accepted for
+	// parity but warned at register time (logs are discarded).
+	LogDriver  string            `json:"logDriver,omitempty"`
+	LogOptions map[string]string `json:"logOptions,omitempty"`
 }
+
+// LogDriverJSONFile is the only log driver the agent honors: containerd's task IO
+// lands in the host journal/file, retrievable per ecs-logging.md.
+const LogDriverJSONFile = "json-file"
 
 // TaskDefRecord is the persisted task definition revision at TaskDefRevKey.
 type TaskDefRecord struct {
-	Family       string         `json:"family"`
-	Revision     int            `json:"revision"`
-	ARN          string         `json:"arn"`
-	NetworkMode  string         `json:"networkMode,omitempty"`
-	CPU          string         `json:"cpu,omitempty"`
-	Memory       string         `json:"memory,omitempty"`
-	TaskRoleArn  string         `json:"taskRoleArn,omitempty"`
-	Containers   []ContainerDef `json:"containers"`
-	Status       string         `json:"status"`
-	RegisteredAt time.Time      `json:"registeredAt"`
+	Family           string         `json:"family"`
+	Revision         int            `json:"revision"`
+	ARN              string         `json:"arn"`
+	NetworkMode      string         `json:"networkMode,omitempty"`
+	CPU              string         `json:"cpu,omitempty"`
+	Memory           string         `json:"memory,omitempty"`
+	TaskRoleArn      string         `json:"taskRoleArn,omitempty"`
+	ExecutionRoleArn string         `json:"executionRoleArn,omitempty"`
+	Containers       []ContainerDef `json:"containers"`
+	Status           string         `json:"status"`
+	RegisteredAt     time.Time      `json:"registeredAt"`
 }
 
 // reservedCPU/reservedMemory sum the task definition's per-container reservations
@@ -239,6 +286,26 @@ type ServiceRecord struct {
 	DeploymentID       string               `json:"deploymentId"`
 	RunningCount       int                  `json:"runningCount"`
 	PendingCount       int                  `json:"pendingCount"`
-	CreatedAt          time.Time            `json:"createdAt"`
-	UpdatedAt          time.Time            `json:"updatedAt"`
+	// Rolling-update configuration (deploymentConfiguration) and its live state.
+	// MinimumHealthyPercent / MaximumPercent gate the rollout; the circuit breaker
+	// trips a failing deployment and optionally rolls back to LastGoodTaskDefARN.
+	MinimumHealthyPercent  int          `json:"minimumHealthyPercent,omitempty"`
+	MaximumPercent         int          `json:"maximumPercent,omitempty"`
+	CircuitBreakerEnable   bool         `json:"deploymentCircuitBreakerEnable,omitempty"`
+	CircuitBreakerRollback bool         `json:"deploymentCircuitBreakerRollback,omitempty"`
+	LastGoodTaskDefARN     string       `json:"lastGoodTaskDefArn,omitempty"`
+	Deployments            []Deployment `json:"deployments,omitempty"`
+	CreatedAt              time.Time    `json:"createdAt"`
+	UpdatedAt              time.Time    `json:"updatedAt"`
+}
+
+// primaryDeployment returns a pointer to the service's PRIMARY deployment, or nil
+// when none exists (a legacy record before ensurePrimaryDeployment runs).
+func (r *ServiceRecord) primaryDeployment() *Deployment {
+	for i := range r.Deployments {
+		if r.Deployments[i].Status == DeploymentStatusPrimary {
+			return &r.Deployments[i]
+		}
+	}
+	return nil
 }

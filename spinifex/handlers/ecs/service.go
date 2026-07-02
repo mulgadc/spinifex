@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
@@ -334,6 +335,10 @@ func (s *Service) RegisterTaskDefinition(input *ecs.RegisterTaskDefinitionInput,
 	if family == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
+	if err := validateContainerDefs(input.ContainerDefinitions); err != nil {
+		return nil, err
+	}
+	warnUnsupportedLogDrivers(family, input.ContainerDefinitions)
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -345,16 +350,17 @@ func (s *Service) RegisterTaskDefinition(input *ecs.RegisterTaskDefinitionInput,
 	}
 
 	rec := TaskDefRecord{
-		Family:       family,
-		Revision:     rev,
-		ARN:          TaskDefARN(s.region, accountID, family, rev),
-		NetworkMode:  aws.StringValue(input.NetworkMode),
-		CPU:          aws.StringValue(input.Cpu),
-		Memory:       aws.StringValue(input.Memory),
-		TaskRoleArn:  aws.StringValue(input.TaskRoleArn),
-		Status:       TaskDefStatusActive,
-		RegisteredAt: time.Now().UTC(),
-		Containers:   containerDefsFromAWS(input.ContainerDefinitions),
+		Family:           family,
+		Revision:         rev,
+		ARN:              TaskDefARN(s.region, accountID, family, rev),
+		NetworkMode:      aws.StringValue(input.NetworkMode),
+		CPU:              aws.StringValue(input.Cpu),
+		Memory:           aws.StringValue(input.Memory),
+		TaskRoleArn:      aws.StringValue(input.TaskRoleArn),
+		ExecutionRoleArn: aws.StringValue(input.ExecutionRoleArn),
+		Status:           TaskDefStatusActive,
+		RegisteredAt:     time.Now().UTC(),
+		Containers:       containerDefsFromAWS(input.ContainerDefinitions),
 	}
 	if err := putJSON(kv, TaskDefRevKey(family, rev), &rec); err != nil {
 		return nil, err
@@ -363,6 +369,35 @@ func (s *Service) RegisterTaskDefinition(input *ecs.RegisterTaskDefinitionInput,
 		return nil, err
 	}
 	return &ecs.RegisterTaskDefinitionOutput{TaskDefinition: rec.toAWS()}, nil
+}
+
+// validateContainerDefs hard-rejects taskdef features the data plane cannot honor.
+// secrets[] is dropped silently by the assign path, so a task would run believing
+// it has secrets it never receives (ecs-v1 Q18) — reject at register instead.
+func validateContainerDefs(defs []*ecs.ContainerDefinition) error {
+	for _, c := range defs {
+		if c != nil && len(c.Secrets) > 0 {
+			return errors.New(awserrors.ErrorECSInvalidParameter)
+		}
+	}
+	return nil
+}
+
+// warnUnsupportedLogDrivers emits the honest "logs discarded" operator signal for
+// any container whose log driver is not the host-side json-file default. The
+// taskdef is still accepted for parity; only json-file is actually collected.
+func warnUnsupportedLogDrivers(family string, defs []*ecs.ContainerDefinition) {
+	for _, c := range defs {
+		if c == nil || c.LogConfiguration == nil {
+			continue
+		}
+		driver := aws.StringValue(c.LogConfiguration.LogDriver)
+		if driver == "" || driver == LogDriverJSONFile {
+			continue
+		}
+		slog.Warn("ECS RegisterTaskDefinition: logDriver not implemented; container logs will be discarded",
+			"family", family, "container", aws.StringValue(c.Name), "logDriver", driver)
+	}
 }
 
 // nextRevision reads the family's latest-rev and returns latest+1 (1 if absent).
@@ -520,6 +555,9 @@ func (r *TaskDefRecord) toAWS() *ecs.TaskDefinition {
 	}
 	if r.TaskRoleArn != "" {
 		td.TaskRoleArn = aws.String(r.TaskRoleArn)
+	}
+	if r.ExecutionRoleArn != "" {
+		td.ExecutionRoleArn = aws.String(r.ExecutionRoleArn)
 	}
 	for _, c := range r.Containers {
 		td.ContainerDefinitions = append(td.ContainerDefinitions, c.toAWS())

@@ -46,7 +46,7 @@ func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual A
 					"spinifex:cidr":   spec.CIDR.String(),
 				},
 			}
-			if _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
+			if _, _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
 				slog.Error("reconcile/apply: ensure VPC router failed", "vpc_id", vpcID, "err", err)
 				continue
 			}
@@ -81,7 +81,7 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 					"spinifex:vpc_id":    spec.VPCID,
 				},
 			}
-			if _, err := r.ovn.EnsureLogicalSwitch(ctx, ls); err != nil {
+			if _, _, err := r.ovn.EnsureLogicalSwitch(ctx, ls); err != nil {
 				slog.Error("reconcile/apply: ensure subnet switch failed", "subnet_id", subnetID, "err", err)
 				continue
 			}

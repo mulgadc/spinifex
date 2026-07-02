@@ -5,8 +5,50 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 )
+
+// ReplaceACLs must no-op on an unchanged set (stable ACL UUIDs) and swap on a
+// changed set, mirroring LiveClient.
+func TestMockReplaceACLs_IdempotentNoChurn(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	if _, _, err := m.EnsurePortGroup(ctx, "pg-acl", nil); err != nil {
+		t.Fatalf("EnsurePortGroup: %v", err)
+	}
+	specs := []ovn.ACLSpec{
+		{Direction: "to-lport", Priority: 1001, Match: "ip4", Action: "allow-related"},
+		{Direction: "from-lport", Priority: 1002, Match: "ip4", Action: "allow-related"},
+	}
+
+	if err := m.ReplaceACLs(ctx, "pg-acl", specs); err != nil {
+		t.Fatalf("ReplaceACLs #1: %v", err)
+	}
+	before := append([]string(nil), m.PortGroups["pg-acl"].ACLs...)
+
+	if err := m.ReplaceACLs(ctx, "pg-acl", specs); err != nil {
+		t.Fatalf("ReplaceACLs #2 (identical): %v", err)
+	}
+	after := m.PortGroups["pg-acl"].ACLs
+	if len(before) != len(after) {
+		t.Fatalf("ACL count changed on identical ReplaceACLs: %d → %d", len(before), len(after))
+	}
+	for i := range before {
+		if before[i] != after[i] {
+			t.Fatalf("identical ReplaceACLs churned ACL UUID: %q → %q", before[i], after[i])
+		}
+	}
+
+	if err := m.ReplaceACLs(ctx, "pg-acl", specs[:1]); err != nil {
+		t.Fatalf("ReplaceACLs #3 (changed): %v", err)
+	}
+	if got := len(m.PortGroups["pg-acl"].ACLs); got != 1 {
+		t.Fatalf("changed ReplaceACLs: ACL count = %d, want 1", got)
+	}
+}
 
 func TestClient_DeleteAllNATsByExternalIP(t *testing.T) {
 	m := New()
@@ -176,7 +218,7 @@ func TestEnsureLogicalRouter_ConcurrentSingleSurvivor(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			lr, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
+			lr, _, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
 				Name:        "vpc-vpc-X",
 				ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-X"},
 			})
@@ -216,19 +258,25 @@ func TestEnsureLogicalRouter_ReturnsExistingOnSecondCall(t *testing.T) {
 	_ = m.Connect(context.Background())
 	ctx := context.Background()
 
-	first, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
+	first, created, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
 		Name:        "vpc-vpc-Y",
 		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-Y", "spinifex:cidr": ""},
 	})
 	if err != nil {
 		t.Fatalf("EnsureLogicalRouter first call: %v", err)
 	}
-	second, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
+	if !created {
+		t.Errorf("first call should report created=true")
+	}
+	second, created, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
 		Name:        "vpc-vpc-Y",
 		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-Y", "spinifex:cidr": "10.0.0.0/16"},
 	})
 	if err != nil {
 		t.Fatalf("EnsureLogicalRouter second call: %v", err)
+	}
+	if created {
+		t.Errorf("second call should report created=false")
 	}
 	if first.UUID != second.UUID {
 		t.Errorf("second call returned different UUID: %q vs %q", second.UUID, first.UUID)
@@ -249,7 +297,7 @@ func TestEnsureLogicalSwitch_ConcurrentSingleSurvivor(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			ls, err := m.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+			ls, _, err := m.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{
 				Name:        "subnet-subnet-Z",
 				ExternalIDs: map[string]string{"spinifex:subnet_id": "subnet-Z"},
 			})
@@ -292,7 +340,7 @@ func TestEnsurePortGroup_ConcurrentSingleSurvivor(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			pg, err := m.EnsurePortGroup(ctx, "sg-pg-A", nil)
+			pg, _, err := m.EnsurePortGroup(ctx, "sg-pg-A", nil)
 			if err != nil {
 				t.Errorf("EnsurePortGroup[%d]: %v", i, err)
 				return

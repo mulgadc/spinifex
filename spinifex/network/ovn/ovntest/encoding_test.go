@@ -25,15 +25,18 @@ func TestStartNB_ColumnEncoding(t *testing.T) {
 	defer cli.Close()
 
 	// EnsureLogicalSwitch twice must converge to a single row, not insert a
-	// duplicate. UUID equality is not asserted: the insert path returns a
-	// client-side named UUID while the existing-row path returns the persisted
-	// one, so identity is checked via the row count and name instead.
+	// duplicate. The insert path reports created=true and the second call
+	// created=false; both return the persisted UUID.
 	ls := &nbdb.LogicalSwitch{Name: "ls-enc"}
-	if _, err := cli.EnsureLogicalSwitch(ctx, ls); err != nil {
+	if _, created, err := cli.EnsureLogicalSwitch(ctx, ls); err != nil {
 		t.Fatalf("EnsureLogicalSwitch #1: %v", err)
+	} else if !created {
+		t.Fatalf("EnsureLogicalSwitch #1: created = false, want true")
 	}
-	if _, err := cli.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ls-enc"}); err != nil {
+	if _, created, err := cli.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ls-enc"}); err != nil {
 		t.Fatalf("EnsureLogicalSwitch #2: %v", err)
+	} else if created {
+		t.Fatalf("EnsureLogicalSwitch #2: created = true, want false")
 	}
 	switches, err := cli.ListLogicalSwitches(ctx)
 	if err != nil {

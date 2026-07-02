@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"maps"
 	"net"
 	"net/netip"
 	"slices"
@@ -110,7 +111,7 @@ func TestReconcile_Idempotent(t *testing.T) {
 	switchCountBefore := len(m.Switches)
 	portCountBefore := len(m.Ports)
 	pgCountBefore := len(m.PortGroups)
-	addACLsBefore := m.AddACLCalls
+	aclUUIDsBefore := aclUUIDSet(m)
 
 	if err := rec.Reconcile(ctx, intent); err != nil {
 		t.Fatalf("Reconcile #2: %v", err)
@@ -128,10 +129,24 @@ func TestReconcile_Idempotent(t *testing.T) {
 	if len(m.PortGroups) != pgCountBefore {
 		t.Errorf("second reconcile created duplicate port groups: %d → %d", pgCountBefore, len(m.PortGroups))
 	}
-	// EnsureSG has replace-all semantics: AddACL count must grow each pass.
-	if m.AddACLCalls < addACLsBefore {
-		t.Errorf("second reconcile fewer AddACL calls than first — replace-all semantics regressed")
+	// An unchanged SG must not churn ACL rows: ReplaceACLs no-ops, so every ACL
+	// UUID from the first pass survives the second identical reconcile.
+	aclUUIDsAfter := aclUUIDSet(m)
+	if !maps.Equal(aclUUIDsBefore, aclUUIDsAfter) {
+		t.Errorf("second reconcile churned ACL UUIDs: %v → %v", aclUUIDsBefore, aclUUIDsAfter)
 	}
+}
+
+// aclUUIDSet snapshots the mock's current ACL UUIDs so idempotency can assert no
+// churn across reconciles.
+func aclUUIDSet(m *mock.Client) map[string]struct{} {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	out := make(map[string]struct{}, len(m.ACLs))
+	for uuid := range m.ACLs {
+		out[uuid] = struct{}{}
+	}
+	return out
 }
 
 func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {

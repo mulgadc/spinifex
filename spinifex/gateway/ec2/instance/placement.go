@@ -215,6 +215,11 @@ func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.C
 		if clientErr := extractClientError(results); clientErr != nil {
 			return nil, clientErr
 		}
+		// A launch that was attempted and failed is not a capacity shortage; surface the real cause.
+		if failErr := launchFailure(results); failErr != nil {
+			slog.Error("distributeInstances: launch fell short of minCount", "minCount", minCount, "launched", totalLaunched, "err", failErr)
+			return nil, failErr
+		}
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
@@ -303,6 +308,10 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 		}
 		if clientErr := extractClientError(results); clientErr != nil {
 			return nil, clientErr
+		}
+		if failErr := launchFailure(results); failErr != nil {
+			slog.Error("distributeInstancesSpread: launch fell short of minCount", "minCount", minCount, "launched", totalLaunched, "err", failErr)
+			return nil, failErr
 		}
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
@@ -432,7 +441,8 @@ func extractClientError(results []nodeLaunchResult) error {
 			continue
 		}
 		switch inner.Error() {
-		case awserrors.ErrorInvalidAMIIDNotFound,
+		case awserrors.ErrorInsufficientInstanceCapacity,
+			awserrors.ErrorInvalidAMIIDNotFound,
 			awserrors.ErrorInvalidAMIIDMalformed,
 			awserrors.ErrorInvalidAMIIDUnavailable,
 			awserrors.ErrorInvalidKeyPairNotFound,
@@ -441,6 +451,21 @@ func extractClientError(results []nodeLaunchResult) error {
 			awserrors.ErrorInvalidParameterValue,
 			awserrors.ErrorSecurityGroupsPerInterfaceLimitExceeded:
 			return inner
+		}
+	}
+	return nil
+}
+
+// launchFailure returns the first node launch error, or nil when no node errored.
+// A sub-minCount launch whose nodes actually errored is not a capacity shortage:
+// genuine capacity is caught pre-launch in distributeInstances, and a node-side
+// capacity race is surfaced by extractClientError. Surfacing the real error (RPC
+// timeout, network/OVN failure) stops it masquerading as
+// InsufficientInstanceCapacity — the mislabel that derails triage.
+func launchFailure(results []nodeLaunchResult) error {
+	for _, r := range results {
+		if r.Err != nil {
+			return r.Err
 		}
 	}
 	return nil

@@ -391,8 +391,11 @@ func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP, eip
 }
 
 // ensureGatewayClaimed polls the SB chassisredirect binding after SetGatewayChassis.
-// An unclaimed binding after reboot makes floating IPs unreachable; nudges recompute
-// once, then gives up. No-op when no verifier is wired.
+// An unclaimed binding after reboot makes floating IPs unreachable. Recompute on
+// every miss, not once: after a fresh-VPC bring-up or a chassis flap a single early
+// nudge fires before ovn-controller has processed the gateway_chassis update (or
+// before the flapped chassis re-registers), so it never binds. Mirrors
+// ensureGuestPortDatapath. No-op when no verifier is wired.
 func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string) {
 	if r.gwClaim == nil {
 		return
@@ -411,13 +414,11 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 			}
 			return
 		}
-		if !nudged {
-			slog.Warn("reconcile/apply: gateway SB binding unclaimed; nudging ovn-controller recompute", "port", crPortName)
-			if err := r.gwClaim.NudgeRecompute(ctx); err != nil {
-				slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "port", crPortName, "err", err)
-			}
-			nudged = true
+		slog.Warn("reconcile/apply: gateway SB binding unclaimed; nudging ovn-controller recompute", "port", crPortName)
+		if err := r.gwClaim.NudgeRecompute(ctx); err != nil {
+			slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "port", crPortName, "err", err)
 		}
+		nudged = true
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: gateway SB chassis claim did not converge; floating IPs may be unreachable",
 				"port", crPortName, "timeout", gatewayClaimTimeout)

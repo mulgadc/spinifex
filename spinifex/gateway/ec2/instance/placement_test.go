@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -271,12 +272,14 @@ func TestAggregateResults_PartialFailureBelowMinCount(t *testing.T) {
 		},
 	}
 
-	// MinCount=3, only got 1 → should fail with InsufficientInstanceCapacity
+	// MinCount=3, only got 1, node-2 errored → surface the real node error, not
+	// a fake capacity shortage (capacity is caught pre-launch).
 	// Note: rollback will attempt to terminate i-001 but we don't have a
 	// daemon responding, so it will fail silently — that's OK for this test
 	_, err := aggregateResults(results, 3, nc, "test-account")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+	assert.Equal(t, assert.AnError, err)
+	assert.NotEqual(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
 
 func TestAggregateResults_AllFail(t *testing.T) {
@@ -285,7 +288,55 @@ func TestAggregateResults_AllFail(t *testing.T) {
 		{NodeID: "node-2", Err: assert.AnError},
 	}
 
+	// All nodes errored → surface the real error, not InsufficientInstanceCapacity.
 	_, err := aggregateResults(results, 1, nil, "")
+	require.Error(t, err)
+	assert.Equal(t, assert.AnError, err)
+}
+
+// A node-side capacity race (queryNodeCapacity saw room, the node then rejected)
+// still propagates as InsufficientInstanceCapacity via the client-error whitelist.
+func TestAggregateResults_NodeCapacityRacePropagates(t *testing.T) {
+	inner := errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+	wrapped := fmt.Errorf("launch on node-1: %w", inner)
+	results := []nodeLaunchResult{
+		{NodeID: "node-1", Err: wrapped},
+	}
+
+	_, err := aggregateResults(results, 1, nil, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+// A node RPC timeout must surface as the real error, never masquerade as capacity.
+func TestAggregateResults_TimeoutSurfacedNotMasked(t *testing.T) {
+	timeoutErr := fmt.Errorf("launch on node-1: %w", context.DeadlineExceeded)
+	results := []nodeLaunchResult{
+		{NodeID: "node-1", Err: timeoutErr},
+	}
+
+	_, err := aggregateResults(results, 1, nil, "")
+	require.Error(t, err)
+	assert.NotEqual(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+// Short launch with no node errors (nodes returned fewer instances than assigned
+// without erroring) keeps the generic capacity code.
+func TestAggregateResults_ShortWithoutNodeErrors(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+	results := []nodeLaunchResult{
+		{
+			NodeID: "node-1",
+			Reservation: &ec2.Reservation{
+				Instances: []*ec2.Instance{{InstanceId: aws.String("i-001")}},
+			},
+		},
+	}
+
+	// totalLaunched=1 > 0 triggers rollback; the daemon isn't responding so it
+	// fails silently — fine for this test.
+	_, err := aggregateResults(results, 3, nc, "test-account")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }

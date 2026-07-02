@@ -1232,7 +1232,7 @@ func (d *Daemon) startCluster() error {
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
-	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
+	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config)
 
 	type snapResult struct {
 		svc *handlers_ec2_snapshot.SnapshotServiceImpl
@@ -2138,9 +2138,16 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 // hold rm.mu for read or write. Extracted so allocate can re-check capacity
 // while holding the write lock without dropping it.
 func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo, count int) int {
-	// GPU capacity is managed exclusively by gpuManager.Claim; don't double-gate
-	// on host CPU/memory which is always abundant on GPU-class hardware.
-	if instancetypes.IsGPUType(instanceType) {
+	// Whole-GPU passthrough: gpuManager.Claim is the sole gate — one GPU per
+	// slot, so host CPU/memory is never the binding constraint.
+	// MIG types fall through to the normal check: one physical GPU backs many
+	// concurrent slices, each consuming real host CPU and memory, so those
+	// resources must be tracked and enforced like any non-GPU instance type.
+	instanceTypeName := ""
+	if instanceType.InstanceType != nil {
+		instanceTypeName = *instanceType.InstanceType
+	}
+	if instancetypes.IsGPUType(instanceType) && !instancetypes.IsMIGType(instanceTypeName) {
 		return count
 	}
 

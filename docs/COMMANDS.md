@@ -93,7 +93,68 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 |---------|-------|-------------|
 | `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | Catalog imports (`--name`) download the image, fetch the catalog `Checksum` URL, verify the SHA-256/SHA-512 digest, and inherit `BootMode` from the catalog entry. `--boot-mode` overrides the catalog value when set. Mismatch fails closed; the cached file is left on disk and `--force` re-downloads. `--file` imports skip checksum verification (operator-supplied media is outside Spinifex's trust boundary, the skip is logged at INFO for audit) and require an explicit `--boot-mode` because there is no catalog metadata to inherit from. `--skip-verify` bypasses verification for catalog imports and emits a WARN slog + stderr notice; use only for debugging or when upstream mirrors are confirmed-broken. On every import a best-effort `virt-customize` step bakes the deployment CA (`<data-root>/config/ca.pem`) into the image's trust store before the block copy, so in-guest SDK-over-TLS calls to Spinifex endpoints trust the gateway from first boot; an image libguestfs cannot customize is imported as-is (CA-free) and logs a skip. Because the CA is fixed into the image, rotating the cluster CA requires re-importing affected images. |
 | `spx admin images list` | — | Lists available OS images that can be imported or downloaded |
+| `spx admin images promote` | `--image-id` (required), `--yes` | Reads `ami-<id>/config.json`, validates the AMI is account-owned, then rewrites `ImageOwnerAlias` to `"system"` in-place. No block data is copied. The change takes effect immediately — the AMI becomes visible to all accounts via `DescribeImages`. Prompts for confirmation (skipped with `--yes`). Already-system AMIs are refused. |
 | `spx admin images remove` | `--image-id` (required), `--force`, `--yes` | Loads `ami-<id>/config.json`, walks transitive dependents — copied snapshots whose `VolumeID == imageID`, volumes whose `SnapshotID` references the internal `snap-ami-<id>` or any derived snap, and account AMIs created via `CopyImage` whose `SnapshotID` is a derived snap — then prompts (skipped with `--yes`) before deleting `ami-<id>/config.json` (the DescribeImages barrier) followed by the rest of `ami-<id>/` and `snap-ami-<id>/`. Account-owned AMIs are refused with a hint pointing at `aws ec2 deregister-image` + `aws ec2 delete-snapshot`. `--force` bypasses the dependency, ownership and config-corrupt checks for salvage of orphaned blocks. |
+
+#### Image integrity verification (CMMC SI.L1-3.14.2)
+
+Catalog imports (`spx admin images import --name <name>`) verify the image
+against the catalog-declared SHA-256/SHA-512 digest before extraction. The sums
+file is fetched from the catalog `Checksum` URL over HTTPS only (cross-scheme
+redirects refused), and verification runs on both fresh downloads and cache
+hits so a poisoned cache is caught on the next import.
+
+On mismatch the import exits non-zero, the cached file is left on disk for
+inspection, and the printed guidance is `spx admin images import --name <name>
+--force` to re-download.
+
+`--file` imports skip verification by design: operator-supplied media is
+outside Spinifex's trust boundary and the operator is responsible for
+integrity (e.g. `sha256sum` against a trusted upstream digest before import).
+The skip is recorded as an INFO `slog` event with `reason=local-file-import`
+so a CMMC assessor can audit the decision from journald.
+
+`--skip-verify` bypasses the checksum step for catalog imports. The command
+still downloads via the catalog URL but does not compare the image digest
+against the sums file. Intended for narrow cases such as debugging upstream
+mirror issues or running against a transiently-broken `latest/` path; the
+skip is logged at WARN with `reason=skip-verify-flag` and printed to stderr
+so operators and assessors see it. Prefer `--file` with an out-of-band
+verified image over `--skip-verify` whenever possible.
+
+**Limitation:** verification confirms the image matches the digest the mirror
+served. A mirror compromise that swaps both image and sums file is not
+detected; closing that gap requires GPG signature verification of the sums
+file, deferred to a later phase.
+
+#### `spx admin images remove` caveats
+
+Admin-imported AMIs (`ImageOwnerAlias = "system"`) live
+under the `ami-<id>/` S3 prefix and use a viperblock-internal snap checkpoint
+at `snap-ami-<id>/` — there is no `snap-<id>/metadata.json`. The AWS handlers
+(`DeregisterImage`, `DeleteSnapshot`) reject system owners with
+`UnauthorizedOperation`, which is the right behaviour for tenant API callers
+but leaves no AWS-flow path to reclaim space. `spx admin images remove` is
+the admin-trust-boundary counterpart that performs the dependency walk and
+hard-deletes the blocks directly against predastore.
+
+`CopyImage` of a system AMI is metadata-only: it writes a fresh
+`snap-<acct>/metadata.json` whose `VolumeID` points at `ami-<sys>` and a new
+`ami-<acct>/config.json` referencing that snap. Volumes launched from the
+copied AMI read transitively from `ami-<sys>/chunks/...`. The remove command
+walks this transitive set and refuses if anything references the target.
+
+**TOCTOU window:** between the safety scan and the `config.json` delete a
+concurrent `RunInstances` against the AMI could create a new dependent
+volume. The window is sub-second on a healthy cluster. The admin running
+this command is expected to know the fleet's operational state; if the race
+fires the result is a `vol-<id>` with deleted backing blocks, recovered by
+terminating the orphaned instance.
+
+**`--force` bypasses every safety check** (dependents, ownership, missing /
+corrupt `config.json`). Use only for salvage of orphaned blocks. Running it
+against a live system AMI corrupts every dependent volume on the next disk
+read.
 
 ### GPU Management
 

@@ -3,6 +3,8 @@ package handlers_ec2_image
 import (
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -2345,4 +2348,78 @@ func TestResetImageAttribute_MissingParameters(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestSnapshotRunningVolume_VolumeConfigMissing(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config:     &config.Config{},
+		store:      store,
+		bucketName: testBucket,
+	}
+	err := svc.snapshotRunningVolume("vol-missing", "snap-r1")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotRunningVolume_BackendInitFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:   srv.URL,
+				Region: "us-east-1",
+				Bucket: testBucket,
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-running1", 10)
+
+	err := svc.snapshotRunningVolume("vol-running1", "snap-r2")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotStoppedVolume_VolumeConfigMissing(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config:     &config.Config{},
+		store:      store,
+		bucketName: testBucket,
+	}
+	err := svc.snapshotStoppedVolume("vol-missing", "snap-s1")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotStoppedVolume_BackendInitFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:   srv.URL,
+				Region: "us-east-1",
+				Bucket: testBucket,
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-stopped1", 10)
+
+	err := svc.snapshotStoppedVolume("vol-stopped1", "snap-s2")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

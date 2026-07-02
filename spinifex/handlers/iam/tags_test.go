@@ -291,6 +291,21 @@ func TestResourceTagging_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestTagUser_GetUserSurfacesTags(t *testing.T) {
+	svc := setupTestIAMService(t)
+	user := createTestUser(t, svc, "tagme")
+
+	_, err := svc.TagUser(testAccountID, &iam.TagUserInput{
+		UserName: user.UserName,
+		Tags:     []*iam.Tag{sdkTag("env", "prod")},
+	})
+	require.NoError(t, err)
+
+	out, err := svc.GetUser(testAccountID, &iam.GetUserInput{UserName: user.UserName})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"env": "prod"}, tagsAsMap(out.User.Tags))
+}
+
 func TestResourceTagging_MissingEntity(t *testing.T) {
 	for _, ops := range allTagOps() {
 		t.Run(ops.resource, func(t *testing.T) {

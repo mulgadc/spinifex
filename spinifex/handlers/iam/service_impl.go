@@ -386,6 +386,7 @@ func (s *IAMServiceImpl) GetUser(accountID string, input *iam.GetUserInput) (*ia
 			Arn:        aws.String(user.ARN),
 			Path:       aws.String(user.Path),
 			CreateDate: aws.Time(createdAt),
+			Tags:       tagsToSDK(user.Tags),
 		},
 	}, nil
 }

@@ -479,9 +479,9 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `get-user-policy` | `--user-name`, `--policy-name` | — | **DONE** |
 | `delete-user-policy` | `--user-name`, `--policy-name` | — | **DONE** |
 | `list-user-policies` | `--user-name` | `--max-items`, `--marker` | **DONE** |
-| `tag-user` | — | `--user-name`, `--tags` | **NOT STARTED** |
-| `untag-user` | — | `--user-name`, `--tag-keys` | **NOT STARTED** |
-| `list-user-tags` | — | `--user-name` | **NOT STARTED** |
+| `tag-user` | `--user-name`, `--tags` | — | **DONE** |
+| `untag-user` | `--user-name`, `--tag-keys` | — | **DONE** |
+| `list-user-tags` | `--user-name` | `--max-items`, `--marker` | **DONE** |
 | `put-user-permissions-boundary` | — | `--user-name`, `--permissions-boundary` | **NOT STARTED** |
 | `delete-user-permissions-boundary` | — | `--user-name` | **NOT STARTED** |
 | `create-login-profile` | — | `--user-name`, `--password` | **NOT STARTED** |
@@ -517,9 +517,9 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `delete-policy-version` | — | `--policy-arn`, `--version-id` | **NOT STARTED** |
 | `set-default-policy-version` | — | `--policy-arn`, `--version-id` | **NOT STARTED** |
 | `list-entities-for-policy` | — | `--policy-arn`, `--entity-filter`, `--path-prefix`, `--policy-usage-filter` | **NOT STARTED** |
-| `tag-policy` | — | `--policy-arn`, `--tags` | **NOT STARTED** |
-| `untag-policy` | — | `--policy-arn`, `--tag-keys` | **NOT STARTED** |
-| `list-policy-tags` | — | `--policy-arn` | **NOT STARTED** |
+| `tag-policy` | `--policy-arn`, `--tags` | — | **DONE** |
+| `untag-policy` | `--policy-arn`, `--tag-keys` | — | **DONE** |
+| `list-policy-tags` | `--policy-arn` | `--max-items`, `--marker` | **DONE** |
 | `generate-service-last-accessed-details` | — | `--arn`, `--granularity` | **NOT STARTED** |
 | `get-service-last-accessed-details` | — | `--job-id` | **NOT STARTED** |
 | `get-service-last-accessed-details-with-entities` | — | `--job-id`, `--service-namespace` | **NOT STARTED** |
@@ -544,9 +544,9 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `delete-role-policy` | `--role-name`, `--policy-name` | — | **DONE** |
 | `put-role-permissions-boundary` | — | `--role-name`, `--permissions-boundary` | **NOT STARTED** |
 | `delete-role-permissions-boundary` | — | `--role-name` | **NOT STARTED** |
-| `tag-role` | — | `--role-name`, `--tags` | **NOT STARTED** |
-| `untag-role` | — | `--role-name`, `--tag-keys` | **NOT STARTED** |
-| `list-role-tags` | — | `--role-name` | **NOT STARTED** |
+| `tag-role` | `--role-name`, `--tags` | — | **DONE** |
+| `untag-role` | `--role-name`, `--tag-keys` | — | **DONE** |
+| `list-role-tags` | `--role-name` | `--max-items`, `--marker` | **DONE** |
 | `update-role-description` | — | `--role-name`, `--description` | **NOT STARTED** |
 
 ### IAM — Instance Profiles
@@ -560,9 +560,9 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `delete-instance-profile` | `--instance-profile-name` | — | **DONE** |
 | `add-role-to-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
 | `remove-role-from-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
-| `tag-instance-profile` | — | `--instance-profile-name`, `--tags` | **NOT STARTED** |
-| `untag-instance-profile` | — | `--instance-profile-name`, `--tag-keys` | **NOT STARTED** |
-| `list-instance-profile-tags` | — | `--instance-profile-name` | **NOT STARTED** |
+| `tag-instance-profile` | `--instance-profile-name`, `--tags` | — | **DONE** |
+| `untag-instance-profile` | `--instance-profile-name`, `--tag-keys` | — | **DONE** |
+| `list-instance-profile-tags` | `--instance-profile-name` | `--max-items`, `--marker` | **DONE** |
 
 ### IAM — OIDC Providers
 
@@ -575,8 +575,8 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `add-client-id-to-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--client-id` | **NOT STARTED** |
 | `remove-client-id-from-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--client-id` | **NOT STARTED** |
 | `update-open-id-connect-provider-thumbprint` | — | `--open-id-connect-provider-arn`, `--thumbprint-list` | **NOT STARTED** |
-| `tag-open-id-connect-provider` / `untag-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--tags`/`--tag-keys` | **NOT STARTED** |
-| `list-open-id-connect-provider-tags` | — | `--open-id-connect-provider-arn` | **NOT STARTED** |
+| `tag-open-id-connect-provider` / `untag-open-id-connect-provider` | `--open-id-connect-provider-arn`, `--tags`/`--tag-keys` | — | **DONE** |
+| `list-open-id-connect-provider-tags` | `--open-id-connect-provider-arn` | `--max-items`, `--marker` | **DONE** |
 
 ### IAM — Groups
 

@@ -428,6 +428,57 @@ func (s *IAMServiceImpl) ListRolePolicies(accountID string, input *iam.ListRoleP
 	}, nil
 }
 
+// TagRole upserts tags on a role under CAS, like the other role writers.
+func (s *IAMServiceImpl) TagRole(accountID string, input *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
+	roleName := *input.RoleName
+	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+		merged := mergeTags(role.Tags, input.Tags)
+		if len(merged) > maxTagsPerResource {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		role.Tags = merged
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("IAM role tagged", "accountID", accountID, "roleName", roleName)
+	return &iam.TagRoleOutput{}, nil
+}
+
+// UntagRole removes the named tag keys from a role; unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagRole(accountID string, input *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	roleName := *input.RoleName
+	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+		role.Tags = removeTagKeys(role.Tags, input.TagKeys)
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("IAM role untagged", "accountID", accountID, "roleName", roleName)
+	return &iam.UntagRoleOutput{}, nil
+}
+
+// ListRoleTags returns a role's tags. Pagination is not implemented:
+// IsTruncated is always false.
+func (s *IAMServiceImpl) ListRoleTags(accountID string, input *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
+	role, err := s.getRole(accountID, *input.RoleName)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListRoleTagsOutput{
+		Tags:        tagsToSDK(role.Tags),
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
 // GetRolePolicies resolves the managed and inline policy documents for a role.
 // Used by the gateway for policy evaluation. Fails closed: any unresolvable
 // policy returns an error so the caller denies access rather than using a partial set.

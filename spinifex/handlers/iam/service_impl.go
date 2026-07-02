@@ -1473,6 +1473,139 @@ func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserP
 	}, nil
 }
 
+// ---------------------------------------------------------------------------
+// User + policy tagging
+// ---------------------------------------------------------------------------
+
+// TagUser upserts tags on a user. Blind read-modify-write Put like the other
+// user writers (no CAS).
+func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
+	userName := *input.UserName
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := mergeTags(user.Tags, input.Tags)
+	if len(merged) > maxTagsPerResource {
+		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	user.Tags = merged
+
+	data, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+	if _, err := s.usersBucket.Put(accountID+"."+userName, data); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM user tagged", "accountID", accountID, "userName", userName)
+	return &iam.TagUserOutput{}, nil
+}
+
+// UntagUser removes the named tag keys from a user; unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	userName := *input.UserName
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	user.Tags = removeTagKeys(user.Tags, input.TagKeys)
+
+	data, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+	if _, err := s.usersBucket.Put(accountID+"."+userName, data); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM user untagged", "accountID", accountID, "userName", userName)
+	return &iam.UntagUserOutput{}, nil
+}
+
+// ListUserTags returns a user's tags. Pagination is not implemented:
+// IsTruncated is always false.
+func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	user, err := s.getUser(accountID, *input.UserName)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListUserTagsOutput{
+		Tags:        tagsToSDK(user.Tags),
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
+// TagPolicy upserts tags on a customer-managed policy, resolved by ARN.
+func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := mergeTags(policy.Tags, input.Tags)
+	if len(merged) > maxTagsPerResource {
+		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	policy.Tags = merged
+
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return nil, fmt.Errorf("marshal policy: %w", err)
+	}
+	if _, err := s.policiesBucket.Put(accountID+"."+policy.PolicyName, data); err != nil {
+		return nil, fmt.Errorf("update policy: %w", err)
+	}
+
+	slog.Info("IAM policy tagged", "accountID", accountID, "policyName", policy.PolicyName)
+	return &iam.TagPolicyOutput{}, nil
+}
+
+// UntagPolicy removes the named tag keys from a policy; unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+
+	policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)
+
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return nil, fmt.Errorf("marshal policy: %w", err)
+	}
+	if _, err := s.policiesBucket.Put(accountID+"."+policy.PolicyName, data); err != nil {
+		return nil, fmt.Errorf("update policy: %w", err)
+	}
+
+	slog.Info("IAM policy untagged", "accountID", accountID, "policyName", policy.PolicyName)
+	return &iam.UntagPolicyOutput{}, nil
+}
+
+// ListPolicyTags returns a policy's tags. Pagination is not implemented:
+// IsTruncated is always false.
+func (s *IAMServiceImpl) ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListPolicyTagsOutput{
+		Tags:        tagsToSDK(policy.Tags),
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
 // GetUserPolicies resolves all policy documents attached to a user.
 // Used internally by the gateway for policy evaluation.
 func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDocument, error) {

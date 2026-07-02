@@ -94,3 +94,30 @@ func RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromIn
 	}
 	return svc.RemoveRoleFromInstanceProfile(accountID, input)
 }
+
+func TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput, svc handlers_iam.IAMService) (*iam.TagInstanceProfileOutput, error) {
+	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Tags) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.TagInstanceProfile(accountID, input)
+}
+
+func UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput, svc handlers_iam.IAMService) (*iam.UntagInstanceProfileOutput, error) {
+	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.TagKeys) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.UntagInstanceProfile(accountID, input)
+}
+
+func ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTagsInput, svc handlers_iam.IAMService) (*iam.ListInstanceProfileTagsOutput, error) {
+	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.ListInstanceProfileTags(accountID, input)
+}

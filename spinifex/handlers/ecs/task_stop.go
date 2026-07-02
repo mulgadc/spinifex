@@ -11,15 +11,19 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go"
 )
 
 // defaultStopReason is recorded when StopTask is called without a reason.
 const defaultStopReason = "Task stopped by user"
 
-// StopTask transitions a task to STOPPED via the control-plane forced-stop path
-// (capacity + ENI release, TG deregister). The live container is torn down by the
-// agent reconciler diffing KV against containerd (ecs-v1.md Q13).
+// StopTask requests a cooperative stop: it marks the task DesiredStatus=STOPPED
+// and posts a directive to the instance's stop inbox. The agent reaps the
+// container and reports STOPPED, which drives the capacity + ENI + TG release in
+// recordTaskState. LastStatus stays RUNNING until the container is actually reaped
+// so a freed port is never rebound while the old container still holds it
+// (ecs-v1.md:165).
 func (s *Service) StopTask(input *ecs.StopTaskInput, accountID string) (*ecs.StopTaskOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	taskID := taskShortID(aws.StringValue(input.Task))
@@ -39,7 +43,7 @@ func (s *Service) StopTask(input *ecs.StopTaskInput, accountID string) (*ecs.Sto
 	if reason == "" {
 		reason = defaultStopReason
 	}
-	s.forceStopTask(kv, accountID, &task, reason)
+	s.requestStopTask(kv, accountID, &task, reason)
 	return &ecs.StopTaskOutput{Task: s.taskToAWS(accountID, &task)}, nil
 }
 
@@ -138,10 +142,37 @@ func (s *Service) reserveOnInstance(kv nats.KeyValue, cluster, instanceID, taskI
 	return nil, errors.New("reservation contended")
 }
 
+// requestStopTask is the cooperative stop used while the agent is alive: it marks
+// the task DesiredStatus=STOPPED and posts a stop directive to the instance's stop
+// inbox, but leaves LastStatus, capacity, ENI, targets, and the assign inbox
+// untouched. The agent reaps the container and reports STOPPED; recordTaskState
+// then performs the single release. No-op once the task is already STOPPED. A task
+// with no container instance (never placed) is forced-stopped directly since no
+// agent can report it.
+func (s *Service) requestStopTask(kv nats.KeyValue, accountID string, task *TaskRecord, reason string) {
+	if task.LastStatus == TaskStatusStopped {
+		return
+	}
+	if task.ContainerInstanceID == "" {
+		s.forceStopTask(kv, accountID, task, reason)
+		return
+	}
+	task.DesiredStatus = TaskStatusStopped
+	if perr := putJSON(kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
+		slog.Error("ECS requestStopTask: persist failed", "task", task.TaskID, "err", perr)
+		return
+	}
+	sd := bus.StopDirective{TaskID: task.TaskID, Reason: reason}
+	if perr := putJSON(kv, StopKey(task.Cluster, task.ContainerInstanceID, task.TaskID), &sd); perr != nil {
+		slog.Error("ECS requestStopTask: post stop directive failed", "task", task.TaskID, "err", perr)
+	}
+}
+
 // forceStopTask is the control-plane forced-stop: it transitions a task to
 // STOPPED, releases its capacity + ENI, drains its assign inbox, and deregisters
-// its ELBv2 targets. Idempotent and reused by StopTask, service scale-in, and the
-// heartbeat reaper. The mutated record is reflected back into task.
+// its ELBv2 targets. Used where no live agent can reap the container (heartbeat
+// reaper, cluster/instance teardown). The mutated record is reflected back into
+// task.
 func (s *Service) forceStopTask(kv nats.KeyValue, accountID string, task *TaskRecord, reason string) {
 	if task.LastStatus == TaskStatusStopped {
 		return
@@ -160,6 +191,7 @@ func (s *Service) forceStopTask(kv nats.KeyValue, accountID string, task *TaskRe
 	}
 	s.deregisterServiceTargets(kv, accountID, task)
 	s.reclaimAssignInbox(kv, task.Cluster, task.ContainerInstanceID, task.TaskID)
+	s.reclaimStopInbox(kv, task.Cluster, task.ContainerInstanceID, task.TaskID)
 	s.reclaimTaskENI(accountID, task)
 	if rerr := s.releaseReservation(kv, task.Cluster, task.ContainerInstanceID, task.TaskID, task.ReservedCPU, task.ReservedMemoryMiB); rerr != nil {
 		slog.Error("ECS forceStopTask: release reservation failed", "task", task.TaskID, "err", rerr)

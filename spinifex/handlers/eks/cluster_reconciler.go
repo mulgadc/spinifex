@@ -24,7 +24,28 @@ const (
 	// defaultStateStaleAfter is the maximum age of a CP state report before
 	// health is treated as unknown. CP publishes every ~30s; 3× tolerates a missed tick.
 	defaultStateStaleAfter = 90 * time.Second
+	// defaultCPRestartGrace is how long an ACTIVE cluster's control plane may stay
+	// unhealthy before an in-place restart is attempted. Absorbs transient blips
+	// (a missed report, a brief apiserver stall) so a healthy CP is never bounced.
+	defaultCPRestartGrace = 2 * time.Minute
+	// defaultCPRestartBackoff is the minimum spacing between CP restart attempts.
+	defaultCPRestartBackoff = 2 * time.Minute
+	// defaultMaxCPRestartAttempts bounds in-place restarts before the reconciler
+	// gives up and leaves the cluster degraded for Phase-2 restore / operator action.
+	defaultMaxCPRestartAttempts = 3
 )
+
+// CPInstanceControl is the minimal control-plane VM lifecycle surface the
+// reconciler needs to recover a wedged CP in place. A stopped/error CP is
+// restarted onto its existing root volume, so embedded etcd survives. Nil
+// disables auto-restart; degradation is still reflected in cluster health.
+type CPInstanceControl interface {
+	// InstanceState returns the CP instance lifecycle state, e.g. "running",
+	// "stopped", "error". Errors propagate so the reconciler retries next tick.
+	InstanceState(ctx context.Context, instanceID string) (string, error)
+	// StartInstance restarts a stopped/error CP instance in place.
+	StartInstance(ctx context.Context, instanceID string) error
+}
 
 // natsSubscriber is the minimal subscribe surface the reconciler needs; *nats.Conn satisfies it.
 type natsSubscriber interface {
@@ -76,6 +97,19 @@ type ClusterReconciler struct {
 	// this is a sibling of the cluster state-report, not folded into it.
 	addonStatusSub     natsSubscriber
 	addonStatusSubject string
+
+	// cpControl recovers a wedged control-plane VM in place; nil disables
+	// auto-restart. restart* fields tune the grace window before the first
+	// restart, the spacing between attempts, and the attempt cap. degradedSince,
+	// restartAttempts, and lastRestartAt are per-cluster restart bookkeeping,
+	// mutated only from the single reconcile goroutine.
+	cpControl          CPInstanceControl
+	restartGrace       time.Duration
+	restartBackoff     time.Duration
+	maxRestartAttempts int
+	degradedSince      time.Time
+	restartAttempts    int
+	lastRestartAt      time.Time
 }
 
 // ReconcilerOption tunes a ClusterReconciler.
@@ -130,6 +164,28 @@ func WithAddonStatusSource(sub natsSubscriber, subject string) ReconcilerOption 
 	}
 }
 
+// WithCPInstanceControl injects the control-plane VM lifecycle surface used to
+// restart a wedged CP in place. Absent, the reconciler only reflects health.
+func WithCPInstanceControl(c CPInstanceControl) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.cpControl = c }
+}
+
+// WithCPRestartPolicy overrides the CP auto-restart grace window, attempt
+// spacing, and max attempts. Non-positive values keep the default.
+func WithCPRestartPolicy(grace, backoff time.Duration, maxAttempts int) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		if grace > 0 {
+			r.restartGrace = grace
+		}
+		if backoff > 0 {
+			r.restartBackoff = backoff
+		}
+		if maxAttempts > 0 {
+			r.maxRestartAttempts = maxAttempts
+		}
+	}
+}
+
 // NewClusterReconciler constructs a ClusterReconciler. healthURL is the
 // fully-qualified probe target (e.g. https://nlb-dns:443/healthz) or empty
 // to skip /healthz probing (CREATING transitions on bootstrap state alone).
@@ -150,17 +206,20 @@ func NewClusterReconciler(leaderKV, acctKV nats.KeyValue, accountID, clusterName
 		return nil, errors.New("eks: NewClusterReconciler empty holderID")
 	}
 	r := &ClusterReconciler{
-		leaderKV:        leaderKV,
-		acctKV:          acctKV,
-		accountID:       accountID,
-		clusterName:     clusterName,
-		holderID:        holderID,
-		healthURL:       healthURL,
-		leaseRefresh:    defaultReconcileLeaseRefresh,
-		interval:        defaultReconcileInterval,
-		healthTimeout:   defaultHealthzTimeout,
-		createTimeout:   defaultCreateTimeout,
-		stateStaleAfter: defaultStateStaleAfter,
+		leaderKV:           leaderKV,
+		acctKV:             acctKV,
+		accountID:          accountID,
+		clusterName:        clusterName,
+		holderID:           holderID,
+		healthURL:          healthURL,
+		leaseRefresh:       defaultReconcileLeaseRefresh,
+		interval:           defaultReconcileInterval,
+		healthTimeout:      defaultHealthzTimeout,
+		createTimeout:      defaultCreateTimeout,
+		stateStaleAfter:    defaultStateStaleAfter,
+		restartGrace:       defaultCPRestartGrace,
+		restartBackoff:     defaultCPRestartBackoff,
+		maxRestartAttempts: defaultMaxCPRestartAttempts,
 		httpClient: &http.Client{
 			Timeout: defaultHealthzTimeout,
 			Transport: &http.Transport{
@@ -340,12 +399,81 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 			}
 			return fmt.Errorf("record cluster health: %w", err)
 		}
+		r.maybeRecoverControlPlane(ctx, meta, issue)
 	case ClusterStatusDeleting:
 		return ErrReconcilerClusterDeleting
 	case ClusterStatusFailed:
 		return ErrReconcilerClusterFailed
 	}
 	return nil
+}
+
+// maybeRecoverControlPlane attempts a bounded in-place restart of a wedged
+// control-plane VM. A healthy CP clears the degraded clock and attempt count. An
+// unhealthy CP is left alone until it stays unhealthy past restartGrace, then
+// StartInstance is invoked (once per restartBackoff, up to maxRestartAttempts)
+// only when the instance is stopped/error — a restart re-mounts the same root
+// volume so embedded etcd survives. Best-effort: failures log and retry next
+// tick; the cluster stays degraded for operator/Phase-2 DR.
+func (r *ClusterReconciler) maybeRecoverControlPlane(ctx context.Context, meta *ClusterMeta, issue string) {
+	if issue == "" {
+		r.degradedSince = time.Time{}
+		r.restartAttempts = 0
+		return
+	}
+	if r.cpControl == nil || meta.ControlPlaneInstanceID == "" {
+		return
+	}
+	now := time.Now()
+	if r.degradedSince.IsZero() {
+		r.degradedSince = now
+	}
+	if now.Sub(r.degradedSince) < r.restartGrace {
+		return
+	}
+	if r.restartAttempts >= r.maxRestartAttempts {
+		return
+	}
+	if !r.lastRestartAt.IsZero() && now.Sub(r.lastRestartAt) < r.restartBackoff {
+		return
+	}
+	instanceID := meta.ControlPlaneInstanceID
+	state, err := r.cpControl.InstanceState(ctx, instanceID)
+	if err != nil {
+		slog.Warn("ClusterReconciler: CP instance state query failed",
+			"cluster", r.clusterName, "instanceId", instanceID, "err", err)
+		return
+	}
+	if !cpRestartable(state) {
+		// A running-but-unhealthy CP (e.g. wedged etcd) is not fixed by a
+		// restart; leave it degraded for Phase-2 snapshot restore.
+		return
+	}
+	r.lastRestartAt = now
+	r.restartAttempts++
+	slog.Warn("ClusterReconciler: restarting wedged control plane in place",
+		"cluster", r.clusterName, "instanceId", instanceID, "state", state,
+		"attempt", r.restartAttempts, "issue", issue)
+	if err := r.cpControl.StartInstance(ctx, instanceID); err != nil {
+		slog.Warn("ClusterReconciler: CP restart failed",
+			"cluster", r.clusterName, "instanceId", instanceID,
+			"attempt", r.restartAttempts, "err", err)
+		return
+	}
+	slog.Info("ClusterReconciler: control-plane restart issued",
+		"cluster", r.clusterName, "instanceId", instanceID, "attempt", r.restartAttempts)
+}
+
+// cpRestartable reports whether an in-place StartInstance can plausibly recover a
+// CP in the given state. Only a stopped/error instance (VM died, but the
+// instance record + root volume survive) is restartable; running/pending are not.
+func cpRestartable(state string) bool {
+	switch state {
+	case "stopped", "error":
+		return true
+	default:
+		return false
+	}
 }
 
 // observe returns the health issue ("" = healthy) and node count from the CP's

@@ -175,6 +175,20 @@ func snapshotNB(t *testing.T, ctx context.Context, cli ovn.Client) string {
 		tokens[d.UUID] = "dhcp:" + d.CIDR
 	}
 
+	// OVN returns set columns (Ports) in an unstable order; sort by token so the
+	// snapshot is deterministic across runs.
+	sortByToken := func(uuids []string) {
+		slices.SortFunc(uuids, func(a, b string) int {
+			return strings.Compare(tokens[a]+a, tokens[b]+b)
+		})
+	}
+	for i := range switches {
+		sortByToken(switches[i].Ports)
+	}
+	for i := range pgs {
+		sortByToken(pgs[i].Ports)
+	}
+
 	var lines []string
 	add := func(kind string, rows []string) {
 		for i := range rows {

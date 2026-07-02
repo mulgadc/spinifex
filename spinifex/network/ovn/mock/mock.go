@@ -102,12 +102,12 @@ func (m *Client) CreateLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) 
 
 // EnsureLogicalSwitch mirrors the live client's wait-op semantics under the
 // mock's single mutex: concurrent callers see the row on the second arrival.
-func (m *Client) EnsureLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, error) {
+func (m *Client) EnsureLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, bool, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	if existing, ok := m.Switches[ls.Name]; ok {
 		result := *existing
-		return &result, nil
+		return &result, false, nil
 	}
 	if ls.UUID == "" {
 		ls.UUID = utils.GenerateResourceID("ovn")
@@ -115,7 +115,7 @@ func (m *Client) EnsureLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) 
 	stored := *ls
 	m.Switches[ls.Name] = &stored
 	result := stored
-	return &result, nil
+	return &result, true, nil
 }
 
 func (m *Client) DeleteLogicalSwitch(_ context.Context, name string) error {
@@ -283,12 +283,12 @@ func (m *Client) CreateLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) 
 
 // EnsureLogicalRouter mirrors the live client's wait-op semantics under the
 // mock's single mutex.
-func (m *Client) EnsureLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error) {
+func (m *Client) EnsureLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, bool, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	if existing, ok := m.Routers[lr.Name]; ok {
 		result := *existing
-		return &result, nil
+		return &result, false, nil
 	}
 	if lr.UUID == "" {
 		lr.UUID = utils.GenerateResourceID("ovn")
@@ -296,7 +296,7 @@ func (m *Client) EnsureLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) 
 	stored := *lr
 	m.Routers[lr.Name] = &stored
 	result := stored
-	return &result, nil
+	return &result, true, nil
 }
 
 func (m *Client) DeleteLogicalRouter(_ context.Context, name string) error {
@@ -790,12 +790,12 @@ func (m *Client) CreatePortGroup(_ context.Context, name string, ports []string)
 }
 
 // EnsurePortGroup mirrors the live client's wait-op semantics.
-func (m *Client) EnsurePortGroup(_ context.Context, name string, ports []string) (*nbdb.PortGroup, error) {
+func (m *Client) EnsurePortGroup(_ context.Context, name string, ports []string) (*nbdb.PortGroup, bool, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	if existing, ok := m.PortGroups[name]; ok {
 		result := *existing
-		return &result, nil
+		return &result, false, nil
 	}
 	pg := &nbdb.PortGroup{
 		UUID:  utils.GenerateResourceID("pg"),
@@ -804,7 +804,7 @@ func (m *Client) EnsurePortGroup(_ context.Context, name string, ports []string)
 	}
 	m.PortGroups[name] = pg
 	result := *pg
-	return &result, nil
+	return &result, true, nil
 }
 
 func (m *Client) DeletePortGroup(_ context.Context, name string) error {
@@ -946,6 +946,23 @@ func (m *Client) ClearACLs(_ context.Context, portGroupName string) error {
 	return nil
 }
 
+// aclSetUnchangedLocked reports whether pg's current ACL rows are the same
+// multiset as specs. Caller holds m.Mu.
+func (m *Client) aclSetUnchangedLocked(pg *nbdb.PortGroup, specs []ovn.ACLSpec) bool {
+	if len(pg.ACLs) != len(specs) {
+		return false
+	}
+	rows := make([]nbdb.ACL, 0, len(pg.ACLs))
+	for _, aclUUID := range pg.ACLs {
+		acl, ok := m.ACLs[aclUUID]
+		if !ok {
+			return false
+		}
+		rows = append(rows, *acl)
+	}
+	return ovn.ACLSetEqual(rows, specs)
+}
+
 // ReplaceACLs atomically swaps the port group's ACL set under a single mutex
 // hold — semantically equivalent to ClearACLs+AddACLs but with no observable
 // mid-flight window where pg.ACLs is empty.
@@ -960,6 +977,11 @@ func (m *Client) ReplaceACLs(_ context.Context, portGroupName string, specs []ov
 	pg, exists := m.PortGroups[portGroupName]
 	if !exists {
 		return fmt.Errorf("port group %q not found", portGroupName)
+	}
+	// No-op when the current ACL set already matches specs, mirroring LiveClient:
+	// unchanged SGs must not churn ACL UUIDs on every reconcile pass.
+	if m.aclSetUnchangedLocked(pg, specs) {
+		return nil
 	}
 	for _, aclUUID := range pg.ACLs {
 		delete(m.ACLs, aclUUID)

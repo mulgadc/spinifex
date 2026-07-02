@@ -65,11 +65,11 @@ func (m *liveManager) EnsureVPC(ctx context.Context, spec VPCSpec) error {
 			"spinifex:cidr":   cidr,
 		},
 	}
-	existing, err := m.ovn.EnsureLogicalRouter(ctx, lr)
+	existing, created, err := m.ovn.EnsureLogicalRouter(ctx, lr)
 	if err != nil {
 		return fmt.Errorf("ensure logical router %q: %w", routerName, err)
 	}
-	if existing.UUID == lr.UUID {
+	if created {
 		slog.Info("topology: EnsureVPC created router", "router", routerName, "vpc_id", spec.VPCID, "cidr", cidr)
 		return nil
 	}
@@ -184,11 +184,11 @@ func (m *liveManager) EnsureSubnet(ctx context.Context, spec SubnetSpec) error {
 			"spinifex:vpc_id":    spec.VPCID,
 		},
 	}
-	existingSwitch, err := m.ovn.EnsureLogicalSwitch(ctx, ls)
+	_, created, err := m.ovn.EnsureLogicalSwitch(ctx, ls)
 	if err != nil {
 		return fmt.Errorf("ensure logical switch %q: %w", switchName, err)
 	}
-	if existingSwitch.UUID != ls.UUID {
+	if !created {
 		return nil
 	}
 
@@ -362,7 +362,7 @@ func (m *liveManager) EnsureSGPortGroup(ctx context.Context, groupID string) err
 		return fmt.Errorf("EnsureSGPortGroup: empty groupID")
 	}
 	pgName := SecurityGroupPortGroup(groupID)
-	if _, err := m.ovn.EnsurePortGroup(ctx, pgName, nil); err != nil {
+	if _, _, err := m.ovn.EnsurePortGroup(ctx, pgName, nil); err != nil {
 		return fmt.Errorf("ensure port group %s: %w", pgName, err)
 	}
 	slog.Info("topology: ensured SG port group", "pg", pgName, "group_id", groupID)

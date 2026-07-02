@@ -1,6 +1,35 @@
 package ovn
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
+)
+
+func ptr(s string) *string { return &s }
+
+func TestACLSetEqual(t *testing.T) {
+	specs := []ACLSpec{
+		{Direction: "to-lport", Priority: 1001, Match: "ip4", Action: "allow-related", Name: "a", Severity: "info"},
+		{Direction: "from-lport", Priority: 1002, Match: "ip6", Action: "drop"},
+	}
+	rows := []nbdb.ACL{
+		{Direction: "from-lport", Priority: 1002, Match: "ip6", Action: "drop"},
+		{Direction: "to-lport", Priority: 1001, Match: "ip4", Action: "allow-related", Name: ptr("a"), Severity: ptr("info")},
+	}
+
+	if !ACLSetEqual(rows, specs) {
+		t.Errorf("reordered equal set reported unequal")
+	}
+	if ACLSetEqual(rows[:1], specs) {
+		t.Errorf("count mismatch reported equal")
+	}
+
+	diff := []nbdb.ACL{rows[0], {Direction: "to-lport", Priority: 1001, Match: "ip4", Action: "drop"}}
+	if ACLSetEqual(diff, specs) {
+		t.Errorf("content mismatch reported equal")
+	}
+}
 
 func TestNamedUUID(t *testing.T) {
 	tests := []struct {

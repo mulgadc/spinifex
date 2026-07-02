@@ -217,7 +217,7 @@ func (m *igwManager) ensureSharedExternal(ctx context.Context, switchName, portN
 		Name:        switchName,
 		ExternalIDs: map[string]string{"spinifex:role": "external"},
 	}
-	if _, err := m.ovn.EnsureLogicalSwitch(ctx, extSwitch); err != nil {
+	if _, _, err := m.ovn.EnsureLogicalSwitch(ctx, extSwitch); err != nil {
 		return fmt.Errorf("ensure shared external switch %s: %w", switchName, err)
 	}
 	if _, err := m.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {

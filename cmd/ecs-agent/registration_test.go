@@ -15,11 +15,13 @@ import (
 type fakeCP struct {
 	mu sync.Mutex
 
-	registers   int
-	states      []bus.TaskState
-	pollAcks    [][]string
-	pollReplies [][]bus.Assign
-	pollCalls   int
+	registers    int
+	states       []bus.TaskState
+	pollAcks     [][]string
+	pollStopAcks [][]string
+	pollReplies  [][]bus.Assign
+	stopReplies  [][]bus.StopDirective
+	pollCalls    int
 
 	registerErr bool
 	submitErr   bool
@@ -47,17 +49,21 @@ func (f *fakeCP) SubmitTaskState(st bus.TaskState) error {
 	return nil
 }
 
-func (f *fakeCP) PollAssignments(_, _ string, ack []string) ([]bus.Assign, error) {
+func (f *fakeCP) PollAssignments(_, _ string, ackAssigns, ackStops []string) ([]bus.Assign, []bus.StopDirective, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	cp := append([]string(nil), ack...)
-	f.pollAcks = append(f.pollAcks, cp)
+	f.pollAcks = append(f.pollAcks, append([]string(nil), ackAssigns...))
+	f.pollStopAcks = append(f.pollStopAcks, append([]string(nil), ackStops...))
 	var out []bus.Assign
 	if f.pollCalls < len(f.pollReplies) {
 		out = f.pollReplies[f.pollCalls]
 	}
+	var stops []bus.StopDirective
+	if f.pollCalls < len(f.stopReplies) {
+		stops = f.stopReplies[f.pollCalls]
+	}
 	f.pollCalls++
-	return out, nil
+	return out, stops, nil
 }
 
 func (f *fakeCP) registerCount() int {
@@ -76,6 +82,12 @@ func (f *fakeCP) acks() [][]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][]string(nil), f.pollAcks...)
+}
+
+func (f *fakeCP) stopAcks() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]string(nil), f.pollStopAcks...)
 }
 
 func testIdentity() identity {

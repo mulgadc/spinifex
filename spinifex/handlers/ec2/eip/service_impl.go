@@ -692,3 +692,26 @@ func (s *EIPServiceImpl) eipRecordToEC2(record *EIPRecord) *ec2.Address {
 
 	return addr
 }
+
+// ApplyRecordTags mirrors CreateTags into the owning EIP KV record so
+// tag-filtered describes observe tags added after create. Resource ids this
+// service does not own are skipped; absent records are a no-op.
+func (s *EIPServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.eipKV, accountID, "eipalloc-", input.Resources,
+		func(r *EIPRecord) *map[string]string { return &r.Tags },
+		utils.MergeTagsMut(input))
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning EIP KV record with
+// AWS-faithful delete semantics.
+func (s *EIPServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.eipKV, accountID, "eipalloc-", input.Resources,
+		func(r *EIPRecord) *map[string]string { return &r.Tags },
+		utils.RemoveTagsMut(input))
+}

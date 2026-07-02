@@ -1603,3 +1603,52 @@ func (s *VolumeServiceImpl) volumeHasSnapshotsKV(volumeID string) (bool, error) 
 
 	return len(snapshots) > 0, nil
 }
+
+// ApplyRecordTags mirrors CreateTags into the owning volume config so
+// DescribeVolumes observes tags added after create. Non-vol ids, volumes
+// absent from this store, and volumes the caller does not own are skipped.
+func (s *VolumeServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return s.mirrorVolumeTags(input.Resources, accountID, utils.MergeTagsMut(input))
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning volume config with
+// AWS-faithful delete semantics.
+func (s *VolumeServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return s.mirrorVolumeTags(input.Resources, accountID, utils.RemoveTagsMut(input))
+}
+
+// mirrorVolumeTags read-modify-writes VolumeMetadata.Tags for each vol- id.
+// config.json lives at a global ID-keyed path, so the mutation is gated on the
+// caller owning the volume (TenantID match); mismatch or absence is a no-op.
+func (s *VolumeServiceImpl) mirrorVolumeTags(resources []*string, accountID string, mut func(map[string]string)) error {
+	for _, res := range resources {
+		if res == nil || !strings.HasPrefix(*res, "vol-") {
+			continue
+		}
+		cfg, err := s.GetVolumeConfig(*res)
+		if err != nil {
+			if err.Error() == awserrors.ErrorInvalidVolumeNotFound {
+				continue
+			}
+			return err
+		}
+		if cfg.VolumeMetadata.TenantID != accountID {
+			slog.Debug("mirrorVolumeTags: skipping volume not owned by caller", "volumeId", *res)
+			continue
+		}
+		if cfg.VolumeMetadata.Tags == nil {
+			cfg.VolumeMetadata.Tags = map[string]string{}
+		}
+		mut(cfg.VolumeMetadata.Tags)
+		if err := s.putVolumeConfig(*res, cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}

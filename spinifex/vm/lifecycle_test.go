@@ -817,6 +817,31 @@ func TestStartQEMU_DirectBoot_MgmtTapError(t *testing.T) {
 	assert.Equal(t, "br-mgmt", plumber.setupCalls[0].Bridge)
 }
 
+// TestStartQEMU_DiskBoot_MgmtTapCreated verifies the disk-boot/restart path
+// pre-creates the mgmt tap via SetupTap (owned by the daemon euid) before
+// handing it to QEMU, mirroring the direct-boot branch. Without this the
+// non-root daemon (no CAP_NET_ADMIN) cannot attach /dev/net/tun, breaking every
+// stopped-instance restart including EKS control-plane recovery.
+func TestStartQEMU_DiskBoot_MgmtTapCreated(t *testing.T) {
+	// No primary ENI → dev user-mode net; MgmtMAC set → enters disk-boot mgmt block.
+	plumber := &fakeNetworkPlumber{setupErr: errors.New("mgmt tap failed")}
+	m := directBootManager(t, plumber)
+
+	instance := &VM{
+		ID:           "i-disk-mgmt",
+		InstanceType: "t3.nano",
+		MgmtMAC:      "02:aa:bb:cc:dd:ee",
+	}
+
+	err := m.startQEMU(instance)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mgmt tap")
+	require.Len(t, plumber.setupCalls, 1)
+	assert.Equal(t, MgmtTapName("i-disk-mgmt"), plumber.setupCalls[0].Name)
+	assert.Equal(t, "br-mgmt", plumber.setupCalls[0].Bridge)
+}
+
 // TestStartQEMU_DirectBoot_NoENI_NoMgmt_InstanceTypeNotFound verifies that
 // startQEMU returns an error when the instance type is absent from the resolver,
 // exercising the early-return before any DirectBoot config is written.

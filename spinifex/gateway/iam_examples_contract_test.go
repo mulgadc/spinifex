@@ -130,7 +130,6 @@ func normalizeEmptySlices(v reflect.Value) {
 	}
 
 	for _, field := range v.Fields() {
-		field := field
 		switch field.Kind() {
 		case reflect.Slice:
 			if field.Len() == 0 && field.CanSet() {

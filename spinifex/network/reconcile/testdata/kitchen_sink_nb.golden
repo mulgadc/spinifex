@@ -11,8 +11,8 @@ port {UUID:lsp:port-eni-priv Name:port-eni-priv Type: Addresses:[02:00:00:00:00:
 port {UUID:lsp:port-eni-pub Name:port-eni-pub Type: Addresses:[02:00:00:00:00:01 10.0.1.10] PortSecurity:[02:00:00:00:00:01 10.0.1.10] DHCPv4Options:PTR Enabled:<nil> Up:<nil> ExternalIDs:map[spinifex:eni_id:eni-pub spinifex:subnet_id:subnet-pub spinifex:vpc_id:vpc-a] Options:map[]}
 port {UUID:lsp:rtr-port-subnet-priv Name:rtr-port-subnet-priv Type:router Addresses:[router] PortSecurity:[] DHCPv4Options:<nil> Enabled:<nil> Up:<nil> ExternalIDs:map[spinifex:subnet_id:subnet-priv spinifex:vpc_id:vpc-a] Options:map[router-port:rtr-subnet-priv]}
 port {UUID:lsp:rtr-port-subnet-pub Name:rtr-port-subnet-pub Type:router Addresses:[router] PortSecurity:[] DHCPv4Options:<nil> Enabled:<nil> Up:<nil> ExternalIDs:map[spinifex:subnet_id:subnet-pub spinifex:vpc_id:vpc-a] Options:map[router-port:rtr-subnet-pub]}
-portgroup {UUID:pg:sg_a Name:sg_a Ports:[lsp:port-eni-pub lsp:port-eni-priv] ACLs:[X X X X X X X] ExternalIDs:map[]}
+portgroup {UUID:pg:sg_a Name:sg_a Ports:[lsp:port-eni-priv lsp:port-eni-pub] ACLs:[X X X X X X X] ExternalIDs:map[]}
 router {UUID:lr:vpc-vpc-a Name:vpc-vpc-a Ports:[X X X] StaticRoutes:[X] NAT:[X X] Policies:[X X X X X] Enabled:<nil> ExternalIDs:map[spinifex:cidr:10.0.0.0/16 spinifex:vpc_id:vpc-a] Options:map[]}
 switch {UUID:ls:ext-shared Name:ext-shared Ports:[lsp:ext-port-shared lsp:gw-port-vpc-a] ACLs:[] DNSRecords:[] ExternalIDs:map[spinifex:role:external] OtherConfig:map[]}
-switch {UUID:ls:subnet-subnet-priv Name:subnet-subnet-priv Ports:[lsp:rtr-port-subnet-priv lsp:port-eni-priv] ACLs:[] DNSRecords:[] ExternalIDs:map[spinifex:subnet_id:subnet-priv spinifex:vpc_id:vpc-a] OtherConfig:map[]}
-switch {UUID:ls:subnet-subnet-pub Name:subnet-subnet-pub Ports:[lsp:rtr-port-subnet-pub lsp:port-eni-pub] ACLs:[] DNSRecords:[] ExternalIDs:map[spinifex:subnet_id:subnet-pub spinifex:vpc_id:vpc-a] OtherConfig:map[]}
+switch {UUID:ls:subnet-subnet-priv Name:subnet-subnet-priv Ports:[lsp:port-eni-priv lsp:rtr-port-subnet-priv] ACLs:[] DNSRecords:[] ExternalIDs:map[spinifex:subnet_id:subnet-priv spinifex:vpc_id:vpc-a] OtherConfig:map[]}
+switch {UUID:ls:subnet-subnet-pub Name:subnet-subnet-pub Ports:[lsp:port-eni-pub lsp:rtr-port-subnet-pub] ACLs:[] DNSRecords:[] ExternalIDs:map[spinifex:subnet_id:subnet-pub spinifex:vpc_id:vpc-a] OtherConfig:map[]}

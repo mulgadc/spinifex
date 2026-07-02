@@ -372,3 +372,32 @@ func TestContainerID(t *testing.T) {
 		t.Errorf("containerID = %q, want t-1-web", got)
 	}
 }
+
+// sentinelResolver is an identity-comparable Resolver for pullResolver tests.
+type sentinelResolver struct{}
+
+func (sentinelResolver) Authorize(context.Context, string) (string, string, string, error) {
+	return "", "", "", nil
+}
+
+// TestPullResolver covers siv-459: an assign with no execution role (or no
+// credential endpoint) uses the instance resolver; with both, a distinct
+// exec-role resolver is built.
+func TestPullResolver(t *testing.T) {
+	fake := sentinelResolver{}
+	a := newAgent(config{Region: "us-east-1"}, testIdentity(), &fakeCP{}, nil, nil, fake)
+
+	if got := a.pullResolver(&bus.Assign{TaskID: "t1"}); got != fake {
+		t.Fatalf("no execution role: want instance resolver fallback")
+	}
+	execAssign := &bus.Assign{TaskID: "t1", ExecutionRoleARN: "arn:aws:iam::1:role/e"}
+	if got := a.pullResolver(execAssign); got != fake {
+		t.Fatalf("nil cred endpoint: want instance resolver fallback")
+	}
+
+	a.cred = &credEndpoint{}
+	got := a.pullResolver(execAssign)
+	if got == nil || got == fake {
+		t.Fatalf("execution role + cred endpoint: want distinct exec-role resolver, got %v", got)
+	}
+}

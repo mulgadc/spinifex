@@ -62,11 +62,32 @@ A **task definition** describes one or more containers (image, CPU/memory, ports
 ECS v1 is deliberately minimal. Keep these in mind:
 
 - **No service discovery.** `serviceRegistries` / Cloud Map integration is not implemented — reach a service through its load balancer, not a DNS name.
-- **`awslogs` log driver is discarded.** Container stdout/stderr is not shipped to CloudWatch Logs; the log configuration is accepted but dropped.
-- **No rolling deployments.** The reconciler keeps the desired count running but ignores `deploymentConfiguration` (`minimumHealthyPercent` / `maximumPercent`); an `UpdateService` to a new revision replaces tasks without a health-gated rollout or circuit-breaker.
+- **Only the `json-file` log driver is collected.** Container stdout/stderr is captured host-side on the container instance (see [Logging](#logging)); it is not shipped to CloudWatch Logs. Any other driver (e.g. `awslogs`) is accepted for parity but its logs are discarded — `RegisterTaskDefinition` logs a warning naming the container so the drop is not silent.
 - **No capacity providers or managed scaling.** Capacity is the static total of your registered instances; there is no scale-out/in or ASG binding — you manage the instance count.
-- **No distinct execution role.** ECR pulls use the instance role directly; `executionRoleArn` is not honoured separately.
-- **`secrets[]` are silently dropped**, and tags set via `TagResource` are not persisted. Health-check settings beyond the target group default are not forwarded.
+- **`secrets[]` are rejected.** A task definition that declares container `secrets[]` fails `RegisterTaskDefinition` with `InvalidParameterException` rather than running without the secrets it expects. Tags set via `TagResource` are not persisted, and health-check settings beyond the target group default are not forwarded.
+
+### Logging
+
+Spinifex honours the host-side **`json-file`** log driver (the containerd default). A container's stdout/stderr is written on its container instance and retrievable there — no CloudWatch Logs path exists.
+
+To read a task's logs, find the container instance running it (`aws ecs describe-tasks` → `containerInstanceArn` → the EC2 instance), then on that host inspect the containerd task output. Containers are named `{taskId}-{containerName}` and carry `mulga.ecs.*` labels:
+
+```bash
+# On the container instance:
+ctr -n default containers ls                 # find {taskId}-{containerName}
+ctr -n default tasks ls
+journalctl -u containerd | grep <taskId>     # container stdout/stderr via the host journal
+```
+
+A task definition may still declare `awslogs` (or any other driver) for AWS compatibility — Spinifex accepts it, warns at registration that the driver is not implemented, and falls back to the host-side `json-file` behaviour.
+
+### Deployments
+
+An `UpdateService` to a new task-definition revision performs a **health-gated rolling update** honouring `deploymentConfiguration`: `minimumHealthyPercent` keeps that fraction of the desired count running while `maximumPercent` bounds how many extra tasks launch during the roll. Enabling the **deployment circuit breaker** fails a rollout whose tasks repeatedly fail to start, and — with `rollback` set — automatically reverts to the last-good task definition.
+
+### Execution role
+
+If a task definition sets `executionRoleArn`, the agent assumes that role to authorise ECR image pulls (instead of the container-instance role). When it is unset, pulls fall back to the instance role.
 
 ## Prerequisites
 
@@ -267,4 +288,4 @@ tofu apply -var 'gateway_url=https://<host-lan-ip>:9999'
 
 **Container cannot assume its task role.** Confirm the task definition sets `taskRoleArn` and the role is trusted by `ecs-tasks.amazonaws.com`. The agent injects `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`; a container that overrides this variable, or an SDK too old to honour it, will not pick up the credentials.
 
-**Expected a feature that is missing.** ECS v1 omits service discovery, `awslogs` shipping, rolling deployments, capacity providers, and a distinct execution role. See the Limitations in the Overview.
+**Expected a feature that is missing.** ECS v1 omits service discovery, CloudWatch Logs (`awslogs`) shipping, and capacity providers / managed scaling. See the Limitations in the Overview.

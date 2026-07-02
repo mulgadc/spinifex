@@ -38,6 +38,7 @@ type PlacementGroupRecord struct {
 	// NodeInstances tracks which node hosts which instances in this group.
 	// Key = node name, Value = list of instance IDs on that node.
 	NodeInstances map[string][]string `json:"node_instances"`
+	Tags          map[string]string   `json:"tags,omitempty"`
 }
 
 // PlacementGroupServiceImpl implements placement group operations with NATS JetStream persistence.
@@ -102,6 +103,7 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(input *ec2.CreatePlacem
 		SpreadLevel:   ec2.SpreadLevelHost,
 		AccountID:     accountID,
 		NodeInstances: make(map[string][]string),
+		Tags:          utils.ExtractTags(input.TagSpecifications, "placement-group"),
 	}
 
 	data, err := json.Marshal(record)
@@ -164,6 +166,8 @@ var describePlacementGroupsValidFilters = map[string]bool{
 	"state":        true,
 	"spread-level": true,
 	"group-name":   true,
+	"tag-key":      true,
+	"tag-value":    true,
 }
 
 // DescribePlacementGroups lists placement groups with optional filters.
@@ -255,6 +259,9 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(input *ec2.DescribeP
 // pgMatchesFilters checks whether a placement group record matches all parsed filters.
 func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string) bool {
 	for name, values := range filters {
+		if strings.HasPrefix(name, "tag:") {
+			continue
+		}
 		switch name {
 		case "group-id":
 			if !filterutil.MatchesAny(values, record.GroupId) {
@@ -276,11 +283,30 @@ func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string)
 			if !filterutil.MatchesAny(values, record.GroupName) {
 				return false
 			}
+		case "tag-key":
+			if !pgMatchesAnyTag(record.Tags, values, func(k, _ string) string { return k }) {
+				return false
+			}
+		case "tag-value":
+			if !pgMatchesAnyTag(record.Tags, values, func(_, v string) string { return v }) {
+				return false
+			}
 		default:
 			return false
 		}
 	}
-	return true
+	return filterutil.MatchesTags(filters, record.Tags)
+}
+
+// pgMatchesAnyTag reports whether any tag's selected field (key or value)
+// matches any of the filter values.
+func pgMatchesAnyTag(tags map[string]string, values []string, field func(k, v string) string) bool {
+	for k, v := range tags {
+		if filterutil.MatchesAny(values, field(k, v)) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetPlacementGroupRecord reads a placement group record from KV with its revision for CAS operations.
@@ -578,6 +604,7 @@ func (s *PlacementGroupServiceImpl) recordToEC2(record *PlacementGroupRecord) *e
 		GroupName: aws.String(record.GroupName),
 		Strategy:  aws.String(record.Strategy),
 		State:     aws.String(record.State),
+		Tags:      utils.MapToEC2Tags(record.Tags),
 	}
 	if record.Strategy == ec2.PlacementStrategySpread {
 		pg.SpreadLevel = aws.String(record.SpreadLevel)

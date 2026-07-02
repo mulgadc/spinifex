@@ -112,10 +112,11 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 	}
 
 	credID := a.registerTaskCreds(as)
+	resolver := a.pullResolver(as)
 
 	statuses := make([]bus.ContainerStatus, 0, len(as.Containers))
 	for _, c := range as.Containers {
-		if _, err := a.puller.Pull(ctx, ctrruntime.PullSpec{Ref: c.Image}, a.resolver); err != nil {
+		if _, err := a.puller.Pull(ctx, ctrruntime.PullSpec{Ref: c.Image}, resolver); err != nil {
 			slog.Error("ecs-agent: pull failed", "task", as.TaskID, "image", c.Image, "err", err)
 			a.teardownTaskNetns(as)
 			a.reportTaskState(as, bus.TaskStatusStopped, "image pull failed: "+err.Error(), statuses)
@@ -182,6 +183,18 @@ func (a *Agent) teardownTaskNetns(as *bus.Assign) {
 	if err := a.netns.Teardown(as.TaskID); err != nil {
 		slog.Warn("ecs-agent: task netns teardown", "task", as.TaskID, "err", err)
 	}
+}
+
+// pullResolver returns the ECR resolver used for a task's image pulls. When the
+// assign carries an execution role, it authorizes pulls as that role (assumed
+// over the gateway); an empty role or a nil credential endpoint (unit tests)
+// falls back to the instance-role resolver, so a pull is never worse off.
+func (a *Agent) pullResolver(as *bus.Assign) ctrruntime.Resolver {
+	if as.ExecutionRoleARN == "" || a.cred == nil {
+		return a.resolver
+	}
+	prov := a.cred.AssumeProvider(as.ExecutionRoleARN, sessionName(as.TaskID))
+	return newLazyECRResolver(prov, a.cfg.Region, a.cfg.GatewayURL, a.cfg.GatewayCA)
 }
 
 // registerTaskCreds registers the task's credID -> role mapping with the

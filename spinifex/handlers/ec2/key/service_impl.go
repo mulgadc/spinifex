@@ -164,11 +164,13 @@ func (s *KeyServiceImpl) CreateKeyPair(input *ec2.CreateKeyPairInput, accountID 
 
 	// Build response (similar to AWS EC2)
 	keyPairID := utils.GenerateResourceID("key")
+	tags := utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, "key-pair"))
 	output := &ec2.CreateKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyMaterial:    aws.String(string(privateKeyData)),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
+		Tags:           tags,
 	}
 
 	// Store metadata file (CreateKeyPairOutput without KeyMaterial) for keyPairId lookups
@@ -176,6 +178,7 @@ func (s *KeyServiceImpl) CreateKeyPair(input *ec2.CreateKeyPairInput, accountID 
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
+		Tags:           tags,
 	})
 	if err != nil {
 		slog.Error("Failed to store key pair metadata", "err", err, "keyPairId", keyPairID)
@@ -616,7 +619,7 @@ func (s *KeyServiceImpl) DescribeKeyPairs(input *ec2.DescribeKeyPairsInput, acco
 			KeyFingerprint: metadata.KeyFingerprint,
 			KeyName:        metadata.KeyName,
 			KeyType:        aws.String(keyType),
-			Tags:           []*ec2.Tag{},
+			Tags:           metadata.Tags,
 		}
 
 		// Use S3 object LastModified as CreateTime
@@ -761,11 +764,12 @@ func (s *KeyServiceImpl) ImportKeyPair(input *ec2.ImportKeyPairInput, accountID 
 	keyPairID := utils.GenerateResourceID("key")
 
 	// Build response output
+	tags := utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, "key-pair"))
 	output := &ec2.ImportKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
-		Tags:           []*ec2.Tag{}, // TODO: Implement tag support from input.TagSpecifications
+		Tags:           tags,
 	}
 
 	// Store metadata file (without public key material)
@@ -773,6 +777,7 @@ func (s *KeyServiceImpl) ImportKeyPair(input *ec2.ImportKeyPairInput, accountID 
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
+		Tags:           tags,
 	}
 
 	err = s.storeKeyPairMetadata(accountID, keyPairID, metadataOutput)
@@ -791,4 +796,65 @@ func (s *KeyServiceImpl) ImportKeyPair(input *ec2.ImportKeyPairInput, accountID 
 	slog.Info("Key pair imported successfully", "keyName", keyName, "fingerprint", fingerprint, "keyPairId", keyPairID, "keyType", keyType)
 
 	return output, nil
+}
+
+// ApplyRecordTags mirrors CreateTags into the owning key-pair metadata so
+// DescribeKeyPairs observes tags added after create. Non-key ids and key pairs
+// absent from the caller's account prefix are skipped.
+func (s *KeyServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return s.mirrorKeyPairTags(input.Resources, accountID, utils.MergeTagsMut(input))
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning key-pair metadata with
+// AWS-faithful delete semantics.
+func (s *KeyServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return s.mirrorKeyPairTags(input.Resources, accountID, utils.RemoveTagsMut(input))
+}
+
+// mirrorKeyPairTags read-modify-writes the metadata Tags slice for each key-
+// id, converting through a map to reuse the shared merge/remove semantics.
+// Metadata is stored under the caller's account prefix, so a cross-account or
+// absent key pair simply misses and no-ops.
+func (s *KeyServiceImpl) mirrorKeyPairTags(resources []*string, accountID string, mut func(map[string]string)) error {
+	for _, res := range resources {
+		if res == nil || !strings.HasPrefix(*res, "key-") {
+			continue
+		}
+		metadataPath := fmt.Sprintf("keys/%s/%s.json", accountID, *res)
+		result, err := s.store.GetObject(&s3.GetObjectInput{
+			Bucket: aws.String(s.bucketName),
+			Key:    aws.String(metadataPath),
+		})
+		if err != nil {
+			if objectstore.IsNoSuchKeyError(err) {
+				continue
+			}
+			return fmt.Errorf("failed to get key pair metadata: %w", err)
+		}
+		body, err := io.ReadAll(result.Body)
+		result.Body.Close()
+		if err != nil {
+			return fmt.Errorf("failed to read key pair metadata: %w", err)
+		}
+		var metadata ec2.CreateKeyPairOutput
+		if err := json.Unmarshal(body, &metadata); err != nil {
+			return fmt.Errorf("failed to unmarshal key pair metadata: %w", err)
+		}
+		tags := filterutil.EC2TagsToMap(metadata.Tags)
+		if tags == nil {
+			tags = map[string]string{}
+		}
+		mut(tags)
+		metadata.Tags = utils.MapToEC2Tags(tags)
+		if err := s.storeKeyPairMetadata(accountID, *res, &metadata); err != nil {
+			return err
+		}
+	}
+	return nil
 }

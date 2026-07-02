@@ -427,3 +427,26 @@ func (s *IGWServiceImpl) recordToEC2(record *IGWRecord) *ec2.InternetGateway {
 
 	return igw
 }
+
+// ApplyRecordTags mirrors CreateTags into the owning IGW KV record so
+// tag-filtered describes observe tags added after create. Resource ids this
+// service does not own are skipped; absent records are a no-op.
+func (s *IGWServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.igwKV, accountID, "igw-", input.Resources,
+		func(r *IGWRecord) *map[string]string { return &r.Tags },
+		utils.MergeTagsMut(input))
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning IGW KV record with
+// AWS-faithful delete semantics.
+func (s *IGWServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.igwKV, accountID, "igw-", input.Resources,
+		func(r *IGWRecord) *map[string]string { return &r.Tags },
+		utils.RemoveTagsMut(input))
+}

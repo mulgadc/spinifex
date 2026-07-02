@@ -1828,6 +1828,81 @@ func TestRemoveRecordTags_Subnet(t *testing.T) {
 	assert.Equal(t, "", findTag(out.Subnets[0].Tags, "drop"))
 }
 
+func TestApplyRecordTags_SecurityGroupTagFilteredDescribe(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.3.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "mirror-sg")
+
+	err := svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String(sgID)},
+		Tags:      []*ec2.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("tag:env"), Values: []*string{aws.String("prod")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroups, 1)
+	assert.Equal(t, sgID, *out.SecurityGroups[0].GroupId)
+	assert.Equal(t, "prod", findTag(out.SecurityGroups[0].Tags, "env"))
+}
+
+func TestRemoveRecordTags_SecurityGroup(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.4.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "mirror-sg-del")
+
+	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String(sgID)},
+		Tags: []*ec2.Tag{
+			{Key: aws.String("keep"), Value: aws.String("yes")},
+			{Key: aws.String("drop"), Value: aws.String("v")},
+		},
+	}, testAccountID))
+
+	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
+		Resources: []*string{aws.String(sgID)},
+		Tags: []*ec2.Tag{
+			{Key: aws.String("keep"), Value: aws.String("wrong")},
+			{Key: aws.String("drop"), Value: aws.String("v")},
+		},
+	}, testAccountID))
+
+	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroups, 1)
+	assert.Equal(t, "yes", findTag(out.SecurityGroups[0].Tags, "keep"))
+	assert.Equal(t, "", findTag(out.SecurityGroups[0].Tags, "drop"))
+}
+
+func TestApplyRecordTags_ENITagFilteredDescribe(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.5.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.5.1.0/24")
+	eniID := createTestENI(t, svc, subnetID)
+
+	err := svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String(eniID)},
+		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("primary")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("tag:Name"), Values: []*string{aws.String("primary")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NetworkInterfaces, 1)
+	assert.Equal(t, eniID, *out.NetworkInterfaces[0].NetworkInterfaceId)
+	assert.Equal(t, "primary", findTag(out.NetworkInterfaces[0].TagSet, "Name"))
+}
+
 func TestApplyRecordTags_UnknownResourceNoError(t *testing.T) {
 	svc := setupTestVPCService(t)
 	// Absent subnet + non-VPC-owned resource id: both skipped without error.

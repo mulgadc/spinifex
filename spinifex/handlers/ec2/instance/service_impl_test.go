@@ -788,32 +788,6 @@ func TestDescribeInstances_HidesManagedSystemVMFromCustomer(t *testing.T) {
 	assert.Empty(t, out.Reservations, "managed system VM must not appear in customer listing")
 }
 
-// The owning account may describe its managed control-plane VM by explicit
-// instance ID — the EKS reconciler resolves the CP's lifecycle state this way
-// to decide whether a wedged CP needs restarting. Bulk listings still hide it
-// (TestDescribeInstances_HidesManagedSystemVMFromCustomer).
-func TestDescribeInstances_OwnerSeesManagedSystemVMByExplicitID(t *testing.T) {
-	owner := "111122223333"
-	v := &vm.VM{
-		ID:        "i-ekscp",
-		AccountID: owner,
-		ManagedBy: tags.ManagedByEKS,
-		Reservation: &ec2.Reservation{
-			ReservationId: aws.String("r-ekscp"),
-			OwnerId:       aws.String(owner),
-		},
-		Instance: &ec2.Instance{InstanceId: aws.String("i-ekscp")},
-	}
-	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
-
-	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String("i-ekscp")},
-	}, owner)
-	require.NoError(t, err)
-	require.Len(t, out.Reservations, 1)
-	assert.Equal(t, "i-ekscp", *out.Reservations[0].Instances[0].InstanceId)
-}
-
 // Root/operator callers still see managed system VMs.
 func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
 	v := &vm.VM{

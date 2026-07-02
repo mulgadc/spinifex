@@ -1921,7 +1921,11 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 		WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject),
 	}
 	if s.deps.CPControl != nil {
-		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: accountID}))
+		// The control-plane VMs are launched under the system account (see
+		// placeControlPlane), not the customer account that owns the cluster
+		// record. CP describe/recover must therefore run as the system account —
+		// the customer account cannot see or own its own cluster's CP VMs.
+		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: admin.SystemAccountID()}))
 	}
 	spawn := func(ctx context.Context, _, _ string) (func(), error) {
 		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "", opts...)

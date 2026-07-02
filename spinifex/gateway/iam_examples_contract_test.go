@@ -62,8 +62,8 @@ func TestIAMExamplesContract(t *testing.T) {
 
 				inputType := method.Type().In(0)
 				outputType := method.Type().Out(0)
-				require.Equal(t, reflect.Ptr, inputType.Kind(), "%s input type", action)
-				require.Equal(t, reflect.Ptr, outputType.Kind(), "%s output type", action)
+				require.Equal(t, reflect.Pointer, inputType.Kind(), "%s input type", action)
+				require.Equal(t, reflect.Pointer, outputType.Kind(), "%s output type", action)
 
 				wantInput := reflect.New(inputType.Elem())
 				unmarshalIAMExample(t, action, "input", example.Input, wantInput.Interface())
@@ -118,7 +118,7 @@ func normalizeEmptySlices(v reflect.Value) {
 	if v.Kind() == reflect.Interface && !v.IsNil() {
 		v = v.Elem()
 	}
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return
 		}
@@ -129,8 +129,8 @@ func normalizeEmptySlices(v reflect.Value) {
 		return
 	}
 
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
+	for _, field := range v.Fields() {
+		field := field
 		switch field.Kind() {
 		case reflect.Slice:
 			if field.Len() == 0 && field.CanSet() {
@@ -139,7 +139,7 @@ func normalizeEmptySlices(v reflect.Value) {
 			for j := 0; j < field.Len(); j++ {
 				normalizeEmptySlices(field.Index(j))
 			}
-		case reflect.Ptr, reflect.Struct, reflect.Interface:
+		case reflect.Pointer, reflect.Struct, reflect.Interface:
 			normalizeEmptySlices(field)
 		}
 	}

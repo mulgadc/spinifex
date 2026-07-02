@@ -246,6 +246,7 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 		s.deregisterServiceTargets(kv, msg.AccountID, &task)
 		s.releaseTaskPublicIP(msg.AccountID, &task)
 		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
+		s.reclaimStopInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
 		s.reclaimTaskENI(msg.AccountID, &task)
 		if perr := putJSON(kv, TaskKey(msg.ClusterName, msg.TaskID), &task); perr != nil {
 			slog.Error("ECS task STOPPED: persist after EIP release failed", "task", msg.TaskID, "err", perr)

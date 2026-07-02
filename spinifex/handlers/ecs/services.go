@@ -258,7 +258,7 @@ func (s *Service) DeleteService(input *ecs.DeleteServiceInput, accountID string)
 		return nil, err
 	}
 	for i := range tasks {
-		s.forceStopTask(kv, accountID, &tasks[i], "Service deleted")
+		s.requestStopTask(kv, accountID, &tasks[i], "Service deleted")
 	}
 	rec.Status = ServiceStatusInactive
 	rec.RunningCount = 0
@@ -447,14 +447,17 @@ func (s *Service) stopServiceSurplus(kv nats.KeyValue, accountID string, tasks [
 		if n <= 0 {
 			break
 		}
-		s.forceStopTask(kv, accountID, &tasks[idx], "Service scaled in")
+		s.requestStopTask(kv, accountID, &tasks[idx], "Service scaled in")
 		n--
 	}
 }
 
 // --- Helpers ---
 
-// listServiceTasks returns a cluster's non-STOPPED tasks owned by the service.
+// listServiceTasks returns a cluster's live tasks owned by the service: neither
+// STOPPED nor already requested to stop (DesiredStatus=STOPPED). A cooperatively
+// stopped task lingers RUNNING until the agent reaps it, but it is on its way out,
+// so it must not count toward the service's running total for scaling decisions.
 func (s *Service) listServiceTasks(kv nats.KeyValue, cluster, name string) ([]TaskRecord, error) {
 	group := serviceTaskGroup(name)
 	all, err := s.listTaskRecords(kv, cluster)
@@ -463,7 +466,7 @@ func (s *Service) listServiceTasks(kv nats.KeyValue, cluster, name string) ([]Ta
 	}
 	out := make([]TaskRecord, 0, len(all))
 	for _, t := range all {
-		if t.Group == group && t.LastStatus != TaskStatusStopped {
+		if t.Group == group && t.LastStatus != TaskStatusStopped && t.DesiredStatus != TaskStatusStopped {
 			out = append(out, t)
 		}
 	}

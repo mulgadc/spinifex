@@ -25,9 +25,10 @@ type controlPlane interface {
 	Register(id identity) error
 	// SubmitTaskState reports a task's RUNNING/STOPPED transition.
 	SubmitTaskState(st bus.TaskState) error
-	// PollAssignments drains this instance's assignment inbox, acking the taskIDs
-	// accepted on the previous poll. Returns the still-pending assignments.
-	PollAssignments(cluster, instance string, ack []string) ([]bus.Assign, error)
+	// PollAssignments drains this instance's assignment + stop inboxes, acking the
+	// assign taskIDs and stop taskIDs accepted on the previous poll. Returns the
+	// still-pending assignments and stop directives.
+	PollAssignments(cluster, instance string, ackAssigns, ackStops []string) ([]bus.Assign, []bus.StopDirective, error)
 }
 
 // gatewayControlPlane implements controlPlane over the SigV4 ECS gateway client.
@@ -111,19 +112,24 @@ func (g *gatewayControlPlane) SubmitTaskState(st bus.TaskState) error {
 	return nil
 }
 
-func (g *gatewayControlPlane) PollAssignments(cluster, instance string, ack []string) ([]bus.Assign, error) {
-	in := &handlers_ecs.PollAssignmentsInput{Cluster: cluster, ContainerInstance: instance, AckTaskIDs: ack}
+func (g *gatewayControlPlane) PollAssignments(cluster, instance string, ackAssigns, ackStops []string) ([]bus.Assign, []bus.StopDirective, error) {
+	in := &handlers_ecs.PollAssignmentsInput{
+		Cluster:           cluster,
+		ContainerInstance: instance,
+		AckTaskIDs:        ackAssigns,
+		AckStopIDs:        ackStops,
+	}
 	body, err := json.Marshal(in)
 	if err != nil {
-		return nil, fmt.Errorf("marshal poll: %w", err)
+		return nil, nil, fmt.Errorf("marshal poll: %w", err)
 	}
 	resp, err := g.client.Call("PollAssignments", body)
 	if err != nil {
-		return nil, fmt.Errorf("poll: %w", err)
+		return nil, nil, fmt.Errorf("poll: %w", err)
 	}
 	var out handlers_ecs.PollAssignmentsOutput
 	if err := json.Unmarshal(resp, &out); err != nil {
-		return nil, fmt.Errorf("decode poll: %w", err)
+		return nil, nil, fmt.Errorf("decode poll: %w", err)
 	}
-	return out.Assignments, nil
+	return out.Assignments, out.Stops, nil
 }

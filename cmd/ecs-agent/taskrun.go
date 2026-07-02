@@ -22,29 +22,76 @@ func (a *Agent) pollAssignments(ctx context.Context, dispatched map[string]bool)
 	ticker := time.NewTicker(a.cfg.PollInterval)
 	defer ticker.Stop()
 
-	var ackNext []string
+	stopping := map[string]bool{}
+	var ackAssigns, ackStops []string
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			assigns, err := a.cp.PollAssignments(a.id.ClusterName, a.id.InstanceID, ackNext)
+			assigns, stops, err := a.cp.PollAssignments(a.id.ClusterName, a.id.InstanceID, ackAssigns, ackStops)
 			if err != nil {
 				slog.Warn("ecs-agent: poll assignments failed", "err", err)
 				continue
 			}
-			ackNext = ackNext[:0]
+			// Dispatch stops first so a task stopped in the same poll it was assigned
+			// is never started.
+			ackStops = ackStops[:0]
+			for i := range stops {
+				sd := stops[i]
+				if !stopping[sd.TaskID] {
+					stopping[sd.TaskID] = true
+					slog.Info("ecs-agent: task stop requested", "task", sd.TaskID, "reason", sd.Reason)
+					go a.stopTask(ctx, sd)
+				}
+				ackStops = append(ackStops, sd.TaskID)
+			}
+			ackAssigns = ackAssigns[:0]
 			for i := range assigns {
 				as := assigns[i]
-				if !dispatched[as.TaskID] {
+				if !dispatched[as.TaskID] && !stopping[as.TaskID] {
 					dispatched[as.TaskID] = true
 					slog.Info("ecs-agent: task assigned", "task", as.TaskID, "containers", len(as.Containers))
 					go a.runTask(ctx, &as)
 				}
-				ackNext = append(ackNext, as.TaskID)
+				ackAssigns = append(ackAssigns, as.TaskID)
 			}
 		}
 	}
+}
+
+// stopTask reaps a task's containers on a control-plane stop directive: it lists
+// the runtime's containers, removes the ones labeled with this task (kill +
+// delete, releasing host ports/netns), then reports the task STOPPED with the
+// directive's reason. Idempotent — a task with no live containers still reports
+// STOPPED so the scheduler releases its capacity.
+func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) {
+	if a.runner == nil {
+		return
+	}
+	containers, err := a.runner.List(ctx)
+	if err != nil {
+		slog.Warn("ecs-agent: stop list failed", "task", sd.TaskID, "err", err)
+		return
+	}
+	statuses := make([]bus.ContainerStatus, 0)
+	for _, c := range containers {
+		if c.Labels[labelTaskID] != sd.TaskID {
+			continue
+		}
+		if rerr := a.runner.Remove(ctx, c.ID); rerr != nil {
+			slog.Warn("ecs-agent: stop remove failed", "task", sd.TaskID, "container", c.ID, "err", rerr)
+		}
+		statuses = append(statuses, bus.ContainerStatus{
+			Name: c.Labels[labelContainerName], Status: bus.TaskStatusStopped, ContainerID: c.ID,
+		})
+	}
+	reason := sd.Reason
+	if reason == "" {
+		reason = "Task stopped"
+	}
+	a.reportTaskState(&bus.Assign{TaskID: sd.TaskID}, bus.TaskStatusStopped, reason, statuses)
+	slog.Info("ecs-agent: task reaped", "task", sd.TaskID, "containers", len(statuses))
 }
 
 // runTask pulls each container image, starts the containers, and reports task

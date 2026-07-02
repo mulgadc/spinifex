@@ -81,6 +81,19 @@ func AssignmentKey(cluster, instanceID, taskID string) string {
 	return AssignmentsPrefix(cluster, instanceID) + taskID
 }
 
+// StopsPrefix returns the KV key prefix under which a container instance's pending
+// task-stop directives (its "stop inbox") live. A sibling of assignments/ so it is
+// never picked up when listing tasks or assignments. The agent drains it by
+// polling the gateway; the STOPPED transition removes an entry.
+func StopsPrefix(cluster, instanceID string) string {
+	return fmt.Sprintf("clusters/%s/stops/%s/", cluster, instanceID)
+}
+
+// StopKey returns the KV key for one task's stop directive in an instance inbox.
+func StopKey(cluster, instanceID, taskID string) string {
+	return StopsPrefix(cluster, instanceID) + taskID
+}
+
 // ServicesPrefix returns the KV key prefix under which all of a cluster's service
 // records live. Used by ListServices to enumerate.
 func ServicesPrefix(cluster string) string {

@@ -336,6 +336,17 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 		if instance.MgmtMAC != "" {
 			mgmtTap := MgmtTapName(instance.ID)
+			// Pre-create the mgmt tap owned by the daemon euid, mirroring the
+			// direct-boot branch above. The non-root daemon has no CAP_NET_ADMIN,
+			// so QEMU can only attach a tap it already owns; without this the
+			// disk-boot/restart path fails with /dev/net/tun: Operation not
+			// permitted (blocks stopped-instance restart incl. EKS CP recovery).
+			if m.deps.NetworkPlumber != nil {
+				if err := m.deps.NetworkPlumber.SetupTap(TapSpec{Name: mgmtTap, Bridge: "br-mgmt"}); err != nil {
+					slog.Error("Failed to set up mgmt tap", "tap", mgmtTap, "err", err)
+					return fmt.Errorf("setup mgmt tap: %w", err)
+				}
+			}
 			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 				Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 			})

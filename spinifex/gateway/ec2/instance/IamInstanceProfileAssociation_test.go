@@ -825,3 +825,49 @@ func TestAssociationIDFormat(t *testing.T) {
 	suffix := strings.TrimPrefix(id, "iip-assoc-")
 	assert.NotEmpty(t, suffix, "association ID must carry a non-empty random suffix")
 }
+
+func (f *fakeIAMService) TagUser(_ string, _ *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	return &iam.TagUserOutput{}, nil
+}
+func (f *fakeIAMService) UntagUser(_ string, _ *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	return &iam.UntagUserOutput{}, nil
+}
+func (f *fakeIAMService) ListUserTags(_ string, _ *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	return &iam.ListUserTagsOutput{}, nil
+}
+func (f *fakeIAMService) TagRole(_ string, _ *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
+	return &iam.TagRoleOutput{}, nil
+}
+func (f *fakeIAMService) UntagRole(_ string, _ *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	return &iam.UntagRoleOutput{}, nil
+}
+func (f *fakeIAMService) ListRoleTags(_ string, _ *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
+	return &iam.ListRoleTagsOutput{}, nil
+}
+func (f *fakeIAMService) TagPolicy(_ string, _ *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
+	return &iam.TagPolicyOutput{}, nil
+}
+func (f *fakeIAMService) UntagPolicy(_ string, _ *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
+	return &iam.UntagPolicyOutput{}, nil
+}
+func (f *fakeIAMService) ListPolicyTags(_ string, _ *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
+	return &iam.ListPolicyTagsOutput{}, nil
+}
+func (f *fakeIAMService) TagInstanceProfile(_ string, _ *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
+	return &iam.TagInstanceProfileOutput{}, nil
+}
+func (f *fakeIAMService) UntagInstanceProfile(_ string, _ *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
+	return &iam.UntagInstanceProfileOutput{}, nil
+}
+func (f *fakeIAMService) ListInstanceProfileTags(_ string, _ *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
+	return &iam.ListInstanceProfileTagsOutput{}, nil
+}
+func (f *fakeIAMService) TagOpenIDConnectProvider(_ string, _ *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
+	return &iam.TagOpenIDConnectProviderOutput{}, nil
+}
+func (f *fakeIAMService) UntagOpenIDConnectProvider(_ string, _ *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	return &iam.UntagOpenIDConnectProviderOutput{}, nil
+}
+func (f *fakeIAMService) ListOpenIDConnectProviderTags(_ string, _ *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
+	return &iam.ListOpenIDConnectProviderTagsOutput{}, nil
+}

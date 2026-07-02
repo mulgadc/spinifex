@@ -32,3 +32,30 @@ func DeleteOpenIDConnectProvider(accountID string, input *iam.DeleteOpenIDConnec
 	}
 	return svc.DeleteOpenIDConnectProvider(accountID, input)
 }
+
+func TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProviderInput, svc handlers_iam.IAMService) (*iam.TagOpenIDConnectProviderOutput, error) {
+	if input.OpenIDConnectProviderArn == nil || *input.OpenIDConnectProviderArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Tags) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.TagOpenIDConnectProvider(accountID, input)
+}
+
+func UntagOpenIDConnectProvider(accountID string, input *iam.UntagOpenIDConnectProviderInput, svc handlers_iam.IAMService) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	if input.OpenIDConnectProviderArn == nil || *input.OpenIDConnectProviderArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.TagKeys) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.UntagOpenIDConnectProvider(accountID, input)
+}
+
+func ListOpenIDConnectProviderTags(accountID string, input *iam.ListOpenIDConnectProviderTagsInput, svc handlers_iam.IAMService) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
+	if input.OpenIDConnectProviderArn == nil || *input.OpenIDConnectProviderArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.ListOpenIDConnectProviderTags(accountID, input)
+}

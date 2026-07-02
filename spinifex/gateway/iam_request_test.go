@@ -437,3 +437,49 @@ func TestIAMRequest_ValidationError(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), "MissingParameter")
 }
+
+func (m *flexMockIAMService) TagUser(_ string, _ *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	return &iam.TagUserOutput{}, nil
+}
+func (m *flexMockIAMService) UntagUser(_ string, _ *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	return &iam.UntagUserOutput{}, nil
+}
+func (m *flexMockIAMService) ListUserTags(_ string, _ *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	return &iam.ListUserTagsOutput{}, nil
+}
+func (m *flexMockIAMService) TagRole(_ string, _ *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
+	return &iam.TagRoleOutput{}, nil
+}
+func (m *flexMockIAMService) UntagRole(_ string, _ *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	return &iam.UntagRoleOutput{}, nil
+}
+func (m *flexMockIAMService) ListRoleTags(_ string, _ *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
+	return &iam.ListRoleTagsOutput{}, nil
+}
+func (m *flexMockIAMService) TagPolicy(_ string, _ *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
+	return &iam.TagPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) UntagPolicy(_ string, _ *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
+	return &iam.UntagPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) ListPolicyTags(_ string, _ *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
+	return &iam.ListPolicyTagsOutput{}, nil
+}
+func (m *flexMockIAMService) TagInstanceProfile(_ string, _ *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
+	return &iam.TagInstanceProfileOutput{}, nil
+}
+func (m *flexMockIAMService) UntagInstanceProfile(_ string, _ *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
+	return &iam.UntagInstanceProfileOutput{}, nil
+}
+func (m *flexMockIAMService) ListInstanceProfileTags(_ string, _ *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
+	return &iam.ListInstanceProfileTagsOutput{}, nil
+}
+func (m *flexMockIAMService) TagOpenIDConnectProvider(_ string, _ *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
+	return &iam.TagOpenIDConnectProviderOutput{}, nil
+}
+func (m *flexMockIAMService) UntagOpenIDConnectProvider(_ string, _ *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	return &iam.UntagOpenIDConnectProviderOutput{}, nil
+}
+func (m *flexMockIAMService) ListOpenIDConnectProviderTags(_ string, _ *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
+	return &iam.ListOpenIDConnectProviderTagsOutput{}, nil
+}

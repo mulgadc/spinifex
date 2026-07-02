@@ -72,3 +72,30 @@ func ListUserPolicies(accountID string, input *iam.ListUserPoliciesInput, svc ha
 	}
 	return svc.ListUserPolicies(accountID, input)
 }
+
+func TagUser(accountID string, input *iam.TagUserInput, svc handlers_iam.IAMService) (*iam.TagUserOutput, error) {
+	if input.UserName == nil || *input.UserName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Tags) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.TagUser(accountID, input)
+}
+
+func UntagUser(accountID string, input *iam.UntagUserInput, svc handlers_iam.IAMService) (*iam.UntagUserOutput, error) {
+	if input.UserName == nil || *input.UserName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.TagKeys) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.UntagUser(accountID, input)
+}
+
+func ListUserTags(accountID string, input *iam.ListUserTagsInput, svc handlers_iam.IAMService) (*iam.ListUserTagsOutput, error) {
+	if input.UserName == nil || *input.UserName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.ListUserTags(accountID, input)
+}

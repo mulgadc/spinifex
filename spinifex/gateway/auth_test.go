@@ -2350,3 +2350,49 @@ func TestCheckPolicy_AssumedRole_PassRole_WildcardResource_Allowed(t *testing.T)
 	body, _ := io.ReadAll(resp.Body)
 	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
 }
+
+func (m *mockIAMService) TagUser(_ string, _ *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	return &iam.TagUserOutput{}, nil
+}
+func (m *mockIAMService) UntagUser(_ string, _ *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	return &iam.UntagUserOutput{}, nil
+}
+func (m *mockIAMService) ListUserTags(_ string, _ *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	return &iam.ListUserTagsOutput{}, nil
+}
+func (m *mockIAMService) TagRole(_ string, _ *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
+	return &iam.TagRoleOutput{}, nil
+}
+func (m *mockIAMService) UntagRole(_ string, _ *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	return &iam.UntagRoleOutput{}, nil
+}
+func (m *mockIAMService) ListRoleTags(_ string, _ *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
+	return &iam.ListRoleTagsOutput{}, nil
+}
+func (m *mockIAMService) TagPolicy(_ string, _ *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
+	return &iam.TagPolicyOutput{}, nil
+}
+func (m *mockIAMService) UntagPolicy(_ string, _ *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
+	return &iam.UntagPolicyOutput{}, nil
+}
+func (m *mockIAMService) ListPolicyTags(_ string, _ *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
+	return &iam.ListPolicyTagsOutput{}, nil
+}
+func (m *mockIAMService) TagInstanceProfile(_ string, _ *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
+	return &iam.TagInstanceProfileOutput{}, nil
+}
+func (m *mockIAMService) UntagInstanceProfile(_ string, _ *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
+	return &iam.UntagInstanceProfileOutput{}, nil
+}
+func (m *mockIAMService) ListInstanceProfileTags(_ string, _ *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
+	return &iam.ListInstanceProfileTagsOutput{}, nil
+}
+func (m *mockIAMService) TagOpenIDConnectProvider(_ string, _ *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
+	return &iam.TagOpenIDConnectProviderOutput{}, nil
+}
+func (m *mockIAMService) UntagOpenIDConnectProvider(_ string, _ *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	return &iam.UntagOpenIDConnectProviderOutput{}, nil
+}
+func (m *mockIAMService) ListOpenIDConnectProviderTags(_ string, _ *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
+	return &iam.ListOpenIDConnectProviderTagsOutput{}, nil
+}

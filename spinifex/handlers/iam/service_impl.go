@@ -43,6 +43,9 @@ const (
 	KVBucketGroupsVersion           = 1
 
 	maxAccessKeysPerUser = 2
+	maxTagsPerResource   = 50
+	maxTagKeyLength      = 128
+	maxTagValueLength    = 256
 
 	// LongLivedAccessKeyIDPrefix is the AWS-defined prefix for long-lived IAM access keys.
 	// The access-keys bucket rejects writes with any other prefix to prevent silent privilege escalation.
@@ -230,6 +233,81 @@ func copyTags(tags []*iam.Tag) []Tag {
 	return out
 }
 
+// tagsToSDK converts stored Tags into the SDK shape.
+func tagsToSDK(tags []Tag) []*iam.Tag {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]*iam.Tag, 0, len(tags))
+	for _, t := range tags {
+		out = append(out, &iam.Tag{Key: aws.String(t.Key), Value: aws.String(t.Value)})
+	}
+	return out
+}
+
+// validateTags enforces the AWS IAM tag limits on request input: at most 50
+// tags, key length 1-128, value length 0-256, no duplicate keys.
+func validateTags(tags []*iam.Tag) error {
+	if len(tags) > maxTagsPerResource {
+		return errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		if tag == nil || tag.Key == nil {
+			return errors.New(awserrors.ErrorIAMInvalidInput)
+		}
+		key := *tag.Key
+		if len(key) < 1 || len(key) > maxTagKeyLength {
+			return errors.New(awserrors.ErrorIAMInvalidInput)
+		}
+		if tag.Value != nil && len(*tag.Value) > maxTagValueLength {
+			return errors.New(awserrors.ErrorIAMInvalidInput)
+		}
+		if _, dup := seen[key]; dup {
+			return errors.New(awserrors.ErrorIAMInvalidInput)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+// mergeTags upserts add into existing by key, matching AWS semantics: a
+// repeated key overwrites in place, new keys append in input order.
+func mergeTags(existing []Tag, add []*iam.Tag) []Tag {
+	out := slices.Clone(existing)
+	for _, tag := range add {
+		if tag.Key == nil {
+			continue
+		}
+		next := Tag{Key: *tag.Key, Value: aws.StringValue(tag.Value)}
+		idx := slices.IndexFunc(out, func(t Tag) bool { return t.Key == next.Key })
+		if idx >= 0 {
+			out[idx] = next
+		} else {
+			out = append(out, next)
+		}
+	}
+	return out
+}
+
+// removeTagKeys drops the named keys from existing; unknown keys are
+// silently ignored, matching AWS.
+func removeTagKeys(existing []Tag, keys []*string) []Tag {
+	drop := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		if k != nil {
+			drop[*k] = struct{}{}
+		}
+	}
+	out := make([]Tag, 0, len(existing))
+	for _, t := range existing {
+		if _, gone := drop[t.Key]; !gone {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // User CRUD
 // ---------------------------------------------------------------------------
@@ -308,6 +386,7 @@ func (s *IAMServiceImpl) GetUser(accountID string, input *iam.GetUserInput) (*ia
 			Arn:        aws.String(user.ARN),
 			Path:       aws.String(user.Path),
 			CreateDate: aws.Time(createdAt),
+			Tags:       tagsToSDK(user.Tags),
 		},
 	}, nil
 }
@@ -1391,6 +1470,139 @@ func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserP
 
 	return &iam.ListUserPoliciesOutput{
 		PolicyNames: names,
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// User + policy tagging
+// ---------------------------------------------------------------------------
+
+// TagUser upserts tags on a user. Blind read-modify-write Put like the other
+// user writers (no CAS).
+func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
+	userName := *input.UserName
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := mergeTags(user.Tags, input.Tags)
+	if len(merged) > maxTagsPerResource {
+		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	user.Tags = merged
+
+	data, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+	if _, err := s.usersBucket.Put(accountID+"."+userName, data); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM user tagged", "accountID", accountID, "userName", userName)
+	return &iam.TagUserOutput{}, nil
+}
+
+// UntagUser removes the named tag keys from a user; unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	userName := *input.UserName
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	user.Tags = removeTagKeys(user.Tags, input.TagKeys)
+
+	data, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+	if _, err := s.usersBucket.Put(accountID+"."+userName, data); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM user untagged", "accountID", accountID, "userName", userName)
+	return &iam.UntagUserOutput{}, nil
+}
+
+// ListUserTags returns a user's tags. Pagination is not implemented:
+// IsTruncated is always false.
+func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	user, err := s.getUser(accountID, *input.UserName)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListUserTagsOutput{
+		Tags:        tagsToSDK(user.Tags),
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
+// TagPolicy upserts tags on a customer-managed policy, resolved by ARN.
+func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := mergeTags(policy.Tags, input.Tags)
+	if len(merged) > maxTagsPerResource {
+		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	policy.Tags = merged
+
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return nil, fmt.Errorf("marshal policy: %w", err)
+	}
+	if _, err := s.policiesBucket.Put(accountID+"."+policy.PolicyName, data); err != nil {
+		return nil, fmt.Errorf("update policy: %w", err)
+	}
+
+	slog.Info("IAM policy tagged", "accountID", accountID, "policyName", policy.PolicyName)
+	return &iam.TagPolicyOutput{}, nil
+}
+
+// UntagPolicy removes the named tag keys from a policy; unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+
+	policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)
+
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return nil, fmt.Errorf("marshal policy: %w", err)
+	}
+	if _, err := s.policiesBucket.Put(accountID+"."+policy.PolicyName, data); err != nil {
+		return nil, fmt.Errorf("update policy: %w", err)
+	}
+
+	slog.Info("IAM policy untagged", "accountID", accountID, "policyName", policy.PolicyName)
+	return &iam.UntagPolicyOutput{}, nil
+}
+
+// ListPolicyTags returns a policy's tags. Pagination is not implemented:
+// IsTruncated is always false.
+func (s *IAMServiceImpl) ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListPolicyTagsOutput{
+		Tags:        tagsToSDK(policy.Tags),
 		IsTruncated: aws.Bool(false),
 	}, nil
 }

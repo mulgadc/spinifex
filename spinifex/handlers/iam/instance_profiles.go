@@ -290,6 +290,73 @@ func parseInstanceProfileARN(arn string) (accountID, name string, err error) {
 	return parts[4], name, nil
 }
 
+// TagInstanceProfile upserts tags on an instance profile. Blind
+// read-modify-write Put like the other instance-profile writers (no CAS).
+func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
+	profileName := *input.InstanceProfileName
+	profile, err := s.getInstanceProfile(accountID, profileName)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := mergeTags(profile.Tags, input.Tags)
+	if len(merged) > maxTagsPerResource {
+		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	profile.Tags = merged
+
+	data, err := json.Marshal(profile)
+	if err != nil {
+		return nil, fmt.Errorf("marshal instance profile: %w", err)
+	}
+	if _, err := s.instanceProfilesBucket.Put(accountID+"."+profileName, data); err != nil {
+		return nil, fmt.Errorf("update instance profile: %w", err)
+	}
+
+	slog.Info("IAM instance profile tagged", "accountID", accountID, "instanceProfileName", profileName)
+	return &iam.TagInstanceProfileOutput{}, nil
+}
+
+// UntagInstanceProfile removes the named tag keys from an instance profile;
+// unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
+	profileName := *input.InstanceProfileName
+	profile, err := s.getInstanceProfile(accountID, profileName)
+	if err != nil {
+		return nil, err
+	}
+
+	profile.Tags = removeTagKeys(profile.Tags, input.TagKeys)
+
+	data, err := json.Marshal(profile)
+	if err != nil {
+		return nil, fmt.Errorf("marshal instance profile: %w", err)
+	}
+	if _, err := s.instanceProfilesBucket.Put(accountID+"."+profileName, data); err != nil {
+		return nil, fmt.Errorf("update instance profile: %w", err)
+	}
+
+	slog.Info("IAM instance profile untagged", "accountID", accountID, "instanceProfileName", profileName)
+	return &iam.UntagInstanceProfileOutput{}, nil
+}
+
+// ListInstanceProfileTags returns an instance profile's tags. Pagination is
+// not implemented: IsTruncated is always false.
+func (s *IAMServiceImpl) ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
+	profile, err := s.getInstanceProfile(accountID, *input.InstanceProfileName)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListInstanceProfileTagsOutput{
+		Tags:        tagsToSDK(profile.Tags),
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
 func (s *IAMServiceImpl) getInstanceProfile(accountID, profileName string) (*InstanceProfile, error) {
 	entry, err := s.instanceProfilesBucket.Get(accountID + "." + profileName)
 	if err != nil {

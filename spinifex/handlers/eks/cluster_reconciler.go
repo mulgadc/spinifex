@@ -421,7 +421,8 @@ func (r *ClusterReconciler) maybeRecoverControlPlane(ctx context.Context, meta *
 		r.restartAttempts = 0
 		return
 	}
-	if r.cpControl == nil || meta.ControlPlaneInstanceID == "" {
+	members := cpMemberInstanceIDs(meta)
+	if r.cpControl == nil || len(members) == 0 {
 		return
 	}
 	now := time.Now()
@@ -437,31 +438,65 @@ func (r *ClusterReconciler) maybeRecoverControlPlane(ctx context.Context, meta *
 	if !r.lastRestartAt.IsZero() && now.Sub(r.lastRestartAt) < r.restartBackoff {
 		return
 	}
-	instanceID := meta.ControlPlaneInstanceID
-	state, err := r.cpControl.InstanceState(ctx, instanceID)
-	if err != nil {
-		slog.Warn("ClusterReconciler: CP instance state query failed",
-			"cluster", r.clusterName, "instanceId", instanceID, "err", err)
+
+	// Collect every CP member currently restartable (stopped/error). An HA
+	// control plane needs etcd quorum, so recovering only the primary can leave
+	// the apiserver down (quorum 1/3); restart all wedged members in one pass. A
+	// per-member state query failure logs and skips that member, not the rest.
+	var restartable []string
+	for _, id := range members {
+		state, err := r.cpControl.InstanceState(ctx, id)
+		if err != nil {
+			slog.Warn("ClusterReconciler: CP instance state query failed",
+				"cluster", r.clusterName, "instanceId", id, "err", err)
+			continue
+		}
+		if cpRestartable(state) {
+			restartable = append(restartable, id)
+		}
+	}
+	if len(restartable) == 0 {
+		// Members are running (VM-level) but the cluster is still unhealthy — a
+		// restart won't fix wedged etcd; leave degraded for Phase-2 snapshot restore.
 		return
 	}
-	if !cpRestartable(state) {
-		// A running-but-unhealthy CP (e.g. wedged etcd) is not fixed by a
-		// restart; leave it degraded for Phase-2 snapshot restore.
-		return
-	}
+
 	r.lastRestartAt = now
 	r.restartAttempts++
-	slog.Warn("ClusterReconciler: restarting wedged control plane in place",
-		"cluster", r.clusterName, "instanceId", instanceID, "state", state,
-		"attempt", r.restartAttempts, "issue", issue)
-	if err := r.cpControl.StartInstance(ctx, instanceID); err != nil {
-		slog.Warn("ClusterReconciler: CP restart failed",
-			"cluster", r.clusterName, "instanceId", instanceID,
-			"attempt", r.restartAttempts, "err", err)
-		return
+	for _, id := range restartable {
+		slog.Warn("ClusterReconciler: restarting wedged control-plane member in place",
+			"cluster", r.clusterName, "instanceId", id,
+			"attempt", r.restartAttempts, "members", len(members), "issue", issue)
+		if err := r.cpControl.StartInstance(ctx, id); err != nil {
+			slog.Warn("ClusterReconciler: CP restart failed",
+				"cluster", r.clusterName, "instanceId", id,
+				"attempt", r.restartAttempts, "err", err)
+			continue
+		}
+		slog.Info("ClusterReconciler: control-plane restart issued",
+			"cluster", r.clusterName, "instanceId", id, "attempt", r.restartAttempts)
 	}
-	slog.Info("ClusterReconciler: control-plane restart issued",
-		"cluster", r.clusterName, "instanceId", instanceID, "attempt", r.restartAttempts)
+}
+
+// cpMemberInstanceIDs returns every control-plane member instance ID from the
+// cluster meta. HA clusters list all servers in ControlPlaneNodes; older or
+// single-CP clusters only carry the scalar ControlPlaneInstanceID.
+func cpMemberInstanceIDs(meta *ClusterMeta) []string {
+	if len(meta.ControlPlaneNodes) > 0 {
+		ids := make([]string, 0, len(meta.ControlPlaneNodes))
+		for _, n := range meta.ControlPlaneNodes {
+			if n.InstanceID != "" {
+				ids = append(ids, n.InstanceID)
+			}
+		}
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+	if meta.ControlPlaneInstanceID != "" {
+		return []string{meta.ControlPlaneInstanceID}
+	}
+	return nil
 }
 
 // cpRestartable reports whether an in-place StartInstance can plausibly recover a

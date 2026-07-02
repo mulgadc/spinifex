@@ -37,6 +37,16 @@ func metaWithCP(id string) *ClusterMeta {
 	return &ClusterMeta{Name: "alpha", ControlPlaneInstanceID: id}
 }
 
+// metaWithCPNodes builds an HA cluster meta whose ControlPlaneNodes lists every
+// member; the scalar ControlPlaneInstanceID mirrors the primary ([0]).
+func metaWithCPNodes(ids ...string) *ClusterMeta {
+	nodes := make([]ControlPlaneNode, 0, len(ids))
+	for _, id := range ids {
+		nodes = append(nodes, ControlPlaneNode{InstanceID: id})
+	}
+	return &ClusterMeta{Name: "alpha", ControlPlaneInstanceID: ids[0], ControlPlaneNodes: nodes}
+}
+
 // newRecoveryReconciler returns a reconciler wired with the given CP control and
 // default restart policy (2m grace/backoff, 3 attempts).
 func newRecoveryReconciler(t *testing.T, cp CPInstanceControl) *ClusterReconciler {
@@ -78,6 +88,18 @@ func TestMaybeRecoverCP_RestartsStoppedCPAfterGrace(t *testing.T) {
 	assert.Equal(t, 1, cp.startCalls, "stopped CP past grace is restarted")
 	assert.Equal(t, "i-cp", cp.lastStarted)
 	assert.Equal(t, 1, r.restartAttempts)
+	assert.False(t, r.lastRestartAt.IsZero())
+}
+
+func TestMaybeRecoverCP_RestartsAllHAMembersAfterGrace(t *testing.T) {
+	cp := &fakeCPControl{state: "stopped"}
+	r := newRecoveryReconciler(t, cp)
+	r.degradedSince = time.Now().Add(-10 * time.Minute)
+
+	r.maybeRecoverControlPlane(context.Background(), metaWithCPNodes("i-cp0", "i-cp1", "i-cp2"), "stale")
+
+	assert.Equal(t, 3, cp.startCalls, "every stopped HA member is restarted, not just the primary")
+	assert.Equal(t, 1, r.restartAttempts, "one recovery pass counts as a single attempt")
 	assert.False(t, r.lastRestartAt.IsZero())
 }
 

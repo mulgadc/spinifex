@@ -155,10 +155,10 @@ Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` 
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-key-pair` | `--key-name`, `--key-type` (rsa/ed25519) | `--key-format`, `--tag-specifications`, `--dry-run` | **DONE** |
+| `create-key-pair` | `--key-name`, `--key-type` (rsa/ed25519), `--tag-specifications` | `--key-format`, `--dry-run` | **DONE** |
 | `describe-key-pairs` | `--key-names`, `--key-pair-ids`, `--filters` (key-pair-id, key-name, fingerprint, tag:*) | `--max-results`, `--dry-run` | **DONE** |
 | `delete-key-pair` | `--key-name`, `--key-pair-id` | `--dry-run` | **DONE** |
-| `import-key-pair` | `--key-name`, `--public-key-material` | `--tag-specifications`, `--dry-run` | **DONE** |
+| `import-key-pair` | `--key-name`, `--public-key-material`, `--tag-specifications` | `--dry-run` | **DONE** |
 
 ### EC2 — AMI Images
 
@@ -181,7 +181,7 @@ Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
 | `describe-volumes` | `--volume-ids`, `--filters` (volume-id, status, size, volume-type, attachment.instance-id, attachment.status, attachment.device, availability-zone, tag:*), persisted `DeleteOnTermination` | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
-| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3), `--snapshot-id` | `--iops` (hardcoded 3000), `--encrypted` (hardcoded false), `--throughput`, `--tag-specifications` | **DONE** |
+| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3), `--snapshot-id`, `--tag-specifications` | `--iops` (hardcoded 3000), `--encrypted` (hardcoded false), `--throughput` | **DONE** |
 | `delete-volume` | `--volume-id` | `--dry-run` | **DONE** |
 | `modify-volume` | `--volume-id`, `--size`, `--volume-type`, `--iops` | `--throughput`, `--dry-run`, `--multi-attach-enabled` | **DONE** |
 | `attach-volume` | `--volume-id`, `--instance-id`, `--device` (auto-assigns `/dev/sd[f-p]`) | `--dry-run` | **DONE** |
@@ -293,7 +293,7 @@ KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on 
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-route-table` | `--vpc-id` | `--tag-specifications`, `--dry-run` | **DONE** |
+| `create-route-table` | `--vpc-id`, `--tag-specifications` | `--dry-run` | **DONE** |
 | `delete-route-table` | `--route-table-id` | `--dry-run` | **DONE** |
 | `describe-route-tables` | `--route-table-ids`, `--filters` (vpc-id, route-table-id, association.main, association.route-table-association-id, association.subnet-id, route.destination-cidr-block, route.gateway-id) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `create-route` | `--route-table-id`, `--destination-cidr-block`, `--gateway-id`, `--nat-gateway-id` | `--egress-only-internet-gateway-id`, `--vpc-peering-connection-id`, `--dry-run` | **DONE** |
@@ -336,7 +336,7 @@ EIP commands are only registered when an external IPAM pool is configured.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-nat-gateway` | `--subnet-id`, `--allocation-id` | `--connectivity-type`, `--tag-specifications`, `--dry-run` | **DONE** |
+| `create-nat-gateway` | `--subnet-id`, `--allocation-id`, `--tag-specifications` | `--connectivity-type`, `--dry-run` | **DONE** |
 | `delete-nat-gateway` | `--nat-gateway-id` | `--dry-run` | **DONE** |
 | `describe-nat-gateways` | `--nat-gateway-ids`, `--filters` (vpc-id, state) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `assign-private-nat-gateway-address` | — | `--nat-gateway-id`, `--private-ip-addresses` | **NOT STARTED** |
@@ -346,9 +346,9 @@ EIP commands are only registered when an external IPAM pool is configured.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-placement-group` | `--group-name`, `--strategy` (spread/cluster) | `--partition-count`, `--spread-level`, `--tag-specifications`, `--dry-run` | **DONE** |
+| `create-placement-group` | `--group-name`, `--strategy` (spread/cluster), `--tag-specifications` | `--partition-count`, `--spread-level`, `--dry-run` | **DONE** |
 | `delete-placement-group` | `--group-name` | `--dry-run` | **DONE** |
-| `describe-placement-groups` | `--group-names`, `--group-ids`, `--filters` (strategy, state, spread-level, group-name) | `--dry-run` | **DONE** |
+| `describe-placement-groups` | `--group-names`, `--group-ids`, `--filters` (strategy, state, spread-level, group-name, tag:*, tag-key, tag-value) | `--dry-run` | **DONE** |
 
 ### EC2 — VPC Peering
 

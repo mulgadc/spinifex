@@ -303,6 +303,25 @@ func TestService_StopTask_NotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
+// StopTask on a never-placed task (no container instance) force-stops it directly:
+// no agent can reap it, so the control plane transitions it to STOPPED immediately.
+func TestService_StopTask_UnplacedForceStops(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	task := &TaskRecord{
+		TaskID: "t-np", Cluster: "web",
+		LastStatus: TaskStatusPending, DesiredStatus: TaskStatusRunning,
+	}
+	require.NoError(t, putJSON(kv, TaskKey("web", "t-np"), task))
+
+	out, err := svc.StopTask(&ecs.StopTaskInput{
+		Cluster: aws.String("web"), Task: aws.String("t-np"), Reason: aws.String("cancel"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, TaskStatusStopped, aws.StringValue(out.Task.LastStatus))
+	assert.Equal(t, TaskStatusStopped, aws.StringValue(out.Task.DesiredStatus))
+	assert.Equal(t, "cancel", aws.StringValue(out.Task.StoppedReason))
+}
+
 // A service with a target group registers each task's ENI IP on RUNNING and
 // deregisters it on STOPPED (ecs-v1.md Q8, single-writer).
 func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) {

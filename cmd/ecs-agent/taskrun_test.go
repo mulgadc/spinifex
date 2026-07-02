@@ -271,6 +271,52 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	}
 }
 
+// stopTask with no runtime is a no-op: nothing to reap, no state reported.
+func TestStopTask_NilRunnerNoOp(t *testing.T) {
+	cp := &fakeCP{}
+	a := newAgent(config{}, testIdentity(), cp, nil, nil, nil)
+	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "x"})
+	if len(cp.taskStates()) != 0 {
+		t.Fatalf("nil runner should report no state, got %+v", cp.taskStates())
+	}
+}
+
+// A List failure aborts the reap without reporting a (false) STOPPED state.
+func TestStopTask_ListErrorNoReport(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{ListErr: errors.New("list boom")}
+	a := newRunAgent(cp, rt)
+	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "x"})
+	if len(cp.taskStates()) != 0 {
+		t.Fatalf("list error should report no state, got %+v", cp.taskStates())
+	}
+}
+
+// A directive with no reason reaps the matching container and reports STOPPED with
+// the default reason.
+func TestStopTask_EmptyReasonReapsWithDefault(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{{
+		ID: "t-001-web",
+		Labels: map[string]string{
+			"mulga.ecs.taskID": "t-001", "mulga.ecs.containerName": "web",
+		},
+	}}}
+	a := newRunAgent(cp, rt)
+	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001"})
+
+	if len(rt.Removed) != 1 || rt.Removed[0] != "t-001-web" {
+		t.Fatalf("want container t-001-web reaped, got %+v", rt.Removed)
+	}
+	st := cp.taskStates()
+	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
+		t.Fatalf("want one STOPPED report, got %+v", st)
+	}
+	if st[0].Reason != "Task stopped" {
+		t.Errorf("want default reason %q, got %q", "Task stopped", st[0].Reason)
+	}
+}
+
 func countStatus(states []bus.TaskState, taskID, status string) int {
 	n := 0
 	for _, st := range states {

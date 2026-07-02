@@ -3,6 +3,7 @@ package utils
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -56,18 +57,22 @@ func UpdateKVRecordTags[R any](kv nats.KeyValue, accountID, resourceID string, m
 		if errors.Is(err, nats.ErrKeyNotFound) {
 			return nil
 		}
+		slog.Error("UpdateKVRecordTags: KV read failed", "key", key, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	var rec R
 	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		slog.Error("UpdateKVRecordTags: record unmarshal failed", "key", key, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	mut(&rec)
 	data, err := json.Marshal(&rec)
 	if err != nil {
+		slog.Error("UpdateKVRecordTags: record marshal failed", "key", key, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := kv.Put(key, data); err != nil {
+		slog.Error("UpdateKVRecordTags: KV write failed", "key", key, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil

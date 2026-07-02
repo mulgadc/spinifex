@@ -87,7 +87,7 @@ func TestIAMExamplesContract(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 33, covered, "covered IAM examples")
+	assert.Equal(t, 39, covered, "covered IAM examples")
 }
 
 func loadIAMExamples(t *testing.T) iamExamplesFile {
@@ -269,6 +269,14 @@ func (svc *echoIAMService) ListGroupsForUser(accountID string, input *iam.ListGr
 	return echoIAMCall[iam.ListGroupsForUserInput, iam.ListGroupsForUserOutput](svc, accountID, input)
 }
 
+func (svc *echoIAMService) ListRoleTags(accountID string, input *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
+	return echoIAMCall[iam.ListRoleTagsInput, iam.ListRoleTagsOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) ListUserTags(accountID string, input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	return echoIAMCall[iam.ListUserTagsInput, iam.ListUserTagsOutput](svc, accountID, input)
+}
+
 func (svc *echoIAMService) ListUsers(accountID string, input *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
 	return echoIAMCall[iam.ListUsersInput, iam.ListUsersOutput](svc, accountID, input)
 }
@@ -291,6 +299,22 @@ func (svc *echoIAMService) RemoveRoleFromInstanceProfile(accountID string, input
 
 func (svc *echoIAMService) RemoveUserFromGroup(accountID string, input *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
 	return echoIAMCall[iam.RemoveUserFromGroupInput, iam.RemoveUserFromGroupOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) TagRole(accountID string, input *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
+	return echoIAMCall[iam.TagRoleInput, iam.TagRoleOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	return echoIAMCall[iam.TagUserInput, iam.TagUserOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) UntagRole(accountID string, input *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	return echoIAMCall[iam.UntagRoleInput, iam.UntagRoleOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) UntagUser(accountID string, input *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	return echoIAMCall[iam.UntagUserInput, iam.UntagUserOutput](svc, accountID, input)
 }
 
 func (svc *echoIAMService) UpdateAccessKey(accountID string, input *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error) {

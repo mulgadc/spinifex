@@ -79,3 +79,30 @@ func ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPolic
 	}
 	return svc.ListAttachedUserPolicies(accountID, input)
 }
+
+func TagPolicy(accountID string, input *iam.TagPolicyInput, svc handlers_iam.IAMService) (*iam.TagPolicyOutput, error) {
+	if input.PolicyArn == nil || *input.PolicyArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Tags) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.TagPolicy(accountID, input)
+}
+
+func UntagPolicy(accountID string, input *iam.UntagPolicyInput, svc handlers_iam.IAMService) (*iam.UntagPolicyOutput, error) {
+	if input.PolicyArn == nil || *input.PolicyArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.TagKeys) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.UntagPolicy(accountID, input)
+}
+
+func ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput, svc handlers_iam.IAMService) (*iam.ListPolicyTagsOutput, error) {
+	if input.PolicyArn == nil || *input.PolicyArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.ListPolicyTags(accountID, input)
+}

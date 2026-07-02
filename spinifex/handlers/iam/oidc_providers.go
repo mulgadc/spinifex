@@ -229,6 +229,85 @@ func (s *IAMServiceImpl) DeleteOpenIDConnectProvider(accountID string, input *ia
 	return &iam.DeleteOpenIDConnectProviderOutput{}, nil
 }
 
+// TagOpenIDConnectProvider upserts tags on an OIDC provider. Blind
+// read-modify-write Put like the other writers here (no CAS).
+func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
+	arn := aws.StringValue(input.OpenIDConnectProviderArn)
+	record, err := s.getOIDCProvider(accountID, arn)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := mergeTags(record.Tags, input.Tags)
+	if len(merged) > maxTagsPerResource {
+		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	record.Tags = merged
+
+	if err := s.putOIDCProvider(accountID, record); err != nil {
+		return nil, err
+	}
+
+	slog.Info("IAM OIDC provider tagged", "accountID", accountID, "arn", arn)
+	return &iam.TagOpenIDConnectProviderOutput{}, nil
+}
+
+// UntagOpenIDConnectProvider removes the named tag keys from an OIDC provider;
+// unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	arn := aws.StringValue(input.OpenIDConnectProviderArn)
+	record, err := s.getOIDCProvider(accountID, arn)
+	if err != nil {
+		return nil, err
+	}
+
+	record.Tags = removeTagKeys(record.Tags, input.TagKeys)
+
+	if err := s.putOIDCProvider(accountID, record); err != nil {
+		return nil, err
+	}
+
+	slog.Info("IAM OIDC provider untagged", "accountID", accountID, "arn", arn)
+	return &iam.UntagOpenIDConnectProviderOutput{}, nil
+}
+
+// ListOpenIDConnectProviderTags returns an OIDC provider's tags. Pagination is
+// not implemented: IsTruncated is always false.
+func (s *IAMServiceImpl) ListOpenIDConnectProviderTags(accountID string, input *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
+	record, err := s.getOIDCProvider(accountID, aws.StringValue(input.OpenIDConnectProviderArn))
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListOpenIDConnectProviderTagsOutput{
+		Tags:        tagsToSDK(record.Tags),
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
+// putOIDCProvider overwrites an existing provider record, keyed by its issuer
+// URL. The record must have been read from the bucket first.
+func (s *IAMServiceImpl) putOIDCProvider(accountID string, record *OIDCProviderRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal OIDC provider: %w", err)
+	}
+	kv, err := s.js.KeyValue(IAMAccountBucketName(accountID))
+	if err != nil {
+		if errors.Is(err, nats.ErrBucketNotFound) {
+			return errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		return fmt.Errorf("open IAM account bucket: %w", err)
+	}
+	if _, err := kv.Put(OIDCProviderKey(record.Url), data); err != nil {
+		return fmt.Errorf("store OIDC provider: %w", err)
+	}
+	return nil
+}
+
 func (s *IAMServiceImpl) getOIDCProvider(accountID, arn string) (*OIDCProviderRecord, error) {
 	issuer, err := issuerFromOIDCProviderARN(arn)
 	if err != nil {
@@ -253,16 +332,4 @@ func (s *IAMServiceImpl) getOIDCProvider(accountID, arn string) (*OIDCProviderRe
 		return nil, fmt.Errorf("unmarshal OIDC provider: %w", err)
 	}
 	return &record, nil
-}
-
-// tagsToSDK converts stored Tags into the SDK shape.
-func tagsToSDK(tags []Tag) []*iam.Tag {
-	if len(tags) == 0 {
-		return nil
-	}
-	out := make([]*iam.Tag, 0, len(tags))
-	for _, t := range tags {
-		out = append(out, &iam.Tag{Key: aws.String(t.Key), Value: aws.String(t.Value)})
-	}
-	return out
 }

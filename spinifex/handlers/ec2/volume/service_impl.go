@@ -162,6 +162,8 @@ func (s *VolumeServiceImpl) CreateVolume(input *ec2.CreateVolumeInput, accountID
 	slog.Info("CreateVolume", "volumeId", volumeID, "size", size, "type", volumeType,
 		"az", *input.AvailabilityZone, "snapshotId", snapshotID)
 
+	tags := utils.ExtractTags(input.TagSpecifications, "volume")
+
 	// Volume size in bytes for viperblock
 	sizeGiB := utils.SafeInt64ToUint64(size)
 	volumeSizeBytes := sizeGiB * 1024 * 1024 * 1024
@@ -178,6 +180,7 @@ func (s *VolumeServiceImpl) CreateVolume(input *ec2.CreateVolumeInput, accountID
 			VolumeType:       volumeType,
 			IOPS:             iops,
 			SnapshotID:       snapshotID,
+			Tags:             tags,
 		},
 	}
 
@@ -246,6 +249,7 @@ func (s *VolumeServiceImpl) CreateVolume(input *ec2.CreateVolumeInput, accountID
 		CreateTime:       aws.Time(now),
 		Iops:             aws.Int64(int64(iops)),
 		Encrypted:        aws.Bool(mkey != nil),
+		Tags:             utils.MapToEC2Tags(tags),
 	}
 
 	if snapshotID != "" {

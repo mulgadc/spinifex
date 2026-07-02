@@ -164,11 +164,13 @@ func (s *KeyServiceImpl) CreateKeyPair(input *ec2.CreateKeyPairInput, accountID 
 
 	// Build response (similar to AWS EC2)
 	keyPairID := utils.GenerateResourceID("key")
+	tags := utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, "key-pair"))
 	output := &ec2.CreateKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyMaterial:    aws.String(string(privateKeyData)),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
+		Tags:           tags,
 	}
 
 	// Store metadata file (CreateKeyPairOutput without KeyMaterial) for keyPairId lookups
@@ -176,6 +178,7 @@ func (s *KeyServiceImpl) CreateKeyPair(input *ec2.CreateKeyPairInput, accountID 
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
+		Tags:           tags,
 	})
 	if err != nil {
 		slog.Error("Failed to store key pair metadata", "err", err, "keyPairId", keyPairID)
@@ -616,7 +619,7 @@ func (s *KeyServiceImpl) DescribeKeyPairs(input *ec2.DescribeKeyPairsInput, acco
 			KeyFingerprint: metadata.KeyFingerprint,
 			KeyName:        metadata.KeyName,
 			KeyType:        aws.String(keyType),
-			Tags:           []*ec2.Tag{},
+			Tags:           metadata.Tags,
 		}
 
 		// Use S3 object LastModified as CreateTime
@@ -761,11 +764,12 @@ func (s *KeyServiceImpl) ImportKeyPair(input *ec2.ImportKeyPairInput, accountID 
 	keyPairID := utils.GenerateResourceID("key")
 
 	// Build response output
+	tags := utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, "key-pair"))
 	output := &ec2.ImportKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
-		Tags:           []*ec2.Tag{}, // TODO: Implement tag support from input.TagSpecifications
+		Tags:           tags,
 	}
 
 	// Store metadata file (without public key material)
@@ -773,6 +777,7 @@ func (s *KeyServiceImpl) ImportKeyPair(input *ec2.ImportKeyPairInput, accountID 
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
+		Tags:           tags,
 	}
 
 	err = s.storeKeyPairMetadata(accountID, keyPairID, metadataOutput)

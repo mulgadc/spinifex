@@ -97,6 +97,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		RouteTable:       d.routeTableService,
 		PlacementGroup:   handlers_ec2_placementgroup.NewNATSPlacementGroupService(d.natsConn),
 		Scheduler:        handlers_eks.NewNATSHostScheduler(d.natsConn),
+		CPControl:        d.instanceService,
 	}
 
 	// A KV-backed IAM service (sharing the gateway's buckets over NATS) lets EKS

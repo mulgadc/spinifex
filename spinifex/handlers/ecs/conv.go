@@ -82,6 +82,15 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 				Protocol:      aws.StringValue(p.Protocol),
 			})
 		}
+		if lc := c.LogConfiguration; lc != nil {
+			def.LogDriver = aws.StringValue(lc.LogDriver)
+			for k, v := range lc.Options {
+				if def.LogOptions == nil {
+					def.LogOptions = map[string]string{}
+				}
+				def.LogOptions[k] = aws.StringValue(v)
+			}
+		}
 		out = append(out, def)
 	}
 	return out
@@ -115,6 +124,16 @@ func (c ContainerDef) toAWS() *ecs.ContainerDefinition {
 		}
 		cd.PortMappings = append(cd.PortMappings, pm)
 	}
+	if c.LogDriver != "" {
+		lc := &ecs.LogConfiguration{LogDriver: aws.String(c.LogDriver)}
+		if len(c.LogOptions) > 0 {
+			lc.Options = map[string]*string{}
+			for k, v := range c.LogOptions {
+				lc.Options[k] = aws.String(v)
+			}
+		}
+		cd.LogConfiguration = lc
+	}
 	return cd
 }
 
@@ -129,5 +148,6 @@ func (c ContainerDef) toAssignContainer() bus.AssignContainer {
 		Command:      c.Command,
 		Environment:  c.Environment,
 		PortMappings: c.PortMappings,
+		LogDriver:    c.LogDriver,
 	}
 }

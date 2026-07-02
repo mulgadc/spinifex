@@ -65,6 +65,9 @@ type AssignContainer struct {
 	Command      []string          `json:"command,omitempty"`
 	Environment  map[string]string `json:"environment,omitempty"`
 	PortMappings []PortMapping     `json:"portMappings,omitempty"`
+	// LogDriver is the requested container log driver; only json-file is honored
+	// (host-side). Any other value means logs are discarded (warned at register).
+	LogDriver string `json:"logDriver,omitempty"`
 }
 
 // Assign is published on AssignSubject when the scheduler places a task on this
@@ -89,9 +92,13 @@ type Assign struct {
 	// TaskRoleARN is the task's IAM role (from the taskdef); when set, the agent
 	// serves its credentials at 169.254.170.2 under CredID, defaulting CredID to
 	// the taskID when the scheduler leaves it empty.
-	CredID      string    `json:"credId,omitempty"`
-	TaskRoleARN string    `json:"taskRoleArn,omitempty"`
-	AssignedAt  time.Time `json:"assignedAt"`
+	CredID      string `json:"credId,omitempty"`
+	TaskRoleARN string `json:"taskRoleArn,omitempty"`
+	// ExecutionRoleARN is the task's execution role (from the taskdef); when set,
+	// the agent assumes it to authorize ECR image pulls instead of the container-
+	// instance role. Empty falls back to the instance role.
+	ExecutionRoleARN string    `json:"executionRoleArn,omitempty"`
+	AssignedAt       time.Time `json:"assignedAt"`
 }
 
 // ContainerStatus is a single container's reported lifecycle state.

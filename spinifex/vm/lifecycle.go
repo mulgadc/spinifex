@@ -2,6 +2,8 @@ package vm
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -158,17 +160,7 @@ func (m *Manager) launch(instance *VM) error {
 	}
 
 	// Mark boot volumes as "in-use" now that instance is confirmed running.
-	if m.deps.VolumeStateUpdater != nil {
-		instance.EBSRequests.Mu.Lock()
-		for _, ebsReq := range instance.EBSRequests.Requests {
-			if ebsReq.Boot {
-				if err := m.deps.VolumeStateUpdater.UpdateVolumeState(ebsReq.Name, "in-use", instance.ID, ""); err != nil {
-					slog.Error("Failed to update volume state to in-use", "volumeId", ebsReq.Name, "err", err)
-				}
-			}
-		}
-		instance.EBSRequests.Mu.Unlock()
-	}
+	m.markBootVolumesInUse(instance)
 
 	if m.deps.Hooks.OnInstanceUp != nil {
 		// Launch path: per-instance subscribe failures are logged and the
@@ -182,6 +174,26 @@ func (m *Manager) launch(instance *VM) error {
 	}
 
 	return nil
+}
+
+// markBootVolumesInUse re-asserts "in-use" status for an instance's boot
+// volumes once it is confirmed running. Used by the launch path and the
+// daemon-restart reconnect path so both keep volume state consistent with a
+// running instance. Errors are logged, not fatal.
+func (m *Manager) markBootVolumesInUse(instance *VM) {
+	if m.deps.VolumeStateUpdater == nil {
+		return
+	}
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+	for _, ebsReq := range instance.EBSRequests.Requests {
+		if !ebsReq.Boot {
+			continue
+		}
+		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(ebsReq.Name, "in-use", instance.ID, ""); err != nil {
+			slog.Error("Failed to update volume state to in-use", "volumeId", ebsReq.Name, "err", err)
+		}
+	}
 }
 
 const (
@@ -237,12 +249,21 @@ func (m *Manager) startQEMU(instance *VM) error {
 		// the pre-built Config. Only create host-side tap devices for VPC ENIs
 		// so the kernel tap interfaces exist before QEMU opens them.
 		if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-			tapSpec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+			// Primary tap goes on br-imds (so its egress meets the IMDS demux
+			// flows); the bridge must exist before SetupTap can attach to it.
+			if err := m.deps.NetworkPlumber.EnsureIMDSDatapathBridge(); err != nil {
+				slog.Error("Failed to ensure IMDS bridge (direct-boot)", "eni", instance.ENIId, "err", err)
+				return fmt.Errorf("ensure IMDS bridge: %w", err)
+			}
+			tapSpec := IMDSPrimaryTapSpec(instance.ENIId)
 			if err := m.deps.NetworkPlumber.SetupTap(tapSpec); err != nil {
 				slog.Error("Failed to set up tap device (direct-boot)", "eni", instance.ENIId, "err", err)
 				return fmt.Errorf("setup tap device: %w", err)
 			}
-			slog.Info("VPC tap configured (direct-boot)", "tap", tapSpec.Name, "eni", instance.ENIId, "mac", instance.ENIMac)
+			slog.Info("VPC tap configured (direct-boot)", "tap", tapSpec.Name, "bridge", tapSpec.Bridge, "eni", instance.ENIId, "mac", instance.ENIMac)
+			if err := m.attachPrimaryIMDSDatapath(instance); err != nil {
+				return err
+			}
 			for _, extra := range instance.ExtraENIs {
 				extraSpec := VPCTapSpec(extra.ENIID, extra.ENIMac)
 				if err := m.deps.NetworkPlumber.SetupTap(extraSpec); err != nil {
@@ -262,7 +283,13 @@ func (m *Manager) startQEMU(instance *VM) error {
 		}
 	} else {
 		if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-			spec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+			// Primary tap goes on br-imds (so its egress meets the IMDS demux
+			// flows); the bridge must exist before SetupTap can attach to it.
+			if err := m.deps.NetworkPlumber.EnsureIMDSDatapathBridge(); err != nil {
+				slog.Error("Failed to ensure IMDS bridge", "eni", instance.ENIId, "err", err)
+				return fmt.Errorf("ensure IMDS bridge: %w", err)
+			}
+			spec := IMDSPrimaryTapSpec(instance.ENIId)
 			if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 				slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)
 				return fmt.Errorf("setup tap device: %w", err)
@@ -273,7 +300,10 @@ func (m *Manager) startQEMU(instance *VM) error {
 				Value: fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
 			})
 			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", instance.ENIMac))
-			slog.Info("VPC networking configured", "tap", tapName, "eni", instance.ENIId, "mac", instance.ENIMac)
+			slog.Info("VPC networking configured", "tap", tapName, "bridge", spec.Bridge, "eni", instance.ENIId, "mac", instance.ENIMac)
+			if err := m.attachPrimaryIMDSDatapath(instance); err != nil {
+				return err
+			}
 
 			if err := m.setupExtraENINICs(instance); err != nil {
 				return err
@@ -310,6 +340,9 @@ func (m *Manager) startQEMU(instance *VM) error {
 				Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 			})
 			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC))
+			if err := m.appendSystemNetcfgFwCfg(instance); err != nil {
+				return fmt.Errorf("attach system netcfg: %w", err)
+			}
 			slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 		}
 
@@ -562,11 +595,23 @@ func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
 	return client, nil
 }
 
-// qmpHeartbeat sends query-status every 30s. Exits and closes the QMP
-// connection when the instance reaches a terminal or transitional state.
+const (
+	// qmpHeartbeatInterval is the QMP query-status poll period.
+	qmpHeartbeatInterval = 30 * time.Second
+	// QMPMaxConsecutiveFailures is how many back-to-back query-status failures
+	// mark an instance impaired and trigger a process-liveness check (90s of
+	// unresponsiveness). Exported so DescribeInstanceStatus uses the same gate.
+	QMPMaxConsecutiveFailures = 3
+)
+
+// qmpHeartbeat polls query-status every qmpHeartbeatInterval and acts on
+// failures: it tracks consecutive failures, and once they reach
+// QMPMaxConsecutiveFailures it checks process liveness. A dead process triggers
+// crash recovery; an alive-but-wedged QEMU stays impaired for an operator. The
+// goroutine exits and closes the QMP connection on any terminal/transitional state.
 func (m *Manager) qmpHeartbeat(instance *VM) {
 	for {
-		time.Sleep(30 * time.Second)
+		time.Sleep(qmpHeartbeatInterval)
 
 		status := m.Status(instance)
 
@@ -584,11 +629,49 @@ func (m *Manager) qmpHeartbeat(instance *VM) {
 		slog.Debug("QMP heartbeat", "instance", instance.ID)
 		qmpStatus, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{Execute: "query-status"}, instance.ID)
 		if err != nil {
-			slog.Warn("QMP heartbeat failed", "instance", instance.ID, "err", err)
+			failures := m.recordQMPFailure(instance)
+			slog.Warn("QMP heartbeat failed", "instance", instance.ID, "consecutiveFailures", failures, "err", err)
+			if failures < QMPMaxConsecutiveFailures {
+				continue
+			}
+			if !isInstanceProcessRunning(instance) {
+				slog.Error("QEMU process dead and QMP unresponsive, triggering crash recovery",
+					"instance", instance.ID, "consecutiveFailures", failures)
+				m.HandleCrash(instance, fmt.Errorf("qmp unresponsive (%d failures), process dead", failures))
+				return
+			}
+			slog.Error("QEMU process alive but QMP unresponsive", "instance", instance.ID, "consecutiveFailures", failures)
 			continue
 		}
+
+		m.recordQMPSuccess(instance)
 		slog.Debug("QMP status", "instance", instance.ID, "status", string(qmpStatus.Return))
 	}
+}
+
+// recordQMPFailure increments the consecutive QMP failure counter, stamping
+// ImpairedSince when the count first reaches QMPMaxConsecutiveFailures. Returns
+// the new count.
+func (m *Manager) recordQMPFailure(instance *VM) int {
+	var count int
+	m.UpdateState(instance.ID, func(v *VM) {
+		v.Health.QMPConsecutiveFailures++
+		count = v.Health.QMPConsecutiveFailures
+		if count == QMPMaxConsecutiveFailures {
+			v.Health.ImpairedSince = time.Now()
+		}
+	})
+	return count
+}
+
+// recordQMPSuccess clears the failure counter and impaired marker after a
+// healthy poll and records the success time.
+func (m *Manager) recordQMPSuccess(instance *VM) {
+	m.UpdateState(instance.ID, func(v *VM) {
+		v.Health.QMPConsecutiveFailures = 0
+		v.Health.ImpairedSince = time.Time{}
+		v.Health.LastQMPSuccess = time.Now()
+	})
 }
 
 // sendQMPCommand encodes cmd and decodes the response, skipping event messages.
@@ -600,18 +683,30 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 	q.Mu.Lock()
 	defer q.Mu.Unlock()
 
+	// A prior timed-out decode leaves the shared Decoder mid-message, wedging
+	// every subsequent command (a single contention spike would otherwise break
+	// EBS attach/detach on this instance for the VM's lifetime). Redial first.
+	if q.Dead {
+		if err := reconnectQMP(q, instanceID); err != nil {
+			return nil, fmt.Errorf("reconnect wedged QMP client: %w", err)
+		}
+	}
+
 	if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 	defer func() { _ = q.Conn.SetReadDeadline(time.Time{}) }()
 
 	if err := q.Encoder.Encode(cmd); err != nil {
+		q.Dead = true
 		return nil, fmt.Errorf("encode error: %w", err)
 	}
 
 	for {
 		var msg map[string]any
 		if err := q.Decoder.Decode(&msg); err != nil {
+			// The stream position is now unknown; force a reconnect next call.
+			q.Dead = true
 			return nil, fmt.Errorf("decode error: %w", err)
 		}
 		if _, ok := msg["event"]; ok {
@@ -638,9 +733,103 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 	}
 }
 
+// reconnectQMP redials a wedged QMP client's socket and re-runs the
+// qmp_capabilities handshake in place, so the cached *qmp.QMPClient pointer the
+// instance holds stays valid. The caller must hold q.Mu. The capabilities
+// exchange runs inline rather than via sendQMPCommand because the lock is held.
+func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
+	if q.Path == "" {
+		return fmt.Errorf("QMP client has no socket path")
+	}
+	fresh, err := qmp.NewQMPClient(q.Path)
+	if err != nil {
+		return fmt.Errorf("redial QMP socket %s: %w", q.Path, err)
+	}
+	// QEMU starts in Negotiation mode and rejects every command until
+	// qmp_capabilities completes, so run it before swapping the client in.
+	if err := fresh.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		_ = fresh.Conn.Close()
+		return fmt.Errorf("set capabilities deadline: %w", err)
+	}
+	if err := fresh.Encoder.Encode(qmp.QMPCommand{Execute: "qmp_capabilities"}); err != nil {
+		_ = fresh.Conn.Close()
+		return fmt.Errorf("encode qmp_capabilities: %w", err)
+	}
+	for {
+		var msg map[string]any
+		if err := fresh.Decoder.Decode(&msg); err != nil {
+			_ = fresh.Conn.Close()
+			return fmt.Errorf("decode qmp_capabilities: %w", err)
+		}
+		if _, ok := msg["event"]; ok {
+			continue
+		}
+		if errObj, ok := msg["error"].(map[string]any); ok {
+			_ = fresh.Conn.Close()
+			return fmt.Errorf("qmp_capabilities error: %v: %v", errObj["class"], errObj["desc"])
+		}
+		if _, ok := msg["return"]; ok {
+			break
+		}
+	}
+	_ = fresh.Conn.SetReadDeadline(time.Time{})
+
+	if q.Conn != nil {
+		_ = q.Conn.Close()
+	}
+	q.Conn = fresh.Conn
+	q.Decoder = fresh.Decoder
+	q.Encoder = fresh.Encoder
+	q.Dead = false
+	slog.Info("QMP client reconnected after wedged stream", "instance", instanceID, "socket", q.Path)
+	return nil
+}
+
 // EBSHotPlugSlotCount is the fixed number of PCIe root ports pre-allocated for
 // EBS hot-plug, matching the /dev/sd[f-p] range. Cannot grow without QEMU restart.
 const EBSHotPlugSlotCount = 11
+
+// appendSystemNetcfgFwCfg attaches an fw_cfg netcfg blob describing a multi-NIC
+// BootAMI system VM's interfaces so the guest brings them up deterministically
+// by MAC. The EKS control plane is the case: cloud-init on a stock Alpine guest
+// cannot reliably pick the right NIC out of two, so it must be told which is
+// which. The primary data ENI is marked DHCP (OVN serves it; it carries the
+// default route, and bringing it up before cloud-init's network stage is what
+// lets the Ec2 datasource reach IMDS — without it cloud-init brings up the mgmt
+// NIC instead and falls to DataSourceNone). mgmt0 lives on br-mgmt with no DHCP,
+// so its static address is delivered here; it is never the default route. The
+// blob key format matches daemon.buildNetcfgBlob and build/microvm/init.sh.
+// No-op without a mgmt NIC, so single-NIC guests are untouched — cloud-init
+// brings their one NIC up.
+func (m *Manager) appendSystemNetcfgFwCfg(instance *VM) error {
+	if instance.MgmtMAC == "" || instance.MgmtIP == "" {
+		return nil
+	}
+	var b strings.Builder
+	n := 0
+	// Primary data ENI: DHCP (OVN-served) + default route.
+	if instance.ENIMac != "" {
+		fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_DHCP=1\nNIC%d_DEFAULT=1\n", n, instance.ENIMac, n, n)
+		n++
+	}
+	// Management NIC: static, off br-mgmt, never the default route.
+	fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_CIDR=%s/24\nNIC%d_DEFAULT=0\n", n, instance.MgmtMAC, n, instance.MgmtIP, n)
+
+	path := filepath.Join(utils.RuntimeDir(), fmt.Sprintf("fwcfg-%s-netcfg.tmp", instance.ID))
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write system netcfg blob: %w", err)
+	}
+	instance.Config.FwCfg = append(instance.Config.FwCfg, FwCfgEntry{Name: "opt/spinifex/netcfg", File: path})
+	return nil
+}
+
+// ec2SMBIOSUUID derives a deterministic, "ec2"-prefixed system UUID from the
+// instance ID so cloud-init's Ec2 datasource activates (stable across reboot).
+func ec2SMBIOSUUID(instanceID string) string {
+	sum := sha256.Sum256([]byte("ec2-smbios:" + instanceID))
+	h := "ec2" + hex.EncodeToString(sum[:])[3:32]
+	return fmt.Sprintf("%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+}
 
 // buildBaseVMConfig creates a Config with base QEMU settings and two pre-allocated
 // PCIe root-port pools: hotplug-ebs{1..N} for EBS (/dev/sd[f-p]) and
@@ -660,6 +849,11 @@ func buildBaseVMConfig(instanceID, instanceType, pidFile, consoleLogPath, serial
 		Architecture:   architecture,
 		InstanceType:   instanceType,
 		UseUEFI:        bootMode == "uefi" || bootMode == "uefi-preferred",
+
+		// Present EC2-shaped DMI so stock cloud-init activates the Ec2 datasource.
+		SMBIOSUUID:         ec2SMBIOSUUID(instanceID),
+		SMBIOSManufacturer: "Amazon EC2",
+		SMBIOSAssetTag:     "Amazon EC2",
 	}
 
 	for i := 1; i <= EBSHotPlugSlotCount; i++ {
@@ -720,13 +914,6 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			iothreadID := "ioth-os"
 			iothreads = append(iothreads, IOThread{ID: iothreadID})
 			devices = append(devices, BlkDevice(machineType, drive.ID, iothreadID, cpuCount, 1))
-		}
-
-		if v.CloudInit {
-			drive.Format = "raw"
-			drive.If = "virtio"
-			drive.Media = "cdrom"
-			drive.ID = "cloudinit"
 		}
 
 		if v.EFI {

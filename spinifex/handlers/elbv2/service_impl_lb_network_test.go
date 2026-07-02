@@ -126,6 +126,40 @@ func TestSetSecurityGroups_NLBRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
 }
 
+func TestSetSecurityGroups_NLBWithSGs_Replaces(t *testing.T) {
+	svc := setupTestService(t)
+	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:           aws.String("sg-nlb-repl"),
+		Type:           aws.String("network"),
+		SecurityGroups: aws.StringSlice([]string{"sg-orig"}),
+	}, testAccountID)
+	require.NoError(t, err)
+	arn := *out.LoadBalancers[0].LoadBalancerArn
+
+	res, err := svc.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+		LoadBalancerArn: aws.String(arn),
+		SecurityGroups:  aws.StringSlice([]string{"sg-new1", "sg-new2"}),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sg-new1", "sg-new2"}, aws.StringValueSlice(res.SecurityGroupIds))
+
+	rec, err := svc.store.GetLoadBalancerByArn(arn)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sg-new1", "sg-new2"}, rec.SecurityGroups)
+}
+
+func TestSetSecurityGroups_TooManyRejected(t *testing.T) {
+	svc := setupTestService(t)
+	arn := createLBArn(t, svc, "sg-too-many")
+
+	_, err := svc.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+		LoadBalancerArn: aws.String(arn),
+		SecurityGroups:  aws.StringSlice([]string{"sg-1", "sg-2", "sg-3", "sg-4", "sg-5", "sg-6"}),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
+}
+
 func TestSetSecurityGroups_CrossAccount(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "sg-xacct")

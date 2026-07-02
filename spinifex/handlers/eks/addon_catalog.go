@@ -13,27 +13,39 @@ type AddonSpec struct {
 	// RequiresIRSA indicates the add-on needs an IAM role for service-account binding.
 	RequiresIRSA bool
 	Description  string
+	// Hidden keeps the spec out of the unfiltered DescribeAddonVersions listing.
+	// It stays creatable (lookupAddon finds it) — used for internal fixtures that
+	// should not surface as user-installable add-ons.
+	Hidden bool
 }
 
 // addonCatalog is the bundled add-on registry. Keep newest version first per slice.
 var addonCatalog = buildAddonCatalog(
 	newAddonSpec("aws-load-balancer-controller", true,
 		"Provisions ELBv2 load balancers for Kubernetes Service/Ingress resources.",
-		"2.8.1"),
-	newAddonSpec("coredns", false,
-		"Cluster DNS server.",
-		"1.11.1"),
+		"2.11.0"),
 	newAddonSpec("argocd", false,
 		"Declarative GitOps continuous delivery for Kubernetes.",
 		"3.0.23"),
+	newAddonSpec("aws-ebs-csi-driver", true,
+		"Container Storage Interface driver for Amazon EBS (Viperblock) volumes.",
+		"1.40.1"),
 	// spinifex-noop is the delivery-transport fixture: a trivial bundle
 	// (Namespace + ConfigMap) used by the addon e2e to prove stage → render →
 	// auto-deploy → ACTIVE → delete round-trips end-to-end without depending on
-	// the CSI or load-balancer-controller manifests. Not a real workload addon.
-	newAddonSpec("spinifex-noop", false,
+	// the CSI or load-balancer-controller manifests. Not a real workload addon,
+	// so it is hidden from the public DescribeAddonVersions catalog.
+	hiddenAddonSpec(newAddonSpec("spinifex-noop", false,
 		"No-op delivery-transport fixture (Namespace + ConfigMap).",
-		"0.1.0"),
+		"0.1.0")),
 )
+
+// hiddenAddonSpec marks a spec as internal: still creatable, but absent from the
+// unfiltered add-on catalog listing.
+func hiddenAddonSpec(s AddonSpec) AddonSpec {
+	s.Hidden = true
+	return s
+}
 
 // newAddonSpec builds a spec with DefaultVersion = versions[0]. Panics on empty versions.
 func newAddonSpec(name string, requiresIRSA bool, description string, versions ...string) AddonSpec {
@@ -75,18 +87,10 @@ func catalogSpecs() []AddonSpec {
 	for n := range addonCatalog {
 		names = append(names, n)
 	}
-	insertionSortStrings(names)
+	slices.Sort(names)
 	out := make([]AddonSpec, 0, len(names))
 	for _, n := range names {
 		out = append(out, addonCatalog[n])
 	}
 	return out
-}
-
-func insertionSortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
 }

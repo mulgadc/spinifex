@@ -16,8 +16,9 @@ import (
 type PollOpt func(*pollCfg)
 
 type pollCfg struct {
-	timeout  time.Duration
-	interval time.Duration
+	timeout   time.Duration
+	interval  time.Duration
+	skipNodes map[string]struct{}
 }
 
 // WithTimeout overrides the resource-default timeout.
@@ -25,6 +26,19 @@ func WithTimeout(d time.Duration) PollOpt { return func(c *pollCfg) { c.timeout 
 
 // WithPoll overrides the resource-default polling interval.
 func WithPoll(d time.Duration) PollOpt { return func(c *pollCfg) { c.interval = d } }
+
+// WithSkipNodes excludes named nodes from a per-node cluster poll. Used when a
+// test has intentionally stopped a node (e.g. StopNode) and must not poll it.
+func WithSkipNodes(names ...string) PollOpt {
+	return func(c *pollCfg) {
+		if c.skipNodes == nil {
+			c.skipNodes = make(map[string]struct{}, len(names))
+		}
+		for _, n := range names {
+			c.skipNodes[n] = struct{}{}
+		}
+	}
+}
 
 func applyOpts(def pollCfg, opts ...PollOpt) pollCfg {
 	for _, o := range opts {

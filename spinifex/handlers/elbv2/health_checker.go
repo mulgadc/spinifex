@@ -1,7 +1,6 @@
 package handlers_elbv2
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -29,17 +28,6 @@ func newHealthChecker(store *Store) *healthChecker {
 		store:    store,
 		counters: make(map[string]*targetCounter),
 	}
-}
-
-// handleHealthReport unmarshals a JSON-encoded health report and processes it.
-func (hc *healthChecker) handleHealthReport(data []byte) {
-	var report lbagent.HealthReport
-	if err := json.Unmarshal(data, &report); err != nil {
-		slog.Warn("healthChecker: invalid health report", "err", err)
-		return
-	}
-
-	hc.handleHealthReportDirect(report)
 }
 
 // handleHealthReportDirect processes a health report without a JSON round-trip.

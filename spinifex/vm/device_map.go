@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 // pciAddrRegexp extracts the device index from a boot-time QDev path.
@@ -154,8 +155,6 @@ func (m *Manager) UpdateGuestDeviceNames(instance *VM) {
 		var qemuID string
 		if req.Boot {
 			qemuID = "os"
-		} else if req.CloudInit {
-			qemuID = "cloudinit"
 		} else {
 			qemuID = fmt.Sprintf("vdisk-%s", req.Name)
 		}
@@ -260,4 +259,28 @@ func nextAvailableDevice(instance *VM) string {
 	}
 
 	return ""
+}
+
+// freeHotplugEBSPort returns the lowest EBS hot-plug PCIe port
+// (1..EBSHotPlugSlotCount) not already claimed by an attached volume, or 0 when
+// the pool is exhausted. The port is decoupled from the AWS device name:
+// callers (e.g. the EBS CSI driver) supply arbitrary names like /dev/xvdaa that
+// do not map onto the /dev/sd[f-p] range, so the physical port is allocated
+// independently. Accounting is in-memory and authoritative: QEMU reports block
+// devices by id, not by bus, so a live query-block scan cannot tell which port
+// is occupied. Callers must hold the EBSRequests lock; serialize the matching
+// device_add under attachMu so allocation and use are atomic.
+func freeHotplugEBSPort(reqs []types.EBSRequest) int {
+	used := make(map[int]bool, len(reqs))
+	for _, r := range reqs {
+		if r.HotplugPort > 0 {
+			used[r.HotplugPort] = true
+		}
+	}
+	for p := 1; p <= EBSHotPlugSlotCount; p++ {
+		if !used[p] {
+			return p
+		}
+	}
+	return 0
 }

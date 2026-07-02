@@ -157,6 +157,40 @@ func TestMarkFailed_AlreadyTerminated_NoOp(t *testing.T) {
 		"MarkFailed must not transition an already-terminated instance")
 }
 
+// TestCleanupTapDevices_DetachesPrimaryIMDSBeforeTap confirms terminate detaches
+// the primary ENI's per-tap IMDS datapath and then removes its tap, plus every
+// extra ENI tap. The detach is the inverse of the launch-time attach.
+func TestCleanupTapDevices_DetachesPrimaryIMDSBeforeTap(t *testing.T) {
+	plumber := &fakeNetworkPlumber{}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	instance := &VM{
+		ID:        "i-term",
+		ENIId:     "eni-primary",
+		ExtraENIs: []ExtraENI{{ENIID: "eni-extra"}},
+	}
+
+	m.cleanupTapDevices(instance)
+
+	assert.Equal(t, []string{"eni-primary"}, plumber.imdsDetachCalls,
+		"primary ENI IMDS datapath must be detached exactly once")
+	assert.Equal(t,
+		[]string{TapDeviceName("eni-primary"), TapDeviceName("eni-extra")},
+		plumber.cleanupCalls,
+		"primary then extra ENI taps must be cleaned up")
+}
+
+// TestCleanupTapDevices_NoPrimaryENI_NoDetach confirms an instance with no
+// primary ENI neither detaches an IMDS datapath nor cleans up a tap.
+func TestCleanupTapDevices_NoPrimaryENI_NoDetach(t *testing.T) {
+	plumber := &fakeNetworkPlumber{}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+
+	m.cleanupTapDevices(&VM{ID: "i-no-eni"})
+
+	assert.Empty(t, plumber.imdsDetachCalls, "no ENI must not detach an IMDS datapath")
+	assert.Empty(t, plumber.cleanupCalls, "no ENI must not clean up a tap")
+}
+
 // TestStop_DoesNotCallDeleteVolumes locks down the architectural
 // invariant that Stop must never delete volumes — a regression here
 // would silently destroy user data on every stop.
@@ -552,6 +586,30 @@ func TestStopCleanup_InvokesReleaseGPU(t *testing.T) {
 	if len(cleaner.deleteVolumes) != 0 || len(cleaner.releasePublicIP) != 0 || len(cleaner.detachAndDeleteENI) != 0 || len(cleaner.removeFromPlacement) != 0 {
 		t.Fatalf("stopCleanup leaked terminate-only calls: delete=%v pubip=%v eni=%v pg=%v",
 			cleaner.deleteVolumes, cleaner.releasePublicIP, cleaner.detachAndDeleteENI, cleaner.removeFromPlacement)
+	}
+}
+
+// TestStopCleanup_ReservationBoundReleasesAndClears proves a reservation-bound
+// instance returns its slot to the reservation on stop and then detaches the
+// binding, so a later start re-allocates from the general pool and terminate
+// frees there too — never double-counting the reservation.
+func TestStopCleanup_ReservationBoundReleasesAndClears(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	rc := &countingResourceController{}
+	m := NewManagerWithDeps(Deps{Resources: rc})
+	instance := &VM{ID: "i-cr", InstanceType: "t3.micro", CapacityReservationId: "cr-123"}
+	m.Insert(instance)
+
+	m.stopCleanup(instance)
+
+	if got := rc.releasedToCRID; len(got) != 1 || got[0] != "cr-123" {
+		t.Fatalf("stop must release the slot to the reservation: got %v, want [cr-123]", got)
+	}
+	if rc.deallocations != 0 {
+		t.Fatalf("stop must not free a reservation-bound instance to the general pool: deallocations=%d", rc.deallocations)
+	}
+	if instance.CapacityReservationId != "" {
+		t.Fatalf("stop must clear the reservation binding so start uses general capacity: got %q", instance.CapacityReservationId)
 	}
 }
 
@@ -1082,13 +1140,20 @@ func TestClassifyRestoredInstances_StateErrorSkipsRelaunch(t *testing.T) {
 }
 
 // countingResourceController counts how often Allocate fires so a test
-// can prove the restore path skipped its resource-allocation branch.
+// can prove the restore path skipped its resource-allocation branch. It
+// also records general deallocations and reservation releases so stop
+// tests can assert which pool a reservation-bound instance returns to.
 type countingResourceController struct {
-	allocations int
+	allocations    int
+	deallocations  int
+	releasedToCRID []string
 }
 
-func (c *countingResourceController) Allocate(_ string) error         { c.allocations++; return nil }
-func (c *countingResourceController) Deallocate(_ string)             {}
+func (c *countingResourceController) Allocate(_ string) error { c.allocations++; return nil }
+func (c *countingResourceController) Deallocate(_ string)     { c.deallocations++ }
+func (c *countingResourceController) ReleaseToReservation(crID, _ string) {
+	c.releasedToCRID = append(c.releasedToCRID, crID)
+}
 func (c *countingResourceController) CanAllocate(_ string, n int) int { return n }
 
 // signalingStore is a no-op StateStore that fires onSave once per

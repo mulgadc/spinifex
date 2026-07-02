@@ -1,32 +1,31 @@
-# Example: 3-Node EKS behind an HTTPS ALB (ACM TLS) with a load-balanced app
+# Example: EKS HTTPS Ingress via the AWS Load Balancer Controller + ACM
 #
-# The largest EKS workbook, and the one with the clearest payoff. It stands up
-# an HA-shaped cluster sized for a 3-node Spinifex deployment, deploys a demo
-# web app across the workers, and publishes it through an internet-facing ALB
-# that terminates TLS with a certificate held in ACM.
+# Builds on eks-quickstart. Instead of poking a NodePort open on the worker, this
+# workbook serves the Spinifex-themed demo app over HTTPS through an Application
+# Load Balancer that the AWS Load Balancer Controller (LBC) provisions from a
+# Kubernetes Ingress — the same pattern you'd use on AWS EKS.
 #
-# After `apply`, fetch the ALB's public IP (see alb_public_ip_hint) and open
-# https://<ip> in a browser. The page reports which pod answered; refresh and
-# it moves between the three replicas spread across the cluster — a live picture
-# of a multi-node Kubernetes cluster load-balancing behind HTTPS.
+# What it adds over the quickstart:
+#   * Public subnets for the ALB + a NAT gateway, private subnets for the workers.
+#   * The aws-load-balancer-controller addon, installed through the EKS API.
+#   * The cluster tag spinifex.io/managed-ingress = "false", which disables K3s'
+#     built-in traefik/servicelb so the LBC owns ingress (AWS parity).
+#   * A self-signed certificate imported into ACM and attached to the ALB's HTTPS
+#     listener via an Ingress annotation.
 #
-# What it builds:
-#   * VPC with two public subnets (ALB + NAT) and two private subnets (workers).
-#   * A NAT gateway so the private workers can pull the demo container image.
-#   * EKS cluster with BOTH a public endpoint (kubectl from your host) and a
-#     private endpoint (the in-VPC path the workers use to join).
-#   * A managed node group of three workers (t3.large) in the private subnets.
-#   * CoreDNS addon.
-#   * A self-signed cert imported into ACM (Spinifex ACM supports
-#     ImportCertificate, not RequestCertificate), wired to the ALB's HTTPS
-#     listener, which forwards to the workers' NodePort.
-#   * The demo Deployment + NodePort Service, deployed by the Kubernetes
-#     provider, plus the one SG rule that lets the ALB reach the NodePort.
+# The workloads/ module then creates a Deployment, a NodePort Service, and an
+# Ingress (ingressClassName: alb). The LBC reconciles that Ingress into an
+# internet-facing ALB that terminates TLS with the ACM cert and forwards to the
+# workers' NodePort. The cluster's ELB-eligible subnets are injected by Spinifex
+# into the alb IngressClassParams, so the Ingress needs no subnet annotations.
 #
 # Usage:
 #   cd spinifex/docs/terraform-workbooks/eks-https-ingress
 #   export AWS_PROFILE=spinifex
 #   tofu init && tofu apply
+#   # build + push the demo image to the ECR repo this creates (see README),
+#   # then: cd workloads && tofu init && tofu apply
+#   # finally: kubectl get ingress spinifex-demo -o wide  → open https://<address>
 
 terraform {
   required_version = ">= 1.6.0"
@@ -64,19 +63,24 @@ variable "k8s_version" {
 
 variable "node_instance_type" {
   type    = string
-  default = "t3.large"
+  default = "t3.medium"
 }
 
 variable "node_desired_size" {
   type        = number
-  default     = 3
-  description = "Worker count; spread across a 3-node Spinifex deployment for HA"
+  default     = 1
+  description = "Worker count. Use 1 for a single-node demo, or 3 for an HA-shaped cluster."
+
+  validation {
+    condition     = var.node_desired_size == 1 || var.node_desired_size == 3
+    error_message = "node_desired_size must be 1 or 3."
+  }
 }
 
 variable "node_port" {
   type        = number
   default     = 30080
-  description = "NodePort the ALB forwards to and the demo Service is published on"
+  description = "NodePort the demo Service is published on and the ALB forwards to"
 }
 
 variable "cert_common_name" {
@@ -88,12 +92,6 @@ variable "api_public_access_cidr" {
   type        = string
   default     = "0.0.0.0/0"
   description = "CIDR allowed to reach the public Kubernetes API endpoint; tighten in production"
-}
-
-variable "alb_ingress_cidr" {
-  type        = string
-  default     = "0.0.0.0/0"
-  description = "CIDR allowed to reach the ALB HTTPS listener"
 }
 
 variable "spinifex_endpoint" {
@@ -109,12 +107,12 @@ provider "aws" {
   region = var.region
 
   endpoints {
-    ec2                    = var.spinifex_endpoint
-    iam                    = var.spinifex_endpoint
-    sts                    = var.spinifex_endpoint
-    eks                    = var.spinifex_endpoint
-    acm                    = var.spinifex_endpoint
-    elasticloadbalancingv2 = var.spinifex_endpoint
+    ec2 = var.spinifex_endpoint
+    iam = var.spinifex_endpoint
+    sts = var.spinifex_endpoint
+    eks = var.spinifex_endpoint
+    ecr = var.spinifex_endpoint
+    acm = var.spinifex_endpoint
   }
 
   skip_credentials_validation = true
@@ -132,7 +130,7 @@ data "aws_availability_zones" "available" {
 # ---------------------------------------------------------------------------
 
 resource "aws_vpc" "main" {
-  cidr_block           = "10.32.0.0/16"
+  cidr_block           = "10.31.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
 
@@ -151,7 +149,7 @@ resource "aws_internet_gateway" "igw" {
 
 resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.32.1.0/24"
+  cidr_block              = "10.31.1.0/24"
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
 
@@ -162,7 +160,7 @@ resource "aws_subnet" "public_a" {
 
 resource "aws_subnet" "public_b" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.32.2.0/24"
+  cidr_block              = "10.31.2.0/24"
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
 
@@ -173,7 +171,7 @@ resource "aws_subnet" "public_b" {
 
 resource "aws_subnet" "private_a" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.32.11.0/24"
+  cidr_block        = "10.31.11.0/24"
   availability_zone = data.aws_availability_zones.available.names[0]
 
   tags = {
@@ -183,7 +181,7 @@ resource "aws_subnet" "private_a" {
 
 resource "aws_subnet" "private_b" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.32.12.0/24"
+  cidr_block        = "10.31.12.0/24"
   availability_zone = data.aws_availability_zones.available.names[0]
 
   tags = {
@@ -214,9 +212,8 @@ resource "aws_route_table_association" "public_b" {
   route_table_id = aws_route_table.public.id
 }
 
-# NAT gateway gives the private workers outbound internet to pull the demo
-# container image. The workers still *join* the cluster over the in-VPC private
-# endpoint, not through the NAT.
+# NAT gateway gives the private workers outbound internet to pull the demo image
+# from ECR. The workers still join the cluster over the in-VPC private endpoint.
 resource "aws_eip" "nat" {
   domain = "vpc"
 
@@ -313,8 +310,82 @@ resource "aws_iam_role_policy_attachment" "node_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# The AWS Load Balancer Controller runs with the node's instance-profile
+# credentials (Spinifex wires creds at the node level, not IRSA — see the addon
+# block below), so the permissions it needs to manage ALBs must live on the node
+# role. This mirrors the upstream AWSLoadBalancerControllerIAMPolicy, trimmed to
+# the actions an ALB Ingress exercises (Shield/WAF/Cognito are disabled on the
+# controller). Resources are "*" since Spinifex evaluates grants by action.
+# A customer-managed policy + attachment is used (Spinifex implements
+# CreatePolicy/AttachRolePolicy, not inline PutRolePolicy).
+resource "aws_iam_policy" "node_lbc" {
+  name = "${var.cluster_name}-node-lbc"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeTags",
+          "ec2:GetCoipPoolUsage",
+          "ec2:DescribeCoipPools",
+          "ec2:CreateSecurityGroup",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:DeleteSecurityGroup",
+          "elasticloadbalancing:*",
+          "acm:ListCertificates",
+          "acm:DescribeCertificate",
+          "acm:GetCertificate",
+          "iam:CreateServiceLinkedRole",
+          "iam:ListServerCertificates",
+          "iam:GetServerCertificate",
+          "tag:GetResources",
+          "tag:TagResources",
+          "wafv2:GetWebACLForResource",
+          "shield:GetSubscriptionState"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_lbc" {
+  role       = aws_iam_role.node.name
+  policy_arn = aws_iam_policy.node_lbc.arn
+}
+
 # ---------------------------------------------------------------------------
-# EKS cluster — public + private endpoints
+# ECR — repository the workers pull the demo image from
+# ---------------------------------------------------------------------------
+
+resource "aws_ecr_repository" "demo" {
+  name = "spinifex-demo"
+
+  # tofu destroy must remove the repo even though it still holds the pushed demo
+  # image; without this, DeleteRepository (force=false) fails RepositoryNotEmpty.
+  force_delete = true
+}
+
+# ---------------------------------------------------------------------------
+# EKS cluster — public + private endpoints, LBC-owned ingress
+#
+# The spinifex.io/managed-ingress = "false" tag disables K3s' built-in
+# traefik/servicelb so the AWS Load Balancer Controller owns ingress, matching
+# how ingress works on AWS EKS.
 # ---------------------------------------------------------------------------
 
 resource "aws_eks_cluster" "this" {
@@ -337,12 +408,13 @@ resource "aws_eks_cluster" "this" {
   depends_on = [aws_iam_role_policy_attachment.cluster]
 
   tags = {
-    Name = var.cluster_name
+    Name                          = var.cluster_name
+    "spinifex.io/managed-ingress" = "false"
   }
 }
 
 # ---------------------------------------------------------------------------
-# Managed node group — three workers in the private subnets
+# Managed node group — workers in the private subnets
 # ---------------------------------------------------------------------------
 
 resource "aws_eks_node_group" "workers" {
@@ -372,27 +444,32 @@ resource "aws_eks_node_group" "workers" {
 }
 
 # ---------------------------------------------------------------------------
-# Addon — CoreDNS
+# Addon — AWS Load Balancer Controller
+#
+# Spinifex wires the controller's AWS credentials and ELB-eligible subnets at the
+# node level, so no IRSA role or subnet tagging is needed here. addon_version is
+# omitted: the AWS provider demands a v-prefixed version that the catalog rejects,
+# so let Spinifex default to its catalog version.
 # ---------------------------------------------------------------------------
 
-resource "aws_eks_addon" "coredns" {
+resource "aws_eks_addon" "lbc" {
   cluster_name                = aws_eks_cluster.this.name
-  addon_name                  = "coredns"
+  addon_name                  = "aws-load-balancer-controller"
   resolve_conflicts_on_create = "OVERWRITE"
 
-  # addon_version omitted on purpose. Spinifex defaults an unset version to its
-  # catalog default (coredns 1.11.1). The AWS provider also rejects a bare
-  # "1.11.1" (it demands a v-prefixed form) which Spinifex's catalog would in
-  # turn reject — so pinning is a dead end here; let the server choose.
   depends_on = [aws_eks_node_group.workers]
 
   tags = {
-    Name = "${var.cluster_name}-coredns"
+    Name = "${var.cluster_name}-lbc"
   }
 }
 
 # ---------------------------------------------------------------------------
 # TLS — self-signed certificate imported into ACM
+#
+# Spinifex ACM supports ImportCertificate (not RequestCertificate), so the cert
+# is generated locally by the tls provider and imported. The workloads Ingress
+# attaches it to the ALB's HTTPS listener by ARN.
 # ---------------------------------------------------------------------------
 
 resource "tls_private_key" "ingress" {
@@ -429,106 +506,11 @@ resource "aws_acm_certificate" "ingress" {
 }
 
 # ---------------------------------------------------------------------------
-# ALB — internet-facing, HTTPS terminated with the ACM cert
-# ---------------------------------------------------------------------------
-
-resource "aws_security_group" "alb" {
-  name        = "${var.cluster_name}-alb-sg"
-  description = "ALB HTTPS inbound, NodePort to workers"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description = "HTTPS"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = [var.alb_ingress_cidr]
-  }
-
-  egress {
-    description = "All outbound"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.cluster_name}-alb-sg"
-  }
-}
-
-resource "aws_lb" "ingress" {
-  name               = "${var.cluster_name}-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = [aws_subnet.public_a.id, aws_subnet.public_b.id]
-
-  tags = {
-    Name = "${var.cluster_name}-alb"
-  }
-}
-
-resource "aws_lb_target_group" "workers" {
-  name        = "${var.cluster_name}-tg"
-  port        = var.node_port
-  protocol    = "HTTP"
-  target_type = "instance"
-  vpc_id      = aws_vpc.main.id
-
-  health_check {
-    path                = "/"
-    protocol            = "HTTP"
-    matcher             = "200-399"
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-    timeout             = 5
-    interval            = 10
-  }
-
-  tags = {
-    Name = "${var.cluster_name}-tg"
-  }
-}
-
-# Discover the launched workers by their Spinifex EKS tag so the ALB can target
-# them. depends_on the node group: the lookup must run after the workers exist.
-data "aws_instances" "workers" {
-  instance_tags = {
-    "spinifex:eks-cluster" = aws_eks_cluster.this.name
-  }
-
-  depends_on = [aws_eks_node_group.workers]
-}
-
-# count is the known desired size, so it's resolvable at plan time even though
-# the worker IDs themselves are only known after the node group launches.
-resource "aws_lb_target_group_attachment" "workers" {
-  count            = var.node_desired_size
-  target_group_arn = aws_lb_target_group.workers.arn
-  target_id        = data.aws_instances.workers.ids[count.index]
-  port             = var.node_port
-}
-
-resource "aws_lb_listener" "https" {
-  load_balancer_arn = aws_lb.ingress.arn
-  port              = 443
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate.ingress.arn
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.workers.arn
-  }
-}
-
-# ---------------------------------------------------------------------------
 # Let the ALB reach the workers' NodePort
 #
 # Spinifex auto-manages the nodegroup SG and admits only intra-cluster traffic.
-# Look it up by its deterministic name and admit the ALB SG on the NodePort.
+# The LBC-provisioned ALB lives in this VPC, so admit the VPC CIDR on the
+# NodePort. Look the SG up by its deterministic name and add one rule.
 # ---------------------------------------------------------------------------
 
 data "aws_security_group" "nodegroup" {
@@ -545,12 +527,12 @@ data "aws_security_group" "nodegroup" {
   depends_on = [aws_eks_node_group.workers]
 }
 
-resource "aws_vpc_security_group_ingress_rule" "nodeport_from_alb" {
-  security_group_id            = data.aws_security_group.nodegroup.id
-  referenced_security_group_id = aws_security_group.alb.id
-  from_port                    = var.node_port
-  to_port                      = var.node_port
-  ip_protocol                  = "tcp"
+resource "aws_vpc_security_group_ingress_rule" "nodeport_from_vpc" {
+  security_group_id = data.aws_security_group.nodegroup.id
+  cidr_ipv4         = aws_vpc.main.cidr_block
+  from_port         = var.node_port
+  to_port           = var.node_port
+  ip_protocol       = "tcp"
 
   tags = {
     Name = "${var.cluster_name}-alb-nodeport"
@@ -581,16 +563,13 @@ output "certificate_arn" {
   value = aws_acm_certificate.ingress.arn
 }
 
-output "alb_dns_name" {
-  value = aws_lb.ingress.dns_name
+output "ecr_repository_url" {
+  value       = aws_ecr_repository.demo.repository_url
+  description = "Push the demo-app image here, then apply the workloads module"
 }
 
-output "alb_public_ip_hint" {
-  value = "aws elbv2 describe-load-balancers --names ${var.cluster_name}-alb --query 'LoadBalancers[0].AvailabilityZones[].LoadBalancerAddresses[].IpAddress' --output text"
-}
-
-output "demo_url_hint" {
-  value = "Fetch the ALB IP via alb_public_ip_hint, then open https://<that-ip> (self-signed cert: curl -k). Refresh to see different pods answer."
+output "ingress_address_hint" {
+  value = "After applying workloads: kubectl get ingress spinifex-demo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{\"\\n\"}' — then open https://<that-address> (self-signed cert: curl -k)."
 }
 
 output "update_kubeconfig" {

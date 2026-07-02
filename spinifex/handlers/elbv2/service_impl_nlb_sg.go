@@ -17,11 +17,15 @@ func nlbManagedSGName(lbID string) string {
 	return "spinifex-nlb-" + lbID
 }
 
-// lbENIGroups returns the SGs to attach to an LB's data-plane ENIs: the managed SG
-// for NLBs (customer SGs are rejected), or customer SGs for ALBs. Shared by the
-// create-time ENI loop and SetSubnets relaunch so both paths attach the same SG.
+// lbENIGroups returns the SGs to attach to an LB's data-plane ENIs: customer SGs
+// when present (ALBs always, NLBs that were created with SGs), else the managed SG
+// for an NLB created without SGs. Shared by the create-time ENI loop and SetSubnets
+// relaunch so both paths attach the same SG.
 func lbENIGroups(lb *LoadBalancerRecord) []string {
 	if lb.Type == LoadBalancerTypeNetwork {
+		if len(lb.SecurityGroups) > 0 {
+			return lb.SecurityGroups
+		}
 		if lb.NLBManagedSGID != "" {
 			return []string{lb.NLBManagedSGID}
 		}

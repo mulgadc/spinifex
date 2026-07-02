@@ -573,6 +573,28 @@ func TestLiveMemGate(t *testing.T) {
 	})
 }
 
+func TestHostUnderMemoryPressure(t *testing.T) {
+	t.Run("nil reader fails open", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2}
+		assert.False(t, rm.HostUnderMemoryPressure())
+	})
+
+	t.Run("read failure fails open", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { return 0, false }}
+		assert.False(t, rm.HostUnderMemoryPressure())
+	})
+
+	t.Run("available above reserve is healthy", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { return 4, true }}
+		assert.False(t, rm.HostUnderMemoryPressure())
+	})
+
+	t.Run("available below reserve is pressure", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { return 1, true }}
+		assert.True(t, rm.HostUnderMemoryPressure())
+	})
+}
+
 func TestResolveNbdkitCharge(t *testing.T) {
 	t.Run("defaults when unset", func(t *testing.T) {
 		main, aux := resolveNbdkitCharge(func(string) string { return "" })

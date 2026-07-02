@@ -65,13 +65,15 @@ if sudo test -f "$CONFIG_FILE"; then
     trap 'rm -f "$TMP_CFG"' EXIT
     sudo cat "$CONFIG_FILE" > "$TMP_CFG"
 
-    # toml_scalar <section-regex> <key> — grabs first matching scalar from the
-    # first matching section. Strips surrounding quotes if present.
+    # toml_scalar <section-prefix> <key> — grabs first matching scalar from the
+    # first section whose header starts with the literal prefix. Strips quotes.
+    # Literal (index) match, not regex: gawk mangles backslash-escaped dynamic
+    # regexes (^\[nodes\. -> ^[nodes. -> invalid), while mawk does not.
     toml_scalar() {
-        local section_re="$1"
+        local section="$1"
         local key="$2"
-        awk -v sec="$section_re" -v key="$key" '
-            $0 ~ sec            { in_sec=1; next }
+        awk -v sec="$section" -v key="$key" '
+            index($0, sec) == 1 { in_sec=1; next }
             /^\[/               { in_sec=0 }
             in_sec && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
                 sub(/^[^=]*=[[:space:]]*/, "")
@@ -81,14 +83,14 @@ if sudo test -f "$CONFIG_FILE"; then
             }' "$TMP_CFG"
     }
 
-    REGION=$(toml_scalar '^\[nodes\.'        'region')
-    AZ=$(toml_scalar     '^\[nodes\.'        'az')
-    EXT_MODE=$(toml_scalar '^\[network\]'    'external_mode')
-    POOL_START=$(toml_scalar  '^\[\[network\.external_pools\]\]' 'range_start')
-    POOL_END=$(toml_scalar    '^\[\[network\.external_pools\]\]' 'range_end')
-    EXT_GATEWAY=$(toml_scalar '^\[\[network\.external_pools\]\]' 'gateway')
-    EXT_PREFIX=$(toml_scalar  '^\[\[network\.external_pools\]\]' 'prefix_len')
-    OPERATOR_EMAIL=$(toml_scalar '^\[operator\]' 'email')
+    REGION=$(toml_scalar '[nodes.'        'region')
+    AZ=$(toml_scalar     '[nodes.'        'az')
+    EXT_MODE=$(toml_scalar '[network]'    'external_mode')
+    POOL_START=$(toml_scalar  '[[network.external_pools]]' 'range_start')
+    POOL_END=$(toml_scalar    '[[network.external_pools]]' 'range_end')
+    EXT_GATEWAY=$(toml_scalar '[[network.external_pools]]' 'gateway')
+    EXT_PREFIX=$(toml_scalar  '[[network.external_pools]]' 'prefix_len')
+    OPERATOR_EMAIL=$(toml_scalar '[operator]' 'email')
 fi
 
 # Allow operator to override on the command line (e.g. first reset on a box

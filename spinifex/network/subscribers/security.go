@@ -4,10 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/nats-io/nats.go"
 )
+
+// sgHandlerTimeout bounds each SG handler's OVN work so a stuck NB op frees the
+// worker instead of hanging on context.Background forever. Sits above worst-case
+// OVN write under raft lag, well under any pathological hang.
+const sgHandlerTimeout = 10 * time.Second
 
 func (e SGEvent) toSpec() policy.SGSpec {
 	return policy.SGSpec{
@@ -40,7 +46,8 @@ func (s *Subscriber) handleCreateSG(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), sgHandlerTimeout)
+	defer cancel()
 	if err := s.topology.EnsureSGPortGroup(ctx, evt.GroupId); err != nil {
 		slog.Error("subscribers: EnsureSGPortGroup failed", "group_id", evt.GroupId, "err", err)
 		respond(msg, err)
@@ -68,7 +75,9 @@ func (s *Subscriber) handleDeleteSG(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.topology.DeleteSGPortGroup(context.Background(), evt.GroupId); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), sgHandlerTimeout)
+	defer cancel()
+	if err := s.topology.DeleteSGPortGroup(ctx, evt.GroupId); err != nil {
 		slog.Error("subscribers: DeleteSGPortGroup failed", "group_id", evt.GroupId, "err", err)
 		respond(msg, err)
 		return
@@ -85,7 +94,9 @@ func (s *Subscriber) handleUpdateSG(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.sg.UpdateSG(context.Background(), evt.toSpec()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), sgHandlerTimeout)
+	defer cancel()
+	if err := s.sg.UpdateSG(ctx, evt.toSpec()); err != nil {
 		slog.Error("subscribers: UpdateSG failed", "group_id", evt.GroupId, "err", err)
 		respond(msg, err)
 		return

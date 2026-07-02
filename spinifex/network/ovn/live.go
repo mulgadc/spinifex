@@ -7,6 +7,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/model"
@@ -23,6 +25,16 @@ const ensureRefetchInterval = 20 * time.Millisecond
 // ensureWaitTimeoutMS=0 makes the wait-op fail fast so we fall through to the
 // refetch path on conflict.
 const ensureWaitTimeoutMS = 0
+
+// inactivityTimeout is the Echo-probe cadence; a missed probe marks the NB peer
+// dead and triggers reconnect. Must exceed reconnectTimeout (libovsdb invariant).
+const inactivityTimeout = 10 * time.Second
+
+// reconnectTimeout bounds each reconnect attempt's Connect context.
+const reconnectTimeout = 5 * time.Second
+
+// reconnectMaxInterval caps exponential backoff between reconnect attempts.
+const reconnectMaxInterval = 30 * time.Second
 
 // ensureNamedRowOps returns ops that insert createObj unless a row with the same
 // Name exists. The wait-op serialises concurrent writers; `until=!=` is required
@@ -106,7 +118,26 @@ func (c *LiveClient) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to create database model: %w", err)
 	}
 
-	ovn, err := client.NewOVSDBClient(dbModel, client.WithEndpoint(c.endpoint))
+	// Infinite backoff (MaxElapsedTime=0) so a daemon keeps reconnecting across a
+	// long NB outage. WithInactivityCheck enables reconnect and adds the Echo
+	// probe that detects a dead/half-open socket the OS never reports.
+	bo := backoff.NewExponentialBackOff(
+		backoff.WithMaxElapsedTime(0),
+		backoff.WithMaxInterval(reconnectMaxInterval),
+	)
+	// One WithEndpoint per RAFT cluster member; libovsdb tries them in order,
+	// fails over on disconnect, and follows leader redirects. A single-endpoint
+	// string yields one endpoint (single-node dev, backward compatible).
+	endpoints := config.ParseEndpoints(c.endpoint)
+	if len(endpoints) == 0 {
+		endpoints = []string{c.endpoint}
+	}
+	opts := make([]client.Option, 0, len(endpoints)+1)
+	for _, ep := range endpoints {
+		opts = append(opts, client.WithEndpoint(ep))
+	}
+	opts = append(opts, client.WithInactivityCheck(inactivityTimeout, reconnectTimeout, bo))
+	ovn, err := client.NewOVSDBClient(dbModel, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create OVSDB client: %w", err)
 	}
@@ -819,8 +850,10 @@ func (c *LiveClient) AddNAT(ctx context.Context, routerName string, nat *nbdb.NA
 	return nil
 }
 
-// DeleteNAT removes a NAT rule matching (natType, logicalIP) from routerName.
-// Scoped to routerName.NAT — AWS CIDRs repeat across VPCs so the pair is not globally unique.
+// DeleteNAT removes every NAT rule matching (natType, logicalIP) from routerName.
+// Scoped to routerName.NAT — AWS CIDRs repeat across VPCs so the pair is not globally
+// unique. Deletes all matches so a duplicate row (e.g. minted by a racing reconcile)
+// is fully cleaned on teardown rather than leaking past the first delete.
 func (c *LiveClient) DeleteNAT(ctx context.Context, routerName string, natType, logicalIP string) error {
 	lr, err := c.GetLogicalRouter(ctx, routerName)
 	if err != nil {
@@ -845,24 +878,26 @@ func (c *LiveClient) DeleteNAT(ctx context.Context, routerName string, natType, 
 		return fmt.Errorf("NAT %s %s on %s: %w", natType, logicalIP, routerName, ErrNATNotFound)
 	}
 
-	nat := &nats[0]
-	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
-		Field:   &lr.NAT,
-		Mutator: "delete",
-		Value:   []string{nat.UUID},
-	})
-	if err != nil {
-		return fmt.Errorf("mutate router NAT ops: %w", err)
+	var allOps []ovsdb.Operation
+	for i := range nats {
+		nat := &nats[i]
+		mutateOps, mErr := c.client.Where(lr).Mutate(lr, model.Mutation{
+			Field:   &lr.NAT,
+			Mutator: "delete",
+			Value:   []string{nat.UUID},
+		})
+		if mErr != nil {
+			return fmt.Errorf("mutate router NAT ops: %w", mErr)
+		}
+		deleteOps, dErr := c.client.Where(nat).Delete()
+		if dErr != nil {
+			return fmt.Errorf("delete NAT ops: %w", dErr)
+		}
+		allOps = append(allOps, mutateOps...)
+		allOps = append(allOps, deleteOps...)
 	}
 
-	deleteOps, err := c.client.Where(nat).Delete()
-	if err != nil {
-		return fmt.Errorf("delete NAT ops: %w", err)
-	}
-
-	ops := append(mutateOps, deleteOps...)
-	err = c.transactOps(ctx, ops)
-	if err != nil {
+	if err := c.transactOps(ctx, allOps); err != nil {
 		return fmt.Errorf("delete NAT transact: %w", err)
 	}
 	return nil
@@ -978,6 +1013,33 @@ func (c *LiveClient) FindNATByExternalIP(ctx context.Context, natType, externalI
 		return n.Type == natType && n.ExternalIP == externalIP
 	}).List(ctx, &nats); err != nil {
 		return nil, fmt.Errorf("find NAT by external IP: %w", err)
+	}
+	if len(nats) == 0 {
+		return nil, nil
+	}
+	return &nats[0], nil
+}
+
+// FindNATByLogicalIP returns the first owned NAT rule matching (natType, logicalIP)
+// on routerName, or (nil, nil). Router-scoped because AWS CIDRs repeat across VPCs,
+// so the pair is not globally unique (mirrors FindStaticRoute and DeleteNAT's key).
+func (c *LiveClient) FindNATByLogicalIP(ctx context.Context, routerName, natType, logicalIP string) (*nbdb.NAT, error) {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return nil, fmt.Errorf("get logical router for NAT lookup: %w", err)
+	}
+	owned := make(map[string]struct{}, len(lr.NAT))
+	for _, u := range lr.NAT {
+		owned[u] = struct{}{}
+	}
+	var nats []nbdb.NAT
+	if err := c.client.WhereCache(func(n *nbdb.NAT) bool {
+		if _, ok := owned[n.UUID]; !ok {
+			return false
+		}
+		return n.Type == natType && n.LogicalIP == logicalIP
+	}).List(ctx, &nats); err != nil {
+		return nil, fmt.Errorf("find NAT by logical IP: %w", err)
 	}
 	if len(nats) == 0 {
 		return nil, nil

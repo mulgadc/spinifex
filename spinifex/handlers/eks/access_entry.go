@@ -230,15 +230,11 @@ func associatedPolicyToAWS(p AssociatedAccessPolicy) *eks.AssociatedAccessPolicy
 	}
 }
 
-// defaultKubernetesUsername mirrors AWS behaviour: username defaults to principalARN when omitted.
-func defaultKubernetesUsername(principalARN string) string {
-	return principalARN
-}
-
 // newAccessEntryRecord builds a record; defaults username to principalARN when unset.
 func newAccessEntryRecord(region, accountID, cluster, principalARN, username string, groups []string, entryType string, tags map[string]string, now time.Time) *AccessEntryRecord {
+	// AWS defaults the Kubernetes username to the principal ARN when omitted.
 	if username == "" {
-		username = defaultKubernetesUsername(principalARN)
+		username = principalARN
 	}
 	return &AccessEntryRecord{
 		ARN:                AccessEntryARN(region, accountID, cluster, principalARN),

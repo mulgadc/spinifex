@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# mulga-eks-provider-id — boot oneshot that writes a K3s drop-in from IMDS
+# before K3s starts: the kubelet provider-id plus region/zone topology labels,
+# the node metadata the aws-ebs-csi-driver needs for NodeGetInfo + provisioning.
+# Ordered after local (which installs the IMDS on-link route) and before both
+# K3s roles. Role-agnostic: enabled on every node (server + agent).
+
+description="Set K3s provider-id + topology labels from IMDS for EBS CSI"
+
+depend() {
+    after net local
+    before k3s k3s-agent
+}
+
+start() {
+    ebegin "Writing K3s provider-id drop-in from IMDS"
+    /usr/local/sbin/mulga-eks-provider-id
+    eend $?
+}

@@ -25,43 +25,6 @@ func createInput(name string) *eks.CreateClusterInput {
 	}
 }
 
-func TestCreateCluster_BuiltinIngressDefaultsOn(t *testing.T) {
-	f := newEKSServiceFixture(t)
-
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
-	require.NoError(t, err)
-
-	meta, err := GetClusterMeta(f.kv, "alpha")
-	require.NoError(t, err)
-	assert.True(t, meta.BuiltinIngress, "interim default: built-in ingress on until aws-lb-controller ships")
-}
-
-func TestCreateCluster_BuiltinIngressOptOutFromTag(t *testing.T) {
-	f := newEKSServiceFixture(t)
-
-	in := createInput("alpha")
-	in.Tags = map[string]*string{managedIngressTagKey: aws.String("false")}
-	_, err := f.svc.CreateCluster(in, testAccountID, "")
-	require.NoError(t, err)
-
-	meta, err := GetClusterMeta(f.kv, "alpha")
-	require.NoError(t, err)
-	assert.False(t, meta.BuiltinIngress, "managed-ingress=false opts out for AWS parity")
-}
-
-func TestCreateCluster_BuiltinIngressFromTag(t *testing.T) {
-	f := newEKSServiceFixture(t)
-
-	in := createInput("alpha")
-	in.Tags = map[string]*string{managedIngressTagKey: aws.String("true")}
-	_, err := f.svc.CreateCluster(in, testAccountID, "")
-	require.NoError(t, err)
-
-	meta, err := GetClusterMeta(f.kv, "alpha")
-	require.NoError(t, err)
-	assert.True(t, meta.BuiltinIngress, "managed-ingress=true keeps built-in ingress")
-}
-
 // A create that fails after the NLB is provisioned must leave the NLB ARNs
 // persisted on the (now FAILED) meta, otherwise the resources leak with no
 // owning record and DeleteCluster cannot reclaim them (bead 165.3).
@@ -153,7 +116,7 @@ func TestCreateCluster_PostPlacementFailedThenDeleteTerminatesControlPlane(t *te
 // same-name retry ever fires the FAILED-cluster reclaim, and the internet-facing
 // LB VM would otherwise keep its allocated+associated EIP indefinitely. The
 // FAILED meta is retained for observability; purge is idempotent so a later
-// DeleteCluster re-purge is a no-op (mulga-siv-293).
+// DeleteCluster re-purge is a no-op.
 func TestCreateCluster_FailedLaunchEagerlyPurgesInfra(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.inst.launchErr = errors.New("no capacity")

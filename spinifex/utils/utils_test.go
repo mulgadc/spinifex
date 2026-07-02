@@ -633,6 +633,39 @@ func TestKillProcess(t *testing.T) {
 	assert.Error(t, err, "Should error when killing non-existent process")
 }
 
+func TestProcessAlive(t *testing.T) {
+	cmd := exec.Command("sleep", "60")
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+
+	var wg sync.WaitGroup
+	wg.Go(func() { _ = cmd.Wait() })
+
+	assert.True(t, ProcessAlive(pid), "a running process must report alive")
+	assert.False(t, ProcessAlive(0), "pid 0 must report not alive")
+	assert.False(t, ProcessAlive(-1), "negative pid must report not alive")
+	assert.False(t, ProcessAlive(999999), "a non-existent pid must report not alive")
+
+	require.NoError(t, cmd.Process.Kill())
+	wg.Wait()
+	assert.False(t, ProcessAlive(pid), "a killed process must report not alive")
+}
+
+func TestForceKillProcess(t *testing.T) {
+	cmd := exec.Command("sleep", "60")
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+
+	var wg sync.WaitGroup
+	wg.Go(func() { _ = cmd.Wait() })
+
+	require.NoError(t, ForceKillProcess(pid, 5*time.Second))
+	wg.Wait()
+	assert.False(t, ProcessAlive(pid), "ForceKillProcess must SIGKILL and confirm exit")
+
+	assert.Error(t, ForceKillProcess(0, time.Second), "invalid pid must error")
+}
+
 func TestStopProcess(t *testing.T) {
 	// Create and start a test process
 	cmd := exec.Command("sleep", "60")
@@ -1635,4 +1668,11 @@ func TestClientIP(t *testing.T) {
 			assert.Equal(t, tt.expected, ClientIP(tt.remoteAddr))
 		})
 	}
+}
+
+func TestAvailableImages_ECSNodeEntry(t *testing.T) {
+	img, ok := AvailableImages["spinifex-ecs-node"]
+	require.True(t, ok, "spinifex-ecs-node must be in the system image catalog")
+	assert.Equal(t, "ecs", img.Tags["spinifex:managed-by"],
+		"ECS node image must carry the managed-by=ecs tag the UI guard resolves on")
 }

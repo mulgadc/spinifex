@@ -1,0 +1,34 @@
+#!/sbin/openrc-run
+# ecs-agent — Spinifex ECS container-instance agent. Resolves host identity from
+# IMDSv2, registers + heartbeats + polls task assignments through the AWS gateway
+# over TLS+SigV4 (no NATS), and pulls task images through containerd.
+#
+# Static config (gateway URL, CA, region, cluster, seeded IAM creds, containerd
+# socket) comes from /etc/spinifex-ecs/agent.env, dropped by cloud-init at launch.
+
+description="Spinifex ECS container-instance agent"
+command="/usr/local/bin/ecs-agent"
+command_background="yes"
+pidfile="/run/ecs-agent.pid"
+output_log="/var/log/ecs-agent.log"
+error_log="/var/log/ecs-agent.log"
+
+start_stop_daemon_args="--wait 2000"
+
+depend() {
+    need net containerd
+    after firewall ecs-ca-install
+}
+
+start_pre() {
+    # Cloud-init drops the agent config here; OpenRC injects it into the agent's
+    # environment. Absent file is tolerated — the agent falls back to its
+    # built-in defaults (cluster=default, default IMDS).
+    if [ -f /etc/spinifex-ecs/agent.env ]; then
+        # shellcheck disable=SC1091
+        . /etc/spinifex-ecs/agent.env
+        export ECS_GATEWAY_URL ECS_GATEWAY_CA ECS_REGION ECS_CLUSTER \
+            ECS_ACCESS_KEY ECS_SECRET_KEY ECS_IMDS_BASE ECS_CONTAINERD_SOCKET \
+            ECS_HEARTBEAT_INTERVAL ECS_POLL_INTERVAL
+    fi
+}

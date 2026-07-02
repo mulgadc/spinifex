@@ -1,10 +1,11 @@
 # Mulga-owned CoreDNS for the eks-node AMI. Replaces k3s's bundled CoreDNS
 # (suppressed via a coredns.yaml.skip marker staged by k3s.initd) so DNS is
 # node-local and never depends on the cross-node pod overlay: a DaemonSet runs
-# CoreDNS on every node and kube-dns uses internalTrafficPolicy=Local, so each
-# node resolves through its own CoreDNS. In the managed-control-plane topology
-# the worker<->CP overlay cannot cross the VPC boundary, so a CP-resident
-# CoreDNS is unreachable from worker pods.
+# CoreDNS on every worker node and kube-dns uses internalTrafficPolicy=Local, so
+# each worker resolves through its own CoreDNS. Mirroring AWS EKS, CoreDNS runs
+# on workers only (nodeAffinity excludes control-plane): the managed control
+# plane never hosts kube-dns, and the worker<->CP overlay cannot cross the VPC
+# boundary, so a CP-resident CoreDNS would be unreachable from worker pods.
 #
 # Faithful to k3s v1.32.5+k3s1 (image, Corefile, RBAC, Service) except the two
 # locality changes above. Refresh image/Corefile when bumping K3S_VERSION in
@@ -118,19 +119,20 @@ spec:
     spec:
       priorityClassName: system-cluster-critical
       serviceAccountName: coredns
-      # CriticalAddonsOnly (Exists, all effects) tolerates the CP's
-      # CriticalAddonsOnly=true:NoExecute taint so a CoreDNS pod also runs on
-      # the control-plane node; the control-plane/master tolerations cover any
-      # role taints. Required for full per-node coverage with internalTrafficPolicy=Local.
-      tolerations:
-        - key: CriticalAddonsOnly
-          operator: Exists
-        - key: node-role.kubernetes.io/control-plane
-          operator: Exists
-          effect: NoSchedule
-        - key: node-role.kubernetes.io/master
-          operator: Exists
-          effect: NoSchedule
+      # AWS-EKS parity: CoreDNS runs on worker nodes only. The control plane is
+      # managed and never hosts kube-dns; each worker resolves through its own
+      # node's CoreDNS (internalTrafficPolicy=Local), so DNS never crosses the
+      # worker<->CP overlay boundary. No CP toleration is carried, and
+      # anti-control-plane nodeAffinity keeps the DaemonSet off the K3s server VMs.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+                  - key: node-role.kubernetes.io/master
+                    operator: DoesNotExist
       nodeSelector:
         kubernetes.io/os: linux
       containers:

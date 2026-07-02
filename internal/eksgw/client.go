@@ -1,10 +1,11 @@
 // Package eksgw is the on-VM SigV4 client used by EKS helpers (eks-gateway-publish,
 // eks-token-webhook) to POST over HTTPS to the AWS gateway instead of NATS.
-// Signs with Predastore credentials for service "eks".
+// Signs for service "eks" with either static keys or IMDS instance-role creds.
 package eksgw
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -16,31 +17,39 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 )
 
 // Client posts SigV4-signed requests to the AWS gateway for the "eks" service.
 type Client struct {
 	baseURL    string
-	accessKey  string
-	secretKey  string
+	signer     *gwsign.Signer
 	region     string
 	httpClient *http.Client
 }
 
 // New builds a client. caPath optionally pins the gateway TLS CA; when empty the
 // client relies on the system trust store. region defaults to us-east-1 when
-// empty (SigV4 requires a non-empty region).
+// empty (SigV4 requires a non-empty region). When accessKey/secretKey are empty
+// the client signs with IMDS instance-role credentials served in-VM.
 func New(baseURL, caPath, accessKey, secretKey, region string) (*Client, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("eksgw: baseURL is required")
 	}
-	if accessKey == "" || secretKey == "" {
-		return nil, fmt.Errorf("eksgw: access key and secret key are required")
-	}
 	if region == "" {
 		region = "us-east-1"
+	}
+
+	var signer *gwsign.Signer
+	if accessKey != "" && secretKey != "" {
+		signer = gwsign.NewStatic(accessKey, secretKey)
+	} else {
+		s, err := gwsign.NewIMDS(context.Background(), region)
+		if err != nil {
+			return nil, fmt.Errorf("eksgw: init IMDS signer: %w", err)
+		}
+		signer = s
 	}
 
 	tlsCfg := &tls.Config{
@@ -60,10 +69,9 @@ func New(baseURL, caPath, accessKey, secretKey, region string) (*Client, error) 
 	}
 
 	return &Client{
-		baseURL:   strings.TrimRight(baseURL, "/"),
-		accessKey: accessKey,
-		secretKey: secretKey,
-		region:    region,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		signer:  signer,
+		region:  region,
 		httpClient: &http.Client{
 			Timeout:   10 * time.Second,
 			Transport: &http.Transport{TLSClientConfig: tlsCfg, MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second},
@@ -94,7 +102,7 @@ func (c *Client) do(method, path string, body []byte) ([]byte, error) {
 	}
 
 	sum := sha256.Sum256(body)
-	if err := auth.SignReq(req, c.accessKey, c.secretKey, hex.EncodeToString(sum[:]), "eks", c.region); err != nil {
+	if err := c.signer.Sign(req, hex.EncodeToString(sum[:]), "eks", c.region); err != nil {
 		return nil, fmt.Errorf("sign request: %w", err)
 	}
 

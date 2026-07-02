@@ -123,7 +123,7 @@ Daemons (`spinifex/daemon/daemon.go`) subscribe to NATS topics and handle reques
 When a daemon handles `RunInstances`:
 
 1. **Resource Check**: Validates CPU/memory availability via `ResourceManager`
-2. **Volume Generation**: Creates boot, cloud-init, and EFI volumes via Viperblock
+2. **Volume Generation**: Creates boot and EFI volumes via Viperblock
 3. **Volume Mount**: Sends `ebs.mount` request to Viperblock, receives NBD URI
 4. **QEMU Launch**: Builds and executes QEMU command with NBD-backed disks
 5. **QMP Monitoring**: Establishes QEMU Machine Protocol connection for VM management
@@ -217,7 +217,6 @@ type EBSRequest struct {
     VolType   string  // gp2, io1, etc.
     Boot      bool    // Boot volume flag
     EFI       bool    // EFI boot volume
-    CloudInit bool    // Cloud-init volume
     NBDURI    string  // NBD URI returned from mount
 }
 ```

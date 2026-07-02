@@ -24,6 +24,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/service"
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
@@ -732,9 +733,9 @@ var vpcdStartCmd = &cobra.Command{
 		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
 
 		// Map cluster-wide external pools to vpcd config
-		var extPools []vpcd.ExternalPoolConfig
+		var extPools []external.ExternalPoolConfig
 		for _, p := range clusterConfig.Network.ExternalPools {
-			extPools = append(extPools, vpcd.ExternalPoolConfig{
+			extPools = append(extPools, external.ExternalPoolConfig{
 				Name:            p.Name,
 				Source:          p.Source,
 				BindBridge:      p.BindBridge,

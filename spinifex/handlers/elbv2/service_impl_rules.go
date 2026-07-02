@@ -242,7 +242,22 @@ func (s *ELBv2ServiceImpl) DescribeRules(input *elbv2.DescribeRulesInput, accoun
 				slog.Error("DescribeRules: failed to get rule", "arn", *arnPtr, "err", err)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
-			if r == nil || r.AccountID != accountID {
+			if r == nil {
+				// Synthetic default rule: resolve by its parent listener.
+				if lArn, isDefault := listenerArnFromDefaultRuleArn(*arnPtr); isDefault {
+					l, lErr := s.store.GetListenerByArn(lArn)
+					if lErr != nil {
+						slog.Error("DescribeRules: failed to get listener", "arn", lArn, "err", lErr)
+						return nil, errors.New(awserrors.ErrorServerInternal)
+					}
+					if l != nil && l.AccountID == accountID {
+						out.Rules = append(out.Rules, defaultRuleFromListener(l))
+						continue
+					}
+				}
+				return nil, errors.New(awserrors.ErrorELBv2RuleNotFound)
+			}
+			if r.AccountID != accountID {
 				return nil, errors.New(awserrors.ErrorELBv2RuleNotFound)
 			}
 			out.Rules = append(out.Rules, ruleRecordToSDK(r))
@@ -597,6 +612,33 @@ func buildRuleArn(listenerArn, ruleID string) (string, error) {
 	return before + ":listener-rule/" + after + "/" + ruleID, nil
 }
 
+// defaultRuleArn returns the deterministic ARN of a listener's synthetic default
+// rule. AWS gives the default rule its own ARN; an empty value makes a controller
+// issue DescribeTags with no resource ARN and get MissingParameter back.
+func defaultRuleArn(listenerArn string) (string, error) {
+	id := listenerArn[strings.LastIndex(listenerArn, "/")+1:]
+	return buildRuleArn(listenerArn, id)
+}
+
+// listenerArnFromDefaultRuleArn reverses defaultRuleArn, returning the parent
+// listener ARN only when ruleArn is exactly that listener's default-rule ARN.
+// Stored or unknown rule ARNs return false.
+func listenerArnFromDefaultRuleArn(ruleArn string) (string, bool) {
+	before, after, ok := strings.Cut(ruleArn, ":listener-rule/")
+	if !ok {
+		return "", false
+	}
+	slash := strings.LastIndex(after, "/")
+	if slash <= 0 {
+		return "", false
+	}
+	listenerArn := before + ":listener/" + after[:slash]
+	if want, err := defaultRuleArn(listenerArn); err != nil || want != ruleArn {
+		return "", false
+	}
+	return listenerArn, true
+}
+
 // ruleRecordToSDK converts a stored rule record to the AWS SDK shape.
 func ruleRecordToSDK(r *RuleRecord) *elbv2.Rule {
 	rule := &elbv2.Rule{
@@ -653,6 +695,9 @@ func defaultRuleFromListener(l *ListenerRecord) *elbv2.Rule {
 	rule := &elbv2.Rule{
 		Priority:  aws.String("default"),
 		IsDefault: aws.Bool(true),
+	}
+	if arn, err := defaultRuleArn(l.ListenerArn); err == nil {
+		rule.RuleArn = aws.String(arn)
 	}
 	for _, a := range l.DefaultActions {
 		rule.Actions = append(rule.Actions, listenerActionToSDK(a))

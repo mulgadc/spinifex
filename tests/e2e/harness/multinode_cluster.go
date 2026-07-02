@@ -30,6 +30,8 @@ type natsRoutezResponse struct {
 // WaitNATSPeers polls every node's NATS /routez until each reports at least want
 // distinct peers (timeout 60s, interval 2s). NATS monitor binds 127.0.0.1:8222
 // only, so queries run via PeerSSH + curl rather than dialling node.Addr directly.
+// Nodes passed to WithSkipNodes are excluded — use it when a node has been
+// stopped so its dead monitor port doesn't fail the poll.
 func (c *Cluster) WaitNATSPeers(t *testing.T, want int, opts ...PollOpt) {
 	t.Helper()
 	cfg := applyOpts(pollCfg{timeout: 60 * time.Second, interval: 2 * time.Second}, opts...)
@@ -37,6 +39,9 @@ func (c *Cluster) WaitNATSPeers(t *testing.T, want int, opts ...PollOpt) {
 
 	EventuallyErr(t, func() error {
 		for _, n := range c.Nodes {
+			if _, skip := cfg.skipNodes[n.Name]; skip {
+				continue
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			out, err := ssh.Run(ctx, n.Addr,
 				fmt.Sprintf("curl -fsS http://127.0.0.1:%d/routez", natsMonitorPort))

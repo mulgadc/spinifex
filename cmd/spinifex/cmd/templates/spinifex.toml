@@ -8,6 +8,10 @@ node = "{{.Node}}"
 email = "{{.OperatorEmail}}"
 {{- end}}
 
+[aws]
+region = "{{.Region}}"
+internal_suffix = "spinifex.internal"
+
 [network]
 ipsec_enabled = {{.IPSecEnabled}}
 {{- if .ExternalMode}}

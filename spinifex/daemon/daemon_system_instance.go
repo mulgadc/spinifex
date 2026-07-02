@@ -34,6 +34,23 @@ func resolveENIAccount(owner, fallback string) string {
 	return fallback
 }
 
+// recordENIInstanceOwner stamps the attached instance's owning account onto the
+// ENI record. System VMs run in the system account but plug into a customer ENI,
+// so without this IMDS would resolve the instance and its IAM role under the ENI
+// account and serve no credentials. Best-effort: a miss leaves IMDS falling back
+// to the ENI account, which only matters for the cross-account system path.
+func (d *Daemon) recordENIInstanceOwner(eniAccountID, eniID, instanceOwnerID string) {
+	if d.vpcService == nil || eniID == "" || instanceOwnerID == eniAccountID {
+		return
+	}
+	if err := d.vpcService.UpdateENI(eniAccountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+		r.InstanceOwnerId = instanceOwnerID
+	}); err != nil {
+		slog.Warn("LaunchSystemInstance: failed to record ENI instance owner",
+			"eniId", eniID, "instanceOwner", instanceOwnerID, "err", err)
+	}
+}
+
 // LaunchSystemInstance creates and starts a system-managed VM (ELBv2 LB).
 // The VM is owned by the system account (GlobalAccountID), is not visible to
 // customer DescribeInstances calls, and always boots via direct kernel boot
@@ -77,6 +94,9 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	}
 	if input.SubnetID != "" {
 		runInput.SubnetId = aws.String(input.SubnetID)
+	}
+	if input.IamInstanceProfileArn != "" {
+		runInput.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{Arn: aws.String(input.IamInstanceProfileArn)}
 	}
 
 	// Create VM via instance service
@@ -127,6 +147,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			if _, attachErr := d.vpcService.AttachENI(eniAccountID, instance.ENIId, instance.ID, 0); attachErr != nil {
 				slog.Warn("LaunchSystemInstance: failed to attach ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
 			}
+			d.recordENIInstanceOwner(eniAccountID, instance.ENIId, accountID)
 		}
 		// Attach any additional pre-created ENIs (multi-subnet ALB VMs).
 		// Use the launcher input slice as the source of truth so the VM
@@ -143,6 +164,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 					d.cleanupFailedSystemInstance(instance, instanceType)
 					return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
 				}
+				d.recordENIInstanceOwner(extraAccount, extra.ENIID, accountID)
 			}
 			instance.ExtraENIs = append(instance.ExtraENIs, vm.ExtraENI{
 				ENIID:    extra.ENIID,
@@ -172,6 +194,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		if _, attachErr := d.vpcService.AttachENI(accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
 			slog.Warn("LaunchSystemInstance: failed to attach auto-created ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
 		}
+		d.recordENIInstanceOwner(accountID, instance.ENIId, accountID)
 	}
 
 	// Allocate public IP for internet-facing ALBs. Route through the EIP
@@ -383,16 +406,17 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 }
 
 // launchAMISystemInstance is the BootAMI branch of LaunchSystemInstance: a full
-// AMI boot (root volume cloned from an AMI, cloud-init user-data + network
-// config seed) for a system-managed VM, with a management-bridge NIC so the
+// AMI boot (root volume cloned from an AMI, bootstrapped from the Ec2 IMDS
+// datasource) for a system-managed VM, with a management-bridge NIC so the
 // guest can reach the daemon (NATS/AWSGW) off its tenant VPC subnet.
 //
 // It mirrors the daemon RunInstances handler's Prepare → Insert → Launch split,
 // allocating the mgmt NIC on the VM record between Insert and Launch so the
-// cloud-init network-config rendered during Launch carries a static mgmt0
-// interface. The instance is owned by input.AccountID (the account its
-// pre-created ENI lives in) and tagged input.ManagedBy so customer listings
-// hide it.
+// fw_cfg netcfg blob built during Launch enumerates both the primary data ENI
+// (DHCP) and the static mgmt0 address — a multi-NIC Alpine guest cannot pick the
+// right NIC for the Ec2 datasource on its own. The instance is owned by
+// input.AccountID (the account its pre-created ENI lives in) and tagged
+// input.ManagedBy so customer listings hide it.
 func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
 	if d.instanceService == nil {
 		return nil, errors.New("sysinstance: instance service not initialized")
@@ -420,6 +444,9 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 	if input.UserData != "" {
 		runInput.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(input.UserData)))
 	}
+	if input.IamInstanceProfileArn != "" {
+		runInput.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{Arn: aws.String(input.IamInstanceProfileArn)}
+	}
 	if input.ManagedBy != "" {
 		runInput.TagSpecifications = []*ec2.TagSpecification{{
 			ResourceType: aws.String("instance"),
@@ -427,7 +454,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		}}
 	}
 
-	_, instances, instanceType, err := d.instanceService.PrepareRunInstances(runInput, input.AccountID)
+	_, instances, instanceType, err := d.instanceService.PrepareRunInstances(runInput, input.AccountID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -441,11 +468,32 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		d.vmMgr.Insert(instance)
 	}
 
-	// Management NIC must be set before LaunchRunInstances so the cloud-init
-	// network-config (built during launch) renders a static mgmt0 interface.
+	// Management NIC must be set before LaunchRunInstances so the fw_cfg netcfg
+	// blob (built during launch) carries the static mgmt0 address.
 	if err := d.attachSystemMgmtNIC(inst); err != nil {
 		d.vmMgr.MarkFailed(inst, "mgmt_nic_setup_failed")
 		return nil, err
+	}
+
+	// Pre-created extra ENIs (e.g. an EKS CP server's flannel-overlay ENI in the
+	// worker VPC) must be attached and recorded on the VM before LaunchRunInstances
+	// so the launch builds their taps/virtio NICs and cloud-init renders a DHCP
+	// stanza per extra MAC. A cross-account ENI is keyed by its own account.
+	for idx, extra := range input.ExtraENIs {
+		if d.vpcService != nil {
+			extraAccount := resolveENIAccount(extra.AccountID, input.AccountID)
+			if _, attachErr := d.vpcService.AttachENI(extraAccount, extra.ENIID, inst.ID, int64(idx+1)); attachErr != nil {
+				slog.Error("launchAMISystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", inst.ID, "err", attachErr)
+				d.vmMgr.MarkFailed(inst, "extra_eni_attach_failed")
+				return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
+			}
+		}
+		inst.ExtraENIs = append(inst.ExtraENIs, vm.ExtraENI{
+			ENIID:    extra.ENIID,
+			ENIMac:   extra.ENIMac,
+			ENIIP:    extra.ENIIP,
+			SubnetID: extra.SubnetID,
+		})
 	}
 
 	d.instanceService.LaunchRunInstances(instances, runInput, instanceType)
@@ -507,10 +555,31 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 // stop qemu and free the ENI — otherwise the local-only path returns NotFound
 // and the teardown deletes a still-attached ENI (InvalidNetworkInterface.InUse).
 func (d *Daemon) TerminateSystemInstance(instanceID string) error {
+	var termErr error
 	if _, exists := d.vmMgr.Get(instanceID); exists {
-		return d.terminateSystemInstanceLocal(instanceID)
+		termErr = d.terminateSystemInstanceLocal(instanceID)
+	} else {
+		termErr = d.terminateSystemInstanceRemote(instanceID)
 	}
-	return d.terminateSystemInstanceRemote(instanceID)
+
+	// Backstop for the no-owner case: terminateSystemInstanceLocal runs the
+	// reclaim on the owning node, but when no node owns the VM (already gone) the
+	// remote route returns NotFound and never reaches it, so an internet-facing
+	// ALB's EIP would orphan. Idempotent — a no-op once the record is released.
+	d.reclaimSystemInstanceEIP(instanceID)
+	return termErr
+}
+
+// reclaimSystemInstanceEIP releases any EIP still recorded against instanceID via
+// the authoritative EIP KV, independent of the cached fields on the VM record.
+// Idempotent and nil-safe; logs on failure.
+func (d *Daemon) reclaimSystemInstanceEIP(instanceID string) {
+	if d.eipService == nil {
+		return
+	}
+	if err := d.eipService.ReleaseAddressByInstanceID(instanceID); err != nil {
+		slog.Warn("reclaimSystemInstanceEIP: backstop release failed", "instanceId", instanceID, "err", err)
+	}
 }
 
 // terminateSystemInstanceLocal stops a VM owned by this node.
@@ -521,8 +590,12 @@ func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
 	}
 
 	// Release EIP through the EIP service for system VMs whose public IP was
-	// allocated via AllocateAddress (internet-facing ALBs).
+	// allocated via AllocateAddress (internet-facing ALBs). releaseSystemInstanceEIP
+	// uses the VM's cached allocation; reclaimSystemInstanceEIP then reconciles
+	// against the EIP KV in case the cache was empty (the authoritative path — this
+	// runs on the owning node, including the NATS terminate handler).
 	d.releaseSystemInstanceEIP(instance)
+	d.reclaimSystemInstanceEIP(instanceID)
 
 	if err := d.vmMgr.Terminate(instanceID); err != nil {
 		slog.Error("TerminateSystemInstance: vmMgr.Terminate failed", "instanceId", instanceID, "err", err)

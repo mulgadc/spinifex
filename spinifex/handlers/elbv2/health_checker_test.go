@@ -1,7 +1,6 @@
 package handlers_elbv2
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
@@ -133,8 +132,7 @@ func TestHandleHealthReport_TransitionsInitialToHealthy(t *testing.T) {
 			{Backend: "bk_tg-123", Server: sanitizeName("srv", "i-aaa111"), Status: "UP"},
 		},
 	}
-	data, _ := json.Marshal(report)
-	hc.handleHealthReport(data)
+	hc.handleHealthReportDirect(report)
 
 	stored, err := store.GetTargetGroup("tg-123")
 	require.NoError(t, err)
@@ -171,8 +169,7 @@ func TestHandleHealthReport_UnhealthyAfterThreshold(t *testing.T) {
 				{Backend: "bk_tg-456", Server: srvName, Status: "DOWN"},
 			},
 		}
-		data, _ := json.Marshal(report)
-		hc.handleHealthReport(data)
+		hc.handleHealthReportDirect(report)
 	}
 
 	stored, err := store.GetTargetGroup("tg-456")
@@ -203,8 +200,7 @@ func TestHandleHealthReport_SkipsDrainingTargets(t *testing.T) {
 			{Backend: "bk_tg-789", Server: sanitizeName("srv", "i-drain"), Status: "UP"},
 		},
 	}
-	data, _ := json.Marshal(report)
-	hc.handleHealthReport(data)
+	hc.handleHealthReportDirect(report)
 
 	stored, err := store.GetTargetGroup("tg-789")
 	require.NoError(t, err)
@@ -226,22 +222,13 @@ func TestRemoveTarget(t *testing.T) {
 	assert.False(t, exists)
 }
 
-func TestHandleHealthReport_InvalidJSON(t *testing.T) {
-	store := setupTestNATS(t)
-	hc := newHealthChecker(store)
-
-	// Should not panic — invalid JSON is silently discarded.
-	hc.handleHealthReport([]byte(`{bad json`))
-}
-
 func TestHandleHealthReport_EmptyServers(t *testing.T) {
 	store := setupTestNATS(t)
 	hc := newHealthChecker(store)
 
 	report := lbagent.HealthReport{LBID: "lb-empty", Servers: nil}
-	data, _ := json.Marshal(report)
 	// Should return early without touching the store.
-	hc.handleHealthReport(data)
+	hc.handleHealthReportDirect(report)
 }
 
 func TestHandleHealthReport_TargetPortZeroUsesTGPort(t *testing.T) {
@@ -266,8 +253,7 @@ func TestHandleHealthReport_TargetPortZeroUsesTGPort(t *testing.T) {
 			{Backend: "bk_tg-p0", Server: sanitizeName("srv", "i-port0"), Status: "UP"},
 		},
 	}
-	data, _ := json.Marshal(report)
-	hc.handleHealthReport(data)
+	hc.handleHealthReportDirect(report)
 
 	stored, err := store.GetTargetGroup("tg-p0")
 	require.NoError(t, err)

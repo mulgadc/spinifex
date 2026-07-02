@@ -10,6 +10,9 @@
 // On startup it writes the apiserver webhook kubeconfig (with its self-signed
 // serving CA) so k3s can be pointed at it via
 // --authentication-token-webhook-config-file.
+//
+// SigV4 creds come from the AWS SDK chain (IMDS instance-role) when static
+// EKS_ACCESS_KEY/EKS_SECRET_KEY are absent, matching the sibling helpers.
 package main
 
 import (
@@ -56,11 +59,13 @@ func loadConfig() (config, error) {
 		keyPath:     envOr("EKS_WEBHOOK_KEY", "/etc/spinifex-eks/token-webhook.key"),
 		kubeconfig:  envOr("EKS_WEBHOOK_KUBECONFIG", "/etc/spinifex-eks/token-webhook.kubeconfig"),
 	}
+	// Static SigV4 creds are optional: when absent, eksgw.New signs with the
+	// AWS SDK chain (IMDS instance-role creds), the same path the CP VM's
+	// sibling helpers use. The CP VM launches on an instance profile, so
+	// buildK3sUserData omits EKS_ACCESS_KEY/EKS_SECRET_KEY by design.
 	switch {
 	case c.gatewayURL == "":
 		return c, errors.New("EKS_GATEWAY_URL not set")
-	case c.accessKey == "" || c.secretKey == "":
-		return c, errors.New("EKS_ACCESS_KEY / EKS_SECRET_KEY not set")
 	case c.accountID == "":
 		return c, errors.New("EKS_ACCOUNT_ID not set")
 	case c.clusterName == "":
@@ -125,7 +130,12 @@ func run(cfg config) error {
 	})
 	mux.HandleFunc("/authenticate", authr.handle)
 
-	server := newServer(cfg.addr, mux, tlsCert)
+	server := &http.Server{
+		Addr:              cfg.addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		TLSConfig:         serverTLSConfig(tlsCert),
+	}
 	slog.Info("eks-token-webhook listening", "addr", cfg.addr, "cluster", cfg.clusterName)
 	if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve: %w", err)
@@ -212,16 +222,5 @@ func (a *authenticator) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("encode TokenReview response", "err", err)
-	}
-}
-
-// newServer builds the loopback TLS server. Split out so tests can construct it
-// without binding a port.
-func newServer(addr string, handler http.Handler, cert tlsCertificate) *http.Server {
-	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		TLSConfig:         cert.serverTLSConfig(),
 	}
 }

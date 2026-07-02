@@ -49,7 +49,7 @@ func TestBuildLBAgentEnv(t *testing.T) {
 		region:          "ap-southeast-2",
 	}
 	// With no mgmt bridge, the lb-agent falls back to the WAN GatewayURL.
-	env := svc.buildLBAgentEnv("lb-abc123")
+	env := svc.buildLBAgentEnv("lb-abc123", true)
 
 	lines := strings.Split(strings.TrimRight(env, "\n"), "\n")
 	kvs := make(map[string]string, len(lines))
@@ -66,6 +66,23 @@ func TestBuildLBAgentEnv(t *testing.T) {
 	assert.Equal(t, "ap-southeast-2", kvs["LB_REGION"])
 }
 
+// TestBuildLBAgentEnv_IMDSModeOmitsKeys verifies that when a profile is attached
+// (staticCreds=false) the static keys are dropped so the lb-agent signs with
+// IMDS instance-role credentials via the SDK chain.
+func TestBuildLBAgentEnv_IMDSModeOmitsKeys(t *testing.T) {
+	svc := &ELBv2ServiceImpl{
+		GatewayURL:      "https://10.0.0.1:9999",
+		SystemAccessKey: "AKIAIOSFODNN7EXAMPLE",
+		SystemSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		region:          "ap-southeast-2",
+	}
+	env := svc.buildLBAgentEnv("lb-abc123", false)
+	assert.NotContains(t, env, "LB_ACCESS_KEY")
+	assert.NotContains(t, env, "LB_SECRET_KEY")
+	assert.Contains(t, env, "LB_LB_ID=lb-abc123\n")
+	assert.Contains(t, env, "LB_REGION=ap-southeast-2\n")
+}
+
 // TestBuildLBAgentEnv_UsesMgmtGateway verifies every lb-agent (customer or
 // system) heartbeats over the on-link mgmt-bridge URL, not the WAN GatewayURL,
 // so the control-plane heartbeat survives a reboot that strands the data plane.
@@ -77,12 +94,12 @@ func TestBuildLBAgentEnv_UsesMgmtGateway(t *testing.T) {
 		SystemSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		region:          "ap-southeast-2",
 	}
-	env := svc.buildLBAgentEnv("lb-abc123")
+	env := svc.buildLBAgentEnv("lb-abc123", true)
 	assert.Contains(t, env, "LB_GATEWAY_URL=https://192.168.50.1:9999\n")
 
 	// With no mgmt bridge, the lb-agent falls back to the WAN URL.
 	svc.MgmtBridgeIP = ""
-	env = svc.buildLBAgentEnv("lb-abc123")
+	env = svc.buildLBAgentEnv("lb-abc123", true)
 	assert.Contains(t, env, "LB_GATEWAY_URL=https://10.0.0.1:9999\n")
 }
 

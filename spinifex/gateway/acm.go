@@ -28,6 +28,15 @@ var acmActions = map[string]acmHandler{
 	"DeleteCertificate": func(gw *GatewayConfig, acct string, b []byte) (any, error) {
 		return gateway_acm.DeleteCertificate(gw.NATSConn, acct, b)
 	},
+	"ListTagsForCertificate": func(gw *GatewayConfig, acct string, b []byte) (any, error) {
+		return gateway_acm.ListTagsForCertificate(gw.NATSConn, acct, b)
+	},
+	"AddTagsToCertificate": func(gw *GatewayConfig, acct string, b []byte) (any, error) {
+		return gateway_acm.AddTagsToCertificate(gw.NATSConn, acct, b)
+	},
+	"RemoveTagsFromCertificate": func(gw *GatewayConfig, acct string, b []byte) (any, error) {
+		return gateway_acm.RemoveTagsFromCertificate(gw.NATSConn, acct, b)
+	},
 }
 
 // acmActionFromTarget extracts the action suffix from an X-Amz-Target header.

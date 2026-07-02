@@ -1,9 +1,11 @@
-name: Publish EKS node AMI
+name: Publish EKS + ECS node AMIs
 
-# Builds the eks-node system AMI (libguestfs, on the runner) and publishes the
-# compressed qcow2 + .sha256 sidecar to the Cloudflare R2 bucket that backs
-# iso.mulgadc.com/system-ami/. Operators then install it on any cluster with:
+# Builds the eks-node and ecs-agent system AMIs (libguestfs, on the runner) and
+# publishes each compressed qcow2 + .sha256 sidecar to the Cloudflare R2 bucket
+# that backs iso.mulgadc.com/system-ami/. Operators then install them on any
+# cluster with:
 #   spx admin images import --name spinifex-eks-node
+#   spx admin images import --name spinifex-ecs-node
 #
 # Manual-only: publishing overwrites the mirror artifact, so it is a deliberate
 # action, not something every push should trigger.
@@ -25,24 +27,24 @@ concurrency:
 
 jobs:
   publish:
-    name: Build + publish eks-node AMI
+    name: Build + publish eks-node + ecs-agent AMIs
     runs-on: [ self-hosted, ci-single ]
 
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: spinifex
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
           ref: dev
           path: viperblock
 
       - name: Checkout Predastore
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
           ref: dev
@@ -73,7 +75,7 @@ jobs:
             rm -rf /tmp/awscliv2.zip /tmp/aws-install
           fi
 
-      - name: Build + publish to R2
+      - name: Build + publish eks-node to R2
         working-directory: spinifex
         env:
           # Map the repo's R2 secrets onto the names publish-system-image.sh reads.
@@ -94,3 +96,22 @@ jobs:
           fi
           ./scripts/publish-system-image.sh \
             scripts/images/eks-node/manifest.conf "${FLAGS[@]}"
+
+      - name: Build + publish ecs-agent to R2
+        working-directory: spinifex
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT_URL }}
+          R2_BUCKET: spinifex-iso
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          FLAGS=(--build)
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            FLAGS+=(--dry-run)
+          fi
+          ./scripts/publish-system-image.sh \
+            scripts/images/ecs-agent/manifest.conf "${FLAGS[@]}"

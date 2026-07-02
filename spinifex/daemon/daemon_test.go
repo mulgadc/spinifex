@@ -41,6 +41,7 @@ import (
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
+	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
@@ -484,6 +485,18 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		initialCount := len(initialOutput.InstanceTypes)
 		t.Logf("Initial supported instance types: %d", initialCount)
 
+		// Pin host capacity so the allocate below is independent of the
+		// runner's live headroom. Without this, readMemAvailableGB reads
+		// live /proc MemAvailable, which a box already running VMs can drive
+		// below a 2 vCPU type's footprint, failing allocate spuriously.
+		daemon.resourceMgr.mu.Lock()
+		daemon.resourceMgr.hostVCPU = 16
+		daemon.resourceMgr.hostMemGB = 32.0
+		daemon.resourceMgr.reservedVCPU = 0
+		daemon.resourceMgr.reservedMem = 0
+		daemon.resourceMgr.readMemAvailableGB = nil
+		daemon.resourceMgr.mu.Unlock()
+
 		schedulableMem := daemon.resourceMgr.hostMemGB - daemon.resourceMgr.reservedMem
 		var instanceType2CPU *ec2.InstanceTypeInfo
 		for _, it := range initialOutput.InstanceTypes {
@@ -759,40 +772,6 @@ func TestDaemon_BootAllocation(t *testing.T) {
 	assert.Equal(t, expectedMem, daemon.resourceMgr.allocatedMem)
 }
 
-// TestStopInstance_Deallocation verifies that stopping an instance deallocates resources
-func TestStopInstance_Deallocation(t *testing.T) {
-	clusterCfg := &config.ClusterConfig{
-		Node:  "node-1",
-		Nodes: map[string]config.Config{"node-1": {BaseDir: "/tmp"}},
-	}
-	daemon, err := NewDaemon(clusterCfg)
-	require.NoError(t, err)
-
-	// Setup a running instance with allocated resources
-	instanceId := "i-test-stop"
-	instanceTypeStr := getTestInstanceType(t)
-	instanceType := daemon.resourceMgr.instanceTypes[instanceTypeStr]
-	daemon.vmMgr.Insert(&vm.VM{
-		ID:           instanceId,
-		InstanceType: instanceTypeStr,
-		Status:       vm.StateRunning,
-		AccountID:    testAccountID,
-	})
-
-	err = daemon.resourceMgr.allocate(instanceType)
-	require.NoError(t, err)
-	assert.Greater(t, daemon.resourceMgr.allocatedVCPU, 0)
-
-	// Call stopInstance (we can't easily wait for QMP/PID here, so we just want to see deallocate call)
-	// Actually stopInstance runs in goroutines and waits for PID removal.
-	// This might be tricky to test without heavy mocking.
-
-	// Let's test the ResourceManager deallocate directly since we've already verified
-	// that stopInstance calls it in the code.
-	daemon.resourceMgr.deallocate(instanceType)
-	assert.Equal(t, 0, daemon.resourceMgr.allocatedVCPU)
-}
-
 // TestCanAllocate_CountEdgeCases tests edge cases for canAllocate with count parameter
 func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	t.Run("MinCount_equals_MaxCount", func(t *testing.T) {
@@ -903,6 +882,18 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 		}
 		require.NotNil(t, microType)
 		require.NotNil(t, mediumType)
+
+		// Pin host capacity so the test is independent of the runner's
+		// schedulable headroom. A constrained box (e.g. 4 vCPU, 2 schedulable
+		// after reserve, more when EKS VMs hold capacity) cannot fit a medium
+		// and rm.allocate would fail with an unexpected insufficient-capacity error.
+		rm.mu.Lock()
+		rm.hostVCPU = 16
+		rm.hostMemGB = 32.0
+		rm.reservedVCPU = 0
+		rm.reservedMem = 0
+		rm.readMemAvailableGB = nil // accounting test: pin to synthetic host, not live /proc
+		rm.mu.Unlock()
 
 		initialMicro := rm.canAllocate(microType, 100)
 		initialMedium := rm.canAllocate(mediumType, 100)
@@ -1627,81 +1618,9 @@ func TestResourceManager_ConcurrentAccess(t *testing.T) {
 	assert.Equal(t, float64(0), rm.allocatedMem, "All memory should be deallocated")
 }
 
-// TestGenerateVolumes_DeleteOnTermination_FromBlockDeviceMapping verifies that
-// the deleteOnTermination flag from RunInstancesInput.BlockDeviceMappings is
-// propagated to the EBSRequest on the instance's volume list.
-func TestGenerateVolumes_DeleteOnTermination_FromBlockDeviceMapping(t *testing.T) {
-	tests := []struct {
-		name                    string
-		deleteOnTerminationFlag *bool
-		expectedFlag            bool
-	}{
-		{
-			name:                    "DeleteOnTermination=true",
-			deleteOnTerminationFlag: aws.Bool(true),
-			expectedFlag:            true,
-		},
-		{
-			name:                    "DeleteOnTermination=false",
-			deleteOnTerminationFlag: aws.Bool(false),
-			expectedFlag:            false,
-		},
-		{
-			name:                    "DeleteOnTermination=nil (defaults to true)",
-			deleteOnTerminationFlag: nil,
-			expectedFlag:            true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Build a RunInstancesInput with BlockDeviceMappings
-			input := &ec2.RunInstancesInput{
-				ImageId:      aws.String("vol-existing-volume"),
-				InstanceType: aws.String("t3.micro"),
-				MinCount:     aws.Int64(1),
-				MaxCount:     aws.Int64(1),
-			}
-
-			if tt.deleteOnTerminationFlag != nil {
-				input.BlockDeviceMappings = []*ec2.BlockDeviceMapping{
-					{
-						DeviceName: aws.String("/dev/vda"),
-						Ebs: &ec2.EbsBlockDevice{
-							VolumeSize:          aws.Int64(8),
-							DeleteOnTermination: tt.deleteOnTerminationFlag,
-						},
-					},
-				}
-			}
-
-			// Exercise the parsing logic that GenerateVolumes uses
-			// Default is true (matches AWS RunInstances behavior for root volumes)
-			deleteOnTermination := true
-			if len(input.BlockDeviceMappings) > 0 {
-				bdm := input.BlockDeviceMappings[0]
-				if bdm.Ebs != nil && bdm.Ebs.DeleteOnTermination != nil {
-					deleteOnTermination = *bdm.Ebs.DeleteOnTermination
-				}
-			}
-
-			assert.Equal(t, tt.expectedFlag, deleteOnTermination,
-				"deleteOnTermination should match expected value")
-
-			// Verify the flag is correctly assigned to an EBSRequest
-			ebsReq := types.EBSRequest{
-				Name:                "vol-test",
-				Boot:                true,
-				DeleteOnTermination: deleteOnTermination,
-			}
-			assert.Equal(t, tt.expectedFlag, ebsReq.DeleteOnTermination)
-		})
-	}
-}
-
 // TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination tests that
 // the instanceCleanerAdapter correctly handles DeleteOnTermination for each
-// volume type: internal volumes (EFI, cloud-init) always go through
+// volume type: internal volumes (EFI) always go through
 // ebs.delete; user volumes only when DeleteOnTermination is true.
 func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) {
 	natsURL := sharedNATSURL
@@ -1710,7 +1629,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 
 	var mu sync.Mutex
 	ebsDeletedVolumes := make(map[string]bool)
-	const expectedDeletes = 2 // EFI + cloud-init; vol-root has no S3 backend
+	const expectedDeletes = 1 // EFI; vol-root has no S3 backend
 	allDeletes := make(chan struct{})
 
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
@@ -1737,7 +1656,6 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 			Requests: []types.EBSRequest{
 				{Name: "vol-root", Boot: true, DeleteOnTermination: true},
 				{Name: "vol-root-efi", EFI: true},
-				{Name: "vol-root-cloudinit", CloudInit: true},
 			},
 		},
 	}
@@ -1754,9 +1672,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Internal volumes (EFI, cloud-init) should receive ebs.delete
+	// Internal volumes (EFI) should receive ebs.delete
 	assert.True(t, ebsDeletedVolumes["vol-root-efi"], "EFI volume should receive ebs.delete")
-	assert.True(t, ebsDeletedVolumes["vol-root-cloudinit"], "Cloud-init volume should receive ebs.delete")
 }
 
 // TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False verifies
@@ -1769,7 +1686,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 
 	var mu sync.Mutex
 	ebsDeletedVolumes := make(map[string]bool)
-	const expectedDeletes = 2 // only the two internal volumes; vol-keep is skipped
+	const expectedDeletes = 1 // only the EFI internal volume; vol-keep is skipped
 	allDeletes := make(chan struct{})
 
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
@@ -1796,7 +1713,6 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 			Requests: []types.EBSRequest{
 				{Name: "vol-keep", Boot: true, DeleteOnTermination: false},
 				{Name: "vol-keep-efi", EFI: true},
-				{Name: "vol-keep-cloudinit", CloudInit: true},
 			},
 		},
 	}
@@ -1815,7 +1731,6 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 
 	// Internal volumes still get ebs.delete (always cleaned up)
 	assert.True(t, ebsDeletedVolumes["vol-keep-efi"], "EFI volume should receive ebs.delete even when root has DeleteOnTermination=false")
-	assert.True(t, ebsDeletedVolumes["vol-keep-cloudinit"], "Cloud-init volume should receive ebs.delete even when root has DeleteOnTermination=false")
 
 	// Root volume with DeleteOnTermination=false should NOT receive ebs.delete
 	assert.False(t, ebsDeletedVolumes["vol-keep"], "Root volume with DeleteOnTermination=false should NOT be deleted")
@@ -2089,40 +2004,6 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 			},
 			DetachVolumeData: &types.DetachVolumeData{
 				VolumeID: efiVolumeID,
-			},
-		}
-		data, _ := json.Marshal(command)
-
-		resp, err := natsRequest(daemon.natsConn,
-			fmt.Sprintf("ec2.cmd.%s", instanceID),
-			data,
-			5*time.Second,
-		)
-		require.NoError(t, err)
-		assert.Contains(t, string(resp.Data), "OperationNotPermitted")
-
-		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = instance.EBSRequests.Requests[:len(instance.EBSRequests.Requests)-1]
-		instance.EBSRequests.Mu.Unlock()
-	})
-
-	t.Run("CloudInitVolumeProtection", func(t *testing.T) {
-		ciVolumeID := "vol-cloudinit-protected"
-
-		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, types.EBSRequest{
-			Name:      ciVolumeID,
-			CloudInit: true,
-		})
-		instance.EBSRequests.Mu.Unlock()
-
-		command := types.EC2InstanceCommand{
-			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
-				DetachVolume: true,
-			},
-			DetachVolumeData: &types.DetachVolumeData{
-				VolumeID: ciVolumeID,
 			},
 		}
 		data, _ := json.Marshal(command)
@@ -3279,7 +3160,8 @@ func TestVolumeMounterAdapter_UnmountOne_Success(t *testing.T) {
 }
 
 // TestVolumeMounterAdapter_UnmountOne_UnmountError verifies that UnmountOne
-// tolerates an error response from ebs.unmount (logs only, no propagation).
+// propagates an error response from ebs.unmount. DetachVolume gates the volume's
+// available transition on this error, so it must not be swallowed.
 func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -3294,11 +3176,12 @@ func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	adapter.UnmountOne(types.EBSRequest{Name: "vol-rollback-err"})
+	require.Error(t, adapter.UnmountOne(types.EBSRequest{Name: "vol-rollback-err"}),
+		"an ebs.unmount error response must propagate so DetachVolume can keep the volume attached")
 }
 
 // TestVolumeMounterAdapter_UnmountOne_StillMounted verifies that UnmountOne
-// tolerates an unmount response that reports the volume still mounted.
+// returns an error when the unmount response reports the volume still mounted.
 func TestVolumeMounterAdapter_UnmountOne_StillMounted(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -3313,18 +3196,103 @@ func TestVolumeMounterAdapter_UnmountOne_StillMounted(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	adapter.UnmountOne(types.EBSRequest{Name: "vol-still-mounted"})
+	require.Error(t, adapter.UnmountOne(types.EBSRequest{Name: "vol-still-mounted"}),
+		"a still-mounted response must propagate as an error")
 }
 
-// TestVolumeMounterAdapter_UnmountOne_NATSTimeout verifies that UnmountOne
-// tolerates NATS request timeout (no subscriber on ebs.unmount).
-func TestVolumeMounterAdapter_UnmountOne_NATSTimeout(t *testing.T) {
-	natsURL := sharedNATSURL
+// TestVolumeMounterAdapter_UnmountOne_RequestFailure verifies that UnmountOne
+// surfaces a failed ebs.unmount NATS request as an error. A closed connection
+// fails immediately, rather than blocking on the full unmountSealTimeout (120s)
+// that a no-subscriber timeout would incur in every preflight run.
+func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	nc.Close()
 
-	daemon := createTestDaemon(t, natsURL)
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+	adapter := newVolumeMounterAdapter(nc, "node-1", nil)
+	require.Error(t, adapter.UnmountOne(types.EBSRequest{Name: "vol-timeout"}),
+		"a failed ebs.unmount request must propagate as an error")
+}
 
-	adapter.UnmountOne(types.EBSRequest{Name: "vol-timeout"})
+// recordingVolState records UpdateVolumeState calls so the bulk-unmount test can
+// assert which volumes transitioned to available.
+type recordingVolState struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *recordingVolState) UpdateVolumeState(volumeID, state, instanceID, attachmentDevice string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, volumeID+":"+state)
+	return nil
+}
+
+func (r *recordingVolState) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+var _ vm.VolumeStateUpdater = (*recordingVolState)(nil)
+
+// TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable verifies the
+// teardown-path durability gate: a per-volume seal failure during the bulk
+// Unmount (stop/terminate) must NOT transition that volume to available — a
+// reattach on a WAL-less node would find no checkpoint (bad superblock) — while
+// other volumes still seal and the loop completes (terminate stays idempotent).
+func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+	volState := &recordingVolState{}
+	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
+
+	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
+		var req types.EBSRequest
+		json.Unmarshal(msg.Data, &req)
+		resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+		if req.Name == "vol-fail" {
+			resp.Error = "seal volume: predastore unreachable"
+		}
+		data, _ := json.Marshal(resp)
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	inst := &vm.VM{
+		ID: "i-1",
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
+		},
+	}
+	require.NoError(t, adapter.Unmount(inst),
+		"bulk Unmount must tolerate a per-volume seal failure so terminate stays idempotent")
+
+	calls := volState.snapshot()
+	assert.NotContains(t, calls, "vol-fail:available",
+		"a failed seal must not transition the volume to available")
+	assert.Contains(t, calls, "vol-ok:available",
+		"a successful seal must still transition the volume to available")
+}
+
+// TestUnmountResponseError covers the shared seal-result parser used by both the
+// gated DetachVolume path (unmountOne) and the tolerated teardown path (Unmount).
+func TestUnmountResponseError(t *testing.T) {
+	t.Run("success (not mounted, no error)", func(t *testing.T) {
+		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Mounted: false})
+		require.NoError(t, unmountResponseError(data))
+	})
+	t.Run("seal error propagates", func(t *testing.T) {
+		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Error: "seal volume: boom"})
+		require.Error(t, unmountResponseError(data))
+	})
+	t.Run("still mounted propagates", func(t *testing.T) {
+		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Mounted: true})
+		require.Error(t, unmountResponseError(data))
+	})
+	t.Run("malformed payload propagates", func(t *testing.T) {
+		require.Error(t, unmountResponseError([]byte("not json")))
+	})
 }
 
 // TestVolumeMounterAdapter_Mount_PartialFailureRollback verifies that when
@@ -4284,6 +4252,7 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 		{name: "eigwService", set: func(d *Daemon) { d.eigwService = &handlers_ec2_eigw.EgressOnlyIGWServiceImpl{} }, wantMsg: "eigwService"},
 		{name: "igwService", set: func(d *Daemon) { d.igwService = &handlers_ec2_igw.IGWServiceImpl{} }, wantMsg: "igwService"},
 		{name: "placementGroupService", set: func(d *Daemon) { d.placementGroupService = &handlers_ec2_placementgroup.PlacementGroupServiceImpl{} }, wantMsg: "placementGroupService"},
+		{name: "spotInstanceService", set: func(d *Daemon) { d.spotInstanceService = &handlers_ec2_spotinstance.SpotInstanceServiceImpl{} }, wantMsg: "spotInstanceService"},
 		{name: "vpcService", set: func(d *Daemon) { d.vpcService = &handlers_ec2_vpc.VPCServiceImpl{} }, wantMsg: "vpcService"},
 		{name: "routeTableService", set: func(d *Daemon) { d.routeTableService = &handlers_ec2_routetable.RouteTableServiceImpl{} }, wantMsg: "routeTableService"},
 		{name: "natGatewayService", set: func(d *Daemon) { d.natGatewayService = &handlers_ec2_natgw.NatGatewayServiceImpl{} }, wantMsg: "natGatewayService"},

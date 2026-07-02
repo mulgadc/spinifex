@@ -50,6 +50,13 @@ func TestAccountScoping(t *testing.T) {
 	runAccountScoping(t, requireSingleNodeFixture(t))
 }
 
+// TestPredastoreObjectLifecycle owns a dedicated bucket and never touches the
+// singleton VM or default VPC/SG, so it is parallel-safe.
+func TestPredastoreObjectLifecycle(t *testing.T) {
+	t.Parallel()
+	runPredastoreObjectLifecycle(t, requireSingleNodeFixture(t))
+}
+
 func TestVPCSubnetE2E(t *testing.T) {
 	t.Parallel()
 	runVPCSubnetE2E(t, requireSingleNodeFixture(t))
@@ -69,7 +76,8 @@ func TestReplaceRouteConvergence(t *testing.T) {
 
 // --- Sequential: singleton VM lifecycle ---
 
-// TestClusterStatsCLI asserts 0-VM baseline state before any instance launches.
+// TestClusterStatsCLI exercises the spx cluster CLI; its get-vms baseline is
+// concurrency-tolerant (other suites may have VMs on the node).
 func TestClusterStatsCLI(t *testing.T) {
 	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
@@ -115,12 +123,25 @@ func TestENIHotplug(t *testing.T) {
 	runENIHotplug(t, requireSingleNodeFixture(t))
 }
 
+// TestENIHotplugReconcile attaches a secondary ENI, restarts spinifex-daemon,
+// and asserts the hot-plug reconciler keeps the ENI attached + manageable
+// (detach succeeds) across the restart. Runs after TestENIHotplug so the
+// singleton is known running + SSH-healthy.
+func TestENIHotplugReconcile(t *testing.T) {
+	runENIHotplugReconcile(t, requireSingleNodeFixture(t))
+}
+
 func TestVolumeLifecycle(t *testing.T) {
 	runVolumeLifecycle(t, requireSingleNodeFixture(t))
 }
 
 func TestVolumeStatus(t *testing.T) {
 	runVolumeStatus(t, requireSingleNodeFixture(t))
+}
+
+// TestVolumeDurability stops/starts the singleton; sequential, leaves it running.
+func TestVolumeDurability(t *testing.T) {
+	runVolumeDurability(t, requireSingleNodeFixture(t))
 }
 
 func TestSnapshotLifecycle(t *testing.T) {
@@ -159,6 +180,13 @@ func TestRunInstancesMultiCount(t *testing.T) {
 	runRunInstancesMultiCount(t, requireSingleNodeFixture(t))
 }
 
+// TestSpotInstanceLifecycle drives the Spot Instance Request mock: request ->
+// fulfilled -> running -> cancel/terminate terminal transitions. Sequential: it
+// consumes node capacity for its own short-lived VMs like the multi-count test.
+func TestSpotInstanceLifecycle(t *testing.T) {
+	runSpotInstanceLifecycle(t, requireSingleNodeFixture(t))
+}
+
 // --- Sequential: shared-state / sub-test-parallel Tests ---
 
 func TestNegativeErrorPaths(t *testing.T) {
@@ -178,68 +206,6 @@ func TestInstanceEIP(t *testing.T) {
 
 func TestSGToSGDatapath(t *testing.T) {
 	runSGToSGDatapath(t, requireSingleNodeFixture(t))
-}
-
-// IAM Tests share the package-scoped IAM fixture; sub-tests inside each
-// runIAM* already use t.Parallel for fan-out.
-func TestIAMUserCRUD(t *testing.T) {
-	runIAMUserCRUD(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMAccessKeyLifecycle(t *testing.T) {
-	runIAMAccessKeyLifecycle(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMUserAuthentication(t *testing.T) {
-	runIAMUserAuthentication(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMPolicyCRUD(t *testing.T) {
-	runIAMPolicyCRUD(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMPolicyAttachmentEnforcement(t *testing.T) {
-	runIAMPolicyAttachmentEnforcement(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMPolicyLifecycle(t *testing.T) {
-	runIAMPolicyLifecycle(t, requireSingleNodeFixture(t))
-}
-
-func TestIAMCleanup(t *testing.T) {
-	runIAMCleanup(t, requireSingleNodeFixture(t))
-}
-
-// TestIAMRolesAndProfiles + TestIAMInstanceProfileAssociation are sequential:
-// the second recreates role/profile names the first tore down.
-func TestIAMRolesAndProfiles(t *testing.T) {
-	runIAMRolesAndProfiles(t, requireSingleNodeFixture(t))
-}
-
-// TestIAMInstanceProfileAssociation mutates the singleton VM, so it cannot
-// share the parallel bucket.
-func TestIAMInstanceProfileAssociation(t *testing.T) {
-	runIAMInstanceProfileAssociation(t, requireSingleNodeFixture(t))
-}
-
-// TestSTSAssumeRoleAndGetCallerIdentity is sequential to avoid racing trust-policy
-// mutations against a parallel AssumeRole.
-func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
-	runSTS(t, requireSingleNodeFixture(t))
-}
-
-// TestAssumedRoleControlPlaneEnforcement verifies a zero-policy assumed-role
-// is denied and permitted once a policy is attached. Sequential to avoid
-// racing the mid-test grant.
-func TestAssumedRoleControlPlaneEnforcement(t *testing.T) {
-	runAssumedRoleControlPlaneEnforcement(t, requireSingleNodeFixture(t))
-}
-
-// TestIMDS exercises IMDSv2 end-to-end: token issuance, metadata surface,
-// instance-role credentials, OVN datapath, and cross-VPC isolation. Sequential
-// because it launches profile-bound VMs and creates a fresh VPC.
-func TestIMDS(t *testing.T) {
-	runIMDS(t, requireSingleNodeFixture(t))
 }
 
 // TestFinalClusterStats runs as the last sequential test.

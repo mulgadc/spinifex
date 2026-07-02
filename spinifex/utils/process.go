@@ -39,6 +39,39 @@ func StopProcess(serviceName string) error {
 	return nil
 }
 
+// ProcessAlive reports whether the process is still running, via a
+// signal-0 liveness probe. A PID file going missing does NOT imply the
+// process exited, so callers that must reap a process check this directly.
+func ProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}
+
+// ForceKillProcess SIGKILLs a process immediately and waits up to timeout for
+// it to exit. Used to reap a known-orphan (e.g. a QEMU for an
+// already-terminated instance) where the graceful SIGTERM grace period is not
+// warranted. SIGKILL cannot be caught, so the process never removes its own PID
+// file — callers should RemovePidFile after this returns.
+func ForceKillProcess(pid int, timeout time.Duration) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid pid %d", pid)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := process.Signal(syscall.SIGKILL); err != nil {
+		return err
+	}
+	return WaitForProcessExit(pid, timeout)
+}
+
 func KillProcess(pid int) error {
 	process, err := os.FindProcess(pid)
 

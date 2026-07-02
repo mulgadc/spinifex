@@ -5,6 +5,7 @@ package lbagent
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -22,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 )
 
@@ -60,9 +61,8 @@ type Agent struct {
 	certDir    string // dir for TLS cert PEM files; defaults to CertDir (overridable in tests)
 	socketPath string // HAProxy stats socket
 
-	accessKey string
-	secretKey string
-	client    *http.Client
+	signer *gwsign.Signer
+	client *http.Client
 
 	localConfigHash string
 	engine          string         // data-plane engine of the last applied config
@@ -86,14 +86,24 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 	if gatewayURL == "" {
 		return nil, fmt.Errorf("gatewayURL is required")
 	}
-	if accessKey == "" || secretKey == "" {
-		return nil, fmt.Errorf("access key and secret key are required")
-	}
 	if region == "" {
 		return nil, fmt.Errorf("region is required")
 	}
 
-	// Use system CA trust store (CA cert injected via cloud-init ca_certs).
+	// Static keys (when present in user-data) sign as-is; otherwise fall back to
+	// the IMDS instance-role credentials served in-VM, which rotate.
+	var signer *gwsign.Signer
+	if accessKey != "" && secretKey != "" {
+		signer = gwsign.NewStatic(accessKey, secretKey)
+	} else {
+		s, err := gwsign.NewIMDS(context.Background(), region)
+		if err != nil {
+			return nil, fmt.Errorf("init IMDS signer: %w", err)
+		}
+		signer = s
+	}
+
+	// Use system CA trust store (deployment CA provisioned via fw_cfg on the microvm).
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
@@ -114,8 +124,7 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		pidPath:       DefaultPIDPath,
 		certDir:       CertDir,
 		socketPath:    fmt.Sprintf("/tmp/spinifex-haproxy/%s.sock", lbID),
-		accessKey:     accessKey,
-		secretKey:     secretKey,
+		signer:        signer,
 		client:        client,
 		stopCh:        make(chan struct{}),
 		reloadFn:      reloadHAProxy,
@@ -309,7 +318,7 @@ func (a *Agent) signedPost(params url.Values) ([]byte, error) {
 
 	sum := sha256.Sum256([]byte(body))
 	payloadHash := hex.EncodeToString(sum[:])
-	if err := auth.SignReq(req, a.accessKey, a.secretKey, payloadHash, "elasticloadbalancing", a.region); err != nil {
+	if err := a.signer.Sign(req, payloadHash, "elasticloadbalancing", a.region); err != nil {
 		return nil, fmt.Errorf("sign request: %w", err)
 	}
 

@@ -77,6 +77,11 @@ type volumeMounterAdapter struct {
 
 var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
 
+// unmountSealTimeout bounds the ebs.unmount NATS request. The handler now drives
+// a synchronous block-map seal to predastore (S3 I/O), so it matches
+// viperblockd's 120s KillProcess wait rather than a bare RPC budget.
+const unmountSealTimeout = 120 * time.Second
+
 func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
 	return &volumeMounterAdapter{nc: nc, node: node, volState: volState}
 }
@@ -152,16 +157,31 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 			continue
 		}
 
-		msg, err := a.nc.Request(a.topic("unmount"), ebsUnMountRequest, 30*time.Second)
+		// ebs.unmount seals the block map to predastore. Teardown tolerates a
+		// failed seal (log + continue) so terminate stays idempotent, but the
+		// volume must NOT then go available: a reattach on a node without the
+		// local WAL would find no checkpoint (bad superblock). On terminate the
+		// volume is deleted regardless; on stop it stays attached/retryable.
+		sealed := true
+		msg, err := a.nc.Request(a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
 		if err != nil {
 			slog.Error("Failed to unmount volume",
 				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
+			sealed = false
+		} else if sealErr := unmountResponseError(msg.Data); sealErr != nil {
+			slog.Error("Volume unmount seal failed, leaving volume non-available",
+				"instance", instance.ID, "volume", ebsRequest.Name, "err", sealErr)
+			sealed = false
 		} else {
 			slog.Info("Unmounted volume",
 				"instance", instance.ID, "volume", ebsRequest.Name, "data", string(msg.Data))
 		}
 
-		if !ebsRequest.EFI && !ebsRequest.CloudInit && a.volState != nil {
+		// Boot/root volumes must stay attached across stop/crash unmount: EFI is
+		// the wrong proxy for "boot" (BIOS-boot roots are Boot && !EFI), so gate on
+		// Boot too. Only DetachVolume and terminate release a boot volume; flipping
+		// it available here while the instance restarts splits the state record.
+		if sealed && !ebsRequest.EFI && !ebsRequest.Boot && a.volState != nil {
 			if err := a.volState.UpdateVolumeState(ebsRequest.Name, "available", "", ""); err != nil {
 				slog.Error("Failed to update volume state to available after unmount",
 					"volumeId", ebsRequest.Name, "err", err)
@@ -200,13 +220,16 @@ func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
 	return nil
 }
 
-// UnmountOne sends ebs.unmount; errors are logged and swallowed.
-func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) {
+// UnmountOne sends ebs.unmount and returns any error. The handler seals the
+// volume's block map to predastore, so the caller decides whether a failure
+// blocks the volume's available transition.
+func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) error {
 	if err := a.unmountOne(req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
-		return
+		return err
 	}
 	slog.Info("UnmountOne: volume unmounted successfully", "volume", req.Name)
+	return nil
 }
 
 // unmountOne sends ebs.unmount and returns any error.
@@ -215,12 +238,19 @@ func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
 	if err != nil {
 		return fmt.Errorf("marshal unmount request: %w", err)
 	}
-	msg, err := a.nc.Request(a.topic("unmount"), payload, 10*time.Second)
+	msg, err := a.nc.Request(a.topic("unmount"), payload, unmountSealTimeout)
 	if err != nil {
 		return fmt.Errorf("ebs.unmount NATS request: %w", err)
 	}
+	return unmountResponseError(msg.Data)
+}
+
+// unmountResponseError reports a seal/unmount failure from an ebs.unmount
+// response payload: a non-empty Error, or a volume still reported mounted.
+// Returns nil when the unmount and its block-map seal succeeded.
+func unmountResponseError(data []byte) error {
 	var resp types.EBSUnMountResponse
-	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+	if err := json.Unmarshal(data, &resp); err != nil {
 		return fmt.Errorf("unmarshal unmount response: %w", err)
 	}
 	if resp.Error != "" {
@@ -285,6 +315,14 @@ func (a *resourceControllerAdapter) Deallocate(instanceType string) {
 		return
 	}
 	a.rm.deallocate(it)
+}
+
+func (a *resourceControllerAdapter) ReleaseToReservation(reservationID, instanceType string) {
+	it := a.rm.instanceTypes[instanceType]
+	if it == nil {
+		return
+	}
+	a.rm.ReleaseToReservation(reservationID, it)
 }
 
 func (a *resourceControllerAdapter) CanAllocate(instanceType string, count int) int {
@@ -527,8 +565,8 @@ func newInstanceCleanerAdapter(d *Daemon) *instanceCleanerAdapter {
 	return &instanceCleanerAdapter{d: d}
 }
 
-// DeleteVolumes deletes EFI / cloud-init internal volumes via ebs.delete
-// and user volumes flagged DeleteOnTermination via the volume service.
+// DeleteVolumes deletes EFI internal volumes via ebs.delete and user volumes
+// flagged DeleteOnTermination via the volume service.
 // Errors are logged per volume; partial failure is tolerated.
 func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 	instance.EBSRequests.Mu.Lock()
@@ -536,11 +574,10 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 
 	var firstErr error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		// Internal volumes (EFI, cloud-init) always go through ebs.delete to
-		// stop their viperblockd processes. S3 data is cleaned up via the
-		// parent root volume's DeleteVolume (which removes -efi/ and
-		// -cloudinit/ prefixes).
-		if ebsRequest.EFI || ebsRequest.CloudInit {
+		// Internal volumes (EFI) always go through ebs.delete to stop their
+		// viperblockd processes. S3 data is cleaned up via the parent root
+		// volume's DeleteVolume (which removes the -efi/ prefix).
+		if ebsRequest.EFI {
 			ebsDeleteData, err := json.Marshal(types.EBSDeleteRequest{Volume: ebsRequest.Name})
 			if err != nil {
 				slog.Error("Failed to marshal ebs.delete request for internal volume",
@@ -672,6 +709,22 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) error
 	}, instance.AccountID); err != nil {
 		slog.Error("Failed to remove instance from placement group",
 			"instanceId", instance.ID, "groupName", instance.PlacementGroupName, "err", err)
+		return err
+	}
+	return nil
+}
+
+// RemoveFromSpotRequest closes the Spot Instance Request fulfilled by this
+// instance, if any. The VM carries no spot marker, so the service scans the
+// active bucket by instance ID; a non-spot instance is a cheap no-op. No-op
+// when the spot instance service is not configured.
+func (a *instanceCleanerAdapter) RemoveFromSpotRequest(instance *vm.VM) error {
+	if a.d.spotInstanceService == nil {
+		return nil
+	}
+	if err := a.d.spotInstanceService.CloseForInstance(instance.ID, instance.AccountID); err != nil {
+		slog.Error("Failed to close spot request for instance",
+			"instanceId", instance.ID, "err", err)
 		return err
 	}
 	return nil

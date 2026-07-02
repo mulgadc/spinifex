@@ -371,9 +371,14 @@ var (
 	ErrorResourceCountLimitExceeded                           = "ResourceCountLimitExceeded"
 	ErrorResourceLimitExceeded                                = "ResourceLimitExceeded"
 	// ErrorResourceNotFound is the ACM not-found code. EKS must use ErrorEKSResourceNotFound — do not cross-wire.
-	ErrorResourceNotFound                               = "ResourceNotFound"
-	ErrorEKSResourceInUse                               = "ResourceInUseException"
-	ErrorEKSResourceNotFound                            = "ResourceNotFoundException"
+	ErrorResourceNotFound    = "ResourceNotFound"
+	ErrorEKSResourceInUse    = "ResourceInUseException"
+	ErrorEKSResourceNotFound = "ResourceNotFoundException"
+	// ECS JSON-1.1 exception codes. ECS clients key on the "Exception"-suffixed
+	// __type; do not cross-wire with the EC2/ACM not-found codes above.
+	ErrorECSClusterNotFound                             = "ClusterNotFoundException"
+	ErrorECSInvalidParameter                            = "InvalidParameterException"
+	ErrorECSServiceNotFound                             = "ServiceNotFoundException"
 	ErrorRetryableError                                 = "RetryableError"
 	ErrorRouteAlreadyExists                             = "RouteAlreadyExists"
 	ErrorRouteLimitExceeded                             = "RouteLimitExceeded"
@@ -452,6 +457,21 @@ var (
 	ErrorIAMInvalidInput            = ErrorInvalidInput // alias for IAM usage
 	ErrorIAMMalformedPolicyDocument = "MalformedPolicyDocument"
 	ErrorAccessDenied               = "AccessDenied"
+
+	// ECR-specific error codes
+	ErrorRepositoryNotFound       = "RepositoryNotFoundException"
+	ErrorRepositoryPolicyNotFound = "RepositoryPolicyNotFoundException"
+	ErrorLifecyclePolicyNotFound  = "LifecyclePolicyNotFoundException"
+	ErrorRepositoryAlreadyExists  = "RepositoryAlreadyExistsException"
+	ErrorRepositoryNotEmpty       = "RepositoryNotEmptyException"
+	ErrorImageNotFound            = "ImageNotFoundException"
+	ErrorImageAlreadyExists       = "ImageAlreadyExistsException"
+	ErrorImageTagAlreadyExists    = "ImageTagAlreadyExistsException"
+	ErrorImageDigestDoesNotMatch  = "ImageDigestDoesNotMatchException"
+	ErrorLayersNotFound           = "LayersNotFoundException"
+	ErrorReferencedImagesNotFound = "ReferencedImagesNotFoundException"
+	ErrorTooManyTags              = "TooManyTagsException"
+	ErrorOperationNotSupported    = "OperationNotSupportedException"
 
 	// ELBv2-specific error codes
 	ErrorELBv2LoadBalancerNotFound         = "LoadBalancerNotFound"
@@ -879,6 +899,9 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
 	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
 	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
+	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "The specified cluster was not found. You can view your available clusters with ListClusters. Amazon ECS clusters are Region specific."},
+	ErrorECSInvalidParameter:                                   {HTTPCode: 400, Message: "The specified parameter is not valid. Review the available parameters for the API request."},
+	ErrorECSServiceNotFound:                                    {HTTPCode: 400, Message: "The specified service was not found. You can view your available services with ListServices. Amazon ECS services are cluster specific and Region specific."},
 	ErrorRetryableError:                                        {HTTPCode: 400, Message: "A request submitted by an AWS service on your behalf could not be completed. The requesting service might automatically retry the request."},
 	ErrorRouteAlreadyExists:                                    {HTTPCode: 409, Message: "A route for the specified CIDR block already exists in this route table."},
 	ErrorRouteLimitExceeded:                                    {HTTPCode: 400, Message: "You've reached the limit on the number of routes that you can add to a route table."},
@@ -956,6 +979,21 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorIAMLimitExceeded:           {HTTPCode: 409, Message: "The request was rejected because it attempted to create resources beyond the current AWS account limits."},
 	ErrorIAMMalformedPolicyDocument: {HTTPCode: 400, Message: "The policy document is malformed."},
 	ErrorAccessDenied:               {HTTPCode: 403, Message: "User is not authorized to perform this action."},
+
+	// ECR error codes
+	ErrorRepositoryNotFound:       {HTTPCode: 400, Message: "The repository could not be found. Check the spelling of the specified repository and ensure that you are performing operations on the correct registry."},
+	ErrorRepositoryPolicyNotFound: {HTTPCode: 400, Message: "The repository and registry do not have an associated repository policy."},
+	ErrorLifecyclePolicyNotFound:  {HTTPCode: 400, Message: "The lifecycle policy for the specified repository could not be found."},
+	ErrorRepositoryAlreadyExists:  {HTTPCode: 400, Message: "The repository already exists in the registry."},
+	ErrorRepositoryNotEmpty:       {HTTPCode: 400, Message: "The repository contains images. Either delete the images or use the force option to delete the repository."},
+	ErrorImageNotFound:            {HTTPCode: 400, Message: "The image requested does not exist in the specified repository."},
+	ErrorImageAlreadyExists:       {HTTPCode: 400, Message: "The specified image has already been pushed, and there were no changes to the manifest or image tag after the last push."},
+	ErrorImageTagAlreadyExists:    {HTTPCode: 400, Message: "The specified image is tagged with a tag that already exists. The repository is configured for tag immutability."},
+	ErrorImageDigestDoesNotMatch:  {HTTPCode: 400, Message: "The specified image digest does not match the digest of the supplied image manifest."},
+	ErrorLayersNotFound:           {HTTPCode: 400, Message: "The specified layers could not be found, or the specified layer is not valid for this repository."},
+	ErrorReferencedImagesNotFound: {HTTPCode: 400, Message: "The manifest list is referencing an image that does not exist."},
+	ErrorTooManyTags:              {HTTPCode: 400, Message: "The list of tags on the repository is over the limit. The maximum number of tags that can be applied to a repository is 50."},
+	ErrorOperationNotSupported:    {HTTPCode: 400, Message: "The specified operation is not supported in this registry."},
 
 	// ELBv2 error codes
 	ErrorELBv2LoadBalancerNotFound:         {HTTPCode: 400, Message: "One or more load balancers not found."},

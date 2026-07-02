@@ -16,7 +16,6 @@ import (
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -30,6 +29,7 @@ import (
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -1123,21 +1123,6 @@ func TestHandleEC2CreateImage_MalformedJSON(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
 	assert.Equal(t, awserrors.ErrorValidationError, errResp["Code"])
-}
-
-// --- SetConfigPath test ---
-
-func TestSetConfigPath(t *testing.T) {
-	clusterCfg := &config.ClusterConfig{
-		Node:  "node-1",
-		Nodes: map[string]config.Config{"node-1": {BaseDir: "/tmp"}},
-	}
-	daemon, err := NewDaemon(clusterCfg)
-	require.NoError(t, err)
-
-	assert.Empty(t, daemon.configPath)
-	daemon.SetConfigPath("/etc/spinifex/config.toml")
-	assert.Equal(t, "/etc/spinifex/config.toml", daemon.configPath)
 }
 
 // --- handleEC2StartStoppedInstance tests ---
@@ -3551,7 +3536,7 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 
 	js, err := nc.JetStream()
 	require.NoError(t, err)
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []handlers_ec2_vpc.ExternalPoolConfig{
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{
 		{Name: "test-pool", RangeStart: "192.168.100.2", RangeEnd: "192.168.100.254", Gateway: "192.168.100.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
@@ -4148,4 +4133,25 @@ func TestRespondWithJSON_RespondFailureLogs(t *testing.T) {
 	logged := buf.String()
 	assert.Contains(t, logged, "Failed to respond to NATS request")
 	assert.NotContains(t, logged, "Failed to marshal response")
+}
+
+func TestVMHealthLabel(t *testing.T) {
+	tests := []struct {
+		name   string
+		status vm.InstanceState
+		health vm.InstanceHealthState
+		want   string
+	}{
+		{"stopped", vm.StateStopped, vm.InstanceHealthState{}, "-"},
+		{"running clean", vm.StateRunning, vm.InstanceHealthState{}, "ok"},
+		{"running after crash", vm.StateRunning, vm.InstanceHealthState{CrashCount: 2}, "recovering"},
+		{"qmp impaired", vm.StateRunning, vm.InstanceHealthState{QMPConsecutiveFailures: vm.QMPMaxConsecutiveFailures}, "impaired"},
+		{"qmp impaired wins over crash", vm.StateRunning, vm.InstanceHealthState{CrashCount: 5, QMPConsecutiveFailures: vm.QMPMaxConsecutiveFailures}, "impaired"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &vm.VM{ID: "i-x", Status: tc.status, Health: tc.health}
+			assert.Equal(t, tc.want, vmHealthLabel(v))
+		})
+	}
 }

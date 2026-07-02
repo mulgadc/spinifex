@@ -135,6 +135,18 @@ func (s *stubIAMService) DetachRolePolicy(_ string, _ *iam.DetachRolePolicyInput
 func (s *stubIAMService) ListAttachedRolePolicies(_ string, _ *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
 	return &iam.ListAttachedRolePoliciesOutput{}, nil
 }
+func (s *stubIAMService) PutRolePolicy(_ string, _ *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	return &iam.PutRolePolicyOutput{}, nil
+}
+func (s *stubIAMService) GetRolePolicy(_ string, _ *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
+	return &iam.GetRolePolicyOutput{}, nil
+}
+func (s *stubIAMService) DeleteRolePolicy(_ string, _ *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
+	return &iam.DeleteRolePolicyOutput{}, nil
+}
+func (s *stubIAMService) ListRolePolicies(_ string, _ *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
+	return &iam.ListRolePoliciesOutput{}, nil
+}
 func (s *stubIAMService) CreateInstanceProfile(_ string, _ *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
 	return &iam.CreateInstanceProfileOutput{}, nil
 }
@@ -161,6 +173,61 @@ func (s *stubIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRo
 }
 func (s *stubIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
 	return nil, nil
+}
+
+func (s *stubIAMService) CreateGroup(_ string, _ *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
+	return &iam.CreateGroupOutput{}, nil
+}
+func (s *stubIAMService) GetGroup(_ string, _ *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
+	return &iam.GetGroupOutput{}, nil
+}
+func (s *stubIAMService) ListGroups(_ string, _ *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
+	return &iam.ListGroupsOutput{}, nil
+}
+func (s *stubIAMService) DeleteGroup(_ string, _ *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
+	return &iam.DeleteGroupOutput{}, nil
+}
+func (s *stubIAMService) AddUserToGroup(_ string, _ *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
+	return &iam.AddUserToGroupOutput{}, nil
+}
+func (s *stubIAMService) RemoveUserFromGroup(_ string, _ *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
+	return &iam.RemoveUserFromGroupOutput{}, nil
+}
+func (s *stubIAMService) ListGroupsForUser(_ string, _ *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
+	return &iam.ListGroupsForUserOutput{}, nil
+}
+func (s *stubIAMService) AttachGroupPolicy(_ string, _ *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
+	return &iam.AttachGroupPolicyOutput{}, nil
+}
+func (s *stubIAMService) DetachGroupPolicy(_ string, _ *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
+	return &iam.DetachGroupPolicyOutput{}, nil
+}
+func (s *stubIAMService) ListAttachedGroupPolicies(_ string, _ *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
+	return &iam.ListAttachedGroupPoliciesOutput{}, nil
+}
+func (s *stubIAMService) PutGroupPolicy(_ string, _ *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	return &iam.PutGroupPolicyOutput{}, nil
+}
+func (s *stubIAMService) GetGroupPolicy(_ string, _ *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	return &iam.GetGroupPolicyOutput{}, nil
+}
+func (s *stubIAMService) DeleteGroupPolicy(_ string, _ *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	return &iam.DeleteGroupPolicyOutput{}, nil
+}
+func (s *stubIAMService) ListGroupPolicies(_ string, _ *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	return &iam.ListGroupPoliciesOutput{}, nil
+}
+func (s *stubIAMService) PutUserPolicy(_ string, _ *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+	return &iam.PutUserPolicyOutput{}, nil
+}
+func (s *stubIAMService) GetUserPolicy(_ string, _ *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
+	return &iam.GetUserPolicyOutput{}, nil
+}
+func (s *stubIAMService) DeleteUserPolicy(_ string, _ *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+	return &iam.DeleteUserPolicyOutput{}, nil
+}
+func (s *stubIAMService) ListUserPolicies(_ string, _ *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
+	return &iam.ListUserPoliciesOutput{}, nil
 }
 
 func TestCreateUser(t *testing.T) {

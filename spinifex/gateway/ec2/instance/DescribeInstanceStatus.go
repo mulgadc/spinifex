@@ -10,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -35,76 +34,17 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	inbox := nats.NewInbox()
-	sub, err := natsConn.SubscribeSync(inbox)
+	frames, sum, err := utils.Gather(natsConn, "ec2.DescribeInstanceStatus", jsonData,
+		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
-		slog.Error("DescribeInstanceStatus: Failed to create inbox subscription", "err", err)
-		return nil, fmt.Errorf("failed to create inbox: %w", err)
+		return nil, err
 	}
-	defer sub.Unsubscribe()
-
-	pubMsg := nats.NewMsg("ec2.DescribeInstanceStatus")
-	pubMsg.Reply = inbox
-	pubMsg.Data = jsonData
-	pubMsg.Header.Set(utils.AccountIDHeader, accountID)
-	if err := natsConn.PublishMsg(pubMsg); err != nil {
-		slog.Error("DescribeInstanceStatus: Failed to publish request", "err", err)
-		return nil, fmt.Errorf("failed to publish request: %w", err)
-	}
-
-	timeout := 3 * time.Second
-	deadline := time.Now().Add(timeout)
 
 	var allStatuses []*ec2.InstanceStatus
-	var clientError string
-	responsesReceived := 0
-
-	if expectedNodes <= 0 {
-		expectedNodes = -1
-		slog.Warn("DescribeInstanceStatus: ExpectedNodes not configured, using timeout-only collection")
-	}
-
-	for time.Now().Before(deadline) {
-		if expectedNodes > 0 && responsesReceived >= expectedNodes {
-			slog.Info("DescribeInstanceStatus: Received responses from all expected nodes", "expected", expectedNodes, "received", responsesReceived)
-			break
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if err == nats.ErrTimeout {
-				break
-			}
-			slog.Error("DescribeInstanceStatus: Error receiving message", "err", err)
-			break
-		}
-		responsesReceived++
-
-		if responseError, perr := utils.ValidateErrorPayload(msg.Data); perr != nil {
-			code := ""
-			if responseError.Code != nil {
-				code = *responseError.Code
-			}
-			if clientError == "" && code != "" {
-				if info, known := awserrors.ErrorLookup[code]; known && info.HTTPCode >= 400 && info.HTTPCode < 500 {
-					clientError = code
-				}
-			}
-			slog.Warn("DescribeInstanceStatus: Received error from node", "code", code, "responses_received", responsesReceived)
-			continue
-		}
-
+	for _, frame := range frames {
 		var nodeOutput ec2.DescribeInstanceStatusOutput
-		if err := json.Unmarshal(msg.Data, &nodeOutput); err != nil {
-			slog.Error("DescribeInstanceStatus: Failed to unmarshal node response", "err", err)
-			continue
-		}
-		if len(nodeOutput.InstanceStatuses) > 0 {
+		if json.Unmarshal(frame, &nodeOutput) == nil {
 			allStatuses = append(allStatuses, nodeOutput.InstanceStatuses...)
-			slog.Info("DescribeInstanceStatus: Collected statuses from node", "count", len(nodeOutput.InstanceStatuses), "responses_received", responsesReceived)
 		}
 	}
 
@@ -116,8 +56,8 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 
 	finalStatuses := dedupStatuses(allStatuses)
 
-	if clientError != "" && len(finalStatuses) == 0 {
-		return nil, errors.New(clientError)
+	if sum.FirstClient4xx != "" && len(finalStatuses) == 0 {
+		return nil, errors.New(sum.FirstClient4xx)
 	}
 
 	slog.Info("DescribeInstanceStatus: Aggregated response", "total_statuses", len(finalStatuses))
@@ -137,7 +77,7 @@ func queryStoppedInstancesForStatus(natsConn *nats.Conn, input *ec2.DescribeInst
 		slog.Error("DescribeInstanceStatus: failed to marshal stopped query", "err", err)
 		return nil
 	}
-	reservations := queryInstanceBucket(natsConn, "ec2.DescribeStoppedInstances", jsonData, accountID)
+	reservations, _ := queryInstanceBucket(natsConn, "ec2.DescribeStoppedInstances", jsonData, accountID)
 	var statuses []*ec2.InstanceStatus
 	for _, res := range reservations {
 		if res == nil {

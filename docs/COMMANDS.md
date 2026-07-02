@@ -69,6 +69,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 |---------|-------|-------------|
 | `spx admin cluster shutdown` | `--force` (shutdown even if nodes don't respond), `--timeout` (max wait per phase, default 120s), `--dry-run` (print phase plan without executing) | Performs coordinated, phased shutdown of entire cluster. Phases execute in order: GATE (stop API/UI) → DRAIN (stop VMs) → STORAGE (stop viperblock) → PERSIST (stop predastore) → INFRA (stop NATS/daemon). Each phase waits for all nodes to ACK before proceeding. Uses JetStream state tracking. |
 | `spx admin cluster drain-dhcp` | `--timeout` (reply-collection window, default 30s) | Asks each vpcd to DHCPRELEASE every external-pool DHCP lease it currently holds, returning them to the upstream DHCP server. Run on teardown before stopping services — an env reset otherwise strands held leases upstream until their TTL expires, eventually exhausting the upstream scope. Best-effort: warns and exits 0 if the cluster is already down. |
+| `spx admin node drain --local` | `--local` (drain the local node only, required), `--timeout` (max wait per phase, default 120s) | Runs the GATE and DRAIN phases against the local node only: powers down its guests via QMP and unmounts their volumes (flushing the viperblock WAL) while every service is still up. STORAGE/PERSIST/INFRA are left to systemd's ordered teardown. Wired as the `ExecStop` of `spinifex-shutdown.service`, so `systemctl stop spinifex.target` and host reboot/poweroff drain guests before any storage service stops. |
 
 ### Certificate Management
 
@@ -93,7 +94,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | Catalog imports (`--name`) download the image, fetch the catalog `Checksum` URL, verify the SHA-256/SHA-512 digest, and inherit `BootMode` from the catalog entry. `--boot-mode` overrides the catalog value when set. Mismatch fails closed; the cached file is left on disk and `--force` re-downloads. `--file` imports skip checksum verification (operator-supplied media is outside Spinifex's trust boundary, the skip is logged at INFO for audit) and require an explicit `--boot-mode` because there is no catalog metadata to inherit from. `--skip-verify` bypasses verification for catalog imports and emits a WARN slog + stderr notice; use only for debugging or when upstream mirrors are confirmed-broken. |
+| `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | Catalog imports (`--name`) download the image, fetch the catalog `Checksum` URL, verify the SHA-256/SHA-512 digest, and inherit `BootMode` from the catalog entry. `--boot-mode` overrides the catalog value when set. Mismatch fails closed; the cached file is left on disk and `--force` re-downloads. `--file` imports skip checksum verification (operator-supplied media is outside Spinifex's trust boundary, the skip is logged at INFO for audit) and require an explicit `--boot-mode` because there is no catalog metadata to inherit from. `--skip-verify` bypasses verification for catalog imports and emits a WARN slog + stderr notice; use only for debugging or when upstream mirrors are confirmed-broken. On every import a best-effort `virt-customize` step bakes the deployment CA (`<data-root>/config/ca.pem`) into the image's trust store before the block copy, so in-guest SDK-over-TLS calls to Spinifex endpoints trust the gateway from first boot; an image libguestfs cannot customize is imported as-is (CA-free) and logs a skip. Because the CA is fixed into the image, rotating the cluster CA requires re-importing affected images. |
 | `spx admin images list` | — | Lists available OS images that can be imported or downloaded |
 | `spx admin images remove` | `--image-id` (required), `--force`, `--yes` | Loads `ami-<id>/config.json`, walks transitive dependents — copied snapshots whose `VolumeID == imageID`, volumes whose `SnapshotID` references the internal `snap-ami-<id>` or any derived snap, and account AMIs created via `CopyImage` whose `SnapshotID` is a derived snap — then prompts (skipped with `--yes`) before deleting `ami-<id>/config.json` (the DescribeImages barrier) followed by the rest of `ami-<id>/` and `snap-ami-<id>/`. Account-owned AMIs are refused with a hint pointing at `aws ec2 deregister-image` + `aws ec2 delete-snapshot`. `--force` bypasses the dependency, ownership and config-corrupt checks for salvage of orphaned blocks. |
 
@@ -116,7 +117,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--metadata-options`, `--launch-template`, `--hibernate-options` | **DONE** |
+| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn), `--capacity-reservation-specification` (CapacityReservationTarget.CapacityReservationId, targeted-by-id only), `--metadata-options` (HttpPutResponseHopLimit; IMDSv2-only enforced — rejects `http-tokens=optional`) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--launch-template`, `--hibernate-options` | **DONE** |
 | `describe-instances` | `--instance-ids`, `--filters` (instance-state-name, instance-id, instance-type, vpc-id, subnet-id, tag:*, tag-key, tag-value) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `start-instances` | `--instance-ids` | `--dry-run`, `--force` | **DONE** |
 | `stop-instances` | `--instance-ids` | `--force`, `--hibernate`, `--dry-run` | **DONE** |
@@ -126,21 +127,25 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 | `modify-instance-attribute` | `--instance-id`, `--instance-type`, `--user-data`, `--disable-api-termination` | `--ebs-optimized`, `--source-dest-check`, `--instance-initiated-shutdown-behavior`, `--block-device-mappings`, `--groups`, `--ena-support`, `--sriov-net-support` | **DONE** |
 | `get-console-output` | `--instance-id` | `--latest`, `--dry-run` | **DONE** |
 | `describe-instance-attribute` | `--instance-id`, `--attribute` (instanceType, userData, disableApiTermination, instanceInitiatedShutdownBehavior, disableApiStop, ebsOptimized, enaSupport, sourceDestCheck, rootDeviceName, kernel, ramdisk) | `--dry-run` | **DONE** |
+| `modify-instance-metadata-options` | `--instance-id`, `--http-put-response-hop-limit` (1–64), `--http-tokens` (`required`), `--http-endpoint` (`enabled`), `--http-protocol-ipv6`/`--instance-metadata-tags` (`disabled`) — secure values are no-ops, downgrades return `UnsupportedOperation` | `--dry-run` | **DONE** |
 | `describe-instance-credit-specifications` | `--instance-ids` | `--filters`, `--max-results`, `--dry-run` | **DONE** (stub — always returns `standard`) |
 | `describe-instance-status` | `--instance-ids`, `--include-all-instances`, `--filters` (availability-zone, instance-state-code, instance-state-name, tag:*) | `--max-results`, `--next-token`, `--dry-run`, event/instance-status/system-status filters | **DONE** (static health) |
 | `monitor-instances` | — | `--instance-ids` | **NOT STARTED** |
 | `unmonitor-instances` | — | `--instance-ids` | **NOT STARTED** |
 
-`run-instances --iam-instance-profile` enforces `iam:PassRole` on the contained
-role ARN and rejects cross-account profile ARNs. Placement strategies: `spread`
-(1 per node, atomic CAS) and `cluster` (pin all to one node).
+### EC2 — Spot Instances
+
+Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` path: a request synchronously launches real VMs on the operator's own compute and is then reported `active`/`fulfilled`. There is no spot market — no bidding, price rejection, interruption, or reclamation, and instances are never reclaimed.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `request-spot-instances` | `--instance-count` (default 1), `--type` (`one-time`/`persistent` — stored, behaviour identical), `--spot-price` (echoed only), `--client-token`, `--launch-specification` (ImageId, InstanceType, KeyName, SubnetId, SecurityGroupIds, UserData, BlockDeviceMappings, IamInstanceProfile, Placement.GroupName, NetworkInterfaces), `--tag-specifications` (spot-instances-request) | `--valid-from`, `--valid-until`, `--launch-group`, `--availability-zone-group`, `--block-duration-minutes`, `--instance-interruption-behavior`, `--dry-run` | **DONE** (mock) |
+| `describe-spot-instance-requests` | `--spot-instance-request-ids`, `--filters` (spot-instance-request-id, state, instance-id, launch.image-id, launch.instance-type, launch.key-name, type, launched-availability-zone, tag-key, tag:*) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `cancel-spot-instance-requests` | `--spot-instance-request-ids` | `--dry-run` | **DONE** |
+
+`describe-spot-price-history` is **unsupported** (returns `InvalidAction`): on owned hardware there is no spot/on-demand price differential, so any synthetic price would be misleading rather than helpful.
 
 ### EC2 — IAM Instance Profile Associations
-
-Stored as `vm.VM.IamInstanceProfileArn` + `IamInstanceProfileAssociationId`
-(one ARN per instance). Association IDs (`iip-assoc-`) are regenerated on every
-Associate/Replace and never reused. Auto-disassociated on terminate; preserved
-across stop/start.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -172,9 +177,7 @@ across stop/start.
 | `reset-image-attribute` | `--image-id`, `--attribute description` | `--attribute launchPermission`, `--dry-run` | **DONE** |
 | `import-image` | — | `--disk-containers`, `--description`, `--architecture`, `--platform` | **NOT STARTED** |
 
-`copy-image` is metadata-only — no block copy. The new snapshot inherits the
-source `VolumeID`. `register-image`/`copy-image` accept `uefi-preferred` as
-input but treat it as `uefi` at launch.
+`copy-image` is metadata-only — no block copy. The new snapshot inherits the. source `VolumeID`.
 
 ### EC2 — Volumes (EBS)
 
@@ -217,8 +220,7 @@ input but treat it as `uefi` at launch.
 
 ### EC2 — Account Settings
 
-Persistence works (NATS JetStream KV) but stored values are not yet enforced
-by downstream services.
+Persistence works but stored values are not yet enforced by downstream services.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -236,6 +238,8 @@ by downstream services.
 | `get-image-block-public-access-state` | — | `--dry-run` | **NOT STARTED** |
 | `modify-instance-metadata-defaults` | — | `--http-tokens`, `--http-put-response-hop-limit`, `--http-endpoint`, `--instance-metadata-tags` | **NOT STARTED** |
 | `get-instance-metadata-defaults` | — | `--dry-run` | **NOT STARTED** |
+
+The account-level `modify-/get-instance-metadata-defaults` are blocked on an `aws-sdk-go` bump: the `InstanceMetadataDefaultsResponse` type is absent from our version (these APIs landed ~March 2024), and the gateway's generic handler needs the typed input struct to route them.
 
 ### EC2 — VPC Core
 
@@ -280,8 +284,7 @@ by downstream services.
 
 ### EC2 — Egress-Only Internet Gateway
 
-KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on
-network topology.
+KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on network topology.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -436,9 +439,9 @@ EIP commands are only registered when an external IPAM pool is configured.
 | `delete-dhcp-options` | — | `--dhcp-options-id`, `--dry-run` | **NOT STARTED** |
 | `describe-dhcp-options` | — | `--dhcp-options-ids`, `--filters`, `--max-results` | **NOT STARTED** |
 | `associate-dhcp-options` | — | `--dhcp-options-id`, `--vpc-id`, `--dry-run` | **NOT STARTED** |
-| `create-capacity-reservation` | — | `--instance-type`, `--instance-platform`, `--availability-zone`, `--instance-count`, `--end-date`, `--end-date-type`, `--instance-match-criteria`, `--tag-specifications` | **NOT STARTED** |
-| `cancel-capacity-reservation` | — | `--capacity-reservation-id`, `--dry-run` | **NOT STARTED** |
-| `describe-capacity-reservations` | — | `--capacity-reservation-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `create-capacity-reservation` | `--instance-type`, `--instance-count`, `--availability-zone`, `--instance-platform`, `--instance-match-criteria`, `--tenancy` (default only), `--dry-run` | `--end-date`, `--end-date-type` (unlimited only), `--availability-zone-id`, `--tag-specifications` | **DONE** |
+| `cancel-capacity-reservation` | `--capacity-reservation-id`, `--dry-run` | — | **DONE** |
+| `describe-capacity-reservations` | `--capacity-reservation-ids`, `--filters` | `--max-results`, `--next-token` | **DONE** |
 | `modify-capacity-reservation` | — | `--capacity-reservation-id`, `--instance-count`, `--end-date`, `--end-date-type` | **NOT STARTED** |
 
 ### EC2 — Misc
@@ -464,8 +467,7 @@ EIP commands are only registered when an external IPAM pool is configured.
 
 ## IAM
 
-All IAM operations are account-scoped. Root user (account `000000000000`)
-bypasses policy evaluation entirely.
+All IAM operations are account-scoped. Root user (account `000000000000`) bypasses policy evaluation entirely.
 
 ### IAM — Users
 
@@ -475,6 +477,21 @@ bypasses policy evaluation entirely.
 | `get-user` | `--user-name` | — | **DONE** |
 | `list-users` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
 | `delete-user` | `--user-name` | — | **DONE** |
+| `update-user` | — | `--user-name`, `--new-path`, `--new-user-name` | **NOT STARTED** |
+| `put-user-policy` | `--user-name`, `--policy-name`, `--policy-document` | — | **DONE** |
+| `get-user-policy` | `--user-name`, `--policy-name` | — | **DONE** |
+| `delete-user-policy` | `--user-name`, `--policy-name` | — | **DONE** |
+| `list-user-policies` | `--user-name` | `--max-items`, `--marker` | **DONE** |
+| `tag-user` | — | `--user-name`, `--tags` | **NOT STARTED** |
+| `untag-user` | — | `--user-name`, `--tag-keys` | **NOT STARTED** |
+| `list-user-tags` | — | `--user-name` | **NOT STARTED** |
+| `put-user-permissions-boundary` | — | `--user-name`, `--permissions-boundary` | **NOT STARTED** |
+| `delete-user-permissions-boundary` | — | `--user-name` | **NOT STARTED** |
+| `create-login-profile` | — | `--user-name`, `--password` | **NOT STARTED** |
+| `get-login-profile` | — | `--user-name` | **NOT STARTED** |
+| `update-login-profile` | — | `--user-name`, `--password` | **NOT STARTED** |
+| `delete-login-profile` | — | `--user-name` | **NOT STARTED** |
+| `change-password` | — | `--old-password`, `--new-password` | **NOT STARTED** |
 
 ### IAM — Access Keys
 
@@ -484,6 +501,7 @@ bypasses policy evaluation entirely.
 | `list-access-keys` | `--user-name` | `--max-items`, `--marker` | **DONE** |
 | `delete-access-key` | `--access-key-id`, `--user-name` | — | **DONE** |
 | `update-access-key` | `--access-key-id`, `--user-name`, `--status` (Active/Inactive) | — | **DONE** |
+| `get-access-key-last-used` | — | `--access-key-id` | **NOT STARTED** |
 
 ### IAM — Policies
 
@@ -498,6 +516,17 @@ bypasses policy evaluation entirely.
 | `attach-user-policy` | `--user-name`, `--policy-arn` | — | **DONE** |
 | `detach-user-policy` | `--user-name`, `--policy-arn` | — | **DONE** |
 | `list-attached-user-policies` | `--user-name` | `--path-prefix`, `--max-items`, `--marker` | **DONE** |
+| `create-policy-version` | — | `--policy-arn`, `--policy-document`, `--set-as-default` | **NOT STARTED** |
+| `delete-policy-version` | — | `--policy-arn`, `--version-id` | **NOT STARTED** |
+| `set-default-policy-version` | — | `--policy-arn`, `--version-id` | **NOT STARTED** |
+| `list-entities-for-policy` | — | `--policy-arn`, `--entity-filter`, `--path-prefix`, `--policy-usage-filter` | **NOT STARTED** |
+| `tag-policy` | — | `--policy-arn`, `--tags` | **NOT STARTED** |
+| `untag-policy` | — | `--policy-arn`, `--tag-keys` | **NOT STARTED** |
+| `list-policy-tags` | — | `--policy-arn` | **NOT STARTED** |
+| `generate-service-last-accessed-details` | — | `--arn`, `--granularity` | **NOT STARTED** |
+| `get-service-last-accessed-details` | — | `--job-id` | **NOT STARTED** |
+| `get-service-last-accessed-details-with-entities` | — | `--job-id`, `--service-namespace` | **NOT STARTED** |
+| `list-policies-granting-service-access` | — | `--arn`, `--service-namespaces` | **NOT STARTED** |
 
 ### IAM — Roles
 
@@ -512,8 +541,16 @@ bypasses policy evaluation entirely.
 | `attach-role-policy` | `--role-name`, `--policy-arn` | — | **DONE** |
 | `detach-role-policy` | `--role-name`, `--policy-arn` | — | **DONE** |
 | `list-attached-role-policies` | `--role-name`, `--path-prefix` | `--max-items`, `--marker` | **DONE** |
-| `list-role-policies` | `--role-name` | `--max-items`, `--marker` | **DONE** (gateway stub — inline policies unsupported, always returns empty) |
-| `get-role-policy` / `put-role-policy` / `delete-role-policy` | — | inline role policies | **NOT STARTED** |
+| `list-role-policies` | `--role-name` | `--max-items`, `--marker` | **DONE** |
+| `put-role-policy` | `--role-name`, `--policy-name`, `--policy-document` | — | **DONE** |
+| `get-role-policy` | `--role-name`, `--policy-name` | — | **DONE** (document returned as raw JSON, not URL-encoded) |
+| `delete-role-policy` | `--role-name`, `--policy-name` | — | **DONE** |
+| `put-role-permissions-boundary` | — | `--role-name`, `--permissions-boundary` | **NOT STARTED** |
+| `delete-role-permissions-boundary` | — | `--role-name` | **NOT STARTED** |
+| `tag-role` | — | `--role-name`, `--tags` | **NOT STARTED** |
+| `untag-role` | — | `--role-name`, `--tag-keys` | **NOT STARTED** |
+| `list-role-tags` | — | `--role-name` | **NOT STARTED** |
+| `update-role-description` | — | `--role-name`, `--description` | **NOT STARTED** |
 
 ### IAM — Instance Profiles
 
@@ -526,6 +563,9 @@ bypasses policy evaluation entirely.
 | `delete-instance-profile` | `--instance-profile-name` | — | **DONE** |
 | `add-role-to-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
 | `remove-role-from-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
+| `tag-instance-profile` | — | `--instance-profile-name`, `--tags` | **NOT STARTED** |
+| `untag-instance-profile` | — | `--instance-profile-name`, `--tag-keys` | **NOT STARTED** |
+| `list-instance-profile-tags` | — | `--instance-profile-name` | **NOT STARTED** |
 
 ### IAM — OIDC Providers
 
@@ -539,21 +579,27 @@ bypasses policy evaluation entirely.
 | `remove-client-id-from-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--client-id` | **NOT STARTED** |
 | `update-open-id-connect-provider-thumbprint` | — | `--open-id-connect-provider-arn`, `--thumbprint-list` | **NOT STARTED** |
 | `tag-open-id-connect-provider` / `untag-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--tags`/`--tag-keys` | **NOT STARTED** |
+| `list-open-id-connect-provider-tags` | — | `--open-id-connect-provider-arn` | **NOT STARTED** |
 
 ### IAM — Groups
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-group` | — | `--group-name`, `--path` | **NOT STARTED** |
-| `get-group` | — | `--group-name` | **NOT STARTED** |
-| `list-groups` | — | `--path-prefix`, `--max-items`, `--marker` | **NOT STARTED** |
-| `delete-group` | — | `--group-name` | **NOT STARTED** |
-| `add-user-to-group` | — | `--group-name`, `--user-name` | **NOT STARTED** |
-| `remove-user-from-group` | — | `--group-name`, `--user-name` | **NOT STARTED** |
-| `list-groups-for-user` | — | `--user-name`, `--max-items`, `--marker` | **NOT STARTED** |
-| `attach-group-policy` | — | `--group-name`, `--policy-arn` | **NOT STARTED** |
-| `detach-group-policy` | — | `--group-name`, `--policy-arn` | **NOT STARTED** |
-| `list-attached-group-policies` | — | `--group-name`, `--path-prefix`, `--max-items`, `--marker` | **NOT STARTED** |
+| `create-group` | `--group-name`, `--path` | — | **DONE** |
+| `get-group` | `--group-name` | — | **DONE** |
+| `list-groups` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
+| `delete-group` | `--group-name` | — | **DONE** |
+| `update-group` | — | `--group-name`, `--new-path`, `--new-group-name` | **NOT STARTED** |
+| `add-user-to-group` | `--group-name`, `--user-name` | — | **DONE** |
+| `remove-user-from-group` | `--group-name`, `--user-name` | — | **DONE** |
+| `list-groups-for-user` | `--user-name` | `--max-items`, `--marker` | **DONE** |
+| `attach-group-policy` | `--group-name`, `--policy-arn` | — | **DONE** |
+| `detach-group-policy` | `--group-name`, `--policy-arn` | — | **DONE** |
+| `list-attached-group-policies` | `--group-name`, `--path-prefix` | `--max-items`, `--marker` | **DONE** |
+| `put-group-policy` | `--group-name`, `--policy-name`, `--policy-document` | — | **DONE** |
+| `get-group-policy` | `--group-name`, `--policy-name` | — | **DONE** |
+| `delete-group-policy` | `--group-name`, `--policy-name` | — | **DONE** |
+| `list-group-policies` | `--group-name` | `--max-items`, `--marker` | **DONE** |
 
 ---
 
@@ -570,7 +616,7 @@ bypasses policy evaluation entirely.
 | `get-federation-token` | — | `--name`, `--policy`, `--policy-arns`, `--duration-seconds`, `--tags` | **NOT STARTED** |
 | `decode-authorization-message` | — | `--encoded-message` | **NOT STARTED** |
 
-Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`, `NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty `Principal` blocks at write time (`MalformedPolicyDocument`) — v1 has no Condition evaluator so accepting them would silently allow.
+Trust policies (`AssumeRolePolicyDocument`) reject `NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty `Principal` blocks at write time (`MalformedPolicyDocument`). `Condition` blocks are rejected except on `sts:AssumeRoleWithWebIdentity` with `StringEquals` (IRSA), which v1 evaluates at assume time (`{iss}:sub`, `{iss}:aud`); anything wider is rejected to avoid silent over-grant.
 
 ---
 
@@ -579,6 +625,8 @@ Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`, 
 Available at `169.254.169.254` from inside every running guest VM, matching AWS. The endpoint is reached from within a guest over plain HTTP, exactly as on EC2, with no in-VM agent to install. DHCP and fully static guests reach it identically, with no in-guest route configuration.
 
 **IMDSv2-only.** Every read requires a session token. A tokenless (v1-style) `GET` returns `401 Unauthorized` with an empty body. Obtain a token with a `PUT /latest/api/token` carrying `X-aws-ec2-metadata-token-ttl-seconds` (1–21600), then send it back in `X-aws-ec2-metadata-token` on every read.
+
+The EC2 control plane reports this posture faithfully: `describe-instances` returns `MetadataOptions.HttpTokens=required`, and `run-instances`/`modify-instance-metadata-options` reject `--http-tokens optional` (and `--http-endpoint disabled`) with `UnsupportedOperation` — exactly as AWS does under account-level IMDSv2 enforcement.
 
 ```bash
 # Inside the guest VM:
@@ -596,17 +644,25 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | Path | Method | Source | Status |
 |------|--------|--------|--------|
 | `/latest/api/token` | PUT | Issues an ENI-bound IMDSv2 token; `X-aws-ec2-metadata-token-ttl-seconds` ∈ [1, 21600] required | **DONE** |
+| `/` | GET | Supported API-version list (`2021-07-15`, `latest`); token-gated | **DONE** |
+| `/latest` | GET | Top-level tree listing (`dynamic`, `meta-data`, `user-data`) | **DONE** |
+| `/<date>/...` | GET/PUT | Any dated API version aliases to `/latest` (cloud-init parity) | **DONE** |
 | `/latest/meta-data/` | GET | Directory listing of supported children | **DONE** |
 | `/latest/meta-data/instance-id` | GET | `vm.ID` | **DONE** |
 | `/latest/meta-data/instance-type` | GET | `vm.InstanceType` | **DONE** |
 | `/latest/meta-data/ami-id` | GET | launch `ImageId` | **DONE** |
+| `/latest/meta-data/ami-launch-index` | GET | Per-instance launch index (`0..n-1`), contiguous on partial failure | **DONE** |
+| `/latest/meta-data/reservation-id` | GET | `DescribeInstances` `Reservation.ReservationId` | **DONE** |
+| `/latest/meta-data/instance-life-cycle` | GET | `spot` for a spot-launched instance, else `on-demand`; defaults to `on-demand` on a resolution miss (never 404, the leaf is always advertised) | **DONE** |
 | `/latest/meta-data/local-ipv4` | GET | `ENIRecord.PrivateIpAddress` (== request source IP) | **DONE** |
 | `/latest/meta-data/public-ipv4` | GET | EIP, else instance public IP; empty body if none | **DONE** |
+| `/latest/meta-data/public-hostname` | GET | Mirrors `public-ipv4`; 404 when no public IP | **DONE** |
 | `/latest/meta-data/mac` | GET | `ENIRecord.MacAddress` | **DONE** |
 | `/latest/meta-data/security-groups` | GET | `ENIRecord.SecurityGroupIds`, newline-separated | **DONE** |
 | `/latest/meta-data/hostname`, `/local-hostname` | GET | Synthesised `ip-<dashed-ip>.<region>.compute.internal` | **DONE** |
 | `/latest/meta-data/placement/availability-zone` | GET | `ENIRecord.AvailabilityZone` | **DONE** |
 | `/latest/meta-data/placement/region` | GET | Derived from AZ (trailing letter stripped) | **DONE** |
+| `/latest/meta-data/services/{domain,partition}` | GET | Static: `amazonaws.com` / `aws` | **DONE** |
 | `/latest/meta-data/iam/info` | GET | `{InstanceProfileArn, InstanceProfileId}`; 404 if no profile | **DONE** |
 | `/latest/meta-data/iam/security-credentials/` | GET | Role name(s) under the profile, one per line; empty body if none | **DONE** |
 | `/latest/meta-data/iam/security-credentials/<role>` | GET | STS `AssumeRoleForInstance` → ASIA-prefixed temporary credential JSON | **DONE** |
@@ -614,17 +670,16 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | `/latest/meta-data/public-keys/0/` | GET | `openssh-key` (format list for index 0) | **DONE** |
 | `/latest/meta-data/public-keys/0/openssh-key` | GET | Launch SSH public key, live-fetched from the key store; 404 if the key was deleted, 500 on backend fault | **DONE** |
 | `/latest/user-data` | GET | `vm.UserData`; 404 if none | **DONE** |
-| `/latest/dynamic/instance-identity/document` (+ `signature`, `pkcs7`, `rsa2048`) | GET | Needs a per-cluster signing key | **NOT STARTED** (404; lands with EKS IRSA) |
-| `/latest/meta-data/network/interfaces/macs/<mac>/...` | GET | Multi-ENI rendering (subnet-id, vpc-id, ipv4s, security-group-ids, …) | **NOT STARTED** (404) |
+| `/latest/dynamic` | GET | Lists `instance-identity/` | **DONE** |
+| `/latest/dynamic/instance-identity` | GET | Lists `document` (signed forms listed when the signing key lands) | **DONE** |
+| `/latest/dynamic/instance-identity/document` | GET | Unsigned identity document from resolved ENI + instance facts | **DONE** |
+| `/latest/dynamic/instance-identity/{signature,pkcs7,rsa2048}` | GET | Signed forms; need a per-cluster signing key | **NOT STARTED** (404; lands with EKS IRSA) |
+| `/latest/meta-data/network/interfaces/macs/<mac>/...` | GET | Primary ENI subtree: `mac`, `device-number`, `interface-id`, `owner-id`, `subnet-id`, `vpc-id`, `local-ipv4s`, `local-hostname`, `security-group-ids`, `security-groups`, `subnet-ipv4-cidr-block`, `vpc-ipv4-cidr-block(s)`, and `public-ipv4s`/`public-hostname` when an EIP is attached | **DONE** (single-NIC; multi-ENI deferred) |
 | `/latest/meta-data/tags/instance/<key>` | GET | Instance-tag metadata; gated on `InstanceMetadataTags` enablement | **NOT STARTED** (404) |
-| `/latest/meta-data/public-hostname` | GET | No public DNS today; would mirror `public-ipv4` | **NOT STARTED** (404) |
-| `/latest/meta-data/reservation-id` | GET | Available on the stored `Reservation`; cheap, not yet surfaced | **NOT STARTED** (404) |
-| `/latest/meta-data/ami-launch-index` | GET | `0` for single-instance launches; trivial once multi-count is exercised | **NOT STARTED** (404) |
 | `/latest/meta-data/block-device-mapping/...` | GET | `ami`/`root`/`ebsN`/`ephemeralN` device map | **NOT STARTED** (404) |
 | `/latest/meta-data/placement/{group-name,partition-number,availability-zone-id,host-id}` | GET | Placement extras beyond `availability-zone`/`region` | **NOT STARTED** (404) |
-| `/latest/meta-data/instance-life-cycle`, `/instance-action` | GET | `on-demand`/`spot`; `none` unless interruptible instances ship | **NOT STARTED** (404) |
-| `/latest/meta-data/services/{domain,partition}` | GET | Static per-deployment values | **NOT STARTED** (404) |
-| `/latest/meta-data/spot/{instance-action,termination-time}` | GET | Only meaningful once Spot is modelled | **NOT STARTED** (404) |
+| `/latest/meta-data/instance-action` | GET | `none` unless interruptible instances ship | **NOT STARTED** (404) |
+| `/latest/meta-data/spot/{instance-action,termination-time}` | GET | 404 is the faithful steady state for a never-interrupted spot instance ("no action scheduled"); a 200 body would trigger interruption handling in pollers (AWS Node Termination Handler / Karpenter). Not advertised in the `spot/` listing | **DONE** (404 by contract) |
 
 ---
 

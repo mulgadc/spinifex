@@ -17,7 +17,22 @@ type ClusterConfig struct {
 	Version   string            `mapstructure:"version"`   // spinifex version
 	Network   NetworkConfig     `mapstructure:"network"`   // cluster-wide external network settings
 	Bootstrap BootstrapConfig   `mapstructure:"bootstrap"` // default VPC IDs for OVN reconciliation
+	AWS       AWSConfig         `mapstructure:"aws"`       // cluster-wide AWS-parity settings (region, endpoint suffix)
 	Nodes     map[string]Config `mapstructure:"nodes"`     // full config for every node
+}
+
+// Defaults for cluster-wide AWS-parity settings.
+const (
+	DefaultAWSRegion         = "us-east-1"
+	DefaultAWSInternalSuffix = "spinifex.internal"
+)
+
+// AWSConfig holds cluster-wide AWS-parity settings shared across services.
+// Region scopes the default AWS region; InternalSuffix is the internal DNS
+// suffix used to build service endpoints (e.g. ecr.{region}.{suffix}).
+type AWSConfig struct {
+	Region         string `mapstructure:"region"`
+	InternalSuffix string `mapstructure:"internal_suffix"`
 }
 
 // ExternalPool defines a range of routable IPs that Spinifex manages for public subnets.
@@ -102,8 +117,8 @@ type ViperblockConfig struct {
 
 // VPCDConfig holds the VPC daemon (vpcd) configuration.
 type VPCDConfig struct {
-	OVNNBAddr         string `json:"OVNNBAddr" mapstructure:"ovn_nb_addr"`                // OVN Northbound DB address (e.g., "tcp:127.0.0.1:6641")
-	OVNSBAddr         string `json:"OVNSBAddr" mapstructure:"ovn_sb_addr"`                // OVN Southbound DB address (e.g., "tcp:127.0.0.1:6642")
+	OVNNBAddr         string `json:"OVNNBAddr" mapstructure:"ovn_nb_addr"`                // OVN Northbound DB address; comma-separated list for a RAFT cluster (e.g., "tcp:127.0.0.1:6641" or "tcp:ip1:6641,tcp:ip2:6641,tcp:ip3:6641")
+	OVNSBAddr         string `json:"OVNSBAddr" mapstructure:"ovn_sb_addr"`                // OVN Southbound DB address; comma-separated list for a RAFT cluster (e.g., "tcp:127.0.0.1:6642" or "tcp:ip1:6642,tcp:ip2:6642,tcp:ip3:6642")
 	ExternalInterface string `json:"ExternalInterface" mapstructure:"external_interface"` // WAN NIC name (e.g., "eth1", "enp0s3") — the physical NIC on the WAN bridge
 	BridgeMode        string `json:"BridgeMode" mapstructure:"bridge_mode"`               // "direct" or "veth" (auto-detected if empty)
 }
@@ -117,6 +132,21 @@ type NorthstarConfig struct {
 	// without reading the credential-bearing northstar.toml.
 	DefaultDomain  string `json:"DefaultDomain" mapstructure:"default_domain"`
 	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
+}
+
+// ParseEndpoints splits a comma-separated OVSDB endpoint list (NB/SB RAFT
+// cluster) into individual endpoints, trimming whitespace and dropping empties.
+// A single endpoint yields a one-element slice; empty input yields nil. Both the
+// libovsdb NB client (one WithEndpoint each) and ovn-sbctl --db= (which also
+// accepts the raw comma list) consume the cluster form.
+func ParseEndpoints(addr string) []string {
+	var out []string
+	for p := range strings.SplitSeq(addr, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 type PredastoreConfig struct {
@@ -222,6 +252,10 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	// Default ipsec_enabled to true; operators must explicitly set false to disable.
 	viper.SetDefault("network.ipsec_enabled", true)
 
+	// Cluster-wide AWS-parity defaults so existing deployments keep working.
+	viper.SetDefault("aws.region", DefaultAWSRegion)
+	viper.SetDefault("aws.internal_suffix", DefaultAWSInternalSuffix)
+
 	// Try to load config file if it exists
 	if configPath != "" {
 		// Check if file exists
@@ -242,6 +276,14 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	var config ClusterConfig
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
+	}
+
+	// Backfill AWS-parity defaults when keys are unset so callers never see empties.
+	if config.AWS.Region == "" {
+		config.AWS.Region = DefaultAWSRegion
+	}
+	if config.AWS.InternalSuffix == "" {
+		config.AWS.InternalSuffix = DefaultAWSInternalSuffix
 	}
 
 	// Rewrite 0.0.0.0 in Predastore.Host to 127.0.0.1 for the local node only (not a valid connect address).

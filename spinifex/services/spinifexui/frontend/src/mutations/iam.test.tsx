@@ -11,21 +11,27 @@ vi.mock("@/lib/awsClient", () => ({
 
 import {
   useAddRoleToInstanceProfile,
+  useAddUserToGroup,
+  useAttachGroupPolicy,
   useAttachRolePolicy,
   useAttachUserPolicy,
   useCreateAccessKey,
+  useCreateGroup,
   useCreateInstanceProfile,
   useCreatePolicy,
   useCreateRole,
   useCreateUser,
   useDeleteAccessKey,
+  useDeleteGroup,
   useDeleteInstanceProfile,
   useDeletePolicy,
   useDeleteRole,
   useDeleteUser,
+  useDetachGroupPolicy,
   useDetachRolePolicy,
   useDetachUserPolicy,
   useRemoveRoleFromInstanceProfile,
+  useRemoveUserFromGroup,
   useUpdateAccessKey,
 } from "./iam"
 
@@ -484,5 +490,155 @@ describe("useRemoveRoleFromInstanceProfile", () => {
       InstanceProfileName: "my-profile",
       RoleName: "my-role",
     })
+  })
+})
+
+describe("useCreateGroup", () => {
+  it("sends CreateGroupCommand with groupName", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateGroup(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupName: "my-group",
+      Path: undefined,
+    })
+  })
+
+  it("includes Path when provided", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateGroup(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group", path: "/engineering/" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupName: "my-group",
+      Path: "/engineering/",
+    })
+  })
+
+  it("invalidates groups query on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useCreateGroup(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups"] })
+  })
+})
+
+describe("useDeleteGroup", () => {
+  it("sends DeleteGroupCommand with groupName", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDeleteGroup(), { wrapper })
+
+    result.current.mutate("my-group")
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupName: "my-group",
+    })
+  })
+})
+
+describe("useAttachGroupPolicy", () => {
+  it("sends AttachGroupPolicyCommand with groupName and policyArn", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useAttachGroupPolicy(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupName: "my-group",
+      PolicyArn: "arn:test",
+    })
+  })
+
+  it("invalidates attached-group-policies query on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useAttachGroupPolicy(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["iam", "attached-group-policies"],
+    })
+  })
+})
+
+describe("useDetachGroupPolicy", () => {
+  it("sends DetachGroupPolicyCommand with groupName and policyArn", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDetachGroupPolicy(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupName: "my-group",
+      PolicyArn: "arn:test",
+    })
+  })
+})
+
+describe("useAddUserToGroup", () => {
+  it("sends AddUserToGroupCommand with groupName and userName", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useAddUserToGroup(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group", userName: "admin" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupName: "my-group",
+      UserName: "admin",
+    })
+  })
+
+  it("invalidates groups and groups-for-user queries on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useAddUserToGroup(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group", userName: "admin" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups"] })
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups-for-user"] })
+  })
+})
+
+describe("useRemoveUserFromGroup", () => {
+  it("sends RemoveUserFromGroupCommand with groupName and userName", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useRemoveUserFromGroup(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group", userName: "admin" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupName: "my-group",
+      UserName: "admin",
+    })
+  })
+
+  it("invalidates groups and groups-for-user queries on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useRemoveUserFromGroup(), { wrapper })
+
+    result.current.mutate({ groupName: "my-group", userName: "admin" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups"] })
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups-for-user"] })
   })
 })

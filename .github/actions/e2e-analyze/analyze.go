@@ -1,7 +1,6 @@
 // Package main implements the e2e-analyze GitHub Action.
 //
-// Stage 1 of docs/development/improvements/e2e-go-failure-analysis.md:
-// cluster failures from go-junit-report's junit-*.xml by error signature,
+// Stage 1: cluster failures from go-junit-report's junit-*.xml by error signature,
 // pick the earliest non-cascade failure per suite as the likely root cause,
 // and render a human-readable report.
 //
@@ -463,8 +462,7 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 	return rep, nil
 }
 
-// Render writes the markdown report. Format is documented in
-// docs/development/improvements/e2e-go-failure-analysis.md (Stage 1).
+// Render writes the markdown report (Stage 1).
 func Render(r Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## %s\n\n", r.Title)

@@ -46,13 +46,17 @@ import (
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
+	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
+	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -61,24 +65,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 )
-
-type BlockDeviceMapping struct {
-	DeviceName string `json:"DeviceName"`
-	EBS        EBS    `json:"EBS"`
-}
-
-type EBS struct {
-	DeleteOnTermination      bool
-	Encrypted                bool
-	Iops                     int
-	KmsKeyId                 string
-	OutpostArn               string
-	SnapshotId               string
-	Throughput               int
-	VolumeInitializationRate int
-	VolumeSize               int
-	VolumeType               string
-}
 
 // ResourceManager handles the allocation and tracking of system resources.
 // It dynamically manages per-instance-type NATS subscriptions: when capacity
@@ -96,6 +82,14 @@ type ResourceManager struct {
 	reservedMem   float64
 	allocatedVCPU int
 	allocatedMem  float64
+	// reservedCRVCPU / reservedCRMem: compute held by capacity reservations
+	// pinned to this node. Subtracted from schedulable capacity exactly like
+	// the host reserve. In-memory only — lost on daemon restart.
+	reservedCRVCPU int
+	reservedCRMem  float64
+	// reservations: in-memory capacity reservations owned by this node, keyed
+	// by id. Mutated together with reservedCR* under mu.
+	reservations map[string]*capacityReservation
 	// nbdkitMainMiB / nbdkitAuxMiB: per-volume nbdkit memory charged at
 	// admission so nbdkit backing a guest's volumes is accounted explicitly.
 	nbdkitMainMiB int
@@ -141,11 +135,15 @@ type Daemon struct {
 	eigwService           *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
 	igwService            *handlers_ec2_igw.IGWServiceImpl
 	placementGroupService *handlers_ec2_placementgroup.PlacementGroupServiceImpl
+	spotInstanceService   *handlers_ec2_spotinstance.SpotInstanceServiceImpl
 	vpcService            *handlers_ec2_vpc.VPCServiceImpl
 	eipService            *handlers_ec2_eip.EIPServiceImpl
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
+	ecsService            *handlers_ecs.Service
+	ecsScheduler          *handlers_ecs.Scheduler
 	acmService            *handlers_acm.ACMServiceImpl
+	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
 	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
@@ -241,6 +239,10 @@ type Daemon struct {
 	reconciling atomic.Bool
 	// stateWriteMu: serialises WriteState to prevent races on the .tmp staging file.
 	stateWriteMu sync.Mutex
+
+	// iamEnsurerMu guards the lazily-built system-role IAM service (systemRoleEnsurer).
+	iamEnsurerMu     sync.Mutex
+	iamEnsurerCached handlers_iam.SystemInstanceRoleEnsurer
 
 	mu sync.Mutex
 }
@@ -489,6 +491,7 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		instanceTypes:      instanceTypes,
 		gpuManager:         gpuMgr,
 		readMemAvailableGB: memReader,
+		reservations:       make(map[string]*capacityReservation),
 	}, nil
 }
 
@@ -574,8 +577,8 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 		}
 
 		count := canAllocateCount(
-			rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
-			rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
+			rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+			rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
 			vCPUs, rm.instanceMemChargeMiB(it),
 			1<<30, // effectively unlimited — let resources be the constraint
 			0, false,
@@ -593,6 +596,7 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 	slog.Info("GetAvailableInstanceTypeInfos", "total_types", len(rm.instanceTypes), "total_available_slots", len(infos),
 		"hostVCPU", rm.hostVCPU, "hostMem", rm.hostMemGB,
 		"reservedVCPU", rm.reservedVCPU, "reservedMem", rm.reservedMem,
+		"reservedCRVCPU", rm.reservedCRVCPU, "reservedCRMem", rm.reservedCRMem,
 		"showCapacity", showCapacity)
 
 	return infos
@@ -628,17 +632,19 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 
 	totalVCPU = rm.hostVCPU
 	totalMemGB = rm.hostMemGB
-	reservedVCPU = rm.reservedVCPU
-	reservedMemGB = rm.reservedMem
+	// Fold the capacity-reservation carve-out into the reported reserve figures;
+	// Phase 1 has no separate status field for it.
+	reservedVCPU = rm.reservedVCPU + rm.reservedCRVCPU
+	reservedMemGB = rm.reservedMem + rm.reservedCRMem
 	allocVCPU = rm.allocatedVCPU
 	allocMemGB = rm.allocatedMem
 
-	remainingVCPU := rm.hostVCPU - rm.reservedVCPU - rm.allocatedVCPU
-	remainingMem := rm.hostMemGB - rm.reservedMem - rm.allocatedMem
+	remainingVCPU := rm.hostVCPU - reservedVCPU - rm.allocatedVCPU
+	remainingMem := rm.hostMemGB - reservedMemGB - rm.allocatedMem
 	if remainingVCPU < 0 || remainingMem < 0 {
 		slog.Error("schedulable capacity negative — reserve misconfigured or allocation drift",
-			"hostVCPU", rm.hostVCPU, "reservedVCPU", rm.reservedVCPU, "allocatedVCPU", rm.allocatedVCPU,
-			"hostMemGB", rm.hostMemGB, "reservedMem", rm.reservedMem, "allocatedMem", rm.allocatedMem,
+			"hostVCPU", rm.hostVCPU, "reservedVCPU", reservedVCPU, "allocatedVCPU", rm.allocatedVCPU,
+			"hostMemGB", rm.hostMemGB, "reservedMem", reservedMemGB, "allocatedMem", rm.allocatedMem,
 			"remainingVCPU", remainingVCPU, "remainingMem", remainingMem)
 	}
 
@@ -775,6 +781,14 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RemoveInstanceFromPlacementGroup", d.handleEC2RemoveInstanceFromPlacementGroup, "spinifex-workers"},
 		{"ec2.ReserveClusterNode", d.handleEC2ReserveClusterNode, "spinifex-workers"},
 		{"ec2.FinalizeClusterInstances", d.handleEC2FinalizeClusterInstances, "spinifex-workers"},
+		{"ec2.PutSpotInstanceRequests", d.handleEC2PutSpotInstanceRequests, "spinifex-workers"},
+		{"ec2.DescribeSpotInstanceRequests", d.handleEC2DescribeSpotInstanceRequests, "spinifex-workers"},
+		{"ec2.CancelSpotInstanceRequests", d.handleEC2CancelSpotInstanceRequests, "spinifex-workers"},
+		// Capacity reservations: Create is node-targeted (gateway pins one node);
+		// Describe fans out and Cancel broadcasts, so both use plain Subscribe.
+		{fmt.Sprintf("ec2.CreateCapacityReservation.%s", d.node), d.handleEC2CreateCapacityReservation, ""},
+		{"ec2.DescribeCapacityReservations", d.handleEC2DescribeCapacityReservations, ""},
+		{"ec2.CancelCapacityReservation", d.handleEC2CancelCapacityReservation, ""},
 		{"ec2.CreateNatGateway", d.handleEC2CreateNatGateway, "spinifex-workers"},
 		{"ec2.DeleteNatGateway", d.handleEC2DeleteNatGateway, "spinifex-workers"},
 		{"ec2.DescribeNatGateways", d.handleEC2DescribeNatGateways, "spinifex-workers"},
@@ -809,6 +823,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RevokeSecurityGroupIngress", d.handleEC2RevokeSecurityGroupIngress, "spinifex-workers"},
 		{"ec2.RevokeSecurityGroupEgress", d.handleEC2RevokeSecurityGroupEgress, "spinifex-workers"},
 		{"ec2.ModifyInstanceAttribute", d.handleEC2ModifyInstanceAttribute, "spinifex-workers"},
+		{"ec2.ModifyInstanceMetadataOptions", d.handleEC2ModifyInstanceMetadataOptions, "spinifex-workers"},
 		{"ec2.start", d.handleEC2StartStoppedInstance, "spinifex-workers"},
 		{fmt.Sprintf("ec2.start.%s", d.node), d.handleEC2StartStoppedInstanceDirect, ""},
 		{"ec2.terminate", d.handleEC2TerminateStoppedInstance, "spinifex-workers"},
@@ -933,6 +948,38 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// ECS gateway → daemon subscriptions (control plane; per-account KV).
+	if d.ecsService != nil {
+		subs = append(subs,
+			natsSub{"ecs.CreateCluster", d.handleECSCreateCluster, "spinifex-workers"},
+			natsSub{"ecs.DeleteCluster", d.handleECSDeleteCluster, "spinifex-workers"},
+			natsSub{"ecs.DescribeClusters", d.handleECSDescribeClusters, "spinifex-workers"},
+			natsSub{"ecs.ListClusters", d.handleECSListClusters, "spinifex-workers"},
+			natsSub{"ecs.RegisterTaskDefinition", d.handleECSRegisterTaskDefinition, "spinifex-workers"},
+			natsSub{"ecs.DeregisterTaskDefinition", d.handleECSDeregisterTaskDefinition, "spinifex-workers"},
+			natsSub{"ecs.DescribeTaskDefinition", d.handleECSDescribeTaskDefinition, "spinifex-workers"},
+			natsSub{"ecs.ListTaskDefinitions", d.handleECSListTaskDefinitions, "spinifex-workers"},
+			natsSub{"ecs.RegisterContainerInstance", d.handleECSRegisterContainerInstance, "spinifex-workers"},
+			natsSub{"ecs.DeregisterContainerInstance", d.handleECSDeregisterContainerInstance, "spinifex-workers"},
+			natsSub{"ecs.UpdateContainerInstancesState", d.handleECSUpdateContainerInstancesState, "spinifex-workers"},
+			natsSub{"ecs.DescribeContainerInstances", d.handleECSDescribeContainerInstances, "spinifex-workers"},
+			natsSub{"ecs.ListContainerInstances", d.handleECSListContainerInstances, "spinifex-workers"},
+			natsSub{"ecs.RunTask", d.handleECSRunTask, "spinifex-workers"},
+			natsSub{"ecs.StartTask", d.handleECSStartTask, "spinifex-workers"},
+			natsSub{"ecs.StopTask", d.handleECSStopTask, "spinifex-workers"},
+			natsSub{"ecs.DescribeTasks", d.handleECSDescribeTasks, "spinifex-workers"},
+			natsSub{"ecs.ListTasks", d.handleECSListTasks, "spinifex-workers"},
+			natsSub{"ecs.CreateService", d.handleECSCreateService, "spinifex-workers"},
+			natsSub{"ecs.UpdateService", d.handleECSUpdateService, "spinifex-workers"},
+			natsSub{"ecs.DeleteService", d.handleECSDeleteService, "spinifex-workers"},
+			natsSub{"ecs.DescribeServices", d.handleECSDescribeServices, "spinifex-workers"},
+			natsSub{"ecs.ListServices", d.handleECSListServices, "spinifex-workers"},
+			natsSub{"ecs.SubmitTaskStateChange", d.handleECSSubmitTaskStateChange, "spinifex-workers"},
+			natsSub{"ecs.PollAssignments", d.handleECSPollAssignments, "spinifex-workers"},
+			natsSub{"ecs.ProvisionCapacity", d.handleECSProvisionCapacity, "spinifex-workers"},
+		)
+	}
+
 	// ACM gateway → daemon subscriptions (minimal certificate store).
 	if d.acmService != nil {
 		subs = append(subs,
@@ -940,6 +987,38 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"acm.DescribeCertificate", d.handleACMDescribeCertificate, "spinifex-workers"},
 			natsSub{"acm.ListCertificates", d.handleACMListCertificates, "spinifex-workers"},
 			natsSub{"acm.DeleteCertificate", d.handleACMDeleteCertificate, "spinifex-workers"},
+			natsSub{"acm.ListTagsForCertificate", d.handleACMListTagsForCertificate, "spinifex-workers"},
+			natsSub{"acm.AddTagsToCertificate", d.handleACMAddTagsToCertificate, "spinifex-workers"},
+			natsSub{"acm.RemoveTagsFromCertificate", d.handleACMRemoveTagsFromCertificate, "spinifex-workers"},
+		)
+	}
+
+	// ECR gateway → daemon subscriptions. The daemon owns the per-account
+	// JetStream KV metadata; blob/manifest bytes never traverse these subjects.
+	if d.ecrMetaService != nil {
+		subs = append(subs,
+			natsSub{handlers_ecr.SubjectRepoCreate, d.handleECRRepoCreate, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectRepoDescribe, d.handleECRRepoDescribe, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectRepoList, d.handleECRRepoList, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectRepoDelete, d.handleECRRepoDelete, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectPolicyPut, d.handleECRPolicyPut, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectPolicyGet, d.handleECRPolicyGet, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectPolicyDelete, d.handleECRPolicyDelete, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectLifecyclePut, d.handleECRLifecyclePut, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectLifecycleGet, d.handleECRLifecycleGet, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectLifecycleDelete, d.handleECRLifecycleDelete, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagPut, d.handleECRTagPut, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagGet, d.handleECRTagGet, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagList, d.handleECRTagList, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectTagDelete, d.handleECRTagDelete, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectManifestPut, d.handleECRManifestPut, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectManifestDescribe, d.handleECRManifestDescribe, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectManifestList, d.handleECRManifestList, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectManifestDelete, d.handleECRManifestDelete, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadCreate, d.handleECRUploadCreate, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadGet, d.handleECRUploadGet, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadUpdate, d.handleECRUploadUpdate, "spinifex-workers"},
+			natsSub{handlers_ecr.SubjectUploadDelete, d.handleECRUploadDelete, "spinifex-workers"},
 		)
 	}
 
@@ -1083,6 +1162,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.igwService must be nil before startCluster")
 	case d.placementGroupService != nil:
 		return errors.New("d.placementGroupService must be nil before startCluster")
+	case d.spotInstanceService != nil:
+		return errors.New("d.spotInstanceService must be nil before startCluster")
 	case d.vpcService != nil:
 		return errors.New("d.vpcService must be nil before startCluster")
 	case d.routeTableService != nil:
@@ -1197,20 +1278,18 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize placement group service: %w", err)
 	}
 
+	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*handlers_ec2_spotinstance.SpotInstanceServiceImpl, error) {
+		return handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize spot instance service: %w", err)
+	}
+
 	d.vpcService, err = initServiceWithRetry("VPC service", func() (*handlers_ec2_vpc.VPCServiceImpl, error) {
 		return handlers_ec2_vpc.NewVPCServiceImplWithNATS(d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
-	}
-
-	// Wire eni-by-vpc-ip reverse index for IMDS source-IP→ENI lookup.
-	if vpcJS, jsErr := d.natsConn.JetStream(); jsErr != nil {
-		slog.Warn("Failed to get JetStream for eni-by-ip index", "err", jsErr)
-	} else if eniByIPKV, kvErr := handlers_imds.InitENIByIPBucket(vpcJS, 1); kvErr != nil {
-		slog.Warn("Failed to init eni-by-ip index bucket", "err", kvErr)
-	} else {
-		d.vpcService.SetENIByIPIndex(handlers_ec2_vpc.NewENIByIPIndex(eniByIPKV))
 	}
 
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
@@ -1236,10 +1315,10 @@ func (d *Daemon) startCluster() error {
 		if jsErr != nil {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
-			var pools []handlers_ec2_vpc.ExternalPoolConfig
+			var pools []external.ExternalPoolConfig
 			anyDHCP := false
 			for _, p := range d.clusterConfig.Network.ExternalPools {
-				pools = append(pools, handlers_ec2_vpc.ExternalPoolConfig{
+				pools = append(pools, external.ExternalPoolConfig{
 					Name:            p.Name,
 					Source:          p.Source,
 					BindBridge:      p.BindBridge,
@@ -1324,6 +1403,13 @@ func (d *Daemon) startCluster() error {
 	// Route system VM launches through NATS so they fan out across the cluster.
 	d.elbv2Service.InstanceLauncher = handlers_elbv2.NewNATSSystemInstanceLauncher(d.natsConn, 0)
 
+	// Provide a lazily-built KV-backed IAM service so an LB VM gets a system
+	// instance profile and authenticates with IMDS instance-role creds. The
+	// provider is resolved at LB-launch time, not now, so it cannot race the
+	// NATS KV backend coming up; absent (no master key) the LB VM falls back to
+	// baked static creds.
+	d.elbv2Service.IAMProvider = d.systemRoleEnsurer
+
 	d.wireLBAgentConfig()
 
 	d.elbv2Service.SetSystemInstanceTypeFunc(func() string {
@@ -1343,11 +1429,41 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize EKS service: %w", err)
 	}
 
+	// ECS control plane: per-account KV-backed handlers + a leader-elected
+	// scheduler goroutine that owns the Layer-2 bus subscriptions and heartbeat
+	// reaper. The scheduler is disabled (handlers still serve) when JetStream is
+	// unavailable.
+	d.ecsService = handlers_ecs.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.InternalSuffix).WithDeps(d.buildECSServiceDeps())
+	if js, jsErr := d.natsConn.JetStream(); jsErr != nil {
+		slog.Warn("ECS scheduler disabled: JetStream unavailable", "err", jsErr)
+	} else if _, lbErr := handlers_ecs.InitLeaderBucket(js); lbErr != nil {
+		slog.Warn("ECS scheduler disabled: leader bucket init failed", "err", lbErr)
+	} else {
+		d.ecsScheduler = handlers_ecs.NewScheduler(d.natsConn, d.ecsService, d.node)
+		d.shutdownWg.Go(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("ECS scheduler goroutine panicked", "recover", r)
+				}
+			}()
+			d.ecsScheduler.Run(d.ctx)
+		})
+	}
+
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
 		return handlers_acm.NewACMServiceImplWithNATS(d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)
+	}
+
+	// ECR metadata service: owns per-account JetStream KV for repos, tags,
+	// manifest records and upload-state CAS. Disabled (gateway returns NATS
+	// timeouts) when JetStream is unavailable.
+	if js, jsErr := d.natsConn.JetStream(); jsErr != nil {
+		slog.Warn("ECR metadata service disabled: JetStream unavailable", "err", jsErr)
+	} else {
+		d.ecrMetaService = handlers_ecr.NewKVMetaService(js)
 	}
 
 	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {
@@ -1416,7 +1532,13 @@ func (d *Daemon) startCluster() error {
 	// data-safety reaper (ADR-0005 §3) rides the same backstop but only marks +
 	// alarms — it never deletes volume data.
 	if d.jsManager != nil {
-		reapers := []vm.Reaper{d.vmMgr.NewTerminatedTeardownReaper()}
+		reapers := []vm.Reaper{
+			d.vmMgr.NewTerminatedTeardownReaper(),
+			d.vmMgr.NewOrphanQEMUReaper(),
+		}
+		if eniRec := d.newENIReconciler(); eniRec != nil {
+			reapers = append(reapers, eniRec)
+		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
 		}
@@ -2039,8 +2161,8 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 	}
 
 	n := canAllocateCount(
-		rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
-		rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
+		rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+		rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
 		instanceTypeVCPUs(instanceType),
 		rm.instanceMemChargeMiB(instanceType),
 		count,
@@ -2060,7 +2182,7 @@ func (rm *ResourceManager) liveMemGate(n int, instanceType *ec2.InstanceTypeInfo
 		return n
 	}
 	memGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
-	return liveMemCount(n, availGB, rm.reservedMem, memGB)
+	return liveMemCount(n, availGB, rm.reservedMem+rm.reservedCRMem, memGB)
 }
 
 // allocate reserves resources for one instance and updates NATS subscriptions.
@@ -2099,6 +2221,8 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 
 	rm.updateInstanceSubscriptions()
 }
+
+var _ handlers_ec2_instance.InstanceTypeAllocator = (*ResourceManager)(nil)
 
 // Allocate, Deallocate, CanAllocate satisfy handlers_ec2_instance.InstanceTypeAllocator.
 func (rm *ResourceManager) Allocate(it *ec2.InstanceTypeInfo) error { return rm.allocate(it) }

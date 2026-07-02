@@ -45,6 +45,20 @@ func OvnTrace(t *testing.T, args ...string) string {
 	return runOvn(t, "ovn-trace", args...)
 }
 
+// OvsVsctl runs `sudo -n ovs-vsctl <args...>` against the local chassis OVS DB.
+// Used to inspect per-chassis datapath state (e.g. br-imds ports) that the
+// cluster-shared NB/SB do not carry.
+func OvsVsctl(t *testing.T, args ...string) string {
+	t.Helper()
+	return runOvn(t, "ovs-vsctl", args...)
+}
+
+// OvsOfctl runs `sudo -n ovs-ofctl <args...>` against the local chassis OVS.
+func OvsOfctl(t *testing.T, args ...string) string {
+	t.Helper()
+	return runOvn(t, "ovs-ofctl", args...)
+}
+
 func runOvn(t *testing.T, tool string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-n", tool}, args...)

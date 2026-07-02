@@ -97,6 +97,20 @@ var iamActions = map[string]IAMHandler{
 		return gateway_iam.ListAttachedUserPolicies(accountID, input, gw.IAMService)
 	}),
 
+	// User inline policies
+	"PutUserPolicy": iamHandler(func(accountID string, input *iam.PutUserPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.PutUserPolicy(accountID, input, gw.IAMService)
+	}),
+	"GetUserPolicy": iamHandler(func(accountID string, input *iam.GetUserPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetUserPolicy(accountID, input, gw.IAMService)
+	}),
+	"DeleteUserPolicy": iamHandler(func(accountID string, input *iam.DeleteUserPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeleteUserPolicy(accountID, input, gw.IAMService)
+	}),
+	"ListUserPolicies": iamHandler(func(accountID string, input *iam.ListUserPoliciesInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListUserPolicies(accountID, input, gw.IAMService)
+	}),
+
 	// Role CRUD
 	"CreateRole": iamHandler(func(accountID string, input *iam.CreateRoleInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.CreateRole(accountID, input, gw.IAMService)
@@ -123,6 +137,15 @@ var iamActions = map[string]IAMHandler{
 	}),
 	"DetachRolePolicy": iamHandler(func(accountID string, input *iam.DetachRolePolicyInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.DetachRolePolicy(accountID, input, gw.IAMService)
+	}),
+	"PutRolePolicy": iamHandler(func(accountID string, input *iam.PutRolePolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.PutRolePolicy(accountID, input, gw.IAMService)
+	}),
+	"GetRolePolicy": iamHandler(func(accountID string, input *iam.GetRolePolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetRolePolicy(accountID, input, gw.IAMService)
+	}),
+	"DeleteRolePolicy": iamHandler(func(accountID string, input *iam.DeleteRolePolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeleteRolePolicy(accountID, input, gw.IAMService)
 	}),
 	"ListAttachedRolePolicies": iamHandler(func(accountID string, input *iam.ListAttachedRolePoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListAttachedRolePolicies(accountID, input, gw.IAMService)
@@ -171,6 +194,56 @@ var iamActions = map[string]IAMHandler{
 	}),
 	"DeleteOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.DeleteOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.DeleteOpenIDConnectProvider(accountID, input, gw.IAMService)
+	}),
+
+	// Group CRUD
+	"CreateGroup": iamHandler(func(accountID string, input *iam.CreateGroupInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.CreateGroup(accountID, input, gw.IAMService)
+	}),
+	"GetGroup": iamHandler(func(accountID string, input *iam.GetGroupInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetGroup(accountID, input, gw.IAMService)
+	}),
+	"ListGroups": iamHandler(func(accountID string, input *iam.ListGroupsInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListGroups(accountID, input, gw.IAMService)
+	}),
+	"DeleteGroup": iamHandler(func(accountID string, input *iam.DeleteGroupInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeleteGroup(accountID, input, gw.IAMService)
+	}),
+
+	// Group membership
+	"AddUserToGroup": iamHandler(func(accountID string, input *iam.AddUserToGroupInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.AddUserToGroup(accountID, input, gw.IAMService)
+	}),
+	"RemoveUserFromGroup": iamHandler(func(accountID string, input *iam.RemoveUserFromGroupInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.RemoveUserFromGroup(accountID, input, gw.IAMService)
+	}),
+	"ListGroupsForUser": iamHandler(func(accountID string, input *iam.ListGroupsForUserInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListGroupsForUser(accountID, input, gw.IAMService)
+	}),
+
+	// Group policy attachment
+	"AttachGroupPolicy": iamHandler(func(accountID string, input *iam.AttachGroupPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.AttachGroupPolicy(accountID, input, gw.IAMService)
+	}),
+	"DetachGroupPolicy": iamHandler(func(accountID string, input *iam.DetachGroupPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DetachGroupPolicy(accountID, input, gw.IAMService)
+	}),
+	"ListAttachedGroupPolicies": iamHandler(func(accountID string, input *iam.ListAttachedGroupPoliciesInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListAttachedGroupPolicies(accountID, input, gw.IAMService)
+	}),
+
+	// Group inline policies
+	"PutGroupPolicy": iamHandler(func(accountID string, input *iam.PutGroupPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.PutGroupPolicy(accountID, input, gw.IAMService)
+	}),
+	"GetGroupPolicy": iamHandler(func(accountID string, input *iam.GetGroupPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetGroupPolicy(accountID, input, gw.IAMService)
+	}),
+	"DeleteGroupPolicy": iamHandler(func(accountID string, input *iam.DeleteGroupPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeleteGroupPolicy(accountID, input, gw.IAMService)
+	}),
+	"ListGroupPolicies": iamHandler(func(accountID string, input *iam.ListGroupPoliciesInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListGroupPolicies(accountID, input, gw.IAMService)
 	}),
 }
 

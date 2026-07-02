@@ -105,7 +105,7 @@ func TestValidateCreateVolumeInput(t *testing.T) {
 				VolumeType:       aws.String("io1"),
 			},
 			wantErr: true,
-			errMsg:  awserrors.ErrorInvalidParameterValue,
+			errMsg:  awserrors.ErrorUnknownVolumeType,
 		},
 		{
 			name: "InvalidVolumeType_GP2",
@@ -115,7 +115,7 @@ func TestValidateCreateVolumeInput(t *testing.T) {
 				VolumeType:       aws.String("gp2"),
 			},
 			wantErr: true,
-			errMsg:  awserrors.ErrorInvalidParameterValue,
+			errMsg:  awserrors.ErrorUnknownVolumeType,
 		},
 		{
 			name: "ValidInput_EmptyVolumeType",

@@ -205,33 +205,12 @@ func TestParseRunInstances(t *testing.T) {
 			},
 			want: errors.New(awserrors.ErrorMissingParameter),
 		},
-
-		// Successful test
-		{
-			name: "ValidTest",
-			input: &ec2.RunInstancesInput{
-				ImageId:          defaults.ImageId,
-				InstanceType:     defaults.InstanceType,
-				MinCount:         aws.Int64(1),
-				MaxCount:         aws.Int64(1),
-				KeyName:          defaults.KeyName,
-				SecurityGroupIds: defaults.SecurityGroupIds,
-				SubnetId:         defaults.SubnetId,
-			},
-			want: nil,
-		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			// Skip the valid test as it requires full daemon infrastructure
-			// These tests are covered by the integration tests in service_nats_test.go
-			if test.want == nil {
-				t.Skip("Skipping valid test - requires full daemon infrastructure")
-			}
-
 			// For validation tests, we can pass nil conn since validation happens before NATS call
-			response, err := RunInstances(test.input, nil, nil, "123456789012", nil)
+			response, err := RunInstances(test.input, nil, nil, "123456789012", nil, nil, 1)
 
 			// Use assert to check if the error is as expected
 			assert.Equal(t, test.want, err)

@@ -56,6 +56,23 @@ func TestMemoryObjectStore_GetNonExistent(t *testing.T) {
 	assert.Equal(t, "NoSuchKey", noSuchKey.Code())
 }
 
+func TestMemoryObjectStore_HeadObject(t *testing.T) {
+	store := NewMemoryObjectStore()
+	_, err := store.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String("b"),
+		Key:    aws.String("k"),
+		Body:   bytes.NewReader([]byte("twelve bytes")),
+	})
+	require.NoError(t, err)
+
+	out, err := store.HeadObject(&s3.HeadObjectInput{Bucket: aws.String("b"), Key: aws.String("k")})
+	require.NoError(t, err)
+	assert.Equal(t, int64(12), *out.ContentLength)
+
+	_, err = store.HeadObject(&s3.HeadObjectInput{Bucket: aws.String("b"), Key: aws.String("missing")})
+	assert.True(t, IsNoSuchKeyError(err))
+}
+
 func TestMemoryObjectStore_Delete(t *testing.T) {
 	store := NewMemoryObjectStore()
 

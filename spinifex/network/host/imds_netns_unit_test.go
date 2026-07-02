@@ -32,30 +32,41 @@ func readUnit(t *testing.T, root, rel string) string {
 	return string(b)
 }
 
-// TestIMDS_NetnsHostMountNSInvariant pins the host-mount-namespace contract: vpcd
-// creates netns via `ip netns add` into the HOST mount namespace. A sandbox
-// directive forks a private mount ns, trapping the bind-mount (setns EINVAL).
+// TestIMDS_NetnsHostMountNSInvariant pins the post-netns sandbox contract: per-tap
+// IMDS removed the in-process setns, so vpcd no longer enters a per-VPC netns. The
+// filesystem sandbox is restored, CAP_SYS_ADMIN is dropped, and namespaces lock down.
 func TestIMDS_NetnsHostMountNSInvariant(t *testing.T) {
 	root := repoRoot(t)
 
 	vpcd := readUnit(t, root, "build/systemd/spinifex-vpcd.service")
 	target := readUnit(t, root, "build/systemd/spinifex.target")
 
-	// No filesystem-sandbox directive: each forks a private mount ns and traps the bind-mount.
-	for _, banned := range []string{
+	// Filesystem-sandbox directives are restored now that no setns runs.
+	for _, want := range []string{
 		"ProtectSystem", "ProtectHome", "PrivateTmp", "ProtectKernelTunables",
 		"ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups",
-		"ProtectProc", "ReadOnlyPaths", "ReadWritePaths", "MountFlags",
+		"ProtectProc", "ReadOnlyPaths", "ReadWritePaths",
 	} {
-		if directiveSet(vpcd, banned) {
-			t.Errorf("spinifex-vpcd.service must share the HOST mount ns but sets %s= — a private mount ns traps /run/netns/<vpc> and host setns(2) fails EINVAL", banned)
+		if !directiveSet(vpcd, want) {
+			t.Errorf("spinifex-vpcd.service must set %s= — per-tap IMDS removed the in-process setns, so the filesystem sandbox is restored", want)
 		}
 	}
 
-	// vpcd still needs CAP_SYS_ADMIN for setns(CLONE_NEWNET) and the net+mnt
-	// namespace allowance for the in-netns `ip` plumbing.
-	mustContain(t, "spinifex-vpcd.service", vpcd, "CAP_SYS_ADMIN")
-	mustContain(t, "spinifex-vpcd.service", vpcd, "RestrictNamespaces=net mnt")
+	// MountFlags was the shared-mount workaround the netns required; it must not return.
+	if directiveSet(vpcd, "MountFlags") {
+		t.Errorf("spinifex-vpcd.service must not set MountFlags= — the shared-mount workaround retired with the netns")
+	}
+
+	// CAP_SYS_ADMIN's sole consumer was setns(CLONE_NEWNET); with the netns gone no
+	// capability directive may grant it, and namespaces lock down (no net/mnt allowance).
+	for _, key := range []string{"AmbientCapabilities", "CapabilityBoundingSet"} {
+		if strings.Contains(directiveValue(vpcd, key), "SYS_ADMIN") {
+			t.Errorf("spinifex-vpcd.service %s must not grant CAP_SYS_ADMIN — its sole consumer (setns) is gone", key)
+		}
+	}
+	if v := directiveValue(vpcd, "RestrictNamespaces"); v != "yes" {
+		t.Errorf("spinifex-vpcd.service must set RestrictNamespaces=yes (no per-VPC netns remains), got %q", v)
+	}
 
 	// The removed shared-mount workaround must not reappear by reference.
 	if strings.Contains(vpcd, "spinifex-netns.service") && !strings.Contains(vpcd, "# ") {
@@ -80,9 +91,13 @@ func directiveSet(body, key string) bool {
 	return false
 }
 
-func mustContain(t *testing.T, name, body, want string) {
-	t.Helper()
-	if !strings.Contains(body, want) {
-		t.Errorf("%s: missing %q", name, want)
+// directiveValue returns the value of the first `key=...` directive line, or "".
+func directiveValue(body, key string) string {
+	for line := range strings.SplitSeq(body, "\n") {
+		s := strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(s, key+"="); ok {
+			return strings.TrimSpace(v)
+		}
 	}
+	return ""
 }

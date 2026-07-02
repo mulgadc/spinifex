@@ -81,7 +81,7 @@ After apply completes, use the outputs to test:
 
 ```bash
 curl http://<public_ip>
-ssh -i nginx-demo.pem ec2-user@<public_ip>
+ssh -i nginx-demo.pem ubuntu@<public_ip>
 ```
 
 Open the `web_url` output in your browser to see the Nginx welcome page.
@@ -124,7 +124,7 @@ aws ec2 describe-instances --profile spinifex
 SSH into the instance and check cloud-init logs:
 
 ```bash
-ssh -i nginx-demo.pem ec2-user@<public_ip>
+ssh -i nginx-demo.pem ubuntu@<public_ip>
 sudo journalctl -u cloud-init --no-pager
 sudo systemctl status nginx
 ```

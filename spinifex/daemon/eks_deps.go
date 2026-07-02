@@ -11,6 +11,41 @@ import (
 	"log/slog"
 )
 
+// systemRoleEnsurer lazily builds — and memoizes — the KV-backed IAM service
+// that find-or-creates the system instance roles/profiles backing IMDS
+// instance-role credentials. It is built on first use, NOT at daemon startup:
+// the NATS KV backend has no responders until JetStream is ready, so an eager
+// build races boot and, on a node that loses, fails permanently with no retry,
+// silently dropping every system VM it launches to baked static creds. By
+// first-use (an LB/cluster create) the backend is up. Returns nil (caller falls
+// back to static creds) until a build succeeds; retried on each call until then,
+// cached once it works.
+func (d *Daemon) systemRoleEnsurer() handlers_iam.SystemInstanceRoleEnsurer {
+	d.iamEnsurerMu.Lock()
+	defer d.iamEnsurerMu.Unlock()
+	if d.iamEnsurerCached != nil {
+		return d.iamEnsurerCached
+	}
+	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+	if err != nil || masterKey == nil {
+		slog.Warn("System role ensurer: master key unavailable; system VMs fall back to baked static creds",
+			"err", err)
+		return nil
+	}
+	clusterSize := 1
+	if d.clusterConfig != nil {
+		clusterSize = len(d.clusterConfig.Nodes)
+	}
+	iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.natsConn, masterKey, clusterSize)
+	if iamErr != nil {
+		slog.Warn("System role ensurer: IAM service init failed (retried on next launch); system VMs fall back to baked static creds",
+			"err", iamErr)
+		return nil
+	}
+	d.iamEnsurerCached = iamSvc
+	return iamSvc
+}
+
 // buildEKSServiceDeps assembles the EKSServiceDeps. All collaborators must
 // already be initialised. MasterKey is loaded best-effort from the config dir.
 func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
@@ -19,6 +54,11 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		slog.Warn("EKS: LoadMasterKey failed; CreateCluster + DeleteCluster will reject until key is provisioned",
 			"err", err)
 		masterKey = nil
+	}
+
+	internalSuffix := ""
+	if d.clusterConfig != nil {
+		internalSuffix = d.clusterConfig.AWS.InternalSuffix
 	}
 
 	gatewayCA := ""
@@ -31,13 +71,14 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		}
 	}
 
-	return handlers_eks.EKSServiceDeps{
+	deps := handlers_eks.EKSServiceDeps{
 		Config:           d.config,
 		NATSConn:         d.natsConn,
 		MasterKey:        masterKey,
 		GatewayBaseURL:   d.resolveGatewayBaseURL(),
 		Region:           d.config.Region,
 		HolderID:         d.node,
+		InternalSuffix:   internalSuffix,
 		SystemGatewayURL: d.resolveSystemGatewayBaseURL(),
 		SystemAccessKey:  d.config.Predastore.AccessKey,
 		SystemSecretKey:  d.config.Predastore.SecretKey,
@@ -57,6 +98,14 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		PlacementGroup:   handlers_ec2_placementgroup.NewNATSPlacementGroupService(d.natsConn),
 		Scheduler:        handlers_eks.NewNATSHostScheduler(d.natsConn),
 	}
+
+	// A KV-backed IAM service (sharing the gateway's buckets over NATS) lets EKS
+	// find-or-create the node-role + CP instance profiles. Provided lazily so it
+	// resolves at cluster-launch time rather than racing the NATS KV backend at
+	// daemon startup; absent (no master key) workers/CP fall back accordingly.
+	deps.IAMProvider = d.systemRoleEnsurer
+
+	return deps
 }
 
 // resolveGatewayHost returns the single AWSGW host used by LB VMs, EKS OIDC

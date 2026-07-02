@@ -117,9 +117,9 @@ func runInstanceEIP(t *testing.T, fix *Fixture) {
 			})
 		t.Fatalf("guest unreachable via EIP %s within %s (see diagnostics above)", eipIP, sshReadyBudget)
 	}
-	tgt := harness.SSHTarget{User: "ec2-user", Host: eipIP, Port: 22, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}
 	idOut := runSSH(t, tgt, "id")
-	require.Containsf(t, idOut, "ec2-user", "ssh via EIP id did not report ec2-user\n%s", idOut)
+	require.Containsf(t, idOut, "ubuntu", "ssh via EIP id did not report ubuntu\n%s", idOut)
 	harness.Detail(t, "datapath", "eip_reachable_ok")
 
 	// --- DisassociateAddress + assert unreachable -------------------------

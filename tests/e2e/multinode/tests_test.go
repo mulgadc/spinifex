@@ -2,7 +2,9 @@
 
 package multinode
 
-import "testing"
+import (
+	"testing"
+)
 
 // Top-level Test* wrappers, each delegating to a runX function. Parallel tests
 // share the read-only singleton trio; sequential tests mutate cluster state
@@ -46,6 +48,13 @@ func TestMultinodeVolumeLifecycle(t *testing.T) {
 	runVolumeLifecycle(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeVolumeDurability is sequential and declared before CrossNodeOps
+// (which destabilises trio[0]'s sshd) so its guest-SSH probes hit settled VMs.
+// Touches predastore state.
+func TestMultinodeVolumeDurability(t *testing.T) {
+	runVolumeDurability(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeCrossNodeGateway is sequential: asserts a stable per-gateway instance count
 // that concurrent launches/terminates would break.
 func TestMultinodeCrossNodeGateway(t *testing.T) {
@@ -64,6 +73,12 @@ func TestMultinodeNodeFailure(t *testing.T) {
 
 func TestMultinodeNodeRecovery(t *testing.T) {
 	runNodeRecovery(t, requireMultiNodeFixture(t))
+}
+
+// TestMultinodeOVNRaft is sequential: stops ovn-central on the NB leader to
+// prove DB failover, restoring it in cleanup before later tests run.
+func TestMultinodeOVNRaft(t *testing.T) {
+	runOVNRaft(t, requireMultiNodeFixture(t))
 }
 
 // TestMultinodeSpread is sequential after NodeRecovery; owns 10.100.0.0/16 + EIP pool.

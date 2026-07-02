@@ -282,6 +282,14 @@ func (m *Manager) stopCleanup(instance *VM) {
 		}
 	}
 	m.deallocateResources(instance)
+
+	// The slot just returned to the reservation; detach the binding (under the
+	// manager lock, mirroring crash recovery) so a later start re-allocates from
+	// the general pool and terminate frees there too — never double-counting the
+	// reservation while the stopped instance no longer holds a slot.
+	if instance.CapacityReservationId != "" {
+		m.UpdateState(instance.ID, func(v *VM) { v.CapacityReservationId = "" })
+	}
 }
 
 // terminateCleanup is stopCleanup plus the AWS-resource cleanup that
@@ -327,6 +335,13 @@ func (m *Manager) terminateCleanup(instance *VM) {
 		if instance.PlacementGroupName != "" {
 			m.markTeardownResult(instance, TeardownPlacement, placementErr)
 		}
+
+		// Spot Instance Requests carry no VM-side marker, so this is a best-effort
+		// scan that no-ops for non-spot instances. It is not a tracked teardown
+		// dependency: without a marker we cannot stamp it only when it applies.
+		if err := m.deps.InstanceCleaner.RemoveFromSpotRequest(instance); err != nil {
+			slog.Warn("Failed to close spot request on termination", "id", instance.ID, "err", err)
+		}
 	}
 
 	m.deallocateResources(instance)
@@ -343,12 +358,17 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 		}
 	}
 
+	// The PID file persisting past the timeout means QEMU did not exit on its
+	// own; force-kill it then. A PID file that disappears is the clean-exit
+	// signal — do not kill on that path (the PID may be stale or reused). The
+	// wrong-node terminate case, where this never runs on the hosting node, is
+	// the OrphanQEMUReaper's job.
 	if err := utils.WaitForPidFileRemoval(instance.ID, pidFileRemovalTimeout); err != nil {
 		slog.Warn("Timeout waiting for PID file removal", "id", instance.ID, "err", err)
 		pid, readErr := utils.ReadPidFile(instance.ID)
 		if readErr != nil {
 			slog.Debug("No PID file found (VM likely already stopped)", "id", instance.ID)
-		} else {
+		} else if utils.ProcessAlive(pid) {
 			slog.Info("Force killing process", "pid", pid, "id", instance.ID)
 			if err := utils.KillProcess(pid); err != nil {
 				slog.Error("Failed to kill process", "pid", pid, "id", instance.ID, "err", err)
@@ -373,6 +393,9 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 // the management TAP/IP allocation. Errors are logged and tolerated.
 func (m *Manager) cleanupTapDevices(instance *VM) {
 	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
+		// Detach the primary ENI's IMDS datapath before removing its tap, the
+		// inverse of the launch-time attach-after-SetupTap order.
+		m.detachPrimaryIMDSDatapath(instance)
 		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(instance.ENIId)); err != nil {
 			slog.Warn("Failed to clean up tap device", "eni", instance.ENIId, "err", err)
 		}
@@ -398,9 +421,18 @@ func (m *Manager) cleanupExtraENITaps(instance *VM) {
 }
 
 // deallocateResources releases the per-instance vCPU/memory reservation
-// back to the resource controller.
+// back to the resource controller. The single release/restore chokepoint for
+// stop, terminate and crash recovery.
 func (m *Manager) deallocateResources(instance *VM) {
 	if m.deps.Resources == nil || instance.InstanceType == "" {
+		return
+	}
+	// A reservation-bound instance returns its slot to the reservation, not the
+	// general pool. CapacityReservationId is set at launch and only cleared (under
+	// the manager lock, on crash before a general-capacity restart), so the
+	// stop/terminate/crash reads here do not overlap that clear.
+	if instance.CapacityReservationId != "" {
+		m.deps.Resources.ReleaseToReservation(instance.CapacityReservationId, instance.InstanceType)
 		return
 	}
 	m.deps.Resources.Deallocate(instance.InstanceType)

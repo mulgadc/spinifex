@@ -18,9 +18,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
-	"sort"
+	"slices"
 	"strings"
 
 	manifestcheck "github.com/mulgadc/spinifex/tests/e2e/manifest-check"
@@ -88,10 +89,5 @@ func gitDiff(root, base, head string) ([]string, error) {
 }
 
 func sortedMapKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(m))
 }

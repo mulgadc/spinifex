@@ -133,14 +133,66 @@ func TestRG9_TierConfinement(t *testing.T) {
 		}
 	}
 
-	// Network tier (vpcd): privileged for in-process netns; a documented exception,
-	// not the locked-down tier. It deliberately runs NoNewPrivileges=no.
+	// Network tier (vpcd): per-tap IMDS dropped the in-process setns, so CAP_SYS_ADMIN
+	// is gone and the cap set is exactly the network minimum. NoNewPrivileges stays off
+	// (RG-10: vpcd shells out to sudo for ip/ovs-vsctl/dhcpcd, like the daemon).
 	vpcd := readUnit(t, dir, "spinifex-vpcd.service")
+	for _, want := range []string{
+		"AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID",
+		"CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID",
+	} {
+		if !hasDirective(vpcd, want) {
+			t.Errorf("RG-9: vpcd must carry exactly %q — CAP_SYS_ADMIN dropped with the per-tap cutover", want)
+		}
+	}
 	if !hasDirective(vpcd, "NoNewPrivileges=no") {
-		t.Error("RG-9: vpcd (network tier) is the documented NoNewPrivileges=no exception")
+		t.Error("RG-9/RG-10: vpcd (network tier) keeps NoNewPrivileges=no while it shells out to sudo (ip/ovs-vsctl/dhcpcd)")
 	}
 	if !hasDirective(vpcd, "SystemCallArchitectures=native") {
 		t.Error("RG-9: vpcd must keep SystemCallArchitectures=native")
+	}
+}
+
+// TestGracefulDrainOrdering asserts the graceful-shutdown contract: the drain
+// oneshot orders After= the storage/daemon units (so a target/host stop runs its
+// ExecStop drain first, while those services are still up), the daemon keeps
+// KillMode=process (guests survive a daemon restart — DDIL reattach), and the
+// drain is wired into the target so a target/host stop triggers it.
+func TestGracefulDrainOrdering(t *testing.T) {
+	dir := unitsDir(t)
+
+	drain := readUnit(t, dir, "spinifex-shutdown.service")
+	var afterLine string
+	for l := range strings.SplitSeq(drain, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "After=") {
+			afterLine = strings.TrimSpace(l)
+		}
+	}
+	if afterLine == "" {
+		t.Fatal("spinifex-shutdown.service must declare After= the storage/daemon units")
+	}
+	for _, dep := range []string{
+		"spinifex-nats.service",
+		"spinifex-predastore.service",
+		"spinifex-viperblock.service",
+		"spinifex-daemon.service",
+	} {
+		if !strings.Contains(afterLine, dep) {
+			t.Errorf("spinifex-shutdown.service After= must include %s so the drain stops before it", dep)
+		}
+	}
+	if !hasDirective(drain, "ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s") {
+		t.Error("spinifex-shutdown.service must drain the local node on stop via ExecStop")
+	}
+
+	daemon := readUnit(t, dir, "spinifex-daemon.service")
+	if !hasDirective(daemon, "KillMode=process") {
+		t.Error("spinifex-daemon.service must keep KillMode=process — guests survive daemon restart (DDIL)")
+	}
+
+	target := readUnit(t, dir, "spinifex.target")
+	if !strings.Contains(target, "spinifex-shutdown.service") {
+		t.Error("spinifex.target Wants= must include spinifex-shutdown.service")
 	}
 }
 

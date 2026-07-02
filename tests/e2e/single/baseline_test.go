@@ -166,9 +166,11 @@ func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 	pubIP := instancePublicIP(t, fix, instanceID)
 	harness.Detail(t, "instance", instanceID, "public_ip", pubIP)
 
-	// Poll for 30s so a slow-converging datapath would still be caught.
+	// Probe a short window to confirm the default-deny ACL is applied and stable.
+	// This overlaps guest boot, and the positive phase below still pays the full
+	// boot wait via trySSHReady, so a longer window buys little extra coverage.
 	harness.Step(t, "asserting tcp/22 stays blocked under default-deny SG")
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		require.Falsef(t, tcpReachable(pubIP, 22, 3*time.Second),
 			"tcp/22 to %s connected with NO ingress rule — default SG must deny external traffic", pubIP)
@@ -181,9 +183,9 @@ func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 		"tcp/22 to %s never became reachable after authorizing ingress — "+
 			"default subnet egress/IGW datapath is broken", pubIP)
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 	idOut := runSSH(t, tgt, "id")
-	assert.Containsf(t, idOut, "ec2-user", "ssh id after authorize\n%s", idOut)
+	assert.Containsf(t, idOut, "ubuntu", "ssh id after authorize\n%s", idOut)
 }
 
 // mainRouteTableID returns the main (implicitly-associated) route table for
@@ -309,9 +311,9 @@ func runNewVPCEgressBaseline(t *testing.T, fix *Fixture) {
 			"after the main-RT IGW route existed", pubIP, subnetID)
 	}
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 	idOut := runSSH(t, tgt, "id")
-	assert.Containsf(t, idOut, "ec2-user", "ssh id in fresh-VPC subnet\n%s", idOut)
+	assert.Containsf(t, idOut, "ubuntu", "ssh id in fresh-VPC subnet\n%s", idOut)
 }
 
 // runSameSGComms verifies that two instances in the default SG can ICMP-ping
@@ -339,7 +341,7 @@ func runSameSGComms(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "src", srcID, "dst", dstID, "dst_private_ip", dstPriv, "ssh_host", host)
 	waitForSSHHandshake(t, host, port, keyPath)
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 	harness.Step(t, "ping %s (%s) from %s via default-SG self-ingress", dstID, dstPriv, srcID)
 	out, converged := pingConverged(tgt, dstPriv, 45*time.Second)
 	require.Truef(t, converged,

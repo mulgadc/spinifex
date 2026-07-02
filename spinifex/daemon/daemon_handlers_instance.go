@@ -51,7 +51,21 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 		return
 	}
 
-	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(input, accountID)
+	// Targeted launch: the gateway routes only when an explicit reservation id is
+	// present, but the id rides in the input either way. Validate semantics
+	// up-front (the per-instance atomic re-check under rm.mu covers the race);
+	// the count gate in PrepareRunInstances handles a full reservation.
+	reservationID := capacityReservationTargetID(input)
+	if reservationID != "" {
+		if it, ok := d.resourceMgr.instanceTypes[aws.StringValue(input.InstanceType)]; ok {
+			if vErr := d.resourceMgr.ValidateReservationTarget(reservationID, accountID, it); vErr != nil {
+				respondWithError(msg, awserrors.ValidErrorCode(vErr.Error()))
+				return
+			}
+		}
+	}
+
+	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(input, accountID, reservationID)
 	if err != nil {
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return
@@ -69,7 +83,11 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 		slog.Error("handleEC2RunInstances failed to marshal reservation", "err", err)
 		respondWithError(msg, awserrors.ErrorServerInternal)
 		for range instances {
-			d.resourceMgr.deallocate(instanceType)
+			if reservationID == "" {
+				d.resourceMgr.deallocate(instanceType)
+			} else {
+				d.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
 		}
 		return
 	}
@@ -99,6 +117,16 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 	d.mu.Unlock()
 
 	d.instanceService.LaunchRunInstances(instances, input, instanceType)
+}
+
+// capacityReservationTargetID returns the explicit targeted-launch reservation id
+// from the input, or "" when the launch is untargeted (general path).
+func capacityReservationTargetID(input *ec2.RunInstancesInput) string {
+	spec := input.CapacityReservationSpecification
+	if spec == nil || spec.CapacityReservationTarget == nil {
+		return ""
+	}
+	return aws.StringValue(spec.CapacityReservationTarget.CapacityReservationId)
 }
 
 // describeInstancesValidFilters defines the set of filter names accepted by DescribeInstances.
@@ -320,6 +348,28 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 						GroupName:        aws.String(instance.PlacementGroupName),
 						AvailabilityZone: aws.String(d.config.AZ),
 					}
+				}
+
+				// Echo the consumed capacity reservation so targeted-launch
+				// Terraform converges — without it the instance reports no
+				// reservation and the plan never settles.
+				if instance.CapacityReservationId != "" {
+					instanceCopy.CapacityReservationId = aws.String(instance.CapacityReservationId)
+					instanceCopy.CapacityReservationSpecification = &ec2.CapacityReservationSpecificationResponse{
+						CapacityReservationPreference: aws.String(ec2.CapacityReservationPreferenceOpen),
+						CapacityReservationTarget: &ec2.CapacityReservationTargetResponse{
+							CapacityReservationId: aws.String(instance.CapacityReservationId),
+						},
+					}
+				}
+
+				// Project spot lineage stamped by the post-launch write-back.
+				// Both empty for on-demand, so the fields stay absent there.
+				if instance.InstanceLifecycle != "" {
+					instanceCopy.InstanceLifecycle = aws.String(instance.InstanceLifecycle)
+				}
+				if instance.SpotInstanceRequestId != "" {
+					instanceCopy.SpotInstanceRequestId = aws.String(instance.SpotInstanceRequestId)
 				}
 
 				// Apply filters against the fully-built instance copy
@@ -562,6 +612,10 @@ func (d *Daemon) describeInstancesFromKV(msg *nats.Msg, listFn func() ([]*vm.VM,
 
 func (d *Daemon) handleEC2ModifyInstanceAttribute(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.ModifyInstanceAttribute)
+}
+
+func (d *Daemon) handleEC2ModifyInstanceMetadataOptions(msg *nats.Msg) {
+	handleNATSRequest(msg, d.instanceService.ModifyInstanceMetadataOptions)
 }
 
 // handleEC2DescribeInstanceAttribute returns a single requested attribute for an instance.

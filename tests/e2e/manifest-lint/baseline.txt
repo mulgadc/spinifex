@@ -7,6 +7,13 @@ create	tests/e2e/eks/eks_test.go	CreateVpc	#1
 create	tests/e2e/gpu/gpu_test.go	RunInstances	#1
 create	tests/e2e/gpu/gpu_test.go	RunInstances	#2
 create	tests/e2e/gpu/helpers_test.go	RunInstances	#1
+create	tests/e2e/iam/iam_test.go	CreateKeyPair	#1
+create	tests/e2e/iam/imds_test.go	CreateInternetGateway	#1
+create	tests/e2e/iam/imds_test.go	CreateRouteTable	#1
+create	tests/e2e/iam/imds_test.go	CreateSubnet	#1
+create	tests/e2e/iam/imds_test.go	CreateVpc	#1
+create	tests/e2e/iam/imds_test.go	RunInstances	#1
+create	tests/e2e/iam/instance_iam_profile_test.go	RunInstances	#1
 create	tests/e2e/lb/lb_test.go	CreateInternetGateway	#1
 create	tests/e2e/lb/lb_test.go	CreateKeyPair	#1
 create	tests/e2e/lb/lb_test.go	CreateListener	#1
@@ -30,6 +37,7 @@ create	tests/e2e/multinode/placement_nat_test.go	CreateSubnet	#2
 create	tests/e2e/multinode/placement_nat_test.go	CreateVpc	#1
 create	tests/e2e/multinode/placement_nat_test.go	RunInstances	#1
 create	tests/e2e/multinode/placement_nat_test.go	RunInstances	#2
+create	tests/e2e/multinode/volume_durability_test.go	CreateVolume	#1
 create	tests/e2e/multinode/volume_test.go	CreateVolume	#1
 create	tests/e2e/multinode/vpc_test.go	CreateSubnet	#1
 create	tests/e2e/multinode/vpc_test.go	CreateVpc	#1
@@ -71,13 +79,6 @@ create	tests/e2e/single/baseline_test.go	CreateVpc	#1
 create	tests/e2e/single/baseline_test.go	RunInstances	#1
 create	tests/e2e/single/datapath_test.go	CreateSecurityGroup	#1
 create	tests/e2e/single/datapath_test.go	RunInstances	#1
-create	tests/e2e/single/iam_test.go	CreateKeyPair	#1
-create	tests/e2e/single/imds_test.go	CreateInternetGateway	#1
-create	tests/e2e/single/imds_test.go	CreateRouteTable	#1
-create	tests/e2e/single/imds_test.go	CreateSubnet	#1
-create	tests/e2e/single/imds_test.go	CreateVpc	#1
-create	tests/e2e/single/imds_test.go	RunInstances	#1
-create	tests/e2e/single/instance_iam_profile_test.go	RunInstances	#1
 create	tests/e2e/single/keypair_test.go	ImportKeyPair	#1
 create	tests/e2e/single/lifecycle_test.go	CreateVolume	#1
 create	tests/e2e/single/lifecycle_test.go	RunInstances	#1
@@ -96,6 +97,7 @@ create	tests/e2e/single/negative_test.go	RunInstances	#2
 create	tests/e2e/single/negative_test.go	RunInstances	#3
 create	tests/e2e/single/negative_test.go	RunInstances	#4
 create	tests/e2e/single/snapshot_test.go	CreateSnapshot	#1
+create	tests/e2e/single/volume_durability_test.go	CreateVolume	#1
 create	tests/e2e/single/volume_test.go	CreateVolume	#1
 create	tests/e2e/single/vpc_test.go	CreateInternetGateway	#1
 create	tests/e2e/single/vpc_test.go	CreateRouteTable	#1

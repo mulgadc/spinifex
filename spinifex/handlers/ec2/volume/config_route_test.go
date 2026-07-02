@@ -78,52 +78,20 @@ func getStoredConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeI
 	return data
 }
 
-// TestUpdateVolumeState_EncryptedRoutesToLiveVB verifies an encrypted-volume
-// state update is delegated to the owning node via ebs.config.{volumeID} rather
-// than rewriting the sealed object directly.
-func TestUpdateVolumeState_EncryptedRoutesToLiveVB(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-	svc.natsConn = startTestNATS(t)
-
-	volumeID := "vol-enc-live"
-	seedEncryptedConfig(t, store, volumeID)
-
-	var got atomic.Pointer[types.EBSConfigUpdateRequest]
-	sub, err := svc.natsConn.Subscribe("ebs.config."+volumeID, func(msg *nats.Msg) {
-		var req types.EBSConfigUpdateRequest
-		_ = json.Unmarshal(msg.Data, &req)
-		got.Store(&req)
-		data, _ := json.Marshal(types.EBSConfigUpdateResponse{Volume: volumeID, Success: true})
-		_ = msg.Respond(data)
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	err = svc.UpdateVolumeState(volumeID, "in-use", "i-abc", "/dev/nbd0")
-	require.NoError(t, err)
-
-	req := got.Load()
-	require.NotNil(t, req, "per-volume responder must receive the config update")
-	var vc viperblock.VolumeConfig
-	require.NoError(t, json.Unmarshal(req.VolumeConfig, &vc))
-	assert.Equal(t, "in-use", vc.VolumeMetadata.State)
-	assert.Equal(t, "i-abc", vc.VolumeMetadata.AttachedInstance)
-	assert.Equal(t, "/dev/nbd0", vc.VolumeMetadata.DeviceName)
-
-	// The sealed object must NOT have been rewritten by the handler.
-	raw := getStoredConfig(t, store, volumeID)
-	var still viperblock.VBState
-	require.NoError(t, json.Unmarshal(viperblock.StateBody(raw), &still))
-	assert.True(t, still.EncryptionEnabled)
-	assert.Equal(t, "available", still.VolumeConfig.VolumeMetadata.State,
-		"handler must not mutate the sealed object directly; the keyholder owns it")
+// encConfig builds a VolumeConfig for an encrypted-volume putVolumeConfig call.
+func encConfig(volumeID string) *viperblock.VolumeConfig {
+	return &viperblock.VolumeConfig{
+		VolumeMetadata: viperblock.VolumeMetadata{VolumeID: volumeID, SizeGiB: 10},
+	}
 }
 
-// TestUpdateVolumeState_EncryptedDetachedFallsBackToQueueGroup verifies that with
-// no per-volume responder (volume unmounted), the update routes to the ebs.config
-// queue group.
-func TestUpdateVolumeState_EncryptedDetachedFallsBackToQueueGroup(t *testing.T) {
+// TestPutVolumeConfig_EncryptedRoutesToQueueGroup verifies a config write for an
+// encrypted volume is delegated to the ebs.config keyholder queue group rather
+// than re-sealing the object out-of-band. The control plane lacks the master key,
+// so a direct PutObject would strip the AES-GCM tag and brick the volume. This is
+// the safe non-live writer path (markVolumeOrphaned / ModifyVolume); UpdateVolumeState
+// no longer routes here at all (it writes state.json).
+func TestPutVolumeConfig_EncryptedRoutesToQueueGroup(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.natsConn = startTestNATS(t)
@@ -140,14 +108,19 @@ func TestUpdateVolumeState_EncryptedDetachedFallsBackToQueueGroup(t *testing.T) 
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	err = svc.UpdateVolumeState(volumeID, "available", "", "")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), hits.Load(), "detached encrypted update must hit the ebs.config queue group")
+	require.NoError(t, svc.putVolumeConfig(volumeID, encConfig(volumeID)))
+	assert.Equal(t, int32(1), hits.Load(), "encrypted config write must hit the ebs.config keyholder queue group")
+
+	// The sealed object must NOT have been rewritten out-of-band by the handler.
+	raw := getStoredConfig(t, store, volumeID)
+	var still viperblock.VBState
+	require.NoError(t, json.Unmarshal(viperblock.StateBody(raw), &still))
+	assert.True(t, still.EncryptionEnabled)
 }
 
-// TestUpdateVolumeState_EncryptedKeyholderError surfaces a keyholder failure
+// TestPutVolumeConfig_EncryptedKeyholderError surfaces a keyholder failure
 // instead of silently succeeding.
-func TestUpdateVolumeState_EncryptedKeyholderError(t *testing.T) {
+func TestPutVolumeConfig_EncryptedKeyholderError(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.natsConn = startTestNATS(t)
@@ -155,14 +128,14 @@ func TestUpdateVolumeState_EncryptedKeyholderError(t *testing.T) {
 	volumeID := "vol-enc-err"
 	seedEncryptedConfig(t, store, volumeID)
 
-	sub, err := svc.natsConn.Subscribe("ebs.config."+volumeID, func(msg *nats.Msg) {
+	sub, err := svc.natsConn.QueueSubscribe("ebs.config", "spinifex-workers", func(msg *nats.Msg) {
 		data, _ := json.Marshal(types.EBSConfigUpdateResponse{Volume: volumeID, Error: "reseal failed"})
 		_ = msg.Respond(data)
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	err = svc.UpdateVolumeState(volumeID, "in-use", "i-x", "/dev/nbd0")
+	err = svc.putVolumeConfig(volumeID, encConfig(volumeID))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reseal failed")
 }

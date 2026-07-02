@@ -169,6 +169,18 @@ func (m *flexMockIAMService) DetachRolePolicy(_ string, _ *iam.DetachRolePolicyI
 func (m *flexMockIAMService) ListAttachedRolePolicies(_ string, _ *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
 	return &iam.ListAttachedRolePoliciesOutput{}, nil
 }
+func (m *flexMockIAMService) PutRolePolicy(_ string, _ *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	return &iam.PutRolePolicyOutput{}, nil
+}
+func (m *flexMockIAMService) GetRolePolicy(_ string, _ *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
+	return &iam.GetRolePolicyOutput{}, nil
+}
+func (m *flexMockIAMService) DeleteRolePolicy(_ string, _ *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
+	return &iam.DeleteRolePolicyOutput{}, nil
+}
+func (m *flexMockIAMService) ListRolePolicies(_ string, _ *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
+	return &iam.ListRolePoliciesOutput{}, nil
+}
 func (m *flexMockIAMService) CreateInstanceProfile(_ string, _ *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
 	return &iam.CreateInstanceProfileOutput{}, nil
 }
@@ -192,6 +204,60 @@ func (m *flexMockIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.Remo
 }
 func (m *flexMockIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
 	return nil, nil
+}
+func (m *flexMockIAMService) CreateGroup(_ string, _ *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
+	return &iam.CreateGroupOutput{}, nil
+}
+func (m *flexMockIAMService) GetGroup(_ string, _ *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
+	return &iam.GetGroupOutput{}, nil
+}
+func (m *flexMockIAMService) ListGroups(_ string, _ *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
+	return &iam.ListGroupsOutput{}, nil
+}
+func (m *flexMockIAMService) DeleteGroup(_ string, _ *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
+	return &iam.DeleteGroupOutput{}, nil
+}
+func (m *flexMockIAMService) AddUserToGroup(_ string, _ *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
+	return &iam.AddUserToGroupOutput{}, nil
+}
+func (m *flexMockIAMService) RemoveUserFromGroup(_ string, _ *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
+	return &iam.RemoveUserFromGroupOutput{}, nil
+}
+func (m *flexMockIAMService) ListGroupsForUser(_ string, _ *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
+	return &iam.ListGroupsForUserOutput{}, nil
+}
+func (m *flexMockIAMService) AttachGroupPolicy(_ string, _ *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
+	return &iam.AttachGroupPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) DetachGroupPolicy(_ string, _ *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
+	return &iam.DetachGroupPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) ListAttachedGroupPolicies(_ string, _ *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
+	return &iam.ListAttachedGroupPoliciesOutput{}, nil
+}
+func (m *flexMockIAMService) PutGroupPolicy(_ string, _ *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	return &iam.PutGroupPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) GetGroupPolicy(_ string, _ *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	return &iam.GetGroupPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) DeleteGroupPolicy(_ string, _ *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	return &iam.DeleteGroupPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) ListGroupPolicies(_ string, _ *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	return &iam.ListGroupPoliciesOutput{}, nil
+}
+func (m *flexMockIAMService) PutUserPolicy(_ string, _ *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+	return &iam.PutUserPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) GetUserPolicy(_ string, _ *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
+	return &iam.GetUserPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) DeleteUserPolicy(_ string, _ *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+	return &iam.DeleteUserPolicyOutput{}, nil
+}
+func (m *flexMockIAMService) ListUserPolicies(_ string, _ *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
+	return &iam.ListUserPoliciesOutput{}, nil
 }
 
 // setupIAMRequestHandler wires an http.Handler for IAM_Request with injected SigV4 context values.

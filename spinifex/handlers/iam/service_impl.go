@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -29,6 +31,7 @@ const (
 	KVBucketAccountCounter   = "spinifex-account-counter"
 	KVBucketRoles            = "spinifex-iam-roles"
 	KVBucketInstanceProfiles = "spinifex-iam-instance-profiles"
+	KVBucketGroups           = "spinifex-iam-groups"
 
 	KVBucketUsersVersion            = 1
 	KVBucketAccessKeysVersion       = 1
@@ -37,6 +40,7 @@ const (
 	KVBucketAccountCounterVersion   = 1
 	KVBucketRolesVersion            = 1
 	KVBucketInstanceProfilesVersion = 1
+	KVBucketGroupsVersion           = 1
 
 	maxAccessKeysPerUser = 2
 
@@ -82,8 +86,8 @@ type IAMServiceImpl struct {
 	accountCounterBucket   nats.KeyValue
 	rolesBucket            nats.KeyValue
 	instanceProfilesBucket nats.KeyValue
-	masterKey              []byte
-	decrypter              *Decrypter
+	groupsBucket           nats.KeyValue
+	key                    *masterkey.Key
 	// replicas is the JetStream replication factor for lazily-created per-account buckets.
 	replicas int
 }
@@ -160,9 +164,17 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketInstanceProfiles, err)
 	}
 
-	decrypter, err := NewDecrypter(masterKey)
+	groupsBucket, err := getOrCreateBucket(js, KVBucketGroups, 10, replicas)
 	if err != nil {
-		return nil, fmt.Errorf("init decrypter: %w", err)
+		return nil, fmt.Errorf("init groups bucket: %w", err)
+	}
+	if err := migrate.DefaultRegistry.RunKV(KVBucketGroups, groupsBucket, KVBucketGroupsVersion); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", KVBucketGroups, err)
+	}
+
+	key, err := masterkey.New(masterKey)
+	if err != nil {
+		return nil, fmt.Errorf("init master key: %w", err)
 	}
 
 	slog.Info("IAM service initialized",
@@ -172,6 +184,7 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		"accounts_bucket", KVBucketAccounts,
 		"roles_bucket", KVBucketRoles,
 		"instance_profiles_bucket", KVBucketInstanceProfiles,
+		"groups_bucket", KVBucketGroups,
 		"replicas", replicas)
 
 	return &IAMServiceImpl{
@@ -184,8 +197,8 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		accountCounterBucket:   accountCounterBucket,
 		rolesBucket:            rolesBucket,
 		instanceProfilesBucket: instanceProfilesBucket,
-		masterKey:              masterKey,
-		decrypter:              decrypter,
+		groupsBucket:           groupsBucket,
+		key:                    key,
 		replicas:               replicas,
 	}, nil
 }
@@ -251,6 +264,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 		AccessKeys:       []string{},
 		Tags:             copyTags(input.Tags),
 		AttachedPolicies: []string{},
+		Groups:           []string{},
 	}
 
 	data, err := json.Marshal(user)
@@ -376,6 +390,12 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 	if len(user.AttachedPolicies) > 0 {
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
+	if len(user.Groups) > 0 {
+		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	}
+	if len(user.InlinePolicies) > 0 {
+		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	}
 
 	if err := s.usersBucket.Delete(kvKey); err != nil {
 		return nil, fmt.Errorf("delete user: %w", err)
@@ -411,7 +431,7 @@ func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAcce
 		return nil, fmt.Errorf("generate secret key: %w", err)
 	}
 
-	encryptedSecret, err := EncryptSecret(secretAccessKey, s.masterKey)
+	encryptedSecret, err := s.key.EncryptBase64(secretAccessKey)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt secret: %w", err)
 	}
@@ -513,22 +533,13 @@ func (s *IAMServiceImpl) DeleteAccessKey(accountID string, input *iam.DeleteAcce
 		return nil, err
 	}
 
-	found := false
-	remaining := make([]string, 0, len(user.AccessKeys))
-	for _, keyID := range user.AccessKeys {
-		if keyID == accessKeyID {
-			found = true
-		} else {
-			remaining = append(remaining, keyID)
-		}
-	}
-
-	if !found {
+	idx := slices.Index(user.AccessKeys, accessKeyID)
+	if idx < 0 {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 
 	// Update user record first to avoid orphaning the reference on crash.
-	user.AccessKeys = remaining
+	user.AccessKeys = slices.Delete(user.AccessKeys, idx, idx+1)
 	userData, err := json.Marshal(user)
 	if err != nil {
 		return nil, fmt.Errorf("marshal user: %w", err)
@@ -608,9 +619,9 @@ func (s *IAMServiceImpl) LookupAccessKey(accessKeyID string) (*AccessKey, error)
 }
 
 // DecryptSecret decrypts a base64-encoded AES-256-GCM ciphertext using the
-// pre-computed cipher initialized at startup.
+// master key loaded at startup.
 func (s *IAMServiceImpl) DecryptSecret(ciphertext string) (string, error) {
-	return s.decrypter.Decrypt(ciphertext)
+	return s.key.DecryptBase64(ciphertext)
 }
 
 // SeedBootstrap seeds the system root user and optional admin account into NATS KV.
@@ -642,6 +653,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 		AccessKeys:       []string{data.AccessKeyID},
 		Tags:             []Tag{},
 		AttachedPolicies: []string{},
+		Groups:           []string{},
 	}
 
 	userData, err := json.Marshal(rootUser)
@@ -759,6 +771,7 @@ func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
 		AccessKeys:       []string{admin.AccessKeyID},
 		Tags:             []Tag{},
 		AttachedPolicies: []string{policyARN},
+		Groups:           []string{},
 	}
 
 	userData, err := json.Marshal(adminUser)
@@ -1028,10 +1041,11 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 		return nil, err
 	}
 
-	attachmentCount, err := s.countPolicyAttachments(accountID, policy.ARN)
+	counts, err := s.buildAttachmentCounts(accountID)
 	if err != nil {
 		return nil, fmt.Errorf("check policy attachments: %w", err)
 	}
+	attachmentCount := counts[policy.ARN]
 
 	createdAt := parseCreatedAt(policy.CreatedAt)
 	return &iam.GetPolicyOutput{
@@ -1157,11 +1171,11 @@ func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyI
 		return nil, err
 	}
 
-	attachCount, err := s.countPolicyAttachments(accountID, policy.ARN)
+	counts, err := s.buildAttachmentCounts(accountID)
 	if err != nil {
 		return nil, fmt.Errorf("check policy attachments: %w", err)
 	}
-	if attachCount > 0 {
+	if counts[policy.ARN] > 0 {
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
@@ -1220,21 +1234,12 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 		return nil, err
 	}
 
-	found := false
-	remaining := make([]string, 0, len(user.AttachedPolicies))
-	for _, arn := range user.AttachedPolicies {
-		if arn == policyARN {
-			found = true
-		} else {
-			remaining = append(remaining, arn)
-		}
-	}
-
-	if !found {
+	idx := slices.Index(user.AttachedPolicies, policyARN)
+	if idx < 0 {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 
-	user.AttachedPolicies = remaining
+	user.AttachedPolicies = slices.Delete(user.AttachedPolicies, idx, idx+1)
 	userData, err := json.Marshal(user)
 	if err != nil {
 		return nil, fmt.Errorf("marshal user: %w", err)
@@ -1273,6 +1278,123 @@ func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.L
 	}, nil
 }
 
+// ---------------------------------------------------------------------------
+// User inline policies
+// ---------------------------------------------------------------------------
+
+// PutUserPolicy embeds an inline policy document in a user, keyed by PolicyName.
+// Idempotent upsert: a same-name policy is overwritten, mirroring AWS. Uses a
+// blind read-modify-write Put like the other user writers (no CAS).
+func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+	userName := *input.UserName
+	policyName := *input.PolicyName
+	policyDoc := *input.PolicyDocument
+	userKVKey := accountID + "." + userName
+
+	if err := validatePolicyName(policyName); err != nil {
+		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	}
+	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
+		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+	}
+
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	if user.InlinePolicies == nil {
+		user.InlinePolicies = map[string]string{}
+	}
+	user.InlinePolicies[policyName] = policyDoc
+
+	userData, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+
+	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM inline policy put on user", "accountID", accountID, "userName", userName, "policyName", policyName)
+	return &iam.PutUserPolicyOutput{}, nil
+}
+
+// GetUserPolicy returns a user's inline policy document by name as a raw JSON
+// string, matching the in-repo convention used by GetGroupPolicy.
+func (s *IAMServiceImpl) GetUserPolicy(accountID string, input *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
+	userName := *input.UserName
+	policyName := *input.PolicyName
+
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	doc, ok := user.InlinePolicies[policyName]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+
+	return &iam.GetUserPolicyOutput{
+		UserName:       aws.String(userName),
+		PolicyName:     aws.String(policyName),
+		PolicyDocument: aws.String(doc),
+	}, nil
+}
+
+// DeleteUserPolicy removes a user's inline policy by name. A missing name
+// yields NoSuchEntity, matching AWS. Blind Put like the other user writers.
+func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+	userName := *input.UserName
+	policyName := *input.PolicyName
+	userKVKey := accountID + "." + userName
+
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, ok := user.InlinePolicies[policyName]; !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	delete(user.InlinePolicies, policyName)
+
+	userData, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+
+	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM inline policy deleted from user", "accountID", accountID, "userName", userName, "policyName", policyName)
+	return &iam.DeleteUserPolicyOutput{}, nil
+}
+
+// ListUserPolicies returns the names of a user's inline policies, sorted for
+// deterministic output. Pagination is not implemented: IsTruncated is always false.
+func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
+	user, err := s.getUser(accountID, *input.UserName)
+	if err != nil {
+		return nil, err
+	}
+
+	rawNames := slices.Sorted(maps.Keys(user.InlinePolicies))
+
+	names := make([]*string, 0, len(rawNames))
+	for _, name := range rawNames {
+		names = append(names, aws.String(name))
+	}
+
+	return &iam.ListUserPoliciesOutput{
+		PolicyNames: names,
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
 // GetUserPolicies resolves all policy documents attached to a user.
 // Used internally by the gateway for policy evaluation.
 func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDocument, error) {
@@ -1282,6 +1404,7 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 	}
 
 	var docs []PolicyDocument
+	// Direct user-attached managed policies.
 	for _, arn := range user.AttachedPolicies {
 		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
 		if err != nil {
@@ -1289,6 +1412,52 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 			return nil, err
 		}
 		if include {
+			docs = append(docs, doc)
+		}
+	}
+
+	// Direct user-inline policies. A malformed document fails closed so a broken
+	// inline grant denies rather than silently permitting, mirroring the
+	// group-inline handling below.
+	for name, raw := range user.InlinePolicies {
+		var doc PolicyDocument
+		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+			return nil, fmt.Errorf("parse user inline policy %s/%s: %w", userName, name, err)
+		}
+		docs = append(docs, doc)
+	}
+
+	// Group-inherited managed policies. A membership to a deleted group is inert
+	// (AWS makes that state impossible by refusing to delete a non-empty group),
+	// so a missing group is skipped with a warn and the user keeps their other
+	// grants — never over-permitting. A missing/corrupt policy within a
+	// resolvable group still fails closed, mirroring the direct-policy handling.
+	for _, groupName := range user.Groups {
+		group, err := s.getGroup(accountID, groupName)
+		if err != nil {
+			if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+				slog.Warn("GetUserPolicies: member references missing group; skipping",
+					"accountID", accountID, "user", userName, "group", groupName)
+				continue
+			}
+			return nil, err // transient/corrupt → fail closed
+		}
+		for _, arn := range group.AttachedPolicies {
+			doc, include, err := s.resolveAttachedPolicy(accountID, arn)
+			if err != nil {
+				return nil, err // fail closed
+			}
+			if include {
+				docs = append(docs, doc)
+			}
+		}
+		// Group-inherited inline policies. A malformed document within a
+		// resolvable group fails closed, mirroring GetRolePolicies.
+		for name, raw := range group.InlinePolicies {
+			var doc PolicyDocument
+			if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+				return nil, fmt.Errorf("parse group inline policy %s/%s: %w", groupName, name, err)
+			}
 			docs = append(docs, doc)
 		}
 	}
@@ -1333,8 +1502,8 @@ func (s *IAMServiceImpl) getPolicyByARN(accountID, policyARN string) (*Policy, e
 }
 
 // buildAttachmentCounts fetches all users for the account once and returns a
-// map of policyARN -> number of users that have it attached. This avoids the
-// N+1 pattern of calling countPolicyAttachments per policy in ListPolicies.
+// map of policyARN -> number of users that have it attached, avoiding a
+// per-policy full scan when listing or inspecting policies.
 func (s *IAMServiceImpl) buildAttachmentCounts(accountID string) (map[string]int64, error) {
 	keys, err := s.usersBucket.Keys()
 	if err != nil {
@@ -1373,47 +1542,6 @@ func (s *IAMServiceImpl) buildAttachmentCounts(accountID string) (map[string]int
 		}
 	}
 	return counts, nil
-}
-
-// countPolicyAttachments counts how many users in this account have this policy attached.
-func (s *IAMServiceImpl) countPolicyAttachments(accountID, policyARN string) (int64, error) {
-	keys, err := s.usersBucket.Keys()
-	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("count policy attachments: %w", err)
-	}
-
-	keyPrefix := accountID + "."
-	var count int64
-	for _, key := range keys {
-		if key == utils.VersionKey {
-			continue
-		}
-		if !strings.HasPrefix(key, keyPrefix) {
-			continue
-		}
-
-		entry, err := s.usersBucket.Get(key)
-		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
-				slog.Debug("countPolicyAttachments: user key disappeared", "key", key)
-				continue
-			}
-			slog.Warn("countPolicyAttachments: failed to get user", "key", key, "err", err)
-			continue
-		}
-		var user User
-		if err := json.Unmarshal(entry.Value(), &user); err != nil {
-			slog.Warn("countPolicyAttachments: failed to unmarshal user", "key", key, "err", err)
-			continue
-		}
-		if slices.Contains(user.AttachedPolicies, policyARN) {
-			count++
-		}
-	}
-	return count, nil
 }
 
 func (s *IAMServiceImpl) getUser(accountID, userName string) (*User, error) {

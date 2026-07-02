@@ -32,6 +32,29 @@ func SpecForSystemType(name string) (vcpu int, memGB float64, ok bool) {
 		true
 }
 
+// defaultVCPUsByInstanceType maps every instance type name to its default vCPU
+// count. vCPUs depend only on the size suffix, not the CPU generation or
+// architecture, so this static map covers every family the cluster can run,
+// including ones a given host cannot itself detect.
+var defaultVCPUsByInstanceType = func() map[string]int {
+	m := make(map[string]int)
+	for _, def := range instanceFamilyDefs {
+		for _, size := range def.sizes {
+			m[def.name+"."+size.suffix] = size.vcpus
+		}
+	}
+	return m
+}()
+
+// DefaultVCPUs returns the default vCPU count for an instance type name (e.g.
+// "c5.large"); ok is false for an unknown type. The result is independent of
+// host CPU generation, so a gateway can size any account's instances even for
+// families its own host cannot run.
+func DefaultVCPUs(instanceType string) (vcpus int, ok bool) {
+	v, ok := defaultVCPUsByInstanceType[instanceType]
+	return v, ok
+}
+
 // generateForGeneration creates instance types for the given CPU generation.
 // Cross-vendor siblings are included on x86_64 so a mixed Intel+AMD cluster
 // can serve either vendor family.
@@ -113,12 +136,7 @@ func generateSystemTypes(arch string) map[string]*ec2.InstanceTypeInfo {
 }
 
 // GenerateGPUTypes returns InstanceTypeInfo entries for each GPU model with GpuInfo populated.
-// Exported for use by the daemon's hot-reload path.
 func GenerateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTypeInfo {
-	return generateGPUTypes(models, arch)
-}
-
-func generateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTypeInfo {
 	types := make(map[string]*ec2.InstanceTypeInfo)
 	seen := make(map[string]bool)
 
@@ -262,7 +280,7 @@ func DetectAndGenerate(cpu CPUInfo, arch string, gpuModels []GPUModel) map[strin
 
 	// Merge in GPU instance types if the host has recognized GPUs.
 	if len(gpuModels) > 0 {
-		maps.Copy(types, generateGPUTypes(gpuModels, arch))
+		maps.Copy(types, GenerateGPUTypes(gpuModels, arch))
 	}
 
 	if len(types) == 0 {

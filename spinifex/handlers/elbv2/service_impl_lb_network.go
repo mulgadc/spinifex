@@ -64,8 +64,11 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 
-	// NLBs do not support security groups (mirrors CreateLoadBalancer).
-	if lb.Type == LoadBalancerTypeNetwork {
+	// SGs are fixed at create time on NLBs: they can be replaced on an NLB created
+	// with SGs, but not added to one created without (it carries the managed SG
+	// instead). ALBs always allow SetSecurityGroups. The empty-input case is
+	// already rejected above, so this never strips an SG-NLB to zero.
+	if lb.Type == LoadBalancerTypeNetwork && len(lb.SecurityGroups) == 0 {
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
@@ -75,6 +78,9 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 		sgs = append(sgs, *sg)
+	}
+	if len(sgs) > maxLBSecurityGroups {
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
 	// Re-attach to each ENI; failure aborts before the record is persisted.
@@ -108,7 +114,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	desired := desiredSubnetSet(input)
+	desired := flattenSubnetIDs(input.Subnets, input.SubnetMappings)
 	if len(desired) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -237,8 +243,10 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 	return s.setSubnetsOutput(lb), nil
 }
 
-// desiredSubnetSet flattens Subnets and SubnetMappings into a deduplicated, ordered list.
-func desiredSubnetSet(input *elbv2.SetSubnetsInput) []string {
+// flattenSubnetIDs deduplicates the explicit Subnets list and the SubnetMappings
+// list into one ordered subnet-ID slice. LBC supplies ALB subnets via
+// SubnetMappings, so both sources must be honoured wherever subnets are read.
+func flattenSubnetIDs(subnets []*string, mappings []*elbv2.SubnetMapping) []string {
 	seen := make(map[string]bool)
 	var out []string
 	add := func(sn string) {
@@ -247,12 +255,12 @@ func desiredSubnetSet(input *elbv2.SetSubnetsInput) []string {
 			out = append(out, sn)
 		}
 	}
-	for _, sn := range input.Subnets {
+	for _, sn := range subnets {
 		if sn != nil {
 			add(*sn)
 		}
 	}
-	for _, m := range input.SubnetMappings {
+	for _, m := range mappings {
 		if m != nil && m.SubnetId != nil {
 			add(*m.SubnetId)
 		}

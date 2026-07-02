@@ -73,10 +73,10 @@ func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult,
 	instance.ENIRequests.AttachedByENIID[eniID] = slot
 
 	dc := newDeviceController(instance)
-	netdevID := fmt.Sprintf("hostnet-eni-%d", slot)
-	deviceID := fmt.Sprintf("net-eni-%d", slot)
+	netdevID := eniNetdevID(slot)
+	deviceID := eniDeviceID(slot)
 	tapName := TapDeviceName(eniID)
-	busID := fmt.Sprintf("hotplug-eni%d", slot)
+	busID := eniBusID(slot)
 
 	// Step 1: tap device + OVS port on br-int (carries OVN iface-id binding).
 	if err := m.setupENITap(instance.ID, eniID, mac); err != nil {
@@ -149,8 +149,8 @@ func (m *Manager) HotUnplugENI(instance *VM, eniID string, force bool) error {
 	}
 
 	dc := newDeviceController(instance)
-	netdevID := fmt.Sprintf("hostnet-eni-%d", slot)
-	deviceID := fmt.Sprintf("net-eni-%d", slot)
+	netdevID := eniNetdevID(slot)
+	deviceID := eniDeviceID(slot)
 	tapName := TapDeviceName(eniID)
 
 	// Step 1: device_del (guest driver release request).

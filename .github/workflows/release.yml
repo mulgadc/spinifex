@@ -9,21 +9,21 @@ permissions:
 
 jobs:
   distro-amd64:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: spinifex
 
       - name: Checkout Predastore
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
           path: predastore
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
           path: viperblock
@@ -54,21 +54,21 @@ jobs:
             spinifex/scripts/setup.sh
 
   distro-arm64:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: spinifex
 
       - name: Checkout Predastore
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
           path: predastore
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
           path: viperblock
@@ -91,7 +91,7 @@ jobs:
 
   release:
     needs: [ distro-amd64, distro-arm64 ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Download amd64 Artifacts
         uses: actions/download-artifact@v8
@@ -143,7 +143,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
@@ -190,7 +190,7 @@ jobs:
 
   promote:
     needs: [ verify, baremetal ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       TAG: ${{ github.ref_name }}
       REPO: ${{ github.repository }}
@@ -211,7 +211,7 @@ jobs:
   mark-failed:
     needs: [ verify, baremetal ]
     if: failure()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       TAG: ${{ github.ref_name }}
       REPO: ${{ github.repository }}
@@ -251,25 +251,25 @@ jobs:
           repositories: mulga
 
       - name: Checkout Spinifex
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: spinifex
           ref: ${{ github.ref }}
 
       - name: Checkout Predastore
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
           path: predastore
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
           path: viperblock
 
       - name: Checkout Mulga iso-builder
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}

@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math/rand/v2"
+	"net"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -240,6 +244,7 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		Version:        version,
 		NodeRole:       aws.StringValue(input.NodeRole),
 		Labels:         aws.StringValueMap(input.Labels),
+		Tags:           aws.StringValueMap(input.Tags),
 		CreatedAt:      now,
 		ModifiedAt:     now,
 	}
@@ -421,12 +426,28 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 	}
 	subnet := rec.Subnets[0]
 	shortID := uuid.NewString()[:8]
+
+	region := s.deps.Region
+	suffix := s.deps.InternalSuffix
+	registryHost := accountID + ".dkr.ecr." + region + "." + suffix
+	gatewayIP := gatewayHostIP(s.deps.GatewayBaseURL)
+	if gatewayIP == "" {
+		slog.Warn("EKS nodegroup: gateway base URL is not an IP; worker ECR registry mirror falls back to the hostname endpoint, DNS resolution required",
+			"gatewayBaseURL", s.deps.GatewayBaseURL, "registryHost", registryHost)
+	}
+
 	userData := buildAgentUserData(agentUserDataInput{
 		ClusterName:   rec.ClusterName,
 		NodegroupName: rec.Name,
 		ServerURL:     clusterJoinEndpoint(meta),
 		JoinToken:     token,
 		NodeName:      fmt.Sprintf("%s-%s-%s", rec.ClusterName, rec.Name, shortID),
+		GatewayURL:    s.deps.GatewayBaseURL,
+		GatewayCACert: s.deps.GatewayCACert,
+		Region:        region,
+		AccountID:     accountID,
+		RegistryHost:  registryHost,
+		GatewayIP:     gatewayIP,
 	})
 	runInput := &ec2.RunInstancesInput{
 		ImageId:          aws.String(amiID),
@@ -450,7 +471,26 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 			Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(rec.DiskSize)},
 		}}
 	}
-	res, err := s.deps.Worker.RunWorkerInstance(runInput, accountID)
+
+	// Attach the node role's instance profile so IMDS serves the role to the ECR
+	// credential provider; without it worker pulls from the internal ECR get 401.
+	if s.iamEnsurer() != nil && rec.NodeRole != "" {
+		profileARN, perr := s.ensureNodeInstanceProfile(accountID, rec.NodeRole)
+		if perr != nil {
+			return "", fmt.Errorf("ensure node instance profile: %w", perr)
+		}
+		runInput.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{Arn: aws.String(profileARN)}
+	} else {
+		slog.Warn("EKS nodegroup: no IAM service or node role; worker launches without an instance profile, internal ECR pulls will fail",
+			"nodegroup", rec.Name, "nodeRole", rec.NodeRole)
+	}
+
+	// Spread workers across hosts: target the eligible host holding the fewest of
+	// this nodegroup's existing workers (round-robin that packs once hosts <
+	// desired). An empty host (no scheduler / no node data) falls back to a local
+	// launch inside RunWorkerInstanceOnNode, never worse than the un-spread path.
+	host := s.selectWorkerHost(instanceType, rec.InstanceIDs)
+	res, err := s.deps.Worker.RunWorkerInstanceOnNode(host, runInput, accountID)
 	if err != nil {
 		return "", err
 	}
@@ -460,6 +500,128 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 		}
 	}
 	return "", errors.New("run worker returned no instance id")
+}
+
+// selectWorkerHost picks the host for the next worker: the eligible host (one
+// with free capacity for instanceType) holding the fewest of this nodegroup's
+// existing workers, so workers spread across hosts and pack evenly once the
+// worker count exceeds the host count. Ties break randomly for fair placement.
+// Returns "" when no scheduler is wired or no host has capacity, in which case
+// the caller falls back to a local launch.
+func (s *EKSServiceImpl) selectWorkerHost(instanceType string, existingWorkerIDs []string) string {
+	if s.deps.Scheduler == nil {
+		return ""
+	}
+	hosts := s.deps.Scheduler.SchedulableHosts(instanceType)
+	if len(hosts) == 0 {
+		return ""
+	}
+	// Count this nodegroup's workers already placed per host.
+	counts := make(map[string]int, len(hosts))
+	for _, h := range hosts {
+		counts[h] = 0
+	}
+	for _, host := range s.deps.Scheduler.InstanceHosts(existingWorkerIDs) {
+		if _, eligible := counts[host]; eligible {
+			counts[host]++
+		}
+	}
+	rand.Shuffle(len(hosts), func(i, j int) { hosts[i], hosts[j] = hosts[j], hosts[i] })
+	best := hosts[0]
+	for _, h := range hosts[1:] {
+		if counts[h] < counts[best] {
+			best = h
+		}
+	}
+	return best
+}
+
+// gatewayHostIP returns the IP literal of the gateway base URL's host, or "" when
+// the host is empty or a DNS name (in which case the worker's ECR registry mirror
+// uses the hostname endpoint and must resolve it via DNS).
+func gatewayHostIP(gatewayURL string) string {
+	if gatewayURL == "" {
+		return ""
+	}
+	u, err := url.Parse(gatewayURL)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if net.ParseIP(host) == nil {
+		return ""
+	}
+	return host
+}
+
+// ensureNodeInstanceProfile guarantees an IAM instance profile named for the
+// nodegroup's node role exists and carries that role, returning its ARN. Workers
+// launch with this profile so IMDS serves the node role to the ECR credential
+// provider, mirroring the implicit instance profile real EKS creates for a node
+// role. Idempotent: concurrent worker launches converge on the same profile.
+func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string) (string, error) {
+	roleName := roleNameFromARN(nodeRoleARN)
+	if roleName == "" {
+		return "", fmt.Errorf("node role ARN %q has no role name", nodeRoleARN)
+	}
+	profileName := roleName
+
+	out, err := s.iamEnsurer().GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
+		InstanceProfileName: aws.String(profileName),
+	})
+	if err == nil {
+		return s.attachRoleToProfile(accountID, profileName, roleName,
+			aws.StringValue(out.InstanceProfile.Arn), len(out.InstanceProfile.Roles) > 0)
+	}
+	if err.Error() != awserrors.ErrorIAMNoSuchEntity {
+		return "", fmt.Errorf("get instance profile %q: %w", profileName, err)
+	}
+
+	created, err := s.iamEnsurer().CreateInstanceProfile(accountID, &iam.CreateInstanceProfileInput{
+		InstanceProfileName: aws.String(profileName),
+	})
+	if err != nil {
+		// A racing worker launch may have created it first; re-read and converge.
+		if err.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+			return "", fmt.Errorf("create instance profile %q: %w", profileName, err)
+		}
+		got, gerr := s.iamEnsurer().GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
+			InstanceProfileName: aws.String(profileName),
+		})
+		if gerr != nil {
+			return "", fmt.Errorf("re-get instance profile %q: %w", profileName, gerr)
+		}
+		return s.attachRoleToProfile(accountID, profileName, roleName,
+			aws.StringValue(got.InstanceProfile.Arn), len(got.InstanceProfile.Roles) > 0)
+	}
+	return s.attachRoleToProfile(accountID, profileName, roleName,
+		aws.StringValue(created.InstanceProfile.Arn), false)
+}
+
+// attachRoleToProfile adds roleName to the profile unless it is already attached,
+// returning the profile ARN. A LimitExceeded error means another launch attached
+// it first and is treated as success.
+func (s *EKSServiceImpl) attachRoleToProfile(accountID, profileName, roleName, profileARN string, alreadyAttached bool) (string, error) {
+	if alreadyAttached {
+		return profileARN, nil
+	}
+	_, err := s.iamEnsurer().AddRoleToInstanceProfile(accountID, &iam.AddRoleToInstanceProfileInput{
+		InstanceProfileName: aws.String(profileName),
+		RoleName:            aws.String(roleName),
+	})
+	if err != nil && err.Error() != awserrors.ErrorIAMLimitExceeded {
+		return "", fmt.Errorf("add role %q to instance profile %q: %w", roleName, profileName, err)
+	}
+	return profileARN, nil
+}
+
+// roleNameFromARN extracts the role name from an arn:aws:iam::<acct>:role/<name>
+// ARN, returning "" when the ARN does not carry the :role/ segment.
+func roleNameFromARN(arn string) string {
+	if _, after, ok := strings.Cut(arn, ":role/"); ok {
+		return after
+	}
+	return ""
 }
 
 func (s *EKSServiceImpl) describeNodegroup(acctKV nats.KeyValue, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {
@@ -919,6 +1081,9 @@ func nodegroupRecordToAWS(rec *NodegroupRecord) *eks.Nodegroup {
 	}
 	if len(rec.Labels) > 0 {
 		out.Labels = aws.StringMap(rec.Labels)
+	}
+	if len(rec.Tags) > 0 {
+		out.Tags = aws.StringMap(rec.Tags)
 	}
 	if rec.StatusReason != "" {
 		out.Health = &eks.NodegroupHealth{Issues: []*eks.Issue{{

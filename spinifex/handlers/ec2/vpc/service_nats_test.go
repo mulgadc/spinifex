@@ -3,7 +3,6 @@ package handlers_ec2_vpc
 import (
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -200,15 +199,4 @@ func TestNATSVPCService_DescribeNetworkInterfaces(t *testing.T) {
 	out, err := client.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(out.NetworkInterfaces), 1)
-}
-
-func TestNATSVPCService_Timeout(t *testing.T) {
-	// Create NATS connection without any subscribers — should timeout
-	_, nc := setupTestVPCServiceWithNC(t)
-	client := &NATSVPCService{natsConn: nc}
-
-	// Production code uses a 30s timeout; just verify the constructor works
-	// without exercising the full round-trip.
-	_ = client
-	_ = time.Second // reference time package
 }

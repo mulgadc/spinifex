@@ -22,6 +22,7 @@ var _ SubnetVPCResolver = (*fakeSubnetResolver)(nil)
 
 func (fakeSubnetResolver) GetSubnetVPC(_, _ string) (string, error) { return "vpc-aaa", nil }
 func (fakeSubnetResolver) GetVPCCIDR(_, _ string) (string, error)   { return "10.0.0.0/16", nil }
+func (fakeSubnetResolver) GetSubnetAZ(_, _ string) (string, error)  { return "spinifexz1", nil }
 
 func deleteInput(name string) *eks.DeleteClusterInput {
 	return &eks.DeleteClusterInput{Name: aws.String(name)}
@@ -77,6 +78,7 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 		VPCSG:            sg,
 		VPCK3s:           vpc,
 		VPCSubnet:        fakeSubnetResolver{},
+		IAM:              newFakeEnsurer(),
 		NLB:              nlb,
 		Instance:         inst,
 		Image:            ami,
@@ -136,7 +138,7 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 }
 
 // TestDeleteCluster_LeakedSGKeepsClusterDeleting guards the customer-VPC SG
-// no-orphan contract (mulga-siv-340): the cluster SGs live in the customer VPC,
+// no-orphan contract: the cluster SGs live in the customer VPC,
 // so a DeleteClusterSGs failure must surface and leave the cluster DELETING — its
 // meta intact for a retry — never complete deletion with an SG stranded that pins
 // the VPC on DependencyViolation. All other teardown steps succeed, isolating the
@@ -160,7 +162,7 @@ func TestDeleteCluster_LeakedSGKeepsClusterDeleting(t *testing.T) {
 	assert.Equal(t, ClusterStatusDeleting, meta.Status, "a cluster with a leaked SG must stay DELETING")
 }
 
-// TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes locks the mulga-siv-303
+// TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes locks the
 // teardown order: route tables must be torn down before the NAT gateway, because
 // the NAT GW delete is guarded against live route forwards (rule #3). Deleting it
 // while the private route table still routes to it fails with DependencyViolation
@@ -184,7 +186,7 @@ func TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes(t *testing.T) {
 
 	require.Len(t, f.ngw.gws, 1)
 	assert.Equal(t, "deleted", f.ngw.gws[0].state, "NAT GW must delete after routes are cleared (rule #3 guard not tripped)")
-	require.Len(t, f.eip.releaseCalls, 1, "the NAT-GW EIP must be released, not stranded (mulga-siv-303)")
+	require.Len(t, f.eip.releaseCalls, 1, "the NAT-GW EIP must be released, not stranded")
 	assert.Equal(t, "eipalloc-cp", aws.StringValue(f.eip.releaseCalls[0].AllocationId))
 }
 
@@ -234,7 +236,7 @@ func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
 	assert.Len(t, f.vpc.deleteCalls, 1)
 }
 
-// TestDeleteCluster_DetachesPrivateEndpointENIBeforeDelete locks the mulga-siv-301
+// TestDeleteCluster_DetachesPrivateEndpointENIBeforeDelete locks the
 // teardown fix: the Set A private-endpoint ENI is an extra NIC on the cluster NLB's
 // LB VM, not that VM's primary ENI, so the instance-terminate cascade never reclaims
 // it. purgeClusterInfra must detach (store-clear) the stale attachment before
@@ -322,7 +324,7 @@ func TestDeleteCluster_EgressEIPReleaseRealErrorLeavesMeta(t *testing.T) {
 	assert.NotEmpty(t, meta.EgressEIPAllocationID, "alloc ID must remain for retry")
 }
 
-// TestDeleteClusterSingleFlightLoserSkipsTeardown locks mulga-siv-295.12: when a
+// TestDeleteClusterSingleFlightLoserSkipsTeardown locks the contract: when a
 // concurrent handler already holds the per-cluster teardown lease (an SDK retry
 // fanned to another worker), DeleteCluster must return the cluster as DELETING
 // without running purgeClusterInfra — no duplicate ENI/NLB/EIP teardown — and
@@ -359,4 +361,33 @@ func TestDeleteClusterWinnerReleasesTeardownLease(t *testing.T) {
 
 	_, getErr := f.svc.leaderKV.Get(teardownLeaderKey(testAccountID, "alpha"))
 	assert.ErrorIs(t, getErr, nats.ErrKeyNotFound, "the teardown lease must be released after a successful delete")
+}
+
+// TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs guards the contract: in
+// the managed control-plane VPC topology the nodegroup's worker-side security
+// groups are created by launchNodegroupInfra in the CUSTOMER VPC
+// (ResourcesVpcConfig.VpcId), not the managed CP VPC. Teardown must reclaim them
+// there too, or they orphan — cross-referencing each other — and pin the
+// customer VPC with DependencyViolation, hanging tofu destroy of the VPC.
+func TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+
+	meta, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	meta.ManagedCPVPC = &ManagedCPVPC{VpcId: "vpc-cp"}
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	// Worker-side SGs created in the customer VPC (vpc-aaa) by launchNodegroupInfra.
+	f.sg.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cust-cp"
+	f.sg.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-cust-ng"
+
+	_, err = f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+
+	var deleted []string
+	for _, c := range f.sg.deleteCalls {
+		deleted = append(deleted, aws.StringValue(c.GroupId))
+	}
+	assert.Contains(t, deleted, "sg-cust-cp", "customer-VPC control-plane SG must be reclaimed on teardown")
+	assert.Contains(t, deleted, "sg-cust-ng", "customer-VPC nodegroup SG must be reclaimed on teardown")
 }

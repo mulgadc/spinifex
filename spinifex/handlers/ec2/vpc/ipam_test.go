@@ -192,8 +192,7 @@ func TestIPAM_InvalidCIDR(t *testing.T) {
 }
 
 func TestIPAM_IpToIntNil(t *testing.T) {
-	result := ipToInt(nil)
-	assert.Equal(t, int64(0), result.Int64())
+	assert.Equal(t, uint32(0), ipToInt(nil))
 }
 
 func itoa(i int) string {

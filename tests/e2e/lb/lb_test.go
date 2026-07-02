@@ -701,6 +701,10 @@ func runUDPNLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	// The key assertion: NLB targets reach healthy via the agent's active
 	// prober. Pre-feature this timed out (nginx reported empty server lists).
 	harness.WaitForTargetsHealthy(t, c, tgArn, 2, label, 2*time.Minute)
+	// Targets only reach healthy if the lb-agent authenticated to the gateway;
+	// with static keys dropped from user-data that auth is IMDS-only, so assert
+	// the cred provenance explicitly (no baked keys, assumed-role principal).
+	assertLBAgentAuthViaIMDS(t)
 
 	eni := lbENI(t, c, "net", lb)
 	priv := privateIP(eni)
@@ -1647,6 +1651,49 @@ func dumpDaemonLogs(t *testing.T, dir, label string) {
 	t.Helper()
 	harness.DumpCmd(t, dir, fmt.Sprintf("daemon-%s.log", label),
 		"journalctl", "-u", "spinifex-daemon", "--no-pager", "-n", "200")
+}
+
+// assertLBAgentAuthViaIMDS proves the LB VM authenticated to the gateway with
+// IMDS-served instance-role credentials rather than baked static keys. The LB VM
+// is a system-account instance plugged into a customer-account ENI, so it is
+// invisible to the customer AWS API; the gateway journal on the cluster nodes is
+// the only surface that observes its principal. A recent assumed-role (ASIA)
+// auth proves the cred type is an instance role — a regression to the three
+// boot-path defects strands the agent on an empty role list, so no recent
+// assumed-role auth appears and this fails. Skips when no node is SSH-reachable.
+//
+// The window is time-bounded on purpose: console logs accumulate across every VM
+// the node has ever run (including pre-fix failures), so a flat-file scan for the
+// old error would false-fail; the gateway's recent successes do not have that
+// problem.
+func assertLBAgentAuthViaIMDS(t *testing.T) {
+	t.Helper()
+	env := harness.LoadEnv(t)
+	if len(env.NodeIPs) == 0 {
+		t.Skip("no node IPs in env; cannot observe the LB VM gateway principal")
+	}
+	ssh := harness.NewPeerSSH()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	sawAssumedRole, anyReachable := false, false
+	for _, ip := range env.NodeIPs {
+		gw, err := ssh.Run(ctx, ip,
+			"sudo journalctl -u spinifex-awsgw --no-pager --since '5 minutes ago' 2>/dev/null | "+
+				`grep -F '"principalType":"assumed-role"' | grep -F '"accessKey":"ASIA' | tail -1`)
+		if err != nil {
+			continue // node unreachable; another node carries the heartbeat
+		}
+		anyReachable = true
+		if strings.TrimSpace(string(gw)) != "" {
+			sawAssumedRole = true
+		}
+	}
+	if !anyReachable {
+		t.Skip("no node SSH-reachable; cannot observe the LB VM gateway principal")
+	}
+	require.True(t, sawAssumedRole,
+		"no assumed-role (ASIA) gateway auth on any node — LB agent did not authenticate via IMDS creds")
 }
 
 func base64Encode(s string) string {

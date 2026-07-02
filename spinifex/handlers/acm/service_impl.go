@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
@@ -101,6 +102,7 @@ func (s *ACMServiceImpl) ImportCertificate(input *acm.ImportCertificateInput, ac
 		NotBefore:        leaf.NotBefore,
 		NotAfter:         leaf.NotAfter,
 		ImportedAt:       time.Now().UTC(),
+		Tags:             tagsToMap(input.Tags),
 	}
 	if err := s.store.PutCert(rec); err != nil {
 		slog.Error("ImportCertificate: store failed", "err", err)
@@ -199,6 +201,94 @@ func timePtr(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// ListTagsForCertificate returns the tags stored on an owned certificate.
+func (s *ACMServiceImpl) ListTagsForCertificate(input *acm.ListTagsForCertificateInput, accountID string) (*acm.ListTagsForCertificateOutput, error) {
+	if input == nil || aws.StringValue(input.CertificateArn) == "" {
+		return nil, errors.New(awserrors.ErrorACMInvalidArn)
+	}
+	rec, err := s.lookupOwned(aws.StringValue(input.CertificateArn), accountID)
+	if err != nil {
+		return nil, err
+	}
+	return &acm.ListTagsForCertificateOutput{Tags: mapToTags(rec.Tags)}, nil
+}
+
+// AddTagsToCertificate merges the supplied tags onto an owned certificate.
+func (s *ACMServiceImpl) AddTagsToCertificate(input *acm.AddTagsToCertificateInput, accountID string) (*acm.AddTagsToCertificateOutput, error) {
+	if input == nil || aws.StringValue(input.CertificateArn) == "" {
+		return nil, errors.New(awserrors.ErrorACMInvalidArn)
+	}
+	rec, err := s.lookupOwned(aws.StringValue(input.CertificateArn), accountID)
+	if err != nil {
+		return nil, err
+	}
+	if rec.Tags == nil {
+		rec.Tags = map[string]string{}
+	}
+	maps.Copy(rec.Tags, tagsToMap(input.Tags))
+	if err := s.store.PutCert(rec); err != nil {
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	return &acm.AddTagsToCertificateOutput{}, nil
+}
+
+// RemoveTagsFromCertificate deletes the named tags from an owned certificate. A
+// tag with a nil value matches by key; a non-nil value removes only on an exact
+// value match, mirroring ACM semantics.
+func (s *ACMServiceImpl) RemoveTagsFromCertificate(input *acm.RemoveTagsFromCertificateInput, accountID string) (*acm.RemoveTagsFromCertificateOutput, error) {
+	if input == nil || aws.StringValue(input.CertificateArn) == "" {
+		return nil, errors.New(awserrors.ErrorACMInvalidArn)
+	}
+	rec, err := s.lookupOwned(aws.StringValue(input.CertificateArn), accountID)
+	if err != nil {
+		return nil, err
+	}
+	for _, tag := range input.Tags {
+		if tag == nil {
+			continue
+		}
+		key := aws.StringValue(tag.Key)
+		if tag.Value != nil && rec.Tags[key] != aws.StringValue(tag.Value) {
+			continue
+		}
+		delete(rec.Tags, key)
+	}
+	if err := s.store.PutCert(rec); err != nil {
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	return &acm.RemoveTagsFromCertificateOutput{}, nil
+}
+
+// tagsToMap converts ACM SDK tags to a key/value map, dropping nil entries.
+func tagsToMap(tags []*acm.Tag) map[string]string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(tags))
+	for _, t := range tags {
+		if t == nil || t.Key == nil {
+			continue
+		}
+		out[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// mapToTags converts a key/value map back to ACM SDK tags.
+func mapToTags(m map[string]string) []*acm.Tag {
+	if len(m) == 0 {
+		return []*acm.Tag{}
+	}
+	out := make([]*acm.Tag, 0, len(m))
+	for k, v := range m {
+		out = append(out, &acm.Tag{Key: aws.String(k), Value: aws.String(v)})
+	}
+	return out
 }
 
 // parseLeaf decodes the first CERTIFICATE block from certPEM and parses it.

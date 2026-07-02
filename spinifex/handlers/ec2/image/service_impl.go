@@ -693,6 +693,93 @@ func (s *ImageServiceImpl) putAMIConfig(imageID string, meta viperblock.AMIMetad
 	return err
 }
 
+// ApplyRecordTags mirrors CreateTags into the owning AMI config so
+// DescribeImages observes tags added after registration. Non-ami ids, AMIs
+// absent from this store, and AMIs the caller does not own are skipped; the
+// generic tag store stays their record of truth.
+func (s *ImageServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	merge := func(tags map[string]string) {
+		for _, t := range input.Tags {
+			if t.Key != nil && t.Value != nil {
+				tags[*t.Key] = *t.Value
+			}
+		}
+	}
+	for _, res := range input.Resources {
+		if res == nil || !strings.HasPrefix(*res, "ami-") {
+			continue
+		}
+		if err := s.updateAMITags(*res, accountID, merge); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning AMI config. Empty
+// input.Tags clears all tags; a tag with a value deletes only on a value match
+// (AWS-faithful), a nil value deletes unconditionally.
+func (s *ImageServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	remove := func(tags map[string]string) {
+		if len(input.Tags) == 0 {
+			for k := range tags {
+				delete(tags, k)
+			}
+			return
+		}
+		for _, t := range input.Tags {
+			if t.Key == nil {
+				continue
+			}
+			if t.Value == nil {
+				delete(tags, *t.Key)
+			} else if cur, ok := tags[*t.Key]; ok && cur == *t.Value {
+				delete(tags, *t.Key)
+			}
+		}
+	}
+	for _, res := range input.Resources {
+		if res == nil || !strings.HasPrefix(*res, "ami-") {
+			continue
+		}
+		if err := s.updateAMITags(*res, accountID, remove); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// updateAMITags read-modify-writes the tag map of the AMI config identified by
+// imageID. An AMI absent from this store or owned by another account is skipped
+// (its tags are not this service's to mutate); a corrupt config propagates.
+func (s *ImageServiceImpl) updateAMITags(imageID, accountID string, mut func(map[string]string)) error {
+	meta, err := s.GetAMIConfig(imageID)
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) {
+			return nil
+		}
+		return err
+	}
+	if err := s.checkAMIOwnership(meta, accountID); err != nil {
+		if err.Error() == awserrors.ErrorUnauthorizedOperation {
+			slog.Debug("updateAMITags: skipping AMI not owned by caller", "imageId", imageID)
+			return nil
+		}
+		return err
+	}
+	if meta.Tags == nil {
+		meta.Tags = map[string]string{}
+	}
+	mut(meta.Tags)
+	return s.putAMIConfig(imageID, meta)
+}
+
 // checkAMIOwnership rejects cross-account and system-AMI mutations. Empty
 // owner is ServerInternal (corrupt config) rather than a misleading 403.
 func (s *ImageServiceImpl) checkAMIOwnership(meta viperblock.AMIMetadata, accountID string) error {

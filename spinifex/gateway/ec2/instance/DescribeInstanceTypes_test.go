@@ -26,7 +26,7 @@ func TestDescribeInstanceTypes_SingleNode(t *testing.T) {
 	})
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(input, nc, 1)
+	output, err := DescribeInstanceTypes(input, nc, 1, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -68,7 +68,7 @@ func TestDescribeInstanceTypes_DeduplicatesAcrossNodes(t *testing.T) {
 	nc2.Flush()
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(input, nc, 2)
+	output, err := DescribeInstanceTypes(input, nc, 2, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -123,7 +123,7 @@ func TestDescribeInstanceTypes_CapacityFilterShowsDuplicates(t *testing.T) {
 			},
 		},
 	}
-	output, err := DescribeInstanceTypes(input, nc, 2)
+	output, err := DescribeInstanceTypes(input, nc, 2, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -153,7 +153,7 @@ func TestDescribeInstanceTypes_CapacityFilterFalseDeduplicates(t *testing.T) {
 			},
 		},
 	}
-	output, err := DescribeInstanceTypes(input, nc, 1)
+	output, err := DescribeInstanceTypes(input, nc, 1, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -164,7 +164,7 @@ func TestDescribeInstanceTypes_NoSubscribers(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(input, nc, 0)
+	output, err := DescribeInstanceTypes(input, nc, 0, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -180,7 +180,7 @@ func TestDescribeInstanceTypes_NodeReturnsError(t *testing.T) {
 	})
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(input, nc, 1)
+	output, err := DescribeInstanceTypes(input, nc, 1, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -195,7 +195,7 @@ func TestDescribeInstanceTypes_MalformedJSON(t *testing.T) {
 	})
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(input, nc, 1)
+	output, err := DescribeInstanceTypes(input, nc, 1, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -217,7 +217,7 @@ func TestDescribeInstanceTypes_NilInstanceTypeSkipped(t *testing.T) {
 	})
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(input, nc, 1)
+	output, err := DescribeInstanceTypes(input, nc, 1, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -233,7 +233,7 @@ func TestDescribeInstanceTypes_ClosedConnection(t *testing.T) {
 	closedNC.Close()
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	_, err = DescribeInstanceTypes(input, closedNC, 1)
+	_, err = DescribeInstanceTypes(input, closedNC, 1, "")
 
 	require.Error(t, err)
 }

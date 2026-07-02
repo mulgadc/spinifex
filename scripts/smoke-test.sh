@@ -226,7 +226,7 @@ for _i in $(seq 1 300); do
            -o BatchMode=yes \
            -p "$SSH_INST_PORT" \
            -i "$SSH_KEY" \
-           ec2-user@"$SSH_INST_HOST" 'echo ready' >/dev/null 2>&1; then
+           ubuntu@"$SSH_INST_HOST" 'echo ready' >/dev/null 2>&1; then
         SSH_READY=1
         break
     fi
@@ -246,10 +246,10 @@ SSH_OUT=$(ssh -o StrictHostKeyChecking=no \
     -o BatchMode=yes \
     -p "$SSH_INST_PORT" \
     -i "$SSH_KEY" \
-    ec2-user@"$SSH_INST_HOST" 'id && hostname' 2>&1)
+    ubuntu@"$SSH_INST_HOST" 'id && hostname' 2>&1)
 echo "  $SSH_OUT"
-if ! echo "$SSH_OUT" | grep -q "ec2-user"; then
-    echo "❌ Expected ec2-user in SSH output"
+if ! echo "$SSH_OUT" | grep -q "ubuntu"; then
+    echo "❌ Expected ubuntu in SSH output"
     exit 1
 fi
 
@@ -261,7 +261,7 @@ if [[ "$TEST_GPU" == "1" ]]; then
         if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                -o ConnectTimeout=5 -o BatchMode=yes \
                -p "$SSH_INST_PORT" -i "$SSH_KEY" \
-               ec2-user@"$SSH_INST_HOST" \
+               ubuntu@"$SSH_INST_HOST" \
                'lspci 2>/dev/null | grep -iE "nvidia|amdgpu|instinct"' 2>/dev/null; then
             GPU_VISIBLE=1
             break

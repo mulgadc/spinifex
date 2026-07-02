@@ -231,6 +231,24 @@ func TestIsQMPNodeInUse(t *testing.T) {
 	}
 }
 
+func TestIsQMPNodeNotFound(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "matches 'Failed to find node'", err: errors.New("QMP error: GenericError: Failed to find node with node-name='nbd-x'"), want: true},
+		{name: "matches 'Cannot find device'", err: errors.New("QMP error: GenericError: Cannot find device='' nor node-name='nbd-x'"), want: true},
+		{name: "in-use is not not-found", err: errors.New("QMP error: GenericError: Node 'nbd-x' is in use"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isQMPNodeNotFound(tt.err))
+		})
+	}
+}
+
 func TestAttachVolume_InstanceNotFound(t *testing.T) {
 	m := NewManager()
 	_, err := m.AttachVolume("i-missing", "vol-1", "")
@@ -288,7 +306,7 @@ func TestDetachVolume_VolumeNotAttached(t *testing.T) {
 
 // TestDetachVolume_DeviceGuards covers the four cross-check and undetachable
 // guards at the head of DetachVolume. Bypassing any of these is destructive:
-// detaching a boot/EFI/CloudInit volume kills the instance, and a device-name
+// detaching a boot/EFI volume kills the instance, and a device-name
 // mismatch silently rips out the wrong disk. The mismatch case additionally
 // pins the error text so an operator-visible diagnostic stays intact.
 func TestDetachVolume_DeviceGuards(t *testing.T) {
@@ -309,12 +327,6 @@ func TestDetachVolume_DeviceGuards(t *testing.T) {
 		{
 			name:          "EFI volume rejected",
 			req:           types.EBSRequest{Name: "vol-efi", EFI: true, DeviceName: "/dev/sdf"},
-			requestDevice: "",
-			wantErr:       ErrVolumeNotDetachable,
-		},
-		{
-			name:          "CloudInit volume rejected",
-			req:           types.EBSRequest{Name: "vol-ci", CloudInit: true, DeviceName: "/dev/sdf"},
 			requestDevice: "",
 			wantErr:       ErrVolumeNotDetachable,
 		},
@@ -386,9 +398,61 @@ func TestDetachVolume_DeviceGuards(t *testing.T) {
 			assert.Contains(t, executed, "blockdev-del",
 				"proceed path must issue blockdev-del")
 			assert.Equal(t, []string{tt.req.Name}, mounter.unmountedOne,
-				"proceed path must invoke UnmountOne best-effort")
+				"proceed path must invoke UnmountOne and, on success, complete the detach")
 		})
 	}
+}
+
+// TestDetachVolume_SealFailureGatesAvailable covers the durability gate in the
+// detach-seal fix: when ebs.unmount (the synchronous block-map seal) fails,
+// DetachVolume must propagate the error, must NOT flip the volume to "available",
+// and must leave it in EBSRequests so the volume stays attached/retryable and its
+// local WAL is retained. A regression back to fire-and-forget unmount would let a
+// volume go available with an unsealed block map — the bad-superblock bug.
+func TestDetachVolume_SealFailureGatesAvailable(t *testing.T) {
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		return nil
+	})
+	defer cancel()
+
+	sealErr := errors.New("seal volume: predastore unreachable")
+	mounter := &fakeVolumeMounter{unmountOneErr: sealErr}
+	stateUpdater := &fakeVolumeStateUpdater{}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: stateUpdater})
+	m.Insert(&VM{
+		ID:        "i-1",
+		Status:    StateRunning,
+		Instance:  &ec2.Instance{},
+		QMPClient: qmpClient,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		},
+	})
+
+	_, err := m.DetachVolume("i-1", "vol-1", "", false)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sealErr,
+		"seal failure must propagate so the caller keeps the volume attached/retryable")
+	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne,
+		"DetachVolume must still attempt the unmount/seal before gating")
+	assert.Empty(t, stateUpdater.snapshot(),
+		"a failed seal must not drive any volume-state update — least of all the available transition")
+
+	instance, ok := m.Get("i-1")
+	require.True(t, ok)
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+	var retained bool
+	for _, r := range instance.EBSRequests.Requests {
+		if r.Name == "vol-1" {
+			retained = true
+		}
+	}
+	assert.True(t, retained,
+		"volume must stay in EBSRequests after a seal failure so reattach/retry can recover it")
 }
 
 func TestReboot_InstanceNotFound(t *testing.T) {
@@ -536,6 +600,9 @@ func TestAttachVolume_ObjectAddFailure_TriggersUnmountOne(t *testing.T) {
 	recorder := &qmpRecorder{}
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		recorder.record(cmd)
+		if cmd.Execute == "query-block" {
+			return map[string]any{"return": []qmp.BlockDevice{}}
+		}
 		if cmd.Execute == "object-add" {
 			return map[string]any{"error": map[string]any{"class": "GenericError", "desc": "iothread limit"}}
 		}
@@ -561,6 +628,9 @@ func TestAttachVolume_BlockdevAddFailure_TriggersUnmountOne(t *testing.T) {
 	recorder := &qmpRecorder{}
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		recorder.record(cmd)
+		if cmd.Execute == "query-block" {
+			return map[string]any{"return": []qmp.BlockDevice{}}
+		}
 		if cmd.Execute == "blockdev-add" {
 			return map[string]any{"error": map[string]any{"class": "GenericError", "desc": "nbd connect failed"}}
 		}
@@ -574,7 +644,7 @@ func TestAttachVolume_BlockdevAddFailure_TriggersUnmountOne(t *testing.T) {
 	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "blockdev-add")
-	assert.Equal(t, []string{"object-add", "blockdev-add"}, recorder.executes())
+	assert.Equal(t, []string{"object-add", "blockdev-add", "object-del"}, recorder.executes())
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
 }
 
@@ -585,6 +655,9 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelOK_Unmounts(t *testing.T) {
 	recorder := &qmpRecorder{}
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		recorder.record(cmd)
+		if cmd.Execute == "query-block" {
+			return map[string]any{"return": []qmp.BlockDevice{}}
+		}
 		if cmd.Execute == "device_add" {
 			return map[string]any{"error": map[string]any{"class": "GenericError", "desc": "no PCI slot"}}
 		}
@@ -598,7 +671,7 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelOK_Unmounts(t *testing.T) {
 	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device_add")
-	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del"}, recorder.executes())
+	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del", "object-del"}, recorder.executes())
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne,
 		"successful blockdev-del rollback must be followed by UnmountOne")
 }
@@ -614,6 +687,8 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelFails_SkipsUnmountOne(t *testi
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		recorder.record(cmd)
 		switch cmd.Execute {
+		case "query-block":
+			return map[string]any{"return": []qmp.BlockDevice{}}
 		case "device_add":
 			return map[string]any{"error": map[string]any{"class": "GenericError", "desc": "no PCI slot"}}
 		case "blockdev-del":
@@ -653,7 +728,7 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 // Terraform AWS provider's aws_volume_attachment polls DescribeVolumes
 // with attachment.device=/dev/sdf — storing the guest path makes that
 // filter reject every attached volume and the wait loop times out with
-// "couldn't find resource". This regression is mulga-siv-154.
+// "couldn't find resource".
 //
 // The QMP responder returns a query-block payload where vdisk-vol-1
 // maps to /dev/vdc (the third virtio slot after os + cloudinit), so the
@@ -803,6 +878,22 @@ func TestTryBlockdevDel(t *testing.T) {
 		assert.Contains(t, err.Error(), "permission denied")
 		assert.Equal(t, int32(2), attempts.Load(),
 			"non-retryable error must stop the loop on the attempt that produced it")
+	})
+
+	t.Run("node-not-found returns nil so a detach retry resumes to the seal", func(t *testing.T) {
+		var attempts atomic.Int32
+		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+			attempts.Add(1)
+			return map[string]any{"error": map[string]any{"class": "GenericError", "desc": "Failed to find node with node-name='nbd-vol-1'"}}
+		})
+		defer cancel()
+
+		m := NewManagerWithDeps(Deps{})
+		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		require.NoError(t, err,
+			"an already-removed block node must be idempotent so a detach retry can re-drive the unmount seal")
+		assert.Equal(t, int32(1), attempts.Load(),
+			"node-not-found must not be retried")
 	})
 
 	t.Run("twenty in-use errors return the last error", func(t *testing.T) {

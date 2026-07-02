@@ -600,6 +600,59 @@ func (s *EIPServiceImpl) AssociatedPublicIPForInstance(accountID, instanceID str
 	return "", false
 }
 
+// ReleaseAddressByInstanceID disassociates and releases every EIP still recorded
+// against instanceID, across all accounts. Idempotent backstop for system-VM
+// teardown paths that lose the cached allocation ID — when the VM is already
+// gone from the manager the per-instance release never runs, so an
+// internet-facing ALB's EIP would otherwise orphan. No-op when nothing matches.
+func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
+	if instanceID == "" {
+		return nil
+	}
+	keys, err := s.eipKV.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list eip keys: %w", err)
+	}
+	var errs []error
+	for _, k := range keys {
+		if k == utils.VersionKey {
+			continue
+		}
+		entry, err := s.eipKV.Get(k)
+		if err != nil {
+			continue
+		}
+		var record EIPRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			continue
+		}
+		if record.InstanceId != instanceID || record.AllocationId == "" {
+			continue
+		}
+		// Key is "{accountID}.{allocID}"; the account scopes the release calls.
+		accountID, _, found := strings.Cut(k, ".")
+		if !found {
+			continue
+		}
+		if record.AssociationId != "" {
+			if _, err := s.DisassociateAddress(&ec2.DisassociateAddressInput{
+				AssociationId: aws.String(record.AssociationId),
+			}, accountID); err != nil {
+				errs = append(errs, fmt.Errorf("disassociate %s: %w", record.AllocationId, err))
+			}
+		}
+		if _, err := s.ReleaseAddress(&ec2.ReleaseAddressInput{
+			AllocationId: aws.String(record.AllocationId),
+		}, accountID); err != nil {
+			errs = append(errs, fmt.Errorf("release %s: %w", record.AllocationId, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // publishNATEvent publishes a NAT lifecycle event to NATS for vpcd (fire-and-forget).
 // PortName must use topology.Port(eniID) to match the OVN logical switch port name;
 // a mismatch causes OVN to never program the DNAT flow.

@@ -169,6 +169,18 @@ func (s *stubIAMService) DetachRolePolicy(string, *iam.DetachRolePolicyInput) (*
 func (s *stubIAMService) ListAttachedRolePolicies(string, *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
 	panic("unexpected ListAttachedRolePolicies call")
 }
+func (s *stubIAMService) PutRolePolicy(string, *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	panic("unexpected PutRolePolicy call")
+}
+func (s *stubIAMService) GetRolePolicy(string, *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
+	panic("unexpected GetRolePolicy call")
+}
+func (s *stubIAMService) DeleteRolePolicy(string, *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
+	panic("unexpected DeleteRolePolicy call")
+}
+func (s *stubIAMService) ListRolePolicies(string, *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
+	panic("unexpected ListRolePolicies call")
+}
 func (s *stubIAMService) CreateInstanceProfile(string, *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
 	panic("unexpected CreateInstanceProfile call")
 }
@@ -217,6 +229,60 @@ func (s *stubIAMService) GetAccount(string) (*handlers_iam.Account, error) {
 }
 func (s *stubIAMService) ListAccounts() ([]*handlers_iam.Account, error) {
 	panic("unexpected ListAccounts call")
+}
+func (s *stubIAMService) CreateGroup(string, *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
+	panic("unexpected CreateGroup call")
+}
+func (s *stubIAMService) GetGroup(string, *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
+	panic("unexpected GetGroup call")
+}
+func (s *stubIAMService) ListGroups(string, *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
+	panic("unexpected ListGroups call")
+}
+func (s *stubIAMService) DeleteGroup(string, *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
+	panic("unexpected DeleteGroup call")
+}
+func (s *stubIAMService) AddUserToGroup(string, *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
+	panic("unexpected AddUserToGroup call")
+}
+func (s *stubIAMService) RemoveUserFromGroup(string, *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
+	panic("unexpected RemoveUserFromGroup call")
+}
+func (s *stubIAMService) ListGroupsForUser(string, *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
+	panic("unexpected ListGroupsForUser call")
+}
+func (s *stubIAMService) AttachGroupPolicy(string, *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
+	panic("unexpected AttachGroupPolicy call")
+}
+func (s *stubIAMService) DetachGroupPolicy(string, *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
+	panic("unexpected DetachGroupPolicy call")
+}
+func (s *stubIAMService) ListAttachedGroupPolicies(string, *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
+	panic("unexpected ListAttachedGroupPolicies call")
+}
+func (s *stubIAMService) PutGroupPolicy(string, *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	panic("unexpected PutGroupPolicy call")
+}
+func (s *stubIAMService) GetGroupPolicy(string, *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	panic("unexpected GetGroupPolicy call")
+}
+func (s *stubIAMService) DeleteGroupPolicy(string, *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	panic("unexpected DeleteGroupPolicy call")
+}
+func (s *stubIAMService) ListGroupPolicies(string, *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	panic("unexpected ListGroupPolicies call")
+}
+func (s *stubIAMService) PutUserPolicy(string, *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+	panic("unexpected PutUserPolicy call")
+}
+func (s *stubIAMService) GetUserPolicy(string, *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
+	panic("unexpected GetUserPolicy call")
+}
+func (s *stubIAMService) DeleteUserPolicy(string, *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+	panic("unexpected DeleteUserPolicy call")
+}
+func (s *stubIAMService) ListUserPolicies(string, *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
+	panic("unexpected ListUserPolicies call")
 }
 
 func TestAssumeRole_HappyPath(t *testing.T) {

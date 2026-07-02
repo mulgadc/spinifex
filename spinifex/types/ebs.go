@@ -15,10 +15,13 @@ type EBSRequest struct {
 	VolType             string `json:"VolType"`
 	Boot                bool   `json:"Boot"`
 	EFI                 bool   `json:"EFI"`
-	CloudInit           bool   `json:"CloudInit"`
 	DeleteOnTermination bool   `json:"DeleteOnTermination"`
 	NBDURI              string `json:"NBDURI"`     // NBD URI - socket path (nbd:unix:/path.sock) or TCP (nbd://host:port)
 	DeviceName          string `json:"DeviceName"` // AWS API device name (e.g. /dev/sdf) for hot-plugged volumes
+	// HotplugPort is the PCIe hot-plug root port (hotplug-ebs{N}) a hot-plugged
+	// volume occupies. 0 for boot/non-hot-plugged volumes. Persisted so port
+	// accounting survives a daemon restart.
+	HotplugPort int `json:"HotplugPort,omitempty"`
 }
 
 // NBDTransport defines the transport type for NBD connections

@@ -1218,67 +1218,74 @@ export function useCreateVpcWizard() {
             ? params.privateSubnetCidrs
             : defaults.privateSubnets.map((s) => s.cidr)
 
-        // Step 2: Create public subnets
+        // Step 2: Create public subnets. Each subnet's CIDR is fixed up front, so
+        // the creations are independent — run them concurrently. Each task records
+        // its subnet in `created` before the attribute call so a later failure
+        // still rolls back what was made.
         currentStep = "creating public subnets"
-        const publicSubnetIds: string[] = []
-        for (let i = 0; i < params.publicSubnetCount; i++) {
-          const name = prefix ? `${prefix}-subnet-public-${i + 1}` : undefined
-          const result = await client.send(
-            new CreateSubnetCommand({
-              VpcId: vpcId,
-              CidrBlock: publicCidrs[i],
-              TagSpecifications: buildTagSpec(
-                ResourceType.subnet,
-                name,
-                extraTags,
-              ),
-            }),
-          )
-          const subnetId = result.Subnet?.SubnetId
-          if (!subnetId) {
-            throw new Error(
-              `Public subnet ${i + 1} was created but no subnet ID was returned`,
+        const publicSubnetIds = await Promise.all(
+          Array.from({ length: params.publicSubnetCount }, async (_, i) => {
+            const name = prefix ? `${prefix}-subnet-public-${i + 1}` : undefined
+            const result = await client.send(
+              new CreateSubnetCommand({
+                VpcId: vpcId,
+                CidrBlock: publicCidrs[i],
+                TagSpecifications: buildTagSpec(
+                  ResourceType.subnet,
+                  name,
+                  extraTags,
+                ),
+              }),
             )
-          }
-          publicSubnetIds.push(subnetId)
-          created.push({ type: "Public Subnet", id: subnetId })
+            const subnetId = result.Subnet?.SubnetId
+            if (!subnetId) {
+              throw new Error(
+                `Public subnet ${i + 1} was created but no subnet ID was returned`,
+              )
+            }
+            created.push({ type: "Public Subnet", id: subnetId })
 
-          // Auto-assign public IPs on launch — CreateSubnet defaults this to
-          // false, so without it instances in a "public" subnet never get a
-          // routable public IP even though the IGW route is in place.
-          await client.send(
-            new ModifySubnetAttributeCommand({
-              SubnetId: subnetId,
-              MapPublicIpOnLaunch: { Value: true },
-            }),
-          )
-        }
+            // Auto-assign public IPs on launch — CreateSubnet defaults this to
+            // false, so without it instances in a "public" subnet never get a
+            // routable public IP even though the IGW route is in place.
+            await client.send(
+              new ModifySubnetAttributeCommand({
+                SubnetId: subnetId,
+                MapPublicIpOnLaunch: { Value: true },
+              }),
+            )
+            return subnetId
+          }),
+        )
 
-        // Step 3: Create private subnets
+        // Step 3: Create private subnets (independent CIDRs — concurrent).
         currentStep = "creating private subnets"
-        const privateSubnetIds: string[] = []
-        for (let i = 0; i < params.privateSubnetCount; i++) {
-          const name = prefix ? `${prefix}-subnet-private-${i + 1}` : undefined
-          const result = await client.send(
-            new CreateSubnetCommand({
-              VpcId: vpcId,
-              CidrBlock: privateCidrs[i],
-              TagSpecifications: buildTagSpec(
-                ResourceType.subnet,
-                name,
-                extraTags,
-              ),
-            }),
-          )
-          const subnetId = result.Subnet?.SubnetId
-          if (!subnetId) {
-            throw new Error(
-              `Private subnet ${i + 1} was created but no subnet ID was returned`,
+        const privateSubnetIds = await Promise.all(
+          Array.from({ length: params.privateSubnetCount }, async (_, i) => {
+            const name = prefix
+              ? `${prefix}-subnet-private-${i + 1}`
+              : undefined
+            const result = await client.send(
+              new CreateSubnetCommand({
+                VpcId: vpcId,
+                CidrBlock: privateCidrs[i],
+                TagSpecifications: buildTagSpec(
+                  ResourceType.subnet,
+                  name,
+                  extraTags,
+                ),
+              }),
             )
-          }
-          privateSubnetIds.push(subnetId)
-          created.push({ type: "Private Subnet", id: subnetId })
-        }
+            const subnetId = result.Subnet?.SubnetId
+            if (!subnetId) {
+              throw new Error(
+                `Private subnet ${i + 1} was created but no subnet ID was returned`,
+              )
+            }
+            created.push({ type: "Private Subnet", id: subnetId })
+            return subnetId
+          }),
+        )
 
         // Step 4: Create and attach internet gateway (if public subnets > 0)
         if (params.publicSubnetCount > 0) {
@@ -1343,14 +1350,17 @@ export function useCreateVpcWizard() {
 
           // Step 8: Associate public subnets with public route table
           currentStep = "associating public subnets with route table"
-          for (const subnetId of publicSubnetIds) {
-            await client.send(
-              new AssociateRouteTableCommand({
-                RouteTableId: pubRtbId,
-                SubnetId: subnetId,
-              }),
-            )
-          }
+          await Promise.all(
+            publicSubnetIds.map(
+              async (subnetId) =>
+                await client.send(
+                  new AssociateRouteTableCommand({
+                    RouteTableId: pubRtbId,
+                    SubnetId: subnetId,
+                  }),
+                ),
+            ),
+          )
         }
 
         // Step 9: Create private route table (if private subnets > 0)
@@ -1377,14 +1387,17 @@ export function useCreateVpcWizard() {
 
           // Step 10: Associate private subnets with private route table
           currentStep = "associating private subnets with route table"
-          for (const subnetId of privateSubnetIds) {
-            await client.send(
-              new AssociateRouteTableCommand({
-                RouteTableId: privRtbId,
-                SubnetId: subnetId,
-              }),
-            )
-          }
+          await Promise.all(
+            privateSubnetIds.map(
+              async (subnetId) =>
+                await client.send(
+                  new AssociateRouteTableCommand({
+                    RouteTableId: privRtbId,
+                    SubnetId: subnetId,
+                  }),
+                ),
+            ),
+          )
 
           // Step 11: NAT gateway for private egress (optional). Needs a public
           // subnet to live in and an Elastic IP; routes private 0.0.0.0/0 to it.

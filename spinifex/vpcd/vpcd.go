@@ -103,7 +103,7 @@ type Config struct {
 	// ExternalMode is "pool" or "" (disabled).
 	ExternalMode string
 	// ExternalPools holds the cluster-wide external IP pool configs.
-	ExternalPools []ExternalPoolConfig
+	ExternalPools []external.ExternalPoolConfig
 	// Bootstrap holds the default VPC config from spinifex.toml for first-boot reconciliation.
 	Bootstrap *BootstrapVPC
 	// ExternalInterface is the WAN NIC name (e.g., "enp0s3"). Used by
@@ -126,23 +126,6 @@ type Config struct {
 	// guests resolve via the node-local DNS instead of the upstream pool DNS. A
 	// future OVN per-VPC resolver VIP will supersede this.
 	ResolverNameservers []string
-}
-
-// ExternalPoolConfig mirrors config.ExternalPool for vpcd's internal use.
-type ExternalPoolConfig struct {
-	Name            string
-	Source          string // "static" (default) or "dhcp"
-	BindBridge      string // Linux bridge for DHCP DORA (source=dhcp only)
-	RangeStart      string
-	RangeEnd        string
-	Gateway         string
-	GatewayIP       string
-	PrefixLen       int
-	DNSServers      []string
-	Region          string
-	AZ              string
-	GwLrpRangeStart string // Sub-range for OVN gateway LRP IPs in centralized NAT mode.
-	GwLrpRangeEnd   string
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -459,7 +442,7 @@ func launchService(cfg *Config) error {
 
 	var igwPool *external.ExternalPoolConfig
 	if cfg.ExternalMode != "" && len(cfg.ExternalPools) > 0 {
-		p := externalPoolConfigToShared(cfg.ExternalPools[0])
+		p := cfg.ExternalPools[0]
 		igwPool = &p
 	}
 
@@ -468,27 +451,29 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	// Create IMDS KV at replica=1; daemon upgrades replicas later. Using chassis count here
-	// could exceed the NATS node count and fail bucket creation.
-	imdsVethKV, _, err := handlers_imds.InitBuckets(js, 1)
-	if err != nil {
-		return fmt.Errorf("init imds buckets: %w", err)
-	}
-	imdsTopoMgr, err := external.NewIMDSTopologyManager(liveClient, handlers_imds.NewVethStore(imdsVethKV))
-	if err != nil {
-		return fmt.Errorf("construct IMDS topology manager: %w", err)
-	}
-
 	// vpcd holds the network capabilities needed for IMDS; STS/IAM stay in awsgw over NATS.
 	imdsCtx, cancelIMDS := context.WithCancel(ctx)
 	defer cancelIMDS()
+	// listTaps drives the per-tap responder reconcile from the live OVS tap set on
+	// this chassis (the IMDS patch ports on br-int carry the full ENI).
+	listTaps := func(ctx context.Context) (map[string]string, error) {
+		taps, err := host.ListIMDSTaps(ctx, host.NewExecRunner())
+		if err != nil {
+			return nil, err
+		}
+		live := make(map[string]string, len(taps))
+		for _, t := range taps {
+			live[t.ENIID] = t.Endpoint
+		}
+		return live, nil
+	}
 	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
 		nc,
 		handlers_imds.NewNATSSTSAssumer(nc),
 		handlers_imds.NewNATSProfileLookup(nc),
 		handlers_imds.NewNATSPublicKeyLookup(nc),
 		max(len(chassisNames), 1),
-		host.EnsureIMDSVeth, host.RemoveIMDSVeth,
+		listTaps,
 		cfg.NorthstarBaseDomain,
 	)
 	if err != nil {
@@ -539,7 +524,7 @@ func launchService(cfg *Config) error {
 	// Elect one vpcd for startup reconcile; without this, concurrent Get-then-Create on Logical_Router
 	// produces duplicate rows that ovn-nbctl rejects. Runtime events still fan out via queue groups.
 	holder, _ := os.Hostname()
-	releaseLeader, isLeader := reconcile.AcquireLeader(nc, holder)
+	releaseLeader, isLeader := reconcile.AcquireLeader(nc, reconcile.KVBucketVPCDReconcile, holder)
 
 	subscriber, err := subscribers.New(subscribers.Config{
 		Topology: topoMgr,
@@ -547,7 +532,6 @@ func launchService(cfg *Config) error {
 		EIP:      eipMgr,
 		NATGW:    natgwMgr,
 		IGW:      igwMgr,
-		IMDS:     imdsTopoMgr,
 	})
 	if err != nil {
 		return fmt.Errorf("construct subscriber: %w", err)
@@ -570,7 +554,6 @@ func launchService(cfg *Config) error {
 		Routes:       routeMgr,
 		IGW:          igwMgr,
 		Topology:     topoMgr,
-		IMDS:         imdsTopoMgr,
 		LocalAZ:      cfg.AZ,
 		NodeHostname: holder,
 		Chassis:      chassisNames,
@@ -629,7 +612,7 @@ func resolverDNSServer(cfg *Config) string {
 
 // pickDNSServer returns the OVN dhcp_options dns_server from the first unscoped pool with DNS servers.
 // Empty falls back to topology.NewLiveManager's default.
-func pickDNSServer(pools []ExternalPoolConfig) string {
+func pickDNSServer(pools []external.ExternalPoolConfig) string {
 	for _, p := range pools {
 		if p.Region == "" && p.AZ == "" && len(p.DNSServers) > 0 {
 			return "{" + strings.Join(p.DNSServers, ", ") + "}"
@@ -684,25 +667,6 @@ func pickGatewayAllocator(pool *external.ExternalPoolConfig, ovnClient ovn.Clien
 		return dhcp.NewDHCPGatewayLRPAllocator(mgr)
 	}
 	return external.NewStaticRangeAllocator(ovnClient)
-}
-
-// externalPoolConfigToShared translates vpcd's ExternalPoolConfig into the network/external shared type.
-func externalPoolConfigToShared(p ExternalPoolConfig) external.ExternalPoolConfig {
-	return external.ExternalPoolConfig{
-		Name:            p.Name,
-		Source:          p.Source,
-		BindBridge:      p.BindBridge,
-		RangeStart:      p.RangeStart,
-		RangeEnd:        p.RangeEnd,
-		Gateway:         p.Gateway,
-		GatewayIP:       p.GatewayIP,
-		PrefixLen:       p.PrefixLen,
-		DNSServers:      p.DNSServers,
-		Region:          p.Region,
-		AZ:              p.AZ,
-		GwLrpRangeStart: p.GwLrpRangeStart,
-		GwLrpRangeEnd:   p.GwLrpRangeEnd,
-	}
 }
 
 // resolveBridgeConfig picks bridge mode (auto-detecting when unset) and always uses "br-wan" as the WAN bridge.

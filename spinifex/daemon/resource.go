@@ -118,6 +118,25 @@ func canAllocateCount(availVCPU, allocVCPU int, availMem, allocMem float64,
 	return max(result, 0)
 }
 
+// HostUnderMemoryPressure reports whether live MemAvailable has fallen below the
+// host reserve, i.e. the node has eaten into the headroom kept for the daemon
+// and co-located services. Surfaced as DescribeInstanceStatus SystemStatus.
+// Returns false when the live gate is disabled or unreadable (fail open — the
+// accounting gate still bounds admission).
+func (rm *ResourceManager) HostUnderMemoryPressure() bool {
+	if rm.readMemAvailableGB == nil {
+		return false
+	}
+	avail, ok := rm.readMemAvailableGB()
+	if !ok {
+		return false
+	}
+	rm.mu.RLock()
+	reserve := rm.reservedMem
+	rm.mu.RUnlock()
+	return avail < reserve
+}
+
 // liveMemCount clamps n by how many guests of memGB fit in live headroom
 // (availMemGB − reservedMemGB). Negative headroom yields 0.
 func liveMemCount(n int, availMemGB, reservedMemGB, memGB float64) int {
@@ -185,10 +204,10 @@ const (
 	defaultNbdkitAuxMiB  = 96
 )
 
-// Default volume layout: one main root volume + two aux volumes (cloud-init, efi).
+// Default volume layout: one main root volume + one aux volume (efi).
 const (
 	defaultMainVolumes = 1
-	defaultAuxVolumes  = 2
+	defaultAuxVolumes  = 1
 )
 
 // resolveNbdkitCharge returns per-volume nbdkit charges, overridable via env.

@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -22,7 +23,7 @@ func TestCreateOpenIDConnectProvider(t *testing.T) {
 		t.Fatalf("CreateOpenIDConnectProvider: %v", err)
 	}
 
-	wantARN := OIDCProviderARN(acct, stripIssuerScheme(testIssuer))
+	wantARN := OIDCProviderARN(acct, strings.TrimPrefix(testIssuer, "https://"))
 	if aws.StringValue(out.OpenIDConnectProviderArn) != wantARN {
 		t.Fatalf("ARN = %q, want %q", aws.StringValue(out.OpenIDConnectProviderArn), wantARN)
 	}
@@ -79,8 +80,8 @@ func TestGetOpenIDConnectProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if aws.StringValue(got.Url) != stripIssuerScheme(testIssuer) {
-		t.Fatalf("Url = %q, want %q", aws.StringValue(got.Url), stripIssuerScheme(testIssuer))
+	if aws.StringValue(got.Url) != strings.TrimPrefix(testIssuer, "https://") {
+		t.Fatalf("Url = %q, want %q", aws.StringValue(got.Url), strings.TrimPrefix(testIssuer, "https://"))
 	}
 	if len(got.ClientIDList) != 1 || aws.StringValue(got.ClientIDList[0]) != "sts.amazonaws.com" {
 		t.Fatalf("ClientIDList = %v", aws.StringValueSlice(got.ClientIDList))
@@ -125,8 +126,8 @@ func TestListOpenIDConnectProviders(t *testing.T) {
 		t.Fatalf("list = %d entries, want 2", len(out.OpenIDConnectProviderList))
 	}
 	want := map[string]bool{
-		OIDCProviderARN(acct, stripIssuerScheme(issuers[0])): true,
-		OIDCProviderARN(acct, stripIssuerScheme(issuers[1])): true,
+		OIDCProviderARN(acct, strings.TrimPrefix(issuers[0], "https://")): true,
+		OIDCProviderARN(acct, strings.TrimPrefix(issuers[1], "https://")): true,
 	}
 	for _, e := range out.OpenIDConnectProviderList {
 		if !want[aws.StringValue(e.Arn)] {
@@ -159,7 +160,7 @@ func TestDeleteOpenIDConnectProvider(t *testing.T) {
 }
 
 func TestIssuerProviderARNRoundTrip(t *testing.T) {
-	arn := OIDCProviderARN("000000000001", stripIssuerScheme(testIssuer))
+	arn := OIDCProviderARN("000000000001", strings.TrimPrefix(testIssuer, "https://"))
 	got, err := issuerFromOIDCProviderARN(arn)
 	if err != nil {
 		t.Fatalf("reverse: %v", err)

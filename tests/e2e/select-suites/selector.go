@@ -5,8 +5,7 @@
 // optional per-suite -test.run regex (RUN_PATTERN) when AST analysis can prove
 // a strict subtest subset is sufficient.
 //
-// Selection model (see docs/development/improvements/
-// e2e-targeted-suite-selection.md):
+// Selection model:
 //
 //	changed_services = { s | s.path (or additional_paths) prefixes a changed file }
 //	covered_services = changed_services plus the transitive closure of
@@ -21,7 +20,9 @@
 package selectsuites
 
 import (
+	"maps"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -301,19 +302,9 @@ func subjectMatch(x, y string) bool {
 }
 
 func suiteNames(m *Manifest) []string {
-	out := make([]string, 0, len(m.Suites))
-	for k := range m.Suites {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(m.Suites))
 }
 
 func sortedKeys(s map[string]bool) []string {
-	out := make([]string, 0, len(s))
-	for k := range s {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(s))
 }

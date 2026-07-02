@@ -8,4 +8,7 @@ type ACMService interface {
 	DescribeCertificate(input *acm.DescribeCertificateInput, accountID string) (*acm.DescribeCertificateOutput, error)
 	ListCertificates(input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error)
 	DeleteCertificate(input *acm.DeleteCertificateInput, accountID string) (*acm.DeleteCertificateOutput, error)
+	ListTagsForCertificate(input *acm.ListTagsForCertificateInput, accountID string) (*acm.ListTagsForCertificateOutput, error)
+	AddTagsToCertificate(input *acm.AddTagsToCertificateInput, accountID string) (*acm.AddTagsToCertificateOutput, error)
+	RemoveTagsFromCertificate(input *acm.RemoveTagsFromCertificateInput, accountID string) (*acm.RemoveTagsFromCertificateOutput, error)
 }

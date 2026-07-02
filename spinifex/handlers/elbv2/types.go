@@ -10,6 +10,9 @@ const (
 	LoadBalancerTypeApplication = "application"
 	LoadBalancerTypeNetwork     = "network"
 
+	// maxLBSecurityGroups is the AWS cap on security groups per load balancer.
+	maxLBSecurityGroups = 5
+
 	// LoadBalancer schemes
 	SchemeInternetFacing = "internet-facing"
 	SchemeInternal       = "internal"
@@ -39,6 +42,13 @@ const (
 	ProtocolUDP    = "UDP"
 	ProtocolTLS    = "TLS"
 	ProtocolTCPUDP = "TCP_UDP"
+
+	// Target-group application protocol versions (HTTP/HTTPS target groups only).
+	// AWS defaults to HTTP1; the load balancer controller always sends a value
+	// and compares it back, so it must round-trip.
+	ProtocolVersionHTTP1 = "HTTP1"
+	ProtocolVersionHTTP2 = "HTTP2"
+	ProtocolVersionGRPC  = "GRPC"
 
 	// Data-plane engines. ALBs (L7) run HAProxy; NLBs (L4) run nginx `stream`
 	// because HAProxy cannot load-balance UDP. The agent learns which engine to
@@ -109,9 +119,10 @@ type LoadBalancerRecord struct {
 	State           string   `json:"state"`  // "provisioning", "active", "failed"
 	VpcId           string   `json:"vpc_id"`
 	SecurityGroups  []string `json:"security_groups"`
-	// NLBManagedSGID is the managed SG minted for NLBs (customer SGs are rejected).
-	// Attached to every LB ENI; listener-port ingress is authorized on it.
-	// Not surfaced by DescribeLoadBalancers.
+	// NLBManagedSGID is the managed SG minted for an NLB created without customer
+	// SGs; attached to every LB ENI with listener-port ingress authorized on it.
+	// Empty when the NLB was created with customer SGs (which replace it). Not
+	// surfaced by DescribeLoadBalancers.
 	NLBManagedSGID string `json:"nlb_managed_sg_id,omitempty"`
 	// NLBIngressCIDRs overrides the scheme-based default client CIDRs that
 	// listener ports are opened to on NLBManagedSGID. Empty ⇒ default
@@ -162,19 +173,20 @@ type AvailZoneInfo struct {
 
 // TargetGroupRecord represents a stored Target Group.
 type TargetGroupRecord struct {
-	TargetGroupArn string            `json:"target_group_arn"`
-	TargetGroupID  string            `json:"target_group_id"` // Short ID (hex suffix)
-	Name           string            `json:"name"`
-	Protocol       string            `json:"protocol"` // "HTTP" or "HTTPS"
-	Port           int64             `json:"port"`     // Default target port
-	VpcId          string            `json:"vpc_id"`
-	TargetType     string            `json:"target_type"` // TargetTypeInstance or TargetTypeIP
-	HealthCheck    HealthCheckConfig `json:"health_check"`
-	Targets        []Target          `json:"targets"`
-	Attributes     map[string]string `json:"attributes,omitempty"`
-	Tags           map[string]string `json:"tags,omitempty"`
-	AccountID      string            `json:"account_id"`
-	CreatedAt      time.Time         `json:"created_at"`
+	TargetGroupArn  string            `json:"target_group_arn"`
+	TargetGroupID   string            `json:"target_group_id"` // Short ID (hex suffix)
+	Name            string            `json:"name"`
+	Protocol        string            `json:"protocol"`                   // "HTTP" or "HTTPS"
+	ProtocolVersion string            `json:"protocol_version,omitempty"` // HTTP1/HTTP2/GRPC (HTTP[S] TGs only)
+	Port            int64             `json:"port"`                       // Default target port
+	VpcId           string            `json:"vpc_id"`
+	TargetType      string            `json:"target_type"` // TargetTypeInstance or TargetTypeIP
+	HealthCheck     HealthCheckConfig `json:"health_check"`
+	Targets         []Target          `json:"targets"`
+	Attributes      map[string]string `json:"attributes,omitempty"`
+	Tags            map[string]string `json:"tags,omitempty"`
+	AccountID       string            `json:"account_id"`
+	CreatedAt       time.Time         `json:"created_at"`
 }
 
 // HealthCheckConfig defines health check parameters for a target group.
@@ -383,5 +395,9 @@ var (
 		"load_balancing.cross_zone.enabled":     "use_load_balancer_configuration",
 		"load_balancing.algorithm.type":         "round_robin",
 		"slow_start.duration_seconds":           "0",
+		// NLB target-group default. The AWS Load Balancer Controller always
+		// writes this on NLB target groups (e.g. ingress-nginx); without it as a
+		// known key the modify is rejected and LBC loops on the Service forever.
+		"proxy_protocol_v2.enabled": "false",
 	}
 )

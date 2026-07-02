@@ -27,6 +27,30 @@ type AttachVolumeResult struct {
 	GuestDevice string
 }
 
+// rollbackUnmount best-effort unmounts a volume while unwinding a failed
+// AttachVolume. The volume never took guest writes, so the unmount seal is a
+// no-op; a failure is logged and tolerated rather than masking the attach error.
+func (m *Manager) rollbackUnmount(req types.EBSRequest) {
+	if m.deps.VolumeMounter == nil {
+		return
+	}
+	if err := m.deps.VolumeMounter.UnmountOne(req); err != nil {
+		slog.Warn("AttachVolume: rollback unmount failed", "volume", req.Name, "err", err)
+	}
+}
+
+// delIothreadBestEffort removes the per-volume iothread object on a failed
+// attach. Without it the orphaned iothread makes object-add fail on every
+// retry ("duplicate property"), so the attach can never recover.
+func (m *Manager) delIothreadBestEffort(instance *VM, iothreadID, volumeID string) {
+	if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
+		Execute:   "object-del",
+		Arguments: map[string]any{"id": iothreadID},
+	}, instance.ID); err != nil {
+		slog.Warn("AttachVolume: rollback object-del iothread failed", "volumeId", volumeID, "err", err)
+	}
+}
+
 // AttachVolume hot-plugs a volume via the QMP pipeline (mount → blockdev-add →
 // device_add). Partial state is rolled back on failure. If device is empty, the
 // next free /dev/sd[f-p] slot is allocated. Instance must be in StateRunning.
@@ -40,6 +64,13 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		return AttachVolumeResult{}, fmt.Errorf("%w: cannot attach to instance %s in state %s",
 			ErrInvalidTransition, id, status)
 	}
+
+	// Serialize hot-plug per instance so the port allocation below and the
+	// matching device_add are atomic; concurrent attaches would otherwise pick
+	// the same PCIe root port and the second device_add fails ("slot 0 already
+	// occupied"). Detach takes the same lock.
+	instance.attachMu.Lock()
+	defer instance.attachMu.Unlock()
 
 	if device == "" {
 		m.UpdateState(id, func(v *VM) { device = nextAvailableDevice(v) })
@@ -61,7 +92,7 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		// Empty-URI response leaves backend NBD state ambiguous; unmount
 		// defensively to avoid orphaning a half-started mount.
 		if errors.Is(err, ErrMountAmbiguous) {
-			m.deps.VolumeMounter.UnmountOne(ebsRequest)
+			m.rollbackUnmount(ebsRequest)
 		}
 		return AttachVolumeResult{}, fmt.Errorf("mount volume %s: %w", volumeID, err)
 	}
@@ -69,7 +100,7 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	serverType, socketPath, nbdHost, nbdPort, err := utils.ParseNBDURI(ebsRequest.NBDURI)
 	if err != nil {
 		slog.Error("AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
-		m.deps.VolumeMounter.UnmountOne(ebsRequest)
+		m.rollbackUnmount(ebsRequest)
 		return AttachVolumeResult{}, fmt.Errorf("parse NBDURI: %w", err)
 	}
 
@@ -84,6 +115,23 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	deviceID := fmt.Sprintf("vdisk-%s", volumeID)
 	iothreadID := fmt.Sprintf("ioth-%s", volumeID)
 
+	// Allocate the PCIe hot-plug port from in-memory accounting. QEMU reports
+	// block devices by id (/machine/peripheral/<id>/virtio-backend), not by bus,
+	// so a live query-block scan cannot tell which hotplug-ebs port is occupied
+	// and always returned the first one — every attach past the first collided
+	// on slot 0. The recorded HotplugPort per attached volume is authoritative;
+	// attachMu (held above) serializes allocation. virtio-blk-pci cannot land on
+	// pcie.0 (no hot-plug), so a free hotplug-ebs root port is always required.
+	instance.EBSRequests.Mu.Lock()
+	hotplugPort := freeHotplugEBSPort(instance.EBSRequests.Requests)
+	instance.EBSRequests.Mu.Unlock()
+	if hotplugPort == 0 {
+		slog.Error("AttachVolume: EBS hot-plug port pool exhausted", "volumeId", volumeID)
+		m.rollbackUnmount(ebsRequest)
+		return AttachVolumeResult{}, ErrAttachmentLimitExceeded
+	}
+	ebsRequest.HotplugPort = hotplugPort
+
 	if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
 		Execute: "object-add",
 		Arguments: map[string]any{
@@ -92,7 +140,7 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		},
 	}, instance.ID); err != nil {
 		slog.Error("AttachVolume: QMP object-add iothread failed", "volumeId", volumeID, "err", err)
-		m.deps.VolumeMounter.UnmountOne(ebsRequest)
+		m.rollbackUnmount(ebsRequest)
 		return AttachVolumeResult{}, fmt.Errorf("QMP object-add iothread: %w", err)
 	}
 
@@ -107,30 +155,27 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		},
 	}, instance.ID); err != nil {
 		slog.Error("AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)
-		m.deps.VolumeMounter.UnmountOne(ebsRequest)
+		m.delIothreadBestEffort(instance, iothreadID, volumeID)
+		m.rollbackUnmount(ebsRequest)
 		return AttachVolumeResult{}, fmt.Errorf("QMP blockdev-add: %w", err)
 	}
 
-	// /dev/sdf -> hotplug-ebs1, /dev/sdg -> hotplug-ebs2, etc. The id prefix
-	// matches the pcie-root-port pre-allocation in buildBaseVMConfig; the
-	// "-ebs" suffix disambiguates these ports from hotplug-eni{N} (Sprint 3a
-	// ENI hot-plug pool).
-	hotplugBus := ""
-	if len(device) > 0 {
-		letter := device[len(device)-1]
-		if letter >= 'f' && letter <= 'p' {
-			hotplugBus = fmt.Sprintf("hotplug-ebs%d", letter-'f'+1)
-		}
-	}
+	// The virtio-blk-pci device must land on a free hot-plug PCIe root port
+	// (hotplug-ebs{N}); pcie.0 rejects hot-plug. The port is allocated from
+	// live QEMU state above, independent of the AWS device name.
+	hotplugBus := fmt.Sprintf("hotplug-ebs%d", hotplugPort)
 
+	// serial is the volume-id with dashes stripped ("vol" + 17 hex = 20 bytes,
+	// the virtio-blk serial limit). It surfaces in-guest as the block device
+	// serial so the EBS CSI node plugin can locate /dev/disk/by-id and match
+	// `lsblk -o SERIAL` against the volume-id.
 	deviceAddArgs := map[string]any{
 		"driver":   "virtio-blk-pci",
 		"id":       deviceID,
 		"drive":    nodeName,
 		"iothread": iothreadID,
-	}
-	if hotplugBus != "" {
-		deviceAddArgs["bus"] = hotplugBus
+		"serial":   strings.ReplaceAll(volumeID, "-", ""),
+		"bus":      hotplugBus,
 	}
 
 	if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
@@ -146,7 +191,8 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 			slog.Error("AttachVolume: rollback blockdev-del failed, skipping EBS unmount",
 				"volumeId", volumeID, "err", delErr)
 		} else {
-			m.deps.VolumeMounter.UnmountOne(ebsRequest)
+			m.delIothreadBestEffort(instance, iothreadID, volumeID)
+			m.rollbackUnmount(ebsRequest)
 		}
 		return AttachVolumeResult{}, fmt.Errorf("QMP device_add: %w", err)
 	}
@@ -244,6 +290,10 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 			ErrInvalidTransition, id, status)
 	}
 
+	// Serialize against concurrent attach/detach on this instance's PCIe ports.
+	instance.attachMu.Lock()
+	defer instance.attachMu.Unlock()
+
 	instance.EBSRequests.Mu.Lock()
 	var ebsReq types.EBSRequest
 	found := false
@@ -260,7 +310,7 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 		return "", fmt.Errorf("%w: %s", ErrVolumeNotAttached, volumeID)
 	}
 
-	if ebsReq.Boot || ebsReq.EFI || ebsReq.CloudInit {
+	if ebsReq.Boot || ebsReq.EFI {
 		return "", fmt.Errorf("%w: %s", ErrVolumeNotDetachable, volumeID)
 	}
 
@@ -313,9 +363,16 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 			"volumeId", volumeID, "err", iothreadErr)
 	}
 
-	// ebs.unmount (best-effort).
+	// ebs.unmount drives the synchronous block-map seal to predastore. On
+	// failure the volume's local WAL is retained, so keep the volume attached
+	// and return the error; an AWS-CLI retry re-drives the seal and same-node
+	// reattach still works meanwhile.
 	if m.deps.VolumeMounter != nil {
-		m.deps.VolumeMounter.UnmountOne(ebsReq)
+		if err := m.deps.VolumeMounter.UnmountOne(ebsReq); err != nil {
+			slog.Error("DetachVolume: ebs.unmount seal failed, leaving volume attached",
+				"volumeId", volumeID, "err", err)
+			return "", fmt.Errorf("ebs.unmount seal: %w", err)
+		}
 	}
 
 	// State cleanup.
@@ -373,6 +430,15 @@ func (m *Manager) tryBlockdevDel(instance *VM, nodeName string) error {
 			}
 			return nil
 		}
+		// A prior detach already removed the block node (e.g. an AWS-CLI retry
+		// after the ebs.unmount seal failed): treat as success so the retry
+		// resumes through object-del to the seal instead of wedging on a
+		// now-absent node.
+		if isQMPNodeNotFound(err) {
+			slog.Info("DetachVolume: block node already removed (resuming detach)",
+				"nodeName", nodeName, "err", err)
+			return nil
+		}
 		lastErr = err
 		if !isQMPNodeInUse(err) {
 			return err
@@ -405,4 +471,16 @@ func isQMPNodeInUse(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "in use")
+}
+
+// isQMPNodeNotFound reports whether err is a QMP error for a block node that no
+// longer exists. blockdev-del on an already-removed node returns this (QEMU:
+// "Failed to find node with node-name=..."), making blockdev-del idempotent
+// across detach retries — mirroring isQMPDeviceNotFound for device_del.
+func isQMPNodeNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Failed to find node") || strings.Contains(msg, "Cannot find device")
 }

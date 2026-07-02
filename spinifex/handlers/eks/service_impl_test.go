@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -16,14 +17,14 @@ import (
 func setupTestService(t *testing.T) *EKSServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewEKSServiceImplWithNATS(nil, nc)
+	svc, err := NewEKSServiceImpl(EKSServiceDeps{NATSConn: nc})
 	require.NoError(t, err)
 	return svc
 }
 
 // TestEKSServiceImpl_ClusterLifecycleShimMode covers the four lifecycle
-// methods when the service is constructed via NewEKSServiceImplWithNATS
-// (the shim path the daemon-handler routing test uses): orchestration deps
+// methods when the service is constructed with only NATS wiring (the path the
+// daemon-handler routing test uses): orchestration deps
 // are absent so CreateCluster/DeleteCluster short-circuit to ServiceUnavailable
 // (the missing deps are logged at ERROR), DescribeCluster hits an empty
 // per-account bucket and surfaces ResourceNotFoundException, and ListClusters
@@ -51,6 +52,32 @@ func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 
 	_, err = svc.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String("c1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
+}
+
+// A daemon that loaded its master key but whose IAM service was not ready at
+// boot (KV quorum still forming) must reject nodegroup orchestration rather than
+// launch workers with no instance profile, which leaves IMDS roleless and blocks
+// ALB creation. The gate reports IAM even though MasterKey is present.
+func TestMissingOrchestrationDeps_NilIAMRejectsNodegroup(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.svc.deps.IAM = nil
+
+	require.Equal(t, []string{"IAM"}, f.svc.missingOrchestrationDeps())
+
+	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
+	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
+}
+
+// Production wires the lazy IAMProvider and leaves deps.IAM nil. The gate must
+// resolve the ensurer (provider included), not read deps.IAM directly, or it
+// rejects every CreateCluster/CreateNodegroup with missing=[IAM] forever even
+// though the IAM service is fully available via the provider.
+func TestMissingOrchestrationDeps_IAMProviderSatisfiesGate(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.svc.deps.IAM = nil
+	f.svc.deps.IAMProvider = func() handlers_iam.SystemInstanceRoleEnsurer { return newFakeEnsurer() }
+
+	require.Empty(t, f.svc.missingOrchestrationDeps())
 }
 
 // EKS only supports the API authentication mode here; CONFIG_MAP (and the
@@ -385,16 +412,84 @@ func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 	require.False(t, hasEnv)
 }
 
-func TestEKSServiceImpl_TagsNonClusterARNNotImplemented(t *testing.T) {
+func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
-	const ngARN = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"
+	js, err := svc.deps.NATSConn.JetStream()
+	require.NoError(t, err)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	require.NoError(t, err)
 
-	_, err := svc.TagResource(&eks.TagResourceInput{ResourceArn: aws.String(ngARN)}, testAccountID)
+	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"
+	require.NoError(t, PutNodegroupRecord(kv, &NodegroupRecord{
+		ClusterName: "c1",
+		Name:        "ng1",
+		Arn:         arn,
+		Status:      eks.NodegroupStatusActive,
+		Tags:        map[string]string{"env": "prod"},
+	}))
+
+	// Create-time tags are echoed (the drift-killing round-trip).
+	lt, err := svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "prod", aws.StringValue(lt.Tags["env"]))
+
+	dn, err := svc.DescribeNodegroup(&eks.DescribeNodegroupInput{
+		ClusterName:   aws.String("c1"),
+		NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "prod", aws.StringValue(dn.Nodegroup.Tags["env"]))
+
+	// TagResource merges, UntagResource removes — both store-only.
+	_, err = svc.TagResource(&eks.TagResourceInput{
+		ResourceArn: aws.String(arn),
+		Tags:        aws.StringMap(map[string]string{"team": "platform"}),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.UntagResource(&eks.UntagResourceInput{
+		ResourceArn: aws.String(arn),
+		TagKeys:     aws.StringSlice([]string{"env"}),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	lt, err = svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "platform", aws.StringValue(lt.Tags["team"]))
+	_, hasEnv := lt.Tags["env"]
+	require.False(t, hasEnv)
+}
+
+func TestEKSServiceImpl_NodegroupTagMissingNotFound(t *testing.T) {
+	svc := setupTestService(t)
+	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/absent/abc123"
+
+	_, err := svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+
+	_, err = svc.TagResource(&eks.TagResourceInput{
+		ResourceArn: aws.String(arn),
+		Tags:        aws.StringMap(map[string]string{"k": "v"}),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+
+	_, err = svc.UntagResource(&eks.UntagResourceInput{
+		ResourceArn: aws.String(arn),
+		TagKeys:     aws.StringSlice([]string{"k"}),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
+
+func TestEKSServiceImpl_TagsUnsupportedARNNotImplemented(t *testing.T) {
+	svc := setupTestService(t)
+	const fpARN = "arn:aws:eks:us-east-1:111122223333:fargateprofile/c1/fp1/abc123"
+
+	_, err := svc.TagResource(&eks.TagResourceInput{ResourceArn: aws.String(fpARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
-	_, err = svc.UntagResource(&eks.UntagResourceInput{ResourceArn: aws.String(ngARN)}, testAccountID)
+	_, err = svc.UntagResource(&eks.UntagResourceInput{ResourceArn: aws.String(fpARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
-	_, err = svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(ngARN)}, testAccountID)
+	_, err = svc.ListTagsForResource(&eks.ListTagsForResourceInput{ResourceArn: aws.String(fpARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 }

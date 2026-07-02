@@ -315,6 +315,39 @@ func (s *Store) TargetGroupsForLB(lbID string) ([]*TargetGroupRecord, error) {
 	return tgs, nil
 }
 
+// TargetGroupInUse reports whether any listener default action or rule action
+// forwards to tgArn. A target group not referenced by a load balancer serves no
+// traffic, so its targets are reported "unused" (AWS Target.NotInUse) instead of
+// staying stuck in "initial" with no health checker to advance them.
+func (s *Store) TargetGroupInUse(tgArn string) (bool, error) {
+	if tgArn == "" {
+		return false, nil
+	}
+	listeners, err := s.ListListeners()
+	if err != nil {
+		return false, err
+	}
+	for _, l := range listeners {
+		for _, a := range l.DefaultActions {
+			if a.TargetGroupArn == tgArn {
+				return true, nil
+			}
+		}
+	}
+	rules, err := s.ListRules()
+	if err != nil {
+		return false, err
+	}
+	for _, r := range rules {
+		for _, a := range r.Actions {
+			if a.TargetGroupArn == tgArn {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // GetTargetGroupByName finds a target group by name within a VPC.
 func (s *Store) GetTargetGroupByName(name, vpcID string) (*TargetGroupRecord, error) {
 	tgs, err := s.ListTargetGroups()

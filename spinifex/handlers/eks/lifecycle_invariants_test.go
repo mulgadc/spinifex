@@ -45,7 +45,7 @@ func TestRLC2_EKSBillableTeardownBeforeKVSweep(t *testing.T) {
 }
 
 // TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete enforces ADR-0006 §6 NLB
-// no-orphan (riding ADR-0002 / mulga-siv-172 cascade composition): after a
+// no-orphan (riding ADR-0002 cascade composition): after a
 // successful DeleteCluster, the eks-{cluster}-cp target group must be gone — an
 // orphaned EKS NLB target group would pin itself as ResourceInUse exactly as a
 // user target group does.

@@ -219,3 +219,109 @@ func TestListAttachedRolePolicies(t *testing.T) {
 		})
 	}
 }
+
+const validInlineDoc = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:DescribeInstances","Resource":"*"}]}`
+
+func TestPutRolePolicy(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.PutRolePolicyInput
+		wantErr string
+	}{
+		{"nil RoleName", &iam.PutRolePolicyInput{PolicyName: aws.String("p"), PolicyDocument: aws.String(validInlineDoc)}, awserrors.ErrorMissingParameter},
+		{"empty RoleName", &iam.PutRolePolicyInput{RoleName: aws.String(""), PolicyName: aws.String("p"), PolicyDocument: aws.String(validInlineDoc)}, awserrors.ErrorMissingParameter},
+		{"nil PolicyName", &iam.PutRolePolicyInput{RoleName: aws.String("r"), PolicyDocument: aws.String(validInlineDoc)}, awserrors.ErrorMissingParameter},
+		{"empty PolicyName", &iam.PutRolePolicyInput{RoleName: aws.String("r"), PolicyName: aws.String(""), PolicyDocument: aws.String(validInlineDoc)}, awserrors.ErrorMissingParameter},
+		{"nil PolicyDocument", &iam.PutRolePolicyInput{RoleName: aws.String("r"), PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"empty PolicyDocument", &iam.PutRolePolicyInput{RoleName: aws.String("r"), PolicyName: aws.String("p"), PolicyDocument: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.PutRolePolicyInput{RoleName: aws.String("r"), PolicyName: aws.String("p"), PolicyDocument: aws.String(validInlineDoc)}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := PutRolePolicy(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestGetRolePolicy(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.GetRolePolicyInput
+		wantErr string
+	}{
+		{"nil RoleName", &iam.GetRolePolicyInput{PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"empty RoleName", &iam.GetRolePolicyInput{RoleName: aws.String(""), PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"nil PolicyName", &iam.GetRolePolicyInput{RoleName: aws.String("r")}, awserrors.ErrorMissingParameter},
+		{"empty PolicyName", &iam.GetRolePolicyInput{RoleName: aws.String("r"), PolicyName: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.GetRolePolicyInput{RoleName: aws.String("r"), PolicyName: aws.String("p")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := GetRolePolicy(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestDeleteRolePolicy(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.DeleteRolePolicyInput
+		wantErr string
+	}{
+		{"nil RoleName", &iam.DeleteRolePolicyInput{PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"empty RoleName", &iam.DeleteRolePolicyInput{RoleName: aws.String(""), PolicyName: aws.String("p")}, awserrors.ErrorMissingParameter},
+		{"nil PolicyName", &iam.DeleteRolePolicyInput{RoleName: aws.String("r")}, awserrors.ErrorMissingParameter},
+		{"empty PolicyName", &iam.DeleteRolePolicyInput{RoleName: aws.String("r"), PolicyName: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.DeleteRolePolicyInput{RoleName: aws.String("r"), PolicyName: aws.String("p")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DeleteRolePolicy(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestListRolePolicies(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.ListRolePoliciesInput
+		wantErr string
+	}{
+		{"nil RoleName", &iam.ListRolePoliciesInput{}, awserrors.ErrorMissingParameter},
+		{"empty RoleName", &iam.ListRolePoliciesInput{RoleName: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.ListRolePoliciesInput{RoleName: aws.String("r")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ListRolePolicies(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

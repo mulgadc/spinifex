@@ -71,9 +71,7 @@ type Config struct {
 	Routes   policy.RouteManager
 	IGW      external.IGWManager
 	Topology topology.Manager
-	// IMDS installs IMDS OVN topology per-VPC. Optional: nil skips IMDS (tests).
-	IMDS    external.IMDSTopologyManager
-	LocalAZ string
+	LocalAZ  string
 	// NodeHostname is the holder identity for leader-election CAS.
 	NodeHostname string
 	// Chassis is the SBDB-discovered chassis list for gateway LRP rebinding.
@@ -92,7 +90,6 @@ type reconciler struct {
 	routes    policy.RouteManager
 	igw       external.IGWManager
 	topology  topology.Manager
-	imds      external.IMDSTopologyManager
 	localAZ   string
 	host      string
 	chassis   []string
@@ -132,7 +129,6 @@ func New(cfg Config) (Reconciler, error) {
 		routes:    cfg.Routes,
 		igw:       cfg.IGW,
 		topology:  cfg.Topology,
-		imds:      cfg.IMDS,
 		localAZ:   cfg.LocalAZ,
 		host:      cfg.NodeHostname,
 		chassis:   cfg.Chassis,

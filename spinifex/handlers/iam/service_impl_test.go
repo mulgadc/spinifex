@@ -330,7 +330,7 @@ func TestCreateAccessKey_SecretIsDecryptable(t *testing.T) {
 	ak, err := svc.LookupAccessKey(accessKeyID)
 	require.NoError(t, err)
 
-	decrypted, err := DecryptSecret(ak.SecretAccessKey, svc.masterKey)
+	decrypted, err := svc.key.DecryptBase64(ak.SecretAccessKey)
 	require.NoError(t, err)
 	assert.Equal(t, plaintextSecret, decrypted)
 }
@@ -649,7 +649,7 @@ func TestLookupAccessKey_InactiveKey(t *testing.T) {
 func TestSeedBootstrap(t *testing.T) {
 	svc := setupTestIAMService(t)
 
-	encryptedSecret, err := EncryptSecret("test-secret-key", svc.masterKey)
+	encryptedSecret, err := svc.key.EncryptBase64("test-secret-key")
 	require.NoError(t, err)
 
 	err = svc.SeedBootstrap(&BootstrapData{
@@ -676,7 +676,7 @@ func TestSeedBootstrap(t *testing.T) {
 	assert.Equal(t, "Active", ak.Status)
 
 	// Verify secret is decryptable
-	decrypted, err := DecryptSecret(ak.SecretAccessKey, svc.masterKey)
+	decrypted, err := svc.key.DecryptBase64(ak.SecretAccessKey)
 	require.NoError(t, err)
 	assert.Equal(t, "test-secret-key", decrypted)
 
@@ -691,7 +691,7 @@ func TestSeedBootstrap(t *testing.T) {
 func TestSeedBootstrap_Idempotent(t *testing.T) {
 	svc := setupTestIAMService(t)
 
-	encryptedSecret, _ := EncryptSecret("test-secret", svc.masterKey)
+	encryptedSecret, _ := svc.key.EncryptBase64("test-secret")
 	data := &BootstrapData{
 		AccessKeyID:     "AKIAEXAMPLE123456789",
 		EncryptedSecret: encryptedSecret,
@@ -717,9 +717,9 @@ func TestSeedBootstrap_Idempotent(t *testing.T) {
 func TestSeedBootstrap_WithAdmin(t *testing.T) {
 	svc := setupTestIAMService(t)
 
-	systemSecret, err := EncryptSecret("system-secret", svc.masterKey)
+	systemSecret, err := svc.key.EncryptBase64("system-secret")
 	require.NoError(t, err)
-	adminSecret, err := EncryptSecret("admin-secret", svc.masterKey)
+	adminSecret, err := svc.key.EncryptBase64("admin-secret")
 	require.NoError(t, err)
 
 	err = svc.SeedBootstrap(&BootstrapData{
@@ -764,7 +764,7 @@ func TestSeedBootstrap_WithAdmin(t *testing.T) {
 	assert.Equal(t, "admin", ak.UserName)
 	assert.Equal(t, "000000000001", ak.AccountID)
 
-	decrypted, err := DecryptSecret(ak.SecretAccessKey, svc.masterKey)
+	decrypted, err := svc.key.DecryptBase64(ak.SecretAccessKey)
 	require.NoError(t, err)
 	assert.Equal(t, "admin-secret", decrypted)
 
@@ -785,7 +785,7 @@ func TestSeedBootstrap_WithAdmin(t *testing.T) {
 func TestSeedBootstrap_AdminNil_BackwardCompat(t *testing.T) {
 	svc := setupTestIAMService(t)
 
-	encryptedSecret, err := EncryptSecret("test-secret", svc.masterKey)
+	encryptedSecret, err := svc.key.EncryptBase64("test-secret")
 	require.NoError(t, err)
 
 	// No Admin field — backward compatibility with old bootstrap.json
@@ -1595,14 +1595,18 @@ func TestSensitiveDataNotLogged_MasterKey(t *testing.T) {
 		slog.SetDefault(slog.New(slog.DiscardHandler))
 	})
 
-	svc := setupTestIAMService(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+	_, err = NewIAMServiceImpl(nc, masterKey, 1)
+	require.NoError(t, err)
 
 	logOutput := buf.String()
-	masterKeyHex := hex.EncodeToString(svc.masterKey)
+	masterKeyHex := hex.EncodeToString(masterKey)
 
 	assert.NotContains(t, logOutput, masterKeyHex,
 		"master key hex must not appear in log output")
-	assert.NotContains(t, logOutput, string(svc.masterKey),
+	assert.NotContains(t, logOutput, string(masterKey),
 		"raw master key bytes must not appear in log output")
 }
 

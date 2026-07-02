@@ -50,10 +50,6 @@ func ExternalSwitchShared() string { return "ext-shared" }
 // switch bridging it onto the host uplink.
 func ExternalLocalnetPortShared() string { return "ext-port-shared" }
 
-// IMDSPort is the host-owned localport LSP that claims 169.254.169.254 on the
-// subnet switch. Bound on every chassis; serves IMDS over a single L2 hop.
-func IMDSPort(subnetID string) string { return "imds-port-" + subnetID }
-
 // SecurityGroupPortGroup is the OVN port group name for an SG.
 // OVN names match [a-zA-Z_][a-zA-Z0-9_]*, so hyphens become underscores.
 func SecurityGroupPortGroup(sgID string) string {

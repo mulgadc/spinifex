@@ -198,3 +198,84 @@ EKS reconcilers also publish on existing namespaces when interacting with
 other services (no `eks.` prefix): `ec2.RunInstances`,
 `ec2.CreateNetworkInterface`, `elbv2.CreateLoadBalancer`,
 `elbv2.RegisterTargets`, `route53.ChangeResourceRecordSets`, etc.
+
+## ECR (OCI Distribution registry metadata)
+
+ECR is not a SigV4 AWS-action surface but an OCI Distribution v2 (`/v2/*`)
+registry. Blob and manifest *bytes* stream straight from the gateway to
+predastore and never traverse NATS. Only the *metadata* — repo/tag/manifest
+records and in-progress upload-state CAS — is owned by the daemon, which holds
+the per-account JetStream KV. The gateway is a request/reply client; the daemon
+serves these subjects under the `spinifex-workers` queue group.
+
+Subjects use a `ecr.<noun>.<verb>` shape (handler `handleECR<Noun><Verb>`):
+
+```
+ecr.repo.create, ecr.repo.describe, ecr.repo.list
+ecr.tag.put, ecr.tag.get, ecr.tag.list, ecr.tag.delete
+ecr.manifest.put, ecr.manifest.describe
+ecr.upload.create, ecr.upload.get, ecr.upload.update, ecr.upload.delete
+```
+
+`ecr.upload.update` is the serialization point for chunked blob uploads: it is a
+JetStream KV compare-and-swap, so a concurrent PATCH that loses the revision
+race is rejected rather than silently merged. Absent records and CAS conflicts
+travel back as response flags (`found`, `conflict`), not transport errors, so
+they round-trip a reply envelope that otherwise only carries AWS error codes.
+
+## ECS (Elastic Container Service)
+
+ECS uses two layers of NATS subjects (ecs-v1.md Q14). The `.bus.` segment
+distinguishes internal scheduler↔agent traffic from the AWS API surface.
+
+### Layer 1 — AWS API surface
+
+The gateway translates ECS JSON 1.1 requests (X-Amz-Target
+`AmazonEC2ContainerServiceV20141113.<Action>`) into `ecs.<AWSAction>` NATS
+requests, using the existing `spinifex-workers` queue group. Handler names
+follow the `handleECS<AWSAction>` convention. The full v1 namespace:
+
+```
+ecs.CreateCluster, ecs.DescribeClusters, ecs.ListClusters, ecs.DeleteCluster,
+ecs.UpdateCluster, ecs.PutClusterCapacityProviders
+ecs.RegisterTaskDefinition, ecs.DeregisterTaskDefinition,
+ecs.DescribeTaskDefinition, ecs.ListTaskDefinitions, ecs.ListTaskDefinitionFamilies
+ecs.RunTask, ecs.StartTask, ecs.StopTask, ecs.DescribeTasks, ecs.ListTasks
+ecs.CreateService, ecs.UpdateService, ecs.DeleteService, ecs.DescribeServices,
+ecs.ListServices, ecs.ListServicesByNamespace
+ecs.RegisterContainerInstance, ecs.DeregisterContainerInstance,
+ecs.DescribeContainerInstances, ecs.ListContainerInstances,
+ecs.UpdateContainerInstancesState
+ecs.PutAccountSetting, ecs.ListAccountSettings
+ecs.TagResource, ecs.UntagResource, ecs.ListTagsForResource
+```
+
+Today every action is a 501 stub; the subjects land with their handler bodies.
+
+### Layer 2 — internal scheduler↔agent bus
+
+The per-cluster scheduler and the on-VM ecs-agent communicate on
+`ecs.bus.<accountID>.<clusterName>.*`. Cluster identity is
+`<accountID>.<clusterName>` (matches the KV layout), not a UUID.
+
+```
+ecs.bus.<accountID>.<clusterName>.assign.<instanceID>             # scheduler → agent
+ecs.bus.<accountID>.<clusterName>.task-state.<taskID>             # agent → scheduler
+ecs.bus.<accountID>.<clusterName>.instance-heartbeat.<instanceID> # agent → scheduler
+ecs.bus.<accountID>.<clusterName>.instance-register.<instanceID>  # agent → scheduler
+ecs.bus.<accountID>.<clusterName>.service-reconcile               # scheduler-internal tick
+```
+
+Sprint 4c lands the agent-side publishers for `instance-register` (at boot) and
+`instance-heartbeat` (every 30s); the scheduler-side subscribers, `assign`, and
+`task-state` land in Sprint 4e. Subject builders and wire payloads live in
+`spinifex/handlers/ecs/bus` so both the agent and the scheduler share one source
+of truth. The Phase 5 per-AZ NATS cutover inserts `{azID}` after `ecs.` →
+`ecs.<azID>.bus.<accountID>.<clusterName>.*`.
+
+### Cross-service calls
+
+The scheduler also publishes on existing namespaces (no `ecs.` prefix):
+`ec2.CreateNetworkInterface`, `ec2.AttachNetworkInterface`, `sts.AssumeRole`,
+`elbv2.RegisterTargets`, `elbv2.DeregisterTargets`,
+`route53.ChangeResourceRecordSets`.

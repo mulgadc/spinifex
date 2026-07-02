@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -172,6 +173,10 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
+	if len(role.InlinePolicies) > 0 {
+		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	}
+
 	profiles, err := s.findInstanceProfilesForRole(accountID, roleName)
 	if err != nil {
 		return nil, fmt.Errorf("check role instance profiles: %w", err)
@@ -328,7 +333,102 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 	}, nil
 }
 
-// GetRolePolicies resolves the managed policy documents attached to a role.
+// PutRolePolicy embeds an inline policy document in a role, keyed by PolicyName.
+// Idempotent upsert: a same-name policy is overwritten, mirroring AWS.
+func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	roleName := *input.RoleName
+	policyName := *input.PolicyName
+	policyDoc := *input.PolicyDocument
+
+	if err := validatePolicyName(policyName); err != nil {
+		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	}
+	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
+		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+	}
+
+	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+		if role.InlinePolicies == nil {
+			role.InlinePolicies = map[string]string{}
+		}
+		role.InlinePolicies[policyName] = policyDoc
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("IAM inline policy put on role", "accountID", accountID, "roleName", roleName, "policyName", policyName)
+	return &iam.PutRolePolicyOutput{}, nil
+}
+
+// GetRolePolicy returns a role's inline policy document by name.
+// Returns the document as a raw JSON string, matching how GetRole returns
+// AssumeRolePolicyDocument; AWS URL-encodes it, we follow the in-repo convention.
+func (s *IAMServiceImpl) GetRolePolicy(accountID string, input *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
+	roleName := *input.RoleName
+	policyName := *input.PolicyName
+
+	role, err := s.getRole(accountID, roleName)
+	if err != nil {
+		return nil, err
+	}
+
+	doc, ok := role.InlinePolicies[policyName]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+
+	return &iam.GetRolePolicyOutput{
+		RoleName:       aws.String(roleName),
+		PolicyName:     aws.String(policyName),
+		PolicyDocument: aws.String(doc),
+	}, nil
+}
+
+// DeleteRolePolicy removes a role's inline policy by name. A missing name yields
+// NoSuchEntity, matching AWS.
+func (s *IAMServiceImpl) DeleteRolePolicy(accountID string, input *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
+	roleName := *input.RoleName
+	policyName := *input.PolicyName
+
+	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+		if _, ok := role.InlinePolicies[policyName]; !ok {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		delete(role.InlinePolicies, policyName)
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("IAM inline policy deleted from role", "accountID", accountID, "roleName", roleName, "policyName", policyName)
+	return &iam.DeleteRolePolicyOutput{}, nil
+}
+
+// ListRolePolicies returns the names of a role's inline policies, sorted for
+// deterministic output. Pagination is not implemented: IsTruncated is always false.
+func (s *IAMServiceImpl) ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
+	role, err := s.getRole(accountID, *input.RoleName)
+	if err != nil {
+		return nil, err
+	}
+
+	rawNames := slices.Sorted(maps.Keys(role.InlinePolicies))
+
+	names := make([]*string, 0, len(rawNames))
+	for _, name := range rawNames {
+		names = append(names, aws.String(name))
+	}
+
+	return &iam.ListRolePoliciesOutput{
+		PolicyNames: names,
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
+// GetRolePolicies resolves the managed and inline policy documents for a role.
 // Used by the gateway for policy evaluation. Fails closed: any unresolvable
 // policy returns an error so the caller denies access rather than using a partial set.
 func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDocument, error) {
@@ -346,6 +446,14 @@ func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDo
 		if include {
 			docs = append(docs, doc)
 		}
+	}
+
+	for name, raw := range role.InlinePolicies {
+		var doc PolicyDocument
+		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+			return nil, fmt.Errorf("parse inline policy %s: %w", name, err) // fail closed
+		}
+		docs = append(docs, doc)
 	}
 
 	return docs, nil

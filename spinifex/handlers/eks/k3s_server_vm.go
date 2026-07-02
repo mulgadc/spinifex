@@ -9,7 +9,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -17,9 +16,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
-
-// imdsServerIP is the link-local IMDS address (duplicated here to avoid an imds→sts→eks import cycle).
-const imdsServerIP = "169.254.169.254"
 
 // ErrEKSServerAMINotFound is returned when no AMI with the EKS managed-by tag
 // exists. Signals an operator/config gap (image not built/imported).
@@ -78,6 +74,16 @@ const (
 	// k3sConfigPath is the K3s server config file written by cloud-init.
 	k3sConfigPath = "/etc/rancher/k3s/config.yaml"
 
+	// k3sEgressSelectorConfigPath is the EgressSelectorConfiguration the apiserver
+	// loads via --egress-selector-config-file. It points the `cluster` egress at the
+	// konnectivity-server UDS, so apiserver→pod/kubelet traffic (exec/logs/webhooks)
+	// rides the agent-initiated reverse tunnel instead of a direct (unroutable) IP.
+	k3sEgressSelectorConfigPath = "/etc/rancher/k3s/egress-selector-config.yaml"
+
+	// konnectivityUDSPath is the unix socket the konnectivity-server listens on for
+	// apiserver egress. Must match the udsName in the EgressSelectorConfiguration.
+	konnectivityUDSPath = "/run/konnectivity/konnectivity-server.socket"
+
 	// k3sResolvConfPath is the on-VM resolver path. The Alpine AMI's dhcpcd hook
 	// cannot create /etc/resolv.conf, so cloud-init writes a static resolver here.
 	k3sResolvConfPath = "/etc/resolv.conf"
@@ -99,6 +105,15 @@ type K3sServerInput struct {
 	ClusterName      string
 	Region           string
 	SubnetID         string
+	// VpcID is the cluster VPC; surfaced as EKS_VPC_ID so the in-cluster LB
+	// controller can pass --aws-vpc-id to the gateway elbv2/ec2 handlers.
+	VpcID string
+	// ELBSubnetIDs is the cluster's ELB-eligible subnets, deduped to one per AZ.
+	// Surfaced as EKS_ELB_SUBNET_IDS and injected into the alb IngressClassParams
+	// so every Ingress takes LBC's explicit-subnet path (the only path that honors
+	// the ALBSingleSubnet gate); tag auto-discovery never threads that gate, so a
+	// single-AZ cluster would otherwise dedup to 1<2 subnets and fail reconcile.
+	ELBSubnetIDs     []string
 	ControlPlaneSGID string
 	NLBDNS           string
 	// EndpointIP is the NLB front-end IP added to the apiserver cert SANs for TLS.
@@ -114,11 +129,22 @@ type K3sServerInput struct {
 	// Gateway broker config: CP VM publishes via SigV4-signed HTTPS POST to AWSGW.
 	// GatewayURL is the mgmt-reachable endpoint; AccessKey/SecretKey are system
 	// SigV4 creds; GatewayCACert signs the gateway TLS cert.
-	GatewayURL    string
-	AccessKey     string
-	SecretKey     string
-	GatewayCACert string
-	InstanceType  string
+	GatewayURL string
+	// AddonGatewayURL is the customer-facing gateway endpoint baked into managed
+	// addon pod specs (EKS_ADDON_GATEWAY_URL). Those pods run on workers, which
+	// cannot reach the mgmt GatewayURL, so they target this public address.
+	AddonGatewayURL string
+	// AccessKey/SecretKey are the static system SigV4 creds baked into the VM's
+	// first-boot env. Empty selects IMDS instance-role creds instead, which
+	// requires IamInstanceProfileArn to be set so IMDS serves a role.
+	AccessKey string
+	SecretKey string
+	// IamInstanceProfileArn attaches a system instance profile to the CP VM so
+	// the in-VM IMDS endpoint serves rotating role credentials. When set, the
+	// static AccessKey/SecretKey are omitted from user-data.
+	IamInstanceProfileArn string
+	GatewayCACert         string
+	InstanceType          string
 	// TargetNodeID pins the VM to a specific host for HA spread; empty = local node.
 	TargetNodeID string
 	// JoinToken is the shared k3s cluster token so HA servers join the etcd quorum.
@@ -127,9 +153,11 @@ type K3sServerInput struct {
 	// ServerURL boots this VM as a JOIN server joining the quorum at the given endpoint.
 	// Empty = first server (cluster-init). Non-empty requires JoinToken.
 	ServerURL string
-	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled.
-	// When false, both are disabled for AWS parity (ingress via the LB Controller).
-	BuiltinIngress bool
+	// KonnServerCount is the number of apiserver replicas in this cluster (1 for a
+	// single CP, len(nodes) for an HA spread). Surfaced as
+	// EKS_KONNECTIVITY_SERVER_COUNT so the konnectivity-server advertises
+	// --server-count=N and every agent holds a tunnel to every replica (HA-correct).
+	KonnServerCount int
 }
 
 // K3sServerOutput carries identifiers to persist in ClusterMeta and register with the NLB.
@@ -190,15 +218,17 @@ func LaunchK3sServerVM(
 	userData := buildK3sUserData(in)
 
 	sysOut, err := instSvc.LaunchSystemInstanceOnNode(in.TargetNodeID, &sysinstance.SystemInstanceInput{
-		BootMode:     sysinstance.BootAMI,
-		ManagedBy:    tags.ManagedByEKS,
-		InstanceType: instanceType,
-		ImageID:      amiID,
-		AccountID:    in.AccountID,
-		ENIID:        eniID,
-		ENIMac:       aws.StringValue(eniOut.NetworkInterface.MacAddress),
-		ENIIP:        eniIP,
-		UserData:     userData,
+		BootMode:              sysinstance.BootAMI,
+		ManagedBy:             tags.ManagedByEKS,
+		InstanceType:          instanceType,
+		ImageID:               amiID,
+		AccountID:             in.AccountID,
+		ENIID:                 eniID,
+		ENIMac:                aws.StringValue(eniOut.NetworkInterface.MacAddress),
+		ENIIP:                 eniIP,
+		SubnetID:              in.SubnetID,
+		UserData:              userData,
+		IamInstanceProfileArn: in.IamInstanceProfileArn,
 	})
 	if err != nil {
 		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
@@ -249,7 +279,7 @@ func TerminateK3sServerVM(
 		}
 	}
 	if eniID != "" {
-		if err := deleteENIAwaitingTerminate(vpcSvc, accountID, eniID); err != nil {
+		if err := detachAndDeleteServerENI(vpcSvc, accountID, eniID); err != nil {
 			slog.Warn("TerminateK3sServerVM: ENI delete failed", "eniId", eniID, "err", err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("delete ENI %s: %w", eniID, err)
@@ -259,47 +289,34 @@ func TerminateK3sServerVM(
 	return firstErr
 }
 
-var (
-	// eniDeleteWaitBudget bounds how long deleteENIAwaitingTerminate retries a
-	// DeleteNetworkInterface that returns InvalidNetworkInterface.InUse while the
-	// async instance-terminate cascade force-deletes the same ENI. Vars (not
-	// consts) so tests can shrink them.
-	eniDeleteWaitBudget   = 45 * time.Second
-	eniDeleteWaitInterval = 1 * time.Second
-)
-
-// deleteENIAwaitingTerminate deletes the server VM's ENI, tolerating the
-// InvalidNetworkInterface.InUse window while the async instance-terminate
-// cascade (DetachAndDeleteENI → ForceDeleteInstanceENI) removes the same ENI
-// once qemu exits. On a multi-node cluster the teardown handler often runs on a
-// node that does not own the VM, so TerminateSystemInstance returns before the
-// cascade completes and the immediate delete loses the race. It retries until
-// the ENI is gone (NotFound = removed by the cascade or by us) or the budget
-// elapses; a persistent InUse past the budget is surfaced so the teardown
-// backstop retries rather than stranding the cluster's billable infra.
-func deleteENIAwaitingTerminate(vpcSvc k3sVPCProvisioner, accountID, eniID string) error {
-	deadline := time.Now().Add(eniDeleteWaitBudget)
-	for {
-		_, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
-			NetworkInterfaceId: aws.String(eniID),
-		}, accountID)
-		switch {
-		case err == nil:
-			return nil
-		case awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
-			awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound):
-			// ENI already gone (cascade or prior retry); idempotent success.
-			slog.Debug("TerminateK3sServerVM: ENI already gone", "eniId", eniID)
-			return nil
-		case awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceInUse):
-			if time.Now().After(deadline) {
-				return err
-			}
-			time.Sleep(eniDeleteWaitInterval)
-		default:
-			return err
-		}
+// detachAndDeleteServerENI removes the server VM's control-plane ENI. Teardown
+// owns this ENI and has already terminated its VM, so the attachment is
+// authoritatively dead even if the record still shows it in-use — a state a
+// plain force=false delete would reject as InvalidNetworkInterface.InUse
+// forever, wedging EKSDeletingReaper in a no-progress loop.
+// Detach first to clear the stale attachment fields, then delete. Both calls
+// tolerate an already-gone ENI (NotFound), so a race with the async
+// instance-terminate cascade that removes the same ENI resolves to idempotent
+// success either way.
+func detachAndDeleteServerENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) error {
+	if err := vpcSvc.DetachENI(accountID, eniID); err != nil && !isENINotFound(err) {
+		// Non-fatal: the delete below still runs and surfaces any real failure.
+		slog.Debug("TerminateK3sServerVM: ENI detach failed; deleting anyway", "eniId", eniID, "err", err)
 	}
+	_, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+		NetworkInterfaceId: aws.String(eniID),
+	}, accountID)
+	if err == nil || isENINotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// isENINotFound reports whether err is one of the ENI-absent error codes, which
+// teardown treats as idempotent success.
+func isENINotFound(err error) bool {
+	return awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound) ||
+		awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound)
 }
 
 // lookupEKSServerAMI resolves the EKS CP AMI by the spinifex:managed-by=eks tag
@@ -370,10 +387,12 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput empty OIDCPublicKeyPEM")
 	case in.GatewayURL == "":
 		return errors.New("eks: K3sServerInput empty GatewayURL")
-	case in.AccessKey == "":
-		return errors.New("eks: K3sServerInput empty AccessKey")
-	case in.SecretKey == "":
-		return errors.New("eks: K3sServerInput empty SecretKey")
+	case in.AddonGatewayURL == "":
+		return errors.New("eks: K3sServerInput empty AddonGatewayURL")
+	case in.AccessKey == "" && in.IamInstanceProfileArn == "":
+		return errors.New("eks: K3sServerInput needs static creds (AccessKey/SecretKey) or an instance profile (IamInstanceProfileArn)")
+	case (in.AccessKey == "") != (in.SecretKey == ""):
+		return errors.New("eks: K3sServerInput AccessKey and SecretKey must both be set or both empty")
 	case strings.TrimSpace(in.GatewayCACert) == "":
 		return errors.New("eks: K3sServerInput empty GatewayCACert")
 	case in.ServerURL != "" && in.JoinToken == "":
@@ -397,12 +416,39 @@ func k3sServerJoinURL(ip string) string {
 	return "https://" + net.JoinHostPort(ip, "6443")
 }
 
-// boolFlag renders a bool as the "1"/"0" string the shell first-boot env reads.
-func boolFlag(b bool) string {
-	if b {
-		return "1"
+// egressSelectorConfigYAML renders the EgressSelectorConfiguration that wires the
+// apiserver `cluster` egress to the konnectivity-server UDS. v1beta1 is the schema
+// k3s/kube-apiserver accept for --egress-selector-config-file.
+func egressSelectorConfigYAML() string {
+	return strings.Join([]string{
+		"apiVersion: apiserver.k8s.io/v1beta1",
+		"kind: EgressSelectorConfiguration",
+		"egressSelections:",
+		"  - name: cluster",
+		"    connection:",
+		"      proxyProtocol: GRPC",
+		"      transport:",
+		"        uds:",
+		"          udsName: " + konnectivityUDSPath,
+	}, "\n")
+}
+
+// dedupeNonEmpty returns the input with empty strings dropped and duplicates
+// removed, preserving first-seen order.
+func dedupeNonEmpty(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
 	}
-	return "0"
+	return out
 }
 
 // userDataFile is one entry in the cloud-config write_files block.
@@ -424,26 +470,51 @@ func buildK3sUserData(in K3sServerInput) string {
 		role = "server-join"
 	}
 
-	envBody := strings.Join([]string{
+	// Konnectivity wiring (apiserver-network-proxy). HOST is the worker-reachable
+	// address agents dial (the Set A private-endpoint, else the public endpoint);
+	// SANS are the konnectivity-server cert SANs the appliance mints from the k3s CA.
+	// SERVER_COUNT advertises --server-count=N so every agent tunnels to every replica.
+	konnHost := in.PrivateEndpointIP
+	if konnHost == "" {
+		konnHost = in.EndpointIP
+	}
+	konnSANs := dedupeNonEmpty([]string{in.PrivateEndpointIP, in.EndpointIP, in.NLBDNS})
+	konnCount := max(in.KonnServerCount, 1)
+
+	envLines := []string{
 		"SPINIFEX_K3S_ROLE=" + role,
 		"EKS_GATEWAY_URL=" + in.GatewayURL,
+		"EKS_ADDON_GATEWAY_URL=" + in.AddonGatewayURL,
 		"EKS_GATEWAY_CA=" + k3sGatewayCAPath,
-		"EKS_ACCESS_KEY=" + in.AccessKey,
-		"EKS_SECRET_KEY=" + in.SecretKey,
-		"EKS_REGION=" + in.Region,
-		"EKS_ACCOUNT_ID=" + in.ClusterAccountID,
-		"EKS_CLUSTER_NAME=" + in.ClusterName,
-		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
-		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,
-		// Deferred ingress: k3s.initd stages a traefik .skip marker; state-reporter removes it once stable.
-		"EKS_DEFER_TRAEFIK=" + boolFlag(in.BuiltinIngress),
-	}, "\n")
+	}
+	// Static SigV4 creds only when supplied; otherwise the gateway helpers fall
+	// back to the AWS SDK chain, which reads IMDS instance-role credentials.
+	if in.AccessKey != "" {
+		envLines = append(envLines,
+			"EKS_ACCESS_KEY="+in.AccessKey,
+			"EKS_SECRET_KEY="+in.SecretKey,
+		)
+	}
+	envLines = append(envLines,
+		"EKS_REGION="+in.Region,
+		"EKS_VPC_ID="+in.VpcID,
+		"EKS_ELB_SUBNET_IDS="+strings.Join(in.ELBSubnetIDs, ","),
+		"EKS_ACCOUNT_ID="+in.ClusterAccountID,
+		"EKS_CLUSTER_NAME="+in.ClusterName,
+		"EKS_NLB_ENDPOINT="+nlbEndpoint,
+		"EKS_OIDC_ISSUER="+in.OIDCIssuer,
+		"EKS_KONNECTIVITY_HOST="+konnHost,
+		"EKS_KONNECTIVITY_SANS="+strings.Join(konnSANs, ","),
+		"EKS_KONNECTIVITY_SERVER_COUNT="+strconv.Itoa(konnCount),
+	)
+	envBody := strings.Join(envLines, "\n")
 
 	// First server uses cluster-init (embedded etcd); join servers set `server: <first>` + token.
 	// etcd-expose-metrics: surfaces etcd fsync/commit latency on 127.0.0.1:2381/metrics.
-	// anonymous-auth=true: reconciler probes /healthz unauthenticated to gate ACTIVE; RBAC limits exposure.
-	// When BuiltinIngress=false, traefik+servicelb are disabled for AWS LB Controller parity.
-	// When true, traefik is deferred (not disabled) to avoid hammering etcd during bootstrap.
+	// anonymous-auth=false (CIS): cluster health rides the authenticated NATS
+	// state-report (probes /healthz via the node's admin kubeconfig), not an
+	// unauthenticated apiserver probe; the NLB target group uses a TCP health check.
+	// traefik+servicelb+local-storage are always disabled for AWS LB Controller parity.
 	var configLines []string
 	if in.ServerURL == "" {
 		configLines = append(configLines, "cluster-init: true")
@@ -453,19 +524,27 @@ func buildK3sUserData(in K3sServerInput) string {
 	if in.JoinToken != "" {
 		configLines = append(configLines, "token: "+in.JoinToken)
 	}
+	configLines = append(configLines, "etcd-expose-metrics: true")
+	// Egress selector: disable k3s's own remotedialer and point the apiserver's
+	// `cluster` egress at the upstream konnectivity-server UDS via the injected
+	// EgressSelectorConfiguration. konnectivity-agents (DaemonSet on workers) dial
+	// out and hold a tunnel to every apiserver replica, so apiserver→pod/kubelet
+	// egress is HA-correct (no single-VIP fan-out 502). EKS-parity datapath.
+	configLines = append(configLines, "egress-selector-mode: disabled")
 	configLines = append(configLines,
-		"etcd-expose-metrics: true",
 		// Prevent user workloads on the CP (EKS parity). k3s packaged addons tolerate CriticalAddonsOnly.
 		"node-taint:",
 		"  - CriticalAddonsOnly=true:NoExecute",
 	)
-	if !in.BuiltinIngress {
-		configLines = append(configLines,
-			"disable:",
-			"  - traefik",
-			"  - servicelb",
-		)
-	}
+	configLines = append(configLines,
+		"disable:",
+		"  - traefik",
+		"  - servicelb",
+		// EKS has no local-path provisioner; leaving it enabled gives the
+		// cluster a second default StorageClass that races ebs-gp3. Disable
+		// it so the EBS CSI StorageClass is the sole default.
+		"  - local-storage",
+	)
 	configLines = append(configLines, "tls-san:", "  - "+in.NLBDNS)
 	// EndpointIP must be a cert SAN for TLS validation via https://<EndpointIP>:443.
 	if in.EndpointIP != "" {
@@ -491,31 +570,24 @@ func buildK3sUserData(in K3sServerInput) string {
 		"  - service-account-signing-key-file="+k3sOIDCSigningKeyPath,
 		"  - service-account-issuer="+in.OIDCIssuer,
 		"  - api-audiences=sts.amazonaws.com",
-		"  - anonymous-auth=true",
+		"  - anonymous-auth=false",
 		"  - authentication-token-webhook-config-file="+k3sTokenWebhookKubeconfigPath,
 		"  - authentication-token-webhook-cache-ttl=5m",
 		// v1: default v1beta1 rejects authentication.k8s.io/v1 TokenReview response (401).
 		"  - authentication-token-webhook-version=v1",
+		// Route the apiserver `cluster` egress through konnectivity (see config file).
+		"  - egress-selector-config-file="+k3sEgressSelectorConfigPath,
 	)
 	k3sConfig := strings.Join(configLines, "\n")
 
 	files := []userDataFile{
-		// 0600: contains system SigV4 secret key.
+		// 0600: may contain a system SigV4 secret key (static-cred mode).
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
 		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},
+		{Path: k3sEgressSelectorConfigPath, Perms: "0644", Body: egressSelectorConfigYAML()},
 		{Path: k3sGatewayCAPath, Perms: "0644", Body: strings.TrimRight(in.GatewayCACert, "\n")},
-		// IMDS on-link route via persistent local.d script: Alpine cloud-init crashes on a
-		// gateway-less network-config route, so it's written here instead. Uses default-route
-		// device (eth0 on Alpine, not vpc0) to ARP 169.254.169.254 directly on the VPC subnet.
-		{
-			Path:  "/etc/local.d/imds-onlink-route.start",
-			Perms: "0755",
-			Body: "#!/bin/sh\n" +
-				"dev=$(ip route show default | awk '{print $5; exit}')\n" +
-				"[ -n \"$dev\" ] && ip route replace " + imdsServerIP + "/32 dev \"$dev\" scope link",
-		},
 	}
 
 	var buf strings.Builder
@@ -539,13 +611,6 @@ func buildK3sUserData(in K3sServerInput) string {
 			buf.WriteString("\n")
 		}
 	}
-
-	// Enable OpenRC `local` for reboot persistence, then run the IMDS route script
-	// directly. Starting the service here would deadlock: runcmd runs inside
-	// cloud-final, but `local` is ordered after it — blocking until OpenRC times out.
-	buf.WriteString("runcmd:\n")
-	buf.WriteString("  - [ rc-update, add, local, default ]\n")
-	buf.WriteString("  - [ /etc/local.d/imds-onlink-route.start ]\n")
 
 	return buf.String()
 }

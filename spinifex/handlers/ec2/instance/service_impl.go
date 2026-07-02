@@ -1,31 +1,24 @@
 package handlers_ec2_instance
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	awss3 "github.com/aws/aws-sdk-go/service/s3"
-	"github.com/kdomanski/iso9660"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -37,294 +30,6 @@ import (
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
 )
-
-const cloudInitUserDataTemplate = `#cloud-config
-{{if .SSHKey}}
-users:
-  - name: {{.Username}}
-    shell: /bin/sh
-    groups:
-      - {{.SudoGroup}}
-    sudo: "ALL=(ALL) NOPASSWD:ALL"
-    ssh_authorized_keys:
-      - {{.SSHKey}}
-{{end}}
-ssh_pwauth: false
-
-hostname: {{.Hostname}}
-manage_etc_hosts: true
-
-{{if .CACertPEM}}
-ca_certs:
-  trusted:
-    - |
-{{.CACertPEM}}
-{{end}}
-
-{{if .UserDataCloudConfig}}
-{{.UserDataCloudConfig}}
-{{end}}
-
-{{if or .RHELWriteFiles .AlpineWriteFiles .UserDataScript}}
-write_files:
-{{- if .RHELWriteFiles}}
-{{.RHELWriteFiles}}{{end}}{{if .AlpineWriteFiles}}
-{{.AlpineWriteFiles}}{{end}}{{if .UserDataScript}}
-  - path: /tmp/cloud-init-startup.sh
-    permissions: '0755'
-    content: |
-{{.UserDataScript}}{{end}}
-{{end}}
-{{if or .RHELRunCmd .AlpineRunCmd .UserDataScript}}
-runcmd:
-{{- if .RHELRunCmd}}
-{{.RHELRunCmd}}{{end}}{{if .AlpineRunCmd}}
-{{.AlpineRunCmd}}{{end}}{{if .UserDataScript}}
-  - [ "/bin/bash", "/tmp/cloud-init-startup.sh" ]
-{{end}}
-{{end}}
-`
-
-const cloudInitMetaTemplate = `# meta-data
-instance-id: {{.InstanceID}}
-local-hostname: {{.Hostname}}
-`
-
-// cloudInitNetworkConfigWildcard enables DHCP on all NICs via "e*" glob,
-// covering both traditional (eth0) and predictable (ens3) names.
-// Used when there is no dual-NIC setup (non-VPC or no DEV_NETWORKING).
-const cloudInitNetworkConfigWildcard = `network:
-  version: 2
-  ethernets:
-    allnics:
-      match:
-        name: "e*"
-      dhcp4: true
-      dhcp-identifier: mac
-`
-
-// cloudInitNetworkConfigDisabled suppresses cloud-init network rendering.
-// Used on RHEL guests where NM keyfiles are written via write_files;
-// without this stub cloud-init would drop a competing autoconnect keyfile.
-const cloudInitNetworkConfigDisabled = `network:
-  config: disabled
-`
-
-// selectNetworkConfigForFamily returns the cloud-init network-config for the distro.
-// RHEL gets "config: disabled" to prevent cloud-init from dropping a competing
-// NM keyfile alongside the ones written via user-data write_files.
-func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
-	if distroFamily == "rhel" {
-		return cloudInitNetworkConfigDisabled
-	}
-	// Alpine renders via cloud-init's eni backend, which cannot emit a
-	// gateway-less route; the IMDS on-link route is delivered via
-	// buildAlpineCloudInit instead. Debian/Ubuntu render via netplan, which
-	// handles the on-link route natively.
-	return generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP, extraENIMACs, distroFamily != "alpine")
-}
-
-// generateNetworkConfig produces the cloud-init network-config for the instance.
-// Emits per-interface blocks when eniMAC is set; falls back to wildcard DHCP
-// when eniMAC is empty.
-func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string, emitIMDSRoute bool) string {
-	if eniMAC == "" {
-		return cloudInitNetworkConfigWildcard
-	}
-	cfg := fmt.Sprintf(`network:
-  version: 2
-  ethernets:
-    vpc0:
-      match:
-        macaddress: "%s"
-      dhcp4: true
-      dhcp-identifier: mac
-`, eniMAC)
-	// Alpine's eni renderer crashes on gateway-less routes; omit here and
-	// deliver via buildAlpineCloudInit instead (emitIMDSRoute=false).
-	if emitIMDSRoute {
-		cfg += fmt.Sprintf(`      routes:
-        - to: %s/32
-          scope: link
-`, handlers_imds.MetaDataServerIP)
-	}
-
-	for i, mac := range extraENIMACs {
-		if mac == "" {
-			continue
-		}
-		cfg += fmt.Sprintf(`    vpc%d:
-      match:
-        macaddress: "%s"
-      dhcp4: true
-      dhcp-identifier: mac
-`, i+1, mac)
-	}
-
-	if devMAC != "" {
-		cfg += fmt.Sprintf(`    dev0:
-      match:
-        macaddress: "%s"
-      dhcp4: true
-      dhcp-identifier: mac
-      dhcp4-overrides:
-        use-routes: false
-        use-dns: false
-`, devMAC)
-	}
-
-	if mgmtMAC != "" && mgmtIP != "" {
-		cfg += fmt.Sprintf(`    mgmt0:
-      match:
-        macaddress: "%s"
-      addresses:
-        - "%s/24"
-`, mgmtMAC, mgmtIP)
-		// LB mgmt route is delivered via fw_cfg netcfg, not here.
-	}
-
-	return cfg
-}
-
-type CloudInitData struct {
-	Username            string
-	SSHKey              string
-	Hostname            string
-	UserDataCloudConfig string
-	UserDataScript      string
-	CACertPEM           string
-	// DistroFamily selects per-distro rendering: "debian" | "rhel" | "alpine".
-	// Empty falls through to debian (legacy AMIs without this field).
-	DistroFamily string
-	// SudoGroup is "sudo" on debian/ubuntu/alpine, "wheel" on RHEL-family.
-	SudoGroup string
-	// RHELWriteFiles is the pre-indented YAML NM keyfile block (one per NIC).
-	// Empty on non-RHEL guests; those use the network-config ISO instead.
-	RHELWriteFiles string
-	// RHELRunCmd is the pre-indented runcmd YAML (restorecon + nmcli reload/up).
-	// Empty on non-RHEL guests.
-	RHELRunCmd string
-	// AlpineWriteFiles / AlpineRunCmd deliver the IMDS on-link route via a
-	// local.d script (eni renderer can't emit gateway-less routes).
-	// Empty on non-Alpine or non-VPC instances.
-	AlpineWriteFiles string
-	AlpineRunCmd     string
-}
-
-// buildRHELCloudInit produces the cloud-init write_files (NM keyfiles) and
-// runcmd blocks for RHEL networking. Returns empty strings when eniMAC is empty.
-// File mode 0600 is required — NM ignores world-readable keyfiles.
-func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) (writeFiles, runCmd string) {
-	if eniMAC == "" {
-		return "", ""
-	}
-
-	var wf, rc strings.Builder
-
-	rc.WriteString("  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]\n")
-	rc.WriteString("  - [ nmcli, connection, reload ]\n")
-
-	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false, true)
-	rc.WriteString("  - [ nmcli, connection, up, vpc0 ]\n")
-
-	for i, mac := range extraENIMACs {
-		if mac == "" {
-			continue
-		}
-		name := fmt.Sprintf("vpc%d", i+1)
-		appendRHELDHCPKeyfile(&wf, name, mac, false, false)
-		fmt.Fprintf(&rc, "  - [ nmcli, connection, up, %s ]\n", name)
-	}
-
-	if devMAC != "" {
-		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true, false)
-		rc.WriteString("  - [ nmcli, connection, up, dev0 ]\n")
-	}
-
-	if mgmtMAC != "" && mgmtIP != "" {
-		appendRHELStaticKeyfile(&wf, "mgmt0", mgmtMAC, mgmtIP)
-		rc.WriteString("  - [ nmcli, connection, up, mgmt0 ]\n")
-	}
-
-	// Trim trailing newline so the template's {{.RHELWriteFiles}} doesn't
-	// produce a blank line before the user-script write_files entry on
-	// instances that have both.
-	return strings.TrimRight(wf.String(), "\n"), strings.TrimRight(rc.String(), "\n")
-}
-
-func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults, imdsRoute bool) {
-	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
-	b.WriteString("    owner: root:root\n")
-	b.WriteString("    permissions: '0600'\n")
-	b.WriteString("    content: |\n")
-	b.WriteString("      [connection]\n")
-	fmt.Fprintf(b, "      id=%s\n", name)
-	b.WriteString("      type=ethernet\n")
-	b.WriteString("      [ethernet]\n")
-	fmt.Fprintf(b, "      mac-address=%s\n", mac)
-	b.WriteString("      [ipv4]\n")
-	b.WriteString("      method=auto\n")
-	b.WriteString("      dhcp-client-id=mac\n")
-	if suppressDefaults {
-		// Dev NIC gets DHCP IP for hostfwd but must not install routes or DNS.
-		b.WriteString("      never-default=true\n")
-		b.WriteString("      ignore-auto-dns=true\n")
-	}
-	if imdsRoute {
-		// On-link IMDS route so guest ARPs 169.254.169.254 on this NIC (link scope).
-		fmt.Fprintf(b, "      route1=%s/32\n", handlers_imds.MetaDataServerIP)
-	}
-	b.WriteString("      [ipv6]\n")
-	b.WriteString("      method=disabled\n")
-}
-
-func appendRHELStaticKeyfile(b *strings.Builder, name, mac, ip string) {
-	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
-	b.WriteString("    owner: root:root\n")
-	b.WriteString("    permissions: '0600'\n")
-	b.WriteString("    content: |\n")
-	b.WriteString("      [connection]\n")
-	fmt.Fprintf(b, "      id=%s\n", name)
-	b.WriteString("      type=ethernet\n")
-	b.WriteString("      [ethernet]\n")
-	fmt.Fprintf(b, "      mac-address=%s\n", mac)
-	b.WriteString("      [ipv4]\n")
-	b.WriteString("      method=manual\n")
-	fmt.Fprintf(b, "      addresses=%s/24\n", ip)
-	b.WriteString("      [ipv6]\n")
-	b.WriteString("      method=disabled\n")
-}
-
-// buildAlpineCloudInit produces the write_files + runcmd blocks that install the
-// IMDS on-link route on Alpine guests. Alpine's eni renderer crashes on
-// gateway-less routes, so the route is delivered via a persistent local.d script.
-func buildAlpineCloudInit(eniMAC string) (writeFiles, runCmd string) {
-	if eniMAC == "" {
-		return "", ""
-	}
-
-	var wf strings.Builder
-	wf.WriteString("  - path: /etc/local.d/imds-onlink-route.start\n")
-	wf.WriteString("    owner: root:root\n")
-	wf.WriteString("    permissions: '0755'\n")
-	wf.WriteString("    content: |\n")
-	wf.WriteString("      #!/bin/sh\n")
-	// Resolve via default route: udev rename to vpc0 hasn't run yet at first boot;
-	// the mgmt NIC has no default route so this always selects the VPC egress NIC.
-	wf.WriteString("      dev=$(ip route show default | awk '{print $5; exit}')\n")
-	fmt.Fprintf(&wf, "      [ -n \"$dev\" ] && ip route replace %s/32 dev \"$dev\" scope link\n", handlers_imds.MetaDataServerIP)
-
-	var rc strings.Builder
-	rc.WriteString("  - [ rc-update, add, local, default ]\n")
-	rc.WriteString("  - [ rc-service, local, start ]\n")
-
-	return strings.TrimRight(wf.String(), "\n"), strings.TrimRight(rc.String(), "\n")
-}
-
-type CloudInitMetaData struct {
-	InstanceID string
-	Hostname   string
-}
 
 // VolumeInfo holds volume information returned from GenerateVolumes
 // for populating BlockDeviceMappings in the EC2 API response
@@ -408,6 +113,8 @@ func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
 
 	return p
 }
+
+var _ InstanceService = (*InstanceServiceImpl)(nil)
 
 // InstanceServiceImpl handles daemon-side EC2 instance operations
 type InstanceServiceImpl struct {
@@ -512,6 +219,20 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 	ec2Instance.State.SetCode(0)
 	ec2Instance.State.SetName("pending")
 
+	// Project the instance type's architecture onto the customer instance so it
+	// flows to DescribeInstances and the IMDS identity document for free.
+	if arch := instanceArchitecture(s.instanceTypes[*input.InstanceType]); arch != "" {
+		ec2Instance.SetArchitecture(arch)
+	}
+
+	// Stamp the constant IMDSv2-only block so DescribeInstances reports the
+	// posture; only the hop limit is request-driven.
+	var hopLimit *int64
+	if input.MetadataOptions != nil {
+		hopLimit = input.MetadataOptions.HttpPutResponseHopLimit
+	}
+	ec2Instance.MetadataOptions = buildMetadataOptions(hopLimit)
+
 	// IAM instance profile attached at launch: gateway has already resolved
 	// the reference to a canonical ARN and enforced iam:PassRole; here we
 	// just persist it on the VM and generate the association ID. Id is left
@@ -562,12 +283,33 @@ func instanceTagsFromSpec(specs []*ec2.TagSpecification) []*ec2.Tag {
 // PrepareRunInstances validates input, allocates capacity, creates VM metadata,
 // auto-creates the primary ENI, and auto-assigns a public IP when needed.
 // Does NOT touch vmMgr or NATS — callers insert VMs then call LaunchRunInstances.
-func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, []*vm.VM, *ec2.InstanceTypeInfo, error) {
+//
+// A non-empty reservationID makes this a targeted launch into an On-Demand
+// Capacity Reservation: capacity is consumed from that reservation (net-zero
+// swap), the count is capped at the reservation's free slots (never spilling
+// onto general capacity), and every rollback site returns slots to the
+// reservation rather than the general pool.
+func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, accountID, reservationID string) (*ec2.Reservation, []*vm.VM, *ec2.InstanceTypeInfo, error) {
 	if accountID == "" {
 		return nil, nil, nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if input == nil || input.InstanceType == nil {
 		return nil, nil, nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	// Reject a metadata-options downgrade before allocating capacity: http-tokens=
+	// optional and other weakenings return UnsupportedOperation under IMDSv2
+	// enforcement. RunInstance seeds the hop limit onto the per-instance block.
+	if opts := input.MetadataOptions; opts != nil {
+		if err := validateMetadataOptions(
+			aws.StringValue(opts.HttpTokens),
+			aws.StringValue(opts.HttpEndpoint),
+			aws.StringValue(opts.HttpProtocolIpv6),
+			aws.StringValue(opts.InstanceMetadataTags),
+			opts.HttpPutResponseHopLimit,
+		); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
 	instanceType, exists := s.instanceTypes[*input.InstanceType]
@@ -610,10 +352,21 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	minCount := int(*input.MinCount)
 	maxCount := int(*input.MaxCount)
 
-	allocatableCount := s.resourceMgr.CanAllocate(instanceType, maxCount)
+	var allocatableCount int
+	if reservationID == "" {
+		allocatableCount = s.resourceMgr.CanAllocate(instanceType, maxCount)
+	} else {
+		// Targeted launch: confined to the reservation. Cap at its free slots so
+		// the overflow never spills onto the node's general capacity.
+		allocatableCount = min(s.resourceMgr.ReservationAvailable(reservationID, accountID, instanceType), maxCount)
+	}
 	if allocatableCount < minCount {
-		slog.Error("PrepareRunInstances: insufficient capacity", "requested", minCount, "available", allocatableCount, "InstanceType", *input.InstanceType)
-		return nil, nil, nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		errCode := awserrors.ErrorInsufficientInstanceCapacity
+		if reservationID != "" {
+			errCode = awserrors.ErrorReservationCapacityExceeded
+		}
+		slog.Error("PrepareRunInstances: insufficient capacity", "requested", minCount, "available", allocatableCount, "InstanceType", *input.InstanceType, "reservationId", reservationID)
+		return nil, nil, nil, errors.New(errCode)
 	}
 
 	launchCount := allocatableCount
@@ -623,18 +376,32 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	// allocatableCount — the < minCount branch below rolls back.
 	var allocatedCount int
 	for i := 0; i < launchCount; i++ {
-		if err := s.resourceMgr.Allocate(instanceType); err != nil {
-			slog.Error("PrepareRunInstances: allocate failed mid-allocation", "allocated", allocatedCount, "err", err)
+		var allocErr error
+		if reservationID == "" {
+			allocErr = s.resourceMgr.Allocate(instanceType)
+		} else {
+			allocErr = s.resourceMgr.AllocateFromReservation(reservationID, accountID, instanceType)
+		}
+		if allocErr != nil {
+			slog.Error("PrepareRunInstances: allocate failed mid-allocation", "allocated", allocatedCount, "err", allocErr)
 			break
 		}
 		allocatedCount++
 	}
 	if allocatedCount < minCount {
 		for i := 0; i < allocatedCount; i++ {
-			s.resourceMgr.Deallocate(instanceType)
+			if reservationID == "" {
+				s.resourceMgr.Deallocate(instanceType)
+			} else {
+				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
+		}
+		errCode := awserrors.ErrorInsufficientInstanceCapacity
+		if reservationID != "" {
+			errCode = awserrors.ErrorReservationCapacityExceeded
 		}
 		slog.Error("PrepareRunInstances: insufficient capacity after allocation", "allocated", allocatedCount, "minCount", minCount)
-		return nil, nil, nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		return nil, nil, nil, errors.New(errCode)
 	}
 	launchCount = allocatedCount
 
@@ -647,7 +414,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 		if err != nil {
 			slog.Error("PrepareRunInstances: RunInstance failed", "index", i, "err", err)
 			lastRunErr = err
-			s.resourceMgr.Deallocate(instanceType)
+			if reservationID == "" {
+				s.resourceMgr.Deallocate(instanceType)
+			} else {
+				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
 			continue
 		}
 		instance.BootMode = amiMeta.BootMode
@@ -675,16 +446,25 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 				slog.Error("PrepareRunInstances: pre-created ENI specified but ENI service unavailable",
 					"instanceId", instance.ID, "eniId", preExistingENIID)
 				lastRunErr = errors.New(awserrors.ErrorServerInternal)
-				s.resourceMgr.Deallocate(instanceType)
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
 				continue
 			}
 			if err := s.attachPreCreatedENI(accountID, preExistingENIID, instance, ec2Instance); err != nil {
 				slog.Error("PrepareRunInstances: pre-created ENI attach failed",
 					"instanceId", instance.ID, "eniId", preExistingENIID, "err", err)
 				lastRunErr = err
-				s.resourceMgr.Deallocate(instanceType)
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
 				continue
 			}
+			ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
 			instances = append(instances, instance)
 			allEC2Instances = append(allEC2Instances, ec2Instance)
 			continue
@@ -707,7 +487,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			if eniErr != nil {
 				slog.Error("PrepareRunInstances: auto-create ENI failed", "instanceId", instance.ID, "subnetId", *input.SubnetId, "err", eniErr)
 				lastRunErr = eniErr
-				s.resourceMgr.Deallocate(instanceType)
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
 				continue
 			}
 
@@ -727,7 +511,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 						"eniId", instance.ENIId, "err", delErr)
 				}
 				lastRunErr = attachErr
-				s.resourceMgr.Deallocate(instanceType)
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
 				continue
 			}
 			ec2Instance.SetPrivateIpAddress(*eni.PrivateIpAddress)
@@ -783,7 +571,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 								"eniId", *eni.NetworkInterfaceId, "err", delErr)
 						}
 						lastRunErr = errors.New(awserrors.ErrorInsufficientAddressCapacity)
-						s.resourceMgr.Deallocate(instanceType)
+						if reservationID == "" {
+							s.resourceMgr.Deallocate(instanceType)
+						} else {
+							s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+						}
 						continue
 					} else {
 						if updateErr := s.eniCreator.UpdateENIPublicIP(accountID, *eni.NetworkInterfaceId, publicIP, poolName); updateErr != nil {
@@ -797,7 +589,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 							utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
 							s.rollbackAutoAssignedPublicIP(accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
 							lastRunErr = natErr
-							s.resourceMgr.Deallocate(instanceType)
+							if reservationID == "" {
+								s.resourceMgr.Deallocate(instanceType)
+							} else {
+								s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+							}
 							continue
 						}
 						ec2Instance.PublicIpAddress = aws.String(publicIP)
@@ -814,13 +610,18 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			}
 		}
 
+		ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
 		instances = append(instances, instance)
 		allEC2Instances = append(allEC2Instances, ec2Instance)
 	}
 
 	if len(instances) < minCount {
 		for range instances {
-			s.resourceMgr.Deallocate(instanceType)
+			if reservationID == "" {
+				s.resourceMgr.Deallocate(instanceType)
+			} else {
+				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
 		}
 		errCode := awserrors.ErrorServerInternal
 		if lastRunErr != nil {
@@ -840,6 +641,9 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	for _, instance := range instances {
 		instance.Reservation = reservation
 		instance.AccountID = accountID
+		if reservationID != "" {
+			instance.CapacityReservationId = reservationID
+		}
 		if input.Placement != nil && input.Placement.GroupName != nil && *input.Placement.GroupName != "" {
 			instance.PlacementGroupName = *input.Placement.GroupName
 		}
@@ -996,7 +800,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(instances []*vm.VM, input *ec2.
 // RunInstances is for non-daemon callers (tests). The daemon calls
 // PrepareRunInstances + LaunchRunInstances directly to respond before launching.
 func (s *InstanceServiceImpl) RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
-	reservation, instances, instanceType, err := s.PrepareRunInstances(input, accountID)
+	reservation, instances, instanceType, err := s.PrepareRunInstances(input, accountID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1443,15 +1247,7 @@ func (s *InstanceServiceImpl) GenerateVolumes(input *ec2.RunInstancesInput, inst
 		}
 	}
 
-	// Step 3: Create cloud-init volume if needed
-	if input.KeyName != nil && *input.KeyName != "" || (input.UserData != nil && *input.UserData != "") {
-		err = s.prepareCloudInitVolume(input, imageId, volumeConfig, instance)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Return volume info for the root volume only (EFI and cloud-init are internal)
+	// Return volume info for the root volume only (EFI is internal)
 	volumeInfos := []VolumeInfo{
 		{
 			VolumeId:            imageId,
@@ -1707,321 +1503,6 @@ func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
 		return ""
 	}
 	return *it.ProcessorInfo.SupportedArchitectures[0]
-}
-
-// prepareCloudInitVolume creates the cloud-init ISO with SSH keys and user data.
-// Uses rootVolumeId (not AMI ID) so each instance gets its own volume.
-func (s *InstanceServiceImpl) prepareCloudInitVolume(input *ec2.RunInstancesInput, rootVolumeId string, volumeConfig viperblock.VolumeConfig, instance *vm.VM) error {
-	slog.Info("Creating cloud-init volume")
-
-	cloudInitVolumeName := fmt.Sprintf("%s-cloudinit", rootVolumeId)
-	cloudInitSize := 1 * 1024 * 1024 // 1MB
-
-	// Update VolumeID to match the cloud-init volume name
-	cloudInitVolumeConfig := volumeConfig
-	cloudInitVolumeConfig.VolumeMetadata.VolumeID = cloudInitVolumeName
-
-	cloudInitVb, err := s.newViperblock(cloudInitVolumeName, cloudInitSize, cloudInitVolumeConfig)
-	if err != nil {
-		slog.Error("Could not create cloudinit viperblock", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Initialize the backend
-	slog.Debug("Initializing cloud-init Viperblock store backend")
-	err = cloudInitVb.Backend.Init()
-	if err != nil {
-		slog.Error("Could not init backend", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Always create a fresh cloud-init ISO — never reuse a cached volume.
-	// Each instance needs its own SSH key, hostname, and user data.
-
-	// Open the chunk WAL (sharded or legacy)
-	if cloudInitVb.UseShardedWAL {
-		err = cloudInitVb.OpenShardedWAL()
-	} else {
-		err = cloudInitVb.OpenWAL(&cloudInitVb.WAL, fmt.Sprintf("%s/%s", cloudInitVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALChunk, cloudInitVb.WAL.WallNum.Load(), cloudInitVb.GetVolume())))
-	}
-	if err != nil {
-		slog.Error("Failed to load WAL", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = cloudInitVb.OpenWAL(&cloudInitVb.BlockToObjectWAL, fmt.Sprintf("%s/%s", cloudInitVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALBlock, cloudInitVb.BlockToObjectWAL.WallNum.Load(), cloudInitVb.GetVolume())))
-	if err != nil {
-		slog.Error("Failed to load block WAL", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Create the cloud-init ISO
-	err = s.createCloudInitISO(input, instance, cloudInitVb)
-	if err != nil {
-		return err
-	}
-
-	err = cloudInitVb.Close()
-	if err != nil {
-		slog.Error("Failed to close cloud-init Viperblock store", "err", err)
-	}
-
-	err = cloudInitVb.RemoveLocalFiles()
-	if err != nil {
-		slog.Error("Failed to remove local files", "err", err)
-	}
-
-	instance.EBSRequests.Mu.Lock()
-	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
-		Name:      cloudInitVolumeName,
-		Boot:      false,
-		CloudInit: true,
-	})
-	instance.EBSRequests.Mu.Unlock()
-
-	return nil
-}
-
-// createCloudInitISO generates the cloud-init ISO image
-func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, instance *vm.VM, cloudInitVb *viperblock.VB) error {
-	// Create ISO writer
-	writer, err := iso9660.NewWriter()
-	if err != nil {
-		slog.Error("failed to create writer", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	defer writer.Cleanup()
-
-	// Generate instance metadata
-	hostname := generateHostname(instance.ID)
-
-	// Retrieve SSH pubkey from S3 — password auth is not supported.
-	keyName := ""
-	if input.KeyName != nil {
-		keyName = *input.KeyName
-	}
-
-	var sshKey []byte
-	if keyName != "" {
-		keyPath := fmt.Sprintf("keys/%s/%s", instance.AccountID, keyName)
-		result, err := s.objectStore.GetObject(&awss3.GetObjectInput{
-			Bucket: aws.String(s.config.Predastore.Bucket),
-			Key:    aws.String(keyPath),
-		})
-		if err != nil {
-			if objectstore.IsNoSuchKeyError(err) {
-				slog.Error("key pair not found", "keyName", keyName, "err", err)
-				return errors.New(awserrors.ErrorInvalidKeyPairNotFound)
-			}
-			slog.Error("failed to read SSH key", "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-
-		sshKey, err = io.ReadAll(result.Body)
-		if err != nil {
-			slog.Error("failed to read SSH key body", "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-	}
-
-	// Read CA cert from <data-root>/config/ca.pem and inject into guest cloud-init.
-	var caCertPEM string
-	dataRoot := filepath.Dir(strings.TrimSuffix(s.config.BaseDir, "/"))
-	caCertPath := filepath.Join(dataRoot, "config", "ca.pem")
-	if caBytes, err := os.ReadFile(caCertPath); err == nil {
-		// Indent each line by 6 spaces for YAML block scalar in ca_certs.trusted.
-		var indented strings.Builder
-		for line := range strings.SplitSeq(string(caBytes), "\n") {
-			if line != "" {
-				indented.WriteString("      ")
-				indented.WriteString(line)
-				indented.WriteByte('\n')
-			}
-		}
-		caCertPEM = indented.String()
-	} else if os.IsNotExist(err) {
-		slog.Warn("CA cert not found, guest VMs will not trust Spinifex services", "path", caCertPath)
-	} else {
-		slog.Error("failed to read CA cert for guest cloud-init injection", "path", caCertPath, "error", err)
-	}
-
-	// Re-read AMI metadata for DistroFamily; not persisted on VM since the ISO is sealed once.
-	var distroFamily string
-	if s.amiLoader != nil && input.ImageId != nil && *input.ImageId != "" {
-		amiMeta, err := s.amiLoader.GetAMIConfig(*input.ImageId)
-		if err != nil {
-			slog.Warn("createCloudInitISO: AMI metadata fetch failed; cloud-init will render with debian-family defaults (RHEL guests will boot without networking and with wrong sudo group)", "imageId", *input.ImageId, "err", err)
-		} else {
-			distroFamily = amiMeta.DistroFamily
-		}
-	}
-
-	extraMACs := make([]string, 0, len(instance.ExtraENIs))
-	for _, extra := range instance.ExtraENIs {
-		extraMACs = append(extraMACs, extra.ENIMac)
-	}
-
-	sudoGroup := "sudo"
-	var rhelWriteFiles, rhelRunCmd string
-	switch distroFamily {
-	case "rhel":
-		sudoGroup = "wheel"
-		rhelWriteFiles, rhelRunCmd = buildRHELCloudInit(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
-	}
-
-	userData := CloudInitData{
-		Username:       "ec2-user",
-		SSHKey:         string(sshKey),
-		Hostname:       hostname,
-		CACertPEM:      caCertPEM,
-		DistroFamily:   distroFamily,
-		SudoGroup:      sudoGroup,
-		RHELWriteFiles: rhelWriteFiles,
-		RHELRunCmd:     rhelRunCmd,
-	}
-
-	// Decode and classify user-data from RunInstances (base64-encoded).
-	if input.UserData != nil && *input.UserData != "" {
-		decoded, decErr := base64.StdEncoding.DecodeString(*input.UserData)
-		if decErr != nil {
-			slog.Warn("Failed to decode user-data, ignoring", "err", decErr)
-		} else {
-			raw := string(decoded)
-			if after, ok := strings.CutPrefix(raw, "#cloud-config"); ok {
-				// Strip the #cloud-config header — the template already has it
-				stripped := after
-				userData.UserDataCloudConfig = strings.TrimSpace(stripped)
-			} else {
-				// Script — indent each line by 4 spaces for YAML write_files block
-				var indented strings.Builder
-				for line := range strings.SplitSeq(raw, "\n") {
-					indented.WriteString("      " + line + "\n")
-				}
-				userData.UserDataScript = indented.String()
-			}
-		}
-	}
-
-	// Inject Alpine IMDS route only when no #cloud-config user-data is present;
-	// a caller-supplied payload already owns write_files/runcmd and a second key collides.
-	if distroFamily == "alpine" && userData.UserDataCloudConfig == "" {
-		userData.AlpineWriteFiles, userData.AlpineRunCmd = buildAlpineCloudInit(instance.ENIMac)
-	}
-
-	var buf bytes.Buffer
-	t := template.Must(template.New("cloud-init").Parse(cloudInitUserDataTemplate))
-
-	if err := t.Execute(&buf, userData); err != nil {
-		slog.Error("failed to render template", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Add user-data
-	err = writer.AddFile(&buf, "user-data")
-	if err != nil {
-		slog.Error("failed to add file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Add meta-data
-	metaData := CloudInitMetaData{
-		InstanceID: instance.ID,
-		Hostname:   hostname,
-	}
-
-	t = template.Must(template.New("meta-data").Parse(cloudInitMetaTemplate))
-	buf.Reset()
-
-	if err := t.Execute(&buf, metaData); err != nil {
-		slog.Error("failed to render template", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = writer.AddFile(&buf, "meta-data")
-	if err != nil {
-		slog.Error("failed to add file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Add network-config: per-interface for VPC+dev, wildcard DHCP otherwise.
-	// RHEL gets "config: disabled" to prevent a competing NM keyfile.
-	networkConfig := selectNetworkConfigForFamily(distroFamily, instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
-	err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
-	if err != nil {
-		slog.Error("failed to add network-config file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Store temp file
-	tempFile, err := os.CreateTemp("", "cloud-init-*.iso")
-	if err != nil {
-		slog.Error("Could not create cloud-init temp file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	slog.Info("Created temp ISO file", "file", tempFile.Name())
-
-	outputFile, err := os.OpenFile(tempFile.Name(), os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0600)
-	if err != nil {
-		slog.Error("failed to create file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Requires cidata volume label for cloud-init to recognize
-	err = writer.WriteTo(outputFile, "cidata")
-	if err != nil {
-		slog.Error("failed to write ISO image", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = writer.Cleanup()
-	if err != nil {
-		slog.Error("failed to cleanup writer", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = outputFile.Close()
-	if err != nil {
-		slog.Error("failed to close output file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	isoData, err := os.ReadFile(tempFile.Name())
-	if err != nil {
-		slog.Error("failed to read ISO image:", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = cloudInitVb.WriteAt(0, isoData)
-	if err != nil {
-		slog.Error("failed to write ISO image to viperblock volume", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Flush
-	if err := cloudInitVb.Flush(); err != nil {
-		slog.Error("Failed to flush cloud-init volume", "err", err)
-	}
-	if err := cloudInitVb.WriteWALToChunk(true); err != nil {
-		slog.Error("Failed to write WAL to chunk", "err", err)
-	}
-
-	// Remove the temp ISO file
-	err = os.Remove(tempFile.Name())
-	if err != nil {
-		slog.Error("Failed to remove temp file", "err", err)
-	}
-
-	return nil
-}
-
-// generateHostname creates a hostname based on instance ID
-func generateHostname(instanceID string) string {
-	if len(instanceID) > 2 {
-		uniquePart := instanceID[2:10] // Take first 8 chars after "i-"
-		return fmt.Sprintf("spinifex-vm-%s", uniquePart)
-	}
-	return "spinifex-vm-unknown"
 }
 
 // DescribeInstancesValidFilters lists the filter names accepted by DescribeInstances
@@ -2462,6 +1943,94 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
 }
 
+// ModifyInstanceMetadataOptions applies a metadata-options change; only the hop
+// limit is mutable. It mirrors DisableApiTermination's running-first/stopped path
+// — no stopped-only guard, since AWS permits this on running instances.
+func (s *InstanceServiceImpl) ModifyInstanceMetadataOptions(input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
+	if input.InstanceId == nil || *input.InstanceId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	instanceID := *input.InstanceId
+
+	if err := validateMetadataOptions(
+		aws.StringValue(input.HttpTokens),
+		aws.StringValue(input.HttpEndpoint),
+		aws.StringValue(input.HttpProtocolIpv6),
+		aws.StringValue(input.InstanceMetadataTags),
+		input.HttpPutResponseHopLimit,
+	); err != nil {
+		return nil, err
+	}
+
+	// Running-first: mutate the live instance's block, falling through to the
+	// stopped store only when the instance isn't running on this node.
+	var notVisible, integrityErr bool
+	var options *ec2.InstanceMetadataOptionsResponse
+	updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
+		if !IsInstanceVisible(accountID, v.AccountID) {
+			notVisible = true
+			return false
+		}
+		if v.Instance == nil {
+			integrityErr = true
+			return false
+		}
+		applyMetadataOptions(v.Instance, input.HttpPutResponseHopLimit)
+		opt := *v.Instance.MetadataOptions
+		options = &opt
+		return true
+	})
+	if notVisible {
+		slog.Warn("ModifyInstanceMetadataOptions: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if integrityErr {
+		slog.Error("ModifyInstanceMetadataOptions: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if updated {
+		if persistErr != nil {
+			slog.Error("ModifyInstanceMetadataOptions: persist failed", "instanceId", instanceID, "err", persistErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.Info("ModifyInstanceMetadataOptions: updated running instance", "instanceId", instanceID)
+		return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: aws.String(instanceID), InstanceMetadataOptions: options}, nil
+	}
+
+	if s.stoppedStore == nil {
+		slog.Error("ModifyInstanceMetadataOptions: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.Error("ModifyInstanceMetadataOptions: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		slog.Warn("ModifyInstanceMetadataOptions: instance not found", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.Warn("ModifyInstanceMetadataOptions: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Instance == nil {
+		slog.Error("ModifyInstanceMetadataOptions: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	applyMetadataOptions(instance.Instance, input.HttpPutResponseHopLimit)
+	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
+		slog.Error("ModifyInstanceMetadataOptions: failed to persist stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.Info("ModifyInstanceMetadataOptions: updated stopped instance", "instanceId", instanceID)
+	return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: aws.String(instanceID), InstanceMetadataOptions: instance.Instance.MetadataOptions}, nil
+}
+
 // StoppedInstanceNode returns the node that last hosted the stopped instance,
 // used to route start requests back to the original node when possible.
 func (s *InstanceServiceImpl) StoppedInstanceNode(instanceID string) string {
@@ -2646,8 +2215,8 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(instance *vm.VM, instanceID 
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		// Internal volumes (EFI, cloud-init) are always cleaned up via ebs.delete.
-		if ebsRequest.EFI || ebsRequest.CloudInit {
+		// Internal volumes (EFI) are always cleaned up via ebs.delete.
+		if ebsRequest.EFI {
 			ebsDeleteData, err := json.Marshal(spxtypes.EBSDeleteRequest{Volume: ebsRequest.Name})
 			if err != nil {
 				slog.Error("TerminateStoppedInstance: failed to marshal ebs.delete request", "name", ebsRequest.Name, "err", err)
@@ -2741,12 +2310,28 @@ func (s *InstanceServiceImpl) deleteInstanceENI(instance *vm.VM, instanceID stri
 	if instance.ENIId == "" || s.eniDeleter == nil {
 		return
 	}
-	if _, err := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	// Detach first to clear the attachment record. A stopped instance's ENI may
+	// still show Status=in-use/AttachmentId set; without the detach the
+	// force=false DeleteNetworkInterface below fails InvalidNetworkInterface.InUse,
+	// stranding the ENI record after the instance is already gone from the store
+	// and blocking VPC/subnet delete. Best-effort: the delete is
+	// the authoritative gate.
+	if s.eniCreator != nil {
+		if err := s.eniCreator.DetachENI(instance.AccountID, instance.ENIId); err != nil {
+			slog.Warn("TerminateStoppedInstance: failed to detach ENI before delete",
+				"eni", instance.ENIId, "instanceId", instanceID, "err", err)
+		}
+	}
+	_, err := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: &instance.ENIId,
-	}, instance.AccountID); err != nil {
-		slog.Error("TerminateStoppedInstance: failed to delete ENI", "eni", instance.ENIId, "err", err)
-	} else {
+	}, instance.AccountID)
+	switch {
+	case err == nil,
+		awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+		awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound):
 		slog.Info("TerminateStoppedInstance: deleted ENI", "eni", instance.ENIId, "instanceId", instanceID)
+	default:
+		slog.Error("TerminateStoppedInstance: failed to delete ENI", "eni", instance.ENIId, "err", err)
 	}
 }
 
@@ -2876,7 +2461,23 @@ var (
 	}
 )
 
-func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM) *ec2.InstanceStatus {
+// hostHealthReporter is an optional capability on the resource manager that
+// reports node-level memory pressure, surfaced as DescribeInstanceStatus
+// SystemStatus. Implemented by daemon.ResourceManager.
+type hostHealthReporter interface {
+	HostUnderMemoryPressure() bool
+}
+
+// hostUnderMemoryPressure reports whether the node is under memory pressure when
+// the resource manager supports the check, false otherwise (fail open).
+func (s *InstanceServiceImpl) hostUnderMemoryPressure() bool {
+	if hr, ok := s.resourceMgr.(hostHealthReporter); ok {
+		return hr.HostUnderMemoryPressure()
+	}
+	return false
+}
+
+func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM, systemImpaired bool) *ec2.InstanceStatus {
 	state := &ec2.InstanceState{}
 	if info, ok := vm.EC2StateCodes[v.Status]; ok {
 		state.SetCode(info.Code)
@@ -2886,11 +2487,25 @@ func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM) *ec2.InstanceStatus 
 		state.SetName(vm.EC2StateCodes[vm.StatePending].Name)
 	}
 
-	status := instanceStatusNotApplicable
-	reachability := instanceStatusNotApplicable
-	if v.Status == vm.StateRunning {
-		status = instanceStatusOK
-		reachability = instanceStatusPassed
+	status, reachability, impairedSince := instanceHealthSummary(v)
+
+	instDetail := &ec2.InstanceStatusDetails{
+		Name:   aws.String(reachabilityDetailName),
+		Status: aws.String(reachability),
+	}
+	if impairedSince != nil {
+		instDetail.ImpairedSince = impairedSince
+	}
+
+	// SystemStatus reflects host/node health, independent of the VM process: a
+	// running VM's host is reachable unless under memory pressure; non-running
+	// instances are not-applicable.
+	systemStatus, systemReach := instanceStatusOK, instanceStatusPassed
+	switch {
+	case v.Status != vm.StateRunning:
+		systemStatus, systemReach = instanceStatusNotApplicable, instanceStatusNotApplicable
+	case systemImpaired:
+		systemStatus, systemReach = instanceStatusImpaired, instanceStatusFailed
 	}
 
 	return &ec2.InstanceStatus{
@@ -2898,26 +2513,58 @@ func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM) *ec2.InstanceStatus 
 		InstanceId:       aws.String(v.ID),
 		InstanceState:    state,
 		InstanceStatus: &ec2.InstanceStatusSummary{
-			Status: aws.String(status),
-			Details: []*ec2.InstanceStatusDetails{{
-				Name:   aws.String(reachabilityDetailName),
-				Status: aws.String(reachability),
-			}},
+			Status:  aws.String(status),
+			Details: []*ec2.InstanceStatusDetails{instDetail},
 		},
 		SystemStatus: &ec2.InstanceStatusSummary{
-			Status: aws.String(status),
+			Status: aws.String(systemStatus),
 			Details: []*ec2.InstanceStatusDetails{{
 				Name:   aws.String(reachabilityDetailName),
-				Status: aws.String(reachability),
+				Status: aws.String(systemReach),
 			}},
 		},
 	}
+}
+
+// instanceInitializingGrace is the post-launch window during which a running VM
+// reports initializing, matching AWS's status-check grace period.
+const instanceInitializingGrace = 2 * time.Minute
+
+// instanceHealthSummary maps a VM's runtime and QMP health into AWS
+// InstanceStatus fields: the status label, the reachability detail status, and
+// an optional ImpairedSince timestamp. Only running VMs carry real health; all
+// other states are not-applicable per AWS behavior.
+func instanceHealthSummary(v *vm.VM) (status, reachability string, impairedSince *time.Time) {
+	if v.Status != vm.StateRunning {
+		return instanceStatusNotApplicable, instanceStatusNotApplicable, nil
+	}
+
+	// QMP unresponsive past the failure gate → impaired/failed.
+	if v.Health.QMPConsecutiveFailures >= vm.QMPMaxConsecutiveFailures {
+		var impPtr *time.Time
+		if !v.Health.ImpairedSince.IsZero() {
+			since := v.Health.ImpairedSince
+			impPtr = &since
+		}
+		return instanceStatusImpaired, instanceStatusFailed, impPtr
+	}
+
+	// Grace period: freshly launched VMs report initializing until reachable.
+	if v.Instance != nil && v.Instance.LaunchTime != nil &&
+		time.Since(*v.Instance.LaunchTime) < instanceInitializingGrace {
+		return instanceStatusInitializing, instanceStatusInitializing, nil
+	}
+
+	return instanceStatusOK, instanceStatusPassed, nil
 }
 
 const (
 	instanceStatusOK            = "ok"
 	instanceStatusPassed        = "passed"
 	instanceStatusNotApplicable = "not-applicable"
+	instanceStatusImpaired      = "impaired"
+	instanceStatusFailed        = "failed"
+	instanceStatusInitializing  = "initializing"
 	reachabilityDetailName      = "reachability"
 )
 
@@ -2983,6 +2630,10 @@ func (s *InstanceServiceImpl) DescribeInstanceStatus(input *ec2.DescribeInstance
 		includedStates = describeInstanceStatusAllIncluded
 	}
 
+	// SystemStatus is node-wide: evaluate host memory pressure once per request
+	// rather than per instance.
+	systemImpaired := s.hostUnderMemoryPressure()
+
 	var statuses []*ec2.InstanceStatus
 	s.vmMgr.View(func(vms map[string]*vm.VM) {
 		for _, v := range vms {
@@ -2995,7 +2646,7 @@ func (s *InstanceServiceImpl) DescribeInstanceStatus(input *ec2.DescribeInstance
 			if !includedStates[v.Status] {
 				continue
 			}
-			is := s.buildInstanceStatus(v)
+			is := s.buildInstanceStatus(v, systemImpaired)
 			if len(parsedFilters) > 0 && !instanceStatusMatchesFilters(v, is, parsedFilters) {
 				continue
 			}

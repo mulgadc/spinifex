@@ -71,7 +71,7 @@ func (a *DHCPGatewayLRPAllocator) Allocate(ctx context.Context, vpcID string, po
 		return "", 0, "", false, fmt.Errorf("dhcp gw-lrp allocator: pool %q: %w", pool.Name, err)
 	}
 
-	prefix := maskToPrefix(entry.Lease.SubnetMask)
+	prefix, _ := entry.Lease.SubnetMask.Size()
 	if prefix <= 0 {
 		prefix = pool.PrefixLen
 	}
@@ -99,14 +99,4 @@ func (a *DHCPGatewayLRPAllocator) Release(ctx context.Context, vpcID string) err
 		return nil
 	}
 	return a.mgr.handleRelease(ctx, GatewayLRPClientID(vpcID))
-}
-
-// maskToPrefix returns the prefix length encoded in an IPv4 subnet mask.
-// Empty mask → 0 (caller falls back to pool.PrefixLen).
-func maskToPrefix(m net.IPMask) int {
-	if len(m) == 0 {
-		return 0
-	}
-	ones, _ := m.Size()
-	return ones
 }

@@ -1,6 +1,7 @@
 import type { AMITypes, CapacityTypes } from "@aws-sdk/client-eks"
 import { z } from "zod"
 
+import { jsonStringSchema } from "@/lib/json"
 import { isValidCidr } from "@/lib/subnet-calculator"
 
 // K3s control plane is pinned per Mulga release; expose the supported
@@ -29,6 +30,26 @@ export const EKS_ACCESS_POLICIES = [
 
 export const EKS_AMI_TYPES = ["AL2_x86_64", "AL2_ARM_64"] as const
 export const EKS_CAPACITY_TYPES = ["ON_DEMAND", "SPOT"] as const
+
+// Trust policy for an EKS cluster IAM role: the EKS control plane assumes it.
+export const EKS_CLUSTER_ASSUME_ROLE_POLICY_DOCUMENT = JSON.stringify(
+  {
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Effect: "Allow",
+        Principal: { Service: "eks.amazonaws.com" },
+        Action: "sts:AssumeRole",
+      },
+    ],
+  },
+  null,
+  2,
+)
+
+// Managed policy granting the EKS control plane the permissions it needs.
+export const AMAZON_EKS_CLUSTER_POLICY_ARN =
+  "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 
 const eksNameField = z
   .string()
@@ -89,24 +110,16 @@ export const createNodegroupSchema = z
 
 export type CreateNodegroupFormValues = z.infer<typeof createNodegroupSchema>
 
+export const addonConfigurationSchema = jsonStringSchema({
+  label: "Configuration",
+  allowEmpty: true,
+})
+
 export const createAddonSchema = z.object({
   addonName: z.string().min(1, "Add-on is required"),
   addonVersion: z.string().min(1, "Version is required"),
   serviceAccountRoleArn: z.string(),
-  configurationValues: z.string().refine(
-    (v) => {
-      if (v.trim() === "") {
-        return true
-      }
-      try {
-        JSON.parse(v)
-        return true
-      } catch {
-        return false
-      }
-    },
-    { message: "Configuration must be valid JSON" },
-  ),
+  configurationValues: addonConfigurationSchema,
 })
 
 export type CreateAddonFormValues = z.infer<typeof createAddonSchema>

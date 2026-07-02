@@ -37,6 +37,10 @@ type fakeNLBProvisioner struct {
 	lbByName       map[string]*elbv2.LoadBalancer
 	tgByName       map[string]*elbv2.TargetGroup
 	listenerByPort map[string]map[int64]*elbv2.Listener // lbArn → port → listener
+	tagsByArn      map[string][]*elbv2.Tag              // lb arn → tags (LBC ownership reap)
+
+	describeTagsCalls []*elbv2.DescribeTagsInput
+	describeTagsErr   error
 
 	createLBOut       *elbv2.CreateLoadBalancerOutput
 	createTGOut       *elbv2.CreateTargetGroupOutput
@@ -63,6 +67,7 @@ func newFakeNLBProvisioner() *fakeNLBProvisioner {
 		lbByName:       map[string]*elbv2.LoadBalancer{},
 		tgByName:       map[string]*elbv2.TargetGroup{},
 		listenerByPort: map[string]map[int64]*elbv2.Listener{},
+		tagsByArn:      map[string][]*elbv2.Tag{},
 	}
 }
 
@@ -124,6 +129,14 @@ func (f *fakeNLBProvisioner) CreateLoadBalancer(input *elbv2.CreateLoadBalancerI
 func (f *fakeNLBProvisioner) DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, _ string) (*elbv2.DescribeLoadBalancersOutput, error) {
 	f.describeLBCalls = append(f.describeLBCalls, input)
 	out := &elbv2.DescribeLoadBalancersOutput{}
+	// No name/arn filter: list every LB (account-scoped in the real impl), as the
+	// LBC ALB reap relies on to enumerate untracked load balancers.
+	if len(input.Names) == 0 && len(input.LoadBalancerArns) == 0 {
+		for _, lb := range f.lbByName {
+			out.LoadBalancers = append(out.LoadBalancers, lb)
+		}
+		return out, nil
+	}
 	for _, n := range input.Names {
 		if n == nil {
 			continue
@@ -131,6 +144,24 @@ func (f *fakeNLBProvisioner) DescribeLoadBalancers(input *elbv2.DescribeLoadBala
 		if lb, ok := f.lbByName[*n]; ok {
 			out.LoadBalancers = append(out.LoadBalancers, lb)
 		}
+	}
+	return out, nil
+}
+
+func (f *fakeNLBProvisioner) DescribeTags(input *elbv2.DescribeTagsInput, _ string) (*elbv2.DescribeTagsOutput, error) {
+	f.describeTagsCalls = append(f.describeTagsCalls, input)
+	if f.describeTagsErr != nil {
+		return nil, f.describeTagsErr
+	}
+	out := &elbv2.DescribeTagsOutput{}
+	for _, arn := range input.ResourceArns {
+		if arn == nil {
+			continue
+		}
+		out.TagDescriptions = append(out.TagDescriptions, &elbv2.TagDescription{
+			ResourceArn: arn,
+			Tags:        f.tagsByArn[*arn],
+		})
 	}
 	return out, nil
 }
@@ -155,10 +186,13 @@ func (f *fakeNLBProvisioner) CreateTargetGroup(input *elbv2.CreateTargetGroupInp
 	if f.createTGErr != nil {
 		return nil, f.createTGErr
 	}
-	if f.createTGOut == nil {
+	out := f.createTGOut
+	if out == nil {
+		// Build per-call so distinct names (cp + konn) get distinct ARNs and both
+		// register for idempotent re-entry — a single cached output mis-serves both.
 		name := aws.StringValue(input.Name)
 		arn := "arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/" + name + "/tg-001"
-		f.createTGOut = &elbv2.CreateTargetGroupOutput{
+		out = &elbv2.CreateTargetGroupOutput{
 			TargetGroups: []*elbv2.TargetGroup{{
 				TargetGroupArn:  aws.String(arn),
 				TargetGroupName: aws.String(name),
@@ -168,7 +202,6 @@ func (f *fakeNLBProvisioner) CreateTargetGroup(input *elbv2.CreateTargetGroupInp
 			}},
 		}
 	}
-	out := f.createTGOut
 	if len(out.TargetGroups) > 0 {
 		name := aws.StringValue(out.TargetGroups[0].TargetGroupName)
 		f.tgByName[name] = out.TargetGroups[0]
@@ -302,15 +335,20 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	assert.Equal(t, []string{"subnet-aaa", "subnet-bbb"}, aws.StringValueSlice(lbIn.Subnets))
 	assertELBv2TaggedAsEKS(t, lbIn.Tags, "alpha")
 
-	require.Len(t, nlbp.createTGCalls, 1)
+	require.Len(t, nlbp.createTGCalls, 2)
 	tgIn := nlbp.createTGCalls[0]
 	assert.Equal(t, "eks-alpha-cp", aws.StringValue(tgIn.Name))
 	assert.Equal(t, elbv2.ProtocolEnumTcp, aws.StringValue(tgIn.Protocol))
 	assert.Equal(t, k3sAPIServerPort, aws.Int64Value(tgIn.Port))
 	assert.Equal(t, elbv2.TargetTypeEnumIp, aws.StringValue(tgIn.TargetType))
 	assertELBv2TaggedAsEKS(t, tgIn.Tags, "alpha")
+	// Second TG is the konnectivity :8132 group fronting the CP konnectivity-servers.
+	konnTGIn := nlbp.createTGCalls[1]
+	assert.Equal(t, "eks-alpha-konn", aws.StringValue(konnTGIn.Name))
+	assert.Equal(t, konnectivityAgentPort, aws.Int64Value(konnTGIn.Port))
+	assert.NotEmpty(t, out.KonnTargetGroupArn)
 
-	require.Len(t, nlbp.createListenerCalls, 2)
+	require.Len(t, nlbp.createListenerCalls, 3)
 	lstIn := nlbp.createListenerCalls[0]
 	assert.Equal(t, out.LoadBalancerArn, aws.StringValue(lstIn.LoadBalancerArn))
 	assert.Equal(t, elbv2.ProtocolEnumTcp, aws.StringValue(lstIn.Protocol))
@@ -324,6 +362,11 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	assert.Equal(t, elbv2.ProtocolEnumTcp, aws.StringValue(apiLstIn.Protocol))
 	require.Len(t, apiLstIn.DefaultActions, 1)
 	assert.Equal(t, out.TargetGroupArn, aws.StringValue(apiLstIn.DefaultActions[0].TargetGroupArn))
+	// Third listener serves :8132 to the konnectivity TG.
+	konnLstIn := nlbp.createListenerCalls[2]
+	assert.Equal(t, konnectivityAgentPort, aws.Int64Value(konnLstIn.Port))
+	require.Len(t, konnLstIn.DefaultActions, 1)
+	assert.Equal(t, out.KonnTargetGroupArn, aws.StringValue(konnLstIn.DefaultActions[0].TargetGroupArn))
 }
 
 func TestEnsureClusterNLB_NoFrontendIPFailsLoud(t *testing.T) {
@@ -485,7 +528,7 @@ func TestEnsureClusterNLB_SetIngressErrorSurfaced(t *testing.T) {
 func TestRegisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	err := RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42")
+	err := RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.registerCalls, 1)
 
@@ -498,8 +541,8 @@ func TestRegisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 
 func TestRegisterClusterTarget_EmptyInputsRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "", "10.0.1.42"))
-	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", ""))
+	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "", "10.0.1.42", k3sAPIServerPort))
+	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "", k3sAPIServerPort))
 	assert.Empty(t, nlbp.registerCalls)
 }
 
@@ -507,7 +550,7 @@ func TestRegisterClusterTargets_RegistersEveryENIIPInOneCall(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
 	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha",
-		[]string{"10.0.1.10", "10.0.2.11", "10.0.3.12"})
+		[]string{"10.0.1.10", "10.0.2.11", "10.0.3.12"}, k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.registerCalls, 1)
 
@@ -524,7 +567,7 @@ func TestRegisterClusterTargets_SkipsEmptyIPs(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
 	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha",
-		[]string{"10.0.1.10", "", "10.0.3.12"})
+		[]string{"10.0.1.10", "", "10.0.3.12"}, k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.registerCalls, 1)
 	require.Len(t, nlbp.registerCalls[0].Targets, 2)
@@ -534,9 +577,9 @@ func TestRegisterClusterTargets_SkipsEmptyIPs(t *testing.T) {
 
 func TestRegisterClusterTargets_EmptyInputsRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "", []string{"10.0.1.10"}))
-	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", nil))
-	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"", ""}))
+	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "", []string{"10.0.1.10"}, k3sAPIServerPort))
+	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", nil, k3sAPIServerPort))
+	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"", ""}, k3sAPIServerPort))
 	assert.Empty(t, nlbp.registerCalls)
 }
 
@@ -544,7 +587,7 @@ func TestRegisterClusterTargets_RegisterErrorSurfaced(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 	nlbp.registerErr = errors.New("TargetGroupNotFound")
 
-	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"10.0.1.10"})
+	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"10.0.1.10"}, k3sAPIServerPort)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "arn:tg/alpha")
 }
@@ -552,7 +595,7 @@ func TestRegisterClusterTargets_RegisterErrorSurfaced(t *testing.T) {
 func TestDeregisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	err := DeregisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42")
+	err := DeregisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.deregisterCalls, 1)
 
@@ -571,8 +614,13 @@ func TestDeleteClusterNLB_DeletesBoth(t *testing.T) {
 	require.NoError(t, DeleteClusterNLB(nlbp, "111122223333", "alpha"))
 	require.Len(t, nlbp.deleteLBCalls, 1)
 	assert.Equal(t, out.LoadBalancerArn, aws.StringValue(nlbp.deleteLBCalls[0].LoadBalancerArn))
-	require.Len(t, nlbp.deleteTGCalls, 1)
-	assert.Equal(t, out.TargetGroupArn, aws.StringValue(nlbp.deleteTGCalls[0].TargetGroupArn))
+	require.Len(t, nlbp.deleteTGCalls, 2, "control-plane TG + konnectivity TG")
+	deletedTGs := map[string]bool{}
+	for _, d := range nlbp.deleteTGCalls {
+		deletedTGs[aws.StringValue(d.TargetGroupArn)] = true
+	}
+	assert.True(t, deletedTGs[out.TargetGroupArn], "control-plane TG deleted")
+	assert.True(t, deletedTGs[out.KonnTargetGroupArn], "konnectivity TG deleted")
 }
 
 func TestDeleteClusterNLB_MissingResourcesNoOp(t *testing.T) {
@@ -593,7 +641,7 @@ func TestDeleteClusterNLB_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delete NLB eks-alpha")
 	assert.Len(t, nlbp.deleteLBCalls, 1)
-	assert.Len(t, nlbp.deleteTGCalls, 1, "TG delete should still be attempted after LB delete fails")
+	assert.Len(t, nlbp.deleteTGCalls, 2, "both TG deletes still attempted after LB delete fails")
 }
 
 func assertELBv2TaggedAsEKS(t *testing.T, tgs []*elbv2.Tag, clusterName string) {
@@ -607,4 +655,59 @@ func assertELBv2TaggedAsEKS(t *testing.T, tgs []*elbv2.Tag, clusterName string) 
 	}
 	assert.Equal(t, tags.ManagedByEKS, got[tags.ManagedByKey])
 	assert.Equal(t, clusterName, got[clusterEKSClusterTagKey])
+}
+
+// seedLBCALB registers an LBC-style ALB in the fake with the given VPC and an
+// optional ownership-tag cluster value (empty = untagged); returns its ARN.
+func (f *fakeNLBProvisioner) seedLBCALB(name, vpcID, ownerCluster string) string {
+	arn := "arn:aws:elasticloadbalancing:us-east-1:111122223333:loadbalancer/app/" + name + "/lbc-" + name
+	f.lbByName[name] = &elbv2.LoadBalancer{
+		LoadBalancerArn:  aws.String(arn),
+		LoadBalancerName: aws.String(name),
+		VpcId:            aws.String(vpcID),
+	}
+	if ownerCluster != "" {
+		f.tagsByArn[arn] = []*elbv2.Tag{{
+			Key:   aws.String(lbcClusterOwnershipTagKey),
+			Value: aws.String(ownerCluster),
+		}}
+	}
+	return arn
+}
+
+// Only an LBC ALB in the customer VPC carrying this cluster's ownership tag is
+// reaped — a different VPC, a different cluster, or no ownership tag is left alone.
+func TestReapLBCLoadBalancers_DeletesOnlyOwnedInVPC(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	owned := nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
+	nlbp.seedLBCALB("k8s-toc-othervpc", "vpc-other", "alpha")   // wrong VPC
+	nlbp.seedLBCALB("k8s-toc-othercluster", "vpc-cust", "beta") // wrong cluster
+	nlbp.seedLBCALB("k8s-toc-untagged", "vpc-cust", "")         // no ownership tag
+
+	require.NoError(t, ReapLBCLoadBalancers(nlbp, "111122223333", "alpha", "vpc-cust"))
+
+	require.Len(t, nlbp.deleteLBCalls, 1)
+	assert.Equal(t, owned, aws.StringValue(nlbp.deleteLBCalls[0].LoadBalancerArn))
+}
+
+// Empty cluster name or VPC id is a no-op (nothing to scope the reap to).
+func TestReapLBCLoadBalancers_EmptyArgsNoop(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
+
+	require.NoError(t, ReapLBCLoadBalancers(nlbp, "111122223333", "", "vpc-cust"))
+	require.NoError(t, ReapLBCLoadBalancers(nlbp, "111122223333", "alpha", ""))
+	assert.Empty(t, nlbp.deleteLBCalls)
+}
+
+// A delete failure surfaces so the teardown backstop retries rather than leaking
+// the ALB (which would pin the VPC undeletable).
+func TestReapLBCLoadBalancers_DeleteErrorSurfaces(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
+	nlbp.deleteLBErr = errors.New("boom")
+
+	err := ReapLBCLoadBalancers(nlbp, "111122223333", "alpha", "vpc-cust")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
 }

@@ -1,0 +1,1 @@
+import{f as e}from"./auth.js";function t(e){try{return JSON.parse(e),!0}catch{return!1}}function n(e){try{return JSON.stringify(JSON.parse(e),null,2)}catch{return null}}function r(n){let{label:r,allowEmpty:i=!1}=n;return(i?e():e().min(1,`${r} is required`)).refine(e=>i&&e.trim()===``?!0:t(e),{message:`${r} must be valid JSON`})}export{t as n,r,n as t};

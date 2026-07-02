@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -60,6 +61,21 @@ func VPCTapSpec(eniID, mac string) TapSpec {
 	}
 }
 
+// IMDSBridgeName is the dedicated, OVN-unmanaged bridge that carries the per-tap
+// IMDS datapath. Kept in sync with network/host.IMDSBridge (host imports vm, not
+// the reverse); a cross-package test in network/host asserts they match.
+const IMDSBridgeName = "br-imds"
+
+// IMDSPrimaryTapSpec returns the TapSpec for a primary ENI's tap on br-imds, where
+// its egress meets the IMDS demux flows. It carries no external_ids — the
+// br-imds<->br-int patch's br-int end carries the OVN iface-id binding instead.
+func IMDSPrimaryTapSpec(eniID string) TapSpec {
+	return TapSpec{
+		Name:   TapDeviceName(eniID),
+		Bridge: IMDSBridgeName,
+	}
+}
+
 // GenerateDevMAC returns the locally-administered unicast MAC for the
 // dev/hostfwd NIC. The "dev:" tag disambiguates from the mgmt NIC of the
 // same instance (which shares instanceID).
@@ -74,11 +90,52 @@ func GenerateMgmtMAC(instanceID string) string {
 	return utils.HashMAC("mgmt:" + instanceID)
 }
 
+// attachPrimaryIMDSDatapath installs the per-tap IMDS datapath for the instance's
+// primary ENI once its tap is up, before QEMU starts the guest. Only the primary
+// ENI serves IMDS. Any failure is launch-fatal: guest bootstrap (SSH key, user-data,
+// network, hostname) now comes from IMDS, so a guest without it would boot
+// unconfigured while reporting success. A serving-only failure
+// (ErrIMDSServingDegraded) and a connectivity-critical failure are treated alike —
+// there is no roll back to br-int, since a rolled-back tap is equally unreachable for
+// IMDS. The error surfaces to RunInstances.
+func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) error {
+	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
+		return nil
+	}
+	subnetID := ""
+	if instance.Instance != nil {
+		subnetID = aws.StringValue(instance.Instance.SubnetId)
+	}
+	if subnetID == "" {
+		slog.Debug("IMDS: no subnet for primary ENI, skipping per-tap datapath",
+			"instance", instance.ID, "eni", instance.ENIId)
+		return nil
+	}
+	if err := m.deps.NetworkPlumber.AttachIMDSDatapath(instance.ENIId, instance.ENIMac, subnetID); err != nil {
+		slog.Error("IMDS: per-tap datapath install failed; aborting launch",
+			"instance", instance.ID, "eni", instance.ENIId, "err", err)
+		return fmt.Errorf("install IMDS datapath for primary ENI %s: %w", instance.ENIId, err)
+	}
+	return nil
+}
+
+// detachPrimaryIMDSDatapath removes the primary ENI's per-tap IMDS datapath at
+// terminate, the inverse of attachPrimaryIMDSDatapath. Best-effort: a failure is
+// logged and never fails teardown. Teardown keys off ENI-derived names, no subnet.
+func (m *Manager) detachPrimaryIMDSDatapath(instance *VM) {
+	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
+		return
+	}
+	if err := m.deps.NetworkPlumber.DetachIMDSDatapath(instance.ENIId); err != nil {
+		slog.Warn("IMDS: per-tap datapath detach failed (continuing)",
+			"instance", instance.ID, "eni", instance.ENIId, "err", err)
+	}
+}
+
 // setupExtraENINICs creates tap devices on br-int and appends matching QEMU
 // virtio-net device entries to instance.Config for each additional ENI a
 // system VM spans. The primary ENI is handled separately by the launch
-// caller. Cloud-init brings the guest interfaces up via per-MAC DHCP blocks
-// written by generateNetworkConfig.
+// caller. The guest brings each interface up via per-MAC DHCP.
 func (m *Manager) setupExtraENINICs(instance *VM) error {
 	if m.deps.NetworkPlumber == nil {
 		return nil

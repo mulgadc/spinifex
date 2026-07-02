@@ -720,7 +720,7 @@ func TestGetRolePolicies_UnresolvablePolicy(t *testing.T) {
 // TestGetRolePolicies_AWSManagedResolved proves a stock EKS node role — whose
 // grants come entirely from AWS-managed policies — resolves to the builtin
 // grant documents, so assumed-role authorization honours them instead of
-// denying every call (the regression behind mulga-siv-297).
+// denying every call.
 func TestGetRolePolicies_AWSManagedResolved(t *testing.T) {
 	svc := setupTestIAMService(t)
 	role := createTestRole(t, svc, "eks-node-role")
@@ -772,6 +772,334 @@ func policiesGrant(docs []PolicyDocument, action string) bool {
 		}
 	}
 	return false
+}
+
+// ============================================================================
+// Inline Role Policy Tests (Put / Get / Delete / List)
+// ============================================================================
+
+// inlineDenyDocument returns a valid inline policy document that denies an action.
+func inlineDenyDocument() string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"s3:DeleteObject","Resource":"*"}]}`
+}
+
+func TestPutRolePolicy_RoundTrip(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "inline-role")
+
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("inline-role"),
+		PolicyName:     aws.String("AllowDescribe"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.GetRolePolicy(testAccountID, &iam.GetRolePolicyInput{
+		RoleName:   aws.String("inline-role"),
+		PolicyName: aws.String("AllowDescribe"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "inline-role", *out.RoleName)
+	assert.Equal(t, "AllowDescribe", *out.PolicyName)
+	assert.Equal(t, validPolicyDocument(), *out.PolicyDocument)
+}
+
+func TestPutRolePolicy_IdempotentOverwrite(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "overwrite-role")
+
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("overwrite-role"),
+		PolicyName:     aws.String("Policy"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("overwrite-role"),
+		PolicyName:     aws.String("Policy"),
+		PolicyDocument: aws.String(inlineDenyDocument()),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.GetRolePolicy(testAccountID, &iam.GetRolePolicyInput{
+		RoleName:   aws.String("overwrite-role"),
+		PolicyName: aws.String("Policy"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, inlineDenyDocument(), *out.PolicyDocument)
+
+	list, err := svc.ListRolePolicies(testAccountID, &iam.ListRolePoliciesInput{
+		RoleName: aws.String("overwrite-role"),
+	})
+	require.NoError(t, err)
+	assert.Len(t, list.PolicyNames, 1, "overwrite must not duplicate the name")
+}
+
+func TestPutRolePolicy_InvalidName(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "badname-role")
+
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("badname-role"),
+		PolicyName:     aws.String("bad name"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+}
+
+func TestPutRolePolicy_MalformedDocument(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "malformed-role")
+
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("malformed-role"),
+		PolicyName:     aws.String("Bad"),
+		PolicyDocument: aws.String(`{not valid json`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestPutRolePolicy_OversizedDocument(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "oversized-role")
+
+	huge := strings.Repeat("a", maxPolicyDocumentSize+1)
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("oversized-role"),
+		PolicyName:     aws.String("Huge"),
+		PolicyDocument: aws.String(huge),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestPutRolePolicy_RoleNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("ghost"),
+		PolicyName:     aws.String("Policy"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestGetRolePolicy_UnknownName(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "get-unknown")
+
+	_, err := svc.GetRolePolicy(testAccountID, &iam.GetRolePolicyInput{
+		RoleName:   aws.String("get-unknown"),
+		PolicyName: aws.String("missing"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestGetRolePolicy_RoleNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.GetRolePolicy(testAccountID, &iam.GetRolePolicyInput{
+		RoleName:   aws.String("ghost"),
+		PolicyName: aws.String("Policy"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestListRolePolicies_Sorted(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "list-role")
+
+	for _, name := range []string{"Charlie", "Alpha", "Bravo"} {
+		_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+			RoleName:       aws.String("list-role"),
+			PolicyName:     aws.String(name),
+			PolicyDocument: aws.String(validPolicyDocument()),
+		})
+		require.NoError(t, err)
+	}
+
+	out, err := svc.ListRolePolicies(testAccountID, &iam.ListRolePoliciesInput{
+		RoleName: aws.String("list-role"),
+	})
+	require.NoError(t, err)
+	require.False(t, *out.IsTruncated)
+	got := make([]string, 0, len(out.PolicyNames))
+	for _, n := range out.PolicyNames {
+		got = append(got, *n)
+	}
+	assert.Equal(t, []string{"Alpha", "Bravo", "Charlie"}, got)
+}
+
+func TestListRolePolicies_Empty(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "empty-inline")
+
+	out, err := svc.ListRolePolicies(testAccountID, &iam.ListRolePoliciesInput{
+		RoleName: aws.String("empty-inline"),
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, out.PolicyNames)
+	assert.Len(t, out.PolicyNames, 0)
+	assert.False(t, *out.IsTruncated)
+}
+
+func TestListRolePolicies_RoleNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.ListRolePolicies(testAccountID, &iam.ListRolePoliciesInput{
+		RoleName: aws.String("ghost"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeleteRolePolicy(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "del-inline")
+
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("del-inline"),
+		PolicyName:     aws.String("Doomed"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteRolePolicy(testAccountID, &iam.DeleteRolePolicyInput{
+		RoleName:   aws.String("del-inline"),
+		PolicyName: aws.String("Doomed"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.GetRolePolicy(testAccountID, &iam.GetRolePolicyInput{
+		RoleName:   aws.String("del-inline"),
+		PolicyName: aws.String("Doomed"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+
+	list, err := svc.ListRolePolicies(testAccountID, &iam.ListRolePoliciesInput{
+		RoleName: aws.String("del-inline"),
+	})
+	require.NoError(t, err)
+	assert.Len(t, list.PolicyNames, 0)
+}
+
+func TestDeleteRolePolicy_DoubleDelete(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "double-del")
+
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("double-del"),
+		PolicyName:     aws.String("Once"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteRolePolicy(testAccountID, &iam.DeleteRolePolicyInput{
+		RoleName:   aws.String("double-del"),
+		PolicyName: aws.String("Once"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteRolePolicy(testAccountID, &iam.DeleteRolePolicyInput{
+		RoleName:   aws.String("double-del"),
+		PolicyName: aws.String("Once"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeleteRolePolicy_RoleNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.DeleteRolePolicy(testAccountID, &iam.DeleteRolePolicyInput{
+		RoleName:   aws.String("ghost"),
+		PolicyName: aws.String("Policy"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeleteRole_WithInlinePolicy(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "inline-conflict")
+
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("inline-conflict"),
+		PolicyName:     aws.String("Blocker"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{
+		RoleName: aws.String("inline-conflict"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	// Succeeds once the inline policy is removed.
+	_, err = svc.DeleteRolePolicy(testAccountID, &iam.DeleteRolePolicyInput{
+		RoleName:   aws.String("inline-conflict"),
+		PolicyName: aws.String("Blocker"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{
+		RoleName: aws.String("inline-conflict"),
+	})
+	require.NoError(t, err)
+}
+
+// TestGetRolePolicies_Inline proves the enforcement resolver walks inline
+// policies, not just managed attachments, so an inline statement is evaluated.
+func TestGetRolePolicies_Inline(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "inline-eval")
+
+	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("inline-eval"),
+		PolicyName:     aws.String("InlineAllow"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+
+	docs, err := svc.GetRolePolicies(testAccountID, "inline-eval")
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+	assert.True(t, policiesGrant(docs, "ec2:DescribeInstances"))
+}
+
+// TestGetRolePolicies_ManagedAndInline proves managed and inline documents both
+// surface from the resolver in one combined set.
+func TestGetRolePolicies_ManagedAndInline(t *testing.T) {
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "combined-eval")
+	policy := createTestPolicy(t, svc, "ManagedAllow")
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: policy.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String("combined-eval"),
+		PolicyName:     aws.String("InlineDeny"),
+		PolicyDocument: aws.String(inlineDenyDocument()),
+	})
+	require.NoError(t, err)
+
+	docs, err := svc.GetRolePolicies(testAccountID, "combined-eval")
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+	assert.True(t, policiesGrant(docs, "ec2:DescribeInstances"), "managed Allow surfaced")
+	assert.True(t, policiesGrant(docs, "s3:DeleteObject"), "inline doc surfaced")
 }
 
 // ============================================================================

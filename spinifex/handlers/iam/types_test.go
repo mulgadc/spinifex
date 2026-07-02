@@ -23,11 +23,11 @@ func TestStringOrArr_UnmarshalArray(t *testing.T) {
 }
 
 func TestStringOrArr_UnmarshalNull(t *testing.T) {
-	// null JSON unmarshals as empty string via the string path → [""]
+	// A JSON null yields a nil slice (an inert field), not [""].
 	var s StringOrArr
 	err := json.Unmarshal([]byte(`null`), &s)
 	require.NoError(t, err)
-	assert.Equal(t, StringOrArr{""}, s)
+	assert.Nil(t, s)
 }
 
 func TestStringOrArr_UnmarshalEmptyArray(t *testing.T) {

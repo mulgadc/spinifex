@@ -19,6 +19,10 @@ import (
 // Defined as a callback to avoid an import cycle with the gateway package.
 type PassRoleChecker func(roleARN string) error
 
+// LaunchQuotaChecker enforces any gateway-side quota that must run after input
+// validation and PassRole authorization, but before the launch is dispatched.
+type LaunchQuotaChecker func() error
+
 type RunInstancesResponse struct {
 	Reservation *ec2.Reservation `locationName:"RunInstancesResponse"`
 }
@@ -72,14 +76,16 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 // When ClientToken is set, wraps the launch in idempotency via the KV store.
 // iamSvc may be nil only when no IamInstanceProfile is supplied.
 // passRoleCheck may be nil to skip PassRole enforcement.
-func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (reservation ec2.Reservation, err error) {
+// launchQuotaCheck may be nil to skip quota enforcement; when present it runs
+// after validation and PassRole authorization, but before any launch dispatch.
+func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	if err = ValidateRunInstancesInput(input); err != nil {
 		return reservation, err
 	}
 
 	token := aws.StringValue(input.ClientToken)
 	if token == "" {
-		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	}
 
 	// ClientToken set: dedup concurrent/retried launches; store failure is fatal
@@ -92,16 +98,40 @@ func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc hand
 	// Hash before any mutation so the same token+params always matches.
 	paramHash := clientTokenParamHash(input)
 	return runInstancesWithClientToken(store, accountID, token, paramHash, func() (ec2.Reservation, error) {
-		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	})
 }
 
 // runInstancesInner performs the actual launch: profile resolution, placement
 // routing, and capacity-aware distribution. Wrapped by RunInstances for idempotency.
-func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (reservation ec2.Reservation, err error) {
+func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	resolvedProfile, err := resolveAndAuthorizeInstanceProfile(input, iamSvc, accountID, passRoleCheck)
 	if err != nil {
 		return reservation, err
+	}
+	if launchQuotaCheck != nil {
+		if err := launchQuotaCheck(); err != nil {
+			return reservation, err
+		}
+	}
+
+	// Targeted capacity-reservation launch routes straight to the owning node's
+	// cr-subject. The gateway does input-only checks (malformed id, the PG+CR
+	// combination); the owning daemon does the semantic checks (account, type,
+	// full) only it can see, and ErrNoResponders surfaces a gone id as NotFound.
+	if crID := capacityReservationTargetID(input); crID != "" {
+		if !strings.HasPrefix(crID, "cr-") {
+			return reservation, errors.New(awserrors.ErrorInvalidCapacityReservationIdMalformed)
+		}
+		if placementGroupName(input) != "" {
+			return reservation, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		reservationPtr, err := runIntoReservation(input, natsConn, accountID, crID)
+		if err != nil {
+			return reservation, err
+		}
+		enrichReservationWithProfileID(reservationPtr, resolvedProfile)
+		return *reservationPtr, nil
 	}
 
 	groupName := placementGroupName(input)
@@ -113,14 +143,14 @@ func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc
 
 		switch strategy {
 		case ec2.PlacementStrategySpread:
-			reservationPtr, err := distributeInstancesSpread(input, natsConn, accountID, groupName)
+			reservationPtr, err := distributeInstancesSpread(input, natsConn, accountID, groupName, expectedNodes)
 			if err != nil {
 				return reservation, err
 			}
 			enrichReservationWithProfileID(reservationPtr, resolvedProfile)
 			return *reservationPtr, nil
 		case ec2.PlacementStrategyCluster:
-			reservationPtr, err := distributeInstancesCluster(input, natsConn, accountID, groupName)
+			reservationPtr, err := distributeInstancesCluster(input, natsConn, accountID, groupName, expectedNodes)
 			if err != nil {
 				return reservation, err
 			}
@@ -131,7 +161,7 @@ func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc
 		}
 	}
 
-	reservationPtr, err := distributeInstances(input, natsConn, accountID)
+	reservationPtr, err := distributeInstances(input, natsConn, accountID, expectedNodes)
 	if err != nil {
 		// Distinguish "unknown type" from "no capacity" via DescribeInstanceTypes.
 		if err.Error() == awserrors.ErrorInsufficientInstanceCapacity {
@@ -196,6 +226,17 @@ func placementGroupName(input *ec2.RunInstancesInput) string {
 		return aws.StringValue(input.Placement.GroupName)
 	}
 	return ""
+}
+
+// capacityReservationTargetID returns the explicit targeted-launch reservation id
+// from the input, or "" when the launch is untargeted (general path). Preference
+// is ignored — only a present target id routes to the cr-subject.
+func capacityReservationTargetID(input *ec2.RunInstancesInput) string {
+	spec := input.CapacityReservationSpecification
+	if spec == nil || spec.CapacityReservationTarget == nil {
+		return ""
+	}
+	return aws.StringValue(spec.CapacityReservationTarget.CapacityReservationId)
 }
 
 // lookupPlacementGroupStrategy returns the strategy of a placement group, or an error if absent/unavailable.

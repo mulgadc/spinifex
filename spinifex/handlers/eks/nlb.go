@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
@@ -20,6 +21,7 @@ type nlbProvisioner interface {
 	CreateClusterNLBSync(input *elbv2.CreateLoadBalancerInput, accountID string, crossAccountENIs []sysinstance.ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error)
 	DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error)
 	DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error)
+	DescribeTags(input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error)
 
 	CreateTargetGroup(input *elbv2.CreateTargetGroupInput, accountID string) (*elbv2.CreateTargetGroupOutput, error)
 	DescribeTargetGroups(input *elbv2.DescribeTargetGroupsInput, accountID string) (*elbv2.DescribeTargetGroupsOutput, error)
@@ -44,12 +46,27 @@ const k3sAPIServerPort int64 = 6443
 // kubectl + the AWS SDK both expect TLS on 443.
 const clusterNLBListenPort int64 = 443
 
+// lbcClusterOwnershipTagKey is the AWS-standard ownership tag the in-cluster AWS
+// LoadBalancer Controller stamps on every ALB and SG it provisions. Spinifex
+// passes it through verbatim, so it reliably discriminates LBC-orphaned
+// resources from spinifex-owned ones (which use spinifex:eks-cluster).
+const lbcClusterOwnershipTagKey = "elbv2.k8s.aws/cluster"
+
+// konnectivityAgentPort is the konnectivity-server agent listen port. The NLB
+// fronts it so worker konnectivity-agents reach the 3 CP konnectivity-servers
+// through one VIP; server-count fan-out gives each apiserver a tunnel to every
+// agent (HA apiserver->pod/kubelet/webhook egress, EKS-parity).
+const konnectivityAgentPort int64 = 8132
+
 // ClusterNLB is the NLB resource tuple produced by EnsureClusterNLB; ARNs are persisted to ClusterMeta.
 type ClusterNLB struct {
 	LoadBalancerArn string
 	TargetGroupArn  string
-	ListenerArn     string
-	DNSName         string
+	// KonnTargetGroupArn is the konnectivity-server target group (:8132 → 3 CP
+	// servers). Empty until the konnectivity listener is provisioned.
+	KonnTargetGroupArn string
+	ListenerArn        string
+	DNSName            string
 	// FrontendIP is the public IP (internet-facing) or VPC IP (internal) of the NLB front-end.
 	// Used as the kubeconfig endpoint host and apiserver cert SAN; empty if not yet provisioned.
 	FrontendIP string
@@ -64,6 +81,12 @@ func ClusterNLBName(clusterName string) string {
 // cluster's control-plane TG.
 func ClusterTargetGroupName(clusterName string) string {
 	return "eks-" + clusterName + "-cp"
+}
+
+// ClusterKonnTargetGroupName returns the deterministic target-group name for a
+// cluster's konnectivity TG (:8132 → 3 CP servers).
+func ClusterKonnTargetGroupName(clusterName string) string {
+	return "eks-" + clusterName + "-konn"
 }
 
 // EnsureClusterNLB provisions (or returns) the cluster's NLB + target group +
@@ -98,11 +121,11 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 	}
 	lbName := ClusterNLBName(clusterName)
 	tgName := ClusterTargetGroupName(clusterName)
-	if len(lbName) > maxELBv2NameLen {
-		return nil, fmt.Errorf("eks: NLB name %q exceeds %d chars (cluster name too long)", lbName, maxELBv2NameLen)
-	}
-	if len(tgName) > maxELBv2NameLen {
-		return nil, fmt.Errorf("eks: TG name %q exceeds %d chars (cluster name too long)", tgName, maxELBv2NameLen)
+	konnTGName := ClusterKonnTargetGroupName(clusterName)
+	for _, n := range []string{lbName, tgName, konnTGName} {
+		if len(n) > maxELBv2NameLen {
+			return nil, fmt.Errorf("eks: ELBv2 name %q exceeds %d chars (cluster name too long)", n, maxELBv2NameLen)
+		}
 	}
 
 	out := &ClusterNLB{}
@@ -110,10 +133,10 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 	if err := ensureClusterLB(nlbp, accountID, clusterName, lbName, subnetIDs, internetFacing, crossAccountENIs, out); err != nil {
 		return nil, err
 	}
-	if err := ensureClusterTG(nlbp, accountID, clusterName, tgName, out); err != nil {
+	var err error
+	if out.TargetGroupArn, err = ensureClusterTG(nlbp, accountID, clusterName, tgName, k3sAPIServerPort); err != nil {
 		return nil, err
 	}
-	var err error
 	if out.ListenerArn, err = ensureClusterListener(nlbp, accountID, lbName, out.LoadBalancerArn, out.TargetGroupArn, clusterNLBListenPort); err != nil {
 		return nil, err
 	}
@@ -121,6 +144,14 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 	// on :6443 in the in-cluster `kubernetes` Endpoints; worker pods reach it only if
 	// the NLB serves :6443. Arn not persisted — teardown cascades via DeleteLoadBalancer.
 	if _, err = ensureClusterListener(nlbp, accountID, lbName, out.LoadBalancerArn, out.TargetGroupArn, k3sAPIServerPort); err != nil {
+		return nil, err
+	}
+	// Konnectivity TG + listener :8132 → the 3 CP konnectivity-servers. Worker
+	// konnectivity-agents dial this VIP; server-count fan-out reaches all 3 servers.
+	if out.KonnTargetGroupArn, err = ensureClusterTG(nlbp, accountID, clusterName, konnTGName, konnectivityAgentPort); err != nil {
+		return nil, err
+	}
+	if _, err = ensureClusterListener(nlbp, accountID, lbName, out.LoadBalancerArn, out.KonnTargetGroupArn, konnectivityAgentPort); err != nil {
 		return nil, err
 	}
 	if internetFacing && narrowsPublicAccess(publicAccessCidrs) {
@@ -179,17 +210,18 @@ func frontendIPFromLB(lb *elbv2.LoadBalancer, internetFacing bool) string {
 	return ""
 }
 
-// RegisterClusterTarget attaches one ENI IP to the cluster TG.
-func RegisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string) error {
+// RegisterClusterTarget attaches one ENI IP to the cluster TG on port.
+func RegisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string, port int64) error {
 	if eniIP == "" {
 		return errors.New("eks: RegisterClusterTarget empty ENI IP")
 	}
-	return RegisterClusterTargets(nlbp, accountID, tgArn, []string{eniIP})
+	return RegisterClusterTargets(nlbp, accountID, tgArn, []string{eniIP}, port)
 }
 
-// RegisterClusterTargets attaches all CP ENI IPs to the cluster TG. Empty IPs are
-// skipped; RegisterTargets deduplicates on (id, port) so re-invocation is idempotent.
-func RegisterClusterTargets(nlbp nlbProvisioner, accountID, tgArn string, eniIPs []string) error {
+// RegisterClusterTargets attaches all CP ENI IPs to the cluster TG on port. Empty
+// IPs are skipped; RegisterTargets deduplicates on (id, port) so re-invocation is
+// idempotent.
+func RegisterClusterTargets(nlbp nlbProvisioner, accountID, tgArn string, eniIPs []string, port int64) error {
 	if tgArn == "" {
 		return errors.New("eks: RegisterClusterTargets empty TG arn")
 	}
@@ -200,7 +232,7 @@ func RegisterClusterTargets(nlbp nlbProvisioner, accountID, tgArn string, eniIPs
 		}
 		targets = append(targets, &elbv2.TargetDescription{
 			Id:   aws.String(ip),
-			Port: aws.Int64(k3sAPIServerPort),
+			Port: aws.Int64(port),
 		})
 	}
 	if len(targets) == 0 {
@@ -215,8 +247,8 @@ func RegisterClusterTargets(nlbp nlbProvisioner, accountID, tgArn string, eniIPs
 	return nil
 }
 
-// DeregisterClusterTarget removes an ENI IP from the cluster TG before VM termination.
-func DeregisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string) error {
+// DeregisterClusterTarget removes an ENI IP from the cluster TG (on port) before VM termination.
+func DeregisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string, port int64) error {
 	if tgArn == "" {
 		return errors.New("eks: DeregisterClusterTarget empty TG arn")
 	}
@@ -227,7 +259,7 @@ func DeregisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string
 		TargetGroupArn: aws.String(tgArn),
 		Targets: []*elbv2.TargetDescription{{
 			Id:   aws.String(eniIP),
-			Port: aws.Int64(k3sAPIServerPort),
+			Port: aws.Int64(port),
 		}},
 	}, accountID); err != nil {
 		return fmt.Errorf("deregister target %s on TG %s: %w", eniIP, tgArn, err)
@@ -243,10 +275,16 @@ func DeleteClusterNLB(nlbp nlbProvisioner, accountID, clusterName string) error 
 	}
 	lbErr := deleteClusterLB(nlbp, accountID, ClusterNLBName(clusterName))
 	tgErr := deleteClusterTG(nlbp, accountID, ClusterTargetGroupName(clusterName))
-	if lbErr != nil {
+	// The konnectivity TG is a no-op for clusters created before this topology.
+	konnErr := deleteClusterTG(nlbp, accountID, ClusterKonnTargetGroupName(clusterName))
+	switch {
+	case lbErr != nil:
 		return lbErr
+	case tgErr != nil:
+		return tgErr
+	default:
+		return konnErr
 	}
-	return tgErr
 }
 
 func deleteClusterLB(nlbp nlbProvisioner, accountID, lbName string) error {
@@ -339,21 +377,23 @@ func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string,
 	return nil
 }
 
-func ensureClusterTG(nlbp nlbProvisioner, accountID, clusterName, tgName string, out *ClusterNLB) error {
+// ensureClusterTG creates (or reuses) a TCP target group of the given name
+// forwarding to port, returning its ARN. Idempotent on name.
+func ensureClusterTG(nlbp nlbProvisioner, accountID, clusterName, tgName string, port int64) (string, error) {
 	if tg, err := lookupTGByName(nlbp, accountID, tgName); err != nil {
-		return err
+		return "", err
 	} else if tg != nil {
-		out.TargetGroupArn = aws.StringValue(tg.TargetGroupArn)
-		if out.TargetGroupArn == "" {
-			return fmt.Errorf("eks: existing TG %s missing arn", tgName)
+		arn := aws.StringValue(tg.TargetGroupArn)
+		if arn == "" {
+			return "", fmt.Errorf("eks: existing TG %s missing arn", tgName)
 		}
-		return nil
+		return arn, nil
 	}
 
 	created, err := nlbp.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
 		Name:       aws.String(tgName),
 		Protocol:   aws.String(elbv2.ProtocolEnumTcp),
-		Port:       aws.Int64(k3sAPIServerPort),
+		Port:       aws.Int64(port),
 		TargetType: aws.String(elbv2.TargetTypeEnumIp),
 		Tags: []*elbv2.Tag{
 			{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
@@ -361,16 +401,16 @@ func ensureClusterTG(nlbp nlbProvisioner, accountID, clusterName, tgName string,
 		},
 	}, accountID)
 	if err != nil {
-		return fmt.Errorf("create TG %s: %w", tgName, err)
+		return "", fmt.Errorf("create TG %s: %w", tgName, err)
 	}
 	if created == nil || len(created.TargetGroups) == 0 || created.TargetGroups[0] == nil {
-		return fmt.Errorf("eks: CreateTargetGroup returned no TG for %s", tgName)
+		return "", fmt.Errorf("eks: CreateTargetGroup returned no TG for %s", tgName)
 	}
-	out.TargetGroupArn = aws.StringValue(created.TargetGroups[0].TargetGroupArn)
-	if out.TargetGroupArn == "" {
-		return fmt.Errorf("eks: CreateTargetGroup returned empty arn for %s", tgName)
+	arn := aws.StringValue(created.TargetGroups[0].TargetGroupArn)
+	if arn == "" {
+		return "", fmt.Errorf("eks: CreateTargetGroup returned empty arn for %s", tgName)
 	}
-	return nil
+	return arn, nil
 }
 
 // ensureClusterListener creates (or reuses) one TCP listener on the LB at the
@@ -437,6 +477,69 @@ func lookupTGByName(nlbp nlbProvisioner, accountID, name string) (*elbv2.TargetG
 		}
 	}
 	return nil, nil
+}
+
+// ReapLBCLoadBalancers deletes ALBs the in-cluster AWS LoadBalancer Controller
+// provisioned in the customer VPC (k8s-toc-*) but spinifex never tracked, so the
+// cluster's own teardown would otherwise leave them pinning the VPC undeletable
+// on DependencyViolation. Match is by AWS-standard ownership tag scoped to this
+// cluster + VPC; the cluster's own NLB is already torn down before this runs, so
+// it is not re-matched. A raced-away LB (NotFound) is skipped. Errors are joined
+// so a failed reap keeps the cluster in DELETING for a retry rather than
+// completing with a leaked ALB.
+func ReapLBCLoadBalancers(nlbp nlbProvisioner, accountID, clusterName, vpcID string) error {
+	if clusterName == "" || vpcID == "" {
+		return nil
+	}
+	out, err := nlbp.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{}, accountID)
+	if err != nil {
+		return fmt.Errorf("describe LBs for LBC reap: %w", err)
+	}
+	var errs []error
+	for _, lb := range out.LoadBalancers {
+		if lb == nil || lb.LoadBalancerArn == nil || aws.StringValue(lb.VpcId) != vpcID {
+			continue
+		}
+		arn := aws.StringValue(lb.LoadBalancerArn)
+		owned, ownErr := lbOwnedByCluster(nlbp, accountID, arn, clusterName)
+		if ownErr != nil {
+			errs = append(errs, ownErr)
+			continue
+		}
+		if !owned {
+			continue
+		}
+		if _, err := nlbp.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lb.LoadBalancerArn}, accountID); err != nil && !awserrors.IsNotFound(err) {
+			slog.Warn("ReapLBCLoadBalancers: delete LBC ALB failed", "arn", arn, "err", err)
+			errs = append(errs, fmt.Errorf("delete LBC ALB %s: %w", arn, err))
+			continue
+		}
+		slog.Info("ReapLBCLoadBalancers: reaped orphan LBC ALB", "arn", arn, "cluster", clusterName)
+	}
+	return errors.Join(errs...)
+}
+
+// lbOwnedByCluster reports whether the LB carries the LBC ownership tag for this
+// cluster. A NotFound (raced-away LB) is treated as not-owned so the reap skips it.
+func lbOwnedByCluster(nlbp nlbProvisioner, accountID, arn, clusterName string) (bool, error) {
+	out, err := nlbp.DescribeTags(&elbv2.DescribeTagsInput{ResourceArns: aws.StringSlice([]string{arn})}, accountID)
+	if err != nil {
+		if awserrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("describe tags for %s: %w", arn, err)
+	}
+	for _, desc := range out.TagDescriptions {
+		if desc == nil {
+			continue
+		}
+		for _, tag := range desc.Tags {
+			if tag != nil && aws.StringValue(tag.Key) == lbcClusterOwnershipTagKey && aws.StringValue(tag.Value) == clusterName {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func lookupListenerByPort(nlbp nlbProvisioner, accountID, lbArn string, port int64) (*elbv2.Listener, error) {

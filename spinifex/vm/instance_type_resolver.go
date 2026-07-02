@@ -21,6 +21,11 @@ type InstanceTypeResolver interface {
 type ResourceController interface {
 	Allocate(instanceType string) error
 	Deallocate(instanceType string)
+	// ReleaseToReservation returns instanceType's compute to the capacity
+	// reservation reservationID instead of the general pool — the net-zero
+	// inverse of the launch-time swap, used when a reservation-bound instance
+	// stops or terminates. Frees to the general pool if the reservation is gone.
+	ReleaseToReservation(reservationID, instanceType string)
 	// CanAllocate returns how many instances of instanceType could be
 	// allocated right now (0 to count). Used by the crash-recovery
 	// scheduler to avoid restarting a VM the host can't fit.

@@ -80,14 +80,42 @@ func ListAttachedRolePolicies(accountID string, input *iam.ListAttachedRolePolic
 	return svc.ListAttachedRolePolicies(accountID, input)
 }
 
-// ListRolePolicies lists inline role policies. Spinifex only ever attaches
-// managed policies (AttachRolePolicy), never inline, so this always returns an
-// empty list — enough to satisfy the AWS provider's aws_iam_role read-back.
+func PutRolePolicy(accountID string, input *iam.PutRolePolicyInput, svc handlers_iam.IAMService) (*iam.PutRolePolicyOutput, error) {
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyName == nil || *input.PolicyName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyDocument == nil || *input.PolicyDocument == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.PutRolePolicy(accountID, input)
+}
+
+func GetRolePolicy(accountID string, input *iam.GetRolePolicyInput, svc handlers_iam.IAMService) (*iam.GetRolePolicyOutput, error) {
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyName == nil || *input.PolicyName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.GetRolePolicy(accountID, input)
+}
+
+func DeleteRolePolicy(accountID string, input *iam.DeleteRolePolicyInput, svc handlers_iam.IAMService) (*iam.DeleteRolePolicyOutput, error) {
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyName == nil || *input.PolicyName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.DeleteRolePolicy(accountID, input)
+}
+
 func ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput, svc handlers_iam.IAMService) (*iam.ListRolePoliciesOutput, error) {
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return &iam.ListRolePoliciesOutput{
-		PolicyNames: []*string{},
-	}, nil
+	return svc.ListRolePolicies(accountID, input)
 }

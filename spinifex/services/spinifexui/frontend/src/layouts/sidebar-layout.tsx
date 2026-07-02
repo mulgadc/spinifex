@@ -5,6 +5,7 @@ import {
   BookOpen,
   Boxes,
   Camera,
+  Container,
   Crosshair,
   Globe,
   HardDrive,
@@ -17,6 +18,7 @@ import {
   LogOut,
   MapPin,
   Network,
+  Package,
   Route,
   Router,
   Server,
@@ -24,6 +26,7 @@ import {
   ShieldCheck,
   UserCog,
   Users,
+  UsersRound,
   Waypoints,
 } from "lucide-react"
 
@@ -332,7 +335,7 @@ export function SidebarLayout() {
         </SidebarGroup>
 
         <SidebarGroup>
-          <SidebarGroupLabel>EKS</SidebarGroupLabel>
+          <SidebarGroupLabel>Containers</SidebarGroupLabel>
           <SidebarMenu>
             <SidebarMenuItem>
               <Link to="/eks/list-clusters">
@@ -341,10 +344,32 @@ export function SidebarLayout() {
                     pathname.startsWith("/eks/list-clusters") ||
                     pathname.startsWith("/eks/create-cluster")
                   }
-                  tooltip="Clusters"
+                  tooltip="EKS clusters"
                 >
                   <Boxes className="size-4" />
-                  <span>Clusters</span>
+                  <span>EKS</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <Link to="/ecr/list-repositories">
+                <SidebarMenuButton
+                  isActive={pathname.startsWith("/ecr/list-repositories")}
+                  tooltip="ECR repositories"
+                >
+                  <Package className="size-4" />
+                  <span>ECR</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <Link to="/ecs/list-clusters">
+                <SidebarMenuButton
+                  isActive={pathname.startsWith("/ecs/")}
+                  tooltip="ECS clusters"
+                >
+                  <Container className="size-4" />
+                  <span>ECS</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>
@@ -365,6 +390,21 @@ export function SidebarLayout() {
                 >
                   <Users className="size-4" />
                   <span>Users</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/iam/list-groups">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/iam/list-groups") ||
+                    pathname.startsWith("/iam/create-group")
+                  }
+                  tooltip="Groups"
+                >
+                  <UsersRound className="size-4" />
+                  <span>Groups</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

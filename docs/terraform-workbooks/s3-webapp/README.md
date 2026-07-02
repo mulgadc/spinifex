@@ -143,7 +143,7 @@ aws s3 ls --profile spinifex --endpoint-url https://localhost:8443
 SSH into the instance and check the service:
 
 ```bash
-ssh -i s3-webapp-demo.pem ec2-user@<public_ip>
+ssh -i s3-webapp-demo.pem ubuntu@<public_ip>
 sudo systemctl status s3-webapp
 sudo journalctl -u s3-webapp --no-pager -n 50
 ```
@@ -153,7 +153,7 @@ sudo journalctl -u s3-webapp --no-pager -n 50
 The instance reached S3 but was not authorized. The `.env` file deliberately holds **no** keys — credentials come from IMDS:
 
 ```bash
-ssh -i s3-webapp-demo.pem ec2-user@<public_ip>
+ssh -i s3-webapp-demo.pem ubuntu@<public_ip>
 cat /opt/webapp/.env   # S3_ENDPOINT / S3_BUCKET / S3_REGION only — no keys
 ```
 
@@ -167,7 +167,7 @@ Check that:
 boto3 could not obtain credentials, which means the IMDS credential chain did not resolve. From the instance:
 
 ```bash
-ssh -i s3-webapp-demo.pem ec2-user@<public_ip>
+ssh -i s3-webapp-demo.pem ubuntu@<public_ip>
 
 # IMDSv2: fetch a token, then the role name behind the instance profile
 TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token \

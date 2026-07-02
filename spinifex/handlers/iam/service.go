@@ -31,6 +31,12 @@ type IAMService interface {
 	DetachUserPolicy(accountID string, input *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error)
 	ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error)
 
+	// User inline policies — account-scoped
+	PutUserPolicy(accountID string, input *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error)
+	GetUserPolicy(accountID string, input *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error)
+	DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error)
+	ListUserPolicies(accountID string, input *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error)
+
 	// Role CRUD — account-scoped
 	CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error)
 	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
@@ -39,10 +45,36 @@ type IAMService interface {
 	UpdateRole(accountID string, input *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error)
 	UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error)
 
-	// Role policy attachment — account-scoped
+	// Role policies — managed + inline — account-scoped
 	AttachRolePolicy(accountID string, input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error)
 	DetachRolePolicy(accountID string, input *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error)
 	ListAttachedRolePolicies(accountID string, input *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error)
+	PutRolePolicy(accountID string, input *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error)
+	GetRolePolicy(accountID string, input *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error)
+	DeleteRolePolicy(accountID string, input *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error)
+	ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error)
+
+	// Group CRUD — account-scoped
+	CreateGroup(accountID string, input *iam.CreateGroupInput) (*iam.CreateGroupOutput, error)
+	GetGroup(accountID string, input *iam.GetGroupInput) (*iam.GetGroupOutput, error)
+	ListGroups(accountID string, input *iam.ListGroupsInput) (*iam.ListGroupsOutput, error)
+	DeleteGroup(accountID string, input *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error)
+
+	// Group membership — account-scoped
+	AddUserToGroup(accountID string, input *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error)
+	RemoveUserFromGroup(accountID string, input *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error)
+	ListGroupsForUser(accountID string, input *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error)
+
+	// Group policy attachment — account-scoped
+	AttachGroupPolicy(accountID string, input *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error)
+	DetachGroupPolicy(accountID string, input *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error)
+	ListAttachedGroupPolicies(accountID string, input *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error)
+
+	// Group inline policies — account-scoped
+	PutGroupPolicy(accountID string, input *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error)
+	GetGroupPolicy(accountID string, input *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error)
+	DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error)
+	ListGroupPolicies(accountID string, input *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error)
 
 	// Instance profile CRUD — account-scoped
 	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
@@ -72,8 +104,8 @@ type IAMService interface {
 	// Policy evaluation (internal — used by gateway enforcement)
 	GetUserPolicies(accountID, userName string) ([]PolicyDocument, error)
 	// GetRolePolicies resolves an assumed-role session's permission policies for
-	// gateway enforcement. Managed policies only; inline policies are not yet
-	// supported.
+	// gateway enforcement. Resolves both managed attachments and embedded inline
+	// policies.
 	GetRolePolicies(accountID, roleName string) ([]PolicyDocument, error)
 
 	// Auth (internal — used by SigV4 middleware and bootstrap, not exposed via gateway)

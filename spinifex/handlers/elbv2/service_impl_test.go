@@ -134,13 +134,32 @@ func TestCreateLoadBalancer_NetworkType(t *testing.T) {
 	assert.Equal(t, "active", *lb.State.Code)
 }
 
-func TestCreateLoadBalancer_NetworkType_RejectsSecurityGroups(t *testing.T) {
+func TestCreateLoadBalancer_NetworkType_AcceptsSecurityGroups(t *testing.T) {
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("nlb-with-sg"),
 		Type:           aws.String("network"),
-		SecurityGroups: []*string{aws.String("sg-111")},
+		SecurityGroups: []*string{aws.String("sg-111"), aws.String("sg-222")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rec, err := svc.store.GetLoadBalancerByName("nlb-with-sg", testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sg-111", "sg-222"}, rec.SecurityGroups)
+	assert.Empty(t, rec.NLBManagedSGID, "NLB created with customer SGs must not mint a managed SG")
+}
+
+func TestCreateLoadBalancer_NetworkType_RejectsTooManySecurityGroups(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name: aws.String("nlb-too-many-sg"),
+		Type: aws.String("network"),
+		SecurityGroups: []*string{
+			aws.String("sg-1"), aws.String("sg-2"), aws.String("sg-3"),
+			aws.String("sg-4"), aws.String("sg-5"), aws.String("sg-6"),
+		},
 	}, testAccountID)
 
 	assert.Error(t, err)
@@ -764,10 +783,11 @@ func TestRegisterTargets(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, health.TargetHealthDescriptions, 2)
 
-	// First target should use TG default port
+	// First target should use TG default port. With no listener forwarding to the
+	// TG it serves no traffic, so health is "unused" (Target.NotInUse).
 	assert.Equal(t, "i-aaa111", *health.TargetHealthDescriptions[0].Target.Id)
 	assert.Equal(t, int64(80), *health.TargetHealthDescriptions[0].Target.Port)
-	assert.Equal(t, "initial", *health.TargetHealthDescriptions[0].TargetHealth.State)
+	assert.Equal(t, "unused", *health.TargetHealthDescriptions[0].TargetHealth.State)
 
 	// Second target should use override port
 	assert.Equal(t, "i-bbb222", *health.TargetHealthDescriptions[1].Target.Id)

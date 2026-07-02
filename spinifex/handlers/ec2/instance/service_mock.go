@@ -64,6 +64,10 @@ func (s *MockInstanceService) ModifyInstanceAttribute(_ *ec2.ModifyInstanceAttri
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
 }
 
+func (s *MockInstanceService) ModifyInstanceMetadataOptions(input *ec2.ModifyInstanceMetadataOptionsInput, _ string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
+	return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: input.InstanceId}, nil
+}
+
 func (s *MockInstanceService) StartStoppedInstance(input *StartStoppedInstanceInput, _ string) (*StartStoppedInstanceOutput, error) {
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: input.InstanceID}, nil
 }

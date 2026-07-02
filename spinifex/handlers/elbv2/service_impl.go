@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/url"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +23,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -90,20 +91,24 @@ var _ ELBv2Service = (*ELBv2ServiceImpl)(nil)
 
 // ELBv2ServiceImpl implements ELBv2 operations with NATS JetStream persistence.
 type ELBv2ServiceImpl struct {
-	config                     *config.Config
-	store                      *Store
-	acmStore                   *handlers_acm.Store              // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
-	nc                         *nats.Conn                       // NATS connection for JetStream KV store
-	VPCService                 *handlers_ec2_vpc.VPCServiceImpl // nil-safe: ENI ops skipped when nil (e.g. in tests)
-	InstanceLauncher           SystemInstanceLauncher           // nil-safe: system VM ops skipped when nil
-	SystemAccessKey            string                           // System account access key for ALB agent SigV4 auth
-	SystemSecretKey            string                           // System account secret key for ALB agent SigV4 auth
-	GatewayURL                 string                           // AWS gateway URL for ALB agent outbound connections
-	MgmtRouteGateway           string                           // br-mgmt IP (next-hop for mgmt route); empty when AWSGW is on 0.0.0.0
-	MgmtRouteTarget            string                           // AWSGW bind IP to route via mgmt NIC
-	MgmtBridgeIP               string                           // br-mgmt IP, populated whenever br-mgmt exists (single + multi node) for the internal-scheme fallback route
-	AdvertiseIP                string                           // AdvertiseIP / WAN gateway, populated whenever set; used as the internal-scheme fallback route target on single-node
-	CACert                     string                           // PEM-encoded CA certificate delivered to microvm guests via fw_cfg
+	config           *config.Config
+	store            *Store
+	acmStore         *handlers_acm.Store                    // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
+	nc               *nats.Conn                             // NATS connection for JetStream KV store
+	VPCService       *handlers_ec2_vpc.VPCServiceImpl       // nil-safe: ENI ops skipped when nil (e.g. in tests)
+	InstanceLauncher SystemInstanceLauncher                 // nil-safe: system VM ops skipped when nil
+	IAM              handlers_iam.SystemInstanceRoleEnsurer // nil-safe: LB VM falls back to baked static creds when nil (tests set directly)
+	// IAMProvider lazily resolves the IAM ensurer at launch time so it cannot
+	// race the NATS KV backend at daemon startup. Preferred over IAM when set.
+	IAMProvider                func() handlers_iam.SystemInstanceRoleEnsurer
+	SystemAccessKey            string // System account access key for ALB agent SigV4 auth
+	SystemSecretKey            string // System account secret key for ALB agent SigV4 auth
+	GatewayURL                 string // AWS gateway URL for ALB agent outbound connections
+	MgmtRouteGateway           string // br-mgmt IP (next-hop for mgmt route); empty when AWSGW is on 0.0.0.0
+	MgmtRouteTarget            string // AWSGW bind IP to route via mgmt NIC
+	MgmtBridgeIP               string // br-mgmt IP, populated whenever br-mgmt exists (single + multi node) for the internal-scheme fallback route
+	AdvertiseIP                string // AdvertiseIP / WAN gateway, populated whenever set; used as the internal-scheme fallback route target on single-node
+	CACert                     string // PEM-encoded CA certificate delivered to microvm guests via fw_cfg
 	nodeID                     string
 	region                     string
 	systemInstanceType         string        // instance type for system VMs; resolved lazily via systemInstanceTypeFunc
@@ -251,7 +256,13 @@ func (s *ELBv2ServiceImpl) getSystemInstanceType() string {
 // br-mgmt NIC (the mgmt-bridge URL): the heartbeat is control-plane and must
 // survive a host reboot that strands the OVN/EIP data plane, so it never rides
 // the WAN. mgmtGatewayURL falls back to the WAN URL when no mgmt bridge exists.
-func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID string) string {
+func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID string, staticCreds bool) string {
+	// staticCreds false ⇒ no LB_ACCESS_KEY/LB_SECRET_KEY: the agent's signer
+	// falls back to the AWS SDK chain, which reads IMDS instance-role creds.
+	if !staticCreds {
+		return fmt.Sprintf("LB_LB_ID=%s\nLB_GATEWAY_URL=%s\nLB_REGION=%s\n",
+			lbID, s.mgmtGatewayURL(), s.region)
+	}
 	return fmt.Sprintf("LB_LB_ID=%s\nLB_GATEWAY_URL=%s\nLB_ACCESS_KEY=%s\nLB_SECRET_KEY=%s\nLB_REGION=%s\n",
 		lbID, s.mgmtGatewayURL(), s.SystemAccessKey, s.SystemSecretKey, s.region)
 }
@@ -451,19 +462,27 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 		return res
 	}
 
+	// Prefer IMDS instance-role creds: attach a system instance profile so the
+	// lb-agent authenticates with scoped, rotating credentials and no static
+	// secret rides in fw_cfg. Falls back to baked system keys when IAM is unwired.
+	// The role lives in the system account because the LB VM (and its ENI) run
+	// there — IMDS resolves the profile under the instance's account.
+	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
+
 	nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
 	launchInput := &SystemInstanceInput{
-		InstanceType: s.getSystemInstanceType(),
-		SubnetID:     subnets[0],
-		ENIID:        eniIDs[0],
-		ENIMac:       primaryMAC,
-		ENIIP:        primaryIP,
-		ExtraENIs:    extraENIInputs,
-		Scheme:       scheme,
-		AccountID:    accountID,
-		NICs:         nics,
-		LBAgentEnv:   s.buildLBAgentEnv(lbID),
-		CACert:       s.CACert,
+		InstanceType:          s.getSystemInstanceType(),
+		SubnetID:              subnets[0],
+		ENIID:                 eniIDs[0],
+		ENIMac:                primaryMAC,
+		ENIIP:                 primaryIP,
+		ExtraENIs:             extraENIInputs,
+		Scheme:                scheme,
+		AccountID:             accountID,
+		NICs:                  nics,
+		LBAgentEnv:            s.buildLBAgentEnv(lbID, profileARN == ""),
+		CACert:                s.CACert,
+		IamInstanceProfileArn: profileARN,
 	}
 	// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
 	// In production (VPC networking), traffic reaches the LB VM's VPC IP directly.
@@ -551,18 +570,24 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 		}
 	}
 
+	// Re-ensure the instance profile so a recovered LB VM keeps IMDS creds; the
+	// ensure is idempotent and converges on the existing role/profile. The role
+	// lives in the system account where the LB VM runs, not the LB owner account.
+	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
+
 	return &SystemInstanceInput{
-		InstanceType: ctx.InstanceType,
-		SubnetID:     lb.Subnets[0],
-		ENIID:        lb.ENIs[0],
-		ENIMac:       primaryMAC,
-		ENIIP:        lb.VPCIP,
-		ExtraENIs:    extraENIs,
-		Scheme:       lb.Scheme,
-		AccountID:    lb.AccountID,
-		NICs:         nics,
-		LBAgentEnv:   s.buildLBAgentEnv(lb.LoadBalancerID),
-		CACert:       s.CACert,
+		InstanceType:          ctx.InstanceType,
+		SubnetID:              lb.Subnets[0],
+		ENIID:                 lb.ENIs[0],
+		ENIMac:                primaryMAC,
+		ENIIP:                 lb.VPCIP,
+		ExtraENIs:             extraENIs,
+		Scheme:                lb.Scheme,
+		AccountID:             lb.AccountID,
+		NICs:                  nics,
+		LBAgentEnv:            s.buildLBAgentEnv(lb.LoadBalancerID, profileARN == ""),
+		CACert:                s.CACert,
+		IamInstanceProfileArn: profileARN,
 	}, nil
 }
 
@@ -741,11 +766,7 @@ func (s *ELBv2ServiceImpl) validateListenerCerts(certs []ListenerCertificate, ac
 func configCertHash(configContent string, certFiles map[string]string) string {
 	h := sha256.New()
 	h.Write([]byte(configContent))
-	paths := make([]string, 0, len(certFiles))
-	for p := range certFiles {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
+	paths := slices.Sorted(maps.Keys(certFiles))
 	for _, p := range paths {
 		h.Write([]byte(p))
 		h.Write([]byte{0})
@@ -914,11 +935,7 @@ func certFilesToSDK(certFiles map[string]string) []*CertFile {
 	if len(certFiles) == 0 {
 		return nil
 	}
-	paths := make([]string, 0, len(certFiles))
-	for p := range certFiles {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
+	paths := slices.Sorted(maps.Keys(certFiles))
 	out := make([]*CertFile, 0, len(paths))
 	for _, p := range paths {
 		out = append(out, &CertFile{Path: aws.String(p), PEM: aws.String(certFiles[p])})
@@ -1100,8 +1117,10 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		}
 	}
 
-	// NLBs do not support security groups.
-	if lbType == LoadBalancerTypeNetwork && len(input.SecurityGroups) > 0 {
+	// AWS caps a load balancer at 5 security groups (ALBs always; NLBs since Aug
+	// 2023). NLBs with customer SGs skip the managed SG and let the caller own the
+	// listener-port rules; NLBs without SGs keep the managed-SG default below.
+	if len(input.SecurityGroups) > maxLBSecurityGroups {
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
@@ -1136,12 +1155,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	var subnets []string
-	for _, sn := range input.Subnets {
-		if sn != nil {
-			subnets = append(subnets, *sn)
-		}
-	}
+	subnets := flattenSubnetIDs(input.Subnets, input.SubnetMappings)
 
 	var securityGroups []string
 	for _, sg := range input.SecurityGroups {
@@ -1158,11 +1172,12 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	vpcID := ""
 	var nlbManagedSGID string
 	if s.VPCService != nil && len(subnets) > 0 {
-		// NLBs reject customer SGs, so mint a dedicated managed SG for all LB ENIs;
-		// CreateListener opens listener ports on it. Without this, ENIs fall back
-		// to the VPC default SG and inbound listener traffic is dropped.
+		// An NLB without customer SGs gets a dedicated managed SG on all its ENIs
+		// and CreateListener opens listener ports on it; otherwise the ENIs fall
+		// back to the VPC default SG and inbound listener traffic is dropped. When
+		// the caller supplies SGs they replace the managed SG and own the rules.
 		eniGroups := securityGroups
-		if lbType == LoadBalancerTypeNetwork {
+		if lbType == LoadBalancerTypeNetwork && len(securityGroups) == 0 {
 			sgID, sgErr := s.createNLBManagedSG(lbID, lbArn, subnets[0], accountID)
 			if sgErr != nil {
 				slog.Error("CreateLoadBalancer: failed to create managed NLB SG", "lbId", lbID, "err", sgErr)
@@ -1557,6 +1572,23 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// ProtocolVersion applies only to HTTP/HTTPS target groups (AWS defaults to
+	// HTTP1). It must round-trip: the load balancer controller always sends it and
+	// recreates the TG if Describe reads it back empty.
+	protocolVersion := ""
+	if protocol == ProtocolHTTP || protocol == ProtocolHTTPS {
+		protocolVersion = ProtocolVersionHTTP1
+		if input.ProtocolVersion != nil && *input.ProtocolVersion != "" {
+			protocolVersion = *input.ProtocolVersion
+		}
+		switch protocolVersion {
+		case ProtocolVersionHTTP1, ProtocolVersionHTTP2, ProtocolVersionGRPC:
+			// valid
+		default:
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+	}
+
 	port := int64(80)
 	if input.Port != nil {
 		port = *input.Port
@@ -1634,17 +1666,18 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	tags := tagsFromSDK(input.Tags)
 
 	record := &TargetGroupRecord{
-		TargetGroupArn: tgArn,
-		TargetGroupID:  tgID,
-		Name:           name,
-		Protocol:       protocol,
-		Port:           port,
-		VpcId:          vpcID,
-		TargetType:     targetType,
-		HealthCheck:    hc,
-		Tags:           tags,
-		AccountID:      accountID,
-		CreatedAt:      time.Now().UTC(),
+		TargetGroupArn:  tgArn,
+		TargetGroupID:   tgID,
+		Name:            name,
+		Protocol:        protocol,
+		ProtocolVersion: protocolVersion,
+		Port:            port,
+		VpcId:           vpcID,
+		TargetType:      targetType,
+		HealthCheck:     hc,
+		Tags:            tags,
+		AccountID:       accountID,
+		CreatedAt:       time.Now().UTC(),
 	}
 
 	if err := s.store.PutTargetGroup(record); err != nil {
@@ -1991,21 +2024,41 @@ func (s *ELBv2ServiceImpl) DescribeTargetHealth(input *elbv2.DescribeTargetHealt
 		}
 	}
 
+	// A target group not forwarded to by any listener serves no traffic; its
+	// targets report "unused" (AWS Target.NotInUse), not "initial".
+	inUse, err := s.store.TargetGroupInUse(tg.TargetGroupArn)
+	if err != nil {
+		slog.Error("DescribeTargetHealth: failed to check TG association", "arn", tg.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	descriptions := make([]*elbv2.TargetHealthDescription, 0)
 	for _, t := range tg.Targets {
 		if len(targetFilter) > 0 && !targetFilter[t.Id] {
 			continue
 		}
 
+		state, healthDesc := t.HealthState, t.HealthDesc
+		var reason string
+		if !inUse && t.HealthState != TargetHealthDraining {
+			state = TargetHealthUnused
+			healthDesc = "Target group is not configured to receive traffic from a load balancer"
+			reason = "Target.NotInUse"
+		}
+
+		health := &elbv2.TargetHealth{
+			State:       aws.String(state),
+			Description: aws.String(healthDesc),
+		}
+		if reason != "" {
+			health.Reason = aws.String(reason)
+		}
 		desc := &elbv2.TargetHealthDescription{
 			Target: &elbv2.TargetDescription{
 				Id:   aws.String(t.Id),
 				Port: aws.Int64(t.Port),
 			},
-			TargetHealth: &elbv2.TargetHealth{
-				State:       aws.String(t.HealthState),
-				Description: aws.String(t.HealthDesc),
-			},
+			TargetHealth: health,
 		}
 		descriptions = append(descriptions, desc)
 	}
@@ -2026,6 +2079,17 @@ func listenerActionFromSDK(a *elbv2.Action) ListenerAction {
 	}
 	if a.TargetGroupArn != nil {
 		action.TargetGroupArn = *a.TargetGroupArn
+	}
+	// Forward actions may carry the target group via ForwardConfig (the modern
+	// weighted shape the LB controller emits) instead of the flat field. Flatten
+	// the first target group so the single-TG model resolves it.
+	if action.TargetGroupArn == "" && a.ForwardConfig != nil {
+		for _, tg := range a.ForwardConfig.TargetGroups {
+			if tg != nil && tg.TargetGroupArn != nil && *tg.TargetGroupArn != "" {
+				action.TargetGroupArn = *tg.TargetGroupArn
+				break
+			}
+		}
 	}
 	if a.FixedResponseConfig != nil {
 		fr := &FixedResponseAction{}
@@ -2640,6 +2704,20 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 				found = true
 				tags = r.Tags
 				ownerAccount = r.AccountID
+			} else if lArn, isDefault := listenerArnFromDefaultRuleArn(arn); isDefault {
+				// Synthetic default rule: not stored, carries no tags. Resolve via
+				// its parent listener so a controller's post-create rule-tag sync
+				// gets an empty TagDescription instead of an error.
+				l, lErr := s.store.GetListenerByArn(lArn)
+				if lErr != nil {
+					slog.Error("DescribeTags: failed to get listener", "arn", lArn, "err", lErr)
+					return nil, errors.New(awserrors.ErrorServerInternal)
+				}
+				if l != nil {
+					found = true
+					tags = nil
+					ownerAccount = l.AccountID
+				}
 			}
 		}
 
@@ -2674,11 +2752,7 @@ func tagsMapToSDK(tags map[string]string) []*elbv2.Tag {
 	if len(tags) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(tags))
-	for k := range tags {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
+	keys := slices.Sorted(maps.Keys(tags))
 	out := make([]*elbv2.Tag, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, &elbv2.Tag{Key: aws.String(k), Value: aws.String(tags[k])})
@@ -2749,7 +2823,7 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(r *LoadBalancerRecord) *elbv2.LoadBalan
 }
 
 func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGroup {
-	return &elbv2.TargetGroup{
+	tg := &elbv2.TargetGroup{
 		TargetGroupArn:             aws.String(r.TargetGroupArn),
 		TargetGroupName:            aws.String(r.Name),
 		Protocol:                   aws.String(r.Protocol),
@@ -2768,6 +2842,14 @@ func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGrou
 			HttpCode: aws.String(r.HealthCheck.Matcher),
 		},
 	}
+
+	// Omitted for NLB (TCP/UDP/TLS) target groups, matching AWS, which returns
+	// ProtocolVersion only for HTTP/HTTPS target groups.
+	if r.ProtocolVersion != "" {
+		tg.ProtocolVersion = aws.String(r.ProtocolVersion)
+	}
+
+	return tg
 }
 
 func (s *ELBv2ServiceImpl) listenerRecordToSDK(r *ListenerRecord) *elbv2.Listener {

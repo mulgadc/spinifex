@@ -43,6 +43,27 @@ func InstancePublicSSHHost(t *testing.T, inst *ec2.Instance) (string, int) {
 	return pub, 22
 }
 
+// InstancePrivateIP returns inst's primary private IPv4, or "" when unset or
+// unresolvable. Used to populate VPCDiagnosticsOpts.LogicalIP so the datapath
+// captures grep both halves of the NAT translation. Non-fatal — it feeds a
+// best-effort diagnostic, so a describe miss logs and returns "".
+func InstancePrivateIP(t *testing.T, c *AWSClient, instanceID string) string {
+	t.Helper()
+	out, err := c.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	})
+	if err != nil {
+		t.Logf("InstancePrivateIP: describe %s: %v", instanceID, err)
+		return ""
+	}
+	for _, r := range out.Reservations {
+		for _, in := range r.Instances {
+			return aws.StringValue(in.PrivateIpAddress)
+		}
+	}
+	return ""
+}
+
 // LsblkRootGiB SSHes into the VM and returns the root disk size in GiB
 // (bytes / 1<<30, rounded down) by running findmnt + lsblk in the guest.
 func LsblkRootGiB(t *testing.T, tgt SSHTarget) int {

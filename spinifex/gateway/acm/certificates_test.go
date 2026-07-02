@@ -38,6 +38,12 @@ func TestOps_InvalidBodyRejected(t *testing.T) {
 	assert.ErrorContains(t, err, awserrors.ErrorInvalidParameter)
 	_, err = DeleteCertificate(nil, "acct", bad)
 	assert.ErrorContains(t, err, awserrors.ErrorInvalidParameter)
+	_, err = ListTagsForCertificate(nil, "acct", bad)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidParameter)
+	_, err = AddTagsToCertificate(nil, "acct", bad)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidParameter)
+	_, err = RemoveTagsFromCertificate(nil, "acct", bad)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidParameter)
 }
 
 // With a live conn but no daemon subscriber, the delegate path fast-fails with
@@ -51,5 +57,11 @@ func TestOps_DelegateNoResponder(t *testing.T) {
 	_, err = ListCertificates(nc, "acct", []byte(`{}`))
 	require.Error(t, err)
 	_, err = DeleteCertificate(nc, "acct", []byte(`{}`))
+	require.Error(t, err)
+	_, err = ListTagsForCertificate(nc, "acct", []byte(`{}`))
+	require.Error(t, err)
+	_, err = AddTagsToCertificate(nc, "acct", []byte(`{}`))
+	require.Error(t, err)
+	_, err = RemoveTagsFromCertificate(nc, "acct", []byte(`{}`))
 	require.Error(t, err)
 }

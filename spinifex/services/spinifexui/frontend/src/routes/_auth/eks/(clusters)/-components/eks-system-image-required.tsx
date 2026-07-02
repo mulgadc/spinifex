@@ -3,7 +3,7 @@ import { Check, Copy, RotateCw, TriangleAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 
-const IMPORT_COMMAND = "make import-eks-node-image"
+const IMPORT_COMMAND = "spx admin images import --name spinifex-eks-node"
 
 export function EksSystemImageRequired({
   isRechecking,
@@ -25,8 +25,7 @@ export function EksSystemImageRequired({
             </h2>
             <p className="text-xs text-muted-foreground">
               EKS clusters boot a Spinifex-managed node image (K3s) that is not
-              shipped with the platform. Install it on the host before creating
-              a cluster.
+              shipped with the platform. Import it before creating a cluster.
             </p>
           </div>
 
@@ -48,8 +47,8 @@ export function EksSystemImageRequired({
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Run from the Spinifex repo root. The command builds and registers
-            the node image, then click Recheck.
+            Run from any authenticated spx CLI host. The command downloads and
+            registers the published node image, then click Recheck.
           </p>
 
           <Button

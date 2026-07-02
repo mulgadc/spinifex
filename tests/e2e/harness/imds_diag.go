@@ -11,17 +11,19 @@ import (
 )
 
 // DumpIMDSDatapathDiagnostics emits a triage bundle for an IMDS reachability
-// failure. Captures OVN port-binding state, per-subnet netns veth/route/neigh,
-// conntrack, and br-int flows for both request and reply paths.
-// Non-fatal — best-effort diagnostics; skips if OVN tooling or sudo unavailable.
+// failure on the per-tap datapath. Captures the br-imds bridge realisation (its
+// ports + demux/forward flows), the OVN guest port-binding reached via the
+// br-imds<->br-int patch, the per-tap reply routing, the root-netns responder
+// listener, conntrack, and br-int flows for the guest.
+// Non-fatal — best-effort diagnostics; skips if OVS tooling or sudo unavailable.
 func DumpIMDSDatapathDiagnostics(t *testing.T, subnetID, guestIP, artifactDir string) {
 	t.Helper()
 	fmt.Printf("\n%s%s── DIAGNOSTICS: IMDS datapath (subnet=%s guest=%s) ──%s\n",
 		colorBold, colorCyan, subnetID, guestIP, colorReset)
 	defer fmt.Printf("%s%s── END DIAGNOSTICS ──%s\n\n", colorBold, colorCyan, colorReset)
 
-	if _, err := exec.LookPath("ovn-nbctl"); err != nil {
-		fmt.Printf("  ovn-nbctl unavailable (%v); skipping IMDS datapath dump\n", err)
+	if _, err := exec.LookPath("ovs-ofctl"); err != nil {
+		fmt.Printf("  ovs-ofctl unavailable (%v); skipping IMDS datapath dump\n", err)
 		return
 	}
 	if err := exec.Command("sudo", "-n", "true").Run(); err != nil {
@@ -29,82 +31,55 @@ func DumpIMDSDatapathDiagnostics(t *testing.T, subnetID, guestIP, artifactDir st
 		return
 	}
 
-	imdsPort := "imds-port-" + subnetID
-	subnetSwitch := "subnet-" + subnetID
-	hostEnd := host.IMDSHostVethName(subnetID)
-	ovsEnd := host.IMDSOVSPortName(subnetID)
-	netns := host.IMDSNetnsName(subnetID)
 	const imdsIP = "169.254.169.254"
-
-	// nsExec wraps an argv to run inside the per-subnet netns, where the host veth
-	// end and the IMDS listener now live.
-	nsExec := func(argv ...string) []string {
-		return append([]string{"ip", "netns", "exec", netns}, argv...)
-	}
 
 	runHostCaptures(t, artifactDir, []hostCapture{
 		{
+			filename: "imds-brimds-ports.txt",
+			label:    "ovs-vsctl list-ports br-imds (primary tap + endpoint + patch present?)",
+			argv:     []string{"ovs-vsctl", "list-ports", host.IMDSBridge},
+		},
+		{
+			filename: "imds-brimds-flows.txt",
+			label:    "ovs-ofctl dump-flows br-imds (demux priority=200 + forward priority=100)",
+			argv:     []string{"ovs-ofctl", "dump-flows", host.IMDSBridge},
+		},
+		{
 			filename: "imds-portbinding.txt",
-			label:    "ovn-sbctl Port_Binding imds-port (chassis,up)",
+			label:    "ovn-sbctl Port_Binding for the guest IP's LSP (bound via the br-int patch end?)",
 			argv: []string{"ovn-sbctl", "--bare", "--columns=logical_port,chassis,up,mac",
-				"find", "Port_Binding", "logical_port=" + imdsPort},
+				"list", "Port_Binding"},
+			grepFor: []string{guestIP},
 		},
 		{
-			filename: "imds-lsp-nb.txt",
-			label:    "ovn-nbctl imds-port LSP (type,addresses,options)",
-			argv: []string{"ovn-nbctl", "--bare", "--columns=name,type,addresses,options",
-				"find", "Logical_Switch_Port", "name=" + imdsPort},
+			filename: "imds-reply-rules.txt",
+			label:    "ip rule (per-tap 'oif <endpoint> lookup <table>' reply rule present?)",
+			argv:     []string{"ip", "rule"},
+			grepFor:  []string{"ime-"},
 		},
 		{
-			filename: "imds-subnet-ports.txt",
-			label:    "ovn-nbctl lsp-list subnet switch (localport present on the guest's switch?)",
-			argv:     []string{"ovn-nbctl", "lsp-list", subnetSwitch},
-			grepFor:  []string{imdsPort},
-		},
-		{
-			filename: "imds-netns.txt",
-			label:    "ip netns list (per-subnet IMDS netns present?)",
-			argv:     []string{"ip", "netns", "list"},
-			grepFor:  []string{netns},
-		},
-		{
-			filename: "imds-host-veth-addr.txt",
-			label:    "ip -d addr show imds-h in netns (expect 169.254.169.254/30 + subnet CIDR on-link)",
-			argv:     nsExec("ip", "-d", "addr", "show", "dev", hostEnd),
-		},
-		{
-			filename: "imds-host-route-to-guest.txt",
-			label:    "ip route get <guest> in netns (expect on-link dev imds-h, no gateway hop)",
-			argv:     nsExec("ip", "route", "get", guestIP),
-		},
-		{
-			filename: "imds-host-neigh.txt",
-			label:    "ip neigh show in netns (expect a resolved entry for the guest IP)",
-			argv:     nsExec("ip", "neigh", "show"),
+			filename: "imds-reply-routes.txt",
+			label:    "ip route show table all (per-tap default dev <endpoint>)",
+			argv:     []string{"ip", "route", "show", "table", "all"},
+			grepFor:  []string{"ime-"},
 		},
 		{
 			filename: "imds-listener.txt",
-			label:    "ss -ltnp in netns (IMDS listener bound?)",
-			argv:     nsExec("ss", "-ltnp"),
+			label:    "ss -ltnp (per-tap responder bound to 169.254.169.254:80 in root netns)",
+			argv:     []string{"ss", "-ltnp"},
 			grepFor:  []string{imdsIP, ":80"},
 		},
 		{
 			filename: "imds-conntrack.txt",
-			label:    "conntrack -L in netns (169.254.169.254 — SYN_RECV = reply lost)",
-			argv:     nsExec("conntrack", "-L"),
+			label:    "conntrack -L (169.254.169.254 — SYN_RECV = reply lost)",
+			argv:     []string{"conntrack", "-L"},
 			grepFor:  []string{imdsIP},
 		},
 		{
-			filename: "imds-ovs-flows.txt",
-			label:    "ovs-ofctl dump-flows br-int (IMDS + guest, filtered)",
+			filename: "imds-brint-flows.txt",
+			label:    "ovs-ofctl dump-flows br-int (guest + IMDS, filtered)",
 			argv:     []string{"ovs-ofctl", "dump-flows", "br-int"},
 			grepFor:  []string{imdsIP, guestIP},
-		},
-		{
-			filename: "imds-ovs-iface.txt",
-			label:    "ovs-vsctl Interface imds-o (iface-id binding, ofport)",
-			argv: []string{"ovs-vsctl", "--columns=name,external_ids,ofport",
-				"list", "Interface", ovsEnd},
 		},
 	})
 }

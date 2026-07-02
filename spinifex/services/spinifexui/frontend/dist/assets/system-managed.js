@@ -1,1 +1,1 @@
-function e(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`)??!1}function t(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`&&e.Value===`eks`)??!1}export{e as n,t};
+function e(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`)??!1}function t(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`&&e.Value===`eks`)??!1}function n(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`&&e.Value===`ecs`)??!1}export{t as n,e as r,n as t};

@@ -3,6 +3,8 @@ package gateway_tagging
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -296,11 +298,7 @@ func elbv2TagsToRGT(tags []*elbv2.Tag) []*rgt.Tag {
 }
 
 func tagMapToRGT(tags map[string]string) []*rgt.Tag {
-	keys := make([]string, 0, len(tags))
-	for k := range tags {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(tags))
 	out := make([]*rgt.Tag, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, &rgt.Tag{Key: aws.String(k), Value: aws.String(tags[k])})

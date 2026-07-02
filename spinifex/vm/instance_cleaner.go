@@ -4,8 +4,8 @@ package vm
 // public IP, ENI, placement group) that the manager does not own. Invoked from
 // Stop/Terminate after QEMU shuts down; methods are best-effort and self-logging.
 type InstanceCleaner interface {
-	// DeleteVolumes deletes EFI / cloud-init internal volumes via ebs.delete
-	// and user volumes flagged DeleteOnTermination via the volume service.
+	// DeleteVolumes deletes the EFI internal volume via ebs.delete and user
+	// volumes flagged DeleteOnTermination via the volume service.
 	// Called only on Terminate, never on Stop. Returns the first delete error.
 	DeleteVolumes(v *VM) error
 
@@ -26,6 +26,12 @@ type InstanceCleaner interface {
 	// RemoveFromPlacementGroup removes the instance from its placement
 	// group, if one is set. Called only on Terminate.
 	RemoveFromPlacementGroup(v *VM) error
+
+	// RemoveFromSpotRequest closes the Spot Instance Request fulfilled by this
+	// instance, if any, by scanning the active spot bucket for its ID. The VM
+	// carries no spot marker, so this is best-effort and untracked (no teardown
+	// stamp): a no-match is the common case. Called only on Terminate.
+	RemoveFromSpotRequest(v *VM) error
 
 	// ReleaseGPU unbinds the instance's GPU from vfio-pci and rebinds to
 	// its original host driver. Called on both Stop and Terminate. No-op

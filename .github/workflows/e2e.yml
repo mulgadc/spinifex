@@ -14,13 +14,10 @@ on:
       - .github/workflows/e2e.yml
   workflow_dispatch:
     inputs:
-      sha:
-        description: "PR head SHA to report status on"
-        required: false
       suites:
-        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks')"
+        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks e2e-iam')"
         required: false
-        default: "e2e-single e2e-multinode e2e-cert e2e-lb"
+        default: "e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam"
       test_run:
         description: "Optional regex for -test.run (e.g. '^TestMultinodeIPSec$'). Empty = run all tests in suite."
         required: false
@@ -32,7 +29,7 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb' }}
+  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
 
 jobs:
@@ -41,10 +38,10 @@ jobs:
   # can compare predicted vs actual before flipping it on.
   select_suites:
     name: Select Suites (shadow)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-go@v6
@@ -78,9 +75,9 @@ jobs:
     # suites='e2e-multinode' only). Push triggers and the default SUITES list
     # both include single/cert/lb so the inputs.suites null-check keeps the
     # job running on plain PR pushes.
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks')
+    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-iam')
     runs-on: [self-hosted, ci-single]
-    timeout-minutes: 45
+    timeout-minutes: 50
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}
@@ -110,6 +107,10 @@ jobs:
           awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
             | sort -r | xargs -r -I{} sudo umount -l -R {} || true
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+          # ARTIFACT_DIR lives in /tmp, outside the workspace, so a re-run on
+          # the same self-hosted runner reuses it. Wipe it so a prior attempt's
+          # stale suite-status.txt / analysis dirs can't leak into this attempt.
+          rm -rf "${ARTIFACT_DIR}"
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -118,14 +119,14 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 
@@ -223,13 +224,10 @@ jobs:
           scp "${SSH_OPTS[@]}" \
             /tmp/eks-node-image-build/eks-node-alpine.raw \
             "$VM":/tmp/eks-node-alpine.raw
-          # Drop the import progress bar (pterm redraws to stdout — thousands of
-          # lines over the SSH pipe). Errors go to stderr, so they survive; the
-          # exit code still gates the step.
           ssh "${SSH_OPTS[@]}" "$VM" \
             "spx admin images import --file /tmp/eks-node-alpine.raw \
                --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
-               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null 2>&1
           ok "eks-node AMI imported"
 
       # The eks data-plane subtest (TestEKS/KubectlGetNodes) drives the full
@@ -466,14 +464,14 @@ jobs:
       - name: Fail job if any suite failed
         if: always()
         run: |
-          if [ "${{ steps.e2e.outputs.rc }}" != "0" ] || [ -s "${ARTIFACT_DIR}/suite-status.txt" ]; then
+          if [ "${{ steps.e2e.outputs.rc }}" != "0" ]; then
             echo "::error::E2E suites failed (rc=${{ steps.e2e.outputs.rc }})"
             cat "${ARTIFACT_DIR}/suite-status.txt" 2>/dev/null || true
             exit 1
           fi
 
-  e2e_real_multi:
-    name: Real Multi-Node E2E
+  e2e_multi:
+    name: Multi-Node E2E
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode')
     runs-on: [self-hosted, ci-multi]
     timeout-minutes: 60
@@ -506,6 +504,10 @@ jobs:
           awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
             | sort -r | xargs -r -I{} sudo umount -l -R {} || true
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+          # ARTIFACT_DIR lives in /tmp, outside the workspace, so a re-run on
+          # the same self-hosted runner reuses it. Wipe it so a prior attempt's
+          # stale suite-status.txt / analysis dirs can't leak into this attempt.
+          rm -rf "${ARTIFACT_DIR}"
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -514,14 +516,14 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: spinifex
 
@@ -593,12 +595,15 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          # single + iam are single-node-only suites — their fixtures skip
+          # unless SPINIFEX_MODE=single, so building/running them on multinode
+          # is wasted work.
           # eks is excluded on multinode: EKS KV is a clustered (Raft) JetStream
           # stream and create-cluster needs an elected leader, but multinode
           # JetStream clustering isn't solid yet (mulga-omq/z2z/5yg). EKS is
           # validated single-node only for now; re-enable here once clustered
           # JetStream + multinode EKS are a deliberate target.
-          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks)$' | tr '\n' ' ')
+          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks|iam)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_BUILD}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); nothing to build"
             exit 0
@@ -660,9 +665,6 @@ jobs:
             echo "=== systemctl is-active spinifex-* ==="
             ssh "${SSH_OPTS[@]}" "$VM" 'for s in spinifex-nats spinifex-predastore spinifex-awsgw spinifex-vpcd spinifex-daemon; do printf "%-22s %s\n" "$s" "$(systemctl is-active $s 2>&1)"; done'
             echo
-            echo "=== which spx + version ==="
-            ssh "${SSH_OPTS[@]}" "$VM" 'which spx; spx --version 2>&1 || true'
-            echo
             echo "=== spx get nodes (direct ssh, tf-user) ==="
             ssh "${SSH_OPTS[@]}" "$VM" 'spx get nodes --timeout 5s 2>&1; echo "exit=$?"'
             echo
@@ -681,7 +683,7 @@ jobs:
         id: e2e
         run: |
           set +e
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks)$' | tr '\n' ' ')
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(single|eks|iam)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"
@@ -876,7 +878,7 @@ jobs:
       - name: Fail job if any suite failed
         if: always()
         run: |
-          if [ "${{ steps.e2e.outputs.rc }}" != "0" ] || [ -s "${ARTIFACT_DIR}/suite-status.txt" ]; then
+          if [ "${{ steps.e2e.outputs.rc }}" != "0" ]; then
             echo "::error::Multi-node E2E suites failed (rc=${{ steps.e2e.outputs.rc }})"
             cat "${ARTIFACT_DIR}/suite-status.txt" 2>/dev/null || true
             exit 1
@@ -885,28 +887,24 @@ jobs:
   e2e_status:
     name: Report E2E Status
     if: always()
-    needs: [e2e_single, e2e_real_multi]
-    runs-on: ubuntu-latest
+    needs: [e2e_single, e2e_multi]
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Report Status to PR
         env:
           GH_TOKEN: ${{ github.token }}
-          REPORT_SHA: ${{ inputs.sha || github.sha }}
+          REPORT_SHA: ${{ github.sha }}
         run: |
-          if [[ -z "${REPORT_SHA}" ]]; then
-            echo "::error::no SHA available (inputs.sha and github.sha both empty)"
-            exit 1
-          fi
           single_ok=true; multi_ok=true
           case "${{ needs.e2e_single.result }}" in success|skipped) ;; *) single_ok=false ;; esac
-          case "${{ needs.e2e_real_multi.result }}" in success|skipped) ;; *) multi_ok=false ;; esac
+          case "${{ needs.e2e_multi.result }}" in success|skipped) ;; *) multi_ok=false ;; esac
           if $single_ok && $multi_ok; then
             STATE="success"
             DESC="E2E suites passed"
           else
             STATE="failure"
-            DESC="E2E failed: single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_real_multi.result }}"
+            DESC="E2E failed: single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_multi.result }}"
           fi
           gh api "repos/${{ github.repository }}/statuses/${REPORT_SHA}" \
             -f state="$STATE" \

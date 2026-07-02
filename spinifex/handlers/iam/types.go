@@ -1,6 +1,10 @@
 package handlers_iam
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/mulgadc/predastore/pkg/iampolicy"
+)
 
 const (
 	AccessKeyStatusActive   = "Active"
@@ -9,21 +13,47 @@ const (
 	AccountStatusActive    = "ACTIVE"
 	AccountStatusSuspended = "SUSPENDED"
 
-	PolicyEffectAllow = "Allow"
-	PolicyEffectDeny  = "Deny"
+	PolicyEffectAllow = iampolicy.EffectAllow
+	PolicyEffectDeny  = iampolicy.EffectDeny
+)
+
+// The IAM policy-document DTOs are owned by predastore's pkg/iampolicy so
+// predastore and spinifex share one definition. These aliases keep every
+// existing spinifex reference (and its JSON (un)marshalling) working unchanged.
+type (
+	PolicyDocument = iampolicy.PolicyDocument
+	Statement      = iampolicy.Statement
+	StringOrArr    = iampolicy.StringOrArr
 )
 
 // User represents an IAM user stored in JetStream KV.
 type User struct {
-	UserName         string   `json:"user_name"`
-	UserID           string   `json:"user_id"`
-	AccountID        string   `json:"account_id"`
-	ARN              string   `json:"arn"`
-	Path             string   `json:"path"`
-	CreatedAt        string   `json:"created_at"`
-	AccessKeys       []string `json:"access_keys"`
-	Tags             []Tag    `json:"tags"`
-	AttachedPolicies []string `json:"attached_policies"` // policy ARNs
+	UserName         string            `json:"user_name"`
+	UserID           string            `json:"user_id"`
+	AccountID        string            `json:"account_id"`
+	ARN              string            `json:"arn"`
+	Path             string            `json:"path"`
+	CreatedAt        string            `json:"created_at"`
+	AccessKeys       []string          `json:"access_keys"`
+	Tags             []Tag             `json:"tags"`
+	AttachedPolicies []string          `json:"attached_policies"`         // policy ARNs
+	Groups           []string          `json:"groups"`                    // group NAMES the user belongs to (≤10)
+	InlinePolicies   map[string]string `json:"inline_policies,omitempty"` // policyName → document JSON
+}
+
+// Group is a permission-grouping IAM identity stored in JetStream KV.
+// Members are NOT stored here; membership is canonical on the User record
+// (User.Groups) so the authorization hot path never scans the groups bucket.
+type Group struct {
+	GroupName        string            `json:"group_name"`
+	GroupID          string            `json:"group_id"`
+	AccountID        string            `json:"account_id"`
+	ARN              string            `json:"arn"`
+	Path             string            `json:"path"`
+	CreatedAt        string            `json:"created_at"`
+	AttachedPolicies []string          `json:"attached_policies"`         // policy ARNs
+	InlinePolicies   map[string]string `json:"inline_policies,omitempty"` // policyName → document JSON
+	Tags             []Tag             `json:"tags"`
 }
 
 // AccessKey represents an IAM access key stored in JetStream KV.
@@ -57,34 +87,21 @@ type Policy struct {
 	Tags           []Tag  `json:"tags"`
 }
 
-// PolicyDocument is the parsed IAM policy JSON structure.
-type PolicyDocument struct {
-	Version   string      `json:"Version"`
-	Statement []Statement `json:"Statement"`
-}
-
-// Statement is a single statement within a policy document.
-type Statement struct {
-	Sid      string      `json:"Sid,omitempty"`
-	Effect   string      `json:"Effect"`
-	Action   StringOrArr `json:"Action"`
-	Resource StringOrArr `json:"Resource"`
-}
-
 // Role is an assumable IAM identity stored in JetStream KV.
 // AssumeRolePolicyDocument is stored opaque; parsed for shape validation only.
 type Role struct {
-	RoleName                 string   `json:"role_name"`
-	RoleID                   string   `json:"role_id"`
-	AccountID                string   `json:"account_id"`
-	ARN                      string   `json:"arn"`
-	Path                     string   `json:"path"`
-	Description              string   `json:"description,omitempty"`
-	AssumeRolePolicyDocument string   `json:"assume_role_policy_document"`
-	MaxSessionDuration       int64    `json:"max_session_duration,omitempty"`
-	CreatedAt                string   `json:"created_at"`
-	AttachedPolicies         []string `json:"attached_policies"` // policy ARNs
-	Tags                     []Tag    `json:"tags"`
+	RoleName                 string            `json:"role_name"`
+	RoleID                   string            `json:"role_id"`
+	AccountID                string            `json:"account_id"`
+	ARN                      string            `json:"arn"`
+	Path                     string            `json:"path"`
+	Description              string            `json:"description,omitempty"`
+	AssumeRolePolicyDocument string            `json:"assume_role_policy_document"`
+	MaxSessionDuration       int64             `json:"max_session_duration,omitempty"`
+	CreatedAt                string            `json:"created_at"`
+	AttachedPolicies         []string          `json:"attached_policies"`         // policy ARNs
+	InlinePolicies           map[string]string `json:"inline_policies,omitempty"` // policyName → document JSON
+	Tags                     []Tag             `json:"tags"`
 }
 
 // InstanceProfile is a container for at most one Role, attachable to EC2 instances.
@@ -119,33 +136,6 @@ type TrustStatement struct {
 	Action       StringOrArr     `json:"Action"`
 	NotAction    StringOrArr     `json:"NotAction,omitempty"`
 	Condition    json.RawMessage `json:"Condition,omitempty"`
-}
-
-// StringOrArr handles JSON fields that can be either a string or an array of strings.
-type StringOrArr []string
-
-// UnmarshalJSON implements custom unmarshaling for string-or-array fields.
-func (s *StringOrArr) UnmarshalJSON(data []byte) error {
-	var single string
-	if err := json.Unmarshal(data, &single); err == nil {
-		*s = []string{single}
-		return nil
-	}
-
-	var arr []string
-	if err := json.Unmarshal(data, &arr); err != nil {
-		return err
-	}
-	*s = arr
-	return nil
-}
-
-// MarshalJSON marshals as a string if single element, otherwise as an array.
-func (s StringOrArr) MarshalJSON() ([]byte, error) {
-	if len(s) == 1 {
-		return json.Marshal(s[0])
-	}
-	return json.Marshal([]string(s))
 }
 
 // BootstrapData is the on-disk JSON file consumed on first gateway start

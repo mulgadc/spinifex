@@ -16,11 +16,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/predastore/pkg/iampolicy"
 	"github.com/mulgadc/predastore/ratelimit"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
+	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -45,6 +48,17 @@ const (
 	// Policy enforcement resolves the role name from this, never from ctxIdentity
 	// (attacker-influenced RoleSessionName).
 	ctxUnderlyingRoleARN contextKey = "sigv4.underlyingRoleARN"
+
+	// ctxTargetAccount carries the accountID parsed from a registry host
+	// ({accountID}.dkr.ecr.{region}.{suffix}) by the host-routing middleware.
+	ctxTargetAccount contextKey = "host.targetAccount"
+	// ctxTargetRegion carries the region parsed from the same registry host.
+	ctxTargetRegion contextKey = "host.targetRegion"
+
+	// ctxAuthPrincipal carries the verified ECR token subject (principal ARN).
+	// The resolved account is stashed via gateway_ecr.WithAuthAccount so the
+	// registry package can read it without sharing this package's key type.
+	ctxAuthPrincipal contextKey = "ecr.authPrincipal"
 )
 
 // Values stored under ctxPrincipalType. Downstream handlers that interpret
@@ -63,13 +77,35 @@ type GatewayConfig struct {
 	Config         string     // Shared AWS Gateway config for S3 auth
 	ExpectedNodes  int        // Number of expected spinifex nodes for multi-node operations
 	Region         string     // Region this gateway is running in
-	AZ             string     // Availability zone this gateway is running in
-	IAMService     handlers_iam.IAMService
-	STSService     handlers_sts.STSService
-	RateLimiter    *AuthRateLimiter     // Per-IP auth failure rate limiter
-	Throttler      *ratelimit.Throttler // Per-account+action API request throttler
-	Version        string               // Build-time version string (set from cmd.Version)
-	Commit         string               // Build-time commit hash (set from cmd.Commit)
+	InternalSuffix string     // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
+	// RegistryPort is the gateway's advertised port, appended to the ECR
+	// registry host so docker login/tag/push dial the right port. Empty or
+	// "443" renders a port-less host (standard HTTPS parity).
+	RegistryPort string
+	// RegistryHost is the gateway's advertised registry host. When set, ECR URIs
+	// use it (account comes from the auth token), so docker needs no DNS — it is
+	// the same reachable, cert-covered host clients use for the AWS API. Empty
+	// falls back to the per-account <acct>.dkr.ecr.<region>.<suffix> name.
+	RegistryHost string
+	AZ           string // Availability zone this gateway is running in
+	IAMService   handlers_iam.IAMService
+	STSService   handlers_sts.STSService
+	RateLimiter  *AuthRateLimiter     // Per-IP auth failure rate limiter
+	Throttler    *ratelimit.Throttler // Per-account+action API request throttler
+	// Quota enforces per-account service quotas. Built unconditionally; a disabled
+	// config yields a no-op Service whose Exempt always returns true. Nil only in
+	// unit tests of unrelated routes, where no handler reaches the quota checks.
+	Quota   *handlers_quota.Service
+	Version string // Build-time version string (set from cmd.Version)
+	Commit  string // Build-time commit hash (set from cmd.Commit)
+	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
+	// to the 501 stub (e.g. in unit tests of unrelated routes).
+	ECRRegistry *gateway_ecr.Registry
+	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
+	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
+	// in unit tests of unrelated routes).
+	ECRTokenIssuer   *gateway_ecrauth.Issuer
+	ECRTokenVerifier *gateway_ecrauth.Verifier
 }
 
 var supportedServices = map[string]bool{
@@ -79,6 +115,8 @@ var supportedServices = map[string]bool{
 	"account":              true,
 	"elasticloadbalancing": true,
 	"eks":                  true,
+	"ecs":                  true,
+	"ecr":                  true,
 	"acm":                  true,
 	"tagging":              true,
 	"spinifex":             true,
@@ -140,6 +178,10 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 		pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/keys", gw.OIDCJWKS)
 	})
 
+	// OCI Distribution registry (/v2/*). Token/host-authenticated rather than
+	// SigV4-credential-scoped, so it mounts outside the SigV4 group.
+	gw.mountOCIRegistry(r)
+
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {
 		auth.Use(gw.SigV4AuthMiddleware())
@@ -192,8 +234,8 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.Request, svc string) {
 	requestID := uuid.NewString()
 
-	// EKS uses AWS REST-JSON 1.1.
-	if svc == "eks" {
+	// EKS and ECS use AWS JSON 1.1.
+	if svc == "eks" || svc == "ecs" {
 		body := GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -244,8 +286,8 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	}
 	errorMsg := awserrors.ErrorLookup[errorCode]
 
-	// EKS uses AWS REST-JSON 1.1.
-	if svc == "eks" {
+	// EKS and ECS use AWS JSON 1.1.
+	if svc == "eks" || svc == "ecs" {
 		body := GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(errorMsg.HTTPCode)
@@ -299,6 +341,10 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ELBv2_Request(w, r)
 	case "eks":
 		err = gw.EKS_Request(w, r)
+	case "ecs":
+		err = gw.ECS_Request(w, r)
+	case "ecr":
+		err = gw.ECR_Request(w, r)
 	case "acm":
 		err = gw.ACM_Request(w, r)
 	case "tagging":
@@ -430,7 +476,7 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	if policy.EvaluateAccess(logIdentity, iamAction, resource, policies) == policy.Deny {
+	if iampolicy.Evaluate(iamAction, resource, policies) == iampolicy.Deny {
 		slog.Info("checkPolicy: access denied", "identity", logIdentity, "action", iamAction, "resource", resource)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
@@ -456,8 +502,8 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	// EKS, ACM, and tagging use AWS JSON 1.1; query/XML services fall through.
-	if svc == "eks" || svc == "acm" || svc == "tagging" {
+	// EKS, ECR, ACM, ECS, and tagging use AWS JSON 1.1; query/XML services fall through.
+	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" {
 		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err.Error(), "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)
@@ -578,17 +624,6 @@ func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
 	return output
 }
 
-func ParseArgsToStruct(input *any, args map[string]string) (err error) {
-	// Generated from input shape: RunInstancesRequest
-	err = awsec2query.QueryParamsToStruct(args, input)
-
-	if err != nil {
-		return errors.New(awserrors.ErrorInvalidParameter)
-	}
-
-	return nil
-}
-
 // DiscoverActiveNodes discovers the number of active spinifex daemon nodes in the cluster
 // by publishing a discovery request and counting unique responses.
 // Returns the number of active nodes (minimum 1 if fallback is needed).
@@ -598,45 +633,20 @@ func (gw *GatewayConfig) DiscoverActiveNodes() int {
 		return gw.ExpectedNodes
 	}
 
-	inbox := nats.NewInbox()
-	sub, err := gw.NATSConn.SubscribeSync(inbox)
+	frames, _, err := utils.Gather(gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
+		utils.GatherOpts{Timeout: 500 * time.Millisecond})
 	if err != nil {
-		slog.Error("DiscoverActiveNodes: Failed to create inbox subscription", "err", err)
+		slog.Error("DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
 	}
-	defer sub.Unsubscribe()
-
-	err = gw.NATSConn.PublishRequest("spinifex.nodes.discover", inbox, []byte("{}"))
-	if err != nil {
-		slog.Error("DiscoverActiveNodes: Failed to publish request", "err", err)
-		return gw.ExpectedNodes
-	}
-
-	timeout := 500 * time.Millisecond
-	deadline := time.Now().Add(timeout)
 
 	nodesSeen := make(map[string]bool)
-	for time.Now().Before(deadline) {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-
-		msg, err := sub.NextMsg(remaining)
-		if err != nil {
-			if err == nats.ErrTimeout {
-				break
-			}
-			slog.Debug("DiscoverActiveNodes: Error receiving message", "err", err)
-			break
-		}
-
+	for _, frame := range frames {
 		var response types.NodeDiscoverResponse
-		if err := json.Unmarshal(msg.Data, &response); err != nil {
+		if err := json.Unmarshal(frame, &response); err != nil {
 			slog.Debug("DiscoverActiveNodes: Failed to unmarshal response", "err", err)
 			continue
 		}
-
 		nodesSeen[response.Node] = true
 	}
 

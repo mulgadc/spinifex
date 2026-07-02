@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -52,6 +53,7 @@ func (d *Daemon) handleAttachNetworkInterface(msg *nats.Msg, command types.EC2In
 	}
 	if err := d.vpcService.UpdateENI(accountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
 		r.AttachmentStatus = "attaching"
+		r.AttachmentStateAt = time.Now()
 		r.LastAttachError = ""
 	}); err != nil {
 		slog.Warn("AttachNetworkInterface: failed to mark attaching state",
@@ -78,6 +80,7 @@ func (d *Daemon) handleAttachNetworkInterface(msg *nats.Msg, command types.EC2In
 	if err := d.vpcService.UpdateENI(accountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
 		r.AttachmentStatus = "attached"
 		r.HotPlugSlot = res.Slot
+		r.AttachmentStateAt = time.Now()
 	}); err != nil {
 		slog.Warn("AttachNetworkInterface: failed to mark attached state",
 			"eniId", eniID, "err", err)
@@ -128,6 +131,7 @@ func (d *Daemon) handleDetachNetworkInterface(msg *nats.Msg, command types.EC2In
 
 	if err := d.vpcService.UpdateENI(accountID, record.NetworkInterfaceId, func(r *handlers_ec2_vpc.ENIRecord) {
 		r.AttachmentStatus = "detaching"
+		r.AttachmentStateAt = time.Now()
 		r.DetachInFlight = true
 		r.DetachForce = force
 	}); err != nil {
@@ -154,6 +158,7 @@ func (d *Daemon) handleDetachNetworkInterface(msg *nats.Msg, command types.EC2In
 		r.HotPlugSlot = 0
 		r.DetachInFlight = false
 		r.DetachForce = false
+		r.AttachmentStateAt = time.Now()
 	})
 
 	publishENIHotplugEvent(d.natsConn, "vpc.eni-hotplug.detached", instance.ID, map[string]any{

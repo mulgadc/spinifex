@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -299,11 +301,7 @@ func buildCanonicalHeaders(host, xK8sAwsID string) (canonicalHeaders, signedHead
 		presignedHostHeader:   host,
 		presignedSignedHeader: xK8sAwsID,
 	}
-	names := make([]string, 0, len(headers))
-	for n := range headers {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(headers))
 	var b strings.Builder
 	for _, n := range names {
 		b.WriteString(n)

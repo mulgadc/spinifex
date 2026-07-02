@@ -11,7 +11,7 @@
 #
 # After apply:
 #   curl http://<public_ip>        # Nginx welcome page
-#   ssh -i nginx-demo.pem ec2-user@<public_ip>
+#   ssh -i nginx-demo.pem ubuntu@<public_ip>
 
 terraform {
   required_version = ">= 1.6.0"
@@ -283,7 +283,7 @@ output "public_ip" {
 }
 
 output "ssh_command" {
-  value = "ssh -i nginx-demo.pem ec2-user@${aws_instance.nginx.public_ip}"
+  value = "ssh -i nginx-demo.pem ubuntu@${aws_instance.nginx.public_ip}"
 }
 
 output "web_url" {

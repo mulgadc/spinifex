@@ -5,9 +5,7 @@ package gateway_eks
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -74,40 +72,4 @@ func WriteJSONError(w http.ResponseWriter, code, message string, httpStatus int)
 	if _, err := w.Write(body); err != nil {
 		slog.Error("Failed to write EKS error response", "err", err)
 	}
-}
-
-// WriteErrorFromCode looks up an awserrors code and writes the JSON error
-// envelope. Falls back to 500 InternalError for unknown codes.
-func WriteErrorFromCode(w http.ResponseWriter, code string) {
-	msg, ok := awserrors.ErrorLookup[code]
-	if !ok {
-		slog.Warn("Unknown EKS error code", "code", code)
-		WriteJSONError(w, awserrors.ErrorInternalError, "Internal error", http.StatusInternalServerError)
-		return
-	}
-	httpStatus := msg.HTTPCode
-	if httpStatus == 0 {
-		httpStatus = http.StatusInternalServerError
-	}
-	WriteJSONError(w, code, msg.Message, httpStatus)
-}
-
-// ParseJSONBody decodes the request body into an aws-sdk-go input struct.
-// Empty bodies (valid for GET/DELETE) return a zero-valued struct.
-func ParseJSONBody[T any](r *http.Request) (*T, error) {
-	out := new(T)
-	if r.Body == nil {
-		return out, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-	if len(body) == 0 {
-		return out, nil
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	return out, nil
 }

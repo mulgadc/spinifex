@@ -78,6 +78,7 @@ type ClusterMeta struct {
 	EgressEIPPublicIP     string    `json:"egressEipPublicIp,omitempty"`
 	NLBArn                string    `json:"nlbArn,omitempty"`
 	NLBTargetGroupArn     string    `json:"nlbTargetGroupArn,omitempty"`
+	KonnTargetGroupArn    string    `json:"konnTargetGroupArn,omitempty"`
 	CreatedAt             time.Time `json:"createdAt"`
 	// DeletingSince stamps when the cluster entered DELETING. The teardown
 	// backstop reaper waits out a healthy synchronous DeleteCluster (min-age)
@@ -92,9 +93,6 @@ type ClusterMeta struct {
 	LastHealthProbe time.Time `json:"lastHealthProbe"`
 	// NodeCount is the node total from the CP's last NATS state report.
 	NodeCount int `json:"nodeCount,omitempty"`
-	// BuiltinIngress is true when the cluster opted into K3s' bundled traefik + servicelb.
-	// Default false = AWS parity (ingress via the AWS Load Balancer Controller).
-	BuiltinIngress bool `json:"builtinIngress,omitempty"`
 	// Tags are the create-time resource tags, stored verbatim so DescribeCluster
 	// echoes them back. Without the round-trip a stock terraform-aws provider
 	// reconciling default_tags sees perpetual drift and issues TagResource on

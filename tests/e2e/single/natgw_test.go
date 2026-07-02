@@ -128,10 +128,10 @@ func runNATGateway(t *testing.T, fix *Fixture) {
 	// Wait for bastion SSH handshake so the SCP below has somewhere to land.
 	waitForSSHReady(t, bastionPubIP, 22, keyPath)
 
-	bastionTgt := harness.SSHTarget{User: "ec2-user", Host: bastionPubIP, Port: 22, KeyPath: keyPath}
+	bastionTgt := harness.SSHTarget{User: "ubuntu", Host: bastionPubIP, Port: 22, KeyPath: keyPath}
 
 	// Copy the keypair to the bastion so it can hop into the private VM.
-	// Matches the bash `scp ... ec2-user@$PUB_IP:/tmp/key.pem` step.
+	// Matches the bash `scp ... ubuntu@$PUB_IP:/tmp/key.pem` step.
 	harness.Step(t, "scp keypair -> bastion:/tmp/key.pem")
 	scpKey(t, keyPath, bastionPubIP)
 	_ = runSSH(t, bastionTgt, "chmod 600 /tmp/key.pem")
@@ -141,7 +141,7 @@ func runNATGateway(t *testing.T, fix *Fixture) {
 	privProbe := fmt.Sprintf(
 		"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "+
 			"-o LogLevel=ERROR -o ConnectTimeout=10 -o BatchMode=yes "+
-			"-i /tmp/key.pem ec2-user@%s hostname",
+			"-i /tmp/key.pem ubuntu@%s hostname",
 		privIP,
 	)
 	harness.Step(t, "wait for private SSH via bastion")
@@ -161,7 +161,7 @@ func runNATGateway(t *testing.T, fix *Fixture) {
 		return fmt.Sprintf(
 			"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "+
 				"-o LogLevel=ERROR -o ConnectTimeout=10 -o BatchMode=yes "+
-				"-i /tmp/key.pem ec2-user@%s 'ping -c 1 -W 3 8.8.8.8'",
+				"-i /tmp/key.pem ubuntu@%s 'ping -c 1 -W 3 8.8.8.8'",
 			privIP,
 		)
 	}
@@ -272,6 +272,17 @@ func runNATGateway(t *testing.T, fix *Fixture) {
 
 	// --- Verify private VM CAN reach the internet now --------------------
 	// OVN needs a beat to install datapath flows after SNAT publishes.
+	// Snapshot the SNAT datapath if egress never comes up; without this the
+	// failure bundle carries no OVN/OVS state to root-cause the loss.
+	harness.OnFailure(t, func() {
+		harness.DumpVPCFlowDiagnostics(t, c, privID,
+			fmt.Sprintf("NAT GW egress — nat_gw=%s external_ip=%s logical_ip=%s", natGWID, natPubIP, privIP),
+			harness.VPCDiagnosticsOpts{
+				ExternalIP:  natPubIP,
+				LogicalIP:   privIP,
+				ArtifactDir: fix.ArtifactDir(t),
+			})
+	})
 	harness.Step(t, "verify private VM reaches 8.8.8.8 via NAT GW")
 	harness.EventuallyErr(t, func() error {
 		out, perr := runSSHQuiet(bastionTgt, pingCmd())
@@ -412,7 +423,7 @@ func waitForInstanceStateSoft(c *harness.AWSClient, id, target string, timeout t
 }
 
 // scpKey copies the harness PEM to /tmp/key.pem on the bastion. Matches
-// the bash `scp -i $KEY $KEY ec2-user@$PUB_IP:/tmp/key.pem` step — the
+// the bash `scp -i $KEY $KEY ubuntu@$PUB_IP:/tmp/key.pem` step — the
 // private VM then accepts that key for the hop.
 func scpKey(t *testing.T, keyPath, host string) {
 	t.Helper()
@@ -424,7 +435,7 @@ func scpKey(t *testing.T, keyPath, host string) {
 		"-o", "BatchMode=yes",
 		"-i", keyPath,
 		keyPath,
-		"ec2-user@" + host + ":/tmp/key.pem",
+		"ubuntu@" + host + ":/tmp/key.pem",
 	}
 	cmd := exec.Command("scp", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {

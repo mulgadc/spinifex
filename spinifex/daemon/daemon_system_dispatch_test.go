@@ -356,7 +356,7 @@ func TestLaunchSystemInstanceOnNode_RemoteWithoutConn(t *testing.T) {
 	require.Error(t, err, "remote placement requires a NATS connection")
 }
 
-// TestTerminateSystemInstanceRemote_RoundTrip locks mulga-siv-295.10: terminating
+// TestTerminateSystemInstanceRemote_RoundTrip locks the contract that terminating
 // a CP VM this node does not own routes over system.TerminateInstance.{id} to the
 // owning daemon, which stops qemu and cascade-deletes the ENI before replying —
 // so the cluster-wide teardown actually frees the remote ENI instead of deleting

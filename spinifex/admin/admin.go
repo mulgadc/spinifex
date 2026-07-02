@@ -60,6 +60,10 @@ type ConfigSettings struct {
 	// Predastore multi-node
 	PredastoreNodeID int
 
+	// CompactionIntervalSeconds gates the predastore [compaction] block. Zero
+	// means unset: no block is emitted and predastore keeps its built-in default.
+	CompactionIntervalSeconds int
+
 	// Node capabilities
 	Services []string
 
@@ -165,7 +169,22 @@ func GenerateConfigFile(configPath string, configTemplate string, configSettings
 	return nil
 }
 
-func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string) (caCertPath string) {
+// AWSGWServiceDNSNames builds the AWS-parity TLS SANs for the awsgw cert from
+// the cluster region and internal suffix: the exact ECR control-plane host and
+// the wildcard covering per-account registry hosts. Returns nil if either input
+// is empty so callers omit the SANs rather than emitting malformed names.
+func AWSGWServiceDNSNames(region, suffix string) []string {
+	if region == "" || suffix == "" {
+		return nil
+	}
+	base := "ecr." + region + "." + suffix
+	return []string{
+		base,            // control plane: ecr.{region}.{suffix}
+		"*.dkr." + base, // registry: *.dkr.ecr.{region}.{suffix}
+	}
+}
+
+func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, awsRegion, internalSuffix string) (caCertPath string) {
 	caCertPath = filepath.Join(configDir, "ca.pem")
 	caKeyPath := filepath.Join(configDir, "ca.key")
 	serverCertPath := filepath.Join(configDir, "server.pem")
@@ -187,7 +206,8 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string) (
 		fmt.Printf("   CA Certificate: %s\n", caCertPath)
 		fmt.Printf("   CA Key: %s\n", caKeyPath)
 
-		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, bindIP); err != nil {
+		extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
+		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
 			os.Exit(1)
 		}
@@ -210,8 +230,9 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string) (
 }
 
 // GenerateServerCertOnly generates a server certificate signed by an existing CA.
-// Used by joining nodes that receive the CA from the leader.
-func GenerateServerCertOnly(configDir string, bindIP string) error {
+// Used by joining nodes that receive the CA from the leader. awsRegion and
+// internalSuffix add the AWS-parity ECR SANs; empty values omit them.
+func GenerateServerCertOnly(configDir string, bindIP, awsRegion, internalSuffix string) error {
 	caCertPath := filepath.Join(configDir, "ca.pem")
 	caKeyPath := filepath.Join(configDir, "ca.key")
 	serverCertPath := filepath.Join(configDir, "server.pem")
@@ -221,7 +242,8 @@ func GenerateServerCertOnly(configDir string, bindIP string) error {
 		return fmt.Errorf("CA files not found in %s", configDir)
 	}
 
-	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, bindIP)
+	extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
+	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS)
 }
 
 func CreateServiceDirectories(spxRoot string) {
@@ -362,6 +384,7 @@ func SetServiceOwnership() {
 	// so /etc/spinifex stays at 0750 (no group-write needed).
 	for path, mode := range map[string]os.FileMode{
 		"/etc/spinifex/spinifex.toml":             0640,
+		"/etc/spinifex/awsgw/awsgw.toml":          0640,
 		"/etc/spinifex/master.key":                0640,
 		"/etc/spinifex/viperblock/encryption.key": 0640,
 		"/etc/spinifex/server.pem":                0644,
@@ -612,16 +635,9 @@ func DiscoverHostname() string {
 }
 
 // GenerateSignedCert generates a server certificate signed by the CA.
-// extraIPs are additional IP addresses to include in the certificate's SANs.
-// All non-loopback interface IPs on the local machine are automatically included.
-func GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath string, extraIPs ...string) error {
-	return GenerateSignedCertWithDNS(certPath, keyPath, caCertPath, caKeyPath, extraIPs, nil)
-}
-
-// GenerateSignedCertWithDNS generates a server certificate signed by the CA.
 // All non-loopback interface IPs and the machine hostname are automatically
 // included. extraIPs and extraDNS allow adding additional SANs.
-func GenerateSignedCertWithDNS(certPath, keyPath, caCertPath, caKeyPath string, extraIPs, extraDNS []string) error {
+func GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath string, extraIPs, extraDNS []string) error {
 	caCertPEM, err := os.ReadFile(caCertPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA cert: %w", err)
@@ -751,69 +767,6 @@ func GenerateSignedCertWithDNS(certPath, keyPath, caCertPath, caKeyPath string, 
 	return nil
 }
 
-// GenerateSelfSignedCert generates a self-signed SSL certificate (legacy, kept for compatibility).
-func GenerateSelfSignedCert(certPath, keyPath string) error {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return fmt.Errorf("failed to generate private key: %w", err)
-	}
-
-	notBefore := time.Now()
-	notAfter := notBefore.Add(3650 * 24 * time.Hour) // 10 years
-
-	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return fmt.Errorf("failed to generate serial number: %w", err)
-	}
-
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			CommonName:   "localhost",
-			Organization: []string{"Spinifex Platform"},
-		},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost"},
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
-	if err != nil {
-		return fmt.Errorf("failed to create certificate: %w", err)
-	}
-
-	certOut, err := os.Create(certPath)
-	if err != nil {
-		return fmt.Errorf("failed to create cert file: %w", err)
-	}
-	defer certOut.Close()
-
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return fmt.Errorf("failed to write cert: %w", err)
-	}
-
-	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to create key file: %w", err)
-	}
-	defer keyOut.Close()
-
-	privBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		return fmt.Errorf("failed to marshal private key: %w", err)
-	}
-
-	if err := pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}); err != nil {
-		return fmt.Errorf("failed to write key: %w", err)
-	}
-
-	return nil
-}
-
 // SetupAWSCredentials updates ~/.aws/credentials and ~/.aws/config.
 // When running under sudo, writes to SUDO_USER's home instead of root's.
 func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP, wanIP string) error {
@@ -882,25 +835,26 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP, wanIP s
 // GenerateMultiNodePredastoreConfig produces a complete predastore.toml for a
 // multi-node Predastore cluster. Each node gets its own DB entry (port 6660)
 // and shard entry (port 9991) on a distinct IP. Node ID 1 is the bootstrap leader.
-func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string) (string, error) {
+func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string, compactionIntervalSeconds int) (string, error) {
 	if len(nodes) < 2 {
 		return "", fmt.Errorf("multi-node predastore requires at least 2 nodes, got %d", len(nodes))
 	}
 
 	data := struct {
-		Nodes     []PredastoreNodeConfig
-		AccessKey string
-		SecretKey string
-		Region    string
-		NatsToken string
-		ConfigDir string
-		BindIP    string
+		Nodes                     []PredastoreNodeConfig
+		AccessKey                 string
+		SecretKey                 string
+		Region                    string
+		NatsToken                 string
+		ConfigDir                 string
+		BindIP                    string
+		CompactionIntervalSeconds int
 		// Northstar provisioning is single-node only for V1; these stay empty
 		// in the multi-node path so the template omits the northstar stanzas.
 		NorthstarAccessKey string
 		NorthstarSecretKey string
 		NorthstarBucket    string
-	}{Nodes: nodes, AccessKey: accessKey, SecretKey: secretKey, Region: region, NatsToken: natsToken, ConfigDir: configDir, BindIP: bindIP}
+	}{Nodes: nodes, AccessKey: accessKey, SecretKey: secretKey, Region: region, NatsToken: natsToken, ConfigDir: configDir, BindIP: bindIP, CompactionIntervalSeconds: compactionIntervalSeconds}
 
 	tmpl, err := template.New("predastore-multinode").Parse(templateStr)
 	if err != nil {

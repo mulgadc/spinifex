@@ -31,6 +31,42 @@ func countFamily(types map[string]*ec2.InstanceTypeInfo, prefix string) int {
 	return count
 }
 
+func TestDefaultVCPUs(t *testing.T) {
+	cases := []struct {
+		name  string
+		vcpus int
+		ok    bool
+	}{
+		{"t3.micro", 2, true},      // burstable
+		{"c5.large", 2, true},      // compute optimized
+		{"m5.4xlarge", 16, true},   // general purpose
+		{"r5.2xlarge", 8, true},    // memory optimized
+		{"g5.xlarge", 4, true},     // GPU family, host-arch independent
+		{"sys.micro", 1, true},     // internal system type
+		{"unknown.size", 0, false}, // not a real type
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := DefaultVCPUs(tc.name)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.vcpus, got)
+		})
+	}
+}
+
+func TestDefaultVCPUs_IndependentOfHostGeneration(t *testing.T) {
+	// Every family/size in the catalog resolves regardless of which CPU the
+	// host detects, so reconcile can size instances launched on other nodes.
+	for _, def := range instanceFamilyDefs {
+		for _, size := range def.sizes {
+			name := def.name + "." + size.suffix
+			got, ok := DefaultVCPUs(name)
+			require.True(t, ok, "%s must resolve", name)
+			assert.Equal(t, size.vcpus, got, "%s vCPUs", name)
+		}
+	}
+}
+
 func TestIsSystemType(t *testing.T) {
 	assert.True(t, IsSystemType("sys.micro"))
 	assert.True(t, IsSystemType("sys.small"))
@@ -423,7 +459,7 @@ func TestGPUModelForVendorDevice_Unknown(t *testing.T) {
 }
 
 func TestGenerateGPUTypes_NVIDIAa10g(t *testing.T) {
-	types := generateGPUTypes([]GPUModel{NVIDIAa10g}, "x86_64")
+	types := GenerateGPUTypes([]GPUModel{NVIDIAa10g}, "x86_64")
 
 	// g5 has 5 single-GPU sizes: xlarge, 2xlarge, 4xlarge, 8xlarge, 16xlarge
 	assert.Len(t, types, 5)
@@ -448,17 +484,17 @@ func TestGenerateGPUTypes_NVIDIAa10g(t *testing.T) {
 
 func TestGenerateGPUTypes_DeduplicatesSameFamily(t *testing.T) {
 	// Two GPUs of the same model (same family) should produce only one set of types.
-	types := generateGPUTypes([]GPUModel{NVIDIAa10g, NVIDIAa10g}, "x86_64")
+	types := GenerateGPUTypes([]GPUModel{NVIDIAa10g, NVIDIAa10g}, "x86_64")
 	assert.Len(t, types, 5, "duplicate GPU model should not double the type count")
 }
 
 func TestGenerateGPUTypes_EmptyModels(t *testing.T) {
-	types := generateGPUTypes(nil, "x86_64")
+	types := GenerateGPUTypes(nil, "x86_64")
 	assert.Empty(t, types)
 }
 
 func TestIsGPUType(t *testing.T) {
-	gpuTypes := generateGPUTypes([]GPUModel{NVIDIAa10g}, "x86_64")
+	gpuTypes := GenerateGPUTypes([]GPUModel{NVIDIAa10g}, "x86_64")
 	for name, info := range gpuTypes {
 		assert.True(t, IsGPUType(info), "%s should be a GPU type", name)
 	}

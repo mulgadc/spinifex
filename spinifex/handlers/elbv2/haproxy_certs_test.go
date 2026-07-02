@@ -75,13 +75,6 @@ func TestGenerateHAProxyConfigWithCerts_MissingCertRendersPlain(t *testing.T) {
 	assert.Empty(t, certFiles)
 }
 
-func TestGenerateHAProxyConfig_BackwardCompatNoTLS(t *testing.T) {
-	lb := &LoadBalancerRecord{LoadBalancerID: "lb-abc123", Name: "my-alb"}
-	config, err := GenerateHAProxyConfig(lb, []*ListenerRecord{httpsListener()}, nil, nil, "0.0.0.0")
-	require.NoError(t, err)
-	assert.NotContains(t, config, "ssl crt", "legacy entrypoint resolves no certs")
-}
-
 func TestConfigCertHash_ChangesOnRotation(t *testing.T) {
 	const cfg = "frontend ft\n    bind *:443 ssl crt /etc/haproxy/certs/x.pem\n"
 	path := "/etc/haproxy/certs/x.pem"

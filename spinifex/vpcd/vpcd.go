@@ -121,10 +121,10 @@ type Config struct {
 	// default_domain, e.g. "spx3.net"). IMDS uses it to serve public-hostname.
 	// Empty disables the public-hostname metadata key.
 	NorthstarBaseDomain string
-	// ResolverNameservers are the WAN IPs of cluster nodes running northstar.
-	// When set, they become the DHCP dns_server advertised to instances, so the
-	// guests resolve via the node-local DNS instead of the upstream pool DNS. A
-	// future OVN per-VPC resolver VIP will supersede this.
+	// ResolverNameservers are the WAN IPs of cluster nodes running northstar,
+	// used as the per-tap DNS shim's forward targets. When set, DHCP advertises
+	// the link-local VPC DNS address (169.254.169.253) instead of the upstream
+	// pool DNS.
 	ResolverNameservers []string
 }
 
@@ -601,12 +601,12 @@ func launchService(cfg *Config) error {
 }
 
 // resolverDNSServer returns the OVN dhcp_options dns_server advertised to
-// instances. The node-local northstar resolvers take precedence so guests
-// resolve internal names authoritatively; absent those it falls back to the
-// upstream pool DNS.
+// instances. With northstar configured, guests get the link-local VPC DNS
+// address served by the per-tap shim (which forwards to ResolverNameservers);
+// absent northstar it falls back to the upstream pool DNS.
 func resolverDNSServer(cfg *Config) string {
 	if len(cfg.ResolverNameservers) > 0 {
-		return topology.FormatDNSServerList(cfg.ResolverNameservers)
+		return handlers_imds.VPCDNSServerIP
 	}
 	return pickDNSServer(cfg.ExternalPools)
 }

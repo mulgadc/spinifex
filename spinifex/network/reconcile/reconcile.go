@@ -78,8 +78,9 @@ type Config struct {
 	Chassis []string
 	// GatewayClaim verifies/repairs the SB chassis claim after rebinding. Optional.
 	GatewayClaim GatewayClaimVerifier
-	// DNSServer is the OVN dhcp_options dns_server value ("{a, b}"). Empty falls
-	// back to the topology default to keep both code paths in sync.
+	// DNSServer is the OVN dhcp_options dns_server value (a single IP or
+	// "{a, b}"). Empty falls back to the topology default to keep both code
+	// paths in sync.
 	DNSServer string
 }
 

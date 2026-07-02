@@ -145,9 +145,9 @@ func nodeNames(cluster *config.ClusterConfig) []string {
 }
 
 // ResolverNameserverIPs returns the WAN IPs of cluster nodes running northstar,
-// in the same deterministic order as the seeded nameservers. Instances use these
-// as their DHCP-advertised DNS resolvers, so internal names resolve
-// authoritatively and external names via northstar's upstream forwarders.
+// in the same deterministic order as the seeded nameservers. vpcd's per-tap DNS
+// shim uses these as forward targets (northstar's :5300 listener), so internal
+// names resolve authoritatively and external names via upstream forwarders.
 // Loopback is skipped: a dev/misconfig node with no reachable IP yields an empty
 // list, letting the caller fall back to the upstream pool DNS.
 func ResolverNameserverIPs(cluster *config.ClusterConfig) []string {

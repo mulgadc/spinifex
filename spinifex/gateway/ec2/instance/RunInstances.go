@@ -60,10 +60,6 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	if input.KeyName == nil || *input.KeyName == "" {
-		return errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	if !strings.HasPrefix(*input.ImageId, "ami-") {
 		return errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}

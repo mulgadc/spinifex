@@ -44,10 +44,6 @@ func ValidateRequestSpotInstancesInput(input *ec2.RequestSpotInstancesInput) err
 	if aws.StringValue(spec.InstanceType) == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	if aws.StringValue(spec.KeyName) == "" {
-		return errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	if input.InstanceCount != nil && *input.InstanceCount < 1 {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}

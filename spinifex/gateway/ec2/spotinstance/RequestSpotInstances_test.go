@@ -70,14 +70,6 @@ func TestValidateRequestSpotInstancesInput(t *testing.T) {
 			want: errors.New(awserrors.ErrorMissingParameter),
 		},
 		{
-			name: "MissingKeyName",
-			input: &ec2.RequestSpotInstancesInput{LaunchSpecification: &ec2.RequestSpotLaunchSpecification{
-				ImageId:      aws.String("ami-0abcdef1234567890"),
-				InstanceType: aws.String("t2.micro"),
-			}},
-			want: errors.New(awserrors.ErrorMissingParameter),
-		},
-		{
 			name: "InstanceCountZero",
 			input: &ec2.RequestSpotInstancesInput{
 				LaunchSpecification: validLaunchSpec(),
@@ -100,6 +92,14 @@ func TestValidateRequestSpotInstancesInput(t *testing.T) {
 				Type:                aws.String("spot-block"),
 			},
 			want: errors.New(awserrors.ErrorInvalidParameterValue),
+		},
+		{
+			name: "MissingKeyNameIsValid",
+			input: &ec2.RequestSpotInstancesInput{LaunchSpecification: &ec2.RequestSpotLaunchSpecification{
+				ImageId:      aws.String("ami-0abcdef1234567890"),
+				InstanceType: aws.String("t2.micro"),
+			}},
+			want: nil,
 		},
 		{
 			name: "PersistentTypeAccepted",

@@ -183,6 +183,9 @@ func (s *Service) CreateService(input *ecs.CreateServiceInput, accountID string)
 		rec.SecurityGroups = awsStringSlice(v.SecurityGroups)
 		rec.AssignPublicIP = aws.StringValue(v.AssignPublicIp)
 	}
+	applyDeploymentConfig(&rec, input.DeploymentConfiguration)
+	rec.LastGoodTaskDefARN = taskDef.ARN
+	rec.Deployments = []Deployment{newPrimaryDeployment(rec.DeploymentID, taskDef, rec.DesiredCount)}
 	if err := putJSON(kv, ServiceKey(cluster, name), &rec); err != nil {
 		return nil, err
 	}
@@ -210,6 +213,10 @@ func (s *Service) UpdateService(input *ecs.UpdateServiceInput, accountID string)
 		return nil, errors.New(awserrors.ErrorECSServiceNotFound)
 	}
 
+	rec.ensurePrimaryDeployment()
+	if input.DeploymentConfiguration != nil {
+		applyDeploymentConfig(&rec, input.DeploymentConfiguration)
+	}
 	if input.DesiredCount != nil {
 		rec.DesiredCount = int(aws.Int64Value(input.DesiredCount))
 	}
@@ -218,11 +225,11 @@ func (s *Service) UpdateService(input *ecs.UpdateServiceInput, accountID string)
 		if terr != nil {
 			return nil, terr
 		}
-		rec.TaskDefFamily = taskDef.Family
-		rec.TaskDefRevision = taskDef.Revision
-		rec.TaskDefARN = taskDef.ARN
-		rec.NetworkMode = resolveNetworkMode(taskDef)
-		rec.DeploymentID = uuid.NewString()
+		// A new task definition starts a rolling deployment only when it differs
+		// from the current PRIMARY; a no-op re-apply keeps the deployment steady.
+		if primary := rec.primaryDeployment(); primary == nil || primary.TaskDefARN != taskDef.ARN {
+			rec.startDeployment(taskDef)
+		}
 	}
 	rec.UpdatedAt = time.Now().UTC()
 	if err := putJSON(kv, ServiceKey(cluster, name), &rec); err != nil {
@@ -314,57 +321,54 @@ func (s *Service) ListServices(input *ecs.ListServicesInput, accountID string) (
 
 // --- Reconciliation ---
 
-// reconcileService converges a service's running task count on its desired count:
-// it launches the shortfall via RunTask (tagged with the service group so the
-// task counts toward the service) and force-stops any surplus. Counts on the
-// record are refreshed as a side effect.
+// reconcileService drives a service's rolling deployment toward its desired
+// count: it launches PRIMARY-deployment tasks within the maximumPercent ceiling
+// and drains superseded (old) tasks while healthy running stays at/above
+// minimumHealthyPercent, then advances the rollout / circuit-breaker state. Per-
+// deployment and overall counts are refreshed as a side effect.
 func (s *Service) reconcileService(kv nats.KeyValue, accountID string, svc *ServiceRecord) error {
 	if svc.Status != ServiceStatusActive {
 		return nil
 	}
+	svc.normalizeDeploymentConfig()
+	svc.ensurePrimaryDeployment()
+
 	tasks, err := s.listServiceTasks(kv, svc.Cluster, svc.Name)
 	if err != nil {
 		return err
 	}
+	running, pending := tallyDeployments(svc, tasks)
 
-	running, pending := 0, 0
-	for i := range tasks {
-		switch tasks[i].LastStatus {
-		case TaskStatusRunning:
-			running++
-		case TaskStatusPending:
-			pending++
+	primary := svc.primaryDeployment()
+	if primary != nil {
+		// A failing deployment trips the breaker (and may roll back); persist and
+		// let the next tick roll the replacement in.
+		if tripCircuitBreaker(svc, primary) {
+			svc.RunningCount, svc.PendingCount = running, pending
+			return putJSON(kv, ServiceKey(svc.Cluster, svc.Name), svc)
 		}
+		desired := svc.DesiredCount
+		maxCount := desired * svc.MaximumPercent / 100
+		minCount := ceilPercent(desired, svc.MinimumHealthyPercent)
+
+		primaryActive := primary.RunningCount + primary.PendingCount
+		if primaryActive < desired && primary.RolloutState != RolloutStateFailed {
+			n := min(desired-primaryActive, max(maxCount-(running+pending), 0))
+			if n > 0 {
+				s.launchDeploymentTasks(accountID, svc, primary, n)
+			}
+		}
+		s.stopSurplusTasks(kv, accountID, tasks, primary.ID, desired, running, minCount)
+
+		// Re-tally after launch/stop so rollout state + persisted counts are current.
+		if fresh, ferr := s.listServiceTasks(kv, svc.Cluster, svc.Name); ferr == nil {
+			running, pending = tallyDeployments(svc, fresh)
+		}
+		updateRolloutState(svc, primary, desired)
 	}
 
-	active := running + pending
-	switch {
-	case active < svc.DesiredCount:
-		s.launchServiceTasks(accountID, svc, svc.DesiredCount-active)
-	case active > svc.DesiredCount:
-		s.stopServiceSurplus(kv, accountID, tasks, active-svc.DesiredCount)
-	}
-
-	// Recount after launch/stop so the persisted counts reflect current state.
-	svc.RunningCount, svc.PendingCount = s.countServiceTasks(kv, svc.Cluster, svc.Name)
+	svc.RunningCount, svc.PendingCount = running, pending
 	return putJSON(kv, ServiceKey(svc.Cluster, svc.Name), svc)
-}
-
-// countServiceTasks returns a service's current RUNNING and PENDING task counts.
-func (s *Service) countServiceTasks(kv nats.KeyValue, cluster, name string) (running, pending int) {
-	tasks, err := s.listServiceTasks(kv, cluster, name)
-	if err != nil {
-		return 0, 0
-	}
-	for i := range tasks {
-		switch tasks[i].LastStatus {
-		case TaskStatusRunning:
-			running++
-		case TaskStatusPending:
-			pending++
-		}
-	}
-	return running, pending
 }
 
 // reconcileAllServices is the scheduler-tick fan-out: every ACTIVE service in
@@ -395,15 +399,16 @@ func (s *Service) reconcileAllServices() {
 	}
 }
 
-// launchServiceTasks places n replacement tasks via the standard RunTask flow,
-// tagged with the service group + deployment so they count toward the service.
-func (s *Service) launchServiceTasks(accountID string, svc *ServiceRecord, n int) {
+// launchDeploymentTasks places n tasks for a specific deployment via the standard
+// RunTask flow, tagged with the service group + the deployment ID (StartedBy) so
+// the reconciler maps them back to the deployment they belong to.
+func (s *Service) launchDeploymentTasks(accountID string, svc *ServiceRecord, dep *Deployment, n int) {
 	in := &ecs.RunTaskInput{
 		Cluster:        aws.String(svc.Cluster),
-		TaskDefinition: aws.String(svc.TaskDefARN),
+		TaskDefinition: aws.String(dep.TaskDefARN),
 		Count:          aws.Int64(int64(n)),
 		Group:          aws.String(serviceTaskGroup(svc.Name)),
-		StartedBy:      aws.String("ecs-svc/" + svc.DeploymentID),
+		StartedBy:      aws.String(deploymentStartedBy(dep.ID)),
 	}
 	if svc.PlacementStrategy != "" {
 		in.PlacementStrategy = []*ecs.PlacementStrategy{{Type: aws.String(svc.PlacementStrategy)}}
@@ -429,26 +434,57 @@ func (s *Service) launchServiceTasks(accountID string, svc *ServiceRecord, n int
 	}
 }
 
-// stopServiceSurplus force-stops n of a service's tasks, preferring PENDING tasks
-// (least disruptive) before RUNNING ones.
-func (s *Service) stopServiceSurplus(kv nats.KeyValue, accountID string, tasks []TaskRecord, n int) {
-	order := make([]int, 0, len(tasks))
+// stopSurplusTasks drains a service's excess tasks: superseded (non-primary)
+// deployment tasks toward zero, and the primary's own surplus on a scale-in.
+// PENDING surplus is stopped freely; RUNNING surplus is gated so healthy running
+// never drops below minimumHealthyPercent (minCount).
+func (s *Service) stopSurplusTasks(kv nats.KeyValue, accountID string, tasks []TaskRecord, primaryID string, desired, runningTotal, minCount int) {
+	var oldPending, oldRunning, primaryPending, primaryRunning []int
 	for i := range tasks {
-		if tasks[i].LastStatus == TaskStatusPending {
-			order = append(order, i)
+		isPrimary := deploymentIDFromStartedBy(tasks[i].StartedBy) == primaryID
+		switch tasks[i].LastStatus {
+		case TaskStatusPending:
+			if isPrimary {
+				primaryPending = append(primaryPending, i)
+			} else {
+				oldPending = append(oldPending, i)
+			}
+		case TaskStatusRunning:
+			if isPrimary {
+				primaryRunning = append(primaryRunning, i)
+			} else {
+				oldRunning = append(oldRunning, i)
+			}
 		}
 	}
-	for i := range tasks {
-		if tasks[i].LastStatus == TaskStatusRunning {
-			order = append(order, i)
-		}
+	primarySurplus := max(len(primaryPending)+len(primaryRunning)-desired, 0)
+	runBudget := max(runningTotal-minCount, 0)
+	stop := func(i int, reason string) { s.forceStopTask(kv, accountID, &tasks[i], reason) }
+
+	for _, i := range oldPending {
+		stop(i, deploymentSupersededReason)
 	}
-	for _, idx := range order {
-		if n <= 0 {
+	for _, i := range primaryPending {
+		if primarySurplus <= 0 {
 			break
 		}
-		s.forceStopTask(kv, accountID, &tasks[idx], "Service scaled in")
-		n--
+		stop(i, "Service scaled in")
+		primarySurplus--
+	}
+	for _, i := range oldRunning {
+		if runBudget <= 0 {
+			break
+		}
+		stop(i, deploymentSupersededReason)
+		runBudget--
+	}
+	for _, i := range primaryRunning {
+		if primarySurplus <= 0 || runBudget <= 0 {
+			break
+		}
+		stop(i, "Service scaled in")
+		primarySurplus--
+		runBudget--
 	}
 }
 
@@ -578,6 +614,35 @@ func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service 
 			TargetGroupArn: aws.String(lb.TargetGroupARN),
 			ContainerName:  aws.String(lb.ContainerName),
 			ContainerPort:  aws.Int64(int64(lb.ContainerPort)),
+		})
+	}
+	if r.MinimumHealthyPercent > 0 || r.MaximumPercent > 0 {
+		svc.DeploymentConfiguration = &ecs.DeploymentConfiguration{
+			MinimumHealthyPercent: aws.Int64(int64(r.MinimumHealthyPercent)),
+			MaximumPercent:        aws.Int64(int64(r.MaximumPercent)),
+			DeploymentCircuitBreaker: &ecs.DeploymentCircuitBreaker{
+				Enable:   aws.Bool(r.CircuitBreakerEnable),
+				Rollback: aws.Bool(r.CircuitBreakerRollback),
+			},
+		}
+	}
+	for i := range r.Deployments {
+		d := &r.Deployments[i]
+		svc.Deployments = append(svc.Deployments, &ecs.Deployment{
+			Id:             aws.String(d.ID),
+			Status:         aws.String(d.Status),
+			TaskDefinition: aws.String(d.TaskDefARN),
+			DesiredCount:   aws.Int64(int64(d.DesiredCount)),
+			RunningCount:   aws.Int64(int64(d.RunningCount)),
+			PendingCount:   aws.Int64(int64(d.PendingCount)),
+			FailedTasks:    aws.Int64(int64(d.FailedTasks)),
+			RolloutState:   aws.String(d.RolloutState),
+			RolloutStateReason: func() *string {
+				if d.RolloutReason == "" {
+					return nil
+				}
+				return aws.String(d.RolloutReason)
+			}(),
 		})
 	}
 	return svc

@@ -243,6 +243,11 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 	// Deregister targets, release the public IP, release capacity + reclaim the
 	// task ENI once, on the transition into STOPPED.
 	if msg.LastStatus == TaskStatusStopped && prev != TaskStatusStopped {
+		// A task that stops without ever reaching RUNNING is a deployment failure;
+		// feed the owning deployment's circuit breaker.
+		if task.StartedAt.IsZero() {
+			s.recordDeploymentFailure(kv, msg.ClusterName, &task)
+		}
 		s.deregisterServiceTargets(kv, msg.AccountID, &task)
 		s.releaseTaskPublicIP(msg.AccountID, &task)
 		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
@@ -284,6 +289,32 @@ func (s *Service) SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, a
 		return nil, err
 	}
 	return &ecs.SubmitTaskStateChangeOutput{Acknowledgment: aws.String("OK")}, nil
+}
+
+// recordDeploymentFailure increments the failed-task counter on the deployment
+// that launched a task which stopped before ever running, driving the service's
+// deployment circuit breaker. No-op for a non-service task or an unknown deployment.
+func (s *Service) recordDeploymentFailure(kv nats.KeyValue, cluster string, task *TaskRecord) {
+	name := serviceNameFromGroup(task.Group)
+	depID := deploymentIDFromStartedBy(task.StartedBy)
+	if name == "" || depID == "" {
+		return
+	}
+	var svc ServiceRecord
+	found, err := getJSON(kv, ServiceKey(cluster, name), &svc)
+	if err != nil || !found {
+		return
+	}
+	for i := range svc.Deployments {
+		if svc.Deployments[i].ID == depID {
+			svc.Deployments[i].FailedTasks++
+			svc.Deployments[i].UpdatedAt = time.Now().UTC()
+			if perr := putJSON(kv, ServiceKey(cluster, name), &svc); perr != nil {
+				slog.Error("ECS deployment failure accounting: persist failed", "service", name, "err", perr)
+			}
+			return
+		}
+	}
 }
 
 // releaseReservation returns a stopped task's capacity to its instance under CAS.

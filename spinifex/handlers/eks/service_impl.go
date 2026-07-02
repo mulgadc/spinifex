@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -91,6 +92,58 @@ type EKSServiceDeps struct {
 
 	// AddonInstaller delivers managed-addon manifests; nil defaults to the KV staging installer.
 	AddonInstaller AddonInstaller
+
+	// CPControl lets the reconciler recover a wedged control-plane VM: describe
+	// its state and restart it if stopped. Nil disables auto-restart (health is
+	// still reflected). The daemon wires its concrete instance service, whose
+	// DescribeInstances aggregates across hosts and StartStoppedInstance forwards
+	// to the CP's owning node.
+	CPControl cpInstanceController
+}
+
+// cpInstanceController is the narrow EC2 instance surface the EKS reconciler uses
+// to recover a wedged control-plane VM. Satisfied by the daemon instance service.
+type cpInstanceController interface {
+	DescribeInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
+	StartStoppedInstance(input *handlers_ec2_instance.StartStoppedInstanceInput, accountID string) (*handlers_ec2_instance.StartStoppedInstanceOutput, error)
+}
+
+// cpControlAdapter binds a cpInstanceController + accountID to the reconciler's
+// CPInstanceControl surface (whose InstanceState/StartInstance take no accountID
+// — one reconciler serves one account).
+type cpControlAdapter struct {
+	ctl       cpInstanceController
+	accountID string
+}
+
+var _ CPInstanceControl = cpControlAdapter{}
+
+// InstanceState returns the CP instance's EC2 lifecycle state name, or an error
+// if the instance is not visible to the account.
+func (a cpControlAdapter) InstanceState(_ context.Context, instanceID string) (string, error) {
+	out, err := a.ctl.DescribeInstances(&ec2.DescribeInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, a.accountID)
+	if err != nil {
+		return "", err
+	}
+	for _, res := range out.Reservations {
+		for _, inst := range res.Instances {
+			if aws.StringValue(inst.InstanceId) == instanceID && inst.State != nil {
+				return aws.StringValue(inst.State.Name), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("eks: control-plane instance %s not found", instanceID)
+}
+
+// StartInstance restarts a stopped CP in place via the instance service, which
+// forwards to the CP's owning node and re-mounts the same root volume.
+func (a cpControlAdapter) StartInstance(_ context.Context, instanceID string) error {
+	_, err := a.ctl.StartStoppedInstance(&handlers_ec2_instance.StartStoppedInstanceInput{
+		InstanceID: instanceID,
+	}, a.accountID)
+	return err
 }
 
 // WorkerLauncher is the narrow EC2 surface for launching nodegroup worker instances.
@@ -1862,10 +1915,15 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 	// CP publishes {healthz,node_count} on the mgmt bus the daemon already shares.
 	stateSubject := StateSubject(accountID, clusterName)
 	addonStatusSubject := AddonStatusSubject(accountID, clusterName)
+	opts := []ReconcilerOption{
+		WithStateSource(s.deps.NATSConn, stateSubject),
+		WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject),
+	}
+	if s.deps.CPControl != nil {
+		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: accountID}))
+	}
 	spawn := func(ctx context.Context, _, _ string) (func(), error) {
-		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "",
-			WithStateSource(s.deps.NATSConn, stateSubject),
-			WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject))
+		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "", opts...)
 	}
 	if err := s.registry.Spawn(s.bgCtx, accountID, clusterName, spawn); err != nil {
 		slog.Error("spawnReconciler: registry spawn", "cluster", clusterName, "err", err)

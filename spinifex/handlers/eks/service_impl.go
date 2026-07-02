@@ -22,7 +22,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -94,18 +93,22 @@ type EKSServiceDeps struct {
 	AddonInstaller AddonInstaller
 
 	// CPControl lets the reconciler recover a wedged control-plane VM: describe
-	// its state and restart it if stopped. Nil disables auto-restart (health is
-	// still reflected). The daemon wires its concrete instance service, whose
-	// DescribeInstances aggregates across hosts and StartStoppedInstance forwards
-	// to the CP's owning node.
+	// its state and restart it. Nil disables auto-restart (health is still
+	// reflected). The daemon wires a NATS-backed impl whose DescribeInstances
+	// fans out across every host and whose RecoverInstance restarts the CP on
+	// its owning node whatever its state.
 	CPControl cpInstanceController
 }
 
 // cpInstanceController is the narrow EC2 instance surface the EKS reconciler uses
-// to recover a wedged control-plane VM. Satisfied by the daemon instance service.
+// to recover a wedged control-plane VM. The daemon wires a NATS-backed impl:
+// DescribeInstances fans out across all hosts so a CP on any node is observed;
+// RecoverInstance restarts the CP on its owning node whatever its state — a live
+// error/running owner in place via ec2.cmd.<id>, or a stopped instance rehydrated
+// from the shared KV via ec2.start.
 type cpInstanceController interface {
 	DescribeInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
-	StartStoppedInstance(input *handlers_ec2_instance.StartStoppedInstanceInput, accountID string) (*handlers_ec2_instance.StartStoppedInstanceOutput, error)
+	RecoverInstance(instanceID, accountID string) error
 }
 
 // cpControlAdapter binds a cpInstanceController + accountID to the reconciler's
@@ -137,13 +140,11 @@ func (a cpControlAdapter) InstanceState(_ context.Context, instanceID string) (s
 	return "", fmt.Errorf("eks: control-plane instance %s not found", instanceID)
 }
 
-// StartInstance restarts a stopped CP in place via the instance service, which
-// forwards to the CP's owning node and re-mounts the same root volume.
+// StartInstance restarts a wedged CP via the instance service, which routes to
+// the CP's owning node — recovering a live error/running owner in place or a
+// stopped instance from the shared KV — and re-mounts the same root volume.
 func (a cpControlAdapter) StartInstance(_ context.Context, instanceID string) error {
-	_, err := a.ctl.StartStoppedInstance(&handlers_ec2_instance.StartStoppedInstanceInput{
-		InstanceID: instanceID,
-	}, a.accountID)
-	return err
+	return a.ctl.RecoverInstance(instanceID, a.accountID)
 }
 
 // WorkerLauncher is the narrow EC2 surface for launching nodegroup worker instances.

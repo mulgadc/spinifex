@@ -64,8 +64,8 @@ type IamProfileAssociationData struct {
 }
 
 // InstanceTagsData carries parameters for a set/remove-instance-tags command.
-// Tags is the upsert set for create-tags; TagKeys carries the removals for
-// delete-tags with the central store's value-match / clear-all semantics.
+// For create-tags, Tags is the upsert set. For delete-tags, TagKeys removes
+// keys unconditionally, Tags removes only on value match, both empty clears all.
 type InstanceTagsData struct {
 	Tags    map[string]string `json:"tags,omitempty"`
 	TagKeys []string          `json:"tag_keys,omitempty"`

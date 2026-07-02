@@ -14,11 +14,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 )
 
 // Ensure TagsServiceImpl implements TagsService
 var _ TagsService = (*TagsServiceImpl)(nil)
+
+// Ensure TagsServiceImpl can project instance record tags into the store
+var _ handlers_ec2_instance.InstanceTagWriter = (*TagsServiceImpl)(nil)
 
 // TagsServiceImpl implements TagsService with S3-backed storage.
 // Tags are stored per-account in S3 (tags/{accountID}/{resourceID}.json),
@@ -153,6 +157,15 @@ func (s *TagsServiceImpl) putResourceTags(accountID, resourceID string, tags map
 	})
 
 	return err
+}
+
+// PutResourceTags overwrites the stored tag set for a resource. Used to
+// project an instance record's tags (the source of truth) into the central
+// store so describe-tags agrees with describe-instances.
+func (s *TagsServiceImpl) PutResourceTags(accountID, resourceID string, tags map[string]string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.putResourceTags(accountID, resourceID, tags)
 }
 
 // CreateTags adds or overwrites tags for the specified resources

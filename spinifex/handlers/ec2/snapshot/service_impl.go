@@ -740,3 +740,52 @@ func (s *SnapshotServiceImpl) volumeHasSnapshots(volumeID string) (bool, error) 
 
 	return len(snapshots) > 0, nil
 }
+
+// ApplyRecordTags mirrors CreateTags into the owning snapshot metadata so
+// DescribeSnapshots observes tags added after create. Non-snap ids, snapshots
+// absent from this store, and snapshots the caller does not own are skipped.
+func (s *SnapshotServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return s.mirrorSnapshotTags(input.Resources, accountID, utils.MergeTagsMut(input))
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning snapshot metadata with
+// AWS-faithful delete semantics.
+func (s *SnapshotServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return s.mirrorSnapshotTags(input.Resources, accountID, utils.RemoveTagsMut(input))
+}
+
+// mirrorSnapshotTags read-modify-writes SnapshotConfig.Tags for each snap- id.
+// metadata.json lives at a global ID-keyed path, so the mutation is gated on
+// the caller owning the snapshot (OwnerID match); mismatch or absence no-ops.
+func (s *SnapshotServiceImpl) mirrorSnapshotTags(resources []*string, accountID string, mut func(map[string]string)) error {
+	for _, res := range resources {
+		if res == nil || !strings.HasPrefix(*res, "snap-") {
+			continue
+		}
+		cfg, err := ReadSnapshotConfig(s.store, s.config.Predastore.Bucket, *res)
+		if err != nil {
+			if objectstore.IsNoSuchKeyError(err) {
+				continue
+			}
+			return err
+		}
+		if cfg.OwnerID != accountID {
+			slog.Debug("mirrorSnapshotTags: skipping snapshot not owned by caller", "snapshotId", *res)
+			continue
+		}
+		if cfg.Tags == nil {
+			cfg.Tags = map[string]string{}
+		}
+		mut(cfg.Tags)
+		if err := s.putSnapshotConfig(*res, cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}

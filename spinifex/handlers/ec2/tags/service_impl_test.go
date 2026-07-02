@@ -439,6 +439,11 @@ func TestGetResourceType(t *testing.T) {
 		{"rtb-abc123", "route-table"},
 		{"igw-abc123", "internet-gateway"},
 		{"eigw-abc123", "egress-only-internet-gateway"},
+		{"eni-abc123", "network-interface"},
+		{"eipalloc-abc123", "elastic-ip"},
+		{"nat-abc123", "natgateway"},
+		{"key-abc123", "key-pair"},
+		{"pg-abc123", "placement-group"},
 		{"unknown-abc123", "unknown"},
 	}
 

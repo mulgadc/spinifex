@@ -151,10 +151,12 @@ func dumpOVNState(t *testing.T, instanceID string) {
 	}
 }
 
-// dumpDatapathState captures OVS / kernel-side state keyed on the external IP:
-// conntrack, upstream ARP, and OF flow install. Each capture is also written
-// to opts.ArtifactDir when set. Skipped silently when inputs or shell tools
-// are unavailable.
+// dumpDatapathState captures OVS / kernel + OVN control state keyed on the
+// external IP: OF flows, conntrack, upstream ARP, plus the gateway router's
+// per-stage logical-flow packet counts, MAC_Binding, static routes and the
+// VM's logical port — enough to locate a pre-SNAT egress drop. Each capture
+// is also written to opts.ArtifactDir when set. Skipped silently when inputs
+// or shell tools are unavailable.
 func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 	t.Helper()
 	if opts.ExternalIP == "" {
@@ -173,10 +175,32 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 			grepFor:  []string{opts.ExternalIP, opts.LogicalIP},
 		},
 		{
+			// br-int flows miss the localnet egress hop; br-ext is where
+			// SNAT'd traffic leaves for the physical uplink, so a dropped
+			// or absent flow here pinpoints an egress black-hole.
+			filename: "ovs-flows-brext.txt",
+			label:    "ovs-ofctl dump-flows br-ext (egress localnet)",
+			argv:     []string{"ovs-ofctl", "dump-flows", "br-ext"},
+		},
+		{
+			// dpctl/dump-conntrack reads the OVS-owned conntrack zone directly,
+			// so it works on hosts without the standalone `conntrack` binary
+			// (absent on the baremetal runner). Shows whether a SNAT ct entry
+			// for the external IP was ever committed.
 			filename: "conntrack-extip.txt",
-			label:    "conntrack -L (filtered)",
-			argv:     []string{"conntrack", "-L"},
+			label:    "ovs-appctl dpctl/dump-conntrack (filtered)",
+			argv:     []string{"ovs-appctl", "dpctl/dump-conntrack"},
 			grepFor:  []string{opts.ExternalIP},
+		},
+		{
+			// Kernel megaflows with hit counters. Shows where the guest's
+			// packets actually land in the datapath and whether any megaflow
+			// carries them toward the uplink, cross-checking the logical-flow
+			// view against real forwarding.
+			filename: "dp-flows.txt",
+			label:    "ovs-appctl dpctl/dump-flows -m (filtered)",
+			argv:     []string{"ovs-appctl", "dpctl/dump-flows", "-m"},
+			grepFor:  []string{opts.ExternalIP, opts.LogicalIP},
 		},
 		{
 			filename: "ip-neigh-extip.txt",
@@ -189,6 +213,46 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 			label:    "ovn-nbctl find NAT external_ip",
 			argv: []string{"ovn-nbctl", "--bare", "--columns=_uuid,type,external_ip,logical_ip,external_mac,logical_port",
 				"find", "NAT", "external_ip=" + opts.ExternalIP},
+		},
+		{
+			// The default route's next-hop must resolve to a MAC before the
+			// router can deliver egress. An empty / stale MAC_Binding for the
+			// uplink next-hop strands the packet in lr_in_arp_resolve, exactly
+			// the pre-SNAT drop we are chasing.
+			filename: "ovn-mac-binding.txt",
+			label:    "ovn-sbctl list MAC_Binding (next-hop ARP)",
+			argv:     []string{"ovn-sbctl", "list", "MAC_Binding"},
+		},
+		{
+			// Is 0.0.0.0/0 → <uplink next-hop> actually programmed, and does
+			// its output_port match the gateway router port? A missing or
+			// mis-pointed default route drops egress in lr_in_ip_routing.
+			filename: "ovn-lr-static-routes.txt",
+			label:    "ovn-nbctl list Logical_Router_Static_Route",
+			argv:     []string{"ovn-nbctl", "list", "Logical_Router_Static_Route"},
+		},
+		{
+			// Maps the VM's private IP to its logical switch port (addresses
+			// column holds "MAC IP") and shows up-state; a down or missing
+			// port would blackhole egress before it reaches the gateway
+			// router. Complements the chassis view in dumpOVNState.
+			filename: "ovn-lsp-logical.txt",
+			label:    "ovn-nbctl list Logical_Switch_Port (VM port)",
+			argv: []string{"ovn-nbctl", "--bare",
+				"--columns=name,addresses,up,type", "list", "Logical_Switch_Port"},
+			grepFor: []string{opts.LogicalIP},
+		},
+		{
+			// Full, unfiltered per-stage packet counts. An IP-filtered lflow
+			// dump hides the default-drop ACL flow (its match carries no IP),
+			// so when the guest's egress dies at ls_out_acl a filtered view
+			// shows the allow-flows at n_packets=0 but not the deny that ate
+			// the packets. This full dump names the exact drop flow and its
+			// hit count. Echoed in full so it survives in the CI stdout log
+			// even when the artifact directory is not bundled.
+			filename: "ovn-lflows-full.txt",
+			label:    "ovn-sbctl --stats lflow-list (full)",
+			argv:     []string{"ovn-sbctl", "--stats", "lflow-list"},
 		},
 	})
 }

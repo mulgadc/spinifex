@@ -272,6 +272,17 @@ func runNATGateway(t *testing.T, fix *Fixture) {
 
 	// --- Verify private VM CAN reach the internet now --------------------
 	// OVN needs a beat to install datapath flows after SNAT publishes.
+	// Snapshot the SNAT datapath if egress never comes up; without this the
+	// failure bundle carries no OVN/OVS state to root-cause the loss.
+	harness.OnFailure(t, func() {
+		harness.DumpVPCFlowDiagnostics(t, c, privID,
+			fmt.Sprintf("NAT GW egress — nat_gw=%s external_ip=%s logical_ip=%s", natGWID, natPubIP, privIP),
+			harness.VPCDiagnosticsOpts{
+				ExternalIP:  natPubIP,
+				LogicalIP:   privIP,
+				ArtifactDir: fix.ArtifactDir(t),
+			})
+	})
 	harness.Step(t, "verify private VM reaches 8.8.8.8 via NAT GW")
 	harness.EventuallyErr(t, func() error {
 		out, perr := runSSHQuiet(bastionTgt, pingCmd())

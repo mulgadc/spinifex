@@ -155,7 +155,7 @@ func TestEnsureGatewayClaimed_NudgeThenConverge(t *testing.T) {
 	}
 }
 
-func TestEnsureGatewayClaimed_NeverConvergesNudgesOnceThenGivesUp(t *testing.T) {
+func TestEnsureGatewayClaimed_NeverConvergesRecomputesEachMiss(t *testing.T) {
 	withFastClaimBounds(t)
 	f := &fakeClaimVerifier{claimedAfter: -1} // never claims
 	r := &reconciler{gwClaim: f}
@@ -171,8 +171,11 @@ func TestEnsureGatewayClaimed_NeverConvergesNudgesOnceThenGivesUp(t *testing.T) 
 		t.Fatal("ensureGatewayClaimed did not return within deadline; blocking reconcile")
 	}
 
-	if f.nudges != 1 {
-		t.Errorf("nudges = %d, want exactly 1 (nudge once, do not spam)", f.nudges)
+	// Recompute on every miss, not once: on a fresh-VPC bring-up or after a chassis
+	// flap a single early nudge fires before ovn-controller processes the
+	// gateway_chassis update, so the cr port never binds.
+	if f.nudges < 2 {
+		t.Errorf("nudges = %d, want >=2 (recompute on each miss, not once)", f.nudges)
 	}
 	if f.checks < 2 {
 		t.Errorf("checks = %d, want >=2 (polled past the first nudge)", f.checks)

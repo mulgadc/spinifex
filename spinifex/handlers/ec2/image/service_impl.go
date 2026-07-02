@@ -701,13 +701,7 @@ func (s *ImageServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID
 	if input == nil {
 		return nil
 	}
-	merge := func(tags map[string]string) {
-		for _, t := range input.Tags {
-			if t.Key != nil && t.Value != nil {
-				tags[*t.Key] = *t.Value
-			}
-		}
-	}
+	merge := utils.MergeTagsMut(input)
 	for _, res := range input.Resources {
 		if res == nil || !strings.HasPrefix(*res, "ami-") {
 			continue
@@ -726,24 +720,7 @@ func (s *ImageServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountI
 	if input == nil {
 		return nil
 	}
-	remove := func(tags map[string]string) {
-		if len(input.Tags) == 0 {
-			for k := range tags {
-				delete(tags, k)
-			}
-			return
-		}
-		for _, t := range input.Tags {
-			if t.Key == nil {
-				continue
-			}
-			if t.Value == nil {
-				delete(tags, *t.Key)
-			} else if cur, ok := tags[*t.Key]; ok && cur == *t.Value {
-				delete(tags, *t.Key)
-			}
-		}
-	}
+	remove := utils.RemoveTagsMut(input)
 	for _, res := range input.Resources {
 		if res == nil || !strings.HasPrefix(*res, "ami-") {
 			continue

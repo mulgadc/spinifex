@@ -529,3 +529,26 @@ func recordToEC2(record *NatGatewayRecord) *ec2.NatGateway {
 
 	return ngw
 }
+
+// ApplyRecordTags mirrors CreateTags into the owning NAT gateway KV record so
+// tag-filtered describes observe tags added after create. Resource ids this
+// service does not own are skipped; absent records are a no-op.
+func (s *NatGatewayServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.natgwKV, accountID, "nat-", input.Resources,
+		func(r *NatGatewayRecord) *map[string]string { return &r.Tags },
+		utils.MergeTagsMut(input))
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning NAT gateway KV record
+// with AWS-faithful delete semantics.
+func (s *NatGatewayServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.natgwKV, accountID, "nat-", input.Resources,
+		func(r *NatGatewayRecord) *map[string]string { return &r.Tags },
+		utils.RemoveTagsMut(input))
+}

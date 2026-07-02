@@ -305,6 +305,19 @@ if [ "$MANAGEMENT" = true ]; then
             echo "  ovn-central: creating RAFT cluster (local=$DB_CLUSTER_LOCAL_ADDR)"
         fi
 
+        # Point ovn-northd's client NB/SB connections at the full RAFT member
+        # list so the active northd follows the leader. Without this it dials the
+        # local member only and stops advancing SB_Global.nb_cfg once leadership
+        # moves off this node, wedging the ovn-nbctl --wait=hv flows barrier.
+        # Derived from OVN_REMOTE (the SB list); the NB list is the same hosts on
+        # 6641. Skipped when OVN_REMOTE is the localhost default (caller passed no
+        # member list) so a lone standalone DB node is unaffected.
+        if [ "$OVN_REMOTE" != "tcp:127.0.0.1:6642" ]; then
+            OVN_REMOTE_NB="${OVN_REMOTE//:6642/:6641}"
+            OVN_CTL_OPTS="$OVN_CTL_OPTS --ovn-northd-nb-db=$OVN_REMOTE_NB --ovn-northd-sb-db=$OVN_REMOTE"
+            echo "  ovn-northd: NB=$OVN_REMOTE_NB SB=$OVN_REMOTE (RAFT member list)"
+        fi
+
         echo "OVN_CTL_OPTS=\"$OVN_CTL_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
         echo "  wrote /etc/default/ovn-central"
 

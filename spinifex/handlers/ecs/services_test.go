@@ -258,20 +258,40 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 
 	task := &TaskRecord{
 		TaskID: "t-9", Cluster: "web", Group: serviceTaskGroup("web"),
-		ContainerInstanceID: "i-1", LastStatus: TaskStatusRunning,
+		ContainerInstanceID: "i-1", LastStatus: TaskStatusRunning, DesiredStatus: TaskStatusRunning,
 		NetworkMode: NetworkModeAwsvpc, ENIPrivateIP: "10.0.1.9",
 		ReservedCPU: 64, ReservedMemoryMiB: 64,
 	}
 	require.NoError(t, putJSON(kv, TaskKey("web", "t-9"), task))
 
+	// Cooperative stop: the task stays RUNNING with desiredStatus=STOPPED and a
+	// stop directive lands in the instance inbox; nothing is deregistered until the
+	// agent reaps the container and reports STOPPED.
 	out, err := svc.StopTask(&ecs.StopTaskInput{
 		Cluster: aws.String("web"), Task: aws.String("t-9"), Reason: aws.String("bye"),
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, TaskStatusStopped, aws.StringValue(out.Task.LastStatus))
-	assert.Equal(t, []string{key(tgARN, "10.0.1.9", 80)}, reg.deregistered)
+	assert.Equal(t, TaskStatusRunning, aws.StringValue(out.Task.LastStatus))
+	assert.Equal(t, TaskStatusStopped, aws.StringValue(out.Task.DesiredStatus))
+	assert.Empty(t, reg.deregistered)
 
-	// Idempotent: a second stop is a no-op (no extra deregister).
+	var sd bus.StopDirective
+	found, err := getJSON(kv, StopKey("web", "i-1", "t-9"), &sd)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, "bye", sd.Reason)
+
+	// Agent reports STOPPED → deregister + stop-inbox reclaimed.
+	require.NoError(t, svc.recordTaskState(&bus.TaskState{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
+		TaskID: "t-9", LastStatus: bus.TaskStatusStopped,
+	}))
+	assert.Equal(t, []string{key(tgARN, "10.0.1.9", 80)}, reg.deregistered)
+	found, err = getJSON(kv, StopKey("web", "i-1", "t-9"), &sd)
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	// Idempotent: a second stop is a no-op (already STOPPED).
 	_, err = svc.StopTask(&ecs.StopTaskInput{Cluster: aws.String("web"), Task: aws.String("t-9")}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, reg.deregistered, 1)
@@ -281,6 +301,25 @@ func TestService_StopTask_NotFound(t *testing.T) {
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.StopTask(&ecs.StopTaskInput{Cluster: aws.String("web"), Task: aws.String("ghost")}, testAccountID)
 	require.Error(t, err)
+}
+
+// StopTask on a never-placed task (no container instance) force-stops it directly:
+// no agent can reap it, so the control plane transitions it to STOPPED immediately.
+func TestService_StopTask_UnplacedForceStops(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	task := &TaskRecord{
+		TaskID: "t-np", Cluster: "web",
+		LastStatus: TaskStatusPending, DesiredStatus: TaskStatusRunning,
+	}
+	require.NoError(t, putJSON(kv, TaskKey("web", "t-np"), task))
+
+	out, err := svc.StopTask(&ecs.StopTaskInput{
+		Cluster: aws.String("web"), Task: aws.String("t-np"), Reason: aws.String("cancel"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, TaskStatusStopped, aws.StringValue(out.Task.LastStatus))
+	assert.Equal(t, TaskStatusStopped, aws.StringValue(out.Task.DesiredStatus))
+	assert.Equal(t, "cancel", aws.StringValue(out.Task.StoppedReason))
 }
 
 // A service with a target group registers each task's ENI IP on RUNNING and

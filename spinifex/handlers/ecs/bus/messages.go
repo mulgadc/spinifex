@@ -101,6 +101,15 @@ type Assign struct {
 	AssignedAt       time.Time `json:"assignedAt"`
 }
 
+// StopDirective is one pending task-stop the scheduler places in an instance's
+// stop inbox (scheduler → agent). The agent kills + reaps the task's containers,
+// then reports STOPPED with Reason. Delivery is idempotent; the STOPPED
+// transition deletes the inbox entry.
+type StopDirective struct {
+	TaskID string `json:"taskId"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // ContainerStatus is a single container's reported lifecycle state.
 type ContainerStatus struct {
 	Name        string `json:"name"`

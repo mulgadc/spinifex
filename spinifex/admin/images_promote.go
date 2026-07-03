@@ -33,6 +33,16 @@ type PromoteImageResult struct {
 	PreviousOwner string
 }
 
+// PromoteImageInput is the NATS message body for the spinifex.image.promote topic.
+type PromoteImageInput struct {
+	ImageID string `json:"ImageID"`
+}
+
+// PromoteImageOutput is the NATS reply for the spinifex.image.promote topic.
+type PromoteImageOutput struct {
+	PreviousOwner string `json:"PreviousOwner"`
+}
+
 // PromoteSystemImage promotes an account-owned AMI to a system image by
 // rewriting its ImageOwnerAlias to SystemOwnerAlias. After the call the AMI
 // is immediately visible to all accounts via DescribeImages.

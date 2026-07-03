@@ -764,6 +764,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DescribeImageAttribute", d.handleEC2DescribeImageAttribute, "spinifex-workers"},
 		{"ec2.ModifyImageAttribute", d.handleEC2ModifyImageAttribute, "spinifex-workers"},
 		{"ec2.ResetImageAttribute", d.handleEC2ResetImageAttribute, "spinifex-workers"},
+		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
 		{"ec2.CreateVolume", d.handleEC2CreateVolume, "spinifex-workers"},
 		{"ec2.DescribeVolumes", d.handleEC2DescribeVolumes, "spinifex-workers"},
 		{"ec2.ModifyVolume", d.handleEC2ModifyVolume, "spinifex-workers"},

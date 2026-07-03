@@ -4,8 +4,10 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
@@ -37,6 +39,23 @@ func (d *Daemon) handleEC2ModifyImageAttribute(msg *nats.Msg) {
 
 func (d *Daemon) handleEC2ResetImageAttribute(msg *nats.Msg) {
 	handleNATSRequest(msg, d.imageService.ResetImageAttribute)
+}
+
+func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) {
+	promoteImage := func(input *admin.PromoteImageInput, _ string) (*admin.PromoteImageOutput, error) {
+		store := objectstore.NewS3ObjectStoreFromConfig(
+			admin.DialTarget(d.config.Predastore.Host),
+			d.config.Predastore.Region,
+			d.config.Predastore.AccessKey,
+			d.config.Predastore.SecretKey,
+		)
+		result, err := admin.PromoteSystemImage(store, d.config.Predastore.Bucket, admin.PromoteImageOpts{ImageID: input.ImageID})
+		if err != nil {
+			return nil, err
+		}
+		return &admin.PromoteImageOutput{PreviousOwner: result.PreviousOwner}, nil
+	}
+	handleNATSRequest(msg, promoteImage)
 }
 
 // handleEC2CreateImage is a stateful handler that extracts instance context

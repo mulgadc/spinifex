@@ -1927,7 +1927,7 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 		// the customer account cannot see or own its own cluster's CP VMs.
 		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: admin.SystemAccountID()}))
 	}
-	spawn := func(ctx context.Context, _, _ string) (func(), error) {
+	spawn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
 		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "", opts...)
 	}
 	if err := s.registry.Spawn(s.bgCtx, accountID, clusterName, spawn); err != nil {

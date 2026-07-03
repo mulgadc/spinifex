@@ -23,27 +23,53 @@ func MergeTagsMut(input *ec2.CreateTagsInput) func(map[string]string) {
 	}
 }
 
+// ApplyTagRemovals applies AWS-faithful DeleteTags semantics to a tag map:
+// keys delete unconditionally, valueMatch entries delete only when the stored
+// value matches, and both empty clears every tag.
+func ApplyTagRemovals(tags map[string]string, keys []string, valueMatch map[string]string) {
+	if len(keys) == 0 && len(valueMatch) == 0 {
+		clear(tags)
+		return
+	}
+	for _, k := range keys {
+		delete(tags, k)
+	}
+	for k, v := range valueMatch {
+		if cur, ok := tags[k]; ok && cur == v {
+			delete(tags, k)
+		}
+	}
+}
+
 // RemoveTagsMut returns a mutator with AWS-faithful DeleteTags semantics:
 // empty input.Tags clears all tags; a tag with a value deletes only on a
 // value match, a nil value deletes unconditionally.
 func RemoveTagsMut(input *ec2.DeleteTagsInput) func(map[string]string) {
 	return func(tags map[string]string) {
 		if len(input.Tags) == 0 {
-			for k := range tags {
-				delete(tags, k)
-			}
+			ApplyTagRemovals(tags, nil, nil)
 			return
 		}
+		var keys []string
+		var valueMatch map[string]string
 		for _, t := range input.Tags {
 			if t.Key == nil {
 				continue
 			}
 			if t.Value == nil {
-				delete(tags, *t.Key)
-			} else if cur, ok := tags[*t.Key]; ok && cur == *t.Value {
-				delete(tags, *t.Key)
+				keys = append(keys, *t.Key)
+			} else {
+				if valueMatch == nil {
+					valueMatch = make(map[string]string)
+				}
+				valueMatch[*t.Key] = *t.Value
 			}
 		}
+		// All entries had nil keys: no removals requested, not a clear-all.
+		if len(keys) == 0 && len(valueMatch) == 0 {
+			return
+		}
+		ApplyTagRemovals(tags, keys, valueMatch)
 	}
 }
 

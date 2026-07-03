@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -127,6 +129,7 @@ type InstanceServiceImpl struct {
 	volumeDeleter VolumeDeleter
 	eniDeleter    ENIDeleter
 	ipReleaser    PublicIPReleaser
+	tagWriter     InstanceTagWriter
 	gpuClaimer    GPUClaimer
 	amiLoader     AMIMetaLoader
 	keyValidator  KeyPairValidator
@@ -155,13 +158,14 @@ func NewInstanceServiceImpl(
 	}
 }
 
-// SetTerminationDeps wires the dependencies required by TerminateStoppedInstance.
+// SetTerminationDeps wires the dependencies required by the terminate paths.
 // Kept separate from the main constructor so handlers needing only read or
 // modify paths can construct a service without dragging the VPC/volume stack in.
-func (s *InstanceServiceImpl) SetTerminationDeps(vd VolumeDeleter, ed ENIDeleter, pr PublicIPReleaser) {
+func (s *InstanceServiceImpl) SetTerminationDeps(vd VolumeDeleter, ed ENIDeleter, pr PublicIPReleaser, tw InstanceTagWriter) {
 	s.volumeDeleter = vd
 	s.eniDeleter = ed
 	s.ipReleaser = pr
+	s.tagWriter = tw
 }
 
 // SetGPUClaimer wires the GPU passthrough claim/release dependency used by
@@ -273,6 +277,112 @@ func instanceTagsFromSpec(specs []*ec2.TagSpecification) []*ec2.Tag {
 		}
 	}
 	return tags
+}
+
+// ApplyInstanceTagMutation applies a set or remove tag mutation to a tag list,
+// mirroring the central tag store's merge, value-match delete, and clear-all
+// semantics, and returns the resulting list sorted by key.
+func ApplyInstanceTagMutation(existing []*ec2.Tag, data *spxtypes.InstanceTagsData, remove bool) []*ec2.Tag {
+	tags := make(map[string]string, len(existing))
+	for _, t := range existing {
+		if t == nil || t.Key == nil {
+			continue
+		}
+		tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+
+	switch {
+	case remove && data == nil:
+		utils.ApplyTagRemovals(tags, nil, nil)
+	case remove:
+		utils.ApplyTagRemovals(tags, data.TagKeys, data.Tags)
+	case data != nil:
+		maps.Copy(tags, data.Tags)
+	}
+
+	out := make([]*ec2.Tag, 0, len(tags))
+	for key, value := range tags {
+		out = append(out, &ec2.Tag{Key: aws.String(key), Value: aws.String(value)})
+	}
+	sort.Slice(out, func(i, j int) bool { return aws.StringValue(out[i].Key) < aws.StringValue(out[j].Key) })
+	return out
+}
+
+// TagsToMap converts a record tag list to the central tag store's map form,
+// skipping nil entries and nil keys.
+func TagsToMap(tags []*ec2.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, t := range tags {
+		if t == nil || t.Key == nil {
+			continue
+		}
+		out[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+	return out
+}
+
+// WriteInstanceTags applies the tag mutation to the instance record (the source
+// of truth) and writes the resulting full tag set to the central tag store, so
+// both stores move together. Callers own record persistence and must not hold
+// the vm.Manager lock, since the central write is an S3 round-trip.
+func WriteInstanceTags(instance *vm.VM, data *spxtypes.InstanceTagsData, remove bool, central InstanceTagWriter, accountID string) error {
+	if instance == nil || instance.Instance == nil || central == nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	instance.Instance.Tags = ApplyInstanceTagMutation(instance.Instance.Tags, data, remove)
+	return central.PutResourceTags(accountID, instance.ID, TagsToMap(instance.Instance.Tags))
+}
+
+// TagStoppedInstance applies a create-tags/delete-tags mutation to a stopped
+// instance's shared KV record and the central tag store together. A missing or
+// cross-account record returns InvalidID.NotFound and writes nothing.
+func (s *InstanceServiceImpl) TagStoppedInstance(instanceID string, data *spxtypes.InstanceTagsData, remove bool, central InstanceTagWriter, accountID string) error {
+	if s.stoppedStore == nil {
+		slog.Error("TagStoppedInstance: stopped store not available")
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.Error("TagStoppedInstance: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.Warn("TagStoppedInstance: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Instance == nil {
+		slog.Error("TagStoppedInstance: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := WriteInstanceTags(instance, data, remove, central, accountID); err != nil {
+		slog.Error("TagStoppedInstance: central tag store write failed", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
+		slog.Error("TagStoppedInstance: failed to write stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return nil
+}
+
+// deleteCentralInstanceTags removes a terminated instance's central tag store
+// entry so describe-tags stops reporting it, while the terminated record keeps
+// its tags until TTL. Best-effort: the terminate already succeeded, so a
+// failed delete is logged rather than surfaced.
+func (s *InstanceServiceImpl) deleteCentralInstanceTags(instanceID, ownerAccountID string) {
+	if s.tagWriter == nil || ownerAccountID == "" {
+		return
+	}
+	if err := s.tagWriter.DeleteAllTags(ownerAccountID, instanceID); err != nil {
+		slog.Error("deleteCentralInstanceTags: central tag store delete failed",
+			"instanceId", instanceID, "err", err)
+	}
 }
 
 // PrepareRunInstances validates input, allocates capacity, creates VM metadata,
@@ -927,7 +1037,7 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
 	}
 
-	go func(id string) {
+	go func(id, ownerAccountID string) {
 		var err error
 		if isTerminate {
 			err = s.vmMgr.Terminate(id)
@@ -941,8 +1051,12 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 				return
 			}
 			slog.Error("StopOrTerminateInstance: failed to "+strings.ToLower(action), "err", err, "id", id)
+			return
 		}
-	}(instance.ID)
+		if isTerminate {
+			s.deleteCentralInstanceTags(id, ownerAccountID)
+		}
+	}(instance.ID, instance.AccountID)
 
 	return nil
 }
@@ -2174,6 +2288,8 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(input *TerminateStoppedIn
 				"instanceId", input.InstanceID, "err", retryErr)
 		}
 	}
+
+	s.deleteCentralInstanceTags(input.InstanceID, instance.AccountID)
 
 	slog.Info("Terminated stopped instance from shared KV", "instanceId", input.InstanceID)
 	return &TerminateStoppedInstanceOutput{Status: "terminated", InstanceID: input.InstanceID}, nil

@@ -1,7 +1,7 @@
 ---
 title: "IAM Users and Policies"
 description: "Create IAM users, manage access keys, and control permissions with policies."
-category: "Administration"
+category: "Identity"
 tags:
   - iam
   - users
@@ -37,13 +37,11 @@ resources:
 
 ## Overview
 
-Spinifex implements AWS-compatible IAM with 16 operations covering user management, access key lifecycle, policy CRUD, and policy attachment. All IAM resources are scoped to the account that creates them — users in one account cannot see or modify resources in another.
+Spinifex implements AWS-compatible IAM covering user management, access key lifecycle, policy CRUD, and policy attachment. Inline user policies (`put-user-policy`), user and policy tagging, and IAM roles for EC2 instances (see [IMDS](/docs/imds)) are also supported. All IAM resources are scoped to the account that creates them — users in one account cannot see or modify resources in another.
 
 When you create an account with `spx admin account create`, Spinifex bootstraps a root user with an `AdministratorAccess` policy and writes the credentials to `~/.aws/credentials`. From there, you use the standard AWS CLI to manage additional users and permissions.
 
 **How authentication works:** Every AWS CLI request is signed with SigV4 using an access key pair. The gateway verifies the signature, resolves the caller's account, and evaluates attached policies before routing the request. The root user (account `000000000000`) bypasses policy evaluation entirely.
-
-## Instructions
 
 ## Prerequisites
 
@@ -54,6 +52,8 @@ When you create an account with `spx admin account create`, Spinifex bootstraps 
 ```bash
 export AWS_PROFILE=spinifex-myteam
 ```
+
+## Instructions
 
 ## Users
 
@@ -458,6 +458,7 @@ AWS_PROFILE=spinifex-carol aws ec2 terminate-instances --instance-ids i-123
 | `create-policy`               | `--policy-name`, `--policy-document`         | Max 6144 bytes                    |
 | `get-policy`                  | `--policy-arn`                               | Metadata only                     |
 | `get-policy-version`          | `--policy-arn`, `--version-id`               | Use `v1`; includes document       |
+| `list-policy-versions`        | `--policy-arn`                               |                                   |
 | `list-policies`               |                                              |                                   |
 | `delete-policy`               | `--policy-arn`                               | Must not be attached              |
 | `attach-user-policy`          | `--user-name`, `--policy-arn`                | Idempotent                        |

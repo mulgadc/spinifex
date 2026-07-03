@@ -31,9 +31,9 @@ resources:
 
 Spinifex provides drop-in compatibility with AWS APIs, making it possible to migrate existing workloads with minimal changes.
 
-**Supported Services:** VPC, EC2, EBS, S3, IAM
+**Supported Services:** EC2, VPC, EBS, S3, IAM, STS, ELBv2 (ALB/NLB), ACM, ECR, ECS, EKS
 
-**Compatible Tools:** AWS CLI, AWS SDKs, Terraform, any S3-compatible client
+**Compatible Tools:** AWS CLI, AWS SDKs, Terraform, kubectl (via `aws eks get-token`), any S3-compatible client
 
 ## Instructions
 
@@ -61,13 +61,21 @@ provider "aws" {
   secret_key = "your-spinifex-secret-key"
 
   endpoints {
-    ec2 = "https://localhost:9999"
-    s3  = "https://localhost:8443"
+    ec2                = "https://localhost:9999"
+    iam                = "https://localhost:9999"
+    sts                = "https://localhost:9999"
+    elbv2              = "https://localhost:9999"
+    acm                = "https://localhost:9999"
+    ecr                = "https://localhost:9999"
+    ecs                = "https://localhost:9999"
+    eks                = "https://localhost:9999"
+    s3                 = "https://localhost:8443"
   }
 
   skip_credentials_validation = true
   skip_metadata_api_check     = true
   skip_requesting_account_id  = true
+  skip_region_validation      = true
 }
 ```
 
@@ -81,12 +89,13 @@ aws s3 sync s3://local-bucket/ s3://cloud-bucket/ --source-region spinifex --reg
 
 ## Terraform Provider Errors
 
-Ensure all three skip flags are set in your provider configuration:
+Ensure all four skip flags are set in your provider configuration:
 
 ```hcl
 skip_credentials_validation = true
 skip_metadata_api_check     = true
 skip_requesting_account_id  = true
+skip_region_validation      = true
 ```
 
 Without these, Terraform will try to validate credentials and metadata against real AWS endpoints.

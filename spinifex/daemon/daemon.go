@@ -764,7 +764,6 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DescribeImageAttribute", d.handleEC2DescribeImageAttribute, "spinifex-workers"},
 		{"ec2.ModifyImageAttribute", d.handleEC2ModifyImageAttribute, "spinifex-workers"},
 		{"ec2.ResetImageAttribute", d.handleEC2ResetImageAttribute, "spinifex-workers"},
-		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
 		{"ec2.CreateVolume", d.handleEC2CreateVolume, "spinifex-workers"},
 		{"ec2.DescribeVolumes", d.handleEC2DescribeVolumes, "spinifex-workers"},
 		{"ec2.ModifyVolume", d.handleEC2ModifyVolume, "spinifex-workers"},
@@ -867,6 +866,7 @@ func (d *Daemon) subscribeAll() error {
 		{"spinifex.node.status", d.handleNodeStatus, ""},
 		{"spinifex.node.vms", d.handleNodeVMs, ""},
 		{"spinifex.storage.config", d.handleStorageConfig, ""},
+		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
 		// Account creation → create default VPC for new account
 		{"iam.account.created", d.handleAccountCreated, "spinifex-workers"},
 		// Coordinated cluster shutdown phases (fan-out, no queue group)

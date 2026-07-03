@@ -22,24 +22,16 @@ import (
 // system image visible to all accounts.
 const SystemOwnerAlias = "system"
 
-// PromoteImageOpts configures PromoteSystemImage.
+// PromoteImageOpts is the input for PromoteSystemImage and the NATS message
+// body for the spinifex.image.promote topic.
 type PromoteImageOpts struct {
-	ImageID string
-}
-
-// PromoteImageResult summarises what changed after a successful promotion.
-type PromoteImageResult struct {
-	// PreviousOwner is the ImageOwnerAlias before promotion (the account ID).
-	PreviousOwner string
-}
-
-// PromoteImageInput is the NATS message body for the spinifex.image.promote topic.
-type PromoteImageInput struct {
 	ImageID string `json:"ImageID"`
 }
 
-// PromoteImageOutput is the NATS reply for the spinifex.image.promote topic.
-type PromoteImageOutput struct {
+// PromoteImageResult summarises what changed after a successful promotion and
+// is also the NATS reply for the spinifex.image.promote topic.
+type PromoteImageResult struct {
+	// PreviousOwner is the ImageOwnerAlias before promotion (the account ID).
 	PreviousOwner string `json:"PreviousOwner"`
 }
 

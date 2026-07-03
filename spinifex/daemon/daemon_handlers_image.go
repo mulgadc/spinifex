@@ -42,18 +42,14 @@ func (d *Daemon) handleEC2ResetImageAttribute(msg *nats.Msg) {
 }
 
 func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) {
-	promoteImage := func(input *admin.PromoteImageInput, _ string) (*admin.PromoteImageOutput, error) {
+	promoteImage := func(input *admin.PromoteImageOpts, _ string) (*admin.PromoteImageResult, error) {
 		store := objectstore.NewS3ObjectStoreFromConfig(
 			admin.DialTarget(d.config.Predastore.Host),
 			d.config.Predastore.Region,
 			d.config.Predastore.AccessKey,
 			d.config.Predastore.SecretKey,
 		)
-		result, err := admin.PromoteSystemImage(store, d.config.Predastore.Bucket, admin.PromoteImageOpts{ImageID: input.ImageID})
-		if err != nil {
-			return nil, err
-		}
-		return &admin.PromoteImageOutput{PreviousOwner: result.PreviousOwner}, nil
+		return admin.PromoteSystemImage(store, d.config.Predastore.Bucket, *input)
 	}
 	handleNATSRequest(msg, promoteImage)
 }

@@ -1994,9 +1994,10 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 			name:    "DeleteTags",
 			topic:   "ec2.test.DeleteTags",
 			handler: daemon.handleEC2DeleteTags,
-			input:   &ec2.DeleteTagsInput{Resources: []*string{aws.String("i-12345678")}},
-			// DeleteTags returns `{}` on success.
-			allowEmpty: true,
+			// Instance IDs route to the owning daemon; with no owner
+			// subscribed the mutation is rejected rather than written blind.
+			input:        &ec2.DeleteTagsInput{Resources: []*string{aws.String("i-12345678")}},
+			expectedCode: awserrors.ErrorInvalidInstanceIDNotFound,
 		},
 		{
 			name:    "DescribeTags",

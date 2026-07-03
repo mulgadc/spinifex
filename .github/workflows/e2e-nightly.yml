@@ -35,6 +35,7 @@ jobs:
           - { cell: 10, install: binary, topo: real-multi, net: dhcp,   host: ubuntu-24.04, arch: x86_64, runner: ci-multi,  extra: "" }
           - { cell: 17, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-pseudo, extra: "tofu-examples" }
           - { cell: 18, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "reboot-single" }
+          - { cell: 19, install: binary, topo: single,     net: nat,    host: debian-13,    arch: x86_64, runner: ci-single, extra: "nat-single" }
 
     runs-on: [ self-hosted, "${{ matrix.runner }}" ]
     timeout-minutes: 35
@@ -121,7 +122,12 @@ jobs:
         env:
           MATRIX_NET: ${{ matrix.net }}
         run: |
-          if [ "$MATRIX_NET" = "dhcp" ]; then
+          if [ "$MATRIX_NET" = "nat" ]; then
+            # Routed-NAT mode with a static public pool: exercises both the
+            # Tier-1 transit datapath and the Tier-2 EIP ingress lane.
+            export SPX_EXTERNAL_MODE=nat
+            export SPX_EXTERNAL_POOL="${SPINIFEX_CI_POOL}"
+          elif [ "$MATRIX_NET" = "dhcp" ]; then
             unset SPX_EXTERNAL_POOL
             export SPX_EXTERNAL_SOURCE=dhcp
           else
@@ -153,6 +159,28 @@ jobs:
                rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
                if [ \$rc -ne 0 ]; then echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; FAIL=1; fi; \
              done; exit \$FAIL"
+
+      - name: Run NAT Uplink E2E
+        if: steps.gate.outputs.selected == 'true' && matrix.extra == 'nat-single'
+        working-directory: mulga/scripts/tofu-cluster
+        # Skips cleanly (exit 0) when the tested branch predates the natuplink
+        # suite so scheduled runs against dev stay green until the merge lands.
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; \
+             if [ ! -f natuplink.test ]; then echo 'natuplink.test not in tests tar (branch predates suite) — skipping'; exit 0; fi; \
+             echo '::group::suite natuplink'; \
+             date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-natuplink.start'; \
+             GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+               ARTIFACT_DIR='${ARTIFACT_DIR}' \
+               ./natuplink.test -test.v -test.timeout=30m \
+               2>&1 | tee '${ARTIFACT_DIR}/test-natuplink.log'; \
+             rc=\${PIPESTATUS[0]}; echo '::endgroup::'; \
+             if [ \$rc -ne 0 ]; then echo 'natuplink: FAILED' >> '${ARTIFACT_DIR}/suite-status.txt'; fi; exit \$rc"
 
       - name: Run Multi Node E2E
         if: steps.gate.outputs.selected == 'true' && matrix.topo == 'real-multi'

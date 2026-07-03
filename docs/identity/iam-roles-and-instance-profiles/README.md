@@ -33,7 +33,6 @@ resources:
 - [Managing Profile Associations at Runtime](#managing-profile-associations-at-runtime)
 - [Assuming a Role](#assuming-a-role)
 - [Cleaning Up](#cleaning-up)
-- [Command Reference](#command-reference)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -51,11 +50,10 @@ Like all IAM resources, roles and instance profiles are scoped to the account th
 ## Prerequisites
 
 - A running Spinifex cluster with the AWS gateway started
-- An account created via `spx admin account create` (see [Spinifex Admin CLI](/docs/spinifex-admin-cli))
-- AWS CLI configured with the account's profile:
+- AWS CLI configured with your account's profile. The default `spinifex` account created at cluster setup works out of the box; to work in a separate account, create one with `spx admin account create` (see [Spinifex Admin CLI](/docs/spinifex-admin-cli)):
 
 ```bash
-export AWS_PROFILE=spinifex-myteam
+export AWS_PROFILE=spinifex
 ```
 
 ## Instructions
@@ -326,34 +324,6 @@ aws iam detach-role-policy --role-name app-server \
 # 3. Delete the role
 aws iam delete-role --role-name app-server
 ```
-
-## Command Reference
-
-| Command                                     | Key Parameters                                                                | Notes                                |
-| ------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------ |
-| `create-role`                               | `--role-name`, `--assume-role-policy-document`, `--path`, `--description`, `--max-session-duration`, `--tags` | Trust policy required                |
-| `get-role`                                  | `--role-name`                                                                  |                                      |
-| `list-roles`                                | `--path-prefix`                                                                |                                      |
-| `update-role`                               | `--role-name`, `--description`, `--max-session-duration`                      |                                      |
-| `update-assume-role-policy`                 | `--role-name`, `--policy-document`                                            | Replaces the trust policy            |
-| `delete-role`                               | `--role-name`                                                                  | Must have no policies or profiles    |
-| `attach-role-policy` / `detach-role-policy` | `--role-name`, `--policy-arn`                                                 |                                      |
-| `list-attached-role-policies`               | `--role-name`                                                                  |                                      |
-| `put-role-policy`                           | `--role-name`, `--policy-name`, `--policy-document`                           | Inline policy                        |
-| `get-role-policy` / `delete-role-policy`    | `--role-name`, `--policy-name`                                                |                                      |
-| `list-role-policies`                        | `--role-name`                                                                  | Inline policy names                  |
-| `tag-role` / `untag-role` / `list-role-tags` | `--role-name`, `--tags`/`--tag-keys`                                          |                                      |
-| `create-instance-profile`                   | `--instance-profile-name`, `--path`, `--tags`                                 |                                      |
-| `get-instance-profile`                      | `--instance-profile-name`                                                      | Includes bound role                  |
-| `list-instance-profiles`                    | `--path-prefix`                                                                |                                      |
-| `list-instance-profiles-for-role`           | `--role-name`                                                                  |                                      |
-| `add-role-to-instance-profile`              | `--instance-profile-name`, `--role-name`                                      | Max 1 role per profile               |
-| `remove-role-from-instance-profile`         | `--instance-profile-name`, `--role-name`                                      |                                      |
-| `delete-instance-profile`                   | `--instance-profile-name`                                                      | Must contain no role                 |
-| `associate-iam-instance-profile`            | `--instance-id`, `--iam-instance-profile`                                     | Works on running instances           |
-| `disassociate-iam-instance-profile`         | `--association-id`                                                             |                                      |
-| `replace-iam-instance-profile-association`  | `--association-id`, `--iam-instance-profile`                                  | Returns a new association ID         |
-| `describe-iam-instance-profile-associations`| `--association-ids`, `--filters` (instance-id, state)                         |                                      |
 
 ## Troubleshooting
 

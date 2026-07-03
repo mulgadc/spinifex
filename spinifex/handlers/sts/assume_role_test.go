@@ -220,13 +220,14 @@ func TestAssumeRole_NoMatchingAllow_AccessDenied(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }
 
-func TestAssumeRole_SameAccountRoleNotFound_NoSuchEntity(t *testing.T) {
+func TestAssumeRole_SameAccountRoleNotFound_AccessDenied(t *testing.T) {
 	svc, _ := newTestSetup(t)
 
+	// AWS masks missing roles to AccessDenied regardless of account.
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCallerAccountID), "sess"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }
 
 func TestAssumeRole_CrossAccountRoleNotFound_AccessDenied(t *testing.T) {

@@ -89,7 +89,7 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 		duration = *input.DurationSeconds
 	}
 
-	out, err := s.assumeRoleForCaller(callerAccountID, callerARN, "", *input.RoleArn, sessionName, aws.StringValue(input.SourceIdentity), duration)
+	out, err := s.assumeRoleForCaller(callerARN, "", *input.RoleArn, sessionName, aws.StringValue(input.SourceIdentity), duration)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +118,7 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 
-	out, err := s.assumeRoleForCaller(accountID, "", ec2ServicePrincipal, roleARN, instanceID, "", durationSeconds)
+	out, err := s.assumeRoleForCaller("", ec2ServicePrincipal, roleARN, instanceID, "", durationSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +137,7 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 // assumeRoleForCaller is the shared core of AssumeRole and AssumeRoleForInstance:
 // resolves the role, clamps the duration, evaluates the trust policy, and mints credentials.
 // principalSource is "" for HTTPS, ec2.amazonaws.com for IMDS.
-func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
+func (s *STSServiceImpl) assumeRoleForCaller(callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
 	roleAccountID, roleName, err := auth.ParseRoleARN(roleARN)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorValidationError)
@@ -145,8 +145,8 @@ func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, princip
 
 	roleOut, err := s.iamSvc.GetRole(roleAccountID, &iam.GetRoleInput{RoleName: aws.String(roleName)})
 	if err != nil {
-		// Cross-account miss is masked to AccessDenied to prevent role enumeration.
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity && callerAccountID != roleAccountID {
+		// All misses are masked to AccessDenied, matching AWS and preventing role enumeration.
+		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
 			return nil, errors.New(awserrors.ErrorAccessDenied)
 		}
 		return nil, err

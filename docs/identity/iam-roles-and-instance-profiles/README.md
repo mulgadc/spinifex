@@ -304,7 +304,7 @@ aws sts assume-role \
 }
 ```
 
-The returned `ASIA`-prefixed credentials are temporary, valid up to the role's `MaxSessionDuration`.
+The returned `ASIA`-prefixed credentials are temporary, valid up to the role's `MaxSessionDuration`. See [STS and Temporary Credentials](/docs/sts) for session durations, using the credentials, and the other STS flows.
 
 ## Cleaning Up
 

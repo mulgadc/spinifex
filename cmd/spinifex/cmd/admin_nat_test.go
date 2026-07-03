@@ -115,9 +115,8 @@ func TestSpinifexTomlTemplate_NATModeWithPublicPool(t *testing.T) {
 		Pools: []admin.PoolData{
 			{Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24},
 			{
-				Name: "wan", Source: "static",
-				Start: "192.168.1.150", End: "192.168.1.250",
-				Gateway: "192.168.1.1", PrefixLen: 24,
+				Name: "wan", Source: "dhcp", BindBridge: "wlan0",
+				DHCPMAC: "interface", PrefixLen: 24,
 			},
 		},
 	}
@@ -128,8 +127,9 @@ func TestSpinifexTomlTemplate_NATModeWithPublicPool(t *testing.T) {
 	content := string(data)
 	assert.Contains(t, content, `name        = "nat-transit"`)
 	assert.Contains(t, content, `name        = "wan"`)
-	assert.Contains(t, content, `range_start = "192.168.1.150"`)
-	assert.Contains(t, content, `range_end   = "192.168.1.250"`)
+	assert.Contains(t, content, `source      = "dhcp"`)
+	assert.Contains(t, content, `bind_bridge = "wlan0"`)
+	assert.Contains(t, content, `dhcp_mac    = "interface"`)
 	transitIdx := strings.Index(content, `name        = "nat-transit"`)
 	wanIdx := strings.Index(content, `name        = "wan"`)
 	assert.Less(t, transitIdx, wanIdx, "transit pool must render first (IGW allocator picks it)")

@@ -1374,6 +1374,7 @@ func (d *Daemon) startCluster() error {
 					Name:            p.Name,
 					Source:          p.Source,
 					BindBridge:      p.BindBridge,
+					DHCPMAC:         p.DHCPMAC,
 					RangeStart:      p.RangeStart,
 					RangeEnd:        p.RangeEnd,
 					Gateway:         p.Gateway,

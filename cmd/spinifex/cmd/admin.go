@@ -1182,9 +1182,15 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			PrefixLen: 24, DNSServers: dnsServers,
 		})
 		if natPublicPool {
+			// WiFi/WWAN uplinks drop frames with foreign source MACs, so DHCP
+			// leases must go out with the interface's own MAC.
+			dhcpMAC := ""
+			if externalSource == "dhcp" && isNonBridgeableUplink(externalBindBridge) {
+				dhcpMAC = "interface"
+			}
 			externalPools = append(externalPools, admin.PoolData{
 				Name: "wan", Source: externalSource, BindBridge: externalBindBridge,
-				Start: poolStart, End: poolEnd, Gateway: natPublicGateway,
+				DHCPMAC: dhcpMAC, Start: poolStart, End: poolEnd, Gateway: natPublicGateway,
 				GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
 			})
 		}

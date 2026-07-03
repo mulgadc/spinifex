@@ -37,7 +37,19 @@ func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Leas
 	if req.Bridge == "" {
 		return nil, fmt.Errorf("dhcp acquire: bridge is required")
 	}
-	if len(req.HWAddr) == 0 {
+	switch {
+	case req.UseIfaceMAC:
+		// The uplink drops foreign source MACs (WiFi/WWAN), so lease with the
+		// interface's own MAC; option 61 keeps leases apart on sane servers.
+		iface, err := net.InterfaceByName(req.Bridge)
+		if err != nil {
+			return nil, fmt.Errorf("dhcp acquire: interface MAC for %s: %w", req.Bridge, err)
+		}
+		if len(iface.HardwareAddr) == 0 {
+			return nil, fmt.Errorf("dhcp acquire: interface %s has no MAC", req.Bridge)
+		}
+		req.HWAddr = iface.HardwareAddr
+	case len(req.HWAddr) == 0:
 		if req.ClientID == "" {
 			return nil, fmt.Errorf("dhcp acquire: client_id or hw_addr is required")
 		}
@@ -121,6 +133,7 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 		Hostname:    lease.Hostname,
 		VendorClass: lease.VendorClass,
 		HWAddr:      lease.HWAddr,
+		UseIfaceMAC: lease.UseIfaceMAC,
 	}, renewed), nil
 }
 
@@ -197,6 +210,7 @@ func leaseFromNClient4(req AcquireRequest, in *nclient4.Lease) *Lease {
 		Hostname:      req.Hostname,
 		VendorClass:   req.VendorClass,
 		HWAddr:        req.HWAddr,
+		UseIfaceMAC:   req.UseIfaceMAC,
 		IP:            ack.YourIPAddr,
 		SubnetMask:    ack.SubnetMask(),
 		Routers:       ack.Router(),

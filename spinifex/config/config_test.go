@@ -846,3 +846,57 @@ ovn_nb_addr = "tcp:127.0.0.1:6641"
 		assert.Contains(t, err.Error(), "not-a-cidr")
 	})
 }
+
+func TestLoadConfig_DHCPMAC(t *testing.T) {
+	base := `
+node = "n1"
+
+[network]
+external_mode = "pool"
+
+[[network.external_pools]]
+name = "wan"
+source = %q
+%s
+%s
+
+[nodes.n1]
+region = "us-east-1"
+
+[nodes.n1.vpcd]
+ovn_nb_addr = "tcp:127.0.0.1:6641"
+`
+	write := func(t *testing.T, source, bindBridge, dhcpMAC string) string {
+		t.Helper()
+		resetViper(t)
+		path := filepath.Join(t.TempDir(), "spinifex.toml")
+		bb := ""
+		if bindBridge != "" {
+			bb = fmt.Sprintf("bind_bridge = %q", bindBridge)
+		}
+		dm := ""
+		if dhcpMAC != "" {
+			dm = fmt.Sprintf("dhcp_mac = %q", dhcpMAC)
+		}
+		require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, base, source, bb, dm), 0600))
+		return path
+	}
+
+	t.Run("interface on dhcp pool", func(t *testing.T) {
+		cfg, err := LoadConfig(write(t, "dhcp", "wlan0", "interface"))
+		require.NoError(t, err)
+		assert.Equal(t, "interface", cfg.Network.ExternalPools[0].DHCPMAC)
+	})
+
+	t.Run("unknown value rejected", func(t *testing.T) {
+		_, err := LoadConfig(write(t, "dhcp", "wlan0", "random"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "dhcp_mac")
+	})
+
+	t.Run("rejected on static pool", func(t *testing.T) {
+		_, err := LoadConfig(write(t, "static", "", "interface"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `dhcp_mac is only valid with source="dhcp"`)
+	})
+}

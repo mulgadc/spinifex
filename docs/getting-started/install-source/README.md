@@ -29,12 +29,10 @@ resources:
 
 This guide builds Spinifex from source. For production deployments, the [binary installer](/docs/install) is recommended.
 
-**Requirements:**
+**Supported Operating Systems:**
 
-- Ubuntu 26.04 / Debian 13
-- Go 1.26.4+
-- GCC, make, pkg-config
-- QEMU/KVM, OVN/Open vSwitch, AWS CLI v2, dhcpcd-base
+- Ubuntu 26.04
+- Debian 13
 
 ## Instructions
 
@@ -47,12 +45,14 @@ sudo make -C spinifex quickinstall
 export PATH=$PATH:/usr/local/go/bin
 ```
 
-## Step 2. Clone and Build
+## Step 2. Clone Sibling Repositories
 
 ```bash
 cd spinifex
 ./scripts/clone-deps.sh
 ```
+
+This clones Predastore (S3) and Viperblock (EBS) alongside Spinifex.
 
 ## Step 3. Development Initialisation
 

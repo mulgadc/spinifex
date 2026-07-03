@@ -1369,7 +1369,7 @@ func (d *Daemon) startCluster() error {
 		}
 	}
 
-	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM)
+	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM, d.tagsService)
 	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, d.externalIPAM)
 
 	if d.gpuManager != nil {

@@ -168,6 +168,24 @@ func (s *TagsServiceImpl) PutResourceTags(accountID, resourceID string, tags map
 	return s.putResourceTags(accountID, resourceID, tags)
 }
 
+// DeleteAllTags removes the stored tag object for a resource. Used on
+// instance terminate so describe-tags stops reporting the instance while the
+// terminated record keeps its tags until TTL. Idempotent: a missing object
+// is not an error.
+func (s *TagsServiceImpl) DeleteAllTags(accountID, resourceID string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	_, err := s.store.DeleteObject(&s3.DeleteObjectInput{
+		Bucket: aws.String(s.config.Predastore.Bucket),
+		Key:    aws.String(getTagsKey(accountID, resourceID)),
+	})
+	if err != nil && !objectstore.IsNoSuchKeyError(err) {
+		return err
+	}
+	return nil
+}
+
 // CreateTags adds or overwrites tags for the specified resources
 func (s *TagsServiceImpl) CreateTags(input *ec2.CreateTagsInput, accountID string) (*ec2.CreateTagsOutput, error) {
 	if input == nil {

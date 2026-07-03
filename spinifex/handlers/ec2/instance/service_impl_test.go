@@ -1617,6 +1617,52 @@ func TestTerminateStoppedInstance_HappyPath(t *testing.T) {
 	assert.Contains(t, store.deletedStopped, id)
 }
 
+func TestTerminateStoppedInstance_CentralTagsDeleted(t *testing.T) {
+	id := "i-term-tags"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
+	}}
+	tw := &fakeTagWriter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, tagWriter: tw}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, tw.deleteCalls)
+	assert.Equal(t, "acc", tw.accountID, "central delete must target the owner's namespace")
+	assert.Equal(t, id, tw.resourceID)
+}
+
+func TestTerminateStoppedInstance_CentralTagDeleteFailureIsBestEffort(t *testing.T) {
+	id := "i-term-tagerr"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
+	}}
+	tw := &fakeTagWriter{err: errors.New("s3 down")}
+	svc := &InstanceServiceImpl{stoppedStore: store, tagWriter: tw}
+
+	out, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err, "terminate already succeeded; central delete failure must not surface")
+	assert.Equal(t, "terminated", out.Status)
+	assert.Contains(t, store.deletedStopped, id)
+}
+
+func TestTerminateStoppedInstance_ProtectedSkipsCentralTagDelete(t *testing.T) {
+	id := "i-prot-tags"
+	tw := &fakeTagWriter{}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {
+			ID: id, Status: vm.StateStopped, AccountID: "acc",
+			RunInstancesInput: &ec2.RunInstancesInput{DisableApiTermination: aws.Bool(true)},
+		},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store, tagWriter: tw}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Zero(t, tw.deleteCalls, "central tags must survive a rejected terminate")
+}
+
 func TestTerminateStoppedInstance_WriteTerminatedError_Aborts(t *testing.T) {
 	id := "i-werr"
 	store := &fakeStoppedStore{

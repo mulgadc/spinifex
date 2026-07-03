@@ -129,6 +129,7 @@ type InstanceServiceImpl struct {
 	volumeDeleter VolumeDeleter
 	eniDeleter    ENIDeleter
 	ipReleaser    PublicIPReleaser
+	tagWriter     InstanceTagWriter
 	gpuClaimer    GPUClaimer
 	amiLoader     AMIMetaLoader
 	keyValidator  KeyPairValidator
@@ -157,13 +158,14 @@ func NewInstanceServiceImpl(
 	}
 }
 
-// SetTerminationDeps wires the dependencies required by TerminateStoppedInstance.
+// SetTerminationDeps wires the dependencies required by the terminate paths.
 // Kept separate from the main constructor so handlers needing only read or
 // modify paths can construct a service without dragging the VPC/volume stack in.
-func (s *InstanceServiceImpl) SetTerminationDeps(vd VolumeDeleter, ed ENIDeleter, pr PublicIPReleaser) {
+func (s *InstanceServiceImpl) SetTerminationDeps(vd VolumeDeleter, ed ENIDeleter, pr PublicIPReleaser, tw InstanceTagWriter) {
 	s.volumeDeleter = vd
 	s.eniDeleter = ed
 	s.ipReleaser = pr
+	s.tagWriter = tw
 }
 
 // SetGPUClaimer wires the GPU passthrough claim/release dependency used by
@@ -374,6 +376,20 @@ func (s *InstanceServiceImpl) TagStoppedInstance(instanceID string, data *spxtyp
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil
+}
+
+// deleteCentralInstanceTags removes a terminated instance's central tag store
+// entry so describe-tags stops reporting it, while the terminated record keeps
+// its tags until TTL. Best-effort: the terminate already succeeded, so a
+// failed delete is logged rather than surfaced.
+func (s *InstanceServiceImpl) deleteCentralInstanceTags(instanceID, ownerAccountID string) {
+	if s.tagWriter == nil || ownerAccountID == "" {
+		return
+	}
+	if err := s.tagWriter.DeleteAllTags(ownerAccountID, instanceID); err != nil {
+		slog.Error("deleteCentralInstanceTags: central tag store delete failed",
+			"instanceId", instanceID, "err", err)
+	}
 }
 
 // PrepareRunInstances validates input, allocates capacity, creates VM metadata,
@@ -1028,7 +1044,7 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
 	}
 
-	go func(id string) {
+	go func(id, ownerAccountID string) {
 		var err error
 		if isTerminate {
 			err = s.vmMgr.Terminate(id)
@@ -1042,8 +1058,12 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 				return
 			}
 			slog.Error("StopOrTerminateInstance: failed to "+strings.ToLower(action), "err", err, "id", id)
+			return
 		}
-	}(instance.ID)
+		if isTerminate {
+			s.deleteCentralInstanceTags(id, ownerAccountID)
+		}
+	}(instance.ID, instance.AccountID)
 
 	return nil
 }
@@ -2275,6 +2295,8 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(input *TerminateStoppedIn
 				"instanceId", input.InstanceID, "err", retryErr)
 		}
 	}
+
+	s.deleteCentralInstanceTags(input.InstanceID, instance.AccountID)
 
 	slog.Info("Terminated stopped instance from shared KV", "instanceId", input.InstanceID)
 	return &TerminateStoppedInstanceOutput{Status: "terminated", InstanceID: input.InstanceID}, nil

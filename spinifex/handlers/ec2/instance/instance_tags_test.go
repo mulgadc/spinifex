@@ -70,11 +70,12 @@ func TestApplyInstanceTagMutation_SortedAndNilSafe(t *testing.T) {
 }
 
 type fakeTagWriter struct {
-	accountID  string
-	resourceID string
-	tags       map[string]string
-	err        error
-	calls      int
+	accountID   string
+	resourceID  string
+	tags        map[string]string
+	err         error
+	calls       int
+	deleteCalls int
 }
 
 func (f *fakeTagWriter) PutResourceTags(accountID, resourceID string, tags map[string]string) error {
@@ -82,6 +83,13 @@ func (f *fakeTagWriter) PutResourceTags(accountID, resourceID string, tags map[s
 	f.accountID = accountID
 	f.resourceID = resourceID
 	f.tags = tags
+	return f.err
+}
+
+func (f *fakeTagWriter) DeleteAllTags(accountID, resourceID string) error {
+	f.deleteCalls++
+	f.accountID = accountID
+	f.resourceID = resourceID
 	return f.err
 }
 

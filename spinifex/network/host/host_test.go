@@ -113,6 +113,7 @@ func TestUplinkModeString(t *testing.T) {
 	}{
 		{UplinkModePhysical, "physical"},
 		{UplinkModeVeth, "veth"},
+		{UplinkModeRouted, "routed"},
 		{UplinkModeUnknown, "unknown"},
 		{UplinkMode(99), "unknown"},
 	}

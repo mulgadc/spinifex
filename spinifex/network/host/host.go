@@ -21,6 +21,10 @@ const (
 
 	// UplinkModeVeth bridges a Linux bridge to br-ext via a veth pair (centralised NAT).
 	UplinkModeVeth
+
+	// UplinkModeRouted leaves br-ext with no WAN NIC; a veth pair links it to
+	// the host stack, which forwards + masquerades the transit /24 (routed NAT).
+	UplinkModeRouted
 )
 
 func (m UplinkMode) String() string {
@@ -29,6 +33,8 @@ func (m UplinkMode) String() string {
 		return "physical"
 	case UplinkModeVeth:
 		return "veth"
+	case UplinkModeRouted:
+		return "routed"
 	default:
 		return "unknown"
 	}

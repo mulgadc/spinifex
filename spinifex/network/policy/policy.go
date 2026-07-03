@@ -21,6 +21,11 @@ const (
 	// NATModeCentralized leaves ExternalMAC/LogicalPort unset; gateway chassis
 	// owns SNAT/DNAT. Required by UplinkModeVeth.
 	NATModeCentralized
+
+	// NATModeRouted is centralised-shaped: gateway chassis SNATs the VPC CIDR
+	// to its transit LRP IP; the host masquerades egress. Required by
+	// UplinkModeRouted. Outbound-only — no EIP/public-IP support.
+	NATModeRouted
 )
 
 func (m NATMode) String() string {
@@ -29,6 +34,8 @@ func (m NATMode) String() string {
 		return "distributed"
 	case NATModeCentralized:
 		return "centralized"
+	case NATModeRouted:
+		return "routed"
 	default:
 		return "unknown"
 	}
@@ -42,6 +49,8 @@ func NATModeFromUplinkMode(m host.UplinkMode) NATMode {
 		return NATModeDistributed
 	case host.UplinkModeVeth:
 		return NATModeCentralized
+	case host.UplinkModeRouted:
+		return NATModeRouted
 	default:
 		return NATModeUnknown
 	}

@@ -49,6 +49,7 @@ func countNAT(m *mock.Client, natType, logicalIP string) int {
 func TestNATModeFromUplinkMode(t *testing.T) {
 	assert.Equal(t, NATModeDistributed, NATModeFromUplinkMode(host.UplinkModePhysical))
 	assert.Equal(t, NATModeCentralized, NATModeFromUplinkMode(host.UplinkModeVeth))
+	assert.Equal(t, NATModeRouted, NATModeFromUplinkMode(host.UplinkModeRouted))
 	assert.Equal(t, NATModeUnknown, NATModeFromUplinkMode(host.UplinkModeUnknown))
 }
 

@@ -16,6 +16,9 @@ var ErrNATNotFound = errors.New("NAT not found")
 // ErrPortGroupNotFound is returned when a port group is absent (use errors.Is for idempotency).
 var ErrPortGroupNotFound = errors.New("port group not found")
 
+// ErrAddressSetNotFound is returned when an address set is absent (use errors.Is for idempotency).
+var ErrAddressSetNotFound = errors.New("address set not found")
+
 // ACLSpec describes an OVN ACL rule for attachment to a port group.
 type ACLSpec struct {
 	Direction string // "to-lport" or "from-lport"
@@ -95,6 +98,17 @@ type Client interface {
 	DeleteAllNATsByExternalIP(ctx context.Context, natType, externalIP string) (int, error)
 	FindNATByExternalIP(ctx context.Context, natType, externalIP string) (*nbdb.NAT, error)
 	FindNATByLogicalIP(ctx context.Context, routerName, natType, logicalIP string) (*nbdb.NAT, error)
+	// SetNATExemptedExtIPs updates exempted_ext_ips in place on the NAT rule
+	// matching (natType, logicalIP) on routerName — no delete/re-add flow gap.
+	// nil clears the ref. Returns ErrNATNotFound when the rule is absent.
+	SetNATExemptedExtIPs(ctx context.Context, routerName, natType, logicalIP string, addressSetUUID *string) error
+
+	// Address Sets (referenced by NAT exempted_ext_ips and ACL match exprs)
+	// EnsureAddressSet atomically creates the named address set or converges the
+	// addresses on the existing row (see EnsureLogicalRouter for the wait-op
+	// rationale). Returns the persisted row UUID.
+	EnsureAddressSet(ctx context.Context, name string, addresses []string) (uuid string, err error)
+	GetAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error)
 
 	// Static routes
 	AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error

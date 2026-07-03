@@ -71,6 +71,7 @@
         "logical_ip": {"type": "string"},
         "logical_port": {"type": {"key": "string", "min": 0, "max": 1}},
         "external_mac": {"type": {"key": "string", "min": 0, "max": 1}},
+        "exempted_ext_ips": {"type": {"key": {"type": "uuid", "refTable": "Address_Set", "refType": "strong"}, "min": 0, "max": 1}},
         "external_ids": {"type": {"key": "string", "value": "string", "min": 0, "max": "unlimited"}},
         "options": {"type": {"key": "string", "value": "string", "min": 0, "max": "unlimited"}}
       }

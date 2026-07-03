@@ -1,6 +1,7 @@
 package nbd
 
 import (
+	"slices"
 	"strconv"
 	"testing"
 )
@@ -124,7 +125,7 @@ func TestBuildArgs_Verbose(t *testing.T) {
 	}
 
 	// -v should appear right after plugin path
-	pluginIdx := indexOf(args, cfg.PluginPath)
+	pluginIdx := slices.Index(args, cfg.PluginPath)
 	if pluginIdx < 0 {
 		t.Fatal("plugin path not found in args")
 	}
@@ -177,7 +178,7 @@ func TestBuildArgs_TCPPortValue(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			pIdx := indexOf(args, "-p")
+			pIdx := slices.Index(args, "-p")
 			if pIdx < 0 || pIdx+1 >= len(args) {
 				t.Fatal("-p flag not found in args")
 			}
@@ -208,11 +209,11 @@ func TestBuildArgs_ArgOrdering(t *testing.T) {
 	}
 
 	// --pidfile before transport args
-	pidIdx := indexOf(args, "--pidfile")
-	unixIdx := indexOf(args, "--unix")
-	pluginIdx := indexOf(args, cfg.PluginPath)
-	verboseIdx := indexOf(args, "-v")
-	volumeIdx := indexOf(args, "volume=vol-test")
+	pidIdx := slices.Index(args, "--pidfile")
+	unixIdx := slices.Index(args, "--unix")
+	pluginIdx := slices.Index(args, cfg.PluginPath)
+	verboseIdx := slices.Index(args, "-v")
+	volumeIdx := slices.Index(args, "volume=vol-test")
 
 	if pidIdx < 0 || unixIdx < 0 || pluginIdx < 0 || verboseIdx < 0 || volumeIdx < 0 {
 		t.Fatalf("missing expected args in: %v", args)
@@ -247,7 +248,7 @@ func TestBuildArgs_EncryptionKeyFileForwarded(t *testing.T) {
 	}
 
 	want := "encryption_key_file=/etc/spinifex/viperblock/encryption.key"
-	if indexOf(args, want) < 0 {
+	if slices.Index(args, want) < 0 {
 		t.Errorf("expected %q in args, got: %v", want, args)
 	}
 }
@@ -281,13 +282,4 @@ func assertArgs(t *testing.T, expected, got []string) {
 			t.Errorf("args[%d] = %q, want %q", i, got[i], expected[i])
 		}
 	}
-}
-
-func indexOf(args []string, val string) int {
-	for i, a := range args {
-		if a == val {
-			return i
-		}
-	}
-	return -1
 }

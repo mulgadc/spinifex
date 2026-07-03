@@ -178,6 +178,18 @@ unless --force is passed. Prompts for confirmation unless --yes is passed.`,
 	Run: runimagesRemoveCmd,
 }
 
+var imagesPromoteCmd = &cobra.Command{
+	Use:   "promote",
+	Short: "Promote an account-owned AMI to a system image",
+	Long: `Rewrite an account-owned AMI's owner to the system alias so it becomes
+visible to all accounts via DescribeImages, matching the behaviour of AMIs
+imported via 'spx admin images import'.
+
+No data is copied — only the config.json owner field is updated. The change
+takes effect immediately. Prompts for confirmation unless --yes is passed.`,
+	Run: runimagesPromoteCmd,
+}
+
 var accountCmd = &cobra.Command{
 	Use:   "account",
 	Short: "Manage Spinifex accounts",
@@ -269,6 +281,7 @@ func init() {
 	imagesCmd.AddCommand(imagesImportCmd)
 	imagesCmd.AddCommand(imagesListCmd)
 	imagesCmd.AddCommand(imagesRemoveCmd)
+	imagesCmd.AddCommand(imagesPromoteCmd)
 
 	adminCmd.AddCommand(accountCmd)
 	accountCmd.AddCommand(accountCreateCmd)
@@ -362,6 +375,12 @@ func init() {
 	imagesRemoveCmd.Flags().Bool("force", false, "Bypass dependency, ownership and config-corrupt checks (salvage mode)")
 	imagesRemoveCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
 	if err := imagesRemoveCmd.MarkFlagRequired("image-id"); err != nil {
+		panic(err)
+	}
+
+	imagesPromoteCmd.Flags().String("image-id", "", "AMI ID to promote to system image (required)")
+	imagesPromoteCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
+	if err := imagesPromoteCmd.MarkFlagRequired("image-id"); err != nil {
 		panic(err)
 	}
 }
@@ -855,6 +874,67 @@ func printDependents(w io.Writer, d admin.Dependents) {
 			fmt.Fprintf(w, "    - %s\n", a)
 		}
 	}
+}
+
+func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
+	imageID, _ := cmd.Flags().GetString("image-id")
+	yes, _ := cmd.Flags().GetBool("yes")
+
+	cfgFile, _ := cmd.Flags().GetString("config")
+	if cfgFile == "" {
+		cfgFile = DefaultConfigFile()
+	}
+
+	appConfig, err := config.LoadConfig(cfgFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error loading config file:", err)
+		os.Exit(1)
+	}
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+	bucket := node.Predastore.Bucket
+
+	// Read current metadata for the confirmation prompt.
+	meta, err := admin.GetAMIMetadata(store, bucket, imageID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to inspect AMI:", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("About to promote AMI to system image:")
+	fmt.Println()
+	fmt.Printf("  Image ID:       %s\n", imageID)
+	fmt.Printf("  Name:           %s\n", meta.Name)
+	fmt.Printf("  Current owner:  %s\n", meta.ImageOwnerAlias)
+	fmt.Printf("  New owner:      %s\n", admin.SystemOwnerAlias)
+	if !meta.CreationDate.IsZero() {
+		fmt.Printf("  Created:        %s\n", meta.CreationDate.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	fmt.Println()
+	fmt.Println("After promotion this AMI will be visible to all accounts.")
+
+	if !yes {
+		fmt.Print("Type 'yes' to proceed: ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		if strings.TrimSpace(answer) != "yes" {
+			fmt.Println("Aborted.")
+			return
+		}
+	}
+
+	if _, err := admin.PromoteSystemImage(store, bucket, admin.PromoteImageOpts{ImageID: imageID}); err != nil {
+		fmt.Fprintln(os.Stderr, "Promote failed:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, admin.SystemOwnerAlias)
 }
 
 // List remote images available

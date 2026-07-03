@@ -20,11 +20,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
 	vbs3 "github.com/mulgadc/viperblock/viperblock/backends/s3"
-	"github.com/nats-io/nats.go"
 )
 
 // Ensure ImageServiceImpl implements ImageService
@@ -36,19 +34,18 @@ type CreateImageParams struct {
 	Input         *ec2.CreateImageInput
 	RootVolumeID  string
 	SourceImageID string
-	IsRunning     bool // true = use ebs.snapshot NATS, false = snapshot from S3 state
+	IsRunning     bool // true = use live checkpoint (instance still running), false = use numbered checkpoint from Close
 }
 
 // ImageServiceImpl handles AMI image operations with S3 storage
 type ImageServiceImpl struct {
 	config     *config.Config
 	store      objectstore.ObjectStore
-	natsConn   *nats.Conn
 	bucketName string
 }
 
 // NewImageServiceImpl creates a new daemon-side image service
-func NewImageServiceImpl(cfg *config.Config, natsConn *nats.Conn) *ImageServiceImpl {
+func NewImageServiceImpl(cfg *config.Config) *ImageServiceImpl {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
 		cfg.Predastore.Region,
@@ -59,7 +56,6 @@ func NewImageServiceImpl(cfg *config.Config, natsConn *nats.Conn) *ImageServiceI
 	return &ImageServiceImpl{
 		config:     cfg,
 		store:      store,
-		natsConn:   natsConn,
 		bucketName: cfg.Predastore.Bucket,
 	}
 }
@@ -452,6 +448,8 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		RootDeviceType:  ec2.DeviceTypeEbs,
 		ImageOwnerAlias: accountID,
 		BootMode:        sourceAMI.BootMode,
+		Distro:          sourceAMI.Distro,
+		DistroFamily:    sourceAMI.DistroFamily,
 	}
 
 	if err := s.putAMIConfig(amiID, meta); err != nil {
@@ -466,32 +464,69 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	}, nil
 }
 
-// snapshotRunningVolume triggers a snapshot via NATS on a running viperblockd instance
+// snapshotRunningVolume creates a crash-consistent snapshot of a running instance by reading
+// the live checkpoint written by nbdkit on every NBD Flush. No IPC with the running nbdkit
+// process is needed; S3 PUT atomicity guarantees we read a complete checkpoint.
 func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID string) error {
-	if s.natsConn == nil {
+	if s.config == nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	snapReq := types.EBSSnapshotRequest{Volume: volumeID, SnapshotID: snapshotID}
-	snapData, err := json.Marshal(snapReq)
+	volConfig, err := s.getVolumeConfig(volumeID)
 	if err != nil {
-		slog.Error("snapshotRunningVolume: failed to marshal snapshot request", "volumeId", volumeID, "err", err)
+		slog.Error("snapshotRunningVolume: failed to read volume config", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
+	volumeSize := volConfig.VolumeMetadata.SizeGiB * 1024 * 1024 * 1024
 
-	msg, err := s.natsConn.Request(fmt.Sprintf("ebs.snapshot.%s", volumeID), snapData, 30*time.Second)
+	cfg := vbs3.S3Config{
+		VolumeName: volumeID,
+		VolumeSize: volumeSize,
+		Bucket:     s.config.Predastore.Bucket,
+		Region:     s.config.Predastore.Region,
+		AccessKey:  s.config.Predastore.AccessKey,
+		SecretKey:  s.config.Predastore.SecretKey,
+		Host:       s.config.Predastore.Host,
+	}
+
+	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
 	if err != nil {
-		slog.Error("snapshotRunningVolume: NATS request failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+		slog.Error("snapshotRunningVolume: failed to load encryption key", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	var snapResp types.EBSSnapshotResponse
-	if err := json.Unmarshal(msg.Data, &snapResp); err != nil {
-		slog.Error("snapshotRunningVolume: failed to unmarshal response", "err", err)
+	vbconfig := viperblock.VB{
+		VolumeName:        volumeID,
+		VolumeSize:        volumeSize,
+		BaseDir:           s.config.WalDir,
+		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
+		MasterKey:         mkey,
+		EncryptionEnabled: mkey != nil,
+	}
+
+	vb, err := viperblock.New(&vbconfig, "s3", cfg)
+	if err != nil {
+		slog.Error("snapshotRunningVolume: failed to create viperblock instance", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if !snapResp.Success || snapResp.Error != "" {
-		slog.Error("snapshotRunningVolume: snapshot failed", "volumeId", volumeID, "err", snapResp.Error)
+
+	if err := vb.Backend.Init(); err != nil {
+		slog.Error("snapshotRunningVolume: failed to init backend", "volumeId", volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := vb.LoadState(); err != nil {
+		slog.Error("snapshotRunningVolume: failed to load state", "volumeId", volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := vb.LoadLiveCheckpoint(); err != nil {
+		slog.Error("snapshotRunningVolume: failed to load live checkpoint", "volumeId", volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if _, err := vb.CreateSnapshot(snapshotID); err != nil {
+		slog.Error("snapshotRunningVolume: CreateSnapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -549,8 +584,13 @@ func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) er
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if _, err := vb.LoadStateRequest(""); err != nil {
+	if err := vb.LoadState(); err != nil {
 		slog.Error("snapshotStoppedVolume: failed to load state", "volumeId", volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := vb.LoadBlockState(); err != nil {
+		slog.Error("snapshotStoppedVolume: failed to load block state", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -1120,6 +1160,7 @@ func (s *ImageServiceImpl) RegisterImage(input *ec2.RegisterImageInput, accountI
 		ImageOwnerAlias: accountID,
 		CreationDate:    time.Now(),
 		Tags:            tags,
+		BootMode:        aws.StringValue(input.BootMode),
 	}
 
 	if err := s.putAMIConfig(amiID, meta); err != nil {

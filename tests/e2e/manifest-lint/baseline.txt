@@ -107,3 +107,4 @@ create	tests/e2e/single/vpc_test.go	CreateSubnet	#1
 create	tests/e2e/single/vpc_test.go	CreateSubnet	#2
 create	tests/e2e/single/vpc_test.go	CreateVpc	#1
 create	tests/e2e/single/vpc_test.go	RunInstances	#1
+subject	spinifex/daemon/daemon.go	spinifex.image.promote

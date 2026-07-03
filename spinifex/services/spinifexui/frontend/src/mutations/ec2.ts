@@ -14,6 +14,7 @@ import {
   AuthorizeSecurityGroupIngressCommand,
   CopySnapshotCommand,
   CreateImageCommand,
+  DeregisterImageCommand,
   CreateInternetGatewayCommand,
   CreateKeyPairCommand,
   CreateNatGatewayCommand,
@@ -48,6 +49,7 @@ import {
   ModifySubnetAttributeCommand,
   ModifyVolumeCommand,
   RebootInstancesCommand,
+  RegisterImageCommand,
   ResourceType,
   RevokeSecurityGroupEgressCommand,
   RevokeSecurityGroupIngressCommand,
@@ -491,6 +493,46 @@ export function useCreateImage() {
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
       })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "images"] })
+    },
+  })
+}
+
+export function useRegisterImage() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      snapshotId: string
+      name: string
+      description?: string
+    }) => {
+      const command = new RegisterImageCommand({
+        Name: params.name,
+        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+        Description: params.description || undefined,
+        BlockDeviceMappings: [
+          {
+            DeviceName: "/dev/sda1",
+            Ebs: { SnapshotId: params.snapshotId },
+          },
+        ],
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "images"] })
+    },
+  })
+}
+
+export function useDeregisterImage() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (imageId: string) => {
+      const command = new DeregisterImageCommand({ ImageId: imageId })
       return await getEc2Client().send(command)
     },
     onSuccess: () => {

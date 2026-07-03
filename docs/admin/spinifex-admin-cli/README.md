@@ -1,7 +1,7 @@
 ---
 title: "Spinifex Admin CLI"
 description: "Complete reference for the Spinifex administration CLI. Manage accounts, nodes, VMs, and services."
-category: "Administration"
+category: "Admin"
 tags:
   - cli
   - admin
@@ -25,11 +25,9 @@ resources:
 
 ## Overview
 
-The `spx` binary is the central administration tool for managing your Spinifex infrastructure. It provides commands for cluster initialization, account management, node operations, VM lifecycle, and service control.
+The `spx` binary is the central administration tool for managing your Spinifex infrastructure. It provides commands for cluster initialization, account management, node operations, VM lifecycle, and service control. All services in the Spinifex platform are managed through this single binary.
 
 **Binary location:** `/usr/local/bin/spx`
-
-All services in the Spinifex platform are managed through this single binary.
 
 ## Instructions
 

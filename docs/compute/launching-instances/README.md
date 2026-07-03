@@ -38,19 +38,6 @@ resources:
 
 Spinifex provides EC2-compatible VM management built on QEMU/KVM. Instances support cloud-init, SSH key injection, VPC networking, and standard AWS lifecycle operations.
 
-**Supported operations:**
-
-- `run-instances` — Launch new VMs
-- `describe-instances` / `describe-instance-status` / `describe-instance-attribute` — Query state
-- `stop-instances` / `start-instances` — Lifecycle
-- `reboot-instances` — In-place restart
-- `terminate-instances` — Permanent removal
-- `modify-instance-attribute` — Change instance type, user data, or termination protection
-- `modify-instance-metadata-options` — IMDS settings (IMDSv2 is always enforced)
-- `request-spot-instances` / `describe-spot-instance-requests` / `cancel-spot-instance-requests` — Spot instance requests
-- `get-console-output` — Retrieve serial console log
-- `describe-instance-types` — List available instance types and capacity
-
 ## Instructions
 
 ## Prerequisites

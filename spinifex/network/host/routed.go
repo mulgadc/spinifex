@@ -16,6 +16,10 @@ const (
 	NATTransitGatewayIP   = "100.127.0.1"
 	NATTransitGatewayCIDR = "100.127.0.1/24"
 
+	// NATTransitPoolName is the auto-generated external pool for the transit
+	// segment; nat mode may carry a public pool alongside it.
+	NATTransitPoolName = "nat-transit"
+
 	// NATTransitHostEnd carries the transit gateway IP in the host stack.
 	NATTransitHostEnd = "spx-nat-host"
 

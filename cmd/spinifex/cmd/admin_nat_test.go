@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
@@ -27,11 +28,11 @@ func TestSpinifexTomlTemplate_NATMode(t *testing.T) {
 		OVNNBAddr: "tcp:127.0.0.1:6641",
 		OVNSBAddr: "tcp:127.0.0.1:6642",
 
-		ExternalMode:  "nat",
-		BridgeMode:    "nat",
-		PoolName:      "nat-transit",
-		PoolGateway:   "100.127.0.1",
-		PoolPrefixLen: 24,
+		ExternalMode: "nat",
+		BridgeMode:   "nat",
+		Pools: []admin.PoolData{{
+			Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24,
+		}},
 	}
 	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
 
@@ -64,12 +65,11 @@ func TestSpinifexTomlTemplate_PoolModeOmitsBridgeMode(t *testing.T) {
 
 		ExternalMode:  "pool",
 		ExternalIface: "enp0s3",
-		PoolName:      "wan",
-		PoolSource:    "static",
-		PoolStart:     "192.168.1.150",
-		PoolEnd:       "192.168.1.250",
-		PoolGateway:   "192.168.1.1",
-		PoolPrefixLen: 24,
+		Pools: []admin.PoolData{{
+			Name: "wan", Source: "static",
+			Start: "192.168.1.150", End: "192.168.1.250",
+			Gateway: "192.168.1.1", PrefixLen: 24,
+		}},
 	}
 	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
 
@@ -87,10 +87,112 @@ func TestIsNonBridgeableUplink(t *testing.T) {
 	}
 }
 
-func TestBridgeModeAndPoolNameFor(t *testing.T) {
+func TestBridgeModeFor(t *testing.T) {
 	assert.Equal(t, "nat", bridgeModeFor("nat"))
 	assert.Equal(t, "", bridgeModeFor("pool"))
 	assert.Equal(t, "", bridgeModeFor(""))
-	assert.Equal(t, "nat-transit", poolNameFor("nat"))
-	assert.Equal(t, "wan", poolNameFor("pool"))
+}
+
+func TestSpinifexTomlTemplate_NATModeWithPublicPool(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:      "node1",
+		Az:        "ap-southeast-2a",
+		Port:      "4432",
+		Region:    "ap-southeast-2",
+		BindIP:    "10.11.12.1",
+		AccessKey: "AKIATEST",
+		SecretKey: "SECRET",
+		AccountID: "123456789012",
+		NatsToken: "token",
+		ConfigDir: dir,
+		OVNNBAddr: "tcp:127.0.0.1:6641",
+		OVNSBAddr: "tcp:127.0.0.1:6642",
+
+		ExternalMode: "nat",
+		BridgeMode:   "nat",
+		Pools: []admin.PoolData{
+			{Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24},
+			{
+				Name: "wan", Source: "static",
+				Start: "192.168.1.150", End: "192.168.1.250",
+				Gateway: "192.168.1.1", PrefixLen: 24,
+			},
+		},
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `name        = "nat-transit"`)
+	assert.Contains(t, content, `name        = "wan"`)
+	assert.Contains(t, content, `range_start = "192.168.1.150"`)
+	assert.Contains(t, content, `range_end   = "192.168.1.250"`)
+	transitIdx := strings.Index(content, `name        = "nat-transit"`)
+	wanIdx := strings.Index(content, `name        = "wan"`)
+	assert.Less(t, transitIdx, wanIdx, "transit pool must render first (IGW allocator picks it)")
+}
+
+func TestResolvePublicPoolFlags(t *testing.T) {
+	tests := []struct {
+		name              string
+		source, poolRange string
+		bindBridge, gw    string
+		defaultBridge     string
+		wantSource        string
+		wantStart         string
+		wantEnd           string
+		wantBridge        string
+		wantErr           string
+	}{
+		{
+			name: "static pool range", source: "", poolRange: "192.168.1.150-192.168.1.250", gw: "192.168.1.1",
+			wantSource: "static", wantStart: "192.168.1.150", wantEnd: "192.168.1.250",
+		},
+		{
+			name: "dhcp defaults bind bridge", source: "dhcp", defaultBridge: "wlan0",
+			wantSource: "dhcp", wantBridge: "wlan0",
+		},
+		{
+			name: "dhcp explicit bind bridge", source: "dhcp", bindBridge: "br-wan", defaultBridge: "wlan0",
+			wantSource: "dhcp", wantBridge: "br-wan",
+		},
+		{
+			name: "dhcp rejects pool range", source: "dhcp", poolRange: "192.168.1.150-192.168.1.250",
+			wantErr: "--external-pool not allowed",
+		},
+		{
+			name: "static requires gateway", poolRange: "192.168.1.150-192.168.1.250",
+			wantErr: "--external-gateway is required",
+		},
+		{
+			name: "static rejects bind bridge", poolRange: "192.168.1.150-192.168.1.250", gw: "192.168.1.1", bindBridge: "br-wan",
+			wantErr: "--external-bind-bridge only valid",
+		},
+		{
+			name: "static requires range", source: "static", gw: "192.168.1.1",
+			wantErr: "--external-pool is required",
+		},
+		{
+			name: "bad range", poolRange: "not-a-range", gw: "192.168.1.1",
+			wantErr: "start-end IPs",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, start, end, bb, err := resolvePublicPoolFlags(tt.source, tt.poolRange, tt.bindBridge, tt.gw, tt.defaultBridge)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantSource, src)
+			assert.Equal(t, tt.wantStart, start)
+			assert.Equal(t, tt.wantEnd, end)
+			assert.Equal(t, tt.wantBridge, bb)
+		})
+	}
 }

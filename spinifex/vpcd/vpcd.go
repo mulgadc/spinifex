@@ -405,9 +405,9 @@ func launchService(cfg *Config) error {
 		}
 		if cfg.ExternalMode == "nat" && len(cfg.ExternalPools) == 0 {
 			slog.Warn("vpcd: nat mode with no external pool; synthesizing default transit pool",
-				"name", "nat-transit", "gateway", host.NATTransitGatewayIP)
+				"name", host.NATTransitPoolName, "gateway", host.NATTransitGatewayIP)
 			cfg.ExternalPools = append(cfg.ExternalPools, external.ExternalPoolConfig{
-				Name: "nat-transit", Gateway: host.NATTransitGatewayIP, PrefixLen: 24,
+				Name: host.NATTransitPoolName, Gateway: host.NATTransitGatewayIP, PrefixLen: 24,
 			})
 		}
 	}

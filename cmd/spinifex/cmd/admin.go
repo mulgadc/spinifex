@@ -1109,68 +1109,54 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "❌ Error: --external-mode must be 'pool', 'nat', or empty, got: %s\n", externalMode)
 		os.Exit(1)
 	}
+	// A public pool alongside nat's transit pool restores EIP / public-subnet
+	// parity where the operator has spare LAN IPs; without these flags nat
+	// stays Tier-1-only (host-jumpbox access, no public IPs).
+	natPublicPool := externalMode == "nat" && (externalPool != "" || externalSource != "")
+	// natPublicGateway keeps the upstream gateway for the public pool before
+	// the transit segment claims externalGateway below.
+	natPublicGateway := externalGateway
 	if externalMode == "nat" {
 		if nodes >= 2 {
 			fmt.Fprintf(os.Stderr, "❌ Error: --external-mode=nat is single-node only (v1); use --nodes=1\n")
 			os.Exit(1)
 		}
-		if externalPool != "" || externalSource != "" || externalBindBridge != "" || gatewayIP != "" {
-			fmt.Fprintf(os.Stderr, "❌ Error: --external-pool/--external-source/--external-bind-bridge/--gateway-ip do not apply to --external-mode=nat (outbound-only, no public IPs)\n")
+		if !natPublicPool && (externalBindBridge != "" || gatewayIP != "") {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge/--gateway-ip require --external-pool or --external-source in --external-mode=nat\n")
 			os.Exit(1)
+		}
+		if natPublicPool {
+			// DHCP DORA in nat mode binds the uplink interface itself — there
+			// is no br-wan (nothing is bridged in routed mode).
+			src, start, end, bb, err := resolvePublicPoolFlags(externalSource, externalPool, externalBindBridge, natPublicGateway, externalIface)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+				os.Exit(1)
+			}
+			externalSource, poolStart, poolEnd, externalBindBridge = src, start, end, bb
 		}
 		// The transit segment is fixed: the host veth owns the gateway IP and
-		// masquerades the /24; no per-VM public IPs exist.
+		// masquerades the /24.
 		externalGateway = host.NATTransitGatewayIP
-		externalPrefixLen = 24
 	}
 	if externalMode == "pool" {
-		// Default source: dhcp when no --external-pool, else static.
-		if externalSource == "" {
-			if externalPool == "" {
-				externalSource = "dhcp"
-			} else {
-				externalSource = "static"
+		src, start, end, bb, err := resolvePublicPoolFlags(externalSource, externalPool, externalBindBridge, externalGateway, "br-wan")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+			if strings.Contains(err.Error(), "--external-pool is required") && detectedNet != nil && detectedNet.WAN != nil {
+				sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
+				fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
 			}
-		}
-		switch externalSource {
-		case "dhcp":
-			if externalPool != "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool not allowed with --external-source=dhcp (addresses come from upstream DHCP server)\n")
-				os.Exit(1)
-			}
-			if externalBindBridge == "" {
-				externalBindBridge = "br-wan"
-			}
-		case "static":
-			if externalBindBridge != "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge only valid with --external-source=dhcp\n")
-				os.Exit(1)
-			}
-			if externalPool == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool is required with --external-source=static (e.g., 192.168.1.150-192.168.1.250)\n")
-				if detectedNet != nil && detectedNet.WAN != nil {
-					sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
-					fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
-				}
-				os.Exit(1)
-			}
-			if externalGateway == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required with --external-source=static\n")
-				os.Exit(1)
-			}
-			parts := strings.SplitN(externalPool, "-", 2)
-			if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s\n", externalPool)
-				os.Exit(1)
-			}
-			poolStart, poolEnd = parts[0], parts[1]
-		default:
-			fmt.Fprintf(os.Stderr, "❌ Error: --external-source must be 'static' or 'dhcp', got: %s\n", externalSource)
 			os.Exit(1)
 		}
+		externalSource, poolStart, poolEnd, externalBindBridge = src, start, end, bb
 	}
 	if externalGateway != "" && net.ParseIP(externalGateway) == nil {
 		fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is not a valid IP: %s\n", externalGateway)
+		os.Exit(1)
+	}
+	if natPublicGateway != "" && net.ParseIP(natPublicGateway) == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is not a valid IP: %s\n", natPublicGateway)
 		os.Exit(1)
 	}
 	if gatewayIP != "" && net.ParseIP(gatewayIP) == nil {
@@ -1185,6 +1171,29 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		if len(dnsServers) > 0 {
 			fmt.Printf("  DNS servers: %s\n", strings.Join(dnsServers, ", "))
 		}
+	}
+
+	// Assemble the external pool blocks rendered into spinifex.toml.
+	var externalPools []admin.PoolData
+	switch externalMode {
+	case "nat":
+		externalPools = append(externalPools, admin.PoolData{
+			Name: host.NATTransitPoolName, Gateway: host.NATTransitGatewayIP,
+			PrefixLen: 24, DNSServers: dnsServers,
+		})
+		if natPublicPool {
+			externalPools = append(externalPools, admin.PoolData{
+				Name: "wan", Source: externalSource, BindBridge: externalBindBridge,
+				Start: poolStart, End: poolEnd, Gateway: natPublicGateway,
+				GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
+			})
+		}
+	case "pool":
+		externalPools = append(externalPools, admin.PoolData{
+			Name: "wan", Source: externalSource, BindBridge: externalBindBridge,
+			Start: poolStart, End: poolEnd, Gateway: externalGateway,
+			GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
+		})
 	}
 
 	// Validate IP address format
@@ -1472,18 +1481,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		OVNNBAddr: "tcp:127.0.0.1:6641",
 		OVNSBAddr: "tcp:127.0.0.1:6642",
 
-		ExternalMode:   externalMode,
-		ExternalIface:  externalIface,
-		BridgeMode:     bridgeModeFor(externalMode),
-		PoolName:       poolNameFor(externalMode),
-		PoolSource:     externalSource,
-		PoolBindBridge: externalBindBridge,
-		PoolStart:      poolStart,
-		PoolEnd:        poolEnd,
-		PoolGateway:    externalGateway,
-		PoolGatewayIP:  gatewayIP,
-		PoolPrefixLen:  externalPrefixLen,
-		PoolDNSServers: dnsServers,
+		ExternalMode:  externalMode,
+		ExternalIface: externalIface,
+		BridgeMode:    bridgeModeFor(externalMode),
+		Pools:         externalPools,
 
 		OperatorEmail:       email,
 		BootstrapAccountId:  admin.DefaultAccountID(),
@@ -2574,15 +2575,19 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
-	settings.PoolName = nc.PoolName
-	settings.PoolSource = nc.PoolSource
-	settings.PoolBindBridge = nc.PoolBindBridge
-	settings.PoolStart = nc.PoolStart
-	settings.PoolEnd = nc.PoolEnd
-	settings.PoolGateway = nc.PoolGateway
-	settings.PoolGatewayIP = nc.PoolGatewayIP
-	settings.PoolPrefixLen = nc.PoolPrefixLen
-	settings.PoolDNSServers = nc.PoolDNSServers
+	if nc.ExternalMode != "" {
+		settings.Pools = []admin.PoolData{{
+			Name:       nc.PoolName,
+			Source:     nc.PoolSource,
+			BindBridge: nc.PoolBindBridge,
+			Start:      nc.PoolStart,
+			End:        nc.PoolEnd,
+			Gateway:    nc.PoolGateway,
+			GatewayIP:  nc.PoolGatewayIP,
+			PrefixLen:  nc.PoolPrefixLen,
+			DNSServers: nc.PoolDNSServers,
+		}}
+	}
 
 	settings.BootstrapAccountId = nc.BootstrapAccountId
 	settings.BootstrapVpcId = nc.BootstrapVpcId
@@ -2746,6 +2751,51 @@ func isNonBridgeableUplink(name string) bool {
 	return strings.HasPrefix(name, "wl") || strings.HasPrefix(name, "ww") || strings.HasPrefix(name, "ppp")
 }
 
+// resolvePublicPoolFlags validates the public-pool flag set shared by pool
+// mode and nat-with-public-pool. Returns the resolved source, static range
+// start/end, and bind bridge. Source defaults to dhcp when no range is given;
+// defaultBindBridge fills --external-bind-bridge for dhcp (br-wan in pool
+// mode, the uplink interface in nat mode).
+func resolvePublicPoolFlags(source, poolRange, bindBridge, gateway, defaultBindBridge string) (resolvedSource, start, end, resolvedBindBridge string, err error) {
+	if source == "" {
+		if poolRange == "" {
+			source = "dhcp"
+		} else {
+			source = "static"
+		}
+	}
+	switch source {
+	case "dhcp":
+		if poolRange != "" {
+			return "", "", "", "", fmt.Errorf("--external-pool not allowed with --external-source=dhcp (addresses come from upstream DHCP server)")
+		}
+		if bindBridge == "" {
+			if defaultBindBridge == "" {
+				return "", "", "", "", fmt.Errorf("--external-bind-bridge is required with --external-source=dhcp (no uplink interface detected)")
+			}
+			bindBridge = defaultBindBridge
+		}
+	case "static":
+		if bindBridge != "" {
+			return "", "", "", "", fmt.Errorf("--external-bind-bridge only valid with --external-source=dhcp")
+		}
+		if poolRange == "" {
+			return "", "", "", "", fmt.Errorf("--external-pool is required with --external-source=static (e.g., 192.168.1.150-192.168.1.250)")
+		}
+		if gateway == "" {
+			return "", "", "", "", fmt.Errorf("--external-gateway is required with --external-source=static")
+		}
+		parts := strings.SplitN(poolRange, "-", 2)
+		if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
+			return "", "", "", "", fmt.Errorf("--external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s", poolRange)
+		}
+		start, end = parts[0], parts[1]
+	default:
+		return "", "", "", "", fmt.Errorf("--external-source must be 'static' or 'dhcp', got: %s", source)
+	}
+	return source, start, end, bindBridge, nil
+}
+
 // bridgeModeFor returns the vpcd bridge_mode admin init persists for the
 // external mode: only nat mode is pinned; bridged modes stay auto-detected.
 func bridgeModeFor(externalMode string) string {
@@ -2753,15 +2803,6 @@ func bridgeModeFor(externalMode string) string {
 		return "nat"
 	}
 	return ""
-}
-
-// poolNameFor names the external pool: the routed transit segment for nat
-// mode, the conventional WAN pool otherwise.
-func poolNameFor(externalMode string) string {
-	if externalMode == "nat" {
-		return "nat-transit"
-	}
-	return "wan"
 }
 
 // detectDNSServers auto-detects DNS servers from the host for the specified

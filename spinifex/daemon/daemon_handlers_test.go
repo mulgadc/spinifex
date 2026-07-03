@@ -1921,6 +1921,14 @@ func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
 func TestDelegateHandlers_RoundTrip(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
+	// DeleteTags' no-owner path falls back to the shared stopped store; give
+	// the service an empty one so an absent instance resolves to NotFound.
+	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+		daemon.config, daemon.resourceMgr.instanceTypes, daemon.natsConn,
+		objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr,
+		&memStoppedStore{})
+	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
+
 	tests := []struct {
 		name         string
 		topic        string
@@ -1994,9 +2002,10 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 			name:    "DeleteTags",
 			topic:   "ec2.test.DeleteTags",
 			handler: daemon.handleEC2DeleteTags,
-			input:   &ec2.DeleteTagsInput{Resources: []*string{aws.String("i-12345678")}},
-			// DeleteTags returns `{}` on success.
-			allowEmpty: true,
+			// Instance IDs route to the owning daemon; with no owner
+			// subscribed the mutation is rejected rather than written blind.
+			input:        &ec2.DeleteTagsInput{Resources: []*string{aws.String("i-12345678")}},
+			expectedCode: awserrors.ErrorInvalidInstanceIDNotFound,
 		},
 		{
 			name:    "DescribeTags",

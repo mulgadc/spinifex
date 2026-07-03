@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
@@ -24,6 +26,61 @@ import (
 // while the target is still launching causes a duplicate Run that collides on
 // the deterministic tap name (TUNSETIFF: Device or resource busy).
 const startStoppedForwardTimeout = 30 * time.Second
+
+// handleSetInstanceTags applies a create-tags/delete-tags mutation to a running
+// instance: central store first, then the record under the manager lock, so a
+// failed S3 write leaves both stores untouched, matching the stopped path.
+// Ownership is checked by checkInstanceOwnership before dispatch.
+func (d *Daemon) handleSetInstanceTags(msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+	remove := command.Attributes.RemoveInstanceTags
+	data := command.InstanceTagsData
+	if data == nil || (!remove && len(data.Tags) == 0) {
+		respondWithError(msg, awserrors.ErrorMissingParameter)
+		return
+	}
+
+	var newTags []*ec2.Tag
+	missingRecord := false
+	d.vmMgr.Inspect(instance, func(v *vm.VM) {
+		if v.Instance == nil {
+			missingRecord = true
+			return
+		}
+		newTags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
+	})
+	if missingRecord {
+		respondWithError(msg, awserrors.ErrorServerInternal)
+		return
+	}
+
+	accountID := utils.AccountIDFromMsg(msg)
+	if err := d.tagsService.PutResourceTags(accountID, instance.ID, handlers_ec2_instance.TagsToMap(newTags)); err != nil {
+		slog.Error("SetInstanceTags: central tag store write failed",
+			"instanceId", instance.ID, "err", err)
+		respondWithError(msg, awserrors.ErrorServerInternal)
+		return
+	}
+
+	found, err := d.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
+		if v.Instance == nil {
+			return false
+		}
+		v.Instance.Tags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
+		return true
+	})
+	if err != nil {
+		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+		return
+	}
+	if !found {
+		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+		return
+	}
+
+	if err := msg.Respond([]byte(`{}`)); err != nil {
+		slog.Error("Failed to respond to NATS request", "err", err)
+	}
+}
 
 // handleEC2RunInstances orchestrates the RunInstances flow across
 // InstanceService.PrepareRunInstances (validation + ENI creation),
@@ -101,6 +158,20 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 		slog.Error("handleEC2RunInstances failed to write initial state", "err", err)
 	}
 	slog.Info("Instances added to state with pending status", "count", len(instances))
+
+	// Project launch tags into the central tag store so describe-tags agrees
+	// with the record from birth. Best-effort: the reservation is already
+	// returned, so a failed write is logged rather than failing the launch.
+	for _, instance := range instances {
+		if instance.Instance == nil || len(instance.Instance.Tags) == 0 {
+			continue
+		}
+		if err := d.tagsService.PutResourceTags(accountID, instance.ID,
+			handlers_ec2_instance.TagsToMap(instance.Instance.Tags)); err != nil {
+			slog.Error("handleEC2RunInstances: launch tag central store write failed",
+				"instanceId", instance.ID, "err", err)
+		}
+	}
 
 	// Subscribe per-instance NATS topics so terminate/stop reach this daemon
 	// while volumes prepare. LaunchInstance replaces these on success.

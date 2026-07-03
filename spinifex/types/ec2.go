@@ -11,6 +11,7 @@ type EC2InstanceCommand struct {
 	DetachENIData             *DetachENIData             `json:"detach_eni_data,omitempty"`
 	IamProfileAssociationData *IamProfileAssociationData `json:"iam_profile_association_data,omitempty"`
 	SpotLineageData           *SpotLineageData           `json:"spot_lineage_data,omitempty"`
+	InstanceTagsData          *InstanceTagsData          `json:"instance_tags_data,omitempty"`
 }
 
 // EC2CommandAttributes indicates which action the daemon should perform.
@@ -25,6 +26,8 @@ type EC2CommandAttributes struct {
 	DetachENI                   bool `json:"detach_eni"`
 	AssociateIamInstanceProfile bool `json:"associate_iam_instance_profile,omitempty"`
 	SetSpotLineage              bool `json:"set_spot_lineage,omitempty"`
+	SetInstanceTags             bool `json:"set_instance_tags,omitempty"`
+	RemoveInstanceTags          bool `json:"remove_instance_tags,omitempty"`
 }
 
 // AttachVolumeData carries parameters for an attach-volume command.
@@ -58,6 +61,14 @@ type DetachENIData struct {
 // only needs the ARN to persist on vm.VM.
 type IamProfileAssociationData struct {
 	InstanceProfileArn string `json:"instance_profile_arn"`
+}
+
+// InstanceTagsData carries parameters for a set/remove-instance-tags command.
+// For create-tags, Tags is the upsert set. For delete-tags, TagKeys removes
+// keys unconditionally, Tags removes only on value match, both empty clears all.
+type InstanceTagsData struct {
+	Tags    map[string]string `json:"tags,omitempty"`
+	TagKeys []string          `json:"tag_keys,omitempty"`
 }
 
 // SpotLineageData carries the SIR id stamped onto a spot-launched instance.

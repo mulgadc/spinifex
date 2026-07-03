@@ -578,3 +578,36 @@ func TestAccountIsolation_DeleteDoesNotAffectOtherAccount(t *testing.T) {
 	assert.Len(t, resultB.Tags, 1)
 	assert.Equal(t, "staging", *resultB.Tags[0].Value)
 }
+
+// TestDeleteAllTags tests that the resource's stored tag object is removed
+// entirely and other accounts' entries for the same resource ID survive
+func TestDeleteAllTags(t *testing.T) {
+	svc, _ := setupTestTagsService(t)
+	accountA := "111111111111"
+	accountB := "222222222222"
+
+	for _, acct := range []string{accountA, accountB} {
+		_, err := svc.CreateTags(&ec2.CreateTagsInput{
+			Resources: []*string{aws.String("i-gone")},
+			Tags:      []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+		}, acct)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, svc.DeleteAllTags(accountA, "i-gone"))
+
+	resultA, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, accountA)
+	require.NoError(t, err)
+	assert.Empty(t, resultA.Tags)
+
+	resultB, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, accountB)
+	require.NoError(t, err)
+	assert.Len(t, resultB.Tags, 1)
+}
+
+// TestDeleteAllTags_MissingResourceIsNoError tests idempotency for a resource
+// that never had tags
+func TestDeleteAllTags_MissingResourceIsNoError(t *testing.T) {
+	svc, _ := setupTestTagsService(t)
+	require.NoError(t, svc.DeleteAllTags("111111111111", "i-never-tagged"))
+}

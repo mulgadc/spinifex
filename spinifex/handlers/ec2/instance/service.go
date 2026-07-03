@@ -86,6 +86,14 @@ type StoppedInstanceStore interface {
 	WriteTerminatedInstance(instanceID string, instance *vm.VM) error
 }
 
+// InstanceTagWriter projects an instance record's full tag set into the
+// central tag store, and removes it on terminate. Implemented by
+// handlers/ec2/tags.TagsServiceImpl.
+type InstanceTagWriter interface {
+	PutResourceTags(accountID, resourceID string, tags map[string]string) error
+	DeleteAllTags(accountID, resourceID string) error
+}
+
 // VolumeDeleter deletes EBS volumes. Implemented by handlers/ec2/volume's
 // VolumeServiceImpl (used by the daemon).
 type VolumeDeleter interface {

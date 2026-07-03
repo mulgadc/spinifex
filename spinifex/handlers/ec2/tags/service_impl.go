@@ -14,11 +14,16 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Ensure TagsServiceImpl implements TagsService
 var _ TagsService = (*TagsServiceImpl)(nil)
+
+// Ensure TagsServiceImpl can project instance record tags into the store
+var _ handlers_ec2_instance.InstanceTagWriter = (*TagsServiceImpl)(nil)
 
 // TagsServiceImpl implements TagsService with S3-backed storage.
 // Tags are stored per-account in S3 (tags/{accountID}/{resourceID}.json),
@@ -153,6 +158,33 @@ func (s *TagsServiceImpl) putResourceTags(accountID, resourceID string, tags map
 	})
 
 	return err
+}
+
+// PutResourceTags overwrites the stored tag set for a resource. Used to
+// project an instance record's tags (the source of truth) into the central
+// store so describe-tags agrees with describe-instances.
+func (s *TagsServiceImpl) PutResourceTags(accountID, resourceID string, tags map[string]string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.putResourceTags(accountID, resourceID, tags)
+}
+
+// DeleteAllTags removes the stored tag object for a resource. Used on
+// instance terminate so describe-tags stops reporting the instance while the
+// terminated record keeps its tags until TTL. Idempotent: a missing object
+// is not an error.
+func (s *TagsServiceImpl) DeleteAllTags(accountID, resourceID string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	_, err := s.store.DeleteObject(&s3.DeleteObjectInput{
+		Bucket: aws.String(s.config.Predastore.Bucket),
+		Key:    aws.String(getTagsKey(accountID, resourceID)),
+	})
+	if err != nil && !objectstore.IsNoSuchKeyError(err) {
+		return err
+	}
+	return nil
 }
 
 // CreateTags adds or overwrites tags for the specified resources
@@ -317,27 +349,7 @@ func (s *TagsServiceImpl) DeleteTags(input *ec2.DeleteTagsInput, accountID strin
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
-		if len(input.Tags) == 0 {
-			// Delete all tags if no specific tags provided
-			existingTags = make(map[string]string)
-		} else {
-			// Delete specified tags — per AWS API, when Value is specified
-			// the tag is only deleted if the stored value matches
-			for _, tag := range input.Tags {
-				if tag.Key == nil {
-					continue
-				}
-				if tag.Value == nil {
-					// No value specified: delete unconditionally
-					delete(existingTags, *tag.Key)
-				} else {
-					// Value specified: only delete if current value matches
-					if current, exists := existingTags[*tag.Key]; exists && current == *tag.Value {
-						delete(existingTags, *tag.Key)
-					}
-				}
-			}
-		}
+		utils.RemoveTagsMut(input)(existingTags)
 
 		// Save updated tags
 		if err := s.putResourceTags(accountID, *resourceID, existingTags); err != nil {

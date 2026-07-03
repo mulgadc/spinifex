@@ -143,7 +143,17 @@ aws iam create-access-key --user-name alice
 
 > **The secret access key is only shown once.** Save it immediately. If lost, delete the key and create a new one.
 
-Add the credentials to `~/.aws/credentials` under a new profile and set `AWS_PROFILE` to use them.
+Configure a profile for the new key. A Spinifex profile also needs the gateway endpoint and CA bundle (copy the values from your existing `spinifex-*` profile in `~/.aws/config`):
+
+```bash
+aws configure set aws_access_key_id AKIA1A2B3C4D5E6F7890ABCD --profile spinifex-alice
+aws configure set aws_secret_access_key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY --profile spinifex-alice
+aws configure set region ap-southeast-2 --profile spinifex-alice
+aws configure set endpoint_url https://localhost:9999 --profile spinifex-alice
+aws configure set ca_bundle /var/lib/spinifex/config/ca.pem --profile spinifex-alice
+```
+
+Then set `AWS_PROFILE=spinifex-alice` to use it.
 
 ### List Access Keys
 
@@ -159,7 +169,9 @@ Create a second key, update your configuration, then delete the old one:
 # 1. Create new key (while old key still works)
 aws iam create-access-key --user-name alice
 
-# 2. Update ~/.aws/credentials with the new key
+# 2. Update the profile with the new key
+aws configure set aws_access_key_id AKIA_NEW_KEY_ID --profile spinifex-alice
+aws configure set aws_secret_access_key NEW_SECRET --profile spinifex-alice
 
 # 3. Verify the new key works
 AWS_PROFILE=spinifex-alice aws sts get-caller-identity
@@ -433,9 +445,13 @@ aws iam create-policy \
 aws iam attach-user-policy --user-name dev-carol \
   --policy-arn arn:aws:iam::000000000001:policy/DeveloperAccess
 
-# 5. Configure the developer's AWS CLI
-aws configure --profile spinifex-carol
-# Enter the access key and secret from step 2
+# 5. Configure the developer's AWS CLI profile with the key from step 2.
+#    endpoint_url and ca_bundle: copy from an existing spinifex-* profile in ~/.aws/config
+aws configure set aws_access_key_id AKIA_CAROL_KEY_ID --profile spinifex-carol
+aws configure set aws_secret_access_key CAROL_SECRET --profile spinifex-carol
+aws configure set region ap-southeast-2 --profile spinifex-carol
+aws configure set endpoint_url https://localhost:9999 --profile spinifex-carol
+aws configure set ca_bundle /var/lib/spinifex/config/ca.pem --profile spinifex-carol
 
 # 6. Verify
 AWS_PROFILE=spinifex-carol aws ec2 describe-instances

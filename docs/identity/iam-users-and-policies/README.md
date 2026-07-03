@@ -30,14 +30,13 @@ resources:
 - [Policies](#policies)
 - [Attaching Policies](#attaching-policies)
 - [Putting It All Together](#putting-it-all-together)
-- [Command Reference](#command-reference)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Overview
 
-Spinifex implements AWS-compatible IAM covering user management, access key lifecycle, policy CRUD, and policy attachment. Inline user policies (`put-user-policy`), user and policy tagging, and IAM roles for EC2 instances (see [IMDS](/docs/imds)) are also supported. All IAM resources are scoped to the account that creates them — users in one account cannot see or modify resources in another.
+Spinifex implements AWS-compatible IAM covering user management, access key lifecycle, policy CRUD, and policy attachment. Inline user policies (`put-user-policy`), user and policy tagging, [groups](/docs/iam-groups), and [roles and instance profiles](/docs/iam-roles-and-instance-profiles) are also supported. All IAM resources are scoped to the account that creates them — users in one account cannot see or modify resources in another.
 
 When you create an account with `spx admin account create`, Spinifex bootstraps a root user with an `AdministratorAccess` policy and writes the credentials to `~/.aws/credentials`. From there, you use the standard AWS CLI to manage additional users and permissions.
 
@@ -46,11 +45,10 @@ When you create an account with `spx admin account create`, Spinifex bootstraps 
 ## Prerequisites
 
 - A running Spinifex cluster with the AWS gateway started
-- An account created via `spx admin account create` (see [Spinifex Admin CLI](/docs/spinifex-admin-cli))
-- AWS CLI configured with the account's profile:
+- AWS CLI configured with your account's profile. The default `spinifex` account created at cluster setup works out of the box; to work in a separate account, create one with `spx admin account create` (see [Spinifex Admin CLI](/docs/spinifex-admin-cli)):
 
 ```bash
-export AWS_PROFILE=spinifex-myteam
+export AWS_PROFILE=spinifex
 ```
 
 ## Instructions
@@ -459,36 +457,14 @@ AWS_PROFILE=spinifex-carol aws ec2 terminate-instances --instance-ids i-123
 # ^ This will be denied by the NoTerminate statement
 ```
 
-## Command Reference
-
-| Command                       | Key Parameters                               | Notes                             |
-| ----------------------------- | -------------------------------------------- | --------------------------------- |
-| `create-user`                 | `--user-name`, `--path`                      | Path default: `/`                 |
-| `get-user`                    | `--user-name`                                |                                   |
-| `list-users`                  | `--path-prefix`                              |                                   |
-| `delete-user`                 | `--user-name`                                | Must have no keys or policies     |
-| `create-access-key`           | `--user-name`                                | Max 2 per user; secret shown once |
-| `list-access-keys`            | `--user-name`                                |                                   |
-| `delete-access-key`           | `--user-name`, `--access-key-id`             |                                   |
-| `update-access-key`           | `--user-name`, `--access-key-id`, `--status` | `Active` or `Inactive`            |
-| `create-policy`               | `--policy-name`, `--policy-document`         | Max 6144 bytes                    |
-| `get-policy`                  | `--policy-arn`                               | Metadata only                     |
-| `get-policy-version`          | `--policy-arn`, `--version-id`               | Use `v1`; includes document       |
-| `list-policy-versions`        | `--policy-arn`                               |                                   |
-| `list-policies`               |                                              |                                   |
-| `delete-policy`               | `--policy-arn`                               | Must not be attached              |
-| `attach-user-policy`          | `--user-name`, `--policy-arn`                | Idempotent                        |
-| `detach-user-policy`          | `--user-name`, `--policy-arn`                |                                   |
-| `list-attached-user-policies` | `--user-name`                                |                                   |
-
 ## Troubleshooting
 
 ### AccessDenied on IAM Commands
 
-The calling user must have IAM permissions. Attach a policy with `iam:*` actions, or use the root account profile:
+The calling user must have IAM permissions. Attach a policy with `iam:*` actions, or use the account's admin profile:
 
 ```bash
-export AWS_PROFILE=spinifex-myteam
+export AWS_PROFILE=spinifex
 aws iam list-users
 ```
 
@@ -511,7 +487,7 @@ If the key was deleted, create a new one.
 
 ### DeleteConflict When Deleting a User
 
-The user still has access keys or attached policies. Remove them first:
+The user still has access keys, attached policies, or [group memberships](/docs/iam-groups). Remove them first:
 
 ```bash
 # Check for access keys
@@ -519,6 +495,9 @@ aws iam list-access-keys --user-name alice
 
 # Check for attached policies
 aws iam list-attached-user-policies --user-name alice
+
+# Check for group memberships
+aws iam list-groups-for-user --user-name alice
 ```
 
 ### DeleteConflict When Deleting a Policy

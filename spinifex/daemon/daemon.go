@@ -1161,6 +1161,34 @@ func (d *Daemon) startLocal() error {
 	return nil
 }
 
+// publicExternalPools filters out the routed-NAT transit pool: it carries
+// gateway plumbing addresses, never allocatable public IPs.
+func publicExternalPools(pools []config.ExternalPool) []config.ExternalPool {
+	var public []config.ExternalPool
+	for _, p := range pools {
+		if p.Name == host.NATTransitPoolName {
+			continue
+		}
+		public = append(public, p)
+	}
+	return public
+}
+
+// hasPublicIPPools reports whether the cluster can allocate routable public
+// IPs: pool mode always, nat mode only with a public pool beside the transit.
+func (d *Daemon) hasPublicIPPools() bool {
+	if d.clusterConfig == nil {
+		return false
+	}
+	switch d.clusterConfig.Network.ExternalMode {
+	case "pool":
+		return true
+	case "nat":
+		return len(publicExternalPools(d.clusterConfig.Network.ExternalPools)) > 0
+	}
+	return false
+}
+
 // assertNoClusterServicesInitialised enforces the DDIL §1e-audit invariant:
 // no NATS-dependent handle may exist at the end of startLocal.
 func (d *Daemon) assertNoClusterServicesInitialised() error {
@@ -1309,9 +1337,10 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
 	}
-	// Non-pool external modes (nat, disabled) have no public IPs, so default
-	// subnets must not request one on launch.
-	d.vpcService.SetDefaultPublicIPMapping(d.clusterConfig != nil && d.clusterConfig.Network.ExternalMode == "pool")
+	// Default subnets request a public IP on launch only when the cluster has
+	// pools that hand out routable public IPs (pool mode always; nat mode only
+	// when a public pool rides alongside the transit segment).
+	d.vpcService.SetDefaultPublicIPMapping(d.hasPublicIPPools())
 
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
 		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.config, d.natsConn)
@@ -1330,15 +1359,17 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
 	}
 
-	// Initialize external IPAM for pool mode (per-VM public IPs).
-	if d.clusterConfig != nil && d.clusterConfig.Network.ExternalMode == "pool" {
+	// Initialize external IPAM when public IP pools exist (pool mode, or nat
+	// mode with a public pool alongside the transit segment). The transit pool
+	// never enters IPAM — its addresses are gateway-LRP plumbing, not EIPs.
+	if d.hasPublicIPPools() {
 		js, jsErr := d.natsConn.JetStream()
 		if jsErr != nil {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
 			var pools []external.ExternalPoolConfig
 			anyDHCP := false
-			for _, p := range d.clusterConfig.Network.ExternalPools {
+			for _, p := range publicExternalPools(d.clusterConfig.Network.ExternalPools) {
 				pools = append(pools, external.ExternalPoolConfig{
 					Name:            p.Name,
 					Source:          p.Source,

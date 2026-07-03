@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Ensure TagsServiceImpl implements TagsService
@@ -348,27 +349,7 @@ func (s *TagsServiceImpl) DeleteTags(input *ec2.DeleteTagsInput, accountID strin
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
-		if len(input.Tags) == 0 {
-			// Delete all tags if no specific tags provided
-			existingTags = make(map[string]string)
-		} else {
-			// Delete specified tags — per AWS API, when Value is specified
-			// the tag is only deleted if the stored value matches
-			for _, tag := range input.Tags {
-				if tag.Key == nil {
-					continue
-				}
-				if tag.Value == nil {
-					// No value specified: delete unconditionally
-					delete(existingTags, *tag.Key)
-				} else {
-					// Value specified: only delete if current value matches
-					if current, exists := existingTags[*tag.Key]; exists && current == *tag.Value {
-						delete(existingTags, *tag.Key)
-					}
-				}
-			}
-		}
+		utils.RemoveTagsMut(input)(existingTags)
 
 		// Save updated tags
 		if err := s.putResourceTags(accountID, *resourceID, existingTags); err != nil {

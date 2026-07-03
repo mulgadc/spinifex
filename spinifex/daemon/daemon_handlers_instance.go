@@ -28,9 +28,9 @@ import (
 const startStoppedForwardTimeout = 30 * time.Second
 
 // handleSetInstanceTags applies a create-tags/delete-tags mutation to a running
-// instance's record under the manager lock, persists it, then projects the full
-// tag set into the central tag store so both stores move together. Ownership is
-// checked by checkInstanceOwnership before dispatch.
+// instance: central store first, then the record under the manager lock, so a
+// failed S3 write leaves both stores untouched, matching the stopped path.
+// Ownership is checked by checkInstanceOwnership before dispatch.
 func (d *Daemon) handleSetInstanceTags(msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
 	remove := command.Attributes.RemoveInstanceTags
 	data := command.InstanceTagsData
@@ -40,25 +40,15 @@ func (d *Daemon) handleSetInstanceTags(msg *nats.Msg, command types.EC2InstanceC
 	}
 
 	var newTags []*ec2.Tag
-	mutated := false
-	found, err := d.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
+	missingRecord := false
+	d.vmMgr.Inspect(instance, func(v *vm.VM) {
 		if v.Instance == nil {
-			return false
+			missingRecord = true
+			return
 		}
-		v.Instance.Tags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
-		newTags = v.Instance.Tags
-		mutated = true
-		return true
+		newTags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
 	})
-	if err != nil {
-		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
-		return
-	}
-	if !found {
-		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-		return
-	}
-	if !mutated {
+	if missingRecord {
 		respondWithError(msg, awserrors.ErrorServerInternal)
 		return
 	}
@@ -68,6 +58,22 @@ func (d *Daemon) handleSetInstanceTags(msg *nats.Msg, command types.EC2InstanceC
 		slog.Error("SetInstanceTags: central tag store write failed",
 			"instanceId", instance.ID, "err", err)
 		respondWithError(msg, awserrors.ErrorServerInternal)
+		return
+	}
+
+	found, err := d.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
+		if v.Instance == nil {
+			return false
+		}
+		v.Instance.Tags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
+		return true
+	})
+	if err != nil {
+		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+		return
+	}
+	if !found {
+		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
 		return
 	}
 

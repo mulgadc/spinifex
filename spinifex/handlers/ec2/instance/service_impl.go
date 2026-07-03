@@ -292,17 +292,10 @@ func ApplyInstanceTagMutation(existing []*ec2.Tag, data *spxtypes.InstanceTagsDa
 	}
 
 	switch {
-	case remove && (data == nil || (len(data.Tags) == 0 && len(data.TagKeys) == 0)):
-		tags = map[string]string{}
+	case remove && data == nil:
+		utils.ApplyTagRemovals(tags, nil, nil)
 	case remove:
-		for _, key := range data.TagKeys {
-			delete(tags, key)
-		}
-		for key, value := range data.Tags {
-			if current, ok := tags[key]; ok && current == value {
-				delete(tags, key)
-			}
-		}
+		utils.ApplyTagRemovals(tags, data.TagKeys, data.Tags)
 	case data != nil:
 		maps.Copy(tags, data.Tags)
 	}

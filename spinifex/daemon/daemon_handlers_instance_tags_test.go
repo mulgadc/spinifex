@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -184,6 +185,45 @@ func TestHandleSetInstanceTags_CrossAccountRejected(t *testing.T) {
 	assert.Equal(t, map[string]string{"Name": "web"}, recordTags(t, d, id))
 	assert.Empty(t, centralTags(t, d, testAccountID, id))
 	assert.Empty(t, centralTags(t, d, attacker, id))
+}
+
+// RunInstances with instance-scoped TagSpecifications projects the launch tags
+// into the central tag store, so describe-tags sees them from birth. The write
+// happens after the reservation reply, hence the Eventually.
+func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
+	daemon, memStore := createFullTestDaemonWithStore(t, sharedNATSURL)
+	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-launchtags")
+
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances.launchtags", "spinifex-workers", daemon.handleEC2RunInstances)
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-launchtags"),
+		InstanceType: aws.String(getTestInstanceType(t)),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("instance"),
+			Tags: []*ec2.Tag{
+				{Key: aws.String("Name"), Value: aws.String("web")},
+				{Key: aws.String("env"), Value: aws.String("dev")},
+			},
+		}},
+	}
+	reply, err := natsRequest(daemon.natsConn, "ec2.RunInstances.launchtags", mustMarshal(t, input), 5*time.Second)
+	require.NoError(t, err)
+
+	var reservation ec2.Reservation
+	require.NoError(t, json.Unmarshal(reply.Data, &reservation))
+	require.Len(t, reservation.Instances, 1, "launch must succeed and return the instance: %s", reply.Data)
+	id := aws.StringValue(reservation.Instances[0].InstanceId)
+
+	want := map[string]string{"Name": "web", "env": "dev"}
+	assert.Eventually(t, func() bool {
+		return assert.ObjectsAreEqual(want, centralTags(t, daemon, testAccountID, id))
+	}, 5*time.Second, 50*time.Millisecond, "central tag store must receive launch tags")
+	assert.Equal(t, want, recordTags(t, daemon, id))
 }
 
 // Missing InstanceTagsData, and a set with no tags, are rejected with

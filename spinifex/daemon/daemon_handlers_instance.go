@@ -153,6 +153,20 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 	}
 	slog.Info("Instances added to state with pending status", "count", len(instances))
 
+	// Project launch tags into the central tag store so describe-tags agrees
+	// with the record from birth. Best-effort: the reservation is already
+	// returned, so a failed write is logged rather than failing the launch.
+	for _, instance := range instances {
+		if instance.Instance == nil || len(instance.Instance.Tags) == 0 {
+			continue
+		}
+		if err := d.tagsService.PutResourceTags(accountID, instance.ID,
+			handlers_ec2_instance.TagsToMap(instance.Instance.Tags)); err != nil {
+			slog.Error("handleEC2RunInstances: launch tag central store write failed",
+				"instanceId", instance.ID, "err", err)
+		}
+	}
+
 	// Subscribe per-instance NATS topics so terminate/stop reach this daemon
 	// while volumes prepare. LaunchInstance replaces these on success.
 	d.mu.Lock()

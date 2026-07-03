@@ -35,6 +35,36 @@ func DetectUplinkFor(ctx context.Context, r Runner, gatewayIP string) (iface, sr
 	return iface, srcIP, nil
 }
 
+// uplinkAddr returns the first global IPv4 on iface, or "" when none parses.
+// Best-effort: the src hint on the EIP route is an optimization, not plumbing.
+func uplinkAddr(ctx context.Context, r Runner, iface string) string {
+	out, err := r.Run(ctx, "ip", "-4", "-o", "addr", "show", "dev", iface, "scope", "global")
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	for i := 0; i < len(fields)-1; i++ {
+		if fields[i] == "inet" {
+			return strings.SplitN(fields[i+1], "/", 2)[0]
+		}
+	}
+	return ""
+}
+
+// resolveUplink picks the LAN-facing interface for EIP proxy-ARP: routed
+// toward poolGateway when known (static pools), else the configured hint
+// (dhcp pools DORA on the uplink itself). Probing the EIP would be wrong —
+// once the /32 route lands, the kernel routes it to the transit veth.
+func resolveUplink(ctx context.Context, r Runner, poolGateway, uplinkHint string) (iface, srcIP string, err error) {
+	if poolGateway != "" {
+		return DetectUplinkFor(ctx, r, poolGateway)
+	}
+	if uplinkHint != "" {
+		return uplinkHint, uplinkAddr(ctx, r, uplinkHint), nil
+	}
+	return "", "", nil
+}
+
 func eipForwardRules(eip string) [][]string {
 	return [][]string{
 		{"-i", NATTransitHostEnd, "-s", eip + "/32",
@@ -51,7 +81,7 @@ func eipForwardRules(eip string) [][]string {
 // cover DROP-policy hosts. The route carries `src <uplink-IP>` so host-local
 // traffic to the EIP still DNATs (host source would match the exempt set).
 // Idempotent; call on every EIP bind and reconcile pass.
-func EnsureEIPIngress(ctx context.Context, r Runner, eip, gwLrpIP, poolGateway string) error {
+func EnsureEIPIngress(ctx context.Context, r Runner, eip, gwLrpIP, poolGateway, uplinkHint string) error {
 	if eip == "" {
 		return fmt.Errorf("EnsureEIPIngress: eip required")
 	}
@@ -59,13 +89,9 @@ func EnsureEIPIngress(ctx context.Context, r Runner, eip, gwLrpIP, poolGateway s
 		return fmt.Errorf("EnsureEIPIngress: gwLrpIP required")
 	}
 
-	var uplink, srcIP string
-	if poolGateway != "" {
-		var err error
-		uplink, srcIP, err = DetectUplinkFor(ctx, r, poolGateway)
-		if err != nil {
-			return fmt.Errorf("EnsureEIPIngress %s: %w", eip, err)
-		}
+	uplink, srcIP, err := resolveUplink(ctx, r, poolGateway, uplinkHint)
+	if err != nil {
+		return fmt.Errorf("EnsureEIPIngress %s: %w", eip, err)
 	}
 
 	routeArgs := []string{"route", "replace", eip + "/32", "via", gwLrpIP, "dev", NATTransitHostEnd}
@@ -105,8 +131,8 @@ func EnsureEIPIngress(ctx context.Context, r Runner, eip, gwLrpIP, poolGateway s
 
 // RemoveEIPIngress tears down the host state for an EIP on disassociate or
 // release. Missing pieces are not errors (idempotent teardown); the proxy
-// neighbor is removed from whatever uplink currently routes to poolGateway.
-func RemoveEIPIngress(ctx context.Context, r Runner, eip, poolGateway string) error {
+// neighbor is removed from whatever uplink currently faces the pool.
+func RemoveEIPIngress(ctx context.Context, r Runner, eip, poolGateway, uplinkHint string) error {
 	if eip == "" {
 		return fmt.Errorf("RemoveEIPIngress: eip required")
 	}
@@ -115,13 +141,11 @@ func RemoveEIPIngress(ctx context.Context, r Runner, eip, poolGateway string) er
 		slog.Debug("host: EIP route already absent", "eip", eip, "err", err)
 	}
 
-	if poolGateway != "" {
-		if uplink, _, err := DetectUplinkFor(ctx, r, poolGateway); err == nil {
-			if _, err := r.Run(ctx, "ip", "neigh", "del", "proxy", eip, "dev", uplink); err != nil {
-				slog.Debug("host: proxy-ARP entry already absent", "eip", eip, "uplink", uplink, "err", err)
-			}
-		} else {
-			slog.Debug("host: uplink detection failed on EIP teardown", "eip", eip, "err", err)
+	if uplink, _, err := resolveUplink(ctx, r, poolGateway, uplinkHint); err != nil {
+		slog.Debug("host: uplink detection failed on EIP teardown", "eip", eip, "err", err)
+	} else if uplink != "" {
+		if _, err := r.Run(ctx, "ip", "neigh", "del", "proxy", eip, "dev", uplink); err != nil {
+			slog.Debug("host: proxy-ARP entry already absent", "eip", eip, "uplink", uplink, "err", err)
 		}
 	}
 

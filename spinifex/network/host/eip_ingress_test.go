@@ -67,7 +67,7 @@ func newEIPStubRunner(routeGet string) *stubRunner {
 
 func TestEnsureEIPIngress_FullPlumbing(t *testing.T) {
 	r := newEIPStubRunner(wiredRouteGet)
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1"); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1", ""); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}
 	for _, want := range []string{
@@ -86,7 +86,7 @@ func TestEnsureEIPIngress_FullPlumbing(t *testing.T) {
 
 func TestEnsureEIPIngress_WiFiUplink(t *testing.T) {
 	r := newEIPStubRunner(wifiRouteGet)
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1"); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1", ""); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}
 	if !r.called("ip neigh replace proxy 192.168.1.200 dev wlan0") {
@@ -100,7 +100,7 @@ func TestEnsureEIPIngress_WiFiUplink(t *testing.T) {
 func TestEnsureEIPIngress_IdempotentSkipsExistingRules(t *testing.T) {
 	r := newEIPStubRunner(wiredRouteGet)
 	r.expect("iptables -t filter -C", nil, nil)
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1"); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1", ""); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}
 	if r.called("iptables -t filter -A") {
@@ -112,7 +112,7 @@ func TestEnsureEIPIngress_ArpingFailureNonFatal(t *testing.T) {
 	r := newEIPStubRunner(wiredRouteGet)
 	r.expect("arping", []byte("arping: command not found"), fmt.Errorf("exit 127"))
 	r.expect("sysctl -w", []byte("permission denied"), fmt.Errorf("exit 1"))
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1"); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1", ""); err != nil {
 		t.Fatalf("arping/sysctl failures must be non-fatal: %v", err)
 	}
 }
@@ -121,7 +121,7 @@ func TestEnsureEIPIngress_NoGatewaySkipsUplinkPlumbing(t *testing.T) {
 	r := newStubRunner()
 	r.expect("ip route replace", nil, nil)
 	r.expect("iptables -t filter -C", nil, nil)
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", ""); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "", ""); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}
 	if !r.called("ip route replace 192.168.1.200/32 via 100.127.0.10 dev " + NATTransitHostEnd) {
@@ -135,12 +135,29 @@ func TestEnsureEIPIngress_NoGatewaySkipsUplinkPlumbing(t *testing.T) {
 	}
 }
 
+func TestEnsureEIPIngress_UplinkHintForDHCPPool(t *testing.T) {
+	r := newEIPStubRunner("")
+	r.expect("ip -4 -o addr show", []byte("3: wlan0    inet 192.168.1.87/24 brd 192.168.1.255 scope global dynamic wlan0\n"), nil)
+	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "", "wlan0"); err != nil {
+		t.Fatalf("EnsureEIPIngress: %v", err)
+	}
+	if r.called("ip route get") {
+		t.Errorf("hint must bypass gateway route lookup: %v", r.calls)
+	}
+	if !r.called("ip neigh replace proxy 192.168.1.200 dev wlan0") {
+		t.Errorf("proxy-ARP must land on hinted uplink: %v", r.calls)
+	}
+	if !r.called("ip route replace 192.168.1.200/32 via 100.127.0.10 dev " + NATTransitHostEnd + " src 192.168.1.87") {
+		t.Errorf("route must carry uplink addr as src: %v", r.calls)
+	}
+}
+
 func TestEnsureEIPIngress_ValidatesArgs(t *testing.T) {
 	r := newStubRunner()
-	if err := EnsureEIPIngress(context.Background(), r, "", "100.127.0.10", ""); err == nil {
+	if err := EnsureEIPIngress(context.Background(), r, "", "100.127.0.10", "", ""); err == nil {
 		t.Error("empty eip: expected error")
 	}
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "", ""); err == nil {
+	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "", "", ""); err == nil {
 		t.Error("empty gwLrpIP: expected error")
 	}
 	if len(r.calls) != 0 {
@@ -154,7 +171,7 @@ func TestRemoveEIPIngress_TearsDownAll(t *testing.T) {
 	r.expect("ip route del", nil, nil)
 	r.expect("ip neigh del proxy", nil, nil)
 	r.expect("iptables -t filter -D", nil, nil)
-	if err := RemoveEIPIngress(context.Background(), r, "192.168.1.200", "192.168.1.1"); err != nil {
+	if err := RemoveEIPIngress(context.Background(), r, "192.168.1.200", "192.168.1.1", ""); err != nil {
 		t.Fatalf("RemoveEIPIngress: %v", err)
 	}
 	for _, want := range []string{
@@ -174,7 +191,7 @@ func TestRemoveEIPIngress_MissingStateNotError(t *testing.T) {
 	r.expect("ip route get", []byte("RTNETLINK answers: Network is unreachable"), fmt.Errorf("exit 2"))
 	r.expect("ip route del", []byte("RTNETLINK answers: No such process"), fmt.Errorf("exit 2"))
 	r.expect("iptables -t filter -D", []byte("Bad rule"), fmt.Errorf("exit 1"))
-	if err := RemoveEIPIngress(context.Background(), r, "192.168.1.200", "192.168.1.1"); err != nil {
+	if err := RemoveEIPIngress(context.Background(), r, "192.168.1.200", "192.168.1.1", ""); err != nil {
 		t.Fatalf("missing state must not be an error, got: %v", err)
 	}
 }

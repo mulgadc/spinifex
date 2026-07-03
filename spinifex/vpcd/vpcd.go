@@ -444,6 +444,8 @@ func launchService(cfg *Config) error {
 	}
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
 
+	igwPool, publicPool := selectExternalPools(cfg.ExternalMode, cfg.ExternalPools)
+
 	sgMgr := policy.NewSecurityGroupManager(liveClient)
 	natOpts := []policy.Option{
 		policy.WithFlowsBarrier(waitForFlowsHV),
@@ -454,17 +456,14 @@ func launchService(cfg *Config) error {
 		natOpts = append(natOpts, policy.WithSNATExemptSet(policy.NATExemptSetName,
 			append([]string{host.NATTransitCIDR}, cfg.NATExemptCIDRs...)))
 	}
+	if natMode == policy.NATModeRouted && publicPool != nil {
+		natOpts = append(natOpts, policy.WithHostEIPBinder(hostEIPBinder(publicPool)))
+	}
 	natMgr, err := policy.NewNATManager(liveClient, natMode, natOpts...)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
 	}
 	routeMgr := policy.NewRouteManager(liveClient)
-
-	var igwPool *external.ExternalPoolConfig
-	if cfg.ExternalMode != "" && len(cfg.ExternalPools) > 0 {
-		p := cfg.ExternalPools[0]
-		igwPool = &p
-	}
 
 	js, err := nc.JetStream()
 	if err != nil {
@@ -704,6 +703,46 @@ func resolveBridgeConfig(cfgBridgeMode, externalIface string) (string, string) {
 		return bridgeMode, host.NATTransitHostEnd
 	}
 	return bridgeMode, "br-wan"
+}
+
+// selectExternalPools splits configured pools by role. In nat mode the IGW
+// gateway-LRP allocator draws from the transit pool (matched by name, never
+// by index); any other pool carries public EIPs delivered via host plumbing.
+// Other modes keep the first pool for the IGW and have no public split.
+func selectExternalPools(externalMode string, pools []external.ExternalPoolConfig) (igwPool, publicPool *external.ExternalPoolConfig) {
+	for i := range pools {
+		p := pools[i]
+		if externalMode == "nat" && p.Name != host.NATTransitPoolName {
+			if publicPool == nil {
+				publicPool = &p
+			}
+			continue
+		}
+		if igwPool == nil {
+			igwPool = &p
+		}
+	}
+	return igwPool, publicPool
+}
+
+// hostEIPBinder builds the routed-mode host plumbing hooks for EIPs on the
+// public pool: /32 route into OVN plus proxy-ARP on the uplink. Static pools
+// locate the uplink via the pool gateway; dhcp pools via their bind bridge.
+func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
+	runner := host.NewExecRunner()
+	gateway, uplinkHint := pool.Gateway, pool.BindBridge
+	return policy.HostEIPBinder{
+		Bind: func(eip policy.EIPSpec, gwLrpIP string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return host.EnsureEIPIngress(ctx, runner, eip.ExternalIP, gwLrpIP, gateway, uplinkHint)
+		},
+		Unbind: func(externalIP string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return host.RemoveEIPIngress(ctx, runner, externalIP, gateway, uplinkHint)
+		},
+	}
 }
 
 // neighFlusher builds the ARP-flush hook for AddEIP/DeleteEIP so recycled IPs re-resolve L2 immediately.

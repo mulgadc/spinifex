@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
+
+// GatewayIPExtIDKey is the gateway LRP external_ids key carrying the IP
+// allocated at IGW attach; the routed-mode next hop for host EIP routes.
+const GatewayIPExtIDKey = "spinifex:gateway_ip"
 
 // EIPSpec is a 1:1 EIP NAT (dnat_and_snat). In NATModeDistributed PortName
 // and MAC MUST be set for per-chassis flows; missing values fall back to
@@ -112,6 +117,25 @@ func WithNeighPrimer(p NeighPrimer) Option {
 	}
 }
 
+// HostEIPBinder plumbs routed-mode host state for an EIP: the /32 route into
+// OVN via the gateway LRP and proxy-ARP on the uplink. Bind fires on every
+// AddEIP (fresh and idempotent) so reconcile re-ensures host state after
+// reboot; Unbind fires on DeleteEIP.
+type HostEIPBinder struct {
+	Bind   func(eip EIPSpec, gwLrpIP string) error
+	Unbind func(externalIP string) error
+}
+
+// WithHostEIPBinder injects the routed-mode host plumbing hooks fired on EIP
+// attach/detach. Only consulted in NATModeRouted.
+func WithHostEIPBinder(b HostEIPBinder) Option {
+	return func(m *natManager) {
+		if b.Bind != nil && b.Unbind != nil {
+			m.hostBinder = &b
+		}
+	}
+}
+
 // NATExemptSetName is the singleton Address_Set holding destinations that
 // skip routed-mode NAT (transit /24 plus operator extras).
 const NATExemptSetName = "spinifex_nat_exempt"
@@ -137,6 +161,7 @@ type natManager struct {
 	neighPrime    NeighPrimer
 	exemptSetName string
 	exemptCIDRs   []string
+	hostBinder    *HostEIPBinder
 }
 
 var _ NATManager = (*natManager)(nil)
@@ -229,7 +254,9 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		// Skip row churn but still re-prime: stop->start re-attaches the same EIP
 		// and the host neigh stays dark until ARP times out without a fresh prime.
 		m.primeReachability(ctx, eip, distributed)
-		return nil
+		// Host state (routes, proxy-ARP) is volatile even when the OVN row
+		// survives — reconcile lands here after a reboot, so re-bind.
+		return m.bindHostEIP(ctx, eip)
 	}
 
 	// Search every router for stale rules — vpc.delete-nat is fire-and-forget.
@@ -246,6 +273,23 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		slog.Warn("policy: AddEIP flows barrier failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
 	m.primeReachability(ctx, eip, distributed)
+	return m.bindHostEIP(ctx, eip)
+}
+
+// bindHostEIP fires the routed-mode host plumbing hook for an EIP. No-op in
+// other modes or when no binder is configured. Errors are returned so a
+// half-plumbed EIP surfaces to the caller (reconcile retries the bind).
+func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
+	if m.mode != NATModeRouted || m.hostBinder == nil {
+		return nil
+	}
+	gwLrpIP := m.gatewayPortIP(ctx, eip.VPCID)
+	if gwLrpIP == "" {
+		return fmt.Errorf("bind host EIP %s: gateway LRP IP unknown for %s (IGW attached?)", eip.ExternalIP, eip.VPCID)
+	}
+	if err := m.hostBinder.Bind(eip, gwLrpIP); err != nil {
+		return fmt.Errorf("bind host EIP %s via %s: %w", eip.ExternalIP, gwLrpIP, err)
+	}
 	return nil
 }
 
@@ -279,6 +323,25 @@ func (m *natManager) gatewayPortMAC(ctx context.Context, vpcID string) string {
 		return ""
 	}
 	return lrp.MAC
+}
+
+// gatewayPortIP returns the IP of the VPC gateway router's external port — the
+// transit-side next hop for routed-mode host EIP routes. Prefers the IP stamped
+// at IGW attach; falls back to the LRP network address. Empty on lookup miss.
+func (m *natManager) gatewayPortIP(ctx context.Context, vpcID string) string {
+	lrp, err := m.ovn.GetLogicalRouterPort(ctx, topology.GatewayRouterPort(vpcID))
+	if err != nil || lrp == nil {
+		return ""
+	}
+	if ip := lrp.ExternalIDs[GatewayIPExtIDKey]; ip != "" {
+		return ip
+	}
+	if len(lrp.Networks) > 0 {
+		if pfx, err := netip.ParsePrefix(lrp.Networks[0]); err == nil {
+			return pfx.Addr().String()
+		}
+	}
+	return ""
 }
 
 func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP, portName string) error {
@@ -324,6 +387,13 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 	// Flush host ARP for the released IP so the next owner isn't shadowed. Best-effort.
 	if err := m.neigh(externalIP); err != nil {
 		slog.Warn("policy: DeleteEIP neighbour flush failed", "external_ip", externalIP, "logical_ip", logicalIP, "err", err)
+	}
+	// Tear down routed-mode host plumbing. Best-effort: the row is already gone
+	// and stale host state is re-converged by the next bind of the same IP.
+	if m.mode == NATModeRouted && m.hostBinder != nil {
+		if err := m.hostBinder.Unbind(externalIP); err != nil {
+			slog.Warn("policy: DeleteEIP host unbind failed", "external_ip", externalIP, "err", err)
+		}
 	}
 	return nil
 }

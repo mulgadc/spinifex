@@ -1508,7 +1508,16 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 	// Print external networking summary
 	if externalMode == "nat" {
-		fmt.Printf("\n📡 External networking: nat (routed, outbound-only — no public IPs/EIPs)\n")
+		if natPublicPool {
+			fmt.Printf("\n📡 External networking: nat (routed) with public pool — EIPs enabled\n")
+			if externalSource == "static" {
+				fmt.Printf("  Public pool:   %s - %s (source: static)\n", poolStart, poolEnd)
+			} else {
+				fmt.Printf("  Public pool:   dhcp via %s\n", externalBindBridge)
+			}
+		} else {
+			fmt.Printf("\n📡 External networking: nat (routed, outbound-only — no public IPs/EIPs)\n")
+		}
 		fmt.Printf("  Transit:       %s via %s (host masquerades out any uplink)\n", host.NATTransitCIDR, host.NATTransitHostEnd)
 		fmt.Printf("  Host setup:    ./scripts/setup-ovn.sh --nat-uplink (run before starting services)\n")
 	} else if externalMode != "" {

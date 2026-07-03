@@ -1166,15 +1166,26 @@ func TestModifyInstanceAttribute_MissingInstanceID(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
-func TestModifyInstanceAttribute_SourceDestCheckNoOp(t *testing.T) {
-	// SourceDestCheck succeeds without touching KV or requiring stopped state.
+func TestModifyInstanceAttribute_SourceDestCheckTrueNoOp(t *testing.T) {
+	// SourceDestCheck=true succeeds without touching KV or requiring stopped state.
 	svc := &InstanceServiceImpl{}
 	out, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:      aws.String("i-sdc-001"),
-		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	}, "acc")
 	require.NoError(t, err)
 	require.NotNil(t, out)
+}
+
+func TestModifyInstanceAttribute_SourceDestCheckFalseUnsupported(t *testing.T) {
+	// Disabling is unsupported: OVN port security always enforces the check.
+	svc := &InstanceServiceImpl{}
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:      aws.String("i-sdc-001"),
+		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorUnsupported, err.Error())
 }
 
 func TestModifyInstanceAttribute_NilStore(t *testing.T) {

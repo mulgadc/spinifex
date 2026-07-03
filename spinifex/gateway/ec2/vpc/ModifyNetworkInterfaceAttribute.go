@@ -19,6 +19,10 @@ func ValidateModifyNetworkInterfaceAttributeInput(input *ec2.ModifyNetworkInterf
 	if len(input.Groups) == 0 && input.Description == nil && input.SourceDestCheck == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	// Disabling source/dest check is unsupported: OVN port security enforces it.
+	if input.SourceDestCheck != nil && input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
+		return errors.New(awserrors.ErrorUnsupported)
+	}
 	return nil
 }
 

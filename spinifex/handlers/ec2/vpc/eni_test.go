@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -578,25 +579,20 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly(t *testing.T) {
 	require.Len(t, desc.NetworkInterfaces, 1)
 	assert.True(t, *desc.NetworkInterfaces[0].SourceDestCheck)
 
-	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
-		NetworkInterfaceId: aws.String(eniId),
-		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	desc, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
-		NetworkInterfaceIds: []*string{aws.String(eniId)},
-	}, testAccountID)
-	require.NoError(t, err)
-	require.Len(t, desc.NetworkInterfaces, 1)
-	assert.False(t, *desc.NetworkInterfaces[0].SourceDestCheck)
-
-	// Re-enable and confirm it round-trips back to true
+	// SourceDestCheck=true as the sole attribute is an accepted no-op
 	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	}, testAccountID)
 	require.NoError(t, err)
+
+	// Disabling is unsupported: OVN port security always enforces the check
+	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorUnsupported, err.Error())
 
 	desc, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
@@ -621,7 +617,7 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly_NoSGEvent(t *testin
 
 	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
-		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	}, testAccountID)
 	require.NoError(t, err)
 

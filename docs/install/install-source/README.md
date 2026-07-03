@@ -1,7 +1,7 @@
 ---
 title: "Source Install"
 description: "Build Spinifex from source for development, custom builds, or contributing."
-category: "Getting Started"
+category: "Install"
 tags:
   - install
   - source

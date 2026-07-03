@@ -1,7 +1,7 @@
 ---
 title: "Single-Node Install"
 description: "Install Spinifex on a single server using the binary installer."
-category: "Getting Started"
+category: "Install"
 tags:
   - install
   - single node

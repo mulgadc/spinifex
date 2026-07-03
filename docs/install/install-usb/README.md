@@ -1,7 +1,7 @@
 ---
 title: "Bootable USB Install"
 description: "Install Spinifex on bare-metal hardware by flashing the Spinifex ISO to a USB drive and booting the target device from it."
-category: "Getting Started"
+category: "Install"
 sections:
   - overview
   - troubleshooting

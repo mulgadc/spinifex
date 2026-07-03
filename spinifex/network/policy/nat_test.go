@@ -672,3 +672,132 @@ func TestNATManager_AddSystemInstanceSNAT_AndDelete(t *testing.T) {
 	// Idempotent on a missing rule.
 	require.NoError(t, nm.DeleteSystemInstanceSNAT(ctx, "vpc-1", "172.31.4.10/32"))
 }
+
+func TestNATManager_AddSNAT_ExemptSetAndIdempotency(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeRouted,
+		WithSNATExemptSet("spinifex_nat_exempt", []string{"100.127.0.0/24", "192.168.50.0/24"}))
+	require.NoError(t, err)
+
+	// Fresh add: row created with exempt ref, set contains configured CIDRs.
+	require.NoError(t, nm.AddSNAT(ctx, "vpc-1", "10.0.0.0/16", "100.127.0.10"))
+	nat := findNAT(m, "snat", "10.0.0.0/16")
+	require.NotNil(t, nat)
+	require.NotNil(t, nat.ExemptedExtIps)
+	as, err := m.GetAddressSet(ctx, "spinifex_nat_exempt")
+	require.NoError(t, err)
+	assert.Equal(t, as.UUID, *nat.ExemptedExtIps)
+	assert.Equal(t, []string{"100.127.0.0/24", "192.168.50.0/24"}, as.Addresses)
+
+	// Double add: idempotent skip, exactly one row, same UUID.
+	firstUUID := nat.UUID
+	require.NoError(t, nm.AddSNAT(ctx, "vpc-1", "10.0.0.0/16", "100.127.0.10"))
+	assert.Equal(t, 1, countNAT(m, "snat", "10.0.0.0/16"))
+	assert.Equal(t, firstUUID, findNAT(m, "snat", "10.0.0.0/16").UUID)
+
+	// External IP change: stale row replaced, still one row.
+	require.NoError(t, nm.AddSNAT(ctx, "vpc-1", "10.0.0.0/16", "100.127.0.20"))
+	assert.Equal(t, 1, countNAT(m, "snat", "10.0.0.0/16"))
+	assert.Equal(t, "100.127.0.20", findNAT(m, "snat", "10.0.0.0/16").ExternalIP)
+}
+
+func TestNATManager_AddSNAT_PatchesLegacyRow(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	router := seedRouter(t, m, "vpc-1")
+
+	// Legacy row minted before the exempt option existed (no ref).
+	require.NoError(t, m.AddNAT(ctx, router, &nbdb.NAT{
+		Type: "snat", ExternalIP: "100.127.0.10", LogicalIP: "10.0.0.0/16",
+	}))
+
+	nm, err := NewNATManager(m, NATModeRouted,
+		WithSNATExemptSet("spinifex_nat_exempt", []string{"100.127.0.0/24"}))
+	require.NoError(t, err)
+	require.NoError(t, nm.AddSNAT(ctx, "vpc-1", "10.0.0.0/16", "100.127.0.10"))
+
+	nat := findNAT(m, "snat", "10.0.0.0/16")
+	require.NotNil(t, nat.ExemptedExtIps, "legacy row must be patched in place")
+	as, err := m.GetAddressSet(ctx, "spinifex_nat_exempt")
+	require.NoError(t, err)
+	assert.Equal(t, as.UUID, *nat.ExemptedExtIps)
+	assert.Equal(t, 1, countNAT(m, "snat", "10.0.0.0/16"), "patch must not mint a second row")
+}
+
+func TestNATManager_AddSNAT_NoExemptOutsideRoutedMode(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+
+	// Option set but mode centralised: no set created, no ref stamped.
+	nm, err := NewNATManager(m, NATModeCentralized,
+		WithSNATExemptSet("spinifex_nat_exempt", []string{"100.127.0.0/24"}))
+	require.NoError(t, err)
+	require.NoError(t, nm.AddSNAT(ctx, "vpc-1", "10.0.0.0/16", "100.127.0.10"))
+
+	nat := findNAT(m, "snat", "10.0.0.0/16")
+	require.NotNil(t, nat)
+	assert.Nil(t, nat.ExemptedExtIps)
+	assert.Empty(t, m.AddressSets)
+}
+
+func TestNATManager_AddEIP_RoutedStampsExemptSet(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeRouted,
+		WithSNATExemptSet("spinifex_nat_exempt", []string{"100.127.0.0/24"}))
+	require.NoError(t, err)
+
+	spec := EIPSpec{VPCID: "vpc-1", ExternalIP: "192.168.50.80", LogicalIP: "10.0.0.5"}
+	require.NoError(t, nm.AddEIP(ctx, spec))
+
+	nat := findNAT(m, "dnat_and_snat", "10.0.0.5")
+	require.NotNil(t, nat)
+	require.NotNil(t, nat.ExemptedExtIps)
+	as, err := m.GetAddressSet(ctx, "spinifex_nat_exempt")
+	require.NoError(t, err)
+	assert.Equal(t, as.UUID, *nat.ExemptedExtIps)
+}
+
+func TestNATManager_AddEIP_IdempotentSkipPatchesExempt(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	router := seedRouter(t, m, "vpc-1")
+
+	// Pre-existing routed EIP row without the ref (pre-upgrade).
+	require.NoError(t, m.AddNAT(ctx, router, &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.50.80", LogicalIP: "10.0.0.5",
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-1", "spinifex:public_ip": "192.168.50.80"},
+	}))
+
+	nm, err := NewNATManager(m, NATModeRouted,
+		WithSNATExemptSet("spinifex_nat_exempt", []string{"100.127.0.0/24"}))
+	require.NoError(t, err)
+	spec := EIPSpec{VPCID: "vpc-1", ExternalIP: "192.168.50.80", LogicalIP: "10.0.0.5"}
+	require.NoError(t, nm.AddEIP(ctx, spec))
+
+	nat := findNAT(m, "dnat_and_snat", "10.0.0.5")
+	require.NotNil(t, nat.ExemptedExtIps, "skip path must patch the exempt ref in place")
+	assert.Equal(t, 1, countNAT(m, "dnat_and_snat", "10.0.0.5"))
+}
+
+func TestNATManager_AddEIP_NoExemptInDistributedMode(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeDistributed,
+		WithSNATExemptSet("spinifex_nat_exempt", []string{"100.127.0.0/24"}))
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
+	}))
+	nat := findNAT(m, "dnat_and_snat", "10.0.0.5")
+	require.NotNil(t, nat)
+	assert.Nil(t, nat.ExemptedExtIps)
+	assert.Empty(t, m.AddressSets)
+}

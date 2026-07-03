@@ -564,6 +564,74 @@ func TestModifyNetworkInterfaceAttribute_Description(t *testing.T) {
 	assert.Equal(t, "updated description", *desc.NetworkInterfaces[0].Description)
 }
 
+func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	// New ENIs default to SourceDestCheck=true
+	desc, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.NetworkInterfaces, 1)
+	assert.True(t, *desc.NetworkInterfaces[0].SourceDestCheck)
+
+	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.NetworkInterfaces, 1)
+	assert.False(t, *desc.NetworkInterfaces[0].SourceDestCheck)
+
+	// Re-enable and confirm it round-trips back to true
+	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.NetworkInterfaces, 1)
+	assert.True(t, *desc.NetworkInterfaces[0].SourceDestCheck)
+}
+
+func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly_NoSGEvent(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.update-port-sgs", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	select {
+	case <-eventCh:
+		t.Fatal("unexpected vpc.update-port-sgs event for source-dest-check-only modify")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")

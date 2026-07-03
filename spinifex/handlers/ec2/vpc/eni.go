@@ -45,6 +45,10 @@ type ENIRecord struct {
 	SecurityGroupIds []string          `json:"security_group_ids,omitempty"`
 	Tags             map[string]string `json:"tags"`
 	CreatedAt        time.Time         `json:"created_at"`
+	// SourceDestCheck mirrors the AWS ENI attribute; nil means true
+	// (AWS default) for records that pre-date the field. Persisted for
+	// API read-back parity only — the dataplane does not enforce it.
+	SourceDestCheck *bool `json:"source_dest_check,omitempty"`
 
 	// AttachmentStatus carries the hot-plug transition state independent of
 	// Status. AWS-parity field: "" (not transitioning), "attaching",
@@ -273,7 +277,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetwor
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if len(input.Groups) == 0 && input.Description == nil {
+	if len(input.Groups) == 0 && input.Description == nil && input.SourceDestCheck == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -308,6 +312,10 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetwor
 
 	if input.Description != nil && input.Description.Value != nil {
 		record.Description = *input.Description.Value
+	}
+
+	if input.SourceDestCheck != nil && input.SourceDestCheck.Value != nil {
+		record.SourceDestCheck = aws.Bool(*input.SourceDestCheck.Value)
 	}
 
 	data, err := json.Marshal(record)
@@ -706,7 +714,7 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string) *ec
 		OwnerId:            aws.String(accountID),
 		RequesterManaged:   aws.Bool(requesterManaged),
 		InterfaceType:      aws.String("interface"),
-		SourceDestCheck:    aws.Bool(true),
+		SourceDestCheck:    aws.Bool(record.SourceDestCheck == nil || *record.SourceDestCheck),
 		PrivateIpAddresses: []*ec2.NetworkInterfacePrivateIpAddress{
 			{
 				Primary:          aws.Bool(true),

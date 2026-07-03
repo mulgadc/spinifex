@@ -24,7 +24,10 @@ func TestValidateCreateNatGatewayInput(t *testing.T) {
 		{"empty SubnetId", &ec2.CreateNatGatewayInput{SubnetId: aws.String(""), AllocationId: aws.String("eipalloc-1")}, awserrors.ErrorMissingParameter},
 		{"missing AllocationId", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1")}, awserrors.ErrorMissingParameter},
 		{"empty AllocationId", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), AllocationId: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"private connectivity unsupported", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), ConnectivityType: aws.String("private")}, awserrors.ErrorUnsupported},
+		{"private connectivity unsupported with AllocationId", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), AllocationId: aws.String("eipalloc-1"), ConnectivityType: aws.String("private")}, awserrors.ErrorUnsupported},
 		{"valid input", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), AllocationId: aws.String("eipalloc-1")}, ""},
+		{"valid public connectivity", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), AllocationId: aws.String("eipalloc-1"), ConnectivityType: aws.String("public")}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

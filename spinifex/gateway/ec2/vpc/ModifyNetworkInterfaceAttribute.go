@@ -16,7 +16,7 @@ func ValidateModifyNetworkInterfaceAttributeInput(input *ec2.ModifyNetworkInterf
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	if len(input.Groups) == 0 && input.Description == nil {
+	if len(input.Groups) == 0 && input.Description == nil && input.SourceDestCheck == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	return nil

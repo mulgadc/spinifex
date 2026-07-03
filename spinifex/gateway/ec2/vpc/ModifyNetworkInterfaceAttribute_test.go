@@ -33,6 +33,14 @@ func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
+func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly_PassesValidation(t *testing.T) {
+	err := ValidateModifyNetworkInterfaceAttributeInput(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String("eni-abc123"),
+		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	})
+	assert.NoError(t, err)
+}
+
 func TestModifyNetworkInterfaceAttribute_NilNATS(t *testing.T) {
 	_, err := ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String("eni-abc123"),

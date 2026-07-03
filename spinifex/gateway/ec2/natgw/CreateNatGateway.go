@@ -16,6 +16,11 @@ func ValidateCreateNatGatewayInput(input *ec2.CreateNatGatewayInput) error {
 	if input.SubnetId == nil || *input.SubnetId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
+	// Private NAT gateways (ConnectivityType=private) are not implemented.
+	if input.ConnectivityType != nil && *input.ConnectivityType == "private" {
+		return errors.New(awserrors.ErrorUnsupported)
+	}
+	// AllocationId is required for public NAT gateways, matching AWS.
 	if input.AllocationId == nil || *input.AllocationId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}

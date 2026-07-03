@@ -26,7 +26,7 @@ func TestValidateCreateVolumeInput(t *testing.T) {
 			name:    "EmptyInput",
 			input:   &ec2.CreateVolumeInput{},
 			wantErr: true,
-			errMsg:  awserrors.ErrorInvalidParameterValue,
+			errMsg:  awserrors.ErrorMissingParameter,
 		},
 		{
 			name: "ValidInput",
@@ -64,12 +64,39 @@ func TestValidateCreateVolumeInput(t *testing.T) {
 			errMsg:  awserrors.ErrorInvalidParameterValue,
 		},
 		{
-			name: "InvalidSize_Nil",
+			name: "InvalidSize_NilWithoutSnapshot",
 			input: &ec2.CreateVolumeInput{
 				AvailabilityZone: aws.String("ap-southeast-2a"),
 			},
 			wantErr: true,
+			errMsg:  awserrors.ErrorMissingParameter,
+		},
+		{
+			name: "ValidInput_NilSizeWithSnapshot",
+			input: &ec2.CreateVolumeInput{
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				SnapshotId:       aws.String("snap-12345678"),
+			},
+			wantErr: false,
+		},
+		{
+			name: "InvalidSize_ZeroWithSnapshot",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(0),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				SnapshotId:       aws.String("snap-12345678"),
+			},
+			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+		},
+		{
+			name: "InvalidSize_NilWithEmptySnapshot",
+			input: &ec2.CreateVolumeInput{
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				SnapshotId:       aws.String(""),
+			},
+			wantErr: true,
+			errMsg:  awserrors.ErrorMissingParameter,
 		},
 		{
 			name: "InvalidSize_TooLarge",

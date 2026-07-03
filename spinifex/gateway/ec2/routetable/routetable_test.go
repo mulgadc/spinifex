@@ -219,7 +219,9 @@ func TestValidateAssociateRouteTableInput(t *testing.T) {
 	}{
 		{"nil input", nil, awserrors.ErrorInvalidParameterValue},
 		{"missing RouteTableId", &ec2.AssociateRouteTableInput{SubnetId: aws.String("subnet-1")}, awserrors.ErrorMissingParameter},
-		{"missing SubnetId", &ec2.AssociateRouteTableInput{RouteTableId: aws.String("rtb-1")}, awserrors.ErrorMissingParameter},
+		{"missing SubnetId and GatewayId", &ec2.AssociateRouteTableInput{RouteTableId: aws.String("rtb-1")}, awserrors.ErrorMissingParameter},
+		{"empty SubnetId and GatewayId", &ec2.AssociateRouteTableInput{RouteTableId: aws.String("rtb-1"), SubnetId: aws.String(""), GatewayId: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"GatewayId edge association unsupported", &ec2.AssociateRouteTableInput{RouteTableId: aws.String("rtb-1"), GatewayId: aws.String("igw-1")}, awserrors.ErrorUnsupported},
 		{"valid input", &ec2.AssociateRouteTableInput{RouteTableId: aws.String("rtb-1"), SubnetId: aws.String("subnet-1")}, ""},
 	}
 	for _, tt := range tests {

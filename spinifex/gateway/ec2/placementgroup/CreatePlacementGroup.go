@@ -16,9 +16,6 @@ func ValidateCreatePlacementGroupInput(input *ec2.CreatePlacementGroupInput) err
 	if input.GroupName == nil || *input.GroupName == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	if input.Strategy == nil || *input.Strategy == "" {
-		return errors.New(awserrors.ErrorMissingParameter)
-	}
 	return nil
 }
 

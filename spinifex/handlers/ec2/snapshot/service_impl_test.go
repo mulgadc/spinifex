@@ -2,6 +2,9 @@ package handlers_ec2_snapshot
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1059,4 +1062,96 @@ func TestDescribeSnapshots_FilterNoFilters(t *testing.T) {
 	out, err := svc.DescribeSnapshots(&ec2.DescribeSnapshotsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.Snapshots, 2)
+}
+
+// TestCreateSnapshot_PredastoreInitFails exercises snapshotVolume past the nil-host guard.
+// The viperblock S3 backend fails at Init() when the test server returns 403, covering the
+// snapshotVolume body (S3Config build, LoadViperblockMasterKey, viperblock.New, Backend.Init)
+// and the CreateSnapshot error return path.
+func TestCreateSnapshot_PredastoreInitFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	cfg := &config.Config{
+		Predastore: config.PredastoreConfig{
+			Host:   srv.URL,
+			Region: "us-east-1",
+			Bucket: "test-bucket",
+		},
+	}
+	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
+	createTestVolume(t, store, "vol-initfail", 10)
+
+	_, err := svc.CreateSnapshot(&ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-initfail"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+// s3MockServer returns a test server that passes ListObjectsV2 (Backend.Init) but
+// returns 404 for every other request (GetObject, PutObject, etc.).
+func s3MockServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.RawQuery, "list-type=2") {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
+				`<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`+
+				`<Name>test-bucket</Name><KeyCount>0</KeyCount>`+
+				`<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated></ListBucketResult>`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
+			`<Error><Code>NoSuchKey</Code>`+
+			`<Message>The specified key does not exist.</Message></Error>`)
+	}))
+}
+
+func TestSnapshotVolume_EncryptionKeyLoadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		Predastore: config.PredastoreConfig{
+			Host:   srv.URL,
+			Region: "us-east-1",
+			Bucket: "test-bucket",
+		},
+		Viperblock: config.ViperblockConfig{
+			EncryptionKeyFile: "/nonexistent-snap-test-key.bin",
+		},
+	}
+	svc := NewSnapshotServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nil)
+
+	err := svc.snapshotVolume("vol-enckey", "snap-enckey", 10*1024*1024*1024)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "load encryption key")
+}
+
+func TestSnapshotVolume_LoadStateFails(t *testing.T) {
+	srv := s3MockServer(t)
+	defer srv.Close()
+
+	cfg := &config.Config{
+		Predastore: config.PredastoreConfig{
+			Host:      srv.URL,
+			Region:    "us-east-1",
+			Bucket:    "test-bucket",
+			AccessKey: "test-key",
+			SecretKey: "test-secret",
+		},
+	}
+	svc := NewSnapshotServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nil)
+
+	err := svc.snapshotVolume("vol-lsf", "snap-lsf", 10*1024*1024*1024)
+	require.Error(t, err)
 }

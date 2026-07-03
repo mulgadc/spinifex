@@ -70,16 +70,14 @@ func loadStateWithRetry(vb *viperblock.VB, volume string) error {
 var serviceName = "viperblock"
 
 type MountedVolume struct {
-	Name        string
-	Port        int    // TCP port (when using TCP transport)
-	Socket      string // Unix socket path (when using socket transport)
-	NBDURI      string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
-	PID         int
-	VB          *viperblock.VB     // Reference to viperblock instance for state sync/flush
-	SnapshotSub *nats.Subscription // Per-volume snapshot subscription (ebs.snapshot.{volumeID})
-	ConfigSub   *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})
+	Name      string
+	Port      int    // TCP port (when using TCP transport)
+	Socket    string // Unix socket path (when using socket transport)
+	NBDURI    string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
+	PID       int
+	VB        *viperblock.VB     // Reference to viperblock instance for state sync/flush
+	ConfigSub *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})
 }
-
 type Config struct {
 	ConfigPath     string
 	PluginPath     string
@@ -132,32 +130,6 @@ func New(config any) (svc *Service, err error) {
 	}
 
 	return svc, nil
-}
-
-// makeSnapshotHandler returns a NATS handler for volume-specific snapshot requests (ebs.snapshot.{volumeID}).
-func makeSnapshotHandler(vb *viperblock.VB, volumeName string) nats.MsgHandler {
-	return func(msg *nats.Msg) {
-		var snapRequest types.EBSSnapshotRequest
-		if err := json.Unmarshal(msg.Data, &snapRequest); err != nil {
-			slog.Error("Failed to unmarshal ebs.snapshot message", "volume", volumeName, "err", err)
-			respondJSON(msg, types.EBSSnapshotResponse{Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-
-		slog.Info("ebs.snapshot: processing snapshot request", "volume", volumeName, "snapshotId", snapRequest.SnapshotID)
-
-		snapResponse := types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID}
-
-		if _, err := vb.CreateSnapshot(snapRequest.SnapshotID); err != nil {
-			snapResponse.Error = fmt.Sprintf("snapshot failed: %v", err)
-			slog.Error("ebs.snapshot: CreateSnapshot failed", "volume", volumeName, "snapshotId", snapRequest.SnapshotID, "err", err)
-		} else {
-			snapResponse.Success = true
-			slog.Info("ebs.snapshot: snapshot created", "volume", volumeName, "snapshotId", snapRequest.SnapshotID)
-		}
-
-		respondJSON(msg, snapResponse)
-	}
 }
 
 // applyConfigUpdate writes a control-plane VolumeConfig onto a viperblock
@@ -413,12 +385,6 @@ func launchService(cfg *Config) (err error) {
 		cfg.mu.Unlock()
 
 		if matchIdx >= 0 {
-			// Unsubscribe from volume-specific snapshot topic
-			if matched.SnapshotSub != nil {
-				if err := matched.SnapshotSub.Unsubscribe(); err != nil {
-					slog.Error("Failed to unsubscribe snapshot topic", "volume", ebsRequest.Volume, "err", err)
-				}
-			}
 			// Unsubscribe from volume-specific config-update topic
 			if matched.ConfigSub != nil {
 				if err := matched.ConfigSub.Unsubscribe(); err != nil {
@@ -494,13 +460,6 @@ func launchService(cfg *Config) (err error) {
 			ebsResponse = types.EBSUnMountResponse{
 				Volume:  matched.Name,
 				Mounted: false,
-			}
-
-			// Unsubscribe from volume-specific snapshot topic
-			if matched.SnapshotSub != nil {
-				if err := matched.SnapshotSub.Unsubscribe(); err != nil {
-					slog.Error("Failed to unsubscribe snapshot topic", "volume", ebsRequest.Name, "err", err)
-				}
 			}
 
 			// Unsubscribe from volume-specific config-update topic
@@ -808,23 +767,22 @@ func launchService(cfg *Config) (err error) {
 		}
 
 		nbdConfig := nbd.NBDKitConfig{
-			Port:       nbdPort,
-			Socket:     nbdSocket,
-			UseTCP:     useTCP,
-			PidFile:    nbdPidFile,
-			PluginPath: cfg.PluginPath,
-			BaseDir:    cfg.BaseDir,
-			Host:       admin.DialTarget(cfg.S3Host),
-			Verbose:    false,
-			Size:       utils.SafeUint64ToInt64(vb.GetVolumeSize()),
-			Volume:     ebsRequest.Name,
-			Bucket:     cfg.Bucket,
-			Region:     cfg.Region,
-			AccessKey:  cfg.AccessKey,
-			SecretKey:  cfg.SecretKey,
-			CacheSize:  nbdCacheSize,
-			ShardWAL:   cfg.ShardWAL,
-
+			Port:              nbdPort,
+			Socket:            nbdSocket,
+			UseTCP:            useTCP,
+			PidFile:           nbdPidFile,
+			PluginPath:        cfg.PluginPath,
+			BaseDir:           cfg.BaseDir,
+			Host:              admin.DialTarget(cfg.S3Host),
+			Verbose:           false,
+			Size:              utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+			Volume:            ebsRequest.Name,
+			Bucket:            cfg.Bucket,
+			Region:            cfg.Region,
+			AccessKey:         cfg.AccessKey,
+			SecretKey:         cfg.SecretKey,
+			CacheSize:         nbdCacheSize,
+			ShardWAL:          cfg.ShardWAL,
 			EncryptionKeyFile: cfg.EncryptionKeyFile,
 		}
 
@@ -896,12 +854,6 @@ func launchService(cfg *Config) (err error) {
 		ebsResponse.Mounted = true
 		ebsResponse.URI = nbdURI
 
-		// Subscribe to volume-specific snapshot topic so requests route to this node
-		snapSub, err := nc.Subscribe(fmt.Sprintf("ebs.snapshot.%s", ebsRequest.Name), makeSnapshotHandler(vb, ebsRequest.Name))
-		if err != nil {
-			slog.Error("Failed to subscribe to volume snapshot topic", "volume", ebsRequest.Name, "err", err)
-		}
-
 		// Subscribe to volume-specific config-update topic so encrypted-volume
 		// metadata writes route to this node's live VB (the StateSeqNum owner).
 		configSub, err := nc.Subscribe(fmt.Sprintf("ebs.config.%s", ebsRequest.Name), makeConfigUpdateHandler(vb, ebsRequest.Name))
@@ -911,14 +863,13 @@ func launchService(cfg *Config) (err error) {
 
 		cfg.mu.Lock()
 		cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
-			Name:        ebsRequest.Name,
-			Port:        nbdPort,
-			Socket:      nbdSocket,
-			NBDURI:      nbdURI,
-			PID:         pid,
-			VB:          vb,
-			SnapshotSub: snapSub,
-			ConfigSub:   configSub,
+			Name:      ebsRequest.Name,
+			Port:      nbdPort,
+			Socket:    nbdSocket,
+			NBDURI:    nbdURI,
+			PID:       pid,
+			VB:        vb,
+			ConfigSub: configSub,
 		})
 		cfg.mu.Unlock()
 

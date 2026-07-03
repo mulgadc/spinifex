@@ -1407,7 +1407,7 @@ func (s *InstanceServiceImpl) prepareRootVolume(input *ec2.RunInstancesInput, im
 	}
 	if err != nil {
 		slog.Info("Volume does not yet exist, creating from AMI ...")
-		if err = s.cloneAMIToVolume(input, size, volumeConfig, vb); err != nil {
+		if err = s.cloneAMIToVolume(input, vb); err != nil {
 			return err
 		}
 	}
@@ -1427,27 +1427,14 @@ func (s *InstanceServiceImpl) prepareRootVolume(input *ec2.RunInstancesInput, im
 // cloneAMIToVolume creates a new volume from an AMI using snapshot-based
 // zero-copy cloning. The destination volume points at the AMI's frozen block
 // map and reads on-demand from the AMI's chunks (copy-on-write).
-func (s *InstanceServiceImpl) cloneAMIToVolume(input *ec2.RunInstancesInput, size int, volumeConfig viperblock.VolumeConfig, destVb *viperblock.VB) error {
-	// Load AMI state to get the snapshot ID
-	amiVb, err := s.newViperblock(*input.ImageId, size, volumeConfig)
+func (s *InstanceServiceImpl) cloneAMIToVolume(input *ec2.RunInstancesInput, destVb *viperblock.VB) error {
+	amiConfig, err := s.amiLoader.GetAMIConfig(*input.ImageId)
 	if err != nil {
-		slog.Error("Failed to connect to Viperblock store for AMI", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = amiVb.Backend.Init()
-	if err != nil {
-		slog.Error("Could not connect to AMI Viperblock store", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	amiState, err := amiVb.LoadStateRequest("")
-	if err != nil {
-		slog.Error("Could not load state for AMI", "imageId", *input.ImageId, "err", err)
+		slog.Error("Could not load AMI config", "imageId", *input.ImageId, "err", err)
 		return errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
 
-	snapshotID := amiState.VolumeConfig.AMIMetadata.SnapshotID
+	snapshotID := amiConfig.SnapshotID
 	if snapshotID == "" {
 		slog.Error("AMI has no snapshot ID, cannot perform zero-copy clone", "imageId", *input.ImageId)
 		return errors.New(awserrors.ErrorServerInternal)

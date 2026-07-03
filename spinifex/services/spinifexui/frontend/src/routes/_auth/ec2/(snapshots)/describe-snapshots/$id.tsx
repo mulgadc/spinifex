@@ -1,6 +1,6 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Copy, Trash2 } from "lucide-react"
+import { Copy, Image, Trash2 } from "lucide-react"
 import { useState } from "react"
 
 import { BackLink } from "@/components/back-link"
@@ -23,8 +23,13 @@ import {
 import { Button } from "@/components/ui/button"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { formatDateTime } from "@/lib/utils"
-import { useCopySnapshot, useDeleteSnapshot } from "@/mutations/ec2"
+import {
+  useCopySnapshot,
+  useDeleteSnapshot,
+  useRegisterImage,
+} from "@/mutations/ec2"
 import { ec2RegionsQueryOptions, ec2SnapshotQueryOptions } from "@/queries/ec2"
 
 export const Route = createFileRoute(
@@ -54,13 +59,45 @@ function SnapshotDetail() {
   const snapshot = data.Snapshots?.[0]
   const deleteMutation = useDeleteSnapshot()
   const copyMutation = useCopySnapshot()
+  const registerMutation = useRegisterImage()
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showCopyDialog, setShowCopyDialog] = useState(false)
   const [copyDescription, setCopyDescription] = useState("")
+  const [showRegisterDialog, setShowRegisterDialog] = useState(false)
+  const [registerName, setRegisterName] = useState("")
+  const [registerDescription, setRegisterDescription] = useState("")
+  const [registeredImageId, setRegisteredImageId] = useState<string | null>(
+    null,
+  )
 
   const currentRegion = regionsData.Regions?.[0]?.RegionName ?? "ap-southeast-2"
 
   const canDelete = snapshot?.State === "completed"
+  const canRegister = snapshot?.State === "completed"
+
+  function handleRegisterClose(nextOpen: boolean) {
+    if (!nextOpen) {
+      setRegisterName("")
+      setRegisterDescription("")
+      setRegisteredImageId(null)
+    }
+    setShowRegisterDialog(nextOpen)
+  }
+
+  async function handleRegister() {
+    try {
+      const result = await registerMutation.mutateAsync({
+        snapshotId: id,
+        name: registerName,
+        description: registerDescription || undefined,
+      })
+      setRegisteredImageId(result.ImageId ?? null)
+      setRegisterName("")
+      setRegisterDescription("")
+    } catch {
+      // error shown via registerMutation.error
+    }
+  }
 
   const handleDelete = async () => {
     try {
@@ -111,6 +148,13 @@ function SnapshotDetail() {
         <ErrorBanner error={copyMutation.error} msg="Failed to copy snapshot" />
       )}
 
+      {registerMutation.error && (
+        <ErrorBanner
+          error={registerMutation.error}
+          msg="Failed to register image"
+        />
+      )}
+
       <div className="space-y-6">
         <PageHeading
           actions={
@@ -132,6 +176,15 @@ function SnapshotDetail() {
               >
                 <Copy className="size-4" />
                 Copy Snapshot
+              </Button>
+              <Button
+                disabled={!canRegister}
+                onClick={() => setShowRegisterDialog(true)}
+                size="sm"
+                variant="outline"
+              >
+                <Image className="size-4" />
+                Register as AMI
               </Button>
               <StateBadge state={snapshot.State} />
             </div>
@@ -211,6 +264,77 @@ function SnapshotDetail() {
             >
               {copyMutation.isPending ? "Copying\u2026" : "Copy Snapshot"}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog onOpenChange={handleRegisterClose} open={showRegisterDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {registeredImageId ? "Image Registered" : "Register as AMI"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {registeredImageId ? (
+                <>
+                  AMI{" "}
+                  <Link
+                    className="text-primary hover:underline"
+                    params={{ id: registeredImageId }}
+                    to="/ec2/describe-images/$id"
+                  >
+                    {registeredImageId}
+                  </Link>{" "}
+                  was registered successfully.
+                </>
+              ) : (
+                `Create an AMI from snapshot "${id}".`
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {!registeredImageId && (
+            <>
+              <Field>
+                <FieldTitle>
+                  <label htmlFor="registerName">Name</label>
+                </FieldTitle>
+                <Input
+                  id="registerName"
+                  onChange={(e) => setRegisterName(e.target.value)}
+                  placeholder="my-image"
+                  value={registerName}
+                />
+              </Field>
+              <Field>
+                <FieldTitle>
+                  <label htmlFor="registerDescription">
+                    Description (optional)
+                  </label>
+                </FieldTitle>
+                <Textarea
+                  id="registerDescription"
+                  onChange={(e) => setRegisterDescription(e.target.value)}
+                  placeholder="Optional description"
+                  rows={2}
+                  value={registerDescription}
+                />
+              </Field>
+            </>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>
+              {registeredImageId ? "Close" : "Cancel"}
+            </AlertDialogCancel>
+            {!registeredImageId && (
+              <AlertDialogAction
+                disabled={registerMutation.isPending || !registerName.trim()}
+                onClick={handleRegister}
+              >
+                {registerMutation.isPending
+                  ? "Registering\u2026"
+                  : "Register AMI"}
+              </AlertDialogAction>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

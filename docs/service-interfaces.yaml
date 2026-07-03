@@ -332,6 +332,12 @@ suites:
   # e2e-bm:
   #   path: spinifex/tests/e2e/baremetal
   #   covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+  #
+  # e2e-natuplink activates once CI can provision an external_mode=nat
+  # node (setup-ovn.sh --nat-uplink + spx admin init --external-mode=nat).
+  # e2e-natuplink:
+  #   path: spinifex/tests/e2e/natuplink
+  #   covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
 
 
 # Special-case rules consumed by the selector (Bead 4). Hard-coded in

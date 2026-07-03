@@ -439,11 +439,11 @@ func runSTS(t *testing.T, fix *Fixture) {
 		return e
 	})
 
-	// Same-account miss → NoSuchEntity. Cross-account miss is masked to
-	// AccessDenied by the handler; that's covered by handlers/sts unit tests
-	// since the single-node fixture only has one account.
-	harness.Step(t, "assume-role missing role (expect NoSuchEntity)")
-	harness.ExpectError(t, "NoSuchEntity", func() error {
+	// All missing-role lookups are masked to AccessDenied by the handler,
+	// matching AWS and preventing role enumeration; same- vs cross-account
+	// masking is covered by handlers/sts unit tests.
+	harness.Step(t, "assume-role missing role (expect AccessDenied)")
+	harness.ExpectError(t, "AccessDenied", func() error {
 		_, e := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
 			RoleArn: aws.String(harness.IAMRoleARN(adminAccount,
 				"sts-e2e-no-such-role")),

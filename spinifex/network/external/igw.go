@@ -106,6 +106,13 @@ func NewIGWManager(cfg IGWManagerConfig) (IGWManager, error) {
 	}, nil
 }
 
+// gatewayOwnsNAT reports whether the gateway chassis owns NAT for VM egress —
+// true for centralized and routed modes, where the gateway LRP gets a real IP
+// from the pool and the localnet advertises router NAT addresses.
+func (m *igwManager) gatewayOwnsNAT() bool {
+	return m.natMode == policy.NATModeCentralized || m.natMode == policy.NATModeRouted
+}
+
 // AttachIGW wires external connectivity for spec.VPCID onto the shared external
 // switch: it ensures the singleton external switch + localnet, attaches the VPC
 // gateway LRP via its own router-type switch port, installs the default route,
@@ -183,6 +190,22 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 		return fmt.Errorf("add default route on %s: %w", routerName, err)
 	}
 
+	// Routed mode: egress SNATs the VPC CIDR to the gateway LRP transit IP so
+	// the host only ever masquerades the transit /24. DetachIGW reverses this.
+	if m.natMode == policy.NATModeRouted && gwLrpIP != "" {
+		router, err := m.ovn.GetLogicalRouter(ctx, routerName)
+		if err != nil {
+			return fmt.Errorf("get router %s for routed SNAT: %w", routerName, err)
+		}
+		vpcCIDR := router.ExternalIDs["spinifex:cidr"]
+		if vpcCIDR == "" {
+			return fmt.Errorf("routed NAT: router %s has no spinifex:cidr external_id", routerName)
+		}
+		if err := m.nat.AddSNAT(ctx, spec.VPCID, vpcCIDR, gwLrpIP); err != nil {
+			return fmt.Errorf("install routed SNAT %s -> %s: %w", vpcCIDR, gwLrpIP, err)
+		}
+	}
+
 	if len(m.chassis) == 0 {
 		slog.Warn("external: no chassis configured — gateway port has no chassis binding, external traffic will not flow",
 			"vpc_id", spec.VPCID, "gw_port", gwPortName)
@@ -224,7 +247,7 @@ func (m *igwManager) ensureSharedExternal(ctx context.Context, switchName, portN
 		return nil
 	}
 	localnetOpts := map[string]string{"network_name": "external"}
-	if m.natMode == policy.NATModeCentralized {
+	if m.gatewayOwnsNAT() {
 		localnetOpts["nat-addresses"] = "router"
 	}
 	if err := m.ovn.CreateLogicalSwitchPort(ctx, switchName, &nbdb.LogicalSwitchPort{
@@ -496,7 +519,7 @@ func (m *igwManager) resolveGatewayNetwork(ctx context.Context, vpcID string) (n
 		nexthop = m.pool.Gateway
 	}
 
-	if m.natMode != policy.NATModeCentralized || m.pool == nil {
+	if !m.gatewayOwnsNAT() || m.pool == nil {
 		return network, nexthop, "", nil
 	}
 

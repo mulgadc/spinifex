@@ -53,6 +53,11 @@ chmod 0755 /etc/init.d/mulga-mgmt-net /usr/local/sbin/mulga-mgmt-net
 chmod 0755 /etc/init.d/mulga-vpc-mtu /usr/local/sbin/mulga-vpc-mtu
 chmod 0755 /etc/periodic/daily/mulga-eks-etcd-snapshot
 
+# mulga-mgmt-net goes in the boot runlevel, not default (where ENABLE_SERVICES
+# lands services). It DHCPs the data NIC so the init-local Ec2 crawl reaches
+# IMDS; a default entry runs after cloud-init-local and is too late.
+rc-update add mulga-mgmt-net boot
+
 # EBS by-id bridge: route every virtio-blk event through mulga-ebs-byid, which
 # delegates to the stock persistent-storage helper and then mints the
 # nvme-Amazon_Elastic_Block_Store_<serial> link the EBS CSI node plugin resolves.

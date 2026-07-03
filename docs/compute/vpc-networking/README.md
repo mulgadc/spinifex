@@ -191,11 +191,12 @@ is identical:
 Both support the same AWS features: public subnets, Elastic IPs, security groups,
 DescribeInstances showing public IPs.
 
-## `nat` — Outbound Only (Simple)
+## `nat` — Shared SNAT (Simple)
 
-All VMs share a single external IP for outbound SNAT. No public IPs, no Elastic
-IPs, no inbound from WAN. All subnets behave as private subnets with internet
-access.
+All VMs share a single external IP for outbound SNAT. By default there are no
+public IPs, no Elastic IPs, and no inbound from WAN — all subnets behave as
+private subnets with internet access. On routed-NAT nodes, adding a public pool
+restores full public IP parity (see below).
 
 The `gateway_ip` is the IP that OVN uses for SNAT. You can set it statically or
 use `setup-ovn.sh --dhcp` to obtain one from the router. This is the router's
@@ -239,6 +240,66 @@ ssh -J admin@<spinifex-host> ubuntu@<instance-private-ip>
 Extra networks that must reach instances without SNAT (e.g. a management LAN)
 can be added via `[network] nat_exempt_cidrs = ["192.168.50.0/24"]`.
 
+### Public IPs in NAT mode (public pool)
+
+A routed-NAT node (`setup-ovn.sh --nat-uplink` + `spx admin init
+--external-mode=nat`) can carry a public pool alongside the internal
+`nat-transit` pool. With one configured, nat mode behaves like pool mode for
+public IPs: `MapPublicIpOnLaunch` on the default subnet, auto-assigned public
+IPs, and Elastic IPs all work. Spinifex delivers each public IP at the host —
+a `/32` route steers it into OVN and a proxy-ARP neighbor entry answers for it
+on the uplink (L3 only, same MAC, so it works on WiFi and other non-bridgeable
+uplinks).
+
+Static range carved out of the router's DHCP scope:
+
+```bash
+spx admin init --external-mode=nat \
+  --external-pool 192.168.1.150-192.168.1.250 \
+  --external-gateway 192.168.1.1
+```
+
+Or lease public IPs from the upstream router's DHCP:
+
+```bash
+spx admin init --external-mode=nat --external-source=dhcp \
+  --external-bind-bridge wlan0
+```
+
+On WiFi/WWAN uplinks the leases are requested with the interface's own MAC
+(`dhcp_mac = "interface"`, written automatically) and distinguished by DHCP
+client-id. Some routers key leases by MAC and ignore the client-id — Spinifex
+detects this (the router hands the same IP to two client-ids) and fails the
+allocation with advice to switch to a static range.
+
+Resulting config:
+
+```toml
+[network]
+external_mode = "nat"
+bridge_mode   = "nat"
+
+[[network.external_pools]]
+name       = "nat-transit"        # internal transit net (auto-generated)
+gateway    = "100.127.0.1"
+prefix_len = 24
+
+[[network.external_pools]]
+name        = "wan"               # public pool
+range_start = "192.168.1.150"
+range_end   = "192.168.1.250"
+gateway     = "192.168.1.1"
+prefix_len  = 24
+```
+
+**Caveat — reaching an EIP from the spinifex host itself.** Host-sourced
+traffic enters OVN from the transit net, which is exempt from NAT (that is what
+makes the jumpbox pattern work) — so a host connection to an EIP that carries
+the transit source IP would skip DNAT. Spinifex stamps the EIP route with the
+uplink's LAN IP as source to avoid this, but if no uplink address can be
+determined, connect to the instance's **private IP** from the host instead.
+Other machines on the LAN are unaffected.
+
 ## Disabled (Empty/Omitted)
 
 VPC networking is overlay-only. No external connectivity. Instances can only
@@ -246,19 +307,21 @@ communicate within their VPC.
 
 ## Mode Comparison
 
-| Capability                        | `pool` (static) | `pool` (dhcp) | `nat`    | Disabled |
-| --------------------------------- | --------------- | ------------- | -------- | -------- |
-| Outbound internet                 | Yes             | Yes           | Yes      | No       |
-| Inbound from WAN                  | Yes (1:1 NAT)   | Yes (1:1 NAT) | No       | No       |
-| Public subnets                    | Yes             | Yes           | No       | No       |
-| Auto-assign public IPs            | Yes             | Yes           | No       | No       |
-| Elastic IPs                       | Yes             | Yes           | No       | No       |
-| DescribeInstances shows public IP | Yes             | Yes           | No       | No       |
-| Admin must reserve IP range       | Yes             | No            | No       | No       |
-| Needs router DHCP                 | No              | Yes           | Optional | No       |
+| Capability                        | `pool` (static) | `pool` (dhcp) | `nat`             | Disabled |
+| --------------------------------- | --------------- | ------------- | ----------------- | -------- |
+| Outbound internet                 | Yes             | Yes           | Yes               | No       |
+| Host reaches instance private IPs | No              | No            | Yes (routed)      | No       |
+| Inbound from WAN                  | Yes (1:1 NAT)   | Yes (1:1 NAT) | With public pool  | No       |
+| Public subnets                    | Yes             | Yes           | With public pool  | No       |
+| Auto-assign public IPs            | Yes             | Yes           | With public pool  | No       |
+| Elastic IPs                       | Yes             | Yes           | With public pool  | No       |
+| DescribeInstances shows public IP | Yes             | Yes           | With public pool  | No       |
+| Admin must reserve IP range       | Yes             | No            | Only static pool  | No       |
+| Needs router DHCP                 | No              | Yes           | Optional          | No       |
 
-If you start with `nat` and later need public subnets, switch to `pool` and
-define a range (or use `source = "dhcp"`) — no data migration needed.
+If you start with `nat` and later need public subnets: on a bridgeable uplink
+switch to `pool` and define a range (or use `source = "dhcp"`); on a routed-NAT
+node just add a public pool alongside `nat-transit` — no data migration needed.
 
 ## Bridge Setup — Physical Network Wiring
 

@@ -68,6 +68,9 @@ type fixture struct {
 	harness    *harness.Fixture
 	artifacts  string
 	configTOML string
+	// publicPool is true when spinifex.toml carries a non-transit pool —
+	// the Tier 2 (EIP / public IP) lane is exercised only then.
+	publicPool bool
 }
 
 // TestNATUplink runs the routed-NAT lane end to end. Phases are sequential:
@@ -95,6 +98,7 @@ func TestNATUplink(t *testing.T) {
 		harness:    hfx,
 		artifacts:  harness.ArtifactDir(t, env),
 		configTOML: cfgPath,
+		publicPool: hasPublicPool(t, cfgPath),
 	}
 
 	harness.Phase(t, "NAT Uplink — Phase 1: host wiring")
@@ -103,10 +107,15 @@ func TestNATUplink(t *testing.T) {
 	harness.Phase(t, "NAT Uplink — Phase 2: config")
 	phaseConfig(t, fix)
 
-	harness.Phase(t, "NAT Uplink — Phase 3: EIP surface disabled")
-	phaseEIPDisabled(t, fix)
+	if fix.publicPool {
+		harness.Phase(t, "NAT Uplink — Phase 3: EIP surface enabled (Tier 2)")
+		phaseEIPEnabled(t, fix)
+	} else {
+		harness.Phase(t, "NAT Uplink — Phase 3: EIP surface disabled")
+		phaseEIPDisabled(t, fix)
+	}
 
-	harness.Phase(t, "NAT Uplink — Phase 4: default subnet has no public IP mapping")
+	harness.Phase(t, "NAT Uplink — Phase 4: default subnet public IP mapping")
 	def := phaseDefaultSubnet(t, fix)
 
 	harness.Phase(t, "NAT Uplink — Phase 5: OVN gateway + SNAT on transit net")
@@ -120,6 +129,13 @@ func TestNATUplink(t *testing.T) {
 
 	harness.Phase(t, "NAT Uplink — Phase 8: second VPC gets a unique transit gateway IP")
 	phaseUniqueTransitIP(t, fix, defaultGwIP)
+
+	if fix.publicPool {
+		harness.Phase(t, "NAT Uplink — Phase 9: EIP ingress lifecycle (Tier 2)")
+		phaseEIPIngress(t, fix, def, probe)
+	} else {
+		t.Log("Phase 9 (Tier 2 EIP ingress) skipped: no public pool in config")
+	}
 }
 
 // --- Phase 1: host wiring --------------------------------------------------
@@ -169,7 +185,11 @@ func phaseConfig(t *testing.T, fix *fixture) {
 	assert.Contains(t, content, `bridge_mode = "nat"`)
 	assert.Containsf(t, content, "nat-transit", "transit pool block missing in %s", fix.configTOML)
 	assert.Containsf(t, content, transitGatewayIP, "transit gateway IP missing in %s", fix.configTOML)
-	assert.NotContains(t, content, "range_start", "nat mode must not carry a public IP range")
+	if fix.publicPool {
+		harness.Detail(t, "tier2", "public pool present — EIP lane active")
+	} else {
+		assert.NotContains(t, content, "range_start", "Tier-1-only nat mode must not carry a public IP range")
+	}
 }
 
 // --- Phase 3: EIP surface ----------------------------------------------------
@@ -190,6 +210,35 @@ func phaseEIPDisabled(t *testing.T, fix *fixture) {
 	})
 }
 
+// phaseEIPEnabled proves nat mode with a public pool exposes the same EIP
+// surface as pool mode: allocate works, the address shows in describe, and
+// release returns it to the pool. The full ingress lifecycle runs in Phase 9.
+func phaseEIPEnabled(t *testing.T, fix *fixture) {
+	t.Helper()
+
+	harness.Step(t, "allocate-address succeeds from public pool")
+	// e2e:allow-create — scratch EIP, released at the end of this phase.
+	alloc, err := fix.aws.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
+	require.NoError(t, err, "allocate-address must succeed with a public pool configured")
+	allocID := aws.StringValue(alloc.AllocationId)
+	eip := aws.StringValue(alloc.PublicIp)
+	require.NotEmpty(t, allocID, "allocate-address returned no AllocationId")
+	require.NotEmpty(t, eip, "allocate-address returned no PublicIp")
+	harness.Detail(t, "allocation", allocID, "eip", eip)
+
+	harness.Step(t, "describe-addresses lists the allocation")
+	out, err := fix.aws.EC2.DescribeAddresses(&ec2.DescribeAddressesInput{
+		AllocationIds: []*string{aws.String(allocID)},
+	})
+	require.NoError(t, err, "describe-addresses %s", allocID)
+	require.Len(t, out.Addresses, 1, "allocation %s missing from describe-addresses", allocID)
+	assert.Equal(t, eip, aws.StringValue(out.Addresses[0].PublicIp))
+
+	harness.Step(t, "release-address returns it to the pool")
+	_, err = fix.aws.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)})
+	require.NoError(t, err, "release-address %s", allocID)
+}
+
 // --- Phase 4: default subnet -------------------------------------------------
 
 func phaseDefaultSubnet(t *testing.T, fix *fixture) harness.VPCInfo {
@@ -202,8 +251,13 @@ func phaseDefaultSubnet(t *testing.T, fix *fixture) harness.VPCInfo {
 	})
 	require.NoError(t, err, "describe-subnets %s", def.SubnetID)
 	require.NotEmpty(t, out.Subnets, "default subnet %s not found", def.SubnetID)
-	assert.Falsef(t, aws.BoolValue(out.Subnets[0].MapPublicIpOnLaunch),
-		"default subnet %s must have MapPublicIpOnLaunch=false in nat mode", def.SubnetID)
+	if fix.publicPool {
+		assert.Truef(t, aws.BoolValue(out.Subnets[0].MapPublicIpOnLaunch),
+			"default subnet %s must have MapPublicIpOnLaunch=true with a public pool (bridge parity)", def.SubnetID)
+	} else {
+		assert.Falsef(t, aws.BoolValue(out.Subnets[0].MapPublicIpOnLaunch),
+			"default subnet %s must have MapPublicIpOnLaunch=false in Tier-1-only nat mode", def.SubnetID)
+	}
 	return def
 }
 
@@ -234,10 +288,11 @@ func phaseOVNGateway(t *testing.T, fix *fixture, vpcID string) string {
 
 // --- Phase 6: instance egress ---------------------------------------------------
 
-// egressProbe carries the phase-6 instance into the Tier 1 ingress phase.
+// egressProbe carries the phase-6 instance into the ingress phases.
 type egressProbe struct {
 	instanceID string
 	privateIP  string
+	publicIP   string
 	sgID       string
 }
 
@@ -273,10 +328,17 @@ func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) egress
 
 	inst := harness.WaitForInstanceState(t, fix.aws, instanceID, "running")
 
-	harness.Step(t, "instance has no public IP")
-	assert.Emptyf(t, aws.StringValue(inst.PublicIpAddress),
-		"nat mode instance %s must not get a public IP (got %q)",
-		instanceID, aws.StringValue(inst.PublicIpAddress))
+	if fix.publicPool {
+		harness.Step(t, "instance auto-assigned a public IP (MapPublicIpOnLaunch)")
+		assert.NotEmptyf(t, aws.StringValue(inst.PublicIpAddress),
+			"instance %s must auto-assign a public IP with a public pool configured", instanceID)
+		harness.Detail(t, "public_ip", aws.StringValue(inst.PublicIpAddress))
+	} else {
+		harness.Step(t, "instance has no public IP")
+		assert.Emptyf(t, aws.StringValue(inst.PublicIpAddress),
+			"Tier-1-only nat mode instance %s must not get a public IP (got %q)",
+			instanceID, aws.StringValue(inst.PublicIpAddress))
+	}
 	assert.NotEmptyf(t, aws.StringValue(inst.PrivateIpAddress),
 		"instance %s missing private IP", instanceID)
 
@@ -303,6 +365,7 @@ func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) egress
 	return egressProbe{
 		instanceID: instanceID,
 		privateIP:  aws.StringValue(inst.PrivateIpAddress),
+		publicIP:   aws.StringValue(inst.PublicIpAddress),
 		sgID:       sgID,
 	}
 }
@@ -368,20 +431,7 @@ func phaseHostIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egr
 
 	harness.Step(t, "TCP handshake to sshd on %s:22 from host", probe.privateIP)
 	harness.EventuallyErr(t, func() error {
-		conn, derr := net.DialTimeout("tcp", net.JoinHostPort(probe.privateIP, "22"), 5*time.Second)
-		if derr != nil {
-			return fmt.Errorf("dial %s:22: %w", probe.privateIP, derr)
-		}
-		defer conn.Close()
-		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		banner := make([]byte, 4)
-		if _, rerr := io.ReadFull(conn, banner); rerr != nil {
-			return fmt.Errorf("read ssh banner: %w", rerr)
-		}
-		if string(banner) != "SSH-" {
-			return fmt.Errorf("unexpected banner prefix %q", string(banner))
-		}
-		return nil
+		return sshHandshake(probe.privateIP)
 	}, 2*time.Minute, 5*time.Second)
 	harness.Step(t, "host->instance return path works without SNAT mangling")
 }
@@ -451,6 +501,174 @@ func phaseUniqueTransitIP(t *testing.T, fix *fixture, defaultGwIP string) {
 	}, 2*time.Minute, 3*time.Second)
 }
 
+// --- Phase 9: Tier 2 EIP ingress lifecycle -----------------------------------
+
+// phaseEIPIngress proves EIP parity with pool mode on a routed-NAT node: the
+// auto-assigned public IP and a freshly associated EIP both get the host
+// delivery trio (/32 route into OVN, proxy-ARP on the uplink, per-EIP FORWARD
+// accepts) plus an exempt-stamped dnat_and_snat row; a TCP handshake to the
+// EIP proves the DNAT path end to end; a vpcd restart must replay the host
+// bindings; disassociating must tear them down.
+func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egressProbe) {
+	t.Helper()
+
+	gwIP := gatewayLRPIP(t, def.VPCID)
+	require.NotEmpty(t, gwIP, "gateway LRP IP")
+
+	harness.Step(t, "auto-assigned public IP %s has host delivery plumbing", probe.publicIP)
+	require.NotEmpty(t, probe.publicIP, "phase 6 probe carries no public IP")
+	harness.EventuallyErr(t, func() error {
+		return eipHostPlumbing(probe.publicIP, gwIP)
+	}, 2*time.Minute, 3*time.Second)
+	assertDNATExempt(t, probe.publicIP)
+
+	harness.Step(t, "allocate + associate a fresh EIP")
+	// e2e:allow-create — scratch EIP owned end to end by this phase.
+	alloc, err := fix.aws.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
+	require.NoError(t, err, "allocate-address")
+	allocID := aws.StringValue(alloc.AllocationId)
+	eip := aws.StringValue(alloc.PublicIp)
+	require.NotEmpty(t, eip, "allocate-address returned no PublicIp")
+	t.Cleanup(func() {
+		_, _ = fix.aws.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)})
+	})
+	harness.Detail(t, "allocation", allocID, "eip", eip)
+
+	assocOut, err := fix.aws.EC2.AssociateAddress(&ec2.AssociateAddressInput{
+		AllocationId: aws.String(allocID),
+		InstanceId:   aws.String(probe.instanceID),
+	})
+	require.NoError(t, err, "associate-address %s -> %s", allocID, probe.instanceID)
+	assocID := aws.StringValue(assocOut.AssociationId)
+
+	harness.Step(t, "host delivery plumbing lands for %s", eip)
+	harness.EventuallyErr(t, func() error {
+		return eipHostPlumbing(eip, gwIP)
+	}, 2*time.Minute, 3*time.Second)
+	assertDNATExempt(t, eip)
+
+	harness.Step(t, "open SG for SSH from anywhere, TCP handshake to EIP %s:22", eip)
+	perms := []*ec2.IpPermission{{
+		IpProtocol: aws.String("tcp"), FromPort: aws.Int64(22), ToPort: aws.Int64(22),
+		IpRanges: []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+	}}
+	_, err = fix.aws.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(probe.sgID), IpPermissions: perms,
+	})
+	require.NoError(t, err, "authorize-security-group-ingress")
+	t.Cleanup(func() {
+		_, _ = fix.aws.EC2.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+			GroupId: aws.String(probe.sgID), IpPermissions: perms,
+		})
+	})
+	harness.EventuallyErr(t, func() error {
+		return sshHandshake(eip)
+	}, 2*time.Minute, 5*time.Second)
+
+	harness.Step(t, "vpcd restart replays host EIP bindings (reconcile)")
+	if out, rerr := exec.Command("sudo", "-n", "ip", "route", "del", eip+"/32",
+		"dev", transitHostEnd).CombinedOutput(); rerr != nil {
+		t.Logf("route del before restart failed (continuing): %s", string(out))
+	}
+	if out, rerr := exec.Command("sudo", "-n", "systemctl", "restart",
+		"spinifex-vpcd").CombinedOutput(); rerr != nil {
+		t.Logf("skipping reconcile-replay check — cannot restart spinifex-vpcd: %s", string(out))
+	} else {
+		harness.EventuallyErr(t, func() error {
+			return eipHostPlumbing(eip, gwIP)
+		}, 3*time.Minute, 5*time.Second)
+	}
+
+	harness.Step(t, "disassociate tears down host delivery for %s", eip)
+	_, err = fix.aws.EC2.DisassociateAddress(&ec2.DisassociateAddressInput{
+		AssociationId: aws.String(assocID),
+	})
+	require.NoError(t, err, "disassociate-address %s", assocID)
+	harness.EventuallyErr(t, func() error {
+		return eipHostPlumbingGone(eip)
+	}, 2*time.Minute, 3*time.Second)
+
+	harness.Step(t, "auto-assigned public IP %s still plumbed after EIP teardown", probe.publicIP)
+	require.NoError(t, eipHostPlumbing(probe.publicIP, gwIP))
+}
+
+// eipHostPlumbing returns nil when the full Tier 2 host state for eip is in
+// place: the /32 route into OVN via the gateway LRP, a proxy-ARP neighbor on
+// the uplink, and both per-EIP FORWARD accepts.
+func eipHostPlumbing(eip, gwIP string) error {
+	out, _ := exec.Command("ip", "route", "show", eip+"/32").CombinedOutput()
+	route := string(out)
+	if !strings.Contains(route, "via "+gwIP) || !strings.Contains(route, "dev "+transitHostEnd) {
+		return fmt.Errorf("EIP route for %s missing (want via %s dev %s): %q",
+			eip, gwIP, transitHostEnd, strings.TrimSpace(route))
+	}
+	out, _ = exec.Command("ip", "neigh", "show", "proxy").CombinedOutput()
+	if !strings.Contains(string(out), eip) {
+		return fmt.Errorf("proxy-ARP entry for %s missing:\n%s", eip, string(out))
+	}
+	for _, args := range eipForwardChecks(eip) {
+		if out, err := exec.Command("sudo", append([]string{"-n", "iptables"}, args...)...).CombinedOutput(); err != nil {
+			return fmt.Errorf("iptables %s missing: %s", strings.Join(args, " "), string(out))
+		}
+	}
+	return nil
+}
+
+// eipHostPlumbingGone returns nil when no host delivery state remains for eip.
+func eipHostPlumbingGone(eip string) error {
+	out, _ := exec.Command("ip", "route", "show", eip+"/32").CombinedOutput()
+	if strings.TrimSpace(string(out)) != "" {
+		return fmt.Errorf("EIP route for %s still present: %q", eip, strings.TrimSpace(string(out)))
+	}
+	out, _ = exec.Command("ip", "neigh", "show", "proxy").CombinedOutput()
+	if strings.Contains(string(out), eip) {
+		return fmt.Errorf("proxy-ARP entry for %s still present", eip)
+	}
+	for _, args := range eipForwardChecks(eip) {
+		if _, err := exec.Command("sudo", append([]string{"-n", "iptables"}, args...)...).CombinedOutput(); err == nil {
+			return fmt.Errorf("iptables rule still present: %s", strings.Join(args, " "))
+		}
+	}
+	return nil
+}
+
+func eipForwardChecks(eip string) [][]string {
+	return [][]string{
+		{"-C", "FORWARD", "-i", transitHostEnd, "-s", eip + "/32",
+			"-m", "comment", "--comment", "spinifex-eip-ingress", "-j", "ACCEPT"},
+		{"-C", "FORWARD", "-o", transitHostEnd, "-d", eip + "/32",
+			"-m", "comment", "--comment", "spinifex-eip-ingress", "-j", "ACCEPT"},
+	}
+}
+
+// assertDNATExempt checks the dnat_and_snat row for eip exists and carries
+// the exempt Address_Set ref (so Tier 1 host->private-IP flows keep working
+// for EIP-holding instances).
+func assertDNATExempt(t *testing.T, eip string) {
+	t.Helper()
+	exemptRef := strings.TrimSpace(harness.OvnNbctl(t, "--bare", "--columns=exempted_ext_ips",
+		"find", "nat", "type=dnat_and_snat", "external_ip="+eip))
+	require.NotEmptyf(t, exemptRef, "dnat_and_snat for %s missing or has no exempted_ext_ips ref", eip)
+}
+
+// sshHandshake dials hostPort:22 and reads the SSH banner prefix.
+func sshHandshake(host string) error {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, "22"), 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("dial %s:22: %w", host, err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	banner := make([]byte, 4)
+	if _, err := io.ReadFull(conn, banner); err != nil {
+		return fmt.Errorf("read ssh banner: %w", err)
+	}
+	if string(banner) != "SSH-" {
+		return fmt.Errorf("unexpected banner prefix %q", string(banner))
+	}
+	return nil
+}
+
 // --- Helpers ---------------------------------------------------------------
 
 // hostCmd runs a local (non-sudo) command and fails the test on error.
@@ -494,6 +712,38 @@ func readExternalMode(t *testing.T, path string) string {
 		}
 	}
 	return ""
+}
+
+// hasPublicPool reports whether spinifex.toml carries an external pool other
+// than the transit pool — the marker that the Tier 2 (EIP / public IP) lane
+// is configured on this node.
+func hasPublicPool(t *testing.T, path string) bool {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	inPool := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "[") {
+			inPool = line == "[[network.external_pools]]"
+			continue
+		}
+		if !inPool || !strings.HasPrefix(line, "name") {
+			continue
+		}
+		if i := strings.IndexByte(line, '='); i >= 0 {
+			name := strings.Trim(strings.TrimSpace(line[i+1:]), "\"'")
+			if name != "nat-transit" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // gatewayLRPIP returns the IP (sans prefix) of gw-<vpcID>'s first network,

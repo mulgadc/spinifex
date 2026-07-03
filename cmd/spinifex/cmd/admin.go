@@ -326,7 +326,7 @@ func init() {
 	adminInitCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). Valid: nats,predastore,viperblock,daemon,awsgw,ui")
 
 	// External networking flags
-	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected), 'nat' (routed, outbound-only; non-bridgeable uplinks), or '' (disabled)")
+	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected), 'nat' (routed; non-bridgeable uplinks; add --external-pool or --external-source=dhcp for public IPs), or '' (disabled)")
 	adminInitCmd.Flags().String("external-iface", "", "WAN NIC for br-external (auto-detected from default route)")
 	adminInitCmd.Flags().String("external-source", "", "Pool IP source: 'dhcp' (default when no --external-pool) or 'static' (uses --external-pool range)")
 	adminInitCmd.Flags().String("external-bind-bridge", "", "Linux bridge for upstream DHCP DORA (default 'br-wan' when --external-source=dhcp)")

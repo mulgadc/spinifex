@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
@@ -118,4 +119,92 @@ func TestWriteInstanceTags_NilRecordRejected(t *testing.T) {
 	err = WriteInstanceTags(&vm.VM{ID: "i-123"}, nil, false, writer, "111122223333")
 	assert.Error(t, err)
 	assert.Zero(t, writer.calls)
+}
+
+func stoppedTagInstance(id, accountID string, tags []*ec2.Tag) *vm.VM {
+	return &vm.VM{
+		ID:        id,
+		AccountID: accountID,
+		Status:    vm.StateStopped,
+		Instance:  &ec2.Instance{InstanceId: aws.String(id), Tags: tags},
+	}
+}
+
+func TestTagStoppedInstance_WritesRecordAndCentral(t *testing.T) {
+	stored := stoppedTagInstance("i-123", "111122223333", tagList("Name", "web"))
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}}
+	writer := &fakeTagWriter{}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	err := svc.TagStoppedInstance("i-123", &spxtypes.InstanceTagsData{
+		Tags: map[string]string{"env": "prod"},
+	}, false, writer, "111122223333")
+	require.NoError(t, err)
+
+	want := map[string]string{"Name": "web", "env": "prod"}
+	written := store.wroteStopped["i-123"]
+	require.NotNil(t, written)
+	assert.Equal(t, want, tagsAsMap(written.Instance.Tags))
+	assert.Equal(t, want, writer.tags)
+	assert.Equal(t, "i-123", writer.resourceID)
+	assert.Equal(t, "111122223333", writer.accountID)
+}
+
+func TestTagStoppedInstance_RemoveKeys(t *testing.T) {
+	stored := stoppedTagInstance("i-123", "111122223333", tagList("Name", "web", "env", "dev"))
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}}
+	writer := &fakeTagWriter{}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	err := svc.TagStoppedInstance("i-123", &spxtypes.InstanceTagsData{
+		TagKeys: []string{"env"},
+	}, true, writer, "111122223333")
+	require.NoError(t, err)
+
+	want := map[string]string{"Name": "web"}
+	assert.Equal(t, want, tagsAsMap(store.wroteStopped["i-123"].Instance.Tags))
+	assert.Equal(t, want, writer.tags)
+}
+
+func TestTagStoppedInstance_NotFound(t *testing.T) {
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	writer := &fakeTagWriter{}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	err := svc.TagStoppedInstance("i-missing", &spxtypes.InstanceTagsData{
+		Tags: map[string]string{"env": "prod"},
+	}, false, writer, "111122223333")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.Zero(t, writer.calls)
+	assert.Empty(t, store.wroteStopped)
+}
+
+func TestTagStoppedInstance_CrossAccountRejected(t *testing.T) {
+	stored := stoppedTagInstance("i-123", "999988887777", tagList("Name", "web"))
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}}
+	writer := &fakeTagWriter{}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	err := svc.TagStoppedInstance("i-123", &spxtypes.InstanceTagsData{
+		Tags: map[string]string{"env": "prod"},
+	}, false, writer, "111122223333")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.Zero(t, writer.calls)
+	assert.Empty(t, store.wroteStopped)
+}
+
+func TestTagStoppedInstance_CentralWriteErrorSkipsRecordWrite(t *testing.T) {
+	stored := stoppedTagInstance("i-123", "111122223333", tagList("Name", "web"))
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}}
+	writer := &fakeTagWriter{err: errors.New("s3 down")}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	err := svc.TagStoppedInstance("i-123", &spxtypes.InstanceTagsData{
+		Tags: map[string]string{"env": "prod"},
+	}, false, writer, "111122223333")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, store.wroteStopped)
 }

@@ -199,8 +199,9 @@ func (d *Daemon) tagInstances(instanceIDs []string, data *types.InstanceTagsData
 
 // tagInstance asks the owning daemon over ec2.cmd.<id> to apply the mutation
 // to the record and central store together; only the owner subscribes there.
-// No responder (not running) and timeout (unreachable owner) both surface
-// InvalidID.NotFound, so nothing is written for an unreachable instance.
+// No responders means the instance isn't running, so the mutation falls back
+// to the shared stopped store; a timeout (partitioned-but-subscribed owner)
+// surfaces InvalidID.NotFound and writes nothing.
 func (d *Daemon) tagInstance(instanceID string, data *types.InstanceTagsData, remove bool, accountID string) error {
 	command := types.EC2InstanceCommand{
 		ID: instanceID,
@@ -222,7 +223,9 @@ func (d *Daemon) tagInstance(instanceID string, data *types.InstanceTagsData, re
 
 	msg, err := d.natsConn.RequestMsg(reqMsg, instanceTagCommandTimeout)
 	switch {
-	case errors.Is(err, nats.ErrNoResponders), errors.Is(err, nats.ErrTimeout):
+	case errors.Is(err, nats.ErrNoResponders):
+		return d.instanceService.TagStoppedInstance(instanceID, data, remove, d.tagsService, accountID)
+	case errors.Is(err, nats.ErrTimeout):
 		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 	case err != nil:
 		slog.Error("tagInstance: owner request failed", "instanceId", instanceID, "err", err)

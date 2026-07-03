@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -15,12 +16,61 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// tagTestDaemon returns a test daemon with an in-memory central tag store and
-// a running VM carrying the given initial tags.
+// memStoppedStore is a map-backed StoppedInstanceStore standing in for the
+// shared JetStream KV in tag fallback tests.
+type memStoppedStore struct {
+	instances map[string]*vm.VM
+}
+
+var _ handlers_ec2_instance.StoppedInstanceStore = (*memStoppedStore)(nil)
+
+func (m *memStoppedStore) LoadStoppedInstance(id string) (*vm.VM, error) {
+	return m.instances[id], nil
+}
+
+func (m *memStoppedStore) ListStoppedInstances() ([]*vm.VM, error) {
+	var out []*vm.VM
+	for _, v := range m.instances {
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func (m *memStoppedStore) ListTerminatedInstances() ([]*vm.VM, error) { return nil, nil }
+
+func (m *memStoppedStore) WriteStoppedInstance(id string, instance *vm.VM) error {
+	if m.instances == nil {
+		m.instances = make(map[string]*vm.VM)
+	}
+	m.instances[id] = instance
+	return nil
+}
+
+func (m *memStoppedStore) DeleteStoppedInstance(id string) error {
+	delete(m.instances, id)
+	return nil
+}
+
+func (m *memStoppedStore) WriteTerminatedInstance(string, *vm.VM) error { return nil }
+
+// tagTestDaemon returns a test daemon with an in-memory central tag store, an
+// empty stopped store, and a running VM carrying the given initial tags.
 func tagTestDaemon(t *testing.T, instanceID string, initial map[string]string) *Daemon {
+	d, _ := tagTestDaemonWithStopped(t, instanceID, initial)
+	return d
+}
+
+// tagTestDaemonWithStopped is tagTestDaemon exposing the stopped store, so
+// tests can seed stopped instances for the no-running-owner fallback.
+func tagTestDaemonWithStopped(t *testing.T, instanceID string, initial map[string]string) (*Daemon, *memStoppedStore) {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore())
+
+	stopped := &memStoppedStore{instances: map[string]*vm.VM{}}
+	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+		d.config, d.resourceMgr.instanceTypes, d.natsConn,
+		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, stopped)
 
 	var tags []*ec2.Tag
 	for k, v := range initial {
@@ -32,7 +82,7 @@ func tagTestDaemon(t *testing.T, instanceID string, initial map[string]string) *
 		AccountID: testAccountID,
 		Instance:  &ec2.Instance{InstanceId: aws.String(instanceID), Tags: tags},
 	})
-	return d
+	return d, stopped
 }
 
 // centralTags reads a resource's tags back out of the central store via

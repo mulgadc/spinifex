@@ -338,6 +338,44 @@ func WriteInstanceTags(instance *vm.VM, data *spxtypes.InstanceTagsData, remove 
 	return central.PutResourceTags(accountID, instance.ID, TagsToMap(instance.Instance.Tags))
 }
 
+// TagStoppedInstance applies a create-tags/delete-tags mutation to a stopped
+// instance's shared KV record and the central tag store together. A missing or
+// cross-account record returns InvalidID.NotFound and writes nothing.
+func (s *InstanceServiceImpl) TagStoppedInstance(instanceID string, data *spxtypes.InstanceTagsData, remove bool, central InstanceTagWriter, accountID string) error {
+	if s.stoppedStore == nil {
+		slog.Error("TagStoppedInstance: stopped store not available")
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.Error("TagStoppedInstance: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.Warn("TagStoppedInstance: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Instance == nil {
+		slog.Error("TagStoppedInstance: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := WriteInstanceTags(instance, data, remove, central, accountID); err != nil {
+		slog.Error("TagStoppedInstance: central tag store write failed", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
+		slog.Error("TagStoppedInstance: failed to write stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return nil
+}
+
 // PrepareRunInstances validates input, allocates capacity, creates VM metadata,
 // auto-creates the primary ENI, and auto-assigns a public IP when needed.
 // Does NOT touch vmMgr or NATS — callers insert VMs then call LaunchRunInstances.

@@ -1921,6 +1921,14 @@ func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
 func TestDelegateHandlers_RoundTrip(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
+	// DeleteTags' no-owner path falls back to the shared stopped store; give
+	// the service an empty one so an absent instance resolves to NotFound.
+	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+		daemon.config, daemon.resourceMgr.instanceTypes, daemon.natsConn,
+		objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr,
+		&memStoppedStore{})
+	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
+
 	tests := []struct {
 		name         string
 		topic        string

@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -107,6 +108,54 @@ func TestDeleteTags_NoOwnerNotFound(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// With no running owner, create-tags falls back to the shared stopped store
+// and the mutation lands on both the stopped record and the central store.
+func TestCreateTags_StoppedFallback(t *testing.T) {
+	const id = "i-tag-stopfall"
+	d, stopped := tagTestDaemonWithStopped(t, "i-tag-unrelated3", nil)
+	stopped.instances[id] = &vm.VM{
+		ID:        id,
+		Status:    vm.StateStopped,
+		AccountID: testAccountID,
+		Instance: &ec2.Instance{InstanceId: aws.String(id),
+			Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("web")}}},
+	}
+
+	_, err := d.createTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String(id)},
+		Tags:      []*ec2.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	want := map[string]string{"Name": "web", "env": "prod"}
+	assert.Equal(t, want, tagsAsMap(stopped.instances[id].Instance.Tags))
+	assert.Equal(t, want, centralTags(t, d, testAccountID, id))
+}
+
+// A stopped instance owned by another account is rejected via the fallback's
+// owner check and nothing is written to either store.
+func TestDeleteTags_StoppedCrossAccountRejected(t *testing.T) {
+	const id = "i-tag-stopcross"
+	const attacker = "999999999999"
+	d, stopped := tagTestDaemonWithStopped(t, "i-tag-unrelated4", nil)
+	stopped.instances[id] = &vm.VM{
+		ID:        id,
+		Status:    vm.StateStopped,
+		AccountID: testAccountID,
+		Instance: &ec2.Instance{InstanceId: aws.String(id),
+			Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("web")}}},
+	}
+
+	_, err := d.deleteTags(&ec2.DeleteTagsInput{
+		Resources: []*string{aws.String(id)},
+	}, attacker)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+
+	assert.Equal(t, map[string]string{"Name": "web"}, tagsAsMap(stopped.instances[id].Instance.Tags))
+	assert.Empty(t, centralTags(t, d, attacker, id))
 }
 
 // A daemon-side error reply from the owner (cross-account NotFound) is

@@ -452,7 +452,7 @@ dns_servers = ["8.8.8.8"]           # DNS for VMs (optional)
 
 | Field         | Required    | Description                                                                                                                                                            |
 | ------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`        | Yes         | Unique pool name. Used as NATS KV key and in `AllocateAddress`.                                                                                                        |
+| `name`        | Yes         | Unique pool name. Referenced by `AllocateAddress` to target a specific pool.                                                                                           |
 | `source`      | No          | IP source: `"static"` (default) uses `range_start`/`range_end`. `"dhcp"` obtains IPs from the router's DHCP server on each VM launch.                                  |
 | `range_start` | Static only | First IP in the range. First IP is reserved for OVN gateway SNAT (unless `gateway_ip` overrides).                                                                      |
 | `range_end`   | Static only | Last IP in the range.                                                                                                                                                  |
@@ -509,26 +509,10 @@ When an instance needs a public IP:
 
 ## IPAM Storage
 
-Each pool gets a NATS KV entry in bucket `spinifex-external-ipam`, keyed by pool
-name. Allocation uses CAS (Compare-And-Set) for lock-free concurrent access:
-
-```json
-{
-  "pool_name": "wan",
-  "range_start": "192.168.1.150",
-  "range_end": "192.168.1.250",
-  "allocated": {
-    "192.168.1.150": { "type": "gateway" },
-    "192.168.1.151": {
-      "type": "auto_assign",
-      "eni_id": "eni-abc",
-      "instance_id": "i-123"
-    }
-  }
-}
-```
-
-Pools are initialized from `spinifex.toml` on vpcd startup (idempotent).
+Pool allocation state is stored durably in the cluster (NATS KV bucket
+`spinifex-external-ipam`, one entry per pool) and survives restarts. Each
+allocation records the ENI and instance holding the address. Pools are
+initialized from `spinifex.toml` on vpcd startup (idempotent).
 
 ## Deployment Examples
 
@@ -1338,12 +1322,10 @@ OVNSB commit failed, force recompute next time.
 Repeated millions of times. Port binding never happens (`up: false`).
 
 **Cause:** Stale entries in the OVN Southbound DB (old chassis records, port
-bindings, datapath bindings) conflict with ovn-controller's expected state.
-Happens when `reset-dev-env.sh` cleans NB but not SB, or after ungraceful
-shutdowns.
+bindings, datapath bindings) conflict with ovn-controller's expected state,
+typically after an ungraceful shutdown.
 
-**Fix:** Delete both OVN DB files and restart. `reset-dev-env.sh` does this
-automatically:
+**Fix:** Delete both OVN DB files and restart:
 
 ```bash
 sudo systemctl stop ovn-central ovn-controller
@@ -1352,21 +1334,6 @@ sudo systemctl start ovn-central ovn-controller
 # vpcd reconcile will recreate the NB topology on next startup
 ```
 
-### Chassis Name Mismatch
-
-After mulga-999, vpcd uses the OVS-managed UUID (persisted at
-`/etc/openvswitch/system-id.conf` by the `openvswitch-switch` package and
-re-applied on every boot) as the canonical chassis identity. The chassis name
-across OVS `external_ids:system-id`, OVN SB `Chassis.name`, and NB
-`Gateway_Chassis.chassis_name` is always the same value, so the mismatch
-class that this section previously documented can no longer recur.
-
-`ReconcileFromKV` runs a `reconcileGatewayChassis` pre-step on every vpcd
-startup that deletes any stale `Gateway_Chassis` row left over from earlier
-installs (where `setup-ovn.sh` fabricated `chassis-$(hostname -s)`) and
-re-binds every gateway LRP against the live SBDB chassis. Pre-mulga-999
-brokenness recovers automatically on the first vpcd restart after upgrade —
-no manual `ovn-nbctl destroy` required.
 
 ### WAN NIC Not Enslaved to a Bridge
 

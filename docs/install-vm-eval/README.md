@@ -97,8 +97,8 @@ iface br-wan inet dhcp
 
 Walkthrough of changes:
 
-* Adds eno3 into the bridge
-* eno3 becomes a slave interface
+* Adds enp0s1 into the bridge
+* enp0s1 becomes a slave interface
 * All traffic goes through br-wan
 * Spinifex EC2 (VMs) in a public subnet, obtain an IP address from the WAN upstream
 

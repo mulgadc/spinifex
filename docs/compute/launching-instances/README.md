@@ -42,7 +42,7 @@ Spinifex provides EC2-compatible VM management built on QEMU/KVM. Instances supp
 - `run-instances` — Launch new VMs
 - `describe-instances` — Query state
 - `stop-instances` / `start-instances` — Lifecycle
-- `reboot-instances` — In-place restart (QMP reset)
+- `reboot-instances` — In-place restart
 - `terminate-instances` — Permanent removal
 - `modify-instance-attribute` — Change type, user data, or source/dest check
 - `get-console-output` — Retrieve serial console log
@@ -131,16 +131,9 @@ aws ec2 describe-instance-types \
   --filters Name=capacity,Values=true
 ```
 
-## SSH (Development)
+## SSH
 
-In development mode, find the QEMU port forward and connect via localhost:
-
-```bash
-ps auxw | grep $INSTANCE_ID
-ssh -i ~/.ssh/spinifex-key ubuntu@127.0.0.1 -p <port>
-```
-
-For production SSH via public IPs, see [Setting Up Your Cluster](/docs/setting-up-your-cluster).
+To SSH into instances via their public IPs, see [Setting Up Your Cluster](/docs/setting-up-your-cluster).
 
 ## Troubleshooting
 

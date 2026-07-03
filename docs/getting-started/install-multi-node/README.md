@@ -45,7 +45,7 @@ A Spinifex cluster distributes services across multiple servers for high availab
 >
 > Before running the installer on any server, that server's WAN interface **must** already be enslaved to a Linux bridge named `br-wan`. The host IP, default route, and DHCP must all live on the bridge — not on the bare NIC.
 >
-> The bootstrap installer does **not** create this bridge for you yet. Running it on a host whose default route is still on a bare NIC will leave the install in a non-working state. Auto-provisioning of `br-wan` will land in the next release.
+> The bootstrap installer does **not** create this bridge for you yet. Running it on a host whose default route is still on a bare NIC will leave the install in a non-working state. Auto-provisioning of `br-wan` will land in a future release.
 >
 > **Verify on every node before continuing:**
 >

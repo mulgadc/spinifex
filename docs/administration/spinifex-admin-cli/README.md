@@ -27,7 +27,7 @@ resources:
 
 The `spx` binary is the central administration tool for managing your Spinifex infrastructure. It provides commands for cluster initialization, account management, node operations, VM lifecycle, and service control.
 
-**Binary location:** `/usr/local/bin/spx` (binary install) or `~/Development/mulga/spinifex/bin/spx` (source install)
+**Binary location:** `/usr/local/bin/spx`
 
 All services in the Spinifex platform are managed through this single binary.
 
@@ -35,7 +35,7 @@ All services in the Spinifex platform are managed through this single binary.
 
 ## Account Management
 
-Create a new isolated account. This provisions a sequential 12-digit account ID, an `admin` user with an `AdministratorAccess` policy attached, and an access key pair. The credentials are written to `~/.aws/credentials` and `~/.aws/config` under a `spinifex-<name>` profile automatically. Requires a running cluster; run from a cluster node:
+Create a new isolated account. This provisions a sequential 12-digit account ID, an `admin` user with an `AdministratorAccess` policy attached, and an access key pair. The credentials are written to `~/.aws/credentials` and `~/.aws/config` under a `spinifex-<name>` profile automatically.
 
 ```bash
 spx admin account create --name myteam
@@ -125,7 +125,7 @@ configuration is needed.
 
 ## Cluster Shutdown
 
-Coordinated, phased shutdown of the entire cluster (API/UI → VMs → viperblock → predastore → NATS/daemon):
+Coordinated, phased shutdown of the entire cluster — running VMs are stopped before storage and control-plane services:
 
 ```bash
 spx admin cluster shutdown

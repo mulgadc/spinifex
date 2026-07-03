@@ -176,8 +176,6 @@ aws eks describe-addon --cluster-name eks-https --addon-name aws-load-balancer-c
 
 Confirm the addon is `ACTIVE` and the cluster carries `spinifex.io/managed-ingress = "false"` (otherwise the built-in ingress competes).
 
-> **Verify on a live cluster.** The LBC reconcile path (ALB creation, target registration, listener wiring) exercises the running Spinifex EKS data plane end to end. Stand this up on a live stack to confirm the ALB serves the page; the manifests here are the AWS-parity shape of that flow.
-
 ### HTTPS Loads but Returns 502 / 504
 
 The ALB reached the workers but the backend didn't answer. Check the demo pods and the NodePort SG rule:

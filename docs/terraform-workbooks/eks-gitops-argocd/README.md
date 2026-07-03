@@ -77,7 +77,7 @@ Terraform manages the cluster, the addons, the ACM cert, and the HTTPS Ingress; 
 
 - The `argocd` and `aws-ebs-csi-driver` bundles must be baked into the `eks-node` AMI — `describe-addon` returns `no baked bundle` otherwise.
 - The EBS-CSI default StorageClass uses `provisioner: ebs.csi.aws.com`; a PVC against it provisions a **Viperblock-backed EBS volume**.
-- **Verify dynamic provisioning on a live cluster.** EBS-CSI dynamic provisioning depends on the running Spinifex EBS/Viperblock data plane and may not be available on every build yet. If the PVC stays `Pending`, the app still serves (the counter falls back to in-memory) — confirm the volume binds on a stack where the driver is healthy.
+- If the PVC stays `Pending`, the app still serves (the counter falls back to in-memory) — see [Troubleshooting](#troubleshooting).
 - Leave addon versions unset (the AWS provider and the catalog disagree on the version-string format).
 - The Argo CD `Application` is a `kubernetes_manifest`, so the `argoproj.io` CRDs must exist before `apply` — apply the parent and let the addon reach `ACTIVE` first.
 
@@ -256,7 +256,7 @@ kubectl describe pvc <name>
 kubectl get storageclass
 ```
 
-Confirm the `aws-ebs-csi-driver` addon is `ACTIVE` and the default StorageClass exists. EBS-CSI dynamic provisioning depends on the live Spinifex EBS/Viperblock data plane — verify on a stack where the driver is healthy. The app still serves with an in-memory counter if the volume never binds.
+Confirm the `aws-ebs-csi-driver` addon is `ACTIVE` and the default StorageClass exists. The app still serves with an in-memory counter if the volume never binds.
 
 ### The Ingress Has No Address
 

@@ -134,7 +134,7 @@ type Daemon struct {
 	placementGroupService *handlers_ec2_placementgroup.PlacementGroupServiceImpl
 	spotInstanceService   *handlers_ec2_spotinstance.SpotInstanceServiceImpl
 	vpcService            *handlers_ec2_vpc.VPCServiceImpl
-	eipService            *handlers_ec2_eip.EIPServiceImpl
+	eipService            handlers_ec2_eip.EIPService
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
 	ecsService            *handlers_ecs.Service
@@ -1043,18 +1043,17 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
-	// EIP operations require external IPAM (pool mode). Only subscribe when available;
-	// without a subscriber the gateway returns a NATS timeout → clean error to the client.
-	if d.eipService != nil {
-		subs = append(subs,
-			natsSub{"ec2.AllocateAddress", d.handleEC2AllocateAddress, "spinifex-workers"},
-			natsSub{"ec2.ReleaseAddress", d.handleEC2ReleaseAddress, "spinifex-workers"},
-			natsSub{"ec2.AssociateAddress", d.handleEC2AssociateAddress, "spinifex-workers"},
-			natsSub{"ec2.DisassociateAddress", d.handleEC2DisassociateAddress, "spinifex-workers"},
-			natsSub{"ec2.DescribeAddresses", d.handleEC2DescribeAddresses, "spinifex-workers"},
-			natsSub{"ec2.DescribeAddressesAttribute", d.handleEC2DescribeAddressesAttribute, "spinifex-workers"},
-		)
-	}
+	// EIP handlers are always registered: without external IPAM d.eipService is
+	// the disabled stub, so reads return empty lists and mutations a clean
+	// UnsupportedOperation instead of a NATS timeout.
+	subs = append(subs,
+		natsSub{"ec2.AllocateAddress", d.handleEC2AllocateAddress, "spinifex-workers"},
+		natsSub{"ec2.ReleaseAddress", d.handleEC2ReleaseAddress, "spinifex-workers"},
+		natsSub{"ec2.AssociateAddress", d.handleEC2AssociateAddress, "spinifex-workers"},
+		natsSub{"ec2.DisassociateAddress", d.handleEC2DisassociateAddress, "spinifex-workers"},
+		natsSub{"ec2.DescribeAddresses", d.handleEC2DescribeAddresses, "spinifex-workers"},
+		natsSub{"ec2.DescribeAddressesAttribute", d.handleEC2DescribeAddressesAttribute, "spinifex-workers"},
+	)
 
 	for _, s := range subs {
 		var sub *nats.Subscription
@@ -1310,6 +1309,9 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
 	}
+	// Non-pool external modes (nat, disabled) have no public IPs, so default
+	// subnets must not request one on launch.
+	d.vpcService.SetDefaultPublicIPMapping(d.clusterConfig != nil && d.clusterConfig.Network.ExternalMode == "pool")
 
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
 		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.config, d.natsConn)
@@ -1393,6 +1395,13 @@ func (d *Daemon) startCluster() error {
 				d.vpcService.SetExternalIPAM(d.externalIPAM, eipKV)
 			}
 		}
+	}
+
+	// Without external IPAM (nat mode or external disabled) serve EIP requests
+	// from the disabled stub so the API surface stays registered.
+	if d.eipService == nil {
+		d.eipService = handlers_ec2_eip.NewDisabledEIPService()
+		slog.Info("EIP service disabled — no external IPAM; serving empty/unsupported responses")
 	}
 
 	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM, d.tagsService)

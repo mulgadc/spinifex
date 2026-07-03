@@ -85,6 +85,17 @@ type VPCServiceImpl struct {
 	// Optional: injected after construction for public IP cleanup in DeleteNetworkInterface.
 	externalIPAM *ExternalIPAM
 	eipKV        nats.KeyValue
+
+	// disableDefaultPublicIP seeds default subnets with MapPublicIpOnLaunch=false
+	// (non-pool external modes have no public IPs to assign). Zero value keeps
+	// the AWS-faithful default of true.
+	disableDefaultPublicIP bool
+}
+
+// SetDefaultPublicIPMapping controls whether default subnets are seeded with
+// MapPublicIpOnLaunch. Call with false when the cluster has no external IPAM.
+func (s *VPCServiceImpl) SetDefaultPublicIPMapping(enabled bool) {
+	s.disableDefaultPublicIP = !enabled
 }
 
 // SetExternalIPAM injects external IPAM and EIP KV store references so that
@@ -1224,7 +1235,7 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 		AvailabilityZone:    az,
 		State:               "available",
 		IsDefault:           true,
-		MapPublicIpOnLaunch: true, // AWS default subnets auto-assign public IPs
+		MapPublicIpOnLaunch: !s.disableDefaultPublicIP, // AWS default subnets auto-assign public IPs (unless external mode has none)
 		Tags:                map[string]string{"Name": "default"},
 		CreatedAt:           time.Now(),
 	}

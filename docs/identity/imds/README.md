@@ -153,7 +153,7 @@ Returns the decoded user data, or 404 if the instance was launched without any. 
 
 ## IAM Role Credentials
 
-Instances launched with an IAM instance profile get short-lived, auto-rotating credentials through IMDS — no static keys baked into the image. Creating roles and instance profiles is covered in the IAM Roles and Instance Profiles guide.
+Instances launched with an IAM instance profile get short-lived, auto-rotating credentials through IMDS — no static keys baked into the image. Creating roles and instance profiles is covered in [IAM Roles and Instance Profiles](/docs/iam-roles-and-instance-profiles).
 
 ```bash
 # Discover the role name

@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/ovn-kubernetes/libovsdb/database/inmemory"
 	"github.com/ovn-kubernetes/libovsdb/model"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
@@ -62,10 +61,11 @@ func StartNB(t testing.TB) *NB {
 		t.Fatalf("model.NewDatabaseModel: %v", errs)
 	}
 
-	logger := logr.Discard()
-	db := inmemory.NewDatabase(map[string]model.ClientDBModel{"OVN_Northbound": clientModel}, &logger)
+	// nil logger: libovsdb falls back to logr.Discard internally, and dropping
+	// the explicit logr.Discard() keeps go-logr out of our direct imports.
+	db := inmemory.NewDatabase(map[string]model.ClientDBModel{"OVN_Northbound": clientModel}, nil)
 
-	srv, err := server.NewOvsdbServer(db, &logger, dbModel)
+	srv, err := server.NewOvsdbServer(db, nil, dbModel)
 	if err != nil {
 		t.Fatalf("server.NewOvsdbServer: %v", err)
 	}

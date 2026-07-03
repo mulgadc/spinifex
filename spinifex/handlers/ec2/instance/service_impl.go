@@ -1891,8 +1891,9 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(input *ec2.DescribeInstanc
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 
-// ModifyInstanceAttribute applies a single attribute change. SourceDestCheck
-// is a no-op on bare-metal VMs. InstanceType/UserData require a stopped instance.
+// ModifyInstanceAttribute applies a single attribute change. SourceDestCheck=true
+// is a no-op; false is unsupported because OVN port security enforces the check.
+// InstanceType/UserData require a stopped instance.
 func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error) {
 	if input.InstanceId == nil || *input.InstanceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1900,7 +1901,10 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	instanceID := *input.InstanceId
 
 	if input.SourceDestCheck != nil {
-		slog.Info("ModifyInstanceAttribute: accepting SourceDestCheck (no-op on bare metal)", "instanceId", instanceID)
+		if input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
+			return nil, errors.New(awserrors.ErrorUnsupported)
+		}
+		slog.Info("ModifyInstanceAttribute: accepting SourceDestCheck=true (no-op)", "instanceId", instanceID)
 		return &ec2.ModifyInstanceAttributeOutput{}, nil
 	}
 

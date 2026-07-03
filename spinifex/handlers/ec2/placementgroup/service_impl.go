@@ -78,9 +78,10 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(input *ec2.CreatePlacem
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	// AWS treats Strategy as optional, defaulting to cluster.
 	strategy := aws.StringValue(input.Strategy)
 	if strategy == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
+		strategy = ec2.PlacementStrategyCluster
 	}
 
 	// Only spread and cluster are supported; partition is rejected.

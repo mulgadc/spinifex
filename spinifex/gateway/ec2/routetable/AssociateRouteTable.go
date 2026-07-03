@@ -16,8 +16,14 @@ func ValidateAssociateRouteTableInput(input *ec2.AssociateRouteTableInput) error
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	if input.SubnetId == nil || *input.SubnetId == "" {
+	hasSubnet := input.SubnetId != nil && *input.SubnetId != ""
+	hasGateway := input.GatewayId != nil && *input.GatewayId != ""
+	if !hasSubnet && !hasGateway {
 		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	// Edge associations (GatewayId) are not implemented by the backend.
+	if hasGateway {
+		return errors.New(awserrors.ErrorUnsupported)
 	}
 	return nil
 }

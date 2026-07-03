@@ -33,19 +33,19 @@ func TestCreatePlacementGroup_EmptyGroupName(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
-func TestCreatePlacementGroup_NilStrategy(t *testing.T) {
-	_, err := CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
+func TestCreatePlacementGroup_NilStrategy_PassesValidation(t *testing.T) {
+	err := ValidateCreatePlacementGroupInput(&ec2.CreatePlacementGroupInput{
 		GroupName: aws.String("my-group"),
-	}, nil, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
+	})
+	assert.NoError(t, err)
 }
 
-func TestCreatePlacementGroup_EmptyStrategy(t *testing.T) {
-	_, err := CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
+func TestCreatePlacementGroup_EmptyStrategy_PassesValidation(t *testing.T) {
+	err := ValidateCreatePlacementGroupInput(&ec2.CreatePlacementGroupInput{
 		GroupName: aws.String("my-group"),
 		Strategy:  aws.String(""),
-	}, nil, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
+	})
+	assert.NoError(t, err)
 }
 
 func TestCreatePlacementGroup_NilNATS(t *testing.T) {

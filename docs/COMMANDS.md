@@ -207,6 +207,8 @@ Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` 
 | `delete-tags` | `--resources`, `--tags` | `--dry-run` | **DONE** |
 | `describe-tags` | `--filters` (resource-id, resource-type, key, value) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 
+Instance tags are reconciled with the instance record: `create-tags`/`delete-tags` on an `i-*` resource are applied by the owning node (or the shared stopped store) to the record and the central tag store together, so the change is visible to `describe-instances` and its `tag:*`/`tag-key`/`tag-value` filters, not just `describe-tags`. Launch tags from `run-instances --tag-specifications` likewise appear in `describe-tags`. Tagging an instance that is unreachable, terminated, or owned by another account returns `InvalidID.NotFound` and writes nothing; terminating an instance removes its `describe-tags` entry while the terminated record keeps its tags until it expires from `describe-instances`.
+
 ### EC2 — Regions, AZs, Account Attributes
 
 | Command | Implemented Flags | Missing Flags | Status |

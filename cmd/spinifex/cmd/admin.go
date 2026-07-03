@@ -34,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -325,7 +326,7 @@ func init() {
 	adminInitCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). Valid: nats,predastore,viperblock,daemon,awsgw,ui")
 
 	// External networking flags
-	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected) or '' (disabled)")
+	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected), 'nat' (routed, outbound-only; non-bridgeable uplinks), or '' (disabled)")
 	adminInitCmd.Flags().String("external-iface", "", "WAN NIC for br-external (auto-detected from default route)")
 	adminInitCmd.Flags().String("external-source", "", "Pool IP source: 'dhcp' (default when no --external-pool) or 'static' (uses --external-pool range)")
 	adminInitCmd.Flags().String("external-bind-bridge", "", "Linux bridge for upstream DHCP DORA (default 'br-wan' when --external-source=dhcp)")
@@ -1090,6 +1091,13 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 				// --external-pool is omitted the validator below will error with
 				// a SuggestPoolRange hint.
 				if externalMode == "" && !cmd.Flags().Changed("external-mode") {
+					if isNonBridgeableUplink(detected.WAN.Name) {
+						fmt.Fprintf(os.Stderr, "\n❌ Detected WAN interface %s cannot be bridged (WiFi/cellular/PPP).\n", detected.WAN.Name)
+						fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead (outbound-only VM networking):\n")
+						fmt.Fprintf(os.Stderr, "     ./scripts/setup-ovn.sh --management --nat-uplink\n")
+						fmt.Fprintf(os.Stderr, "     spx admin init --external-mode=nat\n")
+						os.Exit(1)
+					}
 					externalMode = "pool"
 				}
 			}
@@ -1097,9 +1105,23 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Validate external networking flags
-	if externalMode != "" && externalMode != "pool" {
-		fmt.Fprintf(os.Stderr, "❌ Error: --external-mode must be 'pool' or empty, got: %s\n", externalMode)
+	if externalMode != "" && externalMode != "pool" && externalMode != "nat" {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-mode must be 'pool', 'nat', or empty, got: %s\n", externalMode)
 		os.Exit(1)
+	}
+	if externalMode == "nat" {
+		if nodes >= 2 {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-mode=nat is single-node only (v1); use --nodes=1\n")
+			os.Exit(1)
+		}
+		if externalPool != "" || externalSource != "" || externalBindBridge != "" || gatewayIP != "" {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-pool/--external-source/--external-bind-bridge/--gateway-ip do not apply to --external-mode=nat (outbound-only, no public IPs)\n")
+			os.Exit(1)
+		}
+		// The transit segment is fixed: the host veth owns the gateway IP and
+		// masquerades the /24; no per-VM public IPs exist.
+		externalGateway = host.NATTransitGatewayIP
+		externalPrefixLen = 24
 	}
 	if externalMode == "pool" {
 		// Default source: dhcp when no --external-pool, else static.
@@ -1452,7 +1474,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 		ExternalMode:   externalMode,
 		ExternalIface:  externalIface,
-		PoolName:       "wan",
+		BridgeMode:     bridgeModeFor(externalMode),
+		PoolName:       poolNameFor(externalMode),
 		PoolSource:     externalSource,
 		PoolBindBridge: externalBindBridge,
 		PoolStart:      poolStart,
@@ -1477,7 +1500,11 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Print external networking summary
-	if externalMode != "" {
+	if externalMode == "nat" {
+		fmt.Printf("\n📡 External networking: nat (routed, outbound-only — no public IPs/EIPs)\n")
+		fmt.Printf("  Transit:       %s via %s (host masquerades out any uplink)\n", host.NATTransitCIDR, host.NATTransitHostEnd)
+		fmt.Printf("  Host setup:    ./scripts/setup-ovn.sh --nat-uplink (run before starting services)\n")
+	} else if externalMode != "" {
 		fmt.Printf("\n📡 External networking: %s\n", externalMode)
 		fmt.Printf("  WAN interface: %s\n", externalIface)
 		switch externalSource {
@@ -2711,6 +2738,30 @@ func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []by
 	}
 
 	return handlers_iam.SaveBootstrapData(filepath.Join(bootstrapDir, "bootstrap.json"), bd)
+}
+
+// isNonBridgeableUplink reports whether the interface name indicates an uplink
+// that cannot be enslaved to an L2 bridge: WiFi (wl*), cellular (ww*), PPP.
+func isNonBridgeableUplink(name string) bool {
+	return strings.HasPrefix(name, "wl") || strings.HasPrefix(name, "ww") || strings.HasPrefix(name, "ppp")
+}
+
+// bridgeModeFor returns the vpcd bridge_mode admin init persists for the
+// external mode: only nat mode is pinned; bridged modes stay auto-detected.
+func bridgeModeFor(externalMode string) string {
+	if externalMode == "nat" {
+		return "nat"
+	}
+	return ""
+}
+
+// poolNameFor names the external pool: the routed transit segment for nat
+// mode, the conventional WAN pool otherwise.
+func poolNameFor(externalMode string) string {
+	if externalMode == "nat" {
+		return "nat-transit"
+	}
+	return "wan"
 }
 
 // detectDNSServers auto-detects DNS servers from the host for the specified

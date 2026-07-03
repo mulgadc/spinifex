@@ -107,6 +107,9 @@ ovn_sb_addr = "{{.OVNSBAddr}}"
 {{- if .ExternalIface}}
 external_interface = "{{.ExternalIface}}"
 {{- end}}
+{{- if .BridgeMode}}
+bridge_mode = "{{.BridgeMode}}"
+{{- end}}
 
 [nodes.{{.Node}}.predastore]
 host = "{{.BindIP}}:8443"

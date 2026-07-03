@@ -73,8 +73,9 @@ type ConfigSettings struct {
 	OVNSBAddr string
 
 	// External networking for public subnets
-	ExternalMode   string   // "pool" or "" (disabled)
+	ExternalMode   string   // "pool", "nat" (routed, outbound-only), or "" (disabled)
 	ExternalIface  string   // WAN NIC name (e.g., "eth0", "eth1")
+	BridgeMode     string   // vpcd bridge_mode; only written for "nat" (bridged modes auto-detect)
 	PoolName       string   // External pool name (e.g., "wan")
 	PoolSource     string   // IP source: "static" or "dhcp"
 	PoolBindBridge string   // Linux bridge for upstream DORA (source=dhcp only)

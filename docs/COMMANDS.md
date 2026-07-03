@@ -54,7 +54,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `spx admin init` | `--nodes`, `--node`, `--bind`, `--port`, `--region`, `--az`, `--cluster-name`, `--cluster-bind`, `--cluster-routes`, `--predastore-nodes`, `--services`, `--formation-timeout`, `--token-ttl`, `--force` | Generates root IAM credentials (AKIA-prefixed access key + secret) → creates master.key (AES-256, 32 bytes, 0600) → writes bootstrap.json (consumed on first start) → generates CA + server TLS certificates → generates join token (written to `join-token` file, displayed in join command) → creates NATS config with auth token → writes spinifex.toml, awsgw.toml, predastore.toml → configures AWS CLI `spx` profile → creates directory structure under `~/spinifex/` |
+| `spx admin init` | `--nodes`, `--node`, `--bind`, `--port`, `--region`, `--az`, `--cluster-name`, `--cluster-bind`, `--cluster-routes`, `--predastore-nodes`, `--services`, `--formation-timeout`, `--token-ttl`, `--force`, `--external-mode` (`pool` \| `nat` routed outbound-only for non-bridgeable uplinks, single-node; pair with `setup-ovn.sh --nat-uplink`), `--no-external` | Generates root IAM credentials (AKIA-prefixed access key + secret) → creates master.key (AES-256, 32 bytes, 0600) → writes bootstrap.json (consumed on first start) → generates CA + server TLS certificates → generates join token (written to `join-token` file, displayed in join command) → creates NATS config with auth token → writes spinifex.toml, awsgw.toml, predastore.toml → configures AWS CLI `spx` profile → creates directory structure under `~/spinifex/` |
 | `spx admin join` | `--host` (required), `--node` (required), `--token` (required), `--bind`, `--port`, `--region`, `--az`, `--cluster-bind`, `--cluster-routes`, `--data-dir`, `--services` | Connects to leader node with join token (Authorization: Bearer header) → retrieves cluster configuration → configures local node to join cluster and participate in distributed operations |
 
 ### Version
@@ -385,7 +385,7 @@ termination. Standalone attach/detach API is internal-only.
 
 ### EC2 — Elastic IP
 
-EIP commands are only registered when an external IPAM pool is configured.
+EIP handlers are always registered. Without an external IPAM pool (external mode `nat` or disabled), `describe-addresses` returns an empty list and mutating commands return `UnsupportedOperation`.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|

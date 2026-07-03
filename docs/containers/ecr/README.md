@@ -16,7 +16,7 @@ sections:
 resources:
   - title: "Spinifex Repository"
     url: "https://github.com/mulgadc/spinifex"
-  - title: "Terraform AWS Provider — ECR"
+  - title: "Terraform AWS Provider"
     url: "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecr_repository"
   - title: "OCI Distribution Spec"
     url: "https://github.com/opencontainers/distribution-spec"

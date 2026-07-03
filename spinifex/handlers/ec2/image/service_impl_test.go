@@ -2423,3 +2423,130 @@ func TestSnapshotStoppedVolume_BackendInitFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
+
+// imageS3MockServer passes ListObjectsV2 (Backend.Init) but returns 404 for everything else.
+func imageS3MockServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.RawQuery, "list-type=2") {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
+				`<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`+
+				`<Name>test-bucket</Name><KeyCount>0</KeyCount>`+
+				`<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated></ListBucketResult>`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
+			`<Error><Code>NoSuchKey</Code>`+
+			`<Message>The specified key does not exist.</Message></Error>`)
+	}))
+}
+
+func TestSnapshotRunningVolume_EncryptionKeyLoadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:   srv.URL,
+				Region: "us-east-1",
+				Bucket: testBucket,
+			},
+			Viperblock: config.ViperblockConfig{
+				EncryptionKeyFile: "/nonexistent-image-run-key.bin",
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-running-enckey", 10)
+
+	err := svc.snapshotRunningVolume("vol-running-enckey", "snap-run-enckey")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotRunningVolume_LoadStateFails(t *testing.T) {
+	srv := imageS3MockServer(t)
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:      srv.URL,
+				Region:    "us-east-1",
+				Bucket:    testBucket,
+				AccessKey: "test-key",
+				SecretKey: "test-secret",
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-running-lsf", 10)
+
+	err := svc.snapshotRunningVolume("vol-running-lsf", "snap-run-lsf")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotStoppedVolume_EncryptionKeyLoadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:   srv.URL,
+				Region: "us-east-1",
+				Bucket: testBucket,
+			},
+			Viperblock: config.ViperblockConfig{
+				EncryptionKeyFile: "/nonexistent-image-stop-key.bin",
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-stopped-enckey", 10)
+
+	err := svc.snapshotStoppedVolume("vol-stopped-enckey", "snap-stop-enckey")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotStoppedVolume_LoadStateFails(t *testing.T) {
+	srv := imageS3MockServer(t)
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:      srv.URL,
+				Region:    "us-east-1",
+				Bucket:    testBucket,
+				AccessKey: "test-key",
+				SecretKey: "test-secret",
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-stopped-lsf", 10)
+
+	err := svc.snapshotStoppedVolume("vol-stopped-lsf", "snap-stop-lsf")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}

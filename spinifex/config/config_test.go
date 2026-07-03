@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -803,4 +804,45 @@ func TestParseEndpoints(t *testing.T) {
 			assert.Equal(t, tc.want, ParseEndpoints(tc.in))
 		})
 	}
+}
+
+func TestLoadConfig_NATExemptCIDRs(t *testing.T) {
+	base := `
+node = "n1"
+
+[network]
+external_mode = %q
+nat_exempt_cidrs = [%s]
+
+[nodes.n1]
+region = "us-east-1"
+
+[nodes.n1.vpcd]
+ovn_nb_addr = "tcp:127.0.0.1:6641"
+`
+	write := func(t *testing.T, mode, cidrs string) string {
+		t.Helper()
+		resetViper(t)
+		path := filepath.Join(t.TempDir(), "spinifex.toml")
+		require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, base, mode, cidrs), 0600))
+		return path
+	}
+
+	t.Run("valid in nat mode", func(t *testing.T) {
+		cfg, err := LoadConfig(write(t, "nat", `"192.168.1.0/24", "172.16.0.0/12"`))
+		require.NoError(t, err)
+		assert.Equal(t, []string{"192.168.1.0/24", "172.16.0.0/12"}, cfg.Network.NATExemptCIDRs)
+	})
+
+	t.Run("rejected outside nat mode", func(t *testing.T) {
+		_, err := LoadConfig(write(t, "pool", `"192.168.1.0/24"`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nat_exempt_cidrs")
+	})
+
+	t.Run("invalid CIDR rejected", func(t *testing.T) {
+		_, err := LoadConfig(write(t, "nat", `"not-a-cidr"`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not-a-cidr")
+	})
 }

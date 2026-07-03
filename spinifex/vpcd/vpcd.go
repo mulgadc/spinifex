@@ -119,6 +119,9 @@ type Config struct {
 	// to scope its IntentState scan to local-AZ KV records; new VPC records
 	// are stamped with this value at create time.
 	AZ string
+	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT,
+	// appended to the transit /24 in the spinifex_nat_exempt set. nat mode only.
+	NATExemptCIDRs []string
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -442,11 +445,16 @@ func launchService(cfg *Config) error {
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
 
 	sgMgr := policy.NewSecurityGroupManager(liveClient)
-	natMgr, err := policy.NewNATManager(liveClient, natMode,
+	natOpts := []policy.Option{
 		policy.WithFlowsBarrier(waitForFlowsHV),
 		policy.WithNeighFlusher(neighFlusher(wanBridge)),
 		policy.WithNeighPrimer(neighPrimer(wanBridge)),
-	)
+	}
+	if natMode == policy.NATModeRouted {
+		natOpts = append(natOpts, policy.WithSNATExemptSet(policy.NATExemptSetName,
+			append([]string{host.NATTransitCIDR}, cfg.NATExemptCIDRs...)))
+	}
+	natMgr, err := policy.NewNATManager(liveClient, natMode, natOpts...)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
 	}
@@ -509,16 +517,32 @@ func launchService(cfg *Config) error {
 		}
 	}()
 
+	// Host ingress plumbing only exists in routed-NAT mode; other modes keep
+	// nil hooks so the IGW manager never touches host routes.
+	var routedIngress *external.RoutedIngressHooks
+	if bridgeMode == BridgeModeNAT {
+		ingressRunner := host.NewExecRunner()
+		routedIngress = &external.RoutedIngressHooks{
+			Ensure: func(ctx context.Context, vpcCIDR, gwLrpIP string) error {
+				return host.EnsureVPCIngressRoute(ctx, ingressRunner, vpcCIDR, gwLrpIP)
+			},
+			Remove: func(ctx context.Context, vpcCIDR string) error {
+				return host.RemoveVPCIngressRoute(ctx, ingressRunner, vpcCIDR)
+			},
+		}
+	}
+
 	gwAllocator := pickGatewayAllocator(igwPool, liveClient, dhcpMgr)
 	igwMgr, err := external.NewIGWManager(external.IGWManagerConfig{
-		OVN:          liveClient,
-		Routes:       routeMgr,
-		NAT:          natMgr,
-		Pool:         igwPool,
-		Allocator:    gwAllocator,
-		Chassis:      chassisNames,
-		NATMode:      natMode,
-		FlowsBarrier: waitForFlowsHV,
+		OVN:           liveClient,
+		Routes:        routeMgr,
+		NAT:           natMgr,
+		Pool:          igwPool,
+		Allocator:     gwAllocator,
+		Chassis:       chassisNames,
+		NATMode:       natMode,
+		FlowsBarrier:  waitForFlowsHV,
+		RoutedIngress: routedIngress,
 	})
 	if err != nil {
 		return fmt.Errorf("construct IGW manager: %w", err)

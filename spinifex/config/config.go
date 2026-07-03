@@ -60,6 +60,9 @@ type NetworkConfig struct {
 	ExternalPools []ExternalPool `mapstructure:"external_pools"` // One or more IP pools
 	// IPSecEnabled toggles OVN native IPsec (AES-256-GCM) on every node. Default true; disable only for trusted lab topologies.
 	IPSecEnabled bool `mapstructure:"ipsec_enabled"`
+	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT (added
+	// to the transit /24 in the spinifex_nat_exempt set). nat mode only.
+	NATExemptCIDRs []string `mapstructure:"nat_exempt_cidrs"`
 }
 
 // BootstrapConfig holds the default VPC infrastructure IDs written by admin init.
@@ -297,6 +300,15 @@ func validateClusterConfig(cc *ClusterConfig) error {
 	for nodeName := range cc.Nodes {
 		if viper.IsSet("nodes." + nodeName + ".vpcd.dhcp_bind_bridge") {
 			return fmt.Errorf("config: [nodes.%s.vpcd] dhcp_bind_bridge is no longer supported; remove the key (vpcd no longer runs a DHCP client)", nodeName)
+		}
+	}
+
+	if len(cc.Network.NATExemptCIDRs) > 0 && cc.Network.ExternalMode != "nat" {
+		return fmt.Errorf("config: [network] nat_exempt_cidrs requires external_mode = \"nat\"")
+	}
+	for _, c := range cc.Network.NATExemptCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			return fmt.Errorf("config: [network] nat_exempt_cidrs entry %q: %w", c, err)
 		}
 	}
 

@@ -50,28 +50,39 @@ type IGWManager interface {
 	EnsureEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error
 }
 
+// RoutedIngressHooks deliver host-side ingress plumbing in routed-NAT mode:
+// Ensure installs the host route sending VPC-CIDR traffic into OVN via the
+// gateway LRP transit IP; Remove tears it down on detach. Both idempotent.
+// Nil hooks (all other modes) are never called.
+type RoutedIngressHooks struct {
+	Ensure func(ctx context.Context, vpcCIDR, gwLrpIP string) error
+	Remove func(ctx context.Context, vpcCIDR string) error
+}
+
 // IGWManagerConfig is the construction-time bag for igwManager.
 // FlowsBarrier defaults to a no-op when nil.
 type IGWManagerConfig struct {
-	OVN          ovn.Client
-	Routes       policy.RouteManager
-	NAT          policy.NATManager
-	Pool         *ExternalPoolConfig
-	Allocator    GatewayIPAllocator
-	Chassis      []string
-	NATMode      policy.NATMode
-	FlowsBarrier FlowsBarrier
+	OVN           ovn.Client
+	Routes        policy.RouteManager
+	NAT           policy.NATManager
+	Pool          *ExternalPoolConfig
+	Allocator     GatewayIPAllocator
+	Chassis       []string
+	NATMode       policy.NATMode
+	FlowsBarrier  FlowsBarrier
+	RoutedIngress *RoutedIngressHooks
 }
 
 type igwManager struct {
-	ovn       ovn.Client
-	routes    policy.RouteManager
-	nat       policy.NATManager
-	pool      *ExternalPoolConfig
-	allocator GatewayIPAllocator
-	chassis   []string
-	natMode   policy.NATMode
-	barrier   FlowsBarrier
+	ovn           ovn.Client
+	routes        policy.RouteManager
+	nat           policy.NATManager
+	pool          *ExternalPoolConfig
+	allocator     GatewayIPAllocator
+	chassis       []string
+	natMode       policy.NATMode
+	barrier       FlowsBarrier
+	routedIngress *RoutedIngressHooks
 }
 
 var _ IGWManager = (*igwManager)(nil)
@@ -95,14 +106,15 @@ func NewIGWManager(cfg IGWManagerConfig) (IGWManager, error) {
 		barrier = func() error { return nil }
 	}
 	return &igwManager{
-		ovn:       cfg.OVN,
-		routes:    cfg.Routes,
-		nat:       cfg.NAT,
-		pool:      cfg.Pool,
-		allocator: cfg.Allocator,
-		chassis:   cfg.Chassis,
-		natMode:   cfg.NATMode,
-		barrier:   barrier,
+		ovn:           cfg.OVN,
+		routes:        cfg.Routes,
+		nat:           cfg.NAT,
+		pool:          cfg.Pool,
+		allocator:     cfg.Allocator,
+		chassis:       cfg.Chassis,
+		natMode:       cfg.NATMode,
+		barrier:       barrier,
+		routedIngress: cfg.RoutedIngress,
 	}, nil
 }
 
@@ -136,6 +148,13 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 
 	// The gateway switch port on the shared switch is the per-VPC attach marker.
 	if _, err := m.ovn.GetLogicalSwitchPort(ctx, switchGWPortName); err == nil {
+		// OVN state survives reboots but host routes do not: re-run the routed
+		// leg so reconcile's replayed attach re-ensures ingress + SNAT.
+		if m.natMode == policy.NATModeRouted {
+			if err := m.ensureRoutedLeg(ctx, spec.VPCID, m.gatewayLRPIP(ctx, spec.VPCID)); err != nil {
+				return err
+			}
+		}
 		slog.Debug("external: IGW already attached for VPC, skipping",
 			"vpc_id", spec.VPCID, "gw_port", switchGWPortName)
 		return nil
@@ -191,19 +210,10 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	}
 
 	// Routed mode: egress SNATs the VPC CIDR to the gateway LRP transit IP so
-	// the host only ever masquerades the transit /24. DetachIGW reverses this.
-	if m.natMode == policy.NATModeRouted && gwLrpIP != "" {
-		router, err := m.ovn.GetLogicalRouter(ctx, routerName)
-		if err != nil {
-			return fmt.Errorf("get router %s for routed SNAT: %w", routerName, err)
-		}
-		vpcCIDR := router.ExternalIDs["spinifex:cidr"]
-		if vpcCIDR == "" {
-			return fmt.Errorf("routed NAT: router %s has no spinifex:cidr external_id", routerName)
-		}
-		if err := m.nat.AddSNAT(ctx, spec.VPCID, vpcCIDR, gwLrpIP); err != nil {
-			return fmt.Errorf("install routed SNAT %s -> %s: %w", vpcCIDR, gwLrpIP, err)
-		}
+	// the host only ever masquerades the transit /24, and the host gets an
+	// ingress route to the VPC CIDR. DetachIGW reverses both.
+	if err := m.ensureRoutedLeg(ctx, spec.VPCID, gwLrpIP); err != nil {
+		return err
 	}
 
 	if len(m.chassis) == 0 {
@@ -230,6 +240,52 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 
 	_ = m.barrier()
 	return nil
+}
+
+// ensureRoutedLeg installs the routed-mode datapath legs for a VPC: the OVN
+// SNAT (VPC CIDR → gateway LRP transit IP) and the host ingress route into
+// it. No-op outside routed mode or without a gateway IP. Idempotent — the
+// reconcile loop replays AttachIGW, re-ensuring host state lost on reboot.
+func (m *igwManager) ensureRoutedLeg(ctx context.Context, vpcID, gwLrpIP string) error {
+	if m.natMode != policy.NATModeRouted || gwLrpIP == "" {
+		return nil
+	}
+	routerName := topology.VPCRouter(vpcID)
+	router, err := m.ovn.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get router %s for routed SNAT: %w", routerName, err)
+	}
+	vpcCIDR := router.ExternalIDs["spinifex:cidr"]
+	if vpcCIDR == "" {
+		return fmt.Errorf("routed NAT: router %s has no spinifex:cidr external_id", routerName)
+	}
+	if err := m.nat.AddSNAT(ctx, vpcID, vpcCIDR, gwLrpIP); err != nil {
+		return fmt.Errorf("install routed SNAT %s -> %s: %w", vpcCIDR, gwLrpIP, err)
+	}
+	if m.routedIngress != nil && m.routedIngress.Ensure != nil {
+		if err := m.routedIngress.Ensure(ctx, vpcCIDR, gwLrpIP); err != nil {
+			return fmt.Errorf("install routed ingress route %s via %s: %w", vpcCIDR, gwLrpIP, err)
+		}
+	}
+	return nil
+}
+
+// gatewayLRPIP returns the transit IP of the VPC's gateway LRP — the stamped
+// external_id, falling back to the host part of Networks[0]. Empty on miss.
+func (m *igwManager) gatewayLRPIP(ctx context.Context, vpcID string) string {
+	lrp, err := m.ovn.GetLogicalRouterPort(ctx, topology.GatewayRouterPort(vpcID))
+	if err != nil || lrp == nil {
+		return ""
+	}
+	if ip := lrp.ExternalIDs[gatewayIPExtIDKey]; ip != "" {
+		return ip
+	}
+	if len(lrp.Networks) > 0 {
+		if pfx, err := netip.ParsePrefix(lrp.Networks[0]); err == nil {
+			return pfx.Addr().String()
+		}
+	}
+	return ""
 }
 
 // ensureSharedExternal idempotently creates the singleton shared external switch
@@ -284,6 +340,11 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 		if vpcCIDR != "" {
 			if err := m.nat.DeleteSNAT(ctx, vpcID, vpcCIDR); err != nil {
 				slog.Warn("external: delete IGW SNAT failed", "router", routerName, "cidr", vpcCIDR, "err", err)
+			}
+			if m.routedIngress != nil && m.routedIngress.Remove != nil {
+				if err := m.routedIngress.Remove(ctx, vpcCIDR); err != nil {
+					slog.Warn("external: remove routed ingress route failed", "cidr", vpcCIDR, "err", err)
+				}
 			}
 		}
 	} else {

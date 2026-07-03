@@ -84,3 +84,108 @@ func TestNewManagers_AcceptRoutedMode(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+type recordedIngress struct {
+	ensures []string // "cidr via gwLrpIP"
+	removes []string
+}
+
+func (r *recordedIngress) hooks() *RoutedIngressHooks {
+	return &RoutedIngressHooks{
+		Ensure: func(_ context.Context, vpcCIDR, gwLrpIP string) error {
+			r.ensures = append(r.ensures, vpcCIDR+" via "+gwLrpIP)
+			return nil
+		},
+		Remove: func(_ context.Context, vpcCIDR string) error {
+			r.removes = append(r.removes, vpcCIDR)
+			return nil
+		},
+	}
+}
+
+func newRoutedIngressIGWManager(t *testing.T, m *mock.Client, mode policy.NATMode) (IGWManager, *recordedIngress) {
+	t.Helper()
+	nm, err := policy.NewNATManager(m, mode,
+		policy.WithSNATExemptSet(policy.NATExemptSetName, []string{"100.127.0.0/24"}))
+	require.NoError(t, err)
+	rec := &recordedIngress{}
+	mgr, err := NewIGWManager(IGWManagerConfig{
+		OVN: m, Routes: policy.NewRouteManager(m), NAT: nm,
+		Pool: routedTestPool(), Allocator: NewStaticRangeAllocator(m),
+		Chassis: []string{"chassis-a"}, NATMode: mode,
+		RoutedIngress: rec.hooks(),
+	})
+	require.NoError(t, err)
+	return mgr, rec
+}
+
+func TestAttachIGW_Routed_InstallsIngressRoute(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	mgr, rec := newRoutedIngressIGWManager(t, m, policy.NATModeRouted)
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.Equal(t, []string{"10.0.0.0/16 via 100.127.0.240"}, rec.ensures)
+
+	snat := findSNAT(m, "10.0.0.0/16")
+	require.NotNil(t, snat)
+	require.NotNil(t, snat.ExemptedExtIps, "routed SNAT must carry the exempt set ref")
+}
+
+func TestAttachIGW_Routed_AlreadyAttachedReEnsuresIngress(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	mgr, rec := newRoutedIngressIGWManager(t, m, policy.NATModeRouted)
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	// Simulate reboot: OVN state survives, host route lost, SNAT loses its ref
+	// (legacy row shape). The replayed attach hits the already-attached marker.
+	require.NoError(t, m.SetNATExemptedExtIPs(ctx, topology.VPCRouter("vpc-1"), "snat", "10.0.0.0/16", nil))
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.Equal(t, []string{
+		"10.0.0.0/16 via 100.127.0.240",
+		"10.0.0.0/16 via 100.127.0.240",
+	}, rec.ensures, "already-attached path must re-invoke the ingress hook")
+
+	snat := findSNAT(m, "10.0.0.0/16")
+	require.NotNil(t, snat.ExemptedExtIps, "already-attached path must patch the legacy SNAT ref")
+}
+
+func TestDetachIGW_Routed_RemovesIngressRoute(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	mgr, rec := newRoutedIngressIGWManager(t, m, policy.NATModeRouted)
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.DetachIGW(ctx, "vpc-1"))
+	require.Equal(t, []string{"10.0.0.0/16"}, rec.removes)
+}
+
+func TestAttachIGW_NonRouted_NeverCallsIngressHooks(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+
+	nm, err := policy.NewNATManager(m, policy.NATModeCentralized)
+	require.NoError(t, err)
+	rec := &recordedIngress{}
+	mgr, err := NewIGWManager(IGWManagerConfig{
+		OVN: m, Routes: policy.NewRouteManager(m), NAT: nm,
+		Pool: &ExternalPoolConfig{
+			Name: "wan", Gateway: "192.168.1.1", PrefixLen: 24,
+			GwLrpRangeStart: "192.168.1.240", GwLrpRangeEnd: "192.168.1.243",
+		},
+		Allocator: NewStaticRangeAllocator(m),
+		Chassis:   []string{"chassis-a"}, NATMode: policy.NATModeCentralized,
+		RoutedIngress: rec.hooks(),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	assert.Empty(t, rec.ensures, "non-routed modes must never install host ingress routes")
+}

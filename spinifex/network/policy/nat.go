@@ -112,6 +112,10 @@ func WithNeighPrimer(p NeighPrimer) Option {
 	}
 }
 
+// NATExemptSetName is the singleton Address_Set holding destinations that
+// skip routed-mode NAT (transit /24 plus operator extras).
+const NATExemptSetName = "spinifex_nat_exempt"
+
 // WithSNATExemptSet names an Address_Set whose CIDRs skip NAT (stamped as
 // exempted_ext_ips on SNAT/EIP rows). Routed mode uses it so VM replies to
 // host-initiated flows keep their private source. The set is never deleted:

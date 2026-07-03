@@ -1140,9 +1140,23 @@ func (c *LiveClient) FindStaticRoute(ctx context.Context, routerName, ipPrefix s
 }
 
 func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get logical router for route delete: %w", err)
+	}
+	// Scope the prefix match to this router's rows — every VPC router carries
+	// 0.0.0.0/0, so an unscoped cache match can grab another router's route.
+	owned := make(map[string]struct{}, len(lr.StaticRoutes))
+	for _, u := range lr.StaticRoutes {
+		owned[u] = struct{}{}
+	}
 	var routes []nbdb.LogicalRouterStaticRoute
-	err := c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
-		return r.IPPrefix == ipPrefix
+	err = c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
+		if r.IPPrefix != ipPrefix {
+			return false
+		}
+		_, ok := owned[r.UUID]
+		return ok
 	}).List(ctx, &routes)
 	if err != nil {
 		return fmt.Errorf("find static route: %w", err)
@@ -1152,10 +1166,6 @@ func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, i
 	}
 
 	route := &routes[0]
-	lr, err := c.GetLogicalRouter(ctx, routerName)
-	if err != nil {
-		return fmt.Errorf("get logical router for route delete: %w", err)
-	}
 
 	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
 		Field:   &lr.StaticRoutes,

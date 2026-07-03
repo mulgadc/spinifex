@@ -690,9 +690,11 @@ func (m *Client) DeleteStaticRoute(_ context.Context, routerName string, ipPrefi
 	if !exists {
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
+	// Scope the prefix match to this router's rows — every VPC router carries
+	// 0.0.0.0/0, so an unscoped match can grab another router's route.
 	var foundUUID string
-	for uuid, r := range m.StaticRoutes {
-		if r.IPPrefix == ipPrefix {
+	for _, uuid := range lr.StaticRoutes {
+		if r, ok := m.StaticRoutes[uuid]; ok && r.IPPrefix == ipPrefix {
 			foundUUID = uuid
 			break
 		}

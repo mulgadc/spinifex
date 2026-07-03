@@ -35,12 +35,34 @@ All services in the Spinifex platform are managed through this single binary.
 
 ## Account Management
 
-Create a new isolated account with an admin user and AdministratorAccess policy:
+Create a new isolated account. This provisions a sequential 12-digit account ID, an `admin` user with an `AdministratorAccess` policy attached, and an access key pair. The credentials are written to `~/.aws/credentials` and `~/.aws/config` under a `spinifex-<name>` profile automatically. Requires a running cluster; run from a cluster node:
 
 ```bash
 spx admin account create --name myteam
+```
+
+```
+Account created successfully!
+  Account ID:        000000000002
+  Account Name:      myteam
+  Admin User:        admin
+  Access Key ID:     AKIA1A2B3C4D5E6F7890ABCD
+  Secret Access Key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+  AWS Profile:       spinifex-myteam
+
+Use with:
+  AWS_PROFILE=spinifex-myteam aws ec2 describe-instances
+```
+
+> **The secret access key is only shown once.** It is saved to `~/.aws/credentials` on the node where you ran the command; copy it from there if you need it elsewhere.
+
+Set the profile to start using the account:
+
+```bash
 export AWS_PROFILE=spinifex-myteam
 ```
+
+To create additional users and scoped permissions within the account, see [IAM Users and Policies](/docs/iam-users-and-policies).
 
 List all accounts:
 
@@ -48,7 +70,13 @@ List all accounts:
 spx admin account list
 ```
 
-
+```
+ACCOUNT ID     NAME                 STATUS     CREATED
+----------     ----                 ------     -------
+000000000000   system               ACTIVE     2026-07-03 02:17
+000000000001   spinifex             ACTIVE     2026-07-03 02:17
+000000000002   myteam               ACTIVE     2026-07-03 03:32
+```
 
 ## Node Management
 

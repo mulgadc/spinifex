@@ -16,7 +16,7 @@ func TestCreateVolume_ValidationErrors(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 
 	_, err = CreateVolume(&ec2.CreateVolumeInput{}, nil, "")
-	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestCreateVolume_NilNATS(t *testing.T) {

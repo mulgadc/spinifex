@@ -98,13 +98,23 @@ func TestCreatePlacementGroup_MissingName(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
-func TestCreatePlacementGroup_MissingStrategy(t *testing.T) {
+func TestCreatePlacementGroup_MissingStrategyDefaultsToCluster(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
+	out, err := svc.CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
 		GroupName: aws.String("no-strat"),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+	require.NoError(t, err)
+	assert.Equal(t, "cluster", *out.PlacementGroup.Strategy)
+}
+
+func TestCreatePlacementGroup_EmptyStrategyDefaultsToCluster(t *testing.T) {
+	svc := setupTestService(t)
+	out, err := svc.CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
+		GroupName: aws.String("empty-strat"),
+		Strategy:  aws.String(""),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "cluster", *out.PlacementGroup.Strategy)
 }
 
 func TestCreatePlacementGroup_SameNameDifferentAccounts(t *testing.T) {

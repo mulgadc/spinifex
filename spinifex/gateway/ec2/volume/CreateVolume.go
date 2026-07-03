@@ -14,7 +14,13 @@ func ValidateCreateVolumeInput(input *ec2.CreateVolumeInput) error {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	if input.Size == nil || *input.Size < 1 || *input.Size > 16384 {
+	// Size may be omitted when restoring from a snapshot; the handler
+	// defaults to the snapshot size.
+	hasSnapshot := input.SnapshotId != nil && *input.SnapshotId != ""
+	if input.Size == nil && !hasSnapshot {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.Size != nil && (*input.Size < 1 || *input.Size > 16384) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 

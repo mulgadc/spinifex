@@ -1,7 +1,7 @@
 ---
 title: "Updating Spinifex"
 description: "Upgrade an existing Spinifex installation to the latest release."
-category: "Administration"
+category: "Admin"
 tags:
   - update
   - upgrade

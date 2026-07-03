@@ -15,6 +15,8 @@ import (
 	"bufio"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,7 +41,8 @@ const (
 	egressOKMarker   = "NAT-E2E-EGRESS-OK"
 	egressFailMarker = "NAT-E2E-EGRESS-FAIL"
 
-	secondVPCCIDR = "10.213.0.0/16"
+	secondVPCCIDR    = "10.213.0.0/16"
+	natExemptSetName = "spinifex_nat_exempt"
 )
 
 // egressUserData probes outbound WAN reachability from inside the guest and
@@ -110,9 +113,12 @@ func TestNATUplink(t *testing.T) {
 	defaultGwIP := phaseOVNGateway(t, fix, def.VPCID)
 
 	harness.Phase(t, "NAT Uplink — Phase 6: instance boots and reaches WAN outbound")
-	phaseInstanceEgress(t, fix, def)
+	probe := phaseInstanceEgress(t, fix, def)
 
-	harness.Phase(t, "NAT Uplink — Phase 7: second VPC gets a unique transit gateway IP")
+	harness.Phase(t, "NAT Uplink — Phase 7: host reaches instance private IP (Tier 1 ingress)")
+	phaseHostIngress(t, fix, def, probe)
+
+	harness.Phase(t, "NAT Uplink — Phase 8: second VPC gets a unique transit gateway IP")
 	phaseUniqueTransitIP(t, fix, defaultGwIP)
 }
 
@@ -228,7 +234,14 @@ func phaseOVNGateway(t *testing.T, fix *fixture, vpcID string) string {
 
 // --- Phase 6: instance egress ---------------------------------------------------
 
-func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) {
+// egressProbe carries the phase-6 instance into the Tier 1 ingress phase.
+type egressProbe struct {
+	instanceID string
+	privateIP  string
+	sgID       string
+}
+
+func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) egressProbe {
 	t.Helper()
 
 	instType, arch := harness.DiscoverNanoInstanceType(t, fix.harness)
@@ -282,6 +295,95 @@ func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) {
 		t.Fatalf("guest reported %s — outbound WAN unreachable through routed NAT (console saved to artifacts)", egressFailMarker)
 	}
 	harness.Step(t, "guest reported %s", egressOKMarker)
+
+	var sgID string
+	if len(inst.SecurityGroups) > 0 {
+		sgID = aws.StringValue(inst.SecurityGroups[0].GroupId)
+	}
+	return egressProbe{
+		instanceID: instanceID,
+		privateIP:  aws.StringValue(inst.PrivateIpAddress),
+		sgID:       sgID,
+	}
+}
+
+// --- Phase 7: Tier 1 host ingress -----------------------------------------------
+
+// phaseHostIngress proves the automatic routed-NAT ingress tier: the host has
+// a route to the VPC CIDR via the gateway LRP transit IP, the SNAT rule
+// carries the exempt Address_Set ref (so VM replies to host-initiated flows
+// are not SNATted), and — after opening the SG like on AWS — the host can
+// ping the instance's private IP and complete a TCP handshake to sshd.
+func phaseHostIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egressProbe) {
+	t.Helper()
+
+	gwIP := gatewayLRPIP(t, def.VPCID)
+	require.NotEmpty(t, gwIP, "gateway LRP IP")
+	vpcCIDR := describeVPCCIDR(t, fix, def.VPCID)
+
+	harness.Step(t, "host route %s via %s dev %s", vpcCIDR, gwIP, transitHostEnd)
+	routeOut := hostCmd(t, "ip", "route", "show", vpcCIDR)
+	assert.Containsf(t, routeOut, "via "+gwIP, "VPC ingress route must go via gateway LRP IP\n%s", routeOut)
+	assert.Containsf(t, routeOut, "dev "+transitHostEnd, "VPC ingress route must use %s\n%s", transitHostEnd, routeOut)
+
+	harness.Step(t, "SNAT rule carries exempted_ext_ips -> %s", natExemptSetName)
+	exemptRef := strings.TrimSpace(harness.OvnNbctl(t, "--bare", "--columns=exempted_ext_ips",
+		"find", "nat", "type=snat", "logical_ip="+vpcCIDR))
+	require.NotEmptyf(t, exemptRef, "snat rule for %s has no exempted_ext_ips ref", vpcCIDR)
+	setAddrs := harness.OvnNbctl(t, "--bare", "--columns=addresses",
+		"find", "address_set", "name="+natExemptSetName)
+	assert.Containsf(t, setAddrs, transitCIDR,
+		"%s must contain the transit CIDR %s\n%s", natExemptSetName, transitCIDR, setAddrs)
+
+	harness.Step(t, "open SG for ICMP + SSH from transit net (default-closed, AWS parity)")
+	require.NotEmpty(t, probe.sgID, "probe instance has no security group")
+	perms := []*ec2.IpPermission{
+		{
+			IpProtocol: aws.String("icmp"), FromPort: aws.Int64(-1), ToPort: aws.Int64(-1),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String(transitCIDR)}},
+		},
+		{
+			IpProtocol: aws.String("tcp"), FromPort: aws.Int64(22), ToPort: aws.Int64(22),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String(transitCIDR)}},
+		},
+	}
+	_, err := fix.aws.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(probe.sgID), IpPermissions: perms,
+	})
+	require.NoError(t, err, "authorize-security-group-ingress")
+	t.Cleanup(func() {
+		_, _ = fix.aws.EC2.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+			GroupId: aws.String(probe.sgID), IpPermissions: perms,
+		})
+	})
+
+	harness.Step(t, "ping instance private IP %s from host", probe.privateIP)
+	harness.EventuallyErr(t, func() error {
+		out, perr := exec.Command("ping", "-c", "1", "-W", "3", probe.privateIP).CombinedOutput()
+		if perr != nil {
+			return fmt.Errorf("ping %s: %v: %s", probe.privateIP, perr, string(out))
+		}
+		return nil
+	}, 2*time.Minute, 5*time.Second)
+
+	harness.Step(t, "TCP handshake to sshd on %s:22 from host", probe.privateIP)
+	harness.EventuallyErr(t, func() error {
+		conn, derr := net.DialTimeout("tcp", net.JoinHostPort(probe.privateIP, "22"), 5*time.Second)
+		if derr != nil {
+			return fmt.Errorf("dial %s:22: %w", probe.privateIP, derr)
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		banner := make([]byte, 4)
+		if _, rerr := io.ReadFull(conn, banner); rerr != nil {
+			return fmt.Errorf("read ssh banner: %w", rerr)
+		}
+		if string(banner) != "SSH-" {
+			return fmt.Errorf("unexpected banner prefix %q", string(banner))
+		}
+		return nil
+	}, 2*time.Minute, 5*time.Second)
+	harness.Step(t, "host->instance return path works without SNAT mangling")
 }
 
 // --- Phase 7: unique transit IP per VPC -----------------------------------------
@@ -338,6 +440,15 @@ func phaseUniqueTransitIP(t *testing.T, fix *fixture, defaultGwIP string) {
 	natList := harness.OvnNbctl(t, "lr-nat-list", "vpc-"+vpcID)
 	assert.Containsf(t, natList, secondVPCCIDR,
 		"second VPC router missing snat for %s\n%s", secondVPCCIDR, natList)
+
+	harness.Step(t, "host ingress route for second VPC installed on attach")
+	harness.EventuallyErr(t, func() error {
+		out, _ := exec.Command("ip", "route", "show", secondVPCCIDR).CombinedOutput()
+		if !strings.Contains(string(out), "via "+gwIP) {
+			return fmt.Errorf("route %s via %s not present yet: %s", secondVPCCIDR, gwIP, string(out))
+		}
+		return nil
+	}, 2*time.Minute, 3*time.Second)
 }
 
 // --- Helpers ---------------------------------------------------------------

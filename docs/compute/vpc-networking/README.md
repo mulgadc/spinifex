@@ -215,6 +215,30 @@ gateway_ip = "192.168.1.100"     # Single IP for all VM outbound SNAT
 prefix_len = 24
 ```
 
+### Host access to instances (jumpbox pattern)
+
+The spinifex host automatically reaches every instance's **private IP**: IGW
+attach installs a host route into OVN (`<vpc-cidr> via <gateway-transit-ip>
+dev spx-nat-host`) and exempts the transit net from SNAT, so replies to
+host-initiated connections come back un-NATted. No per-instance setup.
+
+Security groups still apply and the default SG is closed to the host, same as
+AWS — open SSH/ICMP from the transit net first:
+
+```bash
+aws ec2 authorize-security-group-ingress --group-id $SG \
+  --protocol tcp --port 22 --cidr 100.127.0.0/24
+```
+
+Then use the host as a jumpbox for remote access:
+
+```bash
+ssh -J admin@<spinifex-host> ubuntu@<instance-private-ip>
+```
+
+Extra networks that must reach instances without SNAT (e.g. a management LAN)
+can be added via `[network] nat_exempt_cidrs = ["192.168.50.0/24"]`.
+
 ## Disabled (Empty/Omitted)
 
 VPC networking is overlay-only. No external connectivity. Instances can only

@@ -44,8 +44,8 @@ When you create an account with `spx admin account create`, Spinifex bootstraps 
 
 ## Prerequisites
 
-- A running Spinifex cluster with the AWS gateway started
-- AWS CLI configured with your account's profile. The default `spinifex` account created at cluster setup works out of the box; to work in a separate account, create one with `spx admin account create` (see [Spinifex Admin CLI](/docs/spinifex-admin-cli)):
+- A running Spinifex cluster (see [Setting Up Your Cluster](/docs/setting-up-your-cluster))
+- AWS CLI configured with the `spinifex` profile:
 
 ```bash
 export AWS_PROFILE=spinifex

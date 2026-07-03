@@ -1,0 +1,153 @@
+package daemon
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// tagTestDaemon returns a test daemon with an in-memory central tag store and
+// a running VM carrying the given initial tags.
+func tagTestDaemon(t *testing.T, instanceID string, initial map[string]string) *Daemon {
+	t.Helper()
+	d := createTestDaemon(t, sharedNATSURL)
+	d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore())
+
+	var tags []*ec2.Tag
+	for k, v := range initial {
+		tags = append(tags, &ec2.Tag{Key: aws.String(k), Value: aws.String(v)})
+	}
+	d.vmMgr.Insert(&vm.VM{
+		ID:        instanceID,
+		Status:    vm.StateRunning,
+		AccountID: testAccountID,
+		Instance:  &ec2.Instance{InstanceId: aws.String(instanceID), Tags: tags},
+	})
+	return d
+}
+
+// centralTags reads a resource's tags back out of the central store via
+// DescribeTags, as the given account.
+func centralTags(t *testing.T, d *Daemon, accountID, resourceID string) map[string]string {
+	t.Helper()
+	out, err := d.tagsService.DescribeTags(&ec2.DescribeTagsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("resource-id"), Values: []*string{aws.String(resourceID)}}},
+	}, accountID)
+	require.NoError(t, err)
+	tags := make(map[string]string, len(out.Tags))
+	for _, td := range out.Tags {
+		tags[aws.StringValue(td.Key)] = aws.StringValue(td.Value)
+	}
+	return tags
+}
+
+func recordTags(t *testing.T, d *Daemon, instanceID string) map[string]string {
+	t.Helper()
+	got, ok := d.vmMgr.Get(instanceID)
+	require.True(t, ok)
+	return tagsAsMap(got.Instance.Tags)
+}
+
+func tagsAsMap(tags []*ec2.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		out[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+	}
+	return out
+}
+
+func tagCommand(instanceID string, attrs types.EC2CommandAttributes, data *types.InstanceTagsData) []byte {
+	body, _ := json.Marshal(types.EC2InstanceCommand{ID: instanceID, Attributes: attrs, InstanceTagsData: data})
+	return body
+}
+
+// SetInstanceTags merges the upsert set into the record and projects the full
+// tag set into the central store in the same call.
+func TestHandleSetInstanceTags_MergesAndWritesCentral(t *testing.T) {
+	const id = "i-tag-set"
+	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev"})
+
+	body := tagCommand(id, types.EC2CommandAttributes{SetInstanceTags: true},
+		&types.InstanceTagsData{Tags: map[string]string{"env": "prod", "team": "infra"}})
+	reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, body)
+	assert.JSONEq(t, `{}`, string(reply.Data))
+
+	want := map[string]string{"Name": "web", "env": "prod", "team": "infra"}
+	assert.Equal(t, want, recordTags(t, d, id))
+	assert.Equal(t, want, centralTags(t, d, testAccountID, id))
+}
+
+// RemoveInstanceTags removes named keys unconditionally, value-matched keys
+// only on match, and both stores reflect the result.
+func TestHandleSetInstanceTags_RemoveWritesBothStores(t *testing.T) {
+	const id = "i-tag-remove"
+	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev", "team": "infra"})
+	require.NoError(t, d.tagsService.PutResourceTags(testAccountID, id,
+		map[string]string{"Name": "web", "env": "dev", "team": "infra"}))
+
+	body := tagCommand(id, types.EC2CommandAttributes{RemoveInstanceTags: true},
+		&types.InstanceTagsData{TagKeys: []string{"team"}, Tags: map[string]string{"env": "prod", "Name": "web"}})
+	reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, body)
+	assert.JSONEq(t, `{}`, string(reply.Data))
+
+	want := map[string]string{"env": "dev"}
+	assert.Equal(t, want, recordTags(t, d, id))
+	assert.Equal(t, want, centralTags(t, d, testAccountID, id))
+}
+
+// RemoveInstanceTags with empty Tags and TagKeys clears every tag.
+func TestHandleSetInstanceTags_RemoveClearAll(t *testing.T) {
+	const id = "i-tag-clear"
+	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev"})
+	require.NoError(t, d.tagsService.PutResourceTags(testAccountID, id,
+		map[string]string{"Name": "web", "env": "dev"}))
+
+	body := tagCommand(id, types.EC2CommandAttributes{RemoveInstanceTags: true}, &types.InstanceTagsData{})
+	reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, body)
+	assert.JSONEq(t, `{}`, string(reply.Data))
+
+	assert.Empty(t, recordTags(t, d, id))
+	assert.Empty(t, centralTags(t, d, testAccountID, id))
+}
+
+// A cross-account caller is rejected with InvalidID.NotFound before dispatch
+// and neither the record nor either central namespace is written.
+func TestHandleSetInstanceTags_CrossAccountRejected(t *testing.T) {
+	const id = "i-tag-cross"
+	const attacker = "999999999999"
+	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
+
+	body := tagCommand(id, types.EC2CommandAttributes{SetInstanceTags: true},
+		&types.InstanceTagsData{Tags: map[string]string{"stolen": "yes"}})
+	reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, attacker, body)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
+
+	assert.Equal(t, map[string]string{"Name": "web"}, recordTags(t, d, id))
+	assert.Empty(t, centralTags(t, d, testAccountID, id))
+	assert.Empty(t, centralTags(t, d, attacker, id))
+}
+
+// Missing InstanceTagsData, and a set with no tags, are rejected with
+// MissingParameter and leave both stores untouched.
+func TestHandleSetInstanceTags_RejectsMissingData(t *testing.T) {
+	const id = "i-tag-nodata"
+	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
+
+	for _, data := range []*types.InstanceTagsData{nil, {}} {
+		body := tagCommand(id, types.EC2CommandAttributes{SetInstanceTags: true}, data)
+		reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, body)
+		assert.Equal(t, awserrors.ErrorMissingParameter, decodeError(t, reply.Data)["Code"])
+	}
+
+	assert.Equal(t, map[string]string{"Name": "web"}, recordTags(t, d, id))
+	assert.Empty(t, centralTags(t, d, testAccountID, id))
+}

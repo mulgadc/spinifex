@@ -313,6 +313,19 @@ func ApplyInstanceTagMutation(existing []*ec2.Tag, data *spxtypes.InstanceTagsDa
 	return out
 }
 
+// TagsToMap converts a record tag list to the central tag store's map form,
+// skipping nil entries and nil keys.
+func TagsToMap(tags []*ec2.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, t := range tags {
+		if t == nil || t.Key == nil {
+			continue
+		}
+		out[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+	return out
+}
+
 // WriteInstanceTags applies the tag mutation to the instance record (the source
 // of truth) and writes the resulting full tag set to the central tag store, so
 // both stores move together. Callers own record persistence and must not hold
@@ -322,12 +335,7 @@ func WriteInstanceTags(instance *vm.VM, data *spxtypes.InstanceTagsData, remove 
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	instance.Instance.Tags = ApplyInstanceTagMutation(instance.Instance.Tags, data, remove)
-
-	tags := make(map[string]string, len(instance.Instance.Tags))
-	for _, t := range instance.Instance.Tags {
-		tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
-	}
-	return central.PutResourceTags(accountID, instance.ID, tags)
+	return central.PutResourceTags(accountID, instance.ID, TagsToMap(instance.Instance.Tags))
 }
 
 // PrepareRunInstances validates input, allocates capacity, creates VM metadata,

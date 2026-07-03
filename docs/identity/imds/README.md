@@ -267,8 +267,8 @@ Rejected settings:
 Useful background for host-side troubleshooting:
 
 - The IMDS HTTP server runs inside the `spinifex-vpcd` service on each host, listening on `169.254.169.254:80` with one listener per instance's primary interface — attribution is structural, with no source-IP trust.
-- vpcd reconciles listeners against live interfaces every **15 seconds**, so a freshly launched guest's metadata service is serving within one reconcile tick (cloud-init's built-in retries absorb this window).
-- Session tokens and cached role credentials live in memory only. A vpcd restart drops them; SDKs and cloud-init transparently reissue. Datapath state on the host survives service restarts.
+- A freshly launched guest's metadata service comes up within a few seconds of launch; cloud-init's built-in retries absorb this window.
+- Session tokens and cached role credentials are not persisted. A vpcd restart drops them; SDKs and cloud-init transparently reissue. Datapath state on the host survives service restarts.
 
 ## Limits and Defaults
 

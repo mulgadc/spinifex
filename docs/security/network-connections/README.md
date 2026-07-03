@@ -95,7 +95,7 @@ The inventory in [§1](#1-inbound-listeners)–[§2](#2-outbound-connections) sa
 | 8222 | spinifex-nats (monitoring) | HTTP | Localhost | `varz`/`subsz` metrics consumed by the daemon | Loopback only |
 | socket / dynamic TCP | nbdkit (Viperblock) | NBD | Host-local / cluster | Block device transport for guest EBS volumes | Unix socket by default; TCP only in remote/DPU mode |
 
-¹ **Formation port lifecycle.** 4432 opens during `spx admin init` / `spx admin join` while a bootstrap token is outstanding and closes once the cluster is formed (token TTL default 30 min, `--token-ttl`). The server presents an ephemeral self-signed cert that pre-dates trust bootstrap, so the joining node dials with `InsecureSkipVerify` — the only production dial that does. Authenticity rests on the operator supplying the leader address out-of-band plus possession of the bearer token. Document in the security plan so reviewers do not flag 4432 as a persistent open port.
+¹ **Formation port lifecycle.** 4432 opens during `spx admin init` / `spx admin join` while a bootstrap token is outstanding and closes once the cluster is formed (token TTL default 30 min, `--token-ttl`). The server presents an ephemeral self-signed cert that pre-dates trust bootstrap, so the joining node does not verify the certificate chain for this single dial. Authenticity rests on the operator supplying the leader address out-of-band plus possession of the bearer token. Document in the security plan so reviewers do not flag 4432 as a persistent open port.
 
 **Development-only listeners.** When `dev_networking=true`, QEMU opens arbitrary host TCP ports for SSH port-forwarding into guest VMs. Production installs (the `/etc/spinifex` layout) do not enable this; it must not appear on compliance nodes.
 
@@ -165,7 +165,7 @@ Every listener and outbound destination is controlled by one of these files. Cha
 | OVN packages (`ovn-central`, `ovn-host`) | `ovn-nb-db`, `ovn-sb-db` (via `ovs-vsctl set open_vswitch …`) | OVN DB bind addresses. |
 | Spinifex UI service | Built-in defaults: `host = "0.0.0.0"`, `port = 3000`. No `spinifex.toml` block today. | UI listener. |
 | `spx admin init` / `spx admin join` | `--port`, `--token-ttl`, `--no-telemetry` (or `SPX_NO_TELEMETRY=1`) | Formation port, token TTL, telemetry opt-out. |
-| `utils/images.go` `AvailableImages` | Image catalogue URLs | Outbound HTTPS destinations for image downloads. |
+| Image catalogue (built-in) | Fixed URLs listed in [§2](#2-outbound-connections); not operator-configurable | Outbound HTTPS destinations for image downloads. |
 
 ## 6. Operator Checklist
 

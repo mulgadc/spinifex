@@ -55,7 +55,7 @@ This guide installs Spinifex on a single server using the binary installer. For 
 >
 > Before running the installer, the host's WAN interface **must** already be enslaved to a Linux bridge named `br-wan`. The host IP, default route, and DHCP must all live on the bridge — not on the bare NIC.
 >
-> The bootstrap installer does **not** create this bridge for you yet. Running it on a host whose default route is still on a bare NIC will leave the install in a non-working state. Auto-provisioning of `br-wan` will land in the next release.
+> The bootstrap installer does **not** create this bridge for you yet. Running it on a host whose default route is still on a bare NIC will leave the install in a non-working state. Auto-provisioning of `br-wan` will land in a future release.
 >
 > **Verify before continuing:**
 >

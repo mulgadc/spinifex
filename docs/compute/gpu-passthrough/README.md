@@ -72,7 +72,7 @@ After setup and reboot, enable GPU passthrough:
 sudo spx admin gpu enable
 ```
 
-The command writes the configuration, signals the daemon (`SIGHUP`), and waits up to 30 seconds for the daemon to confirm the new state. On success it prints the current GPU status.
+The command writes the configuration, notifies the daemon and waits up to 30 seconds for the daemon to confirm the new state. On success it prints the current GPU status.
 
 <img src="../../../.github/assets/images/gpu-enabled.png" alt="GPU enabled">
 

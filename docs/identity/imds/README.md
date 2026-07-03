@@ -51,7 +51,7 @@ Requests are attributed to an instance by the network interface they arrive on a
 
 ## Prerequisites
 
-- A running Spinifex cluster (see [Launching Instances](/docs/launching-instances))
+- A running Spinifex cluster (see [Setting Up Your Cluster](/docs/setting-up-your-cluster))
 - A running instance to query from
 - For IAM role credentials: an instance launched with `--iam-instance-profile`
 

@@ -33,16 +33,14 @@ resources:
 
 ## Overview
 
-This guide assumes Spinifex is already installed and running. If not, follow one of the installation guides first:
-- [Single-Node Install](/docs/install)
-- [Multi-Node Install](/docs/install-multi-node)
-- [Source Install](/docs/install-source)
+This guide walks through the first steps on a freshly installed cluster: importing an AMI, creating an SSH key and a VPC with a public subnet, launching an instance, and connecting to it.
 
 ## Instructions
 
 ## Prerequisites
 
-Ensure the AWS profile is set:
+- Spinifex installed and running — see [Single-Node Install](/docs/install), [Multi-Node Install](/docs/install-multi-node), or [Source Install](/docs/install-source)
+- AWS CLI configured with the `spinifex` profile:
 
 ```bash
 export AWS_PROFILE=spinifex

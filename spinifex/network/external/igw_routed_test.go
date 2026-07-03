@@ -86,18 +86,18 @@ func TestNewManagers_AcceptRoutedMode(t *testing.T) {
 }
 
 type recordedIngress struct {
-	ensures []string // "cidr via gwLrpIP"
-	removes []string
+	ensures []string // "vpcID cidr via gwLrpIP"
+	removes []string // "vpcID cidr via gwLrpIP"
 }
 
 func (r *recordedIngress) hooks() *RoutedIngressHooks {
 	return &RoutedIngressHooks{
-		Ensure: func(_ context.Context, vpcCIDR, gwLrpIP string) error {
-			r.ensures = append(r.ensures, vpcCIDR+" via "+gwLrpIP)
+		Ensure: func(_ context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
+			r.ensures = append(r.ensures, vpcID+" "+vpcCIDR+" via "+gwLrpIP)
 			return nil
 		},
-		Remove: func(_ context.Context, vpcCIDR string) error {
-			r.removes = append(r.removes, vpcCIDR)
+		Remove: func(_ context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
+			r.removes = append(r.removes, vpcID+" "+vpcCIDR+" via "+gwLrpIP)
 			return nil
 		},
 	}
@@ -126,7 +126,7 @@ func TestAttachIGW_Routed_InstallsIngressRoute(t *testing.T) {
 	mgr, rec := newRoutedIngressIGWManager(t, m, policy.NATModeRouted)
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
-	require.Equal(t, []string{"10.0.0.0/16 via 100.127.0.240"}, rec.ensures)
+	require.Equal(t, []string{"vpc-1 10.0.0.0/16 via 100.127.0.240"}, rec.ensures)
 
 	snat := findSNAT(m, "10.0.0.0/16")
 	require.NotNil(t, snat)
@@ -146,8 +146,8 @@ func TestAttachIGW_Routed_AlreadyAttachedReEnsuresIngress(t *testing.T) {
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 	require.Equal(t, []string{
-		"10.0.0.0/16 via 100.127.0.240",
-		"10.0.0.0/16 via 100.127.0.240",
+		"vpc-1 10.0.0.0/16 via 100.127.0.240",
+		"vpc-1 10.0.0.0/16 via 100.127.0.240",
 	}, rec.ensures, "already-attached path must re-invoke the ingress hook")
 
 	snat := findSNAT(m, "10.0.0.0/16")
@@ -162,7 +162,8 @@ func TestDetachIGW_Routed_RemovesIngressRoute(t *testing.T) {
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 	require.NoError(t, mgr.DetachIGW(ctx, "vpc-1"))
-	require.Equal(t, []string{"10.0.0.0/16"}, rec.removes)
+	require.Equal(t, []string{"vpc-1 10.0.0.0/16 via 100.127.0.240"}, rec.removes,
+		"detach must pass the VPC's own gateway IP so ownership checks work")
 }
 
 func TestAttachIGW_NonRouted_NeverCallsIngressHooks(t *testing.T) {

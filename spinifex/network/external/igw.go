@@ -55,8 +55,8 @@ type IGWManager interface {
 // gateway LRP transit IP; Remove tears it down on detach. Both idempotent.
 // Nil hooks (all other modes) are never called.
 type RoutedIngressHooks struct {
-	Ensure func(ctx context.Context, vpcCIDR, gwLrpIP string) error
-	Remove func(ctx context.Context, vpcCIDR string) error
+	Ensure func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error
+	Remove func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error
 }
 
 // IGWManagerConfig is the construction-time bag for igwManager.
@@ -263,7 +263,7 @@ func (m *igwManager) ensureRoutedLeg(ctx context.Context, vpcID, gwLrpIP string)
 		return fmt.Errorf("install routed SNAT %s -> %s: %w", vpcCIDR, gwLrpIP, err)
 	}
 	if m.routedIngress != nil && m.routedIngress.Ensure != nil {
-		if err := m.routedIngress.Ensure(ctx, vpcCIDR, gwLrpIP); err != nil {
+		if err := m.routedIngress.Ensure(ctx, vpcID, vpcCIDR, gwLrpIP); err != nil {
 			return fmt.Errorf("install routed ingress route %s via %s: %w", vpcCIDR, gwLrpIP, err)
 		}
 	}
@@ -342,7 +342,10 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 				slog.Warn("external: delete IGW SNAT failed", "router", routerName, "cidr", vpcCIDR, "err", err)
 			}
 			if m.routedIngress != nil && m.routedIngress.Remove != nil {
-				if err := m.routedIngress.Remove(ctx, vpcCIDR); err != nil {
+				// gwLrpIP resolved before the LRP is deleted below — Remove
+				// needs it to prove this VPC owns the host route it deletes.
+				gwLrpIP := m.gatewayLRPIP(ctx, vpcID)
+				if err := m.routedIngress.Remove(ctx, vpcID, vpcCIDR, gwLrpIP); err != nil {
 					slog.Warn("external: remove routed ingress route failed", "cidr", vpcCIDR, "err", err)
 				}
 			}

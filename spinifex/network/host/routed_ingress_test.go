@@ -43,6 +43,46 @@ func TestEnsureVPCIngressRoute_RouteFailure(t *testing.T) {
 	}
 }
 
+func TestVPCIngressRouteVia_ParsesHolder(t *testing.T) {
+	r := newStubRunner()
+	r.expect("ip route show", []byte("172.31.0.0/16 via 100.127.0.239 dev spx-nat-host \n"), nil)
+
+	via, err := VPCIngressRouteVia(context.Background(), r, "172.31.0.0/16")
+	if err != nil {
+		t.Fatalf("VPCIngressRouteVia: %v", err)
+	}
+	if via != "100.127.0.239" {
+		t.Errorf("via = %q, want 100.127.0.239", via)
+	}
+	want := "ip route show 172.31.0.0/16 dev " + NATTransitHostEnd
+	if !r.called(want) {
+		t.Errorf("missing route show call:\n  want %q\n  got  %v", want, r.calls)
+	}
+}
+
+func TestVPCIngressRouteVia_NoRoute(t *testing.T) {
+	r := newStubRunner()
+	r.expect("ip route show", nil, nil)
+
+	via, err := VPCIngressRouteVia(context.Background(), r, "172.31.0.0/16")
+	if err != nil {
+		t.Fatalf("VPCIngressRouteVia: %v", err)
+	}
+	if via != "" {
+		t.Errorf("via = %q, want empty for absent route", via)
+	}
+}
+
+func TestVPCIngressRouteVia_ValidatesArgs(t *testing.T) {
+	r := newStubRunner()
+	if _, err := VPCIngressRouteVia(context.Background(), r, ""); err == nil {
+		t.Error("empty vpcCIDR: expected error")
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("validation failures must not run commands: %v", r.calls)
+	}
+}
+
 func TestRemoveVPCIngressRoute_DeletesRoute(t *testing.T) {
 	r := newStubRunner()
 	r.expect("ip route del", nil, nil)

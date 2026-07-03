@@ -521,11 +521,35 @@ func launchService(cfg *Config) error {
 	var routedIngress *external.RoutedIngressHooks
 	if bridgeMode == BridgeModeNAT {
 		ingressRunner := host.NewExecRunner()
+		// Duplicate VPC CIDRs (every account's default VPC is 172.31.0.0/16)
+		// collide on the single host route table: the bootstrap VPC always
+		// wins; other VPCs only install when the CIDR is free and only remove
+		// a route their own gateway IP holds.
+		preferredVPC := ""
+		if cfg.Bootstrap != nil {
+			preferredVPC = cfg.Bootstrap.VpcId
+		}
 		routedIngress = &external.RoutedIngressHooks{
-			Ensure: func(ctx context.Context, vpcCIDR, gwLrpIP string) error {
+			Ensure: func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
+				if vpcID != preferredVPC {
+					holder, err := host.VPCIngressRouteVia(ctx, ingressRunner, vpcCIDR)
+					if err == nil && holder != "" && holder != gwLrpIP {
+						slog.Warn("vpcd: host ingress route conflict, keeping existing holder",
+							"vpc_id", vpcID, "vpc_cidr", vpcCIDR, "holder_gw", holder, "skipped_gw", gwLrpIP)
+						return nil
+					}
+				}
 				return host.EnsureVPCIngressRoute(ctx, ingressRunner, vpcCIDR, gwLrpIP)
 			},
-			Remove: func(ctx context.Context, vpcCIDR string) error {
+			Remove: func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
+				if gwLrpIP != "" {
+					holder, err := host.VPCIngressRouteVia(ctx, ingressRunner, vpcCIDR)
+					if err == nil && holder != "" && holder != gwLrpIP {
+						slog.Info("vpcd: leaving host ingress route held by another VPC",
+							"vpc_id", vpcID, "vpc_cidr", vpcCIDR, "holder_gw", holder)
+						return nil
+					}
+				}
 				return host.RemoveVPCIngressRoute(ctx, ingressRunner, vpcCIDR)
 			},
 		}

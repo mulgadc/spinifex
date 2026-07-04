@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -457,6 +458,30 @@ func TestRestartCrashedInstance_AllocateFailure(t *testing.T) {
 	assert.Equal(t, StateError, m.Status(instance))
 	assert.Equal(t, 1, instance.Health.RestartCount,
 		"RestartCount is incremented before the allocate attempt")
+}
+
+// TestRestartCrashedInstance_RefreshesLaunchTime guards the pending-watchdog
+// hazard: the crash-restart re-enters StatePending, so LaunchTime must be
+// refreshed. A stale original time makes scanAndMarkStuckPending trip
+// launch_timeout on its next tick and terminate the relaunch mid-flight.
+func TestRestartCrashedInstance_RefreshesLaunchTime(t *testing.T) {
+	m, rc, _, _ := crashTestManager(t)
+	rc.allocateErr = errors.New("stop before Run") // isolate the state refresh
+
+	stale := time.Now().Add(-24 * time.Hour)
+	instance := &VM{
+		ID:           "i-stale-launch",
+		Status:       StateError,
+		InstanceType: "t3.micro",
+		Instance:     &ec2.Instance{LaunchTime: &stale},
+	}
+	m.Insert(instance)
+
+	m.RestartCrashedInstance(instance)
+
+	require.NotNil(t, instance.Instance.LaunchTime)
+	assert.True(t, instance.Instance.LaunchTime.After(stale),
+		"crash-restart must refresh LaunchTime so the pending watchdog gives a fresh window")
 }
 
 // TestRestartCrashedInstance_RunFailureRollback covers the post-Allocate

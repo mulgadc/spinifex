@@ -232,7 +232,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 	lb.InstanceID = launch.instanceID
 	lb.VPCIP = launch.vpcIP
 	lb.HostPorts = launch.hostPorts
-	lb.State = s.lbStateAfterLaunch(launch, lb.Scheme)
+	lb.State, lb.StateReason = s.lbStateAfterLaunch(launch, lb.Scheme)
 
 	if err := s.store.PutLoadBalancer(lb); err != nil {
 		slog.Error("SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
@@ -323,23 +323,24 @@ func rebuildAvailZones(subnets []string, existing []AvailZoneInfo, newAZBySubnet
 	return out
 }
 
-// lbStateAfterLaunch returns the post-launch state: provisioning if the VM came up,
-// failed if the launch failed or if an internal LB has no mgmt return route.
-func (s *ELBv2ServiceImpl) lbStateAfterLaunch(launch lbVMLaunch, scheme string) string {
+// lbStateAfterLaunch returns the post-launch state and failure reason:
+// provisioning if the VM came up, failed if the launch failed or if an
+// internal LB has no mgmt return route.
+func (s *ELBv2ServiceImpl) lbStateAfterLaunch(launch lbVMLaunch, scheme string) (string, string) {
 	if launch.instanceID == "" {
 		if launch.failed {
-			return StateFailed
+			return StateFailed, launch.failReason
 		}
-		return StateActive
+		return StateActive, ""
 	}
 	if scheme == SchemeInternal {
 		if gw, tgt := s.resolveMgmtRoute(scheme); gw == "" || tgt == "" {
 			slog.Error("SetSubnets: internal LB has no mgmt return route; marking failed (lb-agent cannot heartbeat AWSGW)",
 				"mgmtBridgeIP", s.MgmtBridgeIP, "advertiseIP", s.AdvertiseIP)
-			return StateFailed
+			return StateFailed, "internal LB has no mgmt return route (lb-agent cannot heartbeat AWSGW)"
 		}
 	}
-	return StateProvisioning
+	return StateProvisioning, ""
 }
 
 // setSubnetsOutput builds the SetSubnets response from the persisted record.

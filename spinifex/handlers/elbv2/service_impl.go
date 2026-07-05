@@ -423,13 +423,14 @@ func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInte
 }
 
 // lbVMLaunch is the outcome of booting the LB system VM. failed is true when
-// the VM could not be launched.
+// the VM could not be launched; failReason carries the cause for State.Reason.
 type lbVMLaunch struct {
 	instanceID string
 	vpcIP      string
 	publicIP   string
 	hostPorts  map[int]int
 	failed     bool
+	failReason string
 }
 
 // launchLBVM boots the system VM for a load balancer. The first ENI is the
@@ -459,6 +460,7 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 	if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
 		slog.Error("launchLBVM: system credentials not configured — cannot launch LB VM", "lbId", lbID)
 		res.failed = true
+		res.failReason = "system credentials not configured for LB VM launch"
 		return res
 	}
 
@@ -494,6 +496,7 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 	if launchErr != nil {
 		slog.Error("launchLBVM: failed to launch LB VM", "lbId", lbID, "err", launchErr)
 		res.failed = true
+		res.failReason = fmt.Sprintf("LB VM launch failed: %v", launchErr)
 		return res
 	}
 
@@ -852,6 +855,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 	stateChanged := false
 	if lb.State == StateProvisioning {
 		lb.State = StateActive
+		lb.StateReason = ""
 		stateChanged = true
 		slog.Info("LB transitioned to active via heartbeat", "lbId", lbID)
 	}
@@ -1235,6 +1239,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	// VM boot is async to avoid blocking the gateway responder. The create
 	// returns provisioning immediately; launcher-less deployments are active on the spot.
 	state := StateActive
+	stateReason := ""
 	willLaunch := s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0
 	if willLaunch {
 		state = StateProvisioning
@@ -1247,6 +1252,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 					"mgmtBridgeIP", s.MgmtBridgeIP,
 					"advertiseIP", s.AdvertiseIP)
 				state = StateFailed
+				stateReason = "internal LB has no mgmt return route (lb-agent cannot heartbeat AWSGW)"
 			}
 		}
 	}
@@ -1261,6 +1267,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		Scheme:           scheme,
 		Type:             lbType,
 		State:            state,
+		StateReason:      stateReason,
 		VpcId:            vpcID,
 		SecurityGroups:   securityGroups,
 		NLBManagedSGID:   nlbManagedSGID,
@@ -1306,7 +1313,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 				defer func() {
 					if r := recover(); r != nil {
 						slog.Error("CreateLoadBalancer: async launch panic", "lbId", lc.lbID, "panic", r)
-						s.markLBFailed(lc.lbArn)
+						s.markLBFailed(lc.lbArn, fmt.Sprintf("LB VM launch panicked: %v", r))
 					}
 				}()
 				s.launchLBVMAsync(lc)
@@ -1354,10 +1361,11 @@ func (s *ELBv2ServiceImpl) provisionLBDataPlane(lc lbLaunchCtx) error {
 
 	if launch.failed {
 		record.State = StateFailed
+		record.StateReason = launch.failReason
 		if putErr := s.store.PutLoadBalancer(record); putErr != nil {
 			return fmt.Errorf("persist failed state for %s: %w", lc.lbArn, putErr)
 		}
-		return fmt.Errorf("lb-vm launch failed for %s", lc.lbArn)
+		return fmt.Errorf("lb-vm launch failed for %s: %s", lc.lbArn, launch.failReason)
 	}
 
 	record.InstanceID = launch.instanceID
@@ -1397,13 +1405,15 @@ func (s *ELBv2ServiceImpl) rollbackLBInfra(eniIDs []string, nlbManagedSGID, name
 	s.releaseLBNameClaim(name, accountID)
 }
 
-// markLBFailed reloads the LB record and flips it to the failed state.
-func (s *ELBv2ServiceImpl) markLBFailed(lbArn string) {
+// markLBFailed reloads the LB record and flips it to the failed state,
+// recording reason for State.Reason.
+func (s *ELBv2ServiceImpl) markLBFailed(lbArn, reason string) {
 	record, err := s.store.GetLoadBalancerByArn(lbArn)
 	if err != nil || record == nil {
 		return
 	}
 	record.State = StateFailed
+	record.StateReason = reason
 	if putErr := s.store.PutLoadBalancer(record); putErr != nil {
 		slog.Error("CreateLoadBalancer: failed to persist failed state", "lbArn", lbArn, "err", putErr)
 	}
@@ -2773,6 +2783,9 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(r *LoadBalancerRecord) *elbv2.LoadBalan
 		State: &elbv2.LoadBalancerState{
 			Code: aws.String(r.State),
 		},
+	}
+	if r.StateReason != "" {
+		lb.State.Reason = aws.String(r.StateReason)
 	}
 
 	for _, sg := range r.SecurityGroups {

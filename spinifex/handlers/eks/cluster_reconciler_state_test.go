@@ -104,6 +104,35 @@ func TestClusterReconciler_ActiveFlagsStaleReport(t *testing.T) {
 	assert.Equal(t, 2, meta.NodeCount, "last known node count still recorded")
 }
 
+func TestClusterReconciler_ActiveUnhealthyReportSurfacesReason(t *testing.T) {
+	r, _, acctKV := newStateReconcilerHarness(t)
+	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
+	r.latest.Store(&ServerStateReport{
+		Healthz: "fail", NodeCount: 0, TS: time.Now().Unix(),
+		Reason: "readyz:[etcd]; etcd:unreachable; disk:ok",
+	})
+
+	require.NoError(t, r.reconcileOnce(context.Background()))
+
+	meta, err := GetClusterMeta(acctKV, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, ClusterStatusActive, meta.Status)
+	assert.Contains(t, meta.HealthIssue, `apiserver healthz="fail"`)
+	assert.Contains(t, meta.HealthIssue, "etcd:unreachable", "in-guest diagnosis surfaced in the health issue")
+}
+
+func TestClusterReconciler_ActiveUnhealthyReportWithoutReasonStaysTerse(t *testing.T) {
+	r, _, acctKV := newStateReconcilerHarness(t)
+	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
+	r.latest.Store(freshReport("fail", 0))
+
+	require.NoError(t, r.reconcileOnce(context.Background()))
+
+	meta, err := GetClusterMeta(acctKV, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, `apiserver healthz="fail"`, meta.HealthIssue, "no reason → terse issue, back-compatible with older AMI")
+}
+
 func TestClusterReconciler_StateReportSubscriptionDrivesActive(t *testing.T) {
 	r, nc, acctKV := newStateReconcilerHarness(t,
 		WithReconcileInterval(10*time.Millisecond),

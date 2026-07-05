@@ -781,6 +781,9 @@ func (r *ClusterReconciler) observe(ctx context.Context) (issue string, nodeCoun
 			return fmt.Sprintf("control-plane state report stale (%s old)", age.Round(time.Second)), report.NodeCount
 		}
 		if !report.Healthy() {
+			if report.Reason != "" {
+				return fmt.Sprintf("apiserver healthz=%q: %s", report.Healthz, report.Reason), report.NodeCount
+			}
 			return fmt.Sprintf("apiserver healthz=%q", report.Healthz), report.NodeCount
 		}
 		return "", report.NodeCount

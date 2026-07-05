@@ -51,7 +51,10 @@ chmod 0755 /etc/init.d/mulga-ebs-byid /usr/local/sbin/mulga-ebs-byid
 chmod 0755 /etc/init.d/mulga-eks-provider-id /usr/local/sbin/mulga-eks-provider-id
 chmod 0755 /etc/init.d/mulga-mgmt-net /usr/local/sbin/mulga-mgmt-net
 chmod 0755 /etc/init.d/mulga-vpc-mtu /usr/local/sbin/mulga-vpc-mtu
-chmod 0755 /etc/periodic/daily/mulga-eks-etcd-snapshot
+# etcd snapshot runs on two crond cadences (nightly + a 15-min RPO window); the
+# same script picks its tier from the dir it is invoked from. Both must be 0755.
+mkdir -p /etc/periodic/15min
+chmod 0755 /etc/periodic/daily/mulga-eks-etcd-snapshot /etc/periodic/15min/mulga-eks-etcd-snapshot
 
 # mulga-mgmt-net goes in the boot runlevel, not default (where ENABLE_SERVICES
 # lands services). It DHCPs the data NIC so the init-local Ec2 crawl reaches

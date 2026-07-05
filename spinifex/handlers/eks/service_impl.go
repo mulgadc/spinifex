@@ -739,6 +739,19 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	meta.ControlPlaneENIIP = primary.ENIIP
 	meta.ControlPlaneMgmtIP = primary.MgmtIP
 
+	// Persist the launch template so the reconciler can replay it to provision a
+	// replacement CP member that joins the surviving quorum (member-count
+	// reconcile). Per-node fields and rotating creds are cleared — the reconciler
+	// sets the join target/host and re-derives creds at provision time.
+	tmpl := serverIn
+	tmpl.TargetNodeID = ""
+	tmpl.ServerURL = ""
+	tmpl.KonnServerCount = 0
+	tmpl.AccessKey = ""
+	tmpl.SecretKey = ""
+	tmpl.IamInstanceProfileArn = ""
+	meta.ControlPlaneTemplate = &tmpl
+
 	// Persist the CP VM + ENI + spread-group refs now, before any further fallible
 	// step. The VMs are live the moment placeControlPlane returns; without this a
 	// failure between here and the next PutClusterMeta leaves them launched but
@@ -1926,6 +1939,10 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 		// record. CP describe/recover must therefore run as the system account —
 		// the customer account cannot see or own its own cluster's CP VMs.
 		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: admin.SystemAccountID()}))
+		// Member-count reconcile: replace a terminated/gone CP member with a fresh
+		// one that joins the surviving quorum. The service replays the persisted
+		// create template; gated on CPControl since replacement needs member describe.
+		opts = append(opts, WithCPProvisioner(s))
 	}
 	spawn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
 		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "", opts...)

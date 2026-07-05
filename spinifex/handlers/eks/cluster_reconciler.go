@@ -33,6 +33,16 @@ const (
 	// defaultMaxCPRestartAttempts bounds in-place restarts before the reconciler
 	// gives up and leaves the cluster degraded for Phase-2 restore / operator action.
 	defaultMaxCPRestartAttempts = 3
+	// defaultCPReplaceGrace is how long a control-plane member must classify as
+	// lost (terminated/gone, not merely stopped) before a replacement is
+	// provisioned. Longer than the restart grace: replacement is the heavier,
+	// last-resort path once in-place restart plainly cannot recover the member.
+	defaultCPReplaceGrace = 5 * time.Minute
+	// defaultCPReplaceBackoff is the minimum spacing between replacement attempts.
+	defaultCPReplaceBackoff = 2 * time.Minute
+	// defaultMaxCPReplaceAttempts bounds replacement provisions before the
+	// reconciler yields and leaves the cluster running below quorum width.
+	defaultMaxCPReplaceAttempts = 3
 )
 
 // CPInstanceControl is the minimal control-plane VM lifecycle surface the
@@ -45,6 +55,31 @@ type CPInstanceControl interface {
 	InstanceState(ctx context.Context, instanceID string) (string, error)
 	// StartInstance restarts a stopped/error CP instance in place.
 	StartInstance(ctx context.Context, instanceID string) error
+}
+
+// CPProvisioner provisions a replacement control-plane member that joins the
+// surviving etcd quorum. Nil disables member-count reconcile — a lost member is
+// reflected in health but never re-provisioned. Implemented by the EKS service,
+// which replays the create-time launch template against a free host.
+type CPProvisioner interface {
+	ProvisionReplacementCP(ctx context.Context, req ReplacementCPRequest) (ControlPlaneNode, error)
+}
+
+// ReplacementCPRequest carries everything the provisioner needs to launch one
+// replacement CP that joins a surviving quorum member. The reconciler holds the
+// cluster meta, so it passes the persisted template and survivor join target
+// rather than the provisioner re-reading KV.
+type ReplacementCPRequest struct {
+	AccountID    string
+	ClusterName  string
+	Template     *K3sServerInput
+	JoinURL      string
+	SpreadGroup  string
+	ExcludeHosts []string
+	MemberCount  int
+	// DeadPeerIP is the terminated member's node IP the replacement evicts from
+	// etcd once it has joined; empty leaves the stale member for an operator.
+	DeadPeerIP string
 }
 
 // natsSubscriber is the minimal subscribe surface the reconciler needs; *nats.Conn satisfies it.
@@ -110,6 +145,18 @@ type ClusterReconciler struct {
 	degradedSince      time.Time
 	restartAttempts    int
 	lastRestartAt      time.Time
+
+	// cpProvisioner replaces a terminated/gone control-plane member with a fresh
+	// one that joins the surviving quorum; nil disables member-count reconcile.
+	// replace* fields mirror the restart bookkeeping: a grace window a member must
+	// stay lost before replacement, spacing between attempts, and an attempt cap.
+	cpProvisioner      CPProvisioner
+	replaceGrace       time.Duration
+	replaceBackoff     time.Duration
+	maxReplaceAttempts int
+	replacingSince     time.Time
+	replaceAttempts    int
+	lastReplaceAt      time.Time
 }
 
 // ReconcilerOption tunes a ClusterReconciler.
@@ -186,6 +233,28 @@ func WithCPRestartPolicy(grace, backoff time.Duration, maxAttempts int) Reconcil
 	}
 }
 
+// WithCPProvisioner injects the replacement-CP provisioner enabling member-count
+// reconcile. Absent, a lost member is reflected in health but never replaced.
+func WithCPProvisioner(p CPProvisioner) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.cpProvisioner = p }
+}
+
+// WithCPReplacePolicy overrides the member-count reconcile grace window, attempt
+// spacing, and max attempts. Non-positive values keep the default.
+func WithCPReplacePolicy(grace, backoff time.Duration, maxAttempts int) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		if grace > 0 {
+			r.replaceGrace = grace
+		}
+		if backoff > 0 {
+			r.replaceBackoff = backoff
+		}
+		if maxAttempts > 0 {
+			r.maxReplaceAttempts = maxAttempts
+		}
+	}
+}
+
 // NewClusterReconciler constructs a ClusterReconciler. healthURL is the
 // fully-qualified probe target (e.g. https://nlb-dns:443/healthz) or empty
 // to skip /healthz probing (CREATING transitions on bootstrap state alone).
@@ -220,6 +289,9 @@ func NewClusterReconciler(leaderKV, acctKV nats.KeyValue, accountID, clusterName
 		restartGrace:       defaultCPRestartGrace,
 		restartBackoff:     defaultCPRestartBackoff,
 		maxRestartAttempts: defaultMaxCPRestartAttempts,
+		replaceGrace:       defaultCPReplaceGrace,
+		replaceBackoff:     defaultCPReplaceBackoff,
+		maxReplaceAttempts: defaultMaxCPReplaceAttempts,
 		httpClient: &http.Client{
 			Timeout: defaultHealthzTimeout,
 			Transport: &http.Transport{
@@ -400,6 +472,7 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 			return fmt.Errorf("record cluster health: %w", err)
 		}
 		r.maybeRecoverControlPlane(ctx, meta, issue)
+		r.maybeReplaceControlPlaneMember(ctx, meta, issue)
 	case ClusterStatusDeleting:
 		return ErrReconcilerClusterDeleting
 	case ClusterStatusFailed:
@@ -509,6 +582,190 @@ func cpRestartable(state string) bool {
 	default:
 		return false
 	}
+}
+
+// cpLive reports whether a CP member is serving (or coming up): running/pending
+// count toward etcd quorum. stopped/error are the restart path's; everything
+// else (terminated, shutting-down, unknown) is treated as lost.
+func cpLive(state string) bool {
+	switch state {
+	case "running", "pending":
+		return true
+	default:
+		return false
+	}
+}
+
+// quorumOf returns the strict-majority size for n members (3 → 2). A replacement
+// may only join an etcd that still holds quorum, so this many members must be live.
+func quorumOf(n int) int { return n/2 + 1 }
+
+// isHAControlPlane reports whether the cluster runs a multi-member CP (a spread).
+// Single-CP clusters have no surviving quorum to join a replacement into, so
+// member-count reconcile is out of scope for them.
+func isHAControlPlane(meta *ClusterMeta) bool {
+	return len(meta.ControlPlaneNodes) > 1 || meta.ControlPlaneSpreadGroup != ""
+}
+
+// cpMemberNodes returns the CP member records (with ENI IP + host) from meta.
+// Prefers ControlPlaneNodes; falls back to synthesising one from the scalar
+// fields for clusters persisted before HA spread.
+func cpMemberNodes(meta *ClusterMeta) []ControlPlaneNode {
+	if len(meta.ControlPlaneNodes) > 0 {
+		return meta.ControlPlaneNodes
+	}
+	if meta.ControlPlaneInstanceID != "" {
+		return []ControlPlaneNode{{
+			InstanceID: meta.ControlPlaneInstanceID,
+			ENIID:      meta.ControlPlaneENIID,
+			ENIIP:      meta.ControlPlaneENIIP,
+			MgmtIP:     meta.ControlPlaneMgmtIP,
+		}}
+	}
+	return nil
+}
+
+// classifyCPMembers buckets every CP member by its instance state: live
+// (running/pending, count toward quorum), restartable (stopped/error, owned by
+// the in-place restart path), or lost (terminated/gone/unreadable). A describe
+// error is treated as lost, but the replaceGrace clock absorbs a transient blip
+// before any provision fires.
+func (r *ClusterReconciler) classifyCPMembers(ctx context.Context, meta *ClusterMeta) (live, restartable, lost []ControlPlaneNode) {
+	for _, n := range cpMemberNodes(meta) {
+		state, err := r.cpControl.InstanceState(ctx, n.InstanceID)
+		if err != nil {
+			slog.Warn("ClusterReconciler: CP member state query failed, treating as lost",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+			lost = append(lost, n)
+			continue
+		}
+		switch {
+		case cpRestartable(state):
+			restartable = append(restartable, n)
+		case cpLive(state):
+			live = append(live, n)
+		default:
+			lost = append(lost, n)
+		}
+	}
+	return live, restartable, lost
+}
+
+// maybeReplaceControlPlaneMember provisions one replacement for a genuinely-lost
+// control-plane member (terminated/gone), restoring the HA member count. It is a
+// last resort layered after maybeRecoverControlPlane: it acts only when no member
+// is restartable (the restart path has nothing left to do) and at least one is
+// lost, and only while a strict majority survives and is healthy — an etcd
+// without quorum cannot accept a member add. Bounded by a grace clock, backoff,
+// and attempt cap; best-effort, leaving the cluster degraded on failure.
+func (r *ClusterReconciler) maybeReplaceControlPlaneMember(ctx context.Context, meta *ClusterMeta, issue string) {
+	if r.cpControl == nil || r.cpProvisioner == nil {
+		return
+	}
+	if meta.ControlPlaneTemplate == nil || !isHAControlPlane(meta) {
+		return
+	}
+	if len(cpMemberNodes(meta)) == 0 {
+		return
+	}
+
+	live, restartable, lost := r.classifyCPMembers(ctx, meta)
+
+	// A restartable member belongs to the in-place restart path; a fully-live
+	// cluster has nothing to replace. Either case clears the replace bookkeeping.
+	if len(restartable) > 0 || len(lost) == 0 {
+		r.replacingSince = time.Time{}
+		r.replaceAttempts = 0
+		return
+	}
+	// Never add an etcd member without a healthy surviving quorum.
+	if issue != "" || len(live) < quorumOf(haControlPlaneCount) {
+		return
+	}
+	if len(live) >= haControlPlaneCount {
+		r.replacingSince = time.Time{}
+		r.replaceAttempts = 0
+		return
+	}
+
+	now := time.Now()
+	if r.replacingSince.IsZero() {
+		r.replacingSince = now
+	}
+	if now.Sub(r.replacingSince) < r.replaceGrace {
+		return
+	}
+	if r.replaceAttempts >= r.maxReplaceAttempts {
+		return
+	}
+	if !r.lastReplaceAt.IsZero() && now.Sub(r.lastReplaceAt) < r.replaceBackoff {
+		return
+	}
+	// Don't race an in-flight in-place restart of another member.
+	if !r.lastRestartAt.IsZero() && now.Sub(r.lastRestartAt) < r.restartBackoff {
+		return
+	}
+
+	survivor := pickSurvivor(live)
+	if survivor.ENIIP == "" {
+		slog.Warn("ClusterReconciler: no survivor ENI IP for CP replacement join",
+			"cluster", r.clusterName)
+		return
+	}
+
+	r.lastReplaceAt = now
+	r.replaceAttempts++
+	deadID := lost[0].InstanceID
+	slog.Warn("ClusterReconciler: provisioning replacement control-plane member",
+		"cluster", r.clusterName, "lost", deadID, "joinIP", survivor.ENIIP,
+		"attempt", r.replaceAttempts, "live", len(live))
+
+	newNode, err := r.cpProvisioner.ProvisionReplacementCP(ctx, ReplacementCPRequest{
+		AccountID:    r.accountID,
+		ClusterName:  r.clusterName,
+		Template:     meta.ControlPlaneTemplate,
+		JoinURL:      k3sServerJoinURL(survivor.ENIIP),
+		SpreadGroup:  meta.ControlPlaneSpreadGroup,
+		ExcludeHosts: liveHosts(live),
+		MemberCount:  haControlPlaneCount,
+		DeadPeerIP:   lost[0].ENIIP,
+	})
+	if err != nil {
+		slog.Warn("ClusterReconciler: CP replacement provision failed",
+			"cluster", r.clusterName, "lost", deadID, "attempt", r.replaceAttempts, "err", err)
+		return
+	}
+	if err := SwapControlPlaneMember(r.acctKV, r.clusterName, deadID, newNode); err != nil {
+		slog.Error("ClusterReconciler: CP replacement launched but meta swap failed (leak risk)",
+			"cluster", r.clusterName, "lost", deadID, "newInstanceId", newNode.InstanceID, "err", err)
+		return
+	}
+	slog.Info("ClusterReconciler: control-plane member replaced",
+		"cluster", r.clusterName, "lost", deadID, "newInstanceId", newNode.InstanceID,
+		"newHost", newNode.NodeID, "attempt", r.replaceAttempts)
+}
+
+// pickSurvivor returns the first live member carrying an ENI IP — the join
+// target the replacement points its k3s server at.
+func pickSurvivor(live []ControlPlaneNode) ControlPlaneNode {
+	for _, n := range live {
+		if n.ENIIP != "" {
+			return n
+		}
+	}
+	return ControlPlaneNode{}
+}
+
+// liveHosts returns the distinct hosts holding live members, so placement lands
+// the replacement on a different host and preserves spread.
+func liveHosts(live []ControlPlaneNode) []string {
+	hosts := make([]string, 0, len(live))
+	for _, n := range live {
+		if n.NodeID != "" {
+			hosts = append(hosts, n.NodeID)
+		}
+	}
+	return hosts
 }
 
 // observe returns the health issue ("" = healthy) and node count from the CP's

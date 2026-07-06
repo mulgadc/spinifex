@@ -8,11 +8,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"runtime/debug"
 	"strings"
 	"time"
 
+	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -67,6 +69,10 @@ func Init(ctx context.Context, serviceName string) (func(context.Context) error,
 		sdkmetric.WithResource(res),
 	)
 	otel.SetMeterProvider(mp)
+
+	if err := otelruntime.Start(); err != nil {
+		slog.Warn("otel runtime metrics disabled", "err", err)
+	}
 
 	shutdown := func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)

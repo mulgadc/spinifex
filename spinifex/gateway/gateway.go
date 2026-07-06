@@ -679,13 +679,14 @@ func traceActionEnricher(next http.Handler) http.Handler {
 		ctx := r.Context()
 		span := trace.SpanFromContext(ctx)
 		if action, _ := ctx.Value(ctxAction).(string); action != "" {
+			name := action
 			if svc, _ := ctx.Value(ctxService).(string); svc != "" {
-				span.SetName(svc + "." + action)
+				name = svc + "." + action
 				span.SetAttributes(attribute.String("aws.service", svc))
-			} else {
-				span.SetName(action)
 			}
+			span.SetName(name)
 			span.SetAttributes(attribute.String("aws.action", action))
+			otelsetup.SetRequestAction(ctx, name)
 		}
 		if acct, _ := ctx.Value(ctxAccountID).(string); acct != "" {
 			span.SetAttributes(attribute.String("aws.account_id", acct))

@@ -14,15 +14,15 @@ import (
 // configurable state/errors, so the restart orchestration can be tested without
 // a real VM manager.
 type fakeCPControl struct {
-	state        string
-	stateErr     error
-	startErr     error
-	rebootErr    error
-	stateCalls   int
-	startCalls   int
-	rebootCalls  int
-	lastStarted  string
-	lastRebooted string
+	state       string
+	stateErr    error
+	startErr    error
+	stopErr     error
+	stateCalls  int
+	startCalls  int
+	stopCalls   int
+	lastStarted string
+	lastStopped string
 }
 
 func (f *fakeCPControl) InstanceState(_ context.Context, _ string) (string, error) {
@@ -36,10 +36,10 @@ func (f *fakeCPControl) StartInstance(_ context.Context, id string) error {
 	return f.startErr
 }
 
-func (f *fakeCPControl) RebootInstance(_ context.Context, id string) error {
-	f.rebootCalls++
-	f.lastRebooted = id
-	return f.rebootErr
+func (f *fakeCPControl) StopInstance(_ context.Context, id string) error {
+	f.stopCalls++
+	f.lastStopped = id
+	return f.stopErr
 }
 
 func metaWithCP(id string) *ClusterMeta {

@@ -109,9 +109,10 @@ type EKSServiceDeps struct {
 type cpInstanceController interface {
 	DescribeInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
 	RecoverInstance(instanceID, accountID string) error
-	// RebootInstance forces a running CP to re-enter its boot sequence so the
-	// boot-time recovery agent applies a pending directive (the etcd reset path).
-	RebootInstance(instanceID, accountID string) error
+	// StopInstance gracefully powers off a running CP so the restart path boots it
+	// clean and the boot-time recovery agent applies a pending directive (the etcd
+	// reset path).
+	StopInstance(instanceID, accountID string) error
 }
 
 // cpControlAdapter binds a cpInstanceController + accountID to the reconciler's
@@ -150,11 +151,12 @@ func (a cpControlAdapter) StartInstance(_ context.Context, instanceID string) er
 	return a.ctl.RecoverInstance(instanceID, a.accountID)
 }
 
-// RebootInstance forces a running CP to reboot (QMP system_reset) so the on-VM
-// recovery agent applies its pending directive on the next boot — the etcd reset
-// path, where every member is running and StartInstance would be IncorrectInstanceState.
-func (a cpControlAdapter) RebootInstance(_ context.Context, instanceID string) error {
-	return a.ctl.RebootInstance(instanceID, a.accountID)
+// StopInstance gracefully powers off a running CP (QMP system_powerdown) so the
+// in-place restart path boots it clean and the on-VM recovery agent applies its
+// pending directive — the etcd reset path. A graceful stop unmounts cleanly, so the
+// next boot is not fsck-corrupted the way a hard reboot would leave it.
+func (a cpControlAdapter) StopInstance(_ context.Context, instanceID string) error {
+	return a.ctl.StopInstance(instanceID, a.accountID)
 }
 
 // WorkerLauncher is the narrow EC2 surface for launching nodegroup worker instances.

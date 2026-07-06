@@ -20,10 +20,10 @@ type fakeCPController struct {
 	recoveredID  string
 	recoverAcct  string
 	recoverCalls int
-	rebootErr    error
-	rebootedID   string
-	rebootAcct   string
-	rebootCalls  int
+	stopErr      error
+	stoppedID    string
+	stopAcct     string
+	stopCalls    int
 }
 
 func (f *fakeCPController) DescribeInstances(_ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
@@ -37,11 +37,11 @@ func (f *fakeCPController) RecoverInstance(instanceID, accountID string) error {
 	return f.recoverErr
 }
 
-func (f *fakeCPController) RebootInstance(instanceID, accountID string) error {
-	f.rebootCalls++
-	f.rebootedID = instanceID
-	f.rebootAcct = accountID
-	return f.rebootErr
+func (f *fakeCPController) StopInstance(instanceID, accountID string) error {
+	f.stopCalls++
+	f.stoppedID = instanceID
+	f.stopAcct = accountID
+	return f.stopErr
 }
 
 func describeWithState(instanceID, state string) *ec2.DescribeInstancesOutput {
@@ -100,20 +100,20 @@ func TestCPControlAdapter_StartInstancePropagatesError(t *testing.T) {
 	require.ErrorContains(t, a.StartInstance(context.Background(), "i-cp"), "no owner")
 }
 
-func TestCPControlAdapter_RebootInstanceForwardsIDAndAccount(t *testing.T) {
+func TestCPControlAdapter_StopInstanceForwardsIDAndAccount(t *testing.T) {
 	ctl := &fakeCPController{}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
-	require.NoError(t, a.RebootInstance(context.Background(), "i-cp"))
-	assert.Equal(t, 1, ctl.rebootCalls)
-	assert.Equal(t, "i-cp", ctl.rebootedID)
-	assert.Equal(t, testAccountID, ctl.rebootAcct)
-	assert.Zero(t, ctl.recoverCalls, "reboot must not fall back to the start/recover path")
+	require.NoError(t, a.StopInstance(context.Background(), "i-cp"))
+	assert.Equal(t, 1, ctl.stopCalls)
+	assert.Equal(t, "i-cp", ctl.stoppedID)
+	assert.Equal(t, testAccountID, ctl.stopAcct)
+	assert.Zero(t, ctl.recoverCalls, "stop must not fall back to the start/recover path")
 }
 
-func TestCPControlAdapter_RebootInstancePropagatesError(t *testing.T) {
-	ctl := &fakeCPController{rebootErr: errors.New("no owner")}
+func TestCPControlAdapter_StopInstancePropagatesError(t *testing.T) {
+	ctl := &fakeCPController{stopErr: errors.New("no owner")}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
-	require.ErrorContains(t, a.RebootInstance(context.Background(), "i-cp"), "no owner")
+	require.ErrorContains(t, a.StopInstance(context.Background(), "i-cp"), "no owner")
 }

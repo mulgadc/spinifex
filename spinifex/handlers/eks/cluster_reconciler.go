@@ -68,11 +68,12 @@ type CPInstanceControl interface {
 	InstanceState(ctx context.Context, instanceID string) (string, error)
 	// StartInstance restarts a stopped/error CP instance in place.
 	StartInstance(ctx context.Context, instanceID string) error
-	// RebootInstance forces a running CP instance to re-enter its boot sequence
-	// (QMP system_reset), so the boot-time recovery agent applies a pending
-	// directive. Used by the etcd reset path, where members are VM-running and
-	// StartInstance would reject them as IncorrectInstanceState.
-	RebootInstance(ctx context.Context, instanceID string) error
+	// StopInstance gracefully powers off a running CP instance (QMP
+	// system_powerdown, clean unmount + SIGKILL fallback). The etcd reset path
+	// uses it so the in-place restart path boots the member clean and the
+	// boot-time recovery agent applies its pending directive; a hard reboot would
+	// corrupt the member's filesystem before recovery runs.
+	StopInstance(ctx context.Context, instanceID string) error
 }
 
 // CPProvisioner provisions a replacement control-plane member that joins the
@@ -612,8 +613,9 @@ func (r *ClusterReconciler) maybeRecoverControlPlane(ctx context.Context, meta *
 // restart path cannot fix — every member is VM-running yet embedded etcd never
 // reformed quorum after a simultaneous restart — to a k3s cluster-reset. It sets
 // per-member recovery directives (the seed reseeds a single-member etcd from its
-// intact data; the others wipe and rejoin) then restarts the members so the on-VM
-// k3s-recovery agent applies them on boot. Bounded by resetGrace/backoff/attempts;
+// intact data; the others wipe and rejoin) then gracefully stops the members so the
+// in-place restart path boots them clean and the on-VM k3s-recovery agent applies the
+// directives on that boot. Bounded by resetGrace/backoff/attempts;
 // a recovered cluster clears the directives and the clock. Best-effort: failures
 // log and retry next tick, leaving the cluster degraded for operator DR.
 func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *ClusterMeta, issue string) {
@@ -677,11 +679,11 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 	// effective escalation.
 	r.lastResetAt = now
 
-	// Directives first, so the agents read them on the reboot the restart triggers.
-	// A directive-store failure for the seed aborts the pass without consuming an
-	// attempt (restarting without the cluster-reset directive would just reproduce
-	// the wedge); a follower failure logs and continues (that member stays wedged,
-	// retried next attempt).
+	// Directives first, so the agents read them on the clean boot the restart path
+	// triggers. A directive-store failure for the seed aborts the pass without
+	// consuming an attempt (stopping without the cluster-reset directive would just
+	// reproduce the wedge); a follower failure logs and continues (that member stays
+	// wedged, retried next attempt).
 	if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, seed.InstanceID, RecoveryActionClusterReset, ""); err != nil {
 		slog.Warn("ClusterReconciler: set cluster-reset directive failed",
 			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
@@ -699,19 +701,21 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 		"cluster", r.clusterName, "seed", seed.InstanceID, "members", len(members),
 		"attempt", r.resetAttempts, "issue", issue)
 
-	// Reboot the seed first so it re-forms a single-member etcd, then the others
-	// (wipe-rejoin) reconnect. Members are VM-running here (the gate requires it),
-	// so a reboot — not StartInstance — is what re-enters the boot sequence to apply
-	// the directive. k3s server-join retries on its own, so a boot race is
-	// self-correcting; a seed reboot failure aborts before churning the followers.
-	if err := r.cpControl.RebootInstance(ctx, seed.InstanceID); err != nil {
-		slog.Warn("ClusterReconciler: seed reset reboot failed",
+	// Gracefully stop every member. The in-place restart path (maybeRecoverControlPlane)
+	// then boots each stopped member clean on a later tick, and the on-VM recovery
+	// agent applies its directive: the seed reseeds a single-member etcd, the others
+	// wipe and rejoin. A graceful stop — not a hard reboot — unmounts cleanly, so the
+	// next boot is not fsck-corrupted before recovery can run. k3s server-join retries
+	// on its own, so a boot race is self-correcting; a seed stop failure aborts before
+	// churning the followers.
+	if err := r.cpControl.StopInstance(ctx, seed.InstanceID); err != nil {
+		slog.Warn("ClusterReconciler: seed reset stop failed",
 			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
 		return
 	}
 	for _, n := range members[1:] {
-		if err := r.cpControl.RebootInstance(ctx, n.InstanceID); err != nil {
-			slog.Warn("ClusterReconciler: member rejoin reboot failed",
+		if err := r.cpControl.StopInstance(ctx, n.InstanceID); err != nil {
+			slog.Warn("ClusterReconciler: member rejoin stop failed",
 				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
 		}
 	}

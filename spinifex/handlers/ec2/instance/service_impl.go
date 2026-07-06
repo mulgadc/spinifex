@@ -1389,6 +1389,10 @@ func (s *InstanceServiceImpl) prepareRootVolume(input *ec2.RunInstancesInput, im
 		slog.Error("Failed to connect to Viperblock store", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
+	defer func() {
+		vb.StopChunkUploader()
+		vb.StopWALSyncer()
+	}()
 
 	// Initialize the backend
 	err = vb.Backend.Init()

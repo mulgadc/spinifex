@@ -108,6 +108,7 @@ func setPromisc(iface string, on bool) error {
 }
 
 func ioctl(fd int, req uint, arg unsafe.Pointer) syscall.Errno {
+	//nolint:gosec // G115: req is a fixed ioctl request constant, not attacker-influenced.
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(req), uintptr(arg))
 	return errno
 }

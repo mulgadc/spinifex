@@ -210,6 +210,7 @@ func (m *Manager) spawnLoop(e Entry, reaffirm bool) {
 		existing.cancel()
 		delete(m.loops, e.Lease.ClientID)
 	}
+	//nolint:gosec // G118: cancel is retained on leaseLoop and invoked on replace/stop, not leaked.
 	loopCtx, cancel := context.WithCancel(m.parentCtx)
 	loop := &leaseLoop{cancel: cancel}
 	m.loops[e.Lease.ClientID] = loop

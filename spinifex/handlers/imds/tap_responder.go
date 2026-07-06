@@ -314,9 +314,11 @@ func bindToDeviceControl(dev string) func(string, string, syscall.RawConn) error
 	return func(_, _ string, c syscall.RawConn) error {
 		var sockErr error
 		if err := c.Control(func(fd uintptr) {
+			//nolint:gosec // G115: fd from RawConn.Control is a valid small descriptor, not attacker-influenced.
 			if sockErr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, dev); sockErr != nil {
 				return
 			}
+			//nolint:gosec // G115: fd from RawConn.Control is a valid small descriptor, not attacker-influenced.
 			sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 		}); err != nil {
 			return err

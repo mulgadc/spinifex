@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ type nodeAllocation struct {
 // distributeInstances spreads instances across nodes: queries capacity, allocates
 // (1 per node first, then packs extras by remaining capacity), launches in parallel,
 // and rolls back on partial failure.
-func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, expectedNodes int) (*ec2.Reservation, error) {
+func distributeInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, expectedNodes int) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
@@ -54,7 +55,7 @@ func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, acco
 
 	launchCount := min(maxCount, totalCapacity)
 	allocations := spreadAllocate(nodes, launchCount)
-	results := launchOnNodes(allocations, input, natsConn, accountID)
+	results := launchOnNodes(ctx, allocations, input, natsConn, accountID)
 	return aggregateResults(results, minCount, natsConn, accountID)
 }
 
@@ -157,7 +158,7 @@ type nodeLaunchResult struct {
 }
 
 // launchOnNodes sends targeted RunInstances to each node in parallel with MinCount=MaxCount=assigned.
-func launchOnNodes(allocations []nodeAllocation, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string) []nodeLaunchResult {
+func launchOnNodes(ctx context.Context, allocations []nodeAllocation, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string) []nodeLaunchResult {
 	instanceType := aws.StringValue(input.InstanceType)
 
 	results := make([]nodeLaunchResult, len(allocations))
@@ -173,7 +174,7 @@ func launchOnNodes(allocations []nodeAllocation, input *ec2.RunInstancesInput, n
 			nodeInput.MaxCount = aws.Int64(int64(a.Assigned))
 
 			topic := fmt.Sprintf("ec2.RunInstances.%s.%s", instanceType, a.NodeID)
-			reservation, err := utils.NATSRequest[ec2.Reservation](natsConn, topic, &nodeInput, 5*time.Minute, accountID)
+			reservation, err := utils.NATSRequestCtx[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID)
 			if err != nil {
 				results[idx] = nodeLaunchResult{NodeID: a.NodeID, Err: fmt.Errorf("launch on %s: %w", a.NodeID, err)}
 				return
@@ -231,7 +232,7 @@ func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.C
 
 // distributeInstancesSpread implements strict 1-per-node spread: queries capacity,
 // atomically reserves nodes via CAS, launches 1 per node, then finalizes or rolls back.
-func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
+func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
@@ -268,7 +269,7 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 		allocations[i] = nodeAllocation{NodeID: nodeID, Assigned: 1}
 	}
 
-	results := launchOnNodes(allocations, input, natsConn, accountID)
+	results := launchOnNodes(ctx, allocations, input, natsConn, accountID)
 
 	var allInstances []*ec2.Instance
 	var reservationID *string
@@ -350,7 +351,7 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 
 // distributeInstancesCluster pins all instances to a single node.
 // Subsequent launches on an existing group reuse the same node; first launch picks highest capacity.
-func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
+func distributeInstancesCluster(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
@@ -396,7 +397,7 @@ func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Con
 		NodeID:   targetNode,
 		Assigned: launchCount,
 	}}
-	results := launchOnNodes(allocations, input, natsConn, accountID)
+	results := launchOnNodes(ctx, allocations, input, natsConn, accountID)
 
 	if results[0].Err != nil {
 		if clientErr := extractClientError(results); clientErr != nil {

@@ -89,7 +89,9 @@ func (d *Daemon) handleSetInstanceTags(msg *nats.Msg, command types.EC2InstanceC
 // preserves the original respond-then-launch timing — AWS gets a reservation
 // before the launch loop starts.
 func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
-	slog.Debug("Received message on subject", "subject", msg.Subject)
+	ctx, span := utils.StartConsumerSpan(msg)
+	defer span.End()
+	slog.DebugContext(ctx, "Received message on subject", "subject", msg.Subject)
 
 	accountID := utils.AccountIDFromMsg(msg)
 	if accountID == "" {

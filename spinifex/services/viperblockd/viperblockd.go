@@ -430,7 +430,9 @@ func launchService(cfg *Config) (err error) {
 		return nc.QueueSubscribe(topic, "spinifex-workers", handler)
 	}
 	if _, err := unmountSubscribe(unmountTopic, func(msg *nats.Msg) {
-		slog.Info("Received message", "data", string(msg.Data))
+		ctx, span := utils.StartConsumerSpan(msg)
+		defer span.End()
+		slog.InfoContext(ctx, "Received message", "data", string(msg.Data))
 
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
@@ -629,7 +631,9 @@ func launchService(cfg *Config) (err error) {
 		return nc.QueueSubscribe(topic, "spinifex-workers", handler)
 	}
 	if _, err := mountSubscribe(mountTopic, func(msg *nats.Msg) {
-		slog.Info("Received message:", "data", string(msg.Data))
+		ctx, span := utils.StartConsumerSpan(msg)
+		defer span.End()
+		slog.InfoContext(ctx, "Received message:", "data", string(msg.Data))
 
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {

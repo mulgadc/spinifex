@@ -6,6 +6,7 @@
 package gateway_ec2_spotinstance
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -62,7 +63,7 @@ func ValidateRequestSpotInstancesInput(input *ec2.RequestSpotInstancesInput) err
 // ClientToken passed through, same vCPU quota gate), then builds and persists one
 // active/fulfilled SpotInstanceRequest per launched instance. On a launch failure
 // (including InsufficientInstanceCapacity) it returns the error and persists nothing.
-func RequestSpotInstances(input *ec2.RequestSpotInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID, az string, passRoleCheck gateway_ec2_instance.PassRoleChecker, quota *handlers_quota.Service, expectedNodes int) (ec2.RequestSpotInstancesOutput, error) {
+func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID, az string, passRoleCheck gateway_ec2_instance.PassRoleChecker, quota *handlers_quota.Service, expectedNodes int) (ec2.RequestSpotInstancesOutput, error) {
 	var output ec2.RequestSpotInstancesOutput
 
 	if err := ValidateRequestSpotInstancesInput(input); err != nil {
@@ -80,7 +81,7 @@ func RequestSpotInstances(input *ec2.RequestSpotInstancesInput, natsConn *nats.C
 
 	// RunInstances normalises runInput in place (e.g. instance profile to ARN),
 	// so the launch spec echoed back is built from runInput afterwards.
-	reservation, err := gateway_ec2_instance.RunInstances(runInput, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
+	reservation, err := gateway_ec2_instance.RunInstances(ctx, runInput, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	if err != nil {
 		return output, err
 	}

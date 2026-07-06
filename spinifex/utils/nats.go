@@ -222,10 +222,21 @@ func PrincipalARNFromMsg(msg *nats.Msg) string {
 
 // NATSRequest performs a NATS request-response with JSON marshaling.
 // Sends with X-Account-ID (plus any extra headers) and unmarshals the successful response into Out.
+// Prefer NATSRequestCtx where a request context is available so traces span the hop.
 func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (*Out, error) {
+	return NATSRequestCtx[Out](context.Background(), conn, subject, input, timeout, accountID, headers...)
+}
+
+// NATSRequestCtx is NATSRequest carrying ctx's trace context onto the wire:
+// it opens a client span for the hop and injects traceparent into the message
+// headers so the consumer joins the same trace.
+func NATSRequestCtx[Out any](ctx context.Context, conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (out *Out, err error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, ErrClusterUnavailable
 	}
+
+	ctx, span := startProducerSpan(ctx, subject)
+	defer func() { endSpanWithError(span, err) }()
 
 	jsonData, err := json.Marshal(input)
 	if err != nil {
@@ -235,6 +246,7 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(AccountIDHeader, accountID)
+	InjectTraceContext(ctx, reqMsg.Header)
 	for _, h := range headers {
 		if h.Key != "" {
 			reqMsg.Header.Set(h.Key, h.Value)
@@ -263,14 +275,25 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 }
 
 // ServeNATSRequest unmarshals the request into *I, invokes fn, and replies with JSON or an awserrors envelope.
+// A consumer span joins the producer's trace when the message carries traceparent.
 func ServeNATSRequest[I any, O any](msg *nats.Msg, fn func(*I) (*O, error)) {
+	ServeNATSRequestCtx(msg, func(_ context.Context, in *I) (*O, error) { return fn(in) })
+}
+
+// ServeNATSRequestCtx is ServeNATSRequest for handlers that take the consumer
+// span's context, so their logs and child spans correlate to the trace.
+func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *I) (*O, error)) {
+	ctx, span := StartConsumerSpan(msg)
+	defer span.End()
+
 	input := new(I)
 	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		respondNATS(msg, errResp)
 		return
 	}
-	out, err := fn(input)
+	out, err := fn(ctx, input)
 	if err != nil {
+		span.RecordError(err)
 		respondNATS(msg, GenerateErrorPayload(awserrors.ValidErrorCode(err.Error())))
 		return
 	}

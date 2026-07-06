@@ -223,6 +223,10 @@ func (s *VolumeServiceImpl) CreateVolume(input *ec2.CreateVolumeInput, accountID
 		slog.Error("CreateVolume failed to create viperblock instance", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	defer func() {
+		vb.StopChunkUploader()
+		vb.StopWALSyncer()
+	}()
 
 	vb.SetDebug(false)
 

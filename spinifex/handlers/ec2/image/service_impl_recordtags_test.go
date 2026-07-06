@@ -1,6 +1,7 @@
 package handlers_ec2_image
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -24,7 +25,7 @@ func TestApplyRecordTags_OwnedAMI(t *testing.T) {
 	err := svc.ApplyRecordTags(createTagsInput("ami-owned", map[string]string{"env": "prod"}), testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig("ami-owned")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-owned")
 	require.NoError(t, err)
 	assert.Equal(t, "prod", meta.Tags["env"])
 }
@@ -36,7 +37,7 @@ func TestApplyRecordTags_NotOwnedSkipped(t *testing.T) {
 	err := svc.ApplyRecordTags(createTagsInput("ami-foreign", map[string]string{"env": "prod"}), testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig("ami-foreign")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-foreign")
 	require.NoError(t, err)
 	assert.NotContains(t, meta.Tags, "env")
 }
@@ -57,7 +58,7 @@ func TestApplyRecordTags_NonAMIResourceSkipped(t *testing.T) {
 	}
 	require.NoError(t, svc.ApplyRecordTags(in, testAccountID))
 
-	meta, err := svc.GetAMIConfig("ami-owned")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-owned")
 	require.NoError(t, err)
 	assert.Equal(t, "v", meta.Tags["k"])
 }
@@ -77,7 +78,7 @@ func TestRemoveRecordTags_ValueMatchAndMismatch(t *testing.T) {
 	}
 	require.NoError(t, svc.RemoveRecordTags(in, testAccountID))
 
-	meta, err := svc.GetAMIConfig("ami-owned")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-owned")
 	require.NoError(t, err)
 	assert.Equal(t, "1", meta.Tags["a"])
 	assert.NotContains(t, meta.Tags, "b")
@@ -94,7 +95,7 @@ func TestRemoveRecordTags_NilValueUnconditional(t *testing.T) {
 	}
 	require.NoError(t, svc.RemoveRecordTags(in, testAccountID))
 
-	meta, err := svc.GetAMIConfig("ami-owned")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-owned")
 	require.NoError(t, err)
 	assert.NotContains(t, meta.Tags, "a")
 }
@@ -107,7 +108,7 @@ func TestRemoveRecordTags_EmptyClearsAll(t *testing.T) {
 	in := &ec2.DeleteTagsInput{Resources: []*string{aws.String("ami-owned")}}
 	require.NoError(t, svc.RemoveRecordTags(in, testAccountID))
 
-	meta, err := svc.GetAMIConfig("ami-owned")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-owned")
 	require.NoError(t, err)
 	assert.Empty(t, meta.Tags)
 }
@@ -119,6 +120,6 @@ func TestRemoveRecordTags_NotOwnedSkipped(t *testing.T) {
 	in := &ec2.DeleteTagsInput{Resources: []*string{aws.String("ami-foreign")}}
 	require.NoError(t, svc.RemoveRecordTags(in, testAccountID))
 	// foreign AMI untouched (still readable, no panic / error)
-	_, err := svc.GetAMIConfig("ami-foreign")
+	_, err := svc.GetAMIConfig(context.Background(), "ami-foreign")
 	require.NoError(t, err)
 }

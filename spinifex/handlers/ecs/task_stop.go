@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -24,7 +25,7 @@ const defaultStopReason = "Task stopped by user"
 // recordTaskState. LastStatus stays RUNNING until the container is actually reaped
 // so a freed port is never rebound while the old container still holds it
 // (ecs-v1.md:165).
-func (s *Service) StopTask(input *ecs.StopTaskInput, accountID string) (*ecs.StopTaskOutput, error) {
+func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accountID string) (*ecs.StopTaskOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	taskID := taskShortID(aws.StringValue(input.Task))
 	kv, err := s.bucket(accountID)
@@ -43,13 +44,13 @@ func (s *Service) StopTask(input *ecs.StopTaskInput, accountID string) (*ecs.Sto
 	if reason == "" {
 		reason = defaultStopReason
 	}
-	s.requestStopTask(kv, accountID, &task, reason)
+	s.requestStopTask(ctx, kv, accountID, &task, reason)
 	return &ecs.StopTaskOutput{Task: s.taskToAWS(accountID, &task)}, nil
 }
 
 // StartTask places one task per named container instance (explicit placement, no
 // scheduler bin-pack). Mirrors RunTask's reserve → record → ENI → assign flow.
-func (s *Service) StartTask(input *ecs.StartTaskInput, accountID string) (*ecs.StartTaskOutput, error) {
+func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, accountID string) (*ecs.StartTaskOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -93,7 +94,7 @@ func (s *Service) StartTask(input *ecs.StartTaskInput, accountID string) (*ecs.S
 		rec.Group = group
 		rec.StartedBy = startedBy
 		if mode == NetworkModeAwsvpc {
-			if failure := s.provisionTaskENI(kv, accountID, cluster, rec, netCfg); failure != nil {
+			if failure := s.provisionTaskENI(ctx, kv, accountID, cluster, rec, netCfg); failure != nil {
 				out.Failures = append(out.Failures, failure)
 				continue
 			}
@@ -102,7 +103,7 @@ func (s *Service) StartTask(input *ecs.StartTaskInput, accountID string) (*ecs.S
 			return nil, err
 		}
 		if err := s.publishAssign(kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
-			slog.Error("ECS StartTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
+			slog.ErrorContext(ctx, "ECS StartTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
 		}
 		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
 	}
@@ -149,22 +150,22 @@ func (s *Service) reserveOnInstance(kv nats.KeyValue, cluster, instanceID, taskI
 // then performs the single release. No-op once the task is already STOPPED. A task
 // with no container instance (never placed) is forced-stopped directly since no
 // agent can report it.
-func (s *Service) requestStopTask(kv nats.KeyValue, accountID string, task *TaskRecord, reason string) {
+func (s *Service) requestStopTask(ctx context.Context, kv nats.KeyValue, accountID string, task *TaskRecord, reason string) {
 	if task.LastStatus == TaskStatusStopped {
 		return
 	}
 	if task.ContainerInstanceID == "" {
-		s.forceStopTask(kv, accountID, task, reason)
+		s.forceStopTask(ctx, kv, accountID, task, reason)
 		return
 	}
 	task.DesiredStatus = TaskStatusStopped
 	if perr := putJSON(kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
-		slog.Error("ECS requestStopTask: persist failed", "task", task.TaskID, "err", perr)
+		slog.ErrorContext(ctx, "ECS requestStopTask: persist failed", "task", task.TaskID, "err", perr)
 		return
 	}
 	sd := bus.StopDirective{TaskID: task.TaskID, Reason: reason}
 	if perr := putJSON(kv, StopKey(task.Cluster, task.ContainerInstanceID, task.TaskID), &sd); perr != nil {
-		slog.Error("ECS requestStopTask: post stop directive failed", "task", task.TaskID, "err", perr)
+		slog.ErrorContext(ctx, "ECS requestStopTask: post stop directive failed", "task", task.TaskID, "err", perr)
 	}
 }
 
@@ -173,7 +174,7 @@ func (s *Service) requestStopTask(kv nats.KeyValue, accountID string, task *Task
 // its ELBv2 targets. Used where no live agent can reap the container (heartbeat
 // reaper, cluster/instance teardown). The mutated record is reflected back into
 // task.
-func (s *Service) forceStopTask(kv nats.KeyValue, accountID string, task *TaskRecord, reason string) {
+func (s *Service) forceStopTask(ctx context.Context, kv nats.KeyValue, accountID string, task *TaskRecord, reason string) {
 	if task.LastStatus == TaskStatusStopped {
 		return
 	}
@@ -184,17 +185,17 @@ func (s *Service) forceStopTask(kv nats.KeyValue, accountID string, task *TaskRe
 	task.StoppedAt = now
 	// Release the auto-assigned EIP before persisting so the cleared public IP
 	// lands in this single write.
-	s.releaseTaskPublicIP(accountID, task)
+	s.releaseTaskPublicIP(ctx, accountID, task)
 	if perr := putJSON(kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
-		slog.Error("ECS forceStopTask: persist failed", "task", task.TaskID, "err", perr)
+		slog.ErrorContext(ctx, "ECS forceStopTask: persist failed", "task", task.TaskID, "err", perr)
 		return
 	}
-	s.deregisterServiceTargets(kv, accountID, task)
+	s.deregisterServiceTargets(ctx, kv, accountID, task)
 	s.reclaimAssignInbox(kv, task.Cluster, task.ContainerInstanceID, task.TaskID)
 	s.reclaimStopInbox(kv, task.Cluster, task.ContainerInstanceID, task.TaskID)
-	s.reclaimTaskENI(accountID, task)
+	s.reclaimTaskENI(ctx, accountID, task)
 	if rerr := s.releaseReservation(kv, task.Cluster, task.ContainerInstanceID, task.TaskID, task.ReservedCPU, task.ReservedMemoryMiB); rerr != nil {
-		slog.Error("ECS forceStopTask: release reservation failed", "task", task.TaskID, "err", rerr)
+		slog.ErrorContext(ctx, "ECS forceStopTask: release reservation failed", "task", task.TaskID, "err", rerr)
 	}
 }
 
@@ -213,16 +214,16 @@ func awsvpcConfigFromStartTask(input *ecs.StartTaskInput) awsvpcConfig {
 // registerServiceTargets registers a task's awsvpc ENI IP with each of its
 // owning service's target groups. No-op when the task is not a service task,
 // the service has no load balancers, or the task has no ENI IP (bridge/host).
-func (s *Service) registerServiceTargets(kv nats.KeyValue, accountID string, task *TaskRecord) {
-	s.applyServiceTargets(kv, accountID, task, true)
+func (s *Service) registerServiceTargets(ctx context.Context, kv nats.KeyValue, accountID string, task *TaskRecord) {
+	s.applyServiceTargets(ctx, kv, accountID, task, true)
 }
 
 // deregisterServiceTargets is the STOPPED-side inverse of registerServiceTargets.
-func (s *Service) deregisterServiceTargets(kv nats.KeyValue, accountID string, task *TaskRecord) {
-	s.applyServiceTargets(kv, accountID, task, false)
+func (s *Service) deregisterServiceTargets(ctx context.Context, kv nats.KeyValue, accountID string, task *TaskRecord) {
+	s.applyServiceTargets(ctx, kv, accountID, task, false)
 }
 
-func (s *Service) applyServiceTargets(kv nats.KeyValue, accountID string, task *TaskRecord, register bool) {
+func (s *Service) applyServiceTargets(ctx context.Context, kv nats.KeyValue, accountID string, task *TaskRecord, register bool) {
 	name := serviceNameFromGroup(task.Group)
 	if name == "" || task.ENIPrivateIP == "" || s.targets == nil {
 		return
@@ -235,12 +236,12 @@ func (s *Service) applyServiceTargets(kv nats.KeyValue, accountID string, task *
 	for _, lb := range svc.LoadBalancers {
 		var terr error
 		if register {
-			terr = s.targets.Register(accountID, lb.TargetGroupARN, task.ENIPrivateIP, lb.ContainerPort)
+			terr = s.targets.Register(ctx, accountID, lb.TargetGroupARN, task.ENIPrivateIP, lb.ContainerPort)
 		} else {
-			terr = s.targets.Deregister(accountID, lb.TargetGroupARN, task.ENIPrivateIP, lb.ContainerPort)
+			terr = s.targets.Deregister(ctx, accountID, lb.TargetGroupARN, task.ENIPrivateIP, lb.ContainerPort)
 		}
 		if terr != nil {
-			slog.Error("ECS target registration failed", "service", name, "tg", lb.TargetGroupARN,
+			slog.ErrorContext(ctx, "ECS target registration failed", "service", name, "tg", lb.TargetGroupARN,
 				"register", register, "err", terr)
 		}
 	}
@@ -251,7 +252,7 @@ func (s *Service) applyServiceTargets(kv nats.KeyValue, accountID string, task *
 // public IP onto the task. No-op for non-service or non-awsvpc tasks, or when an
 // EIP is already assigned. Best-effort: a failure logs and leaves the task with
 // only its private endpoint.
-func (s *Service) assignTaskPublicIP(kv nats.KeyValue, accountID string, task *TaskRecord) {
+func (s *Service) assignTaskPublicIP(ctx context.Context, kv nats.KeyValue, accountID string, task *TaskRecord) {
 	if s.eips == nil || task.ENIID == "" || task.ENIPublicIP != "" {
 		return
 	}
@@ -264,27 +265,27 @@ func (s *Service) assignTaskPublicIP(kv nats.KeyValue, accountID string, task *T
 	if err != nil || !found || !strings.EqualFold(svc.AssignPublicIP, "ENABLED") {
 		return
 	}
-	publicIP, allocID, err := s.eips.AllocateAndAssociate(accountID, task.ENIID)
+	publicIP, allocID, err := s.eips.AllocateAndAssociate(ctx, accountID, task.ENIID)
 	if err != nil {
-		slog.Error("ECS auto-EIP assign failed", "task", task.TaskID, "eni", task.ENIID, "err", err)
+		slog.ErrorContext(ctx, "ECS auto-EIP assign failed", "task", task.TaskID, "eni", task.ENIID, "err", err)
 		return
 	}
 	task.ENIPublicIP = publicIP
 	task.ENIEIPAllocationID = allocID
 	if perr := putJSON(kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
-		slog.Error("ECS auto-EIP: persist public IP failed", "task", task.TaskID, "err", perr)
+		slog.ErrorContext(ctx, "ECS auto-EIP: persist public IP failed", "task", task.TaskID, "err", perr)
 	}
 }
 
 // releaseTaskPublicIP disassociates + releases a task's auto-assigned Elastic IP
 // and clears the record. No-op when no EIP was assigned. The cleared record is
 // reflected back into task; callers on the STOPPED path persist it.
-func (s *Service) releaseTaskPublicIP(accountID string, task *TaskRecord) {
+func (s *Service) releaseTaskPublicIP(ctx context.Context, accountID string, task *TaskRecord) {
 	if s.eips == nil || task.ENIEIPAllocationID == "" {
 		return
 	}
-	if err := s.eips.Release(accountID, task.ENIEIPAllocationID); err != nil {
-		slog.Error("ECS auto-EIP release failed", "task", task.TaskID, "alloc", task.ENIEIPAllocationID, "err", err)
+	if err := s.eips.Release(ctx, accountID, task.ENIEIPAllocationID); err != nil {
+		slog.ErrorContext(ctx, "ECS auto-EIP release failed", "task", task.TaskID, "alloc", task.ENIEIPAllocationID, "err", err)
 	}
 	task.ENIPublicIP = ""
 	task.ENIEIPAllocationID = ""

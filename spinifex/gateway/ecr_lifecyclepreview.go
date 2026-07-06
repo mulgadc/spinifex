@@ -25,6 +25,7 @@ type lifecyclePreviewRequest struct {
 // and evaluates it against the repository's current images. A missing policy
 // (no override and none stored) yields LifecyclePolicyNotFoundException.
 func (gw *GatewayConfig) evaluateLifecyclePreview(r *http.Request) (string, []handlers_ecr.LifecycleExpiry, *lifecyclePreviewRequest, error) {
+	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return "", nil, nil, err
@@ -40,7 +41,7 @@ func (gw *GatewayConfig) evaluateLifecyclePreview(r *http.Request) (string, []ha
 	policyText := req.LifecyclePolicyText
 	if policyText == "" {
 		store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)
-		stored, err := store.GetLifecyclePolicy(accountID, req.RepositoryName)
+		stored, err := store.GetLifecyclePolicy(ctx, accountID, req.RepositoryName)
 		if err != nil {
 			if errors.Is(err, handlers_ecr.ErrNotFound) {
 				return "", nil, nil, errors.New(awserrors.ErrorLifecyclePolicyNotFound)
@@ -50,7 +51,7 @@ func (gw *GatewayConfig) evaluateLifecyclePreview(r *http.Request) (string, []ha
 		policyText = string(stored)
 	}
 
-	records, err := gw.ECRRegistry.ListImages(accountID, req.RepositoryName)
+	records, err := gw.ECRRegistry.ListImages(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
 			return "", nil, nil, errors.New(awserrors.ErrorRepositoryNotFound)

@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -31,7 +32,7 @@ func driveRunning(t *testing.T, svc *Service, kv nats.KeyValue, cluster, name st
 		if tasks[i].LastStatus != TaskStatusPending {
 			continue
 		}
-		require.NoError(t, svc.recordTaskState(&bus.TaskState{
+		require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
 			AccountID: testAccountID, ClusterName: cluster, TaskID: tasks[i].TaskID,
 			LastStatus: TaskStatusRunning,
 		}))
@@ -48,7 +49,7 @@ func failPending(t *testing.T, svc *Service, kv nats.KeyValue, cluster, name str
 		if tasks[i].LastStatus != TaskStatusPending {
 			continue
 		}
-		require.NoError(t, svc.recordTaskState(&bus.TaskState{
+		require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
 			AccountID: testAccountID, ClusterName: cluster, TaskID: tasks[i].TaskID,
 			LastStatus: TaskStatusStopped, Reason: "image pull failed",
 		}))
@@ -57,7 +58,7 @@ func failPending(t *testing.T, svc *Service, kv nats.KeyValue, cluster, name str
 
 func TestDeployment_CreateService_SeedsPrimary(t *testing.T) {
 	svc, _, kv := serviceTestRig(t)
-	out, err := svc.CreateService(&ecs.CreateServiceInput{
+	out, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
 		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(2),
 	}, testAccountID)
@@ -82,7 +83,7 @@ func TestDeployment_CreateService_SeedsPrimary(t *testing.T) {
 
 func TestDeployment_RollingUpdate_ReplacesOldWithNew(t *testing.T) {
 	svc, _, kv := serviceTestRig(t)
-	_, err := svc.CreateService(&ecs.CreateServiceInput{
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
 		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(2),
 	}, testAccountID)
@@ -90,7 +91,7 @@ func TestDeployment_RollingUpdate_ReplacesOldWithNew(t *testing.T) {
 
 	// Complete the initial deployment.
 	driveRunning(t, svc, kv, "web", "web")
-	require.NoError(t, svc.reconcileService(kv, testAccountID, reloadService(t, kv, "web", "web")))
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
 	rec := reloadService(t, kv, "web", "web")
 	require.Len(t, rec.Deployments, 1)
 	assert.Equal(t, RolloutStateCompleted, rec.primaryDeployment().RolloutState)
@@ -98,7 +99,7 @@ func TestDeployment_RollingUpdate_ReplacesOldWithNew(t *testing.T) {
 
 	// New taskdef revision starts a rolling deployment.
 	registerTaskDef(t, svc, "app", 128, 256) // app:2
-	upd, err := svc.UpdateService(&ecs.UpdateServiceInput{
+	upd, err := svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
 		Cluster: aws.String("web"), Service: aws.String("web"),
 		TaskDefinition: aws.String("app:2"),
 	}, testAccountID)
@@ -120,7 +121,7 @@ func TestDeployment_RollingUpdate_ReplacesOldWithNew(t *testing.T) {
 
 	// New tasks come up; a reconcile drains the old ones and completes the rollout.
 	driveRunning(t, svc, kv, "web", "web")
-	require.NoError(t, svc.reconcileService(kv, testAccountID, reloadService(t, kv, "web", "web")))
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
 	rec = reloadService(t, kv, "web", "web")
 	require.Len(t, rec.Deployments, 1)
 	assert.Equal(t, RolloutStateCompleted, rec.primaryDeployment().RolloutState)
@@ -139,7 +140,7 @@ func TestDeployment_MinimumHealthyPercent_GatesDrain(t *testing.T) {
 	svc, _, kv := serviceTestRig(t)
 	// min=100, max=150: with desired=2 the rollout may run up to 3 tasks and must
 	// keep 2 healthy, so old tasks only drain as new ones become healthy.
-	_, err := svc.CreateService(&ecs.CreateServiceInput{
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
 		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(2),
 		DeploymentConfiguration: &ecs.DeploymentConfiguration{
@@ -148,10 +149,10 @@ func TestDeployment_MinimumHealthyPercent_GatesDrain(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	driveRunning(t, svc, kv, "web", "web")
-	require.NoError(t, svc.reconcileService(kv, testAccountID, reloadService(t, kv, "web", "web")))
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
 
 	registerTaskDef(t, svc, "app", 128, 256) // app:2
-	_, err = svc.UpdateService(&ecs.UpdateServiceInput{
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
 		Cluster: aws.String("web"), Service: aws.String("web"), TaskDefinition: aws.String("app:2"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -168,7 +169,7 @@ func TestDeployment_MinimumHealthyPercent_GatesDrain(t *testing.T) {
 
 func TestDeployment_CircuitBreaker_RollsBackToLastGood(t *testing.T) {
 	svc, _, kv := serviceTestRig(t)
-	_, err := svc.CreateService(&ecs.CreateServiceInput{
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
 		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
 		DeploymentConfiguration: &ecs.DeploymentConfiguration{
@@ -179,13 +180,13 @@ func TestDeployment_CircuitBreaker_RollsBackToLastGood(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	driveRunning(t, svc, kv, "web", "web")
-	require.NoError(t, svc.reconcileService(kv, testAccountID, reloadService(t, kv, "web", "web")))
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
 	goodARN := reloadService(t, kv, "web", "web").LastGoodTaskDefARN
 	require.NotEmpty(t, goodARN)
 
 	// Roll out a revision whose tasks always fail to start.
 	registerTaskDef(t, svc, "app", 128, 256) // app:2
-	_, err = svc.UpdateService(&ecs.UpdateServiceInput{
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
 		Cluster: aws.String("web"), Service: aws.String("web"), TaskDefinition: aws.String("app:2"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -194,7 +195,7 @@ func TestDeployment_CircuitBreaker_RollsBackToLastGood(t *testing.T) {
 	// failure threshold the breaker trips on the next reconcile and rolls back.
 	for range circuitBreakerFailureThreshold {
 		failPending(t, svc, kv, "web", "web")
-		require.NoError(t, svc.reconcileService(kv, testAccountID, reloadService(t, kv, "web", "web")))
+		require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
 	}
 
 	rec := reloadService(t, kv, "web", "web")
@@ -216,7 +217,7 @@ func TestDeployment_LegacyServiceSynthesizesPrimary(t *testing.T) {
 	}
 	require.NoError(t, putJSON(kv, ServiceKey("web", "legacy"), rec))
 
-	require.NoError(t, svc.reconcileService(kv, testAccountID, rec))
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, rec))
 	reloaded := reloadService(t, kv, "web", "legacy")
 	primary := reloaded.primaryDeployment()
 	require.NotNil(t, primary)

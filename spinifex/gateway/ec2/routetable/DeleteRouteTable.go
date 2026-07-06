@@ -1,6 +1,7 @@
 package gateway_ec2_routetable
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -19,13 +20,13 @@ func ValidateDeleteRouteTableInput(input *ec2.DeleteRouteTableInput) error {
 	return nil
 }
 
-func DeleteRouteTable(input *ec2.DeleteRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.DeleteRouteTableOutput, error) {
+func DeleteRouteTable(ctx context.Context, input *ec2.DeleteRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.DeleteRouteTableOutput, error) {
 	var output ec2.DeleteRouteTableOutput
 	if err := ValidateDeleteRouteTableInput(input); err != nil {
 		return output, err
 	}
 	svc := handlers_ec2_routetable.NewNATSRouteTableService(natsConn)
-	result, err := svc.DeleteRouteTable(input, accountID)
+	result, err := svc.DeleteRouteTable(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

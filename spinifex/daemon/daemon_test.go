@@ -171,7 +171,7 @@ func getTestInstanceType(t *testing.T) string {
 func seedTestAMI(t *testing.T, store *objectstore.MemoryObjectStore, bucket, imageID string) {
 	t.Helper()
 	amiConfig := `{"VolumeConfig":{"AMIMetadata":{"ImageID":"` + imageID + `","Name":"test"}}}`
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(imageID + "/config.json"),
 		Body:        strings.NewReader(amiConfig),

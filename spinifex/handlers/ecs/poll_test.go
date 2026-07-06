@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
@@ -20,7 +21,7 @@ func TestPollAssignments_DrainsStopsAndAcks(t *testing.T) {
 	require.NoError(t, putJSON(kv, StopKey("web", "i-1", "t-2"),
 		&bus.StopDirective{TaskID: "t-2", Reason: "drain"}))
 
-	out, err := svc.PollAssignments(&PollAssignmentsInput{
+	out, err := svc.PollAssignments(context.Background(), &PollAssignmentsInput{
 		Cluster: "web", ContainerInstance: "i-1",
 	}, testAccountID)
 	require.NoError(t, err)
@@ -32,7 +33,7 @@ func TestPollAssignments_DrainsStopsAndAcks(t *testing.T) {
 
 	// Ack both (with a blank ID that must be skipped) → entries removed, next poll
 	// drains empty.
-	out, err = svc.PollAssignments(&PollAssignmentsInput{
+	out, err = svc.PollAssignments(context.Background(), &PollAssignmentsInput{
 		Cluster: "web", ContainerInstance: "i-1",
 		AckTaskIDs: []string{"t-1", ""}, AckStopIDs: []string{"t-2", ""},
 	}, testAccountID)

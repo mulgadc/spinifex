@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -20,7 +21,7 @@ func ValidateCreateTargetGroupInput(input *elbv2.CreateTargetGroupInput) error {
 }
 
 // CreateTargetGroup handles the ELBv2 CreateTargetGroup API call.
-func CreateTargetGroup(input *elbv2.CreateTargetGroupInput, natsConn *nats.Conn, accountID string) (elbv2.CreateTargetGroupOutput, error) {
+func CreateTargetGroup(ctx context.Context, input *elbv2.CreateTargetGroupInput, natsConn *nats.Conn, accountID string) (elbv2.CreateTargetGroupOutput, error) {
 	var output elbv2.CreateTargetGroupOutput
 
 	if err := ValidateCreateTargetGroupInput(input); err != nil {
@@ -28,7 +29,7 @@ func CreateTargetGroup(input *elbv2.CreateTargetGroupInput, natsConn *nats.Conn,
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.CreateTargetGroup(input, accountID)
+	result, err := svc.CreateTargetGroup(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

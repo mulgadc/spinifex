@@ -27,15 +27,16 @@ type describeRepositoriesRequest struct {
 // gap pending registry-policy v2 and is denied. Pagination (maxResults/
 // nextToken, Q9) is not yet implemented — the full list is returned in one page.
 func (gw *GatewayConfig) handleDescribeRepositories(w http.ResponseWriter, r *http.Request) error {
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	ctx := r.Context()
+	accountID, _ := ctx.Value(ctxAccountID).(string)
 	if accountID == "" {
-		slog.Error("DescribeRepositories: no account ID in auth context")
+		slog.ErrorContext(ctx, "DescribeRepositories: no account ID in auth context")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Error("DescribeRepositories: failed to read body", "err", err)
+		slog.ErrorContext(ctx, "DescribeRepositories: failed to read body", "err", err)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	var req describeRepositoriesRequest
@@ -51,21 +52,21 @@ func (gw *GatewayConfig) handleDescribeRepositories(w http.ResponseWriter, r *ht
 	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)
 	names := req.RepositoryNames
 	if len(names) == 0 {
-		names, err = store.ListRepos(accountID)
+		names, err = store.ListRepos(ctx, accountID)
 		if err != nil {
-			slog.Error("DescribeRepositories: list repos failed", "err", err)
+			slog.ErrorContext(ctx, "DescribeRepositories: list repos failed", "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 	}
 
 	repos := make([]*ecr.Repository, 0, len(names))
 	for _, name := range names {
-		meta, err := store.GetRepo(accountID, name)
+		meta, err := store.GetRepo(ctx, accountID, name)
 		if err != nil {
 			if errors.Is(err, handlers_ecr.ErrNotFound) {
 				return errors.New(awserrors.ErrorRepositoryNotFound)
 			}
-			slog.Error("DescribeRepositories: get repo failed", "repo", name, "err", err)
+			slog.ErrorContext(ctx, "DescribeRepositories: get repo failed", "repo", name, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		repos = append(repos, &ecr.Repository{

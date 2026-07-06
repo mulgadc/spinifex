@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,47 +24,47 @@ import (
 // adapted onto NATS by NATSECSService. One method per wired AWS ECS action; the
 // remaining actions stay NotImplemented at the gateway.
 type ECSService interface {
-	CreateCluster(input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error)
-	DeleteCluster(input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error)
-	DescribeClusters(input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error)
-	ListClusters(input *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error)
+	CreateCluster(ctx context.Context, input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error)
+	DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error)
+	DescribeClusters(ctx context.Context, input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error)
+	ListClusters(ctx context.Context, input *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error)
 
-	RegisterTaskDefinition(input *ecs.RegisterTaskDefinitionInput, accountID string) (*ecs.RegisterTaskDefinitionOutput, error)
-	DeregisterTaskDefinition(input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error)
-	DescribeTaskDefinition(input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error)
-	ListTaskDefinitions(input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error)
+	RegisterTaskDefinition(ctx context.Context, input *ecs.RegisterTaskDefinitionInput, accountID string) (*ecs.RegisterTaskDefinitionOutput, error)
+	DeregisterTaskDefinition(ctx context.Context, input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error)
+	DescribeTaskDefinition(ctx context.Context, input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error)
+	ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error)
 
-	RegisterContainerInstance(input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error)
-	DeregisterContainerInstance(input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error)
-	UpdateContainerInstancesState(input *ecs.UpdateContainerInstancesStateInput, accountID string) (*ecs.UpdateContainerInstancesStateOutput, error)
-	DescribeContainerInstances(input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error)
-	ListContainerInstances(input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error)
+	RegisterContainerInstance(ctx context.Context, input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error)
+	DeregisterContainerInstance(ctx context.Context, input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error)
+	UpdateContainerInstancesState(ctx context.Context, input *ecs.UpdateContainerInstancesStateInput, accountID string) (*ecs.UpdateContainerInstancesStateOutput, error)
+	DescribeContainerInstances(ctx context.Context, input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error)
+	ListContainerInstances(ctx context.Context, input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error)
 
-	RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error)
-	StartTask(input *ecs.StartTaskInput, accountID string) (*ecs.StartTaskOutput, error)
-	StopTask(input *ecs.StopTaskInput, accountID string) (*ecs.StopTaskOutput, error)
-	DescribeTasks(input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error)
-	ListTasks(input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error)
+	RunTask(ctx context.Context, input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error)
+	StartTask(ctx context.Context, input *ecs.StartTaskInput, accountID string) (*ecs.StartTaskOutput, error)
+	StopTask(ctx context.Context, input *ecs.StopTaskInput, accountID string) (*ecs.StopTaskOutput, error)
+	DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error)
+	ListTasks(ctx context.Context, input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error)
 
-	CreateService(input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error)
-	UpdateService(input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error)
-	DeleteService(input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error)
-	DescribeServices(input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error)
-	ListServices(input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error)
+	CreateService(ctx context.Context, input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error)
+	UpdateService(ctx context.Context, input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error)
+	DeleteService(ctx context.Context, input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error)
+	DescribeServices(ctx context.Context, input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error)
+	ListServices(ctx context.Context, input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error)
 
-	SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error)
+	SubmitTaskStateChange(ctx context.Context, input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error)
 
 	// PollAssignments drains an instance's task-assignment inbox (agent → gateway).
-	PollAssignments(input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error)
+	PollAssignments(ctx context.Context, input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error)
 
 	// ProvisionCapacity launches container-instance EC2 capacity into a cluster.
-	ProvisionCapacity(input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error)
+	ProvisionCapacity(ctx context.Context, input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error)
 }
 
 // ecsImageResolver is the narrow AMI surface for resolving the spinifex-ecs-node
 // AMI by tag.
 type ecsImageResolver interface {
-	DescribeImages(input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error)
+	DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error)
 }
 
 // ecsIAM is the narrow IAM surface ProvisionCapacity needs to find-or-create the
@@ -88,7 +89,7 @@ type Deps struct {
 	GatewayCACert  string
 	IAM            ecsIAM
 	Images         ecsImageResolver
-	RunInstances   func(*ec2.RunInstancesInput, string) (*ec2.Reservation, error)
+	RunInstances   func(context.Context, *ec2.RunInstancesInput, string) (*ec2.Reservation, error)
 }
 
 // Service is the daemon-side ECS control-plane implementation, backed by the
@@ -216,7 +217,7 @@ func keysWithPrefix(kv nats.KeyValue, prefix string) ([]string, error) {
 
 // CreateCluster persists a cluster meta record. Idempotent: re-creating an
 // existing cluster returns the existing ACTIVE record.
-func (s *Service) CreateCluster(input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error) {
+func (s *Service) CreateCluster(_ context.Context, input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error) {
 	name := aws.StringValue(input.ClusterName)
 	if name == "" {
 		name = defaultCluster
@@ -253,7 +254,7 @@ func (s *Service) CreateCluster(input *ecs.CreateClusterInput, accountID string)
 
 // DescribeClusters returns meta for the named clusters; unknown names are
 // silently skipped (AWS returns them under "failures", omitted here in v1).
-func (s *Service) DescribeClusters(input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error) {
+func (s *Service) DescribeClusters(_ context.Context, input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -278,7 +279,7 @@ func (s *Service) DescribeClusters(input *ecs.DescribeClustersInput, accountID s
 }
 
 // ListClusters returns the ARNs of all clusters in the account.
-func (s *Service) ListClusters(_ *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error) {
+func (s *Service) ListClusters(_ context.Context, _ *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -330,7 +331,7 @@ func tagsToAWS(tags map[string]string) []*ecs.Tag {
 // --- Task definition ---
 
 // RegisterTaskDefinition stores a new revision of a family, bumping latest-rev.
-func (s *Service) RegisterTaskDefinition(input *ecs.RegisterTaskDefinitionInput, accountID string) (*ecs.RegisterTaskDefinitionOutput, error) {
+func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.RegisterTaskDefinitionInput, accountID string) (*ecs.RegisterTaskDefinitionOutput, error) {
 	family := aws.StringValue(input.Family)
 	if family == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
@@ -338,7 +339,7 @@ func (s *Service) RegisterTaskDefinition(input *ecs.RegisterTaskDefinitionInput,
 	if err := validateContainerDefs(input.ContainerDefinitions); err != nil {
 		return nil, err
 	}
-	warnUnsupportedLogDrivers(family, input.ContainerDefinitions)
+	warnUnsupportedLogDrivers(ctx, family, input.ContainerDefinitions)
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -386,7 +387,7 @@ func validateContainerDefs(defs []*ecs.ContainerDefinition) error {
 // warnUnsupportedLogDrivers emits the honest "logs discarded" operator signal for
 // any container whose log driver is not the host-side json-file default. The
 // taskdef is still accepted for parity; only json-file is actually collected.
-func warnUnsupportedLogDrivers(family string, defs []*ecs.ContainerDefinition) {
+func warnUnsupportedLogDrivers(ctx context.Context, family string, defs []*ecs.ContainerDefinition) {
 	for _, c := range defs {
 		if c == nil || c.LogConfiguration == nil {
 			continue
@@ -395,7 +396,7 @@ func warnUnsupportedLogDrivers(family string, defs []*ecs.ContainerDefinition) {
 		if driver == "" || driver == LogDriverJSONFile {
 			continue
 		}
-		slog.Warn("ECS RegisterTaskDefinition: logDriver not implemented; container logs will be discarded",
+		slog.WarnContext(ctx, "ECS RegisterTaskDefinition: logDriver not implemented; container logs will be discarded",
 			"family", family, "container", aws.StringValue(c.Name), "logDriver", driver)
 	}
 }
@@ -416,7 +417,7 @@ func (s *Service) nextRevision(kv nats.KeyValue, family string) (int, error) {
 // DeregisterTaskDefinition marks a specific task-definition revision INACTIVE.
 // AWS requires an explicit family:revision (a bare family is rejected); the
 // revision stays describable, matching AWS. Idempotent.
-func (s *Service) DeregisterTaskDefinition(input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
+func (s *Service) DeregisterTaskDefinition(_ context.Context, input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
 	family, rev := parseTaskDefRef(aws.StringValue(input.TaskDefinition))
 	if family == "" || rev == 0 {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
@@ -441,7 +442,7 @@ func (s *Service) DeregisterTaskDefinition(input *ecs.DeregisterTaskDefinitionIn
 }
 
 // DescribeTaskDefinition resolves "family", "family:rev" or an ARN to a revision.
-func (s *Service) DescribeTaskDefinition(input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error) {
+func (s *Service) DescribeTaskDefinition(_ context.Context, input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -456,7 +457,7 @@ func (s *Service) DescribeTaskDefinition(input *ecs.DescribeTaskDefinitionInput,
 // ListTaskDefinitions returns revision ARNs, optionally filtered by family and
 // by status. Matching AWS, the status defaults to ACTIVE when unset, so
 // deregistered (INACTIVE) revisions drop off the default listing.
-func (s *Service) ListTaskDefinitions(input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error) {
+func (s *Service) ListTaskDefinitions(_ context.Context, input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err

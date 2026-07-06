@@ -288,17 +288,19 @@ func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *
 
 	input := new(I)
 	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		respondNATS(msg, errResp)
 		return
 	}
 	out, err := fn(ctx, input)
 	if err != nil {
-		span.RecordError(err)
+		MarkSpanError(span, err)
 		respondNATS(msg, GenerateErrorPayload(awserrors.ValidErrorCode(err.Error())))
 		return
 	}
 	data, err := json.Marshal(out)
 	if err != nil {
+		MarkSpanError(span, err)
 		respondNATS(msg, GenerateErrorPayload(awserrors.ErrorServerInternal))
 		return
 	}
@@ -340,10 +342,20 @@ type GatherOpts struct {
 // Error envelopes and oversized frames are dropped from frames but counted in sum;
 // returned frames are raw daemon replies for the caller to decode and merge.
 func Gather(conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
+	return GatherCtx(context.Background(), conn, subject, payload, opts)
+}
+
+// GatherCtx is Gather carrying ctx's trace context onto the wire: it opens a
+// producer span for the fan-out and injects traceparent so every consumer
+// joins the same trace. Prefer it over Gather when a request context exists.
+func GatherCtx(ctx context.Context, conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
 	sum.ErrorCodes = map[string]int{}
 	if conn == nil || !conn.IsConnected() {
 		return nil, sum, ErrClusterUnavailable
 	}
+
+	ctx, span := startProducerSpan(ctx, subject)
+	defer func() { endSpanWithError(span, err) }()
 
 	inbox := nats.NewInbox()
 	sub, err := conn.SubscribeSync(inbox)
@@ -358,6 +370,7 @@ func Gather(conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (f
 	if opts.AccountID != "" {
 		pubMsg.Header.Set(AccountIDHeader, opts.AccountID)
 	}
+	InjectTraceContext(ctx, pubMsg.Header)
 	if err := conn.PublishMsg(pubMsg); err != nil {
 		return nil, sum, fmt.Errorf("failed to publish request: %w", err)
 	}

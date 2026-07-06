@@ -1,6 +1,7 @@
 package handlers_ec2_eip
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -20,7 +21,7 @@ func eipTagVal(tags []*ec2.Tag, key string) string {
 
 func TestEIPRecordTagsMirror(t *testing.T) {
 	svc, _ := setupTestEIP(t)
-	alloc, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	alloc, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	allocID := *alloc.AllocationId
 
@@ -32,7 +33,7 @@ func TestEIPRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	out, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	out, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		AllocationIds: []*string{aws.String(allocID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -48,7 +49,7 @@ func TestEIPRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	out, err = svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	out, err = svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		AllocationIds: []*string{aws.String(allocID)},
 	}, testAccountID)
 	require.NoError(t, err)

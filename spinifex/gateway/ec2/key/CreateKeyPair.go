@@ -1,6 +1,7 @@
 package gateway_ec2_key
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 
@@ -22,7 +23,7 @@ func ValidateCreateKeyPairInput(input *ec2.CreateKeyPairInput) (err error) {
 	return err
 }
 
-func CreateKeyPair(input *ec2.CreateKeyPairInput, natsConn *nats.Conn, accountID string) (output ec2.CreateKeyPairOutput, err error) {
+func CreateKeyPair(ctx context.Context, input *ec2.CreateKeyPairInput, natsConn *nats.Conn, accountID string) (output ec2.CreateKeyPairOutput, err error) {
 	err = ValidateCreateKeyPairInput(input)
 
 	if err != nil {
@@ -30,10 +31,10 @@ func CreateKeyPair(input *ec2.CreateKeyPairInput, natsConn *nats.Conn, accountID
 	}
 
 	keyService := handlers_ec2_key.NewNATSKeyService(natsConn)
-	result, err := keyService.CreateKeyPair(input, accountID)
+	result, err := keyService.CreateKeyPair(ctx, input, accountID)
 
 	if err != nil {
-		slog.Error("CreateKeyPair failed", "err", err)
+		slog.ErrorContext(ctx, "CreateKeyPair failed", "err", err)
 		return output, err
 	}
 

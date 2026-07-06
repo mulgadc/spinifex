@@ -1,6 +1,7 @@
 package gateway_ec2_eip
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -10,7 +11,7 @@ import (
 )
 
 // AllocateAddress handles the EC2 AllocateAddress API call.
-func AllocateAddress(input *ec2.AllocateAddressInput, natsConn *nats.Conn, accountID string) (ec2.AllocateAddressOutput, error) {
+func AllocateAddress(ctx context.Context, input *ec2.AllocateAddressInput, natsConn *nats.Conn, accountID string) (ec2.AllocateAddressOutput, error) {
 	var output ec2.AllocateAddressOutput
 
 	if input == nil {
@@ -18,7 +19,7 @@ func AllocateAddress(input *ec2.AllocateAddressInput, natsConn *nats.Conn, accou
 	}
 
 	svc := handlers_ec2_eip.NewNATSEIPService(natsConn)
-	result, err := svc.AllocateAddress(input, accountID)
+	result, err := svc.AllocateAddress(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -20,7 +21,7 @@ func ValidateCreateLoadBalancerInput(input *elbv2.CreateLoadBalancerInput) error
 }
 
 // CreateLoadBalancer handles the ELBv2 CreateLoadBalancer API call.
-func CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, natsConn *nats.Conn, accountID string) (elbv2.CreateLoadBalancerOutput, error) {
+func CreateLoadBalancer(ctx context.Context, input *elbv2.CreateLoadBalancerInput, natsConn *nats.Conn, accountID string) (elbv2.CreateLoadBalancerOutput, error) {
 	var output elbv2.CreateLoadBalancerOutput
 
 	if err := ValidateCreateLoadBalancerInput(input); err != nil {
@@ -28,7 +29,7 @@ func CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, natsConn *nats.Con
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.CreateLoadBalancer(input, accountID)
+	result, err := svc.CreateLoadBalancer(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

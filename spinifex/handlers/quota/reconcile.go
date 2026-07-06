@@ -35,7 +35,7 @@ type InstanceLister func(accountID string) (reservations []*ec2.Reservation, com
 func NATSInstanceLister(natsConn *nats.Conn, expectedNodes func() int) InstanceLister {
 	return func(accountID string) ([]*ec2.Reservation, bool, error) {
 		return gateway_ec2_instance.DescribeInstancesForReconcile(
-			&ec2.DescribeInstancesInput{}, natsConn, expectedNodes(), accountID)
+			context.Background(), &ec2.DescribeInstancesInput{}, natsConn, expectedNodes(), accountID)
 	}
 }
 

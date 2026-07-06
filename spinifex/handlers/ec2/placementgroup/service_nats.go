@@ -1,6 +1,7 @@
 package handlers_ec2_placementgroup
 
 import (
+	"context"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -13,43 +14,45 @@ type NATSPlacementGroupService struct {
 	natsConn *nats.Conn
 }
 
+var _ PlacementGroupService = (*NATSPlacementGroupService)(nil)
+
 // NewNATSPlacementGroupService creates a new NATS-based placement group service.
 func NewNATSPlacementGroupService(conn *nats.Conn) PlacementGroupService {
 	return &NATSPlacementGroupService{natsConn: conn}
 }
 
-func (s *NATSPlacementGroupService) CreatePlacementGroup(input *ec2.CreatePlacementGroupInput, accountID string) (*ec2.CreatePlacementGroupOutput, error) {
-	return utils.NATSRequest[ec2.CreatePlacementGroupOutput](s.natsConn, "ec2.CreatePlacementGroup", input, 30*time.Second, accountID)
+func (s *NATSPlacementGroupService) CreatePlacementGroup(ctx context.Context, input *ec2.CreatePlacementGroupInput, accountID string) (*ec2.CreatePlacementGroupOutput, error) {
+	return utils.NATSRequestCtx[ec2.CreatePlacementGroupOutput](ctx, s.natsConn, "ec2.CreatePlacementGroup", input, 30*time.Second, accountID)
 }
 
-func (s *NATSPlacementGroupService) DeletePlacementGroup(input *ec2.DeletePlacementGroupInput, accountID string) (*ec2.DeletePlacementGroupOutput, error) {
-	return utils.NATSRequest[ec2.DeletePlacementGroupOutput](s.natsConn, "ec2.DeletePlacementGroup", input, 30*time.Second, accountID)
+func (s *NATSPlacementGroupService) DeletePlacementGroup(ctx context.Context, input *ec2.DeletePlacementGroupInput, accountID string) (*ec2.DeletePlacementGroupOutput, error) {
+	return utils.NATSRequestCtx[ec2.DeletePlacementGroupOutput](ctx, s.natsConn, "ec2.DeletePlacementGroup", input, 30*time.Second, accountID)
 }
 
-func (s *NATSPlacementGroupService) DescribePlacementGroups(input *ec2.DescribePlacementGroupsInput, accountID string) (*ec2.DescribePlacementGroupsOutput, error) {
-	return utils.NATSRequest[ec2.DescribePlacementGroupsOutput](s.natsConn, "ec2.DescribePlacementGroups", input, 30*time.Second, accountID)
+func (s *NATSPlacementGroupService) DescribePlacementGroups(ctx context.Context, input *ec2.DescribePlacementGroupsInput, accountID string) (*ec2.DescribePlacementGroupsOutput, error) {
+	return utils.NATSRequestCtx[ec2.DescribePlacementGroupsOutput](ctx, s.natsConn, "ec2.DescribePlacementGroups", input, 30*time.Second, accountID)
 }
 
-func (s *NATSPlacementGroupService) ReserveSpreadNodes(input *ReserveSpreadNodesInput, accountID string) (*ReserveSpreadNodesOutput, error) {
-	return utils.NATSRequest[ReserveSpreadNodesOutput](s.natsConn, "ec2.ReserveSpreadNodes", input, 30*time.Second, accountID)
+func (s *NATSPlacementGroupService) ReserveSpreadNodes(ctx context.Context, input *ReserveSpreadNodesInput, accountID string) (*ReserveSpreadNodesOutput, error) {
+	return utils.NATSRequestCtx[ReserveSpreadNodesOutput](ctx, s.natsConn, "ec2.ReserveSpreadNodes", input, 30*time.Second, accountID)
 }
 
-func (s *NATSPlacementGroupService) FinalizeSpreadInstances(input *FinalizeSpreadInstancesInput, accountID string) (*FinalizeSpreadInstancesOutput, error) {
-	return utils.NATSRequest[FinalizeSpreadInstancesOutput](s.natsConn, "ec2.FinalizeSpreadInstances", input, 30*time.Second, accountID)
+func (s *NATSPlacementGroupService) FinalizeSpreadInstances(ctx context.Context, input *FinalizeSpreadInstancesInput, accountID string) (*FinalizeSpreadInstancesOutput, error) {
+	return utils.NATSRequestCtx[FinalizeSpreadInstancesOutput](ctx, s.natsConn, "ec2.FinalizeSpreadInstances", input, 30*time.Second, accountID)
 }
 
-func (s *NATSPlacementGroupService) ReleaseSpreadNodes(input *ReleaseSpreadNodesInput, accountID string) (*ReleaseSpreadNodesOutput, error) {
-	return utils.NATSRequest[ReleaseSpreadNodesOutput](s.natsConn, "ec2.ReleaseSpreadNodes", input, 30*time.Second, accountID)
+func (s *NATSPlacementGroupService) ReleaseSpreadNodes(ctx context.Context, input *ReleaseSpreadNodesInput, accountID string) (*ReleaseSpreadNodesOutput, error) {
+	return utils.NATSRequestCtx[ReleaseSpreadNodesOutput](ctx, s.natsConn, "ec2.ReleaseSpreadNodes", input, 30*time.Second, accountID)
 }
 
-func (s *NATSPlacementGroupService) RemoveInstance(input *RemoveInstanceInput, accountID string) (*RemoveInstanceOutput, error) {
-	return utils.NATSRequest[RemoveInstanceOutput](s.natsConn, "ec2.RemoveInstanceFromPlacementGroup", input, 30*time.Second, accountID)
+func (s *NATSPlacementGroupService) RemoveInstance(ctx context.Context, input *RemoveInstanceInput, accountID string) (*RemoveInstanceOutput, error) {
+	return utils.NATSRequestCtx[RemoveInstanceOutput](ctx, s.natsConn, "ec2.RemoveInstanceFromPlacementGroup", input, 30*time.Second, accountID)
 }
 
-func (s *NATSPlacementGroupService) ReserveClusterNode(input *ReserveClusterNodeInput, accountID string) (*ReserveClusterNodeOutput, error) {
-	return utils.NATSRequest[ReserveClusterNodeOutput](s.natsConn, "ec2.ReserveClusterNode", input, 30*time.Second, accountID)
+func (s *NATSPlacementGroupService) ReserveClusterNode(ctx context.Context, input *ReserveClusterNodeInput, accountID string) (*ReserveClusterNodeOutput, error) {
+	return utils.NATSRequestCtx[ReserveClusterNodeOutput](ctx, s.natsConn, "ec2.ReserveClusterNode", input, 30*time.Second, accountID)
 }
 
-func (s *NATSPlacementGroupService) FinalizeClusterInstances(input *FinalizeClusterInstancesInput, accountID string) (*FinalizeClusterInstancesOutput, error) {
-	return utils.NATSRequest[FinalizeClusterInstancesOutput](s.natsConn, "ec2.FinalizeClusterInstances", input, 30*time.Second, accountID)
+func (s *NATSPlacementGroupService) FinalizeClusterInstances(ctx context.Context, input *FinalizeClusterInstancesInput, accountID string) (*FinalizeClusterInstancesOutput, error) {
+	return utils.NATSRequestCtx[FinalizeClusterInstancesOutput](ctx, s.natsConn, "ec2.FinalizeClusterInstances", input, 30*time.Second, accountID)
 }

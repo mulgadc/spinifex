@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,7 +90,7 @@ func writeAMIConfig(store objectstore.ObjectStore, bucket, imageID string, meta 
 	if err != nil {
 		return err
 	}
-	_, err = store.PutObject(&s3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(imageID + "/config.json"),
 		Body:        bytes.NewReader(data),

@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -110,7 +111,7 @@ func TestDescribeInstanceAttribute_SingleNode(t *testing.T) {
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
 	}
 
-	output, err := DescribeInstanceAttribute(input, nc, 1, "123456789012")
+	output, err := DescribeInstanceAttribute(context.Background(), input, nc, 1, "123456789012")
 	require.NoError(t, err)
 	require.NotNil(t, output)
 	assert.Equal(t, "i-test123", *output.InstanceId)
@@ -143,7 +144,7 @@ func TestDescribeInstanceAttribute_MultipleNodes_OwnerWins(t *testing.T) {
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
 	}
 
-	output, err := DescribeInstanceAttribute(input, nc, 2, "123456789012")
+	output, err := DescribeInstanceAttribute(context.Background(), input, nc, 2, "123456789012")
 	require.NoError(t, err)
 	require.NotNil(t, output)
 	assert.Equal(t, "i-owned", *output.InstanceId)
@@ -172,7 +173,7 @@ func TestDescribeInstanceAttribute_AllNodesNotFound(t *testing.T) {
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
 	}
 
-	_, err = DescribeInstanceAttribute(input, nc, 2, "123456789012")
+	_, err = DescribeInstanceAttribute(context.Background(), input, nc, 2, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -192,7 +193,7 @@ func TestDescribeInstanceAttribute_ClientErrorPropagates(t *testing.T) {
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
 	}
 
-	_, err = DescribeInstanceAttribute(input, nc, 1, "123456789012")
+	_, err = DescribeInstanceAttribute(context.Background(), input, nc, 1, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
@@ -221,7 +222,7 @@ func TestDescribeInstanceAttribute_ServerErrorNotMaskedByNotFound(t *testing.T) 
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
 	}
 
-	_, err = DescribeInstanceAttribute(input, nc, 2, "123456789012")
+	_, err = DescribeInstanceAttribute(context.Background(), input, nc, 2, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -237,7 +238,7 @@ func TestDescribeInstanceAttribute_NoResponders(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := DescribeInstanceAttribute(input, nc, 0, "123456789012")
+	_, err := DescribeInstanceAttribute(context.Background(), input, nc, 0, "123456789012")
 	duration := time.Since(start)
 
 	require.Error(t, err)
@@ -249,7 +250,7 @@ func TestDescribeInstanceAttribute_NoResponders(t *testing.T) {
 func TestDescribeInstanceAttribute_ValidationFailure(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
-	_, err := DescribeInstanceAttribute(nil, nc, 1, "123456789012")
+	_, err := DescribeInstanceAttribute(context.Background(), nil, nc, 1, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }

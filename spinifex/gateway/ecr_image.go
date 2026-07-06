@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -70,11 +71,11 @@ type batchDeleteImageRequest struct {
 func (gw *GatewayConfig) ecrImageAccount(r *http.Request) (string, error) {
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
-		slog.Error("ECR image action: no account ID in auth context")
+		slog.ErrorContext(r.Context(), "ECR image action: no account ID in auth context")
 		return "", errors.New(awserrors.ErrorServerInternal)
 	}
 	if gw.ECRRegistry == nil {
-		slog.Error("ECR image action: OCI registry not configured")
+		slog.ErrorContext(r.Context(), "ECR image action: OCI registry not configured")
 		return "", errors.New(awserrors.ErrorServerInternal)
 	}
 	return accountID, nil
@@ -107,6 +108,7 @@ func decodeJSONBody(r *http.Request, dst any) error {
 // TAGGED/UNTAGGED filter. Tagged manifests yield one entry per tag; untagged
 // manifests yield a digest-only entry.
 func (gw *GatewayConfig) handleListImages(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return err
@@ -119,7 +121,7 @@ func (gw *GatewayConfig) handleListImages(w http.ResponseWriter, r *http.Request
 		return err
 	}
 
-	records, err := gw.ecrListImages(accountID, req.RepositoryName)
+	records, err := gw.ecrListImages(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		return err
 	}
@@ -152,6 +154,7 @@ func (gw *GatewayConfig) handleListImages(w http.ResponseWriter, r *http.Request
 // handleDescribeImages returns detailed metadata for the repo's images,
 // optionally narrowed to the requested imageIds.
 func (gw *GatewayConfig) handleDescribeImages(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return err
@@ -164,7 +167,7 @@ func (gw *GatewayConfig) handleDescribeImages(w http.ResponseWriter, r *http.Req
 		return err
 	}
 
-	records, err := gw.ecrListImages(accountID, req.RepositoryName)
+	records, err := gw.ecrListImages(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		return err
 	}
@@ -217,6 +220,7 @@ func (gw *GatewayConfig) handleDescribeImages(w http.ResponseWriter, r *http.Req
 // Per Q14 it answers HTTP 200 with a structured failures array on partial
 // misses; the digest wins over the tag when both are supplied.
 func (gw *GatewayConfig) handleBatchGetImage(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return err
@@ -244,13 +248,13 @@ func (gw *GatewayConfig) handleBatchGetImage(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 
-		body, mediaType, digest, gErr := gw.ECRRegistry.GetManifest(accountID, req.RepositoryName, ref, req.AcceptedMediaTypes)
+		body, mediaType, digest, gErr := gw.ECRRegistry.GetManifest(ctx, accountID, req.RepositoryName, ref, req.AcceptedMediaTypes)
 		if errors.Is(gErr, gateway_ecr.ErrImageNotFound) {
 			failures = append(failures, imageFailure(id, ecr.ImageFailureCodeImageNotFound, "image not found"))
 			continue
 		}
 		if gErr != nil {
-			slog.Error("BatchGetImage: get manifest failed", "repo", req.RepositoryName, "err", gErr)
+			slog.ErrorContext(ctx, "BatchGetImage: get manifest failed", "repo", req.RepositoryName, "err", gErr)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 
@@ -275,6 +279,7 @@ func (gw *GatewayConfig) handleBatchGetImage(w http.ResponseWriter, r *http.Requ
 // twin of an OCI manifest PUT. Used by `aws ecr put-image` to re-tag or copy an
 // existing manifest.
 func (gw *GatewayConfig) handlePutImage(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return err
@@ -295,9 +300,9 @@ func (gw *GatewayConfig) handlePutImage(w http.ResponseWriter, r *http.Request) 
 		ref = req.ImageDigest
 	}
 
-	digest, sErr := gw.ECRRegistry.StoreManifest(accountID, req.RepositoryName, ref, req.ImageManifestMediaType, []byte(req.ImageManifest))
+	digest, sErr := gw.ECRRegistry.StoreManifest(ctx, accountID, req.RepositoryName, ref, req.ImageManifestMediaType, []byte(req.ImageManifest))
 	if sErr != nil {
-		return mapStoreManifestError(sErr, req.RepositoryName)
+		return mapStoreManifestError(ctx, sErr, req.RepositoryName)
 	}
 
 	image := &ecr.Image{
@@ -318,6 +323,7 @@ func (gw *GatewayConfig) handlePutImage(w http.ResponseWriter, r *http.Request) 
 // that tag pointer; a digest removes the manifest and every tag pointing at it.
 // Partial failures are reported in the failures array with HTTP 200.
 func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return err
@@ -341,13 +347,13 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 			continue
 		}
 
-		digest, dErr := gw.ECRRegistry.DeleteImage(accountID, req.RepositoryName, id.ImageTag, id.ImageDigest)
+		digest, dErr := gw.ECRRegistry.DeleteImage(ctx, accountID, req.RepositoryName, id.ImageTag, id.ImageDigest)
 		if errors.Is(dErr, gateway_ecr.ErrImageNotFound) {
 			failures = append(failures, imageFailure(id, ecr.ImageFailureCodeImageNotFound, "image not found"))
 			continue
 		}
 		if dErr != nil {
-			slog.Error("BatchDeleteImage: delete failed", "repo", req.RepositoryName, "err", dErr)
+			slog.ErrorContext(ctx, "BatchDeleteImage: delete failed", "repo", req.RepositoryName, "err", dErr)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 
@@ -364,13 +370,13 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 
 // ecrListImages resolves the repo's image records, mapping a missing repo to
 // RepositoryNotFound and any other backend fault to ServerInternal.
-func (gw *GatewayConfig) ecrListImages(accountID, repo string) ([]gateway_ecr.ImageRecord, error) {
-	records, err := gw.ECRRegistry.ListImages(accountID, repo)
+func (gw *GatewayConfig) ecrListImages(ctx context.Context, accountID, repo string) ([]gateway_ecr.ImageRecord, error) {
+	records, err := gw.ECRRegistry.ListImages(ctx, accountID, repo)
 	if errors.Is(err, handlers_ecr.ErrNotFound) {
 		return nil, errors.New(awserrors.ErrorRepositoryNotFound)
 	}
 	if err != nil {
-		slog.Error("ECR image action: list images failed", "repo", repo, "err", err)
+		slog.ErrorContext(ctx, "ECR image action: list images failed", "repo", repo, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	return records, nil
@@ -378,7 +384,7 @@ func (gw *GatewayConfig) ecrListImages(accountID, repo string) ([]gateway_ecr.Im
 
 // mapStoreManifestError translates the OCI manifest-store error codes into AWS
 // PutImage error codes.
-func mapStoreManifestError(err error, repo string) error {
+func mapStoreManifestError(ctx context.Context, err error, repo string) error {
 	var mErr *gateway_ecr.ManifestStoreError
 	if errors.As(err, &mErr) {
 		switch mErr.Code {
@@ -394,7 +400,7 @@ func mapStoreManifestError(err error, repo string) error {
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 	}
-	slog.Error("PutImage: store manifest failed", "repo", repo, "err", err)
+	slog.ErrorContext(ctx, "PutImage: store manifest failed", "repo", repo, "err", err)
 	return errors.New(awserrors.ErrorServerInternal)
 }
 

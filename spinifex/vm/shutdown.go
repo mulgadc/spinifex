@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -352,7 +353,7 @@ func (m *Manager) terminateCleanup(instance *VM) {
 // attached volume. Each step tolerates failure of the previous one.
 func (m *Manager) shutdownAndUnmount(instance *VM) {
 	if instance.QMPClient != nil {
-		if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{Execute: "system_powerdown"}, instance.ID); err != nil {
+		if _, err := sendQMPCommand(context.Background(), instance.QMPClient, qmp.QMPCommand{Execute: "system_powerdown"}, instance.ID); err != nil {
 			slog.Warn("QMP system_powerdown failed (VM may already be stopped)",
 				"id", instance.ID, "err", err)
 		}

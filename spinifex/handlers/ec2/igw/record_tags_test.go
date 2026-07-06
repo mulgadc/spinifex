@@ -1,6 +1,7 @@
 package handlers_ec2_igw
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -30,7 +31,7 @@ func TestIGWRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	out, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	out, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{aws.String(igwID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -46,7 +47,7 @@ func TestIGWRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	out, err = svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	out, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{aws.String(igwID)},
 	}, testAccountID)
 	require.NoError(t, err)

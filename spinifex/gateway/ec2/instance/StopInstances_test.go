@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestStopInstances_Success(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	output, err := StopInstances(input, nc, "123456789012")
+	output, err := StopInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -63,7 +64,7 @@ func TestStopInstances_MultipleInstances(t *testing.T) {
 		InstanceIds: []*string{aws.String(ids[0]), aws.String(ids[1])},
 	}
 
-	output, err := StopInstances(input, nc, "123456789012")
+	output, err := StopInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.Len(t, output.StoppingInstances, 2)
@@ -82,7 +83,7 @@ func TestStopInstances_EmptyInstanceIds(t *testing.T) {
 		InstanceIds: []*string{},
 	}
 
-	_, err := StopInstances(input, nc, "123456789012")
+	_, err := StopInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -99,7 +100,7 @@ func TestStopInstances_NilInstanceIdSkipped(t *testing.T) {
 		InstanceIds: []*string{nil, aws.String(instanceID)},
 	}
 
-	output, err := StopInstances(input, nc, "123456789012")
+	output, err := StopInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	assert.Len(t, output.StoppingInstances, 1)
@@ -115,7 +116,7 @@ func TestStopInstances_NATSRequestFails(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	output, err := StopInstances(input, nc, "123456789012")
+	output, err := StopInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.Len(t, output.StoppingInstances, 1)
@@ -143,7 +144,7 @@ func TestStopInstances_MixedSuccessAndFailure(t *testing.T) {
 		InstanceIds: []*string{aws.String(goodID), aws.String(badID)},
 	}
 
-	output, err := StopInstances(input, nc, "123456789012")
+	output, err := StopInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.Len(t, output.StoppingInstances, 2)

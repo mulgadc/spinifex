@@ -1,6 +1,7 @@
 package handlers_ec2_vpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -105,7 +106,7 @@ type SGEvent struct {
 }
 
 // CreateSecurityGroup creates a new security group in a VPC.
-func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput, accountID string) (*ec2.CreateSecurityGroupOutput, error) {
+func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.CreateSecurityGroupInput, accountID string) (*ec2.CreateSecurityGroupOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -148,12 +149,12 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 			if errors.Is(err, nats.ErrKeyNotFound) {
 				continue
 			}
-			slog.Warn("CreateSecurityGroup: SG read failed", "key", k, "err", err)
+			slog.WarnContext(ctx, "CreateSecurityGroup: SG read failed", "key", k, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		var existing SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &existing); err != nil {
-			slog.Warn("CreateSecurityGroup: SG unmarshal failed", "key", k, "err", err)
+			slog.WarnContext(ctx, "CreateSecurityGroup: SG unmarshal failed", "key", k, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if existing.VpcId != vpcId {
@@ -199,7 +200,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("CreateSecurityGroup completed", "groupId", groupId, "groupName", groupName, "vpcId", vpcId, "accountID", accountID)
+	slog.InfoContext(ctx, "CreateSecurityGroup completed", "groupId", groupId, "groupName", groupName, "vpcId", vpcId, "accountID", accountID)
 
 	if err := s.requestSGEvent("vpc.create-sg", SGEvent{
 		GroupId:      groupId,
@@ -207,7 +208,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
 	}); err != nil {
-		slog.Error("CreateSecurityGroup: vpcd request failed", "groupId", groupId, "err", err)
+		slog.ErrorContext(ctx, "CreateSecurityGroup: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
 
@@ -217,7 +218,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 }
 
 // DeleteSecurityGroup deletes a security group.
-func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput, accountID string) (*ec2.DeleteSecurityGroupOutput, error) {
+func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.DeleteSecurityGroupInput, accountID string) (*ec2.DeleteSecurityGroupOutput, error) {
 	if input.GroupId == nil || *input.GroupId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -245,7 +246,7 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput
 		return nil, errors.New(awserrors.ErrorCannotDelete)
 	}
 
-	if err := s.checkSGDependencies(accountID, groupId); err != nil {
+	if err := s.checkSGDependencies(ctx, accountID, groupId); err != nil {
 		return nil, err
 	}
 
@@ -253,13 +254,13 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("DeleteSecurityGroup completed", "groupId", groupId, "accountID", accountID)
+	slog.InfoContext(ctx, "DeleteSecurityGroup completed", "groupId", groupId, "accountID", accountID)
 
 	if err := s.requestSGEvent("vpc.delete-sg", SGEvent{
 		GroupId: groupId,
 		VpcId:   record.VpcId,
 	}); err != nil {
-		slog.Error("DeleteSecurityGroup: vpcd request failed", "groupId", groupId, "err", err)
+		slog.ErrorContext(ctx, "DeleteSecurityGroup: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
 
@@ -292,7 +293,7 @@ func (s *VPCServiceImpl) validateSGRuleReferences(accountID, ownerVpcId string, 
 // checkSGDependencies returns DependencyViolation if the given SG is still
 // attached to any ENI in the account or referenced as SourceSG by any other
 // SG's rules in the account.
-func (s *VPCServiceImpl) checkSGDependencies(accountID, groupId string) error {
+func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, groupId string) error {
 	prefix := accountID + "."
 
 	eniKeys, err := s.eniKV.Keys()
@@ -307,12 +308,12 @@ func (s *VPCServiceImpl) checkSGDependencies(accountID, groupId string) error {
 		if err != nil {
 			// Fail closed — a transient read error must not let us delete an
 			// SG that's actually still attached.
-			slog.Warn("checkSGDependencies: ENI read failed", "key", k, "err", err)
+			slog.WarnContext(ctx, "checkSGDependencies: ENI read failed", "key", k, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		var eni ENIRecord
 		if err := json.Unmarshal(entry.Value(), &eni); err != nil {
-			slog.Warn("checkSGDependencies: ENI unmarshal failed", "key", k, "err", err)
+			slog.WarnContext(ctx, "checkSGDependencies: ENI unmarshal failed", "key", k, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if slices.Contains(eni.SecurityGroupIds, groupId) {
@@ -330,12 +331,12 @@ func (s *VPCServiceImpl) checkSGDependencies(accountID, groupId string) error {
 		}
 		entry, err := s.sgKV.Get(k)
 		if err != nil {
-			slog.Warn("checkSGDependencies: SG read failed", "key", k, "err", err)
+			slog.WarnContext(ctx, "checkSGDependencies: SG read failed", "key", k, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		var other SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &other); err != nil {
-			slog.Warn("checkSGDependencies: SG unmarshal failed", "key", k, "err", err)
+			slog.WarnContext(ctx, "checkSGDependencies: SG unmarshal failed", "key", k, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if other.GroupId == groupId {
@@ -365,7 +366,7 @@ var describeSecurityGroupsValidFilters = map[string]bool{
 }
 
 // DescribeSecurityGroups lists security groups with optional filters.
-func (s *VPCServiceImpl) DescribeSecurityGroups(input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error) {
+func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error) {
 	groups := []*ec2.SecurityGroup{}
 
 	groupIDs := make(map[string]bool)
@@ -377,7 +378,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(input *ec2.DescribeSecurityGroup
 
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSecurityGroupsValidFilters)
 	if err != nil {
-		slog.Warn("DescribeSecurityGroups: invalid filter", "err", err)
+		slog.WarnContext(ctx, "DescribeSecurityGroups: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -397,13 +398,13 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(input *ec2.DescribeSecurityGroup
 
 		entry, err := s.sgKV.Get(key)
 		if err != nil {
-			slog.Warn("Failed to get security group record", "key", key, "error", err)
+			slog.WarnContext(ctx, "Failed to get security group record", "key", key, "error", err)
 			continue
 		}
 
 		var record SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.Warn("Failed to unmarshal security group record", "key", key, "error", err)
+			slog.WarnContext(ctx, "Failed to unmarshal security group record", "key", key, "error", err)
 			continue
 		}
 
@@ -433,7 +434,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(input *ec2.DescribeSecurityGroup
 		}
 	}
 
-	slog.Info("DescribeSecurityGroups completed", "count", len(groups), "accountID", accountID)
+	slog.InfoContext(ctx, "DescribeSecurityGroups completed", "count", len(groups), "accountID", accountID)
 
 	return &ec2.DescribeSecurityGroupsOutput{
 		SecurityGroups: groups,
@@ -496,7 +497,7 @@ var describeSecurityGroupRulesValidFilters = map[string]bool{
 // DescribeSecurityGroupRules returns a flat list of SecurityGroupRule objects
 // for the caller's account, optionally narrowed by SecurityGroupRuleIds or
 // filters. MaxResults and NextToken are accepted but ignored.
-func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityGroupRulesInput, accountID string) (*ec2.DescribeSecurityGroupRulesOutput, error) {
+func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *ec2.DescribeSecurityGroupRulesInput, accountID string) (*ec2.DescribeSecurityGroupRulesOutput, error) {
 	requested := make(map[string]bool)
 	if input != nil {
 		for _, id := range input.SecurityGroupRuleIds {
@@ -513,7 +514,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityG
 	}
 	parsedFilters, err := filterutil.ParseFilters(filters, describeSecurityGroupRulesValidFilters)
 	if err != nil {
-		slog.Warn("DescribeSecurityGroupRules: invalid filter", "err", err)
+		slog.WarnContext(ctx, "DescribeSecurityGroupRules: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -532,12 +533,12 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityG
 		}
 		entry, err := s.sgKV.Get(key)
 		if err != nil {
-			slog.Error("DescribeSecurityGroupRules: SG read failed", "key", key, "err", err)
+			slog.ErrorContext(ctx, "DescribeSecurityGroupRules: SG read failed", "key", key, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		var record SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.Error("DescribeSecurityGroupRules: SG unmarshal failed", "key", key, "err", err)
+			slog.ErrorContext(ctx, "DescribeSecurityGroupRules: SG unmarshal failed", "key", key, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
@@ -571,7 +572,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityG
 		}
 	}
 
-	slog.Info("DescribeSecurityGroupRules completed", "count", len(rules), "accountID", accountID)
+	slog.InfoContext(ctx, "DescribeSecurityGroupRules completed", "count", len(rules), "accountID", accountID)
 
 	return &ec2.DescribeSecurityGroupRulesOutput{
 		SecurityGroupRules: rules,
@@ -636,7 +637,7 @@ func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgres
 }
 
 // AuthorizeSecurityGroupIngress adds ingress rules to a security group.
-func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, accountID string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
+func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, input *ec2.AuthorizeSecurityGroupIngressInput, accountID string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
 	if input.GroupId == nil || *input.GroupId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -660,7 +661,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
-		slog.Warn("AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
+		slog.WarnContext(ctx, "AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	if err := s.validateSGRuleReferences(accountID, record.VpcId, newRules); err != nil {
@@ -688,7 +689,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("AuthorizeSecurityGroupIngress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
+	slog.InfoContext(ctx, "AuthorizeSecurityGroupIngress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
 
 	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
 		GroupId:      groupId,
@@ -696,7 +697,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
 	}); err != nil {
-		slog.Error("AuthorizeSecurityGroupIngress: vpcd request failed", "groupId", groupId, "err", err)
+		slog.ErrorContext(ctx, "AuthorizeSecurityGroupIngress: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
 
@@ -711,7 +712,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 }
 
 // AuthorizeSecurityGroupEgress adds egress rules to a security group.
-func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecurityGroupEgressInput, accountID string) (*ec2.AuthorizeSecurityGroupEgressOutput, error) {
+func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input *ec2.AuthorizeSecurityGroupEgressInput, accountID string) (*ec2.AuthorizeSecurityGroupEgressOutput, error) {
 	if input.GroupId == nil || *input.GroupId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -735,7 +736,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
-		slog.Warn("AuthorizeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
+		slog.WarnContext(ctx, "AuthorizeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	if err := s.validateSGRuleReferences(accountID, record.VpcId, newRules); err != nil {
@@ -763,7 +764,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("AuthorizeSecurityGroupEgress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
+	slog.InfoContext(ctx, "AuthorizeSecurityGroupEgress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
 
 	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
 		GroupId:      groupId,
@@ -771,7 +772,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
 	}); err != nil {
-		slog.Error("AuthorizeSecurityGroupEgress: vpcd request failed", "groupId", groupId, "err", err)
+		slog.ErrorContext(ctx, "AuthorizeSecurityGroupEgress: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
 
@@ -786,7 +787,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 }
 
 // RevokeSecurityGroupIngress removes ingress rules from a security group.
-func (s *VPCServiceImpl) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGroupIngressInput, accountID string) (*ec2.RevokeSecurityGroupIngressOutput, error) {
+func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *ec2.RevokeSecurityGroupIngressInput, accountID string) (*ec2.RevokeSecurityGroupIngressOutput, error) {
 	if input.GroupId == nil || *input.GroupId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -806,7 +807,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGro
 
 	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseRevoke)
 	if err != nil {
-		slog.Warn("RevokeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
+		slog.WarnContext(ctx, "RevokeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	idRules, err := resolveRuleIDsToRemove(record.IngressRules, input.SecurityGroupRuleIds)
@@ -830,7 +831,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGro
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("RevokeSecurityGroupIngress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
+	slog.InfoContext(ctx, "RevokeSecurityGroupIngress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
 
 	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
 		GroupId:      groupId,
@@ -838,7 +839,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGro
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
 	}); err != nil {
-		slog.Error("RevokeSecurityGroupIngress: vpcd request failed", "groupId", groupId, "err", err)
+		slog.ErrorContext(ctx, "RevokeSecurityGroupIngress: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
 
@@ -848,7 +849,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGro
 }
 
 // RevokeSecurityGroupEgress removes egress rules from a security group.
-func (s *VPCServiceImpl) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGroupEgressInput, accountID string) (*ec2.RevokeSecurityGroupEgressOutput, error) {
+func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *ec2.RevokeSecurityGroupEgressInput, accountID string) (*ec2.RevokeSecurityGroupEgressOutput, error) {
 	if input.GroupId == nil || *input.GroupId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -868,7 +869,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGrou
 
 	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseRevoke)
 	if err != nil {
-		slog.Warn("RevokeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
+		slog.WarnContext(ctx, "RevokeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	idRules, err := resolveRuleIDsToRemove(record.EgressRules, input.SecurityGroupRuleIds)
@@ -892,7 +893,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGrou
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("RevokeSecurityGroupEgress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
+	slog.InfoContext(ctx, "RevokeSecurityGroupEgress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
 
 	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
 		GroupId:      groupId,
@@ -900,7 +901,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGrou
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
 	}); err != nil {
-		slog.Error("RevokeSecurityGroupEgress: vpcd request failed", "groupId", groupId, "err", err)
+		slog.ErrorContext(ctx, "RevokeSecurityGroupEgress: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
 
@@ -1148,7 +1149,7 @@ func (s *VPCServiceImpl) requestSGEvent(topic string, evt SGEvent) error {
 // createDefaultSecurityGroupInternal provisions the per-VPC default SG with
 // AWS-equivalent rules, bypassing the public-API reserved-name guard. Used by
 // CreateVpc and EnsureDefaultVPC.
-func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId string) (string, error) {
+func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(ctx context.Context, accountID, vpcId string) (string, error) {
 	groupId := utils.GenerateResourceID("sg")
 	record := SecurityGroupRecord{
 		GroupId:     groupId,
@@ -1174,7 +1175,7 @@ func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId str
 		return "", fmt.Errorf("store default security group: %w", err)
 	}
 
-	slog.Info("Created default security group", "groupId", groupId, "vpcId", vpcId, "accountID", accountID)
+	slog.InfoContext(ctx, "Created default security group", "groupId", groupId, "vpcId", vpcId, "accountID", accountID)
 
 	if err := s.requestSGEvent("vpc.create-sg", SGEvent{
 		GroupId:      groupId,
@@ -1190,7 +1191,7 @@ func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId str
 // deleteSecurityGroupInternal removes an SG record without the public-API
 // CannotDelete guard for default SGs. Used by DeleteVpc to cascade-delete the
 // per-VPC default SG. Surfaces vpcd tear-down failures to the caller.
-func (s *VPCServiceImpl) deleteSecurityGroupInternal(accountID, groupId string) error {
+func (s *VPCServiceImpl) deleteSecurityGroupInternal(ctx context.Context, accountID, groupId string) error {
 	key := utils.AccountKey(accountID, groupId)
 	entry, err := s.sgKV.Get(key)
 	if err != nil {

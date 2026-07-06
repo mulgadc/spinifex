@@ -105,7 +105,7 @@ func (r *EKSDeletingReaper) reapCluster(accountID string, acctKV nats.KeyValue, 
 
 	slog.Warn("eks-deleting: re-driving wedged DELETING teardown",
 		"cluster", cluster, "account", accountID, "deletingSince", meta.DeletingSince)
-	if err := r.svc.purgeClusterInfra(accountID, cluster, meta, acctKV, true); err != nil {
+	if err := r.svc.purgeClusterInfra(context.Background(), accountID, cluster, meta, acctKV, true); err != nil {
 		return 0, err
 	}
 	slog.Info("eks-deleting: teardown completed, meta swept", "cluster", cluster, "account", accountID)

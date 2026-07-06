@@ -1,6 +1,8 @@
 package handlers_ec2_instance
 
 import (
+	"context"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
@@ -15,7 +17,7 @@ func NewMockInstanceService() InstanceService {
 	return &MockInstanceService{}
 }
 
-func (s *MockInstanceService) RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
+func (s *MockInstanceService) RunInstances(_ context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
 	instance := &ec2.Instance{
 		InstanceId: aws.String("i-0123456789abcdef0"),
 		State: &ec2.InstanceState{
@@ -36,42 +38,42 @@ func (s *MockInstanceService) RunInstances(input *ec2.RunInstancesInput, account
 	return reservation, nil
 }
 
-func (s *MockInstanceService) DescribeInstances(_ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
+func (s *MockInstanceService) DescribeInstances(_ context.Context, _ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
 	return &ec2.DescribeInstancesOutput{}, nil
 }
 
-func (s *MockInstanceService) DescribeInstanceTypes(_ *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
+func (s *MockInstanceService) DescribeInstanceTypes(_ context.Context, _ *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
 	return &ec2.DescribeInstanceTypesOutput{}, nil
 }
 
-func (s *MockInstanceService) DescribeInstanceStatus(_ *ec2.DescribeInstanceStatusInput, _ string) (*ec2.DescribeInstanceStatusOutput, error) {
+func (s *MockInstanceService) DescribeInstanceStatus(_ context.Context, _ *ec2.DescribeInstanceStatusInput, _ string) (*ec2.DescribeInstanceStatusOutput, error) {
 	return &ec2.DescribeInstanceStatusOutput{}, nil
 }
 
-func (s *MockInstanceService) DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, _ string) (*ec2.DescribeInstanceAttributeOutput, error) {
+func (s *MockInstanceService) DescribeInstanceAttribute(_ context.Context, input *ec2.DescribeInstanceAttributeInput, _ string) (*ec2.DescribeInstanceAttributeOutput, error) {
 	return &ec2.DescribeInstanceAttributeOutput{InstanceId: input.InstanceId}, nil
 }
 
-func (s *MockInstanceService) DescribeStoppedInstances(_ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
+func (s *MockInstanceService) DescribeStoppedInstances(_ context.Context, _ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
 	return &ec2.DescribeInstancesOutput{}, nil
 }
 
-func (s *MockInstanceService) DescribeTerminatedInstances(_ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
+func (s *MockInstanceService) DescribeTerminatedInstances(_ context.Context, _ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
 	return &ec2.DescribeInstancesOutput{}, nil
 }
 
-func (s *MockInstanceService) ModifyInstanceAttribute(_ *ec2.ModifyInstanceAttributeInput, _ string) (*ec2.ModifyInstanceAttributeOutput, error) {
+func (s *MockInstanceService) ModifyInstanceAttribute(_ context.Context, _ *ec2.ModifyInstanceAttributeInput, _ string) (*ec2.ModifyInstanceAttributeOutput, error) {
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
 }
 
-func (s *MockInstanceService) ModifyInstanceMetadataOptions(input *ec2.ModifyInstanceMetadataOptionsInput, _ string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
+func (s *MockInstanceService) ModifyInstanceMetadataOptions(_ context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, _ string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
 	return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: input.InstanceId}, nil
 }
 
-func (s *MockInstanceService) StartStoppedInstance(input *StartStoppedInstanceInput, _ string) (*StartStoppedInstanceOutput, error) {
+func (s *MockInstanceService) StartStoppedInstance(_ context.Context, input *StartStoppedInstanceInput, _ string) (*StartStoppedInstanceOutput, error) {
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: input.InstanceID}, nil
 }
 
-func (s *MockInstanceService) TerminateStoppedInstance(input *TerminateStoppedInstanceInput, _ string) (*TerminateStoppedInstanceOutput, error) {
+func (s *MockInstanceService) TerminateStoppedInstance(_ context.Context, input *TerminateStoppedInstanceInput, _ string) (*TerminateStoppedInstanceOutput, error) {
 	return &TerminateStoppedInstanceOutput{Status: "terminated", InstanceID: input.InstanceID}, nil
 }

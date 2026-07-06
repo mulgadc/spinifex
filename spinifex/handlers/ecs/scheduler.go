@@ -219,7 +219,7 @@ func (sc *Scheduler) onTaskState(msg *nats.Msg) {
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		return
 	}
-	if err := sc.svc.recordTaskState(&m); err != nil {
+	if err := sc.svc.recordTaskState(context.Background(), &m); err != nil {
 		slog.Error("ECS scheduler: record task-state failed", "task", m.TaskID, "err", err)
 		return
 	}
@@ -229,6 +229,7 @@ func (sc *Scheduler) onTaskState(msg *nats.Msg) {
 // reap marks instances that have missed their heartbeat window DRAINING and stops
 // their tasks, releasing capacity. Iterates every ECS account bucket.
 func (sc *Scheduler) reap() {
+	ctx := context.Background()
 	js, err := sc.nc.JetStream()
 	if err != nil {
 		return
@@ -243,11 +244,11 @@ func (sc *Scheduler) reap() {
 		if err != nil {
 			continue
 		}
-		sc.reapBucket(kv, accountID, now)
+		sc.reapBucket(ctx, kv, accountID, now)
 	}
 }
 
-func (sc *Scheduler) reapBucket(kv nats.KeyValue, accountID string, now time.Time) {
+func (sc *Scheduler) reapBucket(ctx context.Context, kv nats.KeyValue, accountID string, now time.Time) {
 	keys, err := keysWithPrefix(kv, "clusters/")
 	if err != nil {
 		return
@@ -271,13 +272,13 @@ func (sc *Scheduler) reapBucket(kv nats.KeyValue, accountID string, now time.Tim
 		if perr := putJSON(kv, k, &inst); perr != nil {
 			continue
 		}
-		sc.stopInstanceTasks(kv, accountID, inst.Cluster, inst.InstanceID)
+		sc.stopInstanceTasks(ctx, kv, accountID, inst.Cluster, inst.InstanceID)
 	}
 }
 
 // stopInstanceTasks transitions a reaped instance's non-stopped tasks to STOPPED
 // and reclaims each awsvpc task's ENI (leak guard for a dead agent).
-func (sc *Scheduler) stopInstanceTasks(kv nats.KeyValue, accountID, cluster, instanceID string) {
+func (sc *Scheduler) stopInstanceTasks(ctx context.Context, kv nats.KeyValue, accountID, cluster, instanceID string) {
 	keys, err := keysWithPrefix(kv, TasksPrefix(cluster))
 	if err != nil {
 		return
@@ -291,7 +292,7 @@ func (sc *Scheduler) stopInstanceTasks(kv nats.KeyValue, accountID, cluster, ins
 		if task.ContainerInstanceID != instanceID || task.LastStatus == TaskStatusStopped {
 			continue
 		}
-		sc.svc.forceStopTask(kv, accountID, &task, stoppedReasonReaped)
+		sc.svc.forceStopTask(ctx, kv, accountID, &task, stoppedReasonReaped)
 	}
 }
 

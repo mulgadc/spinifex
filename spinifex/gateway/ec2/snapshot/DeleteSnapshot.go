@@ -1,6 +1,7 @@
 package gateway_ec2_snapshot
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -28,7 +29,7 @@ func ValidateDeleteSnapshotInput(input *ec2.DeleteSnapshotInput) error {
 }
 
 // DeleteSnapshot handles the EC2 DeleteSnapshot API call
-func DeleteSnapshot(input *ec2.DeleteSnapshotInput, natsConn *nats.Conn, accountID string) (ec2.DeleteSnapshotOutput, error) {
+func DeleteSnapshot(ctx context.Context, input *ec2.DeleteSnapshotInput, natsConn *nats.Conn, accountID string) (ec2.DeleteSnapshotOutput, error) {
 	var output ec2.DeleteSnapshotOutput
 
 	if err := ValidateDeleteSnapshotInput(input); err != nil {
@@ -36,7 +37,7 @@ func DeleteSnapshot(input *ec2.DeleteSnapshotInput, natsConn *nats.Conn, account
 	}
 
 	svc := handlers_ec2_snapshot.NewNATSSnapshotService(natsConn)
-	result, err := svc.DeleteSnapshot(input, accountID)
+	result, err := svc.DeleteSnapshot(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

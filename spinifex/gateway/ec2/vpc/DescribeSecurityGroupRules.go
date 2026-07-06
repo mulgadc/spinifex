@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -12,7 +13,7 @@ import (
 // Nil input is valid and treated as "all rules in the account"; supplied
 // SecurityGroupRuleIds are validated against the sgr-<17 hex> shape before the
 // request crosses NATS so a malformed ID never hits the handler.
-func DescribeSecurityGroupRules(input *ec2.DescribeSecurityGroupRulesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeSecurityGroupRulesOutput, error) {
+func DescribeSecurityGroupRules(ctx context.Context, input *ec2.DescribeSecurityGroupRulesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeSecurityGroupRulesOutput, error) {
 	var output ec2.DescribeSecurityGroupRulesOutput
 	if input != nil {
 		for _, id := range input.SecurityGroupRuleIds {
@@ -22,7 +23,7 @@ func DescribeSecurityGroupRules(input *ec2.DescribeSecurityGroupRulesInput, nats
 		}
 	}
 	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
-	result, err := svc.DescribeSecurityGroupRules(input, accountID)
+	result, err := svc.DescribeSecurityGroupRules(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

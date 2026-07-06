@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -30,7 +31,7 @@ type stubENI struct {
 	released     []string
 }
 
-func (s *stubENI) Allocate(_, subnetID string, sgs []*string) (eniAllocation, error) {
+func (s *stubENI) Allocate(_ context.Context, _, subnetID string, sgs []*string) (eniAllocation, error) {
 	s.allocCalls++
 	s.lastSubnet = subnetID
 	for _, g := range sgs {
@@ -47,7 +48,7 @@ func (s *stubENI) Allocate(_, subnetID string, sgs []*string) (eniAllocation, er
 	}, nil
 }
 
-func (s *stubENI) Attach(_, _, _ string) (string, error) {
+func (s *stubENI) Attach(_ context.Context, _, _, _ string) (string, error) {
 	s.attachCalls++
 	if s.attachErr != nil {
 		return "", s.attachErr
@@ -55,7 +56,7 @@ func (s *stubENI) Attach(_, _, _ string) (string, error) {
 	return "eni-attach-stub", nil
 }
 
-func (s *stubENI) Release(_ string, rec *TaskRecord) error {
+func (s *stubENI) Release(_ context.Context, _ string, rec *TaskRecord) error {
 	s.releaseCalls++
 	s.released = append(s.released, rec.ENIID)
 	return nil
@@ -63,7 +64,7 @@ func (s *stubENI) Release(_ string, rec *TaskRecord) error {
 
 func registerAwsvpcTaskDef(t *testing.T, svc *Service, family string, cpu, mem int) {
 	t.Helper()
-	_, err := svc.RegisterTaskDefinition(&ecs.RegisterTaskDefinitionInput{
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family:      aws.String(family),
 		NetworkMode: aws.String(NetworkModeAwsvpc),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
@@ -95,12 +96,12 @@ func TestRunTask_Awsvpc_AllocatesAttachesAssigns(t *testing.T) {
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
-	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	registerAwsvpcTaskDef(t, svc, "app", 128, 256)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 
-	out, err := svc.RunTask(awsvpcRunInput(), testAccountID)
+	out, err := svc.RunTask(context.Background(), awsvpcRunInput(), testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Tasks, 1)
 	assert.Empty(t, out.Failures)
@@ -118,7 +119,7 @@ func TestRunTask_Awsvpc_AllocatesAttachesAssigns(t *testing.T) {
 	assert.Equal(t, "172.31.0.50", detailValue(att, "privateIPv4Address"))
 
 	// ENI plumbed into the assign payload, delivered via the instance KV inbox.
-	poll, err := svc.PollAssignments(&PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	poll, err := svc.PollAssignments(context.Background(), &PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, poll.Assignments, 1)
 	as := poll.Assignments[0]
@@ -132,13 +133,13 @@ func TestRunTask_Awsvpc_NoSubnets_Errors(t *testing.T) {
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
-	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	registerAwsvpcTaskDef(t, svc, "app", 128, 256)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 
 	// awsvpc task def with no networkConfiguration → request rejected, no ENI.
-	_, err = svc.RunTask(&ecs.RunTaskInput{
+	_, err = svc.RunTask(context.Background(), &ecs.RunTaskInput{
 		Cluster: aws.String("web"), TaskDefinition: aws.String("app"), Count: aws.Int64(1),
 	}, testAccountID)
 	require.Error(t, err)
@@ -149,12 +150,12 @@ func TestRunTask_Awsvpc_AttachFailure_RollsBack(t *testing.T) {
 	svc, _ := newTestService(t)
 	eni := &stubENI{attachErr: errors.New("hot-plug timeout")}
 	svc.eni = eni
-	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	registerAwsvpcTaskDef(t, svc, "app", 128, 256)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 
-	out, err := svc.RunTask(awsvpcRunInput(), testAccountID)
+	out, err := svc.RunTask(context.Background(), awsvpcRunInput(), testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.Tasks)
 	require.Len(t, out.Failures, 1)
@@ -165,7 +166,7 @@ func TestRunTask_Awsvpc_AttachFailure_RollsBack(t *testing.T) {
 	assert.Equal(t, 1, eni.releaseCalls)
 	assert.Contains(t, eni.released, "eni-stub")
 
-	di, err := svc.DescribeContainerInstances(&ecs.DescribeContainerInstancesInput{
+	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
 		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -176,11 +177,11 @@ func TestRecordTaskState_Awsvpc_ReleasesENIOnStopOnce(t *testing.T) {
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
-	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	registerAwsvpcTaskDef(t, svc, "app", 128, 256)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
-	out, err := svc.RunTask(awsvpcRunInput(), testAccountID)
+	out, err := svc.RunTask(context.Background(), awsvpcRunInput(), testAccountID)
 	require.NoError(t, err)
 	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
@@ -188,8 +189,8 @@ func TestRecordTaskState_Awsvpc_ReleasesENIOnStopOnce(t *testing.T) {
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,
 		LastStatus: bus.TaskStatusStopped, Reason: "exited",
 	}
-	require.NoError(t, svc.recordTaskState(stop))
-	require.NoError(t, svc.recordTaskState(stop)) // re-report STOPPED
+	require.NoError(t, svc.recordTaskState(context.Background(), stop))
+	require.NoError(t, svc.recordTaskState(context.Background(), stop)) // re-report STOPPED
 
 	// Released exactly once (the prev!=STOPPED guard makes the re-report a no-op).
 	assert.Equal(t, 1, eni.releaseCalls)
@@ -200,11 +201,11 @@ func TestReaper_Awsvpc_ReleasesENI(t *testing.T) {
 	svc, nc := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
-	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	registerAwsvpcTaskDef(t, svc, "app", 128, 256)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
-	_, err = svc.RunTask(awsvpcRunInput(), testAccountID)
+	_, err = svc.RunTask(context.Background(), awsvpcRunInput(), testAccountID)
 	require.NoError(t, err)
 
 	kv, err := svc.bucket(testAccountID)
@@ -216,7 +217,7 @@ func TestReaper_Awsvpc_ReleasesENI(t *testing.T) {
 	require.NoError(t, putJSON(kv, InstanceKey("web", "i-1"), &rec))
 
 	sc := NewScheduler(nc, svc, "test-holder")
-	sc.reapBucket(kv, testAccountID, time.Now().UTC())
+	sc.reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
 
 	assert.Equal(t, 1, eni.releaseCalls)
 	assert.Contains(t, eni.released, "eni-stub")
@@ -226,12 +227,12 @@ func TestRunTask_BridgeMode_NoENI(t *testing.T) {
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
-	_, err := svc.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	registerTaskDef(t, svc, "app", 128, 256) // no networkMode → bridge default
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 
-	out, err := svc.RunTask(&ecs.RunTaskInput{
+	out, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{
 		Cluster: aws.String("web"), TaskDefinition: aws.String("app"), Count: aws.Int64(1),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -300,17 +301,17 @@ func TestNATSENIController_AllocateAttachRelease(t *testing.T) {
 		return ec2.DeleteNetworkInterfaceOutput{}
 	})
 
-	alloc, err := c.Allocate(testAccountID, "subnet-1", []*string{aws.String("sg-1")})
+	alloc, err := c.Allocate(context.Background(), testAccountID, "subnet-1", []*string{aws.String("sg-1")})
 	require.NoError(t, err)
 	assert.Equal(t, "eni-real", alloc.ENIID)
 	assert.Equal(t, "02:11:22:33:44:55", alloc.MacAddress)
 	assert.Equal(t, "172.31.5.9", alloc.PrivateIP)
 
-	attID, err := c.Attach(testAccountID, "i-1", "eni-real")
+	attID, err := c.Attach(context.Background(), testAccountID, "i-1", "eni-real")
 	require.NoError(t, err)
 	assert.Equal(t, "att-real", attID)
 
-	require.NoError(t, c.Release(testAccountID, &TaskRecord{
+	require.NoError(t, c.Release(context.Background(), testAccountID, &TaskRecord{
 		ENIID: "eni-real", ENIAttachmentID: "att-real", ContainerInstanceID: "i-1",
 	}))
 }
@@ -327,7 +328,7 @@ func TestNATSENIController_Release_NotFoundIsSuccess(t *testing.T) {
 	})
 
 	// Both legs report already-gone; Release converges without error.
-	require.NoError(t, c.Release(testAccountID, &TaskRecord{
+	require.NoError(t, c.Release(context.Background(), testAccountID, &TaskRecord{
 		ENIID: "eni-x", ENIAttachmentID: "att-x", ContainerInstanceID: "i-1",
 	}))
 }
@@ -335,8 +336,8 @@ func TestNATSENIController_Release_NotFoundIsSuccess(t *testing.T) {
 func TestNATSENIController_Release_NoENINoop(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	c := newNATSENIController(nc)
-	require.NoError(t, c.Release(testAccountID, &TaskRecord{})) // no ENIID
-	require.NoError(t, c.Release(testAccountID, nil))
+	require.NoError(t, c.Release(context.Background(), testAccountID, &TaskRecord{})) // no ENIID
+	require.NoError(t, c.Release(context.Background(), testAccountID, nil))
 }
 
 func TestIsENINotFound(t *testing.T) {

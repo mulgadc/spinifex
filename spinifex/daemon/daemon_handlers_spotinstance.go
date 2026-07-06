@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -26,7 +27,7 @@ func (d *Daemon) handleEC2CancelSpotInstanceRequests(msg *nats.Msg) {
 // SpotInstanceRequestId) onto a launched VM. Dispatched from handleEC2Events,
 // which already verified ownership; the SIR id is the only datum on the wire as
 // the lifecycle is always spot for this command.
-func (d *Daemon) handleSetSpotLineage(msg *nats.Msg, command types.EC2InstanceCommand) {
+func (d *Daemon) handleSetSpotLineage(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand) {
 	if command.SpotLineageData == nil {
 		respondWithError(msg, awserrors.ErrorMissingParameter)
 		return
@@ -47,6 +48,6 @@ func (d *Daemon) handleSetSpotLineage(msg *nats.Msg, command types.EC2InstanceCo
 	}
 
 	if err := msg.Respond([]byte(`{}`)); err != nil {
-		slog.Error("Failed to respond to NATS request", "err", err)
+		slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 	}
 }

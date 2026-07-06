@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -87,7 +88,7 @@ func TestValidateResetImageAttributeInput(t *testing.T) {
 }
 
 func TestResetImageAttribute_GatewayValidationFailureReturnsEarly(t *testing.T) {
-	_, err := ResetImageAttribute(&ec2.ResetImageAttributeInput{}, nil, "000000000001")
+	_, err := ResetImageAttribute(context.Background(), &ec2.ResetImageAttributeInput{}, nil, "000000000001")
 	assert.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }

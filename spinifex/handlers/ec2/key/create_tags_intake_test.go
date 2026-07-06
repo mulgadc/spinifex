@@ -1,6 +1,7 @@
 package handlers_ec2_key
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -24,7 +25,7 @@ func TestCreateKeyPair_TagSpecifications(t *testing.T) {
 	requireSSHKeygen(t)
 	svc, _ := newTestKeyService()
 
-	out, err := svc.CreateKeyPair(&ec2.CreateKeyPairInput{
+	out, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
 		KeyName:           aws.String("tagged-create-key"),
 		TagSpecifications: keyPairTagSpecs("key-pair"),
 	}, testAccountID)
@@ -35,7 +36,7 @@ func TestCreateKeyPair_TagSpecifications(t *testing.T) {
 	assert.Equal(t, "dev", tags["env"])
 
 	// Persisted metadata round-trips through DescribeKeyPairs.
-	desc, err := svc.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{
+	desc, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
 		KeyPairIds: []*string{out.KeyPairId},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -48,7 +49,7 @@ func TestCreateKeyPair_TagSpecifications(t *testing.T) {
 func TestImportKeyPair_TagSpecifications(t *testing.T) {
 	svc, _ := newTestKeyService()
 
-	out, err := svc.ImportKeyPair(&ec2.ImportKeyPairInput{
+	out, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
 		KeyName:           aws.String("tagged-import-key"),
 		PublicKeyMaterial: []byte(testED25519PubKey),
 		TagSpecifications: keyPairTagSpecs("key-pair"),
@@ -59,7 +60,7 @@ func TestImportKeyPair_TagSpecifications(t *testing.T) {
 	assert.Equal(t, "build-key", tags["Name"])
 
 	// Tag filter matches the imported key.
-	desc, err := svc.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{
+	desc, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
 		Filters: []*ec2.Filter{{
 			Name:   aws.String("tag:env"),
 			Values: []*string{aws.String("dev")},
@@ -70,7 +71,7 @@ func TestImportKeyPair_TagSpecifications(t *testing.T) {
 	assert.Equal(t, "tagged-import-key", *desc.KeyPairs[0].KeyName)
 
 	// Non-matching tag filter excludes it.
-	desc, err = svc.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{
+	desc, err = svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
 		Filters: []*ec2.Filter{{
 			Name:   aws.String("tag:env"),
 			Values: []*string{aws.String("prod")},
@@ -84,7 +85,7 @@ func TestImportKeyPair_TagSpecificationsWrongType(t *testing.T) {
 	svc, _ := newTestKeyService()
 
 	// Tag specs for a different resource type are ignored.
-	out, err := svc.ImportKeyPair(&ec2.ImportKeyPairInput{
+	out, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
 		KeyName:           aws.String("untagged-import-key"),
 		PublicKeyMaterial: []byte(testED25519PubKey),
 		TagSpecifications: keyPairTagSpecs("volume"),

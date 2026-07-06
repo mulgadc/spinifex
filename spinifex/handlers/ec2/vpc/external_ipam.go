@@ -79,12 +79,12 @@ func (m *ExternalIPAM) EnableDHCP(client *dhcp.NATSClient) error {
 
 // AllocateIP allocates the next available external IP from the best pool
 // matching the given region/AZ. Returns the allocated IP and pool name.
-func (m *ExternalIPAM) AllocateIP(region, az, purpose, allocID, eniID, instanceID string) (string, string, error) {
+func (m *ExternalIPAM) AllocateIP(ctx context.Context, region, az, purpose, allocID, eniID, instanceID string) (string, string, error) {
 	pool := m.findPool(region, az)
 	if pool == nil {
 		return "", "", fmt.Errorf("InsufficientAddressCapacity: no external pool available for region=%q az=%q", region, az)
 	}
-	ip, err := m.AllocateFromPool(pool.Name, purpose, allocID, eniID, instanceID)
+	ip, err := m.AllocateFromPool(ctx, pool.Name, purpose, allocID, eniID, instanceID)
 	if err != nil {
 		return "", "", err
 	}
@@ -92,12 +92,12 @@ func (m *ExternalIPAM) AllocateIP(region, az, purpose, allocID, eniID, instanceI
 }
 
 // AllocateFromPool allocates an IP from a specific named pool.
-func (m *ExternalIPAM) AllocateFromPool(poolName, purpose, allocID, eniID, instanceID string) (string, error) {
+func (m *ExternalIPAM) AllocateFromPool(ctx context.Context, poolName, purpose, allocID, eniID, instanceID string) (string, error) {
 	alloc, err := m.allocatorFor(poolName)
 	if err != nil {
 		return "", err
 	}
-	addr, err := alloc.Allocate(context.Background(), external.AllocateRequest{
+	addr, err := alloc.Allocate(ctx, external.AllocateRequest{
 		PoolName:     poolName,
 		Purpose:      purpose,
 		AllocationID: allocID,
@@ -113,7 +113,7 @@ func (m *ExternalIPAM) AllocateFromPool(poolName, purpose, allocID, eniID, insta
 // ReleaseIP releases a previously allocated external IP back to its pool.
 // ownerENIID, when non-empty, scopes the release to the ENI that currently owns
 // the lease so a stale or duplicated teardown for a recycled IP is a no-op.
-func (m *ExternalIPAM) ReleaseIP(poolName, ip, ownerENIID string) error {
+func (m *ExternalIPAM) ReleaseIP(ctx context.Context, poolName, ip, ownerENIID string) error {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return fmt.Errorf("parse release IP %q: %w", ip, err)
@@ -122,7 +122,7 @@ func (m *ExternalIPAM) ReleaseIP(poolName, ip, ownerENIID string) error {
 	if err != nil {
 		return err
 	}
-	return alloc.Release(context.Background(), poolName, addr, ownerENIID)
+	return alloc.Release(ctx, poolName, addr, ownerENIID)
 }
 
 // GetPoolRecord returns the current IPAM record for a pool. DHCP-sourced

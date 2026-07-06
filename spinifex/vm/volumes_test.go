@@ -251,7 +251,7 @@ func TestIsQMPNodeNotFound(t *testing.T) {
 
 func TestAttachVolume_InstanceNotFound(t *testing.T) {
 	m := NewManager()
-	_, err := m.AttachVolume("i-missing", "vol-1", "")
+	_, err := m.AttachVolume(t.Context(), "i-missing", "vol-1", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInstanceNotFound)
 }
@@ -260,7 +260,7 @@ func TestAttachVolume_NotRunning(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateStopped, Instance: &ec2.Instance{}})
 
-	_, err := m.AttachVolume("i-1", "vol-1", "")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidTransition)
 }
@@ -274,14 +274,14 @@ func TestAttachVolume_AttachmentLimitExceeded(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{BlockDeviceMappings: bdms}})
 
-	_, err := m.AttachVolume("i-1", "vol-1", "")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrAttachmentLimitExceeded)
 }
 
 func TestDetachVolume_InstanceNotFound(t *testing.T) {
 	m := NewManager()
-	_, err := m.DetachVolume("i-missing", "vol-1", "", false)
+	_, err := m.DetachVolume(t.Context(), "i-missing", "vol-1", "", false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInstanceNotFound)
 }
@@ -290,7 +290,7 @@ func TestDetachVolume_NotRunning(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateStopped})
 
-	_, err := m.DetachVolume("i-1", "vol-1", "", false)
+	_, err := m.DetachVolume(t.Context(), "i-1", "vol-1", "", false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidTransition)
 }
@@ -299,7 +299,7 @@ func TestDetachVolume_VolumeNotAttached(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{}})
 
-	_, err := m.DetachVolume("i-1", "vol-missing", "", false)
+	_, err := m.DetachVolume(t.Context(), "i-1", "vol-missing", "", false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrVolumeNotAttached)
 }
@@ -372,7 +372,7 @@ func TestDetachVolume_DeviceGuards(t *testing.T) {
 				},
 			})
 
-			device, err := m.DetachVolume("i-1", tt.req.Name, tt.requestDevice, false)
+			device, err := m.DetachVolume(t.Context(), "i-1", tt.req.Name, tt.requestDevice, false)
 
 			if tt.wantErr != nil {
 				require.Error(t, err)
@@ -431,7 +431,7 @@ func TestDetachVolume_SealFailureGatesAvailable(t *testing.T) {
 		},
 	})
 
-	_, err := m.DetachVolume("i-1", "vol-1", "", false)
+	_, err := m.DetachVolume(t.Context(), "i-1", "vol-1", "", false)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sealErr,
@@ -457,7 +457,7 @@ func TestDetachVolume_SealFailureGatesAvailable(t *testing.T) {
 
 func TestReboot_InstanceNotFound(t *testing.T) {
 	m := NewManager()
-	err := m.Reboot("i-missing")
+	err := m.Reboot(t.Context(), "i-missing")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInstanceNotFound)
 }
@@ -466,7 +466,7 @@ func TestReboot_NotRunning(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateStopped})
 
-	err := m.Reboot("i-1")
+	err := m.Reboot(t.Context(), "i-1")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidTransition)
 }
@@ -492,7 +492,7 @@ func TestReboot_DoesNotFireHooks(t *testing.T) {
 	m := NewManagerWithDeps(Deps{Hooks: hooks})
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
 
-	require.NoError(t, m.Reboot("i-1"))
+	require.NoError(t, m.Reboot(t.Context(), "i-1"))
 
 	assert.Equal(t, 0, upCalls, "Reboot must not fire OnInstanceUp")
 	assert.Equal(t, 0, downCalls, "Reboot must not fire OnInstanceDown")
@@ -510,7 +510,7 @@ func TestReboot_DoesNotChangeStatus(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
 
-	require.NoError(t, m.Reboot("i-1"))
+	require.NoError(t, m.Reboot(t.Context(), "i-1"))
 
 	v, ok := m.Get("i-1")
 	require.True(t, ok)
@@ -531,7 +531,7 @@ func TestReboot_QMPFailureSurfacesError(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
 
-	err := m.Reboot("i-1")
+	err := m.Reboot(t.Context(), "i-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "QMP system_reset")
 }
@@ -559,7 +559,7 @@ func TestAttachVolume_MountAmbiguous_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneErr: ErrMountAmbiguous}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMountAmbiguous)
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne,
@@ -573,7 +573,7 @@ func TestAttachVolume_GenericMountError_DoesNotUnmount(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneErr: errors.New("ebs.mount NATS request: timeout")}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrMountAmbiguous)
 	assert.Empty(t, mounter.unmountedOne,
@@ -587,7 +587,7 @@ func TestAttachVolume_NBDURIParseFailure_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "not-a-valid-nbd-uri"}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse NBDURI")
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
@@ -613,7 +613,7 @@ func TestAttachVolume_ObjectAddFailure_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "object-add")
 	assert.Equal(t, []string{"object-add"}, recorder.executes(),
@@ -641,7 +641,7 @@ func TestAttachVolume_BlockdevAddFailure_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "blockdev-add")
 	assert.Equal(t, []string{"object-add", "blockdev-add", "object-del"}, recorder.executes())
@@ -668,7 +668,7 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelOK_Unmounts(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device_add")
 	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del", "object-del"}, recorder.executes())
@@ -701,7 +701,7 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelFails_SkipsUnmountOne(t *testi
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device_add")
 	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del"}, recorder.executes())
@@ -776,7 +776,7 @@ func TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata(t *testing.T) {
 		QMPClient: qmpClient,
 	})
 
-	res, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	res, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.NoError(t, err)
 
 	assert.Equal(t, "/dev/sdf", res.DeviceName,
@@ -830,7 +830,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.NoError(t, err)
 		assert.Equal(t, int32(1), attempts.Load())
 		assert.NotContains(t, buf.String(), "succeeded after retry",
@@ -851,7 +851,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.NoError(t, err)
 		assert.Equal(t, int32(3), attempts.Load())
 		logs := buf.String()
@@ -873,7 +873,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "permission denied")
 		assert.Equal(t, int32(2), attempts.Load(),
@@ -889,7 +889,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.NoError(t, err,
 			"an already-removed block node must be idempotent so a detach retry can re-drive the unmount seal")
 		assert.Equal(t, int32(1), attempts.Load(),
@@ -905,7 +905,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.Error(t, err)
 		assert.True(t, isQMPNodeInUse(err),
 			"exhaustion must return the last 'in use' error, not a wrapped or sentinel value")

@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -169,7 +170,7 @@ func (s *EKSServiceImpl) nodegroupAcctKV(accountID string) (nats.KeyValue, error
 	return acctKV, nil
 }
 
-func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error) {
+func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyValue, input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -191,19 +192,19 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		return nil, err
 	}
 	if meta.Status != ClusterStatusActive {
-		slog.Warn("createNodegroup: cluster not ACTIVE", "cluster", cluster, "status", meta.Status)
+		slog.WarnContext(ctx, "createNodegroup: cluster not ACTIVE", "cluster", cluster, "status", meta.Status)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
 	}
 	if meta.ControlPlaneENIIP == "" {
-		slog.Error("createNodegroup: cluster has no control-plane ENI IP", "cluster", cluster)
+		slog.ErrorContext(ctx, "createNodegroup: cluster has no control-plane ENI IP", "cluster", cluster)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
 	}
 	if meta.Endpoint == "" {
-		slog.Error("createNodegroup: cluster has no published endpoint", "cluster", cluster)
+		slog.ErrorContext(ctx, "createNodegroup: cluster has no published endpoint", "cluster", cluster)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
 	}
 	if meta.ResourcesVpcConfig == nil || meta.ResourcesVpcConfig.VpcId == "" {
-		slog.Error("createNodegroup: cluster has no VPC", "cluster", cluster)
+		slog.ErrorContext(ctx, "createNodegroup: cluster has no VPC", "cluster", cluster)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
 	}
 
@@ -268,7 +269,7 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 				s.markNodegroupFailed(acctKV, cluster, ng, fmt.Sprintf("launch panic: %v", r))
 			}
 		}()
-		s.launchNodegroupInfra(nodegroupLaunchCtx{
+		s.launchNodegroupInfra(context.Background(), nodegroupLaunchCtx{
 			accountID: accountID,
 			cluster:   cluster,
 			ng:        ng,
@@ -300,15 +301,15 @@ type nodegroupLaunchCtx struct {
 // the node token, resolve the eks-node AMI, launch the workers, and persist the
 // terminal record state. Every failure marks the record CREATE_FAILED so the
 // reclaim path (DeleteNodegroup) can tear it down.
-func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
+func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupLaunchCtx) {
 	acctKV, accountID, cluster, ng, meta, rec := lc.acctKV, lc.accountID, lc.cluster, lc.ng, lc.meta, lc.rec
 
-	cpSGID, ngSGID, err := EnsureClusterSGs(s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
+	cpSGID, ngSGID, err := EnsureClusterSGs(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
 	if err != nil {
 		s.markNodegroupFailed(acctKV, cluster, ng, "ensure cluster SGs: "+err.Error())
 		return
 	}
-	if err := EnsureNodegroupSGRules(s.deps.VPCSG, accountID, cluster, cpSGID, ngSGID); err != nil {
+	if err := EnsureNodegroupSGRules(ctx, s.deps.VPCSG, accountID, cluster, cpSGID, ngSGID); err != nil {
 		s.markNodegroupFailed(acctKV, cluster, ng, "ensure nodegroup SG rules: "+err.Error())
 		return
 	}
@@ -319,20 +320,20 @@ func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
 		return
 	}
 
-	amiID, err := lookupEKSServerAMI(s.deps.Image, accountID)
+	amiID, err := lookupEKSServerAMI(ctx, s.deps.Image, accountID)
 	if err != nil {
 		s.markNodegroupFailed(acctKV, cluster, ng, "resolve eks-node AMI: "+err.Error())
 		return
 	}
 
-	if _, err := s.launchWorkers(acctKV, accountID, rec, meta, ngSGID, amiID, token, lc.desired); err != nil {
+	if _, err := s.launchWorkers(ctx, acctKV, accountID, rec, meta, ngSGID, amiID, token, lc.desired); err != nil {
 		// launchWorkers persisted each worker it launched (incrementally), so the
 		// reclaim path can already tear them down; just record the terminal failure.
 		rec.Status = eks.NodegroupStatusCreateFailed
 		rec.StatusReason = "launch workers: " + err.Error()
 		rec.ModifiedAt = time.Now().UTC()
 		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
-			slog.Error("createNodegroup: persist CREATE_FAILED record", "cluster", cluster, "nodegroup", ng, "err", perr)
+			slog.ErrorContext(ctx, "createNodegroup: persist CREATE_FAILED record", "cluster", cluster, "nodegroup", ng, "err", perr)
 		}
 		return
 	}
@@ -346,7 +347,7 @@ func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
 		rec.StatusReason = "workers did not become Ready: " + err.Error()
 		rec.ModifiedAt = time.Now().UTC()
 		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
-			slog.Error("createNodegroup: persist CREATE_FAILED record", "cluster", cluster, "nodegroup", ng, "err", perr)
+			slog.ErrorContext(ctx, "createNodegroup: persist CREATE_FAILED record", "cluster", cluster, "nodegroup", ng, "err", perr)
 		}
 		return
 	}
@@ -354,7 +355,7 @@ func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
 	rec.Status = eks.NodegroupStatusActive
 	rec.ModifiedAt = time.Now().UTC()
 	if err := PutNodegroupRecord(acctKV, rec); err != nil {
-		slog.Error("createNodegroup: persist ACTIVE record", "cluster", cluster, "nodegroup", ng, "err", err)
+		slog.ErrorContext(ctx, "createNodegroup: persist ACTIVE record", "cluster", cluster, "nodegroup", ng, "err", err)
 	}
 }
 
@@ -391,14 +392,14 @@ func (s *EKSServiceImpl) waitWorkersReady(acctKV nats.KeyValue, cluster string, 
 // so each gets a distinct node name + node label in its user-data) and returns
 // the launched instance IDs. On a partial failure it returns the IDs that did
 // launch plus the error so the caller can persist them for teardown.
-func (s *EKSServiceImpl) launchWorkers(acctKV nats.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
+func (s *EKSServiceImpl) launchWorkers(ctx context.Context, acctKV nats.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
 	// base is the worker set already on the record (non-empty on a scale-up).
 	// Each incremental persist below writes base+newly-launched so the durable
 	// record always reflects every live worker, never just this call's additions.
 	base := append([]string(nil), rec.InstanceIDs...)
 	ids := make([]string, 0, count)
 	for i := range count {
-		id, err := s.launchOneWorker(rec, meta, ngSGID, amiID, token, accountID)
+		id, err := s.launchOneWorker(ctx, rec, meta, ngSGID, amiID, token, accountID)
 		if err != nil {
 			return ids, fmt.Errorf("run worker %d/%d: %w", i+1, count, err)
 		}
@@ -419,7 +420,7 @@ func (s *EKSServiceImpl) launchWorkers(acctKV nats.KeyValue, accountID string, r
 // launchOneWorker provisions a single tagged worker VM and returns its instance
 // ID. It performs no durable record write; the caller owns persistence (plain
 // for the single-owner create path, CAS-append for concurrent scale-up).
-func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token, accountID string) (string, error) {
+func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token, accountID string) (string, error) {
 	instanceType := defaultNodegroupInstanceType
 	if len(rec.InstanceTypes) > 0 {
 		instanceType = rec.InstanceTypes[0]
@@ -432,7 +433,7 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 	registryHost := accountID + ".dkr.ecr." + region + "." + suffix
 	gatewayIP := gatewayHostIP(s.deps.GatewayBaseURL)
 	if gatewayIP == "" {
-		slog.Warn("EKS nodegroup: gateway base URL is not an IP; worker ECR registry mirror falls back to the hostname endpoint, DNS resolution required",
+		slog.WarnContext(ctx, "EKS nodegroup: gateway base URL is not an IP; worker ECR registry mirror falls back to the hostname endpoint, DNS resolution required",
 			"gatewayBaseURL", s.deps.GatewayBaseURL, "registryHost", registryHost)
 	}
 
@@ -481,7 +482,7 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 		}
 		runInput.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{Arn: aws.String(profileARN)}
 	} else {
-		slog.Warn("EKS nodegroup: no IAM service or node role; worker launches without an instance profile, internal ECR pulls will fail",
+		slog.WarnContext(ctx, "EKS nodegroup: no IAM service or node role; worker launches without an instance profile, internal ECR pulls will fail",
 			"nodegroup", rec.Name, "nodeRole", rec.NodeRole)
 	}
 
@@ -489,8 +490,8 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 	// this nodegroup's existing workers (round-robin that packs once hosts <
 	// desired). An empty host (no scheduler / no node data) falls back to a local
 	// launch inside RunWorkerInstanceOnNode, never worse than the un-spread path.
-	host := s.selectWorkerHost(instanceType, rec.InstanceIDs)
-	res, err := s.deps.Worker.RunWorkerInstanceOnNode(host, runInput, accountID)
+	host := s.selectWorkerHost(ctx, instanceType, rec.InstanceIDs)
+	res, err := s.deps.Worker.RunWorkerInstanceOnNode(ctx, host, runInput, accountID)
 	if err != nil {
 		return "", err
 	}
@@ -508,11 +509,11 @@ func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta
 // worker count exceeds the host count. Ties break randomly for fair placement.
 // Returns "" when no scheduler is wired or no host has capacity, in which case
 // the caller falls back to a local launch.
-func (s *EKSServiceImpl) selectWorkerHost(instanceType string, existingWorkerIDs []string) string {
+func (s *EKSServiceImpl) selectWorkerHost(ctx context.Context, instanceType string, existingWorkerIDs []string) string {
 	if s.deps.Scheduler == nil {
 		return ""
 	}
-	hosts := s.deps.Scheduler.SchedulableHosts(instanceType)
+	hosts := s.deps.Scheduler.SchedulableHosts(ctx, instanceType)
 	if len(hosts) == 0 {
 		return ""
 	}
@@ -521,7 +522,7 @@ func (s *EKSServiceImpl) selectWorkerHost(instanceType string, existingWorkerIDs
 	for _, h := range hosts {
 		counts[h] = 0
 	}
-	for _, host := range s.deps.Scheduler.InstanceHosts(existingWorkerIDs) {
+	for _, host := range s.deps.Scheduler.InstanceHosts(ctx, existingWorkerIDs) {
 		if _, eligible := counts[host]; eligible {
 			counts[host]++
 		}
@@ -662,7 +663,7 @@ func (s *EKSServiceImpl) listNodegroups(acctKV nats.KeyValue, input *eks.ListNod
 	return &eks.ListNodegroupsOutput{Nodegroups: aws.StringSlice(names)}, nil
 }
 
-func (s *EKSServiceImpl) updateNodegroupConfig(acctKV nats.KeyValue, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {
+func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV nats.KeyValue, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -679,7 +680,7 @@ func (s *EKSServiceImpl) updateNodegroupConfig(acctKV nats.KeyValue, input *eks.
 		return nil, err
 	}
 
-	rec, err := s.reconcileNodegroup(acctKV, accountID, cluster, ng, meta, input.ScalingConfig, input.Labels)
+	rec, err := s.reconcileNodegroup(ctx, acctKV, accountID, cluster, ng, meta, input.ScalingConfig, input.Labels)
 	if err != nil {
 		return nil, err
 	}
@@ -697,7 +698,7 @@ func (s *EKSServiceImpl) updateNodegroupConfig(acctKV nats.KeyValue, input *eks.
 // CAS on the record revision, so two overlapping UpdateNodegroupConfig calls can
 // never both launch the same delta — the lost-update that scaled 1 worker to 5
 // (two reconciles each reading current=1 and each launching desired-current=2).
-func (s *EKSServiceImpl) reconcileNodegroup(acctKV nats.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, scaling *eks.NodegroupScalingConfig, labels *eks.UpdateLabelsPayload) (*NodegroupRecord, error) {
+func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV nats.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, scaling *eks.NodegroupScalingConfig, labels *eks.UpdateLabelsPayload) (*NodegroupRecord, error) {
 	for range ngCASMaxRetries {
 		rec, rev, err := getNodegroupEntry(acctKV, cluster, ng)
 		if err != nil {
@@ -722,7 +723,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(acctKV nats.KeyValue, accountID, clu
 			// orphan that record-driven reclaim cannot reach. Terminate is
 			// idempotent, so re-terminating on a CAS retry is safe.
 			surplus := rec.InstanceIDs[desired:]
-			if err := s.deps.Worker.TerminateWorkerInstances(surplus, accountID); err != nil {
+			if err := s.deps.Worker.TerminateWorkerInstances(ctx, surplus, accountID); err != nil {
 				return nil, fmt.Errorf("terminate surplus workers: %w", err)
 			}
 			rec.InstanceIDs = rec.InstanceIDs[:desired]
@@ -741,7 +742,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(acctKV nats.KeyValue, accountID, clu
 			} else if !ok {
 				continue
 			}
-			return s.launchWorkersCAS(acctKV, accountID, cluster, ng, meta, desired)
+			return s.launchWorkersCAS(ctx, acctKV, accountID, cluster, ng, meta, desired)
 
 		default:
 			if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
@@ -759,19 +760,19 @@ func (s *EKSServiceImpl) reconcileNodegroup(acctKV nats.KeyValue, accountID, clu
 // worker at a time and CAS-appending its ID only while len(InstanceIDs) <
 // desired. A worker launched into an already-full record (a concurrent reconcile
 // got there first) is terminated, so the count never overshoots desired.
-func (s *EKSServiceImpl) launchWorkersCAS(acctKV nats.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, desired int) (*NodegroupRecord, error) {
+func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV nats.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, desired int) (*NodegroupRecord, error) {
 	token, err := s.decryptNodeToken(acctKV, cluster)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt node token: %w", err)
 	}
-	amiID, err := lookupEKSServerAMI(s.deps.Image, accountID)
+	amiID, err := lookupEKSServerAMI(ctx, s.deps.Image, accountID)
 	if err != nil {
 		if errors.Is(err, ErrEKSServerAMINotFound) {
 			return nil, errors.New(awserrors.ErrorServiceUnavailable)
 		}
 		return nil, fmt.Errorf("resolve eks-node AMI: %w", err)
 	}
-	_, ngSGID, err := EnsureClusterSGs(s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
+	_, ngSGID, err := EnsureClusterSGs(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
 	if err != nil {
 		return nil, fmt.Errorf("ensure cluster SGs: %w", err)
 	}
@@ -788,7 +789,7 @@ func (s *EKSServiceImpl) launchWorkersCAS(acctKV nats.KeyValue, accountID, clust
 		if len(rec.InstanceIDs) >= target {
 			return rec, nil
 		}
-		id, err := s.launchOneWorker(rec, meta, ngSGID, amiID, token, accountID)
+		id, err := s.launchOneWorker(ctx, rec, meta, ngSGID, amiID, token, accountID)
 		if err != nil {
 			// Surface a client-facing code (e.g. InsufficientInstanceCapacity)
 			// verbatim so the gateway maps its real status; wrap only opaque
@@ -798,7 +799,7 @@ func (s *EKSServiceImpl) launchWorkersCAS(acctKV nats.KeyValue, accountID, clust
 			}
 			return nil, fmt.Errorf("launch workers: %w", err)
 		}
-		if _, err := s.recordLaunchedWorker(acctKV, accountID, cluster, ng, id); err != nil {
+		if _, err := s.recordLaunchedWorker(ctx, acctKV, accountID, cluster, ng, id); err != nil {
 			return nil, err
 		}
 	}
@@ -808,7 +809,7 @@ func (s *EKSServiceImpl) launchWorkersCAS(acctKV nats.KeyValue, accountID, clust
 // recordLaunchedWorker CAS-appends id while the record is below its live
 // ScalingDesired, or terminates the worker when a concurrent reconcile already
 // filled the gap (or lowered the target). Returns true when id was recorded.
-func (s *EKSServiceImpl) recordLaunchedWorker(kv nats.KeyValue, accountID, cluster, ng, id string) (bool, error) {
+func (s *EKSServiceImpl) recordLaunchedWorker(ctx context.Context, kv nats.KeyValue, accountID, cluster, ng, id string) (bool, error) {
 	for range ngCASMaxRetries {
 		rec, rev, err := getNodegroupEntry(kv, cluster, ng)
 		if err != nil {
@@ -818,7 +819,7 @@ func (s *EKSServiceImpl) recordLaunchedWorker(kv nats.KeyValue, accountID, clust
 			return true, nil
 		}
 		if len(rec.InstanceIDs) >= int(rec.ScalingDesired) {
-			if terr := s.deps.Worker.TerminateWorkerInstances([]string{id}, accountID); terr != nil {
+			if terr := s.deps.Worker.TerminateWorkerInstances(ctx, []string{id}, accountID); terr != nil {
 				return false, fmt.Errorf("terminate surplus worker: %w", terr)
 			}
 			return false, nil
@@ -832,7 +833,7 @@ func (s *EKSServiceImpl) recordLaunchedWorker(kv nats.KeyValue, accountID, clust
 		}
 	}
 	// Could not record within the CAS budget; terminate so the VM is not orphaned.
-	if terr := s.deps.Worker.TerminateWorkerInstances([]string{id}, accountID); terr != nil {
+	if terr := s.deps.Worker.TerminateWorkerInstances(ctx, []string{id}, accountID); terr != nil {
 		return false, fmt.Errorf("terminate unrecorded worker: %w", terr)
 	}
 	return false, errors.New(awserrors.ErrorServerInternal)
@@ -899,7 +900,7 @@ func (s *EKSServiceImpl) updateNodegroupVersion(input *eks.UpdateNodegroupVersio
 	return nil, notImpl()
 }
 
-func (s *EKSServiceImpl) deleteNodegroup(acctKV nats.KeyValue, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
+func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV nats.KeyValue, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -917,7 +918,7 @@ func (s *EKSServiceImpl) deleteNodegroup(acctKV nats.KeyValue, input *eks.Delete
 	}
 
 	if len(rec.InstanceIDs) > 0 {
-		if err := s.deps.Worker.TerminateWorkerInstances(rec.InstanceIDs, accountID); err != nil {
+		if err := s.deps.Worker.TerminateWorkerInstances(ctx, rec.InstanceIDs, accountID); err != nil {
 			return nil, fmt.Errorf("terminate workers: %w", err)
 		}
 	}
@@ -959,10 +960,10 @@ func (s *EKSServiceImpl) decryptNodeToken(kv nats.KeyValue, cluster string) (str
 // state. Such records — and any CREATE_FAILED record still holding worker IDs —
 // have their recorded workers terminated and the record settled to CREATE_FAILED
 // with InstanceIDs cleared, which is idempotent on the next boot.
-func (s *EKSServiceImpl) reclaimOrphanedNodegroups(accountID string, acctKV nats.KeyValue, cluster string) {
+func (s *EKSServiceImpl) reclaimOrphanedNodegroups(ctx context.Context, accountID string, acctKV nats.KeyValue, cluster string) {
 	recs, err := ListNodegroupRecords(acctKV, cluster)
 	if err != nil {
-		slog.Warn("reclaimOrphanedNodegroups: list records failed", "cluster", cluster, "err", err)
+		slog.WarnContext(ctx, "reclaimOrphanedNodegroups: list records failed", "cluster", cluster, "err", err)
 		return
 	}
 	for _, rec := range recs {
@@ -972,10 +973,10 @@ func (s *EKSServiceImpl) reclaimOrphanedNodegroups(accountID string, acctKV nats
 			continue
 		}
 		if len(rec.InstanceIDs) > 0 {
-			if err := s.deps.Worker.TerminateWorkerInstances(rec.InstanceIDs, accountID); err != nil {
+			if err := s.deps.Worker.TerminateWorkerInstances(ctx, rec.InstanceIDs, accountID); err != nil {
 				// Leave the record untouched so the next boot retries the reclaim
 				// rather than orphaning the workers by clearing their IDs.
-				slog.Error("reclaimOrphanedNodegroups: terminate workers failed",
+				slog.ErrorContext(ctx, "reclaimOrphanedNodegroups: terminate workers failed",
 					"cluster", cluster, "nodegroup", rec.Name, "instances", rec.InstanceIDs, "err", err)
 				continue
 			}
@@ -991,11 +992,11 @@ func (s *EKSServiceImpl) reclaimOrphanedNodegroups(accountID string, acctKV nats
 		rec.InstanceIDs = nil
 		rec.ModifiedAt = time.Now().UTC()
 		if err := PutNodegroupRecord(acctKV, rec); err != nil {
-			slog.Warn("reclaimOrphanedNodegroups: persist settled record failed",
+			slog.WarnContext(ctx, "reclaimOrphanedNodegroups: persist settled record failed",
 				"cluster", cluster, "nodegroup", rec.Name, "err", err)
 			continue
 		}
-		slog.Info("reclaimOrphanedNodegroups: reclaimed stranded nodegroup workers",
+		slog.InfoContext(ctx, "reclaimOrphanedNodegroups: reclaimed stranded nodegroup workers",
 			"cluster", cluster, "nodegroup", rec.Name, "priorStatus", priorStatus, "workers", workerCount)
 	}
 }

@@ -1,6 +1,7 @@
 package handlers_ec2_igw
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -18,7 +19,7 @@ import (
 func TestRLC1_IGWDeleteNotFoundOnAbsent(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 
-	_, err := svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String("igw-absent00000000"),
 	}, testAccountID)
 

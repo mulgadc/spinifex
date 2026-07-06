@@ -1,6 +1,8 @@
 package handlers_ec2_instance
 
 import (
+	"context"
+
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -9,17 +11,17 @@ import (
 
 // InstanceService defines the interface for EC2 instance operations business logic
 type InstanceService interface {
-	RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
-	DescribeInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
-	DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, accountID string) (*ec2.DescribeInstanceStatusOutput, error)
-	DescribeInstanceTypes(input *ec2.DescribeInstanceTypesInput, accountID string) (*ec2.DescribeInstanceTypesOutput, error)
-	DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error)
-	DescribeStoppedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
-	DescribeTerminatedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
-	ModifyInstanceAttribute(input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error)
-	ModifyInstanceMetadataOptions(input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error)
-	StartStoppedInstance(input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error)
-	TerminateStoppedInstance(input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error)
+	RunInstances(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
+	DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
+	DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, accountID string) (*ec2.DescribeInstanceStatusOutput, error)
+	DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypesInput, accountID string) (*ec2.DescribeInstanceTypesOutput, error)
+	DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error)
+	DescribeStoppedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
+	DescribeTerminatedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
+	ModifyInstanceAttribute(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error)
+	ModifyInstanceMetadataOptions(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error)
+	StartStoppedInstance(ctx context.Context, input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error)
+	TerminateStoppedInstance(ctx context.Context, input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error)
 }
 
 // StartStoppedInstanceInput is the payload for ec2.StartStoppedInstance.
@@ -90,38 +92,38 @@ type StoppedInstanceStore interface {
 // central tag store, and removes it on terminate. Implemented by
 // handlers/ec2/tags.TagsServiceImpl.
 type InstanceTagWriter interface {
-	PutResourceTags(accountID, resourceID string, tags map[string]string) error
-	DeleteAllTags(accountID, resourceID string) error
+	PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error
+	DeleteAllTags(ctx context.Context, accountID, resourceID string) error
 }
 
 // VolumeDeleter deletes EBS volumes. Implemented by handlers/ec2/volume's
 // VolumeServiceImpl (used by the daemon).
 type VolumeDeleter interface {
-	DeleteVolume(input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error)
+	DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error)
 }
 
 // ENIDeleter deletes ENIs. Implemented by handlers/ec2/vpc's VPCServiceImpl.
 type ENIDeleter interface {
-	DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
+	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
 }
 
 // PublicIPReleaser releases a previously allocated public IP back to a pool.
 // Implemented by handlers/ec2/vpc.ExternalIPAM. ownerENIID scopes the release
 // to the ENI that owns the lease so a stale teardown for a recycled IP no-ops.
 type PublicIPReleaser interface {
-	ReleaseIP(pool, ip, ownerENIID string) error
+	ReleaseIP(ctx context.Context, pool, ip, ownerENIID string) error
 }
 
 // AMIMetaLoader resolves an AMI ID to its metadata for ownership/validation
 // during RunInstances. Implemented by handlers/ec2/image.ImageServiceImpl.
 type AMIMetaLoader interface {
-	GetAMIConfig(imageID string) (viperblock.AMIMetadata, error)
+	GetAMIConfig(ctx context.Context, imageID string) (viperblock.AMIMetadata, error)
 }
 
 // KeyPairValidator checks that a named key pair exists for an account during
 // RunInstances. Implemented by handlers/ec2/key.KeyServiceImpl.
 type KeyPairValidator interface {
-	ValidateKeyPairExists(accountID, keyName string) error
+	ValidateKeyPairExists(ctx context.Context, accountID, keyName string) error
 }
 
 // SubnetInfo carries the subset of subnet metadata RunInstances needs to
@@ -148,17 +150,17 @@ type ENIInfo struct {
 // primary interface. DetachENI is here (not ENIDeleter) so the NAT-rollback
 // path can flip the ENI to "available" before deletion.
 type ENICreator interface {
-	GetDefaultSubnet(accountID string) (*SubnetInfo, error)
-	GetSubnet(accountID, subnetID string) (*SubnetInfo, error)
-	GetENI(accountID, eniID string) (*ENIInfo, error)
-	CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
-	AttachENI(accountID, eniID, instanceID string, deviceIndex int64) (string, error)
-	DetachENI(accountID, eniID string) error
-	UpdateENIPublicIP(accountID, eniID, publicIP, poolName string) error
+	GetDefaultSubnet(ctx context.Context, accountID string) (*SubnetInfo, error)
+	GetSubnet(ctx context.Context, accountID, subnetID string) (*SubnetInfo, error)
+	GetENI(ctx context.Context, accountID, eniID string) (*ENIInfo, error)
+	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
+	AttachENI(ctx context.Context, accountID, eniID, instanceID string, deviceIndex int64) (string, error)
+	DetachENI(ctx context.Context, accountID, eniID string) error
+	UpdateENIPublicIP(ctx context.Context, accountID, eniID, publicIP, poolName string) error
 }
 
 // PublicIPAllocator allocates a public IP to an instance/ENI from a pool.
 // Implemented by handlers/ec2/vpc.ExternalIPAM.
 type PublicIPAllocator interface {
-	AllocateIP(region, az, allocType, allocID, eniID, instanceID string) (publicIP, poolName string, err error)
+	AllocateIP(ctx context.Context, region, az, allocType, allocID, eniID, instanceID string) (publicIP, poolName string, err error)
 }

@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,14 +13,14 @@ import (
 )
 
 // DescribeInstanceTypes fans out to all nodes and aggregates instance type info.
-func DescribeInstanceTypes(input *ec2.DescribeInstanceTypesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeInstanceTypesOutput, error) {
+func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeInstanceTypesOutput, error) {
 	jsonData, err := json.Marshal(input)
 	if err != nil {
-		slog.Error("DescribeInstanceTypes: Failed to marshal input", "err", err)
+		slog.ErrorContext(ctx, "DescribeInstanceTypes: Failed to marshal input", "err", err)
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, _, err := utils.Gather(natsConn, "ec2.DescribeInstanceTypes", jsonData,
+	frames, _, err := utils.GatherCtx(ctx, natsConn, "ec2.DescribeInstanceTypes", jsonData,
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -82,6 +83,6 @@ func DescribeInstanceTypes(input *ec2.DescribeInstanceTypesInput, natsConn *nats
 		InstanceTypes: finalInstanceTypes,
 	}
 
-	slog.Info("DescribeInstanceTypes: Aggregated response", "total_instance_types", len(finalInstanceTypes), "show_capacity", showCapacity)
+	slog.InfoContext(ctx, "DescribeInstanceTypes: Aggregated response", "total_instance_types", len(finalInstanceTypes), "show_capacity", showCapacity)
 	return output, nil
 }

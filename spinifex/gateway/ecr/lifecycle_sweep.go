@@ -48,39 +48,39 @@ func (s *LifecycleSweeper) Run(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
-	slog.Info("ECR lifecycle sweeper started", "interval", s.interval)
+	slog.InfoContext(ctx, "ECR lifecycle sweeper started", "interval", s.interval)
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("ECR lifecycle sweeper stopped")
+			slog.InfoContext(ctx, "ECR lifecycle sweeper stopped")
 			return
 		case <-ticker.C:
-			s.sweepOnce(s.now())
+			s.sweepOnce(ctx, s.now())
 		}
 	}
 }
 
 // sweepOnce runs one cycle over every account/repo, returning the number of
 // images expired. Per-account and per-repo errors are logged and skipped.
-func (s *LifecycleSweeper) sweepOnce(now time.Time) int {
+func (s *LifecycleSweeper) sweepOnce(ctx context.Context, now time.Time) int {
 	accounts, err := s.accounts()
 	if err != nil {
-		slog.Warn("ECR lifecycle sweep: list accounts failed", "err", err)
+		slog.WarnContext(ctx, "ECR lifecycle sweep: list accounts failed", "err", err)
 		return 0
 	}
 
 	var deleted int
 	for _, account := range accounts {
-		repos, err := s.reg.Meta.ListRepos(account)
+		repos, err := s.reg.Meta.ListRepos(ctx, account)
 		if err != nil {
 			if errors.Is(err, ecr.ErrNotFound) {
 				continue
 			}
-			slog.Warn("ECR lifecycle sweep: list repos failed", "account", account, "err", err)
+			slog.WarnContext(ctx, "ECR lifecycle sweep: list repos failed", "account", account, "err", err)
 			continue
 		}
 		for _, repo := range repos {
-			deleted += s.sweepRepo(account, repo, now)
+			deleted += s.sweepRepo(ctx, account, repo, now)
 		}
 	}
 	return deleted
@@ -88,11 +88,11 @@ func (s *LifecycleSweeper) sweepOnce(now time.Time) int {
 
 // sweepRepo applies one repo's lifecycle policy. A repo with no policy is left
 // untouched. Returns the count of images expired in this repo.
-func (s *LifecycleSweeper) sweepRepo(account, repo string, now time.Time) int {
-	policy, err := s.reg.Meta.GetLifecyclePolicy(account, repo)
+func (s *LifecycleSweeper) sweepRepo(ctx context.Context, account, repo string, now time.Time) int {
+	policy, err := s.reg.Meta.GetLifecyclePolicy(ctx, account, repo)
 	if err != nil {
 		if !errors.Is(err, ecr.ErrNotFound) {
-			slog.Warn("ECR lifecycle sweep: get policy failed", "account", account, "repo", repo, "err", err)
+			slog.WarnContext(ctx, "ECR lifecycle sweep: get policy failed", "account", account, "repo", repo, "err", err)
 		}
 		return 0
 	}
@@ -100,10 +100,10 @@ func (s *LifecycleSweeper) sweepRepo(account, repo string, now time.Time) int {
 		return 0
 	}
 
-	records, err := s.reg.ListImages(account, repo)
+	records, err := s.reg.ListImages(ctx, account, repo)
 	if err != nil {
 		if !errors.Is(err, ecr.ErrNotFound) {
-			slog.Warn("ECR lifecycle sweep: list images failed", "account", account, "repo", repo, "err", err)
+			slog.WarnContext(ctx, "ECR lifecycle sweep: list images failed", "account", account, "repo", repo, "err", err)
 		}
 		return 0
 	}
@@ -115,7 +115,7 @@ func (s *LifecycleSweeper) sweepRepo(account, repo string, now time.Time) int {
 
 	expiries, err := ecr.EvaluateLifecyclePolicy(policy, images, now)
 	if err != nil {
-		slog.Warn("ECR lifecycle sweep: evaluate policy failed", "account", account, "repo", repo, "err", err)
+		slog.WarnContext(ctx, "ECR lifecycle sweep: evaluate policy failed", "account", account, "repo", repo, "err", err)
 		return 0
 	}
 	if len(expiries) == 0 {
@@ -127,9 +127,9 @@ func (s *LifecycleSweeper) sweepRepo(account, repo string, now time.Time) int {
 	// concurrent push/re-tag landed — skip it and let the next cycle re-evaluate
 	// the new state. The cross-repo blob mount guard is provided separately by
 	// reclaimManifest/referencedDigests.
-	fresh, err := s.reg.ListImages(account, repo)
+	fresh, err := s.reg.ListImages(ctx, account, repo)
 	if err != nil {
-		slog.Warn("ECR lifecycle sweep: re-list images failed", "account", account, "repo", repo, "err", err)
+		slog.WarnContext(ctx, "ECR lifecycle sweep: re-list images failed", "account", account, "repo", repo, "err", err)
 		return 0
 	}
 	currentTags := make(map[string][]string, len(fresh))
@@ -145,19 +145,19 @@ func (s *LifecycleSweeper) sweepRepo(account, repo string, now time.Time) int {
 			continue // already gone
 		}
 		if !sameTagSet(exp.Tags, currentTags[exp.Digest]) {
-			slog.Info("ECR lifecycle sweep: skipping image changed since evaluation",
+			slog.InfoContext(ctx, "ECR lifecycle sweep: skipping image changed since evaluation",
 				"account", account, "repo", repo, "digest", exp.Digest)
 			continue
 		}
-		if _, err := s.reg.DeleteImage(account, repo, "", exp.Digest); err != nil {
+		if _, err := s.reg.DeleteImage(ctx, account, repo, "", exp.Digest); err != nil {
 			if errors.Is(err, ErrImageNotFound) {
 				continue
 			}
-			slog.Warn("ECR lifecycle sweep: delete image failed",
+			slog.WarnContext(ctx, "ECR lifecycle sweep: delete image failed",
 				"account", account, "repo", repo, "digest", exp.Digest, "err", err)
 			continue
 		}
-		slog.Info("ECR lifecycle sweep: expired image",
+		slog.InfoContext(ctx, "ECR lifecycle sweep: expired image",
 			"account", account, "repo", repo, "digest", exp.Digest,
 			"tags", exp.Tags, "rulePriority", exp.RulePriority)
 		deleted++

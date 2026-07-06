@@ -1,18 +1,22 @@
 package handlers_ec2_placementgroup
 
-import "github.com/aws/aws-sdk-go/service/ec2"
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+)
 
 // PlacementGroupService defines the interface for placement group operations.
 type PlacementGroupService interface {
-	CreatePlacementGroup(input *ec2.CreatePlacementGroupInput, accountID string) (*ec2.CreatePlacementGroupOutput, error)
-	DeletePlacementGroup(input *ec2.DeletePlacementGroupInput, accountID string) (*ec2.DeletePlacementGroupOutput, error)
-	DescribePlacementGroups(input *ec2.DescribePlacementGroupsInput, accountID string) (*ec2.DescribePlacementGroupsOutput, error)
-	ReserveSpreadNodes(input *ReserveSpreadNodesInput, accountID string) (*ReserveSpreadNodesOutput, error)
-	FinalizeSpreadInstances(input *FinalizeSpreadInstancesInput, accountID string) (*FinalizeSpreadInstancesOutput, error)
-	ReleaseSpreadNodes(input *ReleaseSpreadNodesInput, accountID string) (*ReleaseSpreadNodesOutput, error)
-	RemoveInstance(input *RemoveInstanceInput, accountID string) (*RemoveInstanceOutput, error)
-	ReserveClusterNode(input *ReserveClusterNodeInput, accountID string) (*ReserveClusterNodeOutput, error)
-	FinalizeClusterInstances(input *FinalizeClusterInstancesInput, accountID string) (*FinalizeClusterInstancesOutput, error)
+	CreatePlacementGroup(ctx context.Context, input *ec2.CreatePlacementGroupInput, accountID string) (*ec2.CreatePlacementGroupOutput, error)
+	DeletePlacementGroup(ctx context.Context, input *ec2.DeletePlacementGroupInput, accountID string) (*ec2.DeletePlacementGroupOutput, error)
+	DescribePlacementGroups(ctx context.Context, input *ec2.DescribePlacementGroupsInput, accountID string) (*ec2.DescribePlacementGroupsOutput, error)
+	ReserveSpreadNodes(ctx context.Context, input *ReserveSpreadNodesInput, accountID string) (*ReserveSpreadNodesOutput, error)
+	FinalizeSpreadInstances(ctx context.Context, input *FinalizeSpreadInstancesInput, accountID string) (*FinalizeSpreadInstancesOutput, error)
+	ReleaseSpreadNodes(ctx context.Context, input *ReleaseSpreadNodesInput, accountID string) (*ReleaseSpreadNodesOutput, error)
+	RemoveInstance(ctx context.Context, input *RemoveInstanceInput, accountID string) (*RemoveInstanceOutput, error)
+	ReserveClusterNode(ctx context.Context, input *ReserveClusterNodeInput, accountID string) (*ReserveClusterNodeOutput, error)
+	FinalizeClusterInstances(ctx context.Context, input *FinalizeClusterInstancesInput, accountID string) (*FinalizeClusterInstancesOutput, error)
 }
 
 // ReserveSpreadNodesInput requests atomic node reservation for a spread placement group.

@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -12,7 +13,7 @@ import (
 // SetSubnets handles the ELBv2 SetSubnets API call. It enables the subnets (and
 // their backing ENIs) for the load balancer, adding and removing them to match
 // the request.
-func SetSubnets(input *elbv2.SetSubnetsInput, natsConn *nats.Conn, accountID string) (elbv2.SetSubnetsOutput, error) {
+func SetSubnets(ctx context.Context, input *elbv2.SetSubnetsInput, natsConn *nats.Conn, accountID string) (elbv2.SetSubnetsOutput, error) {
 	var output elbv2.SetSubnetsOutput
 
 	if input == nil || input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
@@ -23,7 +24,7 @@ func SetSubnets(input *elbv2.SetSubnetsInput, natsConn *nats.Conn, accountID str
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.SetSubnets(input, accountID)
+	result, err := svc.SetSubnets(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

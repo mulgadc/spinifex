@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -27,7 +28,7 @@ func ValidateModifyNetworkInterfaceAttributeInput(input *ec2.ModifyNetworkInterf
 }
 
 // ModifyNetworkInterfaceAttribute handles the EC2 ModifyNetworkInterfaceAttribute API call
-func ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetworkInterfaceAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyNetworkInterfaceAttributeOutput, error) {
+func ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyNetworkInterfaceAttributeOutput, error) {
 	var output ec2.ModifyNetworkInterfaceAttributeOutput
 
 	if err := ValidateModifyNetworkInterfaceAttributeInput(input); err != nil {
@@ -35,7 +36,7 @@ func ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetworkInterfaceAttributeI
 	}
 
 	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
-	result, err := svc.ModifyNetworkInterfaceAttribute(input, accountID)
+	result, err := svc.ModifyNetworkInterfaceAttribute(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

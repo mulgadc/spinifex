@@ -68,9 +68,15 @@ func startProducerSpan(ctx context.Context, subject string) (context.Context, tr
 
 // endSpanWithError records err (if any) and ends the span.
 func endSpanWithError(span trace.Span, err error) {
+	MarkSpanError(span, err)
+	span.End()
+}
+
+// MarkSpanError records err (if any) on span and sets error status without
+// ending it. Use when the span's lifetime outlives the failure site.
+func MarkSpanError(span trace.Span, err error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
-	span.End()
 }

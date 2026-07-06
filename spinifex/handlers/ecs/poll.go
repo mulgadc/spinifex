@@ -1,6 +1,8 @@
 package handlers_ecs
 
 import (
+	"context"
+
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go"
 )
@@ -32,7 +34,7 @@ type PollAssignmentsOutput struct {
 // writer of the inbox; the agent is the only reader/acker. Account is
 // authoritative from accountID (SigV4 caller), so an instance cannot drain
 // another account's inbox.
-func (s *Service) PollAssignments(input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error) {
+func (s *Service) PollAssignments(_ context.Context, input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error) {
 	cluster := clusterShortName(input.Cluster)
 	instanceID := containerInstanceShortID(input.ContainerInstance)
 	kv, err := s.bucket(accountID)

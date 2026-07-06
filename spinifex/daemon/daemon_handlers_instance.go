@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +35,7 @@ const startStoppedForwardTimeout = 30 * time.Second
 // instance: central store first, then the record under the manager lock, so a
 // failed S3 write leaves both stores untouched, matching the stopped path.
 // Ownership is checked by checkInstanceOwnership before dispatch.
-func (d *Daemon) handleSetInstanceTags(msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
 	remove := command.Attributes.RemoveInstanceTags
 	data := command.InstanceTagsData
 	if data == nil || (!remove && len(data.Tags) == 0) {
@@ -57,8 +58,8 @@ func (d *Daemon) handleSetInstanceTags(msg *nats.Msg, command types.EC2InstanceC
 	}
 
 	accountID := utils.AccountIDFromMsg(msg)
-	if err := d.tagsService.PutResourceTags(accountID, instance.ID, handlers_ec2_instance.TagsToMap(newTags)); err != nil {
-		slog.Error("SetInstanceTags: central tag store write failed",
+	if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID, handlers_ec2_instance.TagsToMap(newTags)); err != nil {
+		slog.ErrorContext(ctx, "SetInstanceTags: central tag store write failed",
 			"instanceId", instance.ID, "err", err)
 		respondWithError(msg, awserrors.ErrorServerInternal)
 		return
@@ -81,7 +82,7 @@ func (d *Daemon) handleSetInstanceTags(msg *nats.Msg, command types.EC2InstanceC
 	}
 
 	if err := msg.Respond([]byte(`{}`)); err != nil {
-		slog.Error("Failed to respond to NATS request", "err", err)
+		slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 	}
 }
 
@@ -127,7 +128,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 	}
 
 	_, prepSpan := otel.Tracer(daemonTracerName).Start(ctx, "ec2.PrepareRunInstances")
-	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(input, accountID, reservationID)
+	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(ctx, input, accountID, reservationID)
 	endOpSpan(prepSpan, err)
 	if err != nil {
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
@@ -173,7 +174,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 		if instance.Instance == nil || len(instance.Instance.Tags) == 0 {
 			continue
 		}
-		if err := d.tagsService.PutResourceTags(accountID, instance.ID,
+		if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID,
 			handlers_ec2_instance.TagsToMap(instance.Instance.Tags)); err != nil {
 			slog.Error("handleEC2RunInstances: launch tag central store write failed",
 				"instanceId", instance.ID, "err", err)
@@ -195,7 +196,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 
 	_, launchSpan := otel.Tracer(daemonTracerName).Start(ctx, "ec2.LaunchRunInstances",
 		trace.WithAttributes(attribute.Int("instance.count", len(instances))))
-	d.instanceService.LaunchRunInstances(instances, input, instanceType)
+	d.instanceService.LaunchRunInstances(ctx, instances, input, instanceType)
 	launchSpan.End()
 }
 

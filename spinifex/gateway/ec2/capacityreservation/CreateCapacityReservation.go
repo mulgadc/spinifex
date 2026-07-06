@@ -1,6 +1,7 @@
 package gateway_ec2_capacityreservation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -53,7 +54,7 @@ func ValidateCreateCapacityReservationInput(input *ec2.CreateCapacityReservation
 // CreateCapacityReservation runs a census-complete fan-out, pins the highest-
 // available in-AZ node that fits the whole InstanceCount, and node-targets Create.
 // No eligible node (or a lost fit re-check) yields InsufficientInstanceCapacity.
-func CreateCapacityReservation(input *ec2.CreateCapacityReservationInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.CreateCapacityReservationOutput, error) {
+func CreateCapacityReservation(ctx context.Context, input *ec2.CreateCapacityReservationInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.CreateCapacityReservationOutput, error) {
 	var output ec2.CreateCapacityReservationOutput
 
 	if err := ValidateCreateCapacityReservationInput(input); err != nil {
@@ -63,7 +64,7 @@ func CreateCapacityReservation(input *ec2.CreateCapacityReservationInput, natsCo
 		return output, errors.New(awserrors.ErrorDryRunOperation)
 	}
 
-	census, err := collectCensus(natsConn, expectedNodes, accountID)
+	census, err := collectCensus(ctx, natsConn, expectedNodes, accountID)
 	if err != nil {
 		return output, err
 	}
@@ -87,7 +88,7 @@ func CreateCapacityReservation(input *ec2.CreateCapacityReservationInput, natsCo
 	}
 
 	subject := fmt.Sprintf("ec2.CreateCapacityReservation.%s", node)
-	reservation, err := utils.NATSRequest[ec2.CapacityReservation](natsConn, subject, input, createReservationTimeout, accountID)
+	reservation, err := utils.NATSRequestCtx[ec2.CapacityReservation](ctx, natsConn, subject, input, createReservationTimeout, accountID)
 	if err != nil {
 		return output, err
 	}

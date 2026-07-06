@@ -63,7 +63,7 @@ func TestS3ObjectStore_EnsureBucket_HeadOK(t *testing.T) {
 	srv := httptest.NewServer(fake)
 	defer srv.Close()
 
-	require.NoError(t, newS3Store(t, srv.URL).EnsureBucket("ecr-000000000001"))
+	require.NoError(t, newS3Store(t, srv.URL).EnsureBucket(t.Context(), "ecr-000000000001"))
 	assert.Equal(t, 1, fake.heads)
 	assert.Equal(t, 0, fake.puts, "present bucket must not be re-created")
 }
@@ -73,7 +73,7 @@ func TestS3ObjectStore_EnsureBucket_CreatesWhenAbsent(t *testing.T) {
 	srv := httptest.NewServer(fake)
 	defer srv.Close()
 
-	require.NoError(t, newS3Store(t, srv.URL).EnsureBucket("ecr-000000000001"))
+	require.NoError(t, newS3Store(t, srv.URL).EnsureBucket(t.Context(), "ecr-000000000001"))
 	assert.Equal(t, 1, fake.heads)
 	assert.Equal(t, 1, fake.puts)
 }
@@ -87,7 +87,7 @@ func TestS3ObjectStore_EnsureBucket_AlreadyOwnedIsSuccess(t *testing.T) {
 	srv := httptest.NewServer(fake)
 	defer srv.Close()
 
-	require.NoError(t, newS3Store(t, srv.URL).EnsureBucket("ecr-000000000001"))
+	require.NoError(t, newS3Store(t, srv.URL).EnsureBucket(t.Context(), "ecr-000000000001"))
 	assert.Equal(t, 1, fake.puts)
 }
 
@@ -100,5 +100,5 @@ func TestS3ObjectStore_EnsureBucket_BackendErrorPropagates(t *testing.T) {
 	srv := httptest.NewServer(fake)
 	defer srv.Close()
 
-	require.Error(t, newS3Store(t, srv.URL).EnsureBucket("ecr-000000000001"))
+	require.Error(t, newS3Store(t, srv.URL).EnsureBucket(t.Context(), "ecr-000000000001"))
 }

@@ -1,6 +1,8 @@
 package gateway_ecr
 
 import (
+	"context"
+
 	"errors"
 	"net/http"
 	"testing"
@@ -20,12 +22,12 @@ type countingStore struct {
 	ensureErr   error
 }
 
-func (c *countingStore) EnsureBucket(bucket string) error {
+func (c *countingStore) EnsureBucket(ctx context.Context, bucket string) error {
 	c.ensureCalls++
 	if c.ensureErr != nil {
 		return c.ensureErr
 	}
-	return c.MemoryObjectStore.EnsureBucket(bucket)
+	return c.MemoryObjectStore.EnsureBucket(ctx, bucket)
 }
 
 func TestRegistry_EnsureBucketFailureReturns500(t *testing.T) {

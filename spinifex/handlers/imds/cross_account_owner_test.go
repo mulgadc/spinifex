@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,7 +45,7 @@ func TestResolveInstance_DescribesUnderInstanceOwner(t *testing.T) {
 	lookup.facts = &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::000000000000:instance-profile/spinifex-lb-agent"}
 
 	eni := &eniFacts{accountID: "000000000001", instanceAccountID: "000000000000", instanceID: "i-sysvm"}
-	inst, err := r.resolveInstance(eni)
+	inst, err := r.resolveInstance(context.Background(), eni)
 	require.NoError(t, err)
 	require.NotNil(t, inst)
 	assert.Equal(t, "000000000000", lookup.lastAccount)
@@ -57,7 +58,7 @@ func TestResolveInstance_FallsBackToENIAccount(t *testing.T) {
 	lookup.facts = &instanceFacts{}
 
 	eni := &eniFacts{accountID: "111122223333", instanceID: "i-app"}
-	_, err := r.resolveInstance(eni)
+	_, err := r.resolveInstance(context.Background(), eni)
 	require.NoError(t, err)
 	assert.Equal(t, "111122223333", lookup.lastAccount)
 }

@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"testing"
@@ -85,7 +86,7 @@ func TestNATSEIPManager_AllocateAndAssociate(t *testing.T) {
 	backend := &fakeEIPBackend{}
 	backend.register(t, nc)
 
-	pub, alloc, err := newNATSEIPManager(nc).AllocateAndAssociate(testAccountID, "eni-target")
+	pub, alloc, err := newNATSEIPManager(nc).AllocateAndAssociate(context.Background(), testAccountID, "eni-target")
 	require.NoError(t, err)
 	assert.Equal(t, fakePublicIP, pub)
 	assert.Equal(t, fakeAllocID, alloc)
@@ -100,7 +101,7 @@ func TestNATSEIPManager_AssociateFailureReleasesAllocation(t *testing.T) {
 	backend := &fakeEIPBackend{associateFails: true}
 	backend.register(t, nc)
 
-	_, _, err := newNATSEIPManager(nc).AllocateAndAssociate(testAccountID, "eni-target")
+	_, _, err := newNATSEIPManager(nc).AllocateAndAssociate(context.Background(), testAccountID, "eni-target")
 	require.Error(t, err)
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
@@ -112,7 +113,7 @@ func TestNATSEIPManager_ReleaseDisassociatesThenReleases(t *testing.T) {
 	backend := &fakeEIPBackend{}
 	backend.register(t, nc)
 
-	require.NoError(t, newNATSEIPManager(nc).Release(testAccountID, fakeAllocID))
+	require.NoError(t, newNATSEIPManager(nc).Release(context.Background(), testAccountID, fakeAllocID))
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
 	assert.Equal(t, fakeAssocID, backend.disassociated)

@@ -1,6 +1,7 @@
 package handlers_quota
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -22,11 +23,11 @@ func exceeds(count, want, limit int) error {
 }
 
 // EnforceVPCs gates CreateVpc on the account's live DescribeVpcs count.
-func (s *Service) EnforceVPCs(natsConn *nats.Conn, accountID string, want int) error {
+func (s *Service) EnforceVPCs(ctx context.Context, natsConn *nats.Conn, accountID string, want int) error {
 	if s.Exempt(accountID) {
 		return nil
 	}
-	out, err := gateway_ec2_vpc.DescribeVpcs(&ec2.DescribeVpcsInput{}, natsConn, accountID)
+	out, err := gateway_ec2_vpc.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{}, natsConn, accountID)
 	if err != nil {
 		return err
 	}
@@ -35,11 +36,11 @@ func (s *Service) EnforceVPCs(natsConn *nats.Conn, accountID string, want int) e
 
 // EnforceSubnets gates CreateSubnet on the account's live DescribeSubnets count.
 // Subnets are capped per-account in aggregate, not per-VPC.
-func (s *Service) EnforceSubnets(natsConn *nats.Conn, accountID string, want int) error {
+func (s *Service) EnforceSubnets(ctx context.Context, natsConn *nats.Conn, accountID string, want int) error {
 	if s.Exempt(accountID) {
 		return nil
 	}
-	out, err := gateway_ec2_vpc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, natsConn, accountID)
+	out, err := gateway_ec2_vpc.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{}, natsConn, accountID)
 	if err != nil {
 		return err
 	}
@@ -47,11 +48,11 @@ func (s *Service) EnforceSubnets(natsConn *nats.Conn, accountID string, want int
 }
 
 // EnforceEIPs gates AllocateAddress on the account's live DescribeAddresses count.
-func (s *Service) EnforceEIPs(natsConn *nats.Conn, accountID string, want int) error {
+func (s *Service) EnforceEIPs(ctx context.Context, natsConn *nats.Conn, accountID string, want int) error {
 	if s.Exempt(accountID) {
 		return nil
 	}
-	out, err := gateway_ec2_eip.DescribeAddresses(&ec2.DescribeAddressesInput{}, natsConn, accountID)
+	out, err := gateway_ec2_eip.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{}, natsConn, accountID)
 	if err != nil {
 		return err
 	}

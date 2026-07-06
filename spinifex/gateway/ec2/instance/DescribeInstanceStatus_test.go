@@ -2,6 +2,7 @@ package gateway_ec2_instance
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestDescribeInstanceStatus_SingleNode(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out, err := DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, nc, 1, "123456789012", "us-east-1a")
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, "123456789012", "us-east-1a")
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 2)
 }
@@ -84,7 +85,7 @@ func TestDescribeInstanceStatus_TwoNodesDedup(t *testing.T) {
 	require.NoError(t, nc.Flush())
 	require.NoError(t, nc2.Flush())
 
-	out, err := DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, nc, 2, "123456789012", "us-east-1a")
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 2, "123456789012", "us-east-1a")
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-001", *out.InstanceStatuses[0].InstanceId)
@@ -113,7 +114,7 @@ func TestDescribeInstanceStatus_OneNodeErrorOthersData(t *testing.T) {
 	require.NoError(t, nc.Flush())
 	require.NoError(t, nc2.Flush())
 
-	out, err := DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, nc, 2, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 2, "123456789012", "az-a")
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-good", *out.InstanceStatuses[0].InstanceId)
@@ -127,7 +128,7 @@ func TestDescribeInstanceStatus_AllNodesError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, nc, 1, "123456789012", "az-a")
+	_, err = DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, "123456789012", "az-a")
 	require.Error(t, err)
 	assert.Equal(t, "InvalidParameterValue", err.Error())
 }
@@ -135,7 +136,7 @@ func TestDescribeInstanceStatus_AllNodesError(t *testing.T) {
 func TestDescribeInstanceStatus_AllNodesTimeoutReturnsEmpty(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
-	out, err := DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, nc, 0, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 0, "123456789012", "az-a")
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Empty(t, out.InstanceStatuses)
@@ -167,7 +168,7 @@ func TestDescribeInstanceStatus_IncludeAllAddsStoppedAsNotApplicable(t *testing.
 	require.NoError(t, err)
 
 	input := &ec2.DescribeInstanceStatusInput{IncludeAllInstances: aws.Bool(true)}
-	out, err := DescribeInstanceStatus(input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 2)
 
@@ -216,7 +217,7 @@ func TestDescribeInstanceStatus_RunningWinsOverStoppedDuringRace(t *testing.T) {
 	require.NoError(t, err)
 
 	input := &ec2.DescribeInstanceStatusInput{IncludeAllInstances: aws.Bool(true)}
-	out, err := DescribeInstanceStatus(input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "running", *out.InstanceStatuses[0].InstanceState.Name)
@@ -231,7 +232,7 @@ func TestDescribeInstanceStatus_NilInput(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out, err := DescribeInstanceStatus(nil, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), nil, nc, 1, "123456789012", "az-a")
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Empty(t, out.InstanceStatuses)
@@ -244,7 +245,7 @@ func TestDescribeInstanceStatus_ClosedConnection(t *testing.T) {
 	require.NoError(t, err)
 	closed.Close()
 
-	_, err = DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, closed, 1, "123456789012", "az-a")
+	_, err = DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, closed, 1, "123456789012", "az-a")
 	require.Error(t, err)
 }
 
@@ -302,7 +303,7 @@ func TestDescribeInstanceStatus_IncludeAllProjectsInputForStoppedHandler(t *test
 		IncludeAllInstances: aws.Bool(true),
 		InstanceIds:         []*string{aws.String("i-stop")},
 	}
-	out, err := DescribeInstanceStatus(input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
 	require.NoError(t, err)
 	require.NoError(t, unmarshalErr, "projected input must decode cleanly under DisallowUnknownFields")
 	require.Len(t, out.InstanceStatuses, 1)
@@ -421,7 +422,7 @@ func TestDescribeInstanceStatus_IncludeAllWithAZFilterMatches(t *testing.T) {
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-a")}},
 		},
 	}
-	out, err := DescribeInstanceStatus(input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-stop", *out.InstanceStatuses[0].InstanceId)
@@ -451,7 +452,7 @@ func TestDescribeInstanceStatus_IncludeAllWithAZFilterMisses(t *testing.T) {
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-other")}},
 		},
 	}
-	out, err := DescribeInstanceStatus(input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
 	require.NoError(t, err)
 	assert.Empty(t, out.InstanceStatuses)
 }

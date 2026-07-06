@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -45,7 +46,7 @@ const albController = "aws-load-balancer-controller"
 func TestDescribeAddonVersions_ReturnsCatalog(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{}, testAccountID)
+	out, err := svc.DescribeAddonVersions(context.Background(), &eks.DescribeAddonVersionsInput{}, testAccountID)
 	require.NoError(t, err)
 	visible := 0
 	for _, spec := range addonCatalog {
@@ -59,7 +60,7 @@ func TestDescribeAddonVersions_ReturnsCatalog(t *testing.T) {
 	}
 
 	// Filtered to one addon.
-	out, err = svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{
+	out, err = svc.DescribeAddonVersions(context.Background(), &eks.DescribeAddonVersionsInput{
 		AddonName: aws.String(albController),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -71,7 +72,7 @@ func TestDescribeAddonVersions_ReturnsCatalog(t *testing.T) {
 
 func TestCreateAddon_UnknownClusterIsNotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("missing"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
@@ -79,7 +80,7 @@ func TestCreateAddon_UnknownClusterIsNotFound(t *testing.T) {
 
 func TestCreateAddon_UnknownAddonRejected(t *testing.T) {
 	svc, _ := setupAddonService(t)
-	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("not-a-real-addon"),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
@@ -87,7 +88,7 @@ func TestCreateAddon_UnknownAddonRejected(t *testing.T) {
 
 func TestCreateAddon_UnknownVersionRejected(t *testing.T) {
 	svc, _ := setupAddonService(t)
-	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 		AddonVersion: aws.String("9.9.9-nope"),
 	}, testAccountID)
@@ -98,7 +99,7 @@ func TestCreateAddon_CreatesStagingAndDefaultsVersion(t *testing.T) {
 	svc, fake := setupAddonService(t)
 	spec, _ := lookupAddon(albController)
 
-	out, err := svc.CreateAddon(&eks.CreateAddonInput{
+	out, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -114,7 +115,7 @@ func TestCreateAddon_CreatesStagingAndDefaultsVersion(t *testing.T) {
 	assert.Equal(t, albController, fake.installs[0].AddonName)
 
 	// Duplicate create → ResourceInUseException.
-	_, err = svc.CreateAddon(&eks.CreateAddonInput{
+	_, err = svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
@@ -124,12 +125,12 @@ func TestCreateAddon_InstallerFailureMarksCreateFailed(t *testing.T) {
 	svc, fake := setupAddonService(t)
 	fake.installErr = errors.New("delivery bus unreachable")
 
-	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.Error(t, err)
 
-	desc, err := svc.DescribeAddon(&eks.DescribeAddonInput{
+	desc, err := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -139,28 +140,28 @@ func TestCreateAddon_InstallerFailureMarksCreateFailed(t *testing.T) {
 func TestAddon_DescribeListDelete(t *testing.T) {
 	svc, fake := setupAddonService(t)
 
-	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeAddon(&eks.DescribeAddonInput{
+	desc, err := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, albController, aws.StringValue(desc.Addon.AddonName))
 
-	list, err := svc.ListAddons(&eks.ListAddonsInput{ClusterName: aws.String("c1")}, testAccountID)
+	list, err := svc.ListAddons(context.Background(), &eks.ListAddonsInput{ClusterName: aws.String("c1")}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{albController}, aws.StringValueSlice(list.Addons))
 
-	_, err = svc.DeleteAddon(&eks.DeleteAddonInput{
+	_, err = svc.DeleteAddon(context.Background(), &eks.DeleteAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{albController}, fake.uninstalls)
 
-	_, err = svc.DescribeAddon(&eks.DescribeAddonInput{
+	_, err = svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
@@ -168,11 +169,11 @@ func TestAddon_DescribeListDelete(t *testing.T) {
 
 func TestDescribeDeleteAddon_MissingIsNotFound(t *testing.T) {
 	svc, _ := setupAddonService(t)
-	_, err := svc.DescribeAddon(&eks.DescribeAddonInput{
+	_, err := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
-	_, err = svc.DeleteAddon(&eks.DeleteAddonInput{
+	_, err = svc.DeleteAddon(context.Background(), &eks.DeleteAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
@@ -182,13 +183,13 @@ func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 	svc, fake := setupAddonService(t)
 	spec, _ := lookupAddon("argocd")
 
-	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, fake.installs, 1)
 
-	out, err := svc.UpdateAddon(&eks.UpdateAddonInput{
+	out, err := svc.UpdateAddon(context.Background(), &eks.UpdateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 		ConfigurationValues: aws.String(`{"replicaCount":2}`),
 	}, testAccountID)
@@ -197,7 +198,7 @@ func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 	assert.Equal(t, eks.UpdateTypeAddonUpdate, aws.StringValue(out.Update.Type))
 	require.Len(t, fake.installs, 2, "update must re-drive the installer")
 
-	desc, err := svc.DescribeAddon(&eks.DescribeAddonInput{
+	desc, err := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -208,12 +209,12 @@ func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 
 func TestUpdateAddon_UnknownVersionRejected(t *testing.T) {
 	svc, _ := setupAddonService(t)
-	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.UpdateAddon(&eks.UpdateAddonInput{
+	_, err = svc.UpdateAddon(context.Background(), &eks.UpdateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 		AddonVersion: aws.String("9.9.9-nope"),
 	}, testAccountID)
@@ -222,7 +223,7 @@ func TestUpdateAddon_UnknownVersionRejected(t *testing.T) {
 
 func TestUpdateAddon_MissingIsNotFound(t *testing.T) {
 	svc, _ := setupAddonService(t)
-	_, err := svc.UpdateAddon(&eks.UpdateAddonInput{
+	_, err := svc.UpdateAddon(context.Background(), &eks.UpdateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
@@ -234,7 +235,7 @@ func TestStagingInstaller_StagesManifest(t *testing.T) {
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 
-	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 		ServiceAccountRoleArn: aws.String("arn:aws:iam::111122223333:role/alb"),
 	}, testAccountID)
@@ -254,22 +255,22 @@ func TestListStagedAddonManifests(t *testing.T) {
 	seedTestCluster(t, svc, "c1")
 
 	// Empty cluster: no staged manifests, no error.
-	out, err := svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
+	out, err := svc.ListStagedAddonManifests(context.Background(), &ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.Manifests)
 
 	// Stage two addons; reader returns both, sorted by name, with config carried.
-	_, err = svc.CreateAddon(&eks.CreateAddonInput{
+	_, err = svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.CreateAddon(&eks.CreateAddonInput{
+	_, err = svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 		ServiceAccountRoleArn: aws.String("arn:aws:iam::111122223333:role/alb"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
+	out, err = svc.ListStagedAddonManifests(context.Background(), &ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Manifests, 2)
 	assert.Equal(t, "argocd", out.Manifests[0].AddonName, "sorted by addon name")
@@ -277,19 +278,19 @@ func TestListStagedAddonManifests(t *testing.T) {
 	assert.Equal(t, "arn:aws:iam::111122223333:role/alb", out.Manifests[1].ServiceAccountRoleArn)
 
 	// Deleting an addon unstages its manifest; reader drops it.
-	_, err = svc.DeleteAddon(&eks.DeleteAddonInput{
+	_, err = svc.DeleteAddon(context.Background(), &eks.DeleteAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
+	out, err = svc.ListStagedAddonManifests(context.Background(), &ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Manifests, 1)
 	assert.Equal(t, "argocd", out.Manifests[0].AddonName)
 
 	// Unknown cluster surfaces ResourceNotFound; empty cluster name is invalid.
-	_, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "missing"}, testAccountID)
+	_, err = svc.ListStagedAddonManifests(context.Background(), &ListStagedAddonManifestsInput{ClusterName: "missing"}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
-	_, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: ""}, testAccountID)
+	_, err = svc.ListStagedAddonManifests(context.Background(), &ListStagedAddonManifestsInput{ClusterName: ""}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }

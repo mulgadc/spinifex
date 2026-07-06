@@ -87,9 +87,9 @@ func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *n
 
 	// ClientToken set: dedup concurrent/retried launches; store failure is fatal
 	// to avoid a double launch on retry.
-	store, serr := getClientTokenStore(natsConn)
+	store, serr := getClientTokenStore(ctx, natsConn)
 	if serr != nil {
-		slog.Error("RunInstances: client-token store unavailable", "err", serr)
+		slog.ErrorContext(ctx, "RunInstances: client-token store unavailable", "err", serr)
 		return reservation, errors.New(awserrors.ErrorServerInternal)
 	}
 	// Hash before any mutation so the same token+params always matches.
@@ -133,7 +133,7 @@ func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsCo
 
 	groupName := placementGroupName(input)
 	if groupName != "" {
-		strategy, err := lookupPlacementGroupStrategy(natsConn, accountID, groupName)
+		strategy, err := lookupPlacementGroupStrategy(ctx, natsConn, accountID, groupName)
 		if err != nil {
 			return reservation, err
 		}
@@ -162,7 +162,7 @@ func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsCo
 	if err != nil {
 		// Distinguish "unknown type" from "no capacity" via DescribeInstanceTypes.
 		if err.Error() == awserrors.ErrorInsufficientInstanceCapacity {
-			if !isKnownInstanceType(natsConn, *input.InstanceType) {
+			if !isKnownInstanceType(ctx, natsConn, *input.InstanceType) {
 				return reservation, errors.New(awserrors.ErrorInvalidInstanceType)
 			}
 		}
@@ -237,9 +237,9 @@ func capacityReservationTargetID(input *ec2.RunInstancesInput) string {
 }
 
 // lookupPlacementGroupStrategy returns the strategy of a placement group, or an error if absent/unavailable.
-func lookupPlacementGroupStrategy(natsConn *nats.Conn, accountID, groupName string) (string, error) {
+func lookupPlacementGroupStrategy(ctx context.Context, natsConn *nats.Conn, accountID, groupName string) (string, error) {
 	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
-	out, err := pgSvc.DescribePlacementGroups(&ec2.DescribePlacementGroupsInput{
+	out, err := pgSvc.DescribePlacementGroups(ctx, &ec2.DescribePlacementGroupsInput{
 		GroupNames: []*string{aws.String(groupName)},
 	}, accountID)
 	if err != nil {
@@ -256,9 +256,8 @@ func lookupPlacementGroupStrategy(natsConn *nats.Conn, accountID, groupName stri
 }
 
 // isKnownInstanceType checks whether any daemon recognizes the given instance type.
-func isKnownInstanceType(natsConn *nats.Conn, instanceType string) bool {
-	result, err := utils.NATSRequest[ec2.DescribeInstanceTypesOutput](
-		natsConn, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesInput{}, 3*time.Second, utils.GlobalAccountID)
+func isKnownInstanceType(ctx context.Context, natsConn *nats.Conn, instanceType string) bool {
+	result, err := utils.NATSRequestCtx[ec2.DescribeInstanceTypesOutput](ctx, natsConn, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesInput{}, 3*time.Second, utils.GlobalAccountID)
 	if err != nil || result == nil {
 		return false
 	}

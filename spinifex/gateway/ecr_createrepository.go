@@ -30,15 +30,16 @@ type createRepositoryRequest struct {
 // only the per-account KV meta record. imageTagMutability (MUTABLE/IMMUTABLE)
 // is validated, persisted, and echoed; an unset value defaults to MUTABLE.
 func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.Request) error {
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	ctx := r.Context()
+	accountID, _ := ctx.Value(ctxAccountID).(string)
 	if accountID == "" {
-		slog.Error("CreateRepository: no account ID in auth context")
+		slog.ErrorContext(ctx, "CreateRepository: no account ID in auth context")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Error("CreateRepository: failed to read body", "err", err)
+		slog.ErrorContext(ctx, "CreateRepository: failed to read body", "err", err)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	var req createRepositoryRequest
@@ -57,10 +58,10 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 	}
 
 	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)
-	if _, err := store.GetRepo(accountID, req.RepositoryName); err == nil {
+	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err == nil {
 		return errors.New(awserrors.ErrorRepositoryAlreadyExists)
 	} else if !errors.Is(err, handlers_ecr.ErrNotFound) {
-		slog.Error("CreateRepository: get repo failed", "repo", req.RepositoryName, "err", err)
+		slog.ErrorContext(ctx, "CreateRepository: get repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -69,8 +70,8 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 		CreatedAt:          time.Now().UTC(),
 		ImageTagMutability: mutability,
 	}
-	if err := store.PutRepo(accountID, meta); err != nil {
-		slog.Error("CreateRepository: put repo failed", "repo", req.RepositoryName, "err", err)
+	if err := store.PutRepo(ctx, accountID, meta); err != nil {
+		slog.ErrorContext(ctx, "CreateRepository: put repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 

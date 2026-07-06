@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -11,7 +12,7 @@ import (
 
 // DescribeListenerCertificates handles the ELBv2 DescribeListenerCertificates
 // API call. It returns the certificates attached to a listener.
-func DescribeListenerCertificates(input *elbv2.DescribeListenerCertificatesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeListenerCertificatesOutput, error) {
+func DescribeListenerCertificates(ctx context.Context, input *elbv2.DescribeListenerCertificatesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeListenerCertificatesOutput, error) {
 	var output elbv2.DescribeListenerCertificatesOutput
 
 	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
@@ -19,7 +20,7 @@ func DescribeListenerCertificates(input *elbv2.DescribeListenerCertificatesInput
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.DescribeListenerCertificates(input, accountID)
+	result, err := svc.DescribeListenerCertificates(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

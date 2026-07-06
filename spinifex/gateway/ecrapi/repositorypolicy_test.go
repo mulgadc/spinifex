@@ -1,6 +1,8 @@
 package gateway_ecrapi
 
 import (
+	"context"
+
 	"encoding/json"
 	"testing"
 	"time"
@@ -18,7 +20,7 @@ import (
 const policyTestAccount = "000000000000"
 
 // serveMeta wires a MetaService method to a NATS subject, mirroring the daemon.
-func serveMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(*I, string) (*O, error)) {
+func serveMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(context.Context, *I, string) (*O, error)) {
 	t.Helper()
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
 		accountID := utils.AccountIDFromMsg(msg)
@@ -27,7 +29,7 @@ func serveMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn fun
 			_ = msg.Respond(errResp)
 			return
 		}
-		out, err := fn(in, accountID)
+		out, err := fn(context.Background(), in, accountID)
 		if err != nil {
 			_ = msg.Respond(utils.GenerateErrorPayload("ServerInternal"))
 			return
@@ -56,7 +58,7 @@ func newPolicyTestConn(t *testing.T) *nats.Conn {
 func seedRepo(t *testing.T, nc *nats.Conn, repo string) {
 	t.Helper()
 	store := handlers_ecr.NewNATSMetaStore(nc)
-	require.NoError(t, store.PutRepo(policyTestAccount, handlers_ecr.RepoMeta{Name: repo, CreatedAt: time.Now()}))
+	require.NoError(t, store.PutRepo(context.Background(), policyTestAccount, handlers_ecr.RepoMeta{Name: repo, CreatedAt: time.Now()}))
 }
 
 func TestRepositoryPolicy_Lifecycle(t *testing.T) {
@@ -65,7 +67,7 @@ func TestRepositoryPolicy_Lifecycle(t *testing.T) {
 	const policy = `{"Version":"2012-10-17","Statement":[]}`
 	body := []byte(`{"repositoryName":"team/app","policyText":` + strconvQuote(policy) + `}`)
 
-	out, err := SetRepositoryPolicy(nc, policyTestAccount, body)
+	out, err := SetRepositoryPolicy(context.Background(), nc, policyTestAccount, body)
 	require.NoError(t, err)
 	set, ok := out.(*ecr.SetRepositoryPolicyOutput)
 	require.True(t, ok)
@@ -73,20 +75,20 @@ func TestRepositoryPolicy_Lifecycle(t *testing.T) {
 	assert.Equal(t, "team/app", *set.RepositoryName)
 	assert.Equal(t, policyTestAccount, *set.RegistryId)
 
-	out, err = GetRepositoryPolicy(nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	out, err = GetRepositoryPolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.NoError(t, err)
 	got, ok := out.(*ecr.GetRepositoryPolicyOutput)
 	require.True(t, ok)
 	assert.Equal(t, policy, *got.PolicyText)
 
-	out, err = DeleteRepositoryPolicy(nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	out, err = DeleteRepositoryPolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.NoError(t, err)
 	del, ok := out.(*ecr.DeleteRepositoryPolicyOutput)
 	require.True(t, ok)
 	assert.Equal(t, policy, *del.PolicyText)
 
 	// Policy gone after delete.
-	_, err = GetRepositoryPolicy(nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	_, err = GetRepositoryPolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorRepositoryPolicyNotFound, err.Error())
 }
@@ -97,7 +99,7 @@ func TestRepositoryPolicy_Errors(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		fn     func(*nats.Conn, string, []byte) (any, error)
+		fn     func(context.Context, *nats.Conn, string, []byte) (any, error)
 		body   string
 		expect string
 	}{
@@ -111,7 +113,7 @@ func TestRepositoryPolicy_Errors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := tc.fn(nc, policyTestAccount, []byte(tc.body))
+			_, err := tc.fn(context.Background(), nc, policyTestAccount, []byte(tc.body))
 			require.Error(t, err)
 			assert.Equal(t, tc.expect, err.Error())
 		})

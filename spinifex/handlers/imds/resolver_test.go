@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -20,7 +21,7 @@ type fakeLookup struct {
 	lastAccount string
 }
 
-func (f *fakeLookup) describe(accountID, _ string) (*instanceFacts, error) {
+func (f *fakeLookup) describe(_ context.Context, accountID, _ string) (*instanceFacts, error) {
 	f.calls++
 	f.lastAccount = accountID
 	return f.facts, f.err
@@ -72,7 +73,7 @@ func TestResolveENIByID_Hit(t *testing.T) {
 		SecurityGroupIds:   []string{"sg-1", "sg-2"},
 	})
 
-	eni, err := r.resolveENIByID("eni-aaa")
+	eni, err := r.resolveENIByID(context.Background(), "eni-aaa")
 	require.NoError(t, err)
 	require.NotNil(t, eni)
 	assert.Equal(t, "eni-aaa", eni.eniID)
@@ -98,13 +99,13 @@ func TestResolveENIByID_RecoversAccountAcrossTenants(t *testing.T) {
 		NetworkInterfaceId: "eni-bbb", VpcId: testVPC, PrivateIpAddress: testIP, InstanceId: "i-bbbb2222",
 	})
 
-	a, err := r.resolveENIByID("eni-aaa")
+	a, err := r.resolveENIByID(context.Background(), "eni-aaa")
 	require.NoError(t, err)
 	require.NotNil(t, a)
 	assert.Equal(t, "111122223333", a.accountID)
 	assert.Equal(t, "i-aaaa1111", a.instanceID)
 
-	b, err := r.resolveENIByID("eni-bbb")
+	b, err := r.resolveENIByID(context.Background(), "eni-bbb")
 	require.NoError(t, err)
 	require.NotNil(t, b)
 	assert.Equal(t, "444455556666", b.accountID)
@@ -115,12 +116,12 @@ func TestResolveENIByID_RecoversAccountAcrossTenants(t *testing.T) {
 // it to a 404, matching the boot-time "not yet visible" posture.
 func TestResolveENIByID_MissIsNilNil(t *testing.T) {
 	r, _ := newTestResolver(t)
-	eni, err := r.resolveENIByID("eni-nope")
+	eni, err := r.resolveENIByID(context.Background(), "eni-nope")
 	require.NoError(t, err)
 	assert.Nil(t, eni)
 
 	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{NetworkInterfaceId: "eni-aaa"})
-	eni, err = r.resolveENIByID("eni-other")
+	eni, err = r.resolveENIByID(context.Background(), "eni-other")
 	require.NoError(t, err)
 	assert.Nil(t, eni)
 }
@@ -129,7 +130,7 @@ func TestResolveENIByID_MissIsNilNil(t *testing.T) {
 func TestResolveENIByID_EmptyIDIsNilNil(t *testing.T) {
 	r, _ := newTestResolver(t)
 	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{NetworkInterfaceId: "eni-aaa"})
-	eni, err := r.resolveENIByID("")
+	eni, err := r.resolveENIByID(context.Background(), "")
 	require.NoError(t, err)
 	assert.Nil(t, eni)
 }
@@ -139,7 +140,7 @@ func TestResolveENIByID_BadJSONErrors(t *testing.T) {
 	_, err := r.eniKV.Put("111122223333.eni-aaa", []byte("not json"))
 	require.NoError(t, err)
 
-	_, err = r.resolveENIByID("eni-aaa")
+	_, err = r.resolveENIByID(context.Background(), "eni-aaa")
 	require.Error(t, err)
 }
 
@@ -154,12 +155,12 @@ func TestResolveENIByID_ChainsToInstanceProfile(t *testing.T) {
 		NetworkInterfaceId: "eni-aaa", InstanceId: "i-0123456789",
 	})
 
-	eni, err := r.resolveENIByID("eni-aaa")
+	eni, err := r.resolveENIByID(context.Background(), "eni-aaa")
 	require.NoError(t, err)
 	require.NotNil(t, eni)
 	assert.Equal(t, "111122223333", eni.accountID)
 
-	inst, err := r.resolveInstance(eni)
+	inst, err := r.resolveInstance(context.Background(), eni)
 	require.NoError(t, err)
 	require.NotNil(t, inst)
 	assert.Equal(t, "arn:aws:iam::111122223333:instance-profile/app-profile", inst.iamInstanceProfileArn)
@@ -168,7 +169,7 @@ func TestResolveENIByID_ChainsToInstanceProfile(t *testing.T) {
 
 func TestResolveInstance_NoAttachedInstance(t *testing.T) {
 	r, lookup := newTestResolver(t)
-	inst, err := r.resolveInstance(&eniFacts{instanceID: ""})
+	inst, err := r.resolveInstance(context.Background(), &eniFacts{instanceID: ""})
 	require.NoError(t, err)
 	assert.Nil(t, inst)
 	assert.Equal(t, 0, lookup.calls, "lookup must be skipped when no instance is attached")
@@ -178,7 +179,7 @@ func TestResolveInstance_DelegatesToLookup(t *testing.T) {
 	r, lookup := newTestResolver(t)
 	lookup.facts = &instanceFacts{instanceType: "t3.micro", imageID: "ami-1"}
 
-	inst, err := r.resolveInstance(&eniFacts{accountID: "111122223333", instanceID: "i-1"})
+	inst, err := r.resolveInstance(context.Background(), &eniFacts{accountID: "111122223333", instanceID: "i-1"})
 	require.NoError(t, err)
 	require.NotNil(t, inst)
 	assert.Equal(t, "t3.micro", inst.instanceType)
@@ -188,7 +189,7 @@ func TestResolveInstance_DelegatesToLookup(t *testing.T) {
 func TestResolveInstance_LookupErrorPropagates(t *testing.T) {
 	r, lookup := newTestResolver(t)
 	lookup.err = errors.New("fan-out failed")
-	_, err := r.resolveInstance(&eniFacts{accountID: "111122223333", instanceID: "i-1"})
+	_, err := r.resolveInstance(context.Background(), &eniFacts{accountID: "111122223333", instanceID: "i-1"})
 	require.Error(t, err)
 }
 
@@ -197,7 +198,7 @@ func TestResolveInstance_LookupErrorPropagates(t *testing.T) {
 func TestResolveSGNames_NilBucketDegradesToIDs(t *testing.T) {
 	r, _ := newTestResolver(t)
 	r.sgKV = nil
-	got := r.resolveSGNames("111122223333", []string{"sg-1", "sg-2"})
+	got := r.resolveSGNames(context.Background(), "111122223333", []string{"sg-1", "sg-2"})
 	assert.Equal(t, []string{"sg-1", "sg-2"}, got)
 }
 
@@ -208,7 +209,7 @@ func TestResolveSGNames_ResolvesAndFallsBack(t *testing.T) {
 	putJSON(t, r.sgKV, "111122223333.sg-1", sgNameRecord{GroupName: "web-sg"})
 	putJSON(t, r.sgKV, "111122223333.sg-3", sgNameRecord{GroupName: ""}) // empty → ID
 
-	got := r.resolveSGNames("111122223333", []string{"sg-1", "sg-2", "sg-3"})
+	got := r.resolveSGNames(context.Background(), "111122223333", []string{"sg-1", "sg-2", "sg-3"})
 	assert.Equal(t, []string{"web-sg", "sg-2", "sg-3"}, got)
 }
 
@@ -217,6 +218,6 @@ func TestResolveSGNames_BadJSONFallsBackToID(t *testing.T) {
 	_, err := r.sgKV.Put("111122223333.sg-1", []byte("not json"))
 	require.NoError(t, err)
 
-	got := r.resolveSGNames("111122223333", []string{"sg-1"})
+	got := r.resolveSGNames(context.Background(), "111122223333", []string{"sg-1"})
 	assert.Equal(t, []string{"sg-1"}, got)
 }

@@ -1,6 +1,7 @@
 package handlers_ec2_placementgroup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,7 +74,7 @@ func NewPlacementGroupServiceImplWithNATS(cfg *config.Config, natsConn *nats.Con
 }
 
 // CreatePlacementGroup creates a new placement group.
-func (s *PlacementGroupServiceImpl) CreatePlacementGroup(input *ec2.CreatePlacementGroupInput, accountID string) (*ec2.CreatePlacementGroupOutput, error) {
+func (s *PlacementGroupServiceImpl) CreatePlacementGroup(ctx context.Context, input *ec2.CreatePlacementGroupInput, accountID string) (*ec2.CreatePlacementGroupOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -117,7 +118,7 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(input *ec2.CreatePlacem
 		return nil, errors.New(awserrors.ErrorInvalidPlacementGroupDuplicate)
 	}
 
-	slog.Info("CreatePlacementGroup completed", "groupId", groupID, "groupName", groupName, "strategy", strategy, "accountID", accountID)
+	slog.InfoContext(ctx, "CreatePlacementGroup completed", "groupId", groupID, "groupName", groupName, "strategy", strategy, "accountID", accountID)
 
 	return &ec2.CreatePlacementGroupOutput{
 		PlacementGroup: s.recordToEC2(&record),
@@ -125,7 +126,7 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(input *ec2.CreatePlacem
 }
 
 // DeletePlacementGroup deletes a placement group.
-func (s *PlacementGroupServiceImpl) DeletePlacementGroup(input *ec2.DeletePlacementGroupInput, accountID string) (*ec2.DeletePlacementGroupOutput, error) {
+func (s *PlacementGroupServiceImpl) DeletePlacementGroup(ctx context.Context, input *ec2.DeletePlacementGroupInput, accountID string) (*ec2.DeletePlacementGroupOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -156,7 +157,7 @@ func (s *PlacementGroupServiceImpl) DeletePlacementGroup(input *ec2.DeletePlacem
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("DeletePlacementGroup completed", "groupName", groupName, "accountID", accountID)
+	slog.InfoContext(ctx, "DeletePlacementGroup completed", "groupName", groupName, "accountID", accountID)
 
 	return &ec2.DeletePlacementGroupOutput{}, nil
 }
@@ -172,10 +173,10 @@ var describePlacementGroupsValidFilters = map[string]bool{
 }
 
 // DescribePlacementGroups lists placement groups with optional filters.
-func (s *PlacementGroupServiceImpl) DescribePlacementGroups(input *ec2.DescribePlacementGroupsInput, accountID string) (*ec2.DescribePlacementGroupsOutput, error) {
+func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context, input *ec2.DescribePlacementGroupsInput, accountID string) (*ec2.DescribePlacementGroupsOutput, error) {
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describePlacementGroupsValidFilters)
 	if err != nil {
-		slog.Warn("DescribePlacementGroups: invalid filter", "err", err)
+		slog.WarnContext(ctx, "DescribePlacementGroups: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -210,13 +211,13 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(input *ec2.DescribeP
 
 		entry, err := s.kv.Get(k)
 		if err != nil {
-			slog.Warn("Failed to get placement group record", "key", k, "error", err)
+			slog.WarnContext(ctx, "Failed to get placement group record", "key", k, "error", err)
 			continue
 		}
 
 		var record PlacementGroupRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.Warn("Failed to unmarshal placement group record", "key", k, "error", err)
+			slog.WarnContext(ctx, "Failed to unmarshal placement group record", "key", k, "error", err)
 			continue
 		}
 
@@ -250,7 +251,7 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(input *ec2.DescribeP
 		}
 	}
 
-	slog.Info("DescribePlacementGroups completed", "count", len(groups), "accountID", accountID)
+	slog.InfoContext(ctx, "DescribePlacementGroups completed", "count", len(groups), "accountID", accountID)
 
 	return &ec2.DescribePlacementGroupsOutput{
 		PlacementGroups: groups,
@@ -345,7 +346,7 @@ const maxCASRetries = 5
 
 // ReserveSpreadNodes atomically reserves node slots for a spread placement group launch.
 // Filters occupied nodes, selects up to MaxCount, writes placeholders via CAS with retries.
-func (s *PlacementGroupServiceImpl) ReserveSpreadNodes(input *ReserveSpreadNodesInput, accountID string) (*ReserveSpreadNodesOutput, error) {
+func (s *PlacementGroupServiceImpl) ReserveSpreadNodes(ctx context.Context, input *ReserveSpreadNodesInput, accountID string) (*ReserveSpreadNodesOutput, error) {
 	if input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -392,21 +393,21 @@ func (s *PlacementGroupServiceImpl) ReserveSpreadNodes(input *ReserveSpreadNodes
 
 		// CAS write — retry on conflict
 		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.Debug("ReserveSpreadNodes: CAS conflict, retrying", "attempt", attempt, "err", err)
+			slog.DebugContext(ctx, "ReserveSpreadNodes: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
 
-		slog.Info("ReserveSpreadNodes completed", "groupName", input.GroupName, "nodes", selected, "accountID", accountID)
+		slog.InfoContext(ctx, "ReserveSpreadNodes completed", "groupName", input.GroupName, "nodes", selected, "accountID", accountID)
 		return &ReserveSpreadNodesOutput{ReservedNodes: selected}, nil
 	}
 
-	slog.Error("ReserveSpreadNodes: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
+	slog.ErrorContext(ctx, "ReserveSpreadNodes: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
 	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 
 // FinalizeSpreadInstances replaces placeholder entries with actual instance IDs.
 // Uses CAS with retries following the IPAM pattern.
-func (s *PlacementGroupServiceImpl) FinalizeSpreadInstances(input *FinalizeSpreadInstancesInput, accountID string) (*FinalizeSpreadInstancesOutput, error) {
+func (s *PlacementGroupServiceImpl) FinalizeSpreadInstances(ctx context.Context, input *FinalizeSpreadInstancesInput, accountID string) (*FinalizeSpreadInstancesOutput, error) {
 	if input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -421,21 +422,21 @@ func (s *PlacementGroupServiceImpl) FinalizeSpreadInstances(input *FinalizeSprea
 		maps.Copy(record.NodeInstances, input.NodeInstances)
 
 		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.Debug("FinalizeSpreadInstances: CAS conflict, retrying", "attempt", attempt, "err", err)
+			slog.DebugContext(ctx, "FinalizeSpreadInstances: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
 
-		slog.Info("FinalizeSpreadInstances completed", "groupName", input.GroupName, "accountID", accountID)
+		slog.InfoContext(ctx, "FinalizeSpreadInstances completed", "groupName", input.GroupName, "accountID", accountID)
 		return &FinalizeSpreadInstancesOutput{}, nil
 	}
 
-	slog.Error("FinalizeSpreadInstances: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
+	slog.ErrorContext(ctx, "FinalizeSpreadInstances: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
 	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 
 // ReleaseSpreadNodes removes placeholder entries for nodes that failed to launch.
 // Uses CAS with retries following the IPAM pattern.
-func (s *PlacementGroupServiceImpl) ReleaseSpreadNodes(input *ReleaseSpreadNodesInput, accountID string) (*ReleaseSpreadNodesOutput, error) {
+func (s *PlacementGroupServiceImpl) ReleaseSpreadNodes(ctx context.Context, input *ReleaseSpreadNodesInput, accountID string) (*ReleaseSpreadNodesOutput, error) {
 	if input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -460,22 +461,22 @@ func (s *PlacementGroupServiceImpl) ReleaseSpreadNodes(input *ReleaseSpreadNodes
 		}
 
 		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.Debug("ReleaseSpreadNodes: CAS conflict, retrying", "attempt", attempt, "err", err)
+			slog.DebugContext(ctx, "ReleaseSpreadNodes: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
 
-		slog.Info("ReleaseSpreadNodes completed", "groupName", input.GroupName, "nodes", input.Nodes, "accountID", accountID)
+		slog.InfoContext(ctx, "ReleaseSpreadNodes completed", "groupName", input.GroupName, "nodes", input.Nodes, "accountID", accountID)
 		return &ReleaseSpreadNodesOutput{}, nil
 	}
 
-	slog.Error("ReleaseSpreadNodes: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
+	slog.ErrorContext(ctx, "ReleaseSpreadNodes: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
 	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 
 // RemoveInstance removes a specific instance from a placement group's NodeInstances.
 // If the node's instance list becomes empty after removal, the node key is deleted.
 // Uses CAS with retries following the IPAM pattern.
-func (s *PlacementGroupServiceImpl) RemoveInstance(input *RemoveInstanceInput, accountID string) (*RemoveInstanceOutput, error) {
+func (s *PlacementGroupServiceImpl) RemoveInstance(ctx context.Context, input *RemoveInstanceInput, accountID string) (*RemoveInstanceOutput, error) {
 	if input.GroupName == "" || input.InstanceID == "" || input.NodeName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -484,7 +485,7 @@ func (s *PlacementGroupServiceImpl) RemoveInstance(input *RemoveInstanceInput, a
 		record, entry, lookupErr := s.GetPlacementGroupRecord(accountID, input.GroupName)
 		if lookupErr != nil {
 			// Group may have been deleted already — treat as success
-			slog.Debug("RemoveInstance: group not found, treating as success", "groupName", input.GroupName)
+			slog.DebugContext(ctx, "RemoveInstance: group not found, treating as success", "groupName", input.GroupName)
 			return &RemoveInstanceOutput{}, nil //nolint:nilerr // intentional: deleted group = success
 		}
 
@@ -509,22 +510,22 @@ func (s *PlacementGroupServiceImpl) RemoveInstance(input *RemoveInstanceInput, a
 		}
 
 		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.Debug("RemoveInstance: CAS conflict, retrying", "attempt", attempt, "err", err)
+			slog.DebugContext(ctx, "RemoveInstance: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
 
-		slog.Info("RemoveInstance completed", "groupName", input.GroupName, "instanceId", input.InstanceID, "node", input.NodeName, "accountID", accountID)
+		slog.InfoContext(ctx, "RemoveInstance completed", "groupName", input.GroupName, "instanceId", input.InstanceID, "node", input.NodeName, "accountID", accountID)
 		return &RemoveInstanceOutput{}, nil
 	}
 
-	slog.Error("RemoveInstance: CAS retries exhausted", "groupName", input.GroupName, "instanceId", input.InstanceID, "accountID", accountID)
+	slog.ErrorContext(ctx, "RemoveInstance: CAS retries exhausted", "groupName", input.GroupName, "instanceId", input.InstanceID, "accountID", accountID)
 	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 
 // ReserveClusterNode determines the target node for a cluster placement group launch.
 // If the group already has instances, it returns the existing node (cluster = all on one node).
 // If empty, it picks the first eligible node (highest capacity) and writes a placeholder via CAS.
-func (s *PlacementGroupServiceImpl) ReserveClusterNode(input *ReserveClusterNodeInput, accountID string) (*ReserveClusterNodeOutput, error) {
+func (s *PlacementGroupServiceImpl) ReserveClusterNode(ctx context.Context, input *ReserveClusterNodeInput, accountID string) (*ReserveClusterNodeOutput, error) {
 	if input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -555,21 +556,21 @@ func (s *PlacementGroupServiceImpl) ReserveClusterNode(input *ReserveClusterNode
 		record.NodeInstances[targetNode] = []string{}
 
 		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.Debug("ReserveClusterNode: CAS conflict, retrying", "attempt", attempt, "err", err)
+			slog.DebugContext(ctx, "ReserveClusterNode: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
 
-		slog.Info("ReserveClusterNode completed", "groupName", input.GroupName, "targetNode", targetNode, "accountID", accountID)
+		slog.InfoContext(ctx, "ReserveClusterNode completed", "groupName", input.GroupName, "targetNode", targetNode, "accountID", accountID)
 		return &ReserveClusterNodeOutput{TargetNode: targetNode}, nil
 	}
 
-	slog.Error("ReserveClusterNode: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
+	slog.ErrorContext(ctx, "ReserveClusterNode: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
 	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 
 // FinalizeClusterInstances appends launched instance IDs to the cluster placement group record.
 // Uses CAS with retries following the IPAM pattern.
-func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(input *FinalizeClusterInstancesInput, accountID string) (*FinalizeClusterInstancesOutput, error) {
+func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(ctx context.Context, input *FinalizeClusterInstancesInput, accountID string) (*FinalizeClusterInstancesOutput, error) {
 	if input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -586,15 +587,15 @@ func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(input *FinalizeClus
 		}
 
 		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.Debug("FinalizeClusterInstances: CAS conflict, retrying", "attempt", attempt, "err", err)
+			slog.DebugContext(ctx, "FinalizeClusterInstances: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
 
-		slog.Info("FinalizeClusterInstances completed", "groupName", input.GroupName, "accountID", accountID)
+		slog.InfoContext(ctx, "FinalizeClusterInstances completed", "groupName", input.GroupName, "accountID", accountID)
 		return &FinalizeClusterInstancesOutput{}, nil
 	}
 
-	slog.Error("FinalizeClusterInstances: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
+	slog.ErrorContext(ctx, "FinalizeClusterInstances: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
 	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 

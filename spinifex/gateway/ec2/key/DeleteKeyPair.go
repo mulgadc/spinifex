@@ -1,6 +1,7 @@
 package gateway_ec2_key
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 
@@ -23,7 +24,7 @@ func ValidateDeleteKeyPairInput(input *ec2.DeleteKeyPairInput) (err error) {
 	return err
 }
 
-func DeleteKeyPair(input *ec2.DeleteKeyPairInput, natsConn *nats.Conn, accountID string) (output ec2.DeleteKeyPairOutput, err error) {
+func DeleteKeyPair(ctx context.Context, input *ec2.DeleteKeyPairInput, natsConn *nats.Conn, accountID string) (output ec2.DeleteKeyPairOutput, err error) {
 	err = ValidateDeleteKeyPairInput(input)
 
 	if err != nil {
@@ -31,10 +32,10 @@ func DeleteKeyPair(input *ec2.DeleteKeyPairInput, natsConn *nats.Conn, accountID
 	}
 
 	keyService := handlers_ec2_key.NewNATSKeyService(natsConn)
-	result, err := keyService.DeleteKeyPair(input, accountID)
+	result, err := keyService.DeleteKeyPair(ctx, input, accountID)
 
 	if err != nil {
-		slog.Error("DeleteKeyPair failed", "err", err)
+		slog.ErrorContext(ctx, "DeleteKeyPair failed", "err", err)
 		return output, err
 	}
 

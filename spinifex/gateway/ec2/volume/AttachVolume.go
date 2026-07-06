@@ -1,6 +1,7 @@
 package gateway_ec2_volume
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,7 +34,7 @@ func ValidateAttachVolumeInput(input *ec2.AttachVolumeInput) error {
 }
 
 // AttachVolume sends an attach-volume command to the daemon owning the instance
-func AttachVolume(input *ec2.AttachVolumeInput, natsConn *nats.Conn, accountID string) (ec2.VolumeAttachment, error) {
+func AttachVolume(ctx context.Context, input *ec2.AttachVolumeInput, natsConn *nats.Conn, accountID string) (ec2.VolumeAttachment, error) {
 	var output ec2.VolumeAttachment
 
 	if err := ValidateAttachVolumeInput(input); err != nil {
@@ -61,7 +62,7 @@ func AttachVolume(input *ec2.AttachVolumeInput, natsConn *nats.Conn, accountID s
 
 	jsonData, err := json.Marshal(command)
 	if err != nil {
-		slog.Error("AttachVolume: Failed to marshal command", "err", err)
+		slog.ErrorContext(ctx, "AttachVolume: Failed to marshal command", "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -69,11 +70,12 @@ func AttachVolume(input *ec2.AttachVolumeInput, natsConn *nats.Conn, accountID s
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
-		slog.Error("AttachVolume: NATS request failed", "instanceId", instanceID, "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "AttachVolume: NATS request failed", "instanceId", instanceID, "volumeId", volumeID, "err", err)
 		if errors.Is(err, nats.ErrNoResponders) {
-			if isStoppedInstance(instanceID, natsConn, accountID) {
+			if isStoppedInstance(ctx, instanceID, natsConn, accountID) {
 				return output, errors.New(awserrors.ErrorIncorrectInstanceState)
 			}
 			return output, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
@@ -87,17 +89,17 @@ func AttachVolume(input *ec2.AttachVolumeInput, natsConn *nats.Conn, accountID s
 	}
 
 	if err := json.Unmarshal(msg.Data, &output); err != nil {
-		slog.Error("AttachVolume: Failed to unmarshal response", "err", err)
+		slog.ErrorContext(ctx, "AttachVolume: Failed to unmarshal response", "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("AttachVolume completed", "instanceId", instanceID, "volumeId", volumeID)
+	slog.InfoContext(ctx, "AttachVolume completed", "instanceId", instanceID, "volumeId", volumeID)
 	return output, nil
 }
 
 // isStoppedInstance checks the shared KV (via ec2.DescribeStoppedInstances) to
 // determine whether instanceID exists as a stopped instance.
-func isStoppedInstance(instanceID string, natsConn *nats.Conn, accountID string) bool {
+func isStoppedInstance(ctx context.Context, instanceID string, natsConn *nats.Conn, accountID string) bool {
 	input := &ec2.DescribeInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
@@ -109,6 +111,7 @@ func isStoppedInstance(instanceID string, natsConn *nats.Conn, accountID string)
 	reqMsg := nats.NewMsg("ec2.DescribeStoppedInstances")
 	reqMsg.Data = reqData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 3*time.Second)
 	if err != nil {
 		return false

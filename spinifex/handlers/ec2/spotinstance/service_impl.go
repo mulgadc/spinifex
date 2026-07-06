@@ -1,6 +1,7 @@
 package handlers_ec2_spotinstance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,7 +85,7 @@ func getOrCreateTerminalBucket(js nats.JetStreamContext) (nats.KeyValue, error) 
 }
 
 // PutSpotInstanceRequests stores each request in the active bucket.
-func (s *SpotInstanceServiceImpl) PutSpotInstanceRequests(input *PutSpotRequestsInput, accountID string) (*PutSpotRequestsOutput, error) {
+func (s *SpotInstanceServiceImpl) PutSpotInstanceRequests(ctx context.Context, input *PutSpotRequestsInput, accountID string) (*PutSpotRequestsOutput, error) {
 	for _, req := range input.Requests {
 		sirID := aws.StringValue(req.SpotInstanceRequestId)
 		if sirID == "" {
@@ -96,12 +97,12 @@ func (s *SpotInstanceServiceImpl) PutSpotInstanceRequests(input *PutSpotRequests
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if _, err := s.activeKV.Put(utils.AccountKey(accountID, sirID), data); err != nil {
-			slog.Error("PutSpotInstanceRequests: KV put failed", "sirId", sirID, "err", err)
+			slog.ErrorContext(ctx, "PutSpotInstanceRequests: KV put failed", "sirId", sirID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
 
-	slog.Info("PutSpotInstanceRequests completed", "count", len(input.Requests), "accountID", accountID)
+	slog.InfoContext(ctx, "PutSpotInstanceRequests completed", "count", len(input.Requests), "accountID", accountID)
 	return &PutSpotRequestsOutput{}, nil
 }
 
@@ -118,10 +119,10 @@ var describeSpotRequestsValidFilters = map[string]bool{
 }
 
 // DescribeSpotInstanceRequests lists requests from both buckets, merges, and filters.
-func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(input *ec2.DescribeSpotInstanceRequestsInput, accountID string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
+func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(ctx context.Context, input *ec2.DescribeSpotInstanceRequestsInput, accountID string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSpotRequestsValidFilters)
 	if err != nil {
-		slog.Warn("DescribeSpotInstanceRequests: invalid filter", "err", err)
+		slog.WarnContext(ctx, "DescribeSpotInstanceRequests: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -165,14 +166,14 @@ func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(input *ec2.Descri
 		}
 	}
 
-	slog.Info("DescribeSpotInstanceRequests completed", "count", len(requests), "accountID", accountID)
+	slog.InfoContext(ctx, "DescribeSpotInstanceRequests completed", "count", len(requests), "accountID", accountID)
 	return &ec2.DescribeSpotInstanceRequestsOutput{SpotInstanceRequests: requests}, nil
 }
 
 // CancelSpotInstanceRequests moves active requests to the terminal bucket as
 // cancelled. The instances keep running. Already-terminal/absent IDs are
 // idempotent. Returns a cancelled entry for every requested ID.
-func (s *SpotInstanceServiceImpl) CancelSpotInstanceRequests(input *ec2.CancelSpotInstanceRequestsInput, accountID string) (*ec2.CancelSpotInstanceRequestsOutput, error) {
+func (s *SpotInstanceServiceImpl) CancelSpotInstanceRequests(ctx context.Context, input *ec2.CancelSpotInstanceRequestsInput, accountID string) (*ec2.CancelSpotInstanceRequestsOutput, error) {
 	if len(input.SpotInstanceRequestIds) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -200,14 +201,14 @@ func (s *SpotInstanceServiceImpl) CancelSpotInstanceRequests(input *ec2.CancelSp
 		})
 	}
 
-	slog.Info("CancelSpotInstanceRequests completed", "count", len(cancelled), "accountID", accountID)
+	slog.InfoContext(ctx, "CancelSpotInstanceRequests completed", "count", len(cancelled), "accountID", accountID)
 	return &ec2.CancelSpotInstanceRequestsOutput{CancelledSpotInstanceRequests: cancelled}, nil
 }
 
 // CloseForInstance scans the active bucket for the request fulfilled by
 // instanceID and moves it to the terminal bucket as closed. No-op if none match.
 // Called in-process by the daemon teardown cleaner when an instance terminates.
-func (s *SpotInstanceServiceImpl) CloseForInstance(instanceID, accountID string) error {
+func (s *SpotInstanceServiceImpl) CloseForInstance(ctx context.Context, instanceID, accountID string) error {
 	if instanceID == "" {
 		return nil
 	}
@@ -239,7 +240,7 @@ func (s *SpotInstanceServiceImpl) CloseForInstance(instanceID, accountID string)
 		if err := s.moveToTerminal(key, record); err != nil {
 			return err
 		}
-		slog.Info("CloseForInstance moved SIR to terminal", "instanceId", instanceID,
+		slog.InfoContext(ctx, "CloseForInstance moved SIR to terminal", "instanceId", instanceID,
 			"sirId", aws.StringValue(record.Request.SpotInstanceRequestId), "accountID", accountID)
 		return nil
 	}

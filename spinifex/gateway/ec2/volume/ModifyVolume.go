@@ -1,6 +1,7 @@
 package gateway_ec2_volume
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -27,7 +28,7 @@ func ValidateModifyVolumeInput(input *ec2.ModifyVolumeInput) error {
 }
 
 // ModifyVolume handles the ModifyVolume API call
-func ModifyVolume(input *ec2.ModifyVolumeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyVolumeOutput, error) {
+func ModifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyVolumeOutput, error) {
 	var output ec2.ModifyVolumeOutput
 
 	err := ValidateModifyVolumeInput(input)
@@ -36,7 +37,7 @@ func ModifyVolume(input *ec2.ModifyVolumeInput, natsConn *nats.Conn, accountID s
 	}
 
 	volumeService := handlers_ec2_volume.NewNATSVolumeService(natsConn)
-	result, err := volumeService.ModifyVolume(input, accountID)
+	result, err := volumeService.ModifyVolume(ctx, input, accountID)
 
 	if err != nil {
 		return output, err

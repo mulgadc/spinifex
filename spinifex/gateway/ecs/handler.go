@@ -9,6 +9,7 @@
 package gateway_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -28,12 +29,12 @@ const JSONContentType = "application/x-amz-json-1.1"
 // Handler is the signature every ECS control-plane action implements. nc is the
 // gateway NATS connection (handlers relay onto ecs.* subjects); accountID is the
 // resolved caller account; body is the raw JSON 1.1 request payload.
-type Handler func(nc *nats.Conn, accountID string, body []byte) (any, error)
+type Handler func(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error)
 
 // NotImplemented is the placeholder for every unimplemented ECS control-plane
 // action. It returns the AWS NotImplemented error, which the shared gateway
 // ErrorHandler renders as a 501 JSON 1.1 envelope.
-func NotImplemented(_ *nats.Conn, _ string, _ []byte) (any, error) {
+func NotImplemented(_ context.Context, _ *nats.Conn, _ string, _ []byte) (any, error) {
 	return nil, errors.New(awserrors.ErrorNotImplemented)
 }
 

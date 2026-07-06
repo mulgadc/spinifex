@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -260,7 +261,8 @@ func (m *Manager) RestartCrashedInstance(instance *VM) {
 		}
 	}
 
-	if err := m.Run(instance); err != nil {
+	// Crash recovery is a background path with no request context.
+	if err := m.Run(context.Background(), instance); err != nil {
 		slog.Error("Failed to restart crashed instance",
 			"instance", instance.ID, "err", err)
 		m.deps.Resources.Deallocate(instance.InstanceType)

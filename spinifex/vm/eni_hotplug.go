@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -40,7 +41,7 @@ type HotPlugENIResult struct {
 // HotPlugENI runs the 4-step attach pipeline: (1) tap+OVS, (2) netdev_add,
 // (3) device_add, (4) poll query-pci. On failure, prior steps are rolled back
 // and the slot is returned. Instance must be running with a live QMPClient.
-func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult, error) {
+func (m *Manager) HotPlugENI(ctx context.Context, instance *VM, eniID, mac string) (HotPlugENIResult, error) {
 	if instance == nil {
 		return HotPlugENIResult{}, ErrInstanceNotFound
 	}
@@ -72,7 +73,7 @@ func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult,
 	}
 	instance.ENIRequests.AttachedByENIID[eniID] = slot
 
-	dc := newDeviceController(instance)
+	dc := bindDeviceContext(ctx, newDeviceController(instance))
 	netdevID := eniNetdevID(slot)
 	deviceID := eniDeviceID(slot)
 	tapName := TapDeviceName(eniID)
@@ -120,7 +121,7 @@ func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult,
 		return HotPlugENIResult{}, fmt.Errorf("query-pci wait (attach): %w", err)
 	}
 
-	slog.Info("ENI hot-plugged",
+	slog.InfoContext(ctx, "ENI hot-plugged",
 		"instanceId", instance.ID, "eniId", eniID, "slot", slot,
 		"deviceId", deviceID, "netdevId", netdevID, "tap", tapName)
 	return HotPlugENIResult{Slot: slot}, nil
@@ -128,7 +129,7 @@ func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult,
 
 // HotUnplugENI runs the reverse 4-step detach pipeline. force=true shortens
 // the poll budget at the cost of potentially leaving a dangling device.
-func (m *Manager) HotUnplugENI(instance *VM, eniID string, force bool) error {
+func (m *Manager) HotUnplugENI(ctx context.Context, instance *VM, eniID string, force bool) error {
 	if instance == nil {
 		return ErrInstanceNotFound
 	}
@@ -148,7 +149,7 @@ func (m *Manager) HotUnplugENI(instance *VM, eniID string, force bool) error {
 		return fmt.Errorf("%w: %s", ErrENINotAttached, eniID)
 	}
 
-	dc := newDeviceController(instance)
+	dc := bindDeviceContext(ctx, newDeviceController(instance))
 	netdevID := eniNetdevID(slot)
 	deviceID := eniDeviceID(slot)
 	tapName := TapDeviceName(eniID)
@@ -158,7 +159,7 @@ func (m *Manager) HotUnplugENI(instance *VM, eniID string, force bool) error {
 		if !force {
 			return fmt.Errorf("QMP device_del: %w", err)
 		}
-		slog.Warn("HotUnplugENI: device_del failed (force=true, continuing)",
+		slog.WarnContext(ctx, "HotUnplugENI: device_del failed (force=true, continuing)",
 			"instanceId", instance.ID, "eniId", eniID, "err", err)
 	}
 
@@ -167,13 +168,13 @@ func (m *Manager) HotUnplugENI(instance *VM, eniID string, force bool) error {
 		if !force {
 			return fmt.Errorf("query-pci wait (detach): %w", err)
 		}
-		slog.Warn("HotUnplugENI: device removal not observed (force=true, continuing)",
+		slog.WarnContext(ctx, "HotUnplugENI: device removal not observed (force=true, continuing)",
 			"instanceId", instance.ID, "eniId", eniID, "err", err)
 	}
 
 	// Step 3: QMP netdev_del.
 	if err := dc.NetdevDel(netdevID); err != nil {
-		slog.Warn("HotUnplugENI: netdev_del failed (continuing detach)",
+		slog.WarnContext(ctx, "HotUnplugENI: netdev_del failed (continuing detach)",
 			"instanceId", instance.ID, "eniId", eniID, "err", err)
 	}
 
@@ -183,7 +184,7 @@ func (m *Manager) HotUnplugENI(instance *VM, eniID string, force bool) error {
 	delete(instance.ENIRequests.AttachedByENIID, eniID)
 	instance.ENIRequests.AvailableSlots = append(instance.ENIRequests.AvailableSlots, slot)
 
-	slog.Info("ENI hot-unplugged",
+	slog.InfoContext(ctx, "ENI hot-unplugged",
 		"instanceId", instance.ID, "eniId", eniID, "slot", slot, "force", force)
 	return nil
 }

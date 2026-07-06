@@ -1,6 +1,7 @@
 package gateway_ec2_volume
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -105,7 +106,7 @@ func TestDescribeVolumeStatus_InputValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := DescribeVolumeStatus(tt.input, nil, "")
+			_, err := DescribeVolumeStatus(context.Background(), tt.input, nil, "")
 
 			if tt.wantErr {
 				assert.Error(t, err)

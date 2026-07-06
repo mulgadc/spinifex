@@ -1,6 +1,7 @@
 package handlers_ec2_vpc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -18,7 +19,7 @@ import (
 
 func createTestENI(t *testing.T, svc *VPCServiceImpl, subnetId string) string {
 	t.Helper()
-	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -30,7 +31,7 @@ func TestCreateNetworkInterface(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 
-	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -50,13 +51,13 @@ func TestCreateNetworkInterface_SequentialIPs(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 
-	out1, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out1, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.1.4", *out1.NetworkInterface.PrivateIpAddress)
 
-	out2, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out2, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -65,13 +66,13 @@ func TestCreateNetworkInterface_SequentialIPs(t *testing.T) {
 
 func TestCreateNetworkInterface_MissingSubnet(t *testing.T) {
 	svc := setupTestVPCService(t)
-	_, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{}, testAccountID)
+	_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
 }
 
 func TestCreateNetworkInterface_InvalidSubnet(t *testing.T) {
 	svc := setupTestVPCService(t)
-	_, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String("subnet-nonexistent"),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidSubnetID.NotFound")
@@ -82,7 +83,7 @@ func TestCreateNetworkInterface_WithTags(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 
-	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetId),
 		Description: aws.String("test eni"),
 		TagSpecifications: []*ec2.TagSpecification{
@@ -107,13 +108,13 @@ func TestDeleteNetworkInterface(t *testing.T) {
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
 
-	_, err := svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	_, err := svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniId),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify deleted
-	_, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	_, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
@@ -130,7 +131,7 @@ func TestDeleteNetworkInterface_InUse(t *testing.T) {
 	require.NoError(t, err)
 
 	// Try to delete — should fail
-	_, err = svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniId),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidNetworkInterface.InUse")
@@ -142,19 +143,19 @@ func TestDeleteNetworkInterface_ReleasesIP(t *testing.T) {
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 
 	// Create and delete an ENI
-	out1, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out1, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	require.NoError(t, err)
 	ip1 := *out1.NetworkInterface.PrivateIpAddress
 
-	_, err = svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: out1.NetworkInterface.NetworkInterfaceId,
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Create another ENI — should reuse the released IP
-	out2, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out2, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -169,7 +170,7 @@ func TestDescribeNetworkInterfaces_All(t *testing.T) {
 	createTestENI(t, svc, subnetId)
 	createTestENI(t, svc, subnetId)
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.NetworkInterfaces, 2)
 }
@@ -182,7 +183,7 @@ func TestDescribeNetworkInterfaces_ByID(t *testing.T) {
 	eniId := createTestENI(t, svc, subnetId)
 	createTestENI(t, svc, subnetId) // second ENI
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -199,7 +200,7 @@ func TestDescribeNetworkInterfaces_FilterBySubnet(t *testing.T) {
 	createTestENI(t, svc, subnetA)
 	createTestENI(t, svc, subnetB)
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("subnet-id"), Values: []*string{aws.String(subnetA)}},
 		},
@@ -211,7 +212,7 @@ func TestDescribeNetworkInterfaces_FilterBySubnet(t *testing.T) {
 
 func TestDescribeNetworkInterfaces_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
-	_, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	_, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String("eni-nonexistent")},
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
@@ -228,7 +229,7 @@ func TestAttachENI(t *testing.T) {
 	assert.Contains(t, attachId, "eni-attach-")
 
 	// Verify status changed
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -262,11 +263,11 @@ func TestDetachENI(t *testing.T) {
 	_, err := svc.AttachENI(testAccountID, eniId, "i-test123", 0)
 	require.NoError(t, err)
 
-	err = svc.DetachENI(testAccountID, eniId)
+	err = svc.DetachENI(context.Background(), testAccountID, eniId)
 	require.NoError(t, err)
 
 	// Verify status changed back
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -299,7 +300,7 @@ func TestDescribeNetworkInterfaces_FilterByVpcId(t *testing.T) {
 	createTestENI(t, svc, subnet1)
 	createTestENI(t, svc, subnet2)
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpc1)}},
 		},
@@ -321,7 +322,7 @@ func TestDescribeNetworkInterfaces_FilterByAttachmentInstanceId(t *testing.T) {
 	_, err := svc.AttachENI(testAccountID, eni1, "i-attached", 0)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("attachment.instance-id"), Values: []*string{aws.String("i-attached")}},
 		},
@@ -337,20 +338,20 @@ func TestDescribeNetworkInterfaces_FilterByDescription(t *testing.T) {
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 
 	// Create two ENIs with different descriptions
-	out1, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out1, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetId),
 		Description: aws.String("ELB app/my-alb/lb-123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	_, err = svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetId),
 		Description: aws.String("regular ENI"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Filter by description should return only the ALB ENI
-	desc, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("description"), Values: []*string{aws.String("ELB app/my-alb/lb-123")}},
 		},
@@ -368,14 +369,14 @@ func TestCreateNetworkInterface_IPExhaustion(t *testing.T) {
 
 	// Allocate all 11 available IPs
 	for i := range 11 {
-		_, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 			SubnetId: aws.String(subnetId),
 		}, testAccountID)
 		require.NoError(t, err, "ENI %d should succeed", i)
 	}
 
 	// 12th allocation should fail — subnet exhausted
-	_, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -395,7 +396,7 @@ func TestCreateNetworkInterface_PublishesEvent(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -423,7 +424,7 @@ func TestDeleteNetworkInterface_PublishesEvent(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniId),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -444,13 +445,13 @@ func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 	sg1 := createTestSG(t, svc, vpcId, "sg-one")
 	sg2 := createTestSG(t, svc, vpcId, "sg-two")
 
-	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		Groups:             []*string{aws.String(sg1), aws.String(sg2)},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -475,7 +476,7 @@ func TestModifyNetworkInterfaceAttribute_PublishesUpdatePortSGs(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err = svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		Groups:             []*string{aws.String(sg1), aws.String(sg2)},
 	}, testAccountID)
@@ -504,7 +505,7 @@ func TestModifyNetworkInterfaceAttribute_DescriptionOnly_NoSGEvent(t *testing.T)
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err = svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		Description:        &ec2.AttributeValue{Value: aws.String("only desc")},
 	}, testAccountID)
@@ -530,7 +531,7 @@ func TestCreateNetworkInterface_PublishesEventCarriesSGs(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	_, err = svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 		Groups:   []*string{aws.String(sgA)},
 	}, testAccountID)
@@ -551,13 +552,13 @@ func TestModifyNetworkInterfaceAttribute_Description(t *testing.T) {
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
 
-	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		Description:        &ec2.AttributeValue{Value: aws.String("updated description")},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -572,7 +573,7 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly(t *testing.T) {
 	eniId := createTestENI(t, svc, subnetId)
 
 	// New ENIs default to SourceDestCheck=true
-	desc, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -580,21 +581,21 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly(t *testing.T) {
 	assert.True(t, *desc.NetworkInterfaces[0].SourceDestCheck)
 
 	// SourceDestCheck=true as the sole attribute is an accepted no-op
-	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err = svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Disabling is unsupported: OVN port security always enforces the check
-	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err = svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorUnsupported, err.Error())
 
-	desc, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	desc, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -615,7 +616,7 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly_NoSGEvent(t *testin
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err = svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	}, testAccountID)
@@ -634,7 +635,7 @@ func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
 
-	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidParameterValue")
@@ -643,7 +644,7 @@ func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
 func TestModifyNetworkInterfaceAttribute_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String("eni-nonexistent"),
 		Groups:             []*string{aws.String("sg-111")},
 	}, testAccountID)
@@ -653,7 +654,7 @@ func TestModifyNetworkInterfaceAttribute_NotFound(t *testing.T) {
 func TestModifyNetworkInterfaceAttribute_MissingID(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		Groups: []*string{aws.String("sg-111")},
 	}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
@@ -666,7 +667,7 @@ func TestCreateNetworkInterface_WithSecurityGroups(t *testing.T) {
 	sgA := createTestSG(t, svc, vpcId, "sg-aaa")
 	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
 
-	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 		Groups:   []*string{aws.String(sgA), aws.String(sgB)},
 	}, testAccountID)
@@ -682,7 +683,7 @@ func TestCreateNetworkInterface_FallsBackToDefaultSG(t *testing.T) {
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	defaultSG := findDefaultSGInVPC(t, svc, vpcId)
 
-	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -698,7 +699,7 @@ func TestDescribeNetworkInterfaces_FilterByNetworkInterfaceId(t *testing.T) {
 	eniId := createTestENI(t, svc, subnetId)
 	createTestENI(t, svc, subnetId)
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("network-interface-id"), Values: []*string{aws.String(eniId)}},
 		},
@@ -708,7 +709,7 @@ func TestDescribeNetworkInterfaces_FilterByNetworkInterfaceId(t *testing.T) {
 	assert.Equal(t, eniId, *out.NetworkInterfaces[0].NetworkInterfaceId)
 
 	// Wildcard
-	out, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("network-interface-id"), Values: []*string{aws.String("eni-*")}},
 		},
@@ -728,7 +729,7 @@ func TestDescribeNetworkInterfaces_FilterByStatus(t *testing.T) {
 	_, err := svc.AttachENI(testAccountID, eni1, "i-test", 0)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("status"), Values: []*string{aws.String("in-use")}},
 		},
@@ -737,7 +738,7 @@ func TestDescribeNetworkInterfaces_FilterByStatus(t *testing.T) {
 	require.Len(t, out.NetworkInterfaces, 1)
 	assert.Equal(t, eni1, *out.NetworkInterfaces[0].NetworkInterfaceId)
 
-	out, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("status"), Values: []*string{aws.String("available")}},
 		},
@@ -754,7 +755,7 @@ func TestDescribeNetworkInterfaces_FilterByPrivateIpAddress(t *testing.T) {
 	createTestENI(t, svc, subnetId) // 10.0.1.4
 	createTestENI(t, svc, subnetId) // 10.0.1.5
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("private-ip-address"), Values: []*string{aws.String("10.0.1.4")}},
 		},
@@ -764,7 +765,7 @@ func TestDescribeNetworkInterfaces_FilterByPrivateIpAddress(t *testing.T) {
 	assert.Equal(t, "10.0.1.4", *out.NetworkInterfaces[0].PrivateIpAddress)
 
 	// Wildcard
-	out, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("private-ip-address"), Values: []*string{aws.String("10.0.1.*")}},
 		},
@@ -773,7 +774,7 @@ func TestDescribeNetworkInterfaces_FilterByPrivateIpAddress(t *testing.T) {
 	assert.Len(t, out.NetworkInterfaces, 2)
 
 	// Non-match
-	out, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("private-ip-address"), Values: []*string{aws.String("192.168.0.1")}},
 		},
@@ -786,7 +787,7 @@ func TestDescribeNetworkInterfaces_FilterByAvailabilityZone(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	// Create subnet with explicit AZ
-	subnetOut, err := svc.CreateSubnet(&ec2.CreateSubnetInput{
+	subnetOut, err := svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
 		VpcId:            aws.String(vpcId),
 		CidrBlock:        aws.String("10.0.1.0/24"),
 		AvailabilityZone: aws.String("ap-southeast-2a"),
@@ -796,7 +797,7 @@ func TestDescribeNetworkInterfaces_FilterByAvailabilityZone(t *testing.T) {
 
 	createTestENI(t, svc, subnetId)
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("ap-southeast-2a")}},
 		},
@@ -804,7 +805,7 @@ func TestDescribeNetworkInterfaces_FilterByAvailabilityZone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, out.NetworkInterfaces, 1)
 
-	out, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("us-east-1a")}},
 		},
@@ -821,7 +822,7 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
 
 	// Create ENI with security groups
-	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 		Groups:   []*string{aws.String(sgA), aws.String(sgB)},
 	}, testAccountID)
@@ -831,7 +832,7 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 	createTestENI(t, svc, subnetId) // no SGs
 
 	// Match one of the SGs
-	desc, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("group-id"), Values: []*string{aws.String(sgB)}},
 		},
@@ -841,7 +842,7 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 	assert.Equal(t, eniId, *desc.NetworkInterfaces[0].NetworkInterfaceId)
 
 	// Non-match
-	desc, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	desc, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("group-id"), Values: []*string{aws.String("sg-zzz")}},
 		},
@@ -855,13 +856,13 @@ func TestDescribeNetworkInterfaces_FilterByMacAddress(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 
-	outCreate, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	outCreate, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
 	}, testAccountID)
 	require.NoError(t, err)
 	mac := *outCreate.NetworkInterface.MacAddress
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("mac-address"), Values: []*string{aws.String(mac)}},
 		},
@@ -869,7 +870,7 @@ func TestDescribeNetworkInterfaces_FilterByMacAddress(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, out.NetworkInterfaces, 1)
 
-	out, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("mac-address"), Values: []*string{aws.String("ff:ff:ff:ff:ff:ff")}},
 		},
@@ -889,7 +890,7 @@ func TestDescribeNetworkInterfaces_FilterByAttachmentId(t *testing.T) {
 
 	createTestENI(t, svc, subnetId) // not attached
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("attachment.attachment-id"), Values: []*string{aws.String(attachId)}},
 		},
@@ -911,7 +912,7 @@ func TestDescribeNetworkInterfaces_FilterByAttachmentStatus(t *testing.T) {
 	require.NoError(t, err)
 
 	// Filter attached
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("attachment.status"), Values: []*string{aws.String("attached")}},
 		},
@@ -921,7 +922,7 @@ func TestDescribeNetworkInterfaces_FilterByAttachmentStatus(t *testing.T) {
 	assert.Equal(t, eni1, *out.NetworkInterfaces[0].NetworkInterfaceId)
 
 	// Filter detached
-	out, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("attachment.status"), Values: []*string{aws.String("detached")}},
 		},
@@ -961,7 +962,7 @@ func putEIPRecord(t *testing.T, kv nats.KeyValue, key, eniID string) {
 func TestIsEIPOwned_NilKV(t *testing.T) {
 	svc := &VPCServiceImpl{eipKV: nil}
 
-	owned, err := svc.isEIPOwned("eni-111", testAccountID)
+	owned, err := svc.isEIPOwned(context.Background(), "eni-111", testAccountID)
 	assert.NoError(t, err)
 	assert.False(t, owned)
 }
@@ -969,7 +970,7 @@ func TestIsEIPOwned_NilKV(t *testing.T) {
 func TestIsEIPOwned_NoKeys(t *testing.T) {
 	svc, _ := setupEIPTestService(t)
 
-	owned, err := svc.isEIPOwned("eni-111", testAccountID)
+	owned, err := svc.isEIPOwned(context.Background(), "eni-111", testAccountID)
 	assert.NoError(t, err)
 	assert.False(t, owned)
 }
@@ -978,7 +979,7 @@ func TestIsEIPOwned_MatchingENI(t *testing.T) {
 	svc, kv := setupEIPTestService(t)
 	putEIPRecord(t, kv, testAccountID+".eipalloc-001", "eni-111")
 
-	owned, err := svc.isEIPOwned("eni-111", testAccountID)
+	owned, err := svc.isEIPOwned(context.Background(), "eni-111", testAccountID)
 	assert.NoError(t, err)
 	assert.True(t, owned)
 }
@@ -987,7 +988,7 @@ func TestIsEIPOwned_NonMatchingENI(t *testing.T) {
 	svc, kv := setupEIPTestService(t)
 	putEIPRecord(t, kv, testAccountID+".eipalloc-001", "eni-222")
 
-	owned, err := svc.isEIPOwned("eni-111", testAccountID)
+	owned, err := svc.isEIPOwned(context.Background(), "eni-111", testAccountID)
 	assert.NoError(t, err)
 	assert.False(t, owned)
 }
@@ -996,7 +997,7 @@ func TestIsEIPOwned_WrongAccountPrefix(t *testing.T) {
 	svc, kv := setupEIPTestService(t)
 	putEIPRecord(t, kv, "999999999999.eipalloc-001", "eni-111")
 
-	owned, err := svc.isEIPOwned("eni-111", testAccountID)
+	owned, err := svc.isEIPOwned(context.Background(), "eni-111", testAccountID)
 	assert.NoError(t, err)
 	assert.False(t, owned)
 }
@@ -1006,7 +1007,7 @@ func TestIsEIPOwned_MalformedJSON(t *testing.T) {
 	_, err := kv.Put(testAccountID+".eipalloc-001", []byte("not json"))
 	require.NoError(t, err)
 
-	owned, err := svc.isEIPOwned("eni-111", testAccountID)
+	owned, err := svc.isEIPOwned(context.Background(), "eni-111", testAccountID)
 	assert.NoError(t, err)
 	assert.False(t, owned)
 }
@@ -1017,7 +1018,7 @@ func TestIsEIPOwned_MultipleRecords_OneMatches(t *testing.T) {
 	putEIPRecord(t, kv, testAccountID+".eipalloc-002", "eni-target")
 	putEIPRecord(t, kv, testAccountID+".eipalloc-003", "eni-bbb")
 
-	owned, err := svc.isEIPOwned("eni-target", testAccountID)
+	owned, err := svc.isEIPOwned(context.Background(), "eni-target", testAccountID)
 	assert.NoError(t, err)
 	assert.True(t, owned)
 }
@@ -1092,7 +1093,7 @@ func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {
 	testutil.OverrideVpcdStubResponse(nc, "vpc.update-port-sgs",
 		[]byte(`{"success":false,"error":"forced-update-port-sgs-error"}`))
 
-	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		Groups:             []*string{aws.String(sg1)},
 	}, testAccountID)
@@ -1111,7 +1112,7 @@ func TestUpdateENIPublicIP_Success(t *testing.T) {
 
 	require.NoError(t, svc.UpdateENIPublicIP(testAccountID, eniId, "203.0.113.7", "amazon"))
 
-	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	require.NoError(t, err)

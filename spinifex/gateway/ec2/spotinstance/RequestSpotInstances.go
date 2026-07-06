@@ -89,14 +89,14 @@ func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesIn
 	// Charge the actual launched vCPUs; a counter write failure is drift for
 	// reconcile to correct, so it must not fail the already-successful launch.
 	if err := quota.ChargeLaunch(accountID, &reservation); err != nil {
-		slog.Warn("RequestSpotInstances: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
+		slog.WarnContext(ctx, "RequestSpotInstances: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
 	}
 
 	requests := buildSpotRequests(input, runInput, reservation.Instances, az)
 
 	svc := handlers_ec2_spotinstance.NewNATSSpotInstanceService(natsConn)
-	if _, err := svc.PutSpotInstanceRequests(&handlers_ec2_spotinstance.PutSpotRequestsInput{Requests: requests}, accountID); err != nil {
-		slog.Error("RequestSpotInstances: VMs launched but SIR persist failed", "count", count, "accountID", accountID, "err", err)
+	if _, err := svc.PutSpotInstanceRequests(ctx, &handlers_ec2_spotinstance.PutSpotRequestsInput{Requests: requests}, accountID); err != nil {
+		slog.ErrorContext(ctx, "RequestSpotInstances: VMs launched but SIR persist failed", "count", count, "accountID", accountID, "err", err)
 		return output, err
 	}
 
@@ -108,10 +108,10 @@ func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesIn
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("RequestSpotInstances: spot lineage write-back panic", "panic", r)
+				slog.ErrorContext(ctx, "RequestSpotInstances: spot lineage write-back panic", "panic", r)
 			}
 		}()
-		stampSpotLineage(natsConn, requests, accountID)
+		stampSpotLineage(ctx, natsConn, requests, accountID)
 	}()
 
 	return output, nil

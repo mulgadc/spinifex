@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -20,7 +21,7 @@ func ValidateSetRulePrioritiesInput(input *elbv2.SetRulePrioritiesInput) error {
 }
 
 // SetRulePriorities handles the ELBv2 SetRulePriorities API call.
-func SetRulePriorities(input *elbv2.SetRulePrioritiesInput, natsConn *nats.Conn, accountID string) (elbv2.SetRulePrioritiesOutput, error) {
+func SetRulePriorities(ctx context.Context, input *elbv2.SetRulePrioritiesInput, natsConn *nats.Conn, accountID string) (elbv2.SetRulePrioritiesOutput, error) {
 	var output elbv2.SetRulePrioritiesOutput
 
 	if err := ValidateSetRulePrioritiesInput(input); err != nil {
@@ -28,7 +29,7 @@ func SetRulePriorities(input *elbv2.SetRulePrioritiesInput, natsConn *nats.Conn,
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.SetRulePriorities(input, accountID)
+	result, err := svc.SetRulePriorities(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

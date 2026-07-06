@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,7 @@ const reservePlacementRetries = 5
 // bin-pack, reserves their capacity in KV, writes PENDING task records, and
 // publishes an assign on the Layer-2 bus for each. Placement failures for a task
 // are returned as RunTask failures; already-placed tasks in the same call stay.
-func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error) {
+func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -74,7 +75,7 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 		rec.Group = aws.StringValue(input.Group)
 		rec.StartedBy = aws.StringValue(input.StartedBy)
 		if mode == NetworkModeAwsvpc {
-			if failure := s.provisionTaskENI(kv, accountID, cluster, rec, netCfg); failure != nil {
+			if failure := s.provisionTaskENI(ctx, kv, accountID, cluster, rec, netCfg); failure != nil {
 				out.Failures = append(out.Failures, failure)
 				continue
 			}
@@ -84,7 +85,7 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 			return nil, err
 		}
 		if err := s.publishAssign(kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
-			slog.Error("ECS RunTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
+			slog.ErrorContext(ctx, "ECS RunTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
 		}
 		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
 	}
@@ -95,15 +96,15 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 // identity onto rec. On any failure it rolls back (releases a half-allocated ENI
 // and the placement reservation) and returns a RunTask failure for this task —
 // the caller skips it without leaking the ENI or the reserved capacity.
-func (s *Service) provisionTaskENI(kv nats.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
+func (s *Service) provisionTaskENI(ctx context.Context, kv nats.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
 	rollback := func(reason string, err error) *ecs.Failure {
 		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB); rerr != nil {
-			slog.Error("ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
+			slog.ErrorContext(ctx, "ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
 		}
 		return &ecs.Failure{Reason: aws.String(reason), Detail: aws.String(err.Error())}
 	}
 
-	alloc, err := s.eni.Allocate(accountID, netCfg.firstSubnet(), netCfg.securityGroupPtrs())
+	alloc, err := s.eni.Allocate(ctx, accountID, netCfg.firstSubnet(), netCfg.securityGroupPtrs())
 	if err != nil {
 		return rollback("RESOURCE:eni", err)
 	}
@@ -112,9 +113,9 @@ func (s *Service) provisionTaskENI(kv nats.KeyValue, accountID, cluster string, 
 	rec.ENIPrivateIP = alloc.PrivateIP
 	rec.ENISubnetID = alloc.SubnetID
 
-	attachmentID, err := s.eni.Attach(accountID, rec.ContainerInstanceID, alloc.ENIID)
+	attachmentID, err := s.eni.Attach(ctx, accountID, rec.ContainerInstanceID, alloc.ENIID)
 	if err != nil {
-		s.reclaimTaskENI(accountID, rec)
+		s.reclaimTaskENI(ctx, accountID, rec)
 		rec.ENIID, rec.ENIMacAddress, rec.ENIPrivateIP, rec.ENISubnetID = "", "", "", ""
 		return rollback("RESOURCE:eni", err)
 	}
@@ -214,7 +215,7 @@ func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID
 }
 
 // DescribeTasks returns task records for the named tasks in a cluster.
-func (s *Service) DescribeTasks(input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error) {
+func (s *Service) DescribeTasks(_ context.Context, input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -238,7 +239,7 @@ func (s *Service) DescribeTasks(input *ecs.DescribeTasksInput, accountID string)
 }
 
 // ListTasks returns the ARNs of all tasks in a cluster.
-func (s *Service) ListTasks(input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
+func (s *Service) ListTasks(_ context.Context, input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {

@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -37,7 +38,7 @@ func lbENIGroups(lb *LoadBalancerRecord) []string {
 // createNLBManagedSG mints the managed front-end SG for an NLB; the VPC is resolved
 // from the first subnet. The SG is tagged like other managed resources so the
 // ownership sweep can find it.
-func (s *ELBv2ServiceImpl) createNLBManagedSG(lbID, lbArn, subnetID, accountID string) (string, error) {
+func (s *ELBv2ServiceImpl) createNLBManagedSG(ctx context.Context, lbID, lbArn, subnetID, accountID string) (string, error) {
 	subnet, err := s.VPCService.GetSubnet(accountID, subnetID)
 	if err != nil {
 		return "", fmt.Errorf("resolve subnet %s vpc: %w", subnetID, err)
@@ -46,7 +47,7 @@ func (s *ELBv2ServiceImpl) createNLBManagedSG(lbID, lbArn, subnetID, accountID s
 		return "", fmt.Errorf("subnet %s has no vpc", subnetID)
 	}
 
-	out, err := s.VPCService.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	out, err := s.VPCService.CreateSecurityGroup(ctx, &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String(nlbManagedSGName(lbID)),
 		Description: aws.String(fmt.Sprintf("Managed front-end SG for NLB %s", lbID)),
 		VpcId:       aws.String(subnet.VpcId),
@@ -70,26 +71,26 @@ func (s *ELBv2ServiceImpl) createNLBManagedSG(lbID, lbArn, subnetID, accountID s
 // deleteNLBManagedSG best-effort deletes an NLB's managed SG; nil VPC service or
 // empty ID is a no-op. Failures are logged but not returned — the SG can only
 // be deleted after its ENIs are gone, which the delete path ensures.
-func (s *ELBv2ServiceImpl) deleteNLBManagedSG(sgID, accountID string) {
+func (s *ELBv2ServiceImpl) deleteNLBManagedSG(ctx context.Context, sgID, accountID string) {
 	if s.VPCService == nil || sgID == "" {
 		return
 	}
-	if _, err := s.VPCService.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+	if _, err := s.VPCService.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, accountID); err != nil && !awserrors.IsNotFound(err) {
-		slog.Warn("deleteNLBManagedSG: delete failed", "sg", sgID, "err", err)
+		slog.WarnContext(ctx, "deleteNLBManagedSG: delete failed", "sg", sgID, "err", err)
 	}
 }
 
 // resolveNLBIngressCIDRs returns the client CIDRs a listener port is opened to.
 // An explicit override wins; otherwise the default is scheme-based:
 // internet-facing → 0.0.0.0/0, internal → the LB's VPC CIDR.
-func (s *ELBv2ServiceImpl) resolveNLBIngressCIDRs(lb *LoadBalancerRecord) ([]string, error) {
+func (s *ELBv2ServiceImpl) resolveNLBIngressCIDRs(ctx context.Context, lb *LoadBalancerRecord) ([]string, error) {
 	if len(lb.NLBIngressCIDRs) > 0 {
 		return lb.NLBIngressCIDRs, nil
 	}
 	if lb.Scheme == SchemeInternal {
-		cidr, err := s.vpcCIDR(lb.VpcId, lb.AccountID)
+		cidr, err := s.vpcCIDR(ctx, lb.VpcId, lb.AccountID)
 		if err != nil {
 			return nil, err
 		}
@@ -99,14 +100,14 @@ func (s *ELBv2ServiceImpl) resolveNLBIngressCIDRs(lb *LoadBalancerRecord) ([]str
 }
 
 // vpcCIDR returns the primary CIDR block of a VPC.
-func (s *ELBv2ServiceImpl) vpcCIDR(vpcID, accountID string) (string, error) {
+func (s *ELBv2ServiceImpl) vpcCIDR(ctx context.Context, vpcID, accountID string) (string, error) {
 	if s.VPCService == nil {
 		return "", errors.New("vpc service unavailable")
 	}
 	if vpcID == "" {
 		return "", errors.New("empty vpc id")
 	}
-	out, err := s.VPCService.DescribeVpcs(&ec2.DescribeVpcsInput{
+	out, err := s.VPCService.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
 		VpcIds: aws.StringSlice([]string{vpcID}),
 	}, accountID)
 	if err != nil {
@@ -136,13 +137,13 @@ func listenerIPProtocols(protocol string) []string {
 // authorizeNLBListenerPort opens a listener port on the NLB's managed SG for each
 // (protocol, CIDR) pair; each rule is authorized separately so a Duplicate error
 // never blocks a sibling rule. No-op when there is no managed SG.
-func (s *ELBv2ServiceImpl) authorizeNLBListenerPort(lb *LoadBalancerRecord, protocol string, port int64, cidrs []string, accountID string) error {
+func (s *ELBv2ServiceImpl) authorizeNLBListenerPort(ctx context.Context, lb *LoadBalancerRecord, protocol string, port int64, cidrs []string, accountID string) error {
 	if s.VPCService == nil || lb.NLBManagedSGID == "" {
 		return nil
 	}
 	for _, proto := range listenerIPProtocols(protocol) {
 		for _, cidr := range cidrs {
-			_, err := s.VPCService.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			_, err := s.VPCService.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
 				GroupId: aws.String(lb.NLBManagedSGID),
 				IpPermissions: []*ec2.IpPermission{{
 					IpProtocol: aws.String(proto),
@@ -165,13 +166,13 @@ func (s *ELBv2ServiceImpl) authorizeNLBListenerPort(lb *LoadBalancerRecord, prot
 // revokeNLBListenerPort removes the listener-port rules authorizeNLBListenerPort
 // added. An absent rule (NotFound, swallowed) is fine so delete / re-CIDR paths
 // stay idempotent. No-op when there is no managed SG.
-func (s *ELBv2ServiceImpl) revokeNLBListenerPort(lb *LoadBalancerRecord, protocol string, port int64, cidrs []string, accountID string) error {
+func (s *ELBv2ServiceImpl) revokeNLBListenerPort(ctx context.Context, lb *LoadBalancerRecord, protocol string, port int64, cidrs []string, accountID string) error {
 	if s.VPCService == nil || lb.NLBManagedSGID == "" {
 		return nil
 	}
 	for _, proto := range listenerIPProtocols(protocol) {
 		for _, cidr := range cidrs {
-			_, err := s.VPCService.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+			_, err := s.VPCService.RevokeSecurityGroupIngress(ctx, &ec2.RevokeSecurityGroupIngressInput{
 				GroupId: aws.String(lb.NLBManagedSGID),
 				IpPermissions: []*ec2.IpPermission{{
 					IpProtocol: aws.String(proto),
@@ -212,7 +213,7 @@ func (s *ELBv2ServiceImpl) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []str
 		}
 	}
 
-	oldCIDRs, err := s.resolveNLBIngressCIDRs(lb)
+	oldCIDRs, err := s.resolveNLBIngressCIDRs(context.Background(), lb)
 	if err != nil {
 		slog.Error("SetLoadBalancerIngressCIDRs: resolve old CIDRs failed", "arn", lbArn, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -224,18 +225,18 @@ func (s *ELBv2ServiceImpl) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []str
 	}
 
 	lb.NLBIngressCIDRs = cidrs
-	newCIDRs, err := s.resolveNLBIngressCIDRs(lb)
+	newCIDRs, err := s.resolveNLBIngressCIDRs(context.Background(), lb)
 	if err != nil {
 		slog.Error("SetLoadBalancerIngressCIDRs: resolve new CIDRs failed", "arn", lbArn, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	for _, l := range listeners {
-		if err := s.revokeNLBListenerPort(lb, l.Protocol, l.Port, oldCIDRs, accountID); err != nil {
+		if err := s.revokeNLBListenerPort(context.Background(), lb, l.Protocol, l.Port, oldCIDRs, accountID); err != nil {
 			slog.Error("SetLoadBalancerIngressCIDRs: revoke failed", "arn", lbArn, "port", l.Port, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		if err := s.authorizeNLBListenerPort(lb, l.Protocol, l.Port, newCIDRs, accountID); err != nil {
+		if err := s.authorizeNLBListenerPort(context.Background(), lb, l.Protocol, l.Port, newCIDRs, accountID); err != nil {
 			slog.Error("SetLoadBalancerIngressCIDRs: authorize failed", "arn", lbArn, "port", l.Port, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}

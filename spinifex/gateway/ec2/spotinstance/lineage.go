@@ -1,6 +1,7 @@
 package gateway_ec2_spotinstance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -28,7 +29,7 @@ const (
 // persistent miss is logged and the request still succeeds — lineage is a
 // projection, never a launch precondition. Requests with no mapped instance
 // (no VM launched for them) are skipped.
-func stampSpotLineage(natsConn *nats.Conn, requests []*ec2.SpotInstanceRequest, accountID string) {
+func stampSpotLineage(ctx context.Context, natsConn *nats.Conn, requests []*ec2.SpotInstanceRequest, accountID string) {
 	for _, req := range requests {
 		if req == nil {
 			continue
@@ -38,8 +39,8 @@ func stampSpotLineage(natsConn *nats.Conn, requests []*ec2.SpotInstanceRequest, 
 		if instanceID == "" || sirID == "" {
 			continue
 		}
-		if err := sendSpotLineageCommand(natsConn, instanceID, sirID, accountID); err != nil {
-			slog.Warn("RequestSpotInstances: spot lineage write-back failed",
+		if err := sendSpotLineageCommand(ctx, natsConn, instanceID, sirID, accountID); err != nil {
+			slog.WarnContext(ctx, "RequestSpotInstances: spot lineage write-back failed",
 				"instance_id", instanceID, "sir_id", sirID, "err", err)
 		}
 	}
@@ -49,7 +50,7 @@ func stampSpotLineage(natsConn *nats.Conn, requests []*ec2.SpotInstanceRequest, 
 // via ec2.cmd.{id}, retrying past nats.ErrNoResponders until the owner subscribes.
 // A non-no-responders transport error or an owner-returned error code stops the
 // retry and is surfaced to the caller.
-func sendSpotLineageCommand(natsConn *nats.Conn, instanceID, sirID, accountID string) error {
+func sendSpotLineageCommand(ctx context.Context, natsConn *nats.Conn, instanceID, sirID, accountID string) error {
 	command := types.EC2InstanceCommand{
 		ID:              instanceID,
 		Attributes:      types.EC2CommandAttributes{SetSpotLineage: true},
@@ -65,6 +66,7 @@ func sendSpotLineageCommand(natsConn *nats.Conn, instanceID, sirID, accountID st
 		reqMsg := nats.NewMsg("ec2.cmd." + instanceID)
 		reqMsg.Data = jsonData
 		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+		utils.InjectTraceContext(ctx, reqMsg.Header)
 
 		msg, err := natsConn.RequestMsg(reqMsg, spotLineageReqTimeout)
 		if err == nil {

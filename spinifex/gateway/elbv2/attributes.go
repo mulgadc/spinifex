@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -71,34 +72,34 @@ func ValidateDescribeLoadBalancerAttributesInput(input *elbv2.DescribeLoadBalanc
 	return validateAttrArn(input.LoadBalancerArn)
 }
 
-func ModifyTargetGroupAttributes(input *elbv2.ModifyTargetGroupAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyTargetGroupAttributesOutput, error) {
+func ModifyTargetGroupAttributes(ctx context.Context, input *elbv2.ModifyTargetGroupAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyTargetGroupAttributesOutput, error) {
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateModifyTargetGroupAttributesInput,
 		func(i *elbv2.ModifyTargetGroupAttributesInput) (*elbv2.ModifyTargetGroupAttributesOutput, error) {
-			return svc.ModifyTargetGroupAttributes(i, accountID)
+			return svc.ModifyTargetGroupAttributes(ctx, i, accountID)
 		})
 }
 
-func DescribeTargetGroupAttributes(input *elbv2.DescribeTargetGroupAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTargetGroupAttributesOutput, error) {
+func DescribeTargetGroupAttributes(ctx context.Context, input *elbv2.DescribeTargetGroupAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTargetGroupAttributesOutput, error) {
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateDescribeTargetGroupAttributesInput,
 		func(i *elbv2.DescribeTargetGroupAttributesInput) (*elbv2.DescribeTargetGroupAttributesOutput, error) {
-			return svc.DescribeTargetGroupAttributes(i, accountID)
+			return svc.DescribeTargetGroupAttributes(ctx, i, accountID)
 		})
 }
 
-func ModifyLoadBalancerAttributes(input *elbv2.ModifyLoadBalancerAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyLoadBalancerAttributesOutput, error) {
+func ModifyLoadBalancerAttributes(ctx context.Context, input *elbv2.ModifyLoadBalancerAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyLoadBalancerAttributesOutput, error) {
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateModifyLoadBalancerAttributesInput,
 		func(i *elbv2.ModifyLoadBalancerAttributesInput) (*elbv2.ModifyLoadBalancerAttributesOutput, error) {
-			return svc.ModifyLoadBalancerAttributes(i, accountID)
+			return svc.ModifyLoadBalancerAttributes(ctx, i, accountID)
 		})
 }
 
-func DescribeLoadBalancerAttributes(input *elbv2.DescribeLoadBalancerAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeLoadBalancerAttributesOutput, error) {
+func DescribeLoadBalancerAttributes(ctx context.Context, input *elbv2.DescribeLoadBalancerAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeLoadBalancerAttributesOutput, error) {
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateDescribeLoadBalancerAttributesInput,
 		func(i *elbv2.DescribeLoadBalancerAttributesInput) (*elbv2.DescribeLoadBalancerAttributesOutput, error) {
-			return svc.DescribeLoadBalancerAttributes(i, accountID)
+			return svc.DescribeLoadBalancerAttributes(ctx, i, accountID)
 		})
 }

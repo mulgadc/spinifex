@@ -19,7 +19,7 @@ import (
 
 // serveECRMeta wires a MetaService method to a NATS subject for the gateway-side
 // DescribeRepositories tests, mirroring the daemon's handleNATSRequest.
-func serveECRMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(*I, string) (*O, error)) {
+func serveECRMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(context.Context, *I, string) (*O, error)) {
 	t.Helper()
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
 		accountID := utils.AccountIDFromMsg(msg)
@@ -28,7 +28,7 @@ func serveECRMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn 
 			_ = msg.Respond(errResp)
 			return
 		}
-		out, err := fn(in, accountID)
+		out, err := fn(context.Background(), in, accountID)
 		if err != nil {
 			_ = msg.Respond(utils.GenerateErrorPayload("ServerInternal"))
 			return
@@ -50,7 +50,7 @@ func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
 
 	store := handlers_ecr.NewNATSMetaStore(nc)
 	for _, r := range repos {
-		require.NoError(t, store.PutRepo(ecrTestAccount, handlers_ecr.RepoMeta{Name: r, CreatedAt: time.Now()}))
+		require.NoError(t, store.PutRepo(context.Background(), ecrTestAccount, handlers_ecr.RepoMeta{Name: r, CreatedAt: time.Now()}))
 	}
 	return &GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,

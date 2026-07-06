@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -10,7 +11,7 @@ import (
 )
 
 // DescribeLoadBalancers handles the ELBv2 DescribeLoadBalancers API call.
-func DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeLoadBalancersOutput, error) {
+func DescribeLoadBalancers(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeLoadBalancersOutput, error) {
 	var output elbv2.DescribeLoadBalancersOutput
 
 	if input == nil {
@@ -18,7 +19,7 @@ func DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, natsConn *na
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.DescribeLoadBalancers(input, accountID)
+	result, err := svc.DescribeLoadBalancers(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

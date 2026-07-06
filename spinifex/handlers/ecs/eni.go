@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -34,9 +35,9 @@ type eniAllocation struct {
 // detach, and delete for awsvpc task ENIs (single writer). The agent never calls
 // these — it only wires the guest netns once the device is hot-plugged.
 type eniController interface {
-	Allocate(accountID, subnetID string, securityGroups []*string) (eniAllocation, error)
-	Attach(accountID, instanceID, eniID string) (attachmentID string, err error)
-	Release(accountID string, rec *TaskRecord) error
+	Allocate(ctx context.Context, accountID, subnetID string, securityGroups []*string) (eniAllocation, error)
+	Attach(ctx context.Context, accountID, instanceID, eniID string) (attachmentID string, err error)
+	Release(ctx context.Context, accountID string, rec *TaskRecord) error
 }
 
 // natsENIController drives the EC2 ENI handlers over NATS. Create/Delete are plain
@@ -54,13 +55,13 @@ func newNATSENIController(nc *nats.Conn) *natsENIController {
 }
 
 // Allocate creates an ENI in subnetID with the given security groups.
-func (c *natsENIController) Allocate(accountID, subnetID string, securityGroups []*string) (eniAllocation, error) {
+func (c *natsENIController) Allocate(ctx context.Context, accountID, subnetID string, securityGroups []*string) (eniAllocation, error) {
 	in := &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetID),
 		Groups:      securityGroups,
 		Description: aws.String("ecs-awsvpc-task"),
 	}
-	out, err := utils.NATSRequest[ec2.CreateNetworkInterfaceOutput](c.nc, "ec2.CreateNetworkInterface", in, c.timeout, accountID)
+	out, err := utils.NATSRequestCtx[ec2.CreateNetworkInterfaceOutput](ctx, c.nc, "ec2.CreateNetworkInterface", in, c.timeout, accountID)
 	if err != nil {
 		return eniAllocation{}, fmt.Errorf("create task ENI: %w", err)
 	}
@@ -77,7 +78,7 @@ func (c *natsENIController) Allocate(accountID, subnetID string, securityGroups 
 }
 
 // Attach hot-plugs eniID onto instanceID and returns the attachment ID.
-func (c *natsENIController) Attach(accountID, instanceID, eniID string) (string, error) {
+func (c *natsENIController) Attach(ctx context.Context, accountID, instanceID, eniID string) (string, error) {
 	cmd := types.EC2InstanceCommand{
 		ID:         instanceID,
 		Attributes: types.EC2CommandAttributes{AttachENI: true},
@@ -86,7 +87,7 @@ func (c *natsENIController) Attach(accountID, instanceID, eniID string) (string,
 			DeviceIndex:        taskENIDeviceIndex,
 		},
 	}
-	out, err := utils.NATSRequest[ec2.AttachNetworkInterfaceOutput](c.nc, eniCmdSubject(instanceID), cmd, c.timeout, accountID)
+	out, err := utils.NATSRequestCtx[ec2.AttachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(instanceID), cmd, c.timeout, accountID)
 	if err != nil {
 		return "", fmt.Errorf("attach task ENI %s -> %s: %w", eniID, instanceID, err)
 	}
@@ -95,7 +96,7 @@ func (c *natsENIController) Attach(accountID, instanceID, eniID string) (string,
 
 // Release detaches (force) then deletes the task ENI. Both steps treat a NotFound
 // as success so the graceful-stop and reaper paths can each run idempotently.
-func (c *natsENIController) Release(accountID string, rec *TaskRecord) error {
+func (c *natsENIController) Release(ctx context.Context, accountID string, rec *TaskRecord) error {
 	if rec == nil || rec.ENIID == "" {
 		return nil
 	}
@@ -108,14 +109,14 @@ func (c *natsENIController) Release(accountID string, rec *TaskRecord) error {
 				Force:        true,
 			},
 		}
-		_, err := utils.NATSRequest[ec2.DetachNetworkInterfaceOutput](c.nc, eniCmdSubject(rec.ContainerInstanceID), cmd, c.timeout, accountID)
+		_, err := utils.NATSRequestCtx[ec2.DetachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(rec.ContainerInstanceID), cmd, c.timeout, accountID)
 		if err != nil && !isENINotFound(err) {
 			return fmt.Errorf("detach task ENI %s: %w", rec.ENIID, err)
 		}
 	}
 
 	del := &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(rec.ENIID)}
-	_, err := utils.NATSRequest[ec2.DeleteNetworkInterfaceOutput](c.nc, "ec2.DeleteNetworkInterface", del, c.timeout, accountID)
+	_, err := utils.NATSRequestCtx[ec2.DeleteNetworkInterfaceOutput](ctx, c.nc, "ec2.DeleteNetworkInterface", del, c.timeout, accountID)
 	if err != nil && !isENINotFound(err) {
 		return fmt.Errorf("delete task ENI %s: %w", rec.ENIID, err)
 	}
@@ -130,12 +131,12 @@ func eniCmdSubject(instanceID string) string {
 // (graceful stop + reaper both reach it). Best effort: a failure is logged and the
 // ENI fields stay on the record for a later retry, never blocking the STOPPED
 // transition. No-op for non-awsvpc tasks or tasks with no ENI.
-func (s *Service) reclaimTaskENI(accountID string, task *TaskRecord) {
+func (s *Service) reclaimTaskENI(ctx context.Context, accountID string, task *TaskRecord) {
 	if s.eni == nil || task == nil || task.NetworkMode != NetworkModeAwsvpc || task.ENIID == "" {
 		return
 	}
-	if err := s.eni.Release(accountID, task); err != nil {
-		slog.Error("ECS: task ENI release failed",
+	if err := s.eni.Release(ctx, accountID, task); err != nil {
+		slog.ErrorContext(ctx, "ECS: task ENI release failed",
 			"task", task.TaskID, "eni", task.ENIID, "err", err)
 	}
 }

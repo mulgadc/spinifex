@@ -25,15 +25,16 @@ type putImageTagMutabilityRequest struct {
 // It read-modify-writes the per-account RepoMeta record; the value is enforced
 // on push by Registry.StoreManifest.
 func (gw *GatewayConfig) handlePutImageTagMutability(w http.ResponseWriter, r *http.Request) error {
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	ctx := r.Context()
+	accountID, _ := ctx.Value(ctxAccountID).(string)
 	if accountID == "" {
-		slog.Error("PutImageTagMutability: no account ID in auth context")
+		slog.ErrorContext(ctx, "PutImageTagMutability: no account ID in auth context")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Error("PutImageTagMutability: failed to read body", "err", err)
+		slog.ErrorContext(ctx, "PutImageTagMutability: failed to read body", "err", err)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	var req putImageTagMutabilityRequest
@@ -53,18 +54,18 @@ func (gw *GatewayConfig) handlePutImageTagMutability(w http.ResponseWriter, r *h
 	}
 
 	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)
-	meta, err := store.GetRepo(accountID, req.RepositoryName)
+	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
 			return errors.New(awserrors.ErrorRepositoryNotFound)
 		}
-		slog.Error("PutImageTagMutability: get repo failed", "repo", req.RepositoryName, "err", err)
+		slog.ErrorContext(ctx, "PutImageTagMutability: get repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	meta.ImageTagMutability = req.ImageTagMutability
-	if err := store.PutRepo(accountID, meta); err != nil {
-		slog.Error("PutImageTagMutability: put repo failed", "repo", req.RepositoryName, "err", err)
+	if err := store.PutRepo(ctx, accountID, meta); err != nil {
+		slog.ErrorContext(ctx, "PutImageTagMutability: put repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 

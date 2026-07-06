@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -28,6 +29,31 @@ func TestInitWithoutEndpointIsNoop(t *testing.T) {
 	if err := shutdown(context.Background()); err != nil {
 		t.Errorf("shutdown: %v", err)
 	}
+}
+
+func TestInitWithEndpointInstallsProviders(t *testing.T) {
+	// Point at a dead endpoint: exporters dial lazily, so Init must still
+	// succeed and install real (recording) providers.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	prevTracer := otel.GetTracerProvider()
+	prevMeter := otel.GetMeterProvider()
+	defer otel.SetTracerProvider(prevTracer)
+	defer otel.SetMeterProvider(prevMeter)
+
+	shutdown, err := Init(context.Background(), "test-svc")
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	_, span := otel.Tracer("test").Start(context.Background(), "op")
+	if !span.SpanContext().IsValid() {
+		t.Error("expected recording tracer with endpoint set, got no-op span")
+	}
+	span.End()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	// Flush hits the dead endpoint; only assert it returns rather than hangs.
+	_ = shutdown(ctx)
 }
 
 func TestExportEnabled(t *testing.T) {

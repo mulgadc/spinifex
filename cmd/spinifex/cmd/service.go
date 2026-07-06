@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/service"
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
@@ -22,6 +24,28 @@ import (
 var serviceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Manage Spinifex services",
+}
+
+// initTelemetry installs the JSON slog default (trace-stamping) and the OTel
+// providers for a service process. The returned func flushes exporters and
+// must be deferred; with no OTLP endpoint configured both are no-ops.
+func initTelemetry(serviceName string, debug bool) func() {
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+	otelsetup.SetDefaultJSONLogger(level)
+
+	shutdown, err := otelsetup.Init(context.Background(), serviceName)
+	if err != nil {
+		slog.Warn("otel init", "service", serviceName, "error", err)
+		return func() {}
+	}
+	return func() {
+		if err := shutdown(context.Background()); err != nil {
+			slog.Warn("otel shutdown", "service", serviceName, "error", err)
+		}
+	}
 }
 
 var predastoreCmd = &cobra.Command{
@@ -110,6 +134,8 @@ var predastoreStartCmd = &cobra.Command{
 		nodeID := viper.GetInt("node-id")
 		pprofEnabled := viper.GetBool("pprof")
 		pprofOutput := viper.GetString("pprof-output")
+
+		defer initTelemetry("predastore", debug)()
 
 		service, err := service.New("predastore", &predastore.Config{
 			Port:       port,
@@ -273,6 +299,8 @@ var viperblockStartCmd = &cobra.Command{
 			encryptionKeyFile = envKey
 		}
 
+		defer initTelemetry("viperblockd", false)()
+
 		service, err := service.New("viperblock", &viperblockd.Config{
 			NatsHost:          nodeConfig.NATS.Host,
 			NatsToken:         nodeConfig.NATS.ACL.Token,
@@ -350,6 +378,8 @@ var natsStartCmd = &cobra.Command{
 		jetStream := viper.GetBool("jetstream")
 
 		cfgFile := viper.GetString("config")
+
+		defer initTelemetry("nats", debug)()
 
 		service, err := service.New("nats", &nats.Config{
 			ConfigFile: cfgFile,
@@ -443,6 +473,8 @@ var spinifexStartCmd = &cobra.Command{
 
 		// Apply changes back to cluster config
 		clusterConfig.Nodes[clusterConfig.Node] = nodeConfig
+
+		defer initTelemetry("spinifex-daemon", false)()
 
 		svc, err := service.New("spinifex", clusterConfig)
 
@@ -549,6 +581,8 @@ var awsgwStartCmd = &cobra.Command{
 		// Apply changes back to cluster config
 		clusterConfig.Nodes[clusterConfig.Node] = nodeConfig
 
+		defer initTelemetry("awsgw", viper.GetBool("debug"))()
+
 		awsgw.SetBuildInfo(Version, Commit)
 		service, err := service.New("awsgw", clusterConfig)
 
@@ -605,6 +639,8 @@ var spinifexUIStartCmd = &cobra.Command{
 		host := viper.GetString("spinifex-ui-host")
 		tlsCert := viper.GetString("spinifex-ui-tls-cert")
 		tlsKey := viper.GetString("spinifex-ui-tls-key")
+
+		defer initTelemetry("spinifex-ui", false)()
 
 		svc, err := service.New("spinifex-ui", &spinifexui.Config{
 			Port:    port,
@@ -751,6 +787,8 @@ var vpcdStartCmd = &cobra.Command{
 			fmt.Println("Overwriting vpcd base-dir to:", baseDir)
 			nodeConfig.BaseDir = baseDir
 		}
+
+		defer initTelemetry("vpcd", false)()
 
 		svc, err := service.New("vpcd", &vpcd.Config{
 			NatsHost:          nodeConfig.NATS.Host,

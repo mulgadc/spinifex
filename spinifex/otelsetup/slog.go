@@ -3,9 +3,18 @@ package otelsetup
 import (
 	"context"
 	"log/slog"
+	"os"
 
 	"go.opentelemetry.io/otel/trace"
 )
+
+// SetDefaultJSONLogger installs the process-wide slog default: JSON to
+// stdout (journald) at the given level, with trace_id/span_id stamping.
+func SetDefaultJSONLogger(level slog.Level) {
+	slog.SetDefault(slog.New(NewSlogHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+	}))))
+}
 
 var _ slog.Handler = (*traceHandler)(nil)
 

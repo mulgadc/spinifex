@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,7 @@ func Init(ctx context.Context, serviceName string) (func(context.Context) error,
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExp),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(rootSampler()),
 	)
 	otel.SetTracerProvider(tp)
 
@@ -84,6 +86,21 @@ func Init(ctx context.Context, serviceName string) (func(context.Context) error,
 
 // exportEnabled reports whether any standard OTLP endpoint is configured and
 // the SDK is not explicitly disabled.
+// rootSampler samples locally-rooted traces at MULGA_ROOT_TRACE_RATIO
+// (default 1.0) while always honoring an inbound sampled traceparent. Lets
+// chatty services shed root noise without losing any request-linked span.
+func rootSampler() sdktrace.Sampler {
+	ratio := 1.0
+	if v := os.Getenv("MULGA_ROOT_TRACE_RATIO"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			ratio = f
+		} else {
+			slog.Warn("invalid MULGA_ROOT_TRACE_RATIO, using 1.0", "value", v)
+		}
+	}
+	return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+}
+
 func exportEnabled() bool {
 	if strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") {
 		return false

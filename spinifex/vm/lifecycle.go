@@ -30,6 +30,10 @@ import (
 
 const vmTracerName = "github.com/mulgadc/spinifex/spinifex/vm"
 
+// noTraceKey marks a context whose QMP commands should not open spans —
+// used by the heartbeat poller, which would otherwise root a trace per tick.
+type noTraceKey struct{}
+
 // endSpanWithError records err (if any) on span and ends it.
 func endSpanWithError(span trace.Span, err error) {
 	if err != nil {
@@ -662,7 +666,8 @@ func (m *Manager) qmpHeartbeat(instance *VM) {
 		}
 
 		slog.Debug("QMP heartbeat", "instance", instance.ID)
-		qmpStatus, err := sendQMPCommand(context.Background(), instance.QMPClient, qmp.QMPCommand{Execute: "query-status"}, instance.ID)
+		qmpStatus, err := sendQMPCommand(context.WithValue(context.Background(), noTraceKey{}, true),
+			instance.QMPClient, qmp.QMPCommand{Execute: "query-status"}, instance.ID)
 		if err != nil {
 			failures := m.recordQMPFailure(instance)
 			slog.Warn("QMP heartbeat failed", "instance", instance.ID, "consecutiveFailures", failures, "err", err)
@@ -711,12 +716,15 @@ func (m *Manager) recordQMPSuccess(instance *VM) {
 
 // sendQMPCommand encodes cmd and decodes the response, skipping event messages.
 func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (_ *qmp.QMPResponse, err error) {
-	_, span := otel.Tracer(vmTracerName).Start(ctx, "qmp "+cmd.Execute,
-		trace.WithAttributes(
-			attribute.String("qmp.command", cmd.Execute),
-			attribute.String("instance.id", instanceID),
-		))
-	defer func() { endSpanWithError(span, err) }()
+	if ctx.Value(noTraceKey{}) == nil {
+		var span trace.Span
+		_, span = otel.Tracer(vmTracerName).Start(ctx, "qmp "+cmd.Execute,
+			trace.WithAttributes(
+				attribute.String("qmp.command", cmd.Execute),
+				attribute.String("instance.id", instanceID),
+			))
+		defer func() { endSpanWithError(span, err) }()
+	}
 
 	if q == nil || q.Encoder == nil || q.Decoder == nil {
 		return nil, fmt.Errorf("QMP client is not initialized")

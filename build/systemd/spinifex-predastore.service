@@ -6,6 +6,9 @@ Wants=spinifex-nats.service
 
 [Service]
 EnvironmentFile=-/etc/spinifex/telemetry.env
+# Guest block I/O arrives with no caller trace; sample those roots at 5% so
+# they don't drown request traces. Request-linked spans are always kept.
+Environment=MULGA_ROOT_TRACE_RATIO=0.05
 Type=simple
 Slice=spinifex-system.slice
 User=spinifex-storage

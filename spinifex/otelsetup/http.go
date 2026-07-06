@@ -35,6 +35,19 @@ func (w *statusRecorder) WriteHeader(code int) {
 func HTTPMiddleware(serverName string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Health probes fire every few seconds per service and would root a
+			// trace each — record metrics only.
+			if r.URL.Path == "/health" {
+				start := time.Now()
+				rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+				next.ServeHTTP(rec, r)
+				outcome := "success"
+				if rec.status >= http.StatusInternalServerError {
+					outcome = "error"
+				}
+				RecordRequest(r.Context(), r.Method+" /health", outcome, time.Since(start))
+				return
+			}
 			ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 			action := &requestAction{name: r.Method}
 			ctx = context.WithValue(ctx, requestActionKey{}, action)

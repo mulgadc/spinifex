@@ -6,6 +6,7 @@ After=spinifex-nats.service spinifex-viperblock.service openvswitch-switch.servi
 Wants=openvswitch-ipsec.service
 
 [Service]
+EnvironmentFile=-/etc/spinifex/telemetry.env
 Type=simple
 Slice=spinifex-system.slice
 User=spinifex-daemon

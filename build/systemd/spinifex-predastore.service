@@ -5,6 +5,7 @@ After=spinifex-nats.service
 Wants=spinifex-nats.service
 
 [Service]
+EnvironmentFile=-/etc/spinifex/telemetry.env
 Type=simple
 Slice=spinifex-system.slice
 User=spinifex-storage

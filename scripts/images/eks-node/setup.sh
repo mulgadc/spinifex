@@ -51,6 +51,7 @@ chmod 0755 /etc/init.d/mulga-ebs-byid /usr/local/sbin/mulga-ebs-byid
 chmod 0755 /etc/init.d/mulga-eks-provider-id /usr/local/sbin/mulga-eks-provider-id
 chmod 0755 /etc/init.d/mulga-mgmt-net /usr/local/sbin/mulga-mgmt-net
 chmod 0755 /etc/init.d/mulga-vpc-mtu /usr/local/sbin/mulga-vpc-mtu
+chmod 0755 /etc/init.d/mulga-eks-k3s-recovery /usr/local/sbin/mulga-eks-k3s-recovery
 # etcd snapshot runs on two crond cadences (nightly + a 15-min RPO window); the
 # same script picks its tier from the dir it is invoked from. Both must be 0755.
 mkdir -p /etc/periodic/15min

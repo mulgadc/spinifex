@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,18 @@ const (
 	// defaultMaxCPReplaceAttempts bounds replacement provisions before the
 	// reconciler yields and leaves the cluster running below quorum width.
 	defaultMaxCPReplaceAttempts = 3
+	// defaultCPResetGrace is how long an ACTIVE cluster's control plane must stay
+	// etcd-wedged — every member VM-running but etcd unreachable — before the
+	// reconciler escalates to a k3s cluster-reset. Longer than the restart grace:
+	// reset is the heavier last resort once an in-place restart plainly cannot
+	// reform quorum.
+	defaultCPResetGrace = 5 * time.Minute
+	// defaultCPResetBackoff is the minimum spacing between cluster-reset attempts;
+	// a reset reboots every member, so a boot + etcd-reform window must elapse.
+	defaultCPResetBackoff = 5 * time.Minute
+	// defaultMaxCPResetAttempts bounds cluster-reset escalations before the
+	// reconciler yields and leaves the cluster degraded for operator DR.
+	defaultMaxCPResetAttempts = 2
 )
 
 // CPInstanceControl is the minimal control-plane VM lifecycle surface the
@@ -157,6 +170,21 @@ type ClusterReconciler struct {
 	replacingSince     time.Time
 	replaceAttempts    int
 	lastReplaceAt      time.Time
+
+	// etcdResetEnabled drives the last-resort escalation: when every CP member is
+	// VM-running but etcd never reformed quorum after a simultaneous restart, drive
+	// a k3s cluster-reset via per-member recovery directives (seed reseeds a
+	// single-member etcd from intact data; others wipe and rejoin). reset* fields
+	// mirror the restart bookkeeping; resetIssued gates the one-shot clear on
+	// recovery so a healthy cluster does not re-bump the directive epoch each tick.
+	etcdResetEnabled bool
+	resetGrace       time.Duration
+	resetBackoff     time.Duration
+	maxResetAttempts int
+	resetSince       time.Time
+	resetAttempts    int
+	lastResetAt      time.Time
+	resetIssued      bool
 }
 
 // ReconcilerOption tunes a ClusterReconciler.
@@ -255,6 +283,26 @@ func WithCPReplacePolicy(grace, backoff time.Duration, maxAttempts int) Reconcil
 	}
 }
 
+// WithEtcdResetRecovery enables the etcd quorum-reformation escalation: a wedged
+// HA control plane that survives in-place restarts (every member VM-running but
+// etcd unreachable) is driven through a k3s cluster-reset via per-member recovery
+// directives. Non-positive tunables keep the defaults. Requires a CPInstanceControl
+// for the member restarts; without one the escalation is inert.
+func WithEtcdResetRecovery(grace, backoff time.Duration, maxAttempts int) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		r.etcdResetEnabled = true
+		if grace > 0 {
+			r.resetGrace = grace
+		}
+		if backoff > 0 {
+			r.resetBackoff = backoff
+		}
+		if maxAttempts > 0 {
+			r.maxResetAttempts = maxAttempts
+		}
+	}
+}
+
 // NewClusterReconciler constructs a ClusterReconciler. healthURL is the
 // fully-qualified probe target (e.g. https://nlb-dns:443/healthz) or empty
 // to skip /healthz probing (CREATING transitions on bootstrap state alone).
@@ -292,6 +340,9 @@ func NewClusterReconciler(leaderKV, acctKV nats.KeyValue, accountID, clusterName
 		replaceGrace:       defaultCPReplaceGrace,
 		replaceBackoff:     defaultCPReplaceBackoff,
 		maxReplaceAttempts: defaultMaxCPReplaceAttempts,
+		resetGrace:         defaultCPResetGrace,
+		resetBackoff:       defaultCPResetBackoff,
+		maxResetAttempts:   defaultMaxCPResetAttempts,
 		httpClient: &http.Client{
 			Timeout: defaultHealthzTimeout,
 			Transport: &http.Transport{
@@ -472,6 +523,7 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 			return fmt.Errorf("record cluster health: %w", err)
 		}
 		r.maybeRecoverControlPlane(ctx, meta, issue)
+		r.maybeReformEtcdQuorum(ctx, meta, issue)
 		r.maybeReplaceControlPlaneMember(ctx, meta, issue)
 	case ClusterStatusDeleting:
 		return ErrReconcilerClusterDeleting
@@ -549,6 +601,133 @@ func (r *ClusterReconciler) maybeRecoverControlPlane(ctx context.Context, meta *
 		slog.Info("ClusterReconciler: control-plane restart issued",
 			"cluster", r.clusterName, "instanceId", id, "attempt", r.restartAttempts)
 	}
+}
+
+// maybeReformEtcdQuorum escalates a wedged HA control plane that the in-place
+// restart path cannot fix — every member is VM-running yet embedded etcd never
+// reformed quorum after a simultaneous restart — to a k3s cluster-reset. It sets
+// per-member recovery directives (the seed reseeds a single-member etcd from its
+// intact data; the others wipe and rejoin) then restarts the members so the on-VM
+// k3s-recovery agent applies them on boot. Bounded by resetGrace/backoff/attempts;
+// a recovered cluster clears the directives and the clock. Best-effort: failures
+// log and retry next tick, leaving the cluster degraded for operator DR.
+func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *ClusterMeta, issue string) {
+	if r.cpControl == nil || !r.etcdResetEnabled {
+		return
+	}
+	if issue == "" {
+		// One-shot clear on the wedged→healthy edge so a stale cluster-reset cannot
+		// re-apply; resetIssued gates it so a steady-healthy cluster never re-bumps
+		// the directive epoch each tick.
+		if r.resetIssued {
+			r.clearRecoveryDirectives(meta)
+			r.resetIssued = false
+		}
+		r.resetSince = time.Time{}
+		r.resetAttempts = 0
+		return
+	}
+	// Only the guest's etcd-unreachable diagnosis qualifies; other issues are owned
+	// by the restart/replace paths or are transient apiserver blips.
+	if !reasonIndicatesEtcdDown(issue) || !isHAControlPlane(meta) {
+		return
+	}
+	members := cpMemberNodes(meta)
+	if len(members) < 2 {
+		return
+	}
+	// Every member must be VM-running: a stopped/error member is the restart path's
+	// job (a restart may still reform quorum), so reset is the last resort only when
+	// the VMs are up but etcd is wedged. A state-query failure defers the escalation.
+	for _, n := range members {
+		state, err := r.cpControl.InstanceState(ctx, n.InstanceID)
+		if err != nil {
+			slog.Warn("ClusterReconciler: CP member state query failed, deferring etcd reset",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+			return
+		}
+		if !cpLive(state) {
+			return
+		}
+	}
+	now := time.Now()
+	if r.resetSince.IsZero() {
+		r.resetSince = now
+		return
+	}
+	if now.Sub(r.resetSince) < r.resetGrace {
+		return
+	}
+	if r.resetAttempts >= r.maxResetAttempts {
+		return
+	}
+	if !r.lastResetAt.IsZero() && now.Sub(r.lastResetAt) < r.resetBackoff {
+		return
+	}
+
+	seed := members[0]
+	// Space retries even on a partial failure below, so a transient fault cannot
+	// tight-loop; but consume an attempt only once the seed directive is actually
+	// stored, so a KV blip does not silently burn the small attempt budget with no
+	// effective escalation.
+	r.lastResetAt = now
+
+	// Directives first, so the agents read them on the reboot the restart triggers.
+	// A directive-store failure for the seed aborts the pass without consuming an
+	// attempt (restarting without the cluster-reset directive would just reproduce
+	// the wedge); a follower failure logs and continues (that member stays wedged,
+	// retried next attempt).
+	if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, seed.InstanceID, RecoveryActionClusterReset, ""); err != nil {
+		slog.Warn("ClusterReconciler: set cluster-reset directive failed",
+			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
+		return
+	}
+	r.resetAttempts++
+	r.resetIssued = true
+	for _, n := range members[1:] {
+		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionWipeRejoin, ""); err != nil {
+			slog.Warn("ClusterReconciler: set wipe-rejoin directive failed",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+		}
+	}
+	slog.Warn("ClusterReconciler: escalating wedged control plane to etcd cluster-reset",
+		"cluster", r.clusterName, "seed", seed.InstanceID, "members", len(members),
+		"attempt", r.resetAttempts, "issue", issue)
+
+	// Restart the seed first so it re-forms a single-member etcd, then the others
+	// (wipe-rejoin) reconnect. k3s server-join retries on its own, so a boot race is
+	// self-correcting; a seed restart failure aborts before churning the followers.
+	if err := r.cpControl.StartInstance(ctx, seed.InstanceID); err != nil {
+		slog.Warn("ClusterReconciler: seed reset restart failed",
+			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
+		return
+	}
+	for _, n := range members[1:] {
+		if err := r.cpControl.StartInstance(ctx, n.InstanceID); err != nil {
+			slog.Warn("ClusterReconciler: member rejoin restart failed",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+		}
+	}
+}
+
+// clearRecoveryDirectives resets every member's directive to none (advancing the
+// epoch) once a cluster has recovered, so a stale cluster-reset cannot re-apply on
+// a later reboot. Best-effort: a failure logs and the epoch guard on the guest
+// still prevents re-application of the already-applied directive.
+func (r *ClusterReconciler) clearRecoveryDirectives(meta *ClusterMeta) {
+	for _, n := range cpMemberNodes(meta) {
+		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionNone, ""); err != nil {
+			slog.Warn("ClusterReconciler: clear recovery directive failed",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+		}
+	}
+}
+
+// reasonIndicatesEtcdDown reports whether a health issue carries the guest's
+// etcd-unreachable diagnosis token — the signal that embedded-etcd quorum did not
+// reform, as opposed to a disk-full or apiserver-config failure a reset won't fix.
+func reasonIndicatesEtcdDown(issue string) bool {
+	return strings.Contains(issue, "etcd:unreachable")
 }
 
 // cpMemberInstanceIDs returns every control-plane member instance ID from the

@@ -1943,6 +1943,10 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 		// one that joins the surviving quorum. The service replays the persisted
 		// create template; gated on CPControl since replacement needs member describe.
 		opts = append(opts, WithCPProvisioner(s))
+		// Last-resort etcd quorum-reformation: when every member is VM-running but
+		// etcd never reformed after a simultaneous restart, drive a k3s cluster-reset
+		// via per-member recovery directives the on-VM agent applies on boot.
+		opts = append(opts, WithEtcdResetRecovery(0, 0, 0))
 	}
 	spawn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
 		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "", opts...)

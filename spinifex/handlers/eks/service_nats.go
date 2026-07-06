@@ -140,6 +140,14 @@ func (s *NATSEKSService) ListStagedAddonManifests(input *ListStagedAddonManifest
 	return utils.NATSRequest[ListStagedAddonManifestsOutput](s.natsConn, "eks.ListStagedAddonManifests", input, defaultTimeout, accountID)
 }
 
+func (s *NATSEKSService) GetRecoveryDirective(input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error) {
+	return utils.NATSRequest[GetRecoveryDirectiveOutput](s.natsConn, "eks.GetRecoveryDirective", input, defaultTimeout, accountID)
+}
+
+func (s *NATSEKSService) SetRecoveryDirective(input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error) {
+	return utils.NATSRequest[SetRecoveryDirectiveOutput](s.natsConn, "eks.SetRecoveryDirective", input, defaultTimeout, accountID)
+}
+
 func (s *NATSEKSService) UpdateAddon(input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error) {
 	return utils.NATSRequest[eks.UpdateAddonOutput](s.natsConn, "eks.UpdateAddon", input, defaultTimeout, accountID)
 }

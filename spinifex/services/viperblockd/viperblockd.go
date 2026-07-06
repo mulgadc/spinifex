@@ -698,6 +698,11 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
+		// This daemon-side VB tracks state only; the nbdkit plugin process owns
+		// the data path and its own uploader. Stop this VB's background uploader
+		// so it cannot overwrite the live checkpoint every 30s (AEAD corruption).
+		vb.StopChunkUploader()
+
 		if cfg.Debug {
 			vb.SetDebug(true)
 		}

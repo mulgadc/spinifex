@@ -10,12 +10,16 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 func TestInitWithoutEndpointIsNoop(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
+	// Pin a known no-op provider: the otel global delegator cannot be reset
+	// once another test has installed a real provider.
+	otel.SetTracerProvider(noop.NewTracerProvider())
 
 	shutdown, err := Init(context.Background(), "test-svc")
 	if err != nil {

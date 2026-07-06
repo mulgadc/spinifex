@@ -59,6 +59,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -1817,6 +1818,7 @@ func (d *Daemon) ClusterManager() error {
 	}
 
 	r := chi.NewRouter()
+	r.Use(otelsetup.HTTPMiddleware("spinifex-daemon"))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		configHash, err := d.computeConfigHash()

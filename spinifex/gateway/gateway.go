@@ -28,6 +28,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // contextKey is a typed key for request context values.
@@ -159,6 +161,8 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 
 	r := chi.NewRouter()
 
+	r.Use(otelsetup.HTTPMiddleware("awsgw"))
+
 	if !gw.DisableLogging {
 		r.Use(slogRequestLogger)
 	}
@@ -180,6 +184,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {
 		auth.Use(gw.SigV4AuthMiddleware())
+		auth.Use(traceActionEnricher)
 
 		// Post-auth, per-account+action token bucket throttle.
 		if gw.Throttler != nil {
@@ -667,12 +672,37 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// traceActionEnricher renames the server span to the resolved SigV4
+// service.Action and tags account/region once auth populated the context.
+func traceActionEnricher(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		span := trace.SpanFromContext(ctx)
+		if action, _ := ctx.Value(ctxAction).(string); action != "" {
+			if svc, _ := ctx.Value(ctxService).(string); svc != "" {
+				span.SetName(svc + "." + action)
+				span.SetAttributes(attribute.String("aws.service", svc))
+			} else {
+				span.SetName(action)
+			}
+			span.SetAttributes(attribute.String("aws.action", action))
+		}
+		if acct, _ := ctx.Value(ctxAccountID).(string); acct != "" {
+			span.SetAttributes(attribute.String("aws.account_id", acct))
+		}
+		if region, _ := ctx.Value(ctxRegion).(string); region != "" {
+			span.SetAttributes(attribute.String("aws.region", region))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // slogRequestLogger is a middleware that logs each request via slog.
 func slogRequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		ww := &statusWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(ww, r)
-		slog.Info("request", "method", r.Method, "path", r.URL.Path, "status", ww.status, "duration", time.Since(start))
+		slog.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "status", ww.status, "duration", time.Since(start))
 	})
 }

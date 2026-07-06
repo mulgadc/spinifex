@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1004,4 +1005,114 @@ func TestSendQMPCommand_NoPathCannotReconnect(t *testing.T) {
 	_, err = sendQMPCommand(client, qmp.QMPCommand{Execute: "query-status"}, "i-nopath")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no socket path")
+}
+
+// TestRemoveStaleQMPSocket covers the SIGKILL-leftover unlink: a stale socket
+// inode is removed, and a missing file is a no-op (not an error).
+func TestRemoveStaleQMPSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qmp-i-stale.sock")
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+
+	require.NoError(t, removeStaleQMPSocket(path))
+	_, statErr := os.Stat(path)
+	assert.True(t, os.IsNotExist(statErr), "stale socket inode must be unlinked")
+
+	require.NoError(t, removeStaleQMPSocket(path), "a missing socket is a no-op")
+}
+
+// TestIsTransientDialError pins which connect failures the QMP dial retries: a
+// listener-not-up-yet (refused) or a socket briefly absent (enoent) are
+// transient; a greeting/handshake error is not — it means a listener answered.
+func TestIsTransientDialError(t *testing.T) {
+	assert.True(t, isTransientDialError(syscall.ECONNREFUSED), "pre-listen/stale refuses connect")
+	assert.True(t, isTransientDialError(syscall.ENOENT), "socket absent between unlink and rebind")
+	assert.False(t, isTransientDialError(fmt.Errorf("waiting for QMP greeting: eof")),
+		"a reached-listener handshake failure must not be retried")
+}
+
+// serveQMPConn writes the QMP greeting then echoes {"return":{}} for each command
+// line, modelling a live QEMU monitor closely enough for a handshake.
+func serveQMPConn(c net.Conn) {
+	defer func() { _ = c.Close() }()
+	greeting := `{"QMP":{"version":{"qemu":{"major":8,"minor":0}},"capabilities":[]}}` + "\n"
+	if _, err := c.Write([]byte(greeting)); err != nil {
+		return
+	}
+	dec := json.NewDecoder(c)
+	for {
+		var cmd map[string]any
+		if err := dec.Decode(&cmd); err != nil {
+			return
+		}
+		if _, err := c.Write([]byte(`{"return":{}}` + "\n")); err != nil {
+			return
+		}
+	}
+}
+
+// startDelayedQMPListener simulates a relaunched QEMU: after delay it unlinks any
+// stale inode at sockPath, binds, and serves. Until then a pre-seeded stale inode
+// refuses connects, forcing the dialer to retry. Returns a stop function.
+func startDelayedQMPListener(t *testing.T, sockPath string, delay time.Duration) func() {
+	t.Helper()
+	done := make(chan struct{})
+	lnCh := make(chan net.Listener, 1)
+	go func() {
+		defer close(done)
+		time.Sleep(delay)
+		_ = os.Remove(sockPath)
+		ln, err := net.Listen("unix", sockPath)
+		if err != nil {
+			lnCh <- nil
+			return
+		}
+		lnCh <- ln
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go serveQMPConn(conn)
+		}
+	}()
+	stopped := false
+	stop := func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		if ln := <-lnCh; ln != nil {
+			_ = ln.Close()
+		}
+		<-done
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
+// TestNewQMPClientWithHandshake_RetriesTransientConnect is the mgo6c regression:
+// a stale socket inode from a SIGKILLed predecessor refuses the first connect,
+// and the relaunched QEMU only listens after a short delay. The dial must retry
+// past the refused window rather than fail the whole restart.
+func TestNewQMPClientWithHandshake_RetriesTransientConnect(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	sockPath := filepath.Join(t.TempDir(), "qmp-i-retry.sock")
+
+	// Seed a stale inode with no listener — a single dial gets ECONNREFUSED.
+	stale, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+	unixLn, ok := stale.(*net.UnixListener)
+	require.True(t, ok, "unix listener expected")
+	unixLn.SetUnlinkOnClose(false)
+	require.NoError(t, stale.Close())
+
+	stop := startDelayedQMPListener(t, sockPath, 150*time.Millisecond)
+	defer stop()
+
+	instance := &VM{ID: "i-retry", Config: Config{QMPSocket: sockPath}}
+	client, err := newQMPClientWithHandshake(instance)
+	require.NoError(t, err, "dial must retry past the refused window")
+	require.NotNil(t, client)
+	_ = client.Conn.Close()
 }

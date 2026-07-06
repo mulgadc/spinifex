@@ -51,3 +51,14 @@ func (c *eksCPControl) RecoverInstance(instanceID, accountID string) error {
 	}, c.natsConn, accountID)
 	return err
 }
+
+// RebootInstance forces the running control-plane VM to reboot (QMP system_reset
+// on its owning node), re-entering the boot sequence so the k3s-recovery agent
+// applies its pending directive. The etcd reset path uses this rather than
+// RecoverInstance because the members are running, not stopped.
+func (c *eksCPControl) RebootInstance(instanceID, accountID string) error {
+	_, err := gateway_ec2_instance.RebootInstances(&ec2.RebootInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, c.natsConn, accountID)
+	return err
+}

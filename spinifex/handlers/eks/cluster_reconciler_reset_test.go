@@ -31,7 +31,7 @@ func TestReformEtcd_DisabledIsNoop(t *testing.T) {
 
 	r.maybeReformEtcdQuorum(context.Background(), metaWithCPNodes("i-0", "i-1", "i-2"), etcdIssue)
 
-	assert.Zero(t, cp.startCalls, "escalation is inert unless explicitly enabled")
+	assert.Zero(t, cp.rebootCalls, "escalation is inert unless explicitly enabled")
 }
 
 func TestReformEtcd_NonEtcdIssueIgnored(t *testing.T) {
@@ -41,7 +41,7 @@ func TestReformEtcd_NonEtcdIssueIgnored(t *testing.T) {
 
 	r.maybeReformEtcdQuorum(context.Background(), metaWithCPNodes("i-0", "i-1", "i-2"), "stale state report")
 
-	assert.Zero(t, cp.startCalls, "a non-etcd health issue is owned by the restart/replace paths")
+	assert.Zero(t, cp.rebootCalls, "a non-etcd health issue is owned by the restart/replace paths")
 }
 
 func TestReformEtcd_SingleCPIgnored(t *testing.T) {
@@ -51,7 +51,7 @@ func TestReformEtcd_SingleCPIgnored(t *testing.T) {
 
 	r.maybeReformEtcdQuorum(context.Background(), metaWithCP("i-solo"), etcdIssue)
 
-	assert.Zero(t, cp.startCalls, "a single-CP cluster has no quorum to reform")
+	assert.Zero(t, cp.rebootCalls, "a single-CP cluster has no quorum to reform")
 }
 
 func TestReformEtcd_WithinGraceDoesNotReset(t *testing.T) {
@@ -61,7 +61,7 @@ func TestReformEtcd_WithinGraceDoesNotReset(t *testing.T) {
 	r.maybeReformEtcdQuorum(context.Background(), metaWithCPNodes("i-0", "i-1", "i-2"), etcdIssue)
 
 	assert.False(t, r.resetSince.IsZero(), "first wedged tick starts the reset clock")
-	assert.Zero(t, cp.startCalls, "no reset before the grace window elapses")
+	assert.Zero(t, cp.rebootCalls, "no reset before the grace window elapses")
 }
 
 func TestReformEtcd_MemberNotRunningDefers(t *testing.T) {
@@ -73,7 +73,7 @@ func TestReformEtcd_MemberNotRunningDefers(t *testing.T) {
 
 	r.maybeReformEtcdQuorum(context.Background(), metaWithCPNodes("i-0", "i-1", "i-2"), etcdIssue)
 
-	assert.Zero(t, cp.startCalls, "a stopped member defers reset to the restart path")
+	assert.Zero(t, cp.rebootCalls, "a stopped member defers reset to the restart path")
 }
 
 func TestReformEtcd_EscalatesAfterGrace(t *testing.T) {
@@ -83,7 +83,8 @@ func TestReformEtcd_EscalatesAfterGrace(t *testing.T) {
 
 	r.maybeReformEtcdQuorum(context.Background(), metaWithCPNodes("i-seed", "i-1", "i-2"), etcdIssue)
 
-	assert.Equal(t, 3, cp.startCalls, "every member is restarted so the directives apply on reboot")
+	assert.Equal(t, 3, cp.rebootCalls, "every member is rebooted so the directives apply on the next boot")
+	assert.Zero(t, cp.startCalls, "reset reboots running members; it must not use the stopped-instance start path")
 	assert.Equal(t, 1, r.resetAttempts)
 	assert.True(t, r.resetIssued)
 	assert.False(t, r.lastResetAt.IsZero())
@@ -107,7 +108,7 @@ func TestReformEtcd_BackoffPreventsRapidReset(t *testing.T) {
 	r.maybeReformEtcdQuorum(context.Background(), metaWithCPNodes("i-0", "i-1", "i-2"), etcdIssue)
 	r.maybeReformEtcdQuorum(context.Background(), metaWithCPNodes("i-0", "i-1", "i-2"), etcdIssue)
 
-	assert.Equal(t, 3, cp.startCalls, "second escalation within backoff is suppressed")
+	assert.Equal(t, 3, cp.rebootCalls, "second escalation within backoff is suppressed")
 }
 
 func TestReformEtcd_StopsAtMaxAttempts(t *testing.T) {
@@ -118,7 +119,7 @@ func TestReformEtcd_StopsAtMaxAttempts(t *testing.T) {
 
 	r.maybeReformEtcdQuorum(context.Background(), metaWithCPNodes("i-0", "i-1", "i-2"), etcdIssue)
 
-	assert.Zero(t, cp.startCalls, "no reset once the attempt cap is reached")
+	assert.Zero(t, cp.rebootCalls, "no reset once the attempt cap is reached")
 }
 
 func TestReformEtcd_RecoveryClearsDirectivesAndClock(t *testing.T) {

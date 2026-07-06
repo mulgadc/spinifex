@@ -16,9 +16,10 @@ import (
 // describe error) is configured by instance ID, so member-count reconcile can be
 // driven with a mix of live, restartable, and lost members.
 type mapCPControl struct {
-	states     map[string]string
-	errs       map[string]error
-	startCalls int
+	states      map[string]string
+	errs        map[string]error
+	startCalls  int
+	rebootCalls int
 }
 
 func (m *mapCPControl) InstanceState(_ context.Context, id string) (string, error) {
@@ -35,6 +36,11 @@ func (m *mapCPControl) InstanceState(_ context.Context, id string) (string, erro
 
 func (m *mapCPControl) StartInstance(_ context.Context, _ string) error {
 	m.startCalls++
+	return nil
+}
+
+func (m *mapCPControl) RebootInstance(_ context.Context, _ string) error {
+	m.rebootCalls++
 	return nil
 }
 

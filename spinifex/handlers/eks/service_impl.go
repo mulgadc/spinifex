@@ -109,6 +109,9 @@ type EKSServiceDeps struct {
 type cpInstanceController interface {
 	DescribeInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
 	RecoverInstance(instanceID, accountID string) error
+	// RebootInstance forces a running CP to re-enter its boot sequence so the
+	// boot-time recovery agent applies a pending directive (the etcd reset path).
+	RebootInstance(instanceID, accountID string) error
 }
 
 // cpControlAdapter binds a cpInstanceController + accountID to the reconciler's
@@ -145,6 +148,13 @@ func (a cpControlAdapter) InstanceState(_ context.Context, instanceID string) (s
 // stopped instance from the shared KV — and re-mounts the same root volume.
 func (a cpControlAdapter) StartInstance(_ context.Context, instanceID string) error {
 	return a.ctl.RecoverInstance(instanceID, a.accountID)
+}
+
+// RebootInstance forces a running CP to reboot (QMP system_reset) so the on-VM
+// recovery agent applies its pending directive on the next boot — the etcd reset
+// path, where every member is running and StartInstance would be IncorrectInstanceState.
+func (a cpControlAdapter) RebootInstance(_ context.Context, instanceID string) error {
+	return a.ctl.RebootInstance(instanceID, a.accountID)
 }
 
 // WorkerLauncher is the narrow EC2 surface for launching nodegroup worker instances.

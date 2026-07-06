@@ -68,6 +68,11 @@ type CPInstanceControl interface {
 	InstanceState(ctx context.Context, instanceID string) (string, error)
 	// StartInstance restarts a stopped/error CP instance in place.
 	StartInstance(ctx context.Context, instanceID string) error
+	// RebootInstance forces a running CP instance to re-enter its boot sequence
+	// (QMP system_reset), so the boot-time recovery agent applies a pending
+	// directive. Used by the etcd reset path, where members are VM-running and
+	// StartInstance would reject them as IncorrectInstanceState.
+	RebootInstance(ctx context.Context, instanceID string) error
 }
 
 // CPProvisioner provisions a replacement control-plane member that joins the
@@ -694,17 +699,19 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 		"cluster", r.clusterName, "seed", seed.InstanceID, "members", len(members),
 		"attempt", r.resetAttempts, "issue", issue)
 
-	// Restart the seed first so it re-forms a single-member etcd, then the others
-	// (wipe-rejoin) reconnect. k3s server-join retries on its own, so a boot race is
-	// self-correcting; a seed restart failure aborts before churning the followers.
-	if err := r.cpControl.StartInstance(ctx, seed.InstanceID); err != nil {
-		slog.Warn("ClusterReconciler: seed reset restart failed",
+	// Reboot the seed first so it re-forms a single-member etcd, then the others
+	// (wipe-rejoin) reconnect. Members are VM-running here (the gate requires it),
+	// so a reboot — not StartInstance — is what re-enters the boot sequence to apply
+	// the directive. k3s server-join retries on its own, so a boot race is
+	// self-correcting; a seed reboot failure aborts before churning the followers.
+	if err := r.cpControl.RebootInstance(ctx, seed.InstanceID); err != nil {
+		slog.Warn("ClusterReconciler: seed reset reboot failed",
 			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
 		return
 	}
 	for _, n := range members[1:] {
-		if err := r.cpControl.StartInstance(ctx, n.InstanceID); err != nil {
-			slog.Warn("ClusterReconciler: member rejoin restart failed",
+		if err := r.cpControl.RebootInstance(ctx, n.InstanceID); err != nil {
+			slog.Warn("ClusterReconciler: member rejoin reboot failed",
 				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
 		}
 	}

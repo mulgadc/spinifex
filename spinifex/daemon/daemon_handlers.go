@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -16,7 +17,28 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+const daemonTracerName = "github.com/mulgadc/spinifex/spinifex/daemon"
+
+// startOpSpan opens a child span for a named instance operation under ctx.
+func startOpSpan(ctx context.Context, op, instanceID string) (context.Context, trace.Span) {
+	return otel.Tracer(daemonTracerName).Start(ctx, op,
+		trace.WithAttributes(attribute.String("instance.id", instanceID)))
+}
+
+// endOpSpan records err (if any) on span and ends it.
+func endOpSpan(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
+}
 
 // respondWithError sends an error payload for the given error code on the NATS message.
 func respondWithError(msg *nats.Msg, errCode string) {
@@ -82,6 +104,9 @@ func handleNATSRequestWithPrincipal[I any, O any](msg *nats.Msg, serviceFn func(
 
 // handleEC2Events processes incoming EC2 instance events (start, stop, terminate, attach-volume)
 func (d *Daemon) handleEC2Events(msg *nats.Msg) {
+	ctx, span := utils.StartConsumerSpan(msg)
+	defer span.End()
+
 	var command types.EC2InstanceCommand
 
 	if err := json.Unmarshal(msg.Data, &command); err != nil {
@@ -120,7 +145,10 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 	case command.Attributes.SetInstanceTags, command.Attributes.RemoveInstanceTags:
 		d.handleSetInstanceTags(msg, command, instance)
 	case command.Attributes.StartInstance:
-		if err := d.instanceService.StartInstance(instance, command); err != nil {
+		_, opSpan := startOpSpan(ctx, "ec2.StartInstance", instance.ID)
+		err := d.instanceService.StartInstance(instance, command)
+		endOpSpan(opSpan, err)
+		if err != nil {
 			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 			return
 		}
@@ -128,7 +156,10 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}
 	case command.Attributes.RebootInstance:
-		if err := d.instanceService.RebootInstance(instance, command); err != nil {
+		_, opSpan := startOpSpan(ctx, "ec2.RebootInstance", instance.ID)
+		err := d.instanceService.RebootInstance(instance, command)
+		endOpSpan(opSpan, err)
+		if err != nil {
 			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 			return
 		}
@@ -136,7 +167,14 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}
 	case command.Attributes.StopInstance, command.Attributes.TerminateInstance:
-		if err := d.instanceService.StopOrTerminateInstance(instance, command); err != nil {
+		opName := "ec2.StopInstance"
+		if command.Attributes.TerminateInstance {
+			opName = "ec2.TerminateInstance"
+		}
+		_, opSpan := startOpSpan(ctx, opName, instance.ID)
+		err := d.instanceService.StopOrTerminateInstance(instance, command)
+		endOpSpan(opSpan, err)
+		if err != nil {
 			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 			return
 		}

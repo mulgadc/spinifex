@@ -17,6 +17,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // startStoppedForwardTimeout bounds the wait for ec2.start.{nodeId} to respond.
@@ -123,7 +126,9 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 		}
 	}
 
+	_, prepSpan := otel.Tracer(daemonTracerName).Start(ctx, "ec2.PrepareRunInstances")
 	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(input, accountID, reservationID)
+	endOpSpan(prepSpan, err)
 	if err != nil {
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return
@@ -188,7 +193,10 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 	}
 	d.mu.Unlock()
 
+	_, launchSpan := otel.Tracer(daemonTracerName).Start(ctx, "ec2.LaunchRunInstances",
+		trace.WithAttributes(attribute.Int("instance.count", len(instances))))
 	d.instanceService.LaunchRunInstances(instances, input, instanceType)
+	launchSpan.End()
 }
 
 // capacityReservationTargetID returns the explicit targeted-launch reservation id

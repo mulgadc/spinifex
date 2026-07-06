@@ -24,7 +24,22 @@ import (
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
 
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+const viperblockdTracerName = "github.com/mulgadc/spinifex/spinifex/services/viperblockd"
+
+// endSpanWithResponseError marks span failed when respErr is non-empty, then ends it.
+func endSpanWithResponseError(span trace.Span, respErr string) {
+	if respErr != "" {
+		span.RecordError(errors.New(respErr))
+		span.SetStatus(codes.Error, respErr)
+	}
+	span.End()
+}
 
 // loadStateRetryAttempts / loadStateRetryBaseDelay tune the mount-time retry
 // loop (5 attempts at 200ms * 1.5^n ≈ 3.7s; well under the 30s NATS timeout).
@@ -441,9 +456,13 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
+		_, unmountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.unmount",
+			trace.WithAttributes(attribute.String("volume.id", ebsRequest.Name)))
+
 		// Find the volume and extract references while holding the lock,
 		// then release before calling VB.Close() (which does heavy S3 I/O).
 		var ebsResponse types.EBSUnMountResponse
+		defer func() { endSpanWithResponseError(unmountSpan, ebsResponse.Error) }()
 		var matched MountedVolume
 		var matchIdx = -1
 		cfg.mu.Lock()
@@ -644,8 +663,12 @@ func launchService(cfg *Config) (err error) {
 
 		slog.Info("ebs.mount", "request", ebsRequest)
 
+		_, mountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount",
+			trace.WithAttributes(attribute.String("volume.id", ebsRequest.Name)))
+
 		var ebsResponse types.EBSMountResponse
 		ebsResponse.Mounted = false
+		defer func() { endSpanWithResponseError(mountSpan, ebsResponse.Error) }()
 
 		s3cfg := s3.S3Config{
 			VolumeName: ebsRequest.Name,
@@ -720,6 +743,7 @@ func launchService(cfg *Config) (err error) {
 			respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
 			return
 		}
+		mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", utils.SafeUint64ToInt64(vb.GetVolumeSize())))
 
 		useTCP := cfg.NBDTransport == types.NBDTransportTCP
 

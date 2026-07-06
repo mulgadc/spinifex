@@ -2,6 +2,7 @@ package vm
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,7 +22,22 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+const vmTracerName = "github.com/mulgadc/spinifex/spinifex/vm"
+
+// endSpanWithError records err (if any) on span and ends it.
+func endSpanWithError(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
+}
 
 // RG-4 guest OOM tiers: user guests are reaped first; system instances (ELBv2,
 // EKS) rank above user guests but below infra (OOMScoreAdjust=-500).
@@ -93,7 +109,14 @@ func (m *Manager) launchStillValid(instance *VM) bool {
 
 // launch is the orchestrator: pid check, mount volumes, exec QEMU, attach
 // QMP, fire OnInstanceUp, transition to Running.
-func (m *Manager) launch(instance *VM) error {
+func (m *Manager) launch(instance *VM) (err error) {
+	ctx, span := otel.Tracer(vmTracerName).Start(context.Background(), "vm.launch",
+		trace.WithAttributes(
+			attribute.String("instance.id", instance.ID),
+			attribute.String("instance.type", instance.InstanceType),
+		))
+	defer func() { endSpanWithError(span, err) }()
+
 	if !m.launchStillValid(instance) {
 		return nil
 	}
@@ -110,9 +133,12 @@ func (m *Manager) launch(instance *VM) error {
 		}
 	}
 
-	if err := m.deps.VolumeMounter.Mount(instance); err != nil {
-		slog.Error("Failed to mount volumes", "err", err)
-		return err
+	_, mountSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.mount_volumes")
+	mountErr := m.deps.VolumeMounter.Mount(instance)
+	endSpanWithError(mountSpan, mountErr)
+	if mountErr != nil {
+		slog.Error("Failed to mount volumes", "err", mountErr)
+		return mountErr
 	}
 
 	// Re-check status — Mount can take 30+s on cold AMIs, and a terminate may
@@ -121,12 +147,17 @@ func (m *Manager) launch(instance *VM) error {
 		return nil
 	}
 
-	if err := m.startQEMU(instance); err != nil {
-		slog.Error("Failed to launch instance", "err", err)
-		return err
+	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
+	qemuErr := m.startQEMU(instance)
+	endSpanWithError(qemuSpan, qemuErr)
+	if qemuErr != nil {
+		slog.Error("Failed to launch instance", "err", qemuErr)
+		return qemuErr
 	}
 
+	_, qmpSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.qmp_connect")
 	qmpClient, err := newQMPClientWithHandshake(instance)
+	endSpanWithError(qmpSpan, err)
 	if err != nil {
 		slog.Error("Failed to create QMP client", "err", err)
 		// QEMU started but QMP handshake failed. Kill it synchronously so the
@@ -153,9 +184,12 @@ func (m *Manager) launch(instance *VM) error {
 	}
 
 	if m.deps.TransitionState != nil {
-		if err := m.deps.TransitionState(instance, StateRunning); err != nil {
-			slog.Error("Failed to transition instance to running", "instanceId", instance.ID, "err", err)
-			return err
+		_, stateSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.persist_state")
+		transitionErr := m.deps.TransitionState(instance, StateRunning)
+		endSpanWithError(stateSpan, transitionErr)
+		if transitionErr != nil {
+			slog.Error("Failed to transition instance to running", "instanceId", instance.ID, "err", transitionErr)
+			return transitionErr
 		}
 	}
 
@@ -675,7 +709,14 @@ func (m *Manager) recordQMPSuccess(instance *VM) {
 }
 
 // sendQMPCommand encodes cmd and decodes the response, skipping event messages.
-func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*qmp.QMPResponse, error) {
+func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (_ *qmp.QMPResponse, err error) {
+	_, span := otel.Tracer(vmTracerName).Start(context.Background(), "qmp "+cmd.Execute,
+		trace.WithAttributes(
+			attribute.String("qmp.command", cmd.Execute),
+			attribute.String("instance.id", instanceID),
+		))
+	defer func() { endSpanWithError(span, err) }()
+
 	if q == nil || q.Encoder == nil || q.Decoder == nil {
 		return nil, fmt.Errorf("QMP client is not initialized")
 	}

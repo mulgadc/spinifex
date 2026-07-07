@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -63,7 +64,7 @@ var (
 )
 
 // getClientTokenStore lazily initialises the process-wide client-token store via sync.Once.
-func getClientTokenStore(nc *nats.Conn) (*ClientTokenStore, error) {
+func getClientTokenStore(ctx context.Context, nc *nats.Conn) (*ClientTokenStore, error) {
 	ctOnce.Do(func() {
 		js, err := nc.JetStream()
 		if err != nil {

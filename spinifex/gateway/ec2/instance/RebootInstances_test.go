@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestRebootInstances_Success(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	output, err := RebootInstances(input, nc, "123456789012")
+	output, err := RebootInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -55,7 +56,7 @@ func TestRebootInstances_MultipleInstances(t *testing.T) {
 		InstanceIds: []*string{aws.String(ids[0]), aws.String(ids[1])},
 	}
 
-	output, err := RebootInstances(input, nc, "123456789012")
+	output, err := RebootInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -68,7 +69,7 @@ func TestRebootInstances_EmptyInstanceIds(t *testing.T) {
 		InstanceIds: []*string{},
 	}
 
-	_, err := RebootInstances(input, nc, "123456789012")
+	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -80,7 +81,7 @@ func TestRebootInstances_NATSRequestFails(t *testing.T) {
 		InstanceIds: []*string{aws.String("i-nosubscriber")},
 	}
 
-	_, err := RebootInstances(input, nc, "123456789012")
+	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -106,7 +107,7 @@ func TestRebootInstances_StoppedInstance(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	_, err := RebootInstances(input, nc, "123456789012")
+	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
@@ -124,7 +125,7 @@ func TestRebootInstances_DaemonError(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	_, err := RebootInstances(input, nc, "123456789012")
+	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }

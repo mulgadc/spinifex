@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -11,7 +12,7 @@ import (
 
 // AddListenerCertificates handles the ELBv2 AddListenerCertificates API call. It
 // attaches additional SNI certificates to a secure listener.
-func AddListenerCertificates(input *elbv2.AddListenerCertificatesInput, natsConn *nats.Conn, accountID string) (elbv2.AddListenerCertificatesOutput, error) {
+func AddListenerCertificates(ctx context.Context, input *elbv2.AddListenerCertificatesInput, natsConn *nats.Conn, accountID string) (elbv2.AddListenerCertificatesOutput, error) {
 	var output elbv2.AddListenerCertificatesOutput
 
 	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" || len(input.Certificates) == 0 {
@@ -19,7 +20,7 @@ func AddListenerCertificates(input *elbv2.AddListenerCertificatesInput, natsConn
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.AddListenerCertificates(input, accountID)
+	result, err := svc.AddListenerCertificates(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

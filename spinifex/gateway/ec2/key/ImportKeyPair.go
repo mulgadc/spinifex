@@ -1,6 +1,7 @@
 package gateway_ec2_key
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -25,7 +26,7 @@ func ValidateImportKeyPairInput(input *ec2.ImportKeyPairInput) (err error) {
 	return err
 }
 
-func ImportKeyPair(input *ec2.ImportKeyPairInput, natsConn *nats.Conn, accountID string) (output ec2.ImportKeyPairOutput, err error) {
+func ImportKeyPair(ctx context.Context, input *ec2.ImportKeyPairInput, natsConn *nats.Conn, accountID string) (output ec2.ImportKeyPairOutput, err error) {
 	err = ValidateImportKeyPairInput(input)
 
 	if err != nil {
@@ -33,7 +34,7 @@ func ImportKeyPair(input *ec2.ImportKeyPairInput, natsConn *nats.Conn, accountID
 	}
 
 	keyService := handlers_ec2_key.NewNATSKeyService(natsConn)
-	result, err := keyService.ImportKeyPair(input, accountID)
+	result, err := keyService.ImportKeyPair(ctx, input, accountID)
 
 	if err != nil {
 		return output, err

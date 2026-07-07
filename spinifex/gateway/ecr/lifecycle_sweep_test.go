@@ -18,18 +18,18 @@ const sweepMediaType = "application/vnd.docker.distribution.manifest.v2+json"
 // exercising selection + DeleteImage; predastore reclaim is best-effort.
 func seedTimedImage(t *testing.T, reg *Registry, account, repo, digest string, pushedAt time.Time, tags ...string) {
 	t.Helper()
-	require.NoError(t, reg.Meta.PutRepo(account, ecr.RepoMeta{Name: repo, CreatedAt: pushedAt}))
-	require.NoError(t, reg.Meta.PutManifestMeta(account, repo, ecr.ManifestMeta{
+	require.NoError(t, reg.Meta.PutRepo(context.Background(), account, ecr.RepoMeta{Name: repo, CreatedAt: pushedAt}))
+	require.NoError(t, reg.Meta.PutManifestMeta(context.Background(), account, repo, ecr.ManifestMeta{
 		Digest: digest, MediaType: sweepMediaType, Size: 1, PushedAt: pushedAt,
 	}))
 	for _, tag := range tags {
-		require.NoError(t, reg.Meta.PutTag(account, repo, tag, digest))
+		require.NoError(t, reg.Meta.PutTag(context.Background(), account, repo, tag, digest))
 	}
 }
 
 func digestsOf(t *testing.T, reg *Registry, account, repo string) []string {
 	t.Helper()
-	records, err := reg.ListImages(account, repo)
+	records, err := reg.ListImages(context.Background(), account, repo)
 	require.NoError(t, err)
 	out := make([]string, 0, len(records))
 	for _, r := range records {
@@ -44,7 +44,7 @@ func newSweeper(reg *Registry, accounts ...string) *LifecycleSweeper {
 
 func putPolicy(t *testing.T, reg *Registry, account, repo, policy string) {
 	t.Helper()
-	require.NoError(t, reg.Meta.PutLifecyclePolicy(account, repo, []byte(policy)))
+	require.NoError(t, reg.Meta.PutLifecyclePolicy(context.Background(), account, repo, []byte(policy)))
 }
 
 const untaggedExpirePolicy = `{"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},"action":{"type":"expire"}}]}`
@@ -58,7 +58,7 @@ func TestSweepRepo_SinceImagePushed(t *testing.T) {
 	seedTimedImage(t, reg, testAccount, repo, "sha256:oldtagged", now.AddDate(0, 0, -10), "v1")
 	putPolicy(t, reg, testAccount, repo, untaggedExpirePolicy)
 
-	deleted := newSweeper(reg, testAccount).sweepRepo(testAccount, repo, now)
+	deleted := newSweeper(reg, testAccount).sweepRepo(context.Background(), testAccount, repo, now)
 	assert.Equal(t, 1, deleted)
 	assert.ElementsMatch(t, []string{"sha256:newuntagged", "sha256:oldtagged"},
 		digestsOf(t, reg, testAccount, repo))
@@ -74,7 +74,7 @@ func TestSweepRepo_ImageCountMoreThan(t *testing.T) {
 	putPolicy(t, reg, testAccount, repo,
 		`{"rules":[{"rulePriority":1,"selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":1},"action":{"type":"expire"}}]}`)
 
-	deleted := newSweeper(reg, testAccount).sweepRepo(testAccount, repo, now)
+	deleted := newSweeper(reg, testAccount).sweepRepo(context.Background(), testAccount, repo, now)
 	assert.Equal(t, 2, deleted)
 	// Newest (a) kept; the two older expire.
 	assert.Equal(t, []string{"sha256:a"}, digestsOf(t, reg, testAccount, repo))
@@ -86,7 +86,7 @@ func TestSweepRepo_NoPolicy(t *testing.T) {
 	repo := "team/app"
 	seedTimedImage(t, reg, testAccount, repo, "sha256:x", now.AddDate(0, 0, -100))
 
-	deleted := newSweeper(reg, testAccount).sweepRepo(testAccount, repo, now)
+	deleted := newSweeper(reg, testAccount).sweepRepo(context.Background(), testAccount, repo, now)
 	assert.Equal(t, 0, deleted)
 	assert.Len(t, digestsOf(t, reg, testAccount, repo), 1)
 }
@@ -100,8 +100,8 @@ func TestSweepRepo_Idempotent(t *testing.T) {
 	putPolicy(t, reg, testAccount, repo, untaggedExpirePolicy)
 
 	s := newSweeper(reg, testAccount)
-	assert.Equal(t, 1, s.sweepRepo(testAccount, repo, now))
-	assert.Equal(t, 0, s.sweepRepo(testAccount, repo, now)) // nothing left to expire
+	assert.Equal(t, 1, s.sweepRepo(context.Background(), testAccount, repo, now))
+	assert.Equal(t, 0, s.sweepRepo(context.Background(), testAccount, repo, now)) // nothing left to expire
 }
 
 func TestSweepOnce_MultiAccount(t *testing.T) {
@@ -118,7 +118,7 @@ func TestSweepOnce_MultiAccount(t *testing.T) {
 	seedTimedImage(t, reg, acct2, "team/web", "sha256:b2", now.AddDate(0, 0, -2), "o")
 	putPolicy(t, reg, acct2, "team/web", policy)
 
-	deleted := newSweeper(reg, testAccount, acct2).sweepOnce(now)
+	deleted := newSweeper(reg, testAccount, acct2).sweepOnce(context.Background(), now)
 	assert.Equal(t, 2, deleted) // one per account
 	assert.Len(t, digestsOf(t, reg, testAccount, "team/app"), 1)
 	assert.Len(t, digestsOf(t, reg, acct2, "team/web"), 1)
@@ -129,7 +129,7 @@ func TestSweepOnce_AccountsError(t *testing.T) {
 	s := NewLifecycleSweeper(reg, func() ([]string, error) {
 		return nil, assert.AnError
 	}, time.Hour)
-	assert.Equal(t, 0, s.sweepOnce(time.Now().UTC()))
+	assert.Equal(t, 0, s.sweepOnce(context.Background(), time.Now().UTC()))
 }
 
 func TestNewLifecycleSweeper_DefaultInterval(t *testing.T) {
@@ -190,7 +190,7 @@ func TestSweepRepo_InvalidStoredPolicy(t *testing.T) {
 	seedTimedImage(t, reg, testAccount, repo, "sha256:x", now.AddDate(0, 0, -100))
 	putPolicy(t, reg, testAccount, repo, "{not valid json")
 
-	deleted := newSweeper(reg, testAccount).sweepRepo(testAccount, repo, now)
+	deleted := newSweeper(reg, testAccount).sweepRepo(context.Background(), testAccount, repo, now)
 	assert.Equal(t, 0, deleted)
 	assert.Len(t, digestsOf(t, reg, testAccount, repo), 1)
 }
@@ -202,7 +202,7 @@ func TestSweepRepo_PolicyWithoutRepo(t *testing.T) {
 	now := time.Now().UTC()
 	putPolicy(t, reg, testAccount, "ghost", untaggedExpirePolicy)
 
-	deleted := newSweeper(reg, testAccount).sweepRepo(testAccount, "ghost", now)
+	deleted := newSweeper(reg, testAccount).sweepRepo(context.Background(), testAccount, "ghost", now)
 	assert.Equal(t, 0, deleted)
 }
 

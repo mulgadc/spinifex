@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -21,7 +22,7 @@ func TestModifyInstanceMetadataOptions_RejectsMalformedID(t *testing.T) {
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := ModifyInstanceMetadataOptions(in, nil, "acct")
+			_, err := ModifyInstanceMetadataOptions(context.Background(), in, nil, "acct")
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
 		})

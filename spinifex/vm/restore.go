@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -283,7 +284,8 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 			}
 			slog.Info("Launching instance (recovery)",
 				"instance", inst.ID, "managedBy", inst.ManagedBy, "instanceType", inst.InstanceType)
-			if err := m.Run(inst); err != nil {
+			// Restore runs at daemon start with no request context.
+			if err := m.Run(context.Background(), inst); err != nil {
 				slog.Error("Failed to launch instance during recovery",
 					"instanceId", inst.ID, "managedBy", inst.ManagedBy, "instanceType", inst.InstanceType, "err", err)
 				m.MarkRecoveryFailed(inst, "recovery_launch_failed")

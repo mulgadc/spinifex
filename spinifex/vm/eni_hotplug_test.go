@@ -60,7 +60,7 @@ func newHotPlugTestVMWithPlumber(t *testing.T, slots int) (*Manager, *VM, *StubD
 func TestHotPlugENI_SuccessPath(t *testing.T) {
 	mgr, v, stub := newHotPlugTestVM(t, 2)
 
-	res, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01")
+	res, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01")
 	if err != nil {
 		t.Fatalf("HotPlugENI: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestHotPlugENI_SuccessPath(t *testing.T) {
 func TestHotPlugENI_CallOrder(t *testing.T) {
 	mgr, v, stub := newHotPlugTestVM(t, 1)
 
-	if _, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01"); err != nil {
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01"); err != nil {
 		t.Fatalf("HotPlugENI: %v", err)
 	}
 	calls := stub.Calls()
@@ -104,7 +104,7 @@ func TestHotPlugENI_DeviceAddFailureRollsBack(t *testing.T) {
 	wantErr := errors.New("device_add boom")
 	stub.SetFailNext("device_add", wantErr)
 
-	_, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01")
+	_, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01")
 	if err == nil || !strings.Contains(err.Error(), "device_add") {
 		t.Fatalf("HotPlugENI err = %v, want device_add failure", err)
 	}
@@ -126,7 +126,7 @@ func TestHotPlugENI_NetdevAddFailureRollsBack(t *testing.T) {
 	mgr, v, stub := newHotPlugTestVM(t, 1)
 	stub.SetFailNext("netdev_add", errors.New("netdev boom"))
 
-	_, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01")
+	_, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01")
 	if err == nil {
 		t.Fatalf("HotPlugENI: want error, got nil")
 	}
@@ -140,7 +140,7 @@ func TestHotPlugENI_NetdevAddFailureRollsBack(t *testing.T) {
 
 func TestHotPlugENI_AttachmentLimitExceeded(t *testing.T) {
 	mgr, v, _ := newHotPlugTestVM(t, 0)
-	_, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01")
+	_, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01")
 	if !errors.Is(err, ErrAttachmentLimitExceeded) {
 		t.Fatalf("err = %v, want ErrAttachmentLimitExceeded", err)
 	}
@@ -149,12 +149,12 @@ func TestHotPlugENI_AttachmentLimitExceeded(t *testing.T) {
 func TestHotPlugENI_IdempotentReattach(t *testing.T) {
 	mgr, v, stub := newHotPlugTestVM(t, 2)
 
-	res1, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01")
+	res1, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01")
 	if err != nil {
 		t.Fatalf("first attach: %v", err)
 	}
 	callsBefore := len(stub.Calls())
-	res2, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01")
+	res2, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01")
 	if err != nil {
 		t.Fatalf("idempotent reattach: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestHotPlugENI_IdempotentReattach(t *testing.T) {
 func TestHotPlugENI_RejectsNonRunning(t *testing.T) {
 	mgr, v, _ := newHotPlugTestVM(t, 1)
 	v.Status = StateStopped
-	_, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01")
+	_, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01")
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("err = %v, want ErrInvalidTransition", err)
 	}
@@ -178,7 +178,7 @@ func TestHotPlugENI_RejectsNonRunning(t *testing.T) {
 func TestHotPlugENI_RejectsNilQMP(t *testing.T) {
 	mgr, v, _ := newHotPlugTestVM(t, 1)
 	v.QMPClient = nil
-	_, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01")
+	_, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01")
 	if !errors.Is(err, ErrQMPUnavailable) {
 		t.Fatalf("err = %v, want ErrQMPUnavailable", err)
 	}
@@ -186,10 +186,10 @@ func TestHotPlugENI_RejectsNilQMP(t *testing.T) {
 
 func TestHotUnplugENI_SuccessFreesSlot(t *testing.T) {
 	mgr, v, stub := newHotPlugTestVM(t, 2)
-	if _, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01"); err != nil {
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if err := mgr.HotUnplugENI(v, "eni-aaaa", false); err != nil {
+	if err := mgr.HotUnplugENI(t.Context(), v, "eni-aaaa", false); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
 	if stub.HasDevice("net-eni-1") {
@@ -208,7 +208,7 @@ func TestHotUnplugENI_SuccessFreesSlot(t *testing.T) {
 
 func TestHotUnplugENI_NotAttached(t *testing.T) {
 	mgr, v, _ := newHotPlugTestVM(t, 1)
-	err := mgr.HotUnplugENI(v, "eni-missing", false)
+	err := mgr.HotUnplugENI(t.Context(), v, "eni-missing", false)
 	if !errors.Is(err, ErrENINotAttached) {
 		t.Fatalf("err = %v, want ErrENINotAttached", err)
 	}
@@ -216,12 +216,12 @@ func TestHotUnplugENI_NotAttached(t *testing.T) {
 
 func TestHotUnplugENI_DeviceDelFailureWithoutForce(t *testing.T) {
 	mgr, v, stub := newHotPlugTestVM(t, 1)
-	if _, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01"); err != nil {
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	stub.SetFailNext("device_del", errors.New("device_del boom"))
 
-	err := mgr.HotUnplugENI(v, "eni-aaaa", false)
+	err := mgr.HotUnplugENI(t.Context(), v, "eni-aaaa", false)
 	if err == nil {
 		t.Fatalf("want error, got nil")
 	}
@@ -232,7 +232,7 @@ func TestHotUnplugENI_DeviceDelFailureWithoutForce(t *testing.T) {
 
 func TestHotUnplugENI_ForceContinuesPastFailure(t *testing.T) {
 	mgr, v, stub := newHotPlugTestVM(t, 1)
-	if _, err := mgr.HotPlugENI(v, "eni-aaaa", "02:00:00:00:00:01"); err != nil {
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-aaaa", "02:00:00:00:00:01"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	stub.SetFailNext("device_del", errors.New("device_del boom"))
@@ -243,7 +243,7 @@ func TestHotUnplugENI_ForceContinuesPastFailure(t *testing.T) {
 	delete(stub.devices, "net-eni-1")
 	stub.mu.Unlock()
 
-	if err := mgr.HotUnplugENI(v, "eni-aaaa", true); err != nil {
+	if err := mgr.HotUnplugENI(t.Context(), v, "eni-aaaa", true); err != nil {
 		t.Fatalf("force detach: %v", err)
 	}
 	if _, ok := v.ENIRequests.AttachedByENIID["eni-aaaa"]; ok {
@@ -280,7 +280,7 @@ func TestHotPlugENI_ConcurrentAttachesSerialize(t *testing.T) {
 		mac := fmt.Sprintf("02:00:00:00:00:%02d", i+1)
 		go func() {
 			defer wg.Done()
-			res, err := mgr.HotPlugENI(v, eniID, mac)
+			res, err := mgr.HotPlugENI(t.Context(), v, eniID, mac)
 			if err != nil {
 				errs <- err
 				return
@@ -309,7 +309,7 @@ func TestHotPlugENI_ConcurrentAttachesSerialize(t *testing.T) {
 func TestHotPlugENI_WiresTapOnBrInt(t *testing.T) {
 	mgr, v, _, plumber := newHotPlugTestVMWithPlumber(t, 2)
 
-	if _, err := mgr.HotPlugENI(v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
 		t.Fatalf("HotPlugENI: %v", err)
 	}
 	if len(plumber.setupCalls) != 1 {
@@ -329,7 +329,7 @@ func TestHotPlugENI_TapSetupFailureAbortsBeforeQMP(t *testing.T) {
 	mgr, v, stub, plumber := newHotPlugTestVMWithPlumber(t, 1)
 	plumber.setupErr = errors.New("ovs add-port boom")
 
-	_, err := mgr.HotPlugENI(v, "eni-abc123", "02:00:00:aa:bb:cc")
+	_, err := mgr.HotPlugENI(t.Context(), v, "eni-abc123", "02:00:00:aa:bb:cc")
 	if err == nil || !strings.Contains(err.Error(), "tap/ovs setup") {
 		t.Fatalf("err = %v, want tap/ovs setup failure", err)
 	}
@@ -345,7 +345,7 @@ func TestHotPlugENI_QMPFailureCleansUpTap(t *testing.T) {
 	mgr, v, stub, plumber := newHotPlugTestVMWithPlumber(t, 1)
 	stub.SetFailNext("netdev_add", errors.New("netdev boom"))
 
-	if _, err := mgr.HotPlugENI(v, "eni-abc123", "02:00:00:aa:bb:cc"); err == nil {
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-abc123", "02:00:00:aa:bb:cc"); err == nil {
 		t.Fatalf("HotPlugENI: want error, got nil")
 	}
 	wantTap := TapDeviceName("eni-abc123")
@@ -356,10 +356,10 @@ func TestHotPlugENI_QMPFailureCleansUpTap(t *testing.T) {
 
 func TestHotUnplugENI_CleansUpTap(t *testing.T) {
 	mgr, v, _, plumber := newHotPlugTestVMWithPlumber(t, 1)
-	if _, err := mgr.HotPlugENI(v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if err := mgr.HotUnplugENI(v, "eni-abc123", false); err != nil {
+	if err := mgr.HotUnplugENI(t.Context(), v, "eni-abc123", false); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
 	wantTap := TapDeviceName("eni-abc123")

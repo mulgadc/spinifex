@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -9,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -25,9 +25,12 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // contextKey is a typed key for request context values.
@@ -151,18 +154,15 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 		logLevel = slog.LevelInfo
 	}
 
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
-	})
-
-	slogger := slog.New(handler)
-	slog.SetDefault(slogger)
+	otelsetup.SetDefaultJSONLogger(logLevel)
 
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = NewAuthRateLimiter()
 	}
 
 	r := chi.NewRouter()
+
+	r.Use(otelsetup.HTTPMiddleware("awsgw"))
 
 	if !gw.DisableLogging {
 		r.Use(slogRequestLogger)
@@ -185,6 +185,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {
 		auth.Use(gw.SigV4AuthMiddleware())
+		auth.Use(traceActionEnricher)
 
 		// Post-auth, per-account+action token bucket throttle.
 		if gw.Throttler != nil {
@@ -628,15 +629,21 @@ func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
 // by publishing a discovery request and counting unique responses.
 // Returns the number of active nodes (minimum 1 if fallback is needed).
 func (gw *GatewayConfig) DiscoverActiveNodes() int {
+	return gw.DiscoverActiveNodesCtx(context.Background())
+}
+
+// DiscoverActiveNodesCtx is DiscoverActiveNodes carrying the request context so
+// the discovery fan-out joins the caller's trace.
+func (gw *GatewayConfig) DiscoverActiveNodesCtx(ctx context.Context) int {
 	if gw.NATSConn == nil {
-		slog.Warn("DiscoverActiveNodes: NATS connection not available, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
+		slog.WarnContext(ctx, "DiscoverActiveNodes: NATS connection not available, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
 	}
 
-	frames, _, err := utils.Gather(gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
+	frames, _, err := utils.GatherCtx(ctx, gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
 		utils.GatherOpts{Timeout: 500 * time.Millisecond})
 	if err != nil {
-		slog.Error("DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
+		slog.ErrorContext(ctx, "DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
 	}
 
@@ -644,7 +651,7 @@ func (gw *GatewayConfig) DiscoverActiveNodes() int {
 	for _, frame := range frames {
 		var response types.NodeDiscoverResponse
 		if err := json.Unmarshal(frame, &response); err != nil {
-			slog.Debug("DiscoverActiveNodes: Failed to unmarshal response", "err", err)
+			slog.DebugContext(ctx, "DiscoverActiveNodes: Failed to unmarshal response", "err", err)
 			continue
 		}
 		nodesSeen[response.Node] = true
@@ -652,11 +659,11 @@ func (gw *GatewayConfig) DiscoverActiveNodes() int {
 
 	activeNodes := len(nodesSeen)
 	if activeNodes == 0 {
-		slog.Warn("DiscoverActiveNodes: No nodes responded, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
+		slog.WarnContext(ctx, "DiscoverActiveNodes: No nodes responded, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
 	}
 
-	slog.Debug("DiscoverActiveNodes: Discovered active nodes", "count", activeNodes)
+	slog.DebugContext(ctx, "DiscoverActiveNodes: Discovered active nodes", "count", activeNodes)
 	return activeNodes
 }
 
@@ -672,12 +679,38 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// traceActionEnricher renames the server span to the resolved SigV4
+// service.Action and tags account/region once auth populated the context.
+func traceActionEnricher(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		span := trace.SpanFromContext(ctx)
+		if action, _ := ctx.Value(ctxAction).(string); action != "" {
+			name := action
+			if svc, _ := ctx.Value(ctxService).(string); svc != "" {
+				name = svc + "." + action
+				span.SetAttributes(attribute.String("aws.service", svc))
+			}
+			span.SetName(name)
+			span.SetAttributes(attribute.String("aws.action", action))
+			otelsetup.SetRequestAction(ctx, name)
+		}
+		if acct, _ := ctx.Value(ctxAccountID).(string); acct != "" {
+			span.SetAttributes(attribute.String("aws.account_id", acct))
+		}
+		if region, _ := ctx.Value(ctxRegion).(string); region != "" {
+			span.SetAttributes(attribute.String("aws.region", region))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // slogRequestLogger is a middleware that logs each request via slog.
 func slogRequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		ww := &statusWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(ww, r)
-		slog.Info("request", "method", r.Method, "path", r.URL.Path, "status", ww.status, "duration", time.Since(start))
+		slog.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "status", ww.status, "duration", time.Since(start))
 	})
 }

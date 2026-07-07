@@ -1,6 +1,7 @@
 package handlers_ec2_vpc
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -44,14 +45,14 @@ func setupNATSVPCServiceTest(t *testing.T) (VPCService, *VPCServiceImpl, *nats.C
 
 // handleNATSMsg is a generic NATS request handler that unmarshals the request,
 // extracts the account ID from the header, calls the handler, and responds with the result.
-func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(*In, string) (*Out, error)) {
+func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In, string) (*Out, error)) {
 	var input In
 	if err := json.Unmarshal(msg.Data, &input); err != nil {
 		_ = msg.Respond([]byte(`{"error":"unmarshal"}`))
 		return
 	}
 	accountID := msg.Header.Get("X-Account-ID")
-	result, err := fn(&input, accountID)
+	result, err := fn(context.Background(), &input, accountID)
 	if err != nil {
 		errResp, _ := json.Marshal(map[string]string{"error": err.Error()})
 		_ = msg.Respond(errResp)
@@ -64,7 +65,7 @@ func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(*In, string) (*Out, e
 func TestNATSVPCService_CreateVpc(t *testing.T) {
 	client, _, _ := setupNATSVPCServiceTest(t)
 
-	out, err := client.CreateVpc(&ec2.CreateVpcInput{
+	out, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -77,13 +78,13 @@ func TestNATSVPCService_DescribeVpcs(t *testing.T) {
 	client, _, _ := setupNATSVPCServiceTest(t)
 
 	// Create a VPC first
-	createOut, err := client.CreateVpc(&ec2.CreateVpcInput{
+	createOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Describe
-	out, err := client.DescribeVpcs(&ec2.DescribeVpcsInput{}, testAccountID)
+	out, err := client.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(out.Vpcs), 1)
 
@@ -99,12 +100,12 @@ func TestNATSVPCService_DescribeVpcs(t *testing.T) {
 func TestNATSVPCService_DeleteVpc(t *testing.T) {
 	client, _, _ := setupNATSVPCServiceTest(t)
 
-	createOut, err := client.CreateVpc(&ec2.CreateVpcInput{
+	createOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = client.DeleteVpc(&ec2.DeleteVpcInput{
+	_, err = client.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{
 		VpcId: createOut.Vpc.VpcId,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -113,12 +114,12 @@ func TestNATSVPCService_DeleteVpc(t *testing.T) {
 func TestNATSVPCService_CreateAndDeleteSubnet(t *testing.T) {
 	client, _, _ := setupNATSVPCServiceTest(t)
 
-	vpcOut, err := client.CreateVpc(&ec2.CreateVpcInput{
+	vpcOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	subnetOut, err := client.CreateSubnet(&ec2.CreateSubnetInput{
+	subnetOut, err := client.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
 		VpcId:     vpcOut.Vpc.VpcId,
 		CidrBlock: aws.String("10.0.1.0/24"),
 	}, testAccountID)
@@ -126,7 +127,7 @@ func TestNATSVPCService_CreateAndDeleteSubnet(t *testing.T) {
 	require.NotNil(t, subnetOut.Subnet)
 	assert.Equal(t, *vpcOut.Vpc.VpcId, *subnetOut.Subnet.VpcId)
 
-	_, err = client.DeleteSubnet(&ec2.DeleteSubnetInput{
+	_, err = client.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{
 		SubnetId: subnetOut.Subnet.SubnetId,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -135,18 +136,18 @@ func TestNATSVPCService_CreateAndDeleteSubnet(t *testing.T) {
 func TestNATSVPCService_DescribeSubnets(t *testing.T) {
 	client, _, _ := setupNATSVPCServiceTest(t)
 
-	vpcOut, err := client.CreateVpc(&ec2.CreateVpcInput{
+	vpcOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = client.CreateSubnet(&ec2.CreateSubnetInput{
+	_, err = client.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
 		VpcId:     vpcOut.Vpc.VpcId,
 		CidrBlock: aws.String("10.0.1.0/24"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := client.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	out, err := client.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(out.Subnets), 1)
 }
@@ -154,24 +155,24 @@ func TestNATSVPCService_DescribeSubnets(t *testing.T) {
 func TestNATSVPCService_CreateAndDeleteENI(t *testing.T) {
 	client, _, _ := setupNATSVPCServiceTest(t)
 
-	vpcOut, err := client.CreateVpc(&ec2.CreateVpcInput{
+	vpcOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	subnetOut, err := client.CreateSubnet(&ec2.CreateSubnetInput{
+	subnetOut, err := client.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
 		VpcId:     vpcOut.Vpc.VpcId,
 		CidrBlock: aws.String("10.0.1.0/24"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	eniOut, err := client.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	eniOut, err := client.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: subnetOut.Subnet.SubnetId,
 	}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, eniOut.NetworkInterface)
 
-	_, err = client.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	_, err = client.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: eniOut.NetworkInterface.NetworkInterfaceId,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -180,23 +181,23 @@ func TestNATSVPCService_CreateAndDeleteENI(t *testing.T) {
 func TestNATSVPCService_DescribeNetworkInterfaces(t *testing.T) {
 	client, _, _ := setupNATSVPCServiceTest(t)
 
-	vpcOut, err := client.CreateVpc(&ec2.CreateVpcInput{
+	vpcOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	subnetOut, err := client.CreateSubnet(&ec2.CreateSubnetInput{
+	subnetOut, err := client.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
 		VpcId:     vpcOut.Vpc.VpcId,
 		CidrBlock: aws.String("10.0.1.0/24"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = client.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	_, err = client.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: subnetOut.Subnet.SubnetId,
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := client.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	out, err := client.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(out.NetworkInterfaces), 1)
 }

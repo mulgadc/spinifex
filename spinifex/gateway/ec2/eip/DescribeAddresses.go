@@ -1,6 +1,7 @@
 package gateway_ec2_eip
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -10,7 +11,7 @@ import (
 )
 
 // DescribeAddresses handles the EC2 DescribeAddresses API call.
-func DescribeAddresses(input *ec2.DescribeAddressesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeAddressesOutput, error) {
+func DescribeAddresses(ctx context.Context, input *ec2.DescribeAddressesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeAddressesOutput, error) {
 	var output ec2.DescribeAddressesOutput
 
 	if input == nil {
@@ -18,7 +19,7 @@ func DescribeAddresses(input *ec2.DescribeAddressesInput, natsConn *nats.Conn, a
 	}
 
 	svc := handlers_ec2_eip.NewNATSEIPService(natsConn)
-	result, err := svc.DescribeAddresses(input, accountID)
+	result, err := svc.DescribeAddresses(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

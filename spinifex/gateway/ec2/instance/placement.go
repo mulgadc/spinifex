@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,12 +31,12 @@ type nodeAllocation struct {
 // distributeInstances spreads instances across nodes: queries capacity, allocates
 // (1 per node first, then packs extras by remaining capacity), launches in parallel,
 // and rolls back on partial failure.
-func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, expectedNodes int) (*ec2.Reservation, error) {
+func distributeInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, expectedNodes int) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
 
-	nodes, err := queryNodeCapacity(natsConn, instanceType, expectedNodes, accountID)
+	nodes, err := queryNodeCapacity(ctx, natsConn, instanceType, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -54,16 +55,16 @@ func distributeInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, acco
 
 	launchCount := min(maxCount, totalCapacity)
 	allocations := spreadAllocate(nodes, launchCount)
-	results := launchOnNodes(allocations, input, natsConn, accountID)
-	return aggregateResults(results, minCount, natsConn, accountID)
+	results := launchOnNodes(ctx, allocations, input, natsConn, accountID)
+	return aggregateResults(ctx, results, minCount, natsConn, accountID)
 }
 
 // queryNodeCapacity fans out spinifex.node.status and returns eligible nodes
 // (Available >= 1 for instanceType), sorted by capacity desc with random tiebreaking.
 // Early-exits once expectedNodes reply; on a degraded cluster it waits the full timeout
 // rather than placing on a partial view.
-func queryNodeCapacity(natsConn *nats.Conn, instanceType string, expectedNodes int, accountID string) ([]nodeAllocation, error) {
-	frames, _, err := utils.Gather(natsConn, "spinifex.node.status", []byte("{}"),
+func queryNodeCapacity(ctx context.Context, natsConn *nats.Conn, instanceType string, expectedNodes int, accountID string) ([]nodeAllocation, error) {
+	frames, _, err := utils.GatherCtx(ctx, natsConn, "spinifex.node.status", []byte("{}"),
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -73,11 +74,11 @@ func queryNodeCapacity(natsConn *nats.Conn, instanceType string, expectedNodes i
 	for _, frame := range frames {
 		var status types.NodeStatusResponse
 		if err := json.Unmarshal(frame, &status); err != nil {
-			slog.Debug("queryNodeCapacity: failed to unmarshal response", "err", err)
+			slog.DebugContext(ctx, "queryNodeCapacity: failed to unmarshal response", "err", err)
 			continue
 		}
 		if status.Node == "" {
-			slog.Debug("queryNodeCapacity: skipping response with empty node ID")
+			slog.DebugContext(ctx, "queryNodeCapacity: skipping response with empty node ID")
 			continue
 		}
 
@@ -157,7 +158,7 @@ type nodeLaunchResult struct {
 }
 
 // launchOnNodes sends targeted RunInstances to each node in parallel with MinCount=MaxCount=assigned.
-func launchOnNodes(allocations []nodeAllocation, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string) []nodeLaunchResult {
+func launchOnNodes(ctx context.Context, allocations []nodeAllocation, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string) []nodeLaunchResult {
 	instanceType := aws.StringValue(input.InstanceType)
 
 	results := make([]nodeLaunchResult, len(allocations))
@@ -173,7 +174,7 @@ func launchOnNodes(allocations []nodeAllocation, input *ec2.RunInstancesInput, n
 			nodeInput.MaxCount = aws.Int64(int64(a.Assigned))
 
 			topic := fmt.Sprintf("ec2.RunInstances.%s.%s", instanceType, a.NodeID)
-			reservation, err := utils.NATSRequest[ec2.Reservation](natsConn, topic, &nodeInput, 5*time.Minute, accountID)
+			reservation, err := utils.NATSRequestCtx[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID)
 			if err != nil {
 				results[idx] = nodeLaunchResult{NodeID: a.NodeID, Err: fmt.Errorf("launch on %s: %w", a.NodeID, err)}
 				return
@@ -188,13 +189,13 @@ func launchOnNodes(allocations []nodeAllocation, input *ec2.RunInstancesInput, n
 
 // aggregateResults merges successful launches; rolls back and returns
 // InsufficientInstanceCapacity when launched < minCount.
-func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.Conn, accountID string) (*ec2.Reservation, error) {
+func aggregateResults(ctx context.Context, results []nodeLaunchResult, minCount int, natsConn *nats.Conn, accountID string) (*ec2.Reservation, error) {
 	var allInstances []*ec2.Instance
 	var reservationID *string
 
 	for _, r := range results {
 		if r.Err != nil {
-			slog.Warn("distributeInstances: node launch failed", "node", r.NodeID, "err", r.Err)
+			slog.WarnContext(ctx, "distributeInstances: node launch failed", "node", r.NodeID, "err", r.Err)
 			continue
 		}
 		if r.Reservation != nil {
@@ -209,7 +210,7 @@ func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.C
 
 	if totalLaunched < minCount {
 		if totalLaunched > 0 {
-			rollbackInstances(allInstances, natsConn, accountID)
+			rollbackInstances(ctx, allInstances, natsConn, accountID)
 		}
 		// Propagate specific client errors (e.g. InvalidAMIID.NotFound) over the generic capacity error.
 		if clientErr := extractClientError(results); clientErr != nil {
@@ -217,7 +218,7 @@ func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.C
 		}
 		// A launch that was attempted and failed is not a capacity shortage; surface the real cause.
 		if failErr := launchFailure(results); failErr != nil {
-			slog.Error("distributeInstances: launch fell short of minCount", "minCount", minCount, "launched", totalLaunched, "err", failErr)
+			slog.ErrorContext(ctx, "distributeInstances: launch fell short of minCount", "minCount", minCount, "launched", totalLaunched, "err", failErr)
 			return nil, failErr
 		}
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
@@ -231,14 +232,14 @@ func aggregateResults(results []nodeLaunchResult, minCount int, natsConn *nats.C
 
 // distributeInstancesSpread implements strict 1-per-node spread: queries capacity,
 // atomically reserves nodes via CAS, launches 1 per node, then finalizes or rolls back.
-func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
+func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
 
 	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
 
-	nodes, err := queryNodeCapacity(natsConn, instanceType, expectedNodes, accountID)
+	nodes, err := queryNodeCapacity(ctx, natsConn, instanceType, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +252,7 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 		eligibleNodeIDs[i] = n.NodeID
 	}
 
-	reserveOut, err := pgSvc.ReserveSpreadNodes(&handlers_ec2_placementgroup.ReserveSpreadNodesInput{
+	reserveOut, err := pgSvc.ReserveSpreadNodes(ctx, &handlers_ec2_placementgroup.ReserveSpreadNodesInput{
 		GroupName:     groupName,
 		EligibleNodes: eligibleNodeIDs,
 		MinCount:      minCount,
@@ -268,7 +269,7 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 		allocations[i] = nodeAllocation{NodeID: nodeID, Assigned: 1}
 	}
 
-	results := launchOnNodes(allocations, input, natsConn, accountID)
+	results := launchOnNodes(ctx, allocations, input, natsConn, accountID)
 
 	var allInstances []*ec2.Instance
 	var reservationID *string
@@ -277,7 +278,7 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 
 	for _, r := range results {
 		if r.Err != nil {
-			slog.Warn("distributeInstancesSpread: node launch failed", "node", r.NodeID, "err", r.Err)
+			slog.WarnContext(ctx, "distributeInstancesSpread: node launch failed", "node", r.NodeID, "err", r.Err)
 			failedNodes = append(failedNodes, r.NodeID)
 			continue
 		}
@@ -298,47 +299,47 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 
 	if totalLaunched < minCount {
 		if totalLaunched > 0 {
-			rollbackInstances(allInstances, natsConn, accountID)
+			rollbackInstances(ctx, allInstances, natsConn, accountID)
 		}
-		if _, err := pgSvc.ReleaseSpreadNodes(&handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+		if _, err := pgSvc.ReleaseSpreadNodes(ctx, &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
 			GroupName: groupName,
 			Nodes:     reservedNodes,
 		}, accountID); err != nil {
-			slog.Error("distributeInstancesSpread: failed to release nodes after rollback", "err", err)
+			slog.ErrorContext(ctx, "distributeInstancesSpread: failed to release nodes after rollback", "err", err)
 		}
 		if clientErr := extractClientError(results); clientErr != nil {
 			return nil, clientErr
 		}
 		if failErr := launchFailure(results); failErr != nil {
-			slog.Error("distributeInstancesSpread: launch fell short of minCount", "minCount", minCount, "launched", totalLaunched, "err", failErr)
+			slog.ErrorContext(ctx, "distributeInstancesSpread: launch fell short of minCount", "minCount", minCount, "launched", totalLaunched, "err", failErr)
 			return nil, failErr
 		}
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
 	// Finalize: replace placeholders with instance IDs; roll back on failure.
-	if _, err := pgSvc.FinalizeSpreadInstances(&handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
+	if _, err := pgSvc.FinalizeSpreadInstances(ctx, &handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
 		GroupName:     groupName,
 		NodeInstances: nodeInstances,
 	}, accountID); err != nil {
-		slog.Error("distributeInstancesSpread: finalize failed, rolling back instances", "err", err)
-		rollbackInstances(allInstances, natsConn, accountID)
+		slog.ErrorContext(ctx, "distributeInstancesSpread: finalize failed, rolling back instances", "err", err)
+		rollbackInstances(ctx, allInstances, natsConn, accountID)
 		allReleaseNodes := append(reservedNodes[:0:0], reservedNodes...)
-		if _, releaseErr := pgSvc.ReleaseSpreadNodes(&handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+		if _, releaseErr := pgSvc.ReleaseSpreadNodes(ctx, &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
 			GroupName: groupName,
 			Nodes:     allReleaseNodes,
 		}, accountID); releaseErr != nil {
-			slog.Error("distributeInstancesSpread: failed to release nodes after finalize rollback", "err", releaseErr)
+			slog.ErrorContext(ctx, "distributeInstancesSpread: failed to release nodes after finalize rollback", "err", releaseErr)
 		}
 		return nil, fmt.Errorf("failed to finalize placement group record: %w", err)
 	}
 
 	if len(failedNodes) > 0 {
-		if _, err := pgSvc.ReleaseSpreadNodes(&handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+		if _, err := pgSvc.ReleaseSpreadNodes(ctx, &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
 			GroupName: groupName,
 			Nodes:     failedNodes,
 		}, accountID); err != nil {
-			slog.Error("distributeInstancesSpread: failed to release failed nodes", "err", err)
+			slog.ErrorContext(ctx, "distributeInstancesSpread: failed to release failed nodes", "err", err)
 		}
 	}
 
@@ -350,14 +351,14 @@ func distributeInstancesSpread(input *ec2.RunInstancesInput, natsConn *nats.Conn
 
 // distributeInstancesCluster pins all instances to a single node.
 // Subsequent launches on an existing group reuse the same node; first launch picks highest capacity.
-func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
+func distributeInstancesCluster(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string, groupName string, expectedNodes int) (*ec2.Reservation, error) {
 	instanceType := aws.StringValue(input.InstanceType)
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
 
 	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
 
-	nodes, err := queryNodeCapacity(natsConn, instanceType, expectedNodes, accountID)
+	nodes, err := queryNodeCapacity(ctx, natsConn, instanceType, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +369,7 @@ func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Con
 		eligibleNodeIDs[i] = n.NodeID
 	}
 
-	reserveOut, err := pgSvc.ReserveClusterNode(&handlers_ec2_placementgroup.ReserveClusterNodeInput{
+	reserveOut, err := pgSvc.ReserveClusterNode(ctx, &handlers_ec2_placementgroup.ReserveClusterNodeInput{
 		GroupName:     groupName,
 		EligibleNodes: eligibleNodeIDs,
 	}, accountID)
@@ -396,7 +397,7 @@ func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Con
 		NodeID:   targetNode,
 		Assigned: launchCount,
 	}}
-	results := launchOnNodes(allocations, input, natsConn, accountID)
+	results := launchOnNodes(ctx, allocations, input, natsConn, accountID)
 
 	if results[0].Err != nil {
 		if clientErr := extractClientError(results); clientErr != nil {
@@ -417,12 +418,12 @@ func distributeInstancesCluster(input *ec2.RunInstancesInput, natsConn *nats.Con
 		}
 	}
 
-	if _, err := pgSvc.FinalizeClusterInstances(&handlers_ec2_placementgroup.FinalizeClusterInstancesInput{
+	if _, err := pgSvc.FinalizeClusterInstances(ctx, &handlers_ec2_placementgroup.FinalizeClusterInstancesInput{
 		GroupName:     groupName,
 		NodeInstances: nodeInstances,
 	}, accountID); err != nil {
-		slog.Error("distributeInstancesCluster: finalize failed, rolling back instances", "err", err)
-		rollbackInstances(reservation.Instances, natsConn, accountID)
+		slog.ErrorContext(ctx, "distributeInstancesCluster: finalize failed, rolling back instances", "err", err)
+		rollbackInstances(ctx, reservation.Instances, natsConn, accountID)
 		return nil, fmt.Errorf("failed to finalize cluster placement group record: %w", err)
 	}
 
@@ -472,7 +473,7 @@ func launchFailure(results []nodeLaunchResult) error {
 }
 
 // rollbackInstances terminates all instances from a failed multi-node launch.
-func rollbackInstances(instances []*ec2.Instance, natsConn *nats.Conn, accountID string) {
+func rollbackInstances(ctx context.Context, instances []*ec2.Instance, natsConn *nats.Conn, accountID string) {
 	var ids []*string
 	for _, inst := range instances {
 		if inst.InstanceId != nil {
@@ -483,11 +484,11 @@ func rollbackInstances(instances []*ec2.Instance, natsConn *nats.Conn, accountID
 		return
 	}
 
-	slog.Warn("distributeInstances: rolling back launched instances", "count", len(ids))
-	_, err := TerminateInstances(&ec2.TerminateInstancesInput{
+	slog.WarnContext(ctx, "distributeInstances: rolling back launched instances", "count", len(ids))
+	_, err := TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: ids,
 	}, natsConn, accountID)
 	if err != nil {
-		slog.Error("distributeInstances: rollback failed", "err", err)
+		slog.ErrorContext(ctx, "distributeInstances: rollback failed", "err", err)
 	}
 }

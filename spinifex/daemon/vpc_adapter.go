@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+
 	"github.com/aws/aws-sdk-go/service/ec2"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 )
@@ -15,7 +17,7 @@ type daemonENICreator struct {
 
 var _ handlers_ec2_instance.ENICreator = (*daemonENICreator)(nil)
 
-func (a *daemonENICreator) GetDefaultSubnet(accountID string) (*handlers_ec2_instance.SubnetInfo, error) {
+func (a *daemonENICreator) GetDefaultSubnet(_ context.Context, accountID string) (*handlers_ec2_instance.SubnetInfo, error) {
 	rec, err := a.d.vpcService.GetDefaultSubnet(accountID)
 	if err != nil {
 		return nil, err
@@ -27,7 +29,7 @@ func (a *daemonENICreator) GetDefaultSubnet(accountID string) (*handlers_ec2_ins
 	}, nil
 }
 
-func (a *daemonENICreator) GetSubnet(accountID, subnetID string) (*handlers_ec2_instance.SubnetInfo, error) {
+func (a *daemonENICreator) GetSubnet(_ context.Context, accountID, subnetID string) (*handlers_ec2_instance.SubnetInfo, error) {
 	rec, err := a.d.vpcService.GetSubnet(accountID, subnetID)
 	if err != nil {
 		return nil, err
@@ -39,7 +41,7 @@ func (a *daemonENICreator) GetSubnet(accountID, subnetID string) (*handlers_ec2_
 	}, nil
 }
 
-func (a *daemonENICreator) GetENI(accountID, eniID string) (*handlers_ec2_instance.ENIInfo, error) {
+func (a *daemonENICreator) GetENI(_ context.Context, accountID, eniID string) (*handlers_ec2_instance.ENIInfo, error) {
 	rec, err := a.d.vpcService.GetENIRecord(accountID, eniID)
 	if err != nil {
 		return nil, err
@@ -55,18 +57,18 @@ func (a *daemonENICreator) GetENI(accountID, eniID string) (*handlers_ec2_instan
 	}, nil
 }
 
-func (a *daemonENICreator) CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
-	return a.d.vpcService.CreateNetworkInterface(input, accountID)
+func (a *daemonENICreator) CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
+	return a.d.vpcService.CreateNetworkInterface(ctx, input, accountID)
 }
 
-func (a *daemonENICreator) AttachENI(accountID, eniID, instanceID string, deviceIndex int64) (string, error) {
+func (a *daemonENICreator) AttachENI(_ context.Context, accountID, eniID, instanceID string, deviceIndex int64) (string, error) {
 	return a.d.vpcService.AttachENI(accountID, eniID, instanceID, deviceIndex)
 }
 
-func (a *daemonENICreator) DetachENI(accountID, eniID string) error {
-	return a.d.vpcService.DetachENI(accountID, eniID)
+func (a *daemonENICreator) DetachENI(ctx context.Context, accountID, eniID string) error {
+	return a.d.vpcService.DetachENI(ctx, accountID, eniID)
 }
 
-func (a *daemonENICreator) UpdateENIPublicIP(accountID, eniID, publicIP, poolName string) error {
+func (a *daemonENICreator) UpdateENIPublicIP(_ context.Context, accountID, eniID, publicIP, poolName string) error {
 	return a.d.vpcService.UpdateENIPublicIP(accountID, eniID, publicIP, poolName)
 }

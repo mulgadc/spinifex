@@ -71,7 +71,7 @@ func TestPromoteSystemImage_InvalidPrefix_Malformed(t *testing.T) {
 func TestPromoteSystemImage_CorruptConfig_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-corrupt-promote"
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(testRemoveBucket),
 		Key:    aws.String(id + "/config.json"),
 		Body:   bytes.NewReader([]byte("{not valid json")),
@@ -105,7 +105,7 @@ func TestGetAMIMetadata_MissingConfig_NotFound(t *testing.T) {
 func TestGetAMIMetadata_CorruptConfig_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-corrupt-meta"
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(testRemoveBucket),
 		Key:    aws.String(id + "/config.json"),
 		Body:   bytes.NewReader([]byte("not json {")),

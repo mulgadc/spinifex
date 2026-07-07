@@ -505,16 +505,16 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 
 	// Create a VPC + subnet + ENI so LaunchSystemInstance has a real ENI to
 	// attach to and to update with the public IP.
-	vpcOut, err := d.vpcService.CreateVpc(&ec2.CreateVpcInput{
+	vpcOut, err := d.vpcService.CreateVpc(t.Context(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.50.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
-	subnetOut, err := d.vpcService.CreateSubnet(&ec2.CreateSubnetInput{
+	subnetOut, err := d.vpcService.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
 		VpcId:     vpcOut.Vpc.VpcId,
 		CidrBlock: aws.String("10.50.1.0/24"),
 	}, testAccountID)
 	require.NoError(t, err)
-	eniOut, err := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	eniOut, err := d.vpcService.CreateNetworkInterface(t.Context(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    subnetOut.Subnet.SubnetId,
 		Description: aws.String("nat-fail-test"),
 	}, testAccountID)
@@ -562,7 +562,7 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 
 	// ENI public IP record must be cleared so subsequent DescribeNetworkInterfaces
 	// does not surface the unreachable address.
-	descOut, err := d.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	descOut, err := d.vpcService.DescribeNetworkInterfaces(t.Context(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -631,7 +631,7 @@ func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
 
 	// Allocate an EIP the way an internet-facing LB VM launch does, then attach
 	// it to a registered system instance.
-	alloc, err := eipSvc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	alloc, err := eipSvc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	allocID := aws.StringValue(alloc.AllocationId)
 	publicIP := aws.StringValue(alloc.PublicIp)

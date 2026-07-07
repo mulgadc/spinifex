@@ -1,6 +1,7 @@
 package gateway_ec2_placementgroup
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateDeletePlacementGroupInput(input *ec2.DeletePlacementGroupInput) err
 }
 
 // DeletePlacementGroup handles the EC2 DeletePlacementGroup API call.
-func DeletePlacementGroup(input *ec2.DeletePlacementGroupInput, natsConn *nats.Conn, accountID string) (ec2.DeletePlacementGroupOutput, error) {
+func DeletePlacementGroup(ctx context.Context, input *ec2.DeletePlacementGroupInput, natsConn *nats.Conn, accountID string) (ec2.DeletePlacementGroupOutput, error) {
 	var output ec2.DeletePlacementGroupOutput
 
 	if err := ValidateDeletePlacementGroupInput(input); err != nil {
@@ -28,7 +29,7 @@ func DeletePlacementGroup(input *ec2.DeletePlacementGroupInput, natsConn *nats.C
 	}
 
 	svc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
-	result, err := svc.DeletePlacementGroup(input, accountID)
+	result, err := svc.DeletePlacementGroup(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

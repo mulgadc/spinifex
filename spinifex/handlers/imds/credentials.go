@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -32,7 +33,7 @@ type instanceCredential struct {
 
 // stsAssumer is the narrow STSService slice needed by the IMDS credential path.
 type stsAssumer interface {
-	AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error)
+	AssumeRoleForInstance(ctx context.Context, accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error)
 }
 
 // cachedCred holds a rendered credential body and the time it should be re-minted.
@@ -53,7 +54,7 @@ func newCredCache(assumer stsAssumer) *credCache {
 }
 
 // get returns the credential JSON body, minting via STS when the cache is cold or near expiry.
-func (c *credCache) get(eni *eniFacts, roleName, roleARN string, now time.Time) ([]byte, error) {
+func (c *credCache) get(ctx context.Context, eni *eniFacts, roleName, roleARN string, now time.Time) ([]byte, error) {
 	key := eni.eniID + "\x00" + roleName
 
 	c.mu.Lock()
@@ -64,7 +65,7 @@ func (c *credCache) get(eni *eniFacts, roleName, roleARN string, now time.Time) 
 	}
 	c.mu.Unlock()
 
-	out, err := c.sts.AssumeRoleForInstance(eni.iamAccountID(), roleARN, eni.instanceID, credDurationSeconds)
+	out, err := c.sts.AssumeRoleForInstance(ctx, eni.iamAccountID(), roleARN, eni.instanceID, credDurationSeconds)
 	if err != nil {
 		return nil, err
 	}

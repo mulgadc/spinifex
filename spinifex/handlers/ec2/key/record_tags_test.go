@@ -1,6 +1,7 @@
 package handlers_ec2_key
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +17,7 @@ import (
 
 func readKeyPairTags(t *testing.T, svc *KeyServiceImpl, accountID, keyPairID string) map[string]string {
 	t.Helper()
-	result, err := svc.store.GetObject(&s3.GetObjectInput{
+	result, err := svc.store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String(fmt.Sprintf("keys/%s/%s.json", accountID, keyPairID)),
 	})

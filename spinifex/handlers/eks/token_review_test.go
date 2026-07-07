@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -93,7 +94,7 @@ func TestAuthenticate_FallsBackUIDToARN(t *testing.T) {
 }
 
 func TestResolveTokenReview_NilConn(t *testing.T) {
-	_, err := ResolveTokenReview(nil, "111122223333", "alpha", "tok", time.Second)
+	_, err := ResolveTokenReview(context.Background(), nil, "111122223333", "alpha", "tok", time.Second)
 	require.Error(t, err)
 }
 
@@ -101,7 +102,7 @@ func TestResolveTokenReview_NilConn(t *testing.T) {
 // silent Authenticated=false — the webhook turns it into a retryable 5xx.
 func TestResolveTokenReview_MissingBucketErrors(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	_, err := ResolveTokenReview(nc, "111122223333", "alpha", validToken("https://sts/?x=1"), time.Second)
+	_, err := ResolveTokenReview(context.Background(), nc, "111122223333", "alpha", validToken("https://sts/?x=1"), time.Second)
 	require.Error(t, err)
 }
 
@@ -129,7 +130,7 @@ func TestResolveTokenReview_AuthenticatesViaVerifyAndKV(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	res, err := ResolveTokenReview(nc, "111122223333", "alpha", validToken("https://sts/?Action=GetCallerIdentity"), 2*time.Second)
+	res, err := ResolveTokenReview(context.Background(), nc, "111122223333", "alpha", validToken("https://sts/?Action=GetCallerIdentity"), 2*time.Second)
 	require.NoError(t, err)
 	require.True(t, res.Authenticated)
 	assert.Equal(t, testARN, res.Username)
@@ -150,7 +151,7 @@ func TestResolveTokenReview_NoAccessEntryDenies(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	res, err := ResolveTokenReview(nc, "111122223333", "alpha", validToken("https://sts/?x=1"), 2*time.Second)
+	res, err := ResolveTokenReview(context.Background(), nc, "111122223333", "alpha", validToken("https://sts/?x=1"), 2*time.Second)
 	require.NoError(t, err)
 	assert.False(t, res.Authenticated)
 }

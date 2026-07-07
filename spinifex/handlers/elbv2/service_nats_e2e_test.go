@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -66,14 +67,14 @@ func setupNATSELBv2Test(t *testing.T) (ELBv2Service, *ELBv2ServiceImpl) {
 
 // handleNATSMsg is the generic NATS handler that mirrors daemon's handleNATSRequest.
 // Uses GenerateErrorPayload for errors, matching the real daemon behavior.
-func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(*In, string) (*Out, error)) {
+func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In, string) (*Out, error)) {
 	var input In
 	if err := json.Unmarshal(msg.Data, &input); err != nil {
 		_ = msg.Respond(utils.GenerateErrorPayload("ServerInternal"))
 		return
 	}
 	accountID := msg.Header.Get(utils.AccountIDHeader)
-	result, err := fn(&input, accountID)
+	result, err := fn(context.Background(), &input, accountID)
 	if err != nil {
 		_ = msg.Respond(utils.GenerateErrorPayload(err.Error()))
 		return
@@ -87,7 +88,7 @@ func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(*In, string) (*Out, e
 func TestNATSE2E_CreateAndDescribeLoadBalancer(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
-	out, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("e2e-alb"),
 		Subnets:        []*string{aws.String("subnet-aaa")},
 		SecurityGroups: []*string{aws.String("sg-111")},
@@ -96,7 +97,7 @@ func TestNATSE2E_CreateAndDescribeLoadBalancer(t *testing.T) {
 	require.Len(t, out.LoadBalancers, 1)
 	assert.Equal(t, "e2e-alb", *out.LoadBalancers[0].LoadBalancerName)
 
-	desc, err := client.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+	desc, err := client.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
 		Names: []*string{aws.String("e2e-alb")},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -108,7 +109,7 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
 	// 1. Create target group
-	tgOut, err := client.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, err := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("e2e-tg"),
 		Protocol: aws.String("HTTP"),
 		Port:     aws.Int64(80),
@@ -119,7 +120,7 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
 	// 2. Register targets
-	_, err = client.RegisterTargets(&elbv2.RegisterTargetsInput{
+	_, err = client.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: tgArn,
 		Targets: []*elbv2.TargetDescription{
 			{Id: aws.String("i-instance1")},
@@ -129,7 +130,7 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	// 3. Verify targets registered
-	healthOut, err := client.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+	healthOut, err := client.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{
 		TargetGroupArn: tgArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -138,7 +139,7 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	assert.Equal(t, "unused", *healthOut.TargetHealthDescriptions[0].TargetHealth.State)
 
 	// 4. Create load balancer
-	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("e2e-lb"),
 		Subnets:        []*string{aws.String("subnet-1")},
 		SecurityGroups: []*string{aws.String("sg-1")},
@@ -147,7 +148,7 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
 	// 5. Create listener
-	lstOut, err := client.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, err := client.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -160,19 +161,19 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	assert.Equal(t, int64(80), *lstOut.Listeners[0].Port)
 
 	// Now a listener forwards to the TG, so its targets are in use again ("initial").
-	healthOut, err = client.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
+	healthOut, err = client.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, "initial", *healthOut.TargetHealthDescriptions[0].TargetHealth.State)
 
 	// 6. Describe listeners
-	lstDesc, err := client.DescribeListeners(&elbv2.DescribeListenersInput{
+	lstDesc, err := client.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{
 		LoadBalancerArn: lbArn,
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, lstDesc.Listeners, 1)
 
 	// 7. Describe target groups filtered by LB
-	tgDesc, err := client.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{
+	tgDesc, err := client.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{
 		LoadBalancerArn: lbArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -180,13 +181,13 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	assert.Equal(t, "e2e-tg", *tgDesc.TargetGroups[0].TargetGroupName)
 
 	// 8. Deregister one target
-	_, err = client.DeregisterTargets(&elbv2.DeregisterTargetsInput{
+	_, err = client.DeregisterTargets(context.Background(), &elbv2.DeregisterTargetsInput{
 		TargetGroupArn: tgArn,
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-instance1")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	healthOut2, err := client.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+	healthOut2, err := client.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{
 		TargetGroupArn: tgArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -194,35 +195,35 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 	assert.Equal(t, "i-instance2", *healthOut2.TargetHealthDescriptions[0].Target.Id)
 
 	// 9. Delete listener
-	_, err = client.DeleteListener(&elbv2.DeleteListenerInput{
+	_, err = client.DeleteListener(context.Background(), &elbv2.DeleteListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// 10. Delete load balancer
-	_, err = client.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+	_, err = client.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
 		LoadBalancerArn: lbArn,
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// 11. Delete target group (should succeed now — no listener references it)
-	_, err = client.DeregisterTargets(&elbv2.DeregisterTargetsInput{
+	_, err = client.DeregisterTargets(context.Background(), &elbv2.DeregisterTargetsInput{
 		TargetGroupArn: tgArn,
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-instance2"), Port: aws.Int64(8080)}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = client.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+	_, err = client.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{
 		TargetGroupArn: tgArn,
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// 12. Verify everything is cleaned up
-	lbDesc, err := client.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{}, testAccountID)
+	lbDesc, err := client.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, lbDesc.LoadBalancers)
 
-	tgDesc2, err := client.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{}, testAccountID)
+	tgDesc2, err := client.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, tgDesc2.TargetGroups)
 }
@@ -231,46 +232,46 @@ func TestNATSE2E_DeleteLoadBalancerCascadesListeners(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
 	// Create LB + TG + 2 listeners
-	tgOut, _ := client.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("cascade-tg"),
 	}, testAccountID)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
-	lbOut, _ := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("cascade-lb"),
 	}, testAccountID)
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
 	actions := []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgArn}}
-	client.CreateListener(&elbv2.CreateListenerInput{LoadBalancerArn: lbArn, Port: aws.Int64(80), DefaultActions: actions}, testAccountID)
-	client.CreateListener(&elbv2.CreateListenerInput{LoadBalancerArn: lbArn, Port: aws.Int64(443), DefaultActions: actions}, testAccountID)
+	client.CreateListener(context.Background(), &elbv2.CreateListenerInput{LoadBalancerArn: lbArn, Port: aws.Int64(80), DefaultActions: actions}, testAccountID)
+	client.CreateListener(context.Background(), &elbv2.CreateListenerInput{LoadBalancerArn: lbArn, Port: aws.Int64(443), DefaultActions: actions}, testAccountID)
 
 	// Delete LB should cascade-delete listeners
-	_, err := client.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
+	_, err := client.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
 	require.NoError(t, err)
 
 	// TG should now be deletable (no listeners reference it)
-	_, err = client.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: tgArn}, testAccountID)
+	_, err = client.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{TargetGroupArn: tgArn}, testAccountID)
 	require.NoError(t, err)
 }
 
 func TestNATSE2E_ModifyListener(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
-	tgOut, _ := client.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("e2e-mod-tg")}, testAccountID)
+	tgOut, _ := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("e2e-mod-tg")}, testAccountID)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
-	lbOut, _ := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-mod-lb")}, testAccountID)
+	lbOut, _ := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-mod-lb")}, testAccountID)
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	lstOut, err := client.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, err := client.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbArn,
 		Port:            aws.Int64(80),
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgArn}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	modOut, err := client.ModifyListener(&elbv2.ModifyListenerInput{
+	modOut, err := client.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		Port:        aws.Int64(8080),
 	}, testAccountID)
@@ -278,7 +279,7 @@ func TestNATSE2E_ModifyListener(t *testing.T) {
 	require.Len(t, modOut.Listeners, 1)
 	assert.Equal(t, int64(8080), *modOut.Listeners[0].Port)
 
-	desc, err := client.DescribeListeners(&elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
+	desc, err := client.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, desc.Listeners, 1)
 	assert.Equal(t, int64(8080), *desc.Listeners[0].Port)
@@ -287,16 +288,16 @@ func TestNATSE2E_ModifyListener(t *testing.T) {
 func TestNATSE2E_TargetGroupInUseProtection(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
-	tgOut, _ := client.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("protected-tg")}, testAccountID)
-	lbOut, _ := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("protected-lb")}, testAccountID)
+	tgOut, _ := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("protected-tg")}, testAccountID)
+	lbOut, _ := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("protected-lb")}, testAccountID)
 
-	client.CreateListener(&elbv2.CreateListenerInput{
+	client.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
 	// Should fail — TG is in use by a listener
-	_, err := client.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+	_, err := client.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{
 		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
 	}, testAccountID)
 	require.Error(t, err)
@@ -305,11 +306,11 @@ func TestNATSE2E_TargetGroupInUseProtection(t *testing.T) {
 func TestNATSE2E_TagsLifecycle(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
-	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-tags-lb")}, testAccountID)
+	lbOut, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-tags-lb")}, testAccountID)
 	require.NoError(t, err)
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	_, err = client.AddTags(&elbv2.AddTagsInput{
+	_, err = client.AddTags(context.Background(), &elbv2.AddTagsInput{
 		ResourceArns: []*string{lbArn},
 		Tags: []*elbv2.Tag{
 			{Key: aws.String("App"), Value: aws.String("nginx")},
@@ -318,7 +319,7 @@ func TestNATSE2E_TagsLifecycle(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := client.DescribeTags(&elbv2.DescribeTagsInput{ResourceArns: []*string{lbArn}}, testAccountID)
+	desc, err := client.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{ResourceArns: []*string{lbArn}}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, desc.TagDescriptions, 1)
 	got := map[string]string{}
@@ -327,13 +328,13 @@ func TestNATSE2E_TagsLifecycle(t *testing.T) {
 	}
 	assert.Equal(t, map[string]string{"App": "nginx", "Env": "prod"}, got)
 
-	_, err = client.RemoveTags(&elbv2.RemoveTagsInput{
+	_, err = client.RemoveTags(context.Background(), &elbv2.RemoveTagsInput{
 		ResourceArns: []*string{lbArn},
 		TagKeys:      []*string{aws.String("Env")},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc2, err := client.DescribeTags(&elbv2.DescribeTagsInput{ResourceArns: []*string{lbArn}}, testAccountID)
+	desc2, err := client.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{ResourceArns: []*string{lbArn}}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, desc2.TagDescriptions, 1)
 	got2 := map[string]string{}
@@ -346,11 +347,11 @@ func TestNATSE2E_TagsLifecycle(t *testing.T) {
 func TestNATSE2E_AttributeRoundTrip(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
-	tgOut, err := client.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("e2e-attr-tg")}, testAccountID)
+	tgOut, err := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("e2e-attr-tg")}, testAccountID)
 	require.NoError(t, err)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
-	_, err = client.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
+	_, err = client.ModifyTargetGroupAttributes(context.Background(), &elbv2.ModifyTargetGroupAttributesInput{
 		TargetGroupArn: tgArn,
 		Attributes: []*elbv2.TargetGroupAttribute{
 			{Key: aws.String("deregistration_delay.timeout_seconds"), Value: aws.String("120")},
@@ -358,7 +359,7 @@ func TestNATSE2E_AttributeRoundTrip(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	tgAttrs, err := client.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{TargetGroupArn: tgArn}, testAccountID)
+	tgAttrs, err := client.DescribeTargetGroupAttributes(context.Background(), &elbv2.DescribeTargetGroupAttributesInput{TargetGroupArn: tgArn}, testAccountID)
 	require.NoError(t, err)
 	tgGot := map[string]string{}
 	for _, a := range tgAttrs.Attributes {
@@ -366,11 +367,11 @@ func TestNATSE2E_AttributeRoundTrip(t *testing.T) {
 	}
 	assert.Equal(t, "120", tgGot["deregistration_delay.timeout_seconds"])
 
-	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-attr-lb")}, testAccountID)
+	lbOut, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-attr-lb")}, testAccountID)
 	require.NoError(t, err)
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	_, err = client.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+	_, err = client.ModifyLoadBalancerAttributes(context.Background(), &elbv2.ModifyLoadBalancerAttributesInput{
 		LoadBalancerArn: lbArn,
 		Attributes: []*elbv2.LoadBalancerAttribute{
 			{Key: aws.String("deletion_protection.enabled"), Value: aws.String("true")},
@@ -378,7 +379,7 @@ func TestNATSE2E_AttributeRoundTrip(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	lbAttrs, err := client.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{LoadBalancerArn: lbArn}, testAccountID)
+	lbAttrs, err := client.DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{LoadBalancerArn: lbArn}, testAccountID)
 	require.NoError(t, err)
 	lbGot := map[string]string{}
 	for _, a := range lbAttrs.Attributes {
@@ -390,11 +391,11 @@ func TestNATSE2E_AttributeRoundTrip(t *testing.T) {
 func TestNATSE2E_RedirectListener(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
-	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-redir-lb")}, testAccountID)
+	lbOut, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-redir-lb")}, testAccountID)
 	require.NoError(t, err)
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	_, err = client.CreateListener(&elbv2.CreateListenerInput{
+	_, err = client.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -409,7 +410,7 @@ func TestNATSE2E_RedirectListener(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := client.DescribeListeners(&elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
+	desc, err := client.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, desc.Listeners, 1)
 	require.Len(t, desc.Listeners[0].DefaultActions, 1)
@@ -423,7 +424,7 @@ func TestNATSE2E_RedirectListener(t *testing.T) {
 func TestNATSE2E_IPTargetType(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
-	tgOut, err := client.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, err := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:       aws.String("e2e-ip-tg"),
 		TargetType: aws.String("ip"),
 	}, testAccountID)
@@ -431,7 +432,7 @@ func TestNATSE2E_IPTargetType(t *testing.T) {
 	require.Equal(t, "ip", *tgOut.TargetGroups[0].TargetType)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
-	_, err = client.RegisterTargets(&elbv2.RegisterTargetsInput{
+	_, err = client.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: tgArn,
 		Targets: []*elbv2.TargetDescription{
 			{Id: aws.String("10.0.1.20")},
@@ -440,12 +441,12 @@ func TestNATSE2E_IPTargetType(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	health, err := client.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
+	health, err := client.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, health.TargetHealthDescriptions, 2)
 
 	// A non-IP id must be rejected for an ip target group, end-to-end.
-	_, err = client.RegisterTargets(&elbv2.RegisterTargetsInput{
+	_, err = client.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: tgArn,
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-notanip")}},
 	}, testAccountID)
@@ -455,34 +456,34 @@ func TestNATSE2E_IPTargetType(t *testing.T) {
 func TestNATSE2E_SetSecurityGroupsAndIpAddressType(t *testing.T) {
 	client, _ := setupNATSELBv2Test(t)
 
-	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("e2e-net-lb"),
 		SecurityGroups: []*string{aws.String("sg-aaa")},
 	}, testAccountID)
 	require.NoError(t, err)
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	_, err = client.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+	_, err = client.SetSecurityGroups(context.Background(), &elbv2.SetSecurityGroupsInput{
 		LoadBalancerArn: lbArn,
 		SecurityGroups:  []*string{aws.String("sg-bbb"), aws.String("sg-ccc")},
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Spinifex ALBs are IPv4-only; "ipv4" is the only accepted value.
-	_, err = client.SetIpAddressType(&elbv2.SetIpAddressTypeInput{
+	_, err = client.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
 		LoadBalancerArn: lbArn,
 		IpAddressType:   aws.String("ipv4"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// A dualstack request must be rejected end-to-end.
-	_, err = client.SetIpAddressType(&elbv2.SetIpAddressTypeInput{
+	_, err = client.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
 		LoadBalancerArn: lbArn,
 		IpAddressType:   aws.String("dualstack"),
 	}, testAccountID)
 	require.Error(t, err)
 
-	desc, err := client.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+	desc, err := client.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
 		LoadBalancerArns: []*string{lbArn},
 	}, testAccountID)
 	require.NoError(t, err)

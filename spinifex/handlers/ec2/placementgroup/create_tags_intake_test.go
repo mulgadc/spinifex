@@ -1,6 +1,7 @@
 package handlers_ec2_placementgroup
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -16,7 +17,7 @@ func createTaggedGroup(t *testing.T, svc *PlacementGroupServiceImpl, name string
 	for k, v := range tags {
 		ec2Tags = append(ec2Tags, &ec2.Tag{Key: aws.String(k), Value: aws.String(v)})
 	}
-	out, err := svc.CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
+	out, err := svc.CreatePlacementGroup(context.Background(), &ec2.CreatePlacementGroupInput{
 		GroupName: aws.String(name),
 		Strategy:  aws.String("spread"),
 		TagSpecifications: []*ec2.TagSpecification{{
@@ -30,7 +31,7 @@ func createTaggedGroup(t *testing.T, svc *PlacementGroupServiceImpl, name string
 
 func describeWithFilter(t *testing.T, svc *PlacementGroupServiceImpl, name, value string) []*ec2.PlacementGroup {
 	t.Helper()
-	out, err := svc.DescribePlacementGroups(&ec2.DescribePlacementGroupsInput{
+	out, err := svc.DescribePlacementGroups(context.Background(), &ec2.DescribePlacementGroupsInput{
 		Filters: []*ec2.Filter{{
 			Name:   aws.String(name),
 			Values: []*string{aws.String(value)},
@@ -48,7 +49,7 @@ func TestCreatePlacementGroup_TagSpecifications(t *testing.T) {
 	assert.Equal(t, "web", tags["Name"])
 	assert.Equal(t, "dev", tags["env"])
 
-	out, err := svc.DescribePlacementGroups(&ec2.DescribePlacementGroupsInput{
+	out, err := svc.DescribePlacementGroups(context.Background(), &ec2.DescribePlacementGroupsInput{
 		GroupNames: []*string{aws.String("tagged-group")},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -60,7 +61,7 @@ func TestCreatePlacementGroup_TagSpecifications(t *testing.T) {
 func TestCreatePlacementGroup_TagSpecificationsWrongType(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
+	out, err := svc.CreatePlacementGroup(context.Background(), &ec2.CreatePlacementGroupInput{
 		GroupName: aws.String("untagged-group"),
 		Strategy:  aws.String("cluster"),
 		TagSpecifications: []*ec2.TagSpecification{{

@@ -27,15 +27,16 @@ type deleteRepositoryRequest struct {
 // RepositoryNotEmptyException. The KV metadata (meta, policy, tags, manifests)
 // is cascaded; predastore blob reclamation is deferred to a separate GC pass.
 func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.Request) error {
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	ctx := r.Context()
+	accountID, _ := ctx.Value(ctxAccountID).(string)
 	if accountID == "" {
-		slog.Error("DeleteRepository: no account ID in auth context")
+		slog.ErrorContext(ctx, "DeleteRepository: no account ID in auth context")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Error("DeleteRepository: failed to read body", "err", err)
+		slog.ErrorContext(ctx, "DeleteRepository: failed to read body", "err", err)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	var req deleteRepositoryRequest
@@ -50,19 +51,19 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 	}
 
 	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)
-	meta, err := store.GetRepo(accountID, req.RepositoryName)
+	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
 			return errors.New(awserrors.ErrorRepositoryNotFound)
 		}
-		slog.Error("DeleteRepository: get repo failed", "repo", req.RepositoryName, "err", err)
+		slog.ErrorContext(ctx, "DeleteRepository: get repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if !req.Force {
-		manifests, err := store.ListManifests(accountID, req.RepositoryName)
+		manifests, err := store.ListManifests(ctx, accountID, req.RepositoryName)
 		if err != nil {
-			slog.Error("DeleteRepository: list manifests failed", "repo", req.RepositoryName, "err", err)
+			slog.ErrorContext(ctx, "DeleteRepository: list manifests failed", "repo", req.RepositoryName, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if len(manifests) > 0 {
@@ -70,11 +71,11 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	if err := store.DeleteRepo(accountID, req.RepositoryName); err != nil {
+	if err := store.DeleteRepo(ctx, accountID, req.RepositoryName); err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
 			return errors.New(awserrors.ErrorRepositoryNotFound)
 		}
-		slog.Error("DeleteRepository: delete repo failed", "repo", req.RepositoryName, "err", err)
+		slog.ErrorContext(ctx, "DeleteRepository: delete repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 

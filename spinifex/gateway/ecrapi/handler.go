@@ -9,6 +9,7 @@
 package gateway_ecrapi
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -27,12 +28,12 @@ const JSONContentType = "application/x-amz-json-1.1"
 // Handler is the signature every ECR control-plane action implements. nc is the
 // gateway NATS connection (handlers relay onto ecr.* subjects); accountID is the
 // resolved caller account; body is the raw JSON 1.1 request payload.
-type Handler func(nc *nats.Conn, accountID string, body []byte) (any, error)
+type Handler func(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error)
 
 // NotImplemented is the placeholder for every unimplemented ECR control-plane
 // action. It returns the AWS NotImplemented error, which the shared gateway
 // ErrorHandler renders as a 501 JSON 1.1 envelope.
-func NotImplemented(_ *nats.Conn, _ string, _ []byte) (any, error) {
+func NotImplemented(_ context.Context, _ *nats.Conn, _ string, _ []byte) (any, error) {
 	return nil, errors.New(awserrors.ErrorNotImplemented)
 }
 
@@ -40,7 +41,7 @@ func NotImplemented(_ *nats.Conn, _ string, _ []byte) (any, error) {
 // runs no vulnerability scanner, so these actions return the AWS
 // OperationNotSupportedException (400) rather than NotImplemented (501): clients
 // and the console read it as a deliberately-off feature, not a server fault.
-func ScanningNotSupported(_ *nats.Conn, _ string, _ []byte) (any, error) {
+func ScanningNotSupported(_ context.Context, _ *nats.Conn, _ string, _ []byte) (any, error) {
 	return nil, errors.New(awserrors.ErrorOperationNotSupported)
 }
 

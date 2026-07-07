@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -43,22 +44,22 @@ func TestStoreRecoveryDirective_EpochIncrements(t *testing.T) {
 func TestSetRecoveryDirective_RejectsBadInput(t *testing.T) {
 	s := &EKSServiceImpl{}
 
-	_, err := s.SetRecoveryDirective(&SetRecoveryDirectiveInput{ClusterName: "", InstanceID: "i-0", Action: RecoveryActionNone}, testAccountID)
+	_, err := s.SetRecoveryDirective(context.Background(), &SetRecoveryDirectiveInput{ClusterName: "", InstanceID: "i-0", Action: RecoveryActionNone}, testAccountID)
 	require.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue)
 
-	_, err = s.SetRecoveryDirective(&SetRecoveryDirectiveInput{ClusterName: "alpha", InstanceID: "", Action: RecoveryActionNone}, testAccountID)
+	_, err = s.SetRecoveryDirective(context.Background(), &SetRecoveryDirectiveInput{ClusterName: "alpha", InstanceID: "", Action: RecoveryActionNone}, testAccountID)
 	require.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue)
 
-	_, err = s.SetRecoveryDirective(&SetRecoveryDirectiveInput{ClusterName: "alpha", InstanceID: "i-0", Action: "bogus"}, testAccountID)
+	_, err = s.SetRecoveryDirective(context.Background(), &SetRecoveryDirectiveInput{ClusterName: "alpha", InstanceID: "i-0", Action: "bogus"}, testAccountID)
 	require.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue, "an unknown action is rejected before any KV write")
 }
 
 func TestGetRecoveryDirective_RejectsBadInput(t *testing.T) {
 	s := &EKSServiceImpl{}
 
-	_, err := s.GetRecoveryDirective(&GetRecoveryDirectiveInput{ClusterName: "", InstanceID: "i-0"}, testAccountID)
+	_, err := s.GetRecoveryDirective(context.Background(), &GetRecoveryDirectiveInput{ClusterName: "", InstanceID: "i-0"}, testAccountID)
 	require.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue)
 
-	_, err = s.GetRecoveryDirective(&GetRecoveryDirectiveInput{ClusterName: "alpha", InstanceID: ""}, testAccountID)
+	_, err = s.GetRecoveryDirective(context.Background(), &GetRecoveryDirectiveInput{ClusterName: "alpha", InstanceID: ""}, testAccountID)
 	require.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue)
 }

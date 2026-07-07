@@ -1,6 +1,7 @@
 package gateway_ec2_natgw
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -27,13 +28,13 @@ func ValidateCreateNatGatewayInput(input *ec2.CreateNatGatewayInput) error {
 	return nil
 }
 
-func CreateNatGateway(input *ec2.CreateNatGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateNatGatewayOutput, error) {
+func CreateNatGateway(ctx context.Context, input *ec2.CreateNatGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateNatGatewayOutput, error) {
 	var output ec2.CreateNatGatewayOutput
 	if err := ValidateCreateNatGatewayInput(input); err != nil {
 		return output, err
 	}
 	svc := handlers_ec2_natgw.NewNATSNatGatewayService(natsConn)
-	result, err := svc.CreateNatGateway(input, accountID)
+	result, err := svc.CreateNatGateway(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

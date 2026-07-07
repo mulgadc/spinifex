@@ -1,6 +1,7 @@
 package gateway_ec2_spotinstance
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -15,19 +16,19 @@ const testAccountID = "123456789012"
 // than panicking.
 
 func TestDescribeSpotInstanceRequests_NilNATS(t *testing.T) {
-	_, err := DescribeSpotInstanceRequests(&ec2.DescribeSpotInstanceRequestsInput{}, nil, testAccountID)
+	_, err := DescribeSpotInstanceRequests(context.Background(), &ec2.DescribeSpotInstanceRequestsInput{}, nil, testAccountID)
 	assert.Error(t, err)
 }
 
 func TestDescribeSpotInstanceRequests_WithIDsNilNATS(t *testing.T) {
-	_, err := DescribeSpotInstanceRequests(&ec2.DescribeSpotInstanceRequestsInput{
+	_, err := DescribeSpotInstanceRequests(context.Background(), &ec2.DescribeSpotInstanceRequestsInput{
 		SpotInstanceRequestIds: []*string{aws.String("sir-12345678")},
 	}, nil, testAccountID)
 	assert.Error(t, err)
 }
 
 func TestCancelSpotInstanceRequests_NilNATS(t *testing.T) {
-	_, err := CancelSpotInstanceRequests(&ec2.CancelSpotInstanceRequestsInput{
+	_, err := CancelSpotInstanceRequests(context.Background(), &ec2.CancelSpotInstanceRequestsInput{
 		SpotInstanceRequestIds: []*string{aws.String("sir-12345678")},
 	}, nil, testAccountID)
 	assert.Error(t, err)

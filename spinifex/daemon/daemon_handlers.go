@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -16,7 +18,28 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+const daemonTracerName = "github.com/mulgadc/spinifex/spinifex/daemon"
+
+// startOpSpan opens a child span for a named instance operation under ctx.
+func startOpSpan(ctx context.Context, op, instanceID string) (context.Context, trace.Span) {
+	return otel.Tracer(daemonTracerName).Start(ctx, op,
+		trace.WithAttributes(attribute.String("instance.id", instanceID)))
+}
+
+// endOpSpan records err (if any) on span and ends it.
+func endOpSpan(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
+}
 
 // respondWithError sends an error payload for the given error code on the NATS message.
 func respondWithError(msg *nats.Msg, errCode string) {
@@ -40,18 +63,24 @@ func respondWithJSON(msg *nats.Msg, data any) {
 }
 
 // handleNATSRequest is a generic helper for the common unmarshal → service → marshal → respond pattern.
-// It extracts the account ID from the NATS message header and passes it to the service function.
-func handleNATSRequest[I any, O any](msg *nats.Msg, serviceFn func(*I, string) (*O, error)) {
+// It opens a consumer span joining the producer's trace, extracts the account ID
+// from the NATS message header, and passes both to the service function.
+func handleNATSRequest[I any, O any](msg *nats.Msg, serviceFn func(context.Context, *I, string) (*O, error)) {
+	ctx, span := utils.StartConsumerSpan(msg)
+	defer span.End()
+
 	accountID := utils.AccountIDFromMsg(msg)
 	input := new(I)
 	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		if err := msg.Respond(errResp); err != nil {
-			slog.Error("Failed to respond to NATS request", "err", err)
+			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 		}
 		return
 	}
-	output, err := serviceFn(input, accountID)
+	output, err := serviceFn(ctx, input, accountID)
 	if err != nil {
+		utils.MarkSpanError(span, err)
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return
 	}
@@ -62,18 +91,23 @@ func handleNATSRequest[I any, O any](msg *nats.Msg, serviceFn func(*I, string) (
 // also need the caller's IAM principal ARN (X-Principal-ARN header) — e.g. EKS
 // CreateCluster, which mints the bootstrap-creator-admin AccessEntry for the
 // caller.
-func handleNATSRequestWithPrincipal[I any, O any](msg *nats.Msg, serviceFn func(*I, string, string) (*O, error)) {
+func handleNATSRequestWithPrincipal[I any, O any](msg *nats.Msg, serviceFn func(context.Context, *I, string, string) (*O, error)) {
+	ctx, span := utils.StartConsumerSpan(msg)
+	defer span.End()
+
 	accountID := utils.AccountIDFromMsg(msg)
 	principalARN := utils.PrincipalARNFromMsg(msg)
 	input := new(I)
 	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		if err := msg.Respond(errResp); err != nil {
-			slog.Error("Failed to respond to NATS request", "err", err)
+			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 		}
 		return
 	}
-	output, err := serviceFn(input, accountID, principalARN)
+	output, err := serviceFn(ctx, input, accountID, principalARN)
 	if err != nil {
+		utils.MarkSpanError(span, err)
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return
 	}
@@ -82,19 +116,23 @@ func handleNATSRequestWithPrincipal[I any, O any](msg *nats.Msg, serviceFn func(
 
 // handleEC2Events processes incoming EC2 instance events (start, stop, terminate, attach-volume)
 func (d *Daemon) handleEC2Events(msg *nats.Msg) {
+	ctx, span := utils.StartConsumerSpan(msg)
+	defer span.End()
+
 	var command types.EC2InstanceCommand
 
 	if err := json.Unmarshal(msg.Data, &command); err != nil {
-		slog.Error("Error unmarshaling EC2 instance command", "err", err)
+		slog.ErrorContext(ctx, "Error unmarshaling EC2 instance command", "err", err)
+		utils.MarkSpanError(span, err)
 		respondWithError(msg, awserrors.ErrorServerInternal)
 		return
 	}
 
-	slog.Debug("Received message", "subject", msg.Subject, "data", string(msg.Data))
+	slog.DebugContext(ctx, "Received message", "subject", msg.Subject, "data", string(msg.Data))
 
 	instance, ok := d.vmMgr.Get(command.ID)
 	if !ok {
-		slog.Warn("Instance is not running on this node", "id", command.ID)
+		slog.WarnContext(ctx, "Instance is not running on this node", "id", command.ID)
 		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
 		return
 	}
@@ -106,45 +144,61 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 
 	switch {
 	case command.Attributes.AttachVolume:
-		d.handleAttachVolume(msg, command, instance)
+		d.handleAttachVolume(ctx, msg, command, instance)
 	case command.Attributes.DetachVolume:
-		d.handleDetachVolume(msg, command, instance)
+		d.handleDetachVolume(ctx, msg, command, instance)
 	case command.Attributes.AttachENI:
-		d.handleAttachNetworkInterface(msg, command, instance)
+		d.handleAttachNetworkInterface(ctx, msg, command, instance)
 	case command.Attributes.DetachENI:
-		d.handleDetachNetworkInterface(msg, command, instance)
+		d.handleDetachNetworkInterface(ctx, msg, command, instance)
 	case command.Attributes.AssociateIamInstanceProfile:
-		d.handleAssociateIamInstanceProfile(msg, command, instance)
+		d.handleAssociateIamInstanceProfile(ctx, msg, command, instance)
 	case command.Attributes.SetSpotLineage:
-		d.handleSetSpotLineage(msg, command)
+		d.handleSetSpotLineage(ctx, msg, command)
 	case command.Attributes.SetInstanceTags, command.Attributes.RemoveInstanceTags:
-		d.handleSetInstanceTags(msg, command, instance)
+		d.handleSetInstanceTags(ctx, msg, command, instance)
 	case command.Attributes.StartInstance:
-		if err := d.instanceService.StartInstance(instance, command); err != nil {
+		opCtx, opSpan := startOpSpan(ctx, "ec2.StartInstance", instance.ID)
+		err := d.instanceService.StartInstance(opCtx, instance, command)
+		endOpSpan(opSpan, err)
+		if err != nil {
+			utils.MarkSpanError(span, err)
 			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 			return
 		}
 		if err := msg.Respond(fmt.Appendf(nil, `{"status":"running","instanceId":"%s"}`, instance.ID)); err != nil {
-			slog.Error("Failed to respond to NATS request", "err", err)
+			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 		}
 	case command.Attributes.RebootInstance:
-		if err := d.instanceService.RebootInstance(instance, command); err != nil {
+		opCtx, opSpan := startOpSpan(ctx, "ec2.RebootInstance", instance.ID)
+		err := d.instanceService.RebootInstance(opCtx, instance, command)
+		endOpSpan(opSpan, err)
+		if err != nil {
+			utils.MarkSpanError(span, err)
 			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 			return
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {
-			slog.Error("Failed to respond to NATS request", "err", err)
+			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 		}
 	case command.Attributes.StopInstance, command.Attributes.TerminateInstance:
-		if err := d.instanceService.StopOrTerminateInstance(instance, command); err != nil {
+		opName := "ec2.StopInstance"
+		if command.Attributes.TerminateInstance {
+			opName = "ec2.TerminateInstance"
+		}
+		opCtx, opSpan := startOpSpan(ctx, opName, instance.ID)
+		err := d.instanceService.StopOrTerminateInstance(opCtx, instance, command)
+		endOpSpan(opSpan, err)
+		if err != nil {
+			utils.MarkSpanError(span, err)
 			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 			return
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {
-			slog.Error("Failed to respond to NATS request", "err", err)
+			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 		}
 	default:
-		slog.Warn("Unhandled EC2 instance command", "id", command.ID, "attributes", command.Attributes)
+		slog.WarnContext(ctx, "Unhandled EC2 instance command", "id", command.ID, "attributes", command.Attributes)
 		respondWithError(msg, awserrors.ErrorServerInternal)
 	}
 }

@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -303,7 +304,7 @@ func (e *DependentError) Error() string {
 // admin tooling doesn't require an ImageServiceImpl (which carries NATS).
 func readAMIConfig(store objectstore.ObjectStore, bucket, imageID string) (viperblock.AMIMetadata, error) {
 	key := imageID + "/config.json"
-	res, err := store.GetObject(&s3.GetObjectInput{
+	res, err := store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -335,7 +336,7 @@ type volumeConfigWrapper struct {
 
 func readVolumeConfig(store objectstore.ObjectStore, bucket, volumeID string) (*viperblock.VolumeConfig, error) {
 	key := volumeID + "/config.json"
-	res, err := store.GetObject(&s3.GetObjectInput{
+	res, err := store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -362,7 +363,7 @@ func listCommonPrefixes(store objectstore.ObjectStore, bucket string) ([]string,
 	seen := map[string]bool{}
 	var token *string
 	for {
-		out, err := store.ListObjectsV2(&s3.ListObjectsV2Input{
+		out, err := store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
 			Bucket:            aws.String(bucket),
 			Delimiter:         aws.String("/"),
 			ContinuationToken: token,
@@ -395,7 +396,7 @@ func sumPrefix(store objectstore.ObjectStore, bucket, prefix string) (int, int64
 	var bytes int64
 	var token *string
 	for {
-		out, err := store.ListObjectsV2(&s3.ListObjectsV2Input{
+		out, err := store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
 			Bucket:            aws.String(bucket),
 			Prefix:            aws.String(prefix),
 			ContinuationToken: token,
@@ -425,7 +426,7 @@ func deletePrefix(store objectstore.ObjectStore, bucket, prefix string) (int, in
 	var bytes int64
 	var token *string
 	for {
-		out, err := store.ListObjectsV2(&s3.ListObjectsV2Input{
+		out, err := store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
 			Bucket:            aws.String(bucket),
 			Prefix:            aws.String(prefix),
 			ContinuationToken: token,
@@ -437,7 +438,7 @@ func deletePrefix(store objectstore.ObjectStore, bucket, prefix string) (int, in
 			if obj.Key == nil {
 				continue
 			}
-			if _, err := store.DeleteObject(&s3.DeleteObjectInput{
+			if _, err := store.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 				Bucket: aws.String(bucket),
 				Key:    obj.Key,
 			}); err != nil {

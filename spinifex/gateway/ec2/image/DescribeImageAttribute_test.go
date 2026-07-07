@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -105,7 +106,7 @@ func TestValidateDescribeImageAttributeInput(t *testing.T) {
 
 func TestDescribeImageAttribute_GatewayValidationFailureReturnsEarly(t *testing.T) {
 	// nil natsConn is fine: validation rejects before any NATS round-trip.
-	_, err := DescribeImageAttribute(&ec2.DescribeImageAttributeInput{}, nil, "000000000001")
+	_, err := DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{}, nil, "000000000001")
 	assert.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }

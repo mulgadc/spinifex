@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -19,7 +20,7 @@ func ValidateModifyTargetGroupInput(input *elbv2.ModifyTargetGroupInput) error {
 	return nil
 }
 
-func ModifyTargetGroup(input *elbv2.ModifyTargetGroupInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyTargetGroupOutput, error) {
+func ModifyTargetGroup(ctx context.Context, input *elbv2.ModifyTargetGroupInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyTargetGroupOutput, error) {
 	var output elbv2.ModifyTargetGroupOutput
 
 	if err := ValidateModifyTargetGroupInput(input); err != nil {
@@ -27,7 +28,7 @@ func ModifyTargetGroup(input *elbv2.ModifyTargetGroupInput, natsConn *nats.Conn,
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.ModifyTargetGroup(input, accountID)
+	result, err := svc.ModifyTargetGroup(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

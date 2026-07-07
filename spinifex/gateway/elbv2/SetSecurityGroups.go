@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -11,7 +12,7 @@ import (
 
 // SetSecurityGroups handles the ELBv2 SetSecurityGroups API call. It replaces
 // the security groups associated with the load balancer.
-func SetSecurityGroups(input *elbv2.SetSecurityGroupsInput, natsConn *nats.Conn, accountID string) (elbv2.SetSecurityGroupsOutput, error) {
+func SetSecurityGroups(ctx context.Context, input *elbv2.SetSecurityGroupsInput, natsConn *nats.Conn, accountID string) (elbv2.SetSecurityGroupsOutput, error) {
 	var output elbv2.SetSecurityGroupsOutput
 
 	if input == nil || input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
@@ -22,7 +23,7 @@ func SetSecurityGroups(input *elbv2.SetSecurityGroupsInput, natsConn *nats.Conn,
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.SetSecurityGroups(input, accountID)
+	result, err := svc.SetSecurityGroups(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

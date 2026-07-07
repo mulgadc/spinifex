@@ -59,6 +59,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -722,6 +723,27 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 	return d, nil
 }
 
+// natsMetricsHandler wraps a NATS handler to record request count and
+// duration under the given action. Handler outcome is not observable at
+// this chokepoint, so the outcome attribute is omitted.
+func natsMetricsHandler(action string, h nats.MsgHandler) nats.MsgHandler {
+	return func(msg *nats.Msg) {
+		start := time.Now()
+		h(msg)
+		otelsetup.RecordRequest(context.Background(), action, "", time.Since(start))
+	}
+}
+
+// natsMetricAction strips the node name from a topic so node-targeted
+// subjects share one low-cardinality metric action across the cluster.
+func natsMetricAction(topic, node string) string {
+	if node == "" {
+		return topic
+	}
+	action := strings.ReplaceAll(topic, "."+node+".", ".")
+	return strings.TrimSuffix(action, "."+node)
+}
+
 // natsSub defines a single NATS subscription entry for the table-driven setup.
 type natsSub struct {
 	topic      string
@@ -1037,10 +1059,11 @@ func (d *Daemon) subscribeAll() error {
 	for _, s := range subs {
 		var sub *nats.Subscription
 		var err error
+		handler := natsMetricsHandler(natsMetricAction(s.topic, d.node), s.handler)
 		if s.queueGroup != "" {
-			sub, err = d.natsConn.QueueSubscribe(s.topic, s.queueGroup, s.handler)
+			sub, err = d.natsConn.QueueSubscribe(s.topic, s.queueGroup, handler)
 		} else {
-			sub, err = d.natsConn.Subscribe(s.topic, s.handler)
+			sub, err = d.natsConn.Subscribe(s.topic, handler)
 		}
 		if err != nil {
 			return fmt.Errorf("failed to subscribe to %s: %w", s.topic, err)
@@ -1811,6 +1834,19 @@ func (d *Daemon) computeConfigHash() (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
+// routeActionMiddleware names cluster API requests by chi route pattern for
+// request metrics, keeping metric attribute cardinality bounded.
+func routeActionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		if rc := chi.RouteContext(r.Context()); rc != nil {
+			if pattern := rc.RoutePattern(); pattern != "" {
+				otelsetup.SetRequestAction(r.Context(), r.Method+" "+pattern)
+			}
+		}
+	})
+}
+
 // ClusterManager starts the HTTPS cluster management server.
 func (d *Daemon) ClusterManager() error {
 	daemonHost := d.config.Daemon.Host
@@ -1819,6 +1855,8 @@ func (d *Daemon) ClusterManager() error {
 	}
 
 	r := chi.NewRouter()
+	r.Use(otelsetup.HTTPMiddleware("spinifex-daemon"))
+	r.Use(routeActionMiddleware)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		configHash, err := d.computeConfigHash()
@@ -2295,6 +2333,7 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 		}
 
 		queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
+		handler = natsMetricsHandler(queueTopic, handler)
 		_, subscribed := rm.instanceSubs[queueTopic]
 		if canFit && !subscribed {
 			sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, handler)

@@ -26,10 +26,10 @@ func TestTerminateWorkerInstances_NotFoundIsIdempotent(t *testing.T) {
 	t.Cleanup(nc.Close)
 	d := &Daemon{natsConn: nc}
 
-	require.NoError(t, d.TerminateWorkerInstances([]string{"i-gone1", "i-gone2"}, "111122223333"))
+	require.NoError(t, d.TerminateWorkerInstances(t.Context(), []string{"i-gone1", "i-gone2"}, "111122223333"))
 	// Empty / blank IDs are skipped.
-	require.NoError(t, d.TerminateWorkerInstances([]string{"", ""}, "111122223333"))
-	require.NoError(t, d.TerminateWorkerInstances(nil, "111122223333"))
+	require.NoError(t, d.TerminateWorkerInstances(t.Context(), []string{"", ""}, "111122223333"))
+	require.NoError(t, d.TerminateWorkerInstances(t.Context(), nil, "111122223333"))
 }
 
 // Worker terminate must route to whichever node owns the VM via ec2.cmd.<id>,
@@ -51,7 +51,7 @@ func TestTerminateWorkerInstances_RoutesToOwner(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	require.NoError(t, d.TerminateWorkerInstances([]string{"i-owned"}, "111122223333"))
+	require.NoError(t, d.TerminateWorkerInstances(t.Context(), []string{"i-owned"}, "111122223333"))
 
 	select {
 	case cmd := <-gotCmd:
@@ -77,7 +77,7 @@ func TestTerminateWorkerInstances_OwnerNotFoundPayloadIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	require.NoError(t, d.TerminateWorkerInstances([]string{"i-raced"}, "111122223333"))
+	require.NoError(t, d.TerminateWorkerInstances(t.Context(), []string{"i-raced"}, "111122223333"))
 }
 
 // A non-NotFound error payload from the owner must surface so the teardown
@@ -94,7 +94,7 @@ func TestTerminateWorkerInstances_OwnerErrorSurfaces(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	err = d.TerminateWorkerInstances([]string{"i-protected"}, "111122223333")
+	err = d.TerminateWorkerInstances(t.Context(), []string{"i-protected"}, "111122223333")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorOperationNotPermitted)
 }
@@ -120,7 +120,7 @@ func TestTerminateWorkerInstances_StoppedFallbackToEC2Terminate(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	require.NoError(t, d.TerminateWorkerInstances([]string{"i-stopped"}, "111122223333"))
+	require.NoError(t, d.TerminateWorkerInstances(t.Context(), []string{"i-stopped"}, "111122223333"))
 
 	select {
 	case id := <-gotID:
@@ -144,7 +144,7 @@ func TestTerminateWorkerInstances_StoppedFallbackNotFoundIdempotent(t *testing.T
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	require.NoError(t, d.TerminateWorkerInstances([]string{"i-drained"}, "111122223333"))
+	require.NoError(t, d.TerminateWorkerInstances(t.Context(), []string{"i-drained"}, "111122223333"))
 }
 
 // A non-NotFound error from the ec2.terminate fallback must surface so the
@@ -161,7 +161,7 @@ func TestTerminateWorkerInstances_StoppedFallbackErrorSurfaces(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	err = d.TerminateWorkerInstances([]string{"i-protected-stopped"}, "111122223333")
+	err = d.TerminateWorkerInstances(t.Context(), []string{"i-protected-stopped"}, "111122223333")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorOperationNotPermitted)
 }
@@ -171,10 +171,10 @@ func TestTerminateWorkerInstances_StoppedFallbackErrorSurfaces(t *testing.T) {
 func TestWorkerLauncher_NilInstanceService(t *testing.T) {
 	d := &Daemon{}
 
-	_, err := d.RunWorkerInstance(&ec2.RunInstancesInput{ImageId: aws.String("ami-1")}, "111122223333")
+	_, err := d.RunWorkerInstance(t.Context(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")}, "111122223333")
 	require.Error(t, err)
 
-	require.Error(t, d.TerminateWorkerInstances([]string{"i-1"}, "111122223333"))
+	require.Error(t, d.TerminateWorkerInstances(t.Context(), []string{"i-1"}, "111122223333"))
 }
 
 // A node-targeted worker launch publishes the ec2.RunInstances.<type>.<node>
@@ -202,7 +202,7 @@ func TestRunWorkerInstanceOnNode_RoutesToTargetNode(t *testing.T) {
 		ImageId:      aws.String("ami-1"),
 		UserData:     aws.String("#cloud-config\n"),
 	}
-	res, err := d.RunWorkerInstanceOnNode("nodeX", in, "111122223333")
+	res, err := d.RunWorkerInstanceOnNode(t.Context(), "nodeX", in, "111122223333")
 	require.NoError(t, err)
 	require.Len(t, res.Instances, 1)
 	assert.Equal(t, "i-spread1", aws.StringValue(res.Instances[0].InstanceId))

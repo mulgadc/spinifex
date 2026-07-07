@@ -1,6 +1,7 @@
 package gateway_ecr
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding"
 	"encoding/hex"
@@ -88,7 +89,7 @@ func (reg *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		account = reg.AccountID
 	}
 	if account == "" {
-		reg.internal(w, "resolve account", errors.New("no authenticated account"))
+		reg.internal(r.Context(), w, "resolve account", errors.New("no authenticated account"))
 		return
 	}
 	reg.forAccount(account).serve(w, r)
@@ -98,8 +99,9 @@ func (reg *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // contain slashes, so the {name} segment is everything between "/v2/" and the
 // trailing "/blobs", "/manifests" or "/tags" marker.
 func (reg *Registry) serve(w http.ResponseWriter, r *http.Request) {
-	if err := reg.ensureBucket(); err != nil {
-		reg.internal(w, "ensure bucket", err)
+	ctx := r.Context()
+	if err := reg.ensureBucket(ctx); err != nil {
+		reg.internal(ctx, w, "ensure bucket", err)
 		return
 	}
 
@@ -149,6 +151,7 @@ func splitV2Path(path string) (name, kind, ref string, ok bool) {
 // ---- blobs ----
 
 func (reg *Registry) routeBlobs(w http.ResponseWriter, r *http.Request, name, ref string) {
+	ctx := r.Context()
 	switch {
 	case ref == "uploads/" || ref == "uploads":
 		if r.Method == http.MethodPost {
@@ -165,29 +168,29 @@ func (reg *Registry) routeBlobs(w http.ResponseWriter, r *http.Request, name, re
 			reg.finishUpload(w, r, name, uploadID)
 			return
 		case http.MethodDelete:
-			reg.cancelUpload(w, name, uploadID)
+			reg.cancelUpload(ctx, w, name, uploadID)
 			return
 		}
 	default:
 		// ref is a digest.
 		switch r.Method {
 		case http.MethodHead:
-			reg.headBlob(w, name, ref)
+			reg.headBlob(ctx, w, name, ref)
 			return
 		case http.MethodGet:
-			reg.getBlob(w, name, ref)
+			reg.getBlob(ctx, w, name, ref)
 			return
 		}
 	}
 	WriteError(w, http.StatusNotFound, "BLOB_UNKNOWN", "unsupported blob operation")
 }
 
-func (reg *Registry) headBlob(w http.ResponseWriter, _, digest string) {
+func (reg *Registry) headBlob(ctx context.Context, w http.ResponseWriter, _, digest string) {
 	if !ecr.ValidateDigest(digest) {
 		WriteError(w, http.StatusBadRequest, "DIGEST_INVALID", "malformed digest")
 		return
 	}
-	out, err := reg.Store.HeadObject(&s3.HeadObjectInput{
+	out, err := reg.Store.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(reg.bucket()),
 		Key:    aws.String(ecr.BlobKey(digest)),
 	})
@@ -196,7 +199,7 @@ func (reg *Registry) headBlob(w http.ResponseWriter, _, digest string) {
 			WriteError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob not found")
 			return
 		}
-		reg.internal(w, "head blob", err)
+		reg.internal(ctx, w, "head blob", err)
 		return
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(aws.Int64Value(out.ContentLength), 10))
@@ -204,12 +207,12 @@ func (reg *Registry) headBlob(w http.ResponseWriter, _, digest string) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (reg *Registry) getBlob(w http.ResponseWriter, _, digest string) {
+func (reg *Registry) getBlob(ctx context.Context, w http.ResponseWriter, _, digest string) {
 	if !ecr.ValidateDigest(digest) {
 		WriteError(w, http.StatusBadRequest, "DIGEST_INVALID", "malformed digest")
 		return
 	}
-	out, err := reg.Store.GetObject(&s3.GetObjectInput{
+	out, err := reg.Store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(reg.bucket()),
 		Key:    aws.String(ecr.BlobKey(digest)),
 	})
@@ -218,7 +221,7 @@ func (reg *Registry) getBlob(w http.ResponseWriter, _, digest string) {
 			WriteError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob not found")
 			return
 		}
-		reg.internal(w, "get blob", err)
+		reg.internal(ctx, w, "get blob", err)
 		return
 	}
 	defer func() { _ = out.Body.Close() }()
@@ -229,7 +232,7 @@ func (reg *Registry) getBlob(w http.ResponseWriter, _, digest string) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(w, out.Body); err != nil {
-		slog.Error("ECR/OCI: blob stream failed", "err", err)
+		slog.ErrorContext(ctx, "ECR/OCI: blob stream failed", "err", err)
 	}
 }
 
@@ -237,19 +240,20 @@ func (reg *Registry) getBlob(w http.ResponseWriter, _, digest string) {
 // to 201 when the digest already lives in the account pool; otherwise it opens a
 // new chunked upload (202) with a fresh running sha256 state.
 func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name string) {
-	if err := reg.requireRepo(name); err != nil {
+	ctx := r.Context()
+	if err := reg.requireRepo(ctx, name); err != nil {
 		var mErr *ManifestStoreError
 		if errors.As(err, &mErr) {
 			WriteError(w, mErr.Status, mErr.Code, mErr.Msg)
 			return
 		}
-		reg.internal(w, "require repo", err)
+		reg.internal(ctx, w, "require repo", err)
 		return
 	}
 
 	q := r.URL.Query()
 	if mountDigest := q.Get("mount"); mountDigest != "" {
-		if ecr.ValidateDigest(mountDigest) && reg.blobExists(mountDigest) {
+		if ecr.ValidateDigest(mountDigest) && reg.blobExists(ctx, mountDigest) {
 			reg.writeBlobCreated(w, name, mountDigest)
 			return
 		}
@@ -260,17 +264,17 @@ func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name st
 	h := sha256.New()
 	state, err := marshalHash(h)
 	if err != nil {
-		reg.internal(w, "marshal hash", err)
+		reg.internal(ctx, w, "marshal hash", err)
 		return
 	}
 	now := time.Now().UTC()
-	if _, err := reg.Meta.PutUpload(reg.AccountID, uploadID, ecr.UploadState{
+	if _, err := reg.Meta.PutUpload(ctx, reg.AccountID, uploadID, ecr.UploadState{
 		RepoName:             name,
 		StartedAt:            now,
 		LastActivity:         now,
 		SHA256MarshaledState: state,
 	}); err != nil {
-		reg.internal(w, "create upload", err)
+		reg.internal(ctx, w, "create upload", err)
 		return
 	}
 
@@ -290,39 +294,40 @@ func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name st
 // winning record names the exact object it hashed, the digest finally verified
 // always equals the bytes finally stored.
 func (reg *Registry) patchUpload(w http.ResponseWriter, r *http.Request, name, uploadID string) {
-	st, rev, err := reg.Meta.GetUpload(reg.AccountID, uploadID)
+	ctx := r.Context()
+	st, rev, err := reg.Meta.GetUpload(ctx, reg.AccountID, uploadID)
 	if err != nil {
 		if errors.Is(err, ecr.ErrNotFound) {
 			WriteError(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "upload not found")
 			return
 		}
-		reg.internal(w, "get upload", err)
+		reg.internal(ctx, w, "get upload", err)
 		return
 	}
 
 	chunk, err := io.ReadAll(r.Body)
 	if err != nil {
-		reg.internal(w, "read chunk", err)
+		reg.internal(ctx, w, "read chunk", err)
 		return
 	}
 
-	prior := reg.readUploadBytesAt(st.BytesKey)
+	prior := reg.readUploadBytesAt(ctx, st.BytesKey)
 	assembled := append(prior, chunk...)
 	newKey := ecr.UploadChunkKey(uploadID, uuid.NewString())
-	if err := reg.putUploadBytesAt(newKey, assembled); err != nil {
-		reg.internal(w, "store chunk", err)
+	if err := reg.putUploadBytesAt(ctx, newKey, assembled); err != nil {
+		reg.internal(ctx, w, "store chunk", err)
 		return
 	}
 
 	h, err := unmarshalHash(st.SHA256MarshaledState)
 	if err != nil {
-		reg.internal(w, "restore hash", err)
+		reg.internal(ctx, w, "restore hash", err)
 		return
 	}
 	h.Write(chunk)
 	marshaled, err := marshalHash(h)
 	if err != nil {
-		reg.internal(w, "marshal hash", err)
+		reg.internal(ctx, w, "marshal hash", err)
 		return
 	}
 
@@ -331,20 +336,20 @@ func (reg *Registry) patchUpload(w http.ResponseWriter, r *http.Request, name, u
 	st.SHA256MarshaledState = marshaled
 	st.LastActivity = time.Now().UTC()
 	st.BytesKey = newKey
-	if _, err := reg.Meta.UpdateUpload(reg.AccountID, uploadID, st, rev); err != nil {
+	if _, err := reg.Meta.UpdateUpload(ctx, reg.AccountID, uploadID, st, rev); err != nil {
 		// Lost the CAS or a real failure: drop the object this attempt wrote so
 		// it doesn't linger, then surface 409 (the client/registry retries).
-		_ = reg.deleteUploadBytesAt(newKey)
+		_ = reg.deleteUploadBytesAt(ctx, newKey)
 		if errors.Is(err, ecr.ErrConflict) {
 			WriteError(w, http.StatusConflict, "BLOB_UPLOAD_INVALID", "concurrent upload modification")
 			return
 		}
-		reg.internal(w, "update upload", err)
+		reg.internal(ctx, w, "update upload", err)
 		return
 	}
 	// CAS won: the superseded object is no longer referenced.
 	if priorKey != "" {
-		_ = reg.deleteUploadBytesAt(priorKey)
+		_ = reg.deleteUploadBytesAt(ctx, priorKey)
 	}
 
 	w.Header().Set("Location", uploadPath(name, uploadID))
@@ -357,87 +362,88 @@ func (reg *Registry) patchUpload(w http.ResponseWriter, r *http.Request, name, u
 // here) and chunked completion (body empty, bytes already PATCHed). The server
 // recomputes sha256 over all bytes and rejects a mismatch with DIGEST_INVALID.
 func (reg *Registry) finishUpload(w http.ResponseWriter, r *http.Request, name, uploadID string) {
+	ctx := r.Context()
 	digest := r.URL.Query().Get("digest")
 	if digest == "" || !ecr.ValidateDigest(digest) {
 		WriteError(w, http.StatusBadRequest, "DIGEST_INVALID", "missing or malformed digest")
 		return
 	}
 
-	st, _, err := reg.Meta.GetUpload(reg.AccountID, uploadID)
+	st, _, err := reg.Meta.GetUpload(ctx, reg.AccountID, uploadID)
 	if err != nil {
 		if errors.Is(err, ecr.ErrNotFound) {
 			WriteError(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "upload not found")
 			return
 		}
-		reg.internal(w, "get upload", err)
+		reg.internal(ctx, w, "get upload", err)
 		return
 	}
 
 	finalChunk, err := io.ReadAll(r.Body)
 	if err != nil {
-		reg.internal(w, "read body", err)
+		reg.internal(ctx, w, "read body", err)
 		return
 	}
 
 	h, err := unmarshalHash(st.SHA256MarshaledState)
 	if err != nil {
-		reg.internal(w, "restore hash", err)
+		reg.internal(ctx, w, "restore hash", err)
 		return
 	}
 
 	var assembled []byte
 	if len(finalChunk) > 0 {
-		assembled = append(reg.readUploadBytesAt(st.BytesKey), finalChunk...)
+		assembled = append(reg.readUploadBytesAt(ctx, st.BytesKey), finalChunk...)
 		h.Write(finalChunk)
 		st.CommittedBytes += int64(len(finalChunk))
 	} else {
-		assembled = reg.readUploadBytesAt(st.BytesKey)
+		assembled = reg.readUploadBytesAt(ctx, st.BytesKey)
 	}
 
 	computed := "sha256:" + hex.EncodeToString(h.Sum(nil))
 	if computed != digest {
-		reg.cleanupUpload(uploadID)
+		reg.cleanupUpload(ctx, uploadID)
 		WriteError(w, http.StatusBadRequest, "DIGEST_INVALID", "computed digest does not match expected digest")
 		return
 	}
 
 	// Concurrent-push short-circuit: if the pool already holds this blob, skip
 	// the store and just drop the temp upload.
-	if !reg.blobExists(digest) {
-		if _, err := reg.Store.PutObject(&s3.PutObjectInput{
+	if !reg.blobExists(ctx, digest) {
+		if _, err := reg.Store.PutObject(ctx, &s3.PutObjectInput{
 			Bucket: aws.String(reg.bucket()),
 			Key:    aws.String(ecr.BlobKey(digest)),
 			Body:   aws.ReadSeekCloser(strings.NewReader(string(assembled))),
 		}); err != nil {
 			// Finalize failed: drop the temp object and upload record so the
 			// uuid is reusable and no partial blob is left assembled.
-			reg.cleanupUpload(uploadID)
-			reg.internal(w, "store blob", err)
+			reg.cleanupUpload(ctx, uploadID)
+			reg.internal(ctx, w, "store blob", err)
 			return
 		}
 	}
 
-	reg.cleanupUpload(uploadID)
+	reg.cleanupUpload(ctx, uploadID)
 	reg.writeBlobCreated(w, name, digest)
 }
 
 // cancelUpload aborts an in-progress upload, deleting both the committed temp
 // bytes and the upload record. An unknown uuid is a 404; a successful delete is
 // 204 (idempotent — a second cancel sees the record gone and returns 404).
-func (reg *Registry) cancelUpload(w http.ResponseWriter, _, uploadID string) {
-	st, _, getErr := reg.Meta.GetUpload(reg.AccountID, uploadID)
-	err := reg.Meta.DeleteUpload(reg.AccountID, uploadID)
+func (reg *Registry) cancelUpload(ctx context.Context, w http.ResponseWriter, _, uploadID string) {
+	st, _, getErr := reg.Meta.GetUpload(ctx, reg.AccountID, uploadID)
+	err := reg.Meta.DeleteUpload(ctx, reg.AccountID, uploadID)
 	switch {
 	case errors.Is(err, ecr.ErrNotFound):
 		WriteError(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "upload not found")
 		return
 	case err != nil:
-		reg.internal(w, "cancel upload", err)
+		reg.internal(ctx, w, "cancel upload", err)
 		return
 	}
 	if getErr == nil && st.BytesKey != "" {
-		if delErr := reg.deleteUploadBytesAt(st.BytesKey); delErr != nil {
-			slog.Error("ECR/OCI: cancel upload temp cleanup failed", "uploadID", uploadID, "err", delErr)
+		if delErr := reg.deleteUploadBytesAt(ctx, st.BytesKey); delErr != nil {
+			slog.ErrorContext(ctx, "ECR/OCI: cancel upload temp cleanup failed", "uploadID", uploadID, "err", delErr)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -446,14 +452,14 @@ func (reg *Registry) cancelUpload(w http.ResponseWriter, _, uploadID string) {
 // cleanupUpload drops the upload record and its committed temp bytes. Used on
 // finalize success and on finalize failure so an aborted upload leaves neither
 // an orphaned record (which would block the uuid) nor partial blob bytes.
-func (reg *Registry) cleanupUpload(uploadID string) {
-	st, _, getErr := reg.Meta.GetUpload(reg.AccountID, uploadID)
-	if err := reg.Meta.DeleteUpload(reg.AccountID, uploadID); err != nil && !errors.Is(err, ecr.ErrNotFound) {
-		slog.Error("ECR/OCI: upload record cleanup failed", "uploadID", uploadID, "err", err)
+func (reg *Registry) cleanupUpload(ctx context.Context, uploadID string) {
+	st, _, getErr := reg.Meta.GetUpload(ctx, reg.AccountID, uploadID)
+	if err := reg.Meta.DeleteUpload(ctx, reg.AccountID, uploadID); err != nil && !errors.Is(err, ecr.ErrNotFound) {
+		slog.ErrorContext(ctx, "ECR/OCI: upload record cleanup failed", "uploadID", uploadID, "err", err)
 	}
 	if getErr == nil && st.BytesKey != "" {
-		if err := reg.deleteUploadBytesAt(st.BytesKey); err != nil {
-			slog.Error("ECR/OCI: upload temp cleanup failed", "uploadID", uploadID, "err", err)
+		if err := reg.deleteUploadBytesAt(ctx, st.BytesKey); err != nil {
+			slog.ErrorContext(ctx, "ECR/OCI: upload temp cleanup failed", "uploadID", uploadID, "err", err)
 		}
 	}
 }
@@ -475,31 +481,32 @@ func (reg *Registry) routeManifests(w http.ResponseWriter, r *http.Request, name
 	case http.MethodPut:
 		reg.putManifest(w, r, name, reference)
 	case http.MethodDelete:
-		reg.deleteManifest(w, name, reference)
+		reg.deleteManifest(r.Context(), w, name, reference)
 	default:
 		WriteError(w, http.StatusMethodNotAllowed, "UNSUPPORTED", "unsupported manifest method")
 	}
 }
 
 // resolveManifestDigest maps a reference (tag or digest) to a stored digest.
-func (reg *Registry) resolveManifestDigest(name, reference string) (string, bool) {
+func (reg *Registry) resolveManifestDigest(ctx context.Context, name, reference string) (string, bool) {
 	if ecr.ValidateDigest(reference) {
 		return reference, true
 	}
-	digest, err := reg.Meta.GetTag(reg.AccountID, name, reference)
+	digest, err := reg.Meta.GetTag(ctx, reg.AccountID, name, reference)
 	if err != nil {
 		return "", false
 	}
 	return digest, true
 }
 
-func (reg *Registry) headManifest(w http.ResponseWriter, _ *http.Request, name, reference string) {
-	digest, ok := reg.resolveManifestDigest(name, reference)
+func (reg *Registry) headManifest(w http.ResponseWriter, r *http.Request, name, reference string) {
+	ctx := r.Context()
+	digest, ok := reg.resolveManifestDigest(ctx, name, reference)
 	if !ok {
 		WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 		return
 	}
-	meta, err := reg.Meta.GetManifestMeta(reg.AccountID, name, digest)
+	meta, err := reg.Meta.GetManifestMeta(ctx, reg.AccountID, name, digest)
 	if err != nil {
 		WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 		return
@@ -511,12 +518,13 @@ func (reg *Registry) headManifest(w http.ResponseWriter, _ *http.Request, name, 
 }
 
 func (reg *Registry) getManifest(w http.ResponseWriter, r *http.Request, name, reference string) {
-	digest, ok := reg.resolveManifestDigest(name, reference)
+	ctx := r.Context()
+	digest, ok := reg.resolveManifestDigest(ctx, name, reference)
 	if !ok {
 		WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 		return
 	}
-	meta, err := reg.Meta.GetManifestMeta(reg.AccountID, name, digest)
+	meta, err := reg.Meta.GetManifestMeta(ctx, reg.AccountID, name, digest)
 	if err != nil {
 		WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 		return
@@ -525,7 +533,7 @@ func (reg *Registry) getManifest(w http.ResponseWriter, r *http.Request, name, r
 		WriteError(w, http.StatusNotAcceptable, "MANIFEST_INVALID", "no acceptable manifest media type")
 		return
 	}
-	out, err := reg.Store.GetObject(&s3.GetObjectInput{
+	out, err := reg.Store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(reg.bucket()),
 		Key:    aws.String(ecr.ManifestKey(name, digest)),
 	})
@@ -534,13 +542,13 @@ func (reg *Registry) getManifest(w http.ResponseWriter, r *http.Request, name, r
 			WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 			return
 		}
-		reg.internal(w, "get manifest", err)
+		reg.internal(ctx, w, "get manifest", err)
 		return
 	}
 	defer func() { _ = out.Body.Close() }()
 	body, err := io.ReadAll(out.Body)
 	if err != nil {
-		reg.internal(w, "read manifest", err)
+		reg.internal(ctx, w, "read manifest", err)
 		return
 	}
 	w.Header().Set("Docker-Content-Digest", digest)
@@ -548,7 +556,7 @@ func (reg *Registry) getManifest(w http.ResponseWriter, r *http.Request, name, r
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(body); err != nil {
-		slog.Error("ECR/OCI: manifest write failed", "err", err)
+		slog.ErrorContext(ctx, "ECR/OCI: manifest write failed", "err", err)
 	}
 }
 
@@ -556,20 +564,21 @@ func (reg *Registry) getManifest(w http.ResponseWriter, r *http.Request, name, r
 // to ensure every referenced blob exists in the pool; image indexes are checked
 // to ensure every referenced child manifest exists with a matching mediaType.
 func (reg *Registry) putManifest(w http.ResponseWriter, r *http.Request, name, reference string) {
+	ctx := r.Context()
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxManifestBytes+1))
 	if err != nil {
-		reg.internal(w, "read manifest", err)
+		reg.internal(ctx, w, "read manifest", err)
 		return
 	}
 
-	digest, err := reg.StoreManifest(reg.AccountID, name, reference, r.Header.Get("Content-Type"), body)
+	digest, err := reg.StoreManifest(ctx, reg.AccountID, name, reference, r.Header.Get("Content-Type"), body)
 	if err != nil {
 		var mErr *ManifestStoreError
 		if errors.As(err, &mErr) {
 			WriteError(w, mErr.Status, mErr.Code, mErr.Msg)
 			return
 		}
-		reg.internal(w, "store manifest", err)
+		reg.internal(ctx, w, "store manifest", err)
 		return
 	}
 
@@ -578,29 +587,29 @@ func (reg *Registry) putManifest(w http.ResponseWriter, r *http.Request, name, r
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (reg *Registry) deleteManifest(w http.ResponseWriter, name, reference string) {
+func (reg *Registry) deleteManifest(ctx context.Context, w http.ResponseWriter, name, reference string) {
 	// Delete by digest removes the manifest record + object and reclaims any
 	// orphaned blobs; delete by tag removes only the tag pointer (the untagged
 	// image persists, matching AWS).
 	if ecr.ValidateDigest(reference) {
-		if _, err := reg.DeleteImage(reg.AccountID, name, "", reference); err != nil {
+		if _, err := reg.DeleteImage(ctx, reg.AccountID, name, "", reference); err != nil {
 			if errors.Is(err, ErrImageNotFound) {
 				WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 				return
 			}
-			reg.internal(w, "delete manifest", err)
+			reg.internal(ctx, w, "delete manifest", err)
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	err := reg.Meta.DeleteTag(reg.AccountID, name, reference)
+	err := reg.Meta.DeleteTag(ctx, reg.AccountID, name, reference)
 	if err != nil {
 		if errors.Is(err, ecr.ErrNotFound) {
 			WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 			return
 		}
-		reg.internal(w, "delete tag", err)
+		reg.internal(ctx, w, "delete tag", err)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -625,7 +634,7 @@ type manifestDoc struct {
 // digests recorded in the manifest metadata. For an image manifest every config
 // and layer blob must exist; for an index every child manifest must exist with a
 // matching stored mediaType.
-func (reg *Registry) validateManifest(name, contentType string, body []byte) ([]string, string, error) {
+func (reg *Registry) validateManifest(ctx context.Context, name, contentType string, body []byte) ([]string, string, error) {
 	var doc manifestDoc
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return nil, "MANIFEST_INVALID", fmt.Errorf("manifest is not valid JSON: %w", err)
@@ -638,7 +647,7 @@ func (reg *Registry) validateManifest(name, contentType string, body []byte) ([]
 			if !ecr.ValidateDigest(m.Digest) {
 				return nil, "MANIFEST_INVALID", errors.New("index references malformed digest")
 			}
-			meta, err := reg.Meta.GetManifestMeta(reg.AccountID, name, m.Digest)
+			meta, err := reg.Meta.GetManifestMeta(ctx, reg.AccountID, name, m.Digest)
 			if err != nil {
 				return nil, "MANIFEST_BLOB_UNKNOWN", fmt.Errorf("referenced manifest %s not found", m.Digest)
 			}
@@ -661,7 +670,7 @@ func (reg *Registry) validateManifest(name, contentType string, body []byte) ([]
 			if !ecr.ValidateDigest(d) {
 				return nil, "MANIFEST_INVALID", errors.New("manifest references malformed digest")
 			}
-			if !reg.blobExists(d) {
+			if !reg.blobExists(ctx, d) {
 				return nil, "MANIFEST_BLOB_UNKNOWN", fmt.Errorf("referenced blob %s not found", d)
 			}
 			children = append(children, d)
@@ -673,23 +682,24 @@ func (reg *Registry) validateManifest(name, contentType string, body []byte) ([]
 // ---- tags ----
 
 func (reg *Registry) routeTags(w http.ResponseWriter, r *http.Request, name, ref string) {
+	ctx := r.Context()
 	if r.Method != http.MethodGet || ref != "list" {
 		WriteError(w, http.StatusNotFound, "UNSUPPORTED", "unsupported tags operation")
 		return
 	}
-	if _, err := reg.Meta.GetRepo(reg.AccountID, name); err != nil {
+	if _, err := reg.Meta.GetRepo(ctx, reg.AccountID, name); err != nil {
 		WriteError(w, http.StatusNotFound, "NAME_UNKNOWN", "repository unknown")
 		return
 	}
-	tags, err := reg.Meta.ListTags(reg.AccountID, name)
+	tags, err := reg.Meta.ListTags(ctx, reg.AccountID, name)
 	if err != nil {
-		reg.internal(w, "list tags", err)
+		reg.internal(ctx, w, "list tags", err)
 		return
 	}
 	if tags == nil {
 		tags = []string{}
 	}
-	reg.writeJSON(w, http.StatusOK, struct {
+	reg.writeJSON(ctx, w, http.StatusOK, struct {
 		Name string   `json:"name"`
 		Tags []string `json:"tags"`
 	}{Name: name, Tags: tags})
@@ -698,19 +708,20 @@ func (reg *Registry) routeTags(w http.ResponseWriter, r *http.Request, name, ref
 // ---- catalog ----
 
 func (reg *Registry) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	if r.Method != http.MethodGet {
 		WriteError(w, http.StatusMethodNotAllowed, "UNSUPPORTED", "unsupported catalog method")
 		return
 	}
-	repos, err := reg.Meta.ListRepos(reg.AccountID)
+	repos, err := reg.Meta.ListRepos(ctx, reg.AccountID)
 	if err != nil {
-		reg.internal(w, "list repos", err)
+		reg.internal(ctx, w, "list repos", err)
 		return
 	}
 	if repos == nil {
 		repos = []string{}
 	}
-	reg.writeJSON(w, http.StatusOK, struct {
+	reg.writeJSON(ctx, w, http.StatusOK, struct {
 		Repositories []string `json:"repositories"`
 	}{Repositories: repos})
 }
@@ -723,13 +734,13 @@ func (reg *Registry) bucket() string { return ecr.AccountBucket(reg.AccountID) }
 // storage is account-managed: the bucket appears transparently rather than
 // being created by an operator. Success is cached per account; a backend
 // failure is left uncached so the next request retries.
-func (reg *Registry) ensureBucket() error {
+func (reg *Registry) ensureBucket(ctx context.Context) error {
 	reg.buckets.mu.Lock()
 	defer reg.buckets.mu.Unlock()
 	if reg.buckets.ready[reg.AccountID] {
 		return nil
 	}
-	if err := reg.Store.EnsureBucket(reg.bucket()); err != nil {
+	if err := reg.Store.EnsureBucket(ctx, reg.bucket()); err != nil {
 		return err
 	}
 	reg.buckets.ready[reg.AccountID] = true
@@ -740,8 +751,8 @@ func (reg *Registry) ensureBucket() error {
 // auto-create repositories: a push to a repo that was never created with
 // CreateRepository is rejected with OCI NAME_UNKNOWN (the JSON PutImage path
 // maps this to RepositoryNotFoundException).
-func (reg *Registry) requireRepo(name string) error {
-	_, err := reg.Meta.GetRepo(reg.AccountID, name)
+func (reg *Registry) requireRepo(ctx context.Context, name string) error {
+	_, err := reg.Meta.GetRepo(ctx, reg.AccountID, name)
 	if err == nil {
 		return nil
 	}
@@ -751,8 +762,8 @@ func (reg *Registry) requireRepo(name string) error {
 	return err
 }
 
-func (reg *Registry) blobExists(digest string) bool {
-	_, err := reg.Store.HeadObject(&s3.HeadObjectInput{
+func (reg *Registry) blobExists(ctx context.Context, digest string) bool {
+	_, err := reg.Store.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(reg.bucket()),
 		Key:    aws.String(ecr.BlobKey(digest)),
 	})
@@ -761,11 +772,11 @@ func (reg *Registry) blobExists(digest string) bool {
 
 // readUploadBytesAt returns the bytes at key, or nil for an empty key or a miss
 // (a fresh upload has no committed bytes yet).
-func (reg *Registry) readUploadBytesAt(key string) []byte {
+func (reg *Registry) readUploadBytesAt(ctx context.Context, key string) []byte {
 	if key == "" {
 		return nil
 	}
-	out, err := reg.Store.GetObject(&s3.GetObjectInput{
+	out, err := reg.Store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(reg.bucket()),
 		Key:    aws.String(key),
 	})
@@ -780,8 +791,8 @@ func (reg *Registry) readUploadBytesAt(key string) []byte {
 	return data
 }
 
-func (reg *Registry) putUploadBytesAt(key string, data []byte) error {
-	_, err := reg.Store.PutObject(&s3.PutObjectInput{
+func (reg *Registry) putUploadBytesAt(ctx context.Context, key string, data []byte) error {
+	_, err := reg.Store.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(reg.bucket()),
 		Key:    aws.String(key),
 		Body:   aws.ReadSeekCloser(strings.NewReader(string(data))),
@@ -789,32 +800,32 @@ func (reg *Registry) putUploadBytesAt(key string, data []byte) error {
 	return err
 }
 
-func (reg *Registry) deleteUploadBytesAt(key string) error {
+func (reg *Registry) deleteUploadBytesAt(ctx context.Context, key string) error {
 	if key == "" {
 		return nil
 	}
-	_, err := reg.Store.DeleteObject(&s3.DeleteObjectInput{
+	_, err := reg.Store.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(reg.bucket()),
 		Key:    aws.String(key),
 	})
 	return err
 }
 
-func (reg *Registry) writeJSON(w http.ResponseWriter, status int, v any) {
+func (reg *Registry) writeJSON(ctx context.Context, w http.ResponseWriter, status int, v any) {
 	body, err := json.Marshal(v)
 	if err != nil {
-		reg.internal(w, "marshal json", err)
+		reg.internal(ctx, w, "marshal json", err)
 		return
 	}
 	w.Header().Set("Content-Type", OCIContentType)
 	w.WriteHeader(status)
 	if _, err := w.Write(body); err != nil {
-		slog.Error("ECR/OCI: json write failed", "err", err)
+		slog.ErrorContext(ctx, "ECR/OCI: json write failed", "err", err)
 	}
 }
 
-func (reg *Registry) internal(w http.ResponseWriter, op string, err error) {
-	slog.Error("ECR/OCI: "+op+" failed", "err", err)
+func (reg *Registry) internal(ctx context.Context, w http.ResponseWriter, op string, err error) {
+	slog.ErrorContext(ctx, "ECR/OCI: "+op+" failed", "err", err)
 	WriteError(w, http.StatusInternalServerError, "UNKNOWN", "internal registry error")
 }
 

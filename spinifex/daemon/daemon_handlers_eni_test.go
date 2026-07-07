@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,16 +100,16 @@ func newENIHotPlugFixture(t *testing.T) *eniHotPlugFixture {
 	t.Helper()
 	d := createVPCTestDaemon(t)
 
-	vpcOut, err := d.vpcService.CreateVpc(&ec2.CreateVpcInput{
+	vpcOut, err := d.vpcService.CreateVpc(t.Context(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
-	subnetOut, err := d.vpcService.CreateSubnet(&ec2.CreateSubnetInput{
+	subnetOut, err := d.vpcService.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
 		VpcId:     vpcOut.Vpc.VpcId,
 		CidrBlock: aws.String("10.0.1.0/24"),
 	}, testAccountID)
 	require.NoError(t, err)
-	eniOut, err := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	eniOut, err := d.vpcService.CreateNetworkInterface(t.Context(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: subnetOut.Subnet.SubnetId,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -170,7 +171,7 @@ func TestHandleAttachNetworkInterface_NilData(t *testing.T) {
 	f := newENIHotPlugFixture(t)
 	cmd := spxtypes.EC2InstanceCommand{ID: f.vmInst.ID}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.nildata", func(msg *nats.Msg) {
-		f.daemon.handleAttachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorInvalidParameterValue)
 }
@@ -182,7 +183,7 @@ func TestHandleAttachNetworkInterface_EmptyEniID(t *testing.T) {
 		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: "", DeviceIndex: 0},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.emptyid", func(msg *nats.Msg) {
-		f.daemon.handleAttachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorInvalidParameterValue)
 }
@@ -195,7 +196,7 @@ func TestHandleAttachNetworkInterface_NotRunning(t *testing.T) {
 		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.notrunning", func(msg *nats.Msg) {
-		f.daemon.handleAttachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorIncorrectInstanceState)
 }
@@ -207,7 +208,7 @@ func TestHandleAttachNetworkInterface_ENINotFound(t *testing.T) {
 		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: "eni-missing", DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.eninotfound", func(msg *nats.Msg) {
-		f.daemon.handleAttachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
 }
@@ -222,7 +223,7 @@ func TestHandleAttachNetworkInterface_WrongOwner(t *testing.T) {
 		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.wrongowner", func(msg *nats.Msg) {
-		f.daemon.handleAttachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorInvalidNetworkInterfaceInUse)
 }
@@ -242,7 +243,7 @@ func TestHandleAttachNetworkInterface_Success(t *testing.T) {
 		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.success", func(msg *nats.Msg) {
-		f.daemon.handleAttachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 
 	var out ec2.AttachNetworkInterfaceOutput
@@ -279,7 +280,7 @@ func TestHandleAttachNetworkInterface_HotPlugFails_RollsBackKV(t *testing.T) {
 		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.hotplugfails", func(msg *nats.Msg) {
-		f.daemon.handleAttachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorServerInternal)
 
@@ -320,7 +321,7 @@ func TestHandleDetachNetworkInterface_NilData(t *testing.T) {
 	f, _ := attachedFixture(t)
 	cmd := spxtypes.EC2InstanceCommand{ID: f.vmInst.ID}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.nildata", func(msg *nats.Msg) {
-		f.daemon.handleDetachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorInvalidParameterValue)
 }
@@ -332,7 +333,7 @@ func TestHandleDetachNetworkInterface_EmptyAttachID(t *testing.T) {
 		DetachENIData: &spxtypes.DetachENIData{AttachmentID: ""},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.emptyid", func(msg *nats.Msg) {
-		f.daemon.handleDetachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorInvalidParameterValue)
 }
@@ -344,7 +345,7 @@ func TestHandleDetachNetworkInterface_UnknownAttachment(t *testing.T) {
 		DetachENIData: &spxtypes.DetachENIData{AttachmentID: "eni-attach-missing"},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.unknown", func(msg *nats.Msg) {
-		f.daemon.handleDetachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorInvalidAttachmentIDNotFound)
 }
@@ -365,7 +366,7 @@ func TestHandleDetachNetworkInterface_WrongOwner(t *testing.T) {
 		DetachENIData: &spxtypes.DetachENIData{AttachmentID: attachID},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.wrongowner", func(msg *nats.Msg) {
-		f.daemon.handleDetachNetworkInterface(msg, cmd, otherVM)
+		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, otherVM)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorInvalidAttachmentIDNotFound)
 }
@@ -378,7 +379,7 @@ func TestHandleDetachNetworkInterface_NotRunning(t *testing.T) {
 		DetachENIData: &spxtypes.DetachENIData{AttachmentID: attachID},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.notrunning", func(msg *nats.Msg) {
-		f.daemon.handleDetachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorIncorrectInstanceState)
 }
@@ -398,7 +399,7 @@ func TestHandleDetachNetworkInterface_Success(t *testing.T) {
 		DetachENIData: &spxtypes.DetachENIData{AttachmentID: attachID, Force: false},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.success", func(msg *nats.Msg) {
-		f.daemon.handleDetachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	var out ec2.DetachNetworkInterfaceOutput
 	require.NoError(t, json.Unmarshal(payload, &out))
@@ -429,7 +430,7 @@ func TestHandleDetachNetworkInterface_HotUnplugFails(t *testing.T) {
 		DetachENIData: &spxtypes.DetachENIData{AttachmentID: attachID, Force: false},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.hotunplugfails", func(msg *nats.Msg) {
-		f.daemon.handleDetachNetworkInterface(msg, cmd, f.vmInst)
+		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorServerInternal)
 

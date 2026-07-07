@@ -1,6 +1,7 @@
 package handlers_ec2_instance
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -56,7 +57,7 @@ func TestModifyInstanceMetadataOptions_RejectV1(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
 
-	_, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+	_, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 		InstanceId: aws.String(id),
 		HttpTokens: aws.String(ec2.HttpTokensStateOptional),
 	}, owner)
@@ -78,7 +79,7 @@ func TestModifyInstanceMetadataOptions_HopLimitRunning(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
 
-	out, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+	out, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 		InstanceId:              aws.String(id),
 		HttpTokens:              aws.String(ec2.HttpTokensStateRequired),
 		HttpPutResponseHopLimit: aws.Int64(2),
@@ -101,7 +102,7 @@ func TestModifyInstanceMetadataOptions_HopLimitStopped(t *testing.T) {
 	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: stored}}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
 
-	out, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+	out, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 		InstanceId:              aws.String(id),
 		HttpPutResponseHopLimit: aws.Int64(3),
 	}, owner)
@@ -117,7 +118,7 @@ func TestModifyInstanceMetadataOptions_NotFound(t *testing.T) {
 		vmMgr:        mgrWith(map[string]*vm.VM{}),
 		stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}},
 	}
-	_, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+	_, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 		InstanceId:              aws.String("i-ghost"),
 		HttpPutResponseHopLimit: aws.Int64(2),
 	}, utils.GlobalAccountID)
@@ -135,7 +136,7 @@ func TestModifyInstanceMetadataOptions_NilInstance(t *testing.T) {
 		id := "i-nil-run"
 		v := &vm.VM{ID: id, AccountID: owner, Status: vm.StateRunning, Instance: nil}
 		svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
-		_, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+		_, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 			InstanceId: aws.String(id), HttpPutResponseHopLimit: aws.Int64(2),
 		}, owner)
 		require.Error(t, err)
@@ -147,7 +148,7 @@ func TestModifyInstanceMetadataOptions_NilInstance(t *testing.T) {
 		stored := &vm.VM{ID: id, AccountID: owner, Status: vm.StateStopped, Instance: nil}
 		store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: stored}}
 		svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
-		_, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+		_, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 			InstanceId: aws.String(id), HttpPutResponseHopLimit: aws.Int64(2),
 		}, owner)
 		require.Error(t, err)
@@ -166,7 +167,7 @@ func TestModifyInstanceMetadataOptions_LegacyNilBlockStamped(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
 
-	out, err := svc.ModifyInstanceMetadataOptions(&ec2.ModifyInstanceMetadataOptionsInput{
+	out, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 		InstanceId: aws.String(id), HttpPutResponseHopLimit: aws.Int64(2),
 	}, owner)
 	require.NoError(t, err)
@@ -230,7 +231,7 @@ func TestRunInstance_MetadataOptionsSeeded(t *testing.T) {
 // Validation precedes the instance-type lookup, so a bare service suffices.
 func TestPrepareRunInstances_RejectV1MetadataOptions(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		ImageId:         aws.String("ami-0abcdef1234567890"),
 		InstanceType:    aws.String("t3.micro"),
 		MinCount:        aws.Int64(1),

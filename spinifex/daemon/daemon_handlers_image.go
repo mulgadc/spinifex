@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -42,7 +43,7 @@ func (d *Daemon) handleEC2ResetImageAttribute(msg *nats.Msg) {
 }
 
 func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) {
-	promoteImage := func(input *admin.PromoteImageOpts, _ string) (*admin.PromoteImageResult, error) {
+	promoteImage := func(_ context.Context, input *admin.PromoteImageOpts, _ string) (*admin.PromoteImageResult, error) {
 		store := objectstore.NewS3ObjectStoreFromConfig(
 			admin.DialTarget(d.config.Predastore.Host),
 			d.config.Predastore.Region,

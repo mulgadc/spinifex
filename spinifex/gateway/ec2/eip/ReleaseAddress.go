@@ -1,6 +1,7 @@
 package gateway_ec2_eip
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateReleaseAddressInput(input *ec2.ReleaseAddressInput) error {
 }
 
 // ReleaseAddress handles the EC2 ReleaseAddress API call.
-func ReleaseAddress(input *ec2.ReleaseAddressInput, natsConn *nats.Conn, accountID string) (ec2.ReleaseAddressOutput, error) {
+func ReleaseAddress(ctx context.Context, input *ec2.ReleaseAddressInput, natsConn *nats.Conn, accountID string) (ec2.ReleaseAddressOutput, error) {
 	var output ec2.ReleaseAddressOutput
 
 	if err := ValidateReleaseAddressInput(input); err != nil {
@@ -28,7 +29,7 @@ func ReleaseAddress(input *ec2.ReleaseAddressInput, natsConn *nats.Conn, account
 	}
 
 	svc := handlers_ec2_eip.NewNATSEIPService(natsConn)
-	result, err := svc.ReleaseAddress(input, accountID)
+	result, err := svc.ReleaseAddress(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

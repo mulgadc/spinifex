@@ -1,6 +1,7 @@
 package gateway_ec2_eip
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateAssociateAddressInput(input *ec2.AssociateAddressInput) error {
 }
 
 // AssociateAddress handles the EC2 AssociateAddress API call.
-func AssociateAddress(input *ec2.AssociateAddressInput, natsConn *nats.Conn, accountID string) (ec2.AssociateAddressOutput, error) {
+func AssociateAddress(ctx context.Context, input *ec2.AssociateAddressInput, natsConn *nats.Conn, accountID string) (ec2.AssociateAddressOutput, error) {
 	var output ec2.AssociateAddressOutput
 
 	if err := ValidateAssociateAddressInput(input); err != nil {
@@ -28,7 +29,7 @@ func AssociateAddress(input *ec2.AssociateAddressInput, natsConn *nats.Conn, acc
 	}
 
 	svc := handlers_ec2_eip.NewNATSEIPService(natsConn)
-	result, err := svc.AssociateAddress(input, accountID)
+	result, err := svc.AssociateAddress(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

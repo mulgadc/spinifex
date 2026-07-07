@@ -1,6 +1,7 @@
 package handlers_ec2_account
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -38,7 +39,7 @@ const testAccountID = "111111111111"
 
 func TestEbsEncryption_DefaultOff(t *testing.T) {
 	svc := setupTestAccountService(t)
-	out, err := svc.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{}, testAccountID)
+	out, err := svc.GetEbsEncryptionByDefault(context.Background(), &ec2.GetEbsEncryptionByDefaultInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.False(t, *out.EbsEncryptionByDefault)
 }
@@ -47,22 +48,22 @@ func TestEbsEncryption_EnableDisable(t *testing.T) {
 	svc := setupTestAccountService(t)
 
 	// Enable
-	enableOut, err := svc.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{}, testAccountID)
+	enableOut, err := svc.EnableEbsEncryptionByDefault(context.Background(), &ec2.EnableEbsEncryptionByDefaultInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.True(t, *enableOut.EbsEncryptionByDefault)
 
 	// Verify
-	getOut, err := svc.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{}, testAccountID)
+	getOut, err := svc.GetEbsEncryptionByDefault(context.Background(), &ec2.GetEbsEncryptionByDefaultInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.True(t, *getOut.EbsEncryptionByDefault)
 
 	// Disable
-	disableOut, err := svc.DisableEbsEncryptionByDefault(&ec2.DisableEbsEncryptionByDefaultInput{}, testAccountID)
+	disableOut, err := svc.DisableEbsEncryptionByDefault(context.Background(), &ec2.DisableEbsEncryptionByDefaultInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.False(t, *disableOut.EbsEncryptionByDefault)
 
 	// Verify
-	getOut, err = svc.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{}, testAccountID)
+	getOut, err = svc.GetEbsEncryptionByDefault(context.Background(), &ec2.GetEbsEncryptionByDefaultInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.False(t, *getOut.EbsEncryptionByDefault)
 }
@@ -71,7 +72,7 @@ func TestEbsEncryption_EnableDisable(t *testing.T) {
 
 func TestSerialConsole_DefaultOff(t *testing.T) {
 	svc := setupTestAccountService(t)
-	out, err := svc.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{}, testAccountID)
+	out, err := svc.GetSerialConsoleAccessStatus(context.Background(), &ec2.GetSerialConsoleAccessStatusInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.False(t, *out.SerialConsoleAccessEnabled)
 }
@@ -79,19 +80,19 @@ func TestSerialConsole_DefaultOff(t *testing.T) {
 func TestSerialConsole_EnableDisable(t *testing.T) {
 	svc := setupTestAccountService(t)
 
-	enableOut, err := svc.EnableSerialConsoleAccess(&ec2.EnableSerialConsoleAccessInput{}, testAccountID)
+	enableOut, err := svc.EnableSerialConsoleAccess(context.Background(), &ec2.EnableSerialConsoleAccessInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.True(t, *enableOut.SerialConsoleAccessEnabled)
 
-	getOut, err := svc.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{}, testAccountID)
+	getOut, err := svc.GetSerialConsoleAccessStatus(context.Background(), &ec2.GetSerialConsoleAccessStatusInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.True(t, *getOut.SerialConsoleAccessEnabled)
 
-	disableOut, err := svc.DisableSerialConsoleAccess(&ec2.DisableSerialConsoleAccessInput{}, testAccountID)
+	disableOut, err := svc.DisableSerialConsoleAccess(context.Background(), &ec2.DisableSerialConsoleAccessInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.False(t, *disableOut.SerialConsoleAccessEnabled)
 
-	getOut, err = svc.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{}, testAccountID)
+	getOut, err = svc.GetSerialConsoleAccessStatus(context.Background(), &ec2.GetSerialConsoleAccessStatusInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.False(t, *getOut.SerialConsoleAccessEnabled)
 }
@@ -104,16 +105,16 @@ func TestEbsEncryption_MultiAccountIsolation(t *testing.T) {
 	accountB := "222222222222"
 
 	// Enable EBS encryption for account A only
-	_, err := svc.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{}, accountA)
+	_, err := svc.EnableEbsEncryptionByDefault(context.Background(), &ec2.EnableEbsEncryptionByDefaultInput{}, accountA)
 	require.NoError(t, err)
 
 	// Account A should have encryption enabled
-	outA, err := svc.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{}, accountA)
+	outA, err := svc.GetEbsEncryptionByDefault(context.Background(), &ec2.GetEbsEncryptionByDefaultInput{}, accountA)
 	require.NoError(t, err)
 	assert.True(t, *outA.EbsEncryptionByDefault)
 
 	// Account B should still have encryption disabled (default)
-	outB, err := svc.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{}, accountB)
+	outB, err := svc.GetEbsEncryptionByDefault(context.Background(), &ec2.GetEbsEncryptionByDefaultInput{}, accountB)
 	require.NoError(t, err)
 	assert.False(t, *outB.EbsEncryptionByDefault)
 }
@@ -124,16 +125,16 @@ func TestSerialConsole_MultiAccountIsolation(t *testing.T) {
 	accountB := "222222222222"
 
 	// Enable serial console for account A only
-	_, err := svc.EnableSerialConsoleAccess(&ec2.EnableSerialConsoleAccessInput{}, accountA)
+	_, err := svc.EnableSerialConsoleAccess(context.Background(), &ec2.EnableSerialConsoleAccessInput{}, accountA)
 	require.NoError(t, err)
 
 	// Account A should have serial console enabled
-	outA, err := svc.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{}, accountA)
+	outA, err := svc.GetSerialConsoleAccessStatus(context.Background(), &ec2.GetSerialConsoleAccessStatusInput{}, accountA)
 	require.NoError(t, err)
 	assert.True(t, *outA.SerialConsoleAccessEnabled)
 
 	// Account B should still have serial console disabled (default)
-	outB, err := svc.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{}, accountB)
+	outB, err := svc.GetSerialConsoleAccessStatus(context.Background(), &ec2.GetSerialConsoleAccessStatusInput{}, accountB)
 	require.NoError(t, err)
 	assert.False(t, *outB.SerialConsoleAccessEnabled)
 }

@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestStartInstances_Success(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	output, err := StartInstances(input, nc, "123456789012")
+	output, err := StartInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -62,7 +63,7 @@ func TestStartInstances_MultipleInstances(t *testing.T) {
 		InstanceIds: []*string{aws.String(ids[0]), aws.String(ids[1]), aws.String(ids[2])},
 	}
 
-	output, err := StartInstances(input, nc, "123456789012")
+	output, err := StartInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -81,7 +82,7 @@ func TestStartInstances_EmptyInstanceIds(t *testing.T) {
 		InstanceIds: []*string{},
 	}
 
-	_, err := StartInstances(input, nc, "123456789012")
+	_, err := StartInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -98,7 +99,7 @@ func TestStartInstances_NilInstanceIdSkipped(t *testing.T) {
 		InstanceIds: []*string{nil, aws.String(instanceID), nil},
 	}
 
-	output, err := StartInstances(input, nc, "123456789012")
+	output, err := StartInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -117,7 +118,7 @@ func TestStartInstances_NATSRequestFails(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	output, err := StartInstances(input, nc, "123456789012")
+	output, err := StartInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err) // Function itself doesn't error, it records state change
 	require.NotNil(t, output)
@@ -154,7 +155,7 @@ func TestStartInstances_MixedSuccessAndFailure(t *testing.T) {
 		InstanceIds: []*string{aws.String(goodID), aws.String(badID)},
 	}
 
-	_, err := StartInstances(input, nc, "123456789012")
+	_, err := StartInstances(context.Background(), input, nc, "123456789012")
 
 	// Daemon error for any instance should fail the whole call
 	require.Error(t, err)

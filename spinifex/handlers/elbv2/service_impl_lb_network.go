@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,7 +13,7 @@ import (
 )
 
 // SetIpAddressType sets the LB IP address type; only "ipv4" is accepted.
-func (s *ELBv2ServiceImpl) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, accountID string) (*elbv2.SetIpAddressTypeOutput, error) {
+func (s *ELBv2ServiceImpl) SetIpAddressType(ctx context.Context, input *elbv2.SetIpAddressTypeInput, accountID string) (*elbv2.SetIpAddressTypeOutput, error) {
 	if input == nil || input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -25,7 +26,7 @@ func (s *ELBv2ServiceImpl) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, 
 
 	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
 	if err != nil {
-		slog.Error("SetIpAddressType: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "SetIpAddressType: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || lb.AccountID != accountID {
@@ -35,7 +36,7 @@ func (s *ELBv2ServiceImpl) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, 
 	if lb.IPAddressType != IPAddressTypeIPv4 {
 		lb.IPAddressType = IPAddressTypeIPv4
 		if err := s.store.PutLoadBalancer(lb); err != nil {
-			slog.Error("SetIpAddressType: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
+			slog.ErrorContext(ctx, "SetIpAddressType: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -47,7 +48,7 @@ func (s *ELBv2ServiceImpl) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, 
 
 // SetSecurityGroups replaces the security groups on an ALB, re-attaching them
 // to every ENI via ModifyNetworkInterfaceAttribute before persisting.
-func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput, accountID string) (*elbv2.SetSecurityGroupsOutput, error) {
+func (s *ELBv2ServiceImpl) SetSecurityGroups(ctx context.Context, input *elbv2.SetSecurityGroupsInput, accountID string) (*elbv2.SetSecurityGroupsOutput, error) {
 	if input == nil || input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -57,7 +58,7 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 
 	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
 	if err != nil {
-		slog.Error("SetSecurityGroups: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "SetSecurityGroups: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || lb.AccountID != accountID {
@@ -86,11 +87,11 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 	// Re-attach to each ENI; failure aborts before the record is persisted.
 	if s.VPCService != nil {
 		for _, eniID := range lb.ENIs {
-			if _, err := s.VPCService.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+			if _, err := s.VPCService.ModifyNetworkInterfaceAttribute(ctx, &ec2.ModifyNetworkInterfaceAttributeInput{
 				NetworkInterfaceId: aws.String(eniID),
 				Groups:             aws.StringSlice(sgs),
 			}, accountID); err != nil {
-				slog.Error("SetSecurityGroups: failed to update ENI groups", "arn", *input.LoadBalancerArn, "eni", eniID, "err", err)
+				slog.ErrorContext(ctx, "SetSecurityGroups: failed to update ENI groups", "arn", *input.LoadBalancerArn, "eni", eniID, "err", err)
 				return nil, err
 			}
 		}
@@ -98,7 +99,7 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 
 	lb.SecurityGroups = sgs
 	if err := s.store.PutLoadBalancer(lb); err != nil {
-		slog.Error("SetSecurityGroups: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "SetSecurityGroups: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -109,7 +110,7 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 
 // SetSubnets does a full add+remove of the LB's subnets and their ENIs.
 // Because ENI hotplug is not supported, the LB VM is relaunched with the new ENI set.
-func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID string) (*elbv2.SetSubnetsOutput, error) {
+func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubnetsInput, accountID string) (*elbv2.SetSubnetsOutput, error) {
 	if input == nil || input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -121,7 +122,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 
 	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
 	if err != nil {
-		slog.Error("SetSubnets: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "SetSubnets: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || lb.AccountID != accountID {
@@ -147,7 +148,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 	}
 
 	if len(toAdd) == 0 && len(toRemove) == 0 {
-		return s.setSubnetsOutput(lb), nil // idempotent — no change
+		return s.setSubnetsOutput(ctx, lb), nil // idempotent — no change
 	}
 
 	// No VPC service: just record the subnet set (launcher-less / test deployments).
@@ -155,10 +156,10 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		lb.Subnets = desired
 		lb.AvailZones = rebuildAvailZones(desired, lb.AvailZones, nil)
 		if err := s.store.PutLoadBalancer(lb); err != nil {
-			slog.Error("SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
+			slog.ErrorContext(ctx, "SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		return s.setSubnetsOutput(lb), nil
+		return s.setSubnetsOutput(ctx, lb), nil
 	}
 
 	// Create ENIs for added subnets; roll back on failure to avoid leaks.
@@ -166,18 +167,18 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 	newAZBySubnet := make(map[string]string, len(toAdd))
 	rollbackNewENIs := func() {
 		for _, created := range newENIBySubnet {
-			if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+			if _, delErr := s.VPCService.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 				NetworkInterfaceId: aws.String(created),
 			}, accountID); delErr != nil && !awserrors.IsNotFound(delErr) {
-				slog.Error("SetSubnets: rollback failed to delete ENI", "eni", created, "err", delErr)
+				slog.ErrorContext(ctx, "SetSubnets: rollback failed to delete ENI", "eni", created, "err", delErr)
 			}
 		}
 	}
 	for _, subnetID := range toAdd {
-		eniID, az, eniErr := s.createLBENI(subnetID, lb, accountID)
+		eniID, az, eniErr := s.createLBENI(ctx, subnetID, lb, accountID)
 		if eniErr != nil {
 			rollbackNewENIs()
-			slog.Error("SetSubnets: failed to create ENI", "subnet", subnetID, "err", eniErr)
+			slog.ErrorContext(ctx, "SetSubnets: failed to create ENI", "subnet", subnetID, "err", eniErr)
 			return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
 		}
 		newENIBySubnet[subnetID] = eniID
@@ -198,29 +199,29 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 	if lb.InstanceID != "" && s.InstanceLauncher != nil {
 		if err := s.InstanceLauncher.TerminateSystemInstance(lb.InstanceID); err != nil {
 			rollbackNewENIs()
-			slog.Error("SetSubnets: failed to terminate LB VM for relaunch", "arn", *input.LoadBalancerArn, "instanceId", lb.InstanceID, "err", err)
+			slog.ErrorContext(ctx, "SetSubnets: failed to terminate LB VM for relaunch", "arn", *input.LoadBalancerArn, "instanceId", lb.InstanceID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
 
 	// Detach all ENIs explicitly: TerminateSystemInstance doesn't clear in-use status.
 	for _, eniID := range current {
-		if detachErr := s.VPCService.DetachENI(accountID, eniID); detachErr != nil {
-			slog.Warn("SetSubnets: failed to detach ENI before relaunch", "eni", eniID, "err", detachErr)
+		if detachErr := s.VPCService.DetachENI(ctx, accountID, eniID); detachErr != nil {
+			slog.WarnContext(ctx, "SetSubnets: failed to detach ENI before relaunch", "eni", eniID, "err", detachErr)
 		}
 	}
 
 	// Delete ENIs for removed subnets now that they are detached.
 	for _, sn := range toRemove {
 		eniID := current[sn]
-		if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+		if _, delErr := s.VPCService.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 			NetworkInterfaceId: aws.String(eniID),
 		}, accountID); delErr != nil && !awserrors.IsNotFound(delErr) {
-			slog.Error("SetSubnets: failed to delete removed ENI", "subnet", sn, "eni", eniID, "err", delErr)
+			slog.ErrorContext(ctx, "SetSubnets: failed to delete removed ENI", "subnet", sn, "eni", eniID, "err", delErr)
 		}
 	}
 
-	launch := s.launchLBVM(lb.LoadBalancerID, lb.Scheme, newENIs, desired, accountID, lb.CrossAccountENIs)
+	launch := s.launchLBVM(ctx, lb.LoadBalancerID, lb.Scheme, newENIs, desired, accountID, lb.CrossAccountENIs)
 	availZones := rebuildAvailZones(desired, lb.AvailZones, newAZBySubnet)
 	if launch.publicIP != "" && len(availZones) > 0 {
 		availZones[0].PublicIP = launch.publicIP
@@ -235,12 +236,12 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 	lb.State, lb.StateReason = s.lbStateAfterLaunch(launch, lb.Scheme)
 
 	if err := s.store.PutLoadBalancer(lb); err != nil {
-		slog.Error("SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("SetSubnets completed", "arn", *input.LoadBalancerArn, "subnets", len(desired), "added", len(toAdd), "removed", len(toRemove), "state", lb.State)
-	return s.setSubnetsOutput(lb), nil
+	slog.InfoContext(ctx, "SetSubnets completed", "arn", *input.LoadBalancerArn, "subnets", len(desired), "added", len(toAdd), "removed", len(toRemove), "state", lb.State)
+	return s.setSubnetsOutput(ctx, lb), nil
 }
 
 // flattenSubnetIDs deduplicates the explicit Subnets list and the SubnetMappings
@@ -280,7 +281,7 @@ func subnetENIMap(lb *LoadBalancerRecord) map[string]string {
 }
 
 // createLBENI creates a managed ENI in the given subnet, returning the ENI ID and AZ.
-func (s *ELBv2ServiceImpl) createLBENI(subnetID string, lb *LoadBalancerRecord, accountID string) (eniID, az string, err error) {
+func (s *ELBv2ServiceImpl) createLBENI(ctx context.Context, subnetID string, lb *LoadBalancerRecord, accountID string) (eniID, az string, err error) {
 	eniIn := &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetID),
 		Description: aws.String(fmt.Sprintf("ELB %s/%s", lb.Name, lb.LoadBalancerID)),
@@ -297,7 +298,7 @@ func (s *ELBv2ServiceImpl) createLBENI(subnetID string, lb *LoadBalancerRecord, 
 	if groups := lbENIGroups(lb); len(groups) > 0 {
 		eniIn.Groups = aws.StringSlice(groups)
 	}
-	out, err := s.VPCService.CreateNetworkInterface(eniIn, accountID)
+	out, err := s.VPCService.CreateNetworkInterface(ctx, eniIn, accountID)
 	if err != nil {
 		return "", "", err
 	}
@@ -344,8 +345,8 @@ func (s *ELBv2ServiceImpl) lbStateAfterLaunch(launch lbVMLaunch, scheme string) 
 }
 
 // setSubnetsOutput builds the SetSubnets response from the persisted record.
-func (s *ELBv2ServiceImpl) setSubnetsOutput(lb *LoadBalancerRecord) *elbv2.SetSubnetsOutput {
-	sdk := s.lbRecordToSDK(lb)
+func (s *ELBv2ServiceImpl) setSubnetsOutput(ctx context.Context, lb *LoadBalancerRecord) *elbv2.SetSubnetsOutput {
+	sdk := s.lbRecordToSDK(ctx, lb)
 	return &elbv2.SetSubnetsOutput{
 		AvailabilityZones: sdk.AvailabilityZones,
 		IpAddressType:     aws.String(lb.IPAddressType),

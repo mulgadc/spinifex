@@ -1,6 +1,7 @@
 package gateway_tagging
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -28,20 +29,20 @@ const defaultResourcesPerPage = 100
 // resourceLister fetches an account's tagged resources shaped as RGT mappings,
 // split out so filter/sort/paginate logic can be tested without a live NATS backend.
 type resourceLister interface {
-	listELBv2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error)
-	listEC2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error)
+	listELBv2(ctx context.Context, typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error)
+	listEC2(ctx context.Context, typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error)
 }
 
 // GetResources implements the RGT GetResources call, aggregating tagged ELBv2
 // and EC2 resources for the account with type and tag filtering. Pagination uses
 // an opaque integer offset into a deterministically ARN-sorted result set.
-func GetResources(natsConn *nats.Conn, region, accountID string, body []byte) (any, error) {
-	return getResources(&natsLister{natsConn: natsConn, region: region, accountID: accountID}, body)
+func GetResources(ctx context.Context, natsConn *nats.Conn, region, accountID string, body []byte) (any, error) {
+	return getResources(ctx, &natsLister{natsConn: natsConn, region: region, accountID: accountID}, body)
 }
 
 // getResources is the protocol-independent core: parses the request, collects
 // resource families from the lister, then filters, sorts, and paginates.
-func getResources(lister resourceLister, body []byte) (any, error) {
+func getResources(ctx context.Context, lister resourceLister, body []byte) (any, error) {
 	var input rgt.GetResourcesInput
 	if err := unmarshalIfBody(body, &input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -51,13 +52,13 @@ func getResources(lister resourceLister, body []byte) (any, error) {
 
 	var mappings []*rgt.ResourceTagMapping
 
-	elbMappings, err := lister.listELBv2(typeFilters)
+	elbMappings, err := lister.listELBv2(ctx, typeFilters)
 	if err != nil {
 		return nil, err
 	}
 	mappings = append(mappings, elbMappings...)
 
-	ec2Mappings, err := lister.listEC2(typeFilters)
+	ec2Mappings, err := lister.listEC2(ctx, typeFilters)
 	if err != nil {
 		return nil, err
 	}
@@ -87,13 +88,13 @@ type natsLister struct {
 	accountID string
 }
 
-func (l *natsLister) listELBv2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
-	return elbv2Resources(l.natsConn, l.accountID, typeFilters)
+func (l *natsLister) listELBv2(ctx context.Context, typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
+	return elbv2Resources(ctx, l.natsConn, l.accountID, typeFilters)
 }
 
-func (l *natsLister) listEC2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
+func (l *natsLister) listEC2(ctx context.Context, typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
 	svc := handlers_ec2_tags.NewNATSTagsService(l.natsConn)
-	tagsOut, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, l.accountID)
+	tagsOut, err := svc.DescribeTags(ctx, &ec2.DescribeTagsInput{}, l.accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +103,7 @@ func (l *natsLister) listEC2(typeFilters map[string]bool) ([]*rgt.ResourceTagMap
 
 // elbv2Resources lists load balancers and target groups admitted by typeFilters,
 // attaching tags via batched DescribeTags.
-func elbv2Resources(natsConn *nats.Conn, accountID string, typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
+func elbv2Resources(ctx context.Context, natsConn *nats.Conn, accountID string, typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
 	wantLB := matchesType(typeFilters, "elasticloadbalancing:loadbalancer")
 	wantTG := matchesType(typeFilters, "elasticloadbalancing:targetgroup")
 	if !wantLB && !wantTG {
@@ -113,7 +114,7 @@ func elbv2Resources(natsConn *nats.Conn, accountID string, typeFilters map[strin
 	var arns []string
 
 	if wantLB {
-		lbs, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{}, accountID)
+		lbs, err := svc.DescribeLoadBalancers(ctx, &elbv2.DescribeLoadBalancersInput{}, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -124,7 +125,7 @@ func elbv2Resources(natsConn *nats.Conn, accountID string, typeFilters map[strin
 		}
 	}
 	if wantTG {
-		tgs, err := svc.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{}, accountID)
+		tgs, err := svc.DescribeTargetGroups(ctx, &elbv2.DescribeTargetGroupsInput{}, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -141,7 +142,7 @@ func elbv2Resources(natsConn *nats.Conn, accountID string, typeFilters map[strin
 	mappings := make([]*rgt.ResourceTagMapping, 0, len(arns))
 	for start := 0; start < len(arns); start += describeTagsBatchSize {
 		end := min(start+describeTagsBatchSize, len(arns))
-		tagsOut, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+		tagsOut, err := svc.DescribeTags(ctx, &elbv2.DescribeTagsInput{
 			ResourceArns: aws.StringSlice(arns[start:end]),
 		}, accountID)
 		if err != nil {

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -152,7 +153,7 @@ func TestHandleNATSRequest_ValidRequest(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	serviceFn := func(in *testInput, accountID string) (*testOutput, error) {
+	serviceFn := func(_ context.Context, in *testInput, accountID string) (*testOutput, error) {
 		return &testOutput{Greeting: "hello " + in.Name}, nil
 	}
 
@@ -179,7 +180,7 @@ func TestHandleNATSRequest_MalformedJSON(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	serviceFn := func(in *testInput, accountID string) (*testOutput, error) {
+	serviceFn := func(_ context.Context, in *testInput, accountID string) (*testOutput, error) {
 		return &testOutput{Greeting: "hello"}, nil
 	}
 
@@ -205,7 +206,7 @@ func TestHandleNATSRequest_ServiceError(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	serviceFn := func(in *testInput, accountID string) (*testOutput, error) {
+	serviceFn := func(_ context.Context, in *testInput, accountID string) (*testOutput, error) {
 		return nil, fmt.Errorf("something went wrong")
 	}
 
@@ -432,7 +433,7 @@ func TestHandleEC2RunInstances_ValidKeyPairPassesValidation(t *testing.T) {
 
 	// Seed a valid key pair (public key + metadata)
 	bucket := daemon.config.Predastore.Bucket
-	_, err := memStore.PutObject(&awss3.PutObjectInput{
+	_, err := memStore.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String("keys/" + testAccountID + "/my-key"),
 		Body:   strings.NewReader("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest"),
@@ -440,7 +441,7 @@ func TestHandleEC2RunInstances_ValidKeyPairPassesValidation(t *testing.T) {
 	require.NoError(t, err)
 
 	metadataJSON := `{"KeyPairId":"key-abc123","KeyName":"my-key","KeyFingerprint":"SHA256:test"}`
-	_, err = memStore.PutObject(&awss3.PutObjectInput{
+	_, err = memStore.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String("keys/" + testAccountID + "/key-abc123.json"),
 		Body:   strings.NewReader(metadataJSON),
@@ -548,20 +549,20 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	seedTestAMI(t, memStore, bucket, "ami-sgprop")
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, &daemonENICreator{d: daemon}, nil)
 
-	vpcOut, err := daemon.vpcService.CreateVpc(&ec2.CreateVpcInput{
+	vpcOut, err := daemon.vpcService.CreateVpc(t.Context(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.99.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
 	vpcID := *vpcOut.Vpc.VpcId
 
-	subnetOut, err := daemon.vpcService.CreateSubnet(&ec2.CreateSubnetInput{
+	subnetOut, err := daemon.vpcService.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("10.99.1.0/24"),
 	}, testAccountID)
 	require.NoError(t, err)
 	subnetID := *subnetOut.Subnet.SubnetId
 
-	sg1Out, err := daemon.vpcService.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	sg1Out, err := daemon.vpcService.CreateSecurityGroup(t.Context(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("sg-prop-1"),
 		Description: aws.String("test"),
 		VpcId:       aws.String(vpcID),
@@ -569,7 +570,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	require.NoError(t, err)
 	sg1 = *sg1Out.GroupId
 
-	sg2Out, err := daemon.vpcService.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	sg2Out, err := daemon.vpcService.CreateSecurityGroup(t.Context(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("sg-prop-2"),
 		Description: aws.String("test"),
 		VpcId:       aws.String(vpcID),
@@ -595,7 +596,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	// The ENI is durable in KV by the time the handler responds. Inspect it
 	// via the canonical Describe path so we exercise the same record shape
 	// callers see, not internal state.
-	enis, err := daemon.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	enis, err := daemon.vpcService.DescribeNetworkInterfaces(t.Context(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{{
 			Name:   aws.String("subnet-id"),
 			Values: []*string{aws.String(subnetID)},
@@ -1463,7 +1464,7 @@ func TestAttachVolume_ZoneMismatch(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(wrapper)
-	store.PutObject(&awss3.PutObjectInput{
+	store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 		Body:   strings.NewReader(string(data)),
@@ -2663,7 +2664,7 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(wrapper)
-	store.PutObject(&awss3.PutObjectInput{
+	store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 		Body:   strings.NewReader(string(data)),
@@ -2801,7 +2802,7 @@ func TestHandleEC2CreateImage_RunningInstanceReachesService(t *testing.T) {
 		},
 	}
 	volData, _ := json.Marshal(wrapper)
-	store.PutObject(&awss3.PutObjectInput{
+	store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(rootVolumeID + "/config.json"),
 		Body:   strings.NewReader(string(volData)),
@@ -3003,7 +3004,7 @@ func TestAttachVolume_VolumeInUse(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(wrapper)
-	store.PutObject(&awss3.PutObjectInput{
+	store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 		Body:   strings.NewReader(string(data)),

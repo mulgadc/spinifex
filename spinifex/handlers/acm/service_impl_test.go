@@ -1,6 +1,7 @@
 package handlers_acm
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -59,7 +60,7 @@ func TestImportCertificate_MintsArnAndParsesLeaf(t *testing.T) {
 	svc := setupACMService(t)
 	certPEM, keyPEM := genCert(t, "example.com", "example.com", "www.example.com")
 
-	out, err := svc.ImportCertificate(&acm.ImportCertificateInput{
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
 		Certificate: certPEM,
 		PrivateKey:  keyPEM,
 	}, testAccountID)
@@ -68,7 +69,7 @@ func TestImportCertificate_MintsArnAndParsesLeaf(t *testing.T) {
 	assert.Contains(t, aws.StringValue(out.CertificateArn), "arn:aws:acm:")
 	assert.Contains(t, aws.StringValue(out.CertificateArn), ":"+testAccountID+":certificate/")
 
-	desc, err := svc.DescribeCertificate(&acm.DescribeCertificateInput{
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{
 		CertificateArn: out.CertificateArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -86,7 +87,7 @@ func TestImportCertificate_MismatchedKeyRejected(t *testing.T) {
 	certPEM, _ := genCert(t, "a.example.com")
 	_, otherKey := genCert(t, "b.example.com")
 
-	_, err := svc.ImportCertificate(&acm.ImportCertificateInput{
+	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
 		Certificate: certPEM,
 		PrivateKey:  otherKey,
 	}, testAccountID)
@@ -96,7 +97,7 @@ func TestImportCertificate_MismatchedKeyRejected(t *testing.T) {
 
 func TestImportCertificate_GarbagePEMRejected(t *testing.T) {
 	svc := setupACMService(t)
-	_, err := svc.ImportCertificate(&acm.ImportCertificateInput{
+	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
 		Certificate: []byte("not a pem"),
 		PrivateKey:  []byte("nope"),
 	}, testAccountID)
@@ -109,12 +110,12 @@ func TestListCertificates_ScopedToAccount(t *testing.T) {
 	c1, k1 := genCert(t, "one.example.com")
 	c2, k2 := genCert(t, "two.example.com")
 
-	_, err := svc.ImportCertificate(&acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.ImportCertificate(&acm.ImportCertificateInput{Certificate: c2, PrivateKey: k2}, "000000000002")
+	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c2, PrivateKey: k2}, "000000000002")
 	require.NoError(t, err)
 
-	list, err := svc.ListCertificates(&acm.ListCertificatesInput{}, testAccountID)
+	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, list.CertificateSummaryList, 1)
 	assert.Equal(t, "one.example.com", aws.StringValue(list.CertificateSummaryList[0].DomainName))
@@ -123,10 +124,10 @@ func TestListCertificates_ScopedToAccount(t *testing.T) {
 func TestDescribeCertificate_CrossAccountHidden(t *testing.T) {
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "secret.example.com")
-	out, err := svc.ImportCertificate(&acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DescribeCertificate(&acm.DescribeCertificateInput{
+	_, err = svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{
 		CertificateArn: out.CertificateArn,
 	}, "000000000002")
 	require.Error(t, err)
@@ -136,19 +137,19 @@ func TestDescribeCertificate_CrossAccountHidden(t *testing.T) {
 func TestDeleteCertificate(t *testing.T) {
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "del.example.com")
-	out, err := svc.ImportCertificate(&acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteCertificate(&acm.DeleteCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	_, err = svc.DeleteCertificate(context.Background(), &acm.DeleteCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
 	require.NoError(t, err)
 
 	// Gone now.
-	_, err = svc.DescribeCertificate(&acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	_, err = svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorResourceNotFound)
 
 	// Deleting again → ResourceNotFound.
-	_, err = svc.DeleteCertificate(&acm.DeleteCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	_, err = svc.DeleteCertificate(context.Background(), &acm.DeleteCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorResourceNotFound)
 }
@@ -156,7 +157,7 @@ func TestDeleteCertificate(t *testing.T) {
 func TestImportCertificate_ReimportUnknownArnRejected(t *testing.T) {
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "re.example.com")
-	_, err := svc.ImportCertificate(&acm.ImportCertificateInput{
+	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
 		Certificate:    c1,
 		PrivateKey:     k1,
 		CertificateArn: aws.String("arn:aws:acm:ap-southeast-2:000000000001:certificate/does-not-exist"),

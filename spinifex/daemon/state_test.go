@@ -357,7 +357,7 @@ func TestRun_AbortedByConcurrentTerminate(t *testing.T) {
 			}
 			daemon.vmMgr.Insert(instance)
 
-			err := daemon.vmMgr.Run(instance)
+			err := daemon.vmMgr.Run(t.Context(), instance)
 			require.NoError(t, err, "expected nil for non-launchable status %s", status)
 			assert.Equal(t, status, instance.Status, "status must not change")
 		})

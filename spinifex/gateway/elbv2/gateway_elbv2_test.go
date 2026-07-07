@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -12,225 +13,225 @@ import (
 // Input-validation tests; no NATS connection needed.
 
 func TestCreateLoadBalancer_NilInput(t *testing.T) {
-	_, err := CreateLoadBalancer(nil, nil, "123456789012")
+	_, err := CreateLoadBalancer(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestCreateLoadBalancer_MissingName(t *testing.T) {
-	_, err := CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{}, nil, "123456789012")
+	_, err := CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestCreateLoadBalancer_EmptyName(t *testing.T) {
-	_, err := CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err := CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String(""),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDeleteLoadBalancer_NilInput(t *testing.T) {
-	_, err := DeleteLoadBalancer(nil, nil, "123456789012")
+	_, err := DeleteLoadBalancer(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDeleteLoadBalancer_MissingArn(t *testing.T) {
-	_, err := DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{}, nil, "123456789012")
+	_, err := DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeLoadBalancers_NilInput(t *testing.T) {
-	_, err := DescribeLoadBalancers(nil, nil, "123456789012")
+	_, err := DescribeLoadBalancers(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestCreateTargetGroup_NilInput(t *testing.T) {
-	_, err := CreateTargetGroup(nil, nil, "123456789012")
+	_, err := CreateTargetGroup(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestCreateTargetGroup_MissingName(t *testing.T) {
-	_, err := CreateTargetGroup(&elbv2.CreateTargetGroupInput{}, nil, "123456789012")
+	_, err := CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDeleteTargetGroup_NilInput(t *testing.T) {
-	_, err := DeleteTargetGroup(nil, nil, "123456789012")
+	_, err := DeleteTargetGroup(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDeleteTargetGroup_MissingArn(t *testing.T) {
-	_, err := DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{}, nil, "123456789012")
+	_, err := DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeTargetGroups_NilInput(t *testing.T) {
-	_, err := DescribeTargetGroups(nil, nil, "123456789012")
+	_, err := DescribeTargetGroups(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestRegisterTargets_NilInput(t *testing.T) {
-	_, err := RegisterTargets(nil, nil, "123456789012")
+	_, err := RegisterTargets(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestRegisterTargets_MissingArn(t *testing.T) {
-	_, err := RegisterTargets(&elbv2.RegisterTargetsInput{}, nil, "123456789012")
+	_, err := RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestRegisterTargets_MissingTargets(t *testing.T) {
-	_, err := RegisterTargets(&elbv2.RegisterTargetsInput{
+	_, err := RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/my-tg/abc"),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDeregisterTargets_NilInput(t *testing.T) {
-	_, err := DeregisterTargets(nil, nil, "123456789012")
+	_, err := DeregisterTargets(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDeregisterTargets_MissingArn(t *testing.T) {
-	_, err := DeregisterTargets(&elbv2.DeregisterTargetsInput{}, nil, "123456789012")
+	_, err := DeregisterTargets(context.Background(), &elbv2.DeregisterTargetsInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDeregisterTargets_MissingTargets(t *testing.T) {
-	_, err := DeregisterTargets(&elbv2.DeregisterTargetsInput{
+	_, err := DeregisterTargets(context.Background(), &elbv2.DeregisterTargetsInput{
 		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/my-tg/abc"),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeTargetHealth_NilInput(t *testing.T) {
-	_, err := DescribeTargetHealth(nil, nil, "123456789012")
+	_, err := DescribeTargetHealth(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDescribeTargetHealth_MissingArn(t *testing.T) {
-	_, err := DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{}, nil, "123456789012")
+	_, err := DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestCreateListener_NilInput(t *testing.T) {
-	_, err := CreateListener(nil, nil, "123456789012")
+	_, err := CreateListener(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestCreateListener_MissingLBArn(t *testing.T) {
-	_, err := CreateListener(&elbv2.CreateListenerInput{}, nil, "123456789012")
+	_, err := CreateListener(context.Background(), &elbv2.CreateListenerInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestCreateListener_MissingActions(t *testing.T) {
-	_, err := CreateListener(&elbv2.CreateListenerInput{
+	_, err := CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abc"),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDeleteListener_NilInput(t *testing.T) {
-	_, err := DeleteListener(nil, nil, "123456789012")
+	_, err := DeleteListener(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDeleteListener_MissingArn(t *testing.T) {
-	_, err := DeleteListener(&elbv2.DeleteListenerInput{}, nil, "123456789012")
+	_, err := DeleteListener(context.Background(), &elbv2.DeleteListenerInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifyListener_NilInput(t *testing.T) {
-	_, err := ModifyListener(nil, nil, "123456789012")
+	_, err := ModifyListener(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestModifyListener_MissingArn(t *testing.T) {
-	_, err := ModifyListener(&elbv2.ModifyListenerInput{}, nil, "123456789012")
+	_, err := ModifyListener(context.Background(), &elbv2.ModifyListenerInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeListeners_NilInput(t *testing.T) {
-	_, err := DescribeListeners(nil, nil, "123456789012")
+	_, err := DescribeListeners(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestModifyTargetGroupAttributes_NilInput(t *testing.T) {
-	_, err := ModifyTargetGroupAttributes(nil, nil, "123456789012")
+	_, err := ModifyTargetGroupAttributes(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestModifyTargetGroupAttributes_MissingArn(t *testing.T) {
-	_, err := ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{}, nil, "123456789012")
+	_, err := ModifyTargetGroupAttributes(context.Background(), &elbv2.ModifyTargetGroupAttributesInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifyTargetGroupAttributes_EmptyArn(t *testing.T) {
-	_, err := ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
+	_, err := ModifyTargetGroupAttributes(context.Background(), &elbv2.ModifyTargetGroupAttributesInput{
 		TargetGroupArn: aws.String(""),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifyTargetGroupAttributes_MissingAttributes(t *testing.T) {
-	_, err := ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
+	_, err := ModifyTargetGroupAttributes(context.Background(), &elbv2.ModifyTargetGroupAttributesInput{
 		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/my-tg/abc"),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeTargetGroupAttributes_NilInput(t *testing.T) {
-	_, err := DescribeTargetGroupAttributes(nil, nil, "123456789012")
+	_, err := DescribeTargetGroupAttributes(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDescribeTargetGroupAttributes_MissingArn(t *testing.T) {
-	_, err := DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{}, nil, "123456789012")
+	_, err := DescribeTargetGroupAttributes(context.Background(), &elbv2.DescribeTargetGroupAttributesInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeTargetGroupAttributes_EmptyArn(t *testing.T) {
-	_, err := DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
+	_, err := DescribeTargetGroupAttributes(context.Background(), &elbv2.DescribeTargetGroupAttributesInput{
 		TargetGroupArn: aws.String(""),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifyLoadBalancerAttributes_NilInput(t *testing.T) {
-	_, err := ModifyLoadBalancerAttributes(nil, nil, "123456789012")
+	_, err := ModifyLoadBalancerAttributes(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestModifyLoadBalancerAttributes_MissingArn(t *testing.T) {
-	_, err := ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{}, nil, "123456789012")
+	_, err := ModifyLoadBalancerAttributes(context.Background(), &elbv2.ModifyLoadBalancerAttributesInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifyLoadBalancerAttributes_EmptyArn(t *testing.T) {
-	_, err := ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+	_, err := ModifyLoadBalancerAttributes(context.Background(), &elbv2.ModifyLoadBalancerAttributesInput{
 		LoadBalancerArn: aws.String(""),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifyLoadBalancerAttributes_MissingAttributes(t *testing.T) {
-	_, err := ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+	_, err := ModifyLoadBalancerAttributes(context.Background(), &elbv2.ModifyLoadBalancerAttributesInput{
 		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abc"),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeLoadBalancerAttributes_NilInput(t *testing.T) {
-	_, err := DescribeLoadBalancerAttributes(nil, nil, "123456789012")
+	_, err := DescribeLoadBalancerAttributes(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDescribeLoadBalancerAttributes_MissingArn(t *testing.T) {
-	_, err := DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{}, nil, "123456789012")
+	_, err := DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeLoadBalancerAttributes_EmptyArn(t *testing.T) {
-	_, err := DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
+	_, err := DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{
 		LoadBalancerArn: aws.String(""),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
@@ -282,17 +283,17 @@ func TestModifyListenerAttributes_EchoesAttributes(t *testing.T) {
 }
 
 func TestModifyTargetGroup_NilInput(t *testing.T) {
-	_, err := ModifyTargetGroup(nil, nil, "123456789012")
+	_, err := ModifyTargetGroup(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestModifyTargetGroup_MissingArn(t *testing.T) {
-	_, err := ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{}, nil, "123456789012")
+	_, err := ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifyTargetGroup_EmptyArn(t *testing.T) {
-	_, err := ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+	_, err := ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{
 		TargetGroupArn: aws.String(""),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)

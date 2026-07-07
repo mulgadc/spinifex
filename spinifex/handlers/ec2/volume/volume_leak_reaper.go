@@ -54,7 +54,7 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	ids, err := r.svc.listAllVolumeIDs()
+	ids, err := r.svc.listAllVolumeIDs(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -67,7 +67,7 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 		default:
 		}
 
-		cfg, err := r.svc.GetVolumeConfig(id)
+		cfg, err := r.svc.getVolumeConfig(ctx, id)
 		if err != nil {
 			continue
 		}
@@ -79,7 +79,7 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 			continue // already surfaced; idempotent
 		}
 
-		if err := r.svc.markVolumeOrphaned(id, cfg); err != nil {
+		if err := r.svc.markVolumeOrphaned(ctx, id, cfg); err != nil {
 			slog.Error("volume-leak: failed to mark orphaned volume", "volumeId", id, "err", err)
 			continue
 		}
@@ -94,11 +94,11 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 
 // markVolumeOrphaned tags the volume as orphaned and persists it. Tag-only: the
 // volume's data and state are untouched so reclamation stays an explicit choice.
-func (s *VolumeServiceImpl) markVolumeOrphaned(volumeID string, cfg *viperblock.VolumeConfig) error {
+func (s *VolumeServiceImpl) markVolumeOrphaned(ctx context.Context, volumeID string, cfg *viperblock.VolumeConfig) error {
 	if cfg.VolumeMetadata.Tags == nil {
 		cfg.VolumeMetadata.Tags = make(map[string]string)
 	}
 	cfg.VolumeMetadata.Tags[orphanTagKey] = time.Now().UTC().Format(time.RFC3339)
 	cfg.VolumeMetadata.Tags[orphanInstanceTagKey] = cfg.VolumeMetadata.AttachedInstance
-	return s.putVolumeConfig(volumeID, cfg)
+	return s.putVolumeConfig(ctx, volumeID, cfg)
 }

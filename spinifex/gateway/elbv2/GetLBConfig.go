@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -19,7 +20,7 @@ func ValidateGetLBConfigInput(input *handlers_elbv2.GetLBConfigInput) error {
 }
 
 // GetLBConfig handles the ELBv2 GetLBConfig API call.
-func GetLBConfig(input *handlers_elbv2.GetLBConfigInput, natsConn *nats.Conn, accountID string) (handlers_elbv2.GetLBConfigOutput, error) {
+func GetLBConfig(ctx context.Context, input *handlers_elbv2.GetLBConfigInput, natsConn *nats.Conn, accountID string) (handlers_elbv2.GetLBConfigOutput, error) {
 	var output handlers_elbv2.GetLBConfigOutput
 
 	if err := ValidateGetLBConfigInput(input); err != nil {
@@ -27,7 +28,7 @@ func GetLBConfig(input *handlers_elbv2.GetLBConfigInput, natsConn *nats.Conn, ac
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.GetLBConfig(input, accountID)
+	result, err := svc.GetLBConfig(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

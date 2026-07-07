@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,7 +101,7 @@ func StoreRecoveryDirective(acctKV nats.KeyValue, cluster, instanceID string, ac
 
 // GetRecoveryDirective serves a member's current recovery directive to the on-VM
 // k3s-recovery agent via the internal-recovery gateway route.
-func (s *EKSServiceImpl) GetRecoveryDirective(input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error) {
+func (s *EKSServiceImpl) GetRecoveryDirective(_ context.Context, input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error) {
 	if input == nil || input.ClusterName == "" || input.InstanceID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -116,7 +117,7 @@ func (s *EKSServiceImpl) GetRecoveryDirective(input *GetRecoveryDirectiveInput, 
 }
 
 // SetRecoveryDirective records a member's recovery directive (operator CLI path).
-func (s *EKSServiceImpl) SetRecoveryDirective(input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error) {
+func (s *EKSServiceImpl) SetRecoveryDirective(_ context.Context, input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error) {
 	if input == nil || input.ClusterName == "" || input.InstanceID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}

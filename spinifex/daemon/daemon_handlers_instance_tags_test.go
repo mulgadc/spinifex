@@ -90,7 +90,7 @@ func tagTestDaemonWithStopped(t *testing.T, instanceID string, initial map[strin
 // DescribeTags, as the given account.
 func centralTags(t *testing.T, d *Daemon, accountID, resourceID string) map[string]string {
 	t.Helper()
-	out, err := d.tagsService.DescribeTags(&ec2.DescribeTagsInput{
+	out, err := d.tagsService.DescribeTags(t.Context(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("resource-id"), Values: []*string{aws.String(resourceID)}}},
 	}, accountID)
 	require.NoError(t, err)
@@ -142,7 +142,7 @@ func TestHandleSetInstanceTags_MergesAndWritesCentral(t *testing.T) {
 func TestHandleSetInstanceTags_RemoveWritesBothStores(t *testing.T) {
 	const id = "i-tag-remove"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev", "team": "infra"})
-	require.NoError(t, d.tagsService.PutResourceTags(testAccountID, id,
+	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, id,
 		map[string]string{"Name": "web", "env": "dev", "team": "infra"}))
 
 	body := tagCommand(id, types.EC2CommandAttributes{RemoveInstanceTags: true},
@@ -159,7 +159,7 @@ func TestHandleSetInstanceTags_RemoveWritesBothStores(t *testing.T) {
 func TestHandleSetInstanceTags_RemoveClearAll(t *testing.T) {
 	const id = "i-tag-clear"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev"})
-	require.NoError(t, d.tagsService.PutResourceTags(testAccountID, id,
+	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, id,
 		map[string]string{"Name": "web", "env": "dev"}))
 
 	body := tagCommand(id, types.EC2CommandAttributes{RemoveInstanceTags: true}, &types.InstanceTagsData{})

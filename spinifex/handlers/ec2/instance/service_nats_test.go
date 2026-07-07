@@ -1,6 +1,7 @@
 package handlers_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -104,7 +105,7 @@ func TestNATSInstanceService_RunInstances_Success(t *testing.T) {
 	input := createValidRunInstancesInput()
 
 	// Call RunInstances
-	reservation, err := service.RunInstances(input, "123456789012")
+	reservation, err := service.RunInstances(context.Background(), input, "123456789012")
 
 	// Verify success
 	require.NoError(t, err, "RunInstances should succeed")
@@ -154,7 +155,7 @@ func TestNATSInstanceService_RunInstances_DaemonError(t *testing.T) {
 	}
 
 	// Call RunInstances
-	reservation, err := service.RunInstances(input, "123456789012")
+	reservation, err := service.RunInstances(context.Background(), input, "123456789012")
 
 	// Verify error handling - error should be just the AWS error code for gateway lookup
 	require.Error(t, err, "Should return error when daemon returns error")
@@ -182,7 +183,7 @@ func TestNATSInstanceService_RunInstances_NoSubscriber(t *testing.T) {
 
 	// Call RunInstances
 	start := time.Now()
-	reservation, err := service.RunInstances(input, "123456789012")
+	reservation, err := service.RunInstances(context.Background(), input, "123456789012")
 	duration := time.Since(start)
 
 	// Verify error behavior
@@ -219,7 +220,7 @@ func TestNATSInstanceService_RunInstances_InvalidResponse(t *testing.T) {
 	input := createValidRunInstancesInput()
 
 	// Call RunInstances
-	reservation, err := service.RunInstances(input, "123456789012")
+	reservation, err := service.RunInstances(context.Background(), input, "123456789012")
 
 	// Verify error handling
 	require.Error(t, err, "Should return error for invalid JSON")
@@ -243,7 +244,7 @@ func TestNATSInstanceService_RunInstances_MarshalError(t *testing.T) {
 	service := NewNATSInstanceService(nc)
 
 	// Nil input should be rejected before hitting NATS
-	reservation, err := service.RunInstances(nil, "123456789012")
+	reservation, err := service.RunInstances(context.Background(), nil, "123456789012")
 	require.Error(t, err, "Should handle nil input")
 	assert.Nil(t, reservation)
 	assert.Contains(t, err.Error(), "instance type is required")
@@ -300,7 +301,7 @@ func TestNATSInstanceService_RunInstances_MultipleInstances(t *testing.T) {
 	input.MinCount = aws.Int64(3)
 	input.MaxCount = aws.Int64(3)
 
-	reservation, err := service.RunInstances(input, "123456789012")
+	reservation, err := service.RunInstances(context.Background(), input, "123456789012")
 
 	// Verify multiple instances returned
 	require.NoError(t, err)
@@ -347,7 +348,7 @@ func TestNATSInstanceService_RunInstances_QueueGroup(t *testing.T) {
 	// Send multiple requests
 	requestCount := 10
 	for range requestCount {
-		reservation, err := service.RunInstances(input, "123456789012")
+		reservation, err := service.RunInstances(context.Background(), input, "123456789012")
 		require.NoError(t, err)
 		require.NotNil(t, reservation)
 	}

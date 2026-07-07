@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -17,50 +18,50 @@ const testCertArn = "arn:aws:acm:us-east-1:123456789012:certificate/aaaa-1111"
 // Validation guards (no NATS call reached).
 
 func TestAddListenerCertificates_NilInput(t *testing.T) {
-	_, err := AddListenerCertificates(nil, nil, "123456789012")
+	_, err := AddListenerCertificates(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestAddListenerCertificates_MissingArn(t *testing.T) {
-	_, err := AddListenerCertificates(&elbv2.AddListenerCertificatesInput{
+	_, err := AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestAddListenerCertificates_MissingCerts(t *testing.T) {
-	_, err := AddListenerCertificates(&elbv2.AddListenerCertificatesInput{
+	_, err := AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
 		ListenerArn: aws.String(testListenerArn),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestRemoveListenerCertificates_NilInput(t *testing.T) {
-	_, err := RemoveListenerCertificates(nil, nil, "123456789012")
+	_, err := RemoveListenerCertificates(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestRemoveListenerCertificates_MissingArn(t *testing.T) {
-	_, err := RemoveListenerCertificates(&elbv2.RemoveListenerCertificatesInput{
+	_, err := RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestRemoveListenerCertificates_MissingCerts(t *testing.T) {
-	_, err := RemoveListenerCertificates(&elbv2.RemoveListenerCertificatesInput{
+	_, err := RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
 		ListenerArn: aws.String(testListenerArn),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeListenerCertificates_NilInput(t *testing.T) {
-	_, err := DescribeListenerCertificates(nil, nil, "123456789012")
+	_, err := DescribeListenerCertificates(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeListenerCertificates_MissingArn(t *testing.T) {
-	_, err := DescribeListenerCertificates(&elbv2.DescribeListenerCertificatesInput{}, nil, "123456789012")
+	_, err := DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
@@ -68,7 +69,7 @@ func TestDescribeListenerCertificates_MissingArn(t *testing.T) {
 
 func TestAddListenerCertificates_DelegatesNoResponder(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	_, err := AddListenerCertificates(&elbv2.AddListenerCertificatesInput{
+	_, err := AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
 		ListenerArn:  aws.String(testListenerArn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, nc, "123456789012")
@@ -77,7 +78,7 @@ func TestAddListenerCertificates_DelegatesNoResponder(t *testing.T) {
 
 func TestRemoveListenerCertificates_DelegatesNoResponder(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	_, err := RemoveListenerCertificates(&elbv2.RemoveListenerCertificatesInput{
+	_, err := RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
 		ListenerArn:  aws.String(testListenerArn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, nc, "123456789012")
@@ -86,7 +87,7 @@ func TestRemoveListenerCertificates_DelegatesNoResponder(t *testing.T) {
 
 func TestDescribeListenerCertificates_DelegatesNoResponder(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	_, err := DescribeListenerCertificates(&elbv2.DescribeListenerCertificatesInput{
+	_, err := DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{
 		ListenerArn: aws.String(testListenerArn),
 	}, nc, "123456789012")
 	require.Error(t, err)
@@ -94,6 +95,6 @@ func TestDescribeListenerCertificates_DelegatesNoResponder(t *testing.T) {
 
 func TestDescribeSSLPolicies_DelegatesNoResponder(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	_, err := DescribeSSLPolicies(&elbv2.DescribeSSLPoliciesInput{}, nc, "123456789012")
+	_, err := DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{}, nc, "123456789012")
 	require.Error(t, err)
 }

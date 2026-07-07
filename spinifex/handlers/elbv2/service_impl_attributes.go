@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"maps"
@@ -209,7 +210,7 @@ func mkLBAttr(key, value string) *elbv2.LoadBalancerAttribute {
 	return &elbv2.LoadBalancerAttribute{Key: aws.String(key), Value: aws.String(value)}
 }
 
-func (s *ELBv2ServiceImpl) ModifyTargetGroupAttributes(input *elbv2.ModifyTargetGroupAttributesInput, accountID string) (*elbv2.ModifyTargetGroupAttributesOutput, error) {
+func (s *ELBv2ServiceImpl) ModifyTargetGroupAttributes(ctx context.Context, input *elbv2.ModifyTargetGroupAttributesInput, accountID string) (*elbv2.ModifyTargetGroupAttributesOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -223,7 +224,7 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroupAttributes(input *elbv2.ModifyTarget
 	return &elbv2.ModifyTargetGroupAttributesOutput{Attributes: sdkAttrsOut(submitted, mkTGAttr)}, nil
 }
 
-func (s *ELBv2ServiceImpl) DescribeTargetGroupAttributes(input *elbv2.DescribeTargetGroupAttributesInput, accountID string) (*elbv2.DescribeTargetGroupAttributesOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeTargetGroupAttributes(ctx context.Context, input *elbv2.DescribeTargetGroupAttributesInput, accountID string) (*elbv2.DescribeTargetGroupAttributesOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -236,7 +237,7 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroupAttributes(input *elbv2.DescribeTa
 	return &elbv2.DescribeTargetGroupAttributesOutput{Attributes: sdkAttrsOut(pairs, mkTGAttr)}, nil
 }
 
-func (s *ELBv2ServiceImpl) ModifyLoadBalancerAttributes(input *elbv2.ModifyLoadBalancerAttributesInput, accountID string) (*elbv2.ModifyLoadBalancerAttributesOutput, error) {
+func (s *ELBv2ServiceImpl) ModifyLoadBalancerAttributes(ctx context.Context, input *elbv2.ModifyLoadBalancerAttributesInput, accountID string) (*elbv2.ModifyLoadBalancerAttributesOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -250,7 +251,7 @@ func (s *ELBv2ServiceImpl) ModifyLoadBalancerAttributes(input *elbv2.ModifyLoadB
 	return &elbv2.ModifyLoadBalancerAttributesOutput{Attributes: sdkAttrsOut(submitted, mkLBAttr)}, nil
 }
 
-func (s *ELBv2ServiceImpl) DescribeLoadBalancerAttributes(input *elbv2.DescribeLoadBalancerAttributesInput, accountID string) (*elbv2.DescribeLoadBalancerAttributesOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeLoadBalancerAttributes(ctx context.Context, input *elbv2.DescribeLoadBalancerAttributesInput, accountID string) (*elbv2.DescribeLoadBalancerAttributesOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}

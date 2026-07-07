@@ -1,6 +1,7 @@
 package handlers_ec2_igw
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -62,14 +63,14 @@ func setupTestIGWService(t *testing.T) (*IGWServiceImpl, *nats.Conn) {
 
 func createTestIGW(t *testing.T, svc *IGWServiceImpl) string {
 	t.Helper()
-	out, err := svc.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}, testAccountID)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
 	require.NoError(t, err)
 	return *out.InternetGateway.InternetGatewayId
 }
 
 func TestCreateInternetGateway(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	out, err := svc.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}, testAccountID)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out.InternetGateway)
 	assert.Equal(t, "igw-", (*out.InternetGateway.InternetGatewayId)[:4])
@@ -79,7 +80,7 @@ func TestCreateInternetGateway(t *testing.T) {
 
 func TestCreateInternetGateway_WithTags(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	out, err := svc.CreateInternetGateway(&ec2.CreateInternetGatewayInput{
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
 		TagSpecifications: []*ec2.TagSpecification{
 			{
 				ResourceType: aws.String("internet-gateway"),
@@ -94,7 +95,7 @@ func TestCreateInternetGateway_WithTags(t *testing.T) {
 	assert.Len(t, out.InternetGateway.Tags, 2)
 
 	// Verify tags persist through describe
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{out.InternetGateway.InternetGatewayId},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -104,7 +105,7 @@ func TestCreateInternetGateway_WithTags(t *testing.T) {
 
 func TestCreateInternetGateway_TagsWrongResourceType(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	out, err := svc.CreateInternetGateway(&ec2.CreateInternetGatewayInput{
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
 		TagSpecifications: []*ec2.TagSpecification{
 			{
 				ResourceType: aws.String("instance"),
@@ -122,12 +123,12 @@ func TestDeleteInternetGateway(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
-	_, err := svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	_, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{aws.String(igwID)},
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidInternetGatewayID.NotFound")
@@ -135,13 +136,13 @@ func TestDeleteInternetGateway(t *testing.T) {
 
 func TestDeleteInternetGateway_MissingID(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	_, err := svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{}, testAccountID)
+	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
 }
 
 func TestDeleteInternetGateway_EmptyID(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	_, err := svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(""),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
@@ -152,14 +153,14 @@ func TestDeleteInternetGateway_WhileAttached(t *testing.T) {
 	igwID := createTestIGW(t, svc)
 
 	// Attach to a VPC
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Try to delete — should fail with DependencyViolation
-	_, err = svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "DependencyViolation")
@@ -170,7 +171,7 @@ func TestDescribeInternetGateways_All(t *testing.T) {
 	createTestIGW(t, svc)
 	createTestIGW(t, svc)
 
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{}, testAccountID)
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, desc.InternetGateways, 2)
 }
@@ -180,7 +181,7 @@ func TestDescribeInternetGateways_ByID(t *testing.T) {
 	igwID := createTestIGW(t, svc)
 	createTestIGW(t, svc) // second one should be filtered out
 
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{aws.String(igwID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -190,7 +191,7 @@ func TestDescribeInternetGateways_ByID(t *testing.T) {
 
 func TestDescribeInternetGateways_Empty(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{}, testAccountID)
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, desc.InternetGateways)
 }
@@ -199,14 +200,14 @@ func TestAttachInternetGateway(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify attachment via describe
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{aws.String(igwID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -218,7 +219,7 @@ func TestAttachInternetGateway(t *testing.T) {
 
 func TestAttachInternetGateway_NotFound(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String("igw-nonexistent"),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
@@ -229,14 +230,14 @@ func TestAttachInternetGateway_AlreadyAttached(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Try attaching again — should fail
-	_, err = svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-other"),
 	}, testAccountID)
@@ -245,12 +246,12 @@ func TestAttachInternetGateway_AlreadyAttached(t *testing.T) {
 
 func TestAttachInternetGateway_MissingParams(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		VpcId: aws.String("vpc-test123"),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
 
-	_, err = svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String("igw-test"),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
@@ -261,21 +262,21 @@ func TestDetachInternetGateway(t *testing.T) {
 	igwID := createTestIGW(t, svc)
 
 	// Attach first
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Detach
-	_, err = svc.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify detached
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{aws.String(igwID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -287,7 +288,7 @@ func TestDetachInternetGateway_NotAttached(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
-	_, err := svc.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+	_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
@@ -298,14 +299,14 @@ func TestDetachInternetGateway_WrongVPC(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Try detaching from wrong VPC
-	_, err = svc.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-wrong"),
 	}, testAccountID)
@@ -314,7 +315,7 @@ func TestDetachInternetGateway_WrongVPC(t *testing.T) {
 
 func TestDetachInternetGateway_NotFound(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	_, err := svc.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+	_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		InternetGatewayId: aws.String("igw-nonexistent"),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
@@ -323,12 +324,12 @@ func TestDetachInternetGateway_NotFound(t *testing.T) {
 
 func TestDetachInternetGateway_MissingParams(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	_, err := svc.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+	_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		VpcId: aws.String("vpc-test123"),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
 
-	_, err = svc.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		InternetGatewayId: aws.String("igw-test"),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
@@ -341,33 +342,33 @@ func TestIGWLifecycle_CreateAttachDetachDelete(t *testing.T) {
 	igwID := createTestIGW(t, svc)
 
 	// Attach
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-lifecycle"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Cannot delete while attached
-	_, err = svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "DependencyViolation")
 
 	// Detach
-	_, err = svc.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-lifecycle"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Now delete succeeds
-	_, err = svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify gone
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{}, testAccountID)
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, desc.InternetGateways)
 }
@@ -384,7 +385,7 @@ func TestAttachInternetGateway_PublishesEvent(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-event-test"),
 	}, testAccountID)
@@ -405,7 +406,7 @@ func TestDetachInternetGateway_PublishesEvent(t *testing.T) {
 	igwID := createTestIGW(t, svc)
 
 	// Attach first
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-event-test"),
 	}, testAccountID)
@@ -419,7 +420,7 @@ func TestDetachInternetGateway_PublishesEvent(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = svc.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-event-test"),
 	}, testAccountID)
@@ -446,7 +447,7 @@ func TestCreateInternetGateway_PublishesNoEvent(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = svc.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}, testAccountID)
+	_, err = svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify no event was published
@@ -477,12 +478,12 @@ func TestAttachInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 
 	// Create IGW owned by otherAccountID
 	otherAccount := "999999999999"
-	out, err := svc.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}, otherAccount)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, otherAccount)
 	require.NoError(t, err)
 	igwID := *out.InternetGateway.InternetGatewayId
 
 	// Other account tries to attach their IGW to testAccountID's VPC — should fail
-	_, err = svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String(vpcID),
 	}, otherAccount)
@@ -491,7 +492,7 @@ func TestAttachInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 
 	// Owner attaches their own IGW to their own VPC — should succeed
 	ownIGW := createTestIGW(t, svc)
-	_, err = svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(ownIGW),
 		VpcId:             aws.String(vpcID),
 	}, testAccountID)
@@ -503,7 +504,7 @@ func TestDescribeInternetGateways_FilterByIGWId(t *testing.T) {
 	igwID := createTestIGW(t, svc)
 	createTestIGW(t, svc)
 
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String(igwID)}},
 		},
@@ -519,13 +520,13 @@ func TestDescribeInternetGateways_FilterByAttachmentVpcId(t *testing.T) {
 	createTestIGW(t, svc) // detached
 
 	// Attach first IGW
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-test123")}},
 		},
@@ -541,13 +542,13 @@ func TestDescribeInternetGateways_FilterByAttachmentState(t *testing.T) {
 	createTestIGW(t, svc) // detached, won't match
 
 	// Attach
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("attachment.state"), Values: []*string{aws.String("available")}},
 		},
@@ -563,7 +564,7 @@ func TestDescribeInternetGateways_FilterMultipleValues_OR(t *testing.T) {
 	igwID2 := createTestIGW(t, svc)
 	createTestIGW(t, svc)
 
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String(igwID1), aws.String(igwID2)}},
 		},
@@ -577,14 +578,14 @@ func TestDescribeInternetGateways_FilterMultipleFilters_AND(t *testing.T) {
 	igwID := createTestIGW(t, svc)
 	createTestIGW(t, svc) // detached
 
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Match both
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String(igwID)}},
 			{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-test123")}},
@@ -594,7 +595,7 @@ func TestDescribeInternetGateways_FilterMultipleFilters_AND(t *testing.T) {
 	assert.Len(t, desc.InternetGateways, 1)
 
 	// Mismatch
-	desc, err = svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String(igwID)}},
 			{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-wrong")}},
@@ -607,7 +608,7 @@ func TestDescribeInternetGateways_FilterMultipleFilters_AND(t *testing.T) {
 func TestDescribeInternetGateways_FilterUnknownName_Error(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 
-	_, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("bogus-filter"), Values: []*string{aws.String("x")}},
 		},
@@ -619,7 +620,7 @@ func TestDescribeInternetGateways_FilterWildcard(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String("igw-*")}},
 		},
@@ -633,7 +634,7 @@ func TestDescribeInternetGateways_FilterNoResults(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	createTestIGW(t, svc)
 
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String("igw-nonexistent")}},
 		},
@@ -644,7 +645,7 @@ func TestDescribeInternetGateways_FilterNoResults(t *testing.T) {
 
 func TestDescribeInternetGateways_FilterByTag(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
-	out, err := svc.CreateInternetGateway(&ec2.CreateInternetGatewayInput{
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
 		TagSpecifications: []*ec2.TagSpecification{
 			{
 				ResourceType: aws.String("internet-gateway"),
@@ -655,7 +656,7 @@ func TestDescribeInternetGateways_FilterByTag(t *testing.T) {
 	require.NoError(t, err)
 	createTestIGW(t, svc) // untagged
 
-	desc, err := svc.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("tag:Env"), Values: []*string{aws.String("prod")}},
 		},
@@ -677,7 +678,7 @@ func TestDeleteInternetGateway_PublishesNoEvent(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -699,7 +700,7 @@ func TestAttachInternetGateway_NoGateFanOut(t *testing.T) {
 	svc.SetGatePublisher(pub)
 	igwID := createTestIGW(t, svc)
 
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
@@ -712,7 +713,7 @@ func TestDetachInternetGateway_FanOutsGateDecisionsForVPC(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
@@ -722,7 +723,7 @@ func TestDetachInternetGateway_FanOutsGateDecisionsForVPC(t *testing.T) {
 	pub := &fakeGatePublisher{}
 	svc.SetGatePublisher(pub)
 
-	_, err = svc.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
@@ -740,7 +741,7 @@ func TestAttachInternetGateway_NoGatePublisher_NoOp(t *testing.T) {
 	igwID := createTestIGW(t, svc)
 
 	// Default state — gatePublisher nil. Must not panic.
-	_, err := svc.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)

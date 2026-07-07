@@ -1,0 +1,56 @@
+[Unit]
+Description=Spinifex QMP Telemetry Collector (guest metrics)
+PartOf=spinifex.target
+After=spinifex-nats.service spinifex-daemon.service
+Wants=spinifex-nats.service
+
+[Service]
+EnvironmentFile=-/etc/spinifex/telemetry.env
+Type=simple
+Slice=spinifex-system.slice
+# spinifex-daemon user: the collector reads the daemon's telemetry QMP
+# sockets in /run/spinifex and the daemon-owned QEMU /proc entries.
+User=spinifex-daemon
+Group=spinifex
+ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
+ExecStart=/usr/local/bin/spx service qmp-collector start
+Restart=on-failure
+RestartSec=5
+Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
+Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
+# Same runtime dir as the daemon: telemetry sockets + metadata live there
+Environment=XDG_RUNTIME_DIR=/run/spinifex
+
+# RG-9: read-mostly telemetry tier — no capabilities, no device access
+ProtectSystem=full
+PrivateDevices=yes
+NoNewPrivileges=yes
+ReadOnlyPaths=/etc/spinifex/spinifex.toml /etc/spinifex/ca.pem
+ReadWritePaths=/var/lib/spinifex/spinifex /run/spinifex
+
+# RG-9: hardening baseline
+ProtectHome=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+# ProtectProc must stay default: hidepid=invisible hides the QEMU vCPU threads
+# (dumpable=0) this collector must read from /proc/<tid>/stat, even same-uid.
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectHostname=yes
+KeyringMode=private
+RemoveIPC=yes
+LimitCORE=0
+LimitNOFILE=65536
+LimitNPROC=512
+
+[Install]
+WantedBy=spinifex.target

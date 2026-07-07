@@ -1,6 +1,7 @@
 package gateway_ec2_key
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -12,50 +13,50 @@ import (
 // Handler tests — call handlers directly to cover validation + NATS error paths
 
 func TestCreateKeyPair_ValidationErrors(t *testing.T) {
-	_, err := CreateKeyPair(nil, nil, "")
+	_, err := CreateKeyPair(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = CreateKeyPair(&ec2.CreateKeyPairInput{}, nil, "")
+	_, err = CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{}, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestCreateKeyPair_NilNATS(t *testing.T) {
-	_, err := CreateKeyPair(&ec2.CreateKeyPairInput{
+	_, err := CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
 		KeyName: aws.String("my-key"),
 	}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestDeleteKeyPair_ValidationErrors(t *testing.T) {
-	_, err := DeleteKeyPair(nil, nil, "")
+	_, err := DeleteKeyPair(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = DeleteKeyPair(&ec2.DeleteKeyPairInput{}, nil, "")
+	_, err = DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{}, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDeleteKeyPair_NilNATS(t *testing.T) {
-	_, err := DeleteKeyPair(&ec2.DeleteKeyPairInput{
+	_, err := DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{
 		KeyName: aws.String("my-key"),
 	}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestImportKeyPair_ValidationErrors(t *testing.T) {
-	_, err := ImportKeyPair(nil, nil, "")
+	_, err := ImportKeyPair(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = ImportKeyPair(&ec2.ImportKeyPairInput{}, nil, "")
+	_, err = ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{}, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = ImportKeyPair(&ec2.ImportKeyPairInput{
+	_, err = ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
 		KeyName: aws.String("my-key"),
 	}, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestImportKeyPair_NilNATS(t *testing.T) {
-	_, err := ImportKeyPair(&ec2.ImportKeyPairInput{
+	_, err := ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
 		KeyName:           aws.String("my-key"),
 		PublicKeyMaterial: []byte("ssh-rsa AAAA..."),
 	}, nil, "acct-123")
@@ -63,9 +64,9 @@ func TestImportKeyPair_NilNATS(t *testing.T) {
 }
 
 func TestDescribeKeyPairs_NilNATS(t *testing.T) {
-	_, err := DescribeKeyPairs(nil, nil, "acct-123")
+	_, err := DescribeKeyPairs(context.Background(), nil, nil, "acct-123")
 	assert.Error(t, err)
 
-	_, err = DescribeKeyPairs(&ec2.DescribeKeyPairsInput{}, nil, "acct-123")
+	_, err = DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{}, nil, "acct-123")
 	assert.Error(t, err)
 }

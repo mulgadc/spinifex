@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -23,22 +24,22 @@ func TestRLC1_ELBv2DeleteIdempotentOnAbsent(t *testing.T) {
 		call func(svc *ELBv2ServiceImpl) (any, error)
 	}{
 		{"DeleteLoadBalancer", func(svc *ELBv2ServiceImpl) (any, error) {
-			return svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+			return svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
 				LoadBalancerArn: aws.String(arnBase + "loadbalancer/app/absent/0000000000000000"),
 			}, testAccountID)
 		}},
 		{"DeleteTargetGroup", func(svc *ELBv2ServiceImpl) (any, error) {
-			return svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+			return svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{
 				TargetGroupArn: aws.String(arnBase + "targetgroup/absent/0000000000000000"),
 			}, testAccountID)
 		}},
 		{"DeleteListener", func(svc *ELBv2ServiceImpl) (any, error) {
-			return svc.DeleteListener(&elbv2.DeleteListenerInput{
+			return svc.DeleteListener(context.Background(), &elbv2.DeleteListenerInput{
 				ListenerArn: aws.String(arnBase + "listener/app/absent/0000000000000000/1111111111111111"),
 			}, testAccountID)
 		}},
 		{"DeleteRule", func(svc *ELBv2ServiceImpl) (any, error) {
-			return svc.DeleteRule(&elbv2.DeleteRuleInput{
+			return svc.DeleteRule(context.Background(), &elbv2.DeleteRuleInput{
 				RuleArn: aws.String(arnBase + "listener-rule/app/absent/0000000000000000/1111111111111111/2222222222222222"),
 			}, testAccountID)
 		}},
@@ -60,16 +61,16 @@ func TestRLC1_ELBv2DeleteIdempotentOnAbsent(t *testing.T) {
 func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("rlc2-lb")}, testAccountID)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("rlc2-lb")}, testAccountID)
 	require.NoError(t, err)
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("rlc2-tg")}, testAccountID)
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("rlc2-tg")}, testAccountID)
 	require.NoError(t, err)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
 	for i, port := range []int64{80, 8080} {
-		lst, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		lst, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 			LoadBalancerArn: lbArn,
 			Protocol:        aws.String("HTTP"),
 			Port:            aws.Int64(port),
@@ -77,7 +78,7 @@ func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
 		}, testAccountID)
 		require.NoError(t, err)
 
-		_, err = svc.CreateRule(&elbv2.CreateRuleInput{
+		_, err = svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
 			ListenerArn: lst.Listeners[0].ListenerArn,
 			Priority:    aws.Int64(int64(10 + i)),
 			Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/api/*"})}},
@@ -86,7 +87,7 @@ func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
 	require.NoError(t, err)
 
 	listeners, err := svc.store.ListListenersByLB(*lbArn)
@@ -116,7 +117,7 @@ func TestRLC3_ELBv2DeleteLBDoesNotBypassListenerCascade(t *testing.T) {
 // from its signature up to the start of the next top-level func.
 func deleteLBFuncBody(t *testing.T, src string) string {
 	t.Helper()
-	const sig = "func (s *ELBv2ServiceImpl) DeleteLoadBalancer("
+	const sig = "func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, "
 	start := strings.Index(src, sig)
 	require.GreaterOrEqual(t, start, 0, "DeleteLoadBalancer not found in service_impl.go")
 	rest := src[start+len(sig):]
@@ -146,15 +147,15 @@ func stripComments(src string) string {
 func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("rlc4-lb")}, testAccountID)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("rlc4-lb")}, testAccountID)
 	require.NoError(t, err)
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("rlc4-tg")}, testAccountID)
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("rlc4-tg")}, testAccountID)
 	require.NoError(t, err)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
-	lst, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lst, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -162,7 +163,7 @@ func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateRule(&elbv2.CreateRuleInput{
+	_, err = svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
 		ListenerArn: lst.Listeners[0].ListenerArn,
 		Priority:    aws.Int64(10),
 		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/api/*"})}},
@@ -170,10 +171,10 @@ func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: tgArn}, testAccountID)
+	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{TargetGroupArn: tgArn}, testAccountID)
 	require.NoErrorf(t, err, "ADR-0002 §5 TG deletability after LB teardown: target group must not stay pinned as ResourceInUse")
 }
 
@@ -187,7 +188,7 @@ func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
 	svc := setupTestService(t)
 
 	// Orphan-rule TG: forwarded to by a rule whose owning LB/listener is gone.
-	orphanTG, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("rlc3-orphan-tg")}, testAccountID)
+	orphanTG, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("rlc3-orphan-tg")}, testAccountID)
 	require.NoError(t, err)
 	orphanTGArn := *orphanTG.TargetGroups[0].TargetGroupArn
 
@@ -201,17 +202,17 @@ func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
 		AccountID:   testAccountID,
 	}))
 
-	_, err = svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: aws.String(orphanTGArn)}, testAccountID)
+	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{TargetGroupArn: aws.String(orphanTGArn)}, testAccountID)
 	require.NoErrorf(t, err, "ADR-0002 §3 live-only guard: a rule orphaned by a vanished LB must NOT pin the TG as ResourceInUse")
 
 	// Live-rule TG: forwarded to by a listener whose LB still exists → ResourceInUse.
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("rlc3-lb")}, testAccountID)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("rlc3-lb")}, testAccountID)
 	require.NoError(t, err)
-	liveTG, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("rlc3-live-tg")}, testAccountID)
+	liveTG, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("rlc3-live-tg")}, testAccountID)
 	require.NoError(t, err)
 	liveTGArn := liveTG.TargetGroups[0].TargetGroupArn
 
-	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err = svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -219,7 +220,7 @@ func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: liveTGArn}, testAccountID)
+	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{TargetGroupArn: liveTGArn}, testAccountID)
 	assert.ErrorContainsf(t, err, awserrors.ErrorELBv2TargetGroupInUse,
 		"ADR-0002 §3 live-only guard: a TG forwarded to by a LIVE listener must block on ResourceInUse")
 }

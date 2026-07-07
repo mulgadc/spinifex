@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -32,7 +33,7 @@ func ValidateCreateImageInput(input *ec2.CreateImageInput) error {
 }
 
 // CreateImage handles the EC2 CreateImage API call
-func CreateImage(input *ec2.CreateImageInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.CreateImageOutput, error) {
+func CreateImage(ctx context.Context, input *ec2.CreateImageInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.CreateImageOutput, error) {
 	var output ec2.CreateImageOutput
 
 	if err := ValidateCreateImageInput(input); err != nil {
@@ -40,7 +41,7 @@ func CreateImage(input *ec2.CreateImageInput, natsConn *nats.Conn, expectedNodes
 	}
 
 	svc := handlers_ec2_image.NewNATSImageService(natsConn, expectedNodes)
-	result, err := svc.CreateImage(input, accountID)
+	result, err := svc.CreateImage(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

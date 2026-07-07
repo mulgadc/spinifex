@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -241,7 +242,7 @@ func TestValidateRegisterImageInput(t *testing.T) {
 func TestRegisterImage_GatewayValidationFailureReturnsEarly(t *testing.T) {
 	// nil natsConn is fine here: validation rejects the input before any
 	// NATS round-trip is attempted, so we exercise the early-exit path.
-	_, err := RegisterImage(&ec2.RegisterImageInput{}, nil, "000000000001")
+	_, err := RegisterImage(context.Background(), &ec2.RegisterImageInput{}, nil, "000000000001")
 	assert.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }

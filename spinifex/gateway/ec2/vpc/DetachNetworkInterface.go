@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +28,7 @@ func ValidateDetachNetworkInterfaceInput(input *ec2.DetachNetworkInterfaceInput)
 
 // DetachNetworkInterface resolves the owning instance via DescribeNetworkInterfaces,
 // then dispatches the detach command to that daemon.
-func DetachNetworkInterface(input *ec2.DetachNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.DetachNetworkInterfaceOutput, error) {
+func DetachNetworkInterface(ctx context.Context, input *ec2.DetachNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.DetachNetworkInterfaceOutput, error) {
 	var output ec2.DetachNetworkInterfaceOutput
 
 	if err := ValidateDetachNetworkInterfaceInput(input); err != nil {
@@ -40,7 +41,7 @@ func DetachNetworkInterface(input *ec2.DetachNetworkInterfaceInput, natsConn *na
 		force = *input.Force
 	}
 
-	instanceID, err := resolveAttachmentInstance(natsConn, accountID, attachmentID)
+	instanceID, err := resolveAttachmentInstance(ctx, natsConn, accountID, attachmentID)
 	if err != nil {
 		return output, err
 	}
@@ -56,16 +57,17 @@ func DetachNetworkInterface(input *ec2.DetachNetworkInterfaceInput, natsConn *na
 
 	jsonData, err := json.Marshal(command)
 	if err != nil {
-		slog.Error("DetachNetworkInterface: marshal command failed", "err", err)
+		slog.ErrorContext(ctx, "DetachNetworkInterface: marshal command failed", "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	reqMsg := nats.NewMsg(fmt.Sprintf("ec2.cmd.%s", instanceID))
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
-		slog.Error("DetachNetworkInterface: NATS request failed",
+		slog.ErrorContext(ctx, "DetachNetworkInterface: NATS request failed",
 			"instanceId", instanceID, "attachmentId", attachmentID, "err", err)
 		if errors.Is(err, nats.ErrNoResponders) {
 			return output, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
@@ -79,18 +81,18 @@ func DetachNetworkInterface(input *ec2.DetachNetworkInterfaceInput, natsConn *na
 	}
 
 	if err := json.Unmarshal(msg.Data, &output); err != nil {
-		slog.Error("DetachNetworkInterface: unmarshal response failed", "err", err)
+		slog.ErrorContext(ctx, "DetachNetworkInterface: unmarshal response failed", "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("DetachNetworkInterface completed",
+	slog.InfoContext(ctx, "DetachNetworkInterface completed",
 		"instanceId", instanceID, "attachmentId", attachmentID)
 	return output, nil
 }
 
 // resolveAttachmentInstance fans out DescribeNetworkInterfaces to find the instance
 // owning attachmentID; returns InvalidAttachmentID.NotFound when no match.
-func resolveAttachmentInstance(natsConn *nats.Conn, accountID, attachmentID string) (string, error) {
+func resolveAttachmentInstance(ctx context.Context, natsConn *nats.Conn, accountID, attachmentID string) (string, error) {
 	input := &ec2.DescribeNetworkInterfacesInput{}
 	reqData, err := json.Marshal(input)
 	if err != nil {
@@ -99,6 +101,7 @@ func resolveAttachmentInstance(natsConn *nats.Conn, accountID, attachmentID stri
 	reqMsg := nats.NewMsg("ec2.DescribeNetworkInterfaces")
 	reqMsg.Data = reqData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 10*time.Second)
 	if err != nil {
 		return "", errors.New(awserrors.ErrorServerInternal)

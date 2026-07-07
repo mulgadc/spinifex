@@ -20,6 +20,38 @@ var CommandResponseTypes = map[string]unmarshalTarget{
 	"query-block": &[]BlockDevice{},
 
 	"query-status": &Status{},
+
+	"query-cpus-fast":  &[]CPUInfoFast{},
+	"query-blockstats": &[]BlockStats{},
+	"query-balloon":    &BalloonInfo{},
+}
+
+// CPUInfoFast is one vCPU entry from query-cpus-fast. ThreadID is the host
+// thread backing the vCPU; its /proc/<tid>/stat utime+stime deltas yield
+// guest CPU utilization.
+type CPUInfoFast struct {
+	CPUIndex int `json:"cpu-index"`
+	ThreadID int `json:"thread-id"`
+}
+
+// BlockStats is one device entry from query-blockstats.
+type BlockStats struct {
+	Device string           `json:"device,omitempty"`
+	Stats  BlockDeviceStats `json:"stats"`
+}
+
+// BlockDeviceStats holds the cumulative I/O counters of a block device.
+type BlockDeviceStats struct {
+	RdBytes      int64 `json:"rd_bytes"`
+	WrBytes      int64 `json:"wr_bytes"`
+	RdOperations int64 `json:"rd_operations"`
+	WrOperations int64 `json:"wr_operations"`
+}
+
+// BalloonInfo is the query-balloon response; Actual is the guest's current
+// memory allocation in bytes.
+type BalloonInfo struct {
+	Actual int64 `json:"actual"`
 }
 
 type Status struct {
@@ -150,4 +182,54 @@ func NewQMPClient(path string) (*QMPClient, error) {
 	}
 
 	return client, nil
+}
+
+// Close releases the underlying socket. Safe on a nil client.
+func (c *QMPClient) Close() error {
+	if c == nil || c.Conn == nil {
+		return nil
+	}
+	return c.Conn.Close()
+}
+
+// Execute sends one command and decodes its response into out (a pointer,
+// typically from CommandResponseTypes shapes). Async QMP events interleaved on
+// the stream are skipped. Intended for short-lived, single-owner connections
+// (e.g. the telemetry collector); the manager path in vm uses its own
+// reconnecting wrapper. The caller must hold no other reader on the stream.
+func (c *QMPClient) Execute(cmd QMPCommand, out any) error {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+
+	if err := c.Conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	defer func() { _ = c.Conn.SetReadDeadline(time.Time{}) }()
+
+	if err := c.Encoder.Encode(cmd); err != nil {
+		return fmt.Errorf("encode %s: %w", cmd.Execute, err)
+	}
+	for {
+		var resp struct {
+			Return json.RawMessage `json:"return"`
+			Error  *QMPError       `json:"error"`
+			Event  string          `json:"event"`
+		}
+		if err := c.Decoder.Decode(&resp); err != nil {
+			return fmt.Errorf("decode %s: %w", cmd.Execute, err)
+		}
+		if resp.Event != "" {
+			continue
+		}
+		if resp.Error != nil {
+			return fmt.Errorf("QMP %s: %s: %s", cmd.Execute, resp.Error.Class, resp.Error.Desc)
+		}
+		if resp.Return == nil {
+			continue
+		}
+		if out == nil {
+			return nil
+		}
+		return json.Unmarshal(resp.Return, out)
+	}
 }

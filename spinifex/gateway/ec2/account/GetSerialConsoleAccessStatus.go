@@ -1,6 +1,7 @@
 package gateway_ec2_account
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -16,7 +17,7 @@ func ValidateGetSerialConsoleAccessStatusInput(input *ec2.GetSerialConsoleAccess
 	return nil
 }
 
-func GetSerialConsoleAccessStatus(input *ec2.GetSerialConsoleAccessStatusInput, natsConn *nats.Conn, accountID string) (ec2.GetSerialConsoleAccessStatusOutput, error) {
+func GetSerialConsoleAccessStatus(ctx context.Context, input *ec2.GetSerialConsoleAccessStatusInput, natsConn *nats.Conn, accountID string) (ec2.GetSerialConsoleAccessStatusOutput, error) {
 	var output ec2.GetSerialConsoleAccessStatusOutput
 
 	if err := ValidateGetSerialConsoleAccessStatusInput(input); err != nil {
@@ -24,7 +25,7 @@ func GetSerialConsoleAccessStatus(input *ec2.GetSerialConsoleAccessStatusInput, 
 	}
 
 	svc := handlers_ec2_account.NewNATSAccountSettingsService(natsConn)
-	result, err := svc.GetSerialConsoleAccessStatus(input, accountID)
+	result, err := svc.GetSerialConsoleAccessStatus(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

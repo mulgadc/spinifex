@@ -31,6 +31,9 @@ Service lifecycle commands for starting, stopping, and checking status of all Sp
 | `spx service vpcd start` | — | Loads cluster config → starts VPC daemon (subscribes to `vpc.*` NATS events, translates to OVN logical switches/ports/routers) |
 | `spx service vpcd stop` | — | Stops the vpcd service |
 | `spx service vpcd status` | — | Reports vpcd service status |
+| `spx service qmp-collector start` | — | Starts the guest-metrics collector (polls per-VM telemetry QMP sockets + tap counters, publishes CloudWatch-shaped series to NATS `metrics.ec2.*`) |
+| `spx service qmp-collector stop` | — | Stops the qmp-collector service |
+| `spx service qmp-collector status` | — | Reports qmp-collector service status |
 
 ### Cluster Inspection
 

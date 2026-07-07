@@ -1,6 +1,7 @@
 package gateway_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -24,7 +25,7 @@ type webhookTokenReviewRequest struct {
 // WebhookTokenReview — POST /clusters/{name}/token-review. Resolves an
 // `aws eks get-token` bearer token to a K8s identity (STS verify + AccessEntry
 // lookup) via the AWSGW, keeping STS/KV access cluster-internal.
-func WebhookTokenReview(natsConn *nats.Conn, clusterName string, body []byte) (*handlers_eks.WebhookTokenReviewResult, error) {
+func WebhookTokenReview(ctx context.Context, natsConn *nats.Conn, clusterName string, body []byte) (*handlers_eks.WebhookTokenReviewResult, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -34,16 +35,16 @@ func WebhookTokenReview(natsConn *nats.Conn, clusterName string, body []byte) (*
 
 	var req webhookTokenReviewRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		slog.Debug("WebhookTokenReview: bad body", "cluster", clusterName, "err", err)
+		slog.DebugContext(ctx, "WebhookTokenReview: bad body", "cluster", clusterName, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	if req.AccountID == "" || req.Token == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	res, err := handlers_eks.ResolveTokenReview(natsConn, req.AccountID, clusterName, req.Token, tokenReviewVerifyTimeout)
+	res, err := handlers_eks.ResolveTokenReview(ctx, natsConn, req.AccountID, clusterName, req.Token, tokenReviewVerifyTimeout)
 	if err != nil {
-		slog.Error("WebhookTokenReview: resolve failed", "cluster", clusterName, "err", err)
+		slog.ErrorContext(ctx, "WebhookTokenReview: resolve failed", "cluster", clusterName, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	return &res, nil

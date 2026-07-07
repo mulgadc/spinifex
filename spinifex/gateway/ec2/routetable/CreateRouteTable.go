@@ -1,6 +1,7 @@
 package gateway_ec2_routetable
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -19,13 +20,13 @@ func ValidateCreateRouteTableInput(input *ec2.CreateRouteTableInput) error {
 	return nil
 }
 
-func CreateRouteTable(input *ec2.CreateRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.CreateRouteTableOutput, error) {
+func CreateRouteTable(ctx context.Context, input *ec2.CreateRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.CreateRouteTableOutput, error) {
 	var output ec2.CreateRouteTableOutput
 	if err := ValidateCreateRouteTableInput(input); err != nil {
 		return output, err
 	}
 	svc := handlers_ec2_routetable.NewNATSRouteTableService(natsConn)
-	result, err := svc.CreateRouteTable(input, accountID)
+	result, err := svc.CreateRouteTable(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

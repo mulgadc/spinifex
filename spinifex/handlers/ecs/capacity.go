@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -46,7 +47,7 @@ type ProvisionCapacityOutput struct {
 // ECS instance role/profile, resolves the spinifex-ecs-node AMI, renders
 // keyless user-data (IMDS instance-role creds), and launches via the customer
 // RunInstances path with the profile attached and a cluster-association tag.
-func (s *Service) ProvisionCapacity(input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error) {
+func (s *Service) ProvisionCapacity(ctx context.Context, input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -80,7 +81,7 @@ func (s *Service) ProvisionCapacity(input *ProvisionCapacityInput, accountID str
 		return nil, fmt.Errorf("ensure ECS instance profile: %w", err)
 	}
 
-	amiID, err := lookupECSNodeAMI(s.deps.Images, accountID)
+	amiID, err := lookupECSNodeAMI(ctx, s.deps.Images, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +115,7 @@ func (s *Service) ProvisionCapacity(input *ProvisionCapacityInput, accountID str
 		runInput.KeyName = aws.String(input.KeyName)
 	}
 
-	res, err := s.deps.RunInstances(runInput, accountID)
+	res, err := s.deps.RunInstances(ctx, runInput, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -131,8 +132,8 @@ func (s *Service) ProvisionCapacity(input *ProvisionCapacityInput, accountID str
 // lookupECSNodeAMI resolves the spinifex-ecs-node AMI by the
 // spinifex:managed-by=ecs tag rather than a brittle exact name. The newest
 // matching image (by CreationDate) wins.
-func lookupECSNodeAMI(amiSvc ecsImageResolver, accountID string) (string, error) {
-	out, err := amiSvc.DescribeImages(&ec2.DescribeImagesInput{
+func lookupECSNodeAMI(ctx context.Context, amiSvc ecsImageResolver, accountID string) (string, error) {
+	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByECS})},
 		},
@@ -161,7 +162,7 @@ func lookupECSNodeAMI(amiSvc ecsImageResolver, accountID string) (string, error)
 		return "", fmt.Errorf("%w (tag:%s=%s, account %s)", ErrECSNodeAMINotFound, tags.ManagedByKey, tags.ManagedByECS, accountID)
 	}
 	if matches > 1 {
-		slog.Warn("ecs: multiple AMIs match managed-by=ecs; using newest",
+		slog.WarnContext(ctx, "ecs: multiple AMIs match managed-by=ecs; using newest",
 			"count", matches, "imageId", newestID, "created", newestCreated)
 	}
 	return newestID, nil

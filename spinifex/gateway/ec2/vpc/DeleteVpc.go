@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateDeleteVpcInput(input *ec2.DeleteVpcInput) error {
 }
 
 // DeleteVpc handles the EC2 DeleteVpc API call
-func DeleteVpc(input *ec2.DeleteVpcInput, natsConn *nats.Conn, accountID string) (ec2.DeleteVpcOutput, error) {
+func DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInput, natsConn *nats.Conn, accountID string) (ec2.DeleteVpcOutput, error) {
 	var output ec2.DeleteVpcOutput
 
 	if err := ValidateDeleteVpcInput(input); err != nil {
@@ -28,7 +29,7 @@ func DeleteVpc(input *ec2.DeleteVpcInput, natsConn *nats.Conn, accountID string)
 	}
 
 	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
-	result, err := svc.DeleteVpc(input, accountID)
+	result, err := svc.DeleteVpc(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

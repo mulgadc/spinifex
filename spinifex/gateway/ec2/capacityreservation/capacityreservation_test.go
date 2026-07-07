@@ -1,6 +1,7 @@
 package gateway_ec2_capacityreservation
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func validCreateInput() *ec2.CreateCapacityReservationInput {
 
 // answerNodeStatus replies to spinifex.node.status with the given snapshots,
 // letting a test stand up a synthetic census without a real daemon.
-func answerNodeStatus(t *testing.T, nc *nats.Conn, nodes []types.NodeStatusResponse) {
+func answerNodeStatus(ctx context.Context, t *testing.T, nc *nats.Conn, nodes []types.NodeStatusResponse) {
 	t.Helper()
 	sub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
 		for _, n := range nodes {
@@ -88,12 +89,12 @@ func TestValidateCreateCapacityReservationInput_Nil(t *testing.T) {
 func TestCreateCapacityReservation_DryRun(t *testing.T) {
 	in := validCreateInput()
 	in.DryRun = aws.Bool(true)
-	_, err := CreateCapacityReservation(in, nil, 1, testAccountID)
+	_, err := CreateCapacityReservation(context.Background(), in, nil, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorDryRunOperation)
 }
 
 func TestCreateCapacityReservation_NilNATS(t *testing.T) {
-	_, err := CreateCapacityReservation(validCreateInput(), nil, 1, testAccountID)
+	_, err := CreateCapacityReservation(context.Background(), validCreateInput(), nil, 1, testAccountID)
 	assert.ErrorIs(t, err, utils.ErrClusterUnavailable)
 }
 
@@ -101,34 +102,34 @@ func TestCreateCapacityReservation_NilNATS(t *testing.T) {
 
 func TestCreateCapacityReservation_UnknownAZ(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
-	answerNodeStatus(t, nc, []types.NodeStatusResponse{
+	answerNodeStatus(context.Background(), t, nc, []types.NodeStatusResponse{
 		{Node: "node-a", AZ: "az-2", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 4}}},
 	})
-	_, err := CreateCapacityReservation(validCreateInput(), nc, 1, testAccountID)
+	_, err := CreateCapacityReservation(context.Background(), validCreateInput(), nc, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidAvailabilityZone)
 }
 
 func TestCreateCapacityReservation_UnknownType(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
-	answerNodeStatus(t, nc, []types.NodeStatusResponse{
+	answerNodeStatus(context.Background(), t, nc, []types.NodeStatusResponse{
 		{Node: "node-a", AZ: "az-1", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.small", Available: 4}}},
 	})
-	_, err := CreateCapacityReservation(validCreateInput(), nc, 1, testAccountID)
+	_, err := CreateCapacityReservation(context.Background(), validCreateInput(), nc, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidInstanceType)
 }
 
 func TestCreateCapacityReservation_InsufficientCapacity(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
-	answerNodeStatus(t, nc, []types.NodeStatusResponse{
+	answerNodeStatus(context.Background(), t, nc, []types.NodeStatusResponse{
 		{Node: "node-a", AZ: "az-1", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 1}}},
 	})
-	_, err := CreateCapacityReservation(validCreateInput(), nc, 1, testAccountID)
+	_, err := CreateCapacityReservation(context.Background(), validCreateInput(), nc, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
 }
 
 func TestCreateCapacityReservation_Success(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
-	answerNodeStatus(t, nc, []types.NodeStatusResponse{
+	answerNodeStatus(context.Background(), t, nc, []types.NodeStatusResponse{
 		{Node: "node-a", AZ: "az-1", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 4}}},
 	})
 
@@ -147,7 +148,7 @@ func TestCreateCapacityReservation_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	out, err := CreateCapacityReservation(validCreateInput(), nc, 1, testAccountID)
+	out, err := CreateCapacityReservation(context.Background(), validCreateInput(), nc, 1, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out.CapacityReservation)
 	assert.Equal(t, "cr-0123456789abcdef0", aws.StringValue(out.CapacityReservation.CapacityReservationId))
@@ -156,7 +157,7 @@ func TestCreateCapacityReservation_Success(t *testing.T) {
 // Create propagates the pinned daemon's error verbatim (e.g. a lost fit re-check).
 func TestCreateCapacityReservation_DaemonRejection(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
-	answerNodeStatus(t, nc, []types.NodeStatusResponse{
+	answerNodeStatus(context.Background(), t, nc, []types.NodeStatusResponse{
 		{Node: "node-a", AZ: "az-1", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 4}}},
 	})
 	sub, err := nc.Subscribe("ec2.CreateCapacityReservation.node-a", func(msg *nats.Msg) {
@@ -165,7 +166,7 @@ func TestCreateCapacityReservation_DaemonRejection(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = CreateCapacityReservation(validCreateInput(), nc, 1, testAccountID)
+	_, err = CreateCapacityReservation(context.Background(), validCreateInput(), nc, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
 }
 
@@ -226,12 +227,12 @@ func TestDescribeCapacityReservations_InvalidFilter(t *testing.T) {
 	input := &ec2.DescribeCapacityReservationsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("bogus"), Values: aws.StringSlice([]string{"x"})}},
 	}
-	_, err := DescribeCapacityReservations(input, nc, 1, testAccountID)
+	_, err := DescribeCapacityReservations(context.Background(), input, nc, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDescribeCapacityReservations_NilNATS(t *testing.T) {
-	_, err := DescribeCapacityReservations(&ec2.DescribeCapacityReservationsInput{}, nil, 1, testAccountID)
+	_, err := DescribeCapacityReservations(context.Background(), &ec2.DescribeCapacityReservationsInput{}, nil, 1, testAccountID)
 	assert.ErrorIs(t, err, utils.ErrClusterUnavailable)
 }
 
@@ -249,11 +250,11 @@ func TestDescribeCapacityReservations_MergesAndFilters(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	out, err := DescribeCapacityReservations(&ec2.DescribeCapacityReservationsInput{}, nc, 2, testAccountID)
+	out, err := DescribeCapacityReservations(context.Background(), &ec2.DescribeCapacityReservationsInput{}, nc, 2, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.CapacityReservations, 2)
 
-	filtered, err := DescribeCapacityReservations(&ec2.DescribeCapacityReservationsInput{
+	filtered, err := DescribeCapacityReservations(context.Background(), &ec2.DescribeCapacityReservationsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: aws.StringSlice([]string{"t3.small"})}},
 	}, nc, 2, testAccountID)
 	require.NoError(t, err)
@@ -264,24 +265,24 @@ func TestDescribeCapacityReservations_MergesAndFilters(t *testing.T) {
 // Cancel
 
 func TestCancelCapacityReservation_NilInput(t *testing.T) {
-	_, err := CancelCapacityReservation(nil, nil, 1, testAccountID)
+	_, err := CancelCapacityReservation(context.Background(), nil, nil, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestCancelCapacityReservation_MissingID(t *testing.T) {
-	_, err := CancelCapacityReservation(&ec2.CancelCapacityReservationInput{}, nil, 1, testAccountID)
+	_, err := CancelCapacityReservation(context.Background(), &ec2.CancelCapacityReservationInput{}, nil, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestCancelCapacityReservation_Malformed(t *testing.T) {
-	_, err := CancelCapacityReservation(&ec2.CancelCapacityReservationInput{
+	_, err := CancelCapacityReservation(context.Background(), &ec2.CancelCapacityReservationInput{
 		CapacityReservationId: aws.String("bogus-id"),
 	}, nil, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidCapacityReservationIdMalformed)
 }
 
 func TestCancelCapacityReservation_DryRun(t *testing.T) {
-	_, err := CancelCapacityReservation(&ec2.CancelCapacityReservationInput{
+	_, err := CancelCapacityReservation(context.Background(), &ec2.CancelCapacityReservationInput{
 		CapacityReservationId: aws.String("cr-0123456789abcdef0"),
 		DryRun:                aws.Bool(true),
 	}, nil, 1, testAccountID)
@@ -297,7 +298,7 @@ func TestCancelCapacityReservation_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	_, err = CancelCapacityReservation(&ec2.CancelCapacityReservationInput{
+	_, err = CancelCapacityReservation(context.Background(), &ec2.CancelCapacityReservationInput{
 		CapacityReservationId: aws.String("cr-0123456789abcdef0"),
 	}, nc, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidCapacityReservationIdNotFound)
@@ -312,7 +313,7 @@ func TestCancelCapacityReservation_Found(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	out, err := CancelCapacityReservation(&ec2.CancelCapacityReservationInput{
+	out, err := CancelCapacityReservation(context.Background(), &ec2.CancelCapacityReservationInput{
 		CapacityReservationId: aws.String("cr-0123456789abcdef0"),
 	}, nc, 1, testAccountID)
 	require.NoError(t, err)

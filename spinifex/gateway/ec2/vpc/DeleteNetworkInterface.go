@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateDeleteNetworkInterfaceInput(input *ec2.DeleteNetworkInterfaceInput)
 }
 
 // DeleteNetworkInterface handles the EC2 DeleteNetworkInterface API call
-func DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.DeleteNetworkInterfaceOutput, error) {
+func DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.DeleteNetworkInterfaceOutput, error) {
 	var output ec2.DeleteNetworkInterfaceOutput
 
 	if err := ValidateDeleteNetworkInterfaceInput(input); err != nil {
@@ -28,7 +29,7 @@ func DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, natsConn *na
 	}
 
 	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
-	result, err := svc.DeleteNetworkInterface(input, accountID)
+	result, err := svc.DeleteNetworkInterface(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

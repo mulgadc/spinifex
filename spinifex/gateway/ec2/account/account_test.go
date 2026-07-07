@@ -1,6 +1,7 @@
 package gateway_ec2_account
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -282,61 +283,61 @@ func TestValidateGetSerialConsoleAccessStatusInput(t *testing.T) {
 // Handler tests — call handlers with valid input + nil NATS to cover error paths
 
 func TestEnableEbsEncryptionByDefault_ValidationErrors(t *testing.T) {
-	_, err := EnableEbsEncryptionByDefault(nil, nil, "")
+	_, err := EnableEbsEncryptionByDefault(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestEnableEbsEncryptionByDefault_NilNATS(t *testing.T) {
-	_, err := EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{}, nil, "acct-123")
+	_, err := EnableEbsEncryptionByDefault(context.Background(), &ec2.EnableEbsEncryptionByDefaultInput{}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestDisableEbsEncryptionByDefault_ValidationErrors(t *testing.T) {
-	_, err := DisableEbsEncryptionByDefault(nil, nil, "")
+	_, err := DisableEbsEncryptionByDefault(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDisableEbsEncryptionByDefault_NilNATS(t *testing.T) {
-	_, err := DisableEbsEncryptionByDefault(&ec2.DisableEbsEncryptionByDefaultInput{}, nil, "acct-123")
+	_, err := DisableEbsEncryptionByDefault(context.Background(), &ec2.DisableEbsEncryptionByDefaultInput{}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestGetEbsEncryptionByDefault_ValidationErrors(t *testing.T) {
-	_, err := GetEbsEncryptionByDefault(nil, nil, "")
+	_, err := GetEbsEncryptionByDefault(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestGetEbsEncryptionByDefault_NilNATS(t *testing.T) {
-	_, err := GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{}, nil, "acct-123")
+	_, err := GetEbsEncryptionByDefault(context.Background(), &ec2.GetEbsEncryptionByDefaultInput{}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestEnableSerialConsoleAccess_ValidationErrors(t *testing.T) {
-	_, err := EnableSerialConsoleAccess(nil, nil, "")
+	_, err := EnableSerialConsoleAccess(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestEnableSerialConsoleAccess_NilNATS(t *testing.T) {
-	_, err := EnableSerialConsoleAccess(&ec2.EnableSerialConsoleAccessInput{}, nil, "acct-123")
+	_, err := EnableSerialConsoleAccess(context.Background(), &ec2.EnableSerialConsoleAccessInput{}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestDisableSerialConsoleAccess_ValidationErrors(t *testing.T) {
-	_, err := DisableSerialConsoleAccess(nil, nil, "")
+	_, err := DisableSerialConsoleAccess(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDisableSerialConsoleAccess_NilNATS(t *testing.T) {
-	_, err := DisableSerialConsoleAccess(&ec2.DisableSerialConsoleAccessInput{}, nil, "acct-123")
+	_, err := DisableSerialConsoleAccess(context.Background(), &ec2.DisableSerialConsoleAccessInput{}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestGetSerialConsoleAccessStatus_ValidationErrors(t *testing.T) {
-	_, err := GetSerialConsoleAccessStatus(nil, nil, "")
+	_, err := GetSerialConsoleAccessStatus(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestGetSerialConsoleAccessStatus_NilNATS(t *testing.T) {
-	_, err := GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{}, nil, "acct-123")
+	_, err := GetSerialConsoleAccessStatus(context.Background(), &ec2.GetSerialConsoleAccessStatusInput{}, nil, "acct-123")
 	assert.Error(t, err)
 }

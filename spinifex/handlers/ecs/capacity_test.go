@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -18,7 +19,7 @@ type stubImages struct {
 	images []*ec2.Image
 }
 
-func (s *stubImages) DescribeImages(_ *ec2.DescribeImagesInput, _ string) (*ec2.DescribeImagesOutput, error) {
+func (s *stubImages) DescribeImages(_ context.Context, _ *ec2.DescribeImagesInput, _ string) (*ec2.DescribeImagesOutput, error) {
 	return &ec2.DescribeImagesOutput{Images: s.images}, nil
 }
 
@@ -77,13 +78,13 @@ func TestProvisionCapacity_BuildsRunInstancesInput(t *testing.T) {
 		GatewayCACert:  "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----",
 		IAM:            stubIAM{},
 		Images:         &stubImages{images: ecsNodeImage()},
-		RunInstances: func(in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
+		RunInstances: func(_ context.Context, in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 			captured = in
 			return &ec2.Reservation{Instances: []*ec2.Instance{{InstanceId: aws.String("i-123")}}}, nil
 		},
 	})
 
-	out, err := svc.ProvisionCapacity(&ProvisionCapacityInput{
+	out, err := svc.ProvisionCapacity(context.Background(), &ProvisionCapacityInput{
 		Cluster:         "web",
 		InstanceType:    "t3.medium",
 		Count:           2,
@@ -116,13 +117,13 @@ func TestProvisionCapacity_DefaultsAndCount(t *testing.T) {
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM:    stubIAM{},
 		Images: &stubImages{images: ecsNodeImage()},
-		RunInstances: func(in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
+		RunInstances: func(_ context.Context, in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 			captured = in
 			return &ec2.Reservation{Instances: []*ec2.Instance{{InstanceId: aws.String("i-1")}}}, nil
 		},
 	})
 
-	_, err := svc.ProvisionCapacity(&ProvisionCapacityInput{
+	_, err := svc.ProvisionCapacity(context.Background(), &ProvisionCapacityInput{
 		Cluster:         "web",
 		SubnetID:        "subnet-1",
 		SecurityGroupID: "sg-1",
@@ -137,9 +138,9 @@ func TestProvisionCapacity_DefaultsAndCount(t *testing.T) {
 func TestProvisionCapacity_MissingRequired(t *testing.T) {
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM: stubIAM{}, Images: &stubImages{images: ecsNodeImage()},
-		RunInstances: func(*ec2.RunInstancesInput, string) (*ec2.Reservation, error) { return nil, nil },
+		RunInstances: func(context.Context, *ec2.RunInstancesInput, string) (*ec2.Reservation, error) { return nil, nil },
 	})
-	_, err := svc.ProvisionCapacity(&ProvisionCapacityInput{Cluster: "web"}, testAccountID)
+	_, err := svc.ProvisionCapacity(context.Background(), &ProvisionCapacityInput{Cluster: "web"}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
@@ -148,12 +149,12 @@ func TestProvisionCapacity_AMINotFound(t *testing.T) {
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM:    stubIAM{},
 		Images: &stubImages{images: nil},
-		RunInstances: func(*ec2.RunInstancesInput, string) (*ec2.Reservation, error) {
+		RunInstances: func(context.Context, *ec2.RunInstancesInput, string) (*ec2.Reservation, error) {
 			t.Fatal("RunInstances must not be called when no AMI resolves")
 			return nil, nil
 		},
 	})
-	_, err := svc.ProvisionCapacity(&ProvisionCapacityInput{
+	_, err := svc.ProvisionCapacity(context.Background(), &ProvisionCapacityInput{
 		Cluster: "web", SubnetID: "subnet-1", SecurityGroupID: "sg-1",
 	}, testAccountID)
 	require.Error(t, err)

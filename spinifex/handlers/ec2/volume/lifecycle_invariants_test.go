@@ -30,7 +30,7 @@ func seedVolume(t *testing.T, svc *VolumeServiceImpl, volID, state, attachedInst
 			AvailabilityZone: "ap-southeast-2a",
 		},
 	}
-	require.NoError(t, svc.putVolumeConfig(volID, cfg))
+	require.NoError(t, svc.putVolumeConfig(context.Background(), volID, cfg))
 }
 
 // TestRLC1_VolumeDeleteNotFoundOnAbsent enforces the Common Resource Lifecycle
@@ -42,7 +42,7 @@ func seedVolume(t *testing.T, svc *VolumeServiceImpl, volID, state, attachedInst
 func TestRLC1_VolumeDeleteNotFoundOnAbsent(t *testing.T) {
 	svc := newTestVolumeService("ap-southeast-2a")
 
-	_, err := svc.DeleteVolume(&ec2.DeleteVolumeInput{
+	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 		VolumeId: aws.String("vol-absent00000000"),
 	}, "123456789012")
 
@@ -59,7 +59,7 @@ func TestRLC3_VolumeDeleteRequiresDetach(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	seedVolume(t, svc, "vol-attached00000", "in-use", "i-live0000000000")
 
-	_, err := svc.DeleteVolume(&ec2.DeleteVolumeInput{VolumeId: aws.String("vol-attached00000")}, testVolAccountID)
+	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-attached00000")}, testVolAccountID)
 	assert.ErrorContainsf(t, err, awserrors.ErrorVolumeInUse,
 		"ADR-0005 §2: deleting an attached volume must return VolumeInUse (detach-before-delete, rule #3)")
 }

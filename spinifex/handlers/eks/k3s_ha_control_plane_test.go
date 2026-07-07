@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,15 +54,15 @@ func TestNATSHostScheduler_SchedulableHosts(t *testing.T) {
 	sched := NewNATSHostScheduler(nc)
 
 	// Customer type: only the node advertising free capacity is schedulable.
-	require.Equal(t, []string{"nodeA"}, sched.SchedulableHosts("t3.medium"))
+	require.Equal(t, []string{"nodeA"}, sched.SchedulableHosts(context.Background(), "t3.medium"))
 
 	// System type: fit is decided by raw headroom, so the drained node drops out.
-	sysHosts := sched.SchedulableHosts(defaultK3sServerInstanceType)
+	sysHosts := sched.SchedulableHosts(context.Background(), defaultK3sServerInstanceType)
 	sort.Strings(sysHosts)
 	require.Equal(t, []string{"nodeA"}, sysHosts)
 
 	// Unknown system type yields no hosts.
-	require.Empty(t, sched.SchedulableHosts("sys.bogus"))
+	require.Empty(t, sched.SchedulableHosts(context.Background(), "sys.bogus"))
 }
 
 // --- HA control-plane orchestrator test doubles ---
@@ -78,9 +79,9 @@ type fakeHostScheduler struct {
 
 var _ HostScheduler = (*fakeHostScheduler)(nil)
 
-func (f *fakeHostScheduler) SchedulableHosts(string) []string { return f.hosts }
+func (f *fakeHostScheduler) SchedulableHosts(context.Context, string) []string { return f.hosts }
 
-func (f *fakeHostScheduler) InstanceHosts(ids []string) map[string]string {
+func (f *fakeHostScheduler) InstanceHosts(_ context.Context, ids []string) map[string]string {
 	out := make(map[string]string)
 	for _, id := range ids {
 		if f.notVisible[id] {
@@ -104,7 +105,7 @@ type seqK3sVPC struct {
 
 var _ k3sVPCProvisioner = (*seqK3sVPC)(nil)
 
-func (v *seqK3sVPC) CreateNetworkInterface(in *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
+func (v *seqK3sVPC) CreateNetworkInterface(_ context.Context, in *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.n++
@@ -115,18 +116,18 @@ func (v *seqK3sVPC) CreateNetworkInterface(in *ec2.CreateNetworkInterfaceInput, 
 	}}, nil
 }
 
-func (v *seqK3sVPC) DeleteNetworkInterface(in *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
+func (v *seqK3sVPC) DeleteNetworkInterface(_ context.Context, in *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.deleted = append(v.deleted, aws.StringValue(in.NetworkInterfaceId))
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
 
-func (v *seqK3sVPC) DescribeNetworkInterfaces(*ec2.DescribeNetworkInterfacesInput, string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+func (v *seqK3sVPC) DescribeNetworkInterfaces(context.Context, *ec2.DescribeNetworkInterfacesInput, string) (*ec2.DescribeNetworkInterfacesOutput, error) {
 	return &ec2.DescribeNetworkInterfacesOutput{}, nil
 }
 
-func (v *seqK3sVPC) DetachENI(_, _ string) error { return nil }
+func (v *seqK3sVPC) DetachENI(_ context.Context, _, _ string) error { return nil }
 
 // seqK3sInst returns instance ID "i-<nodeID>" so launches map deterministically
 // back to their target host. failNodes makes a node's launch return an error.
@@ -190,7 +191,7 @@ type fakePlacer struct {
 
 var _ controlPlanePlacer = (*fakePlacer)(nil)
 
-func (p *fakePlacer) CreatePlacementGroup(in *ec2.CreatePlacementGroupInput, _ string) (*ec2.CreatePlacementGroupOutput, error) {
+func (p *fakePlacer) CreatePlacementGroup(_ context.Context, in *ec2.CreatePlacementGroupInput, _ string) (*ec2.CreatePlacementGroupOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.createGroups = append(p.createGroups, aws.StringValue(in.GroupName))
@@ -200,14 +201,14 @@ func (p *fakePlacer) CreatePlacementGroup(in *ec2.CreatePlacementGroupInput, _ s
 	return &ec2.CreatePlacementGroupOutput{}, nil
 }
 
-func (p *fakePlacer) DeletePlacementGroup(in *ec2.DeletePlacementGroupInput, _ string) (*ec2.DeletePlacementGroupOutput, error) {
+func (p *fakePlacer) DeletePlacementGroup(_ context.Context, in *ec2.DeletePlacementGroupInput, _ string) (*ec2.DeletePlacementGroupOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.deleteGroups = append(p.deleteGroups, aws.StringValue(in.GroupName))
 	return &ec2.DeletePlacementGroupOutput{}, nil
 }
 
-func (p *fakePlacer) ReserveSpreadNodes(in *handlers_ec2_placementgroup.ReserveSpreadNodesInput, _ string) (*handlers_ec2_placementgroup.ReserveSpreadNodesOutput, error) {
+func (p *fakePlacer) ReserveSpreadNodes(_ context.Context, in *handlers_ec2_placementgroup.ReserveSpreadNodesInput, _ string) (*handlers_ec2_placementgroup.ReserveSpreadNodesOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.reserveInputs = append(p.reserveInputs, in)
@@ -222,14 +223,14 @@ func (p *fakePlacer) ReserveSpreadNodes(in *handlers_ec2_placementgroup.ReserveS
 	return &handlers_ec2_placementgroup.ReserveSpreadNodesOutput{ReservedNodes: reserved}, nil
 }
 
-func (p *fakePlacer) ReleaseSpreadNodes(in *handlers_ec2_placementgroup.ReleaseSpreadNodesInput, _ string) (*handlers_ec2_placementgroup.ReleaseSpreadNodesOutput, error) {
+func (p *fakePlacer) ReleaseSpreadNodes(_ context.Context, in *handlers_ec2_placementgroup.ReleaseSpreadNodesInput, _ string) (*handlers_ec2_placementgroup.ReleaseSpreadNodesOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.releaseInputs = append(p.releaseInputs, in)
 	return &handlers_ec2_placementgroup.ReleaseSpreadNodesOutput{}, nil
 }
 
-func (p *fakePlacer) FinalizeSpreadInstances(in *handlers_ec2_placementgroup.FinalizeSpreadInstancesInput, _ string) (*handlers_ec2_placementgroup.FinalizeSpreadInstancesOutput, error) {
+func (p *fakePlacer) FinalizeSpreadInstances(_ context.Context, in *handlers_ec2_placementgroup.FinalizeSpreadInstancesInput, _ string) (*handlers_ec2_placementgroup.FinalizeSpreadInstancesOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.finalizeInputs = append(p.finalizeInputs, in)
@@ -239,7 +240,7 @@ func (p *fakePlacer) FinalizeSpreadInstances(in *handlers_ec2_placementgroup.Fin
 	return &handlers_ec2_placementgroup.FinalizeSpreadInstancesOutput{}, nil
 }
 
-func (p *fakePlacer) RemoveInstance(in *handlers_ec2_placementgroup.RemoveInstanceInput, _ string) (*handlers_ec2_placementgroup.RemoveInstanceOutput, error) {
+func (p *fakePlacer) RemoveInstance(_ context.Context, in *handlers_ec2_placementgroup.RemoveInstanceInput, _ string) (*handlers_ec2_placementgroup.RemoveInstanceOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.removeInputs = append(p.removeInputs, in)
@@ -255,10 +256,10 @@ type seqK3sAMI struct {
 
 var _ k3sAMIResolver = (*seqK3sAMI)(nil)
 
-func (a *seqK3sAMI) DescribeImages(in *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error) {
+func (a *seqK3sAMI) DescribeImages(_ context.Context, in *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.inner.DescribeImages(in, accountID)
+	return a.inner.DescribeImages(context.Background(), in, accountID)
 }
 
 func newPlacerService(sched HostScheduler, placer controlPlanePlacer, vpc k3sVPCProvisioner, inst k3sInstanceLauncher) *EKSServiceImpl {
@@ -288,7 +289,7 @@ func TestPlaceControlPlane_SpreadHappyPath(t *testing.T) {
 	inst := &seqK3sInst{}
 	svc := newPlacerService(sched, placer, vpc, inst)
 
-	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.NoError(t, err)
 	assert.Equal(t, "eks-cp-"+testHAAccountID+"-alpha", group)
 	require.Len(t, nodes, 3)
@@ -324,7 +325,7 @@ func TestPlaceControlPlane_SpreadFirstInitsRestJoin(t *testing.T) {
 
 	tmpl := validK3sInput()
 	tmpl.JoinToken = "sharedtok123"
-	_, _, err := svc.placeControlPlane(testHAAccountID, "alpha", tmpl)
+	_, _, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", tmpl)
 	require.NoError(t, err)
 
 	// node-a is reserved[0] → the first server: cluster-inits, no join URL.
@@ -351,7 +352,7 @@ func TestPlaceControlPlane_FirstServerFailureRollsBackNoJoins(t *testing.T) {
 	inst := &seqK3sInst{failNodes: map[string]bool{"node-a": true}}
 	svc := newPlacerService(sched, placer, &seqK3sVPC{}, inst)
 
-	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.Error(t, err)
 	assert.Nil(t, nodes)
 	assert.Equal(t, "", group)
@@ -372,7 +373,7 @@ func TestPlaceControlPlane_FallbackUnderThreeHosts(t *testing.T) {
 	inst := &seqK3sInst{}
 	svc := newPlacerService(sched, placer, &seqK3sVPC{}, inst)
 
-	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.NoError(t, err)
 	assert.Equal(t, "", group)
 	require.Len(t, nodes, 1)
@@ -390,7 +391,7 @@ func TestPlaceControlPlane_BoundaryExactlyThree(t *testing.T) {
 	inst := &seqK3sInst{}
 	svc := newPlacerService(sched, placer, &seqK3sVPC{}, inst)
 
-	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.NoError(t, err)
 	assert.Equal(t, "eks-cp-"+testHAAccountID+"-alpha", group)
 	require.Len(t, nodes, 3)
@@ -404,7 +405,7 @@ func TestPlaceControlPlane_PartialLaunchRollsBack(t *testing.T) {
 	inst := &seqK3sInst{failNodes: map[string]bool{"node-c": true}}
 	svc := newPlacerService(sched, placer, &seqK3sVPC{}, inst)
 
-	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.Error(t, err)
 	assert.Nil(t, nodes)
 	assert.Equal(t, "", group)
@@ -422,7 +423,7 @@ func TestPlaceControlPlane_ReserveFailureFallsBackToSingle(t *testing.T) {
 	inst := &seqK3sInst{}
 	svc := newPlacerService(sched, placer, &seqK3sVPC{}, inst)
 
-	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.NoError(t, err)
 	assert.Equal(t, "", group)
 	require.Len(t, nodes, 1)
@@ -443,7 +444,7 @@ func TestPlaceControlPlane_VerifyMismatchRollsBack(t *testing.T) {
 	inst := &seqK3sInst{}
 	svc := newPlacerService(sched, placer, &seqK3sVPC{}, inst)
 
-	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.Error(t, err)
 	assert.Nil(t, nodes)
 	assert.Equal(t, "", group)
@@ -463,7 +464,7 @@ func TestPlaceControlPlane_VerifyToleratesNotYetVisible(t *testing.T) {
 	inst := &seqK3sInst{}
 	svc := newPlacerService(sched, placer, &seqK3sVPC{}, inst)
 
-	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.NoError(t, err)
 	assert.Equal(t, "eks-cp-"+testHAAccountID+"-alpha", group)
 	require.Len(t, nodes, 3)
@@ -481,7 +482,7 @@ func TestPlaceControlPlane_FinalizeFailureRollsBack(t *testing.T) {
 	inst := &seqK3sInst{}
 	svc := newPlacerService(sched, placer, &seqK3sVPC{}, inst)
 
-	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.Error(t, err)
 	assert.Nil(t, nodes)
 	assert.Equal(t, "", group)
@@ -525,13 +526,13 @@ func TestTeardownSpreadGroup(t *testing.T) {
 			{NodeID: "n3", InstanceID: "i-3"},
 		},
 	}
-	svc.teardownSpreadGroup(meta)
+	svc.teardownSpreadGroup(context.Background(), meta)
 	assert.Len(t, placer.removeInputs, 3)
 	assert.Equal(t, []string{meta.ControlPlaneSpreadGroup}, placer.deleteGroups)
 
 	noGroup := &fakePlacer{}
 	svc2 := &EKSServiceImpl{deps: EKSServiceDeps{PlacementGroup: noGroup}}
-	svc2.teardownSpreadGroup(&ClusterMeta{})
+	svc2.teardownSpreadGroup(context.Background(), &ClusterMeta{})
 	assert.Empty(t, noGroup.removeInputs)
 	assert.Empty(t, noGroup.deleteGroups)
 }

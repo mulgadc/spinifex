@@ -1,6 +1,7 @@
 package gateway_ec2_eip
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateDisassociateAddressInput(input *ec2.DisassociateAddressInput) error
 }
 
 // DisassociateAddress handles the EC2 DisassociateAddress API call.
-func DisassociateAddress(input *ec2.DisassociateAddressInput, natsConn *nats.Conn, accountID string) (ec2.DisassociateAddressOutput, error) {
+func DisassociateAddress(ctx context.Context, input *ec2.DisassociateAddressInput, natsConn *nats.Conn, accountID string) (ec2.DisassociateAddressOutput, error) {
 	var output ec2.DisassociateAddressOutput
 
 	if err := ValidateDisassociateAddressInput(input); err != nil {
@@ -28,7 +29,7 @@ func DisassociateAddress(input *ec2.DisassociateAddressInput, natsConn *nats.Con
 	}
 
 	svc := handlers_ec2_eip.NewNATSEIPService(natsConn)
-	result, err := svc.DisassociateAddress(input, accountID)
+	result, err := svc.DisassociateAddress(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

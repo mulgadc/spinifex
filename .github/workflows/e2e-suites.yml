@@ -44,6 +44,10 @@ permissions:
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   TEST_RUN: ${{ inputs.test_run || '' }}
+  # OTLP export to the central Elastic sink (wattle). Repo variable overrides;
+  # empty string disables telemetry entirely.
+  SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
+  SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -458,6 +462,7 @@ jobs:
           reap TERM; sleep 2; reap KILL
           find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
           quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "telemetry flush"       "$TOFU_LOG" timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" || true
           quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
           ok "teardown complete"
@@ -779,6 +784,7 @@ jobs:
           reap TERM; sleep 2; reap KILL
           find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
           quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "telemetry flush"       "$TOFU_LOG" timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" || true
           quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
           ok "teardown complete"

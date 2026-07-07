@@ -1,6 +1,7 @@
 package handlers_ec2_routetable
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -30,7 +31,7 @@ func TestRouteTableRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err := svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		RouteTableIds: []*string{aws.String(rtbID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -47,7 +48,7 @@ func TestRouteTableRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	out, err = svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err = svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		RouteTableIds: []*string{aws.String(rtbID)},
 	}, testAccountID)
 	require.NoError(t, err)

@@ -1,6 +1,7 @@
 package handlers_ec2_volume
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func seedUnencryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, v
 	}
 	data, err := json.Marshal(state)
 	require.NoError(t, err)
-	_, err = store.PutObject(&s3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 		Body:   strings.NewReader(string(data)),
@@ -120,7 +121,7 @@ func TestGetVolumeConfig_FallsBackWhenNoStateJSON(t *testing.T) {
 // getStoredState reads and decodes the raw state.json from the memory store.
 func getStoredState(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) volumeStateRecord {
 	t.Helper()
-	res, err := store.GetObject(&s3.GetObjectInput{
+	res, err := store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/state.json"),
 	})

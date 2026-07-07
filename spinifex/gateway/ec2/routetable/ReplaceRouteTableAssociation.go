@@ -1,6 +1,7 @@
 package gateway_ec2_routetable
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -22,13 +23,13 @@ func ValidateReplaceRouteTableAssociationInput(input *ec2.ReplaceRouteTableAssoc
 	return nil
 }
 
-func ReplaceRouteTableAssociation(input *ec2.ReplaceRouteTableAssociationInput, natsConn *nats.Conn, accountID string) (ec2.ReplaceRouteTableAssociationOutput, error) {
+func ReplaceRouteTableAssociation(ctx context.Context, input *ec2.ReplaceRouteTableAssociationInput, natsConn *nats.Conn, accountID string) (ec2.ReplaceRouteTableAssociationOutput, error) {
 	var output ec2.ReplaceRouteTableAssociationOutput
 	if err := ValidateReplaceRouteTableAssociationInput(input); err != nil {
 		return output, err
 	}
 	svc := handlers_ec2_routetable.NewNATSRouteTableService(natsConn)
-	result, err := svc.ReplaceRouteTableAssociation(input, accountID)
+	result, err := svc.ReplaceRouteTableAssociation(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

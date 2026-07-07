@@ -2,6 +2,7 @@ package vm
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,7 +22,26 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+const vmTracerName = "github.com/mulgadc/spinifex/spinifex/vm"
+
+// noTraceKey marks a context whose QMP commands should not open spans —
+// used by the heartbeat poller, which would otherwise root a trace per tick.
+type noTraceKey struct{}
+
+// endSpanWithError records err (if any) on span and ends it.
+func endSpanWithError(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
+}
 
 // RG-4 guest OOM tiers: user guests are reaped first; system instances (ELBv2,
 // EKS) rank above user guests but below infra (OOMScoreAdjust=-500).
@@ -42,13 +62,13 @@ func guestOOMScore(managedBy string) int {
 // Run launches a VM: validate state, mount volumes, exec QEMU, attach QMP,
 // transition to Running, fire OnInstanceUp. Inserts the instance before
 // transitioning. Used by RunInstances, start-stopped handler, restore, and crash recovery.
-func (m *Manager) Run(instance *VM) error {
-	return m.launch(instance)
+func (m *Manager) Run(ctx context.Context, instance *VM) error {
+	return m.launch(ctx, instance)
 }
 
 // Start re-launches a stopped instance by id. Returns ErrInstanceNotFound when
 // id is unknown so callers can map the failure to InvalidInstanceID.NotFound.
-func (m *Manager) Start(id string) error {
+func (m *Manager) Start(ctx context.Context, id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrInstanceNotFound, id)
@@ -60,12 +80,12 @@ func (m *Manager) Start(id string) error {
 			return err
 		}
 	}
-	return m.launch(instance)
+	return m.launch(ctx, instance)
 }
 
 // Reboot issues a QMP system_reset; the VM stays in StateRunning while QEMU
 // re-runs firmware. Returns ErrInstanceNotFound or ErrInvalidTransition as appropriate.
-func (m *Manager) Reboot(id string) error {
+func (m *Manager) Reboot(ctx context.Context, id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
 		return ErrInstanceNotFound
@@ -74,7 +94,7 @@ func (m *Manager) Reboot(id string) error {
 		return fmt.Errorf("%w: cannot reboot instance %s in state %s",
 			ErrInvalidTransition, id, status)
 	}
-	if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{Execute: "system_reset"}, id); err != nil {
+	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{Execute: "system_reset"}, id); err != nil {
 		return fmt.Errorf("QMP system_reset: %w", err)
 	}
 	return nil
@@ -93,7 +113,14 @@ func (m *Manager) launchStillValid(instance *VM) bool {
 
 // launch is the orchestrator: pid check, mount volumes, exec QEMU, attach
 // QMP, fire OnInstanceUp, transition to Running.
-func (m *Manager) launch(instance *VM) error {
+func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
+	ctx, span := otel.Tracer(vmTracerName).Start(ctx, "vm.launch",
+		trace.WithAttributes(
+			attribute.String("instance.id", instance.ID),
+			attribute.String("instance.type", instance.InstanceType),
+		))
+	defer func() { endSpanWithError(span, err) }()
+
 	if !m.launchStillValid(instance) {
 		return nil
 	}
@@ -105,14 +132,17 @@ func (m *Manager) launch(instance *VM) error {
 			return err
 		}
 		if err := process.Signal(syscall.Signal(0)); err == nil {
-			slog.Error("Instance is already running", "InstanceID", instance.ID, "pid", pid)
+			slog.ErrorContext(ctx, "Instance is already running", "InstanceID", instance.ID, "pid", pid)
 			return errors.New("instance is already running")
 		}
 	}
 
-	if err := m.deps.VolumeMounter.Mount(instance); err != nil {
-		slog.Error("Failed to mount volumes", "err", err)
-		return err
+	_, mountSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.mount_volumes")
+	mountErr := m.deps.VolumeMounter.Mount(instance)
+	endSpanWithError(mountSpan, mountErr)
+	if mountErr != nil {
+		slog.ErrorContext(ctx, "Failed to mount volumes", "err", mountErr)
+		return mountErr
 	}
 
 	// Re-check status — Mount can take 30+s on cold AMIs, and a terminate may
@@ -121,14 +151,19 @@ func (m *Manager) launch(instance *VM) error {
 		return nil
 	}
 
-	if err := m.startQEMU(instance); err != nil {
-		slog.Error("Failed to launch instance", "err", err)
-		return err
+	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
+	qemuErr := m.startQEMU(instance)
+	endSpanWithError(qemuSpan, qemuErr)
+	if qemuErr != nil {
+		slog.ErrorContext(ctx, "Failed to launch instance", "err", qemuErr)
+		return qemuErr
 	}
 
-	qmpClient, err := newQMPClientWithHandshake(instance)
+	_, qmpSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.qmp_connect")
+	qmpClient, err := newQMPClientWithHandshake(ctx, instance)
+	endSpanWithError(qmpSpan, err)
 	if err != nil {
-		slog.Error("Failed to create QMP client", "err", err)
+		slog.ErrorContext(ctx, "Failed to create QMP client", "err", err)
 		// QEMU started but QMP handshake failed. Kill it synchronously so the
 		// VFIO device is released before the caller frees the GPU pool entry;
 		// otherwise the next Claim gets the same PCI address while QEMU still
@@ -142,7 +177,7 @@ func (m *Manager) launch(instance *VM) error {
 		return err
 	}
 	instance.QMPClient = qmpClient
-	go m.qmpHeartbeat(instance)
+	go m.qmpHeartbeat(instance) //nolint:gosec // heartbeat outlives the launch request; must not inherit its cancellation
 
 	m.Insert(instance)
 
@@ -153,9 +188,12 @@ func (m *Manager) launch(instance *VM) error {
 	}
 
 	if m.deps.TransitionState != nil {
-		if err := m.deps.TransitionState(instance, StateRunning); err != nil {
-			slog.Error("Failed to transition instance to running", "instanceId", instance.ID, "err", err)
-			return err
+		_, stateSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.persist_state")
+		transitionErr := m.deps.TransitionState(instance, StateRunning)
+		endSpanWithError(stateSpan, transitionErr)
+		if transitionErr != nil {
+			slog.ErrorContext(ctx, "Failed to transition instance to running", "instanceId", instance.ID, "err", transitionErr)
+			return transitionErr
 		}
 	}
 
@@ -168,7 +206,7 @@ func (m *Manager) launch(instance *VM) error {
 		// fan-out (DescribeInstances) and the next OnInstanceUp on a
 		// state-touching event will reinstall the subs idempotently.
 		if err := m.deps.Hooks.OnInstanceUp(instance); err != nil {
-			slog.Error("OnInstanceUp hook reported error during launch",
+			slog.ErrorContext(ctx, "OnInstanceUp hook reported error during launch",
 				"instance", instance.ID, "err", err)
 		}
 	}
@@ -393,6 +431,17 @@ func (m *Manager) startQEMU(instance *VM) error {
 		slog.Warn("Failed to remove stale QMP socket", "path", qmpSocket, "err", err)
 	}
 
+	// Second QMP monitor for the metrics collector; a stale socket from a
+	// SIGKILLed QEMU is unlinked so the fresh process can bind. Telemetry
+	// never blocks a launch — failures degrade to no metrics for this VM.
+	if telemetrySocket, terr := utils.GenerateSocketFile(utils.QMPTelemetryPrefix + instance.ID); terr != nil {
+		slog.Warn("Failed to generate telemetry QMP socket", "instanceId", instance.ID, "err", terr)
+	} else {
+		_ = os.Remove(telemetrySocket)
+		instance.Config.TelemetryQMPSocket = telemetrySocket
+		refreshTelemetryMeta(instance)
+	}
+
 	instance.EBSRequests.Mu.Lock()
 	nbdEndpoints := make([]struct{ name, uri string }, 0, len(instance.EBSRequests.Requests))
 	for _, req := range instance.EBSRequests.Requests {
@@ -586,7 +635,8 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 // AttachQMP connects a QMP client to an already-running QEMU process and
 // starts the heartbeat goroutine. Used by reconnect callers on daemon restart.
 func (m *Manager) AttachQMP(instance *VM) error {
-	client, err := newQMPClientWithHandshake(instance)
+	// Reconnect path runs outside any request; not request-scoped.
+	client, err := newQMPClientWithHandshake(context.Background(), instance)
 	if err != nil {
 		return err
 	}
@@ -642,7 +692,7 @@ func isTransientDialError(err error) bool {
 
 // newQMPClientWithHandshake dials the QMP socket and runs the qmp_capabilities
 // handshake. The caller is responsible for starting the heartbeat goroutine.
-func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
+func newQMPClientWithHandshake(ctx context.Context, v *VM) (*qmp.QMPClient, error) {
 	// QMP socket bind lags the pidfile under recovery load; wait for the
 	// socket inode to exist before dialling to avoid an ENOENT race.
 	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, 3*time.Second); err != nil {
@@ -652,11 +702,11 @@ func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
-	if _, err := sendQMPCommand(client, qmp.QMPCommand{Execute: "qmp_capabilities"}, v.ID); err != nil {
+	if _, err := sendQMPCommand(ctx, client, qmp.QMPCommand{Execute: "qmp_capabilities"}, v.ID); err != nil {
 		_ = client.Conn.Close()
 		return nil, err
 	}
-	slog.Debug("QMP handshake complete", "instance", v.ID)
+	slog.DebugContext(ctx, "QMP handshake complete", "instance", v.ID)
 	return client, nil
 }
 
@@ -692,7 +742,8 @@ func (m *Manager) qmpHeartbeat(instance *VM) {
 		}
 
 		slog.Debug("QMP heartbeat", "instance", instance.ID)
-		qmpStatus, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{Execute: "query-status"}, instance.ID)
+		qmpStatus, err := sendQMPCommand(context.WithValue(context.Background(), noTraceKey{}, true),
+			instance.QMPClient, qmp.QMPCommand{Execute: "query-status"}, instance.ID)
 		if err != nil {
 			failures := m.recordQMPFailure(instance)
 			slog.Warn("QMP heartbeat failed", "instance", instance.ID, "consecutiveFailures", failures, "err", err)
@@ -740,7 +791,17 @@ func (m *Manager) recordQMPSuccess(instance *VM) {
 }
 
 // sendQMPCommand encodes cmd and decodes the response, skipping event messages.
-func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*qmp.QMPResponse, error) {
+func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (_ *qmp.QMPResponse, err error) {
+	if ctx.Value(noTraceKey{}) == nil {
+		var span trace.Span
+		_, span = otel.Tracer(vmTracerName).Start(ctx, "qmp "+cmd.Execute,
+			trace.WithAttributes(
+				attribute.String("qmp.command", cmd.Execute),
+				attribute.String("instance.id", instanceID),
+			))
+		defer func() { endSpanWithError(span, err) }()
+	}
+
 	if q == nil || q.Encoder == nil || q.Decoder == nil {
 		return nil, fmt.Errorf("QMP client is not initialized")
 	}
@@ -775,7 +836,7 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 			return nil, fmt.Errorf("decode error: %w", err)
 		}
 		if _, ok := msg["event"]; ok {
-			slog.Info("QMP event", "event", msg["event"], "instanceId", instanceID)
+			slog.InfoContext(ctx, "QMP event", "event", msg["event"], "instanceId", instanceID)
 			if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 				return nil, fmt.Errorf("set read deadline: %w", err)
 			}

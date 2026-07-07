@@ -1,6 +1,7 @@
 package handlers_ec2_vpc
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 
 func createTestSG(t *testing.T, svc *VPCServiceImpl, vpcID, name string) string {
 	t.Helper()
-	out, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	out, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String(name),
 		Description: aws.String("test sg"),
 		VpcId:       aws.String(vpcID),
@@ -32,7 +33,7 @@ func TestCreateSecurityGroup_Success(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
-	out, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	out, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("web-sg"),
 		Description: aws.String("Web security group"),
 		VpcId:       aws.String(vpcID),
@@ -44,7 +45,7 @@ func TestCreateSecurityGroup_Success(t *testing.T) {
 func TestCreateSecurityGroup_MissingGroupName(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	_, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		VpcId: aws.String("vpc-test"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -53,7 +54,7 @@ func TestCreateSecurityGroup_MissingGroupName(t *testing.T) {
 func TestCreateSecurityGroup_MissingVpcId(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	_, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName: aws.String("web-sg"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -62,7 +63,7 @@ func TestCreateSecurityGroup_MissingVpcId(t *testing.T) {
 func TestCreateSecurityGroup_InvalidVpc(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	_, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName: aws.String("web-sg"),
 		VpcId:     aws.String("vpc-nonexistent"),
 	}, testAccountID)
@@ -74,13 +75,13 @@ func TestCreateSecurityGroup_DuplicateName(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
-	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	_, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName: aws.String("dup-sg"),
 		VpcId:     aws.String(vpcID),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	_, err = svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName: aws.String("dup-sg"),
 		VpcId:     aws.String(vpcID),
 	}, testAccountID)
@@ -95,13 +96,13 @@ func TestDeleteSecurityGroup_Success(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "delete-me")
 
-	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify it's gone
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{}, testAccountID)
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{}, testAccountID)
 	require.NoError(t, err)
 	for _, sg := range desc.SecurityGroups {
 		assert.NotEqual(t, sgID, *sg.GroupId)
@@ -111,7 +112,7 @@ func TestDeleteSecurityGroup_Success(t *testing.T) {
 func TestDeleteSecurityGroup_MissingGroupId(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{}, testAccountID)
+	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{}, testAccountID)
 	assert.Error(t, err)
 }
 
@@ -123,7 +124,7 @@ func TestDescribeSecurityGroups_All(t *testing.T) {
 	createTestSG(t, svc, vpcID, "sg-a")
 	createTestSG(t, svc, vpcID, "sg-b")
 
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{}, testAccountID)
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{}, testAccountID)
 	require.NoError(t, err)
 	// 2 user-created + 1 auto-created default SG (CreateVpc provisions one).
 	assert.Len(t, desc.SecurityGroups, 3)
@@ -135,7 +136,7 @@ func TestDescribeSecurityGroups_ByGroupId(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "target-sg")
 	createTestSG(t, svc, vpcID, "other-sg")
 
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []*string{aws.String(sgID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -149,7 +150,7 @@ func TestDescribeSecurityGroups_ByGroupName(t *testing.T) {
 	createTestSG(t, svc, vpcID, "find-me")
 	createTestSG(t, svc, vpcID, "skip-me")
 
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("group-name"), Values: []*string{aws.String("find-me")}},
 		},
@@ -162,7 +163,7 @@ func TestDescribeSecurityGroups_ByGroupName(t *testing.T) {
 func TestDescribeSecurityGroups_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	_, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []*string{aws.String("sg-nonexistent")},
 	}, testAccountID)
 	assert.Error(t, err)
@@ -177,7 +178,7 @@ func TestAuthorizeSecurityGroupIngress_Success(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "ingress-sg")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{
 			{
@@ -191,7 +192,7 @@ func TestAuthorizeSecurityGroupIngress_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify rule was added
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []*string{aws.String(sgID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -201,7 +202,7 @@ func TestAuthorizeSecurityGroupIngress_Success(t *testing.T) {
 func TestAuthorizeSecurityGroupIngress_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String("sg-nonexistent"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -211,7 +212,7 @@ func TestAuthorizeSecurityGroupIngress_NotFound(t *testing.T) {
 func TestAuthorizeSecurityGroupIngress_MissingGroupId(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{}, testAccountID)
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{}, testAccountID)
 	assert.Error(t, err)
 }
 
@@ -223,7 +224,7 @@ func TestAuthorizeSecurityGroupEgress_Success(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "egress-sg")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{
 			{
@@ -240,7 +241,7 @@ func TestAuthorizeSecurityGroupEgress_Success(t *testing.T) {
 func TestAuthorizeSecurityGroupEgress_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String("sg-nonexistent"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -253,7 +254,7 @@ func TestAuthorizeSecurityGroupIngress_ReturnsRuleSet(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "ingress-ruleset-sg")
 
-	out, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	out, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: aws.String("tcp"),
@@ -280,7 +281,7 @@ func TestAuthorizeSecurityGroupEgress_ReturnsRuleSet(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "egress-ruleset-sg")
 
-	out, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+	out, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: aws.String("tcp"),
@@ -313,14 +314,14 @@ func TestRevokeSecurityGroupIngress_Success(t *testing.T) {
 	}
 
 	// Add rule
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId:       aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{perm},
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Revoke rule
-	_, err = svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+	_, err = svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId:       aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{perm},
 	}, testAccountID)
@@ -330,7 +331,7 @@ func TestRevokeSecurityGroupIngress_Success(t *testing.T) {
 func TestRevokeSecurityGroupIngress_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+	_, err := svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId: aws.String("sg-nonexistent"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -345,7 +346,7 @@ func TestRevokeSecurityGroupIngress_RuleNotFound(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "rule-notfound-ingress")
 
 	proto := "tcp"
-	_, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+	_, err := svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -367,7 +368,7 @@ func TestRevokeSecurityGroupEgress_Success(t *testing.T) {
 
 	// Revoke default egress rule (0.0.0.0/0 all)
 	allProto := "-1"
-	_, err := svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+	_, err := svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{
 			{
@@ -382,7 +383,7 @@ func TestRevokeSecurityGroupEgress_Success(t *testing.T) {
 func TestRevokeSecurityGroupEgress_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+	_, err := svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
 		GroupId: aws.String("sg-nonexistent"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -397,7 +398,7 @@ func TestRevokeSecurityGroupEgress_IPv6OnlyIsNoOp(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "ipv6-revoke-noop")
 
 	allProto := "-1"
-	out, err := svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+	out, err := svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &allProto,
@@ -417,7 +418,7 @@ func TestRevokeSecurityGroupIngress_IPv6OnlyIsNoOp(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "ipv6-revoke-ingress-noop")
 
 	allProto := "-1"
-	out, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+	out, err := svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &allProto,
@@ -437,7 +438,7 @@ func TestAuthorizeSecurityGroupEgress_IPv6Rejected(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "ipv6-authorize-rejected")
 
 	allProto := "-1"
-	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &allProto,
@@ -456,7 +457,7 @@ func TestRevokeSecurityGroupEgress_RuleNotFound(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "rule-notfound-egress")
 
 	proto := "tcp"
-	_, err := svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+	_, err := svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -473,7 +474,7 @@ func TestRevokeSecurityGroupEgress_RuleNotFound(t *testing.T) {
 
 func authorizeIngressFromSG(t *testing.T, svc *VPCServiceImpl, sgID, srcSG string) {
 	t.Helper()
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       aws.String("tcp"),
@@ -487,7 +488,7 @@ func authorizeIngressFromSG(t *testing.T, svc *VPCServiceImpl, sgID, srcSG strin
 
 func ingressRuleIDReferencing(t *testing.T, svc *VPCServiceImpl, sgID, srcSG string) string {
 	t.Helper()
-	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -515,23 +516,23 @@ func TestRevokeSecurityGroupIngress_ByRuleID_BreaksMutualReferenceTeardown(t *te
 	authorizeIngressFromSG(t, svc, sgB, sgA)
 
 	// Precondition: each SG is pinned undeletable while the cross-ref stands.
-	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgA)}, testAccountID)
+	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgA)}, testAccountID)
 	require.ErrorContains(t, err, awserrors.ErrorDependencyViolation)
 
 	ruleA := ingressRuleIDReferencing(t, svc, sgA, sgB)
 	ruleB := ingressRuleIDReferencing(t, svc, sgB, sgA)
 
 	for _, rv := range []struct{ sg, rule string }{{sgA, ruleA}, {sgB, ruleB}} {
-		_, err = svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+		_, err = svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 			GroupId:              aws.String(rv.sg),
 			SecurityGroupRuleIds: []*string{aws.String(rv.rule)},
 		}, testAccountID)
 		require.NoErrorf(t, err, "revoke %s by rule id must remove the cross-ref", rv.sg)
 	}
 
-	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgA)}, testAccountID)
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgA)}, testAccountID)
 	require.NoError(t, err, "sgA must tear down once its cross-ref is revoked")
-	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgB)}, testAccountID)
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgB)}, testAccountID)
 	require.NoError(t, err, "sgB must tear down once its cross-ref is revoked")
 }
 
@@ -540,7 +541,7 @@ func TestRevokeSecurityGroupEgress_ByRuleID_RemovesRule(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "tf-egress-byid")
 
-	rules, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	rules, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -552,13 +553,13 @@ func TestRevokeSecurityGroupEgress_ByRuleID_RemovesRule(t *testing.T) {
 	}
 	require.NotEmpty(t, egressID, "new SG has a default all-egress rule")
 
-	_, err = svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+	_, err = svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
 		GroupId:              aws.String(sgID),
 		SecurityGroupRuleIds: []*string{aws.String(egressID)},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	after, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	after, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -572,7 +573,7 @@ func TestRevokeSecurityGroupIngress_ByRuleID_NotFound(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "tf-byid-notfound")
 
-	_, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+	_, err := svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId:              aws.String(sgID),
 		SecurityGroupRuleIds: []*string{aws.String("sgr-00000000000000000")},
 	}, testAccountID)
@@ -584,7 +585,7 @@ func TestRevokeSecurityGroupIngress_ByRuleID_Malformed(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "tf-byid-malformed")
 
-	_, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+	_, err := svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId:              aws.String(sgID),
 		SecurityGroupRuleIds: []*string{aws.String("not-a-rule-id")},
 	}, testAccountID)
@@ -843,7 +844,7 @@ func TestAuthorizeSecurityGroupIngress_RejectsInvalidRule(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "inj-sg")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -862,7 +863,7 @@ func TestAuthorizeSecurityGroupEgress_RejectsInvalidRule(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "inj-sg-egress")
 
 	proto := "-1"
-	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &proto,
@@ -879,7 +880,7 @@ func TestRevokeSecurityGroupIngress_RejectsInvalidRule(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "inj-sg-revoke")
 
 	proto := "tcp"
-	_, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+	_, err := svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -899,7 +900,7 @@ func TestAuthorizeSecurityGroupIngress_AcceptsValidSourceSG(t *testing.T) {
 	srcSG := createTestSG(t, svc, vpcID, "valid-target-sg")
 
 	proto := "-1"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &proto,
@@ -917,7 +918,7 @@ func TestDescribeSecurityGroups_FilterByGroupId(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "target-sg")
 	createTestSG(t, svc, vpcID, "other-sg")
 
-	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}},
 		},
@@ -931,21 +932,21 @@ func TestDescribeSecurityGroups_FilterByDescription(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
-	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	_, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("web-sg"),
 		Description: aws.String("Web server security group"),
 		VpcId:       aws.String(vpcID),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	_, err = svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("db-sg"),
 		Description: aws.String("Database security group"),
 		VpcId:       aws.String(vpcID),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("description"), Values: []*string{aws.String("Web server security group")}},
 		},
@@ -962,7 +963,7 @@ func TestDescribeSecurityGroups_FilterByVpcId(t *testing.T) {
 	createTestSG(t, svc, vpc1, "sg-in-vpc1")
 	createTestSG(t, svc, vpc2, "sg-in-vpc2")
 
-	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpc1)}},
 		},
@@ -981,7 +982,7 @@ func TestDescribeSecurityGroups_FilterByIpPermissionCidr(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "cidr-sg")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{
 			{
@@ -997,7 +998,7 @@ func TestDescribeSecurityGroups_FilterByIpPermissionCidr(t *testing.T) {
 	// Create another SG without the ingress rule
 	createTestSG(t, svc, vpcID, "no-cidr-sg")
 
-	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("ip-permission.cidr"), Values: []*string{aws.String("10.0.0.0/8")}},
 		},
@@ -1014,7 +1015,7 @@ func TestDescribeSecurityGroups_FilterMultipleValues_OR(t *testing.T) {
 	createTestSG(t, svc, vpcID, "sg-beta")
 	createTestSG(t, svc, vpcID, "sg-gamma")
 
-	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("group-name"), Values: []*string{aws.String("sg-alpha"), aws.String("sg-gamma")}},
 		},
@@ -1030,7 +1031,7 @@ func TestDescribeSecurityGroups_FilterMultipleFilters_AND(t *testing.T) {
 	createTestSG(t, svc, vpc1, "same-name")
 	createTestSG(t, svc, vpc2, "same-name")
 
-	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("group-name"), Values: []*string{aws.String("same-name")}},
 			{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpc1)}},
@@ -1044,7 +1045,7 @@ func TestDescribeSecurityGroups_FilterMultipleFilters_AND(t *testing.T) {
 func TestDescribeSecurityGroups_FilterUnknownName_Error(t *testing.T) {
 	svc := setupTestVPCService(t)
 
-	_, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	_, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("bogus-filter"), Values: []*string{aws.String("x")}},
 		},
@@ -1059,7 +1060,7 @@ func TestDescribeSecurityGroups_FilterWildcard(t *testing.T) {
 	createTestSG(t, svc, vpcID, "prod-api")
 	createTestSG(t, svc, vpcID, "staging-web")
 
-	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("group-name"), Values: []*string{aws.String("prod-*")}},
 		},
@@ -1072,7 +1073,7 @@ func TestDescribeSecurityGroups_FilterByTag(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
-	out, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	out, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("tagged-sg"),
 		Description: aws.String("tagged"),
 		VpcId:       aws.String(vpcID),
@@ -1087,7 +1088,7 @@ func TestDescribeSecurityGroups_FilterByTag(t *testing.T) {
 
 	createTestSG(t, svc, vpcID, "untagged-sg")
 
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("tag:Env"), Values: []*string{aws.String("prod")}},
 		},
@@ -1102,7 +1103,7 @@ func TestDescribeSecurityGroups_FilterNoResults(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSG(t, svc, vpcID, "my-sg")
 
-	out, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("group-name"), Values: []*string{aws.String("nonexistent")}},
 		},
@@ -1141,7 +1142,7 @@ func TestCreateVpc_ProvisionsDefaultSG(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
 	sgID := findDefaultSGInVPC(t, svc, vpcID)
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []*string{aws.String(sgID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1161,7 +1162,7 @@ func TestCreateSecurityGroup_RejectsReservedDefaultName(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
-	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	_, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("default"),
 		Description: aws.String("user-supplied"),
 		VpcId:       aws.String(vpcID),
@@ -1175,7 +1176,7 @@ func TestDeleteSecurityGroup_RejectsDefault(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := findDefaultSGInVPC(t, svc, vpcID)
 
-	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, testAccountID)
 	require.Error(t, err)
@@ -1188,13 +1189,13 @@ func TestDeleteSecurityGroup_RejectsAttachedToENI(t *testing.T) {
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
 	sgID := createTestSG(t, svc, vpcID, "in-use-sg")
 
-	_, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetID),
 		Groups:   []*string{aws.String(sgID)},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, testAccountID)
 	require.Error(t, err)
@@ -1208,7 +1209,7 @@ func TestDeleteSecurityGroup_RejectsReferencedFromOtherSG(t *testing.T) {
 	dstSG := createTestSG(t, svc, vpcID, "dst-sg")
 
 	allProto := "-1"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(dstSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &allProto,
@@ -1217,7 +1218,7 @@ func TestDeleteSecurityGroup_RejectsReferencedFromOtherSG(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(srcSG),
 	}, testAccountID)
 	require.Error(t, err)
@@ -1229,7 +1230,7 @@ func TestDeleteVpc_BlocksOnNonDefaultSG(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSG(t, svc, vpcID, "user-sg")
 
-	_, err := svc.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "DependencyViolation")
 }
@@ -1239,11 +1240,11 @@ func TestDeleteVpc_CascadesDefaultSG(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	defaultSG := findDefaultSGInVPC(t, svc, vpcID)
 
-	_, err := svc.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
 	require.NoError(t, err)
 
 	// Default SG must be gone too.
-	_, err = svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	_, err = svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []*string{aws.String(defaultSG)},
 	}, testAccountID)
 	require.Error(t, err)
@@ -1257,7 +1258,7 @@ func TestAuthorizeSecurityGroupIngress_RuleLimit(t *testing.T) {
 
 	proto := "tcp"
 	for port := range maxRulesPerSGSide {
-		_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 			GroupId: aws.String(sgID),
 			IpPermissions: []*ec2.IpPermission{{
 				IpProtocol: &proto,
@@ -1269,7 +1270,7 @@ func TestAuthorizeSecurityGroupIngress_RuleLimit(t *testing.T) {
 		require.NoError(t, err, "rule %d should fit under the cap", port)
 	}
 
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -1288,7 +1289,7 @@ func TestEnsureDefaultVPC_CreatesDefaultSG(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, info)
 
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("vpc-id"), Values: []*string{aws.String(info.VpcId)}},
 			{Name: aws.String("group-name"), Values: []*string{aws.String("default")}},
@@ -1307,7 +1308,7 @@ func TestAuthorizeSecurityGroupIngress_SourceSG_SameVPC(t *testing.T) {
 	srcSG := createTestSG(t, svc, vpcID, "source-sg")
 
 	allProto := "-1"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(ownerSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &allProto,
@@ -1324,7 +1325,7 @@ func TestAuthorizeSecurityGroupIngress_SourceSG_NotFound(t *testing.T) {
 
 	allProto := "-1"
 	// Well-formed sg-id that does not exist in KV — must fail with InvalidGroup.NotFound.
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(ownerSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &allProto,
@@ -1343,7 +1344,7 @@ func TestAuthorizeSecurityGroupIngress_SourceSG_CrossVPC(t *testing.T) {
 	srcSG := createTestSG(t, svc, vpcB, "source-sg-cross")
 
 	allProto := "-1"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(ownerSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &allProto,
@@ -1363,7 +1364,7 @@ func TestAuthorizeSecurityGroupEgress_SourceSG_CrossVPC(t *testing.T) {
 	dstSG := createTestSG(t, svc, vpcB, "dst-sg-cross-egr")
 
 	allProto := "-1"
-	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String(ownerSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &allProto,
@@ -1383,7 +1384,7 @@ func TestDeleteSecurityGroup_RejectsReferencedFromOtherSGEgress(t *testing.T) {
 	dstSG := createTestSG(t, svc, vpcID, "egress-dst-sg")
 
 	allProto := "-1"
-	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String(srcSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &allProto,
@@ -1392,7 +1393,7 @@ func TestDeleteSecurityGroup_RejectsReferencedFromOtherSGEgress(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(dstSG),
 	}, testAccountID)
 	require.Error(t, err)
@@ -1410,7 +1411,7 @@ func TestAuthorizeSecurityGroupEgress_RuleLimit(t *testing.T) {
 	// Default egress allow-all already counts as 1 rule, so the cap is hit
 	// after maxRulesPerSGSide-1 additions.
 	for port := range maxRulesPerSGSide - 1 {
-		_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+		_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 			GroupId: aws.String(sgID),
 			IpPermissions: []*ec2.IpPermission{{
 				IpProtocol: &proto,
@@ -1422,7 +1423,7 @@ func TestAuthorizeSecurityGroupEgress_RuleLimit(t *testing.T) {
 		require.NoError(t, err, "rule %d should fit under the cap", port)
 	}
 
-	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -1447,7 +1448,7 @@ func TestCreateSecurityGroup_VpcdError_RecordPersists(t *testing.T) {
 	// record directly to isolate the SG path.
 	seedAvailableVPC(t, svc, "vpc-fail000000000")
 
-	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	_, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("user-sg"),
 		Description: aws.String("d"),
 		VpcId:       aws.String("vpc-fail000000000"),
@@ -1458,7 +1459,7 @@ func TestCreateSecurityGroup_VpcdError_RecordPersists(t *testing.T) {
 	// KV write happens before the request, so the record IS in KV — vpcd's
 	// orphan-PG reconciler is the safety net. Verify the user can DescribeSGs
 	// and see exactly the one failed-to-provision SG so they can retry/delete.
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: []*string{aws.String("vpc-fail000000000")}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1475,7 +1476,7 @@ func TestDeleteSecurityGroup_VpcdError_Propagated(t *testing.T) {
 	// Replace the success stub with a failing one for the delete-sg path.
 	failingDeleteResponder(t, nc, "forced-delete-sg-error")
 
-	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, testAccountID)
 	require.Error(t, err)
@@ -1483,7 +1484,7 @@ func TestDeleteSecurityGroup_VpcdError_Propagated(t *testing.T) {
 
 	// KV record is removed even on vpcd error — reconciler's orphan-PG scan
 	// converges OVN. Asserts the documented "KV-first, no rollback" contract.
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []*string{aws.String(sgID)},
 	}, testAccountID)
 	require.Error(t, err, "SG record should be gone post-DeleteSG even when vpcd errors")
@@ -1499,7 +1500,7 @@ func TestAuthorizeSecurityGroupIngress_VpcdError_Propagated(t *testing.T) {
 	failingUpdateResponder(t, nc, "forced-update-sg-error")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -1512,7 +1513,7 @@ func TestAuthorizeSecurityGroupIngress_VpcdError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "forced-update-sg-error")
 
 	// Rule must remain in KV so the reconciler can converge OVN.
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []*string{aws.String(sgID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1532,7 +1533,7 @@ func TestRevokeSecurityGroupIngress_VpcdError_Propagated(t *testing.T) {
 		ToPort:     aws.Int64(443),
 		IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
 	}
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId:       aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{rule},
 	}, testAccountID)
@@ -1540,7 +1541,7 @@ func TestRevokeSecurityGroupIngress_VpcdError_Propagated(t *testing.T) {
 
 	failingUpdateResponder(t, nc, "forced-revoke-error")
 
-	_, err = svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+	_, err = svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId:       aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{rule},
 	}, testAccountID)
@@ -1558,7 +1559,7 @@ func TestAuthorizeSecurityGroupEgress_VpcdError_Propagated(t *testing.T) {
 	failingUpdateResponder(t, nc, "forced-egress-auth-error")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -1584,7 +1585,7 @@ func TestRevokeSecurityGroupEgress_VpcdError_Propagated(t *testing.T) {
 
 	failingUpdateResponder(t, nc, "forced-egress-revoke-error")
 
-	_, err := svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+	_, err := svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
 		GroupId:       aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{rule},
 	}, testAccountID)
@@ -1629,12 +1630,12 @@ func TestDeleteVpc_VpcdError_VPCNotDeleted(t *testing.T) {
 	// Cascade fires vpc.delete-sg through the internal helper.
 	failingDeleteResponder(t, nc, "forced-cascade-error")
 
-	_, err := svc.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forced-cascade-error")
 
 	// VPC record must still exist so the user can retry.
-	desc, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{
+	desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
 		VpcIds: []*string{aws.String(vpcID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1653,7 +1654,7 @@ func TestDeleteSecurityGroup_FailsClosedOnCorruptENI(t *testing.T) {
 	_, err := svc.eniKV.Put(testAccountID+".eni-corrupt", []byte("{not json"))
 	require.NoError(t, err)
 
-	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, testAccountID)
 	require.Error(t, err)
@@ -1696,7 +1697,7 @@ func failingUpdateResponder(t *testing.T, nc *nats.Conn, msg string) {
 func authorizeIngressTCP(t *testing.T, svc *VPCServiceImpl, sgID string, port int64, cidr string) string {
 	t.Helper()
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -1707,7 +1708,7 @@ func authorizeIngressTCP(t *testing.T, svc *VPCServiceImpl, sgID string, port in
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1729,7 +1730,7 @@ func TestDescribeSecurityGroupRules_All(t *testing.T) {
 	authorizeIngressTCP(t, svc, sgA, 22, "10.0.0.0/24")
 	authorizeIngressTCP(t, svc, sgB, 443, "0.0.0.0/0")
 
-	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{}, testAccountID)
+	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{}, testAccountID)
 	require.NoError(t, err)
 
 	var ingressForA, egressForA, ingressForB int
@@ -1764,7 +1765,7 @@ func TestDescribeSecurityGroupRules_FilterByGroupID(t *testing.T) {
 	authorizeIngressTCP(t, svc, sgA, 22, "10.0.0.0/24")
 	authorizeIngressTCP(t, svc, sgB, 22, "10.0.0.0/24")
 
-	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgA)}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1780,7 +1781,7 @@ func TestDescribeSecurityGroupRules_FilterByRuleID(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "by-rule-id")
 	ruleID := authorizeIngressTCP(t, svc, sgID, 22, "10.0.0.0/24")
 
-	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("security-group-rule-id"), Values: []*string{aws.String(ruleID)}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1794,7 +1795,7 @@ func TestDescribeSecurityGroupRules_ByRuleIDsExplicit(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "explicit-ids")
 	ruleID := authorizeIngressTCP(t, svc, sgID, 22, "10.0.0.0/24")
 
-	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		SecurityGroupRuleIds: []*string{aws.String(ruleID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1807,7 +1808,7 @@ func TestDescribeSecurityGroupRules_RuleIDNotFound(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSG(t, svc, vpcID, "any")
 
-	_, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	_, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		SecurityGroupRuleIds: []*string{aws.String("sgr-deadbeefdeadbeef0")},
 	}, testAccountID)
 	require.Error(t, err)
@@ -1819,7 +1820,7 @@ func TestDescribeSecurityGroupRules_NilInput(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSG(t, svc, vpcID, "nil-input")
 
-	out, err := svc.DescribeSecurityGroupRules(nil, testAccountID)
+	out, err := svc.DescribeSecurityGroupRules(context.Background(), nil, testAccountID)
 	require.NoError(t, err)
 	assert.NotEmpty(t, out.SecurityGroupRules)
 }
@@ -1830,7 +1831,7 @@ func TestDescribeSecurityGroupRules_TagFiltersReturnNothing(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "tag-filter")
 	authorizeIngressTCP(t, svc, sgID, 22, "10.0.0.0/24")
 
-	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("tag:Owner"), Values: []*string{aws.String("teamA")}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1844,7 +1845,7 @@ func TestDescribeSecurityGroupRules_ReferencedGroupInfo(t *testing.T) {
 	dstSG := createTestSG(t, svc, vpcID, "dest")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(dstSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &proto,
@@ -1855,7 +1856,7 @@ func TestDescribeSecurityGroupRules_ReferencedGroupInfo(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(dstSG)}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1882,7 +1883,7 @@ func TestAuthorizeSecurityGroupIngress_AssignsRuleIDs(t *testing.T) {
 	sgID := createTestSG(t, svc, vpcID, "assigns-ids")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &proto,
@@ -1917,13 +1918,13 @@ func TestAuthorizeSecurityGroupIngress_RejectsContentDuplicate(t *testing.T) {
 		ToPort:     aws.Int64(22),
 		IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24")}},
 	}
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId:       aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{perm},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err = svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId:       aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{perm},
 	}, testAccountID)
@@ -1936,7 +1937,7 @@ func TestDescribeSecurityGroupRules_InvalidFilter(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSG(t, svc, vpcID, "invalid-filter")
 
-	_, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+	_, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("ip-permission.cidr"), Values: []*string{aws.String("10.0.0.0/24")}}},
 	}, testAccountID)
 	require.Error(t, err)
@@ -1957,7 +1958,7 @@ func TestSecurityGroupRule_DescriptionRoundTrips(t *testing.T) {
 
 	const desc = "elbv2.k8s.aws/targetGroupBinding=shared"
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(nodeSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &proto,
@@ -1969,7 +1970,7 @@ func TestSecurityGroupRule_DescriptionRoundTrips(t *testing.T) {
 	require.NoError(t, err)
 
 	// Describe must surface the description so the controller recognises its rule.
-	dout, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	dout, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []*string{aws.String(nodeSG)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1984,12 +1985,12 @@ func TestSecurityGroupRule_DescriptionRoundTrips(t *testing.T) {
 	assert.Equal(t, desc, gotDesc, "UserIdGroupPair description must round-trip through describe")
 
 	// Backend SG is pinned while the node-SG rule references it.
-	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(backendSG)}, testAccountID)
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{GroupId: aws.String(backendSG)}, testAccountID)
 	require.ErrorContains(t, err, awserrors.ErrorDependencyViolation)
 
 	// Revoke matching the rule WITHOUT a description must still match (description
 	// is metadata, not identity) so the controller's revoke clears the cross-ref.
-	_, err = svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+	_, err = svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId: aws.String(nodeSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &proto,
@@ -2001,6 +2002,6 @@ func TestSecurityGroupRule_DescriptionRoundTrips(t *testing.T) {
 	require.NoError(t, err, "revoke without description must match the tagged rule")
 
 	// With the cross-ref gone the backend SG tears down cleanly — no orphan.
-	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(backendSG)}, testAccountID)
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{GroupId: aws.String(backendSG)}, testAccountID)
 	require.NoError(t, err, "backend SG must delete once its node-SG reference is revoked")
 }

@@ -1,6 +1,7 @@
 package gateway_ec2_capacityreservation
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -70,7 +71,7 @@ func TestCollectCensus_CapturesDistinctNodes(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	census, err := collectCensus(nc, 2, "")
+	census, err := collectCensus(context.Background(), nc, 2, "")
 	require.NoError(t, err)
 	require.Len(t, census, 2)
 
@@ -104,7 +105,7 @@ func TestCollectCensus_DedupsRepeatNodes(t *testing.T) {
 
 	// Gather counts frames, not distinct nodes: expect all 3 frames so the
 	// caller's by-node dedup can collapse them to 2 distinct nodes.
-	census, err := collectCensus(nc, 3, "")
+	census, err := collectCensus(context.Background(), nc, 3, "")
 	require.NoError(t, err)
 	require.Len(t, census, 2)
 

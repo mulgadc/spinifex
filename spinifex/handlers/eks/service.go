@@ -1,64 +1,68 @@
 // Package handlers_eks implements the EKS control-plane API surface for Spinifex.
 package handlers_eks
 
-import "github.com/aws/aws-sdk-go/service/eks"
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go/service/eks"
+)
 
 // EKSService is the EKS control-plane contract; one method per AWS EKS API action.
 type EKSService interface {
 	// Cluster. callerPrincipalARN is the IAM principal for the bootstrap AccessEntry; "" skips it.
-	CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error)
-	DescribeCluster(input *eks.DescribeClusterInput, accountID string) (*eks.DescribeClusterOutput, error)
-	ListClusters(input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error)
-	UpdateClusterConfig(input *eks.UpdateClusterConfigInput, accountID string) (*eks.UpdateClusterConfigOutput, error)
-	UpdateClusterVersion(input *eks.UpdateClusterVersionInput, accountID string) (*eks.UpdateClusterVersionOutput, error)
-	DeleteCluster(input *eks.DeleteClusterInput, accountID string) (*eks.DeleteClusterOutput, error)
+	CreateCluster(ctx context.Context, input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error)
+	DescribeCluster(ctx context.Context, input *eks.DescribeClusterInput, accountID string) (*eks.DescribeClusterOutput, error)
+	ListClusters(ctx context.Context, input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error)
+	UpdateClusterConfig(ctx context.Context, input *eks.UpdateClusterConfigInput, accountID string) (*eks.UpdateClusterConfigOutput, error)
+	UpdateClusterVersion(ctx context.Context, input *eks.UpdateClusterVersionInput, accountID string) (*eks.UpdateClusterVersionOutput, error)
+	DeleteCluster(ctx context.Context, input *eks.DeleteClusterInput, accountID string) (*eks.DeleteClusterOutput, error)
 
 	// Nodegroup
-	CreateNodegroup(input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error)
-	DescribeNodegroup(input *eks.DescribeNodegroupInput, accountID string) (*eks.DescribeNodegroupOutput, error)
-	ListNodegroups(input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error)
-	UpdateNodegroupConfig(input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error)
-	UpdateNodegroupVersion(input *eks.UpdateNodegroupVersionInput, accountID string) (*eks.UpdateNodegroupVersionOutput, error)
-	DeleteNodegroup(input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error)
+	CreateNodegroup(ctx context.Context, input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error)
+	DescribeNodegroup(ctx context.Context, input *eks.DescribeNodegroupInput, accountID string) (*eks.DescribeNodegroupOutput, error)
+	ListNodegroups(ctx context.Context, input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error)
+	UpdateNodegroupConfig(ctx context.Context, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error)
+	UpdateNodegroupVersion(ctx context.Context, input *eks.UpdateNodegroupVersionInput, accountID string) (*eks.UpdateNodegroupVersionOutput, error)
+	DeleteNodegroup(ctx context.Context, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error)
 
 	// AccessEntry + AccessPolicy
-	CreateAccessEntry(input *eks.CreateAccessEntryInput, accountID string) (*eks.CreateAccessEntryOutput, error)
-	DescribeAccessEntry(input *eks.DescribeAccessEntryInput, accountID string) (*eks.DescribeAccessEntryOutput, error)
-	ListAccessEntries(input *eks.ListAccessEntriesInput, accountID string) (*eks.ListAccessEntriesOutput, error)
-	UpdateAccessEntry(input *eks.UpdateAccessEntryInput, accountID string) (*eks.UpdateAccessEntryOutput, error)
-	DeleteAccessEntry(input *eks.DeleteAccessEntryInput, accountID string) (*eks.DeleteAccessEntryOutput, error)
-	AssociateAccessPolicy(input *eks.AssociateAccessPolicyInput, accountID string) (*eks.AssociateAccessPolicyOutput, error)
-	DisassociateAccessPolicy(input *eks.DisassociateAccessPolicyInput, accountID string) (*eks.DisassociateAccessPolicyOutput, error)
-	ListAssociatedAccessPolicies(input *eks.ListAssociatedAccessPoliciesInput, accountID string) (*eks.ListAssociatedAccessPoliciesOutput, error)
-	ListAccessPolicies(input *eks.ListAccessPoliciesInput, accountID string) (*eks.ListAccessPoliciesOutput, error)
+	CreateAccessEntry(ctx context.Context, input *eks.CreateAccessEntryInput, accountID string) (*eks.CreateAccessEntryOutput, error)
+	DescribeAccessEntry(ctx context.Context, input *eks.DescribeAccessEntryInput, accountID string) (*eks.DescribeAccessEntryOutput, error)
+	ListAccessEntries(ctx context.Context, input *eks.ListAccessEntriesInput, accountID string) (*eks.ListAccessEntriesOutput, error)
+	UpdateAccessEntry(ctx context.Context, input *eks.UpdateAccessEntryInput, accountID string) (*eks.UpdateAccessEntryOutput, error)
+	DeleteAccessEntry(ctx context.Context, input *eks.DeleteAccessEntryInput, accountID string) (*eks.DeleteAccessEntryOutput, error)
+	AssociateAccessPolicy(ctx context.Context, input *eks.AssociateAccessPolicyInput, accountID string) (*eks.AssociateAccessPolicyOutput, error)
+	DisassociateAccessPolicy(ctx context.Context, input *eks.DisassociateAccessPolicyInput, accountID string) (*eks.DisassociateAccessPolicyOutput, error)
+	ListAssociatedAccessPolicies(ctx context.Context, input *eks.ListAssociatedAccessPoliciesInput, accountID string) (*eks.ListAssociatedAccessPoliciesOutput, error)
+	ListAccessPolicies(ctx context.Context, input *eks.ListAccessPoliciesInput, accountID string) (*eks.ListAccessPoliciesOutput, error)
 
 	// Addons
-	ListAddons(input *eks.ListAddonsInput, accountID string) (*eks.ListAddonsOutput, error)
-	DescribeAddonVersions(input *eks.DescribeAddonVersionsInput, accountID string) (*eks.DescribeAddonVersionsOutput, error)
-	CreateAddon(input *eks.CreateAddonInput, accountID string) (*eks.CreateAddonOutput, error)
-	DeleteAddon(input *eks.DeleteAddonInput, accountID string) (*eks.DeleteAddonOutput, error)
-	DescribeAddon(input *eks.DescribeAddonInput, accountID string) (*eks.DescribeAddonOutput, error)
-	UpdateAddon(input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error)
+	ListAddons(ctx context.Context, input *eks.ListAddonsInput, accountID string) (*eks.ListAddonsOutput, error)
+	DescribeAddonVersions(ctx context.Context, input *eks.DescribeAddonVersionsInput, accountID string) (*eks.DescribeAddonVersionsOutput, error)
+	CreateAddon(ctx context.Context, input *eks.CreateAddonInput, accountID string) (*eks.CreateAddonOutput, error)
+	DeleteAddon(ctx context.Context, input *eks.DeleteAddonInput, accountID string) (*eks.DeleteAddonOutput, error)
+	DescribeAddon(ctx context.Context, input *eks.DescribeAddonInput, accountID string) (*eks.DescribeAddonOutput, error)
+	UpdateAddon(ctx context.Context, input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error)
 	// ListStagedAddonManifests is an internal control-plane method (not an
 	// AWS-SDK action): the on-VM addon-sync agent fetches staged manifests for a
 	// cluster via the internal-addons gateway route.
-	ListStagedAddonManifests(input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error)
+	ListStagedAddonManifests(ctx context.Context, input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error)
 
 	// GetRecoveryDirective / SetRecoveryDirective are internal control-plane
 	// methods (not AWS-SDK actions): the on-VM k3s-recovery agent fetches its
 	// per-member directive via the internal-recovery gateway route, and the
 	// reconciler / operator CLI set it to drive an etcd cluster-reset recovery.
-	GetRecoveryDirective(input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error)
-	SetRecoveryDirective(input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error)
+	GetRecoveryDirective(ctx context.Context, input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error)
+	SetRecoveryDirective(ctx context.Context, input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error)
 
 	// OIDC identity-provider configs.
-	AssociateIdentityProviderConfig(input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error)
-	DescribeIdentityProviderConfig(input *eks.DescribeIdentityProviderConfigInput, accountID string) (*eks.DescribeIdentityProviderConfigOutput, error)
-	ListIdentityProviderConfigs(input *eks.ListIdentityProviderConfigsInput, accountID string) (*eks.ListIdentityProviderConfigsOutput, error)
-	DisassociateIdentityProviderConfig(input *eks.DisassociateIdentityProviderConfigInput, accountID string) (*eks.DisassociateIdentityProviderConfigOutput, error)
+	AssociateIdentityProviderConfig(ctx context.Context, input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error)
+	DescribeIdentityProviderConfig(ctx context.Context, input *eks.DescribeIdentityProviderConfigInput, accountID string) (*eks.DescribeIdentityProviderConfigOutput, error)
+	ListIdentityProviderConfigs(ctx context.Context, input *eks.ListIdentityProviderConfigsInput, accountID string) (*eks.ListIdentityProviderConfigsOutput, error)
+	DisassociateIdentityProviderConfig(ctx context.Context, input *eks.DisassociateIdentityProviderConfigInput, accountID string) (*eks.DisassociateIdentityProviderConfigOutput, error)
 
 	// Tags
-	TagResource(input *eks.TagResourceInput, accountID string) (*eks.TagResourceOutput, error)
-	UntagResource(input *eks.UntagResourceInput, accountID string) (*eks.UntagResourceOutput, error)
-	ListTagsForResource(input *eks.ListTagsForResourceInput, accountID string) (*eks.ListTagsForResourceOutput, error)
+	TagResource(ctx context.Context, input *eks.TagResourceInput, accountID string) (*eks.TagResourceOutput, error)
+	UntagResource(ctx context.Context, input *eks.UntagResourceInput, accountID string) (*eks.UntagResourceOutput, error)
+	ListTagsForResource(ctx context.Context, input *eks.ListTagsForResourceInput, accountID string) (*eks.ListTagsForResourceOutput, error)
 }

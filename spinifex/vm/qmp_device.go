@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -30,6 +31,7 @@ type PCIDevice struct {
 
 // QMPDeviceController is the production DeviceController for a live QEMU instance.
 type QMPDeviceController struct {
+	ctx        context.Context // request trace parent; nil means background
 	client     *qmp.QMPClient
 	instanceID string
 }
@@ -40,13 +42,31 @@ func NewQMPDeviceController(client *qmp.QMPClient, instanceID string) *QMPDevice
 	return &QMPDeviceController{client: client, instanceID: instanceID}
 }
 
+// commandContext returns the bound request context, or Background for
+// controllers created on non-request paths.
+func (c *QMPDeviceController) commandContext() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+// bindDeviceContext parents a QMPDeviceController's QMP spans on ctx so they
+// join the caller's trace. Stub controllers pass through unchanged.
+func bindDeviceContext(ctx context.Context, dc DeviceController) DeviceController {
+	if c, ok := dc.(*QMPDeviceController); ok {
+		c.ctx = ctx
+	}
+	return dc
+}
+
 func (c *QMPDeviceController) DeviceAdd(args map[string]any) error {
-	_, err := sendQMPCommand(c.client, qmp.QMPCommand{Execute: "device_add", Arguments: args}, c.instanceID)
+	_, err := sendQMPCommand(c.commandContext(), c.client, qmp.QMPCommand{Execute: "device_add", Arguments: args}, c.instanceID)
 	return err
 }
 
 func (c *QMPDeviceController) DeviceDel(deviceID string) error {
-	_, err := sendQMPCommand(c.client, qmp.QMPCommand{
+	_, err := sendQMPCommand(c.commandContext(), c.client, qmp.QMPCommand{
 		Execute:   "device_del",
 		Arguments: map[string]any{"id": deviceID},
 	}, c.instanceID)
@@ -54,12 +74,12 @@ func (c *QMPDeviceController) DeviceDel(deviceID string) error {
 }
 
 func (c *QMPDeviceController) NetdevAdd(args map[string]any) error {
-	_, err := sendQMPCommand(c.client, qmp.QMPCommand{Execute: "netdev_add", Arguments: args}, c.instanceID)
+	_, err := sendQMPCommand(c.commandContext(), c.client, qmp.QMPCommand{Execute: "netdev_add", Arguments: args}, c.instanceID)
 	return err
 }
 
 func (c *QMPDeviceController) NetdevDel(netdevID string) error {
-	_, err := sendQMPCommand(c.client, qmp.QMPCommand{
+	_, err := sendQMPCommand(c.commandContext(), c.client, qmp.QMPCommand{
 		Execute:   "netdev_del",
 		Arguments: map[string]any{"id": netdevID},
 	}, c.instanceID)
@@ -70,7 +90,7 @@ func (c *QMPDeviceController) NetdevDel(netdevID string) error {
 // recursing through pci_bridge entries. Only devices with a non-empty qdev_id
 // are returned.
 func (c *QMPDeviceController) QueryPCI() ([]PCIDevice, error) {
-	resp, err := sendQMPCommand(c.client, qmp.QMPCommand{Execute: "query-pci"}, c.instanceID)
+	resp, err := sendQMPCommand(c.commandContext(), c.client, qmp.QMPCommand{Execute: "query-pci"}, c.instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("query-pci: %w", err)
 	}

@@ -1,6 +1,7 @@
 package gateway_eks
 
 import (
+	"context"
 	"errors"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -20,14 +21,14 @@ type internalAddonsOutput struct {
 // — same carve-out as PublishInternal. Returns every staged add-on manifest so
 // the VM can render the baked bundles into the K3s auto-deploy dir and GC the
 // locally-rendered manifests for add-ons no longer staged.
-func ListInternalAddons(natsConn *nats.Conn, clusterName, accountID string) (*internalAddonsOutput, error) {
+func ListInternalAddons(ctx context.Context, natsConn *nats.Conn, clusterName, accountID string) (*internalAddonsOutput, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if clusterName == "" || accountID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	out, err := handlers_eks.NewNATSEKSService(natsConn).ListStagedAddonManifests(
+	out, err := handlers_eks.NewNATSEKSService(natsConn).ListStagedAddonManifests(ctx,
 		&handlers_eks.ListStagedAddonManifestsInput{ClusterName: clusterName}, accountID)
 	if err != nil {
 		return nil, err

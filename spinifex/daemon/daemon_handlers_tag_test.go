@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -27,7 +28,7 @@ func TestCreateTags_MixedResourceDispatch(t *testing.T) {
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
 	subscribeOwner(t, d, id)
 
-	out, err := d.createTags(&ec2.CreateTagsInput{
+	out, err := d.createTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String(id), aws.String("vol-tag-mixed")},
 		Tags:      []*ec2.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
 	}, testAccountID)
@@ -46,10 +47,10 @@ func TestDeleteTags_InstanceRoutedViaOwner(t *testing.T) {
 	const id = "i-tag-del"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev", "team": "infra"})
 	subscribeOwner(t, d, id)
-	require.NoError(t, d.tagsService.PutResourceTags(testAccountID, id,
+	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, id,
 		map[string]string{"Name": "web", "env": "dev", "team": "infra"}))
 
-	_, err := d.deleteTags(&ec2.DeleteTagsInput{
+	_, err := d.deleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String(id)},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("team")},
@@ -69,10 +70,10 @@ func TestDeleteTags_InstanceClearAll(t *testing.T) {
 	const id = "i-tag-delall"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev"})
 	subscribeOwner(t, d, id)
-	require.NoError(t, d.tagsService.PutResourceTags(testAccountID, id,
+	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, id,
 		map[string]string{"Name": "web", "env": "dev"}))
 
-	_, err := d.deleteTags(&ec2.DeleteTagsInput{
+	_, err := d.deleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String(id)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -87,7 +88,7 @@ func TestCreateTags_NoOwnerNotFound(t *testing.T) {
 	const absent = "i-tag-absent"
 	d := tagTestDaemon(t, "i-tag-unrelated", nil)
 
-	_, err := d.createTags(&ec2.CreateTagsInput{
+	_, err := d.createTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("vol-tag-still"), aws.String(absent)},
 		Tags:      []*ec2.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
 	}, testAccountID)
@@ -103,7 +104,7 @@ func TestCreateTags_NoOwnerNotFound(t *testing.T) {
 func TestDeleteTags_NoOwnerNotFound(t *testing.T) {
 	d := tagTestDaemon(t, "i-tag-unrelated2", nil)
 
-	_, err := d.deleteTags(&ec2.DeleteTagsInput{
+	_, err := d.deleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String("i-tag-gone1"), aws.String("i-tag-gone2")},
 	}, testAccountID)
 	require.Error(t, err)
@@ -123,7 +124,7 @@ func TestCreateTags_StoppedFallback(t *testing.T) {
 			Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("web")}}},
 	}
 
-	_, err := d.createTags(&ec2.CreateTagsInput{
+	_, err := d.createTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String(id)},
 		Tags:      []*ec2.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
 	}, testAccountID)
@@ -148,7 +149,7 @@ func TestDeleteTags_StoppedCrossAccountRejected(t *testing.T) {
 			Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("web")}}},
 	}
 
-	_, err := d.deleteTags(&ec2.DeleteTagsInput{
+	_, err := d.deleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String(id)},
 	}, attacker)
 	require.Error(t, err)
@@ -166,7 +167,7 @@ func TestCreateTags_OwnerErrorRelayed(t *testing.T) {
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
 	subscribeOwner(t, d, id)
 
-	_, err := d.createTags(&ec2.CreateTagsInput{
+	_, err := d.createTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String(id)},
 		Tags:      []*ec2.Tag{{Key: aws.String("stolen"), Value: aws.String("yes")}},
 	}, attacker)
@@ -181,15 +182,15 @@ func TestCreateTags_OwnerErrorRelayed(t *testing.T) {
 func TestCreateTags_Validation(t *testing.T) {
 	d := tagTestDaemon(t, "i-tag-valid", nil)
 
-	_, err := d.createTags(nil, testAccountID)
+	_, err := d.createTags(context.Background(), nil, testAccountID)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 
-	_, err = d.createTags(&ec2.CreateTagsInput{
+	_, err = d.createTags(context.Background(), &ec2.CreateTagsInput{
 		Tags: []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
 	}, testAccountID)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 
-	_, err = d.createTags(&ec2.CreateTagsInput{
+	_, err = d.createTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-tag-valid")},
 	}, testAccountID)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
@@ -198,9 +199,9 @@ func TestCreateTags_Validation(t *testing.T) {
 func TestDeleteTags_Validation(t *testing.T) {
 	d := tagTestDaemon(t, "i-tag-valid2", nil)
 
-	_, err := d.deleteTags(nil, testAccountID)
+	_, err := d.deleteTags(context.Background(), nil, testAccountID)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 
-	_, err = d.deleteTags(&ec2.DeleteTagsInput{}, testAccountID)
+	_, err = d.deleteTags(context.Background(), &ec2.DeleteTagsInput{}, testAccountID)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }

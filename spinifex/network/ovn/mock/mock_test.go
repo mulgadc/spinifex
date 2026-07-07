@@ -2,6 +2,7 @@ package mock
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -467,5 +468,89 @@ func TestLogicalRouterPolicies_DanglingUUIDsIgnored(t *testing.T) {
 	}
 	if len(policies) != 0 {
 		t.Fatalf("expected 0 policies, got %d", len(policies))
+	}
+}
+
+// EnsureAddressSet must create on first call, keep the UUID stable, and
+// converge addresses on subsequent calls (mirrors LiveClient).
+func TestEnsureAddressSet_IdempotentConverge(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	uuid1, err := m.EnsureAddressSet(ctx, "spinifex_nat_exempt", []string{"100.127.0.0/24"})
+	if err != nil {
+		t.Fatalf("EnsureAddressSet #1: %v", err)
+	}
+	if uuid1 == "" {
+		t.Fatal("EnsureAddressSet returned empty UUID")
+	}
+
+	uuid2, err := m.EnsureAddressSet(ctx, "spinifex_nat_exempt", []string{"100.127.0.0/24", "192.168.1.0/24"})
+	if err != nil {
+		t.Fatalf("EnsureAddressSet #2: %v", err)
+	}
+	if uuid2 != uuid1 {
+		t.Fatalf("UUID changed on re-ensure: %q → %q", uuid1, uuid2)
+	}
+
+	as, err := m.GetAddressSet(ctx, "spinifex_nat_exempt")
+	if err != nil {
+		t.Fatalf("GetAddressSet: %v", err)
+	}
+	if len(as.Addresses) != 2 || as.Addresses[0] != "100.127.0.0/24" || as.Addresses[1] != "192.168.1.0/24" {
+		t.Fatalf("addresses not converged: %v", as.Addresses)
+	}
+}
+
+func TestGetAddressSet_NotFound(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+
+	_, err := m.GetAddressSet(context.Background(), "no-such-set")
+	if !errors.Is(err, ovn.ErrAddressSetNotFound) {
+		t.Fatalf("err = %v, want ErrAddressSetNotFound", err)
+	}
+}
+
+// SetNATExemptedExtIPs must mutate the stored NAT row in place, clear on nil,
+// and return ErrNATNotFound when no rule matches.
+func TestSetNATExemptedExtIPs(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-r1"}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	if err := m.AddNAT(ctx, "vpc-r1", &nbdb.NAT{
+		Type: "snat", ExternalIP: "100.127.0.10", LogicalIP: "10.0.0.0/16",
+	}); err != nil {
+		t.Fatalf("AddNAT: %v", err)
+	}
+
+	setUUID := "as-1234"
+	if err := m.SetNATExemptedExtIPs(ctx, "vpc-r1", "snat", "10.0.0.0/16", &setUUID); err != nil {
+		t.Fatalf("SetNATExemptedExtIPs: %v", err)
+	}
+	nat, err := m.FindNATByLogicalIP(ctx, "vpc-r1", "snat", "10.0.0.0/16")
+	if err != nil || nat == nil {
+		t.Fatalf("FindNATByLogicalIP: nat=%v err=%v", nat, err)
+	}
+	if nat.ExemptedExtIps == nil || *nat.ExemptedExtIps != setUUID {
+		t.Fatalf("ExemptedExtIps = %v, want %q", nat.ExemptedExtIps, setUUID)
+	}
+
+	if err := m.SetNATExemptedExtIPs(ctx, "vpc-r1", "snat", "10.0.0.0/16", nil); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	nat, _ = m.FindNATByLogicalIP(ctx, "vpc-r1", "snat", "10.0.0.0/16")
+	if nat.ExemptedExtIps != nil {
+		t.Fatalf("ExemptedExtIps not cleared: %v", *nat.ExemptedExtIps)
+	}
+
+	err = m.SetNATExemptedExtIPs(ctx, "vpc-r1", "snat", "10.99.0.0/16", &setUUID)
+	if !errors.Is(err, ovn.ErrNATNotFound) {
+		t.Fatalf("missing NAT: err = %v, want ErrNATNotFound", err)
 	}
 }

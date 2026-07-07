@@ -63,14 +63,17 @@ type DHCPOptions struct {
 
 // NAT represents an OVN NAT rule on a Logical_Router.
 type NAT struct {
-	UUID        string            `ovsdb:"_uuid"`
-	Type        string            `ovsdb:"type"` // "snat", "dnat", "dnat_and_snat"
-	ExternalIP  string            `ovsdb:"external_ip"`
-	LogicalIP   string            `ovsdb:"logical_ip"`
-	LogicalPort *string           `ovsdb:"logical_port"`
-	ExternalMAC *string           `ovsdb:"external_mac"`
-	ExternalIDs map[string]string `ovsdb:"external_ids"`
-	Options     map[string]string `ovsdb:"options"`
+	UUID        string  `ovsdb:"_uuid"`
+	Type        string  `ovsdb:"type"` // "snat", "dnat", "dnat_and_snat"
+	ExternalIP  string  `ovsdb:"external_ip"`
+	LogicalIP   string  `ovsdb:"logical_ip"`
+	LogicalPort *string `ovsdb:"logical_port"`
+	ExternalMAC *string `ovsdb:"external_mac"`
+	// ExemptedExtIps references an Address_Set (strong ref); packets whose
+	// destination (snat) / source (dnat) matches the set skip this NAT rule.
+	ExemptedExtIps *string           `ovsdb:"exempted_ext_ips"`
+	ExternalIDs    map[string]string `ovsdb:"external_ids"`
+	Options        map[string]string `ovsdb:"options"`
 }
 
 // LogicalRouterStaticRoute represents an OVN Logical_Router_Static_Route.

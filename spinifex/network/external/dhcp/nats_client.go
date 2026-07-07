@@ -36,6 +36,7 @@ type AcquireParams struct {
 	Hostname    string
 	VendorClass string
 	HWAddr      net.HardwareAddr
+	UseIfaceMAC bool
 	Purpose     string
 	PoolName    string
 	VPCID       string
@@ -57,6 +58,7 @@ func (c *NATSClient) RequestAcquire(ctx context.Context, p AcquireParams) (*Leas
 		Hostname:    p.Hostname,
 		VendorClass: p.VendorClass,
 		HWAddr:      hwToString(p.HWAddr),
+		UseIfaceMAC: p.UseIfaceMAC,
 		Purpose:     p.Purpose,
 		PoolName:    p.PoolName,
 		VPCID:       p.VPCID,

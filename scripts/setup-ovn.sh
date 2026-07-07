@@ -18,6 +18,11 @@
 #   --wan-bridge=NAME    OVS bridge for WAN traffic (default: auto-detect from default route)
 #   --wan-iface=NAME     Physical NIC to add to the WAN bridge (use with --wan-bridge)
 #   --dhcp               Obtain gateway IP via DHCP on the WAN bridge interface
+#   --nat-uplink         Routed NAT mode: no WAN NIC is bridged. Creates br-ext
+#                        with a transit veth (spx-nat-host 100.127.0.1/24) and
+#                        host masquerade rules; VMs get outbound-only WAN over
+#                        any uplink (ethernet, WiFi, cellular, PPP). Pair with
+#                        `spx admin init --external-mode=nat`.
 #   --mgmt-bridge=NAME   OVS bridge for system-instance control plane (default: br-mgmt)
 #   --mgmt-cidr=CIDR     IPv4 CIDR to assign on the mgmt bridge (default: 10.15.8.1/24)
 #   --mgmt-iface=NAME    Physical/virtual NIC to enslave to the mgmt bridge (multi-node only)
@@ -62,6 +67,9 @@
 #
 #   # No WAN bridge (overlay-only, no public subnet):
 #   ./scripts/setup-ovn.sh --management --encap-ip=10.0.0.1
+#
+#   # Non-bridgeable uplink (WiFi/cellular) — routed NAT, outbound-only VMs:
+#   ./scripts/setup-ovn.sh --management --nat-uplink
 
 set -e
 
@@ -70,6 +78,7 @@ MANAGEMENT=false
 WAN_BRIDGE=""
 WAN_IFACE=""
 EXTERNAL_DHCP=false
+NAT_UPLINK=false
 MGMT_BRIDGE_ENABLED=true
 MGMT_BRIDGE="br-mgmt"
 MGMT_CIDR="10.15.8.1/24"
@@ -95,6 +104,7 @@ for arg in "$@"; do
     case "$arg" in
         --management)       MANAGEMENT=true ;;
         --dhcp)             EXTERNAL_DHCP=true ;;
+        --nat-uplink)       NAT_UPLINK=true ;;
         --wan-bridge=*)     WAN_BRIDGE="${arg#*=}" ;;
         --wan-iface=*)      WAN_IFACE="${arg#*=}" ;;
         --mgmt-bridge=*)    MGMT_BRIDGE="${arg#*=}" ;;
@@ -204,12 +214,28 @@ detect_wan_bridge() {
     echo ""
     echo "  3. No external networking (overlay-only):"
     echo "     ./scripts/setup-ovn.sh --management --encap-ip=$wan_ip"
+    echo ""
+    echo "  4. Non-bridgeable uplink (WiFi/cellular/PPP) — routed NAT mode"
+    echo "     (VMs get outbound-only internet, no public IPs):"
+    echo "     ./scripts/setup-ovn.sh --management --nat-uplink"
+    echo "     then: spx admin init --external-mode=nat"
     echo "============================================================"
     echo ""
     exit 1
 }
 
-detect_wan_bridge
+if [ "$NAT_UPLINK" = true ]; then
+    # Routed NAT: nothing is bridged, so the uplink type is irrelevant.
+    if [ -n "$WAN_BRIDGE" ] || [ -n "$WAN_IFACE" ]; then
+        echo "ERROR: --nat-uplink does not take --wan-bridge/--wan-iface (no WAN NIC is bridged)"
+        exit 1
+    fi
+    WAN_BRIDGE="br-ext"
+    WAN_BRIDGE_MODE="nat"
+    echo "  Routed NAT uplink: br-ext + transit veth, host masquerade (no WAN bridge)"
+else
+    detect_wan_bridge
+fi
 
 # Auto-detect encap IP if not specified
 if [ -z "$ENCAP_IP" ]; then
@@ -413,6 +439,16 @@ if [ -n "$WAN_BRIDGE" ]; then
         sudo ip link del veth-wan-br 2>/dev/null || true
     fi
 
+    # Same ripdown for stale routed-NAT plumbing when switching away from nat.
+    if [ "$WAN_BRIDGE_MODE" != "nat" ]; then
+        sudo rm -f /etc/systemd/network/17-spinifex-nat.netdev \
+                   /etc/systemd/network/17-spinifex-nat.network \
+                   /etc/systemd/network/18-spinifex-nat-ovs.network
+        sudo networkctl reload 2>/dev/null || true
+        sudo ovs-vsctl --if-exists del-port spx-nat-ovs 2>/dev/null || true
+        sudo ip link del spx-nat-host 2>/dev/null || true
+    fi
+
     case "$WAN_BRIDGE_MODE" in
         existing)
             # Already an OVS bridge (from a previous run or explicit --wan-bridge).
@@ -560,10 +596,101 @@ NETWORK
             echo "  $WAN_BRIDGE: direct bridge on $WAN_IFACE"
             echo "  NOTE: $WAN_IFACE is now an OVS port — no host IP on this NIC"
             ;;
+
+        nat)
+            # Routed NAT: br-ext carries no WAN NIC. A transit veth pair links
+            # it to the host stack (spx-nat-host owns 100.127.0.1/24); the host
+            # forwards and masquerades the transit /24 out whatever uplink it
+            # has. OVN SNATs each VPC CIDR to its gateway LRP transit IP, so
+            # the masquerade rule below is the only host-side NAT state.
+            NAT_TRANSIT_CIDR="100.127.0.0/24"
+            NAT_TRANSIT_GW_CIDR="100.127.0.1/24"
+
+            if ! sudo ovs-vsctl br-exists "$WAN_BRIDGE" 2>/dev/null; then
+                sudo ovs-vsctl --may-exist add-br "$WAN_BRIDGE"
+                echo "  created OVS bridge: $WAN_BRIDGE"
+            fi
+            sudo ip link set "$WAN_BRIDGE" up
+
+            # Create transit veth pair (idempotent)
+            if ! ip link show spx-nat-host >/dev/null 2>&1; then
+                sudo ip link add spx-nat-host type veth peer name spx-nat-ovs
+                echo "  created veth pair: spx-nat-host ↔ spx-nat-ovs"
+            else
+                echo "  veth pair already exists: spx-nat-host ↔ spx-nat-ovs"
+            fi
+            sudo ip addr replace "$NAT_TRANSIT_GW_CIDR" dev spx-nat-host
+
+            # Add the OVS end to br-ext
+            if ! sudo ovs-vsctl port-to-br spx-nat-ovs >/dev/null 2>&1; then
+                sudo ovs-vsctl --may-exist add-port "$WAN_BRIDGE" spx-nat-ovs
+                echo "  spx-nat-ovs → $WAN_BRIDGE (OVS bridge)"
+            fi
+            sudo ip link set spx-nat-host up
+            sudo ip link set spx-nat-ovs up
+            echo "  host (spx-nat-host $NAT_TRANSIT_GW_CIDR) ↔ veth pair ↔ $WAN_BRIDGE (OVS)"
+
+            # Persist the veth pair + transit IP across reboot (veths are
+            # kernel-only; same rationale as veth mode above).
+            NAT_NETDEV="/etc/systemd/network/17-spinifex-nat.netdev"
+            NAT_NETWORK="/etc/systemd/network/17-spinifex-nat.network"
+            NAT_OVS_NETWORK="/etc/systemd/network/18-spinifex-nat-ovs.network"
+            sudo tee "$NAT_NETDEV" >/dev/null <<NETDEV
+[NetDev]
+Name=spx-nat-host
+Kind=veth
+
+[Peer]
+Name=spx-nat-ovs
+NETDEV
+            sudo tee "$NAT_NETWORK" >/dev/null <<NETWORK
+[Match]
+Name=spx-nat-host
+
+[Network]
+Address=$NAT_TRANSIT_GW_CIDR
+ConfigureWithoutCarrier=yes
+NETWORK
+            # Admin-up the OVS end after reboot (OVS owns the port but does
+            # not flip admin state on external ports — same as veth mode).
+            sudo tee "$NAT_OVS_NETWORK" >/dev/null <<NETWORK
+[Match]
+Name=spx-nat-ovs
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+ConfigureWithoutCarrier=yes
+NETWORK
+            sudo networkctl reload 2>/dev/null || true
+            echo "  wrote $NAT_NETDEV + $NAT_NETWORK + $NAT_OVS_NETWORK (transit veth persists on reboot)"
+
+            # Kernel egress: masquerade the transit /24 out any uplink and
+            # accept forwarded transit traffic even under FORWARD-policy DROP.
+            # vpcd re-ensures these on every start; installing here too means
+            # the wiring is testable before services run.
+            sudo iptables -t nat -C POSTROUTING -s "$NAT_TRANSIT_CIDR" ! -d "$NAT_TRANSIT_CIDR" \
+                -m comment --comment "spinifex-nat-egress" -j MASQUERADE 2>/dev/null || \
+            sudo iptables -t nat -A POSTROUTING -s "$NAT_TRANSIT_CIDR" ! -d "$NAT_TRANSIT_CIDR" \
+                -m comment --comment "spinifex-nat-egress" -j MASQUERADE
+            sudo iptables -C FORWARD -i spx-nat-host -s "$NAT_TRANSIT_CIDR" \
+                -m comment --comment "spinifex-nat-egress" -j ACCEPT 2>/dev/null || \
+            sudo iptables -A FORWARD -i spx-nat-host -s "$NAT_TRANSIT_CIDR" \
+                -m comment --comment "spinifex-nat-egress" -j ACCEPT
+            sudo iptables -C FORWARD -o spx-nat-host -m conntrack --ctstate RELATED,ESTABLISHED \
+                -m comment --comment "spinifex-nat-egress" -j ACCEPT 2>/dev/null || \
+            sudo iptables -A FORWARD -o spx-nat-host -m conntrack --ctstate RELATED,ESTABLISHED \
+                -m comment --comment "spinifex-nat-egress" -j ACCEPT
+            echo "  installed masquerade + forward rules for $NAT_TRANSIT_CIDR (comment: spinifex-nat-egress)"
+            ;;
     esac
 
     # --- DHCP: obtain gateway IP for OVN SNAT ---
-    if [ "$EXTERNAL_DHCP" = true ]; then
+    if [ "$EXTERNAL_DHCP" = true ] && [ "$WAN_BRIDGE_MODE" = "nat" ]; then
+        echo ""
+        echo "  Skipping --dhcp: routed NAT mode has a fixed transit gateway (100.127.0.1)"
+    elif [ "$EXTERNAL_DHCP" = true ]; then
         echo ""
         echo "Step 3c: Obtaining external gateway IP via DHCP..."
 

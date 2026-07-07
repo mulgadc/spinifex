@@ -40,6 +40,7 @@ type ExternalPool struct {
 	Name       string   `mapstructure:"name"`        // Pool identifier (e.g., "wan", "dc1-primary")
 	Source     string   `mapstructure:"source"`      // IP source: "static" (default) or "dhcp"
 	BindBridge string   `mapstructure:"bind_bridge"` // Linux bridge for DHCP DORA (source=dhcp only)
+	DHCPMAC    string   `mapstructure:"dhcp_mac"`    // DHCP client MAC strategy: "derived" (default) or "interface" (source=dhcp only)
 	RangeStart string   `mapstructure:"range_start"` // First IP in range (static source only)
 	RangeEnd   string   `mapstructure:"range_end"`   // Last IP in range (static source only)
 	Gateway    string   `mapstructure:"gateway"`     // WAN default gateway (next hop for 0.0.0.0/0)
@@ -60,6 +61,9 @@ type NetworkConfig struct {
 	ExternalPools []ExternalPool `mapstructure:"external_pools"` // One or more IP pools
 	// IPSecEnabled toggles OVN native IPsec (AES-256-GCM) on every node. Default true; disable only for trusted lab topologies.
 	IPSecEnabled bool `mapstructure:"ipsec_enabled"`
+	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT (added
+	// to the transit /24 in the spinifex_nat_exempt set). nat mode only.
+	NATExemptCIDRs []string `mapstructure:"nat_exempt_cidrs"`
 }
 
 // BootstrapConfig holds the default VPC infrastructure IDs written by admin init.
@@ -300,6 +304,15 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		}
 	}
 
+	if len(cc.Network.NATExemptCIDRs) > 0 && cc.Network.ExternalMode != "nat" {
+		return fmt.Errorf("config: [network] nat_exempt_cidrs requires external_mode = \"nat\"")
+	}
+	for _, c := range cc.Network.NATExemptCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			return fmt.Errorf("config: [network] nat_exempt_cidrs entry %q: %w", c, err)
+		}
+	}
+
 	type poolRange struct {
 		name  string
 		start netip.Addr
@@ -307,10 +320,18 @@ func validateClusterConfig(cc *ClusterConfig) error {
 	}
 	var ranges []poolRange
 	for _, p := range cc.Network.ExternalPools {
+		switch p.DHCPMAC {
+		case "", "derived", "interface":
+		default:
+			return fmt.Errorf("config: [[network.external_pools]] %q: dhcp_mac=%q unsupported; use \"derived\" or \"interface\"", p.Name, p.DHCPMAC)
+		}
 		switch p.Source {
 		case "", "static":
 			if p.BindBridge != "" {
 				return fmt.Errorf("config: [[network.external_pools]] %q: bind_bridge is only valid with source=\"dhcp\"", p.Name)
+			}
+			if p.DHCPMAC != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: dhcp_mac is only valid with source=\"dhcp\"", p.Name)
 			}
 		case "dhcp":
 			if p.BindBridge == "" {

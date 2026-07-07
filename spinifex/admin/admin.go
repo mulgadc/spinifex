@@ -73,17 +73,10 @@ type ConfigSettings struct {
 	OVNSBAddr string
 
 	// External networking for public subnets
-	ExternalMode   string   // "pool" or "" (disabled)
-	ExternalIface  string   // WAN NIC name (e.g., "eth0", "eth1")
-	PoolName       string   // External pool name (e.g., "wan")
-	PoolSource     string   // IP source: "static" or "dhcp"
-	PoolBindBridge string   // Linux bridge for upstream DORA (source=dhcp only)
-	PoolStart      string   // First IP in external pool range (static only)
-	PoolEnd        string   // Last IP in external pool range (static only)
-	PoolGateway    string   // WAN gateway IP
-	PoolGatewayIP  string   // Explicit SNAT IP (overrides default of first IP in range)
-	PoolPrefixLen  int      // Subnet prefix length (default 24)
-	PoolDNSServers []string // DNS servers for VM DHCP (auto-detected from host)
+	ExternalMode  string     // "pool", "nat" (routed), or "" (disabled)
+	ExternalIface string     // WAN NIC name (e.g., "eth0", "eth1")
+	BridgeMode    string     // vpcd bridge_mode; only written for "nat" (bridged modes auto-detect)
+	Pools         []PoolData // External pools rendered in order (nat mode: transit first, then optional public pool)
 
 	// OperatorEmail is the address collected at install time. Written under [operator]
 	// in spinifex.toml so it survives wipes. Empty means no identity was supplied.
@@ -114,6 +107,20 @@ type ConfigSettings struct {
 	// Empty means no key was provisioned and volumes are written cleartext
 	// (legacy mode); the template omits the field entirely in that case.
 	EncryptionKeyFile string
+}
+
+// PoolData is one [[network.external_pools]] block rendered into spinifex.toml.
+type PoolData struct {
+	Name       string   // Pool name (e.g., "wan", "nat-transit")
+	Source     string   // IP source: "static" or "dhcp"
+	BindBridge string   // Linux bridge / interface for upstream DORA (source=dhcp only)
+	Start      string   // First IP in range (static only)
+	End        string   // Last IP in range (static only)
+	Gateway    string   // WAN gateway IP
+	GatewayIP  string   // Explicit SNAT IP (overrides default of first IP in range)
+	PrefixLen  int      // Subnet prefix length (default 24)
+	DNSServers []string // DNS servers for VM DHCP (auto-detected from host)
+	DHCPMAC    string   // DHCP client MAC strategy: "derived" (default) or "interface"
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.

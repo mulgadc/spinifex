@@ -180,6 +180,7 @@ type wireEntry struct {
 	DNS         []string  `json:"dns,omitempty"`
 	ServerID    string    `json:"server_id,omitempty"`
 	HWAddr      string    `json:"hwaddr,omitempty"`
+	UseIfaceMAC bool      `json:"use_iface_mac,omitempty"`
 	Bridge      string    `json:"bridge,omitempty"`
 	Hostname    string    `json:"hostname,omitempty"`
 	VendorClass string    `json:"vendor_class,omitempty"`
@@ -204,6 +205,7 @@ func toWireEntry(e Entry) wireEntry {
 		DNS:         ipsToStrings(l.DNS),
 		ServerID:    ipToString(l.ServerID),
 		HWAddr:      hwToString(l.HWAddr),
+		UseIfaceMAC: l.UseIfaceMAC,
 		Bridge:      l.Bridge,
 		Hostname:    l.Hostname,
 		VendorClass: l.VendorClass,
@@ -223,6 +225,7 @@ func fromWireEntry(w wireEntry) (Entry, error) {
 		Bridge:      w.Bridge,
 		Hostname:    w.Hostname,
 		VendorClass: w.VendorClass,
+		UseIfaceMAC: w.UseIfaceMAC,
 		AcquiredAt:  w.Acquired,
 		RawOffer:    w.RawOffer,
 		RawACK:      w.RawACK,

@@ -9,7 +9,11 @@ type ExternalPoolConfig struct {
 	Source string
 	// BindBridge is the Linux bridge the DHCP client runs against
 	// (required when Source="dhcp"). Empty for static pools.
-	BindBridge      string
+	BindBridge string
+	// DHCPMAC picks the DHCP client MAC strategy: "derived" (default,
+	// per-client-id 02:xx MACs) or "interface" (the bind interface's own
+	// MAC, for uplinks that drop foreign source MACs — WiFi/WWAN).
+	DHCPMAC         string
 	RangeStart      string
 	RangeEnd        string
 	Gateway         string
@@ -32,7 +36,19 @@ const (
 	SourceStatic = "static"
 	// SourceDHCP delegates allocation to vpcd's DHCPManager.
 	SourceDHCP = "dhcp"
+
+	// DHCPMACDerived leases with deterministic per-client-id 02:xx MACs.
+	DHCPMACDerived = "derived"
+	// DHCPMACInterface leases with the bind interface's own MAC; the
+	// upstream router keys on MAC, so client-id is the only discriminator.
+	DHCPMACInterface = "interface"
 )
+
+// UsesIfaceMAC reports whether DHCP leases go out with the bind
+// interface's own MAC instead of derived per-client-id MACs.
+func (p *ExternalPoolConfig) UsesIfaceMAC() bool {
+	return p != nil && p.DHCPMAC == DHCPMACInterface
+}
 
 // IGWSpec is the L5 input for IGWManager.AttachIGW / DetachIGW.
 // InternetGatewayID is propagated into OVN external_ids for reconcile correlation.

@@ -66,8 +66,8 @@ func (d *Daemon) recordTagMirrors() []recordTagMirror {
 	if d.eigwService != nil {
 		mirrors = append(mirrors, d.eigwService)
 	}
-	if d.eipService != nil {
-		mirrors = append(mirrors, d.eipService)
+	if m, ok := d.eipService.(recordTagMirror); ok {
+		mirrors = append(mirrors, m)
 	}
 	if d.natGatewayService != nil {
 		mirrors = append(mirrors, d.natGatewayService)

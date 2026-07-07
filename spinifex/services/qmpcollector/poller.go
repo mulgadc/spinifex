@@ -88,7 +88,7 @@ func (p *poller) run(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(staggerOffset(p.meta.InstanceID, period)):
+	case <-time.After(staggerOffset(p.snapshotMeta().InstanceID, period)):
 	}
 
 	ticker := time.NewTicker(period)
@@ -114,7 +114,7 @@ func (p *poller) tick() {
 	meta := p.snapshotMeta()
 	cur, err := p.collect(meta)
 	if err != nil {
-		slog.Debug("qmp-collector: collect failed, re-priming",
+		slog.Warn("qmp-collector: collect failed, re-priming",
 			"instanceId", meta.InstanceID, "err", err)
 		p.mu.Lock()
 		p.prev = nil
@@ -141,7 +141,9 @@ func (p *poller) tick() {
 	}
 	if err := p.nc.Publish(types.MetricsEC2SubjectPrefix+meta.InstanceID, data); err != nil {
 		slog.Warn("qmp-collector: publish failed", "instanceId", meta.InstanceID, "err", err)
+		return
 	}
+	slog.Debug("qmp-collector: published", "instanceId", meta.InstanceID, "series", len(batch.Series))
 }
 
 // collect dials the telemetry socket fresh each tick (no held connection to

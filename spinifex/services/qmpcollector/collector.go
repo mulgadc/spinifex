@@ -79,6 +79,8 @@ func (c *collector) reconcile(ctx context.Context) {
 		p := newPoller(c.cfg, c.nc, meta)
 		c.pollers[meta.InstanceID] = p
 		p.start(ctx)
+		slog.Info("qmp-collector: poller started", "instanceId", meta.InstanceID,
+			"period", meta.PeriodSeconds, "taps", meta.Taps)
 	}
 
 	for id, p := range c.pollers {

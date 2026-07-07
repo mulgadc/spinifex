@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -104,7 +105,7 @@ func launchService(cfg *Config) error {
 		cfg.DiscoverInterval = 15 * time.Second
 	}
 
-	nc, err := utils.ConnectNATS(cfg.NatsHost, cfg.NatsToken, cfg.NatsCACert)
+	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
 	if err != nil {
 		return fmt.Errorf("connect NATS: %w", err)
 	}

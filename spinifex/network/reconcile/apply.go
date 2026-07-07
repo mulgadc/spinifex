@@ -33,6 +33,13 @@ var (
 	guestPortDatapathInterval = 5 * time.Second
 )
 
+// After this many recompute misses with a binding still down, the readiness loops
+// check SB connectivity and, if the local ovn-controller is not "connected",
+// escalate once to sb-cluster-state-reset. A recompute re-evaluates flows from the
+// controller's current SB view, so it is a no-op against a stale-SB wedge — the
+// reset re-syncs that view. Package var so tests can shrink it.
+var sbResetEscalateAfter = 3
+
 // applyVPCs ensures every intent VPC has a LogicalRouter. Stray OVN-only
 // routers are left alone.
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState) {
@@ -390,6 +397,29 @@ func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP, eip
 	}
 }
 
+// escalateSBReset issues a one-shot sb-cluster-state-reset when the local
+// ovn-controller's SB client is wedged (status not "connected"). A recompute nudge
+// cannot clear a stale-SB wedge — it re-evaluates flows from the same stale SB view
+// — so a readiness loop that keeps missing checks connectivity and resets once.
+// Returns true when a reset was issued (caller stops escalating); false when the SB
+// is connected (recompute is the right tool) or the probe failed (retry next miss).
+func (r *reconciler) escalateSBReset(ctx context.Context, logKV ...any) bool {
+	status, err := r.gwClaim.SBConnectionState(ctx)
+	if err != nil {
+		slog.Warn("reconcile/apply: SB connection-status probe failed during escalation", append(logKV, "err", err)...)
+		return false
+	}
+	if status == "connected" {
+		return false
+	}
+	slog.Warn("reconcile/apply: recompute not converging and SB not connected; escalating to sb-cluster-state-reset",
+		append(logKV, "sb_status", status)...)
+	if err := r.gwClaim.ResetSBClusterState(ctx); err != nil {
+		slog.Warn("reconcile/apply: sb-cluster-state-reset failed", append(logKV, "err", err)...)
+	}
+	return true
+}
+
 // ensureGatewayClaimed polls the SB chassisredirect binding after SetGatewayChassis.
 // An unclaimed binding after reboot makes floating IPs unreachable. Recompute on
 // every miss, not once: after a fresh-VPC bring-up or a chassis flap a single early
@@ -402,6 +432,8 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 	}
 	deadline := time.Now().Add(gatewayClaimTimeout)
 	nudged := false
+	misses := 0
+	resetEscalated := false
 	for {
 		claimed, err := r.gwClaim.GatewayPortClaimed(ctx, crPortName)
 		if err != nil {
@@ -419,6 +451,10 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 			slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "port", crPortName, "err", err)
 		}
 		nudged = true
+		misses++
+		if !resetEscalated && misses >= sbResetEscalateAfter {
+			resetEscalated = r.escalateSBReset(ctx, "port", crPortName)
+		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: gateway SB chassis claim did not converge; floating IPs may be unreachable",
 				"port", crPortName, "timeout", gatewayClaimTimeout)
@@ -512,6 +548,8 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, vpcID, lspName
 	}
 	deadline := time.Now().Add(guestPortDatapathTimeout)
 	nudged := false
+	misses := 0
+	resetEscalated := false
 	for {
 		up, err := r.gwClaim.GuestPortUp(ctx, lspName)
 		if err != nil {
@@ -530,6 +568,10 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, vpcID, lspName
 			slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "vpc_id", vpcID, "lsp", lspName, "err", err)
 		}
 		nudged = true
+		misses++
+		if !resetEscalated && misses >= sbResetEscalateAfter {
+			resetEscalated = r.escalateSBReset(ctx, "vpc_id", vpcID, "lsp", lspName)
+		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: guest port datapath did not converge; EIP ingress may be unreachable",
 				"vpc_id", vpcID, "lsp", lspName, "timeout", guestPortDatapathTimeout)

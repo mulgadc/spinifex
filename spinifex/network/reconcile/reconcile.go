@@ -60,6 +60,15 @@ type GatewayClaimVerifier interface {
 	// blackholes after DNAT and the public IP is dark against an otherwise-running
 	// instance — the post-reboot state until an ovn-controller recompute binds it.
 	GuestPortUp(ctx context.Context, lspName string) (bool, error)
+	// SBConnectionState returns ovn-controller's Southbound OVSDB connection status
+	// ("connected" when healthy). A sustained non-"connected" status is the stale-SB
+	// RAFT wedge that stops new Port_Binding realisation; a recompute cannot clear it
+	// because it re-evaluates flows from the same stale SB view.
+	SBConnectionState(ctx context.Context) (string, error)
+	// ResetSBClusterState forces ovn-controller to re-sync its SB cluster state,
+	// clearing a stale-index wedge without a process restart or a flow wipe. Escalated
+	// to when a recompute nudge cannot converge a binding and the SB is not connected.
+	ResetSBClusterState(ctx context.Context) error
 }
 
 // Config is the construction-time bag for the reconciler. All fields except

@@ -70,6 +70,32 @@ func (p *GatewayClaimProber) NudgeRecompute(_ context.Context) error {
 	return nil
 }
 
+// SBConnectionState returns ovn-controller's Southbound OVSDB connection status.
+// It is `connected` when the controller is synced with the SB RAFT cluster; a
+// sustained non-`connected` status (typically looping on "clustered database
+// server has stale data") is the stale-index wedge that stops the controller
+// realising new Port_Bindings. Output() not CombinedOutput(): sudo PAM noise on
+// stderr must not be misread as the status token.
+func (p *GatewayClaimProber) SBConnectionState(_ context.Context) (string, error) {
+	out, err := utils.SudoCommand("ovn-appctl", "-t", "ovn-controller", "connection-status").Output()
+	if err != nil {
+		return "", fmt.Errorf("ovn-appctl connection-status: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// ResetSBClusterState forces ovn-controller to drop its cached SB cluster state
+// and re-sync against the SB RAFT cluster, clearing a stale-index wedge without a
+// process restart or a flow wipe. Targeted equivalent of the manual
+// `systemctl restart ovn-controller` recovery.
+func (p *GatewayClaimProber) ResetSBClusterState(_ context.Context) error {
+	out, err := utils.SudoCommand("ovn-appctl", "-t", "ovn-controller", "sb-cluster-state-reset").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ovn-appctl sb-cluster-state-reset: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 // RepairDatapath re-asserts the WAN-glue veth admin state, then forces a recompute.
 // A post-reboot boot race (ovs-vswitchd/ovn-controller start after the passive
 // network.target, concurrently with systemd-networkd) can leave veth-wan-ovs

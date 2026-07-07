@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +125,77 @@ func (s *EKSServiceImpl) placeControlPlane(accountID, clusterName string, tmpl K
 	slog.Info("placeControlPlane: HA control plane placed",
 		"cluster", clusterName, "group", groupName, "nodes", reserved)
 	return launched, groupName, nil
+}
+
+var _ CPProvisioner = (*EKSServiceImpl)(nil)
+
+// ProvisionReplacementCP launches one replacement control-plane VM that joins the
+// surviving etcd quorum at req.JoinURL, placed on a schedulable host not already
+// holding a live member so spread is preserved. It replays the create-time
+// template (rotating creds re-derived) — the single-node analogue of the spread
+// join branch. The caller (reconciler) swaps the returned node into meta; NLB
+// per-node registration and spread-group accounting stay with the [0] mirror
+// today, matching the create path.
+func (s *EKSServiceImpl) ProvisionReplacementCP(_ context.Context, req ReplacementCPRequest) (ControlPlaneNode, error) {
+	if req.Template == nil {
+		return ControlPlaneNode{}, errors.New("eks: ProvisionReplacementCP nil template")
+	}
+	if req.JoinURL == "" {
+		return ControlPlaneNode{}, errors.New("eks: ProvisionReplacementCP empty join URL")
+	}
+
+	in := *req.Template
+	in.ServerURL = req.JoinURL
+	in.KonnServerCount = req.MemberCount
+	in.PrunePeerIP = req.DeadPeerIP
+
+	// Re-derive rotating creds the same way CreateCluster does so a replacement
+	// picks up current credentials rather than a frozen create-time snapshot.
+	sysAcct := admin.SystemAccountID()
+	in.IamInstanceProfileArn = ""
+	in.AccessKey = ""
+	in.SecretKey = ""
+	if profileARN := s.ensureCPInstanceProfile(sysAcct); profileARN != "" {
+		in.IamInstanceProfileArn = profileARN
+	} else {
+		in.AccessKey = s.deps.SystemAccessKey
+		in.SecretKey = s.deps.SystemSecretKey
+	}
+
+	instanceType := in.InstanceType
+	if instanceType == "" {
+		instanceType = defaultK3sServerInstanceType
+	}
+	target, err := s.pickReplacementHost(instanceType, req.ExcludeHosts)
+	if err != nil {
+		return ControlPlaneNode{}, err
+	}
+	in.TargetNodeID = target
+
+	out, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, in)
+	if err != nil {
+		return ControlPlaneNode{}, err
+	}
+	slog.Info("ProvisionReplacementCP: replacement control plane launched",
+		"cluster", req.ClusterName, "instanceId", out.InstanceID, "host", target, "joinURL", req.JoinURL)
+	return controlPlaneNode(target, out), nil
+}
+
+// pickReplacementHost returns a schedulable host for the given instance type that
+// is not already holding a live control-plane member, preserving one-member-per-host
+// spread. Errors when every schedulable host is excluded (host permanently down),
+// so the reconciler surfaces a clear degraded reason rather than looping.
+func (s *EKSServiceImpl) pickReplacementHost(instanceType string, exclude []string) (string, error) {
+	ex := make(map[string]bool, len(exclude))
+	for _, h := range exclude {
+		ex[h] = true
+	}
+	for _, h := range s.deps.Scheduler.SchedulableHosts(instanceType) {
+		if !ex[h] {
+			return h, nil
+		}
+	}
+	return "", fmt.Errorf("eks: no schedulable host for replacement control plane (excluding %d live-member host(s))", len(exclude))
 }
 
 // launchSingleControlPlane launches one CP VM on the local node (pre-HA fallback).

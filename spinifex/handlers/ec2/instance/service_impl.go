@@ -1702,9 +1702,10 @@ func (s *InstanceServiceImpl) DescribeInstances(input *ec2.DescribeInstancesInpu
 			if !IsInstanceVisible(accountID, instance.AccountID) {
 				continue
 			}
-			// Platform-managed VMs (LB, EKS control plane) are hidden from customer
-			// listings. LBs are system-account-owned; EKS control-plane VMs are
-			// customer-account-owned so ManagedBy guards them explicitly.
+			// Platform-managed VMs (LB, EKS control plane) are system-account-owned
+			// and hidden from customer listings; only the system/Global account
+			// sees them. The EKS reconciler resolves its control-plane VM's state
+			// by running describe as the system account.
 			if instance.ManagedBy != "" && accountID != utils.GlobalAccountID {
 				continue
 			}

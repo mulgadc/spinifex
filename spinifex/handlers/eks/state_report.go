@@ -23,6 +23,10 @@ type ServerStateReport struct {
 	Healthz   string `json:"healthz"`
 	NodeCount int    `json:"node_count"`
 	TS        int64  `json:"ts"`
+	// Reason is a compact in-guest diagnosis emitted only when the apiserver is
+	// unhealthy (failing /readyz subchecks, etcd reachability, etcd-disk free).
+	// Empty from a healthy CP or an older AMI that predates the field.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Healthy reports whether the apiserver was serving at publish time.

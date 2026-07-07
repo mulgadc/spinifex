@@ -336,6 +336,17 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 		if instance.MgmtMAC != "" {
 			mgmtTap := MgmtTapName(instance.ID)
+			// Pre-create the mgmt tap owned by the daemon euid, mirroring the
+			// direct-boot branch above. The non-root daemon has no CAP_NET_ADMIN,
+			// so QEMU can only attach a tap it already owns; without this the
+			// disk-boot/restart path fails with /dev/net/tun: Operation not
+			// permitted (blocks stopped-instance restart incl. EKS CP recovery).
+			if m.deps.NetworkPlumber != nil {
+				if err := m.deps.NetworkPlumber.SetupTap(TapSpec{Name: mgmtTap, Bridge: "br-mgmt"}); err != nil {
+					slog.Error("Failed to set up mgmt tap", "tap", mgmtTap, "err", err)
+					return fmt.Errorf("setup mgmt tap: %w", err)
+				}
+			}
 			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 				Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 			})
@@ -372,6 +383,15 @@ func (m *Manager) startQEMU(instance *VM) error {
 		return err
 	}
 	instance.Config.QMPSocket = qmpSocket
+
+	// A predecessor QEMU killed with SIGKILL (crash/etcd-reset restart) leaves its
+	// qmp-<id>.sock inode behind. QEMU rebinds the socket, but the stale inode
+	// makes the startup os.Stat probe and the QMP dial race a dead listener
+	// (connection refused). Unlink it so the socket that appears is the fresh
+	// QEMU's. The launch pid-check above already ruled out a live owner.
+	if err := removeStaleQMPSocket(qmpSocket); err != nil {
+		slog.Warn("Failed to remove stale QMP socket", "path", qmpSocket, "err", err)
+	}
 
 	instance.EBSRequests.Mu.Lock()
 	nbdEndpoints := make([]struct{ name, uri string }, 0, len(instance.EBSRequests.Requests))
@@ -575,6 +595,51 @@ func (m *Manager) AttachQMP(instance *VM) error {
 	return nil
 }
 
+const (
+	// qmpDialTimeout bounds how long the QMP dial retries a transient connect
+	// failure after a QEMU relaunch before giving up.
+	qmpDialTimeout = 3 * time.Second
+	// qmpDialRetryInterval is the backoff between QMP connect retries.
+	qmpDialRetryInterval = 50 * time.Millisecond
+)
+
+// removeStaleQMPSocket unlinks a leftover QMP socket inode from a prior QEMU so
+// the startup probe and QMP dial cannot race a dead listener. A missing file is
+// not an error.
+func removeStaleQMPSocket(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// dialQMPWithRetry redials the QMP socket until the connect+greeting succeeds or
+// the deadline passes. A just-relaunched QEMU can present the socket inode a beat
+// before it listen()s, and a stale inode from a SIGKILLed predecessor refuses the
+// first connect; a single dial then loses the race. Only transient connect
+// errors are retried — a greeting/handshake failure means we reached a listener,
+// so it surfaces immediately.
+func dialQMPWithRetry(path string) (*qmp.QMPClient, error) {
+	deadline := time.Now().Add(qmpDialTimeout)
+	for {
+		client, err := qmp.NewQMPClient(path)
+		if err == nil {
+			return client, nil
+		}
+		if time.Now().After(deadline) || !isTransientDialError(err) {
+			return nil, err
+		}
+		time.Sleep(qmpDialRetryInterval)
+	}
+}
+
+// isTransientDialError reports whether a QMP connect failed because the listener
+// is not up yet: connection refused (bound but pre-listen, or a stale dead
+// inode) or the socket momentarily absent between unlink and rebind.
+func isTransientDialError(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
+}
+
 // newQMPClientWithHandshake dials the QMP socket and runs the qmp_capabilities
 // handshake. The caller is responsible for starting the heartbeat goroutine.
 func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
@@ -583,7 +648,7 @@ func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
 	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, 3*time.Second); err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
-	client, err := qmp.NewQMPClient(v.Config.QMPSocket)
+	client, err := dialQMPWithRetry(v.Config.QMPSocket)
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}

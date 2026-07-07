@@ -34,6 +34,10 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 	// broker with these IMDS creds; without this action the gateway 403s the
 	// relay and every external `kubectl` gets 401.
 	assert.Contains(t, policy, "eks:WebhookTokenReview")
+	// The k3s-recovery agent pulls its per-member etcd recovery directive with
+	// these IMDS creds; without this action the gateway 403s the boot-time fetch
+	// and a wedged control plane can never be auto-reset.
+	assert.Contains(t, policy, "eks:GetRecoveryDirective")
 
 	require.NotNil(t, f.profiles[eksServerSystemRoleName])
 	assert.Len(t, f.profiles[eksServerSystemRoleName].Roles, 1)

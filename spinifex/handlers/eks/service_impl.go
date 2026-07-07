@@ -91,6 +91,72 @@ type EKSServiceDeps struct {
 
 	// AddonInstaller delivers managed-addon manifests; nil defaults to the KV staging installer.
 	AddonInstaller AddonInstaller
+
+	// CPControl lets the reconciler recover a wedged control-plane VM: describe
+	// its state and restart it. Nil disables auto-restart (health is still
+	// reflected). The daemon wires a NATS-backed impl whose DescribeInstances
+	// fans out across every host and whose RecoverInstance restarts the CP on
+	// its owning node whatever its state.
+	CPControl cpInstanceController
+}
+
+// cpInstanceController is the narrow EC2 instance surface the EKS reconciler uses
+// to recover a wedged control-plane VM. The daemon wires a NATS-backed impl:
+// DescribeInstances fans out across all hosts so a CP on any node is observed;
+// RecoverInstance restarts the CP on its owning node whatever its state — a live
+// error/running owner in place via ec2.cmd.<id>, or a stopped instance rehydrated
+// from the shared KV via ec2.start.
+type cpInstanceController interface {
+	DescribeInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
+	RecoverInstance(instanceID, accountID string) error
+	// StopInstance gracefully powers off a running CP so the restart path boots it
+	// clean and the boot-time recovery agent applies a pending directive (the etcd
+	// reset path).
+	StopInstance(instanceID, accountID string) error
+}
+
+// cpControlAdapter binds a cpInstanceController + accountID to the reconciler's
+// CPInstanceControl surface (whose InstanceState/StartInstance take no accountID
+// — one reconciler serves one account).
+type cpControlAdapter struct {
+	ctl       cpInstanceController
+	accountID string
+}
+
+var _ CPInstanceControl = cpControlAdapter{}
+
+// InstanceState returns the CP instance's EC2 lifecycle state name, or an error
+// if the instance is not visible to the account.
+func (a cpControlAdapter) InstanceState(_ context.Context, instanceID string) (string, error) {
+	out, err := a.ctl.DescribeInstances(&ec2.DescribeInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, a.accountID)
+	if err != nil {
+		return "", err
+	}
+	for _, res := range out.Reservations {
+		for _, inst := range res.Instances {
+			if aws.StringValue(inst.InstanceId) == instanceID && inst.State != nil {
+				return aws.StringValue(inst.State.Name), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("eks: control-plane instance %s not found", instanceID)
+}
+
+// StartInstance restarts a wedged CP via the instance service, which routes to
+// the CP's owning node — recovering a live error/running owner in place or a
+// stopped instance from the shared KV — and re-mounts the same root volume.
+func (a cpControlAdapter) StartInstance(_ context.Context, instanceID string) error {
+	return a.ctl.RecoverInstance(instanceID, a.accountID)
+}
+
+// StopInstance gracefully powers off a running CP (QMP system_powerdown) so the
+// in-place restart path boots it clean and the on-VM recovery agent applies its
+// pending directive — the etcd reset path. A graceful stop unmounts cleanly, so the
+// next boot is not fsck-corrupted the way a hard reboot would leave it.
+func (a cpControlAdapter) StopInstance(_ context.Context, instanceID string) error {
+	return a.ctl.StopInstance(instanceID, a.accountID)
 }
 
 // WorkerLauncher is the narrow EC2 surface for launching nodegroup worker instances.
@@ -684,6 +750,19 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	meta.ControlPlaneENIID = primary.ENIID
 	meta.ControlPlaneENIIP = primary.ENIIP
 	meta.ControlPlaneMgmtIP = primary.MgmtIP
+
+	// Persist the launch template so the reconciler can replay it to provision a
+	// replacement CP member that joins the surviving quorum (member-count
+	// reconcile). Per-node fields and rotating creds are cleared — the reconciler
+	// sets the join target/host and re-derives creds at provision time.
+	tmpl := serverIn
+	tmpl.TargetNodeID = ""
+	tmpl.ServerURL = ""
+	tmpl.KonnServerCount = 0
+	tmpl.AccessKey = ""
+	tmpl.SecretKey = ""
+	tmpl.IamInstanceProfileArn = ""
+	meta.ControlPlaneTemplate = &tmpl
 
 	// Persist the CP VM + ENI + spread-group refs now, before any further fallible
 	// step. The VMs are live the moment placeControlPlane returns; without this a
@@ -1862,10 +1941,27 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 	// CP publishes {healthz,node_count} on the mgmt bus the daemon already shares.
 	stateSubject := StateSubject(accountID, clusterName)
 	addonStatusSubject := AddonStatusSubject(accountID, clusterName)
-	spawn := func(ctx context.Context, _, _ string) (func(), error) {
-		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "",
-			WithStateSource(s.deps.NATSConn, stateSubject),
-			WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject))
+	opts := []ReconcilerOption{
+		WithStateSource(s.deps.NATSConn, stateSubject),
+		WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject),
+	}
+	if s.deps.CPControl != nil {
+		// The control-plane VMs are launched under the system account (see
+		// placeControlPlane), not the customer account that owns the cluster
+		// record. CP describe/recover must therefore run as the system account —
+		// the customer account cannot see or own its own cluster's CP VMs.
+		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: admin.SystemAccountID()}))
+		// Member-count reconcile: replace a terminated/gone CP member with a fresh
+		// one that joins the surviving quorum. The service replays the persisted
+		// create template; gated on CPControl since replacement needs member describe.
+		opts = append(opts, WithCPProvisioner(s))
+		// Last-resort etcd quorum-reformation: when every member is VM-running but
+		// etcd never reformed after a simultaneous restart, drive a k3s cluster-reset
+		// via per-member recovery directives the on-VM agent applies on boot.
+		opts = append(opts, WithEtcdResetRecovery(0, 0, 0))
+	}
+	spawn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
+		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "", opts...)
 	}
 	if err := s.registry.Spawn(s.bgCtx, accountID, clusterName, spawn); err != nil {
 		slog.Error("spawnReconciler: registry spawn", "cluster", clusterName, "err", err)

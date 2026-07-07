@@ -18,8 +18,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
 	github.com/klauspost/cpuid/v2 v2.3.0
-	github.com/mulgadc/predastore v1.11.0-dev.0.20260707000752-ad0d31eab177
-	github.com/mulgadc/viperblock v1.10.1-0.20260706231251-178323ba9b18
+	github.com/mulgadc/predastore v1.11.0-dev.0.20260707053307-88a36cfd2f59
+	github.com/mulgadc/viperblock v1.10.1-0.20260707055112-d86ecfe7e293
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/runtime-spec v1.3.0

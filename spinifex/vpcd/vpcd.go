@@ -644,6 +644,12 @@ func launchService(cfg *Config) error {
 		close(loopDone)
 	}()
 
+	// Per-host ovn-controller wedge watchdog. Not leader-gated: a stale-SB wedge is
+	// local to this chassis and usually strikes a non-leader placement host, so the
+	// recovery must run on every node. Backstops the bring-up settle pass for runtime
+	// SB re-bootstraps (snapshot install / compaction) with no deploy in flight.
+	go runOVNControllerWatchdog(loopCtx, newOVNWatchdog(host.NewGatewayClaimProber(cfg.OVNSBAddr)))
+
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
 		"subscriptions", len(subs))
 

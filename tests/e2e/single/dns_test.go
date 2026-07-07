@@ -17,16 +17,19 @@ import (
 //
 //  1. pings the instance's own private IP (from DescribeInstances) to prove the
 //     local ICMP datapath before DNS is exercised, and
-//  2. pings public hostnames (google.com, cloudflare.com), forcing guest-side
-//     name resolution (resolver -> northstar recursion) followed by ICMP egress.
+//  2. resolves public hostnames (google.com, cloudflare.com) through the guest
+//     resolver, then pings them.
 //
-// Public-hostname pings validate that the DHCP-advertised resolver
-// (169.254.169.253, served by the per-tap shim once P7 is deployed) returns a
-// routable answer and that egress works. The own private IP isolates a DNS
-// failure from a plain datapath failure when the hostname pings fail. The public
-// inbound path is already proven by the successful SSH over the public IP, and a
-// guest cannot ping its own public IP (gateway NAT, no hairpin) — AWS behaves the
-// same — so no own-public-IP ping is attempted.
+// Resolution is asserted separately from the ping via `getent hosts`, which
+// drives the same NSS -> /etc/resolv.conf (169.254.169.253, served by the
+// per-tap shim once P7 is deployed) -> northstar recursion path guest apps use
+// and is always present (nslookup/dig are not on the minimal cloud image). The
+// getent step is the northstar signal; the follow-on ping only adds ICMP-egress
+// coverage — so a resolver/northstar failure is isolated from a WAN-egress
+// failure. The own private IP ping isolates both from a plain local-datapath
+// failure. The public inbound path is already proven by the SSH over the public
+// IP, and a guest cannot ping its own public IP (gateway NAT, no hairpin — AWS
+// behaves the same), so no own-public-IP ping is attempted.
 func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Guest DNS end-to-end: resolver + ICMP egress")
 
@@ -61,14 +64,24 @@ func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 		"guest ping to own private IP %s never reached 0%% loss within 30s\n%s",
 		privIP, out)
 
-	// Step 2: ping public hostnames — forces DNS resolution then ICMP egress. A
-	// resolver failure surfaces as a name-resolution error (never 0% loss), so a
-	// converged ping proves the full resolve -> egress chain.
+	// Step 2: resolve each public hostname through the guest resolver (the
+	// northstar path), then ping it. getent hosts is the DNS assertion; the ping
+	// only adds egress coverage — splitting them isolates a resolver/northstar
+	// failure from a WAN-egress failure.
 	for _, host := range []string{"google.com", "cloudflare.com"} {
-		harness.Step(t, "ping public hostname %s (DNS resolve + egress)", host)
+		harness.Step(t, "resolve %s via guest resolver (northstar path)", host)
+		res, err := sshCapture(tgt, "getent hosts "+host)
+		require.NoErrorf(t, err,
+			"guest failed to resolve %s — DNS path (resolver -> northstar) is broken\n%s",
+			host, res)
+		require.Regexpf(t, `\d{1,3}(\.\d{1,3}){3}`, res,
+			"resolve %s returned no IPv4 address — northstar answered without an A record\n%s",
+			host, res)
+
+		harness.Step(t, "ping %s (ICMP egress after resolution)", host)
 		out, ok := pingConverged(tgt, host, 45*time.Second)
 		require.Truef(t, ok,
-			"guest ping to %s never reached 0%% loss within 45s — DNS resolution "+
-				"or WAN egress is broken\n%s", host, out)
+			"guest ping to %s never reached 0%% loss within 45s — WAN egress is broken\n%s",
+			host, out)
 	}
 }

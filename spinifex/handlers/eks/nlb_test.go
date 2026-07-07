@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -76,7 +77,7 @@ func newFakeNLBProvisioner() *fakeNLBProvisioner {
 // address onto the returned + stored LB, as a real sync launch would.
 func (f *fakeNLBProvisioner) CreateLoadBalancerSync(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
 	f.createLBSyncCalls = append(f.createLBSyncCalls, input)
-	out, err := f.CreateLoadBalancer(input, accountID)
+	out, err := f.CreateLoadBalancer(context.Background(), input, accountID)
 	if err != nil || out == nil || len(out.LoadBalancers) == 0 {
 		return out, err
 	}
@@ -99,7 +100,7 @@ func (f *fakeNLBProvisioner) CreateClusterNLBSync(input *elbv2.CreateLoadBalance
 	return f.CreateLoadBalancerSync(input, accountID)
 }
 
-func (f *fakeNLBProvisioner) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, _ string) (*elbv2.CreateLoadBalancerOutput, error) {
+func (f *fakeNLBProvisioner) CreateLoadBalancer(_ context.Context, input *elbv2.CreateLoadBalancerInput, _ string) (*elbv2.CreateLoadBalancerOutput, error) {
 	f.createLBCalls = append(f.createLBCalls, input)
 	if f.createLBErr != nil {
 		return nil, f.createLBErr
@@ -126,7 +127,7 @@ func (f *fakeNLBProvisioner) CreateLoadBalancer(input *elbv2.CreateLoadBalancerI
 	return out, nil
 }
 
-func (f *fakeNLBProvisioner) DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, _ string) (*elbv2.DescribeLoadBalancersOutput, error) {
+func (f *fakeNLBProvisioner) DescribeLoadBalancers(_ context.Context, input *elbv2.DescribeLoadBalancersInput, _ string) (*elbv2.DescribeLoadBalancersOutput, error) {
 	f.describeLBCalls = append(f.describeLBCalls, input)
 	out := &elbv2.DescribeLoadBalancersOutput{}
 	// No name/arn filter: list every LB (account-scoped in the real impl), as the
@@ -148,7 +149,7 @@ func (f *fakeNLBProvisioner) DescribeLoadBalancers(input *elbv2.DescribeLoadBala
 	return out, nil
 }
 
-func (f *fakeNLBProvisioner) DescribeTags(input *elbv2.DescribeTagsInput, _ string) (*elbv2.DescribeTagsOutput, error) {
+func (f *fakeNLBProvisioner) DescribeTags(_ context.Context, input *elbv2.DescribeTagsInput, _ string) (*elbv2.DescribeTagsOutput, error) {
 	f.describeTagsCalls = append(f.describeTagsCalls, input)
 	if f.describeTagsErr != nil {
 		return nil, f.describeTagsErr
@@ -166,7 +167,7 @@ func (f *fakeNLBProvisioner) DescribeTags(input *elbv2.DescribeTagsInput, _ stri
 	return out, nil
 }
 
-func (f *fakeNLBProvisioner) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, _ string) (*elbv2.DeleteLoadBalancerOutput, error) {
+func (f *fakeNLBProvisioner) DeleteLoadBalancer(_ context.Context, input *elbv2.DeleteLoadBalancerInput, _ string) (*elbv2.DeleteLoadBalancerOutput, error) {
 	f.deleteLBCalls = append(f.deleteLBCalls, input)
 	if f.deleteLBErr != nil {
 		return nil, f.deleteLBErr
@@ -181,7 +182,7 @@ func (f *fakeNLBProvisioner) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerI
 	return &elbv2.DeleteLoadBalancerOutput{}, nil
 }
 
-func (f *fakeNLBProvisioner) CreateTargetGroup(input *elbv2.CreateTargetGroupInput, _ string) (*elbv2.CreateTargetGroupOutput, error) {
+func (f *fakeNLBProvisioner) CreateTargetGroup(_ context.Context, input *elbv2.CreateTargetGroupInput, _ string) (*elbv2.CreateTargetGroupOutput, error) {
 	f.createTGCalls = append(f.createTGCalls, input)
 	if f.createTGErr != nil {
 		return nil, f.createTGErr
@@ -209,7 +210,7 @@ func (f *fakeNLBProvisioner) CreateTargetGroup(input *elbv2.CreateTargetGroupInp
 	return out, nil
 }
 
-func (f *fakeNLBProvisioner) DescribeTargetGroups(input *elbv2.DescribeTargetGroupsInput, _ string) (*elbv2.DescribeTargetGroupsOutput, error) {
+func (f *fakeNLBProvisioner) DescribeTargetGroups(_ context.Context, input *elbv2.DescribeTargetGroupsInput, _ string) (*elbv2.DescribeTargetGroupsOutput, error) {
 	f.describeTGCalls = append(f.describeTGCalls, input)
 	out := &elbv2.DescribeTargetGroupsOutput{}
 	for _, n := range input.Names {
@@ -223,7 +224,7 @@ func (f *fakeNLBProvisioner) DescribeTargetGroups(input *elbv2.DescribeTargetGro
 	return out, nil
 }
 
-func (f *fakeNLBProvisioner) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput, _ string) (*elbv2.DeleteTargetGroupOutput, error) {
+func (f *fakeNLBProvisioner) DeleteTargetGroup(_ context.Context, input *elbv2.DeleteTargetGroupInput, _ string) (*elbv2.DeleteTargetGroupOutput, error) {
 	f.deleteTGCalls = append(f.deleteTGCalls, input)
 	if f.deleteTGErr != nil {
 		return nil, f.deleteTGErr
@@ -238,7 +239,7 @@ func (f *fakeNLBProvisioner) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInp
 	return &elbv2.DeleteTargetGroupOutput{}, nil
 }
 
-func (f *fakeNLBProvisioner) CreateListener(input *elbv2.CreateListenerInput, _ string) (*elbv2.CreateListenerOutput, error) {
+func (f *fakeNLBProvisioner) CreateListener(_ context.Context, input *elbv2.CreateListenerInput, _ string) (*elbv2.CreateListenerOutput, error) {
 	f.createListenerCalls = append(f.createListenerCalls, input)
 	if f.createListenerErr != nil {
 		return nil, f.createListenerErr
@@ -259,7 +260,7 @@ func (f *fakeNLBProvisioner) CreateListener(input *elbv2.CreateListenerInput, _ 
 	return &elbv2.CreateListenerOutput{Listeners: []*elbv2.Listener{listener}}, nil
 }
 
-func (f *fakeNLBProvisioner) DescribeListeners(input *elbv2.DescribeListenersInput, _ string) (*elbv2.DescribeListenersOutput, error) {
+func (f *fakeNLBProvisioner) DescribeListeners(_ context.Context, input *elbv2.DescribeListenersInput, _ string) (*elbv2.DescribeListenersOutput, error) {
 	f.describeListeners = append(f.describeListeners, input)
 	out := &elbv2.DescribeListenersOutput{}
 	if input.LoadBalancerArn != nil {
@@ -270,7 +271,7 @@ func (f *fakeNLBProvisioner) DescribeListeners(input *elbv2.DescribeListenersInp
 	return out, nil
 }
 
-func (f *fakeNLBProvisioner) RegisterTargets(input *elbv2.RegisterTargetsInput, _ string) (*elbv2.RegisterTargetsOutput, error) {
+func (f *fakeNLBProvisioner) RegisterTargets(_ context.Context, input *elbv2.RegisterTargetsInput, _ string) (*elbv2.RegisterTargetsOutput, error) {
 	f.registerCalls = append(f.registerCalls, input)
 	if f.registerErr != nil {
 		return nil, f.registerErr
@@ -278,7 +279,7 @@ func (f *fakeNLBProvisioner) RegisterTargets(input *elbv2.RegisterTargetsInput, 
 	return &elbv2.RegisterTargetsOutput{}, nil
 }
 
-func (f *fakeNLBProvisioner) DeregisterTargets(input *elbv2.DeregisterTargetsInput, _ string) (*elbv2.DeregisterTargetsOutput, error) {
+func (f *fakeNLBProvisioner) DeregisterTargets(_ context.Context, input *elbv2.DeregisterTargetsInput, _ string) (*elbv2.DeregisterTargetsOutput, error) {
 	f.deregisterCalls = append(f.deregisterCalls, input)
 	if f.deregisterErr != nil {
 		return nil, f.deregisterErr
@@ -294,10 +295,10 @@ func (f *fakeNLBProvisioner) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []s
 func TestEnsureClusterNLB_EmptyInputsRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	_, err := EnsureClusterNLB(nlbp, "111122223333", "", []string{"subnet-aaa"}, false, nil, nil)
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "", []string{"subnet-aaa"}, false, nil, nil)
 	require.Error(t, err)
 
-	_, err = EnsureClusterNLB(nlbp, "111122223333", "alpha", nil, false, nil, nil)
+	_, err = EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", nil, false, nil, nil)
 	require.Error(t, err)
 
 	assert.Empty(t, nlbp.createLBCalls)
@@ -307,7 +308,7 @@ func TestEnsureClusterNLB_NameTooLongRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
 	longName := strings.Repeat("x", maxELBv2NameLen) // "eks-" + 32x = 36 chars
-	_, err := EnsureClusterNLB(nlbp, "111122223333", longName, []string{"subnet-aaa"}, false, nil, nil)
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", longName, []string{"subnet-aaa"}, false, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds")
 	assert.Empty(t, nlbp.createLBCalls)
@@ -316,7 +317,7 @@ func TestEnsureClusterNLB_NameTooLongRejected(t *testing.T) {
 func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa", "subnet-bbb"}, false, nil, nil)
+	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa", "subnet-bbb"}, false, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.NotEmpty(t, out.LoadBalancerArn)
@@ -373,7 +374,7 @@ func TestEnsureClusterNLB_NoFrontendIPFailsLoud(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 	nlbp.frontendIP = "" // no external IP pool → LB comes up without a reachable address
 
-	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrClusterNLBFrontendIPUnavailable)
 	// The LB was still created (sync attempt) before the loud fail.
@@ -384,7 +385,7 @@ func TestEnsureClusterNLB_InternetFacingUsesPublicAddress(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 	nlbp.frontendIP = "203.0.113.7"
 
-	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
+	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "203.0.113.7", out.FrontendIP)
 	require.Len(t, nlbp.createLBSyncCalls, 1)
@@ -394,14 +395,14 @@ func TestEnsureClusterNLB_InternetFacingUsesPublicAddress(t *testing.T) {
 func TestEnsureClusterNLB_IdempotentReusesExisting(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	first, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
+	first, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
 	require.NoError(t, err)
 
 	createLBCount := len(nlbp.createLBCalls)
 	createTGCount := len(nlbp.createTGCalls)
 	createListenerCount := len(nlbp.createListenerCalls)
 
-	second, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
+	second, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, first.LoadBalancerArn, second.LoadBalancerArn)
@@ -418,7 +419,7 @@ func TestEnsureClusterNLB_LBCreateErrorSurfaced(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 	nlbp.createLBErr = errors.New("InsufficientCapacity")
 
-	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create NLB eks-alpha")
 	assert.Empty(t, nlbp.createTGCalls, "TG create should not run when LB create fails")
@@ -444,7 +445,7 @@ func TestEnsureClusterNLB_InternetFacingSchemeAndPublicFrontendIP(t *testing.T) 
 		}},
 	}
 
-	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
+	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, nlbp.createLBCalls, 1)
 	assert.Equal(t, elbv2.LoadBalancerSchemeEnumInternetFacing, aws.StringValue(nlbp.createLBCalls[0].Scheme))
@@ -469,7 +470,7 @@ func TestEnsureClusterNLB_InternalSchemeUsesPrivateFrontendIP(t *testing.T) {
 		}},
 	}
 
-	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
+	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, nlbp.createLBCalls, 1)
 	assert.Equal(t, elbv2.LoadBalancerSchemeEnumInternal, aws.StringValue(nlbp.createLBCalls[0].Scheme))
@@ -480,7 +481,7 @@ func TestEnsureClusterNLB_NarrowedPublicAccessSetsIngressCIDRs(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
 	cidrs := []string{"203.0.113.0/24", "198.51.100.7/32"}
-	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, cidrs, nil)
+	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, cidrs, nil)
 	require.NoError(t, err)
 
 	require.Len(t, nlbp.setIngressCalls, 1, "narrowed public access should drive SetLoadBalancerIngressCIDRs")
@@ -499,7 +500,7 @@ func TestEnsureClusterNLB_DefaultPublicAccessSkipsIngressCIDRs(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			nlbp := newFakeNLBProvisioner()
-			_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, tc.cidrs, nil)
+			_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, tc.cidrs, nil)
 			require.NoError(t, err)
 			assert.Empty(t, nlbp.setIngressCalls, "wide-open front-end needs no ingress override")
 		})
@@ -511,7 +512,7 @@ func TestEnsureClusterNLB_InternalSkipsIngressCIDRs(t *testing.T) {
 
 	// Even with narrowed CIDRs, an internal NLB ignores them — its ingress
 	// already tracks the VPC CIDR, not a public front-end.
-	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, []string{"203.0.113.0/24"}, nil)
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, []string{"203.0.113.0/24"}, nil)
 	require.NoError(t, err)
 	assert.Empty(t, nlbp.setIngressCalls)
 }
@@ -520,7 +521,7 @@ func TestEnsureClusterNLB_SetIngressErrorSurfaced(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 	nlbp.setIngressErr = errors.New("InvalidLoadBalancer")
 
-	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, []string{"203.0.113.0/24"}, nil)
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, []string{"203.0.113.0/24"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "set NLB ingress CIDRs for eks-alpha")
 }
@@ -528,7 +529,7 @@ func TestEnsureClusterNLB_SetIngressErrorSurfaced(t *testing.T) {
 func TestRegisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	err := RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
+	err := RegisterClusterTarget(context.Background(), nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.registerCalls, 1)
 
@@ -541,15 +542,15 @@ func TestRegisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 
 func TestRegisterClusterTarget_EmptyInputsRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "", "10.0.1.42", k3sAPIServerPort))
-	require.Error(t, RegisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "", k3sAPIServerPort))
+	require.Error(t, RegisterClusterTarget(context.Background(), nlbp, "111122223333", "", "10.0.1.42", k3sAPIServerPort))
+	require.Error(t, RegisterClusterTarget(context.Background(), nlbp, "111122223333", "arn:tg/alpha", "", k3sAPIServerPort))
 	assert.Empty(t, nlbp.registerCalls)
 }
 
 func TestRegisterClusterTargets_RegistersEveryENIIPInOneCall(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha",
+	err := RegisterClusterTargets(context.Background(), nlbp, "111122223333", "arn:tg/alpha",
 		[]string{"10.0.1.10", "10.0.2.11", "10.0.3.12"}, k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.registerCalls, 1)
@@ -566,7 +567,7 @@ func TestRegisterClusterTargets_RegistersEveryENIIPInOneCall(t *testing.T) {
 func TestRegisterClusterTargets_SkipsEmptyIPs(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha",
+	err := RegisterClusterTargets(context.Background(), nlbp, "111122223333", "arn:tg/alpha",
 		[]string{"10.0.1.10", "", "10.0.3.12"}, k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.registerCalls, 1)
@@ -577,9 +578,9 @@ func TestRegisterClusterTargets_SkipsEmptyIPs(t *testing.T) {
 
 func TestRegisterClusterTargets_EmptyInputsRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "", []string{"10.0.1.10"}, k3sAPIServerPort))
-	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", nil, k3sAPIServerPort))
-	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"", ""}, k3sAPIServerPort))
+	require.Error(t, RegisterClusterTargets(context.Background(), nlbp, "111122223333", "", []string{"10.0.1.10"}, k3sAPIServerPort))
+	require.Error(t, RegisterClusterTargets(context.Background(), nlbp, "111122223333", "arn:tg/alpha", nil, k3sAPIServerPort))
+	require.Error(t, RegisterClusterTargets(context.Background(), nlbp, "111122223333", "arn:tg/alpha", []string{"", ""}, k3sAPIServerPort))
 	assert.Empty(t, nlbp.registerCalls)
 }
 
@@ -587,7 +588,7 @@ func TestRegisterClusterTargets_RegisterErrorSurfaced(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 	nlbp.registerErr = errors.New("TargetGroupNotFound")
 
-	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"10.0.1.10"}, k3sAPIServerPort)
+	err := RegisterClusterTargets(context.Background(), nlbp, "111122223333", "arn:tg/alpha", []string{"10.0.1.10"}, k3sAPIServerPort)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "arn:tg/alpha")
 }
@@ -595,7 +596,7 @@ func TestRegisterClusterTargets_RegisterErrorSurfaced(t *testing.T) {
 func TestDeregisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	err := DeregisterClusterTarget(nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
+	err := DeregisterClusterTarget(context.Background(), nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
 	require.NoError(t, err)
 	require.Len(t, nlbp.deregisterCalls, 1)
 
@@ -608,10 +609,10 @@ func TestDeregisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 
 func TestDeleteClusterNLB_DeletesBoth(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
+	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
 	require.NoError(t, err)
 
-	require.NoError(t, DeleteClusterNLB(nlbp, "111122223333", "alpha"))
+	require.NoError(t, DeleteClusterNLB(context.Background(), nlbp, "111122223333", "alpha"))
 	require.Len(t, nlbp.deleteLBCalls, 1)
 	assert.Equal(t, out.LoadBalancerArn, aws.StringValue(nlbp.deleteLBCalls[0].LoadBalancerArn))
 	require.Len(t, nlbp.deleteTGCalls, 2, "control-plane TG + konnectivity TG")
@@ -626,18 +627,18 @@ func TestDeleteClusterNLB_DeletesBoth(t *testing.T) {
 func TestDeleteClusterNLB_MissingResourcesNoOp(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	require.NoError(t, DeleteClusterNLB(nlbp, "111122223333", "alpha"))
+	require.NoError(t, DeleteClusterNLB(context.Background(), nlbp, "111122223333", "alpha"))
 	assert.Empty(t, nlbp.deleteLBCalls)
 	assert.Empty(t, nlbp.deleteTGCalls)
 }
 
 func TestDeleteClusterNLB_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
 	require.NoError(t, err)
 	nlbp.deleteLBErr = errors.New("LoadBalancerInUse")
 
-	err = DeleteClusterNLB(nlbp, "111122223333", "alpha")
+	err = DeleteClusterNLB(context.Background(), nlbp, "111122223333", "alpha")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delete NLB eks-alpha")
 	assert.Len(t, nlbp.deleteLBCalls, 1)
@@ -684,7 +685,7 @@ func TestReapLBCLoadBalancers_DeletesOnlyOwnedInVPC(t *testing.T) {
 	nlbp.seedLBCALB("k8s-toc-othercluster", "vpc-cust", "beta") // wrong cluster
 	nlbp.seedLBCALB("k8s-toc-untagged", "vpc-cust", "")         // no ownership tag
 
-	require.NoError(t, ReapLBCLoadBalancers(nlbp, "111122223333", "alpha", "vpc-cust"))
+	require.NoError(t, ReapLBCLoadBalancers(context.Background(), nlbp, "111122223333", "alpha", "vpc-cust"))
 
 	require.Len(t, nlbp.deleteLBCalls, 1)
 	assert.Equal(t, owned, aws.StringValue(nlbp.deleteLBCalls[0].LoadBalancerArn))
@@ -695,8 +696,8 @@ func TestReapLBCLoadBalancers_EmptyArgsNoop(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 	nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
 
-	require.NoError(t, ReapLBCLoadBalancers(nlbp, "111122223333", "", "vpc-cust"))
-	require.NoError(t, ReapLBCLoadBalancers(nlbp, "111122223333", "alpha", ""))
+	require.NoError(t, ReapLBCLoadBalancers(context.Background(), nlbp, "111122223333", "", "vpc-cust"))
+	require.NoError(t, ReapLBCLoadBalancers(context.Background(), nlbp, "111122223333", "alpha", ""))
 	assert.Empty(t, nlbp.deleteLBCalls)
 }
 
@@ -707,7 +708,7 @@ func TestReapLBCLoadBalancers_DeleteErrorSurfaces(t *testing.T) {
 	nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
 	nlbp.deleteLBErr = errors.New("boom")
 
-	err := ReapLBCLoadBalancers(nlbp, "111122223333", "alpha", "vpc-cust")
+	err := ReapLBCLoadBalancers(context.Background(), nlbp, "111122223333", "alpha", "vpc-cust")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boom")
 }

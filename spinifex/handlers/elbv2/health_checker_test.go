@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
@@ -132,7 +133,7 @@ func TestHandleHealthReport_TransitionsInitialToHealthy(t *testing.T) {
 			{Backend: "bk_tg-123", Server: sanitizeName("srv", "i-aaa111"), Status: "UP"},
 		},
 	}
-	hc.handleHealthReportDirect(report)
+	hc.handleHealthReportDirect(context.Background(), report)
 
 	stored, err := store.GetTargetGroup("tg-123")
 	require.NoError(t, err)
@@ -169,7 +170,7 @@ func TestHandleHealthReport_UnhealthyAfterThreshold(t *testing.T) {
 				{Backend: "bk_tg-456", Server: srvName, Status: "DOWN"},
 			},
 		}
-		hc.handleHealthReportDirect(report)
+		hc.handleHealthReportDirect(context.Background(), report)
 	}
 
 	stored, err := store.GetTargetGroup("tg-456")
@@ -200,7 +201,7 @@ func TestHandleHealthReport_SkipsDrainingTargets(t *testing.T) {
 			{Backend: "bk_tg-789", Server: sanitizeName("srv", "i-drain"), Status: "UP"},
 		},
 	}
-	hc.handleHealthReportDirect(report)
+	hc.handleHealthReportDirect(context.Background(), report)
 
 	stored, err := store.GetTargetGroup("tg-789")
 	require.NoError(t, err)
@@ -228,7 +229,7 @@ func TestHandleHealthReport_EmptyServers(t *testing.T) {
 
 	report := lbagent.HealthReport{LBID: "lb-empty", Servers: nil}
 	// Should return early without touching the store.
-	hc.handleHealthReportDirect(report)
+	hc.handleHealthReportDirect(context.Background(), report)
 }
 
 func TestHandleHealthReport_TargetPortZeroUsesTGPort(t *testing.T) {
@@ -253,7 +254,7 @@ func TestHandleHealthReport_TargetPortZeroUsesTGPort(t *testing.T) {
 			{Backend: "bk_tg-p0", Server: sanitizeName("srv", "i-port0"), Status: "UP"},
 		},
 	}
-	hc.handleHealthReportDirect(report)
+	hc.handleHealthReportDirect(context.Background(), report)
 
 	stored, err := store.GetTargetGroup("tg-p0")
 	require.NoError(t, err)
@@ -283,7 +284,7 @@ func TestHandleHealthReportDirect_TransitionsInitialToHealthy(t *testing.T) {
 	setupLBWithTG(t, store, "lb-direct", tg)
 
 	// Call handleHealthReportDirect with a struct — no JSON round-trip.
-	hc.handleHealthReportDirect(lbagent.HealthReport{
+	hc.handleHealthReportDirect(context.Background(), lbagent.HealthReport{
 		LBID: "lb-direct",
 		Servers: []lbagent.ServerStatus{
 			{Backend: "bk_tg-direct", Server: sanitizeName("srv", "i-direct1"), Status: "UP"},
@@ -300,7 +301,7 @@ func TestHandleHealthReportDirect_EmptyServersIsNoOp(t *testing.T) {
 	hc := newHealthChecker(store)
 
 	// Should return immediately without touching the store.
-	hc.handleHealthReportDirect(lbagent.HealthReport{LBID: "lb-empty", Servers: nil})
+	hc.handleHealthReportDirect(context.Background(), lbagent.HealthReport{LBID: "lb-empty", Servers: nil})
 }
 
 func TestHandleHealthReport_OnlyProcessesTGsForReportingLB(t *testing.T) {
@@ -334,7 +335,7 @@ func TestHandleHealthReport_OnlyProcessesTGsForReportingLB(t *testing.T) {
 	setupLBWithTG(t, store, "lb-B", tgB)
 
 	// Report from lb-A — only tg-a should be updated.
-	hc.handleHealthReportDirect(lbagent.HealthReport{
+	hc.handleHealthReportDirect(context.Background(), lbagent.HealthReport{
 		LBID: "lb-A",
 		Servers: []lbagent.ServerStatus{
 			{Backend: "bk_tg-a", Server: sanitizeName("srv", "i-shared"), Status: "UP"},
@@ -368,7 +369,7 @@ func TestHandleHealthReport_FallbackListTargetGroups(t *testing.T) {
 	require.NoError(t, store.PutTargetGroup(tg))
 
 	// Report with empty LBID → should fall back to ListTargetGroups
-	hc.handleHealthReportDirect(lbagent.HealthReport{
+	hc.handleHealthReportDirect(context.Background(), lbagent.HealthReport{
 		LBID: "",
 		Servers: []lbagent.ServerStatus{
 			{Backend: "bk_tg-fb", Server: sanitizeName("srv", "i-fallback"), Status: "UP"},

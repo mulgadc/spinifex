@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -19,11 +20,11 @@ import (
 // QMP/state-machine pipeline to vm.Manager.AttachVolume. The manager owns
 // every QMP and persistence side-effect; the daemon only emits the AWS API
 // response.
-func (d *Daemon) handleAttachVolume(msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
-	slog.Info("Attaching volume to instance", "instanceId", command.ID)
+func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+	slog.InfoContext(ctx, "Attaching volume to instance", "instanceId", command.ID)
 
 	if command.AttachVolumeData == nil || command.AttachVolumeData.VolumeID == "" {
-		slog.Error("AttachVolume: missing attach volume data")
+		slog.ErrorContext(ctx, "AttachVolume: missing attach volume data")
 		respondWithError(msg, awserrors.ErrorInvalidParameterValue)
 		return
 	}
@@ -34,7 +35,7 @@ func (d *Daemon) handleAttachVolume(msg *nats.Msg, command types.EC2InstanceComm
 	// caller sees the instance-state error first when both apply.
 	status := d.vmMgr.Status(instance)
 	if status != vm.StateRunning {
-		slog.Error("AttachVolume: instance not running",
+		slog.ErrorContext(ctx, "AttachVolume: instance not running",
 			"instanceId", command.ID, "status", status)
 		respondWithError(msg, awserrors.ErrorIncorrectInstanceState)
 		return
@@ -42,14 +43,14 @@ func (d *Daemon) handleAttachVolume(msg *nats.Msg, command types.EC2InstanceComm
 
 	volCfg, err := d.volumeService.GetVolumeConfig(volumeID)
 	if err != nil {
-		slog.Error("AttachVolume: failed to get volume config", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "AttachVolume: failed to get volume config", "volumeId", volumeID, "err", err)
 		respondWithError(msg, awserrors.ErrorInvalidVolumeNotFound)
 		return
 	}
 
 	callerAccountID := utils.AccountIDFromMsg(msg)
 	if !volumeVisibleTo(volCfg.VolumeMetadata.TenantID, callerAccountID) {
-		slog.Warn("AttachVolume: account does not own volume",
+		slog.WarnContext(ctx, "AttachVolume: account does not own volume",
 			"volumeId", volumeID,
 			"callerAccount", callerAccountID,
 			"ownerAccount", volCfg.VolumeMetadata.TenantID)
@@ -58,7 +59,7 @@ func (d *Daemon) handleAttachVolume(msg *nats.Msg, command types.EC2InstanceComm
 	}
 
 	if volCfg.VolumeMetadata.State != "available" {
-		slog.Error("AttachVolume: volume not available",
+		slog.ErrorContext(ctx, "AttachVolume: volume not available",
 			"volumeId", volumeID, "state", volCfg.VolumeMetadata.State)
 		respondWithError(msg, awserrors.ErrorVolumeInUse)
 		return
@@ -66,7 +67,7 @@ func (d *Daemon) handleAttachVolume(msg *nats.Msg, command types.EC2InstanceComm
 
 	if volCfg.VolumeMetadata.AvailabilityZone != "" && d.config.AZ != "" &&
 		volCfg.VolumeMetadata.AvailabilityZone != d.config.AZ {
-		slog.Error("AttachVolume: volume and instance are in different AZs",
+		slog.ErrorContext(ctx, "AttachVolume: volume and instance are in different AZs",
 			"volumeId", volumeID,
 			"volumeAZ", volCfg.VolumeMetadata.AvailabilityZone,
 			"instanceAZ", d.config.AZ)
@@ -74,7 +75,7 @@ func (d *Daemon) handleAttachVolume(msg *nats.Msg, command types.EC2InstanceComm
 		return
 	}
 
-	res, err := d.vmMgr.AttachVolume(instance.ID, volumeID, command.AttachVolumeData.Device)
+	res, err := d.vmMgr.AttachVolume(ctx, instance.ID, volumeID, command.AttachVolumeData.Device)
 	if err != nil {
 		respondWithError(msg, attachDetachErrorCode(err))
 		return
@@ -92,16 +93,17 @@ func (d *Daemon) handleAttachVolume(msg *nats.Msg, command types.EC2InstanceComm
 
 // handleDetachVolume dispatches the QMP/state-machine pipeline to
 // vm.Manager.DetachVolume and emits the AWS API response.
-func (d *Daemon) handleDetachVolume(msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
-	slog.Info("Detaching volume from instance", "instanceId", command.ID)
+func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+	slog.InfoContext(ctx, "Detaching volume from instance", "instanceId", command.ID)
 
 	if command.DetachVolumeData == nil || command.DetachVolumeData.VolumeID == "" {
-		slog.Error("DetachVolume: missing detach volume data")
+		slog.ErrorContext(ctx, "DetachVolume: missing detach volume data")
 		respondWithError(msg, awserrors.ErrorInvalidParameterValue)
 		return
 	}
 
 	deviceName, err := d.vmMgr.DetachVolume(
+		ctx,
 		instance.ID,
 		command.DetachVolumeData.VolumeID,
 		command.DetachVolumeData.Device,
@@ -154,8 +156,11 @@ func (d *Daemon) handleEC2DescribeVolumesModifications(msg *nats.Msg) {
 
 // handleEC2ModifyVolume processes incoming EC2 ModifyVolume requests
 func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
-	slog.Debug("Received message", "subject", msg.Subject)
-	slog.Debug("Message data", "data", string(msg.Data))
+	ctx, span := utils.StartConsumerSpan(msg)
+	defer span.End()
+
+	slog.DebugContext(ctx, "Received message", "subject", msg.Subject)
+	slog.DebugContext(ctx, "Message data", "data", string(msg.Data))
 
 	accountID := utils.AccountIDFromMsg(msg)
 
@@ -163,19 +168,21 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
 	errResp := utils.UnmarshalJsonPayload(modifyVolumeInput, msg.Data)
 
 	if errResp != nil {
+		utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		if err := msg.Respond(errResp); err != nil {
-			slog.Error("Failed to respond to NATS request", "err", err)
+			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 		}
-		slog.Error("Request does not match ModifyVolumeInput")
+		slog.ErrorContext(ctx, "Request does not match ModifyVolumeInput")
 		return
 	}
 
-	slog.Info("Processing ModifyVolume request", "volumeId", modifyVolumeInput.VolumeId, "accountID", accountID)
+	slog.InfoContext(ctx, "Processing ModifyVolume request", "volumeId", modifyVolumeInput.VolumeId, "accountID", accountID)
 
-	output, err := d.volumeService.ModifyVolume(modifyVolumeInput, accountID)
+	output, err := d.volumeService.ModifyVolume(ctx, modifyVolumeInput, accountID)
 
 	if err != nil {
-		slog.Error("handleEC2ModifyVolume service.ModifyVolume failed", "err", err)
+		slog.ErrorContext(ctx, "handleEC2ModifyVolume service.ModifyVolume failed", "err", err)
+		utils.MarkSpanError(span, err)
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return
 	}
@@ -186,17 +193,17 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
 	if modifyVolumeInput.VolumeId != nil {
 		syncData, err := json.Marshal(types.EBSSyncRequest{Volume: *modifyVolumeInput.VolumeId})
 		if err != nil {
-			slog.Error("failed to marshal ebs.sync request", "volumeId", *modifyVolumeInput.VolumeId, "err", err)
+			slog.ErrorContext(ctx, "failed to marshal ebs.sync request", "volumeId", *modifyVolumeInput.VolumeId, "err", err)
 		} else {
 			_, syncErr := d.natsConn.Request("ebs.sync", syncData, 5*time.Second)
 			if syncErr != nil {
-				slog.Warn("ebs.sync notification failed (volume may not be mounted)",
+				slog.WarnContext(ctx, "ebs.sync notification failed (volume may not be mounted)",
 					"volumeId", *modifyVolumeInput.VolumeId, "err", syncErr)
 			}
 		}
 	}
 
-	slog.Info("handleEC2ModifyVolume completed", "volumeId", modifyVolumeInput.VolumeId)
+	slog.InfoContext(ctx, "handleEC2ModifyVolume completed", "volumeId", modifyVolumeInput.VolumeId)
 }
 
 func (d *Daemon) handleEC2DeleteVolume(msg *nats.Msg) {

@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateDeleteSubnetInput(input *ec2.DeleteSubnetInput) error {
 }
 
 // DeleteSubnet handles the EC2 DeleteSubnet API call
-func DeleteSubnet(input *ec2.DeleteSubnetInput, natsConn *nats.Conn, accountID string) (ec2.DeleteSubnetOutput, error) {
+func DeleteSubnet(ctx context.Context, input *ec2.DeleteSubnetInput, natsConn *nats.Conn, accountID string) (ec2.DeleteSubnetOutput, error) {
 	var output ec2.DeleteSubnetOutput
 
 	if err := ValidateDeleteSubnetInput(input); err != nil {
@@ -28,7 +29,7 @@ func DeleteSubnet(input *ec2.DeleteSubnetInput, natsConn *nats.Conn, accountID s
 	}
 
 	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
-	result, err := svc.DeleteSubnet(input, accountID)
+	result, err := svc.DeleteSubnet(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

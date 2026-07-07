@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -12,7 +13,7 @@ import (
 // DescribeTags returns tags for the ELBv2 resources named in ResourceArns.
 // Untagged resources produce a TagDescription with an empty Tags slice, as
 // the Terraform AWS provider expects during post-create refresh.
-func DescribeTags(input *elbv2.DescribeTagsInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTagsOutput, error) {
+func DescribeTags(ctx context.Context, input *elbv2.DescribeTagsInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTagsOutput, error) {
 	var output elbv2.DescribeTagsOutput
 
 	if input == nil || len(input.ResourceArns) == 0 {
@@ -20,7 +21,7 @@ func DescribeTags(input *elbv2.DescribeTagsInput, natsConn *nats.Conn, accountID
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.DescribeTags(input, accountID)
+	result, err := svc.DescribeTags(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

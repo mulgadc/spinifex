@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,7 +51,7 @@ func resolveAndAuthorizeProfile(spec *ec2.IamInstanceProfileSpecification, iamSv
 // AssociateIamInstanceProfile attaches a profile to a running instance.
 // The gateway resolves the profile and enforces PassRole; the daemon validates
 // no existing profile and generates a fresh iip-assoc-… ID.
-func AssociateIamInstanceProfile(input *ec2.AssociateIamInstanceProfileInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*ec2.AssociateIamInstanceProfileOutput, error) {
+func AssociateIamInstanceProfile(ctx context.Context, input *ec2.AssociateIamInstanceProfileInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*ec2.AssociateIamInstanceProfileOutput, error) {
 	if input == nil || input.InstanceId == nil || *input.InstanceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -74,8 +75,7 @@ func AssociateIamInstanceProfile(input *ec2.AssociateIamInstanceProfileInput, na
 	}
 
 	subject := fmt.Sprintf("ec2.cmd.%s", *input.InstanceId)
-	assoc, err := utils.NATSRequest[ec2.IamInstanceProfileAssociation](
-		natsConn, subject, command, fanOutTimeout, accountID)
+	assoc, err := utils.NATSRequestCtx[ec2.IamInstanceProfileAssociation](ctx, natsConn, subject, command, fanOutTimeout, accountID)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {
 			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
@@ -89,12 +89,12 @@ func AssociateIamInstanceProfile(input *ec2.AssociateIamInstanceProfileInput, na
 
 // DisassociateIamInstanceProfile broadcasts to all daemons; the owner detaches
 // and returns the association. All-null responses mean the ID is unknown.
-func DisassociateIamInstanceProfile(input *ec2.DisassociateIamInstanceProfileInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DisassociateIamInstanceProfileOutput, error) {
+func DisassociateIamInstanceProfile(ctx context.Context, input *ec2.DisassociateIamInstanceProfileInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DisassociateIamInstanceProfileOutput, error) {
 	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	assoc, err := broadcastForAssociation(natsConn, "ec2.IamProfileAssociation.disassociate", input, expectedNodes, accountID)
+	assoc, err := broadcastForAssociation(ctx, natsConn, "ec2.IamProfileAssociation.disassociate", input, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func DisassociateIamInstanceProfile(input *ec2.DisassociateIamInstanceProfileInp
 
 // ReplaceIamInstanceProfileAssociation swaps the profile for an existing association.
 // The gateway resolves the new profile and enforces PassRole; the daemon swaps atomically.
-func ReplaceIamInstanceProfileAssociation(input *ec2.ReplaceIamInstanceProfileAssociationInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, expectedNodes int, accountID string, passRoleCheck PassRoleChecker) (*ec2.ReplaceIamInstanceProfileAssociationOutput, error) {
+func ReplaceIamInstanceProfileAssociation(ctx context.Context, input *ec2.ReplaceIamInstanceProfileAssociationInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, expectedNodes int, accountID string, passRoleCheck PassRoleChecker) (*ec2.ReplaceIamInstanceProfileAssociationOutput, error) {
 	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -122,7 +122,7 @@ func ReplaceIamInstanceProfileAssociation(input *ec2.ReplaceIamInstanceProfileAs
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(profile.ARN)},
 	}
 
-	assoc, err := broadcastForAssociation(natsConn, "ec2.IamProfileAssociation.replace", wireInput, expectedNodes, accountID)
+	assoc, err := broadcastForAssociation(ctx, natsConn, "ec2.IamProfileAssociation.replace", wireInput, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -132,8 +132,8 @@ func ReplaceIamInstanceProfileAssociation(input *ec2.ReplaceIamInstanceProfileAs
 
 // CountInstanceProfileAssociations returns how many live instances in the account
 // reference profileARN. Used by DeleteInstanceProfile to refuse deletion while attached.
-func CountInstanceProfileAssociations(natsConn *nats.Conn, expectedNodes int, accountID, profileARN string) (int, error) {
-	associations, err := broadcastDescribeAssociations(natsConn, &ec2.DescribeIamInstanceProfileAssociationsInput{}, expectedNodes, accountID)
+func CountInstanceProfileAssociations(ctx context.Context, natsConn *nats.Conn, expectedNodes int, accountID, profileARN string) (int, error) {
+	associations, err := broadcastDescribeAssociations(ctx, natsConn, &ec2.DescribeIamInstanceProfileAssociationsInput{}, expectedNodes, accountID)
 	if err != nil {
 		return 0, err
 	}
@@ -148,7 +148,7 @@ func CountInstanceProfileAssociations(natsConn *nats.Conn, expectedNodes int, ac
 
 // DescribeIamInstanceProfileAssociations aggregates associations across all daemons.
 // Filter names are validated at the gateway to fail fast before any NATS round-trip.
-func DescribeIamInstanceProfileAssociations(input *ec2.DescribeIamInstanceProfileAssociationsInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
+func DescribeIamInstanceProfileAssociations(ctx context.Context, input *ec2.DescribeIamInstanceProfileAssociationsInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
 	for _, f := range input.Filters {
 		if f == nil || f.Name == nil {
 			continue
@@ -160,7 +160,7 @@ func DescribeIamInstanceProfileAssociations(input *ec2.DescribeIamInstanceProfil
 		}
 	}
 
-	associations, err := broadcastDescribeAssociations(natsConn, input, expectedNodes, accountID)
+	associations, err := broadcastDescribeAssociations(ctx, natsConn, input, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -181,13 +181,13 @@ func enrichProfileID(assoc *ec2.IamInstanceProfileAssociation, profile *handlers
 
 // broadcastForAssociation fans out a mutation to all daemons and returns the first
 // populated response; returns NoSuchAssociation when all daemons reply null.
-func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, expectedNodes int, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
+func broadcastForAssociation(ctx context.Context, natsConn *nats.Conn, subject string, payload any, expectedNodes int, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	frames, sum, err := utils.Gather(natsConn, subject, jsonData,
+	frames, sum, err := utils.GatherCtx(ctx, natsConn, subject, jsonData,
 		utils.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -213,13 +213,13 @@ func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, e
 
 // broadcastDescribeAssociations fans out a Describe request and concatenates every
 // daemon's records. Partial collection is acceptable for Describe semantics.
-func broadcastDescribeAssociations(natsConn *nats.Conn, input *ec2.DescribeIamInstanceProfileAssociationsInput, expectedNodes int, accountID string) ([]*ec2.IamInstanceProfileAssociation, error) {
+func broadcastDescribeAssociations(ctx context.Context, natsConn *nats.Conn, input *ec2.DescribeIamInstanceProfileAssociationsInput, expectedNodes int, accountID string) ([]*ec2.IamInstanceProfileAssociation, error) {
 	jsonData, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	frames, sum, err := utils.Gather(natsConn, "ec2.IamProfileAssociation.describe", jsonData,
+	frames, sum, err := utils.GatherCtx(ctx, natsConn, "ec2.IamProfileAssociation.describe", jsonData,
 		utils.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err

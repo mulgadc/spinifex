@@ -1,6 +1,7 @@
 package handlers_ec2_volume
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,7 @@ func TestGetVolumeConfig_CorruptJSON(t *testing.T) {
 	// Body is not a valid VBState (BlockSize stays 0 → falls through) and is
 	// not a valid volumeConfigWrapper either (unmarshal fails) — must surface
 	// "failed to unmarshal config" from getVolumeConfigAndEncryption.
-	_, err := store.PutObject(&s3.PutObjectInput{
+	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 		Body:   strings.NewReader("not valid json {{{"),
@@ -61,14 +62,14 @@ func TestMergeVolumeConfig_RefusesEncryptedVBState(t *testing.T) {
 	}
 	data, err := json.Marshal(state)
 	require.NoError(t, err)
-	_, err = store.PutObject(&s3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(configKey),
 		Body:   strings.NewReader(string(data)),
 	})
 	require.NoError(t, err)
 
-	_, err = svc.mergeVolumeConfig(configKey, &viperblock.VolumeConfig{
+	_, err = svc.mergeVolumeConfig(context.Background(), configKey, &viperblock.VolumeConfig{
 		VolumeMetadata: viperblock.VolumeMetadata{VolumeID: volumeID, SizeGiB: 2},
 	})
 	require.Error(t, err)
@@ -100,7 +101,7 @@ func TestCreateVolume_EncryptionKeyLoadError(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.key")
 	svc := newTestVolumeServiceWithEncryptionKey("ap-southeast-2a", missing)
 
-	_, err := svc.CreateVolume(&ec2.CreateVolumeInput{
+	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size:             aws.Int64(1),
 		AvailabilityZone: aws.String("ap-southeast-2a"),
 	}, "")

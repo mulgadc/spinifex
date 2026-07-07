@@ -1,6 +1,7 @@
 package gateway_ec2_capacityreservation
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"time"
@@ -26,12 +27,12 @@ type nodeCensus struct {
 // collectCensus fans out spinifex.node.status and returns one entry per distinct
 // node that responds, stopping once expectedNodes answer or censusTimeout elapses.
 // It does not narrow the deadline after the first reply, trading latency for completeness.
-func collectCensus(natsConn *nats.Conn, expectedNodes int, accountID string) ([]nodeCensus, error) {
+func collectCensus(ctx context.Context, natsConn *nats.Conn, expectedNodes int, accountID string) ([]nodeCensus, error) {
 	if expectedNodes < 1 {
 		expectedNodes = 1
 	}
 
-	frames, _, err := utils.Gather(natsConn, "spinifex.node.status", []byte("{}"),
+	frames, _, err := utils.GatherCtx(ctx, natsConn, "spinifex.node.status", []byte("{}"),
 		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -42,7 +43,7 @@ func collectCensus(natsConn *nats.Conn, expectedNodes int, accountID string) ([]
 	for _, frame := range frames {
 		var status types.NodeStatusResponse
 		if err := json.Unmarshal(frame, &status); err != nil {
-			slog.Debug("collectCensus: failed to unmarshal response", "err", err)
+			slog.DebugContext(ctx, "collectCensus: failed to unmarshal response", "err", err)
 			continue
 		}
 		if status.Node == "" {

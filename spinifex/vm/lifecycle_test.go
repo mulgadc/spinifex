@@ -234,7 +234,7 @@ func TestGenerateMgmtMAC_Stable(t *testing.T) {
 
 func TestStartReturnsErrorWhenInstanceUnknown(t *testing.T) {
 	m := NewManager()
-	err := m.Start("i-missing")
+	err := m.Start(t.Context(), "i-missing")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "i-missing")
 }
@@ -282,7 +282,7 @@ func TestRun_LaunchStillValid_FirstCheck(t *testing.T) {
 			instance := &VM{ID: "i-" + string(status), Status: status}
 			m.Insert(instance)
 
-			err := m.Run(instance)
+			err := m.Run(t.Context(), instance)
 
 			require.NoError(t, err)
 			assert.Empty(t, mounter.mounted, "Mount must not be called when launch is aborted by first race check")
@@ -306,7 +306,7 @@ func TestRun_LaunchStillValid_SecondCheck(t *testing.T) {
 		m.UpdateState(v.ID, func(vv *VM) { vv.Status = StateShuttingDown })
 	}
 
-	err := m.Run(instance)
+	err := m.Run(t.Context(), instance)
 
 	require.NoError(t, err, "Run must return nil when concurrent terminate flips status during Mount")
 	assert.Equal(t, []string{"i-flip"}, mounter.mounted, "Mount must run exactly once before the second race check")
@@ -325,7 +325,7 @@ func TestRun_VolumeMounterError_Propagates(t *testing.T) {
 	instance := &VM{ID: "i-mount-fail", Status: StatePending}
 	m.Insert(instance)
 
-	err := m.Run(instance)
+	err := m.Run(t.Context(), instance)
 
 	require.ErrorIs(t, err, sentinel)
 	assert.Equal(t, []string{"i-mount-fail"}, mounter.mounted)
@@ -346,7 +346,7 @@ func TestRun_AlreadyRunningPID_ReturnsError(t *testing.T) {
 	pidFile := filepath.Join(pidDir, instance.ID+".pid")
 	require.NoError(t, os.WriteFile(pidFile, fmt.Appendf(nil, "%d", os.Getpid()), 0o600))
 
-	err := m.Run(instance)
+	err := m.Run(t.Context(), instance)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already running")
@@ -367,7 +367,7 @@ func TestStart_DispatchesThroughLaunch(t *testing.T) {
 	instance := &VM{ID: "i-start-dispatch", Status: StateStopped}
 	m.Insert(instance)
 
-	err := m.Start(instance.ID)
+	err := m.Start(t.Context(), instance.ID)
 
 	require.ErrorIs(t, err, sentinel, "Start must dispatch through launch and surface Mount errors")
 	assert.Equal(t, []string{"i-start-dispatch"}, mounter.mounted)
@@ -381,7 +381,7 @@ func TestStart_AbortedByConcurrentTerminate(t *testing.T) {
 	instance := &VM{ID: "i-start-abort", Status: StateShuttingDown}
 	m.Insert(instance)
 
-	err := m.Start(instance.ID)
+	err := m.Start(t.Context(), instance.ID)
 
 	require.NoError(t, err)
 	assert.Empty(t, mounter.mounted)
@@ -978,13 +978,13 @@ func TestSendQMPCommand_ReconnectsWedgedClient(t *testing.T) {
 	// Simulate the wedge: mark Dead as a timed-out decode would.
 	client.Dead = true
 
-	resp, err := sendQMPCommand(client, qmp.QMPCommand{Execute: "query-status"}, "i-wedged")
+	resp, err := sendQMPCommand(t.Context(), client, qmp.QMPCommand{Execute: "query-status"}, "i-wedged")
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.False(t, client.Dead, "reconnect must clear Dead so later commands reuse the fresh stream")
 
 	// A second command must succeed over the reconnected stream.
-	_, err = sendQMPCommand(client, qmp.QMPCommand{Execute: "query-status"}, "i-wedged")
+	_, err = sendQMPCommand(t.Context(), client, qmp.QMPCommand{Execute: "query-status"}, "i-wedged")
 	require.NoError(t, err)
 }
 
@@ -1002,7 +1002,7 @@ func TestSendQMPCommand_NoPathCannotReconnect(t *testing.T) {
 	client.Dead = true
 	client.Path = ""
 
-	_, err = sendQMPCommand(client, qmp.QMPCommand{Execute: "query-status"}, "i-nopath")
+	_, err = sendQMPCommand(t.Context(), client, qmp.QMPCommand{Execute: "query-status"}, "i-nopath")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no socket path")
 }
@@ -1111,7 +1111,7 @@ func TestNewQMPClientWithHandshake_RetriesTransientConnect(t *testing.T) {
 	defer stop()
 
 	instance := &VM{ID: "i-retry", Config: Config{QMPSocket: sockPath}}
-	client, err := newQMPClientWithHandshake(instance)
+	client, err := newQMPClientWithHandshake(t.Context(), instance)
 	require.NoError(t, err, "dial must retry past the refused window")
 	require.NotNil(t, client)
 	_ = client.Conn.Close()

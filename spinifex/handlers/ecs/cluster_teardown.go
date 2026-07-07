@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -20,7 +21,7 @@ func clusterKeyPrefix(cluster string) string {
 // (releasing ENIs, deregistering TG targets, returning capacity), every service
 // is marked INACTIVE, then the whole clusters/{name}/ prefix is deleted. Returns
 // the cluster with Status INACTIVE.
-func (s *Service) DeleteCluster(input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error) {
+func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -40,7 +41,7 @@ func (s *Service) DeleteCluster(input *ecs.DeleteClusterInput, accountID string)
 		return nil, err
 	}
 	for i := range tasks {
-		s.forceStopTask(kv, accountID, &tasks[i], "Cluster deleted")
+		s.forceStopTask(ctx, kv, accountID, &tasks[i], "Cluster deleted")
 	}
 
 	if err := deleteKeysWithPrefix(kv, clusterKeyPrefix(cluster)); err != nil {
@@ -56,7 +57,7 @@ func (s *Service) DeleteCluster(input *ecs.DeleteClusterInput, accountID string)
 // it rejects an instance that still has running tasks (AWS parity). The instance
 // record and its assignment inbox are deleted; the response carries Status
 // INACTIVE.
-func (s *Service) DeregisterContainerInstance(input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error) {
+func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	id := containerInstanceShortID(aws.StringValue(input.ContainerInstance))
 	kv, err := s.bucket(accountID)
@@ -80,7 +81,7 @@ func (s *Service) DeregisterContainerInstance(input *ecs.DeregisterContainerInst
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 	for i := range active {
-		s.forceStopTask(kv, accountID, &active[i], "Container instance deregistered")
+		s.forceStopTask(ctx, kv, accountID, &active[i], "Container instance deregistered")
 	}
 
 	if derr := deleteKeysWithPrefix(kv, AssignmentsPrefix(cluster, id)); derr != nil {
@@ -97,7 +98,7 @@ func (s *Service) DeregisterContainerInstance(input *ecs.DeregisterContainerInst
 // Draining force-stops the instance's service-owned tasks so the reconciler
 // relaunches them elsewhere; standalone (non-service) tasks are left running,
 // matching AWS. Unknown instances surface as Failures.
-func (s *Service) UpdateContainerInstancesState(input *ecs.UpdateContainerInstancesStateInput, accountID string) (*ecs.UpdateContainerInstancesStateOutput, error) {
+func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.UpdateContainerInstancesStateInput, accountID string) (*ecs.UpdateContainerInstancesStateOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	status := aws.StringValue(input.Status)
 	if status != InstanceStatusActive && status != InstanceStatusDraining {
@@ -125,7 +126,7 @@ func (s *Service) UpdateContainerInstancesState(input *ecs.UpdateContainerInstan
 			return nil, perr
 		}
 		if status == InstanceStatusDraining {
-			s.drainInstanceServiceTasks(kv, accountID, cluster, id)
+			s.drainInstanceServiceTasks(ctx, kv, accountID, cluster, id)
 		}
 		out.ContainerInstances = append(out.ContainerInstances, s.instanceToAWS(&rec))
 	}
@@ -150,7 +151,7 @@ func (s *Service) instanceActiveTasks(kv nats.KeyValue, cluster, instanceID stri
 // drainInstanceServiceTasks force-stops the instance's service-owned tasks on an
 // intentional DRAINING; the service reconciler then relaunches them on another
 // instance. Standalone tasks are left running (AWS DRAINING semantics).
-func (s *Service) drainInstanceServiceTasks(kv nats.KeyValue, accountID, cluster, instanceID string) {
+func (s *Service) drainInstanceServiceTasks(ctx context.Context, kv nats.KeyValue, accountID, cluster, instanceID string) {
 	active, err := s.instanceActiveTasks(kv, cluster, instanceID)
 	if err != nil {
 		return
@@ -159,6 +160,6 @@ func (s *Service) drainInstanceServiceTasks(kv nats.KeyValue, accountID, cluster
 		if serviceNameFromGroup(active[i].Group) == "" {
 			continue
 		}
-		s.forceStopTask(kv, accountID, &active[i], "Container instance draining")
+		s.forceStopTask(ctx, kv, accountID, &active[i], "Container instance draining")
 	}
 }

@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func newTestNATS(t *testing.T) *nats.Conn {
 
 // describeNetworkInterfacesResponder seeds a DescribeNetworkInterfaces NATS
 // responder that returns the supplied attachment-id → instance-id mapping.
-func describeNetworkInterfacesResponder(t *testing.T, nc *nats.Conn, attachID, instanceID, eniID string) {
+func describeNetworkInterfacesResponder(ctx context.Context, t *testing.T, nc *nats.Conn, attachID, instanceID, eniID string) {
 	t.Helper()
 	sub, err := nc.Subscribe("ec2.DescribeNetworkInterfaces", func(msg *nats.Msg) {
 		resp := ec2.DescribeNetworkInterfacesOutput{
@@ -62,12 +63,12 @@ func describeNetworkInterfacesResponder(t *testing.T, nc *nats.Conn, attachID, i
 // --- AttachNetworkInterface ---
 
 func TestAttachNetworkInterface_NilInput(t *testing.T) {
-	_, err := AttachNetworkInterface(nil, nil, testAccountID)
+	_, err := AttachNetworkInterface(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestAttachNetworkInterface_MissingNetworkInterfaceID(t *testing.T) {
-	_, err := AttachNetworkInterface(&ec2.AttachNetworkInterfaceInput{
+	_, err := AttachNetworkInterface(context.Background(), &ec2.AttachNetworkInterfaceInput{
 		InstanceId:  aws.String("i-abc"),
 		DeviceIndex: aws.Int64(0),
 	}, nil, testAccountID)
@@ -75,7 +76,7 @@ func TestAttachNetworkInterface_MissingNetworkInterfaceID(t *testing.T) {
 }
 
 func TestAttachNetworkInterface_EmptyNetworkInterfaceID(t *testing.T) {
-	_, err := AttachNetworkInterface(&ec2.AttachNetworkInterfaceInput{
+	_, err := AttachNetworkInterface(context.Background(), &ec2.AttachNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(""),
 		InstanceId:         aws.String("i-abc"),
 		DeviceIndex:        aws.Int64(0),
@@ -84,7 +85,7 @@ func TestAttachNetworkInterface_EmptyNetworkInterfaceID(t *testing.T) {
 }
 
 func TestAttachNetworkInterface_MissingInstanceID(t *testing.T) {
-	_, err := AttachNetworkInterface(&ec2.AttachNetworkInterfaceInput{
+	_, err := AttachNetworkInterface(context.Background(), &ec2.AttachNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String("eni-1"),
 		DeviceIndex:        aws.Int64(0),
 	}, nil, testAccountID)
@@ -92,7 +93,7 @@ func TestAttachNetworkInterface_MissingInstanceID(t *testing.T) {
 }
 
 func TestAttachNetworkInterface_MissingDeviceIndex(t *testing.T) {
-	_, err := AttachNetworkInterface(&ec2.AttachNetworkInterfaceInput{
+	_, err := AttachNetworkInterface(context.Background(), &ec2.AttachNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String("eni-1"),
 		InstanceId:         aws.String("i-abc"),
 	}, nil, testAccountID)
@@ -101,7 +102,7 @@ func TestAttachNetworkInterface_MissingDeviceIndex(t *testing.T) {
 
 func TestAttachNetworkInterface_NoResponders(t *testing.T) {
 	nc := newTestNATS(t)
-	_, err := AttachNetworkInterface(&ec2.AttachNetworkInterfaceInput{
+	_, err := AttachNetworkInterface(context.Background(), &ec2.AttachNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String("eni-1"),
 		InstanceId:         aws.String("i-no-responder"),
 		DeviceIndex:        aws.Int64(0),
@@ -125,7 +126,7 @@ func TestAttachNetworkInterface_Success(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	out, err := AttachNetworkInterface(&ec2.AttachNetworkInterfaceInput{
+	out, err := AttachNetworkInterface(context.Background(), &ec2.AttachNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String("eni-feedface"),
 		InstanceId:         aws.String("i-success"),
 		DeviceIndex:        aws.Int64(2),
@@ -151,7 +152,7 @@ func TestAttachNetworkInterface_DaemonErrorResponse(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = AttachNetworkInterface(&ec2.AttachNetworkInterfaceInput{
+	_, err = AttachNetworkInterface(context.Background(), &ec2.AttachNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String("eni-bad"),
 		InstanceId:         aws.String("i-err"),
 		DeviceIndex:        aws.Int64(0),
@@ -168,7 +169,7 @@ func TestAttachNetworkInterface_MalformedDaemonResponse(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = AttachNetworkInterface(&ec2.AttachNetworkInterfaceInput{
+	_, err = AttachNetworkInterface(context.Background(), &ec2.AttachNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String("eni-bad"),
 		InstanceId:         aws.String("i-malformed"),
 		DeviceIndex:        aws.Int64(0),
@@ -179,17 +180,17 @@ func TestAttachNetworkInterface_MalformedDaemonResponse(t *testing.T) {
 // --- DetachNetworkInterface ---
 
 func TestDetachNetworkInterface_NilInput(t *testing.T) {
-	_, err := DetachNetworkInterface(nil, nil, testAccountID)
+	_, err := DetachNetworkInterface(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDetachNetworkInterface_MissingAttachmentID(t *testing.T) {
-	_, err := DetachNetworkInterface(&ec2.DetachNetworkInterfaceInput{}, nil, testAccountID)
+	_, err := DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{}, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDetachNetworkInterface_EmptyAttachmentID(t *testing.T) {
-	_, err := DetachNetworkInterface(&ec2.DetachNetworkInterfaceInput{
+	_, err := DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String(""),
 	}, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
@@ -205,7 +206,7 @@ func TestDetachNetworkInterface_UnknownAttachment(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = DetachNetworkInterface(&ec2.DetachNetworkInterfaceInput{
+	_, err = DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-missing"),
 	}, nc, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidAttachmentIDNotFound)
@@ -220,7 +221,7 @@ func TestDetachNetworkInterface_DescribeErrorResponse(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = DetachNetworkInterface(&ec2.DetachNetworkInterfaceInput{
+	_, err = DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-1"),
 	}, nc, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidAttachmentIDNotFound)
@@ -246,7 +247,7 @@ func TestDetachNetworkInterface_AttachmentWithoutInstance(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = DetachNetworkInterface(&ec2.DetachNetworkInterfaceInput{
+	_, err = DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-orphan"),
 	}, nc, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidAttachmentIDNotFound)
@@ -254,9 +255,9 @@ func TestDetachNetworkInterface_AttachmentWithoutInstance(t *testing.T) {
 
 func TestDetachNetworkInterface_NoResponders(t *testing.T) {
 	nc := newTestNATS(t)
-	describeNetworkInterfacesResponder(t, nc, "eni-attach-1", "i-no-daemon", "eni-1")
+	describeNetworkInterfacesResponder(context.Background(), t, nc, "eni-attach-1", "i-no-daemon", "eni-1")
 
-	_, err := DetachNetworkInterface(&ec2.DetachNetworkInterfaceInput{
+	_, err := DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-1"),
 	}, nc, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidInstanceIDNotFound)
@@ -264,7 +265,7 @@ func TestDetachNetworkInterface_NoResponders(t *testing.T) {
 
 func TestDetachNetworkInterface_Success(t *testing.T) {
 	nc := newTestNATS(t)
-	describeNetworkInterfacesResponder(t, nc, "eni-attach-ok", "i-detach", "eni-detachable")
+	describeNetworkInterfacesResponder(context.Background(), t, nc, "eni-attach-ok", "i-detach", "eni-detachable")
 
 	var received types.EC2InstanceCommand
 	var receivedAccount string
@@ -277,7 +278,7 @@ func TestDetachNetworkInterface_Success(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = DetachNetworkInterface(&ec2.DetachNetworkInterfaceInput{
+	_, err = DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-ok"),
 		Force:        aws.Bool(true),
 	}, nc, testAccountID)
@@ -293,7 +294,7 @@ func TestDetachNetworkInterface_Success(t *testing.T) {
 
 func TestDetachNetworkInterface_DaemonErrorResponse(t *testing.T) {
 	nc := newTestNATS(t)
-	describeNetworkInterfacesResponder(t, nc, "eni-attach-err", "i-err", "eni-x")
+	describeNetworkInterfacesResponder(context.Background(), t, nc, "eni-attach-err", "i-err", "eni-x")
 
 	sub, err := nc.Subscribe("ec2.cmd.i-err", func(msg *nats.Msg) {
 		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorIncorrectInstanceState))
@@ -301,7 +302,7 @@ func TestDetachNetworkInterface_DaemonErrorResponse(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = DetachNetworkInterface(&ec2.DetachNetworkInterfaceInput{
+	_, err = DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-err"),
 	}, nc, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorIncorrectInstanceState)
@@ -309,7 +310,7 @@ func TestDetachNetworkInterface_DaemonErrorResponse(t *testing.T) {
 
 func TestDetachNetworkInterface_MalformedDaemonResponse(t *testing.T) {
 	nc := newTestNATS(t)
-	describeNetworkInterfacesResponder(t, nc, "eni-attach-bad", "i-bad", "eni-bad")
+	describeNetworkInterfacesResponder(context.Background(), t, nc, "eni-attach-bad", "i-bad", "eni-bad")
 
 	sub, err := nc.Subscribe("ec2.cmd.i-bad", func(msg *nats.Msg) {
 		_ = msg.Respond([]byte("not-json"))
@@ -317,7 +318,7 @@ func TestDetachNetworkInterface_MalformedDaemonResponse(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = DetachNetworkInterface(&ec2.DetachNetworkInterfaceInput{
+	_, err = DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-bad"),
 	}, nc, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorServerInternal)

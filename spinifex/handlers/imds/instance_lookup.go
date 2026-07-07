@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
@@ -19,8 +20,8 @@ type natsInstanceLookup struct {
 
 var _ instanceLookup = (*natsInstanceLookup)(nil)
 
-func (l *natsInstanceLookup) describe(accountID, instanceID string) (*instanceFacts, error) {
-	out, err := gateway_ec2_instance.DescribeInstances(&ec2.DescribeInstancesInput{
+func (l *natsInstanceLookup) describe(ctx context.Context, accountID, instanceID string) (*instanceFacts, error) {
+	out, err := gateway_ec2_instance.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
 	}, l.nc, l.expectedNodes, accountID)
 	if err != nil {
@@ -46,13 +47,13 @@ func (l *natsInstanceLookup) describe(accountID, instanceID string) (*instanceFa
 		facts.iamInstanceProfileArn = aws.StringValue(inst.IamInstanceProfile.Arn)
 	}
 
-	facts.userData = l.userData(accountID, instanceID)
+	facts.userData = l.userData(ctx, accountID, instanceID)
 	return facts, nil
 }
 
 // userData fetches and decodes the instance's base64 user-data, returning nil on miss or error.
-func (l *natsInstanceLookup) userData(accountID, instanceID string) []byte {
-	attr, err := gateway_ec2_instance.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+func (l *natsInstanceLookup) userData(ctx context.Context, accountID, instanceID string) []byte {
+	attr, err := gateway_ec2_instance.DescribeInstanceAttribute(ctx, &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String(instanceID),
 		Attribute:  aws.String("userData"),
 	}, l.nc, l.expectedNodes, accountID)
@@ -61,7 +62,7 @@ func (l *natsInstanceLookup) userData(accountID, instanceID string) []byte {
 	}
 	decoded, err := base64.StdEncoding.DecodeString(aws.StringValue(attr.UserData.Value))
 	if err != nil {
-		slog.Warn("IMDS: failed to decode instance user-data", "instance_id", instanceID, "err", err)
+		slog.WarnContext(ctx, "IMDS: failed to decode instance user-data", "instance_id", instanceID, "err", err)
 		return nil
 	}
 	return decoded

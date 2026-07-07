@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"github.com/aws/aws-sdk-go/aws"
 	ec2 "github.com/aws/aws-sdk-go/service/ec2"
 )
@@ -24,7 +25,7 @@ func newFakeEIPProvisioner() *fakeEIPProvisioner {
 	return &fakeEIPProvisioner{publicIP: "203.0.113.50", allocationID: "eipalloc-fake01"}
 }
 
-func (f *fakeEIPProvisioner) AllocateAddress(input *ec2.AllocateAddressInput, _ string) (*ec2.AllocateAddressOutput, error) {
+func (f *fakeEIPProvisioner) AllocateAddress(_ context.Context, input *ec2.AllocateAddressInput, _ string) (*ec2.AllocateAddressOutput, error) {
 	f.allocateCalls = append(f.allocateCalls, input)
 	if f.allocateErr != nil {
 		return nil, f.allocateErr
@@ -35,7 +36,7 @@ func (f *fakeEIPProvisioner) AllocateAddress(input *ec2.AllocateAddressInput, _ 
 	}, nil
 }
 
-func (f *fakeEIPProvisioner) ReleaseAddress(input *ec2.ReleaseAddressInput, _ string) (*ec2.ReleaseAddressOutput, error) {
+func (f *fakeEIPProvisioner) ReleaseAddress(_ context.Context, input *ec2.ReleaseAddressInput, _ string) (*ec2.ReleaseAddressOutput, error) {
 	f.releaseCalls = append(f.releaseCalls, input)
 	if f.releaseErr != nil {
 		return nil, f.releaseErr

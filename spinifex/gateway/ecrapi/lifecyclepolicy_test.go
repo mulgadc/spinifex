@@ -1,6 +1,8 @@
 package gateway_ecrapi
 
 import (
+	"context"
+
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -33,7 +35,7 @@ func TestLifecyclePolicy_Lifecycle(t *testing.T) {
 	seedRepo(t, nc, "team/app")
 	body := []byte(`{"repositoryName":"team/app","lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy) + `}`)
 
-	out, err := PutLifecyclePolicy(nc, policyTestAccount, body)
+	out, err := PutLifecyclePolicy(context.Background(), nc, policyTestAccount, body)
 	require.NoError(t, err)
 	put, ok := out.(*ecr.PutLifecyclePolicyOutput)
 	require.True(t, ok)
@@ -41,19 +43,19 @@ func TestLifecyclePolicy_Lifecycle(t *testing.T) {
 	assert.Equal(t, "team/app", *put.RepositoryName)
 	assert.Equal(t, policyTestAccount, *put.RegistryId)
 
-	out, err = GetLifecyclePolicy(nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	out, err = GetLifecyclePolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.NoError(t, err)
 	got, ok := out.(*ecr.GetLifecyclePolicyOutput)
 	require.True(t, ok)
 	assert.Equal(t, validLifecyclePolicy, *got.LifecyclePolicyText)
 
-	out, err = DeleteLifecyclePolicy(nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	out, err = DeleteLifecyclePolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.NoError(t, err)
 	del, ok := out.(*ecr.DeleteLifecyclePolicyOutput)
 	require.True(t, ok)
 	assert.Equal(t, validLifecyclePolicy, *del.LifecyclePolicyText)
 
-	_, err = GetLifecyclePolicy(nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	_, err = GetLifecyclePolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorLifecyclePolicyNotFound, err.Error())
 }
@@ -64,7 +66,7 @@ func TestLifecyclePolicy_Errors(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		fn     func(*nats.Conn, string, []byte) (any, error)
+		fn     func(context.Context, *nats.Conn, string, []byte) (any, error)
 		body   string
 		expect string
 	}{
@@ -79,7 +81,7 @@ func TestLifecyclePolicy_Errors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := tc.fn(nc, policyTestAccount, []byte(tc.body))
+			_, err := tc.fn(context.Background(), nc, policyTestAccount, []byte(tc.body))
 			require.Error(t, err)
 			assert.Equal(t, tc.expect, err.Error())
 		})

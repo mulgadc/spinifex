@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,12 +28,12 @@ func ValidateRebootInstancesInput(input *ec2.RebootInstancesInput) error {
 // RebootInstances sends reboot commands to specified instances via NATS.
 // Unlike stop+start, reboot keeps the instance running and sends a QMP system_reset.
 // Returns an empty response on success (AWS returns no state-change data).
-func RebootInstances(input *ec2.RebootInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.RebootInstancesOutput, error) {
+func RebootInstances(ctx context.Context, input *ec2.RebootInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.RebootInstancesOutput, error) {
 	if err := ValidateRebootInstancesInput(input); err != nil {
 		return nil, err
 	}
 
-	slog.Info("RebootInstances: Processing request", "instance_count", len(input.InstanceIds))
+	slog.InfoContext(ctx, "RebootInstances: Processing request", "instance_count", len(input.InstanceIds))
 
 	for _, instanceIDPtr := range input.InstanceIds {
 		if instanceIDPtr == nil {
@@ -49,7 +50,7 @@ func RebootInstances(input *ec2.RebootInstancesInput, natsConn *nats.Conn, accou
 
 		jsonData, err := json.Marshal(command)
 		if err != nil {
-			slog.Error("RebootInstances: Failed to marshal command", "instance_id", instanceID, "err", err)
+			slog.ErrorContext(ctx, "RebootInstances: Failed to marshal command", "instance_id", instanceID, "err", err)
 			continue
 		}
 
@@ -57,9 +58,10 @@ func RebootInstances(input *ec2.RebootInstancesInput, natsConn *nats.Conn, accou
 		reqMsg := nats.NewMsg(subject)
 		reqMsg.Data = jsonData
 		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+		utils.InjectTraceContext(ctx, reqMsg.Header)
 		msg, err := natsConn.RequestMsg(reqMsg, 5*time.Second)
 		if err != nil {
-			slog.Error("RebootInstances: Failed to send command", "instance_id", instanceID, "err", err)
+			slog.ErrorContext(ctx, "RebootInstances: Failed to send command", "instance_id", instanceID, "err", err)
 
 			// No daemon subscription: check stopped-KV to return IncorrectInstanceState instead of NotFound.
 			describeInput := &ec2.DescribeInstancesInput{
@@ -69,7 +71,7 @@ func RebootInstances(input *ec2.RebootInstancesInput, natsConn *nats.Conn, accou
 			if err != nil {
 				return nil, fmt.Errorf("marshal describe input: %w", err)
 			}
-			if reservations, _ := queryInstanceBucket(natsConn, "ec2.DescribeStoppedInstances", describeData, accountID); len(reservations) > 0 {
+			if reservations, _ := queryInstanceBucket(ctx, natsConn, "ec2.DescribeStoppedInstances", describeData, accountID); len(reservations) > 0 {
 				return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
 			}
 
@@ -77,13 +79,13 @@ func RebootInstances(input *ec2.RebootInstancesInput, natsConn *nats.Conn, accou
 		}
 
 		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
-			slog.Error("RebootInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
+			slog.ErrorContext(ctx, "RebootInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 			return nil, errors.New(*responseError.Code)
 		}
 
-		slog.Info("RebootInstances: Command sent successfully", "instance_id", instanceID)
+		slog.InfoContext(ctx, "RebootInstances: Command sent successfully", "instance_id", instanceID)
 	}
 
-	slog.Info("RebootInstances: Completed", "total_instances", len(input.InstanceIds))
+	slog.InfoContext(ctx, "RebootInstances: Completed", "total_instances", len(input.InstanceIds))
 	return &ec2.RebootInstancesOutput{}, nil
 }

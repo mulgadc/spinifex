@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,33 +54,34 @@ func ValidateModifyInstanceAttributeInput(input *ec2.ModifyInstanceAttributeInpu
 
 // ModifyInstanceAttribute sends a modify request to the daemon via NATS.
 // The daemon updates the stopped instance in KV and returns an empty response on success.
-func ModifyInstanceAttribute(input *ec2.ModifyInstanceAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyInstanceAttributeOutput, error) {
+func ModifyInstanceAttribute(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyInstanceAttributeOutput, error) {
 	if err := ValidateModifyInstanceAttributeInput(input); err != nil {
 		return ec2.ModifyInstanceAttributeOutput{}, err
 	}
 
-	slog.Info("ModifyInstanceAttribute: Processing request", "instance_id", *input.InstanceId)
+	slog.InfoContext(ctx, "ModifyInstanceAttribute: Processing request", "instance_id", *input.InstanceId)
 
 	jsonData, err := json.Marshal(input)
 	if err != nil {
-		slog.Error("ModifyInstanceAttribute: Failed to marshal request", "instance_id", *input.InstanceId, "err", err)
+		slog.ErrorContext(ctx, "ModifyInstanceAttribute: Failed to marshal request", "instance_id", *input.InstanceId, "err", err)
 		return ec2.ModifyInstanceAttributeOutput{}, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	reqMsg := nats.NewMsg("ec2.ModifyInstanceAttribute")
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
-		slog.Error("ModifyInstanceAttribute: Failed to send request", "instance_id", *input.InstanceId, "err", err)
+		slog.ErrorContext(ctx, "ModifyInstanceAttribute: Failed to send request", "instance_id", *input.InstanceId, "err", err)
 		return ec2.ModifyInstanceAttributeOutput{}, fmt.Errorf("failed to send modify request: %w", err)
 	}
 
 	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
-		slog.Error("ModifyInstanceAttribute: Daemon returned error", "instance_id", *input.InstanceId, "code", *responseError.Code)
+		slog.ErrorContext(ctx, "ModifyInstanceAttribute: Daemon returned error", "instance_id", *input.InstanceId, "code", *responseError.Code)
 		return ec2.ModifyInstanceAttributeOutput{}, errors.New(*responseError.Code)
 	}
 
-	slog.Info("ModifyInstanceAttribute: Completed successfully", "instance_id", *input.InstanceId)
+	slog.InfoContext(ctx, "ModifyInstanceAttribute: Completed successfully", "instance_id", *input.InstanceId)
 	return ec2.ModifyInstanceAttributeOutput{}, nil
 }

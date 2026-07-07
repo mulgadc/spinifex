@@ -1,6 +1,7 @@
 package handlers_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -282,25 +283,25 @@ func TestFloorVolumeSizeToAMI(t *testing.T) {
 	const twentyGiB = 20 * 1024 * 1024 * 1024
 
 	t.Run("ami larger than requested rounds up", func(t *testing.T) {
-		assert.Equal(t, tenGiB, floorVolumeSizeToAMI(loader, "ami-rocky", fourGiB))
+		assert.Equal(t, tenGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-rocky", fourGiB))
 	})
 	t.Run("ami smaller than requested keeps requested", func(t *testing.T) {
-		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-debian", fourGiB))
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-debian", fourGiB))
 	})
 	t.Run("requested larger than ami keeps requested", func(t *testing.T) {
-		assert.Equal(t, twentyGiB, floorVolumeSizeToAMI(loader, "ami-rocky", twentyGiB))
+		assert.Equal(t, twentyGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-rocky", twentyGiB))
 	})
 	t.Run("missing VolumeSizeGiB keeps requested (legacy AMI)", func(t *testing.T) {
-		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-no-size", fourGiB))
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-no-size", fourGiB))
 	})
 	t.Run("unknown AMI keeps requested", func(t *testing.T) {
-		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-unknown", fourGiB))
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-unknown", fourGiB))
 	})
 	t.Run("non-ami image id keeps requested", func(t *testing.T) {
-		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "vol-123", fourGiB))
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), loader, "vol-123", fourGiB))
 	})
 	t.Run("nil loader keeps requested", func(t *testing.T) {
-		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(nil, "ami-rocky", fourGiB))
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), nil, "ami-rocky", fourGiB))
 	})
 }
 
@@ -665,7 +666,7 @@ func (f *fakeStoppedStore) DeleteTerminatedInstance(string) error { return nil }
 
 func TestDescribeInstanceTypes_NilResourceMgr(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{}, "")
+	_, err := svc.DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{}, "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -683,7 +684,7 @@ func TestDescribeInstanceTypes_ReturnsSupportedByDefault(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{resourceMgr: prov}
 
-	out, err := svc.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{}, "")
+	out, err := svc.DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{}, "")
 	require.NoError(t, err)
 	require.Len(t, out.InstanceTypes, 3,
 		"no-filter DescribeInstanceTypes must return the supported set, not the capacity-gated set")
@@ -709,7 +710,7 @@ func TestDescribeInstanceTypes_CapacityFilterHitsAvailable(t *testing.T) {
 			{Name: aws.String("capacity"), Values: []*string{aws.String("true")}},
 		},
 	}
-	out, err := svc.DescribeInstanceTypes(input, "")
+	out, err := svc.DescribeInstanceTypes(context.Background(), input, "")
 	require.NoError(t, err)
 	require.Len(t, out.InstanceTypes, 2, "capacity=true must use the per-slot list")
 	assert.Equal(t, 1, prov.calls, "capacity-gated path must be hit when capacity=true")
@@ -719,7 +720,7 @@ func TestDescribeInstanceTypes_CapacityFilterHitsAvailable(t *testing.T) {
 
 func TestDescribeInstances_Empty(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
-	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations)
 }
@@ -741,7 +742,7 @@ func TestDescribeInstances_OneVisibleInstance(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
 
-	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, resID, *out.Reservations[0].ReservationId)
@@ -761,7 +762,7 @@ func TestDescribeInstances_AccountFilteringHidesOtherTenant(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
-	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, "111122223333")
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, "111122223333")
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations)
 }
@@ -783,7 +784,7 @@ func TestDescribeInstances_HidesManagedSystemVMFromCustomer(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
-	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations, "managed system VM must not appear in customer listing")
 }
@@ -802,7 +803,7 @@ func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
-	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-lb", *out.Reservations[0].Instances[0].InstanceId)
@@ -824,7 +825,7 @@ func TestDescribeInstances_CustomerWorkloadStaysVisible(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
-	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-worker", *out.Reservations[0].Instances[0].InstanceId)
@@ -835,7 +836,7 @@ func TestDescribeInstances_MalformedID(t *testing.T) {
 	input := &ec2.DescribeInstancesInput{
 		InstanceIds: []*string{aws.String("not-an-id")},
 	}
-	_, err := svc.DescribeInstances(input, utils.GlobalAccountID)
+	_, err := svc.DescribeInstances(context.Background(), input, utils.GlobalAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
 }
@@ -861,7 +862,7 @@ func TestDescribeInstances_FilterByInstanceID(t *testing.T) {
 	})}
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-keep")}}
-	out, err := svc.DescribeInstances(input, utils.GlobalAccountID)
+	out, err := svc.DescribeInstances(context.Background(), input, utils.GlobalAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-keep", *out.Reservations[0].Instances[0].InstanceId)
@@ -869,7 +870,7 @@ func TestDescribeInstances_FilterByInstanceID(t *testing.T) {
 
 func TestDescribeInstanceAttribute_MissingInstanceID(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
-	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 		Attribute: aws.String(ec2.InstanceAttributeNameInstanceType),
 	}, "")
 	require.Error(t, err)
@@ -878,7 +879,7 @@ func TestDescribeInstanceAttribute_MissingInstanceID(t *testing.T) {
 
 func TestDescribeInstanceAttribute_MissingAttribute(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
-	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String("i-aaa"),
 	}, "")
 	require.Error(t, err)
@@ -956,7 +957,7 @@ func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+			out, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 				InstanceId: aws.String(id),
 				Attribute:  aws.String(tc.attribute),
 			}, owner)
@@ -970,7 +971,7 @@ func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
 
 func TestDescribeInstanceAttribute_NotRunning_NoStore(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
-	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String("i-missing"),
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
 	}, "")
@@ -989,7 +990,7 @@ func TestDescribeInstanceAttribute_FoundInStoppedStore(t *testing.T) {
 		stoppedStore: store,
 	}
 
-	out, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+	out, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String(id),
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
 	}, owner)
@@ -1002,7 +1003,7 @@ func TestDescribeInstanceAttribute_NotFound(t *testing.T) {
 		vmMgr:        mgrWith(map[string]*vm.VM{}),
 		stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}},
 	}
-	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String("i-ghost"),
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
 	}, utils.GlobalAccountID)
@@ -1015,7 +1016,7 @@ func TestDescribeInstanceAttribute_HiddenForOtherAccount(t *testing.T) {
 	v := &vm.VM{ID: id, InstanceType: "t3.micro", AccountID: "999988887777"}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
 
-	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String(id),
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
 	}, "111122223333")
@@ -1069,7 +1070,7 @@ func TestDescribeInstanceAttribute_DisableApiTermination(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{tc.instance.ID: tc.instance})}
-			out, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+			out, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 				InstanceId: aws.String(tc.instance.ID),
 				Attribute:  aws.String(ec2.InstanceAttributeNameDisableApiTermination),
 			}, owner)
@@ -1082,7 +1083,7 @@ func TestDescribeInstanceAttribute_DisableApiTermination(t *testing.T) {
 
 func TestDescribeStoppedInstances_NilStore(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.DescribeStoppedInstances(&ec2.DescribeInstancesInput{}, "")
+	_, err := svc.DescribeStoppedInstances(context.Background(), &ec2.DescribeInstancesInput{}, "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -1104,7 +1105,7 @@ func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	out, err := svc.DescribeStoppedInstances(&ec2.DescribeInstancesInput{}, owner)
+	out, err := svc.DescribeStoppedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-stop1", *out.Reservations[0].Instances[0].InstanceId)
@@ -1112,7 +1113,7 @@ func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
 
 func TestDescribeTerminatedInstances_NilStore(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.DescribeTerminatedInstances(&ec2.DescribeInstancesInput{}, "")
+	_, err := svc.DescribeTerminatedInstances(context.Background(), &ec2.DescribeInstancesInput{}, "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -1134,7 +1135,7 @@ func TestDescribeTerminatedInstances_HappyPath(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	out, err := svc.DescribeTerminatedInstances(&ec2.DescribeInstancesInput{}, owner)
+	out, err := svc.DescribeTerminatedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-term1", *out.Reservations[0].Instances[0].InstanceId)
@@ -1161,7 +1162,7 @@ func TestIsInstanceVisible(t *testing.T) {
 
 func TestModifyInstanceAttribute_MissingInstanceID(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{}, "acc")
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -1169,7 +1170,7 @@ func TestModifyInstanceAttribute_MissingInstanceID(t *testing.T) {
 func TestModifyInstanceAttribute_SourceDestCheckTrueNoOp(t *testing.T) {
 	// SourceDestCheck=true succeeds without touching KV or requiring stopped state.
 	svc := &InstanceServiceImpl{}
-	out, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	out, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:      aws.String("i-sdc-001"),
 		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	}, "acc")
@@ -1180,7 +1181,7 @@ func TestModifyInstanceAttribute_SourceDestCheckTrueNoOp(t *testing.T) {
 func TestModifyInstanceAttribute_SourceDestCheckFalseUnsupported(t *testing.T) {
 	// Disabling is unsupported: OVN port security always enforces the check.
 	svc := &InstanceServiceImpl{}
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:      aws.String("i-sdc-001"),
 		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
 	}, "acc")
@@ -1190,7 +1191,7 @@ func TestModifyInstanceAttribute_SourceDestCheckFalseUnsupported(t *testing.T) {
 
 func TestModifyInstanceAttribute_NilStore(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String("i-1"),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
 	}, "acc")
@@ -1202,7 +1203,7 @@ func TestModifyInstanceAttribute_InstanceNotFound(t *testing.T) {
 	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String("i-missing"),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
 	}, "acc")
@@ -1217,7 +1218,7 @@ func TestModifyInstanceAttribute_NotStopped(t *testing.T) {
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String(id),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
 	}, "acc")
@@ -1232,7 +1233,7 @@ func TestModifyInstanceAttribute_NotVisible(t *testing.T) {
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String(id),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
 	}, "other-acc")
@@ -1257,7 +1258,7 @@ func TestModifyInstanceAttribute_ChangeInstanceType(t *testing.T) {
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String(id),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
 	}, "acc")
@@ -1277,7 +1278,7 @@ func TestModifyInstanceAttribute_ChangeInstanceType_EmptyValue(t *testing.T) {
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String(id),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("")},
 	}, "acc")
@@ -1292,7 +1293,7 @@ func TestModifyInstanceAttribute_ChangeInstanceType_NilEmbeddedInstance(t *testi
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String(id),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
 	}, "acc")
@@ -1316,7 +1317,7 @@ func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
 	newContent := "#!/bin/bash"
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId: aws.String(id),
 		UserData:   &ec2.BlobAttributeValue{Value: []byte(newContent)},
 	}, "acc")
@@ -1348,7 +1349,7 @@ func TestModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String(id),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.micro")},
 	}, "acc")
@@ -1379,7 +1380,7 @@ func TestModifyInstanceAttribute_DisableApiTermination_Running(t *testing.T) {
 			})
 			svc := &InstanceServiceImpl{vmMgr: mgr}
 
-			_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+			_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 				InstanceId:            aws.String(id),
 				DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(tc.setTo)},
 			}, owner)
@@ -1400,7 +1401,7 @@ func TestModifyInstanceAttribute_DisableApiTermination_Running_NotVisible(t *tes
 	})
 	svc := &InstanceServiceImpl{vmMgr: mgr}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:            aws.String(id),
 		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	}, "other-acc")
@@ -1422,7 +1423,7 @@ func TestModifyInstanceAttribute_DisableApiTermination_Stopped(t *testing.T) {
 		stoppedStore: store,
 	}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:            aws.String(id),
 		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	}, owner)
@@ -1454,7 +1455,7 @@ func TestModifyInstanceAttribute_WriteError(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String(id),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
 	}, "acc")
@@ -1470,7 +1471,7 @@ type fakeVolumeDeleter struct {
 	err     error
 }
 
-func (f *fakeVolumeDeleter) DeleteVolume(input *ec2.DeleteVolumeInput, _ string) (*ec2.DeleteVolumeOutput, error) {
+func (f *fakeVolumeDeleter) DeleteVolume(_ context.Context, input *ec2.DeleteVolumeInput, _ string) (*ec2.DeleteVolumeOutput, error) {
 	id := aws.StringValue(input.VolumeId)
 	f.calls = append(f.calls, id)
 	if f.err != nil {
@@ -1485,7 +1486,7 @@ type fakeENIDeleter struct {
 	err   error
 }
 
-func (f *fakeENIDeleter) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
+func (f *fakeENIDeleter) DeleteNetworkInterface(_ context.Context, input *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	f.calls = append(f.calls, aws.StringValue(input.NetworkInterfaceId))
 	if f.err != nil {
 		return nil, f.err
@@ -1500,7 +1501,7 @@ type fakePublicIPReleaser struct {
 	err      error
 }
 
-func (f *fakePublicIPReleaser) ReleaseIP(pool, ip, ownerENIID string) error {
+func (f *fakePublicIPReleaser) ReleaseIP(_ context.Context, pool, ip, ownerENIID string) error {
 	f.pool = pool
 	f.ip = ip
 	f.ownerENI = ownerENIID
@@ -1532,14 +1533,14 @@ func embeddedNATS(t *testing.T) *nats.Conn {
 
 func TestTerminateStoppedInstance_MissingInstanceID(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestTerminateStoppedInstance_NilStore(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: "i-1"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -1548,7 +1549,7 @@ func TestTerminateStoppedInstance_LoadError(t *testing.T) {
 	store := &fakeStoppedStore{loadErr: errors.New("kv down")}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: "i-1"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -1557,7 +1558,7 @@ func TestTerminateStoppedInstance_NotFound(t *testing.T) {
 	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -1569,7 +1570,7 @@ func TestTerminateStoppedInstance_NotStopped(t *testing.T) {
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
@@ -1581,7 +1582,7 @@ func TestTerminateStoppedInstance_NotVisible(t *testing.T) {
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "other-acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "other-acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -1601,7 +1602,7 @@ func TestTerminateStoppedInstance_TerminationProtected(t *testing.T) {
 	vd := &fakeVolumeDeleter{}
 	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorOperationNotPermitted, err.Error())
 
@@ -1617,7 +1618,7 @@ func TestTerminateStoppedInstance_HappyPath(t *testing.T) {
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	out, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Equal(t, "terminated", out.Status)
@@ -1636,7 +1637,7 @@ func TestTerminateStoppedInstance_CentralTagsDeleted(t *testing.T) {
 	tw := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store, tagWriter: tw}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, tw.deleteCalls)
@@ -1652,7 +1653,7 @@ func TestTerminateStoppedInstance_CentralTagDeleteFailureIsBestEffort(t *testing
 	tw := &fakeTagWriter{err: errors.New("s3 down")}
 	svc := &InstanceServiceImpl{stoppedStore: store, tagWriter: tw}
 
-	out, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err, "terminate already succeeded; central delete failure must not surface")
 	assert.Equal(t, "terminated", out.Status)
 	assert.Contains(t, store.deletedStopped, id)
@@ -1669,7 +1670,7 @@ func TestTerminateStoppedInstance_ProtectedSkipsCentralTagDelete(t *testing.T) {
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store, tagWriter: tw}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Zero(t, tw.deleteCalls, "central tags must survive a rejected terminate")
 }
@@ -1682,7 +1683,7 @@ func TestTerminateStoppedInstance_WriteTerminatedError_Aborts(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, store.deletedStopped, "stopped delete must not run when terminated write fails")
@@ -1696,7 +1697,7 @@ func TestTerminateStoppedInstance_RetriesStoppedDelete(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 	assert.Equal(t, 2, store.deleteAttempts, "first delete fails, retry succeeds")
 	assert.Contains(t, store.deletedStopped, id)
@@ -1713,7 +1714,7 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 	vd := &fakeVolumeDeleter{}
 	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"vol-user-001"}, vd.calls, "only DeleteOnTermination=true volumes deleted")
 	assert.Equal(t, []string{"vol-user-001"}, vd.deleted)
@@ -1728,7 +1729,7 @@ func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
 	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err, "missing VolumeDeleter must not abort termination")
 	require.NotNil(t, store.wroteTerminated[id])
 }
@@ -1754,7 +1755,7 @@ func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
 
 	svc := &InstanceServiceImpl{stoppedStore: store, natsConn: nc}
 
-	_, err = svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err = svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"vol-efi-001"}, ebsDeleted)
 }
@@ -1778,7 +1779,7 @@ func TestTerminateStoppedInstance_PublicIPReleased(t *testing.T) {
 	pr := &fakePublicIPReleaser{}
 	svc := &InstanceServiceImpl{stoppedStore: store, ipReleaser: pr}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 	assert.Equal(t, "pool-a", pr.pool)
 	assert.Equal(t, "203.0.113.5", pr.ip)
@@ -1792,7 +1793,7 @@ func TestTerminateStoppedInstance_ENIDeleted(t *testing.T) {
 	ec := &fakeENICreator{}
 	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
 
-	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 	// Detach must precede the delete so a stale in-use attachment can't strand
 	// the ENI record after the instance is gone.
@@ -1809,7 +1810,7 @@ func TestTerminateStoppedInstance_ENIDeleteNotFoundTolerated(t *testing.T) {
 	ed := &fakeENIDeleter{err: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)}
 	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: &fakeENICreator{}}
 
-	out, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 	assert.Equal(t, "terminated", out.Status)
 	assert.Equal(t, []string{"eni-gone"}, ed.calls)
@@ -1840,21 +1841,21 @@ func (f *fakeGPUClaimer) Release(instanceID string) error {
 
 func TestStartStoppedInstance_MissingInstanceID(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestStartStoppedInstance_NilStore(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
 func TestStartStoppedInstance_NilResourceMgr(t *testing.T) {
 	svc := &InstanceServiceImpl{stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}}}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -1864,7 +1865,7 @@ func TestStartStoppedInstance_NilVMMgr(t *testing.T) {
 		stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}},
 		resourceMgr:  &fakeResourceCapacityProvider{},
 	}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -1876,7 +1877,7 @@ func TestStartStoppedInstance_LoadError(t *testing.T) {
 		resourceMgr:  &fakeResourceCapacityProvider{},
 		vmMgr:        vm.NewManager(),
 	}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -1888,7 +1889,7 @@ func TestStartStoppedInstance_NotFound(t *testing.T) {
 		resourceMgr:  &fakeResourceCapacityProvider{},
 		vmMgr:        vm.NewManager(),
 	}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -1903,7 +1904,7 @@ func TestStartStoppedInstance_NotStopped(t *testing.T) {
 		resourceMgr:  &fakeResourceCapacityProvider{},
 		vmMgr:        vm.NewManager(),
 	}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
@@ -1918,7 +1919,7 @@ func TestStartStoppedInstance_NotVisible(t *testing.T) {
 		resourceMgr:  &fakeResourceCapacityProvider{},
 		vmMgr:        vm.NewManager(),
 	}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "other-acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "other-acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 
@@ -1937,7 +1938,7 @@ func TestStartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 		resourceMgr:  prov,
 		vmMgr:        vm.NewManager(),
 	}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 	assert.Empty(t, prov.allocated, "no allocation should occur for unknown type")
@@ -1960,7 +1961,7 @@ func TestStartStoppedInstance_AllocateFails(t *testing.T) {
 		resourceMgr:  prov,
 		vmMgr:        vm.NewManager(),
 	}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -1988,7 +1989,7 @@ func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
 		vmMgr:        mgr,
 		gpuClaimer:   claimer,
 	}
-	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "acc")
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 
@@ -2006,7 +2007,7 @@ type fakeAMILoader struct {
 	err  error
 }
 
-func (f *fakeAMILoader) GetAMIConfig(id string) (viperblock.AMIMetadata, error) {
+func (f *fakeAMILoader) GetAMIConfig(_ context.Context, id string) (viperblock.AMIMetadata, error) {
 	if f.err != nil {
 		return viperblock.AMIMetadata{}, f.err
 	}
@@ -2020,7 +2021,7 @@ type fakeKeyValidator struct {
 	err error
 }
 
-func (f *fakeKeyValidator) ValidateKeyPairExists(_ string, _ string) error {
+func (f *fakeKeyValidator) ValidateKeyPairExists(_ context.Context, _ string, _ string) error {
 	return f.err
 }
 
@@ -2031,21 +2032,21 @@ func defaultPrepareInstanceTypes() (map[string]*ec2.InstanceTypeInfo, *ec2.Insta
 
 func TestPrepareRunInstances_MissingAccountID(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{InstanceType: aws.String("t3.micro")}, "", "")
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{InstanceType: aws.String("t3.micro")}, "", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
 func TestPrepareRunInstances_MissingInstanceType(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{}, "acc", "")
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestPrepareRunInstances_InvalidInstanceType(t *testing.T) {
 	svc := &InstanceServiceImpl{instanceTypes: map[string]*ec2.InstanceTypeInfo{}}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("unknown.type"),
 	}, "acc", "")
 	require.Error(t, err)
@@ -2055,7 +2056,7 @@ func TestPrepareRunInstances_InvalidInstanceType(t *testing.T) {
 func TestPrepareRunInstances_MissingImageID(t *testing.T) {
 	types, _ := defaultPrepareInstanceTypes()
 	svc := &InstanceServiceImpl{instanceTypes: types}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 	}, "acc", "")
 	require.Error(t, err)
@@ -2065,7 +2066,7 @@ func TestPrepareRunInstances_MissingImageID(t *testing.T) {
 func TestPrepareRunInstances_NilAMILoader(t *testing.T) {
 	types, _ := defaultPrepareInstanceTypes()
 	svc := &InstanceServiceImpl{instanceTypes: types}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 	}, "acc", "")
@@ -2079,7 +2080,7 @@ func TestPrepareRunInstances_AMINotFound(t *testing.T) {
 		instanceTypes: types,
 		amiLoader:     &fakeAMILoader{err: errors.New("missing")},
 	}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-missing"),
 	}, "acc", "")
@@ -2095,7 +2096,7 @@ func TestPrepareRunInstances_AMINotOwnedByCaller(t *testing.T) {
 			"ami-other": {ImageOwnerAlias: "999988887777"},
 		}},
 	}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-other"),
 	}, "111122223333", "")
@@ -2112,7 +2113,7 @@ func TestPrepareRunInstances_KeyPairNotFound(t *testing.T) {
 		}},
 		keyValidator: &fakeKeyValidator{err: errors.New("no key")},
 	}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		KeyName:      aws.String("nope"),
@@ -2137,7 +2138,7 @@ func TestPrepareRunInstances_InsufficientCapacity(t *testing.T) {
 		}},
 		resourceMgr: prov,
 	}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -2161,7 +2162,7 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 		}},
 		resourceMgr: prov,
 	}
-	reservation, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	reservation, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(2),
@@ -2196,7 +2197,7 @@ func TestPrepareRunInstances_PersistsIamInstanceProfile(t *testing.T) {
 		resourceMgr: prov,
 	}
 	const profileARN = "arn:aws:iam::000000000000:instance-profile/spinifex-eks-server"
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType:       aws.String("t3.micro"),
 		ImageId:            aws.String("ami-1"),
 		MinCount:           aws.Int64(2),
@@ -2229,7 +2230,7 @@ func TestPrepareRunInstances_ConsumesReservation(t *testing.T) {
 		}},
 		resourceMgr: prov,
 	}
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(2),
@@ -2260,7 +2261,7 @@ func TestPrepareRunInstances_ReservationCapsNoSpill(t *testing.T) {
 		}},
 		resourceMgr: prov,
 	}
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -2287,7 +2288,7 @@ func TestPrepareRunInstances_ReservationExceeded(t *testing.T) {
 		}},
 		resourceMgr: prov,
 	}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(2),
@@ -2318,7 +2319,7 @@ func TestPrepareRunInstances_ReservationRollbackNoGeneralPoolLeak(t *testing.T) 
 		resourceMgr: prov,
 		eniCreator:  eni,
 	}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		SubnetId:     aws.String("subnet-1"),
@@ -2349,7 +2350,7 @@ func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
 			}},
 			resourceMgr: prov,
 		}
-		reservation, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		reservation, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 			InstanceType: aws.String("t3.micro"),
 			ImageId:      aws.String("ami-1"),
 			MinCount:     aws.Int64(3),
@@ -2381,7 +2382,7 @@ func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
 		}
 		svc, _ := prepareSvcWithENI(t, eni, nil)
 
-		reservation, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		reservation, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 			InstanceType: aws.String("t3.micro"),
 			ImageId:      aws.String("ami-1"),
 			SubnetId:     aws.String("subnet-1"),
@@ -2425,7 +2426,7 @@ func TestPrepareRunInstances_BootModePropagated(t *testing.T) {
 				}},
 				resourceMgr: prov,
 			}
-			_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 				InstanceType: aws.String("t3.micro"),
 				ImageId:      aws.String("ami-1"),
 				MinCount:     aws.Int64(1),
@@ -2443,7 +2444,7 @@ func TestStartInstance_NotStopped(t *testing.T) {
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
 	v, _ := mgr.Get(id)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
-	err := svc.StartInstance(v, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.StartInstance(context.Background(), v, spxtypes.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
@@ -2453,7 +2454,7 @@ func TestStopOrTerminateInstance_TerminateIdempotent(t *testing.T) {
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateShuttingDown}})
 	v, _ := mgr.Get(id)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
-	err := svc.StopOrTerminateInstance(v, spxtypes.EC2InstanceCommand{
+	err := svc.StopOrTerminateInstance(context.Background(), v, spxtypes.EC2InstanceCommand{
 		ID:         id,
 		Attributes: spxtypes.EC2CommandAttributes{TerminateInstance: true},
 	})
@@ -2465,7 +2466,7 @@ func TestStopOrTerminateInstance_InvalidTransition(t *testing.T) {
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped}})
 	v, _ := mgr.Get(id)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
-	err := svc.StopOrTerminateInstance(v, spxtypes.EC2InstanceCommand{
+	err := svc.StopOrTerminateInstance(context.Background(), v, spxtypes.EC2InstanceCommand{
 		ID:         id,
 		Attributes: spxtypes.EC2CommandAttributes{StopInstance: true},
 	})
@@ -2495,7 +2496,7 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 			v, _ := mgr.Get(id)
 			svc := &InstanceServiceImpl{vmMgr: mgr}
 
-			err := svc.StopOrTerminateInstance(v, spxtypes.EC2InstanceCommand{ID: id, Attributes: tc.attrs})
+			err := svc.StopOrTerminateInstance(context.Background(), v, spxtypes.EC2InstanceCommand{ID: id, Attributes: tc.attrs})
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -2523,21 +2524,21 @@ type fakeENICreator struct {
 	detachCalls     int
 }
 
-func (f *fakeENICreator) GetDefaultSubnet(_ string) (*SubnetInfo, error) {
+func (f *fakeENICreator) GetDefaultSubnet(_ context.Context, _ string) (*SubnetInfo, error) {
 	if f.defaultSubnet == nil {
 		return nil, errors.New("no default")
 	}
 	return f.defaultSubnet, nil
 }
 
-func (f *fakeENICreator) GetSubnet(_, _ string) (*SubnetInfo, error) {
+func (f *fakeENICreator) GetSubnet(_ context.Context, _, _ string) (*SubnetInfo, error) {
 	if f.subnet == nil {
 		return nil, errors.New("no subnet")
 	}
 	return f.subnet, nil
 }
 
-func (f *fakeENICreator) GetENI(_, eniID string) (*ENIInfo, error) {
+func (f *fakeENICreator) GetENI(_ context.Context, _, eniID string) (*ENIInfo, error) {
 	if f.getENIErr != nil {
 		return nil, f.getENIErr
 	}
@@ -2551,7 +2552,7 @@ func (f *fakeENICreator) GetENI(_, eniID string) (*ENIInfo, error) {
 	return info, nil
 }
 
-func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
+func (f *fakeENICreator) CreateNetworkInterface(_ context.Context, _ *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	f.createCalls++
 	if f.createErr != nil && (f.createErrOnCall == 0 || f.createErrOnCall == f.createCalls) {
 		return nil, f.createErr
@@ -2559,7 +2560,7 @@ func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInp
 	return f.createOut, nil
 }
 
-func (f *fakeENICreator) AttachENI(_, _, _ string, _ int64) (string, error) {
+func (f *fakeENICreator) AttachENI(_ context.Context, _, _, _ string, _ int64) (string, error) {
 	f.attachCalls++
 	if f.attachErr != nil {
 		return "", f.attachErr
@@ -2567,12 +2568,12 @@ func (f *fakeENICreator) AttachENI(_, _, _ string, _ int64) (string, error) {
 	return "attached", nil
 }
 
-func (f *fakeENICreator) DetachENI(_, _ string) error {
+func (f *fakeENICreator) DetachENI(_ context.Context, _, _ string) error {
 	f.detachCalls++
 	return nil
 }
 
-func (f *fakeENICreator) UpdateENIPublicIP(_, _, publicIP, _ string) error {
+func (f *fakeENICreator) UpdateENIPublicIP(_ context.Context, _, _, publicIP, _ string) error {
 	f.updateCalls++
 	if publicIP == "" {
 		f.clearCalls++
@@ -2586,7 +2587,7 @@ type fakeIPAllocator struct {
 	err      error
 }
 
-func (f *fakeIPAllocator) AllocateIP(_, _, _, _, _, _ string) (string, string, error) {
+func (f *fakeIPAllocator) AllocateIP(_ context.Context, _, _, _, _, _, _ string) (string, string, error) {
 	if f.err != nil {
 		return "", "", f.err
 	}
@@ -2630,7 +2631,7 @@ func TestPrepareRunInstances_DefaultSubnetResolved(t *testing.T) {
 	}
 	svc, _ := prepareSvcWithENI(t, eni, nil)
 
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -2691,7 +2692,7 @@ func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
 				}
 			}
 
-			_, instances, _, err := svc.PrepareRunInstances(input, "acc", "")
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), input, "acc", "")
 			require.NoError(t, err)
 			require.Len(t, instances, 1)
 			if tc.wantPublic {
@@ -2752,7 +2753,7 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = delSub.Unsubscribe() }()
 
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		SubnetId:     aws.String("subnet-1"),
@@ -2821,7 +2822,7 @@ func TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch(t *testing.T) {
 	svc, prov := prepareSvcWithENI(t, eni, ipam)
 	svc.eniDeleter = deleter
 
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		SubnetId:     aws.String("subnet-1"),
@@ -2856,7 +2857,7 @@ func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
 	eni := &fakeENICreator{createErr: errors.New("boom")}
 	svc, prov := prepareSvcWithENI(t, eni, nil)
 
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		SubnetId:     aws.String("subnet-1"),
@@ -2889,7 +2890,7 @@ func TestPrepareRunInstances_ENIAttachFailureRollsBack(t *testing.T) {
 	svc, prov := prepareSvcWithENI(t, eni, nil)
 	svc.eniDeleter = deleter
 
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		SubnetId:     aws.String("subnet-1"),
@@ -2920,7 +2921,7 @@ func TestPrepareRunInstances_NetworkInterfaceLifted(t *testing.T) {
 	}
 	svc, _ := prepareSvcWithENI(t, eni, nil)
 
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -2951,7 +2952,7 @@ func TestPrepareRunInstances_PlacementGroup(t *testing.T) {
 		}},
 		resourceMgr: prov,
 	}
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -2978,7 +2979,7 @@ func TestPrepareRunInstances_AllocateFailsMidLoop(t *testing.T) {
 		}},
 		resourceMgr: prov,
 	}
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -3000,7 +3001,7 @@ func TestStartInstance_AllocateFails(t *testing.T) {
 		allocateErr:   errors.New("no capacity"),
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgr, resourceMgr: prov}
-	err := svc.StartInstance(v, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.StartInstance(context.Background(), v, spxtypes.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -3019,7 +3020,7 @@ func TestStartInstance_ErrorStateStartable(t *testing.T) {
 		allocateErr:   errors.New("no capacity"),
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgr, resourceMgr: prov}
-	err := svc.StartInstance(v, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.StartInstance(context.Background(), v, spxtypes.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -3028,7 +3029,7 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	id := "i-missing"
 	mgr := mgrWith(nil)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
-	err := svc.RebootInstance(&vm.VM{ID: id}, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.RebootInstance(context.Background(), &vm.VM{ID: id}, spxtypes.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -3043,7 +3044,7 @@ func TestStartInstance_NotFound(t *testing.T) {
 		resourceMgr: &fakeResourceCapacityProvider{},
 	}
 	instance := &vm.VM{ID: id, Status: vm.StateStopped, InstanceType: "unknown"}
-	err := svc.StartInstance(instance, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.StartInstance(context.Background(), instance, spxtypes.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -3052,7 +3053,7 @@ func TestStartInstance_NotFound(t *testing.T) {
 // (sync convenience method) error propagation when PrepareRunInstances rejects.
 func TestRunInstances_PrepareError(t *testing.T) {
 	svc := &InstanceServiceImpl{}
-	_, err := svc.RunInstances(&ec2.RunInstancesInput{}, "acc")
+	_, err := svc.RunInstances(context.Background(), &ec2.RunInstancesInput{}, "acc")
 	require.Error(t, err)
 }
 
@@ -3081,7 +3082,7 @@ func runningVM(id, owner string) *vm.VM {
 
 func TestDescribeInstanceStatus_Empty(t *testing.T) {
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{})
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, utils.GlobalAccountID)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, utils.GlobalAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Empty(t, out.InstanceStatuses)
@@ -3092,7 +3093,7 @@ func TestDescribeInstanceStatus_RunningInstance(t *testing.T) {
 	v := runningVM("i-aaa", owner)
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 
@@ -3111,7 +3112,7 @@ func TestDescribeInstanceStatus_AccountFilteringHidesOtherTenant(t *testing.T) {
 	v := runningVM("i-other", "999988887777")
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, "111122223333")
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, "111122223333")
 	require.NoError(t, err)
 	assert.Empty(t, out.InstanceStatuses)
 }
@@ -3122,7 +3123,7 @@ func TestDescribeInstanceStatus_StoppedExcludedByDefault(t *testing.T) {
 	stopped.Status = vm.StateStopped
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{stopped.ID: stopped})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
 	require.NoError(t, err)
 	assert.Empty(t, out.InstanceStatuses)
 }
@@ -3133,7 +3134,7 @@ func TestDescribeInstanceStatus_IncludeAllSurfacesPending(t *testing.T) {
 	pend.Status = vm.StatePending
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{pend.ID: pend})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		IncludeAllInstances: aws.Bool(true),
 	}, owner)
 	require.NoError(t, err)
@@ -3149,7 +3150,7 @@ func TestDescribeInstanceStatus_IncludeAllSurfacesStopped(t *testing.T) {
 	stopped.Status = vm.StateStopped
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{stopped.ID: stopped})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		IncludeAllInstances: aws.Bool(true),
 	}, owner)
 	require.NoError(t, err)
@@ -3165,7 +3166,7 @@ func TestDescribeInstanceStatus_TerminatedNeverReturned(t *testing.T) {
 	term.Status = vm.StateTerminated
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{term.ID: term})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		IncludeAllInstances: aws.Bool(true),
 	}, owner)
 	require.NoError(t, err)
@@ -3178,7 +3179,7 @@ func TestDescribeInstanceStatus_ErrorStateNeverReturned(t *testing.T) {
 	errVM.Status = vm.StateError
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{errVM.ID: errVM})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		IncludeAllInstances: aws.Bool(true),
 	}, owner)
 	require.NoError(t, err)
@@ -3191,7 +3192,7 @@ func TestDescribeInstanceStatus_InstanceIDFilter(t *testing.T) {
 	drop := runningVM("i-drop", owner)
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{keep.ID: keep, drop.ID: drop})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		InstanceIds: []*string{aws.String("i-keep")},
 	}, owner)
 	require.NoError(t, err)
@@ -3201,7 +3202,7 @@ func TestDescribeInstanceStatus_InstanceIDFilter(t *testing.T) {
 
 func TestDescribeInstanceStatus_MalformedInstanceID(t *testing.T) {
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{})
-	_, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	_, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		InstanceIds: []*string{aws.String("not-an-id")},
 	}, utils.GlobalAccountID)
 	require.Error(t, err)
@@ -3213,7 +3214,7 @@ func TestDescribeInstanceStatus_UnknownFilter(t *testing.T) {
 	v := runningVM("i-aaa", owner)
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
 
-	_, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	_, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		Filters: []*ec2.Filter{{
 			Name:   aws.String("event.code"),
 			Values: []*string{aws.String("system-reboot")},
@@ -3230,7 +3231,7 @@ func TestDescribeInstanceStatus_StateNameFilter(t *testing.T) {
 	stop.Status = vm.StateStopped
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{run.ID: run, stop.ID: stop})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		IncludeAllInstances: aws.Bool(true),
 		Filters: []*ec2.Filter{{
 			Name:   aws.String("instance-state-name"),
@@ -3247,7 +3248,7 @@ func TestDescribeInstanceStatus_AvailabilityZoneFilter(t *testing.T) {
 	v := runningVM("i-aaa", owner)
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		Filters: []*ec2.Filter{{
 			Name:   aws.String("availability-zone"),
 			Values: []*string{aws.String("az-a")},
@@ -3256,7 +3257,7 @@ func TestDescribeInstanceStatus_AvailabilityZoneFilter(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 
-	out, err = svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	out, err = svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		Filters: []*ec2.Filter{{
 			Name:   aws.String("availability-zone"),
 			Values: []*string{aws.String("az-b")},
@@ -3273,7 +3274,7 @@ func TestDescribeInstanceStatus_TagFilter(t *testing.T) {
 	plain := runningVM("i-plain", owner)
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{tagged.ID: tagged, plain.ID: plain})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		Filters: []*ec2.Filter{{
 			Name:   aws.String("tag:Name"),
 			Values: []*string{aws.String("foo")},
@@ -3292,7 +3293,7 @@ func TestDescribeInstanceStatus_QMPUnresponsiveImpaired(t *testing.T) {
 	v.Health.ImpairedSince = since
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 
@@ -3313,7 +3314,7 @@ func TestDescribeInstanceStatus_BelowThresholdStaysOK(t *testing.T) {
 	v.Health.QMPConsecutiveFailures = vm.QMPMaxConsecutiveFailures - 1
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "ok", *out.InstanceStatuses[0].InstanceStatus.Status)
@@ -3327,7 +3328,7 @@ func TestDescribeInstanceStatus_RecentLaunchInitializing(t *testing.T) {
 	v.Instance.LaunchTime = &now
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "initializing", *out.InstanceStatuses[0].InstanceStatus.Status)
@@ -3341,7 +3342,7 @@ func TestDescribeInstanceStatus_PastGraceOK(t *testing.T) {
 	v.Instance.LaunchTime = &old
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "ok", *out.InstanceStatuses[0].InstanceStatus.Status)
@@ -3356,7 +3357,7 @@ func TestDescribeInstanceStatus_MemoryPressureSystemImpaired(t *testing.T) {
 		resourceMgr: &fakeResourceCapacityProvider{memPressure: true},
 	}
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 
@@ -3376,7 +3377,7 @@ func TestDescribeInstanceStatus_NoPressureSystemOK(t *testing.T) {
 		resourceMgr: &fakeResourceCapacityProvider{memPressure: false},
 	}
 
-	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "ok", *out.InstanceStatuses[0].SystemStatus.Status)
@@ -3428,7 +3429,7 @@ func TestPrepareRunInstances_PreCreatedENIAttachedSkipsAutoCreate(t *testing.T) 
 	}
 	svc, _ := prepareSvcWithENI(t, eni, nil)
 
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -3457,7 +3458,7 @@ func TestPrepareRunInstances_PreCreatedENIInUseRejected(t *testing.T) {
 	}
 	svc, _ := prepareSvcWithENI(t, eni, nil)
 
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -3478,7 +3479,7 @@ func TestPrepareRunInstances_PreCreatedENILookupErrorSurfaced(t *testing.T) {
 	}
 	svc, _ := prepareSvcWithENI(t, eni, nil)
 
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -3509,7 +3510,7 @@ func TestPrepareRunInstances_PreCreatedENIAttachErrorSurfaced(t *testing.T) {
 	}
 	svc, _ := prepareSvcWithENI(t, eni, nil)
 
-	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),

@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -194,7 +195,7 @@ func TestValidateCopyImageInput(t *testing.T) {
 func TestCopyImage_GatewayValidationFailureReturnsEarly(t *testing.T) {
 	// nil natsConn is fine: validation rejects the input before any NATS
 	// round-trip is attempted, so we exercise the early-exit path.
-	_, err := CopyImage(&ec2.CopyImageInput{}, nil, testCopyImageRegion, "000000000001")
+	_, err := CopyImage(context.Background(), &ec2.CopyImageInput{}, nil, testCopyImageRegion, "000000000001")
 	assert.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }

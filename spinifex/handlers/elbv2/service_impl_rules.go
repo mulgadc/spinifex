@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,7 +32,7 @@ var allowedHTTPMethods = map[string]struct{}{
 	"CONNECT": {}, "OPTIONS": {}, "TRACE": {}, "PATCH": {},
 }
 
-func (s *ELBv2ServiceImpl) CreateRule(input *elbv2.CreateRuleInput, accountID string) (*elbv2.CreateRuleOutput, error) {
+func (s *ELBv2ServiceImpl) CreateRule(ctx context.Context, input *elbv2.CreateRuleInput, accountID string) (*elbv2.CreateRuleOutput, error) {
 	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -41,7 +42,7 @@ func (s *ELBv2ServiceImpl) CreateRule(input *elbv2.CreateRuleInput, accountID st
 
 	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
 	if err != nil {
-		slog.Error("CreateRule: failed to get listener", "arn", *input.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "CreateRule: failed to get listener", "arn", *input.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if listener == nil || listener.AccountID != accountID {
@@ -65,7 +66,7 @@ func (s *ELBv2ServiceImpl) CreateRule(input *elbv2.CreateRuleInput, accountID st
 
 	existing, err := s.store.ListRulesByListener(listener.ListenerArn)
 	if err != nil {
-		slog.Error("CreateRule: failed to list rules", "listenerArn", listener.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "CreateRule: failed to list rules", "listenerArn", listener.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if len(existing) >= MaxRulesPerListener {
@@ -80,7 +81,7 @@ func (s *ELBv2ServiceImpl) CreateRule(input *elbv2.CreateRuleInput, accountID st
 	ruleID := utils.GenerateResourceID("rule")
 	ruleArn, err := buildRuleArn(listener.ListenerArn, ruleID)
 	if err != nil {
-		slog.Error("CreateRule: failed to build ARN", "listenerArn", listener.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "CreateRule: failed to build ARN", "listenerArn", listener.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -99,29 +100,29 @@ func (s *ELBv2ServiceImpl) CreateRule(input *elbv2.CreateRuleInput, accountID st
 	}
 
 	if err := s.store.PutRule(record); err != nil {
-		slog.Error("CreateRule: failed to persist", "ruleId", ruleID, "err", err)
+		slog.ErrorContext(ctx, "CreateRule: failed to persist", "ruleId", ruleID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if err := s.reloadListenerLB(listener); err != nil {
+	if err := s.reloadListenerLB(ctx, listener); err != nil {
 		return nil, err
 	}
 
-	slog.Info("CreateRule completed", "ruleArn", ruleArn, "listenerArn", listener.ListenerArn, "priority", priority, "accountID", accountID)
+	slog.InfoContext(ctx, "CreateRule completed", "ruleArn", ruleArn, "listenerArn", listener.ListenerArn, "priority", priority, "accountID", accountID)
 
 	return &elbv2.CreateRuleOutput{
 		Rules: []*elbv2.Rule{ruleRecordToSDK(record)},
 	}, nil
 }
 
-func (s *ELBv2ServiceImpl) ModifyRule(input *elbv2.ModifyRuleInput, accountID string) (*elbv2.ModifyRuleOutput, error) {
+func (s *ELBv2ServiceImpl) ModifyRule(ctx context.Context, input *elbv2.ModifyRuleInput, accountID string) (*elbv2.ModifyRuleOutput, error) {
 	if input == nil || input.RuleArn == nil || *input.RuleArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	rule, err := s.store.GetRuleByArn(*input.RuleArn)
 	if err != nil {
-		slog.Error("ModifyRule: failed to get rule", "arn", *input.RuleArn, "err", err)
+		slog.ErrorContext(ctx, "ModifyRule: failed to get rule", "arn", *input.RuleArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if rule == nil || rule.AccountID != accountID {
@@ -130,7 +131,7 @@ func (s *ELBv2ServiceImpl) ModifyRule(input *elbv2.ModifyRuleInput, accountID st
 
 	listener, err := s.store.GetListenerByArn(rule.ListenerArn)
 	if err != nil || listener == nil {
-		slog.Error("ModifyRule: failed to get listener", "arn", rule.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "ModifyRule: failed to get listener", "arn", rule.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -151,29 +152,29 @@ func (s *ELBv2ServiceImpl) ModifyRule(input *elbv2.ModifyRuleInput, accountID st
 	}
 
 	if err := s.store.PutRule(&updated); err != nil {
-		slog.Error("ModifyRule: failed to persist", "ruleId", updated.RuleID, "err", err)
+		slog.ErrorContext(ctx, "ModifyRule: failed to persist", "ruleId", updated.RuleID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if err := s.reloadListenerLB(listener); err != nil {
+	if err := s.reloadListenerLB(ctx, listener); err != nil {
 		return nil, err
 	}
 
-	slog.Info("ModifyRule completed", "ruleArn", updated.RuleArn, "accountID", accountID)
+	slog.InfoContext(ctx, "ModifyRule completed", "ruleArn", updated.RuleArn, "accountID", accountID)
 
 	return &elbv2.ModifyRuleOutput{
 		Rules: []*elbv2.Rule{ruleRecordToSDK(&updated)},
 	}, nil
 }
 
-func (s *ELBv2ServiceImpl) DeleteRule(input *elbv2.DeleteRuleInput, accountID string) (*elbv2.DeleteRuleOutput, error) {
+func (s *ELBv2ServiceImpl) DeleteRule(ctx context.Context, input *elbv2.DeleteRuleInput, accountID string) (*elbv2.DeleteRuleOutput, error) {
 	if input == nil || input.RuleArn == nil || *input.RuleArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	rule, err := s.store.GetRuleByArn(*input.RuleArn)
 	if err != nil {
-		slog.Error("DeleteRule: failed to get rule", "arn", *input.RuleArn, "err", err)
+		slog.ErrorContext(ctx, "DeleteRule: failed to get rule", "arn", *input.RuleArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if rule == nil || rule.AccountID != accountID {
@@ -184,27 +185,27 @@ func (s *ELBv2ServiceImpl) DeleteRule(input *elbv2.DeleteRuleInput, accountID st
 
 	listener, err := s.store.GetListenerByArn(rule.ListenerArn)
 	if err != nil {
-		slog.Error("DeleteRule: failed to get listener for reload", "listenerArn", rule.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "DeleteRule: failed to get listener for reload", "listenerArn", rule.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if err := s.store.DeleteRule(rule.RuleID); err != nil {
-		slog.Error("DeleteRule: failed to delete", "ruleId", rule.RuleID, "err", err)
+		slog.ErrorContext(ctx, "DeleteRule: failed to delete", "ruleId", rule.RuleID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if listener != nil {
-		if err := s.reloadListenerLB(listener); err != nil {
+		if err := s.reloadListenerLB(ctx, listener); err != nil {
 			return nil, err
 		}
 	}
 
-	slog.Info("DeleteRule completed", "ruleArn", *input.RuleArn, "accountID", accountID)
+	slog.InfoContext(ctx, "DeleteRule completed", "ruleArn", *input.RuleArn, "accountID", accountID)
 
 	return &elbv2.DeleteRuleOutput{}, nil
 }
 
-func (s *ELBv2ServiceImpl) DescribeRules(input *elbv2.DescribeRulesInput, accountID string) (*elbv2.DescribeRulesOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeRules(ctx context.Context, input *elbv2.DescribeRulesInput, accountID string) (*elbv2.DescribeRulesOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -215,7 +216,7 @@ func (s *ELBv2ServiceImpl) DescribeRules(input *elbv2.DescribeRulesInput, accoun
 	case input.ListenerArn != nil && *input.ListenerArn != "":
 		listener, err := s.store.GetListenerByArn(*input.ListenerArn)
 		if err != nil {
-			slog.Error("DescribeRules: failed to get listener", "arn", *input.ListenerArn, "err", err)
+			slog.ErrorContext(ctx, "DescribeRules: failed to get listener", "arn", *input.ListenerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if listener == nil || listener.AccountID != accountID {
@@ -223,7 +224,7 @@ func (s *ELBv2ServiceImpl) DescribeRules(input *elbv2.DescribeRulesInput, accoun
 		}
 		rules, err := s.store.ListRulesByListener(listener.ListenerArn)
 		if err != nil {
-			slog.Error("DescribeRules: failed to list", "listenerArn", listener.ListenerArn, "err", err)
+			slog.ErrorContext(ctx, "DescribeRules: failed to list", "listenerArn", listener.ListenerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		for _, r := range rules {
@@ -239,7 +240,7 @@ func (s *ELBv2ServiceImpl) DescribeRules(input *elbv2.DescribeRulesInput, accoun
 			}
 			r, err := s.store.GetRuleByArn(*arnPtr)
 			if err != nil {
-				slog.Error("DescribeRules: failed to get rule", "arn", *arnPtr, "err", err)
+				slog.ErrorContext(ctx, "DescribeRules: failed to get rule", "arn", *arnPtr, "err", err)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			if r == nil {
@@ -247,7 +248,7 @@ func (s *ELBv2ServiceImpl) DescribeRules(input *elbv2.DescribeRulesInput, accoun
 				if lArn, isDefault := listenerArnFromDefaultRuleArn(*arnPtr); isDefault {
 					l, lErr := s.store.GetListenerByArn(lArn)
 					if lErr != nil {
-						slog.Error("DescribeRules: failed to get listener", "arn", lArn, "err", lErr)
+						slog.ErrorContext(ctx, "DescribeRules: failed to get listener", "arn", lArn, "err", lErr)
 						return nil, errors.New(awserrors.ErrorServerInternal)
 					}
 					if l != nil && l.AccountID == accountID {
@@ -270,7 +271,7 @@ func (s *ELBv2ServiceImpl) DescribeRules(input *elbv2.DescribeRulesInput, accoun
 	return out, nil
 }
 
-func (s *ELBv2ServiceImpl) SetRulePriorities(input *elbv2.SetRulePrioritiesInput, accountID string) (*elbv2.SetRulePrioritiesOutput, error) {
+func (s *ELBv2ServiceImpl) SetRulePriorities(ctx context.Context, input *elbv2.SetRulePrioritiesInput, accountID string) (*elbv2.SetRulePrioritiesOutput, error) {
 	if input == nil || len(input.RulePriorities) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -293,7 +294,7 @@ func (s *ELBv2ServiceImpl) SetRulePriorities(input *elbv2.SetRulePrioritiesInput
 		}
 		r, err := s.store.GetRuleByArn(*rp.RuleArn)
 		if err != nil {
-			slog.Error("SetRulePriorities: failed to get rule", "arn", *rp.RuleArn, "err", err)
+			slog.ErrorContext(ctx, "SetRulePriorities: failed to get rule", "arn", *rp.RuleArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if r == nil || r.AccountID != accountID {
@@ -319,7 +320,7 @@ func (s *ELBv2ServiceImpl) SetRulePriorities(input *elbv2.SetRulePrioritiesInput
 	// Detect collisions with rules not being renumbered in this call.
 	all, err := s.store.ListRulesByListener(listenerArn)
 	if err != nil {
-		slog.Error("SetRulePriorities: failed to list rules", "listenerArn", listenerArn, "err", err)
+		slog.ErrorContext(ctx, "SetRulePriorities: failed to list rules", "listenerArn", listenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	renumbering := make(map[string]struct{}, len(pending))
@@ -340,7 +341,7 @@ func (s *ELBv2ServiceImpl) SetRulePriorities(input *elbv2.SetRulePrioritiesInput
 		next := *p.rule
 		next.Priority = p.newPriority
 		if err := s.store.PutRule(&next); err != nil {
-			slog.Error("SetRulePriorities: failed to persist", "ruleId", next.RuleID, "err", err)
+			slog.ErrorContext(ctx, "SetRulePriorities: failed to persist", "ruleId", next.RuleID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		updated = append(updated, ruleRecordToSDK(&next))
@@ -348,29 +349,29 @@ func (s *ELBv2ServiceImpl) SetRulePriorities(input *elbv2.SetRulePrioritiesInput
 
 	listener, err := s.store.GetListenerByArn(listenerArn)
 	if err == nil && listener != nil {
-		if err := s.reloadListenerLB(listener); err != nil {
+		if err := s.reloadListenerLB(ctx, listener); err != nil {
 			return nil, err
 		}
 	}
 
-	slog.Info("SetRulePriorities completed", "count", len(pending), "listenerArn", listenerArn, "accountID", accountID)
+	slog.InfoContext(ctx, "SetRulePriorities completed", "count", len(pending), "listenerArn", listenerArn, "accountID", accountID)
 
 	return &elbv2.SetRulePrioritiesOutput{Rules: updated}, nil
 }
 
 // reloadListenerLB resolves the load balancer that owns the listener and
 // regenerates its HAProxy config.
-func (s *ELBv2ServiceImpl) reloadListenerLB(listener *ListenerRecord) error {
+func (s *ELBv2ServiceImpl) reloadListenerLB(ctx context.Context, listener *ListenerRecord) error {
 	lb, err := s.store.GetLoadBalancerByArn(listener.LoadBalancerArn)
 	if err != nil {
-		slog.Error("rule reload: failed to get LB", "arn", listener.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "rule reload: failed to get LB", "arn", listener.LoadBalancerArn, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil {
 		return nil
 	}
-	if err := s.updateStoredConfig(lb); err != nil {
-		slog.Error("rule reload: failed to update config", "lbArn", lb.LoadBalancerArn, "err", err)
+	if err := s.updateStoredConfig(ctx, lb); err != nil {
+		slog.ErrorContext(ctx, "rule reload: failed to update config", "lbArn", lb.LoadBalancerArn, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil

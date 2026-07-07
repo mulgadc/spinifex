@@ -50,6 +50,7 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
 
+	ctx := r.Context()
 	var output any
 	switch action {
 	case "GetVersion":
@@ -58,12 +59,12 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		output, err = gateway_spx.GetNodes(gw.NATSConn, gw.DiscoverActiveNodes())
+		output, err = gateway_spx.GetNodes(ctx, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx))
 	case "GetVMs":
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		output, err = gateway_spx.GetVMs(gw.NATSConn, gw.DiscoverActiveNodes())
+		output, err = gateway_spx.GetVMs(ctx, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx))
 	case "GetStorageStatus":
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
@@ -77,7 +78,7 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		if imageID == "" {
 			return errors.New(awserrors.ErrorMissingParameter)
 		}
-		output, err = gateway_spx.PromoteImage(gw.NATSConn, imageID, accountID)
+		output, err = gateway_spx.PromoteImage(ctx, gw.NATSConn, imageID, accountID)
 	default:
 		return errors.New(awserrors.ErrorInvalidAction)
 	}

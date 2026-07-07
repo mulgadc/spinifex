@@ -4,6 +4,7 @@ PartOf=spinifex.target
 Before=spinifex-predastore.service spinifex-daemon.service spinifex-awsgw.service spinifex-vpcd.service
 
 [Service]
+EnvironmentFile=-/etc/spinifex/telemetry.env
 Type=simple
 Slice=spinifex-system.slice
 User=spinifex-nats

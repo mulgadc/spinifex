@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -19,7 +20,7 @@ func ValidateLBAgentHeartbeatInput(input *handlers_elbv2.LBAgentHeartbeatInput) 
 }
 
 // LBAgentHeartbeat handles the ELBv2 LBAgentHeartbeat API call.
-func LBAgentHeartbeat(input *handlers_elbv2.LBAgentHeartbeatInput, natsConn *nats.Conn, accountID string) (handlers_elbv2.LBAgentHeartbeatOutput, error) {
+func LBAgentHeartbeat(ctx context.Context, input *handlers_elbv2.LBAgentHeartbeatInput, natsConn *nats.Conn, accountID string) (handlers_elbv2.LBAgentHeartbeatOutput, error) {
 	var output handlers_elbv2.LBAgentHeartbeatOutput
 
 	if err := ValidateLBAgentHeartbeatInput(input); err != nil {
@@ -27,7 +28,7 @@ func LBAgentHeartbeat(input *handlers_elbv2.LBAgentHeartbeatInput, natsConn *nat
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.LBAgentHeartbeat(input, accountID)
+	result, err := svc.LBAgentHeartbeat(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

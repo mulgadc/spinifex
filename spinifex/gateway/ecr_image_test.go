@@ -30,7 +30,7 @@ func newImageGateway(t *testing.T) *GatewayConfig {
 // which require an existing repository — accept writes. Idempotent.
 func seedGatewayRepo(t *testing.T, gw *GatewayConfig, repo string) {
 	t.Helper()
-	require.NoError(t, gw.ECRRegistry.Meta.PutRepo(ecrTestAccount, handlers_ecr.RepoMeta{Name: repo}))
+	require.NoError(t, gw.ECRRegistry.Meta.PutRepo(context.Background(), ecrTestAccount, handlers_ecr.RepoMeta{Name: repo}))
 }
 
 // seedTaggedImage stores a layerless manifest under repo:tag, returning its
@@ -40,7 +40,7 @@ func seedTaggedImage(t *testing.T, gw *GatewayConfig, repo, tag string) string {
 	seedGatewayRepo(t, gw, repo)
 	manifest := fmt.Appendf(nil,
 		`{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","layers":[],"annotations":{"tag":"%s"}}`, tag)
-	digest, err := gw.ECRRegistry.StoreManifest(ecrTestAccount, repo, tag, "application/vnd.docker.distribution.manifest.v2+json", manifest)
+	digest, err := gw.ECRRegistry.StoreManifest(context.Background(), ecrTestAccount, repo, tag, "application/vnd.docker.distribution.manifest.v2+json", manifest)
 	require.NoError(t, err)
 	return digest
 }

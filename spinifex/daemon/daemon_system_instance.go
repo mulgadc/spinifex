@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -136,7 +137,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		// instance.Instance.VpcId (notably onInstanceUpHook's NAT republish)
 		// work uniformly across both paths.
 		if d.vpcService != nil {
-			if eniOut, descErr := d.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+			if eniOut, descErr := d.vpcService.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 				NetworkInterfaceIds: []*string{aws.String(input.ENIID)},
 			}, eniAccountID); descErr == nil && len(eniOut.NetworkInterfaces) > 0 && eniOut.NetworkInterfaces[0].VpcId != nil {
 				ec2Instance.SetVpcId(*eniOut.NetworkInterfaces[0].VpcId)
@@ -175,7 +176,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		}
 	} else if input.SubnetID != "" && d.vpcService != nil {
 		// Auto-create ENI in subnet
-		eniOut, eniErr := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		eniOut, eniErr := d.vpcService.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 			SubnetId:    aws.String(input.SubnetID),
 			Description: aws.String("System interface for " + instance.ID),
 		}, accountID)
@@ -205,7 +206,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	publicIP := ""
 	if input.Scheme == handlers_elbv2.SchemeInternetFacing && d.vpcService != nil && instance.ENIId != "" {
 		if d.eipService != nil {
-			allocOut, allocErr := d.eipService.AllocateAddress(&ec2.AllocateAddressInput{}, eniAccountID)
+			allocOut, allocErr := d.eipService.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, eniAccountID)
 			if allocErr != nil {
 				slog.Error("LaunchSystemInstance: EIP AllocateAddress failed", "instanceId", instance.ID, "err", allocErr)
 				d.cleanupFailedSystemInstance(instance, instanceType)
@@ -215,13 +216,13 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			poolName := aws.StringValue(allocOut.PublicIpv4Pool)
 			allocID := aws.StringValue(allocOut.AllocationId)
 
-			assocOut, assocErr := d.eipService.AssociateAddress(&ec2.AssociateAddressInput{
+			assocOut, assocErr := d.eipService.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
 				AllocationId:       allocOut.AllocationId,
 				NetworkInterfaceId: aws.String(instance.ENIId),
 			}, eniAccountID)
 			if assocErr != nil {
 				slog.Error("LaunchSystemInstance: EIP AssociateAddress failed", "instanceId", instance.ID, "allocationId", allocID, "err", assocErr)
-				if _, relErr := d.eipService.ReleaseAddress(&ec2.ReleaseAddressInput{
+				if _, relErr := d.eipService.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
 					AllocationId: allocOut.AllocationId,
 				}, eniAccountID); relErr != nil {
 					slog.Warn("LaunchSystemInstance: failed to release EIP after associate failure", "allocationId", allocID, "err", relErr)
@@ -251,7 +252,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				region = d.config.Region
 				az = d.config.AZ
 			}
-			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(region, az, handlers_ec2_vpc.PurposeENIPublic, "", instance.ENIId, instance.ID)
+			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(context.Background(), region, az, handlers_ec2_vpc.PurposeENIPublic, "", instance.ENIId, instance.ID)
 			if allocErr != nil {
 				slog.Error("LaunchSystemInstance: failed to allocate public IP for internet-facing ALB", "instanceId", instance.ID, "err", allocErr)
 				d.cleanupFailedSystemInstance(instance, instanceType)
@@ -262,7 +263,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				slog.Warn("LaunchSystemInstance: failed to update ENI with public IP", "eniId", instance.ENIId, "err", updateErr)
 			}
 			vpcID := ""
-			result, descErr := d.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+			result, descErr := d.vpcService.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 				NetworkInterfaceIds: []*string{aws.String(instance.ENIId)},
 			}, eniAccountID)
 			if descErr == nil && len(result.NetworkInterfaces) > 0 && result.NetworkInterfaces[0].VpcId != nil {
@@ -278,7 +279,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 					slog.Warn("LaunchSystemInstance: failed to clear ENI public IP during NAT-failure rollback",
 						"eniId", instance.ENIId, "publicIp", publicIP, "err", clearErr)
 				}
-				if relErr := d.externalIPAM.ReleaseIP(poolName, publicIP, instance.ENIId); relErr != nil {
+				if relErr := d.externalIPAM.ReleaseIP(context.Background(), poolName, publicIP, instance.ENIId); relErr != nil {
 					slog.Warn("LaunchSystemInstance: failed to release public IP during NAT-failure rollback",
 						"publicIp", publicIP, "pool", poolName, "err", relErr)
 				}
@@ -381,7 +382,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 
 	// Launch QEMU VM
 	t1 := time.Now()
-	if err := d.vmMgr.Run(instance); err != nil {
+	if err := d.vmMgr.Run(context.Background(), instance); err != nil {
 		d.cleanupFailedSystemInstance(instance, instanceType)
 		return nil, fmt.Errorf("launch instance: %w", err)
 	}
@@ -454,7 +455,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		}}
 	}
 
-	_, instances, instanceType, err := d.instanceService.PrepareRunInstances(runInput, input.AccountID, "")
+	_, instances, instanceType, err := d.instanceService.PrepareRunInstances(context.Background(), runInput, input.AccountID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -496,7 +497,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		})
 	}
 
-	d.instanceService.LaunchRunInstances(instances, runInput, instanceType)
+	d.instanceService.LaunchRunInstances(context.Background(), instances, runInput, instanceType)
 
 	privateIP := input.ENIIP
 	if privateIP == "" && inst.Instance != nil {
@@ -648,13 +649,13 @@ func (d *Daemon) releaseSystemInstanceEIP(instance *vm.VM) {
 	}
 	eniAccount := instance.AccountID
 	if instance.PublicIPAssocID != "" {
-		if _, err := d.eipService.DisassociateAddress(&ec2.DisassociateAddressInput{
+		if _, err := d.eipService.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{
 			AssociationId: aws.String(instance.PublicIPAssocID),
 		}, eniAccount); err != nil {
 			slog.Warn("releaseSystemInstanceEIP: DisassociateAddress failed", "instanceId", instance.ID, "associationId", instance.PublicIPAssocID, "err", err)
 		}
 	}
-	if _, err := d.eipService.ReleaseAddress(&ec2.ReleaseAddressInput{
+	if _, err := d.eipService.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
 		AllocationId: aws.String(instance.PublicIPAllocID),
 	}, eniAccount); err != nil {
 		slog.Warn("releaseSystemInstanceEIP: ReleaseAddress failed", "instanceId", instance.ID, "allocationId", instance.PublicIPAllocID, "err", err)

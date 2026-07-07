@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -23,7 +24,7 @@ func ValidateModifyRuleInput(input *elbv2.ModifyRuleInput) error {
 }
 
 // ModifyRule handles the ELBv2 ModifyRule API call.
-func ModifyRule(input *elbv2.ModifyRuleInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyRuleOutput, error) {
+func ModifyRule(ctx context.Context, input *elbv2.ModifyRuleInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyRuleOutput, error) {
 	var output elbv2.ModifyRuleOutput
 
 	if err := ValidateModifyRuleInput(input); err != nil {
@@ -31,7 +32,7 @@ func ModifyRule(input *elbv2.ModifyRuleInput, natsConn *nats.Conn, accountID str
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.ModifyRule(input, accountID)
+	result, err := svc.ModifyRule(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

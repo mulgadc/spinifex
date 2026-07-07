@@ -1,6 +1,7 @@
 package gateway_ec2_placementgroup
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateCreatePlacementGroupInput(input *ec2.CreatePlacementGroupInput) err
 }
 
 // CreatePlacementGroup handles the EC2 CreatePlacementGroup API call.
-func CreatePlacementGroup(input *ec2.CreatePlacementGroupInput, natsConn *nats.Conn, accountID string) (ec2.CreatePlacementGroupOutput, error) {
+func CreatePlacementGroup(ctx context.Context, input *ec2.CreatePlacementGroupInput, natsConn *nats.Conn, accountID string) (ec2.CreatePlacementGroupOutput, error) {
 	var output ec2.CreatePlacementGroupOutput
 
 	if err := ValidateCreatePlacementGroupInput(input); err != nil {
@@ -28,7 +29,7 @@ func CreatePlacementGroup(input *ec2.CreatePlacementGroupInput, natsConn *nats.C
 	}
 
 	svc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
-	result, err := svc.CreatePlacementGroup(input, accountID)
+	result, err := svc.CreatePlacementGroup(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

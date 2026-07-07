@@ -1,6 +1,7 @@
 package handlers_ec2_igw
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,15 +95,15 @@ func NewIGWServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*IGWSer
 // CreateInternetGatewayWithID creates an IGW with a pre-determined ID.
 // Used by bootstrap to ensure the IGW ID matches [bootstrap] in spinifex.toml.
 func (s *IGWServiceImpl) CreateInternetGatewayWithID(input *ec2.CreateInternetGatewayInput, accountID, igwID string) (*ec2.CreateInternetGatewayOutput, error) {
-	return s.createIGW(input, accountID, igwID)
+	return s.createIGW(context.Background(), input, accountID, igwID)
 }
 
-func (s *IGWServiceImpl) CreateInternetGateway(input *ec2.CreateInternetGatewayInput, accountID string) (*ec2.CreateInternetGatewayOutput, error) {
+func (s *IGWServiceImpl) CreateInternetGateway(ctx context.Context, input *ec2.CreateInternetGatewayInput, accountID string) (*ec2.CreateInternetGatewayOutput, error) {
 	igwID := utils.GenerateResourceID("igw")
-	return s.createIGW(input, accountID, igwID)
+	return s.createIGW(ctx, input, accountID, igwID)
 }
 
-func (s *IGWServiceImpl) createIGW(input *ec2.CreateInternetGatewayInput, accountID, igwID string) (*ec2.CreateInternetGatewayOutput, error) {
+func (s *IGWServiceImpl) createIGW(ctx context.Context, input *ec2.CreateInternetGatewayInput, accountID, igwID string) (*ec2.CreateInternetGatewayOutput, error) {
 	record := IGWRecord{
 		InternetGatewayId: igwID,
 		State:             "available",
@@ -118,7 +119,7 @@ func (s *IGWServiceImpl) createIGW(input *ec2.CreateInternetGatewayInput, accoun
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("CreateInternetGateway completed", "internetGatewayId", igwID, "accountID", accountID)
+	slog.InfoContext(ctx, "CreateInternetGateway completed", "internetGatewayId", igwID, "accountID", accountID)
 
 	return &ec2.CreateInternetGatewayOutput{
 		InternetGateway: s.recordToEC2(&record),
@@ -126,7 +127,7 @@ func (s *IGWServiceImpl) createIGW(input *ec2.CreateInternetGatewayInput, accoun
 }
 
 // DeleteInternetGateway deletes an Internet Gateway (must be detached first)
-func (s *IGWServiceImpl) DeleteInternetGateway(input *ec2.DeleteInternetGatewayInput, accountID string) (*ec2.DeleteInternetGatewayOutput, error) {
+func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.DeleteInternetGatewayInput, accountID string) (*ec2.DeleteInternetGatewayOutput, error) {
 	if input.InternetGatewayId == nil || *input.InternetGatewayId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -159,7 +160,7 @@ func (s *IGWServiceImpl) DeleteInternetGateway(input *ec2.DeleteInternetGatewayI
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("DeleteInternetGateway completed", "internetGatewayId", igwID, "accountID", accountID)
+	slog.InfoContext(ctx, "DeleteInternetGateway completed", "internetGatewayId", igwID, "accountID", accountID)
 
 	return &ec2.DeleteInternetGatewayOutput{}, nil
 }
@@ -172,7 +173,7 @@ var describeIGWValidFilters = map[string]bool{
 }
 
 // DescribeInternetGateways lists Internet Gateways, optionally filtered by ID
-func (s *IGWServiceImpl) DescribeInternetGateways(input *ec2.DescribeInternetGatewaysInput, accountID string) (*ec2.DescribeInternetGatewaysOutput, error) {
+func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, accountID string) (*ec2.DescribeInternetGatewaysOutput, error) {
 	var igws []*ec2.InternetGateway
 
 	igwIDs := make(map[string]bool)
@@ -184,7 +185,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(input *ec2.DescribeInternetGat
 
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeIGWValidFilters)
 	if err != nil {
-		slog.Warn("DescribeInternetGateways: invalid filter", "err", err)
+		slog.WarnContext(ctx, "DescribeInternetGateways: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -206,13 +207,13 @@ func (s *IGWServiceImpl) DescribeInternetGateways(input *ec2.DescribeInternetGat
 
 		entry, err := s.igwKV.Get(key)
 		if err != nil {
-			slog.Warn("Failed to get IGW record", "key", key, "error", err)
+			slog.WarnContext(ctx, "Failed to get IGW record", "key", key, "error", err)
 			continue
 		}
 
 		var record IGWRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.Warn("Failed to unmarshal IGW record", "key", key, "error", err)
+			slog.WarnContext(ctx, "Failed to unmarshal IGW record", "key", key, "error", err)
 			continue
 		}
 
@@ -235,7 +236,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(input *ec2.DescribeInternetGat
 		}
 	}
 
-	slog.Info("DescribeInternetGateways completed", "count", len(igws), "accountID", accountID)
+	slog.InfoContext(ctx, "DescribeInternetGateways completed", "count", len(igws), "accountID", accountID)
 
 	return &ec2.DescribeInternetGatewaysOutput{
 		InternetGateways: igws,
@@ -274,7 +275,7 @@ func igwMatchesFilters(record *IGWRecord, filters map[string][]string) bool {
 
 // AttachInternetGateway attaches an IGW to a VPC and publishes a NATS event
 // for vpcd to create the OVN external switch, gateway port, and SNAT rules.
-func (s *IGWServiceImpl) AttachInternetGateway(input *ec2.AttachInternetGatewayInput, accountID string) (*ec2.AttachInternetGatewayOutput, error) {
+func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.AttachInternetGatewayInput, accountID string) (*ec2.AttachInternetGatewayOutput, error) {
 	if input.InternetGatewayId == nil || *input.InternetGatewayId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -302,11 +303,11 @@ func (s *IGWServiceImpl) AttachInternetGateway(input *ec2.AttachInternetGatewayI
 
 	// Verify the caller owns the target VPC (fail-closed if KV unavailable)
 	if s.vpcKV == nil {
-		slog.Error("VPC KV unavailable, cannot verify VPC ownership")
+		slog.ErrorContext(ctx, "VPC KV unavailable, cannot verify VPC ownership")
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcID)); err != nil {
-		slog.Warn("AttachInternetGateway: VPC not found for account", "vpcId", vpcID, "accountID", accountID)
+		slog.WarnContext(ctx, "AttachInternetGateway: VPC not found for account", "vpcId", vpcID, "accountID", accountID)
 		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
 	}
 
@@ -329,23 +330,23 @@ func (s *IGWServiceImpl) AttachInternetGateway(input *ec2.AttachInternetGatewayI
 		}
 		eventData, err := json.Marshal(event)
 		if err != nil {
-			slog.Warn("Failed to marshal IGW attach event", "error", err)
+			slog.WarnContext(ctx, "Failed to marshal IGW attach event", "error", err)
 		} else if err := s.natsConn.Publish("vpc.igw-attach", eventData); err != nil {
-			slog.Warn("Failed to publish IGW attach event", "error", err)
+			slog.WarnContext(ctx, "Failed to publish IGW attach event", "error", err)
 		}
 	}
 
 	// Gate fan-out is intentionally skipped on attach to avoid a race with
 	// the bootstrap CreateRoute path. Detach triggers gate fan-out directly.
 
-	slog.Info("AttachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
+	slog.InfoContext(ctx, "AttachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
 
 	return &ec2.AttachInternetGatewayOutput{}, nil
 }
 
 // DetachInternetGateway detaches an IGW from a VPC and publishes a NATS event
 // for vpcd to clean up the OVN external switch, gateway port, and NAT rules.
-func (s *IGWServiceImpl) DetachInternetGateway(input *ec2.DetachInternetGatewayInput, accountID string) (*ec2.DetachInternetGatewayOutput, error) {
+func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.DetachInternetGatewayInput, accountID string) (*ec2.DetachInternetGatewayOutput, error) {
 	if input.InternetGatewayId == nil || *input.InternetGatewayId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -390,9 +391,9 @@ func (s *IGWServiceImpl) DetachInternetGateway(input *ec2.DetachInternetGatewayI
 		}
 		eventData, err := json.Marshal(event)
 		if err != nil {
-			slog.Warn("Failed to marshal IGW detach event", "error", err)
+			slog.WarnContext(ctx, "Failed to marshal IGW detach event", "error", err)
 		} else if err := s.natsConn.Publish("vpc.igw-detach", eventData); err != nil {
-			slog.Warn("Failed to publish IGW detach event", "error", err)
+			slog.WarnContext(ctx, "Failed to publish IGW detach event", "error", err)
 		}
 	}
 
@@ -404,7 +405,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(input *ec2.DetachInternetGatewayI
 		s.gatePublisher.PublishGateDecisionsForVPC(accountID, vpcID, "0.0.0.0/0")
 	}
 
-	slog.Info("DetachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
+	slog.InfoContext(ctx, "DetachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
 
 	return &ec2.DetachInternetGatewayOutput{}, nil
 }

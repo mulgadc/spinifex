@@ -1,6 +1,7 @@
 package gateway_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestNotImplemented(t *testing.T) {
-	out, err := NotImplemented(nil, "123456789012", []byte("{}"))
+	out, err := NotImplemented(context.Background(), nil, "123456789012", []byte("{}"))
 	assert.Nil(t, out)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
@@ -37,7 +38,7 @@ var wiredActions = map[string]bool{
 func TestActions_StubsReturnNotImplemented(t *testing.T) {
 	require.NotEmpty(t, Actions)
 	for action, h := range Actions {
-		_, err := h(nil, "123456789012", []byte("{}"))
+		_, err := h(context.Background(), nil, "123456789012", []byte("{}"))
 		require.Error(t, err, "action %q", action)
 		if wiredActions[action] {
 			assert.NotEqual(t, awserrors.ErrorNotImplemented, err.Error(), "wired action %q should not be a stub", action)

@@ -1,6 +1,7 @@
 package gateway_ec2_snapshot
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -28,7 +29,7 @@ func ValidateCreateSnapshotInput(input *ec2.CreateSnapshotInput) error {
 }
 
 // CreateSnapshot handles the EC2 CreateSnapshot API call
-func CreateSnapshot(input *ec2.CreateSnapshotInput, natsConn *nats.Conn, accountID string) (ec2.Snapshot, error) {
+func CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, natsConn *nats.Conn, accountID string) (ec2.Snapshot, error) {
 	var output ec2.Snapshot
 
 	if err := ValidateCreateSnapshotInput(input); err != nil {
@@ -36,7 +37,7 @@ func CreateSnapshot(input *ec2.CreateSnapshotInput, natsConn *nats.Conn, account
 	}
 
 	svc := handlers_ec2_snapshot.NewNATSSnapshotService(natsConn)
-	result, err := svc.CreateSnapshot(input, accountID)
+	result, err := svc.CreateSnapshot(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

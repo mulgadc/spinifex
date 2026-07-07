@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -383,7 +384,7 @@ func TestEnrichProfileID_NilInnerProfileIsAllocated(t *testing.T) {
 // --- AssociateIamInstanceProfile ---------------------------------------------
 
 func TestAssociateIamInstanceProfile_NilInput(t *testing.T) {
-	_, err := AssociateIamInstanceProfile(nil, nil, &fakeIAMService{}, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), nil, nil, &fakeIAMService{}, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -392,14 +393,14 @@ func TestAssociateIamInstanceProfile_MissingInstanceID(t *testing.T) {
 	in := &ec2.AssociateIamInstanceProfileInput{
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}
-	_, err := AssociateIamInstanceProfile(in, nil, &fakeIAMService{}, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nil, &fakeIAMService{}, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestAssociateIamInstanceProfile_MissingProfileSpec(t *testing.T) {
 	in := &ec2.AssociateIamInstanceProfileInput{InstanceId: aws.String("i-001")}
-	_, err := AssociateIamInstanceProfile(in, nil, &fakeIAMService{}, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nil, &fakeIAMService{}, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -410,7 +411,7 @@ func TestAssociateIamInstanceProfile_ProfileNotFound(t *testing.T) {
 		InstanceId:         aws.String("i-001"),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String("ghost")},
 	}
-	_, err := AssociateIamInstanceProfile(in, nil, svc, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nil, svc, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidIamInstanceProfileNotFound, err.Error())
 }
@@ -424,7 +425,7 @@ func TestAssociateIamInstanceProfile_PassRoleDenied(t *testing.T) {
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}
 	check := func(string) error { return errors.New(awserrors.ErrorAccessDenied) }
-	_, err := AssociateIamInstanceProfile(in, nil, svc, testGwAccountID, check)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nil, svc, testGwAccountID, check)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }
@@ -441,7 +442,7 @@ func TestAssociateIamInstanceProfile_NoResponders(t *testing.T) {
 	// No subscriber on ec2.cmd.* → ErrNoResponders → maps to
 	// InvalidInstanceID.NotFound so callers get an AWS-shaped 400 instead of
 	// a raw NATS timeout.
-	_, err := AssociateIamInstanceProfile(in, nc, svc, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nc, svc, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -474,7 +475,7 @@ func TestAssociateIamInstanceProfile_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out, err := AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
+	out, err := AssociateIamInstanceProfile(context.Background(), &ec2.AssociateIamInstanceProfileInput{
 		InstanceId:         aws.String(instanceID),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}, nc, svc, testGwAccountID, func(string) error { return nil })
@@ -502,7 +503,7 @@ func TestAssociateIamInstanceProfile_DaemonAlreadyAssociated(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
+	_, err = AssociateIamInstanceProfile(context.Background(), &ec2.AssociateIamInstanceProfileInput{
 		InstanceId:         aws.String(instanceID),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameOther)},
 	}, nc, svc, testGwAccountID, nil)
@@ -513,13 +514,13 @@ func TestAssociateIamInstanceProfile_DaemonAlreadyAssociated(t *testing.T) {
 // --- DisassociateIamInstanceProfile -----------------------------------------
 
 func TestDisassociateIamInstanceProfile_MissingAssociationID(t *testing.T) {
-	_, err := DisassociateIamInstanceProfile(&ec2.DisassociateIamInstanceProfileInput{}, nil, 0, testGwAccountID)
+	_, err := DisassociateIamInstanceProfile(context.Background(), &ec2.DisassociateIamInstanceProfileInput{}, nil, 0, testGwAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestDisassociateIamInstanceProfile_NilInput(t *testing.T) {
-	_, err := DisassociateIamInstanceProfile(nil, nil, 0, testGwAccountID)
+	_, err := DisassociateIamInstanceProfile(context.Background(), nil, nil, 0, testGwAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -558,7 +559,7 @@ func TestDisassociateIamInstanceProfile_Success(t *testing.T) {
 	require.NoError(t, nc.Flush())
 	require.NoError(t, nc2.Flush())
 
-	out, err := DisassociateIamInstanceProfile(&ec2.DisassociateIamInstanceProfileInput{
+	out, err := DisassociateIamInstanceProfile(context.Background(), &ec2.DisassociateIamInstanceProfileInput{
 		AssociationId: aws.String(assocID),
 	}, nc, 2, testGwAccountID)
 	require.NoError(t, err)
@@ -581,7 +582,7 @@ func TestDisassociateIamInstanceProfile_NoSuchAssociation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DisassociateIamInstanceProfile(&ec2.DisassociateIamInstanceProfileInput{
+	_, err = DisassociateIamInstanceProfile(context.Background(), &ec2.DisassociateIamInstanceProfileInput{
 		AssociationId: aws.String("iip-assoc-stale-id"),
 	}, nc, 1, testGwAccountID)
 	require.Error(t, err)
@@ -591,7 +592,7 @@ func TestDisassociateIamInstanceProfile_NoSuchAssociation(t *testing.T) {
 // --- ReplaceIamInstanceProfileAssociation -----------------------------------
 
 func TestReplaceIamInstanceProfileAssociation_NilInput(t *testing.T) {
-	_, err := ReplaceIamInstanceProfileAssociation(nil, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
+	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), nil, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -600,14 +601,14 @@ func TestReplaceIamInstanceProfileAssociation_MissingAssociationID(t *testing.T)
 	in := &ec2.ReplaceIamInstanceProfileAssociationInput{
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}
-	_, err := ReplaceIamInstanceProfileAssociation(in, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
+	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), in, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestReplaceIamInstanceProfileAssociation_MissingProfileSpec(t *testing.T) {
 	in := &ec2.ReplaceIamInstanceProfileAssociationInput{AssociationId: aws.String("iip-assoc-x")}
-	_, err := ReplaceIamInstanceProfileAssociation(in, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
+	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), in, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -618,7 +619,7 @@ func TestReplaceIamInstanceProfileAssociation_PassRoleDeniedBeforeBroadcast(t *t
 		return profileWithRole(), nil
 	}}
 	check := func(string) error { return errors.New(awserrors.ErrorAccessDenied) }
-	_, err := ReplaceIamInstanceProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), &ec2.ReplaceIamInstanceProfileAssociationInput{
 		AssociationId:      aws.String("iip-assoc-old"),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}, nil, svc, 0, testGwAccountID, check)
@@ -653,7 +654,7 @@ func TestReplaceIamInstanceProfileAssociation_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out, err := ReplaceIamInstanceProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+	out, err := ReplaceIamInstanceProfileAssociation(context.Background(), &ec2.ReplaceIamInstanceProfileAssociationInput{
 		AssociationId:      aws.String(oldID),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}, nc, svc, 1, testGwAccountID, func(string) error { return nil })
@@ -676,7 +677,7 @@ func TestReplaceIamInstanceProfileAssociation_NoSuchAssociation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = ReplaceIamInstanceProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+	_, err = ReplaceIamInstanceProfileAssociation(context.Background(), &ec2.ReplaceIamInstanceProfileAssociationInput{
 		AssociationId:      aws.String("iip-assoc-stale"),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameOther)},
 	}, nc, svc, 1, testGwAccountID, nil)
@@ -720,8 +721,7 @@ func TestDescribeIamInstanceProfileAssociations_FanOutAggregates(t *testing.T) {
 	require.NoError(t, nc.Flush())
 	require.NoError(t, nc2.Flush())
 
-	out, err := DescribeIamInstanceProfileAssociations(
-		&ec2.DescribeIamInstanceProfileAssociationsInput{}, nc, 2, testGwAccountID)
+	out, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{}, nc, 2, testGwAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Len(t, out.IamInstanceProfileAssociations, 2)
@@ -737,7 +737,7 @@ func TestDescribeIamInstanceProfileAssociations_ForwardsFilters(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DescribeIamInstanceProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
+	_, err = DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{
 		AssociationIds: []*string{aws.String("iip-assoc-1"), aws.String("iip-assoc-2")},
 		Filters: []*ec2.Filter{
 			{Name: aws.String("instance-id"), Values: []*string{aws.String("i-001"), aws.String("i-002")}},
@@ -754,7 +754,7 @@ func TestDescribeIamInstanceProfileAssociations_ForwardsFilters(t *testing.T) {
 
 func TestDescribeIamInstanceProfileAssociations_InvalidFilterName(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	_, err := DescribeIamInstanceProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
+	_, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("not-a-valid-filter")}},
 	}, nc, 1, testGwAccountID)
 	require.Error(t, err)
@@ -769,8 +769,7 @@ func TestDescribeIamInstanceProfileAssociations_EmptyResultIsValid(t *testing.T)
 	})
 	require.NoError(t, err)
 
-	out, err := DescribeIamInstanceProfileAssociations(
-		&ec2.DescribeIamInstanceProfileAssociationsInput{}, nc, 1, testGwAccountID)
+	out, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{}, nc, 1, testGwAccountID)
 	require.NoError(t, err, "no records is a valid response, not an error")
 	assert.Empty(t, out.IamInstanceProfileAssociations)
 }
@@ -791,7 +790,7 @@ func TestCountInstanceProfileAssociations_MatchesByARN(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, err := CountInstanceProfileAssociations(nc, 1, testGwAccountID, testProfileARNApp)
+	got, err := CountInstanceProfileAssociations(context.Background(), nc, 1, testGwAccountID, testProfileARNApp)
 	require.NoError(t, err)
 	assert.Equal(t, 2, got, "only associations whose ARN matches must count")
 }
@@ -807,7 +806,7 @@ func TestCountInstanceProfileAssociations_NoMatches(t *testing.T) {
 		nc.Publish(msg.Reply, resp)
 	})
 	require.NoError(t, err)
-	got, err := CountInstanceProfileAssociations(nc, 1, testGwAccountID, testProfileARNApp)
+	got, err := CountInstanceProfileAssociations(context.Background(), nc, 1, testGwAccountID, testProfileARNApp)
 	require.NoError(t, err)
 	assert.Equal(t, 0, got)
 }

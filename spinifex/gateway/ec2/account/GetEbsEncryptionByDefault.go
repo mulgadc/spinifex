@@ -1,6 +1,7 @@
 package gateway_ec2_account
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -16,7 +17,7 @@ func ValidateGetEbsEncryptionByDefaultInput(input *ec2.GetEbsEncryptionByDefault
 	return nil
 }
 
-func GetEbsEncryptionByDefault(input *ec2.GetEbsEncryptionByDefaultInput, natsConn *nats.Conn, accountID string) (ec2.GetEbsEncryptionByDefaultOutput, error) {
+func GetEbsEncryptionByDefault(ctx context.Context, input *ec2.GetEbsEncryptionByDefaultInput, natsConn *nats.Conn, accountID string) (ec2.GetEbsEncryptionByDefaultOutput, error) {
 	var output ec2.GetEbsEncryptionByDefaultOutput
 
 	if err := ValidateGetEbsEncryptionByDefaultInput(input); err != nil {
@@ -24,7 +25,7 @@ func GetEbsEncryptionByDefault(input *ec2.GetEbsEncryptionByDefaultInput, natsCo
 	}
 
 	svc := handlers_ec2_account.NewNATSAccountSettingsService(natsConn)
-	result, err := svc.GetEbsEncryptionByDefault(input, accountID)
+	result, err := svc.GetEbsEncryptionByDefault(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

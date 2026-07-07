@@ -1,6 +1,7 @@
 package gateway_eks
 
 import (
+	"context"
 	"errors"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -19,7 +20,7 @@ type internalRecoveryOutput struct {
 // SigV4 creds, so accountID names the customer cluster account explicitly — same
 // carve-out as ListInternalAddons. Returns the per-member recovery directive the
 // agent applies (none, cluster-reset, or wipe-rejoin) before k3s starts.
-func GetRecoveryDirective(natsConn *nats.Conn, clusterName, accountID, instanceID string) (*internalRecoveryOutput, error) {
+func GetRecoveryDirective(ctx context.Context, natsConn *nats.Conn, clusterName, accountID, instanceID string) (*internalRecoveryOutput, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -27,7 +28,7 @@ func GetRecoveryDirective(natsConn *nats.Conn, clusterName, accountID, instanceI
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	out, err := handlers_eks.NewNATSEKSService(natsConn).GetRecoveryDirective(
-		&handlers_eks.GetRecoveryDirectiveInput{ClusterName: clusterName, InstanceID: instanceID}, accountID)
+		ctx, &handlers_eks.GetRecoveryDirectiveInput{ClusterName: clusterName, InstanceID: instanceID}, accountID)
 	if err != nil {
 		return nil, err
 	}

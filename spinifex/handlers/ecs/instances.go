@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"slices"
@@ -35,7 +36,7 @@ func (s *Service) listInstanceRecords(kv nats.KeyValue, cluster string) ([]Insta
 // RegisterContainerInstance is the AWS-API registration path. In 4e the agent
 // normally registers over the Layer-2 bus; this keeps API parity by writing the
 // same record shape from an explicit call.
-func (s *Service) RegisterContainerInstance(input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error) {
+func (s *Service) RegisterContainerInstance(_ context.Context, input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	instanceID := aws.StringValue(input.InstanceIdentityDocument)
 	if instanceID == "" {
@@ -69,7 +70,7 @@ func (s *Service) RegisterContainerInstance(input *ecs.RegisterContainerInstance
 }
 
 // DescribeContainerInstances returns records for the named container instances.
-func (s *Service) DescribeContainerInstances(input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error) {
+func (s *Service) DescribeContainerInstances(_ context.Context, input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -93,7 +94,7 @@ func (s *Service) DescribeContainerInstances(input *ecs.DescribeContainerInstanc
 }
 
 // ListContainerInstances returns the ARNs of all container instances in a cluster.
-func (s *Service) ListContainerInstances(input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error) {
+func (s *Service) ListContainerInstances(_ context.Context, input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -198,7 +199,7 @@ func (s *Service) recordHeartbeat(msg *bus.Heartbeat) error {
 
 // recordTaskState applies an agent task-state report: it updates the task record
 // and, on STOPPED, releases the reserved capacity back to the instance.
-func (s *Service) recordTaskState(msg *bus.TaskState) error {
+func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error {
 	kv, err := s.bucket(msg.AccountID)
 	if err != nil {
 		return err
@@ -236,8 +237,8 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 	// Register ELBv2 targets and assign a public IP on the transition into
 	// RUNNING (Q8). assignTaskPublicIP persists the EIP onto the task itself.
 	if msg.LastStatus == TaskStatusRunning && prev != TaskStatusRunning {
-		s.registerServiceTargets(kv, msg.AccountID, &task)
-		s.assignTaskPublicIP(kv, msg.AccountID, &task)
+		s.registerServiceTargets(ctx, kv, msg.AccountID, &task)
+		s.assignTaskPublicIP(ctx, kv, msg.AccountID, &task)
 	}
 
 	// Deregister targets, release the public IP, release capacity + reclaim the
@@ -246,15 +247,15 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 		// A task that stops without ever reaching RUNNING is a deployment failure;
 		// feed the owning deployment's circuit breaker.
 		if task.StartedAt.IsZero() {
-			s.recordDeploymentFailure(kv, msg.ClusterName, &task)
+			s.recordDeploymentFailure(ctx, kv, msg.ClusterName, &task)
 		}
-		s.deregisterServiceTargets(kv, msg.AccountID, &task)
-		s.releaseTaskPublicIP(msg.AccountID, &task)
+		s.deregisterServiceTargets(ctx, kv, msg.AccountID, &task)
+		s.releaseTaskPublicIP(ctx, msg.AccountID, &task)
 		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
 		s.reclaimStopInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
-		s.reclaimTaskENI(msg.AccountID, &task)
+		s.reclaimTaskENI(ctx, msg.AccountID, &task)
 		if perr := putJSON(kv, TaskKey(msg.ClusterName, msg.TaskID), &task); perr != nil {
-			slog.Error("ECS task STOPPED: persist after EIP release failed", "task", msg.TaskID, "err", perr)
+			slog.ErrorContext(ctx, "ECS task STOPPED: persist after EIP release failed", "task", msg.TaskID, "err", perr)
 		}
 		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB)
 	}
@@ -265,7 +266,7 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 // It maps the SDK input onto the same bus.TaskState shape the Layer-2 bus
 // delivers and converges on recordTaskState, so a gateway-routed agent reports
 // state without touching NATS. The account is authoritative from accountID.
-func (s *Service) SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error) {
+func (s *Service) SubmitTaskStateChange(ctx context.Context, input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error) {
 	msg := bus.TaskState{
 		AccountID:   accountID,
 		ClusterName: clusterShortName(aws.StringValue(input.Cluster)),
@@ -286,7 +287,7 @@ func (s *Service) SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, a
 		}
 		msg.Containers = append(msg.Containers, cs)
 	}
-	if err := s.recordTaskState(&msg); err != nil {
+	if err := s.recordTaskState(ctx, &msg); err != nil {
 		return nil, err
 	}
 	return &ecs.SubmitTaskStateChangeOutput{Acknowledgment: aws.String("OK")}, nil
@@ -295,7 +296,7 @@ func (s *Service) SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, a
 // recordDeploymentFailure increments the failed-task counter on the deployment
 // that launched a task which stopped before ever running, driving the service's
 // deployment circuit breaker. No-op for a non-service task or an unknown deployment.
-func (s *Service) recordDeploymentFailure(kv nats.KeyValue, cluster string, task *TaskRecord) {
+func (s *Service) recordDeploymentFailure(ctx context.Context, kv nats.KeyValue, cluster string, task *TaskRecord) {
 	name := serviceNameFromGroup(task.Group)
 	depID := deploymentIDFromStartedBy(task.StartedBy)
 	if name == "" || depID == "" {
@@ -311,7 +312,7 @@ func (s *Service) recordDeploymentFailure(kv nats.KeyValue, cluster string, task
 			svc.Deployments[i].FailedTasks++
 			svc.Deployments[i].UpdatedAt = time.Now().UTC()
 			if perr := putJSON(kv, ServiceKey(cluster, name), &svc); perr != nil {
-				slog.Error("ECS deployment failure accounting: persist failed", "service", name, "err", perr)
+				slog.ErrorContext(ctx, "ECS deployment failure accounting: persist failed", "service", name, "err", perr)
 			}
 			return
 		}

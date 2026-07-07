@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -29,7 +30,7 @@ func ValidateCreateRuleInput(input *elbv2.CreateRuleInput) error {
 }
 
 // CreateRule handles the ELBv2 CreateRule API call.
-func CreateRule(input *elbv2.CreateRuleInput, natsConn *nats.Conn, accountID string) (elbv2.CreateRuleOutput, error) {
+func CreateRule(ctx context.Context, input *elbv2.CreateRuleInput, natsConn *nats.Conn, accountID string) (elbv2.CreateRuleOutput, error) {
 	var output elbv2.CreateRuleOutput
 
 	if err := ValidateCreateRuleInput(input); err != nil {
@@ -37,7 +38,7 @@ func CreateRule(input *elbv2.CreateRuleInput, natsConn *nats.Conn, accountID str
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.CreateRule(input, accountID)
+	result, err := svc.CreateRule(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

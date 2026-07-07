@@ -1,6 +1,7 @@
 package gateway_ec2_capacityreservation
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ var validCapacityReservationFilters = map[string]bool{
 // in-memory reservations, and applies the requested ids and filters. Account
 // scoping is enforced by the daemons (which key ListReservations on the caller's
 // account id from the request header).
-func DescribeCapacityReservations(input *ec2.DescribeCapacityReservationsInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.DescribeCapacityReservationsOutput, error) {
+func DescribeCapacityReservations(ctx context.Context, input *ec2.DescribeCapacityReservationsInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.DescribeCapacityReservationsOutput, error) {
 	var output ec2.DescribeCapacityReservationsOutput
 	if input == nil {
 		input = &ec2.DescribeCapacityReservationsInput{}
@@ -46,7 +47,7 @@ func DescribeCapacityReservations(input *ec2.DescribeCapacityReservationsInput, 
 		return output, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, _, err := utils.Gather(natsConn, "ec2.DescribeCapacityReservations", payload,
+	frames, _, err := utils.GatherCtx(ctx, natsConn, "ec2.DescribeCapacityReservations", payload,
 		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return output, err

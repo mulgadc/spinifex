@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -224,10 +225,10 @@ func TestRunInstancesWithClientToken_ParamMismatchMapsAWSError(t *testing.T) {
 // instance on subsequent calls.
 func TestGetClientTokenStore_BindsOnce(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	s1, err := getClientTokenStore(nc)
+	s1, err := getClientTokenStore(context.Background(), nc)
 	require.NoError(t, err)
 	require.NotNil(t, s1)
-	s2, err := getClientTokenStore(nc)
+	s2, err := getClientTokenStore(context.Background(), nc)
 	require.NoError(t, err)
 	assert.Same(t, s1, s2, "store binds once")
 }

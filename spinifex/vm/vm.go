@@ -216,17 +216,21 @@ type IOThread struct {
 }
 
 type Config struct {
-	Name           string `json:"name"`
-	PIDFile        string `json:"pid_file"`
-	QMPSocket      string `json:"qmp_socket"`
-	EnableKVM      bool   `json:"enable_kvm"`
-	NoGraphic      bool   `json:"no_graphic"`
-	MachineType    string `json:"machine_type"`
-	ConsoleLogPath string `json:"console_log_path,omitempty"`
-	SerialSocket   string `json:"serial_socket,omitempty"`
-	CPUType        string `json:"cpu_type"`
-	CPUCount       int    `json:"cpu_count"`
-	Memory         int    `json:"memory"`
+	Name      string `json:"name"`
+	PIDFile   string `json:"pid_file"`
+	QMPSocket string `json:"qmp_socket"`
+	// TelemetryQMPSocket is a second QMP monitor reserved for the metrics
+	// collector, so telemetry polling never contends with the manager's
+	// control socket (QMP serves one client per monitor).
+	TelemetryQMPSocket string `json:"telemetry_qmp_socket,omitempty"`
+	EnableKVM          bool   `json:"enable_kvm"`
+	NoGraphic          bool   `json:"no_graphic"`
+	MachineType        string `json:"machine_type"`
+	ConsoleLogPath     string `json:"console_log_path,omitempty"`
+	SerialSocket       string `json:"serial_socket,omitempty"`
+	CPUType            string `json:"cpu_type"`
+	CPUCount           int    `json:"cpu_count"`
+	Memory             int    `json:"memory"`
 
 	Drives    []Drive    `json:"drives"`
 	IOThreads []IOThread `json:"io_threads,omitempty"`
@@ -271,6 +275,10 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 
 	if cfg.QMPSocket != "" {
 		args = append(args, "-qmp", fmt.Sprintf("unix:%s,server,nowait", cfg.QMPSocket))
+	}
+
+	if cfg.TelemetryQMPSocket != "" {
+		args = append(args, "-qmp", fmt.Sprintf("unix:%s,server,nowait", cfg.TelemetryQMPSocket))
 	}
 
 	// EC2-shaped SMBIOS so a stock cloud image's cloud-init selects the Ec2

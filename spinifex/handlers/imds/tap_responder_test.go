@@ -32,7 +32,7 @@ func loopbackTapListen(addrs *sync.Map) tapListenFunc {
 
 // staticResolve returns a resolveENIFunc serving a fixed eniID → facts table.
 func staticResolve(table map[string]*eniFacts) resolveENIFunc {
-	return func(eniID string) (*eniFacts, error) { return table[eniID], nil }
+	return func(_ context.Context, eniID string) (*eniFacts, error) { return table[eniID], nil }
 }
 
 func TestTapResponder_ThreadsENIIdentity(t *testing.T) {
@@ -247,7 +247,7 @@ func TestTapResponder_StartRejectsMissAndError(t *testing.T) {
 
 	// A resolve backend error propagates.
 	boom := newTapResponderManager(http.NewServeMux(),
-		func(string) (*eniFacts, error) { return nil, errors.New("kv down") }, listen)
+		func(context.Context, string) (*eniFacts, error) { return nil, errors.New("kv down") }, listen)
 	require.Error(t, boom.start(context.Background(), "eni-x", "ime-x"))
 }
 

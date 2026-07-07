@@ -222,10 +222,21 @@ func PrincipalARNFromMsg(msg *nats.Msg) string {
 
 // NATSRequest performs a NATS request-response with JSON marshaling.
 // Sends with X-Account-ID (plus any extra headers) and unmarshals the successful response into Out.
+// Prefer NATSRequestCtx where a request context is available so traces span the hop.
 func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (*Out, error) {
+	return NATSRequestCtx[Out](context.Background(), conn, subject, input, timeout, accountID, headers...)
+}
+
+// NATSRequestCtx is NATSRequest carrying ctx's trace context onto the wire:
+// it opens a client span for the hop and injects traceparent into the message
+// headers so the consumer joins the same trace.
+func NATSRequestCtx[Out any](ctx context.Context, conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (out *Out, err error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, ErrClusterUnavailable
 	}
+
+	ctx, span := startProducerSpan(ctx, subject)
+	defer func() { endSpanWithError(span, err) }()
 
 	jsonData, err := json.Marshal(input)
 	if err != nil {
@@ -235,6 +246,7 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(AccountIDHeader, accountID)
+	InjectTraceContext(ctx, reqMsg.Header)
 	for _, h := range headers {
 		if h.Key != "" {
 			reqMsg.Header.Set(h.Key, h.Value)
@@ -263,19 +275,32 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 }
 
 // ServeNATSRequest unmarshals the request into *I, invokes fn, and replies with JSON or an awserrors envelope.
+// A consumer span joins the producer's trace when the message carries traceparent.
 func ServeNATSRequest[I any, O any](msg *nats.Msg, fn func(*I) (*O, error)) {
+	ServeNATSRequestCtx(msg, func(_ context.Context, in *I) (*O, error) { return fn(in) })
+}
+
+// ServeNATSRequestCtx is ServeNATSRequest for handlers that take the consumer
+// span's context, so their logs and child spans correlate to the trace.
+func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *I) (*O, error)) {
+	ctx, span := StartConsumerSpan(msg)
+	defer span.End()
+
 	input := new(I)
 	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		respondNATS(msg, errResp)
 		return
 	}
-	out, err := fn(input)
+	out, err := fn(ctx, input)
 	if err != nil {
+		MarkSpanError(span, err)
 		respondNATS(msg, GenerateErrorPayload(awserrors.ValidErrorCode(err.Error())))
 		return
 	}
 	data, err := json.Marshal(out)
 	if err != nil {
+		MarkSpanError(span, err)
 		respondNATS(msg, GenerateErrorPayload(awserrors.ErrorServerInternal))
 		return
 	}
@@ -317,10 +342,20 @@ type GatherOpts struct {
 // Error envelopes and oversized frames are dropped from frames but counted in sum;
 // returned frames are raw daemon replies for the caller to decode and merge.
 func Gather(conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
+	return GatherCtx(context.Background(), conn, subject, payload, opts)
+}
+
+// GatherCtx is Gather carrying ctx's trace context onto the wire: it opens a
+// producer span for the fan-out and injects traceparent so every consumer
+// joins the same trace. Prefer it over Gather when a request context exists.
+func GatherCtx(ctx context.Context, conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
 	sum.ErrorCodes = map[string]int{}
 	if conn == nil || !conn.IsConnected() {
 		return nil, sum, ErrClusterUnavailable
 	}
+
+	ctx, span := startProducerSpan(ctx, subject)
+	defer func() { endSpanWithError(span, err) }()
 
 	inbox := nats.NewInbox()
 	sub, err := conn.SubscribeSync(inbox)
@@ -335,6 +370,7 @@ func Gather(conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (f
 	if opts.AccountID != "" {
 		pubMsg.Header.Set(AccountIDHeader, opts.AccountID)
 	}
+	InjectTraceContext(ctx, pubMsg.Header)
 	if err := conn.PublishMsg(pubMsg); err != nil {
 		return nil, sum, fmt.Errorf("failed to publish request: %w", err)
 	}

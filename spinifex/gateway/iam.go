@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -166,7 +167,7 @@ var iamActions = map[string]IAMHandler{
 	}),
 	"DeleteInstanceProfile": iamHandler(func(accountID string, input *iam.DeleteInstanceProfileInput, gw *GatewayConfig) (any, error) {
 		countLive := func(profileARN string) (int, error) {
-			return gateway_ec2_instance.CountInstanceProfileAssociations(gw.NATSConn, gw.DiscoverActiveNodes(), accountID, profileARN)
+			return gateway_ec2_instance.CountInstanceProfileAssociations(context.Background(), gw.NATSConn, gw.DiscoverActiveNodes(), accountID, profileARN)
 		}
 		return gateway_iam.DeleteInstanceProfile(accountID, input, gw.IAMService, countLive)
 	}),

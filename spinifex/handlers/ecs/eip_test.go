@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,7 +19,7 @@ type stubEIPs struct {
 	releaseErr error
 }
 
-func (e *stubEIPs) AllocateAndAssociate(_, eniID string) (string, string, error) {
+func (e *stubEIPs) AllocateAndAssociate(_ context.Context, _, eniID string) (string, string, error) {
 	if e.allocErr != nil {
 		return "", "", e.allocErr
 	}
@@ -26,7 +27,7 @@ func (e *stubEIPs) AllocateAndAssociate(_, eniID string) (string, string, error)
 	return e.publicIP, e.allocID, nil
 }
 
-func (e *stubEIPs) Release(_, allocationID string) error {
+func (e *stubEIPs) Release(_ context.Context, _, allocationID string) error {
 	e.released = append(e.released, allocationID)
 	return e.releaseErr
 }
@@ -45,7 +46,7 @@ func TestAssignTaskPublicIP_EnabledAssociatesAndPersists(t *testing.T) {
 	}
 	require.NoError(t, putJSON(kv, TaskKey("web", "t-1"), task))
 
-	svc.assignTaskPublicIP(kv, testAccountID, task)
+	svc.assignTaskPublicIP(context.Background(), kv, testAccountID, task)
 
 	assert.Equal(t, []string{"eni-1"}, eips.allocated)
 	assert.Equal(t, "192.0.2.50", task.ENIPublicIP)
@@ -70,7 +71,7 @@ func TestAssignTaskPublicIP_DisabledNoOp(t *testing.T) {
 		TaskID: "t-2", Cluster: "web", Group: serviceTaskGroup("web"), ENIID: "eni-2",
 	}
 
-	svc.assignTaskPublicIP(kv, testAccountID, task)
+	svc.assignTaskPublicIP(context.Background(), kv, testAccountID, task)
 
 	assert.Empty(t, eips.allocated)
 	assert.Empty(t, task.ENIPublicIP)
@@ -82,7 +83,7 @@ func TestReleaseTaskPublicIP_ReleasesAndClears(t *testing.T) {
 	svc.eips = eips
 
 	task := &TaskRecord{TaskID: "t-3", Cluster: "web", ENIPublicIP: "192.0.2.50", ENIEIPAllocationID: "eipalloc-9"}
-	svc.releaseTaskPublicIP(testAccountID, task)
+	svc.releaseTaskPublicIP(context.Background(), testAccountID, task)
 
 	assert.Equal(t, []string{"eipalloc-9"}, eips.released)
 	assert.Empty(t, task.ENIPublicIP)
@@ -95,7 +96,7 @@ func TestReleaseTaskPublicIP_NoAllocationNoOp(t *testing.T) {
 	svc.eips = eips
 
 	task := &TaskRecord{TaskID: "t-4", Cluster: "web"}
-	svc.releaseTaskPublicIP(testAccountID, task)
+	svc.releaseTaskPublicIP(context.Background(), testAccountID, task)
 
 	assert.Empty(t, eips.released)
 }

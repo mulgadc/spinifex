@@ -1,6 +1,8 @@
 package ecr
 
 import (
+	"context"
+
 	"strings"
 	"testing"
 	"time"
@@ -42,17 +44,17 @@ func TestMemoryMetaStore_RepoRoundtrip(t *testing.T) {
 	m := NewMemoryMetaStore()
 	const acct = "000000000000"
 
-	_, err := m.GetRepo(acct, "team/app")
+	_, err := m.GetRepo(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	require.NoError(t, m.PutRepo(acct, RepoMeta{Name: "team/app", CreatedAt: time.Now()}))
-	require.NoError(t, m.PutRepo(acct, RepoMeta{Name: "team/web", CreatedAt: time.Now()}))
+	require.NoError(t, m.PutRepo(context.Background(), acct, RepoMeta{Name: "team/app", CreatedAt: time.Now()}))
+	require.NoError(t, m.PutRepo(context.Background(), acct, RepoMeta{Name: "team/web", CreatedAt: time.Now()}))
 
-	got, err := m.GetRepo(acct, "team/app")
+	got, err := m.GetRepo(context.Background(), acct, "team/app")
 	require.NoError(t, err)
 	assert.Equal(t, "team/app", got.Name)
 
-	repos, err := m.ListRepos(acct)
+	repos, err := m.ListRepos(context.Background(), acct)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"team/app", "team/web"}, repos)
 }
@@ -61,59 +63,59 @@ func TestMemoryMetaStore_TagsAndManifests(t *testing.T) {
 	m := NewMemoryMetaStore()
 	const acct = "000000000000"
 
-	require.NoError(t, m.PutTag(acct, "r", "v1", "sha256:aaa"))
-	require.NoError(t, m.PutTag(acct, "r", "v2", "sha256:bbb"))
-	d, err := m.GetTag(acct, "r", "v1")
+	require.NoError(t, m.PutTag(context.Background(), acct, "r", "v1", "sha256:aaa"))
+	require.NoError(t, m.PutTag(context.Background(), acct, "r", "v2", "sha256:bbb"))
+	d, err := m.GetTag(context.Background(), acct, "r", "v1")
 	require.NoError(t, err)
 	assert.Equal(t, "sha256:aaa", d)
 
-	tags, err := m.ListTags(acct, "r")
+	tags, err := m.ListTags(context.Background(), acct, "r")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"v1", "v2"}, tags)
 
-	require.NoError(t, m.DeleteTag(acct, "r", "v1"))
-	_, err = m.GetTag(acct, "r", "v1")
+	require.NoError(t, m.DeleteTag(context.Background(), acct, "r", "v1"))
+	_, err = m.GetTag(context.Background(), acct, "r", "v1")
 	assert.ErrorIs(t, err, ErrNotFound)
-	assert.ErrorIs(t, m.DeleteTag(acct, "r", "missing"), ErrNotFound)
+	assert.ErrorIs(t, m.DeleteTag(context.Background(), acct, "r", "missing"), ErrNotFound)
 
-	require.NoError(t, m.PutManifestMeta(acct, "r", ManifestMeta{Digest: "sha256:ccc", MediaType: "x", Size: 7}))
-	mm, err := m.GetManifestMeta(acct, "r", "sha256:ccc")
+	require.NoError(t, m.PutManifestMeta(context.Background(), acct, "r", ManifestMeta{Digest: "sha256:ccc", MediaType: "x", Size: 7}))
+	mm, err := m.GetManifestMeta(context.Background(), acct, "r", "sha256:ccc")
 	require.NoError(t, err)
 	assert.Equal(t, int64(7), mm.Size)
-	_, err = m.GetManifestMeta(acct, "r", "sha256:zzz")
+	_, err = m.GetManifestMeta(context.Background(), acct, "r", "sha256:zzz")
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	require.NoError(t, m.DeleteManifestMeta(acct, "r", "sha256:ccc"))
-	_, err = m.GetManifestMeta(acct, "r", "sha256:ccc")
+	require.NoError(t, m.DeleteManifestMeta(context.Background(), acct, "r", "sha256:ccc"))
+	_, err = m.GetManifestMeta(context.Background(), acct, "r", "sha256:ccc")
 	assert.ErrorIs(t, err, ErrNotFound)
-	assert.ErrorIs(t, m.DeleteManifestMeta(acct, "r", "sha256:ccc"), ErrNotFound)
+	assert.ErrorIs(t, m.DeleteManifestMeta(context.Background(), acct, "r", "sha256:ccc"), ErrNotFound)
 }
 
 func TestMemoryMetaStore_UploadCAS(t *testing.T) {
 	m := NewMemoryMetaStore()
 	const acct = "000000000000"
 
-	rev, err := m.PutUpload(acct, "u1", UploadState{RepoName: "r"})
+	rev, err := m.PutUpload(context.Background(), acct, "u1", UploadState{RepoName: "r"})
 	require.NoError(t, err)
 
-	st, gotRev, err := m.GetUpload(acct, "u1")
+	st, gotRev, err := m.GetUpload(context.Background(), acct, "u1")
 	require.NoError(t, err)
 	assert.Equal(t, rev, gotRev)
 	assert.Equal(t, "r", st.RepoName)
 
 	// Stale revision is rejected.
-	_, err = m.UpdateUpload(acct, "u1", st, rev+99)
+	_, err = m.UpdateUpload(context.Background(), acct, "u1", st, rev+99)
 	assert.ErrorIs(t, err, ErrConflict)
 
 	st.CommittedBytes = 10
-	newRev, err := m.UpdateUpload(acct, "u1", st, gotRev)
+	newRev, err := m.UpdateUpload(context.Background(), acct, "u1", st, gotRev)
 	require.NoError(t, err)
 	assert.Greater(t, newRev, gotRev)
 
-	require.NoError(t, m.DeleteUpload(acct, "u1"))
-	_, _, err = m.GetUpload(acct, "u1")
+	require.NoError(t, m.DeleteUpload(context.Background(), acct, "u1"))
+	_, _, err = m.GetUpload(context.Background(), acct, "u1")
 	assert.ErrorIs(t, err, ErrNotFound)
-	assert.ErrorIs(t, m.DeleteUpload(acct, "u1"), ErrNotFound)
+	assert.ErrorIs(t, m.DeleteUpload(context.Background(), acct, "u1"), ErrNotFound)
 }
 
 func TestTrimSuffixMeta(t *testing.T) {
@@ -124,37 +126,37 @@ func TestMemoryMetaStore_DeleteRepoAndListManifests(t *testing.T) {
 	m := NewMemoryMetaStore()
 	const acct = "000000000000"
 
-	require.NoError(t, m.PutRepo(acct, RepoMeta{Name: "team/app", CreatedAt: time.Now()}))
-	require.NoError(t, m.PutRepo(acct, RepoMeta{Name: "team/web", CreatedAt: time.Now()}))
-	require.NoError(t, m.PutTag(acct, "team/app", "v1", "sha256:aaa"))
-	require.NoError(t, m.PutManifestMeta(acct, "team/app", ManifestMeta{Digest: "sha256:ccc", MediaType: "x", Size: 3}))
-	require.NoError(t, m.PutRepoPolicy(acct, "team/app", []byte(`{}`)))
-	require.NoError(t, m.PutLifecyclePolicy(acct, "team/app", []byte(`{}`)))
+	require.NoError(t, m.PutRepo(context.Background(), acct, RepoMeta{Name: "team/app", CreatedAt: time.Now()}))
+	require.NoError(t, m.PutRepo(context.Background(), acct, RepoMeta{Name: "team/web", CreatedAt: time.Now()}))
+	require.NoError(t, m.PutTag(context.Background(), acct, "team/app", "v1", "sha256:aaa"))
+	require.NoError(t, m.PutManifestMeta(context.Background(), acct, "team/app", ManifestMeta{Digest: "sha256:ccc", MediaType: "x", Size: 3}))
+	require.NoError(t, m.PutRepoPolicy(context.Background(), acct, "team/app", []byte(`{}`)))
+	require.NoError(t, m.PutLifecyclePolicy(context.Background(), acct, "team/app", []byte(`{}`)))
 
-	digs, err := m.ListManifests(acct, "team/app")
+	digs, err := m.ListManifests(context.Background(), acct, "team/app")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"sha256:ccc"}, digs)
 
-	require.NoError(t, m.DeleteRepo(acct, "team/app"))
-	_, err = m.GetRepo(acct, "team/app")
+	require.NoError(t, m.DeleteRepo(context.Background(), acct, "team/app"))
+	_, err = m.GetRepo(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
-	tags, err := m.ListTags(acct, "team/app")
+	tags, err := m.ListTags(context.Background(), acct, "team/app")
 	require.NoError(t, err)
 	assert.Empty(t, tags)
-	digs, err = m.ListManifests(acct, "team/app")
+	digs, err = m.ListManifests(context.Background(), acct, "team/app")
 	require.NoError(t, err)
 	assert.Empty(t, digs)
-	_, err = m.GetRepoPolicy(acct, "team/app")
+	_, err = m.GetRepoPolicy(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
-	_, err = m.GetLifecyclePolicy(acct, "team/app")
+	_, err = m.GetLifecyclePolicy(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 
 	// Other repo untouched.
-	got, err := m.GetRepo(acct, "team/web")
+	got, err := m.GetRepo(context.Background(), acct, "team/web")
 	require.NoError(t, err)
 	assert.Equal(t, "team/web", got.Name)
 
-	assert.ErrorIs(t, m.DeleteRepo(acct, "team/ghost"), ErrNotFound)
+	assert.ErrorIs(t, m.DeleteRepo(context.Background(), acct, "team/ghost"), ErrNotFound)
 }
 
 func TestMemoryMetaStore_RepoPolicy(t *testing.T) {
@@ -162,20 +164,20 @@ func TestMemoryMetaStore_RepoPolicy(t *testing.T) {
 	const acct = "000000000000"
 	const policy = `{"Version":"2012-10-17"}`
 
-	_, err := m.GetRepoPolicy(acct, "team/app")
+	_, err := m.GetRepoPolicy(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
-	_, err = m.DeleteRepoPolicy(acct, "team/app")
+	_, err = m.DeleteRepoPolicy(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	require.NoError(t, m.PutRepoPolicy(acct, "team/app", []byte(policy)))
-	got, err := m.GetRepoPolicy(acct, "team/app")
+	require.NoError(t, m.PutRepoPolicy(context.Background(), acct, "team/app", []byte(policy)))
+	got, err := m.GetRepoPolicy(context.Background(), acct, "team/app")
 	require.NoError(t, err)
 	assert.Equal(t, policy, string(got))
 
-	deleted, err := m.DeleteRepoPolicy(acct, "team/app")
+	deleted, err := m.DeleteRepoPolicy(context.Background(), acct, "team/app")
 	require.NoError(t, err)
 	assert.Equal(t, policy, string(deleted))
-	_, err = m.GetRepoPolicy(acct, "team/app")
+	_, err = m.GetRepoPolicy(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -184,19 +186,19 @@ func TestMemoryMetaStore_LifecyclePolicy(t *testing.T) {
 	const acct = "000000000000"
 	const policy = `{"rules":[]}`
 
-	_, err := m.GetLifecyclePolicy(acct, "team/app")
+	_, err := m.GetLifecyclePolicy(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
-	_, err = m.DeleteLifecyclePolicy(acct, "team/app")
+	_, err = m.DeleteLifecyclePolicy(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	require.NoError(t, m.PutLifecyclePolicy(acct, "team/app", []byte(policy)))
-	got, err := m.GetLifecyclePolicy(acct, "team/app")
+	require.NoError(t, m.PutLifecyclePolicy(context.Background(), acct, "team/app", []byte(policy)))
+	got, err := m.GetLifecyclePolicy(context.Background(), acct, "team/app")
 	require.NoError(t, err)
 	assert.Equal(t, policy, string(got))
 
-	deleted, err := m.DeleteLifecyclePolicy(acct, "team/app")
+	deleted, err := m.DeleteLifecyclePolicy(context.Background(), acct, "team/app")
 	require.NoError(t, err)
 	assert.Equal(t, policy, string(deleted))
-	_, err = m.GetLifecyclePolicy(acct, "team/app")
+	_, err = m.GetLifecyclePolicy(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 }

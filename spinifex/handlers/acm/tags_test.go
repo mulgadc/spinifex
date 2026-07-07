@@ -1,6 +1,7 @@
 package handlers_acm
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -13,7 +14,7 @@ import (
 func importTagged(t *testing.T, svc *ACMServiceImpl, tags ...*acm.Tag) string {
 	t.Helper()
 	certPEM, keyPEM := genCert(t, "tags.example.com", "tags.example.com")
-	out, err := svc.ImportCertificate(&acm.ImportCertificateInput{
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
 		Certificate: certPEM,
 		PrivateKey:  keyPEM,
 		Tags:        tags,
@@ -26,7 +27,7 @@ func TestListTagsForCertificate_ReturnsImportTags(t *testing.T) {
 	svc := setupACMService(t)
 	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
 
-	out, err := svc.ListTagsForCertificate(&acm.ListTagsForCertificateInput{
+	out, err := svc.ListTagsForCertificate(context.Background(), &acm.ListTagsForCertificateInput{
 		CertificateArn: aws.String(arn),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -39,7 +40,7 @@ func TestListTagsForCertificate_NoTagsReturnsEmpty(t *testing.T) {
 	svc := setupACMService(t)
 	arn := importTagged(t, svc)
 
-	out, err := svc.ListTagsForCertificate(&acm.ListTagsForCertificateInput{
+	out, err := svc.ListTagsForCertificate(context.Background(), &acm.ListTagsForCertificateInput{
 		CertificateArn: aws.String(arn),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -50,7 +51,7 @@ func TestAddTagsToCertificate_MergesAndPersists(t *testing.T) {
 	svc := setupACMService(t)
 	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
 
-	_, err := svc.AddTagsToCertificate(&acm.AddTagsToCertificateInput{
+	_, err := svc.AddTagsToCertificate(context.Background(), &acm.AddTagsToCertificateInput{
 		CertificateArn: aws.String(arn),
 		Tags: []*acm.Tag{
 			{Key: aws.String("env"), Value: aws.String("dev")},
@@ -59,7 +60,7 @@ func TestAddTagsToCertificate_MergesAndPersists(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.ListTagsForCertificate(&acm.ListTagsForCertificateInput{
+	out, err := svc.ListTagsForCertificate(context.Background(), &acm.ListTagsForCertificateInput{
 		CertificateArn: aws.String(arn),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -79,7 +80,7 @@ func TestRemoveTagsFromCertificate_ByKeyAndByValue(t *testing.T) {
 	)
 
 	// Key-only removal drops "Name"; value-mismatch keeps "env"; exact match drops "team".
-	_, err := svc.RemoveTagsFromCertificate(&acm.RemoveTagsFromCertificateInput{
+	_, err := svc.RemoveTagsFromCertificate(context.Background(), &acm.RemoveTagsFromCertificateInput{
 		CertificateArn: aws.String(arn),
 		Tags: []*acm.Tag{
 			{Key: aws.String("Name")},
@@ -89,7 +90,7 @@ func TestRemoveTagsFromCertificate_ByKeyAndByValue(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.ListTagsForCertificate(&acm.ListTagsForCertificateInput{
+	out, err := svc.ListTagsForCertificate(context.Background(), &acm.ListTagsForCertificateInput{
 		CertificateArn: aws.String(arn),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -102,7 +103,7 @@ func TestTagOps_CrossAccountHidden(t *testing.T) {
 	svc := setupACMService(t)
 	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
 
-	_, err := svc.ListTagsForCertificate(&acm.ListTagsForCertificateInput{
+	_, err := svc.ListTagsForCertificate(context.Background(), &acm.ListTagsForCertificateInput{
 		CertificateArn: aws.String(arn),
 	}, "000000000002")
 	assert.Equal(t, awserrors.ErrorResourceNotFound, err.Error())

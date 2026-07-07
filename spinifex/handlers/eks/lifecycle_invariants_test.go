@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -19,7 +20,7 @@ import (
 func TestRLC1_EKSDeleteClusterIdempotentOnAbsent(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
-	out, err := f.svc.DeleteCluster(deleteInput("absent"), testAccountID)
+	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("absent"), testAccountID)
 	require.NoErrorf(t, err, "ADR-0006 §1: DeleteCluster on an absent cluster must return success, not ResourceNotFound (RLC rule #1)")
 	require.NotNil(t, out, "ADR-0006 §1: DeleteCluster must return a non-nil output on absent")
 	assert.Empty(t, f.inst.terminateCalls, "an absent cluster must trigger no billable teardown")
@@ -35,7 +36,7 @@ func TestRLC2_EKSBillableTeardownBeforeKVSweep(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 	f.inst.terminateErr = errors.New("hypervisor unreachable")
 
-	_, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
 	require.Error(t, err, "ADR-0006 §6: a failed billable teardown must surface, not be swallowed")
 
 	require.Len(t, f.inst.terminateCalls, 1, "the VM teardown must have been attempted")
@@ -63,7 +64,7 @@ func TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete(t *testing.T) {
 		TargetGroupName: aws.String(tgName),
 	}
 
-	_, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
 	require.NoError(t, err)
 
 	_, getErr := GetClusterMeta(f.kv, "alpha")

@@ -1,6 +1,7 @@
 package handlers_ec2_routetable
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"testing"
@@ -53,7 +54,7 @@ func setupTestService(t *testing.T) *RouteTableServiceImpl {
 
 func createTestRtb(t *testing.T, svc *RouteTableServiceImpl) string {
 	t.Helper()
-	out, err := svc.CreateRouteTable(&ec2.CreateRouteTableInput{
+	out, err := svc.CreateRouteTable(context.Background(), &ec2.CreateRouteTableInput{
 		VpcId: aws.String("vpc-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -62,7 +63,7 @@ func createTestRtb(t *testing.T, svc *RouteTableServiceImpl) string {
 
 func TestCreateRouteTable(t *testing.T) {
 	svc := setupTestService(t)
-	out, err := svc.CreateRouteTable(&ec2.CreateRouteTableInput{
+	out, err := svc.CreateRouteTable(context.Background(), &ec2.CreateRouteTableInput{
 		VpcId: aws.String("vpc-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -85,7 +86,7 @@ func TestCreateRouteTable(t *testing.T) {
 // the NAT gateway (and its billable EIP) be reclaimed.
 func TestCreateRouteTable_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateRouteTable(&ec2.CreateRouteTableInput{
+	_, err := svc.CreateRouteTable(context.Background(), &ec2.CreateRouteTableInput{
 		VpcId: aws.String("vpc-test1"),
 		TagSpecifications: []*ec2.TagSpecification{{
 			ResourceType: aws.String(ec2.ResourceTypeRouteTable),
@@ -97,7 +98,7 @@ func TestCreateRouteTable_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err := svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("tag:spinifex:eks-cluster"), Values: aws.StringSlice([]string{"alpha"})},
 			{Name: aws.String("tag:spinifex:eks-role"), Values: aws.StringSlice([]string{"cp-private-rt"})},
@@ -116,7 +117,7 @@ func TestCreateRouteTable_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 
 func TestCreateRouteTable_VpcNotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateRouteTable(&ec2.CreateRouteTableInput{
+	_, err := svc.CreateRouteTable(context.Background(), &ec2.CreateRouteTableInput{
 		VpcId: aws.String("vpc-nonexistent"),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidVpcIDNotFound)
@@ -126,13 +127,13 @@ func TestDeleteRouteTable(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	_, err := svc.DeleteRouteTable(&ec2.DeleteRouteTableInput{
+	_, err := svc.DeleteRouteTable(context.Background(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Should be gone
-	_, err = svc.getRouteTable(testAccountID, rtbID)
+	_, err = svc.getRouteTable(context.Background(), testAccountID, rtbID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidRouteTableIDNotFound)
 }
 
@@ -141,7 +142,7 @@ func TestDeleteRouteTable_Main(t *testing.T) {
 	record, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
 	require.NoError(t, err)
 
-	_, err = svc.DeleteRouteTable(&ec2.DeleteRouteTableInput{
+	_, err = svc.DeleteRouteTable(context.Background(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(record.RouteTableId),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorDependencyViolation)
@@ -152,14 +153,14 @@ func TestDeleteRouteTable_WithAssociations(t *testing.T) {
 	rtbID := createTestRtb(t, svc)
 
 	// Associate a subnet
-	_, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Should fail to delete
-	_, err = svc.DeleteRouteTable(&ec2.DeleteRouteTableInput{
+	_, err = svc.DeleteRouteTable(context.Background(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorDependencyViolation)
@@ -169,7 +170,7 @@ func TestDescribeRouteTables(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{}, testAccountID)
+	out, err := svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.RouteTables, 1)
 	assert.Equal(t, rtbID, *out.RouteTables[0].RouteTableId)
@@ -181,7 +182,7 @@ func TestDescribeRouteTables_FilterByVpcId(t *testing.T) {
 
 	name := "vpc-id"
 	val := "vpc-test1"
-	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err := svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: &name, Values: []*string{&val}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -189,7 +190,7 @@ func TestDescribeRouteTables_FilterByVpcId(t *testing.T) {
 
 	// Filter by non-existent VPC
 	val2 := "vpc-nope"
-	out, err = svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err = svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: &name, Values: []*string{&val2}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -208,7 +209,7 @@ func TestDescribeRouteTables_FilterByMain(t *testing.T) {
 
 	name := "association.main"
 	val := "true"
-	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err := svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: &name, Values: []*string{&val}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -221,14 +222,14 @@ func TestDescribeRouteTables_FilterByRouteState(t *testing.T) {
 	createTestRtb(t, svc) // has local route with state=active
 
 	// Exact match
-	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err := svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("route.state"), Values: []*string{aws.String("active")}}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.RouteTables, 1)
 
 	// Non-match
-	out, err = svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err = svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("route.state"), Values: []*string{aws.String("blackhole")}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -239,13 +240,13 @@ func TestDescribeRouteTables_FilterByRouteOrigin(t *testing.T) {
 	svc := setupTestService(t)
 	createTestRtb(t, svc) // local route has origin=CreateRouteTable
 
-	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err := svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("route.origin"), Values: []*string{aws.String("CreateRouteTable")}}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.RouteTables, 1)
 
-	out, err = svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err = svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("route.origin"), Values: []*string{aws.String("CreateRoute")}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -257,14 +258,14 @@ func TestDescribeRouteTables_FilterByRouteNatGatewayId(t *testing.T) {
 	createTestRtb(t, svc) // no NAT GW route
 
 	// No match — no routes have a nat-gateway-id
-	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err := svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("route.nat-gateway-id"), Values: []*string{aws.String("nat-000000")}}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.RouteTables)
 
 	// Wildcard on empty field should not match
-	out, err = svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err = svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("route.nat-gateway-id"), Values: []*string{aws.String("nat-*")}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -276,21 +277,21 @@ func TestDescribeRouteTables_FilterByOwnerId(t *testing.T) {
 	createTestRtb(t, svc)
 
 	// Exact match
-	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err := svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("owner-id"), Values: []*string{aws.String(testAccountID)}}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.RouteTables, 1)
 
 	// Non-match
-	out, err = svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err = svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("owner-id"), Values: []*string{aws.String("999999999999")}}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.RouteTables)
 
 	// Wildcard
-	out, err = svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+	out, err = svc.DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("owner-id"), Values: []*string{aws.String("1234*")}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -301,7 +302,7 @@ func TestCreateRoute(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	_, err := svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err := svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -309,7 +310,7 @@ func TestCreateRoute(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify route was added
-	record, err := svc.getRouteTable(testAccountID, rtbID)
+	record, err := svc.getRouteTable(context.Background(), testAccountID, rtbID)
 	require.NoError(t, err)
 	assert.Len(t, record.Routes, 2) // local + igw
 	assert.Equal(t, "0.0.0.0/0", record.Routes[1].DestinationCidrBlock)
@@ -320,7 +321,7 @@ func TestCreateRoute_DuplicateDestination(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	_, err := svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err := svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -328,7 +329,7 @@ func TestCreateRoute_DuplicateDestination(t *testing.T) {
 	require.NoError(t, err)
 
 	// Duplicate should fail
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -340,20 +341,20 @@ func TestDeleteRoute(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	_, err := svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err := svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteRoute(&ec2.DeleteRouteInput{
+	_, err = svc.DeleteRoute(context.Background(), &ec2.DeleteRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	record, err := svc.getRouteTable(testAccountID, rtbID)
+	record, err := svc.getRouteTable(context.Background(), testAccountID, rtbID)
 	require.NoError(t, err)
 	assert.Len(t, record.Routes, 1) // only local remains
 }
@@ -362,7 +363,7 @@ func TestDeleteRoute_LocalRoute(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	_, err := svc.DeleteRoute(&ec2.DeleteRouteInput{
+	_, err := svc.DeleteRoute(context.Background(), &ec2.DeleteRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
@@ -373,7 +374,7 @@ func TestDeleteRoute_NotFound(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	_, err := svc.DeleteRoute(&ec2.DeleteRouteInput{
+	_, err := svc.DeleteRoute(context.Background(), &ec2.DeleteRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("192.168.0.0/16"),
 	}, testAccountID)
@@ -384,7 +385,7 @@ func TestReplaceRoute(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	_, err := svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err := svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -392,7 +393,7 @@ func TestReplaceRoute(t *testing.T) {
 	require.NoError(t, err)
 
 	// Replace target (same IGW for simplicity — validates the swap logic)
-	_, err = svc.ReplaceRoute(&ec2.ReplaceRouteInput{
+	_, err = svc.ReplaceRoute(context.Background(), &ec2.ReplaceRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -404,7 +405,7 @@ func TestAssociateRouteTable(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	out, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	out, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-test1"),
 	}, testAccountID)
@@ -417,14 +418,14 @@ func TestAssociateRouteTable_DuplicateSubnet(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	_, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Second association should fail
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-test1"),
 	}, testAccountID)
@@ -448,7 +449,7 @@ func TestAssociateRouteTable_ConcurrentDistinctSubnets(t *testing.T) {
 		wg.Add(1)
 		go func(i int, sn string) {
 			defer wg.Done()
-			_, errs[i] = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+			_, errs[i] = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 				RouteTableId: aws.String(rtbID),
 				SubnetId:     aws.String(sn),
 			}, testAccountID)
@@ -460,7 +461,7 @@ func TestAssociateRouteTable_ConcurrentDistinctSubnets(t *testing.T) {
 		require.NoErrorf(t, err, "associate %s", subnets[i])
 	}
 
-	record, err := svc.getRouteTable(testAccountID, rtbID)
+	record, err := svc.getRouteTable(context.Background(), testAccountID, rtbID)
 	require.NoError(t, err)
 	got := make([]string, 0, len(record.Associations))
 	for _, a := range record.Associations {
@@ -473,19 +474,19 @@ func TestDisassociateRouteTable(t *testing.T) {
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
-	assocOut, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	assocOut, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+	_, err = svc.DisassociateRouteTable(context.Background(), &ec2.DisassociateRouteTableInput{
 		AssociationId: assocOut.AssociationId,
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify association removed
-	record, err := svc.getRouteTable(testAccountID, rtbID)
+	record, err := svc.getRouteTable(context.Background(), testAccountID, rtbID)
 	require.NoError(t, err)
 	assert.Empty(t, record.Associations)
 }
@@ -495,7 +496,7 @@ func TestDisassociateRouteTable_Main(t *testing.T) {
 	record, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
 	require.NoError(t, err)
 
-	_, err = svc.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+	_, err = svc.DisassociateRouteTable(context.Background(), &ec2.DisassociateRouteTableInput{
 		AssociationId: aws.String(record.Associations[0].AssociationId),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
@@ -506,13 +507,13 @@ func TestReplaceRouteTableAssociation(t *testing.T) {
 	rtb1ID := createTestRtb(t, svc)
 	rtb2ID := createTestRtb(t, svc)
 
-	assocOut, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	assocOut, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtb1ID),
 		SubnetId:     aws.String("subnet-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	replaceOut, err := svc.ReplaceRouteTableAssociation(&ec2.ReplaceRouteTableAssociationInput{
+	replaceOut, err := svc.ReplaceRouteTableAssociation(context.Background(), &ec2.ReplaceRouteTableAssociationInput{
 		AssociationId: assocOut.AssociationId,
 		RouteTableId:  aws.String(rtb2ID),
 	}, testAccountID)
@@ -521,12 +522,12 @@ func TestReplaceRouteTableAssociation(t *testing.T) {
 	assert.NotEqual(t, *assocOut.AssociationId, *replaceOut.NewAssociationId)
 
 	// Verify old table has no associations
-	oldRecord, err := svc.getRouteTable(testAccountID, rtb1ID)
+	oldRecord, err := svc.getRouteTable(context.Background(), testAccountID, rtb1ID)
 	require.NoError(t, err)
 	assert.Empty(t, oldRecord.Associations)
 
 	// Verify new table has the association
-	newRecord, err := svc.getRouteTable(testAccountID, rtb2ID)
+	newRecord, err := svc.getRouteTable(context.Background(), testAccountID, rtb2ID)
 	require.NoError(t, err)
 	require.Len(t, newRecord.Associations, 1)
 	assert.Equal(t, "subnet-test1", newRecord.Associations[0].SubnetId)
@@ -576,7 +577,7 @@ func TestAssociateRouteTable_PublishesNatGatewayEvent(t *testing.T) {
 	rtbID := createTestRtb(t, svc)
 
 	// Add NAT GW route BEFORE any subnet is associated (terraform ordering).
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		NatGatewayId:         aws.String("nat-test1"),
@@ -587,7 +588,7 @@ func TestAssociateRouteTable_PublishesNatGatewayEvent(t *testing.T) {
 	_, err = sub.NextMsg(100 * time.Millisecond)
 	assert.Error(t, err, "CreateRoute must not publish when table has no associations")
 
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -608,7 +609,7 @@ func TestAssociateRouteTable_NoNatGatewayRoute(t *testing.T) {
 
 	rtbID := createTestRtb(t, svc)
 
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -627,20 +628,20 @@ func TestDisassociateRouteTable_PublishesNatGatewayDeleteEvent(t *testing.T) {
 	defer func() { _ = delSub.Unsubscribe() }()
 
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		NatGatewayId:         aws.String("nat-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	assocOut, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	assocOut, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+	_, err = svc.DisassociateRouteTable(context.Background(), &ec2.DisassociateRouteTableInput{
 		AssociationId: assocOut.AssociationId,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -661,12 +662,12 @@ func TestDeleteRoute_NATGW_PublishesDeleteForAssociatedSubnets(t *testing.T) {
 	defer func() { _ = delSub.Unsubscribe() }()
 
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		NatGatewayId:         aws.String("nat-test1"),
@@ -676,7 +677,7 @@ func TestDeleteRoute_NATGW_PublishesDeleteForAssociatedSubnets(t *testing.T) {
 	natgwID, _ := receiveNatGWEvent(t, addSub, "10.0.11.0/24")
 	require.Equal(t, "nat-test1", natgwID)
 
-	_, err = svc.DeleteRoute(&ec2.DeleteRouteInput{
+	_, err = svc.DeleteRoute(context.Background(), &ec2.DeleteRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 	}, testAccountID)
@@ -701,14 +702,14 @@ func TestReplaceRouteTableAssociation_PublishesNatGatewayEvents(t *testing.T) {
 	oldRtb := createTestRtb(t, svc)
 	newRtb := createTestRtb(t, svc)
 
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(oldRtb),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		NatGatewayId:         aws.String("nat-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	assocOut, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	assocOut, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(oldRtb),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -717,7 +718,7 @@ func TestReplaceRouteTableAssociation_PublishesNatGatewayEvents(t *testing.T) {
 	_, err = addSub.NextMsg(time.Second)
 	require.NoError(t, err)
 
-	_, err = svc.ReplaceRouteTableAssociation(&ec2.ReplaceRouteTableAssociationInput{
+	_, err = svc.ReplaceRouteTableAssociation(context.Background(), &ec2.ReplaceRouteTableAssociationInput{
 		AssociationId: assocOut.AssociationId,
 		RouteTableId:  aws.String(newRtb),
 	}, testAccountID)
@@ -759,13 +760,13 @@ func TestCreateRoute_IGW_PublishesAddIGWRouteForAssociatedSubnets(t *testing.T) 
 
 	// Associate subnet FIRST, then CreateRoute — exercises the "route after
 	// association" leg.
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -787,7 +788,7 @@ func TestAssociateRouteTable_PublishesAddIGWRouteForExistingRoute(t *testing.T) 
 
 	rtbID := createTestRtb(t, svc)
 
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -798,7 +799,7 @@ func TestAssociateRouteTable_PublishesAddIGWRouteForExistingRoute(t *testing.T) 
 	_, err = sub.NextMsg(100 * time.Millisecond)
 	assert.Error(t, err, "CreateRoute(IGW) must not publish when table has no associations")
 
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -818,20 +819,20 @@ func TestDeleteRoute_IGW_PublishesDeleteIGWRoute(t *testing.T) {
 	defer func() { _ = delSub.Unsubscribe() }()
 
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteRoute(&ec2.DeleteRouteInput{
+	_, err = svc.DeleteRoute(context.Background(), &ec2.DeleteRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 	}, testAccountID)
@@ -851,20 +852,20 @@ func TestDisassociateRouteTable_PublishesDeleteIGWRoute(t *testing.T) {
 	defer func() { _ = delSub.Unsubscribe() }()
 
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	assocOut, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	assocOut, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+	_, err = svc.DisassociateRouteTable(context.Background(), &ec2.DisassociateRouteTableInput{
 		AssociationId: assocOut.AssociationId,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -904,7 +905,7 @@ func TestCreateRoute_IGW_OnMainRT_FansOutToImplicitSubnets(t *testing.T) {
 	mainRT, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
 	require.NoError(t, err)
 
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(mainRT.RouteTableId),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -930,13 +931,13 @@ func TestCreateRoute_IGW_OnMainRT_SkipsExplicitlyAssociatedSubnets(t *testing.T)
 	require.NoError(t, err)
 
 	customRtbID := createTestRtb(t, svc)
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(customRtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(mainRT.RouteTableId),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -958,7 +959,7 @@ func TestAssociateRouteTable_RemovesMainRTRoutesForJoiningSubnet(t *testing.T) {
 
 	mainRT, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
 	require.NoError(t, err)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(mainRT.RouteTableId),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -966,7 +967,7 @@ func TestAssociateRouteTable_RemovesMainRTRoutesForJoiningSubnet(t *testing.T) {
 	require.NoError(t, err)
 
 	customRtbID := createTestRtb(t, svc)
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(customRtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -1019,7 +1020,7 @@ func TestCreateRoute_IGW_PublishesUngateForAssociatedSubnets(t *testing.T) {
 	defer func() { _ = ungate.Unsubscribe() }()
 
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -1031,7 +1032,7 @@ func TestCreateRoute_IGW_PublishesUngateForAssociatedSubnets(t *testing.T) {
 		}
 	}
 
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -1053,12 +1054,12 @@ func TestDeleteRoute_IGW_PublishesGateForAssociatedSubnets(t *testing.T) {
 	defer func() { _ = gate.Unsubscribe() }()
 
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -1070,7 +1071,7 @@ func TestDeleteRoute_IGW_PublishesGateForAssociatedSubnets(t *testing.T) {
 		}
 	}
 
-	_, err = svc.DeleteRoute(&ec2.DeleteRouteInput{
+	_, err = svc.DeleteRoute(context.Background(), &ec2.DeleteRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 	}, testAccountID)
@@ -1090,7 +1091,7 @@ func TestAssociateRouteTable_NoDefaultRoute_PublishesGate(t *testing.T) {
 	defer func() { _ = gate.Unsubscribe() }()
 
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -1111,14 +1112,14 @@ func TestAssociateRouteTable_HasIGWRoute_PublishesUngate(t *testing.T) {
 	defer func() { _ = ungate.Unsubscribe() }()
 
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -1141,13 +1142,13 @@ func TestDisassociateRouteTable_MainHasNoEgress_PublishesGate(t *testing.T) {
 	_, err = svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
 	require.NoError(t, err)
 	customRtbID := createTestRtb(t, svc)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(customRtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
-	assocOut, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	assocOut, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(customRtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -1158,7 +1159,7 @@ func TestDisassociateRouteTable_MainHasNoEgress_PublishesGate(t *testing.T) {
 		}
 	}
 
-	_, err = svc.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+	_, err = svc.DisassociateRouteTable(context.Background(), &ec2.DisassociateRouteTableInput{
 		AssociationId: assocOut.AssociationId,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1180,7 +1181,7 @@ func TestCreateRoute_NonDefaultPrefix_NoGateEvent(t *testing.T) {
 	defer func() { _ = ungate.Unsubscribe() }()
 
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -1192,7 +1193,7 @@ func TestCreateRoute_NonDefaultPrefix_NoGateEvent(t *testing.T) {
 		}
 	}
 
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("8.8.8.8/32"),
 		GatewayId:            aws.String("igw-test1"),
@@ -1215,7 +1216,7 @@ func TestCreateRoute_IGW_OnMainRT_FansOutUngateToImplicitSubnets(t *testing.T) {
 
 	mainRT, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
 	require.NoError(t, err)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(mainRT.RouteTableId),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -1235,7 +1236,7 @@ func TestDisassociateRouteTable_RestoresMainRTRoutesForDepartingSubnet(t *testin
 
 	mainRT, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
 	require.NoError(t, err)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(mainRT.RouteTableId),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
@@ -1243,7 +1244,7 @@ func TestDisassociateRouteTable_RestoresMainRTRoutesForDepartingSubnet(t *testin
 	require.NoError(t, err)
 
 	customRtbID := createTestRtb(t, svc)
-	assocOut, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	assocOut, err := svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(customRtbID),
 		SubnetId:     aws.String("subnet-priv1"),
 	}, testAccountID)
@@ -1257,7 +1258,7 @@ func TestDisassociateRouteTable_RestoresMainRTRoutesForDepartingSubnet(t *testin
 		}
 	}
 
-	_, err = svc.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+	_, err = svc.DisassociateRouteTable(context.Background(), &ec2.DisassociateRouteTableInput{
 		AssociationId: assocOut.AssociationId,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1297,13 +1298,13 @@ func TestPublishGateDecisionsForVPC_UngatesSubnetWithIGWRoute(t *testing.T) {
 
 	// Custom RT with 0.0.0.0/0 -> IGW, associated to subnet-test1.
 	rtbID := createTestRtb(t, svc)
-	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+	_, err = svc.CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err = svc.AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 		SubnetId:     aws.String("subnet-test1"),
 	}, testAccountID)
@@ -1352,15 +1353,15 @@ func TestEffectiveRouteTable_DeterministicWithDuplicateMain(t *testing.T) {
 		},
 		CreatedAt: now,
 	}
-	require.NoError(t, svc.putRouteTable(testAccountID, &orphan))
-	require.NoError(t, svc.putRouteTable(testAccountID, &real_))
+	require.NoError(t, svc.putRouteTable(context.Background(), testAccountID, &orphan))
+	require.NoError(t, svc.putRouteTable(context.Background(), testAccountID, &real_))
 
-	rt, err := svc.effectiveRouteTable(testAccountID, "vpc-test1", "subnet-priv1")
+	rt, err := svc.effectiveRouteTable(context.Background(), testAccountID, "vpc-test1", "subnet-priv1")
 	require.NoError(t, err)
 	require.NotNil(t, rt)
 	assert.Equal(t, "rtb-aaareal", rt.RouteTableId, "must prefer main RT with more routes")
 
-	main, err := svc.mainRouteTable(testAccountID, "vpc-test1")
+	main, err := svc.mainRouteTable(context.Background(), testAccountID, "vpc-test1")
 	require.NoError(t, err)
 	require.NotNil(t, main)
 	assert.Equal(t, "rtb-aaareal", main.RouteTableId, "mainRouteTable must use same tiebreak")

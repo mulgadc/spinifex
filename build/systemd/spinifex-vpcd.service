@@ -5,6 +5,7 @@ After=spinifex-nats.service spinifex-daemon.service systemd-networkd.service ope
 Wants=spinifex-nats.service ovn-controller.service
 
 [Service]
+EnvironmentFile=-/etc/spinifex/telemetry.env
 Type=simple
 Slice=spinifex-system.slice
 User=spinifex-vpcd

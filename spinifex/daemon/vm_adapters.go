@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -465,7 +466,7 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		if d.natsConn != nil && instance.ENIId != "" && instance.Instance != nil {
 			publicIP := instance.PublicIP
 			if publicIP == "" && d.eipService != nil {
-				if eipIP, ok := d.eipService.AssociatedPublicIPForInstance(instance.AccountID, instance.ID); ok {
+				if eipIP, ok := d.eipService.AssociatedPublicIPForInstance(context.Background(), instance.AccountID, instance.ID); ok {
 					publicIP = eipIP
 				}
 			}
@@ -611,7 +612,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 				"name", ebsRequest.Name, "id", instance.ID)
 			continue
 		}
-		if _, err := a.d.volumeService.DeleteVolume(&ec2.DeleteVolumeInput{
+		if _, err := a.d.volumeService.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 			VolumeId: &ebsRequest.Name,
 		}, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
 			slog.Error("Failed to delete volume on termination",
@@ -660,7 +661,7 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 	}
 	utils.PublishNATEvent(a.d.natsConn, "vpc.delete-nat", vpcId, instance.PublicIP, logicalIP, portName, "")
 
-	if err := a.d.externalIPAM.ReleaseIP(instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
+	if err := a.d.externalIPAM.ReleaseIP(context.Background(), instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
 		slog.Warn("Failed to release public IP on termination",
 			"ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
 		return err
@@ -681,11 +682,11 @@ func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
 	// Best-effort detach; a failure here must not block deletion — the force
 	// delete below bypasses the in-use guard for the owning instance, breaking
 	// the un-terminable-ENI deadlock (ADR-0003 §2).
-	if detachErr := a.d.vpcService.DetachENI(instance.AccountID, instance.ENIId); detachErr != nil {
+	if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, instance.ENIId); detachErr != nil {
 		slog.Warn("Failed to detach ENI on termination",
 			"eni", instance.ENIId, "instanceId", instance.ID, "err", detachErr)
 	}
-	if err := a.d.vpcService.ForceDeleteInstanceENI(instance.AccountID, instance.ENIId); err != nil {
+	if err := a.d.vpcService.ForceDeleteInstanceENI(context.Background(), instance.AccountID, instance.ENIId); err != nil {
 		slog.Error("Failed to delete ENI on termination",
 			"eni", instance.ENIId, "instanceId", instance.ID, "err", err)
 		return err
@@ -702,7 +703,7 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) error
 	if instance.PlacementGroupName == "" || a.d.placementGroupService == nil {
 		return nil
 	}
-	if _, err := a.d.placementGroupService.RemoveInstance(&handlers_ec2_placementgroup.RemoveInstanceInput{
+	if _, err := a.d.placementGroupService.RemoveInstance(context.Background(), &handlers_ec2_placementgroup.RemoveInstanceInput{
 		GroupName:  instance.PlacementGroupName,
 		NodeName:   instance.PlacementGroupNode,
 		InstanceID: instance.ID,
@@ -722,7 +723,7 @@ func (a *instanceCleanerAdapter) RemoveFromSpotRequest(instance *vm.VM) error {
 	if a.d.spotInstanceService == nil {
 		return nil
 	}
-	if err := a.d.spotInstanceService.CloseForInstance(instance.ID, instance.AccountID); err != nil {
+	if err := a.d.spotInstanceService.CloseForInstance(context.Background(), instance.ID, instance.AccountID); err != nil {
 		slog.Error("Failed to close spot request for instance",
 			"instanceId", instance.ID, "err", err)
 		return err

@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -123,7 +124,7 @@ func selectRootBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping, rootDevice
 	return nil
 }
 
-func RegisterImage(input *ec2.RegisterImageInput, natsConn *nats.Conn, accountID string) (ec2.RegisterImageOutput, error) {
+func RegisterImage(ctx context.Context, input *ec2.RegisterImageInput, natsConn *nats.Conn, accountID string) (ec2.RegisterImageOutput, error) {
 	var output ec2.RegisterImageOutput
 
 	if err := ValidateRegisterImageInput(input); err != nil {
@@ -131,7 +132,7 @@ func RegisterImage(input *ec2.RegisterImageInput, natsConn *nats.Conn, accountID
 	}
 
 	svc := handlers_ec2_image.NewNATSImageService(natsConn, 0)
-	result, err := svc.RegisterImage(input, accountID)
+	result, err := svc.RegisterImage(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

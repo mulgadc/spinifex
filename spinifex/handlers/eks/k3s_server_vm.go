@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -23,10 +24,10 @@ var ErrEKSServerAMINotFound = errors.New("eks: eks-server AMI not found")
 
 // k3sVPCProvisioner is the narrow VPC surface the K3s server VM launcher needs.
 type k3sVPCProvisioner interface {
-	CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
-	DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
-	DescribeNetworkInterfaces(input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error)
-	DetachENI(accountID, eniID string) error
+	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
+	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
+	DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error)
+	DetachENI(ctx context.Context, accountID, eniID string) error
 }
 
 // k3sInstanceLauncher is the system-instance launch surface for the K3s CP VM.
@@ -42,7 +43,7 @@ type k3sInstanceLauncher interface {
 
 // k3sAMIResolver is the narrow AMI surface for resolving the eks-server AMI ID.
 type k3sAMIResolver interface {
-	DescribeImages(input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error)
+	DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error)
 }
 
 const (
@@ -176,7 +177,7 @@ type K3sServerOutput struct {
 // LaunchK3sServerVM provisions the K3s CP VM: resolves the AMI, pre-creates the
 // ENI, renders cloud-init user-data, then launches via RunInstances. On failure
 // the ENI is deleted best-effort to avoid leaking a customer-account resource.
-func LaunchK3sServerVM(
+func LaunchK3sServerVM(ctx context.Context,
 	vpcSvc k3sVPCProvisioner,
 	instSvc k3sInstanceLauncher,
 	amiSvc k3sAMIResolver,
@@ -190,12 +191,12 @@ func LaunchK3sServerVM(
 		instanceType = defaultK3sServerInstanceType
 	}
 
-	amiID, err := lookupEKSServerAMI(amiSvc, in.AccountID)
+	amiID, err := lookupEKSServerAMI(ctx, amiSvc, in.AccountID)
 	if err != nil {
 		return nil, err
 	}
 
-	eniOut, err := vpcSvc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	eniOut, err := vpcSvc.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(in.SubnetID),
 		Description: aws.String("EKS K3s server ENI for " + in.ClusterName),
 		Groups:      aws.StringSlice([]string{in.ControlPlaneSGID}),
@@ -236,16 +237,16 @@ func LaunchK3sServerVM(
 		IamInstanceProfileArn: in.IamInstanceProfileArn,
 	})
 	if err != nil {
-		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
+		rollbackK3sENI(ctx, vpcSvc, in.AccountID, eniID)
 		return nil, fmt.Errorf("run K3s server instance for cluster %s: %w", in.ClusterName, err)
 	}
 	if sysOut == nil || sysOut.InstanceID == "" {
-		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
+		rollbackK3sENI(ctx, vpcSvc, in.AccountID, eniID)
 		return nil, fmt.Errorf("eks: LaunchSystemInstance returned no instance for cluster %s", in.ClusterName)
 	}
 	instanceID := sysOut.InstanceID
 
-	slog.Info("LaunchK3sServerVM completed",
+	slog.InfoContext(ctx, "LaunchK3sServerVM completed",
 		"clusterName", in.ClusterName,
 		"accountID", in.AccountID,
 		"instanceId", instanceID,
@@ -263,7 +264,7 @@ func LaunchK3sServerVM(
 
 // TerminateK3sServerVM terminates the K3s server VM and deletes the ENI.
 // Missing instance/ENI is a no-op for idempotent retries.
-func TerminateK3sServerVM(
+func TerminateK3sServerVM(ctx context.Context,
 	vpcSvc k3sVPCProvisioner,
 	instSvc k3sInstanceLauncher,
 	accountID, instanceID, eniID string,
@@ -276,16 +277,16 @@ func TerminateK3sServerVM(
 		// "instance not found" on a retry is idempotent success; proceed to the ENI/SG/KV sweep.
 		if err := instSvc.TerminateSystemInstance(instanceID); err != nil {
 			if errors.Is(err, sysinstance.ErrSystemInstanceNotFound) {
-				slog.Debug("TerminateK3sServerVM: instance already gone", "instanceId", instanceID)
+				slog.DebugContext(ctx, "TerminateK3sServerVM: instance already gone", "instanceId", instanceID)
 			} else {
-				slog.Warn("TerminateK3sServerVM: terminate failed", "instanceId", instanceID, "err", err)
+				slog.WarnContext(ctx, "TerminateK3sServerVM: terminate failed", "instanceId", instanceID, "err", err)
 				firstErr = fmt.Errorf("terminate instance %s: %w", instanceID, err)
 			}
 		}
 	}
 	if eniID != "" {
-		if err := detachAndDeleteServerENI(vpcSvc, accountID, eniID); err != nil {
-			slog.Warn("TerminateK3sServerVM: ENI delete failed", "eniId", eniID, "err", err)
+		if err := detachAndDeleteServerENI(ctx, vpcSvc, accountID, eniID); err != nil {
+			slog.WarnContext(ctx, "TerminateK3sServerVM: ENI delete failed", "eniId", eniID, "err", err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("delete ENI %s: %w", eniID, err)
 			}
@@ -303,12 +304,12 @@ func TerminateK3sServerVM(
 // tolerate an already-gone ENI (NotFound), so a race with the async
 // instance-terminate cascade that removes the same ENI resolves to idempotent
 // success either way.
-func detachAndDeleteServerENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) error {
-	if err := vpcSvc.DetachENI(accountID, eniID); err != nil && !isENINotFound(err) {
+func detachAndDeleteServerENI(ctx context.Context, vpcSvc k3sVPCProvisioner, accountID, eniID string) error {
+	if err := vpcSvc.DetachENI(ctx, accountID, eniID); err != nil && !isENINotFound(err) {
 		// Non-fatal: the delete below still runs and surfaces any real failure.
-		slog.Debug("TerminateK3sServerVM: ENI detach failed; deleting anyway", "eniId", eniID, "err", err)
+		slog.DebugContext(ctx, "TerminateK3sServerVM: ENI detach failed; deleting anyway", "eniId", eniID, "err", err)
 	}
-	_, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	_, err := vpcSvc.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniID),
 	}, accountID)
 	if err == nil || isENINotFound(err) {
@@ -326,8 +327,8 @@ func isENINotFound(err error) bool {
 
 // lookupEKSServerAMI resolves the EKS CP AMI by the spinifex:managed-by=eks tag
 // rather than a brittle exact name. If multiple AMIs match, the newest wins.
-func lookupEKSServerAMI(amiSvc k3sAMIResolver, accountID string) (string, error) {
-	out, err := amiSvc.DescribeImages(&ec2.DescribeImagesInput{
+func lookupEKSServerAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID string) (string, error) {
+	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByEKS})},
 		},
@@ -356,17 +357,17 @@ func lookupEKSServerAMI(amiSvc k3sAMIResolver, accountID string) (string, error)
 		return "", fmt.Errorf("%w (tag:%s=%s, account %s)", ErrEKSServerAMINotFound, tags.ManagedByKey, tags.ManagedByEKS, accountID)
 	}
 	if matches > 1 {
-		slog.Warn("eks: multiple AMIs match managed-by=eks; using newest",
+		slog.WarnContext(ctx, "eks: multiple AMIs match managed-by=eks; using newest",
 			"count", matches, "imageId", newestID, "created", newestCreated)
 	}
 	return newestID, nil
 }
 
-func rollbackK3sENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) {
-	if _, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+func rollbackK3sENI(ctx context.Context, vpcSvc k3sVPCProvisioner, accountID, eniID string) {
+	if _, err := vpcSvc.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniID),
 	}, accountID); err != nil && !awserrors.IsNotFound(err) {
-		slog.Warn("LaunchK3sServerVM: rollback ENI delete failed", "eniId", eniID, "err", err)
+		slog.WarnContext(ctx, "LaunchK3sServerVM: rollback ENI delete failed", "eniId", eniID, "err", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -140,13 +141,13 @@ func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc
 	elbv2Svc.region = "us-east-1"
 	elbv2Svc.CACert = "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n"
 
-	vpcOut, err := vpcSvc.CreateVpc(&ec2.CreateVpcInput{
+	vpcOut, err := vpcSvc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
 	vpcID := *vpcOut.Vpc.VpcId
 
-	subnetOut, err := vpcSvc.CreateSubnet(&ec2.CreateSubnetInput{
+	subnetOut, err := vpcSvc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
 		VpcId:            aws.String(vpcID),
 		CidrBlock:        aws.String("10.0.1.0/24"),
 		AvailabilityZone: aws.String("us-east-1a"),
@@ -170,7 +171,7 @@ func TestCreateLoadBalancer_DeliversCACert(t *testing.T) {
 	}
 	svc.InstanceLauncher = mock
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("mv-alb"),
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
@@ -192,7 +193,7 @@ func TestCreateLoadBalancer_Microvm_LBAgentEnv(t *testing.T) {
 	}
 	svc.InstanceLauncher = mock
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("env-alb"),
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
@@ -220,7 +221,7 @@ func TestCreateLoadBalancer_Microvm_NICs(t *testing.T) {
 	}
 	svc.InstanceLauncher = mock
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("nic-alb"),
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)

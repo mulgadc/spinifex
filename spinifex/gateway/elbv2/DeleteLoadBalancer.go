@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -20,7 +21,7 @@ func ValidateDeleteLoadBalancerInput(input *elbv2.DeleteLoadBalancerInput) error
 }
 
 // DeleteLoadBalancer handles the ELBv2 DeleteLoadBalancer API call.
-func DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, natsConn *nats.Conn, accountID string) (elbv2.DeleteLoadBalancerOutput, error) {
+func DeleteLoadBalancer(ctx context.Context, input *elbv2.DeleteLoadBalancerInput, natsConn *nats.Conn, accountID string) (elbv2.DeleteLoadBalancerOutput, error) {
 	var output elbv2.DeleteLoadBalancerOutput
 
 	if err := ValidateDeleteLoadBalancerInput(input); err != nil {
@@ -28,7 +29,7 @@ func DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, natsConn *nats.Con
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.DeleteLoadBalancer(input, accountID)
+	result, err := svc.DeleteLoadBalancer(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

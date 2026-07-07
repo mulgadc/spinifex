@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func TestCapacityReservationTargetID(t *testing.T) {
 
 // A malformed reservation id is rejected at the gateway before any NATS call.
 func TestRunInstancesInner_TargetedMalformedID(t *testing.T) {
-	_, err := runInstancesInner(crTargetedInput("bogus-id"), nil, nil, "123456789012", nil, nil, 1)
+	_, err := runInstancesInner(context.Background(), crTargetedInput("bogus-id"), nil, nil, "123456789012", nil, nil, 1)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdMalformed, err.Error())
 }
@@ -48,7 +49,7 @@ func TestRunInstancesInner_TargetedMalformedID(t *testing.T) {
 func TestRunInstancesInner_TargetedWithPlacementGroup(t *testing.T) {
 	input := crTargetedInput(testCRID)
 	input.Placement = &ec2.Placement{GroupName: aws.String("pg-cluster")}
-	_, err := runInstancesInner(input, nil, nil, "123456789012", nil, nil, 1)
+	_, err := runInstancesInner(context.Background(), input, nil, nil, "123456789012", nil, nil, 1)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
@@ -57,7 +58,7 @@ func TestRunInstancesInner_TargetedWithPlacementGroup(t *testing.T) {
 // transport-level ErrNoResponders to InvalidCapacityReservationId.NotFound.
 func TestRunIntoReservation_NoResponder(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	_, err := runIntoReservation(crTargetedInput(testCRID), nc, "123456789012", testCRID)
+	_, err := runIntoReservation(context.Background(), crTargetedInput(testCRID), nc, "123456789012", testCRID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdNotFound, err.Error())
 }
@@ -78,7 +79,7 @@ func TestRunIntoReservation_Success(t *testing.T) {
 	defer func() { _ = sub.Unsubscribe() }()
 	time.Sleep(50 * time.Millisecond)
 
-	reservation, err := runIntoReservation(crTargetedInput(testCRID), nc, "123456789012", testCRID)
+	reservation, err := runIntoReservation(context.Background(), crTargetedInput(testCRID), nc, "123456789012", testCRID)
 	require.NoError(t, err)
 	require.Len(t, reservation.Instances, 1)
 	assert.Equal(t, "i-cr1", aws.StringValue(reservation.Instances[0].InstanceId))
@@ -96,7 +97,7 @@ func TestRunIntoReservation_DaemonErrorPropagates(t *testing.T) {
 	defer func() { _ = sub.Unsubscribe() }()
 	time.Sleep(50 * time.Millisecond)
 
-	_, err = runIntoReservation(crTargetedInput(testCRID), nc, "123456789012", testCRID)
+	_, err = runIntoReservation(context.Background(), crTargetedInput(testCRID), nc, "123456789012", testCRID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorReservationCapacityExceeded, err.Error())
 }
@@ -117,7 +118,7 @@ func TestRunInstancesInner_TargetedRoutesToCRSubject(t *testing.T) {
 	defer func() { _ = sub.Unsubscribe() }()
 	time.Sleep(50 * time.Millisecond)
 
-	reservation, err := runInstancesInner(crTargetedInput(testCRID), nc, nil, "123456789012", nil, nil, 1)
+	reservation, err := runInstancesInner(context.Background(), crTargetedInput(testCRID), nc, nil, "123456789012", nil, nil, 1)
 	require.NoError(t, err)
 	require.Len(t, reservation.Instances, 1)
 	assert.Equal(t, "i-cr1", aws.StringValue(reservation.Instances[0].InstanceId))

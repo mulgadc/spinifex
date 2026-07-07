@@ -1,6 +1,7 @@
 package gateway_ec2_volume
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,7 +30,7 @@ func ValidateDetachVolumeInput(input *ec2.DetachVolumeInput) error {
 }
 
 // DetachVolume sends a detach-volume command to the daemon owning the instance
-func DetachVolume(input *ec2.DetachVolumeInput, natsConn *nats.Conn, accountID string) (ec2.VolumeAttachment, error) {
+func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *nats.Conn, accountID string) (ec2.VolumeAttachment, error) {
 	var output ec2.VolumeAttachment
 
 	if err := ValidateDetachVolumeInput(input); err != nil {
@@ -43,11 +44,11 @@ func DetachVolume(input *ec2.DetachVolumeInput, natsConn *nats.Conn, accountID s
 		instanceID = *input.InstanceId
 	} else {
 		volSvc := handlers_ec2_volume.NewNATSVolumeService(natsConn)
-		descOutput, err := volSvc.DescribeVolumes(&ec2.DescribeVolumesInput{
+		descOutput, err := volSvc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 			VolumeIds: []*string{&volumeID},
 		}, accountID)
 		if err != nil {
-			slog.Error("DetachVolume: failed to describe volume", "volumeId", volumeID, "err", err)
+			slog.ErrorContext(ctx, "DetachVolume: failed to describe volume", "volumeId", volumeID, "err", err)
 			return output, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 		}
 		if len(descOutput.Volumes) == 0 {
@@ -79,7 +80,7 @@ func DetachVolume(input *ec2.DetachVolumeInput, natsConn *nats.Conn, accountID s
 
 	jsonData, err := json.Marshal(command)
 	if err != nil {
-		slog.Error("DetachVolume: Failed to marshal command", "err", err)
+		slog.ErrorContext(ctx, "DetachVolume: Failed to marshal command", "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -87,9 +88,10 @@ func DetachVolume(input *ec2.DetachVolumeInput, natsConn *nats.Conn, accountID s
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
-		slog.Error("DetachVolume: NATS request failed", "instanceId", instanceID, "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "DetachVolume: NATS request failed", "instanceId", instanceID, "volumeId", volumeID, "err", err)
 		if errors.Is(err, nats.ErrNoResponders) {
 			return output, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
@@ -105,10 +107,10 @@ func DetachVolume(input *ec2.DetachVolumeInput, natsConn *nats.Conn, accountID s
 	}
 
 	if err := json.Unmarshal(msg.Data, &output); err != nil {
-		slog.Error("DetachVolume: Failed to unmarshal response", "err", err)
+		slog.ErrorContext(ctx, "DetachVolume: Failed to unmarshal response", "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("DetachVolume completed", "instanceId", instanceID, "volumeId", volumeID)
+	slog.InfoContext(ctx, "DetachVolume completed", "instanceId", instanceID, "volumeId", volumeID)
 	return output, nil
 }

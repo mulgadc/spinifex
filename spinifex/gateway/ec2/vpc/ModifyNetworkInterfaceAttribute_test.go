@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -10,24 +11,24 @@ import (
 )
 
 func TestModifyNetworkInterfaceAttribute_NilInput(t *testing.T) {
-	_, err := ModifyNetworkInterfaceAttribute(nil, nil, "123456789012")
+	_, err := ModifyNetworkInterfaceAttribute(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestModifyNetworkInterfaceAttribute_NilNetworkInterfaceId(t *testing.T) {
-	_, err := ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{}, nil, "123456789012")
+	_, err := ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifyNetworkInterfaceAttribute_EmptyNetworkInterfaceId(t *testing.T) {
-	_, err := ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(""),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
-	_, err := ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String("eni-abc123"),
 	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
@@ -50,7 +51,7 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckFalse_Unsupported(t *tes
 }
 
 func TestModifyNetworkInterfaceAttribute_NilNATS(t *testing.T) {
-	_, err := ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String("eni-abc123"),
 		Description:        &ec2.AttributeValue{Value: aws.String("desc")},
 	}, nil, "123456789012")

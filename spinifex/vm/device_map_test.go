@@ -232,7 +232,7 @@ func TestQueryGuestDeviceMapWait(t *testing.T) {
 		})
 		defer cancel()
 
-		deviceMap, err := queryGuestDeviceMapWait(qmpClient, "i-1", "vdisk-vol-new")
+		deviceMap, err := queryGuestDeviceMapWait(t.Context(), qmpClient, "i-1", "vdisk-vol-new")
 
 		require.NoError(t, err)
 		assert.Contains(t, deviceMap, "vdisk-vol-new")
@@ -254,7 +254,7 @@ func TestQueryGuestDeviceMapWait(t *testing.T) {
 		})
 		defer cancel()
 
-		deviceMap, err := queryGuestDeviceMapWait(qmpClient, "i-1", "vdisk-vol-missing")
+		deviceMap, err := queryGuestDeviceMapWait(t.Context(), qmpClient, "i-1", "vdisk-vol-missing")
 
 		require.NoError(t, err)
 		assert.Equal(t, int32(6), calls.Load(),
@@ -282,7 +282,7 @@ func TestQueryGuestDeviceMapWait(t *testing.T) {
 		})
 		defer cancel()
 
-		deviceMap, err := queryGuestDeviceMapWait(qmpClient, "i-1", "vdisk-vol-late")
+		deviceMap, err := queryGuestDeviceMapWait(t.Context(), qmpClient, "i-1", "vdisk-vol-late")
 
 		require.NoError(t, err)
 		assert.Contains(t, deviceMap, "vdisk-vol-late")

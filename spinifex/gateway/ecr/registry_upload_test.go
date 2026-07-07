@@ -1,6 +1,8 @@
 package gateway_ecr
 
 import (
+	"context"
+
 	"errors"
 	"net/http"
 	"strings"
@@ -20,11 +22,11 @@ type blobPutFailStore struct {
 	*objectstore.MemoryObjectStore
 }
 
-func (s *blobPutFailStore) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+func (s *blobPutFailStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
 	if input.Key != nil && strings.HasPrefix(*input.Key, "blobs/") {
 		return nil, errors.New("predastore unavailable")
 	}
-	return s.MemoryObjectStore.PutObject(input)
+	return s.MemoryObjectStore.PutObject(ctx, input)
 }
 
 // TestFinishUpload_StoreFailure_CleansUp proves that when the blob PutObject
@@ -53,10 +55,10 @@ func TestFinishUpload_StoreFailure_CleansUp(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, w.Code)
 
 	uploadID := strings.TrimPrefix(loc, "/v2/team/app/blobs/uploads/")
-	_, _, err := meta.GetUpload(testAccount, uploadID)
+	_, _, err := meta.GetUpload(context.Background(), testAccount, uploadID)
 	assert.ErrorIs(t, err, ecr.ErrNotFound, "upload record must be cleaned up after finalize failure")
 
-	listed, err := mem.ListObjectsV2(&s3.ListObjectsV2Input{
+	listed, err := mem.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
 		Bucket: awsString(ecr.AccountBucket(testAccount)),
 		Prefix: awsString("uploads/"),
 	})
@@ -71,7 +73,7 @@ func awsString(s string) *string { return &s }
 // the other gets ErrConflict — so a racing PATCH is rejected, never merged.
 func TestUploadCAS_SameRevisionSingleWinner(t *testing.T) {
 	meta := ecr.NewMemoryMetaStore()
-	rev, err := meta.PutUpload(testAccount, "u-race", ecr.UploadState{RepoName: "r"})
+	rev, err := meta.PutUpload(context.Background(), testAccount, "u-race", ecr.UploadState{RepoName: "r"})
 	require.NoError(t, err)
 
 	stA := ecr.UploadState{RepoName: "r", CommittedBytes: 8, BytesKey: "uploads/u-race/a"}
@@ -83,7 +85,7 @@ func TestUploadCAS_SameRevisionSingleWinner(t *testing.T) {
 		wg.Add(1)
 		go func(idx int, s ecr.UploadState) {
 			defer wg.Done()
-			_, errs[idx] = meta.UpdateUpload(testAccount, "u-race", s, rev)
+			_, errs[idx] = meta.UpdateUpload(context.Background(), testAccount, "u-race", s, rev)
 		}(i, st)
 	}
 	wg.Wait()
@@ -103,7 +105,7 @@ func TestUploadCAS_SameRevisionSingleWinner(t *testing.T) {
 	assert.Equal(t, 1, conflicts, "the racing update must conflict, not silently merge")
 
 	// The committed record points at exactly one byte key — never a mix.
-	final, _, err := meta.GetUpload(testAccount, "u-race")
+	final, _, err := meta.GetUpload(context.Background(), testAccount, "u-race")
 	require.NoError(t, err)
 	assert.Contains(t, []string{"uploads/u-race/a", "uploads/u-race/b"}, final.BytesKey)
 }
@@ -134,9 +136,9 @@ func TestPatchUpload_ConcurrentNoCorruption(t *testing.T) {
 
 		// Read the committed bytes the server recorded, finalize against their
 		// digest, and require the stored blob to match exactly.
-		st, _, err := reg.Meta.GetUpload(testAccount, strings.TrimPrefix(loc, "/v2/"+repo+"/blobs/uploads/"))
+		st, _, err := reg.Meta.GetUpload(context.Background(), testAccount, strings.TrimPrefix(loc, "/v2/"+repo+"/blobs/uploads/"))
 		require.NoError(t, err)
-		committed := reg.readUploadBytesAt(st.BytesKey)
+		committed := reg.readUploadBytesAt(context.Background(), st.BytesKey)
 		dg := digestOf(committed)
 
 		w = do(reg, http.MethodPut, loc+"?digest="+dg, nil, nil)

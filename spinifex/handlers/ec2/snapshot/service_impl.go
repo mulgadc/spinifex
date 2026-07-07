@@ -2,6 +2,7 @@ package handlers_ec2_snapshot
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,7 +123,7 @@ var ErrCorruptSnapshotMetadata = errors.New("corrupt snapshot metadata")
 // Decode failures wrap ErrCorruptSnapshotMetadata.
 func ReadSnapshotConfig(store objectstore.ObjectStore, bucket, snapshotID string) (*SnapshotConfig, error) {
 	key := GetSnapshotKey(snapshotID)
-	result, err := store.GetObject(&s3.GetObjectInput{
+	result, err := store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -144,7 +145,7 @@ func WriteSnapshotConfig(store objectstore.ObjectStore, bucket, snapshotID strin
 	if err != nil {
 		return err
 	}
-	_, err = store.PutObject(&s3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(GetSnapshotKey(snapshotID)),
 		Body:        bytes.NewReader(data),
@@ -190,31 +191,31 @@ func snapshotConfigToEC2(cfg *SnapshotConfig) *ec2.Snapshot {
 }
 
 // CreateSnapshot creates a new snapshot from a volume
-func (s *SnapshotServiceImpl) CreateSnapshot(input *ec2.CreateSnapshotInput, accountID string) (*ec2.Snapshot, error) {
+func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, accountID string) (*ec2.Snapshot, error) {
 	if input == nil || input.VolumeId == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	volumeID := *input.VolumeId
 
-	slog.Info("CreateSnapshot request", "volumeId", volumeID)
+	slog.InfoContext(ctx, "CreateSnapshot request", "volumeId", volumeID)
 
 	snapshotID := utils.GenerateResourceID("snap")
 
 	volumeConfigKey := fmt.Sprintf("%s/config.json", volumeID)
-	volumeResult, err := s.store.GetObject(&s3.GetObjectInput{
+	volumeResult, err := s.store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.config.Predastore.Bucket),
 		Key:    aws.String(volumeConfigKey),
 	})
 	if err != nil {
-		slog.Error("CreateSnapshot failed to get volume config", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "CreateSnapshot failed to get volume config", "volumeId", volumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
 	defer volumeResult.Body.Close()
 
 	volumeBody, err := io.ReadAll(volumeResult.Body)
 	if err != nil {
-		slog.Error("CreateSnapshot failed to read volume config", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "CreateSnapshot failed to read volume config", "volumeId", volumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -223,19 +224,19 @@ func (s *SnapshotServiceImpl) CreateSnapshot(input *ec2.CreateSnapshotInput, acc
 	// (SizeGiB==0), which the size guard below would reject as a 500.
 	var volumeState viperblock.VBState
 	if err := json.Unmarshal(viperblock.StateBody(volumeBody), &volumeState); err != nil {
-		slog.Error("CreateSnapshot failed to decode volume config", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "CreateSnapshot failed to decode volume config", "volumeId", volumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	volumeConfig := volumeState.VolumeConfig
 
 	// Verify the caller owns the source volume
 	if accountID != "" && volumeConfig.VolumeMetadata.TenantID != "" && volumeConfig.VolumeMetadata.TenantID != accountID {
-		slog.Warn("CreateSnapshot: account does not own volume", "volumeId", volumeID, "accountID", accountID, "tenantID", volumeConfig.VolumeMetadata.TenantID)
+		slog.WarnContext(ctx, "CreateSnapshot: account does not own volume", "volumeId", volumeID, "accountID", accountID, "tenantID", volumeConfig.VolumeMetadata.TenantID)
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
 
 	if volumeConfig.VolumeMetadata.SizeGiB == 0 {
-		slog.Error("CreateSnapshot: source volume has zero size in config", "volumeId", volumeID)
+		slog.ErrorContext(ctx, "CreateSnapshot: source volume has zero size in config", "volumeId", volumeID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -244,10 +245,10 @@ func (s *SnapshotServiceImpl) CreateSnapshot(input *ec2.CreateSnapshotInput, acc
 	// If the volume is not mounted (stopped), LoadLiveCheckpoint falls back to the
 	// numbered checkpoint written by Close. No IPC with nbdkit required.
 	if err := s.snapshotVolume(volumeID, snapshotID, volumeConfig.VolumeMetadata.SizeGiB*1024*1024*1024); err != nil {
-		slog.Error("CreateSnapshot: viperblock snapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+		slog.ErrorContext(ctx, "CreateSnapshot: viperblock snapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	slog.Info("CreateSnapshot: viperblock snapshot created", "volumeId", volumeID, "snapshotId", snapshotID)
+	slog.InfoContext(ctx, "CreateSnapshot: viperblock snapshot created", "volumeId", volumeID, "snapshotId", snapshotID)
 
 	now := time.Now()
 
@@ -271,17 +272,17 @@ func (s *SnapshotServiceImpl) CreateSnapshot(input *ec2.CreateSnapshotInput, acc
 	// Track the volume→snapshot dependency in KV before persisting to S3.
 	// This ensures we never have an untracked snapshot in S3.
 	if err := s.addSnapshotRef(volumeID, snapshotID); err != nil {
-		slog.Error("CreateSnapshot failed to add snapshot ref to KV", "snapshotId", snapshotID, "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "CreateSnapshot failed to add snapshot ref to KV", "snapshotId", snapshotID, "volumeId", volumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if err := s.putSnapshotConfig(snapshotID, snapshotCfg); err != nil {
-		slog.Error("CreateSnapshot failed to write config", "snapshotId", snapshotID, "err", err)
+		slog.ErrorContext(ctx, "CreateSnapshot failed to write config", "snapshotId", snapshotID, "err", err)
 		_ = s.removeSnapshotRef(volumeID, snapshotID) // best-effort cleanup
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("CreateSnapshot completed", "snapshotId", snapshotID, "volumeId", volumeID)
+	slog.InfoContext(ctx, "CreateSnapshot completed", "snapshotId", snapshotID, "volumeId", volumeID)
 
 	return snapshotConfigToEC2(snapshotCfg), nil
 }
@@ -374,11 +375,11 @@ var describeSnapshotsValidFilters = map[string]bool{
 }
 
 // DescribeSnapshots lists snapshots matching the specified criteria, scoped to the caller's account.
-func (s *SnapshotServiceImpl) DescribeSnapshots(input *ec2.DescribeSnapshotsInput, accountID string) (*ec2.DescribeSnapshotsOutput, error) {
+func (s *SnapshotServiceImpl) DescribeSnapshots(ctx context.Context, input *ec2.DescribeSnapshotsInput, accountID string) (*ec2.DescribeSnapshotsOutput, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
-	slog.Info("DescribeSnapshots request", "snapshotIds", input.SnapshotIds, "accountID", accountID)
+	slog.InfoContext(ctx, "DescribeSnapshots request", "snapshotIds", input.SnapshotIds, "accountID", accountID)
 
 	snapshotIDFilter := make(map[string]bool)
 	for _, id := range input.SnapshotIds {
@@ -389,17 +390,17 @@ func (s *SnapshotServiceImpl) DescribeSnapshots(input *ec2.DescribeSnapshotsInpu
 
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSnapshotsValidFilters)
 	if err != nil {
-		slog.Warn("DescribeSnapshots: invalid filter", "err", err)
+		slog.WarnContext(ctx, "DescribeSnapshots: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	listResult, err := s.store.ListObjectsV2(&s3.ListObjectsV2Input{
+	listResult, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(s.config.Predastore.Bucket),
 		Prefix:    aws.String("snap-"),
 		Delimiter: aws.String("/"),
 	})
 	if err != nil {
-		slog.Error("DescribeSnapshots failed to list objects", "err", err)
+		slog.ErrorContext(ctx, "DescribeSnapshots failed to list objects", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -432,7 +433,7 @@ func (s *SnapshotServiceImpl) DescribeSnapshots(input *ec2.DescribeSnapshotsInpu
 
 		cfg, err := s.getSnapshotConfig(snapshotID)
 		if err != nil {
-			slog.Warn("DescribeSnapshots failed to get config", "snapshotId", snapshotID, "err", err)
+			slog.WarnContext(ctx, "DescribeSnapshots failed to get config", "snapshotId", snapshotID, "err", err)
 			continue
 		}
 
@@ -448,7 +449,7 @@ func (s *SnapshotServiceImpl) DescribeSnapshots(input *ec2.DescribeSnapshotsInpu
 		snapshots = append(snapshots, snapshotConfigToEC2(cfg))
 	}
 
-	slog.Info("DescribeSnapshots completed", "count", len(snapshots))
+	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))
 
 	return &ec2.DescribeSnapshotsOutput{
 		Snapshots: snapshots,
@@ -487,8 +488,8 @@ func snapshotMatchesFilters(cfg *SnapshotConfig, filters map[string][]string) bo
 }
 
 // snapshotInUseByVolumes checks if any volume was created from the given snapshot.
-func (s *SnapshotServiceImpl) snapshotInUseByVolumes(snapshotID string) (bool, error) {
-	listResult, err := s.store.ListObjectsV2(&s3.ListObjectsV2Input{
+func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapshotID string) (bool, error) {
+	listResult, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(s.config.Predastore.Bucket),
 		Prefix:    aws.String("vol-"),
 		Delimiter: aws.String("/"),
@@ -504,7 +505,7 @@ func (s *SnapshotServiceImpl) snapshotInUseByVolumes(snapshotID string) (bool, e
 		volumeID := strings.TrimSuffix(*prefix.Prefix, "/")
 		configKey := fmt.Sprintf("%s/config.json", volumeID)
 
-		result, err := s.store.GetObject(&s3.GetObjectInput{
+		result, err := s.store.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(s.config.Predastore.Bucket),
 			Key:    aws.String(configKey),
 		})
@@ -533,44 +534,44 @@ func (s *SnapshotServiceImpl) snapshotInUseByVolumes(snapshotID string) (bool, e
 }
 
 // DeleteSnapshot deletes a snapshot after verifying the caller owns it.
-func (s *SnapshotServiceImpl) DeleteSnapshot(input *ec2.DeleteSnapshotInput, accountID string) (*ec2.DeleteSnapshotOutput, error) {
+func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.DeleteSnapshotInput, accountID string) (*ec2.DeleteSnapshotOutput, error) {
 	if input == nil || input.SnapshotId == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	snapshotID := *input.SnapshotId
 
-	slog.Info("DeleteSnapshot request", "snapshotId", snapshotID, "accountID", accountID)
+	slog.InfoContext(ctx, "DeleteSnapshot request", "snapshotId", snapshotID, "accountID", accountID)
 
 	cfg, err := s.getSnapshotConfig(snapshotID)
 	if err != nil {
-		slog.Error("DeleteSnapshot snapshot not found", "snapshotId", snapshotID, "err", err)
+		slog.ErrorContext(ctx, "DeleteSnapshot snapshot not found", "snapshotId", snapshotID, "err", err)
 		return nil, err
 	}
 
 	// Verify ownership: caller must own the snapshot
 	if accountID != "" && cfg.OwnerID != "" && cfg.OwnerID != accountID {
-		slog.Warn("DeleteSnapshot: account does not own snapshot", "snapshotId", snapshotID, "accountID", accountID, "ownerID", cfg.OwnerID)
+		slog.WarnContext(ctx, "DeleteSnapshot: account does not own snapshot", "snapshotId", snapshotID, "accountID", accountID, "ownerID", cfg.OwnerID)
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}
 
 	// Check if any volumes were created from this snapshot
-	inUse, err := s.snapshotInUseByVolumes(snapshotID)
+	inUse, err := s.snapshotInUseByVolumes(ctx, snapshotID)
 	if err != nil {
-		slog.Error("DeleteSnapshot failed to check snapshot usage", "snapshotId", snapshotID, "err", err)
+		slog.ErrorContext(ctx, "DeleteSnapshot failed to check snapshot usage", "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if inUse {
-		slog.Info("DeleteSnapshot blocked: snapshot in use by volume", "snapshotId", snapshotID)
+		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by volume", "snapshotId", snapshotID)
 		return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
 	}
 
-	listResult, err := s.store.ListObjectsV2(&s3.ListObjectsV2Input{
+	listResult, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.config.Predastore.Bucket),
 		Prefix: aws.String(snapshotID + "/"),
 	})
 	if err != nil {
-		slog.Error("DeleteSnapshot failed to list objects", "snapshotId", snapshotID, "err", err)
+		slog.ErrorContext(ctx, "DeleteSnapshot failed to list objects", "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -578,46 +579,46 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(input *ec2.DeleteSnapshotInput, acc
 		if obj.Key == nil {
 			continue
 		}
-		_, err := s.store.DeleteObject(&s3.DeleteObjectInput{
+		_, err := s.store.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(s.config.Predastore.Bucket),
 			Key:    obj.Key,
 		})
 		if err != nil {
-			slog.Warn("DeleteSnapshot failed to delete object", "key", *obj.Key, "err", err)
+			slog.WarnContext(ctx, "DeleteSnapshot failed to delete object", "key", *obj.Key, "err", err)
 		}
 	}
 
 	// Remove from KV after S3 cleanup. Failure is logged but not fatal —
 	// a phantom entry safely blocks volume deletion rather than allowing it.
 	if err := s.removeSnapshotRef(cfg.VolumeID, snapshotID); err != nil {
-		slog.Warn("DeleteSnapshot failed to remove snapshot ref from KV", "snapshotId", snapshotID, "volumeId", cfg.VolumeID, "err", err)
+		slog.WarnContext(ctx, "DeleteSnapshot failed to remove snapshot ref from KV", "snapshotId", snapshotID, "volumeId", cfg.VolumeID, "err", err)
 	}
 
-	slog.Info("DeleteSnapshot completed", "snapshotId", snapshotID)
+	slog.InfoContext(ctx, "DeleteSnapshot completed", "snapshotId", snapshotID)
 
 	return &ec2.DeleteSnapshotOutput{}, nil
 }
 
 // CopySnapshot copies a snapshot (within same region for now).
 // The copied snapshot is owned by the caller's account.
-func (s *SnapshotServiceImpl) CopySnapshot(input *ec2.CopySnapshotInput, accountID string) (*ec2.CopySnapshotOutput, error) {
+func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopySnapshotInput, accountID string) (*ec2.CopySnapshotOutput, error) {
 	if input == nil || input.SourceSnapshotId == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	sourceSnapshotID := *input.SourceSnapshotId
 
-	slog.Info("CopySnapshot request", "sourceSnapshotId", sourceSnapshotID, "accountID", accountID)
+	slog.InfoContext(ctx, "CopySnapshot request", "sourceSnapshotId", sourceSnapshotID, "accountID", accountID)
 
 	sourceCfg, err := s.getSnapshotConfig(sourceSnapshotID)
 	if err != nil {
-		slog.Error("CopySnapshot source snapshot not found", "snapshotId", sourceSnapshotID, "err", err)
+		slog.ErrorContext(ctx, "CopySnapshot source snapshot not found", "snapshotId", sourceSnapshotID, "err", err)
 		return nil, err
 	}
 
 	// Verify the caller owns the source snapshot
 	if accountID != "" && sourceCfg.OwnerID != "" && sourceCfg.OwnerID != accountID {
-		slog.Warn("CopySnapshot: account does not own source snapshot", "snapshotId", sourceSnapshotID, "accountID", accountID, "ownerID", sourceCfg.OwnerID)
+		slog.WarnContext(ctx, "CopySnapshot: account does not own source snapshot", "snapshotId", sourceSnapshotID, "accountID", accountID, "ownerID", sourceCfg.OwnerID)
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}
 
@@ -645,17 +646,17 @@ func (s *SnapshotServiceImpl) CopySnapshot(input *ec2.CopySnapshotInput, account
 
 	// Track the volume→snapshot dependency in KV before persisting to S3.
 	if err := s.addSnapshotRef(sourceCfg.VolumeID, newSnapshotID); err != nil {
-		slog.Error("CopySnapshot failed to add snapshot ref to KV", "snapshotId", newSnapshotID, "volumeId", sourceCfg.VolumeID, "err", err)
+		slog.ErrorContext(ctx, "CopySnapshot failed to add snapshot ref to KV", "snapshotId", newSnapshotID, "volumeId", sourceCfg.VolumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if err := s.putSnapshotConfig(newSnapshotID, newCfg); err != nil {
-		slog.Error("CopySnapshot failed to write config", "snapshotId", newSnapshotID, "err", err)
+		slog.ErrorContext(ctx, "CopySnapshot failed to write config", "snapshotId", newSnapshotID, "err", err)
 		_ = s.removeSnapshotRef(sourceCfg.VolumeID, newSnapshotID) // best-effort cleanup
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("CopySnapshot completed", "sourceSnapshotId", sourceSnapshotID, "newSnapshotId", newSnapshotID)
+	slog.InfoContext(ctx, "CopySnapshot completed", "sourceSnapshotId", sourceSnapshotID, "newSnapshotId", newSnapshotID)
 
 	return &ec2.CopySnapshotOutput{
 		SnapshotId: aws.String(newSnapshotID),

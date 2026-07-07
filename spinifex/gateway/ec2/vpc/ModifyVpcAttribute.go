@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateModifyVpcAttributeInput(input *ec2.ModifyVpcAttributeInput) error {
 }
 
 // ModifyVpcAttribute handles the EC2 ModifyVpcAttribute API call
-func ModifyVpcAttribute(input *ec2.ModifyVpcAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyVpcAttributeOutput, error) {
+func ModifyVpcAttribute(ctx context.Context, input *ec2.ModifyVpcAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyVpcAttributeOutput, error) {
 	var output ec2.ModifyVpcAttributeOutput
 
 	if err := ValidateModifyVpcAttributeInput(input); err != nil {
@@ -28,7 +29,7 @@ func ModifyVpcAttribute(input *ec2.ModifyVpcAttributeInput, natsConn *nats.Conn,
 	}
 
 	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
-	result, err := svc.ModifyVpcAttribute(input, accountID)
+	result, err := svc.ModifyVpcAttribute(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

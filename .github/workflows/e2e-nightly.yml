@@ -17,6 +17,10 @@ permissions:
 env:
   GIT_BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
   UBUNTU_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-ubuntu-24.04.qcow2
+  # OTLP export to the central Elastic sink (wattle). Repo variable overrides;
+  # empty string disables telemetry entirely.
+  SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
+  SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
 jobs:
   matrix:
@@ -340,6 +344,7 @@ jobs:
             TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}"
           fi
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
+          timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 

@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -31,7 +32,7 @@ func ValidateResetImageAttributeInput(input *ec2.ResetImageAttributeInput) error
 	return nil
 }
 
-func ResetImageAttribute(input *ec2.ResetImageAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ResetImageAttributeOutput, error) {
+func ResetImageAttribute(ctx context.Context, input *ec2.ResetImageAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ResetImageAttributeOutput, error) {
 	var output ec2.ResetImageAttributeOutput
 
 	if err := ValidateResetImageAttributeInput(input); err != nil {
@@ -39,7 +40,7 @@ func ResetImageAttribute(input *ec2.ResetImageAttributeInput, natsConn *nats.Con
 	}
 
 	svc := handlers_ec2_image.NewNATSImageService(natsConn, 0)
-	result, err := svc.ResetImageAttribute(input, accountID)
+	result, err := svc.ResetImageAttribute(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

@@ -1,6 +1,7 @@
 package handlers_ec2_vpc
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -24,16 +25,16 @@ func TestRLC1_VPCDeleteNotFoundOnAbsent(t *testing.T) {
 		call    func(svc *VPCServiceImpl) (any, error)
 	}{
 		{"DeleteVpc", awserrors.ErrorInvalidVpcIDNotFound, func(svc *VPCServiceImpl) (any, error) {
-			return svc.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String("vpc-absent00000000")}, testAccountID)
+			return svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String("vpc-absent00000000")}, testAccountID)
 		}},
 		{"DeleteSubnet", awserrors.ErrorInvalidSubnetIDNotFound, func(svc *VPCServiceImpl) (any, error) {
-			return svc.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String("subnet-absent0000")}, testAccountID)
+			return svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String("subnet-absent0000")}, testAccountID)
 		}},
 		{"DeleteSecurityGroup", awserrors.ErrorInvalidGroupNotFound, func(svc *VPCServiceImpl) (any, error) {
-			return svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String("sg-absent000000000")}, testAccountID)
+			return svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{GroupId: aws.String("sg-absent000000000")}, testAccountID)
 		}},
 		{"DeleteNetworkInterface", awserrors.ErrorInvalidNetworkInterfaceIDNotFound, func(svc *VPCServiceImpl) (any, error) {
-			return svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String("eni-absent00000000")}, testAccountID)
+			return svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String("eni-absent00000000")}, testAccountID)
 		}},
 	}
 
@@ -66,23 +67,23 @@ func TestRLC_ENINonDeadlock(t *testing.T) {
 	require.NoError(t, err)
 
 	// The guard stays intact: a plain delete of an in-use ENI is still rejected.
-	_, err = svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniId),
 	}, testAccountID)
 	assert.ErrorContainsf(t, err, "InvalidNetworkInterface.InUse",
 		"ADR-0003 §2: the in-use guard must still protect an ENI held by a different live instance")
 
 	// The owning instance's force teardown must break the deadlock.
-	require.NoErrorf(t, svc.ForceDeleteInstanceENI(testAccountID, eniId),
+	require.NoErrorf(t, svc.ForceDeleteInstanceENI(context.Background(), testAccountID, eniId),
 		"ADR-0003 §2: ForceDeleteInstanceENI must delete the owning instance's in-use ENI to break the un-terminable-ENI deadlock")
 
-	_, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	_, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
 
 	// Idempotent: forcing teardown of an already-gone ENI is success.
-	require.NoErrorf(t, svc.ForceDeleteInstanceENI(testAccountID, eniId),
+	require.NoErrorf(t, svc.ForceDeleteInstanceENI(context.Background(), testAccountID, eniId),
 		"ADR-0003 §2 / RLC rule #1: ForceDeleteInstanceENI on an absent ENI must be idempotent success")
 }
 
@@ -100,7 +101,7 @@ func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
 		_, err := svc.AttachENI(testAccountID, eniId, "i-resident000000", 0)
 		require.NoError(t, err)
 
-		_, err = svc.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(subnetId)}, testAccountID)
+		_, err = svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetId)}, testAccountID)
 		assert.ErrorContainsf(t, err, awserrors.ErrorDependencyViolation,
 			"ADR-0004 §2: DeleteSubnet must return DependencyViolation while a live ENI attachment (a resident instance) remains (rule #3)")
 	})
@@ -111,7 +112,7 @@ func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
 		subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 		_ = createTestENI(t, svc, subnetId) // available, never attached
 
-		_, err := svc.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(subnetId)}, testAccountID)
+		_, err := svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetId)}, testAccountID)
 		require.NoErrorf(t, err,
 			"ADR-0004 §2/rule #3: an available (orphan) ENI must not pin its subnet — it is itself deletable and GC-reaped")
 	})
@@ -124,7 +125,7 @@ func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
 		_, err := svc.AttachENI(testAccountID, eniId, "i-live0000000000", 0)
 		require.NoError(t, err)
 
-		_, err = svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(eniId)}, testAccountID)
+		_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(eniId)}, testAccountID)
 		assert.ErrorContainsf(t, err, awserrors.ErrorInvalidNetworkInterfaceInUse,
 			"ADR-0004 §2: a plain DeleteNetworkInterface must reject an ENI attached to a live instance")
 	})
@@ -136,9 +137,9 @@ func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
 		eniId := createTestENI(t, svc, subnetId)
 		_, err := svc.AttachENI(testAccountID, eniId, "i-gone0000000000", 0)
 		require.NoError(t, err)
-		require.NoError(t, svc.DetachENI(testAccountID, eniId))
+		require.NoError(t, svc.DetachENI(context.Background(), testAccountID, eniId))
 
-		_, err = svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(eniId)}, testAccountID)
+		_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(eniId)}, testAccountID)
 		require.NoErrorf(t, err,
 			"ADR-0004 §2/rule #3: an ENI whose instance is gone (detached) must be deletable")
 	})

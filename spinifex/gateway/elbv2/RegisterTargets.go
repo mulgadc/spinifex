@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -23,7 +24,7 @@ func ValidateRegisterTargetsInput(input *elbv2.RegisterTargetsInput) error {
 }
 
 // RegisterTargets handles the ELBv2 RegisterTargets API call.
-func RegisterTargets(input *elbv2.RegisterTargetsInput, natsConn *nats.Conn, accountID string) (elbv2.RegisterTargetsOutput, error) {
+func RegisterTargets(ctx context.Context, input *elbv2.RegisterTargetsInput, natsConn *nats.Conn, accountID string) (elbv2.RegisterTargetsOutput, error) {
 	var output elbv2.RegisterTargetsOutput
 
 	if err := ValidateRegisterTargetsInput(input); err != nil {
@@ -31,7 +32,7 @@ func RegisterTargets(input *elbv2.RegisterTargetsInput, natsConn *nats.Conn, acc
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.RegisterTargets(input, accountID)
+	result, err := svc.RegisterTargets(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

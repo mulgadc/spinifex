@@ -1,6 +1,7 @@
 package gateway_ec2_tags
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -23,7 +24,7 @@ func ValidateDeleteTagsInput(input *ec2.DeleteTagsInput) error {
 }
 
 // DeleteTags handles the EC2 DeleteTags API call
-func DeleteTags(input *ec2.DeleteTagsInput, natsConn *nats.Conn, accountID string) (ec2.DeleteTagsOutput, error) {
+func DeleteTags(ctx context.Context, input *ec2.DeleteTagsInput, natsConn *nats.Conn, accountID string) (ec2.DeleteTagsOutput, error) {
 	var output ec2.DeleteTagsOutput
 
 	if err := ValidateDeleteTagsInput(input); err != nil {
@@ -31,7 +32,7 @@ func DeleteTags(input *ec2.DeleteTagsInput, natsConn *nats.Conn, accountID strin
 	}
 
 	svc := handlers_ec2_tags.NewNATSTagsService(natsConn)
-	result, err := svc.DeleteTags(input, accountID)
+	result, err := svc.DeleteTags(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

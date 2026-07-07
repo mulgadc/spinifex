@@ -1,6 +1,7 @@
 package gateway_ec2_routetable
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -19,13 +20,13 @@ func ValidateDisassociateRouteTableInput(input *ec2.DisassociateRouteTableInput)
 	return nil
 }
 
-func DisassociateRouteTable(input *ec2.DisassociateRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.DisassociateRouteTableOutput, error) {
+func DisassociateRouteTable(ctx context.Context, input *ec2.DisassociateRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.DisassociateRouteTableOutput, error) {
 	var output ec2.DisassociateRouteTableOutput
 	if err := ValidateDisassociateRouteTableInput(input); err != nil {
 		return output, err
 	}
 	svc := handlers_ec2_routetable.NewNATSRouteTableService(natsConn)
-	result, err := svc.DisassociateRouteTable(input, accountID)
+	result, err := svc.DisassociateRouteTable(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

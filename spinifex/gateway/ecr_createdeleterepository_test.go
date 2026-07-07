@@ -153,7 +153,7 @@ func TestDeleteRepository_NotEmpty(t *testing.T) {
 
 	// Seed an image (manifest) so the repo is non-empty.
 	store := handlers_ecr.NewNATSMetaStore(nc)
-	require.NoError(t, store.PutManifestMeta(ecrTestAccount, "team/app", handlers_ecr.ManifestMeta{
+	require.NoError(t, store.PutManifestMeta(context.Background(), ecrTestAccount, "team/app", handlers_ecr.ManifestMeta{
 		Digest: "sha256:" + strings.Repeat("a", 64), MediaType: "application/json", Size: 7, PushedAt: time.Now(),
 	}))
 

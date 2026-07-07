@@ -1,6 +1,7 @@
 package gateway_ecrapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
@@ -23,7 +24,7 @@ type repoPolicyRequest struct {
 // resolvePolicyRepo parses and validates the request, enforces the registryId
 // cross-account guard, and confirms the repository exists. It returns the parsed
 // request and the NATS-backed MetaStore for the follow-on policy operation.
-func resolvePolicyRepo(nc *nats.Conn, accountID string, body []byte) (repoPolicyRequest, *handlers_ecr.NATSMetaStore, error) {
+func resolvePolicyRepo(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (repoPolicyRequest, *handlers_ecr.NATSMetaStore, error) {
 	var req repoPolicyRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -40,7 +41,7 @@ func resolvePolicyRepo(nc *nats.Conn, accountID string, body []byte) (repoPolicy
 	}
 
 	store := handlers_ecr.NewNATSMetaStore(nc)
-	if _, err := store.GetRepo(accountID, req.RepositoryName); err != nil {
+	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
 			return req, nil, errors.New(awserrors.ErrorRepositoryNotFound)
 		}
@@ -52,15 +53,15 @@ func resolvePolicyRepo(nc *nats.Conn, accountID string, body []byte) (repoPolicy
 // SetRepositoryPolicy stores the JSON IAM policy document for a repository. The
 // policy is passthrough metadata in v1: it is persisted and returned but not
 // evaluated for cross-account access (Q8; registry-policy evaluator is v2).
-func SetRepositoryPolicy(nc *nats.Conn, accountID string, body []byte) (any, error) {
-	req, store, err := resolvePolicyRepo(nc, accountID, body)
+func SetRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	req, store, err := resolvePolicyRepo(ctx, nc, accountID, body)
 	if err != nil {
 		return nil, err
 	}
 	if req.PolicyText == "" || !json.Valid([]byte(req.PolicyText)) {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if err := store.PutRepoPolicy(accountID, req.RepositoryName, []byte(req.PolicyText)); err != nil {
+	if err := store.PutRepoPolicy(ctx, accountID, req.RepositoryName, []byte(req.PolicyText)); err != nil {
 		return nil, err
 	}
 	return &ecr.SetRepositoryPolicyOutput{
@@ -72,12 +73,12 @@ func SetRepositoryPolicy(nc *nats.Conn, accountID string, body []byte) (any, err
 
 // GetRepositoryPolicy returns the stored policy document, or
 // RepositoryPolicyNotFoundException when none is set.
-func GetRepositoryPolicy(nc *nats.Conn, accountID string, body []byte) (any, error) {
-	req, store, err := resolvePolicyRepo(nc, accountID, body)
+func GetRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	req, store, err := resolvePolicyRepo(ctx, nc, accountID, body)
 	if err != nil {
 		return nil, err
 	}
-	policy, err := store.GetRepoPolicy(accountID, req.RepositoryName)
+	policy, err := store.GetRepoPolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorRepositoryPolicyNotFound)
@@ -93,12 +94,12 @@ func GetRepositoryPolicy(nc *nats.Conn, accountID string, body []byte) (any, err
 
 // DeleteRepositoryPolicy removes and returns the stored policy document, or
 // RepositoryPolicyNotFoundException when none is set.
-func DeleteRepositoryPolicy(nc *nats.Conn, accountID string, body []byte) (any, error) {
-	req, store, err := resolvePolicyRepo(nc, accountID, body)
+func DeleteRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	req, store, err := resolvePolicyRepo(ctx, nc, accountID, body)
 	if err != nil {
 		return nil, err
 	}
-	policy, err := store.DeleteRepoPolicy(accountID, req.RepositoryName)
+	policy, err := store.DeleteRepoPolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorRepositoryPolicyNotFound)

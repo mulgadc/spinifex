@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -22,7 +23,7 @@ func ValidateDescribeRulesInput(input *elbv2.DescribeRulesInput) error {
 }
 
 // DescribeRules handles the ELBv2 DescribeRules API call.
-func DescribeRules(input *elbv2.DescribeRulesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeRulesOutput, error) {
+func DescribeRules(ctx context.Context, input *elbv2.DescribeRulesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeRulesOutput, error) {
 	var output elbv2.DescribeRulesOutput
 
 	if err := ValidateDescribeRulesInput(input); err != nil {
@@ -30,7 +31,7 @@ func DescribeRules(input *elbv2.DescribeRulesInput, natsConn *nats.Conn, account
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.DescribeRules(input, accountID)
+	result, err := svc.DescribeRules(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

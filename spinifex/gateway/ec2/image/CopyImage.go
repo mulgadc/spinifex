@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -53,7 +54,7 @@ func ValidateCopyImageInput(input *ec2.CopyImageInput, gwRegion string) error {
 }
 
 // CopyImage handles the EC2 CopyImage API call.
-func CopyImage(input *ec2.CopyImageInput, natsConn *nats.Conn, gwRegion, accountID string) (ec2.CopyImageOutput, error) {
+func CopyImage(ctx context.Context, input *ec2.CopyImageInput, natsConn *nats.Conn, gwRegion, accountID string) (ec2.CopyImageOutput, error) {
 	var output ec2.CopyImageOutput
 
 	if err := ValidateCopyImageInput(input, gwRegion); err != nil {
@@ -61,7 +62,7 @@ func CopyImage(input *ec2.CopyImageInput, natsConn *nats.Conn, gwRegion, account
 	}
 
 	svc := handlers_ec2_image.NewNATSImageService(natsConn, 0)
-	result, err := svc.CopyImage(input, accountID)
+	result, err := svc.CopyImage(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

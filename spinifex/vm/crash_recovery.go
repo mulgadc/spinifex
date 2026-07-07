@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -129,6 +130,7 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	if instance.Config.QMPSocket != "" {
 		_ = os.Remove(instance.Config.QMPSocket)
 	}
+	removeTelemetryArtifacts(instance)
 
 	if m.deps.VolumeMounter != nil {
 		if err := m.deps.VolumeMounter.Unmount(instance); err != nil {
@@ -267,7 +269,8 @@ func (m *Manager) RestartCrashedInstance(instance *VM) {
 		}
 	}
 
-	if err := m.Run(instance); err != nil {
+	// Crash recovery is a background path with no request context.
+	if err := m.Run(context.Background(), instance); err != nil {
 		slog.Error("Failed to restart crashed instance",
 			"instance", instance.ID, "err", err)
 		m.deps.Resources.Deallocate(instance.InstanceType)

@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -12,7 +13,7 @@ import (
 // AddTags handles the ELBv2 AddTags API call. It adds or overwrites the given
 // tags on each ELBv2 resource (load balancer, target group, listener, listener
 // rule) named in ResourceArns.
-func AddTags(input *elbv2.AddTagsInput, natsConn *nats.Conn, accountID string) (elbv2.AddTagsOutput, error) {
+func AddTags(ctx context.Context, input *elbv2.AddTagsInput, natsConn *nats.Conn, accountID string) (elbv2.AddTagsOutput, error) {
 	var output elbv2.AddTagsOutput
 
 	if input == nil || len(input.ResourceArns) == 0 || len(input.Tags) == 0 {
@@ -20,7 +21,7 @@ func AddTags(input *elbv2.AddTagsInput, natsConn *nats.Conn, accountID string) (
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.AddTags(input, accountID)
+	result, err := svc.AddTags(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

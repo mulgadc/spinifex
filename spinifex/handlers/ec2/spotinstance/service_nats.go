@@ -1,6 +1,7 @@
 package handlers_ec2_spotinstance
 
 import (
+	"context"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -21,14 +22,14 @@ func NewNATSSpotInstanceService(conn *nats.Conn) *NATSSpotInstanceService {
 	return &NATSSpotInstanceService{natsConn: conn}
 }
 
-func (s *NATSSpotInstanceService) PutSpotInstanceRequests(input *PutSpotRequestsInput, accountID string) (*PutSpotRequestsOutput, error) {
-	return utils.NATSRequest[PutSpotRequestsOutput](s.natsConn, "ec2.PutSpotInstanceRequests", input, 30*time.Second, accountID)
+func (s *NATSSpotInstanceService) PutSpotInstanceRequests(ctx context.Context, input *PutSpotRequestsInput, accountID string) (*PutSpotRequestsOutput, error) {
+	return utils.NATSRequestCtx[PutSpotRequestsOutput](ctx, s.natsConn, "ec2.PutSpotInstanceRequests", input, 30*time.Second, accountID)
 }
 
-func (s *NATSSpotInstanceService) DescribeSpotInstanceRequests(input *ec2.DescribeSpotInstanceRequestsInput, accountID string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
-	return utils.NATSRequest[ec2.DescribeSpotInstanceRequestsOutput](s.natsConn, "ec2.DescribeSpotInstanceRequests", input, 30*time.Second, accountID)
+func (s *NATSSpotInstanceService) DescribeSpotInstanceRequests(ctx context.Context, input *ec2.DescribeSpotInstanceRequestsInput, accountID string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
+	return utils.NATSRequestCtx[ec2.DescribeSpotInstanceRequestsOutput](ctx, s.natsConn, "ec2.DescribeSpotInstanceRequests", input, 30*time.Second, accountID)
 }
 
-func (s *NATSSpotInstanceService) CancelSpotInstanceRequests(input *ec2.CancelSpotInstanceRequestsInput, accountID string) (*ec2.CancelSpotInstanceRequestsOutput, error) {
-	return utils.NATSRequest[ec2.CancelSpotInstanceRequestsOutput](s.natsConn, "ec2.CancelSpotInstanceRequests", input, 30*time.Second, accountID)
+func (s *NATSSpotInstanceService) CancelSpotInstanceRequests(ctx context.Context, input *ec2.CancelSpotInstanceRequestsInput, accountID string) (*ec2.CancelSpotInstanceRequestsOutput, error) {
+	return utils.NATSRequestCtx[ec2.CancelSpotInstanceRequestsOutput](ctx, s.natsConn, "ec2.CancelSpotInstanceRequests", input, 30*time.Second, accountID)
 }

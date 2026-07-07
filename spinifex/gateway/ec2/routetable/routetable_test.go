@@ -1,6 +1,7 @@
 package gateway_ec2_routetable
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -37,12 +38,12 @@ func TestValidateCreateRouteTableInput(t *testing.T) {
 }
 
 func TestCreateRouteTable_NilInput(t *testing.T) {
-	_, err := CreateRouteTable(nil, nil, testAccountID)
+	_, err := CreateRouteTable(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestCreateRouteTable_NilNATS(t *testing.T) {
-	_, err := CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String("vpc-1")}, nil, testAccountID)
+	_, err := CreateRouteTable(context.Background(), &ec2.CreateRouteTableInput{VpcId: aws.String("vpc-1")}, nil, testAccountID)
 	assert.Error(t, err)
 }
 
@@ -72,24 +73,24 @@ func TestValidateDeleteRouteTableInput(t *testing.T) {
 }
 
 func TestDeleteRouteTable_NilInput(t *testing.T) {
-	_, err := DeleteRouteTable(nil, nil, testAccountID)
+	_, err := DeleteRouteTable(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDeleteRouteTable_NilNATS(t *testing.T) {
-	_, err := DeleteRouteTable(&ec2.DeleteRouteTableInput{RouteTableId: aws.String("rtb-1")}, nil, testAccountID)
+	_, err := DeleteRouteTable(context.Background(), &ec2.DeleteRouteTableInput{RouteTableId: aws.String("rtb-1")}, nil, testAccountID)
 	assert.Error(t, err)
 }
 
 // DescribeRouteTables tests
 
 func TestDescribeRouteTables_NilInput(t *testing.T) {
-	_, err := DescribeRouteTables(nil, nil, testAccountID)
+	_, err := DescribeRouteTables(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDescribeRouteTables_NilNATS(t *testing.T) {
-	_, err := DescribeRouteTables(&ec2.DescribeRouteTablesInput{}, nil, testAccountID)
+	_, err := DescribeRouteTables(context.Background(), &ec2.DescribeRouteTablesInput{}, nil, testAccountID)
 	assert.Error(t, err)
 }
 
@@ -121,12 +122,12 @@ func TestValidateCreateRouteInput(t *testing.T) {
 }
 
 func TestCreateRoute_NilInput(t *testing.T) {
-	_, err := CreateRoute(nil, nil, testAccountID)
+	_, err := CreateRoute(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestCreateRoute_NilNATS(t *testing.T) {
-	_, err := CreateRoute(&ec2.CreateRouteInput{
+	_, err := CreateRoute(context.Background(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String("rtb-1"),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 	}, nil, testAccountID)
@@ -159,12 +160,12 @@ func TestValidateDeleteRouteInput(t *testing.T) {
 }
 
 func TestDeleteRoute_NilInput(t *testing.T) {
-	_, err := DeleteRoute(nil, nil, testAccountID)
+	_, err := DeleteRoute(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDeleteRoute_NilNATS(t *testing.T) {
-	_, err := DeleteRoute(&ec2.DeleteRouteInput{
+	_, err := DeleteRoute(context.Background(), &ec2.DeleteRouteInput{
 		RouteTableId:         aws.String("rtb-1"),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 	}, nil, testAccountID)
@@ -197,12 +198,12 @@ func TestValidateReplaceRouteInput(t *testing.T) {
 }
 
 func TestReplaceRoute_NilInput(t *testing.T) {
-	_, err := ReplaceRoute(nil, nil, testAccountID)
+	_, err := ReplaceRoute(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestReplaceRoute_NilNATS(t *testing.T) {
-	_, err := ReplaceRoute(&ec2.ReplaceRouteInput{
+	_, err := ReplaceRoute(context.Background(), &ec2.ReplaceRouteInput{
 		RouteTableId:         aws.String("rtb-1"),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 	}, nil, testAccountID)
@@ -237,12 +238,12 @@ func TestValidateAssociateRouteTableInput(t *testing.T) {
 }
 
 func TestAssociateRouteTable_NilInput(t *testing.T) {
-	_, err := AssociateRouteTable(nil, nil, testAccountID)
+	_, err := AssociateRouteTable(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestAssociateRouteTable_NilNATS(t *testing.T) {
-	_, err := AssociateRouteTable(&ec2.AssociateRouteTableInput{
+	_, err := AssociateRouteTable(context.Background(), &ec2.AssociateRouteTableInput{
 		RouteTableId: aws.String("rtb-1"),
 		SubnetId:     aws.String("subnet-1"),
 	}, nil, testAccountID)
@@ -275,12 +276,12 @@ func TestValidateDisassociateRouteTableInput(t *testing.T) {
 }
 
 func TestDisassociateRouteTable_NilInput(t *testing.T) {
-	_, err := DisassociateRouteTable(nil, nil, testAccountID)
+	_, err := DisassociateRouteTable(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDisassociateRouteTable_NilNATS(t *testing.T) {
-	_, err := DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+	_, err := DisassociateRouteTable(context.Background(), &ec2.DisassociateRouteTableInput{
 		AssociationId: aws.String("rtbassoc-1"),
 	}, nil, testAccountID)
 	assert.Error(t, err)
@@ -312,12 +313,12 @@ func TestValidateReplaceRouteTableAssociationInput(t *testing.T) {
 }
 
 func TestReplaceRouteTableAssociation_NilInput(t *testing.T) {
-	_, err := ReplaceRouteTableAssociation(nil, nil, testAccountID)
+	_, err := ReplaceRouteTableAssociation(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestReplaceRouteTableAssociation_NilNATS(t *testing.T) {
-	_, err := ReplaceRouteTableAssociation(&ec2.ReplaceRouteTableAssociationInput{
+	_, err := ReplaceRouteTableAssociation(context.Background(), &ec2.ReplaceRouteTableAssociationInput{
 		AssociationId: aws.String("rtbassoc-1"),
 		RouteTableId:  aws.String("rtb-1"),
 	}, nil, testAccountID)

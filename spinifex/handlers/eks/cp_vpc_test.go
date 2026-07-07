@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -120,7 +121,7 @@ type fakeVPCProvisioner struct {
 
 func newFakeVPCProvisioner() *fakeVPCProvisioner { return &fakeVPCProvisioner{} }
 
-func (f *fakeVPCProvisioner) DescribeVpcs(input *ec2.DescribeVpcsInput, _ string) (*ec2.DescribeVpcsOutput, error) {
+func (f *fakeVPCProvisioner) DescribeVpcs(_ context.Context, input *ec2.DescribeVpcsInput, _ string) (*ec2.DescribeVpcsOutput, error) {
 	var out []*ec2.Vpc
 	for _, v := range f.vpcs {
 		if !cpvpcMatchTagFilters(v.tags, input.Filters) {
@@ -131,7 +132,7 @@ func (f *fakeVPCProvisioner) DescribeVpcs(input *ec2.DescribeVpcsInput, _ string
 	return &ec2.DescribeVpcsOutput{Vpcs: out}, nil
 }
 
-func (f *fakeVPCProvisioner) CreateVpc(input *ec2.CreateVpcInput, accountID string) (*ec2.CreateVpcOutput, error) {
+func (f *fakeVPCProvisioner) CreateVpc(_ context.Context, input *ec2.CreateVpcInput, accountID string) (*ec2.CreateVpcOutput, error) {
 	f.createVpcCalls = append(f.createVpcCalls, input)
 	f.createVpcAccts = append(f.createVpcAccts, accountID)
 	if f.createVpcErr != nil {
@@ -147,7 +148,7 @@ func (f *fakeVPCProvisioner) CreateVpc(input *ec2.CreateVpcInput, accountID stri
 	return &ec2.CreateVpcOutput{Vpc: &ec2.Vpc{VpcId: aws.String(v.id), CidrBlock: aws.String(v.cidr)}}, nil
 }
 
-func (f *fakeVPCProvisioner) DeleteVpc(input *ec2.DeleteVpcInput, _ string) (*ec2.DeleteVpcOutput, error) {
+func (f *fakeVPCProvisioner) DeleteVpc(_ context.Context, input *ec2.DeleteVpcInput, _ string) (*ec2.DeleteVpcOutput, error) {
 	f.deleteVpcCalls = append(f.deleteVpcCalls, input)
 	if f.deleteVpcErr != nil {
 		return nil, f.deleteVpcErr
@@ -163,7 +164,7 @@ func (f *fakeVPCProvisioner) DeleteVpc(input *ec2.DeleteVpcInput, _ string) (*ec
 	return &ec2.DeleteVpcOutput{}, nil
 }
 
-func (f *fakeVPCProvisioner) DescribeSubnets(input *ec2.DescribeSubnetsInput, _ string) (*ec2.DescribeSubnetsOutput, error) {
+func (f *fakeVPCProvisioner) DescribeSubnets(_ context.Context, input *ec2.DescribeSubnetsInput, _ string) (*ec2.DescribeSubnetsOutput, error) {
 	var out []*ec2.Subnet
 	for _, sn := range f.subnets {
 		if !cpvpcMatchTagFilters(sn.tags, input.Filters) {
@@ -177,7 +178,7 @@ func (f *fakeVPCProvisioner) DescribeSubnets(input *ec2.DescribeSubnetsInput, _ 
 	return &ec2.DescribeSubnetsOutput{Subnets: out}, nil
 }
 
-func (f *fakeVPCProvisioner) CreateSubnet(input *ec2.CreateSubnetInput, _ string) (*ec2.CreateSubnetOutput, error) {
+func (f *fakeVPCProvisioner) CreateSubnet(_ context.Context, input *ec2.CreateSubnetInput, _ string) (*ec2.CreateSubnetOutput, error) {
 	f.createSubnetCalls = append(f.createSubnetCalls, input)
 	if f.createSubnetErr != nil {
 		return nil, f.createSubnetErr
@@ -193,7 +194,7 @@ func (f *fakeVPCProvisioner) CreateSubnet(input *ec2.CreateSubnetInput, _ string
 	return &ec2.CreateSubnetOutput{Subnet: &ec2.Subnet{SubnetId: aws.String(sn.id), VpcId: input.VpcId, CidrBlock: input.CidrBlock}}, nil
 }
 
-func (f *fakeVPCProvisioner) DeleteSubnet(input *ec2.DeleteSubnetInput, _ string) (*ec2.DeleteSubnetOutput, error) {
+func (f *fakeVPCProvisioner) DeleteSubnet(_ context.Context, input *ec2.DeleteSubnetInput, _ string) (*ec2.DeleteSubnetOutput, error) {
 	f.deleteSubnetCalls = append(f.deleteSubnetCalls, input)
 	id := aws.StringValue(input.SubnetId)
 	kept := f.subnets[:0]
@@ -240,7 +241,7 @@ func (f *fakeRouteTableProvisioner) find(id string) *fakeCPRouteTable {
 	return nil
 }
 
-func (f *fakeRouteTableProvisioner) DescribeRouteTables(input *ec2.DescribeRouteTablesInput, _ string) (*ec2.DescribeRouteTablesOutput, error) {
+func (f *fakeRouteTableProvisioner) DescribeRouteTables(_ context.Context, input *ec2.DescribeRouteTablesInput, _ string) (*ec2.DescribeRouteTablesOutput, error) {
 	var out []*ec2.RouteTable
 	for _, rt := range f.tables {
 		if !cpvpcMatchTagFilters(rt.tags, input.Filters) {
@@ -256,7 +257,7 @@ func (f *fakeRouteTableProvisioner) DescribeRouteTables(input *ec2.DescribeRoute
 	return &ec2.DescribeRouteTablesOutput{RouteTables: out}, nil
 }
 
-func (f *fakeRouteTableProvisioner) CreateRouteTable(input *ec2.CreateRouteTableInput, _ string) (*ec2.CreateRouteTableOutput, error) {
+func (f *fakeRouteTableProvisioner) CreateRouteTable(_ context.Context, input *ec2.CreateRouteTableInput, _ string) (*ec2.CreateRouteTableOutput, error) {
 	f.createCalls = append(f.createCalls, input)
 	if f.createErr != nil {
 		return nil, f.createErr
@@ -271,7 +272,7 @@ func (f *fakeRouteTableProvisioner) CreateRouteTable(input *ec2.CreateRouteTable
 	return &ec2.CreateRouteTableOutput{RouteTable: &ec2.RouteTable{RouteTableId: aws.String(rt.id), VpcId: input.VpcId}}, nil
 }
 
-func (f *fakeRouteTableProvisioner) DeleteRouteTable(input *ec2.DeleteRouteTableInput, _ string) (*ec2.DeleteRouteTableOutput, error) {
+func (f *fakeRouteTableProvisioner) DeleteRouteTable(_ context.Context, input *ec2.DeleteRouteTableInput, _ string) (*ec2.DeleteRouteTableOutput, error) {
 	f.deleteCalls = append(f.deleteCalls, input)
 	id := aws.StringValue(input.RouteTableId)
 	kept := f.tables[:0]
@@ -284,12 +285,12 @@ func (f *fakeRouteTableProvisioner) DeleteRouteTable(input *ec2.DeleteRouteTable
 	return &ec2.DeleteRouteTableOutput{}, nil
 }
 
-func (f *fakeRouteTableProvisioner) CreateRoute(input *ec2.CreateRouteInput, _ string) (*ec2.CreateRouteOutput, error) {
+func (f *fakeRouteTableProvisioner) CreateRoute(_ context.Context, input *ec2.CreateRouteInput, _ string) (*ec2.CreateRouteOutput, error) {
 	f.createRoutes = append(f.createRoutes, input)
 	return &ec2.CreateRouteOutput{Return: aws.Bool(true)}, nil
 }
 
-func (f *fakeRouteTableProvisioner) AssociateRouteTable(input *ec2.AssociateRouteTableInput, _ string) (*ec2.AssociateRouteTableOutput, error) {
+func (f *fakeRouteTableProvisioner) AssociateRouteTable(_ context.Context, input *ec2.AssociateRouteTableInput, _ string) (*ec2.AssociateRouteTableOutput, error) {
 	f.assocCalls = append(f.assocCalls, input)
 	f.nextAssoc++
 	assocID := fmt.Sprintf("rtbassoc-cp%04d", f.nextAssoc)
@@ -304,7 +305,7 @@ func (f *fakeRouteTableProvisioner) AssociateRouteTable(input *ec2.AssociateRout
 	return &ec2.AssociateRouteTableOutput{AssociationId: aws.String(assocID)}, nil
 }
 
-func (f *fakeRouteTableProvisioner) DisassociateRouteTable(input *ec2.DisassociateRouteTableInput, _ string) (*ec2.DisassociateRouteTableOutput, error) {
+func (f *fakeRouteTableProvisioner) DisassociateRouteTable(_ context.Context, input *ec2.DisassociateRouteTableInput, _ string) (*ec2.DisassociateRouteTableOutput, error) {
 	f.disassoc = append(f.disassoc, input)
 	id := aws.StringValue(input.AssociationId)
 	for _, rt := range f.tables {
@@ -345,7 +346,7 @@ type fakeNatGatewayProvisioner struct {
 
 func newFakeNatGatewayProvisioner() *fakeNatGatewayProvisioner { return &fakeNatGatewayProvisioner{} }
 
-func (f *fakeNatGatewayProvisioner) DescribeNatGateways(input *ec2.DescribeNatGatewaysInput, _ string) (*ec2.DescribeNatGatewaysOutput, error) {
+func (f *fakeNatGatewayProvisioner) DescribeNatGateways(_ context.Context, input *ec2.DescribeNatGatewaysInput, _ string) (*ec2.DescribeNatGatewaysOutput, error) {
 	var out []*ec2.NatGateway
 	for _, ng := range f.gws {
 		if !cpvpcMatchTagFilters(ng.tags, input.Filter) {
@@ -364,7 +365,7 @@ func (f *fakeNatGatewayProvisioner) DescribeNatGateways(input *ec2.DescribeNatGa
 	return &ec2.DescribeNatGatewaysOutput{NatGateways: out}, nil
 }
 
-func (f *fakeNatGatewayProvisioner) CreateNatGateway(input *ec2.CreateNatGatewayInput, _ string) (*ec2.CreateNatGatewayOutput, error) {
+func (f *fakeNatGatewayProvisioner) CreateNatGateway(_ context.Context, input *ec2.CreateNatGatewayInput, _ string) (*ec2.CreateNatGatewayOutput, error) {
 	f.createCalls = append(f.createCalls, input)
 	if f.createErr != nil {
 		return nil, f.createErr
@@ -383,7 +384,7 @@ func (f *fakeNatGatewayProvisioner) CreateNatGateway(input *ec2.CreateNatGateway
 	return &ec2.CreateNatGatewayOutput{NatGateway: &ec2.NatGateway{NatGatewayId: aws.String(ng.id), State: aws.String(ng.state)}}, nil
 }
 
-func (f *fakeNatGatewayProvisioner) DeleteNatGateway(input *ec2.DeleteNatGatewayInput, _ string) (*ec2.DeleteNatGatewayOutput, error) {
+func (f *fakeNatGatewayProvisioner) DeleteNatGateway(_ context.Context, input *ec2.DeleteNatGatewayInput, _ string) (*ec2.DeleteNatGatewayOutput, error) {
 	f.deleteCalls = append(f.deleteCalls, input)
 	if f.routeGuard != nil && len(f.routeGuard.tables) > 0 {
 		return nil, errors.New(awserrors.ErrorDependencyViolation)

@@ -4,6 +4,7 @@ PartOf=spinifex.target
 After=spinifex-awsgw.service
 
 [Service]
+EnvironmentFile=-/etc/spinifex/telemetry.env
 Type=simple
 Slice=spinifex-system.slice
 User=spinifex-ui

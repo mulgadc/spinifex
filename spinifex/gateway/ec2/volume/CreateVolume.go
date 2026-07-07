@@ -1,6 +1,7 @@
 package gateway_ec2_volume
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -36,7 +37,7 @@ func ValidateCreateVolumeInput(input *ec2.CreateVolumeInput) error {
 }
 
 // CreateVolume handles the CreateVolume API call
-func CreateVolume(input *ec2.CreateVolumeInput, natsConn *nats.Conn, accountID string) (ec2.Volume, error) {
+func CreateVolume(ctx context.Context, input *ec2.CreateVolumeInput, natsConn *nats.Conn, accountID string) (ec2.Volume, error) {
 	var output ec2.Volume
 
 	err := ValidateCreateVolumeInput(input)
@@ -45,7 +46,7 @@ func CreateVolume(input *ec2.CreateVolumeInput, natsConn *nats.Conn, accountID s
 	}
 
 	volumeService := handlers_ec2_volume.NewNATSVolumeService(natsConn)
-	result, err := volumeService.CreateVolume(input, accountID)
+	result, err := volumeService.CreateVolume(ctx, input, accountID)
 
 	if err != nil {
 		return output, err

@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +35,7 @@ func ValidateAttachNetworkInterfaceInput(input *ec2.AttachNetworkInterfaceInput)
 
 // AttachNetworkInterface dispatches to the owning daemon via ec2.cmd.{instanceID};
 // the daemon handles both KV-side AttachENI and QMP hot-plug.
-func AttachNetworkInterface(input *ec2.AttachNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.AttachNetworkInterfaceOutput, error) {
+func AttachNetworkInterface(ctx context.Context, input *ec2.AttachNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.AttachNetworkInterfaceOutput, error) {
 	var output ec2.AttachNetworkInterfaceOutput
 
 	if err := ValidateAttachNetworkInterfaceInput(input); err != nil {
@@ -56,16 +57,17 @@ func AttachNetworkInterface(input *ec2.AttachNetworkInterfaceInput, natsConn *na
 
 	jsonData, err := json.Marshal(command)
 	if err != nil {
-		slog.Error("AttachNetworkInterface: marshal command failed", "err", err)
+		slog.ErrorContext(ctx, "AttachNetworkInterface: marshal command failed", "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	reqMsg := nats.NewMsg(fmt.Sprintf("ec2.cmd.%s", instanceID))
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
-		slog.Error("AttachNetworkInterface: NATS request failed",
+		slog.ErrorContext(ctx, "AttachNetworkInterface: NATS request failed",
 			"instanceId", instanceID, "eniId", eniID, "err", err)
 		if errors.Is(err, nats.ErrNoResponders) {
 			return output, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
@@ -79,11 +81,11 @@ func AttachNetworkInterface(input *ec2.AttachNetworkInterfaceInput, natsConn *na
 	}
 
 	if err := json.Unmarshal(msg.Data, &output); err != nil {
-		slog.Error("AttachNetworkInterface: unmarshal response failed", "err", err)
+		slog.ErrorContext(ctx, "AttachNetworkInterface: unmarshal response failed", "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("AttachNetworkInterface completed",
+	slog.InfoContext(ctx, "AttachNetworkInterface completed",
 		"instanceId", instanceID, "eniId", eniID,
 		"attachmentId", aws.StringValue(output.AttachmentId))
 	return output, nil

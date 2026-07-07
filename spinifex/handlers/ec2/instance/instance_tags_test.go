@@ -1,6 +1,7 @@
 package handlers_ec2_instance
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -78,7 +79,7 @@ type fakeTagWriter struct {
 	deleteCalls int
 }
 
-func (f *fakeTagWriter) PutResourceTags(accountID, resourceID string, tags map[string]string) error {
+func (f *fakeTagWriter) PutResourceTags(_ context.Context, accountID, resourceID string, tags map[string]string) error {
 	f.calls++
 	f.accountID = accountID
 	f.resourceID = resourceID
@@ -86,7 +87,7 @@ func (f *fakeTagWriter) PutResourceTags(accountID, resourceID string, tags map[s
 	return f.err
 }
 
-func (f *fakeTagWriter) DeleteAllTags(accountID, resourceID string) error {
+func (f *fakeTagWriter) DeleteAllTags(_ context.Context, accountID, resourceID string) error {
 	f.deleteCalls++
 	f.accountID = accountID
 	f.resourceID = resourceID
@@ -97,7 +98,7 @@ func TestWriteInstanceTags_WritesRecordAndCentral(t *testing.T) {
 	instance := &vm.VM{ID: "i-123", Instance: &ec2.Instance{Tags: tagList("Name", "web")}}
 	writer := &fakeTagWriter{}
 
-	err := WriteInstanceTags(instance, &spxtypes.InstanceTagsData{
+	err := WriteInstanceTags(context.Background(), instance, &spxtypes.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.NoError(t, err)
@@ -114,7 +115,7 @@ func TestWriteInstanceTags_CentralWriteErrorPropagates(t *testing.T) {
 	instance := &vm.VM{ID: "i-123", Instance: &ec2.Instance{}}
 	writer := &fakeTagWriter{err: errors.New("s3 down")}
 
-	err := WriteInstanceTags(instance, &spxtypes.InstanceTagsData{
+	err := WriteInstanceTags(context.Background(), instance, &spxtypes.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	assert.Error(t, err)
@@ -122,9 +123,9 @@ func TestWriteInstanceTags_CentralWriteErrorPropagates(t *testing.T) {
 
 func TestWriteInstanceTags_NilRecordRejected(t *testing.T) {
 	writer := &fakeTagWriter{}
-	err := WriteInstanceTags(nil, nil, false, writer, "111122223333")
+	err := WriteInstanceTags(context.Background(), nil, nil, false, writer, "111122223333")
 	assert.Error(t, err)
-	err = WriteInstanceTags(&vm.VM{ID: "i-123"}, nil, false, writer, "111122223333")
+	err = WriteInstanceTags(context.Background(), &vm.VM{ID: "i-123"}, nil, false, writer, "111122223333")
 	assert.Error(t, err)
 	assert.Zero(t, writer.calls)
 }
@@ -144,7 +145,7 @@ func TestTagStoppedInstance_WritesRecordAndCentral(t *testing.T) {
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance("i-123", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.NoError(t, err)
@@ -164,7 +165,7 @@ func TestTagStoppedInstance_RemoveKeys(t *testing.T) {
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance("i-123", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
 		TagKeys: []string{"env"},
 	}, true, writer, "111122223333")
 	require.NoError(t, err)
@@ -179,7 +180,7 @@ func TestTagStoppedInstance_NotFound(t *testing.T) {
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance("i-missing", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-missing", &spxtypes.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.Error(t, err)
@@ -194,7 +195,7 @@ func TestTagStoppedInstance_CrossAccountRejected(t *testing.T) {
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance("i-123", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.Error(t, err)
@@ -209,7 +210,7 @@ func TestTagStoppedInstance_CentralWriteErrorSkipsRecordWrite(t *testing.T) {
 	writer := &fakeTagWriter{err: errors.New("s3 down")}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance("i-123", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.Error(t, err)

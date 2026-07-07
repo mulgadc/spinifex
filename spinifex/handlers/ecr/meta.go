@@ -1,6 +1,7 @@
 package ecr
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,34 +76,34 @@ type UploadState struct {
 // return ErrNotFound for missing records; CAS updates return ErrConflict on a
 // concurrent revision clash so the caller can retry.
 type MetaStore interface {
-	PutRepo(accountID string, meta RepoMeta) error
-	GetRepo(accountID, repo string) (RepoMeta, error)
-	ListRepos(accountID string) ([]string, error)
-	DeleteRepo(accountID, repo string) error
+	PutRepo(ctx context.Context, accountID string, meta RepoMeta) error
+	GetRepo(ctx context.Context, accountID, repo string) (RepoMeta, error)
+	ListRepos(ctx context.Context, accountID string) ([]string, error)
+	DeleteRepo(ctx context.Context, accountID, repo string) error
 
-	ListManifests(accountID, repo string) ([]string, error)
+	ListManifests(ctx context.Context, accountID, repo string) ([]string, error)
 
-	PutRepoPolicy(accountID, repo string, policyText []byte) error
-	GetRepoPolicy(accountID, repo string) ([]byte, error)
-	DeleteRepoPolicy(accountID, repo string) ([]byte, error)
+	PutRepoPolicy(ctx context.Context, accountID, repo string, policyText []byte) error
+	GetRepoPolicy(ctx context.Context, accountID, repo string) ([]byte, error)
+	DeleteRepoPolicy(ctx context.Context, accountID, repo string) ([]byte, error)
 
-	PutLifecyclePolicy(accountID, repo string, policyText []byte) error
-	GetLifecyclePolicy(accountID, repo string) ([]byte, error)
-	DeleteLifecyclePolicy(accountID, repo string) ([]byte, error)
+	PutLifecyclePolicy(ctx context.Context, accountID, repo string, policyText []byte) error
+	GetLifecyclePolicy(ctx context.Context, accountID, repo string) ([]byte, error)
+	DeleteLifecyclePolicy(ctx context.Context, accountID, repo string) ([]byte, error)
 
-	PutTag(accountID, repo, tag, digest string) error
-	GetTag(accountID, repo, tag string) (string, error)
-	DeleteTag(accountID, repo, tag string) error
-	ListTags(accountID, repo string) ([]string, error)
+	PutTag(ctx context.Context, accountID, repo, tag, digest string) error
+	GetTag(ctx context.Context, accountID, repo, tag string) (string, error)
+	DeleteTag(ctx context.Context, accountID, repo, tag string) error
+	ListTags(ctx context.Context, accountID, repo string) ([]string, error)
 
-	PutManifestMeta(accountID, repo string, meta ManifestMeta) error
-	GetManifestMeta(accountID, repo, digest string) (ManifestMeta, error)
-	DeleteManifestMeta(accountID, repo, digest string) error
+	PutManifestMeta(ctx context.Context, accountID, repo string, meta ManifestMeta) error
+	GetManifestMeta(ctx context.Context, accountID, repo, digest string) (ManifestMeta, error)
+	DeleteManifestMeta(ctx context.Context, accountID, repo, digest string) error
 
-	PutUpload(accountID, uploadID string, state UploadState) (uint64, error)
-	GetUpload(accountID, uploadID string) (UploadState, uint64, error)
-	UpdateUpload(accountID, uploadID string, state UploadState, rev uint64) (uint64, error)
-	DeleteUpload(accountID, uploadID string) error
+	PutUpload(ctx context.Context, accountID, uploadID string, state UploadState) (uint64, error)
+	GetUpload(ctx context.Context, accountID, uploadID string) (UploadState, uint64, error)
+	UpdateUpload(ctx context.Context, accountID, uploadID string, state UploadState, rev uint64) (uint64, error)
+	DeleteUpload(ctx context.Context, accountID, uploadID string) error
 }
 
 // KVMetaStore is the JetStream-KV-backed MetaStore. Per-account buckets are
@@ -135,7 +136,7 @@ func (s *KVMetaStore) bucket(accountID string) (nats.KeyValue, error) {
 	return kv, nil
 }
 
-func (s *KVMetaStore) PutRepo(accountID string, meta RepoMeta) error {
+func (s *KVMetaStore) PutRepo(_ context.Context, accountID string, meta RepoMeta) error {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return err
@@ -148,7 +149,7 @@ func (s *KVMetaStore) PutRepo(accountID string, meta RepoMeta) error {
 	return err
 }
 
-func (s *KVMetaStore) GetRepo(accountID, repo string) (RepoMeta, error) {
+func (s *KVMetaStore) GetRepo(_ context.Context, accountID, repo string) (RepoMeta, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return RepoMeta{}, err
@@ -164,7 +165,7 @@ func (s *KVMetaStore) GetRepo(accountID, repo string) (RepoMeta, error) {
 	return m, nil
 }
 
-func (s *KVMetaStore) ListRepos(accountID string) ([]string, error) {
+func (s *KVMetaStore) ListRepos(_ context.Context, accountID string) ([]string, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -194,7 +195,7 @@ func (s *KVMetaStore) ListRepos(accountID string) ([]string, error) {
 // tags, and all manifest records. Predastore blob garbage collection is out of
 // scope here (deferred); only the per-account KV records are removed. Returns
 // ErrNotFound when the repository meta is absent.
-func (s *KVMetaStore) DeleteRepo(accountID, repo string) error {
+func (s *KVMetaStore) DeleteRepo(_ context.Context, accountID, repo string) error {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return err
@@ -222,7 +223,7 @@ func (s *KVMetaStore) DeleteRepo(accountID, repo string) error {
 	return nil
 }
 
-func (s *KVMetaStore) ListManifests(accountID, repo string) ([]string, error) {
+func (s *KVMetaStore) ListManifests(_ context.Context, accountID, repo string) ([]string, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -245,7 +246,7 @@ func (s *KVMetaStore) ListManifests(accountID, repo string) ([]string, error) {
 	return digests, nil
 }
 
-func (s *KVMetaStore) PutRepoPolicy(accountID, repo string, policyText []byte) error {
+func (s *KVMetaStore) PutRepoPolicy(_ context.Context, accountID, repo string, policyText []byte) error {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return err
@@ -254,7 +255,7 @@ func (s *KVMetaStore) PutRepoPolicy(accountID, repo string, policyText []byte) e
 	return err
 }
 
-func (s *KVMetaStore) GetRepoPolicy(accountID, repo string) ([]byte, error) {
+func (s *KVMetaStore) GetRepoPolicy(_ context.Context, accountID, repo string) ([]byte, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -266,7 +267,7 @@ func (s *KVMetaStore) GetRepoPolicy(accountID, repo string) ([]byte, error) {
 	return entry.Value(), nil
 }
 
-func (s *KVMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, error) {
+func (s *KVMetaStore) DeleteRepoPolicy(_ context.Context, accountID, repo string) ([]byte, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -283,7 +284,7 @@ func (s *KVMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, error) {
 	return entry.Value(), nil
 }
 
-func (s *KVMetaStore) PutLifecyclePolicy(accountID, repo string, policyText []byte) error {
+func (s *KVMetaStore) PutLifecyclePolicy(_ context.Context, accountID, repo string, policyText []byte) error {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return err
@@ -292,7 +293,7 @@ func (s *KVMetaStore) PutLifecyclePolicy(accountID, repo string, policyText []by
 	return err
 }
 
-func (s *KVMetaStore) GetLifecyclePolicy(accountID, repo string) ([]byte, error) {
+func (s *KVMetaStore) GetLifecyclePolicy(_ context.Context, accountID, repo string) ([]byte, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -304,7 +305,7 @@ func (s *KVMetaStore) GetLifecyclePolicy(accountID, repo string) ([]byte, error)
 	return entry.Value(), nil
 }
 
-func (s *KVMetaStore) DeleteLifecyclePolicy(accountID, repo string) ([]byte, error) {
+func (s *KVMetaStore) DeleteLifecyclePolicy(_ context.Context, accountID, repo string) ([]byte, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -321,7 +322,7 @@ func (s *KVMetaStore) DeleteLifecyclePolicy(accountID, repo string) ([]byte, err
 	return entry.Value(), nil
 }
 
-func (s *KVMetaStore) PutTag(accountID, repo, tag, digest string) error {
+func (s *KVMetaStore) PutTag(_ context.Context, accountID, repo, tag, digest string) error {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return err
@@ -330,7 +331,7 @@ func (s *KVMetaStore) PutTag(accountID, repo, tag, digest string) error {
 	return err
 }
 
-func (s *KVMetaStore) GetTag(accountID, repo, tag string) (string, error) {
+func (s *KVMetaStore) GetTag(_ context.Context, accountID, repo, tag string) (string, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return "", err
@@ -342,7 +343,7 @@ func (s *KVMetaStore) GetTag(accountID, repo, tag string) (string, error) {
 	return string(entry.Value()), nil
 }
 
-func (s *KVMetaStore) DeleteTag(accountID, repo, tag string) error {
+func (s *KVMetaStore) DeleteTag(_ context.Context, accountID, repo, tag string) error {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return err
@@ -358,7 +359,7 @@ func (s *KVMetaStore) DeleteTag(accountID, repo, tag string) error {
 	return nil
 }
 
-func (s *KVMetaStore) ListTags(accountID, repo string) ([]string, error) {
+func (s *KVMetaStore) ListTags(_ context.Context, accountID, repo string) ([]string, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return nil, err
@@ -381,7 +382,7 @@ func (s *KVMetaStore) ListTags(accountID, repo string) ([]string, error) {
 	return tags, nil
 }
 
-func (s *KVMetaStore) PutManifestMeta(accountID, repo string, meta ManifestMeta) error {
+func (s *KVMetaStore) PutManifestMeta(_ context.Context, accountID, repo string, meta ManifestMeta) error {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return err
@@ -394,7 +395,7 @@ func (s *KVMetaStore) PutManifestMeta(accountID, repo string, meta ManifestMeta)
 	return err
 }
 
-func (s *KVMetaStore) GetManifestMeta(accountID, repo, digest string) (ManifestMeta, error) {
+func (s *KVMetaStore) GetManifestMeta(_ context.Context, accountID, repo, digest string) (ManifestMeta, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return ManifestMeta{}, err
@@ -410,7 +411,7 @@ func (s *KVMetaStore) GetManifestMeta(accountID, repo, digest string) (ManifestM
 	return m, nil
 }
 
-func (s *KVMetaStore) DeleteManifestMeta(accountID, repo, digest string) error {
+func (s *KVMetaStore) DeleteManifestMeta(_ context.Context, accountID, repo, digest string) error {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return err
@@ -421,7 +422,7 @@ func (s *KVMetaStore) DeleteManifestMeta(accountID, repo, digest string) error {
 	return kv.Delete(KVManifestKey(repo, digest))
 }
 
-func (s *KVMetaStore) PutUpload(accountID, uploadID string, state UploadState) (uint64, error) {
+func (s *KVMetaStore) PutUpload(_ context.Context, accountID, uploadID string, state UploadState) (uint64, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return 0, err
@@ -433,7 +434,7 @@ func (s *KVMetaStore) PutUpload(accountID, uploadID string, state UploadState) (
 	return kv.Put(KVUploadKey(uploadID), data)
 }
 
-func (s *KVMetaStore) GetUpload(accountID, uploadID string) (UploadState, uint64, error) {
+func (s *KVMetaStore) GetUpload(_ context.Context, accountID, uploadID string) (UploadState, uint64, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return UploadState{}, 0, err
@@ -449,7 +450,7 @@ func (s *KVMetaStore) GetUpload(accountID, uploadID string) (UploadState, uint64
 	return st, entry.Revision(), nil
 }
 
-func (s *KVMetaStore) UpdateUpload(accountID, uploadID string, state UploadState, rev uint64) (uint64, error) {
+func (s *KVMetaStore) UpdateUpload(_ context.Context, accountID, uploadID string, state UploadState, rev uint64) (uint64, error) {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return 0, err
@@ -468,7 +469,7 @@ func (s *KVMetaStore) UpdateUpload(accountID, uploadID string, state UploadState
 	return newRev, nil
 }
 
-func (s *KVMetaStore) DeleteUpload(accountID, uploadID string) error {
+func (s *KVMetaStore) DeleteUpload(_ context.Context, accountID, uploadID string) error {
 	kv, err := s.bucket(accountID)
 	if err != nil {
 		return err
@@ -515,7 +516,7 @@ func NewMemoryMetaStore() *MemoryMetaStore {
 	}
 }
 
-func (m *MemoryMetaStore) PutRepo(accountID string, meta RepoMeta) error {
+func (m *MemoryMetaStore) PutRepo(_ context.Context, accountID string, meta RepoMeta) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.repos[accountID] == nil {
@@ -525,7 +526,7 @@ func (m *MemoryMetaStore) PutRepo(accountID string, meta RepoMeta) error {
 	return nil
 }
 
-func (m *MemoryMetaStore) GetRepo(accountID, repo string) (RepoMeta, error) {
+func (m *MemoryMetaStore) GetRepo(_ context.Context, accountID, repo string) (RepoMeta, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.repos[accountID][repo]
@@ -535,13 +536,13 @@ func (m *MemoryMetaStore) GetRepo(accountID, repo string) (RepoMeta, error) {
 	return r, nil
 }
 
-func (m *MemoryMetaStore) ListRepos(accountID string) ([]string, error) {
+func (m *MemoryMetaStore) ListRepos(_ context.Context, accountID string) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return slices.Sorted(maps.Keys(m.repos[accountID])), nil
 }
 
-func (m *MemoryMetaStore) DeleteRepo(accountID, repo string) error {
+func (m *MemoryMetaStore) DeleteRepo(_ context.Context, accountID, repo string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.repos[accountID][repo]; !ok {
@@ -563,7 +564,7 @@ func (m *MemoryMetaStore) DeleteRepo(accountID, repo string) error {
 	return nil
 }
 
-func (m *MemoryMetaStore) ListManifests(accountID, repo string) ([]string, error) {
+func (m *MemoryMetaStore) ListManifests(_ context.Context, accountID, repo string) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []string
@@ -576,7 +577,7 @@ func (m *MemoryMetaStore) ListManifests(accountID, repo string) ([]string, error
 	return out, nil
 }
 
-func (m *MemoryMetaStore) PutRepoPolicy(accountID, repo string, policyText []byte) error {
+func (m *MemoryMetaStore) PutRepoPolicy(_ context.Context, accountID, repo string, policyText []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.policies[accountID] == nil {
@@ -586,7 +587,7 @@ func (m *MemoryMetaStore) PutRepoPolicy(accountID, repo string, policyText []byt
 	return nil
 }
 
-func (m *MemoryMetaStore) GetRepoPolicy(accountID, repo string) ([]byte, error) {
+func (m *MemoryMetaStore) GetRepoPolicy(_ context.Context, accountID, repo string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, ok := m.policies[accountID][repo]
@@ -596,7 +597,7 @@ func (m *MemoryMetaStore) GetRepoPolicy(accountID, repo string) ([]byte, error) 
 	return p, nil
 }
 
-func (m *MemoryMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, error) {
+func (m *MemoryMetaStore) DeleteRepoPolicy(_ context.Context, accountID, repo string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, ok := m.policies[accountID][repo]
@@ -607,7 +608,7 @@ func (m *MemoryMetaStore) DeleteRepoPolicy(accountID, repo string) ([]byte, erro
 	return p, nil
 }
 
-func (m *MemoryMetaStore) PutLifecyclePolicy(accountID, repo string, policyText []byte) error {
+func (m *MemoryMetaStore) PutLifecyclePolicy(_ context.Context, accountID, repo string, policyText []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.lifecycle[accountID] == nil {
@@ -617,7 +618,7 @@ func (m *MemoryMetaStore) PutLifecyclePolicy(accountID, repo string, policyText 
 	return nil
 }
 
-func (m *MemoryMetaStore) GetLifecyclePolicy(accountID, repo string) ([]byte, error) {
+func (m *MemoryMetaStore) GetLifecyclePolicy(_ context.Context, accountID, repo string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, ok := m.lifecycle[accountID][repo]
@@ -627,7 +628,7 @@ func (m *MemoryMetaStore) GetLifecyclePolicy(accountID, repo string) ([]byte, er
 	return p, nil
 }
 
-func (m *MemoryMetaStore) DeleteLifecyclePolicy(accountID, repo string) ([]byte, error) {
+func (m *MemoryMetaStore) DeleteLifecyclePolicy(_ context.Context, accountID, repo string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, ok := m.lifecycle[accountID][repo]
@@ -638,7 +639,7 @@ func (m *MemoryMetaStore) DeleteLifecyclePolicy(accountID, repo string) ([]byte,
 	return p, nil
 }
 
-func (m *MemoryMetaStore) PutTag(accountID, repo, tag, digest string) error {
+func (m *MemoryMetaStore) PutTag(_ context.Context, accountID, repo, tag, digest string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.tags[accountID] == nil {
@@ -648,7 +649,7 @@ func (m *MemoryMetaStore) PutTag(accountID, repo, tag, digest string) error {
 	return nil
 }
 
-func (m *MemoryMetaStore) GetTag(accountID, repo, tag string) (string, error) {
+func (m *MemoryMetaStore) GetTag(_ context.Context, accountID, repo, tag string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d, ok := m.tags[accountID][repo+"|"+tag]
@@ -658,7 +659,7 @@ func (m *MemoryMetaStore) GetTag(accountID, repo, tag string) (string, error) {
 	return d, nil
 }
 
-func (m *MemoryMetaStore) DeleteTag(accountID, repo, tag string) error {
+func (m *MemoryMetaStore) DeleteTag(_ context.Context, accountID, repo, tag string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := repo + "|" + tag
@@ -669,7 +670,7 @@ func (m *MemoryMetaStore) DeleteTag(accountID, repo, tag string) error {
 	return nil
 }
 
-func (m *MemoryMetaStore) ListTags(accountID, repo string) ([]string, error) {
+func (m *MemoryMetaStore) ListTags(_ context.Context, accountID, repo string) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []string
@@ -682,7 +683,7 @@ func (m *MemoryMetaStore) ListTags(accountID, repo string) ([]string, error) {
 	return out, nil
 }
 
-func (m *MemoryMetaStore) PutManifestMeta(accountID, repo string, meta ManifestMeta) error {
+func (m *MemoryMetaStore) PutManifestMeta(_ context.Context, accountID, repo string, meta ManifestMeta) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.manifests[accountID] == nil {
@@ -692,7 +693,7 @@ func (m *MemoryMetaStore) PutManifestMeta(accountID, repo string, meta ManifestM
 	return nil
 }
 
-func (m *MemoryMetaStore) GetManifestMeta(accountID, repo, digest string) (ManifestMeta, error) {
+func (m *MemoryMetaStore) GetManifestMeta(_ context.Context, accountID, repo, digest string) (ManifestMeta, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	meta, ok := m.manifests[accountID][repo+"|"+digest]
@@ -702,7 +703,7 @@ func (m *MemoryMetaStore) GetManifestMeta(accountID, repo, digest string) (Manif
 	return meta, nil
 }
 
-func (m *MemoryMetaStore) DeleteManifestMeta(accountID, repo, digest string) error {
+func (m *MemoryMetaStore) DeleteManifestMeta(_ context.Context, accountID, repo, digest string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := repo + "|" + digest
@@ -713,7 +714,7 @@ func (m *MemoryMetaStore) DeleteManifestMeta(accountID, repo, digest string) err
 	return nil
 }
 
-func (m *MemoryMetaStore) PutUpload(accountID, uploadID string, state UploadState) (uint64, error) {
+func (m *MemoryMetaStore) PutUpload(_ context.Context, accountID, uploadID string, state UploadState) (uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.uploads[accountID] == nil {
@@ -724,7 +725,7 @@ func (m *MemoryMetaStore) PutUpload(accountID, uploadID string, state UploadStat
 	return rev, nil
 }
 
-func (m *MemoryMetaStore) GetUpload(accountID, uploadID string) (UploadState, uint64, error) {
+func (m *MemoryMetaStore) GetUpload(_ context.Context, accountID, uploadID string) (UploadState, uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	u, ok := m.uploads[accountID][uploadID]
@@ -734,7 +735,7 @@ func (m *MemoryMetaStore) GetUpload(accountID, uploadID string) (UploadState, ui
 	return u.state, u.rev, nil
 }
 
-func (m *MemoryMetaStore) UpdateUpload(accountID, uploadID string, state UploadState, rev uint64) (uint64, error) {
+func (m *MemoryMetaStore) UpdateUpload(_ context.Context, accountID, uploadID string, state UploadState, rev uint64) (uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	u, ok := m.uploads[accountID][uploadID]
@@ -750,7 +751,7 @@ func (m *MemoryMetaStore) UpdateUpload(accountID, uploadID string, state UploadS
 	return u.rev, nil
 }
 
-func (m *MemoryMetaStore) DeleteUpload(accountID, uploadID string) error {
+func (m *MemoryMetaStore) DeleteUpload(_ context.Context, accountID, uploadID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.uploads[accountID][uploadID]; !ok {

@@ -1,6 +1,7 @@
 package handlers_ec2_vpc
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -15,7 +16,7 @@ func TestEnsureDefaultVPC_PublicIPMappingDisabled(t *testing.T) {
 	_, err := svc.EnsureDefaultVPC(testAccountID)
 	require.NoError(t, err)
 
-	subDesc, err := svc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	subDesc, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, subDesc.Subnets, 1)
 	assert.False(t, *subDesc.Subnets[0].MapPublicIpOnLaunch,
@@ -28,7 +29,7 @@ func TestEnsureDefaultVPC_PublicIPMappingDefaultOn(t *testing.T) {
 	_, err := svc.EnsureDefaultVPC(testAccountID)
 	require.NoError(t, err)
 
-	subDesc, err := svc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	subDesc, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, subDesc.Subnets, 1)
 	assert.True(t, *subDesc.Subnets[0].MapPublicIpOnLaunch)

@@ -229,6 +229,13 @@ func (m *Manager) RestartCrashedInstance(instance *VM) {
 		}
 		v.Health.RestartCount++
 		restartCount = v.Health.RestartCount
+		// Refresh LaunchTime so the pending watchdog gives the relaunch a fresh
+		// window; the stale original time otherwise trips launch_timeout on the
+		// next tick and terminates the crash-restart mid-flight (cf. restore.go).
+		if v.Instance != nil {
+			now := time.Now()
+			v.Instance.LaunchTime = &now
+		}
 	})
 	if skipReason != "" {
 		slog.Info("Skipping restart of crashed instance",

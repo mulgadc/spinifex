@@ -72,6 +72,12 @@ type ClusterMeta struct {
 	ControlPlaneNodes []ControlPlaneNode `json:"controlPlaneNodes,omitempty"`
 	// ControlPlaneSpreadGroup is the spread placement-group name; "" for single-CP.
 	ControlPlaneSpreadGroup string `json:"controlPlaneSpreadGroup,omitempty"`
+	// ControlPlaneTemplate is the create-time K3sServerInput the reconciler
+	// replays to provision a replacement CP member that joins the surviving etcd
+	// quorum. Per-node fields (TargetNodeID/ServerURL/KonnServerCount) and rotating
+	// creds (AccessKey/SecretKey/IamInstanceProfileArn) are cleared at persist and
+	// re-derived at provision. Nil for clusters created before member-count reconcile.
+	ControlPlaneTemplate *K3sServerInput `json:"controlPlaneTemplate,omitempty"`
 	// EgressEIPAllocationID / EgressEIPPublicIP track the hidden-pool SNAT address
 	// for CP VM egress (image pulls). Released on DeleteCluster.
 	EgressEIPAllocationID string    `json:"egressEipAllocationId,omitempty"`
@@ -290,6 +296,39 @@ func SetClusterHealthState(kv nats.KeyValue, name, issue string, nodeCount int) 
 		m.HealthIssue = issue
 		m.NodeCount = nodeCount
 		m.LastHealthProbe = time.Now().UTC()
+		return true
+	})
+}
+
+// SwapControlPlaneMember atomically replaces a lost control-plane member
+// (deadInstanceID) with a freshly provisioned one in meta.ControlPlaneNodes and
+// refreshes the scalar [0] mirrors if the primary changed. A no-op (no error)
+// when the dead member is already gone from the list — a concurrent swap already
+// won. Returns ErrClusterNotFound if the cluster was deleted concurrently.
+func SwapControlPlaneMember(kv nats.KeyValue, name, deadInstanceID string, replacement ControlPlaneNode) error {
+	if name == "" {
+		return errors.New("eks: SwapControlPlaneMember empty name")
+	}
+	if replacement.InstanceID == "" {
+		return errors.New("eks: SwapControlPlaneMember empty replacement instance id")
+	}
+	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+		idx := -1
+		for i, n := range m.ControlPlaneNodes {
+			if n.InstanceID == deadInstanceID {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 {
+			return false
+		}
+		m.ControlPlaneNodes[idx] = replacement
+		primary := m.ControlPlaneNodes[0]
+		m.ControlPlaneInstanceID = primary.InstanceID
+		m.ControlPlaneENIID = primary.ENIID
+		m.ControlPlaneENIIP = primary.ENIIP
+		m.ControlPlaneMgmtIP = primary.MgmtIP
 		return true
 	})
 }

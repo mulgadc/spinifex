@@ -49,6 +49,15 @@ func New(baseURL, caPath, accessKey, secretKey, region string) (*Client, error) 
 		if err != nil {
 			return nil, fmt.Errorf("eksgw: init IMDS signer: %w", err)
 		}
+		// The per-tap IMDS datapath lags VM boot by minutes (data-NIC DHCP lease
+		// + br-imds reconcile), and the SDK's IMDS client fast-fails each probe.
+		// Block until the instance-role creds first retrieve so the first signed
+		// request already has them, rather than letting each caller burn its own
+		// short POST-retry budget against a still-cold datapath (observed: the CP
+		// datapath warms at ~264s, past gateway-publish's 150s budget).
+		if err := warmIMDSCredentials(s); err != nil {
+			return nil, fmt.Errorf("eksgw: IMDS instance-role credentials unavailable: %w", err)
+		}
 		signer = s
 	}
 
@@ -77,6 +86,37 @@ func New(baseURL, caPath, accessKey, secretKey, region string) (*Client, error) 
 			Transport: &http.Transport{TLSClientConfig: tlsCfg, MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second},
 		},
 	}, nil
+}
+
+const (
+	// imdsWarmupTimeout bounds the wait for the IMDS instance-role datapath to
+	// come up — aligned with cloud-init's Ec2 max_wait (600s), since it is the
+	// same per-tap datapath. Exceeding it means the datapath is genuinely broken
+	// (not merely slow), so New fails loudly instead of signing credential-less.
+	imdsWarmupTimeout = 10 * time.Minute
+	// imdsWarmupInterval spaces the retrieve probes; each SDK probe fast-fails
+	// (~250ms dial) against a cold datapath, so a short interval keeps the total
+	// wait close to the datapath's actual readiness time.
+	imdsWarmupInterval = 2 * time.Second
+)
+
+// warmIMDSCredentials blocks until the signer's IMDS provider first yields
+// credentials, or imdsWarmupTimeout elapses. Retries because the SDK client
+// fast-fails each probe while the per-tap datapath is still cold.
+func warmIMDSCredentials(s *gwsign.Signer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), imdsWarmupTimeout)
+	defer cancel()
+	var lastErr error
+	for {
+		if lastErr = s.EnsureCredentials(ctx); lastErr == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("after %s: %w", imdsWarmupTimeout, lastErr)
+		case <-time.After(imdsWarmupInterval):
+		}
+	}
 }
 
 // Post SigV4-signs and sends body to path, returning the response body on 2xx.

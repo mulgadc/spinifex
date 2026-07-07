@@ -100,64 +100,69 @@ const (
 // report, and add-on fetch reach the customer cluster, not the system account.
 // Region is carried for future region-aware AMI lookups but not consumed today.
 type K3sServerInput struct {
-	AccountID        string
-	ClusterAccountID string
-	ClusterName      string
-	Region           string
-	SubnetID         string
+	AccountID        string `json:"accountId,omitempty"`
+	ClusterAccountID string `json:"clusterAccountId,omitempty"`
+	ClusterName      string `json:"clusterName,omitempty"`
+	Region           string `json:"region,omitempty"`
+	SubnetID         string `json:"subnetId,omitempty"`
 	// VpcID is the cluster VPC; surfaced as EKS_VPC_ID so the in-cluster LB
 	// controller can pass --aws-vpc-id to the gateway elbv2/ec2 handlers.
-	VpcID string
+	VpcID string `json:"vpcId,omitempty"`
 	// ELBSubnetIDs is the cluster's ELB-eligible subnets, deduped to one per AZ.
 	// Surfaced as EKS_ELB_SUBNET_IDS and injected into the alb IngressClassParams
 	// so every Ingress takes LBC's explicit-subnet path (the only path that honors
 	// the ALBSingleSubnet gate); tag auto-discovery never threads that gate, so a
 	// single-AZ cluster would otherwise dedup to 1<2 subnets and fail reconcile.
-	ELBSubnetIDs     []string
-	ControlPlaneSGID string
-	NLBDNS           string
+	ELBSubnetIDs     []string `json:"elbSubnetIds,omitempty"`
+	ControlPlaneSGID string   `json:"controlPlaneSgId,omitempty"`
+	NLBDNS           string   `json:"nlbDns,omitempty"`
 	// EndpointIP is the NLB front-end IP added to the apiserver cert SANs for TLS.
 	// Empty for an internal endpoint with no front-end IP.
-	EndpointIP string
+	EndpointIP string `json:"endpointIp,omitempty"`
 	// PrivateEndpointIP is the customer-VPC (Set A) private-endpoint IP added to the
 	// apiserver cert SANs so in-VPC clients validate TLS via https://<ip>:443.
 	// Empty when private access is off.
-	PrivateEndpointIP string
-	OIDCIssuer        string
-	OIDCPrivateKeyPEM string
-	OIDCPublicKeyPEM  string
+	PrivateEndpointIP string `json:"privateEndpointIp,omitempty"`
+	OIDCIssuer        string `json:"oidcIssuer,omitempty"`
+	OIDCPrivateKeyPEM string `json:"oidcPrivateKeyPem,omitempty"`
+	OIDCPublicKeyPEM  string `json:"oidcPublicKeyPem,omitempty"`
 	// Gateway broker config: CP VM publishes via SigV4-signed HTTPS POST to AWSGW.
 	// GatewayURL is the mgmt-reachable endpoint; AccessKey/SecretKey are system
 	// SigV4 creds; GatewayCACert signs the gateway TLS cert.
-	GatewayURL string
+	GatewayURL string `json:"gatewayUrl,omitempty"`
 	// AddonGatewayURL is the customer-facing gateway endpoint baked into managed
 	// addon pod specs (EKS_ADDON_GATEWAY_URL). Those pods run on workers, which
 	// cannot reach the mgmt GatewayURL, so they target this public address.
-	AddonGatewayURL string
+	AddonGatewayURL string `json:"addonGatewayUrl,omitempty"`
 	// AccessKey/SecretKey are the static system SigV4 creds baked into the VM's
 	// first-boot env. Empty selects IMDS instance-role creds instead, which
 	// requires IamInstanceProfileArn to be set so IMDS serves a role.
-	AccessKey string
-	SecretKey string
+	AccessKey string `json:"accessKey,omitempty"`
+	SecretKey string `json:"secretKey,omitempty"`
 	// IamInstanceProfileArn attaches a system instance profile to the CP VM so
 	// the in-VM IMDS endpoint serves rotating role credentials. When set, the
 	// static AccessKey/SecretKey are omitted from user-data.
-	IamInstanceProfileArn string
-	GatewayCACert         string
-	InstanceType          string
+	IamInstanceProfileArn string `json:"iamInstanceProfileArn,omitempty"`
+	GatewayCACert         string `json:"gatewayCaCert,omitempty"`
+	InstanceType          string `json:"instanceType,omitempty"`
 	// TargetNodeID pins the VM to a specific host for HA spread; empty = local node.
-	TargetNodeID string
+	TargetNodeID string `json:"targetNodeId,omitempty"`
 	// JoinToken is the shared k3s cluster token so HA servers join the etcd quorum.
 	// Empty = k3s auto-generated token (single-CP).
-	JoinToken string
+	JoinToken string `json:"joinToken,omitempty"`
 	// ServerURL boots this VM as a JOIN server joining the quorum at the given endpoint.
 	// Empty = first server (cluster-init). Non-empty requires JoinToken.
-	ServerURL string
+	ServerURL string `json:"serverUrl,omitempty"`
+	// PrunePeerIP is a terminated CP member's node IP the reconciler asks this
+	// replacement to evict once it has joined: deleting the dead Node triggers k3s
+	// embedded-etcd to drop the stale member, so the quorum width returns to N
+	// rather than N+1-with-a-dead-peer. Empty = nothing to prune (create path).
+	PrunePeerIP string `json:"prunePeerIp,omitempty"`
 	// KonnServerCount is the number of apiserver replicas in this cluster (1 for a
 	// single CP, len(nodes) for an HA spread). Surfaced as
 	// EKS_KONNECTIVITY_SERVER_COUNT so the konnectivity-server advertises
 	// --server-count=N and every agent holds a tunnel to every replica (HA-correct).
-	KonnServerCount int
+	KonnServerCount int `json:"konnServerCount,omitempty"`
 }
 
 // K3sServerOutput carries identifiers to persist in ClusterMeta and register with the NLB.
@@ -507,6 +512,12 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_KONNECTIVITY_SANS="+strings.Join(konnSANs, ","),
 		"EKS_KONNECTIVITY_SERVER_COUNT="+strconv.Itoa(konnCount),
 	)
+	// A replacement CP prunes the terminated member it supersedes from etcd once
+	// it has joined (k3s-first-boot deletes the dead Node → embedded-etcd drops
+	// the member). Only set on a member-count-reconcile replacement launch.
+	if in.PrunePeerIP != "" {
+		envLines = append(envLines, "EKS_ETCD_PRUNE_PEER_IP="+in.PrunePeerIP)
+	}
 	envBody := strings.Join(envLines, "\n")
 
 	// First server uses cluster-init (embedded etcd); join servers set `server: <first>` + token.

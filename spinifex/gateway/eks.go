@@ -73,6 +73,14 @@ var eksRoutes = []eksRoute{
 			return gateway_eks.ListInternalAddons(gw.NATSConn, p[0], p[1])
 		}},
 
+	// Internal control-plane route: the on-VM k3s-recovery agent pulls its
+	// per-member recovery directive (cluster-reset / wipe-rejoin) at boot. Same
+	// system-cred carve-out as internal-addons; instance ID is the third segment.
+	{"GET", regexp.MustCompile(`^/clusters/([^/]+)/internal-recovery/([^/]+)/([^/]+)$`), "GetRecoveryDirective",
+		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
+			return gateway_eks.GetRecoveryDirective(gw.NATSConn, p[0], p[1], p[2])
+		}},
+
 	// Nodegroup
 	{"POST", regexp.MustCompile(`^/clusters/([^/]+)/node-groups$`), "CreateNodegroup",
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {

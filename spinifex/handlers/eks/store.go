@@ -146,6 +146,18 @@ func AddonManifestKey(cluster, addon string) string {
 	return AddonsPrefix(cluster) + addon + "/manifest"
 }
 
+// RecoveryPrefix returns the KV key prefix under which a cluster's per-member
+// control-plane recovery directives live.
+func RecoveryPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/recovery/", cluster)
+}
+
+// RecoveryDirectiveKey returns the KV key for a control-plane member's recovery
+// directive, keyed by instance ID so a replacement VM (new ID) starts with none.
+func RecoveryDirectiveKey(cluster, instanceID string) string {
+	return RecoveryPrefix(cluster) + instanceID
+}
+
 // Store is the per-daemon EKS KV handle. Per-account and leader buckets are
 // accessed via the package-level factories below.
 type Store struct {

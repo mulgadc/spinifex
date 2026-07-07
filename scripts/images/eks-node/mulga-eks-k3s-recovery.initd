@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+# mulga-eks-k3s-recovery — boot oneshot that applies a control-plane etcd-quorum
+# recovery directive before K3s starts (server role only; the script self-guards).
+# Ordered before k3s so the etcd datastore is reset/wiped while the apiserver is
+# down, and after the role selector + mgmt-net so the role file exists and IMDS +
+# the AWS gateway are reachable for the directive fetch. Enabled by eks-node-role
+# on server roles; a no-op every boot the reconciler has issued no directive.
+
+description="Apply Mulga EKS control-plane etcd recovery directive (pre-k3s)"
+
+depend() {
+    need net
+    after eks-node-role mulga-mgmt-net local
+    before k3s
+}
+
+start() {
+    ebegin "Applying EKS control-plane etcd recovery directive"
+    /usr/local/sbin/mulga-eks-k3s-recovery
+    eend $?
+}

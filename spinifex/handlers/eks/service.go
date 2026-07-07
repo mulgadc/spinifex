@@ -44,6 +44,13 @@ type EKSService interface {
 	// cluster via the internal-addons gateway route.
 	ListStagedAddonManifests(input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error)
 
+	// GetRecoveryDirective / SetRecoveryDirective are internal control-plane
+	// methods (not AWS-SDK actions): the on-VM k3s-recovery agent fetches its
+	// per-member directive via the internal-recovery gateway route, and the
+	// reconciler / operator CLI set it to drive an etcd cluster-reset recovery.
+	GetRecoveryDirective(input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error)
+	SetRecoveryDirective(input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error)
+
 	// OIDC identity-provider configs.
 	AssociateIdentityProviderConfig(input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error)
 	DescribeIdentityProviderConfig(input *eks.DescribeIdentityProviderConfigInput, accountID string) (*eks.DescribeIdentityProviderConfigOutput, error)

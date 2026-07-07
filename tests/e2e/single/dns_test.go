@@ -47,7 +47,7 @@ func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 	require.Truef(t, trySSHReady(pubIP, 22, keyPath, sshReadyBudget),
 		"tcp/22 to %s never became reachable after authorizing ingress", pubIP)
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: keyPath}
+	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 
 	// Step 1: ping the instance's own IPs — datapath sanity, no DNS involved.
 	for _, self := range []struct{ label, dst string }{

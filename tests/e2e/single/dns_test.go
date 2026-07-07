@@ -15,15 +15,18 @@ import (
 // inside a running instance. It launches one instance, SSHes in over its public
 // IP, and over that session:
 //
-//  1. pings the instance's own private and public IPs (from DescribeInstances)
-//     to prove the local ICMP datapath before DNS is exercised, and
+//  1. pings the instance's own private IP (from DescribeInstances) to prove the
+//     local ICMP datapath before DNS is exercised, and
 //  2. pings public hostnames (google.com, cloudflare.com), forcing guest-side
 //     name resolution (resolver -> northstar recursion) followed by ICMP egress.
 //
 // Public-hostname pings validate that the DHCP-advertised resolver
 // (169.254.169.253, served by the per-tap shim once P7 is deployed) returns a
-// routable answer and that egress works. The instance's own IPs isolate a DNS
-// failure from a plain datapath failure when the hostname pings fail.
+// routable answer and that egress works. The own private IP isolates a DNS
+// failure from a plain datapath failure when the hostname pings fail. The public
+// inbound path is already proven by the successful SSH over the public IP, and a
+// guest cannot ping its own public IP (gateway NAT, no hairpin) — AWS behaves the
+// same — so no own-public-IP ping is attempted.
 func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Guest DNS end-to-end: resolver + ICMP egress")
 
@@ -49,17 +52,14 @@ func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 
 	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 
-	// Step 1: ping the instance's own IPs — datapath sanity, no DNS involved.
-	for _, self := range []struct{ label, dst string }{
-		{"private", privIP},
-		{"public", pubIP},
-	} {
-		harness.Step(t, "ping own %s IP %s from guest", self.label, self.dst)
-		out, ok := pingConverged(tgt, self.dst, 30*time.Second)
-		require.Truef(t, ok,
-			"guest ping to own %s IP %s never reached 0%% loss within 30s\n%s",
-			self.label, self.dst, out)
-	}
+	// Step 1: ping the instance's own private IP — local datapath sanity, no DNS
+	// involved. (Own public IP is unreachable from inside via gateway NAT, and the
+	// public inbound path is already proven by the SSH above.)
+	harness.Step(t, "ping own private IP %s from guest", privIP)
+	out, ok := pingConverged(tgt, privIP, 30*time.Second)
+	require.Truef(t, ok,
+		"guest ping to own private IP %s never reached 0%% loss within 30s\n%s",
+		privIP, out)
 
 	// Step 2: ping public hostnames — forces DNS resolution then ICMP egress. A
 	// resolver failure surfaces as a name-resolution error (never 0% loss), so a

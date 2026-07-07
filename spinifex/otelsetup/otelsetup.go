@@ -129,7 +129,11 @@ func newResource(ctx context.Context, serviceName string) (*resource.Resource, e
 		env = os.Getenv("SPINIFEX_CI_ENV")
 	}
 	if env != "" {
-		attrs = append(attrs, attribute.String("mulga.env", env))
+		// deployment.environment maps to service.environment in Elastic APM,
+		// enabling the native environment selector across the APM UI.
+		attrs = append(attrs,
+			attribute.String("mulga.env", env),
+			semconv.DeploymentEnvironment(env))
 	}
 	if src := os.Getenv("MULGA_SOURCE"); src != "" {
 		attrs = append(attrs, attribute.String("mulga.source", src))

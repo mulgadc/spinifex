@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
+	"github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/vpcd"
@@ -846,6 +847,77 @@ var vpcdStatusCmd = &cobra.Command{
 	},
 }
 
+var qmpCollectorCmd = &cobra.Command{
+	Use:   "qmp-collector",
+	Short: "Manage the qmp-collector (guest metrics) service",
+}
+
+var qmpCollectorStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start the qmp-collector service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Starting qmp-collector service...")
+
+		cfgFile := viper.GetString("config")
+		if cfgFile == "" {
+			fmt.Println("Config file is not set")
+			return
+		}
+		clusterConfig, err := config.LoadConfig(cfgFile)
+		if err != nil {
+			fmt.Println("Error loading config file:", err)
+			return
+		}
+		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
+
+		defer initTelemetry("qmp-collector", false)()
+
+		svc, err := service.New("qmp-collector", &qmpcollector.Config{
+			NatsHost:   nodeConfig.NATS.Host,
+			NatsToken:  nodeConfig.NATS.ACL.Token,
+			NatsCACert: nodeConfig.NATS.CACert,
+			BaseDir:    nodeConfig.BaseDir,
+			NodeName:   clusterConfig.Node,
+		})
+		if err != nil {
+			fmt.Println("Error starting qmp-collector service:", err)
+			return
+		}
+		if _, err = svc.Start(); err != nil {
+			fmt.Println("Error starting qmp-collector service:", err)
+			os.Exit(1)
+		}
+		fmt.Println("qmp-collector service started")
+	},
+}
+
+var qmpCollectorStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the qmp-collector service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Stopping qmp-collector service...")
+
+		svc, err := service.New("qmp-collector", &qmpcollector.Config{})
+		if err != nil {
+			fmt.Println("Error stopping qmp-collector service:", err)
+			return
+		}
+		if err = svc.Stop(); err != nil {
+			fmt.Println("Error stopping qmp-collector service:", err)
+			os.Exit(1)
+		}
+		fmt.Println("qmp-collector service stopped")
+	},
+}
+
+var qmpCollectorStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Get status of the qmp-collector service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("qmp-collector service status: ...")
+	},
+}
+
 func init() {
 	viper.SetEnvPrefix("SPINIFEX") // Prefix for environment variables
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
@@ -1045,4 +1117,11 @@ func init() {
 	vpcdCmd.AddCommand(vpcdStartCmd)
 	vpcdCmd.AddCommand(vpcdStopCmd)
 	vpcdCmd.AddCommand(vpcdStatusCmd)
+
+	// qmp-collector
+	serviceCmd.AddCommand(qmpCollectorCmd)
+
+	qmpCollectorCmd.AddCommand(qmpCollectorStartCmd)
+	qmpCollectorCmd.AddCommand(qmpCollectorStopCmd)
+	qmpCollectorCmd.AddCommand(qmpCollectorStatusCmd)
 }

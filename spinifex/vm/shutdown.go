@@ -388,6 +388,8 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 			slog.Warn("Failed to remove fw_cfg temp file", "file", fw.File, "id", instance.ID, "err", err)
 		}
 	}
+
+	removeTelemetryArtifacts(instance)
 }
 
 // cleanupTapDevices removes the primary VPC tap, every extra ENI tap, and

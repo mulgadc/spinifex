@@ -154,6 +154,15 @@ func RuntimeDir() string {
 	return pidPath()
 }
 
+// QMPTelemetryPrefix names the per-VM telemetry QMP socket and its sidecar
+// metadata file in the runtime dir: <prefix><instance-id>.sock / .json.
+const QMPTelemetryPrefix = "qmp-telemetry-"
+
+// TelemetryMetaPath returns the qmp-collector discovery file for an instance.
+func TelemetryMetaPath(instanceID string) string {
+	return filepath.Join(RuntimeDir(), QMPTelemetryPrefix+instanceID+".json")
+}
+
 func pidPath() string {
 	if os.Getenv("XDG_RUNTIME_DIR") != "" {
 		return os.Getenv("XDG_RUNTIME_DIR")

@@ -130,6 +130,7 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	if instance.Config.QMPSocket != "" {
 		_ = os.Remove(instance.Config.QMPSocket)
 	}
+	removeTelemetryArtifacts(instance)
 
 	if m.deps.VolumeMounter != nil {
 		if err := m.deps.VolumeMounter.Unmount(instance); err != nil {

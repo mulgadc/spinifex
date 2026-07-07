@@ -53,6 +53,10 @@ func (m *Manager) HotPlugENI(ctx context.Context, instance *VM, eniID, mac strin
 		return HotPlugENIResult{}, fmt.Errorf("%w: instance %s", ErrQMPUnavailable, instance.ID)
 	}
 
+	// Runs after the Mu unlock below (LIFO defers): telemetryTaps re-acquires
+	// the lock to include the hot-plugged ENI's tap in NetworkIn/Out.
+	defer refreshTelemetryMeta(instance)
+
 	instance.ENIRequests.Mu.Lock()
 	defer instance.ENIRequests.Mu.Unlock()
 
@@ -140,6 +144,10 @@ func (m *Manager) HotUnplugENI(ctx context.Context, instance *VM, eniID string, 
 	if instance.QMPClient == nil {
 		return fmt.Errorf("%w: instance %s", ErrQMPUnavailable, instance.ID)
 	}
+
+	// Runs after the Mu unlock below (LIFO defers): telemetryTaps re-acquires
+	// the lock to drop the detached ENI's tap from NetworkIn/Out.
+	defer refreshTelemetryMeta(instance)
 
 	instance.ENIRequests.Mu.Lock()
 	defer instance.ENIRequests.Mu.Unlock()

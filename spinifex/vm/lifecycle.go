@@ -411,6 +411,17 @@ func (m *Manager) startQEMU(instance *VM) error {
 	}
 	instance.Config.QMPSocket = qmpSocket
 
+	// Second QMP monitor for the metrics collector; a stale socket from a
+	// SIGKILLed QEMU is unlinked so the fresh process can bind. Telemetry
+	// never blocks a launch — failures degrade to no metrics for this VM.
+	if telemetrySocket, terr := utils.GenerateSocketFile(utils.QMPTelemetryPrefix + instance.ID); terr != nil {
+		slog.Warn("Failed to generate telemetry QMP socket", "instanceId", instance.ID, "err", terr)
+	} else {
+		_ = os.Remove(telemetrySocket)
+		instance.Config.TelemetryQMPSocket = telemetrySocket
+		refreshTelemetryMeta(instance)
+	}
+
 	instance.EBSRequests.Mu.Lock()
 	nbdEndpoints := make([]struct{ name, uri string }, 0, len(instance.EBSRequests.Requests))
 	for _, req := range instance.EBSRequests.Requests {

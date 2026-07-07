@@ -510,6 +510,10 @@ func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID string) er
 		slog.Error("snapshotRunningVolume: failed to create viperblock instance", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
+	defer func() {
+		vb.StopChunkUploader()
+		vb.StopWALSyncer()
+	}()
 
 	if err := vb.Backend.Init(); err != nil {
 		slog.Error("snapshotRunningVolume: failed to init backend", "volumeId", volumeID, "err", err)
@@ -579,6 +583,10 @@ func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) er
 		slog.Error("snapshotStoppedVolume: failed to create viperblock instance", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
+	defer func() {
+		vb.StopChunkUploader()
+		vb.StopWALSyncer()
+	}()
 
 	if err := vb.Backend.Init(); err != nil {
 		slog.Error("snapshotStoppedVolume: failed to init backend", "volumeId", volumeID, "err", err)

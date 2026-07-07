@@ -30,8 +30,11 @@ func NewReconcilerRegistry() *ReconcilerRegistry {
 	return &ReconcilerRegistry{holders: map[string]*reconcilerHandle{}}
 }
 
-// SpawnReconcilerFn starts a per-cluster reconciler goroutine; injectable for tests.
-type SpawnReconcilerFn func(ctx context.Context, accountID, clusterName string) (release func(), err error)
+// SpawnReconcilerFn starts a per-cluster reconciler goroutine; injectable for
+// tests. finished closes when that goroutine exits on its own (terminal cluster
+// state or a lost lease), which has no external canceller — Spawn watches it so
+// a self-exiting reconciler drops its registry entry instead of leaking it.
+type SpawnReconcilerFn func(ctx context.Context, accountID, clusterName string) (release func(), finished <-chan struct{}, err error)
 
 // Spawn launches one reconciler goroutine for (accountID, clusterName), or no-ops if already running.
 func (r *ReconcilerRegistry) Spawn(parent context.Context, accountID, clusterName string, spawnFn SpawnReconcilerFn) error {
@@ -54,7 +57,7 @@ func (r *ReconcilerRegistry) Spawn(parent context.Context, accountID, clusterNam
 	r.holders[key] = h
 	r.mu.Unlock()
 
-	release, err := spawnFn(ctx, accountID, clusterName)
+	release, finished, err := spawnFn(ctx, accountID, clusterName)
 	if err != nil {
 		r.mu.Lock()
 		delete(r.holders, key)
@@ -72,10 +75,23 @@ func (r *ReconcilerRegistry) Spawn(parent context.Context, accountID, clusterNam
 	r.mu.Unlock()
 
 	go func() {
-		<-ctx.Done()
+		// Clean up on whichever comes first: an external Stop/StopAll (ctx
+		// cancel) or the reconciler's own Run exiting (finished). Run self-exits
+		// on a terminal cluster state or a lost lease with nothing to cancel the
+		// ctx, so without watching finished the entry would leak and a same-name
+		// recreate would silently no-op at the head of Spawn. A nil finished
+		// (test fakes that never exit) just never selects — old ctx-only behaviour.
+		select {
+		case <-ctx.Done():
+		case <-finished:
+		}
 		r.mu.Lock()
+		if r.holders[key] == h {
+			delete(r.holders, key)
+		}
 		rel := h.release
 		r.mu.Unlock()
+		cancel()
 		if rel != nil {
 			rel()
 		}
@@ -142,22 +158,26 @@ func RunClusterReconciler(
 	leaderKV, acctKV nats.KeyValue,
 	accountID, clusterName, holderID, healthURL string,
 	opts ...ReconcilerOption,
-) (func(), error) {
+) (func(), <-chan struct{}, error) {
 	r, err := NewClusterReconciler(leaderKV, acctKV, accountID, clusterName, holderID, healthURL, opts...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	release, ok := r.AcquireLease()
 	if !ok {
 		slog.Info("RunClusterReconciler: lease held elsewhere, skipping spawn",
 			"accountID", accountID, "cluster", clusterName)
-		return nil, ErrLeaseHeld
+		return nil, nil, ErrLeaseHeld
 	}
+	// Closed when Run returns so the registry can drop this entry on a self-exit
+	// (terminal state / lost lease), letting a later same-name create re-spawn.
+	finished := make(chan struct{})
 	go func() {
+		defer close(finished)
 		if runErr := r.Run(ctx); runErr != nil && !errors.Is(runErr, context.Canceled) {
 			slog.Info("RunClusterReconciler: Run exited",
 				"accountID", accountID, "cluster", clusterName, "err", runErr)
 		}
 	}()
-	return release, nil
+	return release, finished, nil
 }

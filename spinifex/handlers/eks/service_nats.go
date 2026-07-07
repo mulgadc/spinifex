@@ -145,6 +145,14 @@ func (s *NATSEKSService) UpdateAddon(ctx context.Context, input *eks.UpdateAddon
 	return utils.NATSRequestCtx[eks.UpdateAddonOutput](ctx, s.natsConn, "eks.UpdateAddon", input, defaultTimeout, accountID)
 }
 
+func (s *NATSEKSService) GetRecoveryDirective(ctx context.Context, input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error) {
+	return utils.NATSRequestCtx[GetRecoveryDirectiveOutput](ctx, s.natsConn, "eks.GetRecoveryDirective", input, defaultTimeout, accountID)
+}
+
+func (s *NATSEKSService) SetRecoveryDirective(ctx context.Context, input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error) {
+	return utils.NATSRequestCtx[SetRecoveryDirectiveOutput](ctx, s.natsConn, "eks.SetRecoveryDirective", input, defaultTimeout, accountID)
+}
+
 // --- OIDC identity-provider configs ---
 
 func (s *NATSEKSService) AssociateIdentityProviderConfig(ctx context.Context, input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error) {

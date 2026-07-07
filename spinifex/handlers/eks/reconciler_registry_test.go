@@ -18,10 +18,10 @@ func TestReconcilerRegistry_SpawnAndStop(t *testing.T) {
 		ran      atomic.Bool
 		released atomic.Bool
 	)
-	fn := func(ctx context.Context, accountID, clusterName string) (func(), error) {
+	fn := func(ctx context.Context, accountID, clusterName string) (func(), <-chan struct{}, error) {
 		ran.Store(true)
 		go func() { <-ctx.Done() }()
-		return func() { released.Store(true) }, nil
+		return func() { released.Store(true) }, nil, nil
 	}
 
 	require.NoError(t, reg.Spawn(t.Context(), "111122223333", "alpha", fn))
@@ -36,10 +36,10 @@ func TestReconcilerRegistry_SpawnAndStop(t *testing.T) {
 func TestReconcilerRegistry_SpawnIdempotent(t *testing.T) {
 	reg := NewReconcilerRegistry()
 	var spawnCalls atomic.Int32
-	fn := func(ctx context.Context, _, _ string) (func(), error) {
+	fn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
 		spawnCalls.Add(1)
 		go func() { <-ctx.Done() }()
-		return func() {}, nil
+		return func() {}, nil, nil
 	}
 
 	require.NoError(t, reg.Spawn(t.Context(), "111122223333", "alpha", fn))
@@ -51,8 +51,8 @@ func TestReconcilerRegistry_SpawnIdempotent(t *testing.T) {
 
 func TestReconcilerRegistry_SpawnFnErrorRemovesEntry(t *testing.T) {
 	reg := NewReconcilerRegistry()
-	fn := func(_ context.Context, _, _ string) (func(), error) {
-		return nil, errors.New("acquire lease failed")
+	fn := func(_ context.Context, _, _ string) (func(), <-chan struct{}, error) {
+		return nil, nil, errors.New("acquire lease failed")
 	}
 
 	err := reg.Spawn(t.Context(), "111122223333", "alpha", fn)
@@ -65,13 +65,13 @@ func TestReconcilerRegistry_LeaseHeldDropsEntryAndRetries(t *testing.T) {
 	var spawnCalls atomic.Int32
 	leaseHeld := atomic.Bool{}
 	leaseHeld.Store(true)
-	fn := func(ctx context.Context, _, _ string) (func(), error) {
+	fn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
 		spawnCalls.Add(1)
 		if leaseHeld.Load() {
-			return nil, ErrLeaseHeld
+			return nil, nil, ErrLeaseHeld
 		}
 		go func() { <-ctx.Done() }()
-		return func() {}, nil
+		return func() {}, nil, nil
 	}
 
 	// Lease held elsewhere: Spawn is benign (nil), records no phantom holder.
@@ -87,12 +87,53 @@ func TestReconcilerRegistry_LeaseHeldDropsEntryAndRetries(t *testing.T) {
 	reg.StopAll()
 }
 
+// TestReconcilerRegistry_SelfExitDropsEntryAndRespawns covers a reconciler that
+// exits on its own — a terminal cluster state or a lost lease — with no Stop()
+// to cancel its ctx. The registry must drop the entry (and release the lease) so
+// a later same-name create spawns a fresh reconciler instead of silently
+// no-opping on a leaked holder.
+func TestReconcilerRegistry_SelfExitDropsEntryAndRespawns(t *testing.T) {
+	reg := NewReconcilerRegistry()
+	var (
+		spawnCalls atomic.Int32
+		released   atomic.Int32
+	)
+	// finished models RunClusterReconciler's Run goroutine returning on its own;
+	// closing it is the only signal (ctx is never cancelled here).
+	finished := make(chan struct{})
+	fn := func(_ context.Context, _, _ string) (func(), <-chan struct{}, error) {
+		spawnCalls.Add(1)
+		return func() { released.Add(1) }, finished, nil
+	}
+
+	require.NoError(t, reg.Spawn(t.Context(), "111122223333", "alpha", fn))
+	assert.True(t, reg.Has("111122223333", "alpha"))
+
+	close(finished) // reconciler self-exits
+	require.Eventually(t, func() bool { return !reg.Has("111122223333", "alpha") },
+		500*time.Millisecond, 5*time.Millisecond, "self-exit must drop the registry entry")
+	require.Eventually(t, func() bool { return released.Load() == 1 },
+		500*time.Millisecond, 5*time.Millisecond, "self-exit must release the lease")
+
+	// A later create under the same name must re-invoke fn, not no-op.
+	finished2 := make(chan struct{})
+	fn2 := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
+		spawnCalls.Add(1)
+		go func() { <-ctx.Done() }()
+		return func() {}, finished2, nil
+	}
+	require.NoError(t, reg.Spawn(t.Context(), "111122223333", "alpha", fn2))
+	assert.True(t, reg.Has("111122223333", "alpha"))
+	assert.EqualValues(t, 2, spawnCalls.Load(), "same-name create after self-exit must re-invoke fn")
+	reg.StopAll()
+}
+
 func TestReconcilerRegistry_StopAllCancelsEvery(t *testing.T) {
 	reg := NewReconcilerRegistry()
 	var released atomic.Int32
-	fn := func(ctx context.Context, _, _ string) (func(), error) {
+	fn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
 		go func() { <-ctx.Done() }()
-		return func() { released.Add(1) }, nil
+		return func() { released.Add(1) }, nil, nil
 	}
 
 	require.NoError(t, reg.Spawn(t.Context(), "111122223333", "alpha", fn))
@@ -114,7 +155,7 @@ func TestReconcilerRegistry_StopUnknownKeyNoop(t *testing.T) {
 
 func TestReconcilerRegistry_SpawnRejectsBadArgs(t *testing.T) {
 	reg := NewReconcilerRegistry()
-	fn := func(_ context.Context, _, _ string) (func(), error) { return func() {}, nil }
+	fn := func(_ context.Context, _, _ string) (func(), <-chan struct{}, error) { return func() {}, nil, nil }
 
 	require.Error(t, reg.Spawn(t.Context(), "", "alpha", fn))
 	require.Error(t, reg.Spawn(t.Context(), "111122223333", "", fn))

@@ -1390,6 +1390,10 @@ func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.
 		slog.ErrorContext(ctx, "Failed to connect to Viperblock store", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
+	defer func() {
+		vb.StopChunkUploader()
+		vb.StopWALSyncer()
+	}()
 
 	// Initialize the backend
 	err = vb.Backend.Init()
@@ -1699,9 +1703,10 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 			if !IsInstanceVisible(accountID, instance.AccountID) {
 				continue
 			}
-			// Platform-managed VMs (LB, EKS control plane) are hidden from customer
-			// listings. LBs are system-account-owned; EKS control-plane VMs are
-			// customer-account-owned so ManagedBy guards them explicitly.
+			// Platform-managed VMs (LB, EKS control plane) are system-account-owned
+			// and hidden from customer listings; only the system/Global account
+			// sees them. The EKS reconciler resolves its control-plane VM's state
+			// by running describe as the system account.
 			if instance.ManagedBy != "" && accountID != utils.GlobalAccountID {
 				continue
 			}

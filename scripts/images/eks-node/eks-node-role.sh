@@ -52,6 +52,11 @@ case "${ROLE}" in
     server)
         log "configuring server role"
         rc-update add eks-token-webhook default
+        # Pre-k3s etcd recovery: added to the runlevel so it runs before k3s on
+        # every subsequent boot, but not started now — a fresh cluster has no
+        # directive and the role file it guards on is written at the end of this
+        # script. It first acts on the reboot the reconciler triggers.
+        rc-update add mulga-eks-k3s-recovery default
         rc-update add k3s default
         # konnectivity-server fronts apiserver egress; every server replica runs
         # one so the agent's per-replica tunnel always lands a live server.
@@ -73,6 +78,9 @@ case "${ROLE}" in
     server-join)
         log "configuring server-join role"
         rc-update add eks-token-webhook default
+        # Pre-k3s etcd recovery (see server role): server-join members are the
+        # wipe-rejoin followers of a cluster-reset, so they need it too.
+        rc-update add mulga-eks-k3s-recovery default
         rc-update add k3s default
         rc-update add konnectivity-server default
         rc-update add mulga-eks-state-report default

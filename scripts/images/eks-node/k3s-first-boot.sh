@@ -135,6 +135,29 @@ jq -n --arg k "${KUBECONFIG_REWRITTEN}" '{adminKubeconfig: $k}'      | publish_e
 jq -n --arg j "${JWKS}"                 '{jwks: $j}'                  | publish_envelope k3s-oidc-jwks
 jq -n --arg c "${CA_B64}"               '{certificateAuthority: $c}' | publish_envelope k3s-ca
 
+# 3.5 Prune a terminated control-plane peer this VM replaces. The spinifex
+# reconciler sets EKS_ETCD_PRUNE_PEER_IP to the dead member's node IP when this
+# VM is provisioned as its replacement (member-count reconcile). Deleting the
+# dead Node makes k3s embedded-etcd remove the stale member, so quorum width
+# returns to N rather than N+1-with-a-dead-peer. Best-effort: a failure leaves
+# the member for an operator and never blocks first boot.
+if [ -n "${EKS_ETCD_PRUNE_PEER_IP:-}" ]; then
+    log "pruning terminated CP peer at ${EKS_ETCD_PRUNE_PEER_IP} from etcd"
+    dead_node=$(kubectl --kubeconfig "${KUBECONFIG_FILE}" get nodes \
+        -o "custom-columns=NAME:.metadata.name,IP:.status.addresses[?(@.type=='InternalIP')].address" \
+        --no-headers 2>/dev/null \
+        | awk -v ip="${EKS_ETCD_PRUNE_PEER_IP}" '$2==ip {print $1; exit}')
+    if [ -n "${dead_node}" ]; then
+        if kubectl --kubeconfig "${KUBECONFIG_FILE}" delete node "${dead_node}" --ignore-not-found=true; then
+            log "deleted dead node ${dead_node}; k3s will remove its etcd member"
+        else
+            log "WARN: delete of dead node ${dead_node} failed; etcd member left for operator"
+        fi
+    else
+        log "no node has internal IP ${EKS_ETCD_PRUNE_PEER_IP}; nothing to prune"
+    fi
+fi
+
 # 4. Self-disable. Remove sentinel, pull from runlevel.
 rm -f "${SENTINEL}"
 rc-update del k3s-first-boot default 2>/dev/null || true

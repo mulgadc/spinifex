@@ -409,8 +409,9 @@ func launchService(cfg *Config) (err error) {
 					slog.ErrorContext(ctx, "Failed to unsubscribe config topic", "volume", ebsRequest.Volume, "err", err)
 				}
 			}
-			// Stop WAL syncer and kill nbdkit process
+			// Stop background goroutines and kill nbdkit process
 			if matched.VB != nil {
+				matched.VB.StopChunkUploader()
 				matched.VB.StopWALSyncer()
 			}
 			if err := utils.KillProcess(matched.PID); err != nil {
@@ -494,9 +495,11 @@ func launchService(cfg *Config) (err error) {
 				}
 			}
 
-			// Clean up the VB instance's background goroutine.
-			// This VB is state-only (LoadState/sync) — actual I/O is in the nbdkit plugin process.
+			// Stop background goroutines on the state-tracking VB.
+			// Actual I/O is in the nbdkit plugin process; sealVolumeVB below
+			// opens a fresh VB and calls Close() for the proper seal.
 			if matched.VB != nil {
+				matched.VB.StopChunkUploader()
 				matched.VB.StopWALSyncer()
 			}
 
@@ -742,6 +745,11 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
+		// This daemon-side VB tracks state only; the nbdkit plugin process owns
+		// the data path and its own uploader. Stop this VB's background uploader
+		// so it cannot overwrite the live checkpoint every 30s (AEAD corruption).
+		vb.StopChunkUploader()
+
 		if cfg.Debug {
 			vb.SetDebug(true)
 		}
@@ -957,6 +965,7 @@ func launchService(cfg *Config) (err error) {
 func shutdownVolumes(volumes []MountedVolume, inUse func(MountedVolume) bool) {
 	for _, volume := range volumes {
 		if volume.VB != nil {
+			volume.VB.StopChunkUploader()
 			volume.VB.StopWALSyncer()
 		}
 		if inUse(volume) {

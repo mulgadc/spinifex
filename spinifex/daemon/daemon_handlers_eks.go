@@ -122,6 +122,14 @@ func (d *Daemon) handleEKSListStagedAddonManifests(msg *nats.Msg) {
 	handleNATSRequest(msg, d.eksService.ListStagedAddonManifests)
 }
 
+func (d *Daemon) handleEKSGetRecoveryDirective(msg *nats.Msg) {
+	handleNATSRequest(msg, d.eksService.GetRecoveryDirective)
+}
+
+func (d *Daemon) handleEKSSetRecoveryDirective(msg *nats.Msg) {
+	handleNATSRequest(msg, d.eksService.SetRecoveryDirective)
+}
+
 // --- OIDC identity-provider configs ---
 
 func (d *Daemon) handleEKSAssociateIdentityProviderConfig(msg *nats.Msg) {

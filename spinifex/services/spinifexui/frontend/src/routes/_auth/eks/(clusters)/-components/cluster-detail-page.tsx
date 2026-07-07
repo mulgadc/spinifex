@@ -1,6 +1,6 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { Trash2 } from "lucide-react"
+import { AlertTriangle, Trash2 } from "lucide-react"
 import { useState } from "react"
 
 import { BackLink } from "@/components/back-link"
@@ -49,6 +49,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
   const deleteCluster = useDeleteCluster()
 
   const cluster = clusterData.cluster
+  const healthIssues = cluster?.health?.issues ?? []
 
   const kubeconfigCommands = [
     {
@@ -93,6 +94,14 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
             <Badge variant={statusVariant(cluster?.status)}>
               {cluster?.status ?? "UNKNOWN"}
             </Badge>
+            {healthIssues.length > 0 && (
+              <Badge variant="destructive">
+                <AlertTriangle className="size-3" />
+                {healthIssues.length === 1
+                  ? "1 health issue"
+                  : `${healthIssues.length} health issues`}
+              </Badge>
+            )}
           </div>
         }
         subtitle="Cluster Details"
@@ -126,6 +135,17 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
             <DetailCard.Content>
               <DetailRow label="ARN" value={cluster?.arn} />
               <DetailRow label="Status" value={cluster?.status} />
+              <DetailRow
+                label="Health"
+                value={
+                  healthIssues.length > 0
+                    ? healthIssues
+                        .map((issue) => issue.message)
+                        .filter(Boolean)
+                        .join("; ")
+                    : "OK"
+                }
+              />
               <DetailRow label="Kubernetes version" value={cluster?.version} />
               <DetailRow
                 label="Platform version"

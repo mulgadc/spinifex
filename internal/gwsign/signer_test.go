@@ -1,16 +1,27 @@
 package gwsign
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/mulgadc/predastore/auth"
 )
+
+// failingProvider models a cold IMDS datapath: Retrieve always errors, as the
+// SDK's IMDS client does before the per-tap datapath is up.
+type failingProvider struct{ err error }
+
+func (p failingProvider) Retrieve(context.Context) (aws.Credentials, error) {
+	return aws.Credentials{}, p.err
+}
 
 const (
 	testAccessKey = "AKIAIOSFODNN7EXAMPLE"
@@ -78,6 +89,25 @@ func TestSign_SessionTokenHeader(t *testing.T) {
 	authHdr := req.Header.Get("Authorization")
 	if !strings.Contains(authHdr, "x-amz-security-token") {
 		t.Fatalf("session token not in SignedHeaders: %q", authHdr)
+	}
+}
+
+// TestEnsureCredentials confirms a resolvable provider warms clean while a cold
+// datapath surfaces its retrieve error (the signal a warm-up loop retries on).
+func TestEnsureCredentials(t *testing.T) {
+	ok := &Signer{provider: credentials.NewStaticCredentialsProvider(testAccessKey, testSecretKey, "")}
+	if err := ok.EnsureCredentials(t.Context()); err != nil {
+		t.Fatalf("EnsureCredentials(static) = %v, want nil", err)
+	}
+
+	coldErr := errors.New("no EC2 IMDS role found")
+	cold := &Signer{provider: failingProvider{err: coldErr}}
+	err := cold.EnsureCredentials(t.Context())
+	if err == nil {
+		t.Fatal("EnsureCredentials(cold) = nil, want error")
+	}
+	if !errors.Is(err, coldErr) {
+		t.Fatalf("EnsureCredentials(cold) = %v, want wrap of %v", err, coldErr)
 	}
 }
 

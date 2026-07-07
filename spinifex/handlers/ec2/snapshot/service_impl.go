@@ -325,6 +325,11 @@ func (s *SnapshotServiceImpl) snapshotVolume(volumeID, snapshotID string, volume
 	if err != nil {
 		return fmt.Errorf("new viperblock: %w", err)
 	}
+	defer func() {
+		vb.StopChunkUploader()
+		vb.StopWALSyncer()
+	}()
+
 	if err := vb.Backend.Init(); err != nil {
 		return fmt.Errorf("backend init: %w", err)
 	}

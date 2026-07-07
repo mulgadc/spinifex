@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // NoSuchKeyError represents a missing object error, compatible with AWS S3 errors
@@ -56,10 +57,14 @@ type ObjectStore interface {
 // NewS3ObjectStoreFromConfig creates an S3ObjectStore from Predastore connection parameters.
 func NewS3ObjectStoreFromConfig(host, region, accessKey, secretKey string) *S3ObjectStore {
 	// otelhttp emits a client span per S3 request and injects traceparent,
-	// parented to any span carried on the request context.
+	// but only when the request context already carries a span: background
+	// jobs (state sync, cleanup loops) would otherwise root a trace per S3
+	// call, surfacing as method-only "HTTP GET" transactions in APM.
 	client := &http.Client{
-		Transport: otelhttp.NewTransport(http.DefaultTransport),
-		Timeout:   120 * time.Second,
+		Transport: otelhttp.NewTransport(http.DefaultTransport, otelhttp.WithFilter(func(r *http.Request) bool {
+			return trace.SpanFromContext(r.Context()).SpanContext().IsValid()
+		})),
+		Timeout: 120 * time.Second,
 	}
 	sess := session.Must(session.NewSession(&aws.Config{
 		Endpoint:         aws.String(host),

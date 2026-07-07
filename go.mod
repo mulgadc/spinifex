@@ -18,8 +18,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
 	github.com/klauspost/cpuid/v2 v2.3.0
-	github.com/mulgadc/predastore v1.11.0-dev
-	github.com/mulgadc/viperblock v1.10.1-0.20260703054738-6af89855f547
+	github.com/mulgadc/predastore v1.11.0-dev.0.20260707000752-ad0d31eab177
+	github.com/mulgadc/viperblock v1.10.1-0.20260706231251-178323ba9b18
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/runtime-spec v1.3.0
@@ -29,6 +29,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.69.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0
@@ -172,7 +173,6 @@ require (
 	go.etcd.io/bbolt v1.4.3 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect

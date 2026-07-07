@@ -20,10 +20,12 @@ import (
 //  2. resolves public hostnames (google.com, cloudflare.com) through the guest
 //     resolver, then pings them.
 //
-// Resolution is asserted separately from the ping via `getent hosts`, which
-// drives the same NSS -> /etc/resolv.conf (169.254.169.253, served by the
-// per-tap shim once P7 is deployed) -> northstar recursion path guest apps use
-// and is always present (nslookup/dig are not on the minimal cloud image). The
+// Resolution is asserted separately from the ping via `getent ahostsv4` (AF_INET
+// so it forces an A-record answer, not the AAAA the resolver may otherwise
+// prefer), which drives the same NSS -> /etc/resolv.conf (169.254.169.253,
+// served by the per-tap shim once P7 is deployed) -> northstar recursion path
+// guest apps use and is always present (nslookup/dig are not on the minimal
+// cloud image). The
 // getent step is the northstar signal; the follow-on ping only adds ICMP-egress
 // coverage — so a resolver/northstar failure is isolated from a WAN-egress
 // failure. The own private IP ping isolates both from a plain local-datapath
@@ -70,7 +72,7 @@ func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 	// failure from a WAN-egress failure.
 	for _, host := range []string{"google.com", "cloudflare.com"} {
 		harness.Step(t, "resolve %s via guest resolver (northstar path)", host)
-		res, err := sshCapture(tgt, "getent hosts "+host)
+		res, err := sshCapture(tgt, "getent ahostsv4 "+host)
 		require.NoErrorf(t, err,
 			"guest failed to resolve %s — DNS path (resolver -> northstar) is broken\n%s",
 			host, res)

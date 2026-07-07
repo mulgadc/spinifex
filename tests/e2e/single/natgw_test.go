@@ -3,6 +3,7 @@
 package single
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -443,6 +444,12 @@ func scpKey(t *testing.T, keyPath, host string) {
 	}
 }
 
+// sshQuietHardTimeout hard-caps one runSSHQuiet call. ConnectTimeout bounds only
+// the TCP connect; a post-connect banner/kex wedge (e.g. probing an EIP whose
+// DNAT was just torn down) is otherwise unbounded and can outlast the caller's
+// EventuallyErr budget. The ctx deadline kills ssh regardless of which phase hangs.
+const sshQuietHardTimeout = 30 * time.Second
+
 // runSSHQuiet is the EventuallyErr-friendly variant of runSSH: it returns
 // stdout+stderr and the error rather than calling t.Fatal, so polling
 // loops can iterate on transient failures (cloud-init not done, OVN
@@ -459,6 +466,14 @@ func runSSHQuiet(tgt harness.SSHTarget, command string) (string, error) {
 		tgt.User + "@" + tgt.Host,
 		command,
 	}
-	out, err := exec.Command("ssh", args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), sshQuietHardTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.WaitDelay = 5 * time.Second // return even if ssh ignores the kill
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("ssh %s@%s:%d timed out after %s: %w",
+			tgt.User, tgt.Host, tgt.Port, sshQuietHardTimeout, ctx.Err())
+	}
 	return string(out), err
 }

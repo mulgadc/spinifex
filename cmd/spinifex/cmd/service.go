@@ -758,6 +758,7 @@ var vpcdStartCmd = &cobra.Command{
 				Name:            p.Name,
 				Source:          p.Source,
 				BindBridge:      p.BindBridge,
+				DHCPMAC:         p.DHCPMAC,
 				RangeStart:      p.RangeStart,
 				RangeEnd:        p.RangeEnd,
 				Gateway:         p.Gateway,
@@ -805,6 +806,7 @@ var vpcdStartCmd = &cobra.Command{
 			ExternalInterface: nodeConfig.VPCD.ExternalInterface,
 			BridgeMode:        nodeConfig.VPCD.BridgeMode,
 			AZ:                nodeConfig.AZ,
+			NATExemptCIDRs:    clusterConfig.Network.NATExemptCIDRs,
 		})
 		if err != nil {
 			fmt.Println("Error starting vpcd service:", err)

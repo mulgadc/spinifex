@@ -1059,6 +1059,27 @@ func (c *LiveClient) FindNATByLogicalIP(ctx context.Context, routerName, natType
 	return &nats[0], nil
 }
 
+// SetNATExemptedExtIPs updates exempted_ext_ips in place on the NAT rule
+// matching (natType, logicalIP) on routerName. nil clears the ref.
+func (c *LiveClient) SetNATExemptedExtIPs(ctx context.Context, routerName, natType, logicalIP string, addressSetUUID *string) error {
+	nat, err := c.FindNATByLogicalIP(ctx, routerName, natType, logicalIP)
+	if err != nil {
+		return fmt.Errorf("set NAT exempted_ext_ips lookup: %w", err)
+	}
+	if nat == nil {
+		return fmt.Errorf("NAT %s %s on %s: %w", natType, logicalIP, routerName, ErrNATNotFound)
+	}
+	nat.ExemptedExtIps = addressSetUUID
+	ops, err := c.client.Where(nat).Update(nat, &nat.ExemptedExtIps)
+	if err != nil {
+		return fmt.Errorf("set NAT exempted_ext_ips ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("set NAT exempted_ext_ips transact: %w", err)
+	}
+	return nil
+}
+
 func (c *LiveClient) AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error {
 	if route.UUID == "" {
 		route.UUID = namedUUID("route_", route.IPPrefix)
@@ -1119,9 +1140,23 @@ func (c *LiveClient) FindStaticRoute(ctx context.Context, routerName, ipPrefix s
 }
 
 func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get logical router for route delete: %w", err)
+	}
+	// Scope the prefix match to this router's rows — every VPC router carries
+	// 0.0.0.0/0, so an unscoped cache match can grab another router's route.
+	owned := make(map[string]struct{}, len(lr.StaticRoutes))
+	for _, u := range lr.StaticRoutes {
+		owned[u] = struct{}{}
+	}
 	var routes []nbdb.LogicalRouterStaticRoute
-	err := c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
-		return r.IPPrefix == ipPrefix
+	err = c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
+		if r.IPPrefix != ipPrefix {
+			return false
+		}
+		_, ok := owned[r.UUID]
+		return ok
 	}).List(ctx, &routes)
 	if err != nil {
 		return fmt.Errorf("find static route: %w", err)
@@ -1131,10 +1166,6 @@ func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, i
 	}
 
 	route := &routes[0]
-	lr, err := c.GetLogicalRouter(ctx, routerName)
-	if err != nil {
-		return fmt.Errorf("get logical router for route delete: %w", err)
-	}
 
 	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
 		Field:   &lr.StaticRoutes,
@@ -1431,6 +1462,97 @@ func (c *LiveClient) ListPortGroups(ctx context.Context) ([]nbdb.PortGroup, erro
 		return nil, fmt.Errorf("list port groups: %w", err)
 	}
 	return pgs, nil
+}
+
+// EnsureAddressSet atomically creates the named address set or converges the
+// addresses on the existing row. Wait-op serialises concurrent writers (NB has
+// no unique-Name constraint). Returns the persisted row UUID.
+func (c *LiveClient) EnsureAddressSet(ctx context.Context, name string, addresses []string) (string, error) {
+	if existing, err := c.getAddressSet(ctx, name); err == nil {
+		return existing.UUID, c.convergeAddressSet(ctx, existing, addresses)
+	}
+	as := &nbdb.AddressSet{
+		UUID:        namedUUID("as_", name),
+		Name:        name,
+		Addresses:   addresses,
+		ExternalIDs: map[string]string{},
+	}
+	ops, err := c.ensureNamedRowOps("Address_Set", name, as)
+	if err != nil {
+		return "", err
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		if existing, refErr := c.waitForCachedAddressSet(ctx, name); refErr == nil {
+			slog.Info("ovn: EnsureAddressSet lost race, reusing existing",
+				"name", name, "existing_uuid", existing.UUID)
+			return existing.UUID, c.convergeAddressSet(ctx, existing, addresses)
+		}
+		return "", fmt.Errorf("ensure address set %q: %w", name, err)
+	}
+	created, refErr := c.waitForCachedAddressSet(ctx, name)
+	if refErr != nil {
+		return "", fmt.Errorf("resolve address set %q uuid after insert: %w", name, refErr)
+	}
+	return created.UUID, nil
+}
+
+// convergeAddressSet updates the row's addresses when they differ from want.
+func (c *LiveClient) convergeAddressSet(ctx context.Context, existing *nbdb.AddressSet, want []string) error {
+	have := slices.Clone(existing.Addresses)
+	wantSorted := slices.Clone(want)
+	slices.Sort(have)
+	slices.Sort(wantSorted)
+	if slices.Equal(have, wantSorted) {
+		return nil
+	}
+	existing.Addresses = want
+	ops, err := c.client.Where(existing).Update(existing, &existing.Addresses)
+	if err != nil {
+		return fmt.Errorf("converge address set %q ops: %w", existing.Name, err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("converge address set %q transact: %w", existing.Name, err)
+	}
+	return nil
+}
+
+func (c *LiveClient) waitForCachedAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
+	deadline := time.Now().Add(ensureRefetchTimeout)
+	var lastErr error
+	for {
+		v, err := c.getAddressSet(ctx, name)
+		if err == nil {
+			return v, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(ensureRefetchInterval):
+		}
+	}
+}
+
+// GetAddressSet returns the named address set.
+func (c *LiveClient) GetAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
+	return c.getAddressSet(ctx, name)
+}
+
+func (c *LiveClient) getAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
+	var sets []nbdb.AddressSet
+	err := c.client.WhereCache(func(as *nbdb.AddressSet) bool {
+		return as.Name == name
+	}).List(ctx, &sets)
+	if err != nil {
+		return nil, fmt.Errorf("get address set: %w", err)
+	}
+	if len(sets) == 0 {
+		return nil, fmt.Errorf("%w: %q", ErrAddressSetNotFound, name)
+	}
+	return &sets[0], nil
 }
 
 // ListPortGroupsForPort returns port group names containing the LSP. Empty (not error) when none.

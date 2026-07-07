@@ -575,10 +575,11 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 // the authoritative EIP KV, independent of the cached fields on the VM record.
 // Idempotent and nil-safe; logs on failure.
 func (d *Daemon) reclaimSystemInstanceEIP(instanceID string) {
-	if d.eipService == nil {
+	releaser, ok := d.eipService.(interface{ ReleaseAddressByInstanceID(string) error })
+	if !ok {
 		return
 	}
-	if err := d.eipService.ReleaseAddressByInstanceID(instanceID); err != nil {
+	if err := releaser.ReleaseAddressByInstanceID(instanceID); err != nil {
 		slog.Warn("reclaimSystemInstanceEIP: backstop release failed", "instanceId", instanceID, "err", err)
 	}
 }

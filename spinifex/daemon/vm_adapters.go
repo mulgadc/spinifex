@@ -465,8 +465,10 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		// never re-announces the EIP's NAT and the VM loses connectivity.
 		if d.natsConn != nil && instance.ENIId != "" && instance.Instance != nil {
 			publicIP := instance.PublicIP
-			if publicIP == "" && d.eipService != nil {
-				if eipIP, ok := d.eipService.AssociatedPublicIPForInstance(context.Background(), instance.AccountID, instance.ID); ok {
+			if resolver, ok := d.eipService.(interface {
+				AssociatedPublicIPForInstance(context.Context, string, string) (string, bool)
+			}); ok && publicIP == "" {
+				if eipIP, ok := resolver.AssociatedPublicIPForInstance(context.Background(), instance.AccountID, instance.ID); ok {
 					publicIP = eipIP
 				}
 			}

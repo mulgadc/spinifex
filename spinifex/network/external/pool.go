@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
+	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
@@ -17,7 +18,7 @@ const linkLocalGatewayNetwork = "169.254.0.1/30"
 const linkLocalGatewayNexthop = "169.254.0.2"
 
 // gatewayIPExtIDKey is the LRP external_ids key for the allocated gateway IP.
-const gatewayIPExtIDKey = "spinifex:gateway_ip"
+const gatewayIPExtIDKey = policy.GatewayIPExtIDKey
 
 // FindPool returns the first matching pool: AZ-scoped → region-scoped → unscoped.
 func FindPool(pools []ExternalPoolConfig, region, az string) *ExternalPoolConfig {

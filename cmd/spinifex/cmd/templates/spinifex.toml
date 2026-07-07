@@ -16,28 +16,33 @@ internal_suffix = "spinifex.internal"
 ipsec_enabled = {{.IPSecEnabled}}
 {{- if .ExternalMode}}
 external_mode = "{{.ExternalMode}}"
+{{- range .Pools}}
 
 [[network.external_pools]]
-name        = "{{.PoolName}}"
-{{- if .PoolSource}}
-source      = "{{.PoolSource}}"
+name        = "{{.Name}}"
+{{- if .Source}}
+source      = "{{.Source}}"
 {{- end}}
-{{- if .PoolBindBridge}}
-bind_bridge = "{{.PoolBindBridge}}"
+{{- if .BindBridge}}
+bind_bridge = "{{.BindBridge}}"
 {{- end}}
-{{- if .PoolStart}}
-range_start = "{{.PoolStart}}"
-range_end   = "{{.PoolEnd}}"
+{{- if .DHCPMAC}}
+dhcp_mac    = "{{.DHCPMAC}}"
 {{- end}}
-{{- if .PoolGateway}}
-gateway     = "{{.PoolGateway}}"
+{{- if .Start}}
+range_start = "{{.Start}}"
+range_end   = "{{.End}}"
 {{- end}}
-{{- if .PoolGatewayIP}}
-gateway_ip  = "{{.PoolGatewayIP}}"
+{{- if .Gateway}}
+gateway     = "{{.Gateway}}"
 {{- end}}
-prefix_len  = {{if .PoolPrefixLen}}{{.PoolPrefixLen}}{{else}}24{{end}}
-{{- if .PoolDNSServers}}
-dns_servers = [{{range $i, $s := .PoolDNSServers}}{{if $i}}, {{end}}"{{$s}}"{{end}}]
+{{- if .GatewayIP}}
+gateway_ip  = "{{.GatewayIP}}"
+{{- end}}
+prefix_len  = {{if .PrefixLen}}{{.PrefixLen}}{{else}}24{{end}}
+{{- if .DNSServers}}
+dns_servers = [{{range $i, $s := .DNSServers}}{{if $i}}, {{end}}"{{$s}}"{{end}}]
+{{- end}}
 {{- end}}
 {{- end}}
 {{- if .BootstrapVpcId}}
@@ -106,6 +111,9 @@ ovn_nb_addr = "{{.OVNNBAddr}}"
 ovn_sb_addr = "{{.OVNSBAddr}}"
 {{- if .ExternalIface}}
 external_interface = "{{.ExternalIface}}"
+{{- end}}
+{{- if .BridgeMode}}
+bridge_mode = "{{.BridgeMode}}"
 {{- end}}
 
 [nodes.{{.Node}}.predastore]

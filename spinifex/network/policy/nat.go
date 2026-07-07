@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
+
+// GatewayIPExtIDKey is the gateway LRP external_ids key carrying the IP
+// allocated at IGW attach; the routed-mode next hop for host EIP routes.
+const GatewayIPExtIDKey = "spinifex:gateway_ip"
 
 // EIPSpec is a 1:1 EIP NAT (dnat_and_snat). In NATModeDistributed PortName
 // and MAC MUST be set for per-chassis flows; missing values fall back to
@@ -112,12 +117,51 @@ func WithNeighPrimer(p NeighPrimer) Option {
 	}
 }
 
+// HostEIPBinder plumbs routed-mode host state for an EIP: the /32 route into
+// OVN via the gateway LRP and proxy-ARP on the uplink. Bind fires on every
+// AddEIP (fresh and idempotent) so reconcile re-ensures host state after
+// reboot; Unbind fires on DeleteEIP.
+type HostEIPBinder struct {
+	Bind   func(eip EIPSpec, gwLrpIP string) error
+	Unbind func(externalIP string) error
+}
+
+// WithHostEIPBinder injects the routed-mode host plumbing hooks fired on EIP
+// attach/detach. Only consulted in NATModeRouted.
+func WithHostEIPBinder(b HostEIPBinder) Option {
+	return func(m *natManager) {
+		if b.Bind != nil && b.Unbind != nil {
+			m.hostBinder = &b
+		}
+	}
+}
+
+// NATExemptSetName is the singleton Address_Set holding destinations that
+// skip routed-mode NAT (transit /24 plus operator extras).
+const NATExemptSetName = "spinifex_nat_exempt"
+
+// WithSNATExemptSet names an Address_Set whose CIDRs skip NAT (stamped as
+// exempted_ext_ips on SNAT/EIP rows). Routed mode uses it so VM replies to
+// host-initiated flows keep their private source. The set is never deleted:
+// it is a singleton strongly referenced by every routed NAT row.
+func WithSNATExemptSet(setName string, cidrs []string) Option {
+	return func(m *natManager) {
+		if setName != "" {
+			m.exemptSetName = setName
+			m.exemptCIDRs = cidrs
+		}
+	}
+}
+
 type natManager struct {
-	ovn        ovn.Client
-	mode       NATMode
-	barrier    FlowsBarrier
-	neigh      NeighFlusher
-	neighPrime NeighPrimer
+	ovn           ovn.Client
+	mode          NATMode
+	barrier       FlowsBarrier
+	neigh         NeighFlusher
+	neighPrime    NeighPrimer
+	exemptSetName string
+	exemptCIDRs   []string
+	hostBinder    *HostEIPBinder
 }
 
 var _ NATManager = (*natManager)(nil)
@@ -141,8 +185,27 @@ func NewNATManager(client ovn.Client, mode NATMode, opts ...Option) (NATManager,
 	return m, nil
 }
 
+// exemptSetUUID ensures the configured exempt Address_Set exists and returns
+// its UUID for stamping as exempted_ext_ips. Nil when the option is unset or
+// the mode is not routed (only routed SNAT breaks host-initiated return paths).
+func (m *natManager) exemptSetUUID(ctx context.Context) (*string, error) {
+	if m.mode != NATModeRouted || m.exemptSetName == "" {
+		return nil, nil
+	}
+	uuid, err := m.ovn.EnsureAddressSet(ctx, m.exemptSetName, m.exemptCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("ensure NAT exempt set %q: %w", m.exemptSetName, err)
+	}
+	return &uuid, nil
+}
+
 func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	router := topology.VPCRouter(eip.VPCID)
+
+	exemptUUID, err := m.exemptSetUUID(ctx)
+	if err != nil {
+		return err
+	}
 
 	natRule := &nbdb.NAT{
 		Type:       "dnat_and_snat",
@@ -159,6 +222,7 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	if eip.PortName != "" {
 		natRule.ExternalIDs["spinifex:logical_port"] = eip.PortName
 	}
+	natRule.ExemptedExtIps = exemptUUID
 	distributed := m.mode == NATModeDistributed && eip.PortName != "" && eip.MAC != ""
 	if distributed {
 		mac := eip.MAC
@@ -176,12 +240,23 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		(!distributed ||
 			(existing.ExternalMAC != nil && *existing.ExternalMAC == eip.MAC &&
 				existing.LogicalPort != nil && *existing.LogicalPort == eip.PortName)) {
+		// Upgrade path: stamp the exempt ref in place on rows minted before the
+		// option existed (or after a set re-create).
+		if exemptUUID != nil && (existing.ExemptedExtIps == nil || *existing.ExemptedExtIps != *exemptUUID) {
+			if err := m.ovn.SetNATExemptedExtIPs(ctx, router, "dnat_and_snat", eip.LogicalIP, exemptUUID); err != nil {
+				return fmt.Errorf("patch exempt set on dnat_and_snat %s on %s: %w", eip.ExternalIP, router, err)
+			}
+			slog.Info("policy: AddEIP patched exempt set on existing rule",
+				"router", router, "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP)
+		}
 		slog.Info("policy: AddEIP idempotent skip — rule current, re-priming reachability",
 			"router", router, "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP)
 		// Skip row churn but still re-prime: stop->start re-attaches the same EIP
 		// and the host neigh stays dark until ARP times out without a fresh prime.
 		m.primeReachability(ctx, eip, distributed)
-		return nil
+		// Host state (routes, proxy-ARP) is volatile even when the OVN row
+		// survives — reconcile lands here after a reboot, so re-bind.
+		return m.bindHostEIP(ctx, eip)
 	}
 
 	// Search every router for stale rules — vpc.delete-nat is fire-and-forget.
@@ -198,6 +273,23 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		slog.Warn("policy: AddEIP flows barrier failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
 	m.primeReachability(ctx, eip, distributed)
+	return m.bindHostEIP(ctx, eip)
+}
+
+// bindHostEIP fires the routed-mode host plumbing hook for an EIP. No-op in
+// other modes or when no binder is configured. Errors are returned so a
+// half-plumbed EIP surfaces to the caller (reconcile retries the bind).
+func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
+	if m.mode != NATModeRouted || m.hostBinder == nil {
+		return nil
+	}
+	gwLrpIP := m.gatewayPortIP(ctx, eip.VPCID)
+	if gwLrpIP == "" {
+		return fmt.Errorf("bind host EIP %s: gateway LRP IP unknown for %s (IGW attached?)", eip.ExternalIP, eip.VPCID)
+	}
+	if err := m.hostBinder.Bind(eip, gwLrpIP); err != nil {
+		return fmt.Errorf("bind host EIP %s via %s: %w", eip.ExternalIP, gwLrpIP, err)
+	}
 	return nil
 }
 
@@ -231,6 +323,25 @@ func (m *natManager) gatewayPortMAC(ctx context.Context, vpcID string) string {
 		return ""
 	}
 	return lrp.MAC
+}
+
+// gatewayPortIP returns the IP of the VPC gateway router's external port — the
+// transit-side next hop for routed-mode host EIP routes. Prefers the IP stamped
+// at IGW attach; falls back to the LRP network address. Empty on lookup miss.
+func (m *natManager) gatewayPortIP(ctx context.Context, vpcID string) string {
+	lrp, err := m.ovn.GetLogicalRouterPort(ctx, topology.GatewayRouterPort(vpcID))
+	if err != nil || lrp == nil {
+		return ""
+	}
+	if ip := lrp.ExternalIDs[GatewayIPExtIDKey]; ip != "" {
+		return ip
+	}
+	if len(lrp.Networks) > 0 {
+		if pfx, err := netip.ParsePrefix(lrp.Networks[0]); err == nil {
+			return pfx.Addr().String()
+		}
+	}
+	return ""
 }
 
 func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP, portName string) error {
@@ -276,6 +387,13 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 	// Flush host ARP for the released IP so the next owner isn't shadowed. Best-effort.
 	if err := m.neigh(externalIP); err != nil {
 		slog.Warn("policy: DeleteEIP neighbour flush failed", "external_ip", externalIP, "logical_ip", logicalIP, "err", err)
+	}
+	// Tear down routed-mode host plumbing. Best-effort: the row is already gone
+	// and stale host state is re-converged by the next bind of the same IP.
+	if m.mode == NATModeRouted && m.hostBinder != nil {
+		if err := m.hostBinder.Unbind(externalIP); err != nil {
+			slog.Warn("policy: DeleteEIP host unbind failed", "external_ip", externalIP, "err", err)
+		}
 	}
 	return nil
 }
@@ -336,10 +454,45 @@ func (m *natManager) DeleteNATGateway(ctx context.Context, vpcID, subnetCIDR str
 
 func (m *natManager) AddSNAT(ctx context.Context, vpcID, vpcCIDR, externalIP string) error {
 	router := topology.VPCRouter(vpcID)
+
+	exemptUUID, err := m.exemptSetUUID(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Reconcile replays IGW attach every pass; key on (router, vpcCIDR) so the
+	// re-publish is a no-op instead of minting duplicate snat rows.
+	if existing, err := m.ovn.FindNATByLogicalIP(ctx, router, "snat", vpcCIDR); err != nil {
+		slog.Warn("policy: AddSNAT idempotency lookup failed", "vpc_cidr", vpcCIDR, "err", err)
+	} else if existing != nil && existing.ExternalIP == externalIP {
+		// Upgrade path: stamp the exempt ref in place on rows minted before the
+		// option existed (or after a set re-create).
+		if exemptUUID != nil && (existing.ExemptedExtIps == nil || *existing.ExemptedExtIps != *exemptUUID) {
+			if err := m.ovn.SetNATExemptedExtIPs(ctx, router, "snat", vpcCIDR, exemptUUID); err != nil {
+				return fmt.Errorf("patch exempt set on IGW snat %s on %s: %w", vpcCIDR, router, err)
+			}
+			slog.Info("policy: AddSNAT patched exempt set on existing rule",
+				"router", router, "vpc_cidr", vpcCIDR, "external_ip", externalIP)
+			return nil
+		}
+		slog.Info("policy: AddSNAT idempotent skip — rule already current",
+			"router", router, "vpc_cidr", vpcCIDR, "external_ip", externalIP)
+		return nil
+	} else if existing != nil {
+		// Same VPC CIDR, different external IP (gateway transit IP changed).
+		// Scrub the stale row so egress does not leak via the old IP.
+		slog.Info("policy: AddSNAT replacing stale snat — external IP changed",
+			"router", router, "old_ip", existing.ExternalIP, "new_ip", externalIP, "vpc_cidr", vpcCIDR)
+		if err := m.ovn.DeleteNAT(ctx, router, "snat", vpcCIDR); err != nil && !errors.Is(err, ovn.ErrNATNotFound) {
+			return fmt.Errorf("replace stale IGW snat %s on %s: %w", vpcCIDR, router, err)
+		}
+	}
+
 	snatRule := &nbdb.NAT{
-		Type:       "snat",
-		ExternalIP: externalIP,
-		LogicalIP:  vpcCIDR,
+		Type:           "snat",
+		ExternalIP:     externalIP,
+		LogicalIP:      vpcCIDR,
+		ExemptedExtIps: exemptUUID,
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id": vpcID,
 			"spinifex:role":   "igw-default-snat",

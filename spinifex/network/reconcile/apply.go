@@ -270,16 +270,16 @@ func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState) {
 }
 
 // applyIGWs ensures every intent IGW has OVN topology and rebinds chassis on
-// existing IGWs. AttachIGW is idempotent.
+// existing IGWs. AttachIGW is idempotent and must run even when the gateway
+// switch port already exists: its already-attached path re-ensures host state
+// (routed-NAT ingress routes) that survives in OVN but not across reboots.
 func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual ActualState) {
 	for vpcID, spec := range intent.IGWs {
-		if _, ok := actual.ExternalSwch[vpcID]; !ok {
-			if err := r.igw.AttachIGW(ctx, spec); err != nil {
-				slog.Error("reconcile/apply: AttachIGW failed", "vpc_id", vpcID, "err", err)
-				continue
-			}
-			actual.ExternalSwch[vpcID] = struct{}{}
+		if err := r.igw.AttachIGW(ctx, spec); err != nil {
+			slog.Error("reconcile/apply: AttachIGW failed", "vpc_id", vpcID, "err", err)
+			continue
 		}
+		actual.ExternalSwch[vpcID] = struct{}{}
 		r.rebindGatewayChassis(ctx, vpcID, eipProbeIP(intent, vpcID))
 	}
 }

@@ -45,6 +45,9 @@ type ManagerConfig struct {
 	Now             func() time.Time
 	AcquireSchedule []time.Duration
 	AcquireBudget   time.Duration
+	// IfaceIPs lists the IPs bound to a named interface; tests override.
+	// Used to detect MAC-keyed upstream routers on interface-MAC pools.
+	IfaceIPs func(iface string) ([]net.IP, error)
 }
 
 // Manager owns active DHCP leases in vpcd: one renewal goroutine per
@@ -56,6 +59,7 @@ type Manager struct {
 	now             func() time.Time
 	acquireSchedule []time.Duration
 	acquireBudget   time.Duration
+	ifaceIPs        func(iface string) ([]net.IP, error)
 
 	sf singleflight.Group
 
@@ -97,12 +101,17 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if budget <= 0 {
 		budget = defaultAcquireBudget
 	}
+	ifaceIPs := cfg.IfaceIPs
+	if ifaceIPs == nil {
+		ifaceIPs = defaultIfaceIPs
+	}
 	return &Manager{
 		client:          cfg.Client,
 		store:           cfg.Store,
 		now:             now,
 		acquireSchedule: schedule,
 		acquireBudget:   budget,
+		ifaceIPs:        ifaceIPs,
 		loops:           map[string]*leaseLoop{},
 	}, nil
 }
@@ -300,6 +309,7 @@ func (m *Manager) doAcquire(ctx context.Context, e *Entry) error {
 		Hostname:    e.Lease.Hostname,
 		VendorClass: e.Lease.VendorClass,
 		HWAddr:      e.Lease.HWAddr,
+		UseIfaceMAC: e.Lease.UseIfaceMAC,
 	})
 	if err != nil {
 		return err
@@ -467,9 +477,18 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 		Hostname:    req.Hostname,
 		VendorClass: req.VendorClass,
 		HWAddr:      hw,
+		UseIfaceMAC: req.UseIfaceMAC,
 	})
 	if err != nil {
 		return nil, err
+	}
+	if req.UseIfaceMAC {
+		if cerr := m.checkIfaceMACCollision(req.Bridge, req.ClientID, lease.IP); cerr != nil {
+			if relErr := m.client.Release(ctx, lease); relErr != nil {
+				slog.Warn("dhcp manager: release of colliding lease failed", "client_id", req.ClientID, "err", relErr)
+			}
+			return nil, cerr
+		}
 	}
 	entry := Entry{Purpose: req.Purpose, PoolName: req.PoolName, VPCID: req.VPCID, Lease: lease}
 	if err := m.store.Put(entry); err != nil {
@@ -477,6 +496,57 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 	}
 	m.spawnLoop(entry, false)
 	return &entry, nil
+}
+
+// checkIfaceMACCollision detects upstream routers that key leases on MAC and
+// ignore option 61: every interface-MAC client then ACKs the same IP. The
+// ACK IP matching the interface's own address or another client-id's live
+// lease is a hard error — the operator must switch the pool to a static range.
+func (m *Manager) checkIfaceMACCollision(iface, clientID string, ip net.IP) error {
+	if ip == nil {
+		return nil
+	}
+	const advice = "the upstream router keys leases on MAC and ignores client-id; use source=\"static\" with a range outside its DHCP scope"
+	if ips, err := m.ifaceIPs(iface); err == nil {
+		for _, own := range ips {
+			if own.Equal(ip) {
+				return fmt.Errorf("dhcp manager: upstream leased %s to client %q but %s already owns that IP — %s", ip, clientID, iface, advice)
+			}
+		}
+	}
+	entries, err := m.store.List()
+	if err != nil {
+		slog.Warn("dhcp manager: lease list for MAC-collision check failed", "err", err)
+		return nil
+	}
+	for _, e := range entries {
+		if e.Lease == nil || e.Lease.ClientID == clientID || e.Lease.IP == nil {
+			continue
+		}
+		if e.Lease.IP.Equal(ip) && e.Lease.ExpiresAt().After(m.now()) {
+			return fmt.Errorf("dhcp manager: upstream leased %s to client %q but client %q already holds it — %s", ip, clientID, e.Lease.ClientID, advice)
+		}
+	}
+	return nil
+}
+
+// defaultIfaceIPs lists the addresses bound to a named interface.
+func defaultIfaceIPs(name string) ([]net.IP, error) {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return nil, err
+	}
+	var ips []net.IP
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok {
+			ips = append(ips, ipn.IP)
+		}
+	}
+	return ips, nil
 }
 
 // DrainAll DHCPRELEASEs every lease in this vpcd's per-AZ store and deletes

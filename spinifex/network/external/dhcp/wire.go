@@ -26,6 +26,7 @@ type acquireWireRequest struct {
 	Hostname    string `json:"hostname,omitempty"`
 	VendorClass string `json:"vendor_class,omitempty"`
 	HWAddr      string `json:"hwaddr,omitempty"`
+	UseIfaceMAC bool   `json:"use_iface_mac,omitempty"`
 	Purpose     string `json:"purpose,omitempty"`
 	PoolName    string `json:"pool_name,omitempty"`
 	VPCID       string `json:"vpc_id,omitempty"`
@@ -68,6 +69,7 @@ type wireLease struct {
 	Hostname      string        `json:"hostname,omitempty"`
 	VendorClass   string        `json:"vendor_class,omitempty"`
 	HWAddr        string        `json:"hwaddr,omitempty"`
+	UseIfaceMAC   bool          `json:"use_iface_mac,omitempty"`
 	IP            string        `json:"ip,omitempty"`
 	SubnetMask    string        `json:"subnet_mask,omitempty"`
 	Routers       []string      `json:"routers,omitempty"`
@@ -91,6 +93,7 @@ func toWireLease(l *Lease) *wireLease {
 		Hostname:      l.Hostname,
 		VendorClass:   l.VendorClass,
 		HWAddr:        hwToString(l.HWAddr),
+		UseIfaceMAC:   l.UseIfaceMAC,
 		IP:            ipToString(l.IP),
 		SubnetMask:    maskToString(l.SubnetMask),
 		Routers:       ipsToStrings(l.Routers),
@@ -114,6 +117,7 @@ func fromWireLease(w *wireLease) (*Lease, error) {
 		ClientID:      w.ClientID,
 		Hostname:      w.Hostname,
 		VendorClass:   w.VendorClass,
+		UseIfaceMAC:   w.UseIfaceMAC,
 		AcquiredAt:    w.AcquiredAt,
 		LeaseDuration: w.LeaseDuration,
 		T1:            w.T1,

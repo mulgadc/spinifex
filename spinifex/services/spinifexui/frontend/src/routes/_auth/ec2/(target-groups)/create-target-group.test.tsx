@@ -26,7 +26,7 @@ const { routerState, sdk } = vi.hoisted(() => {
   return {
     routerState: {
       navigate: vi.fn(),
-      params: {} as Record<string, string>,
+      params: {},
     },
     sdk: {
       send,

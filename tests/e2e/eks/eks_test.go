@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,6 +60,7 @@ func TestEKS(t *testing.T) {
 		ca, err := base64.StdEncoding.DecodeString(aws.StringValue(cl.CertificateAuthority.Data))
 		require.NoError(t, err, "certificateAuthority.data must be base64")
 		assert.Contains(t, string(ca), "BEGIN CERTIFICATE", "CA data must be a PEM cert")
+		assertEKSEndpointResolves(t, aws.StringValue(cl.Endpoint))
 		fx.Cluster = cl
 	})
 
@@ -930,6 +933,35 @@ func deleteClusterBestEffort(t *testing.T, c *harness.AWSClient, fx *clusterFixt
 }
 
 // --- kubeconfig artifact --------------------------------------------------
+
+// assertEKSEndpointResolves confirms the DescribeCluster endpoint is an
+// AWS-shaped DNS name that resolves through the host resolver (the path a
+// kubectl/AWS SDK client uses), matching real EKS. Skipped when northstar is not
+// configured and the endpoint is still a bare IP. Retries because the endpoint A
+// record is published asynchronously by the control-plane writer.
+func assertEKSEndpointResolves(t *testing.T, endpoint string) {
+	t.Helper()
+	require.NotEmpty(t, endpoint, "cluster endpoint must be set")
+	u, err := url.Parse(endpoint)
+	require.NoErrorf(t, err, "parse cluster endpoint %q", endpoint)
+	host := u.Hostname()
+	if net.ParseIP(host) != nil {
+		t.Logf("endpoint %q is a bare IP — DNS registration off, skipping resolution check", endpoint)
+		return
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if addrs, lerr := net.LookupHost(host); lerr == nil && len(addrs) > 0 {
+			t.Logf("EKS endpoint %s resolved to %v (northstar path)", host, addrs)
+			return
+		} else {
+			lastErr = lerr
+		}
+		time.Sleep(3 * time.Second)
+	}
+	t.Fatalf("EKS endpoint host %q never resolved within 90s (last err=%v) — northstar did not serve the A record", host, lastErr)
+}
 
 // writeKubeconfig builds a kubeconfig from DescribeCluster output and writes it to the artifact
 // dir. Avoids shelling to `aws eks update-kubeconfig` so the structure assertion is hermetic.

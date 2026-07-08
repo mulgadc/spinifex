@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -155,6 +156,10 @@ type EKSServiceImpl struct {
 	// launchWG tracks in-flight async create launches for test determinism (WaitLaunches).
 	launchWG sync.WaitGroup
 
+	// baseDomain is the northstar default_domain; "" disables endpoint DNS naming
+	// (the cluster then publishes its bare IP:port endpoint as before).
+	baseDomain string
+
 	// nodegroupReadyTimeout / nodegroupReadyPoll bound how long launchNodegroupInfra
 	// waits for its workers to register Ready before marking the nodegroup
 	// CREATE_FAILED. Tests inject small values.
@@ -189,6 +194,7 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 		registry:              NewReconcilerRegistry(),
 		bgCtx:                 ctx,
 		bgCancel:              cancel,
+		baseDomain:            handlers_dns.ResolveBaseDomain(deps.Config),
 		nodegroupReadyTimeout: defaultNodegroupReadyTimeout,
 		nodegroupReadyPoll:    defaultNodegroupReadyPoll,
 	}, nil
@@ -582,18 +588,32 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure cluster NLB", err)
 		return
 	}
-	// Endpoint resolution (301): publish the reachable front-end. With public access
-	// on (public-only or public+private) that is the NLB's public front-end IP. A
-	// private-only cluster publishes its Set A private endpoint instead — the
-	// internal NLB's Set B IP is unreachable from the customer VPC. Either way the
-	// host is a cert SAN, so TLS validates with verification on.
+	// Endpoint resolution (301): resolve the reachable front-end IP. With public
+	// access on (public-only or public+private) that is the NLB's public front-end
+	// IP. A private-only cluster uses its Set A private endpoint instead — the
+	// internal NLB's Set B IP is unreachable from the customer VPC.
 	if publicAccess {
-		meta.Endpoint = "https://" + net.JoinHostPort(nlb.FrontendIP, strconv.FormatInt(clusterNLBListenPort, 10))
 		meta.EndpointIP = nlb.FrontendIP
 	} else {
-		meta.Endpoint = "https://" + net.JoinHostPort(meta.PrivateEndpointIP, strconv.FormatInt(clusterNLBListenPort, 10))
 		meta.EndpointIP = meta.PrivateEndpointIP
 	}
+	// With northstar configured, publish an AWS-shaped DNS endpoint
+	// ({cluster}.{region}.eks.{baseDomain}) that resolves to EndpointIP and is
+	// SANed on the apiserver cert (below), so TLS validates. Without northstar the
+	// bare IP endpoint is published as before. Workers still join by IP
+	// (clusterJoinEndpoint), so cluster bring-up never waits on DNS propagation —
+	// only external SDK/kubectl clients use the name.
+	meta.EndpointDNSName = ""
+	if s.baseDomain != "" {
+		meta.EndpointDNSName = handlers_dns.EKSName(name, region, s.baseDomain)
+	}
+	endpointHost := meta.EndpointIP
+	if meta.EndpointDNSName != "" {
+		endpointHost = meta.EndpointDNSName
+	}
+	meta.Endpoint = "https://" + net.JoinHostPort(endpointHost, strconv.FormatInt(clusterNLBListenPort, 10))
+	// Register the endpoint A record (best-effort; reconcile repairs a miss).
+	s.publishEKSDNS(accountID, meta, handlers_dns.ActionUpsert)
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
 	meta.KonnTargetGroupArn = nlb.KonnTargetGroupArn
@@ -646,6 +666,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		ControlPlaneSGID:  cpSG,
 		NLBDNS:            nlb.DNSName,
 		EndpointIP:        nlb.FrontendIP,
+		EndpointDNS:       meta.EndpointDNSName,
 		PrivateEndpointIP: meta.PrivateEndpointIP,
 		OIDCIssuer:        oidcIssuer,
 		OIDCPrivateKeyPEM: privPEM,
@@ -989,6 +1010,9 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 	if err := ZeroizeClusterOIDCKey(acctKV, name); err != nil {
 		teardownErrs = append(teardownErrs, fmt.Errorf("zeroize OIDC key: %w", err))
 	}
+
+	// Withdraw the endpoint A record alongside the NLB teardown (best-effort).
+	s.publishEKSDNS(accountID, meta, handlers_dns.ActionDelete)
 
 	if meta.NLBArn != "" {
 		// Deregister is best-effort: DeleteClusterNLB tears down the whole NLB
@@ -1811,7 +1835,24 @@ func clusterJoinEndpoint(meta *ClusterMeta) string {
 	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.EndpointPrivateAccess && meta.PrivateEndpointIP != "" {
 		return "https://" + net.JoinHostPort(meta.PrivateEndpointIP, strconv.FormatInt(clusterNLBListenPort, 10))
 	}
+	// Workers join by IP so cluster bring-up never waits on DNS resolution of the
+	// published endpoint name (EndpointIP is a cert SAN like the DNS name).
+	if meta.EndpointIP != "" {
+		return "https://" + net.JoinHostPort(meta.EndpointIP, strconv.FormatInt(clusterNLBListenPort, 10))
+	}
 	return meta.Endpoint
+}
+
+// publishEKSDNS registers or withdraws the cluster's apiserver endpoint A record
+// ({cluster}.{region}.eks.{baseDomain} → EndpointIP) with the control-plane DNS
+// writer. Best-effort and a no-op when northstar is not configured; the reconcile
+// loop repairs any miss and it never blocks the cluster operation.
+func (s *EKSServiceImpl) publishEKSDNS(accountID string, meta *ClusterMeta, action handlers_dns.Action) {
+	if s.baseDomain == "" || meta == nil || meta.EndpointDNSName == "" {
+		return
+	}
+	changes := handlers_dns.EKSChanges(action, meta.EndpointDNSName, s.baseDomain, meta.EndpointIP)
+	handlers_dns.PublishChangesBestEffort(s.deps.NATSConn, accountID, changes)
 }
 
 func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {

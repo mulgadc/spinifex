@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -523,6 +524,7 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	if scheme == "internet-facing" {
 		ip := publicIP(eni)
 		require.NotEmpty(t, ip, label+" needs public IP")
+		assertLBDNSResolves(t, lb.DNSName, ip, label)
 		runInternetFacingTrafficSingle(t, kind, ssh, peer, ip)
 		if kind == kindNLB {
 			runNLBDeregisterDraining(t, c, tgArn, f.AppInstanceIDs[0])
@@ -535,6 +537,7 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	priv := privateIP(eni)
 	require.NotEmpty(t, priv, label+" needs private IP")
 	assertInternalDNS(t, c, lb.ARN, label)
+	assertLBDNSResolves(t, lb.DNSName, priv, label)
 	runInternalTrafficViaClient(t, c, f, kind, priv)
 }
 
@@ -830,7 +833,7 @@ func deregisterTargets(t *testing.T, c *harness.AWSClient, tgArn string, instanc
 }
 
 type lbInfo struct {
-	ARN, ID, Scheme, Type string
+	ARN, ID, Scheme, Type, DNSName string
 }
 
 func createLB(t *testing.T, c *harness.AWSClient, f *sharedFixture, name, lbType, scheme string) lbInfo {
@@ -850,12 +853,13 @@ func createLB(t *testing.T, c *harness.AWSClient, f *sharedFixture, name, lbType
 	arn := aws.StringValue(lb.LoadBalancerArn)
 	parts := strings.Split(arn, "/")
 	info := lbInfo{
-		ARN:    arn,
-		ID:     parts[len(parts)-1],
-		Scheme: aws.StringValue(lb.Scheme),
-		Type:   aws.StringValue(lb.Type),
+		ARN:     arn,
+		ID:      parts[len(parts)-1],
+		Scheme:  aws.StringValue(lb.Scheme),
+		Type:    aws.StringValue(lb.Type),
+		DNSName: aws.StringValue(lb.DNSName),
 	}
-	t.Logf("LB %s: %s (scheme=%s type=%s)", name, info.ARN, info.Scheme, info.Type)
+	t.Logf("LB %s: %s (scheme=%s type=%s dns=%s)", name, info.ARN, info.Scheme, info.Type, info.DNSName)
 	return info
 }
 
@@ -1465,6 +1469,36 @@ func assertInternalDNS(t *testing.T, c *harness.AWSClient, lbArn, label string) 
 	require.NotEmpty(t, out.LoadBalancers)
 	dns := aws.StringValue(out.LoadBalancers[0].DNSName)
 	assert.True(t, strings.HasPrefix(dns, "internal-"), "%s internal DNS missing internal- prefix: %s", label, dns)
+}
+
+// assertLBDNSResolves confirms the SDK-returned DNSName resolves to the LB's
+// frontend IP through the host resolver (the same path an AWS SDK/CLI client
+// uses). Skipped when northstar is not configured (legacy .spinifex.local
+// naming, which northstar does not serve). Retries because the control-plane
+// writer publishes the record asynchronously (best-effort + reconcile).
+func assertLBDNSResolves(t *testing.T, dnsName, wantIP, label string) {
+	t.Helper()
+	if dnsName == "" || strings.HasSuffix(dnsName, ".spinifex.local") {
+		t.Logf("%s: DNS registration off (dns=%q) — skipping resolution check", label, dnsName)
+		return
+	}
+	harness.Step(t, "resolve LB DNS %s → %s (northstar path)", dnsName, wantIP)
+	deadline := time.Now().Add(90 * time.Second)
+	var last []string
+	for time.Now().Before(deadline) {
+		addrs, err := net.LookupHost(dnsName)
+		if err == nil {
+			last = addrs
+			for _, a := range addrs {
+				if a == wantIP {
+					return
+				}
+			}
+		}
+		time.Sleep(3 * time.Second)
+	}
+	t.Fatalf("%s: LB DNS %q never resolved to frontend IP %s within 90s (last=%v) — northstar did not serve the A record",
+		label, dnsName, wantIP, last)
 }
 
 // --- Internet-facing traffic ---------------------------------------------

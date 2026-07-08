@@ -25,10 +25,10 @@ set -a
 . "${ENVFILE}"
 set +a
 
+# EKS_ACCESS_KEY/EKS_SECRET_KEY are intentionally not required: when absent,
+# eks-gateway-{fetch,publish} sign with IMDS instance-role creds via the SDK chain.
 : "${EKS_GATEWAY_URL:?}"
 : "${EKS_ADDON_GATEWAY_URL:?}"
-: "${EKS_ACCESS_KEY:?}"
-: "${EKS_SECRET_KEY:?}"
 : "${EKS_ACCOUNT_ID:?}"
 : "${EKS_CLUSTER_NAME:?}"
 

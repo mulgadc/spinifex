@@ -41,6 +41,36 @@ func TestEC2Changes(t *testing.T) {
 	assert.Empty(t, EC2Changes(ActionUpsert, "", "spx3.net", "", "1.2.3.4", "172.31.26.216"))
 }
 
+func TestELBNameAndChanges(t *testing.T) {
+	assert.Equal(t, "web-lb-abc123.ap-southeast-2.elb.spx3.net",
+		ELBName("", "web-lb", "abc123", "ap-southeast-2", "spx3.net"))
+	assert.Equal(t, "internal-web-lb-abc123.ap-southeast-2.elb.spx3.net",
+		ELBName("internal-", "web-lb", "abc123", "ap-southeast-2", "spx3.net"))
+
+	changes := ELBChanges(ActionUpsert, "internal-web-lb-abc123.ap-southeast-2.elb.spx3.net", "spx3.net", "10.0.0.5")
+	require.Len(t, changes, 1)
+	assert.Equal(t, "spx3.net", changes[0].Zone)
+	assert.Equal(t, "A", changes[0].Type)
+	assert.Equal(t, "10.0.0.5", changes[0].Value)
+
+	// Missing zone or frontend IP → no change (launcher-less LB, northstar off).
+	assert.Empty(t, ELBChanges(ActionUpsert, "web-lb-abc123.ap-southeast-2.elb.spx3.net", "", "10.0.0.5"))
+	assert.Empty(t, ELBChanges(ActionUpsert, "web-lb-abc123.ap-southeast-2.elb.spx3.net", "spx3.net", ""))
+}
+
+func TestEKSNameAndChanges(t *testing.T) {
+	assert.Equal(t, "my-cluster.ap-southeast-2.eks.spx3.net",
+		EKSName("my-cluster", "ap-southeast-2", "spx3.net"))
+
+	changes := EKSChanges(ActionDelete, "my-cluster.ap-southeast-2.eks.spx3.net", "spx3.net", "10.0.0.9")
+	require.Len(t, changes, 1)
+	assert.Equal(t, ActionDelete, changes[0].Action)
+	assert.Equal(t, "spx3.net", changes[0].Zone)
+	assert.Equal(t, "10.0.0.9", changes[0].Value)
+
+	assert.Empty(t, EKSChanges(ActionUpsert, "my-cluster.ap-southeast-2.eks.spx3.net", "spx3.net", ""))
+}
+
 func TestRelativeLabel(t *testing.T) {
 	assert.Equal(t, "", relativeLabel("spx3.net", "spx3.net"))
 	assert.Equal(t, "", relativeLabel("spx3.net.", "spx3.net"))

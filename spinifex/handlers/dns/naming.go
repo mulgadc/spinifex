@@ -70,6 +70,50 @@ func EC2Changes(action Action, region, baseDomain, internalDomain, publicIP, pri
 	return changes
 }
 
+// ELBName is the AWS-shaped DNS name for a load balancer's frontend:
+// {prefix}{name}-{lbID}.{region}.elb.{baseDomain}. prefix is "internal-" for
+// internal-scheme balancers (AWS convention), "" for internet-facing.
+func ELBName(prefix, name, lbID, region, baseDomain string) string {
+	return fmt.Sprintf("%s%s-%s.%s.elb.%s", prefix, name, lbID, region, baseDomain)
+}
+
+// ELBChanges builds the record-set change for a load balancer's frontend
+// address. Returns no change when the name, zone, or IP is unavailable (e.g. a
+// launcher-less LB with no allocated frontend IP).
+func ELBChanges(action Action, dnsName, baseDomain, frontendIP string) []Change {
+	if dnsName == "" || baseDomain == "" || frontendIP == "" {
+		return nil
+	}
+	return []Change{{
+		Action: action,
+		Zone:   baseDomain,
+		Name:   dnsName,
+		Type:   "A",
+		Value:  frontendIP,
+	}}
+}
+
+// EKSName is the AWS-shaped DNS name for a cluster's apiserver endpoint:
+// {cluster}.{region}.eks.{baseDomain}.
+func EKSName(cluster, region, baseDomain string) string {
+	return fmt.Sprintf("%s.%s.eks.%s", cluster, region, baseDomain)
+}
+
+// EKSChanges builds the record-set change for a cluster's apiserver endpoint.
+// Returns no change when the name, zone, or IP is unavailable.
+func EKSChanges(action Action, dnsName, baseDomain, endpointIP string) []Change {
+	if dnsName == "" || baseDomain == "" || endpointIP == "" {
+		return nil
+	}
+	return []Change{{
+		Action: action,
+		Zone:   baseDomain,
+		Name:   dnsName,
+		Type:   "A",
+		Value:  endpointIP,
+	}}
+}
+
 // privateZoneOrDefault returns the configured internal domain or the
 // compute.internal default when unset.
 func privateZoneOrDefault(internalDomain string) string {

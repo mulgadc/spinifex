@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,6 +48,29 @@ func TestClusterJoinEndpoint_PublicOnlyUsesPublished(t *testing.T) {
 		},
 	}
 	assert.Equal(t, "https://203.0.113.9:443", clusterJoinEndpoint(meta))
+}
+
+func TestClusterJoinEndpoint_PublicJoinsByEndpointIP(t *testing.T) {
+	// With northstar on, meta.Endpoint is the DNS name but workers join by IP so
+	// cluster bring-up never depends on DNS resolution of the published name.
+	meta := &ClusterMeta{
+		Endpoint:   "https://my-cluster.ap-southeast-2.eks.spx3.net:443",
+		EndpointIP: "203.0.113.9",
+		ResourcesVpcConfig: &ClusterVpcConfig{
+			EndpointPublicAccess:  true,
+			EndpointPrivateAccess: false,
+		},
+	}
+	assert.Equal(t, "https://203.0.113.9:443", clusterJoinEndpoint(meta))
+}
+
+func TestPublishEKSDNS_NoopWhenDisabledOrIncomplete(t *testing.T) {
+	// baseDomain empty → no-op (and must not panic on a nil NATS conn).
+	s := &EKSServiceImpl{}
+	s.publishEKSDNS("acct", &ClusterMeta{EndpointDNSName: "c.r.eks.spx3.net", EndpointIP: "10.0.0.1"}, handlers_dns.ActionDelete)
+	// baseDomain set but no DNS name resolved → still a no-op.
+	s.baseDomain = "spx3.net"
+	s.publishEKSDNS("acct", &ClusterMeta{EndpointIP: "10.0.0.1"}, handlers_dns.ActionUpsert)
 }
 
 func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROnAPIServerPorts(t *testing.T) {

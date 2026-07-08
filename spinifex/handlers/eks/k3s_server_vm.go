@@ -119,6 +119,10 @@ type K3sServerInput struct {
 	// EndpointIP is the NLB front-end IP added to the apiserver cert SANs for TLS.
 	// Empty for an internal endpoint with no front-end IP.
 	EndpointIP string
+	// EndpointDNS is the AWS-shaped apiserver DNS name ({cluster}.{region}.eks.
+	// {baseDomain}) added to the cert SANs so kubectl/SDK clients validate TLS when
+	// connecting via the published DNS endpoint. Empty when northstar is unconfigured.
+	EndpointDNS string
 	// PrivateEndpointIP is the customer-VPC (Set A) private-endpoint IP added to the
 	// apiserver cert SANs so in-VPC clients validate TLS via https://<ip>:443.
 	// Empty when private access is off.
@@ -478,7 +482,7 @@ func buildK3sUserData(in K3sServerInput) string {
 	if konnHost == "" {
 		konnHost = in.EndpointIP
 	}
-	konnSANs := dedupeNonEmpty([]string{in.PrivateEndpointIP, in.EndpointIP, in.NLBDNS})
+	konnSANs := dedupeNonEmpty([]string{in.PrivateEndpointIP, in.EndpointIP, in.NLBDNS, in.EndpointDNS})
 	konnCount := max(in.KonnServerCount, 1)
 
 	envLines := []string{
@@ -549,6 +553,11 @@ func buildK3sUserData(in K3sServerInput) string {
 	// EndpointIP must be a cert SAN for TLS validation via https://<EndpointIP>:443.
 	if in.EndpointIP != "" {
 		configLines = append(configLines, "  - "+in.EndpointIP)
+	}
+	// EndpointDNS (the published AWS-shaped endpoint) must be SANed so kubectl/SDK
+	// clients validate TLS when connecting via the DNS name.
+	if in.EndpointDNS != "" {
+		configLines = append(configLines, "  - "+in.EndpointDNS)
 	}
 	// The Set A private-endpoint IP is what in-VPC clients connect to; SAN it too.
 	if in.PrivateEndpointIP != "" && in.PrivateEndpointIP != in.EndpointIP {

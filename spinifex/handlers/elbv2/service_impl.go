@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
@@ -111,6 +112,7 @@ type ELBv2ServiceImpl struct {
 	CACert                     string // PEM-encoded CA certificate delivered to microvm guests via fw_cfg
 	nodeID                     string
 	region                     string
+	dnsBaseDomain              string        // northstar default_domain; "" disables DNS registration (falls back to spinifex.local naming)
 	systemInstanceType         string        // instance type for system VMs; resolved lazily via systemInstanceTypeFunc
 	systemInstanceTypeFunc     func() string // returns the smallest available instance type
 	systemInstanceTypeMu       sync.Mutex    // guards lazy resolution of systemInstanceType
@@ -159,15 +161,16 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 	hc := newHealthChecker(store)
 
 	return &ELBv2ServiceImpl{
-		config:   cfg,
-		store:    store,
-		acmStore: acmStore,
-		nc:       nc,
-		nodeID:   nodeID,
-		region:   region,
-		ctx:      ctx,
-		cancel:   cancel,
-		hc:       hc,
+		config:        cfg,
+		store:         store,
+		acmStore:      acmStore,
+		nc:            nc,
+		nodeID:        nodeID,
+		region:        region,
+		dnsBaseDomain: handlers_dns.ResolveBaseDomain(cfg),
+		ctx:           ctx,
+		cancel:        cancel,
+		hc:            hc,
 	}, nil
 }
 
@@ -1139,7 +1142,13 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	if scheme == SchemeInternal {
 		dnsPrefix = "internal-"
 	}
-	dnsName := fmt.Sprintf("%s%s-%s.%s.elb.spinifex.local", dnsPrefix, name, lbID, s.region)
+	// Under the northstar base domain when configured so the DNSName actually
+	// resolves; otherwise the legacy spinifex.local suffix (not northstar-served).
+	elbZone := s.dnsBaseDomain
+	if elbZone == "" {
+		elbZone = "spinifex.local"
+	}
+	dnsName := handlers_dns.ELBName(dnsPrefix, name, lbID, s.region, elbZone)
 
 	// Atomically claim the name before ENI/VM work. SDK retries lose the claim;
 	// orphaned claims from crashed creates are reclaimed. Every failure releases it.
@@ -1369,7 +1378,30 @@ func (s *ELBv2ServiceImpl) provisionLBDataPlane(lc lbLaunchCtx) error {
 	if putErr := s.store.PutLoadBalancer(record); putErr != nil {
 		return fmt.Errorf("persist launch result for %s: %w", lc.lbArn, putErr)
 	}
+	// Register the frontend A record now that the serving IP is allocated.
+	s.publishLBDNS(record, handlers_dns.ActionUpsert)
 	return nil
+}
+
+// lbFrontendIP is the address the load balancer's DNS name should resolve to:
+// the public IP for an internet-facing LB, the VPC IP for an internal one.
+func lbFrontendIP(r *LoadBalancerRecord) string {
+	if r.Scheme != SchemeInternal && len(r.AvailZones) > 0 && r.AvailZones[0].PublicIP != "" {
+		return r.AvailZones[0].PublicIP
+	}
+	return r.VPCIP
+}
+
+// publishLBDNS registers or withdraws the load balancer's frontend A record with
+// the control-plane DNS writer. Best-effort and a no-op when northstar is not
+// configured or no frontend IP has been allocated; the reconcile loop repairs
+// any miss and never blocks the LB operation.
+func (s *ELBv2ServiceImpl) publishLBDNS(record *LoadBalancerRecord, action handlers_dns.Action) {
+	if s.dnsBaseDomain == "" || record == nil {
+		return
+	}
+	changes := handlers_dns.ELBChanges(action, record.DNSName, s.dnsBaseDomain, lbFrontendIP(record))
+	handlers_dns.PublishChangesBestEffort(s.nc, record.AccountID, changes)
 }
 
 // launchLBVMAsync runs provisionLBDataPlane on the background goroutine spawned
@@ -1474,6 +1506,9 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 	// Release the name claim so the name is reusable. Idempotent on a missing
 	// key, so a delete that races the record removal still converges.
 	s.releaseLBNameClaim(lb.Name, accountID)
+
+	// Withdraw the frontend A record (best-effort; reconcile repairs a miss).
+	s.publishLBDNS(lb, handlers_dns.ActionDelete)
 
 	slog.Info("DeleteLoadBalancer completed", "lbArn", *input.LoadBalancerArn, "enis", len(lb.ENIs), "accountID", accountID)
 

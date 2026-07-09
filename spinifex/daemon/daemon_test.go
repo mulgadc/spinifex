@@ -745,7 +745,7 @@ func TestDaemon_BootAllocation(t *testing.T) {
 
 	// Pre-populate the local state file with test state. Post-1a, LoadState
 	// reads from the local file (KV is best-effort cache only).
-	err = WriteLocalState(daemon.localStatePath(), vms)
+	err = writeLocalState(daemon.localStatePath(), vms)
 	require.NoError(t, err)
 
 	// Manually trigger the LoadState and allocation logic normally found in Start()
@@ -2797,7 +2797,7 @@ func TestDaemon_WriteState_NilJSManager(t *testing.T) {
 
 func TestDaemon_LoadState_NilJSManager(t *testing.T) {
 	tmpDir := t.TempDir()
-	require.NoError(t, WriteLocalState(LocalStatePath(tmpDir), map[string]*vm.VM{
+	require.NoError(t, writeLocalState(LocalStatePath(tmpDir), map[string]*vm.VM{
 		"i-seed": {ID: "i-seed"},
 	}))
 

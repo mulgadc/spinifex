@@ -66,17 +66,6 @@ type EBSDeleteResponse struct {
 	Error   string `json:"Error"`
 }
 
-type EBSSnapshotRequest struct {
-	Volume     string `json:"Volume"`
-	SnapshotID string `json:"SnapshotID"`
-}
-
-type EBSSnapshotResponse struct {
-	SnapshotID string `json:"SnapshotID"`
-	Success    bool   `json:"Success"`
-	Error      string `json:"Error"`
-}
-
 // EBSConfigUpdateRequest carries a control-plane VolumeConfig update for an
 // encrypted volume. config.json is a sealed VBState; only the master-key holder
 // (viperblockd) can reseal it, so the EC2 edge ships the new config here instead

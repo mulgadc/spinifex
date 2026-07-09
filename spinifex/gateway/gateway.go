@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/predastore/pkg/iampolicy"
@@ -115,7 +116,6 @@ var supportedServices = map[string]bool{
 	"ec2":                  true,
 	"iam":                  true,
 	"sts":                  true,
-	"account":              true,
 	"elasticloadbalancing": true,
 	"eks":                  true,
 	"ecs":                  true,
@@ -323,8 +323,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fail fast when NATS is down; every NATS-bound handler would otherwise hang
-	// until per-call timeout. Account is a local stub exempt from NATS.
-	if svc != "account" && (gw.NATSConn == nil || !gw.NATSConn.IsConnected()) {
+	// until per-call timeout.
+	if gw.NATSConn == nil || !gw.NATSConn.IsConnected() {
 		gw.writeClusterUnavailable(w, r, svc)
 		return
 	}
@@ -332,8 +332,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	switch svc {
 	case "ec2":
 		err = gw.EC2_Request(w, r)
-	case "account":
-		err = gw.Account_Request(w, r)
 	case "iam":
 		err = gw.IAM_Request(w, r)
 	case "sts":
@@ -667,18 +665,6 @@ func (gw *GatewayConfig) DiscoverActiveNodesCtx(ctx context.Context) int {
 	return activeNodes
 }
 
-// statusWriter wraps http.ResponseWriter to capture the written status code.
-type statusWriter struct {
-	http.ResponseWriter
-
-	status int
-}
-
-func (w *statusWriter) WriteHeader(code int) {
-	w.status = code
-	w.ResponseWriter.WriteHeader(code)
-}
-
 // traceActionEnricher renames the server span to the resolved SigV4
 // service.Action and tags account/region once auth populated the context.
 func traceActionEnricher(next http.Handler) http.Handler {
@@ -709,8 +695,8 @@ func traceActionEnricher(next http.Handler) http.Handler {
 func slogRequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		ww := &statusWriter{ResponseWriter: w, status: 200}
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-		slog.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "status", ww.status, "duration", time.Since(start))
+		slog.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "status", ww.Status(), "duration", time.Since(start))
 	})
 }

@@ -55,16 +55,6 @@ func MarshalLocalState(vms map[string]*vm.VM) ([]byte, error) {
 	return data, nil
 }
 
-// WriteLocalState atomically writes instance state via marshal → tmp → fsync →
-// rename. vms must be a caller-owned snapshot; this function does not lock.
-func WriteLocalState(path string, vms map[string]*vm.VM) error {
-	data, err := MarshalLocalState(vms)
-	if err != nil {
-		return err
-	}
-	return WriteLocalStateBytes(path, data)
-}
-
 // WriteLocalStateBytes atomically writes pre-marshalled state JSON to path.
 func WriteLocalStateBytes(path string, data []byte) error {
 	dir := filepath.Dir(path)

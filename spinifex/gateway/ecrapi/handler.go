@@ -19,9 +19,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// TargetPrefix is the X-Amz-Target service prefix for ECR control-plane calls.
-const TargetPrefix = "AmazonEC2ContainerRegistry_V20150921"
-
 // JSONContentType is the AWS JSON 1.1 content type ECR clients expect.
 const JSONContentType = "application/x-amz-json-1.1"
 

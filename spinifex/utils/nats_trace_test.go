@@ -90,7 +90,7 @@ func TestNATSRequestCtxNoSpanStillWorks(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out, err := NATSRequest[traceEchoResponse](nc, "test.trace.plain", traceEchoRequest{Name: "plain"}, 5*time.Second, "123456789012")
+	out, err := NATSRequestCtx[traceEchoResponse](context.Background(), nc, "test.trace.plain", traceEchoRequest{Name: "plain"}, 5*time.Second, "123456789012")
 	require.NoError(t, err)
 	assert.Equal(t, "plain", out.Name)
 }

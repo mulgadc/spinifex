@@ -220,16 +220,10 @@ func PrincipalARNFromMsg(msg *nats.Msg) string {
 	return msg.Header.Get(PrincipalARNHeader)
 }
 
-// NATSRequest performs a NATS request-response with JSON marshaling.
-// Sends with X-Account-ID (plus any extra headers) and unmarshals the successful response into Out.
-// Prefer NATSRequestCtx where a request context is available so traces span the hop.
-func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (*Out, error) {
-	return NATSRequestCtx[Out](context.Background(), conn, subject, input, timeout, accountID, headers...)
-}
-
-// NATSRequestCtx is NATSRequest carrying ctx's trace context onto the wire:
-// it opens a client span for the hop and injects traceparent into the message
-// headers so the consumer joins the same trace.
+// NATSRequestCtx performs a NATS request-response with JSON marshaling. It sends
+// with X-Account-ID (plus any extra headers), unmarshals the successful response
+// into Out, and carries ctx's trace context onto the wire: it opens a client span
+// for the hop and injects traceparent so the consumer joins the same trace.
 func NATSRequestCtx[Out any](ctx context.Context, conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (out *Out, err error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, ErrClusterUnavailable
@@ -337,17 +331,13 @@ type GatherOpts struct {
 	AccountID     string        // sets X-Account-ID header when non-empty
 }
 
-// Gather publishes payload to subject over a fresh inbox and collects reply frames
-// until ExpectedNodes answer, StopOnFirst yields a success, or Timeout elapses.
-// Error envelopes and oversized frames are dropped from frames but counted in sum;
-// returned frames are raw daemon replies for the caller to decode and merge.
-func Gather(conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
-	return GatherCtx(context.Background(), conn, subject, payload, opts)
-}
-
-// GatherCtx is Gather carrying ctx's trace context onto the wire: it opens a
-// producer span for the fan-out and injects traceparent so every consumer
-// joins the same trace. Prefer it over Gather when a request context exists.
+// GatherCtx publishes payload to subject over a fresh inbox and collects reply
+// frames until ExpectedNodes answer, StopOnFirst yields a success, or Timeout
+// elapses. Error envelopes and oversized frames are dropped from frames but
+// counted in sum; returned frames are raw daemon replies for the caller to
+// decode and merge. It carries ctx's trace context onto the wire: it opens a
+// producer span for the fan-out and injects traceparent so every consumer joins
+// the same trace.
 func GatherCtx(ctx context.Context, conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
 	sum.ErrorCodes = map[string]int{}
 	if conn == nil || !conn.IsConnected() {

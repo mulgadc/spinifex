@@ -1543,7 +1543,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP, advertiseIP)
+	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP)
 
 	// Write node.conf so spx admin banner works on source installs (not just ISO).
 	nodeHostname, _ := os.Hostname()
@@ -1800,7 +1800,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP, advertiseIP)
+	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP)
 
 	// Keep formation server running briefly so joining nodes can fetch complete status
 	fmt.Println("\n⏳ Waiting for joining nodes to fetch cluster data...")
@@ -2257,7 +2257,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(dataDir, caCertPath, creds.AdminAccessKey, creds.AdminSecretKey, creds.Region, bindIP, advertiseIP)
+	finalizeNodeSetup(dataDir, caCertPath, creds.AdminAccessKey, creds.AdminSecretKey, creds.Region, bindIP)
 
 	// Print cluster summary
 	fmt.Println("\n🎉 Node successfully joined cluster!")
@@ -2486,15 +2486,17 @@ func runAccountList(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	fmt.Printf("%-14s %-20s %-10s %s\n", "ACCOUNT ID", "NAME", "STATUS", "CREATED")
-	fmt.Printf("%-14s %-20s %-10s %s\n", "----------", "----", "------", "-------")
+	tableData := pterm.TableData{
+		{"ACCOUNT ID", "NAME", "STATUS", "CREATED"},
+	}
 	for _, a := range accounts {
 		created := a.CreatedAt
 		if t, err := time.Parse(time.RFC3339, a.CreatedAt); err == nil {
 			created = t.Format("2006-01-02 15:04")
 		}
-		fmt.Printf("%-14s %-20s %-10s %s\n", a.AccountID, a.AccountName, a.Status, created)
+		tableData = append(tableData, []string{a.AccountID, a.AccountName, a.Status, created})
 	}
+	pterm.DefaultTable.WithHasHeader().WithLeftAlignment().WithData(tableData).Render()
 }
 
 func runCertRenew(cmd *cobra.Command, _ []string) {
@@ -2567,12 +2569,10 @@ func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings 
 }
 
 // finalizeNodeSetup configures AWS credentials, creates service directories,
-// and sets ownership when running as root. advertiseIP is the off-host dial
-// target for this node; it is threaded through SetupAWSCredentials's wanIP
-// param for a future --operator-endpoint flag (see SetupAWSCredentials doc).
-func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region, bindIP, advertiseIP string) {
+// and sets ownership when running as root.
+func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region, bindIP string) {
 	fmt.Println("\n🔧 Configuring AWS credentials...")
-	if err := admin.SetupAWSCredentials(adminAccessKey, adminSecretKey, region, certPath, bindIP, advertiseIP); err != nil {
+	if err := admin.SetupAWSCredentials(adminAccessKey, adminSecretKey, region, certPath, bindIP); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Could not update AWS credentials: %v\n", err)
 	} else {
 		fmt.Println("✅ AWS credentials configured")

@@ -70,19 +70,6 @@ var stsActions = map[string]STSHandler{
 	}),
 }
 
-// stsSkipPolicyCheck lists actions not gated by IAM policy on the caller.
-// AssumeRole is gated by the role's trust policy in the handler.
-// GetCallerIdentity is always allowed per AWS (SDK init flows must not break).
-// AssumeRoleWithWebIdentity is anonymous; trust-policy-gated in the handler.
-// GetSessionToken is allowed for any authenticated caller; assumed-role and
-// session (ASIA) callers are rejected inside the handler.
-var stsSkipPolicyCheck = map[string]bool{
-	"AssumeRole":                true,
-	"AssumeRoleWithWebIdentity": true,
-	"GetCallerIdentity":         true,
-	"GetSessionToken":           true,
-}
-
 // anonymousSTSActions lists STS actions that carry no SigV4; authenticated by
 // a web-identity JWT instead. anonymousSTSInterceptor routes these before auth.
 var anonymousSTSActions = map[string]bool{
@@ -111,11 +98,9 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	if !stsSkipPolicyCheck[action] {
-		if err := gw.checkPolicy(r, "sts", action); err != nil {
-			return err
-		}
-	}
+	// STS actions are not gated by caller IAM policy: each action enforces its
+	// own rule in the handler (role trust policy, web-identity JWT, or the
+	// always-allowed GetCallerIdentity), so no checkPolicy pass runs here.
 
 	// Anonymous actions carry no SigV4 envelope; handler ignores the zero caller.
 	var caller stsCaller

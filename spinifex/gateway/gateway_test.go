@@ -489,11 +489,6 @@ func TestGetService(t *testing.T) {
 			wantSvc: "iam",
 		},
 		{
-			name:    "account service",
-			ctxVal:  "account",
-			wantSvc: "account",
-		},
-		{
 			name:    "tagging service",
 			ctxVal:  "tagging",
 			wantSvc: "tagging",

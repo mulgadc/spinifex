@@ -11,6 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// writeLocalState marshals vms and atomically writes them to path. Test-only
+// convenience over MarshalLocalState + WriteLocalStateBytes.
+func writeLocalState(path string, vms map[string]*vm.VM) error {
+	data, err := MarshalLocalState(vms)
+	if err != nil {
+		return err
+	}
+	return WriteLocalStateBytes(path, data)
+}
+
 func TestLocalStatePath_UsesDataDir(t *testing.T) {
 	got := LocalStatePath("/data")
 	assert.Equal(t, "/data/state/instance-state.json", got)
@@ -29,7 +39,7 @@ func TestWriteLocalState_RoundTrip(t *testing.T) {
 		"i-bbb": {ID: "i-bbb", InstanceType: "m5.large"},
 	}
 
-	require.NoError(t, WriteLocalState(path, vms))
+	require.NoError(t, writeLocalState(path, vms))
 
 	loaded, err := ReadLocalState(path)
 	require.NoError(t, err)
@@ -42,7 +52,7 @@ func TestWriteLocalState_RoundTrip(t *testing.T) {
 
 func TestWriteLocalState_MkdirParent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deep", "nested", "state", "instance-state.json")
-	require.NoError(t, WriteLocalState(path, map[string]*vm.VM{}))
+	require.NoError(t, writeLocalState(path, map[string]*vm.VM{}))
 	_, err := os.Stat(path)
 	require.NoError(t, err)
 }
@@ -50,7 +60,7 @@ func TestWriteLocalState_MkdirParent(t *testing.T) {
 func TestWriteLocalState_NoTmpLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "instance-state.json")
-	require.NoError(t, WriteLocalState(path, map[string]*vm.VM{}))
+	require.NoError(t, writeLocalState(path, map[string]*vm.VM{}))
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
@@ -62,11 +72,11 @@ func TestWriteLocalState_NoTmpLeftBehind(t *testing.T) {
 func TestWriteLocalState_AtomicReplace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "instance-state.json")
 
-	require.NoError(t, WriteLocalState(path, map[string]*vm.VM{
+	require.NoError(t, writeLocalState(path, map[string]*vm.VM{
 		"i-1": {ID: "i-1"},
 	}))
 
-	require.NoError(t, WriteLocalState(path, map[string]*vm.VM{
+	require.NoError(t, writeLocalState(path, map[string]*vm.VM{
 		"i-2": {ID: "i-2"},
 	}))
 

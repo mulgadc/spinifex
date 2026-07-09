@@ -21,7 +21,7 @@ type KVMigration struct {
 }
 
 // KVContext provides KV migration functions access to the bucket being migrated.
-// JetStream is non-nil only when the caller used RunKVWithJetStream — used by
+// JetStream is non-nil only when the caller passed a handle to RunKV — used by
 // migrations that need to read sibling buckets (e.g. owner-attribution lookups).
 type KVContext struct {
 	KV        nats.KeyValue
@@ -100,17 +100,17 @@ func (r *Registry) RegisterConfig(target string, m ConfigMigration) {
 	})
 }
 
-// RunKVWithJetStream is RunKV with a JetStream handle attached to each
-// migration's KVContext, enabling cross-bucket reads (e.g. owner-attribution
-// during a backfill). Prefer plain RunKV when the migration is self-contained.
-func (r *Registry) RunKVWithJetStream(bucket string, kv nats.KeyValue, js nats.JetStreamContext, targetVersion int) error {
-	return r.runKV(bucket, kv, js, targetVersion)
-}
-
 // RunKV applies pending KV migrations up to targetVersion. Stamps directly when
 // no migrations are registered (fresh bucket). Errors if the chain is incomplete.
-func (r *Registry) RunKV(bucket string, kv nats.KeyValue, targetVersion int) error {
-	return r.runKV(bucket, kv, nil, targetVersion)
+// An optional JetStream handle is attached to each migration's KVContext,
+// enabling cross-bucket reads (e.g. owner-attribution during a backfill); omit it
+// when the migration is self-contained.
+func (r *Registry) RunKV(bucket string, kv nats.KeyValue, targetVersion int, js ...nats.JetStreamContext) error {
+	var jsCtx nats.JetStreamContext
+	if len(js) > 0 {
+		jsCtx = js[0]
+	}
+	return r.runKV(bucket, kv, jsCtx, targetVersion)
 }
 
 func (r *Registry) runKV(bucket string, kv nats.KeyValue, js nats.JetStreamContext, targetVersion int) error {

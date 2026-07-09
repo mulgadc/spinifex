@@ -623,16 +623,11 @@ func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
 	return output
 }
 
-// DiscoverActiveNodes discovers the number of active spinifex daemon nodes in the cluster
-// by publishing a discovery request and counting unique responses.
+// DiscoverActiveNodes discovers the number of active spinifex daemon nodes in the
+// cluster by publishing a discovery request and counting unique responses. It
+// carries the request context so the discovery fan-out joins the caller's trace.
 // Returns the number of active nodes (minimum 1 if fallback is needed).
-func (gw *GatewayConfig) DiscoverActiveNodes() int {
-	return gw.DiscoverActiveNodesCtx(context.Background())
-}
-
-// DiscoverActiveNodesCtx is DiscoverActiveNodes carrying the request context so
-// the discovery fan-out joins the caller's trace.
-func (gw *GatewayConfig) DiscoverActiveNodesCtx(ctx context.Context) int {
+func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 	if gw.NATSConn == nil {
 		slog.WarnContext(ctx, "DiscoverActiveNodes: NATS connection not available, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes

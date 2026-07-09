@@ -167,7 +167,8 @@ var iamActions = map[string]IAMHandler{
 	}),
 	"DeleteInstanceProfile": iamHandler(func(accountID string, input *iam.DeleteInstanceProfileInput, gw *GatewayConfig) (any, error) {
 		countLive := func(profileARN string) (int, error) {
-			return gateway_ec2_instance.CountInstanceProfileAssociations(context.Background(), gw.NATSConn, gw.DiscoverActiveNodes(), accountID, profileARN)
+			ctx := context.Background()
+			return gateway_ec2_instance.CountInstanceProfileAssociations(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
 		}
 		return gateway_iam.DeleteInstanceProfile(accountID, input, gw.IAMService, countLive)
 	}),

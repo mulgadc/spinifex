@@ -15,9 +15,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// blockdevDelMaxAttempts caps the bounded retry on "node is in use" while
-// QEMU drains pending I/O after device_del. 20 × DetachDelay (default 1s)
-// gives a 20s budget.
+// blockdevDelMaxAttempts caps the bounded retry on "node is in use" as a
+// safety net after the DEVICE_DELETED wait (see DeviceDeletedTimeout): a miss
+// on the event (timeout, or a client not opted in) falls back to polling at
+// DetachDelay. 20 × DetachDelay (default 1s) gives a 20s budget.
 const blockdevDelMaxAttempts = 20
 
 // AttachVolumeResult carries the AWS-API device name (/dev/sd[f-p]) and the
@@ -327,12 +328,14 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 	// device_del is idempotent on DeviceNotFound so a second AWS-CLI
 	// retry can drive blockdev-del to completion when a prior detach left
 	// the guest device gone but the block node intact.
+	deviceDelIssued := false
 	_, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute:   "device_del",
 		Arguments: map[string]any{"id": deviceID},
 	}, instance.ID)
 	switch {
 	case err == nil:
+		deviceDelIssued = true
 	case isQMPDeviceNotFound(err):
 		slog.InfoContext(ctx, "DetachVolume: guest device already removed (resuming detach)",
 			"volumeId", volumeID, "err", err)
@@ -344,7 +347,18 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 		return "", fmt.Errorf("QMP device_del: %w", err)
 	}
 
-	if m.deps.DetachDelay > 0 {
+	// device_del only requests the unplug; QEMU frees the block node once the
+	// guest ACKs it (DEVICE_DELETED). Wait for that real completion signal
+	// instead of blindly sleeping, so blockdev-del isn't attempted while the
+	// node still has a user. A miss (timeout, event drained by a racing read,
+	// or a resumed/forced detach with no fresh unplug in flight) falls
+	// through to the bounded retry below unchanged.
+	if deviceDelIssued && m.deps.DeviceDeletedTimeout > 0 {
+		if waitErr := waitForDeviceDeletedEvent(ctx, instance.QMPClient, deviceID, m.deps.DeviceDeletedTimeout, instance.ID); waitErr != nil {
+			slog.DebugContext(ctx, "DetachVolume: DEVICE_DELETED not observed, falling back to blockdev-del retry",
+				"volumeId", volumeID, "err", waitErr)
+		}
+	} else if m.deps.DetachDelay > 0 {
 		time.Sleep(m.deps.DetachDelay)
 	}
 
@@ -413,6 +427,62 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 
 	slog.InfoContext(ctx, "Volume detached successfully", "volumeId", volumeID, "instanceId", instance.ID)
 	return ebsReq.DeviceName, nil
+}
+
+// waitForDeviceDeletedEvent blocks until QEMU emits a DEVICE_DELETED event
+// matching deviceID or timeout elapses, returning nil only on a match. It
+// takes over the QMP connection directly (no in-flight command is expected
+// while it runs) rather than going through sendQMPCommand, since the signal
+// we need is an async event, not a command reply.
+//
+// A timeout is treated the same as any other decode failure: q.Decoder is a
+// single shared *json.Decoder, and once Decode returns an error — including a
+// read-deadline timeout — that Decoder instance is permanently unusable, so
+// q.Dead is set exactly as sendQMPCommand does. The next QMP command
+// transparently redials via reconnectQMP. This is non-fatal either way:
+// DetachVolume falls back to the bounded blockdev-del retry, so a missed
+// event never blocks the caller forever.
+func waitForDeviceDeletedEvent(ctx context.Context, q *qmp.QMPClient, deviceID string, timeout time.Duration, instanceID string) error {
+	if q == nil || q.Conn == nil || q.Decoder == nil {
+		return fmt.Errorf("QMP client is not initialized")
+	}
+
+	q.Mu.Lock()
+	defer q.Mu.Unlock()
+
+	if q.Dead {
+		return fmt.Errorf("QMP client is disconnected")
+	}
+
+	if err := q.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	defer func() { _ = q.Conn.SetReadDeadline(time.Time{}) }()
+
+	for {
+		var msg struct {
+			Event string `json:"event"`
+			Data  struct {
+				Device string `json:"device"`
+				Path   string `json:"path"`
+			} `json:"data"`
+		}
+		if err := q.Decoder.Decode(&msg); err != nil {
+			q.Dead = true
+			return fmt.Errorf("decode error waiting for DEVICE_DELETED: %w", err)
+		}
+		if msg.Event != "DEVICE_DELETED" {
+			// Nothing else should be in flight on this connection while we
+			// hold q.Mu, but tolerate and skip any stray message rather than
+			// treating it as our signal.
+			continue
+		}
+		if msg.Data.Device == deviceID || strings.Contains(msg.Data.Path, deviceID) {
+			return nil
+		}
+		slog.DebugContext(ctx, "waitForDeviceDeletedEvent: DEVICE_DELETED for a different device, still waiting",
+			"wantDevice", deviceID, "gotDevice", msg.Data.Device, "instanceId", instanceID)
+	}
 }
 
 // tryBlockdevDel issues blockdev-del with bounded retry on "is in use" errors.

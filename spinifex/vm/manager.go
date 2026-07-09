@@ -55,9 +55,18 @@ type Deps struct {
 	BindHost string
 
 	// DetachDelay is the pause between QMP device_del and blockdev-del
-	// during DetachVolume, and the polling interval for blockdev-del retry.
-	// Zero is acceptable in tests; production uses 1s.
+	// during DetachVolume when DeviceDeletedTimeout is unset, and the
+	// polling interval for blockdev-del retry. Zero is acceptable in tests;
+	// production uses 1s.
 	DetachDelay time.Duration
+
+	// DeviceDeletedTimeout bounds how long DetachVolume waits for QEMU's
+	// DEVICE_DELETED event after device_del before falling back to the
+	// blockdev-del retry loop. This is the real signal that the guest has
+	// released the block node; when set (>0) it replaces the DetachDelay
+	// sleep for the common path. Zero disables the wait (old sleep+retry
+	// behavior); production uses 15s.
+	DeviceDeletedTimeout time.Duration
 
 	// ConsumeCleanShutdownMarker reports whether the previous run wrote a clean
 	// shutdown marker, consuming it. Nil is treated as "no marker" (cautious recovery).

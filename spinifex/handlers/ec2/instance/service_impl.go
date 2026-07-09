@@ -2161,6 +2161,25 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 	}
 
+	// Atomic claim: at most one caller across the cluster can win this race
+	// — a forwarded call and this node's local fallback, or two nodes
+	// racing the same forwarded call, both pass the checks above, but only
+	// one succeeds here. The loser must not touch resourceMgr/vmMgr at
+	// all, closing the double-start-onto-the-same-volume race. This also
+	// replaces the plain Load used above as the record of truth going
+	// forward: `instance` is reassigned to the freshest claimed value.
+	instance, err = s.stoppedStore.ClaimStoppedInstance(input.InstanceID)
+	if err != nil {
+		if errors.Is(err, vm.ErrStoppedInstanceClaimed) {
+			slog.WarnContext(ctx, "StartStoppedInstance: lost race to claim stopped instance",
+				"instanceId", input.InstanceID)
+			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+		}
+		slog.ErrorContext(ctx, "StartStoppedInstance: failed to claim stopped instance",
+			"instanceId", input.InstanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	// Reset node-local fields that are stale after cross-node migration.
 	instance.ResetNodeLocalState()
 
@@ -2168,10 +2187,12 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	if !ok {
 		slog.ErrorContext(ctx, "StartStoppedInstance: instance type not available on this node",
 			"instanceId", input.InstanceID, "instanceType", instance.InstanceType)
+		s.restoreClaimedStoppedInstance(ctx, instance)
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 	if err := s.resourceMgr.Allocate(instanceType); err != nil {
 		slog.ErrorContext(ctx, "StartStoppedInstance: failed to allocate resources", "instanceId", input.InstanceID, "err", err)
+		s.restoreClaimedStoppedInstance(ctx, instance)
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
@@ -2188,6 +2209,7 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 			slog.ErrorContext(ctx, "StartStoppedInstance: GPU claim failed", "instanceId", input.InstanceID, "err", gpuErr)
 			s.resourceMgr.Deallocate(instanceType)
 			s.vmMgr.Delete(instance.ID)
+			s.restoreClaimedStoppedInstance(ctx, instance)
 			return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 		}
 		instance.GPUAttachments = []gpu.GPUAttachment{*att}
@@ -2206,25 +2228,29 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 		}
 		s.resourceMgr.Deallocate(instanceType)
 		s.vmMgr.Delete(instance.ID)
+		s.restoreClaimedStoppedInstance(ctx, instance)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Discover actual guest device names via QMP query-block.
 	s.vmMgr.UpdateGuestDeviceNames(instance)
 
-	// Remove from shared KV now that it's running locally. Retry once on failure —
-	// a stale KV entry risks duplicate starts.
-	if err := s.stoppedStore.DeleteStoppedInstance(input.InstanceID); err != nil {
-		slog.WarnContext(ctx, "StartStoppedInstance: first KV delete failed, retrying",
-			"instanceId", input.InstanceID, "err", err)
-		if retryErr := s.stoppedStore.DeleteStoppedInstance(input.InstanceID); retryErr != nil {
-			slog.ErrorContext(ctx, "StartStoppedInstance: KV delete failed after retry, instance is running locally but stale entry remains in shared KV",
-				"instanceId", input.InstanceID, "err", retryErr)
-		}
-	}
-
 	slog.InfoContext(ctx, "Started stopped instance from shared KV", "instanceId", instance.ID)
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
+}
+
+// restoreClaimedStoppedInstance writes instance back to the shared
+// stopped-instance store after a downstream failure that follows a
+// successful ClaimStoppedInstance (which already removed it), so the claim
+// does not silently lose the instance. Best-effort: the caller already has
+// an error to return, so a restore failure is logged, not surfaced — the
+// instance is still safely stopped in the local vm.Manager's view (it was
+// never inserted, or was removed again above).
+func (s *InstanceServiceImpl) restoreClaimedStoppedInstance(ctx context.Context, instance *vm.VM) {
+	if err := s.stoppedStore.WriteStoppedInstance(instance.ID, instance); err != nil {
+		slog.ErrorContext(ctx, "StartStoppedInstance: failed to restore claimed instance to shared KV after downstream failure",
+			"instanceId", instance.ID, "err", err)
+	}
 }
 
 // TerminateStoppedInstance terminates a stopped instance: deletes its volumes,

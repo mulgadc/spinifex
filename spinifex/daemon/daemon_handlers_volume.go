@@ -59,6 +59,26 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 	}
 
 	if volCfg.VolumeMetadata.State != "available" {
+		if volCfg.VolumeMetadata.AttachedInstance == command.ID {
+			if command.AttachVolumeData.Device != "" &&
+				command.AttachVolumeData.Device != volCfg.VolumeMetadata.DeviceName {
+				slog.ErrorContext(ctx, "AttachVolume: requested device conflicts with existing attachment",
+					"volumeId", volumeID, "instanceId", command.ID,
+					"requestedDevice", command.AttachVolumeData.Device,
+					"attachedDevice", volCfg.VolumeMetadata.DeviceName)
+				respondWithError(msg, attachDetachErrorCode(vm.ErrVolumeDeviceMismatch))
+				return
+			}
+
+			// Volume is already attached to this instance (e.g. a CSI
+			// ControllerPublishVolume retry after a slow first attach).
+			// Treat as an idempotent success instead of VolumeInUse.
+			slog.InfoContext(ctx, "AttachVolume: volume already attached to requesting instance, returning idempotent success",
+				"volumeId", volumeID, "instanceId", command.ID, "device", volCfg.VolumeMetadata.DeviceName)
+			d.respondWithVolumeAttachment(msg, volumeID, command.ID, volCfg.VolumeMetadata.DeviceName, "attached")
+			return
+		}
+
 		slog.ErrorContext(ctx, "AttachVolume: volume not available",
 			"volumeId", volumeID, "state", volCfg.VolumeMetadata.State)
 		respondWithError(msg, awserrors.ErrorVolumeInUse)

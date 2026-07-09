@@ -59,7 +59,13 @@ func (r *TerminatedTeardownReaper) Sweep(context.Context) (int, error) {
 			continue // already done on arrival: leave to the 1h bucket TTL
 		}
 
-		r.retryOutstanding(v)
+		results := r.retryOutstanding(v)
+		for dep, state := range results {
+			if v.Teardown == nil {
+				v.Teardown = make(map[string]string)
+			}
+			v.Teardown[dep] = string(state)
+		}
 
 		if v.TeardownComplete() && time.Since(v.TerminatedAt) >= terminatedVisibilityWindow {
 			if r.purge(v) {
@@ -68,40 +74,55 @@ func (r *TerminatedTeardownReaper) Sweep(context.Context) (int, error) {
 			continue
 		}
 		// Either still incomplete (retry next sweep), or complete but inside the
-		// describe-visibility window: persist progress and leave the record to
-		// the 1h bucket TTL so the instance stays describable as terminated.
-		if err := r.m.deps.StateStore.WriteTerminatedInstance(v.ID, v); err != nil {
-			slog.Warn("vm/gc: failed to persist advanced teardown marks",
-				"instanceId", v.ID, "err", err)
+		// describe-visibility window: merge this sweep's marks into whatever is
+		// currently in KV via CAS, so a concurrent writer advancing a different
+		// dependent for the same record isn't clobbered by our local snapshot.
+		if len(results) > 0 {
+			if _, err := r.m.deps.StateStore.UpdateTerminatedInstance(v.ID, func(fresh *VM) {
+				if fresh.Teardown == nil {
+					fresh.Teardown = make(map[string]string)
+				}
+				for dep, state := range results {
+					fresh.Teardown[dep] = string(state)
+				}
+			}); err != nil {
+				slog.Warn("vm/gc: failed to persist advanced teardown marks",
+					"instanceId", v.ID, "err", err)
+			}
 		}
 	}
 	return reaped, nil
 }
 
 // retryOutstanding re-drives every not-`done` dependent through the idempotent
-// cleaner and re-stamps the result. The cleaner calls are idempotent (absent →
-// success), so a successful re-drive confirms the Spinifex-side teardown; the
-// dataplane object (OVN LSP, NAT rule) is pruned by the cluster reconciler.
-func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) {
+// cleaner and returns the dep→result map for whatever was retried. The cleaner
+// calls are idempotent (absent → success), so a successful re-drive confirms
+// the Spinifex-side teardown; the dataplane object (OVN LSP, NAT rule) is
+// pruned by the cluster reconciler. Pure w.r.t. KV/local state — callers merge
+// the results atomically via StateStore.UpdateTerminatedInstance so the cleaner
+// calls (which have real side effects) never run twice for a single CAS retry.
+func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownState {
 	c := r.m.deps.InstanceCleaner
 	if c == nil {
-		return
+		return nil
 	}
 
+	results := make(map[string]TeardownState)
+
 	if outstanding(v, TeardownVolumes) {
-		r.m.markTeardownResult(v, TeardownVolumes, c.DeleteVolumes(v))
+		results[TeardownVolumes] = resultState(c.DeleteVolumes(v))
 	}
 	if outstanding(v, TeardownGPU) {
-		r.m.markTeardownResult(v, TeardownGPU, c.ReleaseGPU(v))
+		results[TeardownGPU] = resultState(c.ReleaseGPU(v))
 	}
 	if outstanding(v, TeardownPlacement) {
-		r.m.markTeardownResult(v, TeardownPlacement, c.RemoveFromPlacementGroup(v))
+		results[TeardownPlacement] = resultState(c.RemoveFromPlacementGroup(v))
 	}
 
 	// NAT: re-publishes vpc.delete-nat + frees the IPAM slot. The cluster
 	// reconciler heals the dataplane NAT rule.
 	if outstanding(v, TeardownNAT) {
-		r.m.markTeardownResult(v, TeardownNAT, c.ReleasePublicIP(v))
+		results[TeardownNAT] = resultState(c.ReleasePublicIP(v))
 	}
 
 	// ENI delete + OVN: deleting the ENI KV record turns its LSP into an orphan
@@ -109,9 +130,11 @@ func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) {
 	// both eni and ovn.
 	if outstanding(v, TeardownENI) || outstanding(v, TeardownOVN) {
 		eniErr := c.DetachAndDeleteENI(v)
-		r.m.markTeardownResult(v, TeardownENI, eniErr)
-		r.m.markTeardownResult(v, TeardownOVN, eniErr)
+		results[TeardownENI] = resultState(eniErr)
+		results[TeardownOVN] = resultState(eniErr)
 	}
+
+	return results
 }
 
 func (r *TerminatedTeardownReaper) purge(v *VM) bool {

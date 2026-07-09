@@ -46,3 +46,10 @@ var ErrENIPipelineTimeout = errors.New("ENI hot-plug pipeline timed out")
 // instance has no live QMPClient (daemon restart mid-launch, terminated
 // VM, etc).
 var ErrQMPUnavailable = errors.New("QMP unavailable for instance")
+
+// ErrStoppedInstanceClaimed is returned by StateStore.ClaimStoppedInstance
+// when a concurrent caller already claimed (or the record was otherwise
+// removed from) the stopped-instance store for the given id. The caller
+// lost the race and must not proceed to allocate resources or launch qemu
+// for that instance.
+var ErrStoppedInstanceClaimed = errors.New("stopped instance already claimed")

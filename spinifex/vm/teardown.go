@@ -38,11 +38,16 @@ func (m *Manager) markTeardown(instance *VM, dep string, state TeardownState) {
 
 // markTeardownResult records done on nil error, failed otherwise.
 func (m *Manager) markTeardownResult(instance *VM, dep string, err error) {
+	m.markTeardown(instance, dep, resultState(err))
+}
+
+// resultState maps a cleaner call's error into its teardown mark: done on
+// nil, failed otherwise.
+func resultState(err error) TeardownState {
 	if err != nil {
-		m.markTeardown(instance, dep, TeardownFailed)
-		return
+		return TeardownFailed
 	}
-	m.markTeardown(instance, dep, TeardownDone)
+	return TeardownDone
 }
 
 // TeardownComplete reports whether every tracked dependent is done. A terminated

@@ -320,9 +320,10 @@ func (m *Manager) reconnectInstance(instance *VM) error {
 
 	instance.Status = StateRunning
 
-	// Re-assert boot-volume in-use state; a daemon restart otherwise leaves the
-	// root volume "available" while the instance runs (split-brain, siv-464).
-	m.markBootVolumesInUse(instance)
+	// Re-assert in-use state for every attached volume; a daemon restart
+	// otherwise leaves boot and non-boot volumes "available" while the
+	// instance runs (split-brain).
+	m.markAttachedVolumesInUse(instance)
 
 	if err := m.writeRunningState(); err != nil {
 		return fmt.Errorf("failed to persist reconnected instance state: %w", err)

@@ -175,8 +175,14 @@ type Daemon struct {
 	// initJetStream succeeds.
 	stateStore vm.StateStore
 
-	// Delay after QMP device_del before blockdev-del (default 1s, 0 in tests)
+	// Delay after QMP device_del before blockdev-del (default 1s, 0 in tests).
+	// Only used as a fallback when deviceDeletedTimeout is 0.
 	detachDelay time.Duration
+
+	// deviceDeletedTimeout bounds how long DetachVolume waits for QEMU's
+	// DEVICE_DELETED event after device_del before falling back to the
+	// blockdev-del retry loop (default 15s, 0 disables the wait in tests).
+	deviceDeletedTimeout time.Duration
 
 	// NATS connect retry options (nil uses defaults: 5min max, 500ms initial delay)
 	natsRetryOpts []utils.RetryOption
@@ -701,20 +707,21 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		node:               cfg.Node,
-		clusterConfig:      cfg,
-		config:             &nodeCfg,
-		resourceMgr:        rm,
-		gpuProbe:           gpuProbe,
-		gpuManager:         gpuMgr,
-		ctx:                ctx,
-		cancel:             cancel,
-		vmMgr:              vm.NewManager(),
-		natsSubscriptions:  make(map[string]*nats.Subscription),
-		startTime:          time.Now(),
-		detachDelay:        1 * time.Second,
-		requireNATSTimeout: 30 * time.Second,
-		exitFunc:           os.Exit,
+		node:                 cfg.Node,
+		clusterConfig:        cfg,
+		config:               &nodeCfg,
+		resourceMgr:          rm,
+		gpuProbe:             gpuProbe,
+		gpuManager:           gpuMgr,
+		ctx:                  ctx,
+		cancel:               cancel,
+		vmMgr:                vm.NewManager(),
+		natsSubscriptions:    make(map[string]*nats.Subscription),
+		startTime:            time.Now(),
+		detachDelay:          1 * time.Second,
+		deviceDeletedTimeout: 15 * time.Second,
+		requireNATSTimeout:   30 * time.Second,
+		exitFunc:             os.Exit,
 	}
 	// Initialise peersReachable true so the first probe tick never fires a
 	// spurious reconcileOnHeal at startup. Mode() still requires natsConnected

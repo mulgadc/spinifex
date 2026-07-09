@@ -52,6 +52,15 @@ func (m *memStoppedStore) DeleteStoppedInstance(id string) error {
 	return nil
 }
 
+func (m *memStoppedStore) ClaimStoppedInstance(id string) (*vm.VM, error) {
+	v, ok := m.instances[id]
+	if !ok {
+		return nil, vm.ErrStoppedInstanceClaimed
+	}
+	delete(m.instances, id)
+	return v, nil
+}
+
 func (m *memStoppedStore) WriteTerminatedInstance(string, *vm.VM) error { return nil }
 
 // tagTestDaemon returns a test daemon with an in-memory central tag store, an

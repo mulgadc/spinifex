@@ -25,11 +25,9 @@ import (
 
 // startStoppedForwardTimeout bounds the wait for ec2.start.{nodeId} to respond.
 // StartStoppedInstance does volume rehydrate + QEMU launch + QMP handshake,
-// which can take 10-20s on a cold start. Match the awsgw upstream 30s budget
-// so a slow-but-alive target node never trips the fallback path — falling back
-// while the target is still launching causes a duplicate Run that collides on
-// the deterministic tap name (TUNSETIFF: Device or resource busy).
-const startStoppedForwardTimeout = 30 * time.Second
+// which can take 10-20s on a cold start. Match the awsgw upstream 30s budget.
+// A var (not const) so tests can shrink it instead of sleeping real seconds.
+var startStoppedForwardTimeout = 30 * time.Second
 
 // handleSetInstanceTags applies a create-tags/delete-tags mutation to a running
 // instance: central store first, then the record under the manager lock, so a
@@ -477,14 +475,11 @@ func (d *Daemon) handleEC2DescribeInstanceStatus(msg *nats.Msg) {
 
 // handleEC2StartStoppedInstance handles the generic ec2.start queue-group topic.
 // It reads the stopped instance's LastNode from shared KV and forwards the
-// request to ec2.start.{lastNode} when the instance last ran on a different
-// node. This keeps instances on their original node so the per-node resource
-// manager sees the correct allocation. Local fallback fires only when the
-// targeted node has no active subscriber (ErrNoResponders — node down or not
-// yet recovered) or returns InsufficientInstanceCapacity. A timeout from a
-// reachable-but-slow target is surfaced as ServerInternal so the caller can
-// retry; falling back in that case races the still-running launch on the
-// target and collides on the deterministic tap name.
+// request to ec2.start.{lastNode} to keep instances on their original node.
+// Local fallback fires on any forward failure — no responders, capacity, or
+// timeout — because StartStoppedInstance's ClaimStoppedInstance call is the
+// single cluster-wide serialization point, so a losing racer bails out
+// cleanly instead of double-starting.
 func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 	// Peek at the instance ID without full unmarshal — we only need it for the
 	// LastNode lookup. The full unmarshal happens inside StartStoppedInstance.
@@ -532,13 +527,11 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 			slog.Warn("ec2.start: original node has no subscriber, starting locally",
 				"instanceId", peek.InstanceID, "lastNode", lastNode, "err", err)
 		} else {
-			// Timeout or other transport error from a node whose subscription
-			// did exist. Do NOT fall back — the target may still be launching
-			// the VM, and a duplicate Run here would collide on tap setup.
-			slog.Error("ec2.start: forward to original node failed, not falling back",
+			// Timeout or other transport error — e.g. lastNode crashed without
+			// a clean NATS disconnect, so no ErrNoResponders fires. The atomic
+			// claim in StartStoppedInstance makes a local retry safe either way.
+			slog.Warn("ec2.start: forward to original node failed, attempting local start",
 				"instanceId", peek.InstanceID, "lastNode", lastNode, "err", err)
-			respondWithError(msg, awserrors.ErrorServerInternal)
-			return
 		}
 	}
 

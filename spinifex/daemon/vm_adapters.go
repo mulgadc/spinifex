@@ -52,12 +52,20 @@ func (a *stateStoreAdapter) DeleteStoppedInstance(id string) error {
 	return a.js.DeleteStoppedInstance(id)
 }
 
+func (a *stateStoreAdapter) ClaimStoppedInstance(id string) (*vm.VM, error) {
+	return a.js.ClaimStoppedInstance(id)
+}
+
 func (a *stateStoreAdapter) ListStoppedInstances() ([]*vm.VM, error) {
 	return a.js.ListStoppedInstances()
 }
 
 func (a *stateStoreAdapter) WriteTerminatedInstance(id string, v *vm.VM) error {
 	return a.js.WriteTerminatedInstance(id, v)
+}
+
+func (a *stateStoreAdapter) UpdateTerminatedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	return a.js.UpdateTerminatedInstance(id, mutate)
 }
 
 func (a *stateStoreAdapter) ListTerminatedInstances() ([]*vm.VM, error) {
@@ -550,6 +558,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		DevNetworking:              d.config.Daemon.DevNetworking,
 		BindHost:                   d.config.Host,
 		DetachDelay:                d.detachDelay,
+		DeviceDeletedTimeout:       d.deviceDeletedTimeout,
 		ConsumeCleanShutdownMarker: d.consumeCleanShutdownMarker(),
 	}
 }

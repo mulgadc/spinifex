@@ -16,8 +16,20 @@ type StateStore interface {
 	LoadStoppedInstance(id string) (*VM, error)
 	DeleteStoppedInstance(id string) error
 	ListStoppedInstances() ([]*VM, error)
+	// ClaimStoppedInstance atomically removes id's record from the shared
+	// store and returns the VM it held, so that at most one caller across
+	// the cluster can ever win a race to (re)launch the same stopped
+	// instance. Returns ErrStoppedInstanceClaimed if a concurrent caller
+	// already claimed (or otherwise removed) the record.
+	ClaimStoppedInstance(id string) (*VM, error)
 
 	WriteTerminatedInstance(id string, v *VM) error
 	ListTerminatedInstances() ([]*VM, error)
 	DeleteTerminatedInstance(id string) error
+	// UpdateTerminatedInstance atomically applies mutate to the current
+	// record for id and writes it back using optimistic concurrency (CAS),
+	// so a concurrent writer to the same record (e.g. two teardown-reaper
+	// sweeps advancing different dependents) cannot clobber the other's
+	// progress. Returns an error if no record exists for id.
+	UpdateTerminatedInstance(id string, mutate func(*VM)) (*VM, error)
 }

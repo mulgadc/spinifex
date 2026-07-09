@@ -312,19 +312,17 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 	}
 
 	// Query service roles concurrently to keep worst-case latency bounded.
-	ovnDBMember := d.isOVNDBQuorumMember()
+	// OVN roles are probed only on DB quorum members; compute-only nodes skip
+	// the shell-out entirely.
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(2)
 	go func() { defer wg.Done(); resp.NATSRole = d.queryNATSRole() }()
 	go func() { defer wg.Done(); resp.PredastoreRole = d.queryPredastoreRole() }()
-	go func() {
-		defer wg.Done()
-		resp.OVNNBRole = queryOVNRole(ovnDBMember, host.OVNNBTarget, host.OVNNBSchema)
-	}()
-	go func() {
-		defer wg.Done()
-		resp.OVNSBRole = queryOVNRole(ovnDBMember, host.OVNSBTarget, host.OVNSBSchema)
-	}()
+	if d.isOVNDBQuorumMember() {
+		wg.Add(2)
+		go func() { defer wg.Done(); resp.OVNNBRole = host.OVNDBRole(host.OVNNBTarget, host.OVNNBSchema) }()
+		go func() { defer wg.Done(); resp.OVNSBRole = host.OVNDBRole(host.OVNSBTarget, host.OVNSBSchema) }()
+	}
 	wg.Wait()
 
 	respondWithJSON(msg, resp)
@@ -367,16 +365,6 @@ func (d *Daemon) isOVNDBQuorumMember() bool {
 	}
 	names := slices.Collect(maps.Keys(d.clusterConfig.Nodes))
 	return slices.Contains(formation.OVNDBQuorumNames(names), d.node)
-}
-
-// queryOVNRole returns this node's OVN DB Raft role for the given ctl target and
-// schema, or "" when the node is not an OVN DB cluster member. A standalone OVN
-// or any appctl error fails soft to "".
-func queryOVNRole(dbMember bool, target, schema string) string {
-	if !dbMember {
-		return ""
-	}
-	return host.OVNDBRole(target, schema)
 }
 
 var roleHTTPClient = &http.Client{Timeout: 500 * time.Millisecond}

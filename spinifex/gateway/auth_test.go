@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -35,8 +33,13 @@ const (
 	testService   = "ec2"
 )
 
-// mockIAMService implements handlers_iam.IAMService for auth tests.
+// mockIAMService implements handlers_iam.IAMService for auth tests. It embeds
+// the interface so it satisfies the full contract; the SigV4 middleware drives
+// only LookupAccessKey and DecryptSecret, so those are the only methods wired.
+// Any other method nil-panics, surfacing an unexpected call.
 type mockIAMService struct {
+	handlers_iam.IAMService
+
 	accessKeys map[string]*handlers_iam.AccessKey
 	masterKey  []byte
 }
@@ -49,193 +52,8 @@ func (m *mockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.Acce
 	return ak, nil
 }
 
-func (m *mockIAMService) CreateUser(_ string, _ *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) GetUser(_ string, _ *iam.GetUserInput) (*iam.GetUserOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListUsers(_ string, _ *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) DeleteUser(_ string, _ *iam.DeleteUserInput) (*iam.DeleteUserOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) CreateAccessKey(_ string, _ *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListAccessKeys(_ string, _ *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) DeleteAccessKey(_ string, _ *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) UpdateAccessKey(_ string, _ *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) CreatePolicy(_ string, _ *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) GetPolicy(_ string, _ *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) GetPolicyVersion(_ string, _ *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListPolicyVersions(_ string, _ *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListPolicies(_ string, _ *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) DeletePolicy(_ string, _ *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) AttachUserPolicy(_ string, _ *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) DetachUserPolicy(_ string, _ *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListAttachedUserPolicies(_ string, _ *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) GetUserPolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-func (m *mockIAMService) GetRolePolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
 func (m *mockIAMService) DecryptSecret(ciphertext string) (string, error) {
 	return handlers_iam.DecryptSecret(ciphertext, m.masterKey)
-}
-func (m *mockIAMService) SeedBootstrap(_ *handlers_iam.BootstrapData) error { return nil }
-func (m *mockIAMService) IsEmpty() (bool, error)                            { return true, nil }
-func (m *mockIAMService) CreateAccount(_ string) (*handlers_iam.Account, error) {
-	return nil, nil
-}
-func (m *mockIAMService) GetAccount(_ string) (*handlers_iam.Account, error) { return nil, nil }
-func (m *mockIAMService) ListAccounts() ([]*handlers_iam.Account, error)     { return nil, nil }
-func (m *mockIAMService) GetAccountSummary(_ string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
-	return &iam.GetAccountSummaryOutput{}, nil
-}
-
-func (m *mockIAMService) CreateRole(_ string, _ *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) GetRole(_ string, _ *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListRoles(_ string, _ *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) DeleteRole(_ string, _ *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) UpdateRole(_ string, _ *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) UpdateAssumeRolePolicy(_ string, _ *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) AttachRolePolicy(_ string, _ *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) DetachRolePolicy(_ string, _ *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListAttachedRolePolicies(_ string, _ *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) PutRolePolicy(_ string, _ *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) GetRolePolicy(_ string, _ *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) DeleteRolePolicy(_ string, _ *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListRolePolicies(_ string, _ *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) CreateInstanceProfile(_ string, _ *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) GetInstanceProfile(_ string, _ *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListInstanceProfiles(_ string, _ *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) DeleteInstanceProfile(_ string, _ *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ListInstanceProfilesForRole(_ string, _ *iam.ListInstanceProfilesForRoleInput) (*iam.ListInstanceProfilesForRoleOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
-	return nil, nil
-}
-func (m *mockIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
-	return nil, nil
-}
-func (m *mockIAMService) CreateGroup(_ string, _ *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
-	return &iam.CreateGroupOutput{}, nil
-}
-func (m *mockIAMService) GetGroup(_ string, _ *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
-	return &iam.GetGroupOutput{}, nil
-}
-func (m *mockIAMService) ListGroups(_ string, _ *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
-	return &iam.ListGroupsOutput{}, nil
-}
-func (m *mockIAMService) DeleteGroup(_ string, _ *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
-	return &iam.DeleteGroupOutput{}, nil
-}
-func (m *mockIAMService) AddUserToGroup(_ string, _ *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
-	return &iam.AddUserToGroupOutput{}, nil
-}
-func (m *mockIAMService) RemoveUserFromGroup(_ string, _ *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
-	return &iam.RemoveUserFromGroupOutput{}, nil
-}
-func (m *mockIAMService) ListGroupsForUser(_ string, _ *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
-	return &iam.ListGroupsForUserOutput{}, nil
-}
-func (m *mockIAMService) AttachGroupPolicy(_ string, _ *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
-	return &iam.AttachGroupPolicyOutput{}, nil
-}
-func (m *mockIAMService) DetachGroupPolicy(_ string, _ *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
-	return &iam.DetachGroupPolicyOutput{}, nil
-}
-func (m *mockIAMService) ListAttachedGroupPolicies(_ string, _ *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
-	return &iam.ListAttachedGroupPoliciesOutput{}, nil
-}
-func (m *mockIAMService) PutGroupPolicy(_ string, _ *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
-	return &iam.PutGroupPolicyOutput{}, nil
-}
-func (m *mockIAMService) GetGroupPolicy(_ string, _ *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
-	return &iam.GetGroupPolicyOutput{}, nil
-}
-func (m *mockIAMService) DeleteGroupPolicy(_ string, _ *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
-	return &iam.DeleteGroupPolicyOutput{}, nil
-}
-func (m *mockIAMService) ListGroupPolicies(_ string, _ *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
-	return &iam.ListGroupPoliciesOutput{}, nil
-}
-func (m *mockIAMService) PutUserPolicy(_ string, _ *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
-	return &iam.PutUserPolicyOutput{}, nil
-}
-func (m *mockIAMService) GetUserPolicy(_ string, _ *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
-	return &iam.GetUserPolicyOutput{}, nil
-}
-func (m *mockIAMService) DeleteUserPolicy(_ string, _ *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
-	return &iam.DeleteUserPolicyOutput{}, nil
-}
-func (m *mockIAMService) ListUserPolicies(_ string, _ *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
-	return &iam.ListUserPoliciesOutput{}, nil
 }
 
 // testMasterKey is a fixed 32-byte key for deterministic tests.
@@ -1629,27 +1447,19 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 // --- Session credential (ASIA) auth tests ---
 
 // mockSTSService implements handlers_sts.STSService for auth-middleware tests.
-// Only LookupSessionCredential and VerifySessionToken are exercised; others
-// return nil so a misrouted call panics instead of silently allowing.
+// It embeds the interface so it satisfies the full contract; only
+// LookupSessionCredential and VerifySessionToken are exercised, and any other
+// method nil-panics so a misrouted call fails loudly instead of silently
+// allowing.
 type mockSTSService struct {
+	handlers_sts.STSService
+
 	sessions  map[string]*handlers_sts.SessionCredential
 	tokens    map[string]string // AKID → plaintext wire token for HMAC equivalence
 	lookupErr error
 	lookups   atomic.Int32 // counts LookupSessionCredential calls for negative-side-effect assertions
 }
 
-func (m *mockSTSService) AssumeRole(_, _, _ string, _ *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
-	return nil, nil
-}
-func (m *mockSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
-	return nil, nil
-}
-func (m *mockSTSService) GetCallerIdentity(_, _, _ string, _ *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
-	return nil, nil
-}
-func (m *mockSTSService) GetSessionToken(_, _, _, _ string, _ *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
-	return nil, nil
-}
 func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_sts.SessionCredential, error) {
 	m.lookups.Add(1)
 	if m.lookupErr != nil {
@@ -1676,14 +1486,6 @@ func (m *mockSTSService) VerifySessionToken(cred *handlers_sts.SessionCredential
 		return false
 	}
 	return want == wireToken
-}
-
-func (m *mockSTSService) AssumeRoleWithWebIdentity(_ *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
-	return nil, errors.New(awserrors.ErrorNotImplemented)
-}
-
-func (m *mockSTSService) VerifyPresignedGetCallerIdentity(_, _ string) (*handlers_sts.PresignedCallerIdentity, error) {
-	return nil, errors.New(awserrors.ErrorNotImplemented)
 }
 
 const (
@@ -2352,50 +2154,4 @@ func TestCheckPolicy_AssumedRole_PassRole_WildcardResource_Allowed(t *testing.T)
 	resp := doSessionPolicyRequest(t, handler, cred.AccessKeyID)
 	body, _ := io.ReadAll(resp.Body)
 	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
-}
-
-func (m *mockIAMService) TagUser(_ string, _ *iam.TagUserInput) (*iam.TagUserOutput, error) {
-	return &iam.TagUserOutput{}, nil
-}
-func (m *mockIAMService) UntagUser(_ string, _ *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
-	return &iam.UntagUserOutput{}, nil
-}
-func (m *mockIAMService) ListUserTags(_ string, _ *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
-	return &iam.ListUserTagsOutput{}, nil
-}
-func (m *mockIAMService) TagRole(_ string, _ *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
-	return &iam.TagRoleOutput{}, nil
-}
-func (m *mockIAMService) UntagRole(_ string, _ *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
-	return &iam.UntagRoleOutput{}, nil
-}
-func (m *mockIAMService) ListRoleTags(_ string, _ *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
-	return &iam.ListRoleTagsOutput{}, nil
-}
-func (m *mockIAMService) TagPolicy(_ string, _ *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
-	return &iam.TagPolicyOutput{}, nil
-}
-func (m *mockIAMService) UntagPolicy(_ string, _ *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
-	return &iam.UntagPolicyOutput{}, nil
-}
-func (m *mockIAMService) ListPolicyTags(_ string, _ *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
-	return &iam.ListPolicyTagsOutput{}, nil
-}
-func (m *mockIAMService) TagInstanceProfile(_ string, _ *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
-	return &iam.TagInstanceProfileOutput{}, nil
-}
-func (m *mockIAMService) UntagInstanceProfile(_ string, _ *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
-	return &iam.UntagInstanceProfileOutput{}, nil
-}
-func (m *mockIAMService) ListInstanceProfileTags(_ string, _ *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
-	return &iam.ListInstanceProfileTagsOutput{}, nil
-}
-func (m *mockIAMService) TagOpenIDConnectProvider(_ string, _ *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
-	return &iam.TagOpenIDConnectProviderOutput{}, nil
-}
-func (m *mockIAMService) UntagOpenIDConnectProvider(_ string, _ *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
-	return &iam.UntagOpenIDConnectProviderOutput{}, nil
-}
-func (m *mockIAMService) ListOpenIDConnectProviderTags(_ string, _ *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
-	return &iam.ListOpenIDConnectProviderTagsOutput{}, nil
 }

@@ -466,6 +466,15 @@ jobs:
           quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
           ok "teardown complete"
 
+      - name: Upload tofu log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tofu-log-single-${{ github.run_id }}
+          path: ${{ env.TOFU_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Fail job if any suite failed
         if: always()
         run: |
@@ -880,6 +889,15 @@ jobs:
           quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
           ok "teardown complete"
+
+      - name: Upload tofu log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tofu-log-multi-${{ github.run_id }}
+          path: ${{ env.TOFU_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Fail job if any suite failed
         if: always()

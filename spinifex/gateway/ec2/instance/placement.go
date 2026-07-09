@@ -64,7 +64,7 @@ func distributeInstances(ctx context.Context, input *ec2.RunInstancesInput, nats
 // Early-exits once expectedNodes reply; on a degraded cluster it waits the full timeout
 // rather than placing on a partial view.
 func queryNodeCapacity(ctx context.Context, natsConn *nats.Conn, instanceType string, expectedNodes int, accountID string) ([]nodeAllocation, error) {
-	frames, _, err := utils.GatherCtx(ctx, natsConn, "spinifex.node.status", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, natsConn, "spinifex.node.status", []byte("{}"),
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -174,7 +174,7 @@ func launchOnNodes(ctx context.Context, allocations []nodeAllocation, input *ec2
 			nodeInput.MaxCount = aws.Int64(int64(a.Assigned))
 
 			topic := fmt.Sprintf("ec2.RunInstances.%s.%s", instanceType, a.NodeID)
-			reservation, err := utils.NATSRequestCtx[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID)
+			reservation, err := utils.NatsRequest[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID)
 			if err != nil {
 				results[idx] = nodeLaunchResult{NodeID: a.NodeID, Err: fmt.Errorf("launch on %s: %w", a.NodeID, err)}
 				return

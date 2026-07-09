@@ -40,7 +40,7 @@ func CancelCapacityReservation(ctx context.Context, input *ec2.CancelCapacityRes
 		return output, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, _, err := utils.GatherCtx(ctx, natsConn, "ec2.CancelCapacityReservation", payload,
+	frames, _, err := utils.Gather(ctx, natsConn, "ec2.CancelCapacityReservation", payload,
 		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return output, err

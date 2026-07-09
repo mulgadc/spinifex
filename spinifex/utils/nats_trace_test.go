@@ -49,7 +49,7 @@ func TestNATSTracePropagation(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx, parent := otel.Tracer("test").Start(context.Background(), "parent-op")
-	out, err := NATSRequestCtx[traceEchoResponse](ctx, nc, "test.trace.echo", traceEchoRequest{Name: "spinifex"}, 5*time.Second, "123456789012")
+	out, err := NatsRequest[traceEchoResponse](ctx, nc, "test.trace.echo", traceEchoRequest{Name: "spinifex"}, 5*time.Second, "123456789012")
 	require.NoError(t, err)
 	parent.End()
 
@@ -75,9 +75,9 @@ func TestNATSTracePropagation(t *testing.T) {
 	assert.Equal(t, clientSpanID, consumerParentID, "consumer span parent must be the producer client span")
 }
 
-// TestNATSRequestCtxNoSpanStillWorks: without a recording span the request
-// must behave exactly like NATSRequest (no headers beyond AccountID required).
-func TestNATSRequestCtxNoSpanStillWorks(t *testing.T) {
+// TestNatsRequestNoSpanStillWorks: without a recording span the request
+// must behave exactly like NatsRequest (no headers beyond AccountID required).
+func TestNatsRequestNoSpanStillWorks(t *testing.T) {
 	ns := startTestNATSServer(t)
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestNATSRequestCtxNoSpanStillWorks(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out, err := NATSRequestCtx[traceEchoResponse](context.Background(), nc, "test.trace.plain", traceEchoRequest{Name: "plain"}, 5*time.Second, "123456789012")
+	out, err := NatsRequest[traceEchoResponse](context.Background(), nc, "test.trace.plain", traceEchoRequest{Name: "plain"}, 5*time.Second, "123456789012")
 	require.NoError(t, err)
 	assert.Equal(t, "plain", out.Name)
 }

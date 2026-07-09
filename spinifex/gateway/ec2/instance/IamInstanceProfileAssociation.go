@@ -75,7 +75,7 @@ func AssociateIamInstanceProfile(ctx context.Context, input *ec2.AssociateIamIns
 	}
 
 	subject := fmt.Sprintf("ec2.cmd.%s", *input.InstanceId)
-	assoc, err := utils.NATSRequestCtx[ec2.IamInstanceProfileAssociation](ctx, natsConn, subject, command, fanOutTimeout, accountID)
+	assoc, err := utils.NatsRequest[ec2.IamInstanceProfileAssociation](ctx, natsConn, subject, command, fanOutTimeout, accountID)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {
 			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
@@ -187,7 +187,7 @@ func broadcastForAssociation(ctx context.Context, natsConn *nats.Conn, subject s
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	frames, sum, err := utils.GatherCtx(ctx, natsConn, subject, jsonData,
+	frames, sum, err := utils.Gather(ctx, natsConn, subject, jsonData,
 		utils.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -219,7 +219,7 @@ func broadcastDescribeAssociations(ctx context.Context, natsConn *nats.Conn, inp
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	frames, sum, err := utils.GatherCtx(ctx, natsConn, "ec2.IamProfileAssociation.describe", jsonData,
+	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.IamProfileAssociation.describe", jsonData,
 		utils.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err

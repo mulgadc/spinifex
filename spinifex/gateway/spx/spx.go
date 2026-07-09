@@ -46,7 +46,7 @@ type GetNodesOutput struct {
 
 // GetNodes queries all daemon nodes via NATS fan-out and returns their status.
 func GetNodes(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetNodesOutput, error) {
-	frames, _, err := utils.GatherCtx(ctx, nc, "spinifex.node.status", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, nc, "spinifex.node.status", []byte("{}"),
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ type GetVMsOutput struct {
 
 // GetVMs queries all daemon nodes via NATS fan-out and returns their VMs.
 func GetVMs(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetVMsOutput, error) {
-	frames, _, err := utils.GatherCtx(ctx, nc, "spinifex.node.vms", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, nc, "spinifex.node.vms", []byte("{}"),
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err

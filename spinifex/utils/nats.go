@@ -207,7 +207,7 @@ const AccountIDHeader = "X-Account-ID"
 // PrincipalARNHeader carries the caller's resolved IAM principal ARN from gateway to daemon handlers.
 const PrincipalARNHeader = "X-Principal-ARN"
 
-// NATSHeader is an extra request header passed to NATSRequest beyond the
+// NATSHeader is an extra request header passed to NatsRequest beyond the
 // always-set X-Account-ID.
 type NATSHeader struct{ Key, Value string }
 
@@ -220,11 +220,11 @@ func PrincipalARNFromMsg(msg *nats.Msg) string {
 	return msg.Header.Get(PrincipalARNHeader)
 }
 
-// NATSRequestCtx performs a NATS request-response with JSON marshaling. It sends
+// NatsRequest performs a NATS request-response with JSON marshaling. It sends
 // with X-Account-ID (plus any extra headers), unmarshals the successful response
 // into Out, and carries ctx's trace context onto the wire: it opens a client span
 // for the hop and injects traceparent so the consumer joins the same trace.
-func NATSRequestCtx[Out any](ctx context.Context, conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (out *Out, err error) {
+func NatsRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (out *Out, err error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, ErrClusterUnavailable
 	}
@@ -331,14 +331,14 @@ type GatherOpts struct {
 	AccountID     string        // sets X-Account-ID header when non-empty
 }
 
-// GatherCtx publishes payload to subject over a fresh inbox and collects reply
+// Gather publishes payload to subject over a fresh inbox and collects reply
 // frames until ExpectedNodes answer, StopOnFirst yields a success, or Timeout
 // elapses. Error envelopes and oversized frames are dropped from frames but
 // counted in sum; returned frames are raw daemon replies for the caller to
 // decode and merge. It carries ctx's trace context onto the wire: it opens a
 // producer span for the fan-out and injects traceparent so every consumer joins
 // the same trace.
-func GatherCtx(ctx context.Context, conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
+func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
 	sum.ErrorCodes = map[string]int{}
 	if conn == nil || !conn.IsConnected() {
 		return nil, sum, ErrClusterUnavailable

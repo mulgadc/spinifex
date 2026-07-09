@@ -81,7 +81,7 @@ func ResolveTokenReview(ctx context.Context, nc *nats.Conn, accountID, clusterNa
 	}
 
 	verify := func(presignedURL string) (*TokenVerifyResponse, error) {
-		return utils.NATSRequestCtx[TokenVerifyResponse](
+		return utils.NatsRequest[TokenVerifyResponse](
 			ctx, nc, TokenVerifySubject,
 			TokenVerifyRequest{PresignedURL: presignedURL, ClusterName: clusterName},
 			verifyTimeout, "")

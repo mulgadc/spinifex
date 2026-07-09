@@ -32,7 +32,7 @@ func collectCensus(ctx context.Context, natsConn *nats.Conn, expectedNodes int, 
 		expectedNodes = 1
 	}
 
-	frames, _, err := utils.GatherCtx(ctx, natsConn, "spinifex.node.status", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, natsConn, "spinifex.node.status", []byte("{}"),
 		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err

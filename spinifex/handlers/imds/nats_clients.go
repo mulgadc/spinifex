@@ -39,7 +39,7 @@ func NewNATSSTSAssumer(nc *nats.Conn) *NATSSTSAssumer {
 }
 
 func (a *NATSSTSAssumer) AssumeRoleForInstance(ctx context.Context, accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
-	return utils.NATSRequestCtx[sts.AssumeRoleOutput](ctx, a.nc, handlers_sts.SubjectAssumeRoleForInstance, handlers_sts.AssumeRoleForInstanceRequest{
+	return utils.NatsRequest[sts.AssumeRoleOutput](ctx, a.nc, handlers_sts.SubjectAssumeRoleForInstance, handlers_sts.AssumeRoleForInstanceRequest{
 		AccountID:       accountID,
 		RoleARN:         roleARN,
 		InstanceID:      instanceID,
@@ -70,7 +70,7 @@ func (p *NATSProfileLookup) ResolveInstanceProfile(ctx context.Context, accountI
 	if v, ok := p.profiles.get(key); ok {
 		return v, nil
 	}
-	out, err := utils.NATSRequestCtx[handlers_iam.InstanceProfile](ctx, p.nc, handlers_iam.SubjectResolveInstanceProfile, handlers_iam.ResolveInstanceProfileRequest{
+	out, err := utils.NatsRequest[handlers_iam.InstanceProfile](ctx, p.nc, handlers_iam.SubjectResolveInstanceProfile, handlers_iam.ResolveInstanceProfileRequest{
 		AccountID: accountID,
 		NameOrARN: nameOrARN,
 	}, imdsRPCTimeout, accountID)
@@ -86,7 +86,7 @@ func (p *NATSProfileLookup) GetRole(ctx context.Context, accountID string, input
 	if v, ok := p.roles.get(key); ok {
 		return v, nil
 	}
-	out, err := utils.NATSRequestCtx[iam.GetRoleOutput](ctx, p.nc, handlers_iam.SubjectGetRole, handlers_iam.GetRoleRequest{
+	out, err := utils.NatsRequest[iam.GetRoleOutput](ctx, p.nc, handlers_iam.SubjectGetRole, handlers_iam.GetRoleRequest{
 		AccountID: accountID,
 		Input:     input,
 	}, imdsRPCTimeout, accountID)
@@ -118,7 +118,7 @@ func (p *NATSPublicKeyLookup) GetPublicKey(ctx context.Context, accountID, keyNa
 	if v, ok := p.cache.get(key); ok {
 		return v, nil
 	}
-	out, err := utils.NATSRequestCtx[handlers_ec2_key.GetPublicKeyResponse](ctx, p.nc, "imds.ec2.get_public_key", handlers_ec2_key.GetPublicKeyRequest{
+	out, err := utils.NatsRequest[handlers_ec2_key.GetPublicKeyResponse](ctx, p.nc, "imds.ec2.get_public_key", handlers_ec2_key.GetPublicKeyRequest{
 		AccountID: accountID,
 		KeyName:   keyName,
 	}, imdsRPCTimeout, accountID)

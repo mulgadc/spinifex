@@ -27,115 +27,115 @@ func NewNATSECSService(conn *nats.Conn) ECSService {
 // --- Cluster ---
 
 func (s *NATSECSService) CreateCluster(ctx context.Context, input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error) {
-	return utils.NATSRequestCtx[ecs.CreateClusterOutput](ctx, s.natsConn, "ecs.CreateCluster", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.CreateClusterOutput](ctx, s.natsConn, "ecs.CreateCluster", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error) {
-	return utils.NATSRequestCtx[ecs.DeleteClusterOutput](ctx, s.natsConn, "ecs.DeleteCluster", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.DeleteClusterOutput](ctx, s.natsConn, "ecs.DeleteCluster", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DescribeClusters(ctx context.Context, input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error) {
-	return utils.NATSRequestCtx[ecs.DescribeClustersOutput](ctx, s.natsConn, "ecs.DescribeClusters", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.DescribeClustersOutput](ctx, s.natsConn, "ecs.DescribeClusters", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) ListClusters(ctx context.Context, input *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error) {
-	return utils.NATSRequestCtx[ecs.ListClustersOutput](ctx, s.natsConn, "ecs.ListClusters", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.ListClustersOutput](ctx, s.natsConn, "ecs.ListClusters", input, defaultTimeout, accountID)
 }
 
 // --- Task definition ---
 
 func (s *NATSECSService) RegisterTaskDefinition(ctx context.Context, input *ecs.RegisterTaskDefinitionInput, accountID string) (*ecs.RegisterTaskDefinitionOutput, error) {
-	return utils.NATSRequestCtx[ecs.RegisterTaskDefinitionOutput](ctx, s.natsConn, "ecs.RegisterTaskDefinition", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.RegisterTaskDefinitionOutput](ctx, s.natsConn, "ecs.RegisterTaskDefinition", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DeregisterTaskDefinition(ctx context.Context, input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
-	return utils.NATSRequestCtx[ecs.DeregisterTaskDefinitionOutput](ctx, s.natsConn, "ecs.DeregisterTaskDefinition", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.DeregisterTaskDefinitionOutput](ctx, s.natsConn, "ecs.DeregisterTaskDefinition", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DescribeTaskDefinition(ctx context.Context, input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error) {
-	return utils.NATSRequestCtx[ecs.DescribeTaskDefinitionOutput](ctx, s.natsConn, "ecs.DescribeTaskDefinition", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.DescribeTaskDefinitionOutput](ctx, s.natsConn, "ecs.DescribeTaskDefinition", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error) {
-	return utils.NATSRequestCtx[ecs.ListTaskDefinitionsOutput](ctx, s.natsConn, "ecs.ListTaskDefinitions", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.ListTaskDefinitionsOutput](ctx, s.natsConn, "ecs.ListTaskDefinitions", input, defaultTimeout, accountID)
 }
 
 // --- Container instance ---
 
 func (s *NATSECSService) RegisterContainerInstance(ctx context.Context, input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error) {
-	return utils.NATSRequestCtx[ecs.RegisterContainerInstanceOutput](ctx, s.natsConn, "ecs.RegisterContainerInstance", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.RegisterContainerInstanceOutput](ctx, s.natsConn, "ecs.RegisterContainerInstance", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DeregisterContainerInstance(ctx context.Context, input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error) {
-	return utils.NATSRequestCtx[ecs.DeregisterContainerInstanceOutput](ctx, s.natsConn, "ecs.DeregisterContainerInstance", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.DeregisterContainerInstanceOutput](ctx, s.natsConn, "ecs.DeregisterContainerInstance", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) UpdateContainerInstancesState(ctx context.Context, input *ecs.UpdateContainerInstancesStateInput, accountID string) (*ecs.UpdateContainerInstancesStateOutput, error) {
-	return utils.NATSRequestCtx[ecs.UpdateContainerInstancesStateOutput](ctx, s.natsConn, "ecs.UpdateContainerInstancesState", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.UpdateContainerInstancesStateOutput](ctx, s.natsConn, "ecs.UpdateContainerInstancesState", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DescribeContainerInstances(ctx context.Context, input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error) {
-	return utils.NATSRequestCtx[ecs.DescribeContainerInstancesOutput](ctx, s.natsConn, "ecs.DescribeContainerInstances", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.DescribeContainerInstancesOutput](ctx, s.natsConn, "ecs.DescribeContainerInstances", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) ListContainerInstances(ctx context.Context, input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error) {
-	return utils.NATSRequestCtx[ecs.ListContainerInstancesOutput](ctx, s.natsConn, "ecs.ListContainerInstances", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.ListContainerInstancesOutput](ctx, s.natsConn, "ecs.ListContainerInstances", input, defaultTimeout, accountID)
 }
 
 // --- Task ---
 
 func (s *NATSECSService) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error) {
-	return utils.NATSRequestCtx[ecs.RunTaskOutput](ctx, s.natsConn, "ecs.RunTask", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.RunTaskOutput](ctx, s.natsConn, "ecs.RunTask", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) StartTask(ctx context.Context, input *ecs.StartTaskInput, accountID string) (*ecs.StartTaskOutput, error) {
-	return utils.NATSRequestCtx[ecs.StartTaskOutput](ctx, s.natsConn, "ecs.StartTask", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.StartTaskOutput](ctx, s.natsConn, "ecs.StartTask", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) StopTask(ctx context.Context, input *ecs.StopTaskInput, accountID string) (*ecs.StopTaskOutput, error) {
-	return utils.NATSRequestCtx[ecs.StopTaskOutput](ctx, s.natsConn, "ecs.StopTask", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.StopTaskOutput](ctx, s.natsConn, "ecs.StopTask", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error) {
-	return utils.NATSRequestCtx[ecs.DescribeTasksOutput](ctx, s.natsConn, "ecs.DescribeTasks", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.DescribeTasksOutput](ctx, s.natsConn, "ecs.DescribeTasks", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) ListTasks(ctx context.Context, input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
-	return utils.NATSRequestCtx[ecs.ListTasksOutput](ctx, s.natsConn, "ecs.ListTasks", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.ListTasksOutput](ctx, s.natsConn, "ecs.ListTasks", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) SubmitTaskStateChange(ctx context.Context, input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error) {
-	return utils.NATSRequestCtx[ecs.SubmitTaskStateChangeOutput](ctx, s.natsConn, "ecs.SubmitTaskStateChange", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.SubmitTaskStateChangeOutput](ctx, s.natsConn, "ecs.SubmitTaskStateChange", input, defaultTimeout, accountID)
 }
 
 // --- Service ---
 
 func (s *NATSECSService) CreateService(ctx context.Context, input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error) {
-	return utils.NATSRequestCtx[ecs.CreateServiceOutput](ctx, s.natsConn, "ecs.CreateService", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.CreateServiceOutput](ctx, s.natsConn, "ecs.CreateService", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) UpdateService(ctx context.Context, input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error) {
-	return utils.NATSRequestCtx[ecs.UpdateServiceOutput](ctx, s.natsConn, "ecs.UpdateService", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.UpdateServiceOutput](ctx, s.natsConn, "ecs.UpdateService", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DeleteService(ctx context.Context, input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error) {
-	return utils.NATSRequestCtx[ecs.DeleteServiceOutput](ctx, s.natsConn, "ecs.DeleteService", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.DeleteServiceOutput](ctx, s.natsConn, "ecs.DeleteService", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) DescribeServices(ctx context.Context, input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error) {
-	return utils.NATSRequestCtx[ecs.DescribeServicesOutput](ctx, s.natsConn, "ecs.DescribeServices", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.DescribeServicesOutput](ctx, s.natsConn, "ecs.DescribeServices", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) ListServices(ctx context.Context, input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error) {
-	return utils.NATSRequestCtx[ecs.ListServicesOutput](ctx, s.natsConn, "ecs.ListServices", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ecs.ListServicesOutput](ctx, s.natsConn, "ecs.ListServices", input, defaultTimeout, accountID)
 }
 
 func (s *NATSECSService) PollAssignments(ctx context.Context, input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error) {
-	return utils.NATSRequestCtx[PollAssignmentsOutput](ctx, s.natsConn, "ecs.PollAssignments", input, defaultTimeout, accountID)
+	return utils.NatsRequest[PollAssignmentsOutput](ctx, s.natsConn, "ecs.PollAssignments", input, defaultTimeout, accountID)
 }
 
 // --- Capacity ---
 
 func (s *NATSECSService) ProvisionCapacity(ctx context.Context, input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error) {
-	return utils.NATSRequestCtx[ProvisionCapacityOutput](ctx, s.natsConn, "ecs.ProvisionCapacity", input, defaultTimeout, accountID)
+	return utils.NatsRequest[ProvisionCapacityOutput](ctx, s.natsConn, "ecs.ProvisionCapacity", input, defaultTimeout, accountID)
 }

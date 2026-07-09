@@ -23,13 +23,13 @@ func NewNATSSpotInstanceService(conn *nats.Conn) *NATSSpotInstanceService {
 }
 
 func (s *NATSSpotInstanceService) PutSpotInstanceRequests(ctx context.Context, input *PutSpotRequestsInput, accountID string) (*PutSpotRequestsOutput, error) {
-	return utils.NATSRequestCtx[PutSpotRequestsOutput](ctx, s.natsConn, "ec2.PutSpotInstanceRequests", input, 30*time.Second, accountID)
+	return utils.NatsRequest[PutSpotRequestsOutput](ctx, s.natsConn, "ec2.PutSpotInstanceRequests", input, 30*time.Second, accountID)
 }
 
 func (s *NATSSpotInstanceService) DescribeSpotInstanceRequests(ctx context.Context, input *ec2.DescribeSpotInstanceRequestsInput, accountID string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
-	return utils.NATSRequestCtx[ec2.DescribeSpotInstanceRequestsOutput](ctx, s.natsConn, "ec2.DescribeSpotInstanceRequests", input, 30*time.Second, accountID)
+	return utils.NatsRequest[ec2.DescribeSpotInstanceRequestsOutput](ctx, s.natsConn, "ec2.DescribeSpotInstanceRequests", input, 30*time.Second, accountID)
 }
 
 func (s *NATSSpotInstanceService) CancelSpotInstanceRequests(ctx context.Context, input *ec2.CancelSpotInstanceRequestsInput, accountID string) (*ec2.CancelSpotInstanceRequestsOutput, error) {
-	return utils.NATSRequestCtx[ec2.CancelSpotInstanceRequestsOutput](ctx, s.natsConn, "ec2.CancelSpotInstanceRequests", input, 30*time.Second, accountID)
+	return utils.NatsRequest[ec2.CancelSpotInstanceRequestsOutput](ctx, s.natsConn, "ec2.CancelSpotInstanceRequests", input, 30*time.Second, accountID)
 }

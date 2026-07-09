@@ -638,7 +638,7 @@ func (gw *GatewayConfig) DiscoverActiveNodesCtx(ctx context.Context) int {
 		return gw.ExpectedNodes
 	}
 
-	frames, _, err := utils.GatherCtx(ctx, gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
 		utils.GatherOpts{Timeout: 500 * time.Millisecond})
 	if err != nil {
 		slog.ErrorContext(ctx, "DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)

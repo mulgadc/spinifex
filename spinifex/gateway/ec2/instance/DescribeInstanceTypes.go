@@ -20,7 +20,7 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, _, err := utils.GatherCtx(ctx, natsConn, "ec2.DescribeInstanceTypes", jsonData,
+	frames, _, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstanceTypes", jsonData,
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err

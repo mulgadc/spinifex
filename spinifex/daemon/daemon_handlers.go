@@ -6,14 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -307,11 +311,20 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 		InstanceTypes:  caps,
 	}
 
-	// Query service roles concurrently to halve worst-case latency (500ms vs 1s).
+	// Query service roles concurrently to keep worst-case latency bounded.
+	ovnDBMember := d.isOVNDBQuorumMember()
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(4)
 	go func() { defer wg.Done(); resp.NATSRole = d.queryNATSRole() }()
 	go func() { defer wg.Done(); resp.PredastoreRole = d.queryPredastoreRole() }()
+	go func() {
+		defer wg.Done()
+		resp.OVNNBRole = queryOVNRole(ovnDBMember, host.OVNNBTarget, host.OVNNBSchema)
+	}()
+	go func() {
+		defer wg.Done()
+		resp.OVNSBRole = queryOVNRole(ovnDBMember, host.OVNSBTarget, host.OVNSBSchema)
+	}()
 	wg.Wait()
 
 	respondWithJSON(msg, resp)
@@ -343,6 +356,27 @@ func (d *Daemon) queryPredastoreRole() string {
 	}
 	url := "https://" + net.JoinHostPort(d.daemonIP(), strconv.Itoa(predastoreDBPort)) + "/status"
 	return fetchPredastoreRole(url, roleTLSHTTPClient)
+}
+
+// isOVNDBQuorumMember reports whether this node hosts the clustered OVN NB/SB
+// databases. Compute-only nodes short-circuit OVN role probes to "" without
+// shelling out to ovn-appctl.
+func (d *Daemon) isOVNDBQuorumMember() bool {
+	if d.clusterConfig == nil {
+		return false
+	}
+	names := slices.Collect(maps.Keys(d.clusterConfig.Nodes))
+	return formation.IsOVNDBQuorumMember(names, d.node)
+}
+
+// queryOVNRole returns this node's OVN DB Raft role for the given ctl target and
+// schema, or "" when the node is not an OVN DB cluster member. A standalone OVN
+// or any appctl error fails soft to "".
+func queryOVNRole(dbMember bool, target, schema string) string {
+	if !dbMember {
+		return ""
+	}
+	return host.OVNDBRole(target, schema)
 }
 
 var roleHTTPClient = &http.Client{Timeout: 500 * time.Millisecond}

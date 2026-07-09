@@ -99,6 +99,23 @@ func TestBuildOVNDBAddrs_FewerThanQuorum(t *testing.T) {
 	assert.Equal(t, "tcp:10.0.0.1:6642,tcp:10.0.0.2:6642", sb)
 }
 
+func TestIsOVNDBQuorumMember(t *testing.T) {
+	t.Parallel()
+	names := []string{"node4", "node1", "node3", "node2", "node5"}
+	// Quorum = first ovnDBQuorum sorted names: node1, node2, node3.
+	assert.True(t, IsOVNDBQuorumMember(names, "node1"))
+	assert.True(t, IsOVNDBQuorumMember(names, "node3"))
+	assert.False(t, IsOVNDBQuorumMember(names, "node4"))
+	assert.False(t, IsOVNDBQuorumMember(names, "node5"))
+	assert.False(t, IsOVNDBQuorumMember(names, "absent"))
+
+	// Fewer than quorum: every node is a member.
+	small := []string{"a", "b"}
+	assert.True(t, IsOVNDBQuorumMember(small, "a"))
+	assert.True(t, IsOVNDBQuorumMember(small, "b"))
+	assert.False(t, IsOVNDBQuorumMember(nil, "a"))
+}
+
 func TestBuildClusterRoutes_MixedServicesAndEmpty(t *testing.T) {
 	t.Parallel()
 	nodes := map[string]NodeInfo{

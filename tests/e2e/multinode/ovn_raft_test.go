@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -125,23 +126,7 @@ func ovnClusterStatus(t *testing.T, ssh *harness.PeerSSH, n harness.Node, sock, 
 	defer cancel()
 	out, err := ssh.Run(ctx, n.Addr, fmt.Sprintf("sudo ovn-appctl -t %s cluster/status %s", sock, schema))
 	require.NoErrorf(t, err, "cluster/status %s on %s", schema, n.Name)
-	return parseClusterStatus(string(out))
-}
-
-// parseClusterStatus extracts the quorum size and this server's role from
-// ovs cluster/status output. Each member appears as a "<id> at tcp:<addr>" line
-// under Servers:; the "Role:" header reports the queried server's own role.
-func parseClusterStatus(out string) (servers int, role string) {
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Role:") {
-			role = strings.TrimSpace(strings.TrimPrefix(line, "Role:"))
-		}
-		if strings.Contains(line, " at tcp:") {
-			servers++
-		}
-	}
-	return servers, role
+	return host.ParseClusterStatus(string(out))
 }
 
 // nbEndpointList builds the comma-separated NB client endpoint list used by

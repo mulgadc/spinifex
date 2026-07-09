@@ -88,6 +88,17 @@ func BuildOVNDBAddrs(nodes map[string]NodeInfo) (nbAddr, sbAddr string) {
 	return strings.Join(nb, ","), strings.Join(sb, ",")
 }
 
+// IsOVNDBQuorumMember reports whether the named node hosts the clustered OVN
+// NB/SB databases: the RAFT quorum is the first ovnDBQuorum node names (sorted).
+// Every other node is OVN compute-only and does not run the DB servers.
+func IsOVNDBQuorumMember(nodeNames []string, name string) bool {
+	sorted := slices.Sorted(slices.Values(nodeNames))
+	if len(sorted) > ovnDBQuorum {
+		sorted = sorted[:ovnDBQuorum]
+	}
+	return slices.Contains(sorted, name)
+}
+
 // sortedNodes returns nodes sorted by name.
 func sortedNodes(nodes map[string]NodeInfo) []NodeInfo {
 	names := slices.Sorted(maps.Keys(nodes))

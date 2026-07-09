@@ -52,6 +52,10 @@ func (a *stateStoreAdapter) DeleteStoppedInstance(id string) error {
 	return a.js.DeleteStoppedInstance(id)
 }
 
+func (a *stateStoreAdapter) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	return a.js.UpdateStoppedInstance(id, mutate)
+}
+
 func (a *stateStoreAdapter) ClaimStoppedInstance(id string) (*vm.VM, error) {
 	return a.js.ClaimStoppedInstance(id)
 }
@@ -256,11 +260,17 @@ func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
 
 // unmountResponseError reports a seal/unmount failure from an ebs.unmount
 // response payload: a non-empty Error, or a volume still reported mounted.
-// Returns nil when the unmount and its block-map seal succeeded.
+// Returns nil when the unmount and its block-map seal succeeded, or when the
+// volume was already unmounted and sealed (NotFound) — viperblockd only
+// reports NotFound once the seal itself has completed, so a retry landing
+// here is an idempotent success, not a failure.
 func unmountResponseError(data []byte) error {
 	var resp types.EBSUnMountResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return fmt.Errorf("unmarshal unmount response: %w", err)
+	}
+	if resp.NotFound {
+		return nil
 	}
 	if resp.Error != "" {
 		return fmt.Errorf("ebs.unmount returned error: %s", resp.Error)

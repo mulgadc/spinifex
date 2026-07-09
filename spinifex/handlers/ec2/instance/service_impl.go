@@ -365,7 +365,21 @@ func (s *InstanceServiceImpl) TagStoppedInstance(ctx context.Context, instanceID
 		slog.ErrorContext(ctx, "TagStoppedInstance: central tag store write failed", "instanceId", instanceID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
+
+	// CAS the tag mutation into the shared KV record instead of a wholesale
+	// WriteStoppedInstance: createIfAbsent=false means a claim that deletes
+	// the record between the Load above and this write fails cleanly with
+	// nats.ErrKeyNotFound rather than resurrecting a stale stopped entry.
+	newTags := instance.Instance.Tags
+	if _, err := s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
+		if v.Instance != nil {
+			v.Instance.Tags = newTags
+		}
+	}); err != nil {
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			slog.WarnContext(ctx, "TagStoppedInstance: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
+			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		}
 		slog.ErrorContext(ctx, "TagStoppedInstance: failed to write stopped instance", "instanceId", instanceID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
@@ -1987,32 +2001,46 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 		}
 		slog.InfoContext(ctx, "ModifyInstanceAttribute: changing instance type",
 			"instanceId", instanceID, "oldType", instance.InstanceType, "newType", newType)
-
-		instance.InstanceType = newType
-		instance.Config.InstanceType = newType
-		instance.Instance.InstanceType = aws.String(newType)
-		// Clear StateReason — resolves capacity-unavailable state from instance-type-missing bug.
-		instance.Instance.StateReason = nil
 	}
 
-	if input.UserData != nil && input.UserData.Value != nil {
-		slog.InfoContext(ctx, "ModifyInstanceAttribute: changing user data", "instanceId", instanceID)
-		if instance.RunInstancesInput == nil {
-			instance.RunInstancesInput = &ec2.RunInstancesInput{}
+	// CAS the mutations into the shared KV record instead of a wholesale
+	// WriteStoppedInstance: createIfAbsent=false means a claim that deletes
+	// the record between the Load above and this write fails cleanly with
+	// nats.ErrKeyNotFound rather than resurrecting a stale stopped entry.
+	_, err = s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
+		if input.InstanceType != nil && input.InstanceType.Value != nil && v.Instance != nil {
+			newType := *input.InstanceType.Value
+			v.InstanceType = newType
+			v.Config.InstanceType = newType
+			v.Instance.InstanceType = aws.String(newType)
+			// Clear StateReason — resolves capacity-unavailable state from instance-type-missing bug.
+			v.Instance.StateReason = nil
 		}
-		instance.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
-	}
 
-	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
-		slog.InfoContext(ctx, "ModifyInstanceAttribute: changing DisableApiTermination on stopped instance",
-			"instanceId", instanceID, "value", *input.DisableApiTermination.Value)
-		if instance.RunInstancesInput == nil {
-			instance.RunInstancesInput = &ec2.RunInstancesInput{}
+		if input.UserData != nil && input.UserData.Value != nil {
+			slog.InfoContext(ctx, "ModifyInstanceAttribute: changing user data", "instanceId", instanceID)
+			if v.RunInstancesInput == nil {
+				v.RunInstancesInput = &ec2.RunInstancesInput{}
+			}
+			v.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
 		}
-		instance.RunInstancesInput.DisableApiTermination = input.DisableApiTermination.Value
-	}
 
-	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
+		if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
+			slog.InfoContext(ctx, "ModifyInstanceAttribute: changing DisableApiTermination on stopped instance",
+				"instanceId", instanceID, "value", *input.DisableApiTermination.Value)
+			if v.RunInstancesInput == nil {
+				v.RunInstancesInput = &ec2.RunInstancesInput{}
+			}
+			v.RunInstancesInput.DisableApiTermination = input.DisableApiTermination.Value
+		}
+	})
+	if err != nil {
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			// The record existed moments ago (Load above) but a concurrent
+			// claim removed it: the instance is mid-transition, not gone.
+			slog.WarnContext(ctx, "ModifyInstanceAttribute: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
+			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+		}
 		slog.ErrorContext(ctx, "ModifyInstanceAttribute: failed to write modified instance to KV",
 			"instanceId", instanceID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -2148,6 +2176,16 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if instance == nil {
+		// Disambiguate a genuinely-absent record from a local race: if this
+		// node's vmMgr already shows the instance running, a winning claim
+		// started it here between another caller's checks and this Load, so
+		// the correct taxonomy is IncorrectInstanceState, not NotFound. A
+		// cross-node winner is invisible to this node's vmMgr and still
+		// falls through to NotFound.
+		if _, ok := s.vmMgr.Get(input.InstanceID); ok {
+			slog.WarnContext(ctx, "StartStoppedInstance: instance already running locally", "instanceId", input.InstanceID)
+			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+		}
 		slog.WarnContext(ctx, "StartStoppedInstance: instance not found in shared KV", "instanceId", input.InstanceID)
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 	}

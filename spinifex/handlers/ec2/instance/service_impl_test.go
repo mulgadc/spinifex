@@ -613,6 +613,7 @@ type fakeStoppedStore struct {
 	listTermErr     error
 	loadErr         error
 	writeErr        error
+	updateErr       error
 	writeTermErr    error
 	deleteErr       error
 	deleteFailFirst bool
@@ -625,6 +626,16 @@ type fakeStoppedStore struct {
 	claimedStopped []string
 	claimErr       error
 	claimAttempts  int
+
+	// updateStoppedCalls counts UpdateStoppedInstance invocations for tests
+	// that assert on retry/race behavior.
+	updateStoppedCalls int
+
+	// claimAfterLoad simulates a winning ClaimStoppedInstance landing between
+	// a caller's Load and its later UpdateStoppedInstance: the record is
+	// removed right after LoadStoppedInstance returns it, so the subsequent
+	// UpdateStoppedInstance sees a missing entry exactly like the real CAS.
+	claimAfterLoad bool
 }
 
 func (f *fakeStoppedStore) LoadStoppedInstance(id string) (*vm.VM, error) {
@@ -633,10 +644,15 @@ func (f *fakeStoppedStore) LoadStoppedInstance(id string) (*vm.VM, error) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if v, ok := f.loadByID[id]; ok {
-		return v, nil
+	v, ok := f.loadByID[id]
+	if !ok {
+		return nil, nil
 	}
-	return nil, nil
+	if f.claimAfterLoad {
+		delete(f.loadByID, id)
+		f.claimedStopped = append(f.claimedStopped, id)
+	}
+	return v, nil
 }
 func (f *fakeStoppedStore) ListStoppedInstances() ([]*vm.VM, error) {
 	if f.listErr != nil {
@@ -695,6 +711,25 @@ func (f *fakeStoppedStore) DeleteStoppedInstance(id string) error {
 	return nil
 }
 func (f *fakeStoppedStore) DeleteTerminatedInstance(string) error { return nil }
+
+// UpdateStoppedInstance mimics the real CAS semantics: mutate runs under the
+// store lock against loadByID's entry, and a missing record (e.g. removed by
+// a concurrent ClaimStoppedInstance) returns nats.ErrKeyNotFound instead of
+// resurrecting it — the same createIfAbsent=false contract as JetStreamManager.
+func (f *fakeStoppedStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updateStoppedCalls++
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	v, ok := f.loadByID[id]
+	if !ok {
+		return nil, nats.ErrKeyNotFound
+	}
+	mutate(v)
+	return v, nil
+}
 
 // ClaimStoppedInstance mimics the real atomic delete-as-claim: under the
 // store lock, remove and return loadByID[id], or vm.ErrStoppedInstanceClaimed
@@ -1317,7 +1352,7 @@ func TestModifyInstanceAttribute_ChangeInstanceType(t *testing.T) {
 	}, "acc")
 	require.NoError(t, err)
 
-	updated := store.wroteStopped[id]
+	updated := store.loadByID[id]
 	require.NotNil(t, updated)
 	assert.Equal(t, "t3.medium", updated.InstanceType)
 	assert.Equal(t, "t3.medium", updated.Config.InstanceType)
@@ -1376,7 +1411,7 @@ func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
 	}, "acc")
 	require.NoError(t, err)
 
-	updated := store.wroteStopped[id]
+	updated := store.loadByID[id]
 	require.NotNil(t, updated)
 	assert.Equal(t, "IyEvYmluL2Jhc2g=", *updated.RunInstancesInput.UserData)
 }
@@ -1408,7 +1443,7 @@ func TestModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
 	}, "acc")
 	require.NoError(t, err)
 
-	updated := store.wroteStopped[id]
+	updated := store.loadByID[id]
 	require.NotNil(t, updated)
 	assert.Nil(t, updated.Instance.StateReason)
 }
@@ -1482,7 +1517,7 @@ func TestModifyInstanceAttribute_DisableApiTermination_Stopped(t *testing.T) {
 	}, owner)
 	require.NoError(t, err)
 
-	updated := store.wroteStopped[id]
+	updated := store.loadByID[id]
 	require.NotNil(t, updated)
 	require.NotNil(t, updated.RunInstancesInput)
 	assert.True(t, *updated.RunInstancesInput.DisableApiTermination)
@@ -1504,7 +1539,7 @@ func TestModifyInstanceAttribute_WriteError(t *testing.T) {
 				},
 			},
 		},
-		writeErr: fmt.Errorf("kv write boom"),
+		updateErr: fmt.Errorf("kv write boom"),
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
@@ -1514,6 +1549,41 @@ func TestModifyInstanceAttribute_WriteError(t *testing.T) {
 	}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+// TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect covers a
+// ModifyInstanceAttribute racing a winning ClaimStoppedInstance (e.g.
+// StartStoppedInstance) that deletes the record between this call's Load and
+// its CAS write: the update must fail cleanly instead of resurrecting a
+// stale stopped entry.
+func TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect(t *testing.T) {
+	id := "i-raced"
+	store := &fakeStoppedStore{
+		loadByID: map[string]*vm.VM{
+			id: {
+				ID:           id,
+				Status:       vm.StateStopped,
+				AccountID:    "acc",
+				InstanceType: "t3.micro",
+				Config:       vm.Config{InstanceType: "t3.micro"},
+				Instance: &ec2.Instance{
+					InstanceId:   aws.String(id),
+					InstanceType: aws.String("t3.micro"),
+				},
+			},
+		},
+		claimAfterLoad: true,
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	assert.Empty(t, store.loadByID, "the claimed record must not be resurrected")
+	assert.Equal(t, []string{id}, store.claimedStopped)
 }
 
 // --- TerminateStoppedInstance tests ---
@@ -1945,6 +2015,28 @@ func TestStartStoppedInstance_NotFound(t *testing.T) {
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// TestStartStoppedInstance_NotFoundButRunningLocally covers the local-race
+// taxonomy fix: when the shared KV has no stopped record for the id but this
+// node's vmMgr already shows it running (a winning claim landed here between
+// another caller's checks and this Load), the correct error is
+// IncorrectInstanceState, not InvalidInstanceID.NotFound — the instance is
+// mid-transition, not gone. A genuinely-absent instance (empty vmMgr) still
+// returns NotFound (TestStartStoppedInstance_NotFound).
+func TestStartStoppedInstance_NotFoundButRunningLocally(t *testing.T) {
+	id := "i-won-locally"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateRunning, AccountID: "acc"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
 
 func TestStartStoppedInstance_NotStopped(t *testing.T) {

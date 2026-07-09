@@ -36,6 +36,7 @@ type fakeStateStore struct {
 	stopped          map[string]*vm.VM
 	loadStoppedErr   error
 	writeStoppedErr  error
+	updateStoppedErr error
 	listStoppedErr   error
 	deleteStoppedErr error
 
@@ -120,6 +121,24 @@ func (f *fakeStateStore) ClaimStoppedInstance(id string) (*vm.VM, error) {
 		return nil, vm.ErrStoppedInstanceClaimed
 	}
 	delete(f.stopped, id)
+	return v, nil
+}
+
+// UpdateStoppedInstance mimics the real CAS semantics for tests: mutate runs
+// under the store lock against the stored value, and a missing record
+// returns nats.ErrKeyNotFound (matching JetStreamManager's createIfAbsent=false
+// behavior) rather than resurrecting it.
+func (f *fakeStateStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updateStoppedErr != nil {
+		return nil, f.updateStoppedErr
+	}
+	v, ok := f.stopped[id]
+	if !ok {
+		return nil, nats.ErrKeyNotFound
+	}
+	mutate(v)
 	return v, nil
 }
 
@@ -477,7 +496,7 @@ func TestHandleEC2TerminateStoppedInstance_CrossTenantRejected(t *testing.T) {
 
 func TestHandleEC2ModifyInstanceAttribute_WriteFailureReturnsServerInternal(t *testing.T) {
 	store := newFakeStateStore()
-	store.writeStoppedErr = errors.New("kv write failed")
+	store.updateStoppedErr = errors.New("kv write failed")
 	v := stoppedVMFixture("i-mod-write-fail", testAccountID)
 	store.stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)

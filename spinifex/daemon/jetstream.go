@@ -927,6 +927,35 @@ func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, erro
 	return instance, nil
 }
 
+// UpdateStoppedInstance atomically applies mutate to the current KV-stored
+// stopped record for instanceID and writes it back using optimistic
+// concurrency (CAS), retrying on a concurrent writer's revision conflict.
+// createIfAbsent is false: if a winning ClaimStoppedInstance deletes the
+// record mid-flight, the CAS write fails with nats.ErrKeyNotFound instead of
+// resurrecting it. Used by tag/attribute mutations that read-modify-write a
+// stopped instance so they cannot race a claim into recreating a stale
+// record. Returns nats.ErrKeyNotFound if no record exists.
+func (m *JetStreamManager) UpdateStoppedInstance(instanceID string, mutate func(*vm.VM)) (*vm.VM, error) {
+	if m.kv == nil {
+		return nil, errors.New("KV bucket not initialized")
+	}
+
+	key := StoppedInstancePrefix + instanceID
+	updated, err := casUpdate(m.kv, key, mutate, false)
+	if err != nil {
+		if isStreamUnavailable(err) {
+			slog.Warn("KV stream unavailable, attempting recovery", "operation", "UpdateStoppedInstance", "key", key, "err", err)
+			kv, recoverErr := m.recoverKVBucket()
+			if recoverErr != nil {
+				return nil, err
+			}
+			return casUpdate(kv, key, mutate, false)
+		}
+		return nil, err
+	}
+	return updated, nil
+}
+
 // ListStoppedInstances returns all stopped instances from the shared KV store.
 func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
 	if m.kv == nil {

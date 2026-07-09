@@ -85,6 +85,11 @@ type StoppedInstanceStore interface {
 	ListTerminatedInstances() ([]*vm.VM, error)
 	WriteStoppedInstance(instanceID string, instance *vm.VM) error
 	DeleteStoppedInstance(instanceID string) error
+	// UpdateStoppedInstance atomically applies mutate to the current stopped
+	// record under optimistic concurrency (CAS) with createIfAbsent=false, so
+	// a caller racing a winning ClaimStoppedInstance gets a clean
+	// nats.ErrKeyNotFound instead of resurrecting a deleted record.
+	UpdateStoppedInstance(instanceID string, mutate func(*vm.VM)) (*vm.VM, error)
 	WriteTerminatedInstance(instanceID string, instance *vm.VM) error
 	// ClaimStoppedInstance atomically removes instanceID's record and
 	// returns the VM it held, so at most one caller can ever win a race to

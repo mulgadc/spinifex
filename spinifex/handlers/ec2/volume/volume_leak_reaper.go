@@ -87,6 +87,14 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 		// reclamation is the explicit --purge / operator path (ADR-0005 §3).
 		slog.Warn("DATA-SAFETY ALARM: orphaned volume retained, not deleted",
 			"volumeId", id, "attachedInstance", md.AttachedInstance, "sizeGiB", md.SizeGiB)
+
+		// Reconcile the attachment record only — never the volume data. The
+		// owning instance is definitively terminated (this node's leaked
+		// set), so nothing still claims the volume; clearing the stale
+		// attachment lets an operator DeleteVolume it after seeing the alarm.
+		if err := r.svc.UpdateVolumeState(id, "available", "", ""); err != nil {
+			slog.Error("volume-leak: failed to reconcile orphaned volume attachment", "volumeId", id, "err", err)
+		}
 		marked++
 	}
 	return marked, nil

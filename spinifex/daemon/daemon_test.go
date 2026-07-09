@@ -3277,6 +3277,48 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 		"a successful seal must still transition the volume to available")
 }
 
+// TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable verifies the
+// timeout-then-completed-seal retry path: an ebs.unmount response reporting
+// NotFound (the seal already completed on a prior, client-timed-out request)
+// must still flip a non-boot data volume to available, while the boot/EFI
+// gate stays intact.
+func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+	volState := &recordingVolState{}
+	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
+
+	sub, err := daemon.natsConn.Subscribe(adapter.topic("unmount"), func(msg *nats.Msg) {
+		var req types.EBSRequest
+		json.Unmarshal(msg.Data, &req)
+		resp := types.EBSUnMountResponse{
+			Volume:   req.Name,
+			NotFound: true,
+			Error:    fmt.Sprintf("Volume %s not found", req.Name),
+		}
+		data, _ := json.Marshal(resp)
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	inst := &vm.VM{
+		ID: "i-unmount-retry",
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: "vol-boot-retry", Boot: true, EFI: false},
+				{Name: "vol-data-retry", Boot: false, EFI: false},
+			},
+		},
+	}
+	require.NoError(t, adapter.Unmount(inst))
+
+	calls := volState.snapshot()
+	assert.Contains(t, calls, "vol-data-retry:available",
+		"a NotFound response (already-completed seal) must still flip a non-boot data volume to available")
+	assert.NotContains(t, calls, "vol-boot-retry:available",
+		"a boot volume must stay attached even when the seal retry reports NotFound")
+}
+
 // TestUnmountResponseError covers the shared seal-result parser used by both the
 // gated DetachVolume path (unmountOne) and the tolerated teardown path (Unmount).
 func TestUnmountResponseError(t *testing.T) {
@@ -3294,6 +3336,11 @@ func TestUnmountResponseError(t *testing.T) {
 	})
 	t.Run("malformed payload propagates", func(t *testing.T) {
 		require.Error(t, unmountResponseError([]byte("not json")))
+	})
+	t.Run("not found treated as idempotent success", func(t *testing.T) {
+		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", NotFound: true, Error: "Volume v not found"})
+		require.NoError(t, unmountResponseError(data),
+			"a NotFound response means the seal already completed on a prior request; a timeout-then-retry must not be treated as a failure")
 	})
 }
 

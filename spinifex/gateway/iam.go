@@ -293,6 +293,11 @@ var iamActions = map[string]IAMHandler{
 	"ListGroupPolicies": iamHandler(func(accountID string, input *iam.ListGroupPoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListGroupPolicies(accountID, input, gw.IAMService)
 	}),
+
+	// Account
+	"GetAccountSummary": iamHandler(func(accountID string, input *iam.GetAccountSummaryInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetAccountSummary(accountID, input, gw.IAMService)
+	}),
 }
 
 func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) error {

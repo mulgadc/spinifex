@@ -116,6 +116,9 @@ func (m *mockIAMService) CreateAccount(_ string) (*handlers_iam.Account, error) 
 }
 func (m *mockIAMService) GetAccount(_ string) (*handlers_iam.Account, error) { return nil, nil }
 func (m *mockIAMService) ListAccounts() ([]*handlers_iam.Account, error)     { return nil, nil }
+func (m *mockIAMService) GetAccountSummary(_ string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	return &iam.GetAccountSummaryOutput{}, nil
+}
 
 func (m *mockIAMService) CreateRole(_ string, _ *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
 	return nil, nil

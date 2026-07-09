@@ -87,7 +87,7 @@ func TestIAMExamplesContract(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 39, covered, "covered IAM examples")
+	assert.Equal(t, 40, covered, "covered IAM examples")
 }
 
 func loadIAMExamples(t *testing.T) iamExamplesFile {
@@ -236,6 +236,10 @@ func (svc *echoIAMService) DeleteUser(accountID string, input *iam.DeleteUserInp
 
 func (svc *echoIAMService) DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
 	return echoIAMCall[iam.DeleteUserPolicyInput, iam.DeleteUserPolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	return echoIAMCall[iam.GetAccountSummaryInput, iam.GetAccountSummaryOutput](svc, accountID, input)
 }
 
 func (svc *echoIAMService) GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {

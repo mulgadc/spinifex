@@ -662,6 +662,12 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `delete-group-policy` | `--group-name`, `--policy-name` | — | **DONE** |
 | `list-group-policies` | `--group-name` | `--max-items`, `--marker` | **DONE** |
 
+### IAM — Account
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `get-account-summary` | — | — | **DONE** |
+
 ---
 
 ## STS

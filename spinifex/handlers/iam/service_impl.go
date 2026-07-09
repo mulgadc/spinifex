@@ -1874,11 +1874,13 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 }
 
 // summaryQuotaDefaults holds the static SummaryMap entries returned by
-// GetAccountSummary. Spinifex has no live quota system, so quota values are
-// AWS-parity constants for informational compatibility only, not enforced
-// limits. Resource types Spinifex does not model are reported as 0 rather than
-// omitted so CIS/audit tooling that reads these keys keeps working. Real
-// per-account resource counts are overlaid on top of this table at call time.
+// GetAccountSummary. Spinifex's quota system (handlers/quota) only enforces
+// infrastructure dimensions (vCPUs, VPCs, subnets, EIPs, EBS) and models no IAM
+// entity limits, so these IAM quota values are AWS-parity constants for
+// informational compatibility only, not enforced limits. Resource types
+// Spinifex does not model are reported as 0 rather than omitted so CIS/audit
+// tooling that reads these keys keeps working. Real per-account resource counts
+// are overlaid on top of this table at call time.
 var summaryQuotaDefaults = map[string]int64{
 	// Account-wide quotas (AWS defaults).
 	"UsersQuota":               5000,

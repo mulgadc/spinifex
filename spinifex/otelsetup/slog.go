@@ -2,6 +2,7 @@ package otelsetup
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 
@@ -51,4 +52,61 @@ func (h *traceHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *traceHandler) WithGroup(name string) slog.Handler {
 	return &traceHandler{inner: h.inner.WithGroup(name)}
+}
+
+var _ slog.Handler = (*fanoutHandler)(nil)
+
+// fanoutHandler writes every record to all inner handlers, e.g. so OTLP
+// export is additive to the existing stdout/journald handler rather than
+// replacing it.
+type fanoutHandler struct {
+	handlers []slog.Handler
+}
+
+// newFanoutHandler returns a handler that fans out to all of handlers.
+func newFanoutHandler(handlers ...slog.Handler) slog.Handler {
+	return &fanoutHandler{handlers: handlers}
+}
+
+func (h *fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, inner := range h.handlers {
+		if inner.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	var errs error
+	for _, inner := range h.handlers {
+		if inner.Enabled(ctx, r.Level) {
+			errs = errors.Join(errs, inner.Handle(ctx, r.Clone()))
+		}
+	}
+	return errs
+}
+
+func (h *fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := make([]slog.Handler, len(h.handlers))
+	for i, inner := range h.handlers {
+		next[i] = inner.WithAttrs(attrs)
+	}
+	return &fanoutHandler{handlers: next}
+}
+
+func (h *fanoutHandler) WithGroup(name string) slog.Handler {
+	next := make([]slog.Handler, len(h.handlers))
+	for i, inner := range h.handlers {
+		next[i] = inner.WithGroup(name)
+	}
+	return &fanoutHandler{handlers: next}
+}
+
+// addFanoutHandler rewraps the process slog default so records also reach
+// extra, in addition to whatever handler is already installed (e.g. the
+// stdout/journald handler from SetDefaultJSONLogger). Used by Init to bolt
+// the OTLP bridge onto an already-configured default logger.
+func addFanoutHandler(extra slog.Handler) {
+	slog.SetDefault(slog.New(newFanoutHandler(slog.Default().Handler(), extra)))
 }

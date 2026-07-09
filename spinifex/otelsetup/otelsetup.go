@@ -15,12 +15,16 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	loggerglobal "go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -72,6 +76,21 @@ func Init(ctx context.Context, serviceName string) (func(context.Context) error,
 	)
 	otel.SetMeterProvider(mp)
 
+	logExp, err := otlploggrpc.New(ctx)
+	if err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		return nil, errors.Join(
+			fmt.Errorf("otlp log exporter for %s: %w", serviceName, err),
+			tp.Shutdown(shutdownCtx), mp.Shutdown(shutdownCtx))
+	}
+	lp := sdklog.NewLoggerProvider(
+		sdklog.WithResource(res),
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp)),
+	)
+	loggerglobal.SetLoggerProvider(lp)
+	addFanoutHandler(otelslog.NewHandler(serviceName, otelslog.WithLoggerProvider(lp)))
+
 	if err := otelruntime.Start(); err != nil {
 		slog.Warn("otel runtime metrics disabled", "err", err)
 	}
@@ -79,7 +98,7 @@ func Init(ctx context.Context, serviceName string) (func(context.Context) error,
 	shutdown := func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 		defer cancel()
-		return errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx))
+		return errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx), lp.Shutdown(ctx))
 	}
 	return shutdown, nil
 }

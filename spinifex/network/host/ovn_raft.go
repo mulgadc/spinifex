@@ -1,8 +1,12 @@
 package host
 
 import (
+	"context"
+	"errors"
 	"log/slog"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -17,17 +21,36 @@ const (
 	OVNSBSchema = "OVN_Southbound"
 )
 
+// ovnAppctlTimeout bounds the cluster/status shell-out so a wedged ovsdb-server
+// cannot stall the node-status handler, matching the 500ms budget of the
+// sibling NATS/Predastore role probes.
+const ovnAppctlTimeout = 500 * time.Millisecond
+
 // OVNDBRole reports this node's OVSDB Raft role for the given ctl target and
 // schema: "leader", "follower", or "" when OVN is standalone or unreachable.
-// A standalone (non-clustered) DB or any appctl error fails soft to "".
+// Callers gate this on quorum membership, so an appctl error means a DB that
+// should be reachable is not — logged at Warn rather than silently dropped.
 func OVNDBRole(target, schema string) string {
-	out, err := utils.SudoCommand("ovn-appctl", "-t", target, "cluster/status", schema).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), ovnAppctlTimeout)
+	defer cancel()
+	out, err := utils.SudoCommandContext(ctx, "ovn-appctl", "-t", target, "cluster/status", schema).Output()
 	if err != nil {
-		slog.Debug("Failed to query OVN cluster/status", "schema", schema, "err", err)
+		slog.Warn("Failed to query OVN cluster/status on a quorum member",
+			"schema", schema, "target", target, "err", err, "stderr", commandStderr(err))
 		return ""
 	}
 	_, role := ParseClusterStatus(string(out))
 	return role
+}
+
+// commandStderr returns the subprocess stderr captured by exec.Cmd.Output for an
+// ExitError; err.Error() alone reports only the exit code.
+func commandStderr(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return strings.TrimSpace(string(exitErr.Stderr))
+	}
+	return ""
 }
 
 // ParseClusterStatus extracts the quorum size and this server's role from ovs

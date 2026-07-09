@@ -366,7 +366,7 @@ func (d *Daemon) isOVNDBQuorumMember() bool {
 		return false
 	}
 	names := slices.Collect(maps.Keys(d.clusterConfig.Nodes))
-	return formation.IsOVNDBQuorumMember(names, d.node)
+	return slices.Contains(formation.OVNDBQuorumNames(names), d.node)
 }
 
 // queryOVNRole returns this node's OVN DB Raft role for the given ctl target and

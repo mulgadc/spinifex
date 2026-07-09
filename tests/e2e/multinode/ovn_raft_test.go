@@ -15,10 +15,8 @@ import (
 )
 
 const (
-	ovnNBSock   = "/var/run/ovn/ovnnb_db.ctl"
-	ovnSBSock   = "/var/run/ovn/ovnsb_db.ctl"
-	ovnNBSchema = "OVN_Northbound"
-	ovnSBSchema = "OVN_Southbound"
+	ovnNBSock = "/var/run/ovn/ovnnb_db.ctl"
+	ovnSBSock = "/var/run/ovn/ovnsb_db.ctl"
 )
 
 // runOVNRaft asserts the clustered OVN control plane: every DB node's NB and SB
@@ -37,8 +35,8 @@ func runOVNRaft(t *testing.T, fix *Fixture) {
 
 	// 1. Quorum health: 3 servers + exactly one leader, per schema, per node.
 	for _, db := range []struct{ name, sock, schema string }{
-		{"NB", ovnNBSock, ovnNBSchema},
-		{"SB", ovnSBSock, ovnSBSchema},
+		{"NB", ovnNBSock, host.OVNNBSchema},
+		{"SB", ovnSBSock, host.OVNSBSchema},
 	} {
 		leaders := 0
 		for _, n := range dbNodes {
@@ -58,7 +56,7 @@ func runOVNRaft(t *testing.T, fix *Fixture) {
 	var leader harness.Node
 	var survivors []harness.Node
 	for _, n := range dbNodes {
-		if _, role := ovnClusterStatus(t, ssh, n, ovnNBSock, ovnNBSchema); role == "leader" {
+		if _, role := ovnClusterStatus(t, ssh, n, ovnNBSock, host.OVNNBSchema); role == "leader" {
 			leader = n
 		} else {
 			survivors = append(survivors, n)

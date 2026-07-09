@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -141,6 +142,113 @@ func TestDNSForwarder_TCPProxiesFramedSession(t *testing.T) {
 
 func TestServfail_RejectsRunt(t *testing.T) {
 	assert.Nil(t, servfail([]byte{0x01, 0x02}), "a message without a DNS header has nothing to answer")
+}
+
+// ----- H3: backend health memory ----------------------------------------
+
+// After a backend fails, it is deprioritised for the cooldown window so the next
+// query hits a healthy backend first instead of eating the dead one's timeout.
+func TestDNSForwarder_DownBackendDeprioritisedAfterFailure(t *testing.T) {
+	dead := fakeUDPUpstream(t, silent)
+	live := fakeUDPUpstream(t, markedResponse('Y'))
+	f := newDNSForwarder([]string{dead, live})
+	f.timeout = 100 * time.Millisecond
+	base := time.Now()
+	f.now = func() time.Time { return base }
+
+	// First query pays the dead backend's timeout, then answers via live.
+	resp, err := f.exchangeUDP(testDNSQuery)
+	require.NoError(t, err)
+	assert.Equal(t, byte('Y'), resp[len(resp)-1])
+
+	require.False(t, f.backends[0].healthy(base), "failed backend must be marked down")
+	require.True(t, f.backends[1].healthy(base), "responding backend must stay healthy")
+	order := f.ordered(base)
+	assert.Equal(t, live, order[0].addr, "healthy backend must be tried first")
+
+	// The second query must not eat the dead backend's timeout again.
+	start := time.Now()
+	_, err = f.exchangeUDP(testDNSQuery)
+	require.NoError(t, err)
+	assert.Less(t, time.Since(start), f.timeout, "down backend must be skipped, not timed out on")
+}
+
+// A recovered backend is marked healthy again once it answers.
+func TestDNSForwarder_BackendRecovers(t *testing.T) {
+	b := &dnsBackend{addr: "10.0.0.1:53"}
+	now := time.Now()
+	b.markDown(now, 10*time.Second)
+	assert.False(t, b.healthy(now), "backend is down during cooldown")
+	assert.True(t, b.healthy(now.Add(11*time.Second)), "backend recovers after cooldown")
+	b.markUp()
+	assert.True(t, b.healthy(now), "an explicit markUp clears the cooldown immediately")
+}
+
+// ----- H2: per-tap rate limit + concurrency cap -------------------------
+
+// The token bucket admits a burst then sheds, and refills over elapsed time.
+func TestTokenBucket_ShedsBurstThenRefills(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	tb := newTokenBucket(100, 3, clock)
+
+	for i := range 3 {
+		assert.True(t, tb.allow(), "burst token %d must be admitted", i)
+	}
+	assert.False(t, tb.allow(), "query beyond the burst must be shed while the clock is frozen")
+
+	now = now.Add(50 * time.Millisecond) // 100/s * 0.05s = 5 tokens refilled
+	assert.True(t, tb.allow(), "a query must be admitted after the bucket refills")
+}
+
+// A non-positive rate disables limiting entirely.
+func TestTokenBucket_ZeroRateAllowsAll(t *testing.T) {
+	tb := newTokenBucket(0, 0, time.Now)
+	for range 1000 {
+		require.True(t, tb.allow())
+	}
+}
+
+// A flood on one tap is shed to the burst size (H2): with the clock frozen so the
+// bucket never refills, only `burst` queries reach the backend and the rest drop.
+func TestDNSForwarder_UDPFloodShedToBurst(t *testing.T) {
+	var received atomic.Int32
+	backend := fakeUDPUpstream(t, func(q []byte) []byte {
+		received.Add(1)
+		return markedResponse('F')(q)
+	})
+	f := newDNSForwarder([]string{backend})
+	base := time.Now()
+	f.now = func() time.Time { return base } // freeze: no refill
+	f.rate, f.burst = 100, 3
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go f.serveUDP(pc)
+	defer func() { _ = pc.Close() }()
+
+	client, err := net.Dial("udp", pc.LocalAddr().String())
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+
+	const flood = 8
+	for range flood {
+		_, err := client.Write(testDNSQuery)
+		require.NoError(t, err)
+	}
+
+	// Count answers: only the burst allotment is relayed, the rest are shed.
+	answered := 0
+	buf := make([]byte, maxDNSUDPSize)
+	for {
+		_ = client.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		if _, err := client.Read(buf); err != nil {
+			break
+		}
+		answered++
+	}
+	assert.Equal(t, 3, answered, "flood must be shed to the burst size")
+	assert.Equal(t, int32(3), received.Load(), "backend must see only the admitted queries")
 }
 
 // ----- manager lifecycle -------------------------------------------------

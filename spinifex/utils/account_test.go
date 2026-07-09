@@ -106,6 +106,51 @@ func TestVersionStateMachine(t *testing.T) {
 	assert.Equal(t, "5", string(entry.Value()))
 }
 
+// streamReplicas returns the replica count of the JetStream stream backing a
+// KV bucket, so tests can assert on the config actually sent to the server.
+func streamReplicas(t *testing.T, js nats.JetStreamContext, bucket string) int {
+	t.Helper()
+	si, err := js.StreamInfo("KV_" + bucket)
+	require.NoError(t, err)
+	return si.Config.Replicas
+}
+
+func TestGetOrCreateKVBucket_CreatesAtReplicaOne(t *testing.T) {
+	_, js := startJSNATSServer(t)
+
+	kv, err := GetOrCreateKVBucket(js, "regression-bucket", 5)
+	require.NoError(t, err)
+	require.NotNil(t, kv)
+	assert.Equal(t, 1, streamReplicas(t, js, "regression-bucket"))
+}
+
+func TestGetOrCreateKVBucketWithReplicas_CreatesAtRequestedReplicas(t *testing.T) {
+	_, js := startJSNATSServer(t)
+
+	// The embedded single-node test server rejects Replicas > 1
+	// ("replicas > 1 not supported in non-clustered mode"), so the only
+	// replica count exercisable end-to-end here is 1; the clamping logic
+	// (max(replicas, 1)) is covered separately below.
+	kv, err := GetOrCreateKVBucketWithReplicas(js, "replicated-bucket", 5, 1)
+	require.NoError(t, err)
+	require.NotNil(t, kv)
+	assert.Equal(t, 1, streamReplicas(t, js, "replicated-bucket"))
+}
+
+func TestGetOrCreateKVBucketWithReplicas_ClampsBelowOne(t *testing.T) {
+	_, js := startJSNATSServer(t)
+
+	kv, err := GetOrCreateKVBucketWithReplicas(js, "clamped-zero", 1, 0)
+	require.NoError(t, err)
+	require.NotNil(t, kv)
+	assert.Equal(t, 1, streamReplicas(t, js, "clamped-zero"))
+
+	kv, err = GetOrCreateKVBucketWithReplicas(js, "clamped-negative", 1, -3)
+	require.NoError(t, err)
+	require.NotNil(t, kv)
+	assert.Equal(t, 1, streamReplicas(t, js, "clamped-negative"))
+}
+
 func TestDeleteKVBucketIfExists(t *testing.T) {
 	_, js := startJSNATSServer(t)
 

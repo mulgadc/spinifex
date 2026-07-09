@@ -12,7 +12,7 @@ import (
 
 func TestLoadRecoveryDirective_AbsentIsZeroNone(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	acctKV, err := GetOrCreateAccountBucket(js, testAccountID)
+	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 
 	d, err := LoadRecoveryDirective(acctKV, "alpha", "i-missing")
@@ -23,7 +23,7 @@ func TestLoadRecoveryDirective_AbsentIsZeroNone(t *testing.T) {
 
 func TestStoreRecoveryDirective_EpochIncrements(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	acctKV, err := GetOrCreateAccountBucket(js, testAccountID)
+	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 
 	first, err := StoreRecoveryDirective(acctKV, "alpha", "i-0", RecoveryActionClusterReset, "")

@@ -163,7 +163,7 @@ func (s *EKSServiceImpl) nodegroupAcctKV(accountID string) (nats.KeyValue, error
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(js, accountID)
+	acctKV, err := GetOrCreateAccountBucket(js, accountID, max(s.deps.ClusterSize, 1))
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}

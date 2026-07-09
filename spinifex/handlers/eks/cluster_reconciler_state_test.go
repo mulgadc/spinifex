@@ -19,9 +19,9 @@ import (
 func newStateReconcilerHarness(t *testing.T, opts ...ReconcilerOption) (*ClusterReconciler, *nats.Conn, nats.KeyValue) {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
-	leaderKV, err := InitLeaderBucket(js)
+	leaderKV, err := InitLeaderBucket(js, 1)
 	require.NoError(t, err)
-	acctKV, err := GetOrCreateAccountBucket(js, testAccountID)
+	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 	require.NoError(t, PutClusterMeta(acctKV, sampleClusterMeta("alpha")))
 

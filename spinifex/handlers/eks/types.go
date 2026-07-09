@@ -84,3 +84,13 @@ type AccessScope struct {
 	Type       string   `json:"type"`
 	Namespaces []string `json:"namespaces,omitempty"`
 }
+
+// OIDCProviderConfigRecord captures the minimum needed to register an OIDC
+// identity provider against a cluster.
+type OIDCProviderConfigRecord struct {
+	ClusterName string    `json:"clusterName"`
+	IssuerURL   string    `json:"issuerURL"`
+	IssuerHash  string    `json:"issuerHash"`
+	ClientID    string    `json:"clientID"`
+	CreatedAt   time.Time `json:"createdAt"`
+}

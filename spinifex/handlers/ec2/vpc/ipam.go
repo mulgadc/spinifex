@@ -44,7 +44,7 @@ func NewIPAM(js nats.JetStreamContext) (*IPAM, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create IPAM KV bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketIPAM, kv, KVBucketIPAMVersion, js); err != nil {
+	if err := migrate.DefaultRegistry.RunKVWithJetStream(KVBucketIPAM, kv, js, KVBucketIPAMVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketIPAM, err)
 	}
 	return &IPAM{kv: kv}, nil

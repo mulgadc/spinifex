@@ -31,6 +31,12 @@ type ManifestStoreError struct {
 
 func (e *ManifestStoreError) Error() string { return e.Msg }
 
+// ImageID pairs a manifest digest with an optional tag.
+type ImageID struct {
+	Digest string
+	Tag    string
+}
+
 // ImageRecord is a stored image's metadata, resolved with its tag set.
 type ImageRecord struct {
 	Digest    string

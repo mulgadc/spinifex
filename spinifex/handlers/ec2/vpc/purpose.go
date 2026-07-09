@@ -10,6 +10,16 @@ const (
 	PurposeEIP           = "eip"
 	PurposeNATGWExternal = "natgw-external"
 	PurposeIGWLRP        = "igw-lrp"
+	// Future-reserved values; defined now so call sites and migrations can
+	// reference them without a follow-up rename.
+	PurposeEdgeLRExternal = "edge-lr-external"
+	PurposeNodeMgmt       = "node-mgmt"       // currently .env
+	PurposeSubnetRouter   = "subnet-router"   // .1
+	PurposeSubnetDNS      = "subnet-dns"      // .2
+	PurposeSubnetReserved = "subnet-reserved" // .0, .3, .last
+	// PurposeUnknown tags records the migration could not classify (e.g.
+	// orphan IPs with no owning ENIRecord). Surfaces in logs for triage.
+	PurposeUnknown = "unknown"
 )
 
 // LegacyExternalTypeToPurpose maps the old ExternalIPAllocation.Type values

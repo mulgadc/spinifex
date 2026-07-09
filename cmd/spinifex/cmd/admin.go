@@ -2486,17 +2486,15 @@ func runAccountList(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	tableData := pterm.TableData{
-		{"ACCOUNT ID", "NAME", "STATUS", "CREATED"},
-	}
+	fmt.Printf("%-14s %-20s %-10s %s\n", "ACCOUNT ID", "NAME", "STATUS", "CREATED")
+	fmt.Printf("%-14s %-20s %-10s %s\n", "----------", "----", "------", "-------")
 	for _, a := range accounts {
 		created := a.CreatedAt
 		if t, err := time.Parse(time.RFC3339, a.CreatedAt); err == nil {
 			created = t.Format("2006-01-02 15:04")
 		}
-		tableData = append(tableData, []string{a.AccountID, a.AccountName, a.Status, created})
+		fmt.Printf("%-14s %-20s %-10s %s\n", a.AccountID, a.AccountName, a.Status, created)
 	}
-	pterm.DefaultTable.WithHasHeader().WithLeftAlignment().WithData(tableData).Render()
 }
 
 func runCertRenew(cmd *cobra.Command, _ []string) {

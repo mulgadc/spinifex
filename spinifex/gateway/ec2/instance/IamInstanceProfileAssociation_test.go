@@ -10,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
@@ -32,11 +31,13 @@ const (
 	testProfileIDOther   = "AIPAEXAMPLE0000000002"
 )
 
-// fakeIAMService is a minimal IAMService stub for gateway-side tests. Only the
-// methods the EC2 IAM-profile gateway code actually touches are wired with
-// configurable behaviour — the rest return zero-value outputs to satisfy the
-// interface contract.
+// fakeIAMService embeds the IAMService interface so it satisfies the contract
+// without hand-writing every method. The EC2 IAM-profile gateway code only
+// touches ResolveInstanceProfile; any other method nil-panics, surfacing an
+// unexpected call rather than masking it with a zero value.
 type fakeIAMService struct {
+	handlers_iam.IAMService
+
 	resolveFn func(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
 }
 
@@ -45,188 +46,6 @@ func (f *fakeIAMService) ResolveInstanceProfile(accountID, nameOrARN string) (*h
 		return f.resolveFn(accountID, nameOrARN)
 	}
 	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-}
-
-func (f *fakeIAMService) CreateUser(string, *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
-	return &iam.CreateUserOutput{}, nil
-}
-func (f *fakeIAMService) GetUser(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
-	return &iam.GetUserOutput{}, nil
-}
-func (f *fakeIAMService) ListUsers(string, *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
-	return &iam.ListUsersOutput{}, nil
-}
-func (f *fakeIAMService) DeleteUser(string, *iam.DeleteUserInput) (*iam.DeleteUserOutput, error) {
-	return &iam.DeleteUserOutput{}, nil
-}
-func (f *fakeIAMService) CreateAccessKey(string, *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
-	return &iam.CreateAccessKeyOutput{}, nil
-}
-func (f *fakeIAMService) ListAccessKeys(string, *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error) {
-	return &iam.ListAccessKeysOutput{}, nil
-}
-func (f *fakeIAMService) DeleteAccessKey(string, *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
-	return &iam.DeleteAccessKeyOutput{}, nil
-}
-func (f *fakeIAMService) UpdateAccessKey(string, *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error) {
-	return &iam.UpdateAccessKeyOutput{}, nil
-}
-func (f *fakeIAMService) CreatePolicy(string, *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
-	return &iam.CreatePolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetPolicy(string, *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
-	return &iam.GetPolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetPolicyVersion(string, *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
-	return &iam.GetPolicyVersionOutput{}, nil
-}
-func (f *fakeIAMService) ListPolicyVersions(string, *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
-	return &iam.ListPolicyVersionsOutput{}, nil
-}
-func (f *fakeIAMService) ListPolicies(string, *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
-	return &iam.ListPoliciesOutput{}, nil
-}
-func (f *fakeIAMService) DeletePolicy(string, *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
-	return &iam.DeletePolicyOutput{}, nil
-}
-func (f *fakeIAMService) AttachUserPolicy(string, *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
-	return &iam.AttachUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) DetachUserPolicy(string, *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error) {
-	return &iam.DetachUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListAttachedUserPolicies(string, *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
-	return &iam.ListAttachedUserPoliciesOutput{}, nil
-}
-func (f *fakeIAMService) CreateRole(string, *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
-	return &iam.CreateRoleOutput{}, nil
-}
-func (f *fakeIAMService) GetRole(string, *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-	return &iam.GetRoleOutput{}, nil
-}
-func (f *fakeIAMService) ListRoles(string, *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
-	return &iam.ListRolesOutput{}, nil
-}
-func (f *fakeIAMService) DeleteRole(string, *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
-	return &iam.DeleteRoleOutput{}, nil
-}
-func (f *fakeIAMService) UpdateRole(string, *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
-	return &iam.UpdateRoleOutput{}, nil
-}
-func (f *fakeIAMService) UpdateAssumeRolePolicy(string, *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
-	return &iam.UpdateAssumeRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) AttachRolePolicy(string, *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
-	return &iam.AttachRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) DetachRolePolicy(string, *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
-	return &iam.DetachRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListAttachedRolePolicies(string, *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
-	return &iam.ListAttachedRolePoliciesOutput{}, nil
-}
-func (f *fakeIAMService) PutRolePolicy(string, *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
-	return &iam.PutRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetRolePolicy(string, *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
-	return &iam.GetRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) DeleteRolePolicy(string, *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
-	return &iam.DeleteRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListRolePolicies(string, *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
-	return &iam.ListRolePoliciesOutput{}, nil
-}
-func (f *fakeIAMService) CreateInstanceProfile(string, *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
-	return &iam.CreateInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) GetInstanceProfile(string, *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
-	return &iam.GetInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) ListInstanceProfiles(string, *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
-	return &iam.ListInstanceProfilesOutput{}, nil
-}
-func (f *fakeIAMService) DeleteInstanceProfile(string, *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
-	return &iam.DeleteInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) ListInstanceProfilesForRole(string, *iam.ListInstanceProfilesForRoleInput) (*iam.ListInstanceProfilesForRoleOutput, error) {
-	return &iam.ListInstanceProfilesForRoleOutput{}, nil
-}
-func (f *fakeIAMService) AddRoleToInstanceProfile(string, *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
-	return &iam.AddRoleToInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) RemoveRoleFromInstanceProfile(string, *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
-	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) GetUserPolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-func (f *fakeIAMService) GetRolePolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-func (f *fakeIAMService) LookupAccessKey(string) (*handlers_iam.AccessKey, error) { return nil, nil }
-func (f *fakeIAMService) DecryptSecret(string) (string, error)                    { return "", nil }
-func (f *fakeIAMService) SeedBootstrap(*handlers_iam.BootstrapData) error         { return nil }
-func (f *fakeIAMService) IsEmpty() (bool, error)                                  { return true, nil }
-func (f *fakeIAMService) CreateAccount(string) (*handlers_iam.Account, error)     { return nil, nil }
-func (f *fakeIAMService) GetAccount(string) (*handlers_iam.Account, error)        { return nil, nil }
-func (f *fakeIAMService) ListAccounts() ([]*handlers_iam.Account, error)          { return nil, nil }
-func (f *fakeIAMService) GetAccountSummary(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
-	return &iam.GetAccountSummaryOutput{}, nil
-}
-func (f *fakeIAMService) CreateGroup(string, *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
-	return &iam.CreateGroupOutput{}, nil
-}
-func (f *fakeIAMService) GetGroup(string, *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
-	return &iam.GetGroupOutput{}, nil
-}
-func (f *fakeIAMService) ListGroups(string, *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
-	return &iam.ListGroupsOutput{}, nil
-}
-func (f *fakeIAMService) DeleteGroup(string, *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
-	return &iam.DeleteGroupOutput{}, nil
-}
-func (f *fakeIAMService) AddUserToGroup(string, *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
-	return &iam.AddUserToGroupOutput{}, nil
-}
-func (f *fakeIAMService) RemoveUserFromGroup(string, *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
-	return &iam.RemoveUserFromGroupOutput{}, nil
-}
-func (f *fakeIAMService) ListGroupsForUser(string, *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
-	return &iam.ListGroupsForUserOutput{}, nil
-}
-func (f *fakeIAMService) AttachGroupPolicy(string, *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
-	return &iam.AttachGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) DetachGroupPolicy(string, *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
-	return &iam.DetachGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListAttachedGroupPolicies(string, *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
-	return &iam.ListAttachedGroupPoliciesOutput{}, nil
-}
-func (f *fakeIAMService) PutGroupPolicy(string, *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
-	return &iam.PutGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetGroupPolicy(string, *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
-	return &iam.GetGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) DeleteGroupPolicy(string, *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
-	return &iam.DeleteGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListGroupPolicies(string, *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
-	return &iam.ListGroupPoliciesOutput{}, nil
-}
-func (f *fakeIAMService) PutUserPolicy(string, *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
-	return &iam.PutUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetUserPolicy(string, *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
-	return &iam.GetUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) DeleteUserPolicy(string, *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
-	return &iam.DeleteUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListUserPolicies(string, *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
-	return &iam.ListUserPoliciesOutput{}, nil
 }
 
 var _ handlers_iam.IAMService = (*fakeIAMService)(nil)
@@ -826,50 +645,4 @@ func TestAssociationIDFormat(t *testing.T) {
 		"GenerateResourceID must preserve the AWS-style hyphen between prefix and suffix")
 	suffix := strings.TrimPrefix(id, "iip-assoc-")
 	assert.NotEmpty(t, suffix, "association ID must carry a non-empty random suffix")
-}
-
-func (f *fakeIAMService) TagUser(_ string, _ *iam.TagUserInput) (*iam.TagUserOutput, error) {
-	return &iam.TagUserOutput{}, nil
-}
-func (f *fakeIAMService) UntagUser(_ string, _ *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
-	return &iam.UntagUserOutput{}, nil
-}
-func (f *fakeIAMService) ListUserTags(_ string, _ *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
-	return &iam.ListUserTagsOutput{}, nil
-}
-func (f *fakeIAMService) TagRole(_ string, _ *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
-	return &iam.TagRoleOutput{}, nil
-}
-func (f *fakeIAMService) UntagRole(_ string, _ *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
-	return &iam.UntagRoleOutput{}, nil
-}
-func (f *fakeIAMService) ListRoleTags(_ string, _ *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
-	return &iam.ListRoleTagsOutput{}, nil
-}
-func (f *fakeIAMService) TagPolicy(_ string, _ *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
-	return &iam.TagPolicyOutput{}, nil
-}
-func (f *fakeIAMService) UntagPolicy(_ string, _ *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
-	return &iam.UntagPolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListPolicyTags(_ string, _ *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
-	return &iam.ListPolicyTagsOutput{}, nil
-}
-func (f *fakeIAMService) TagInstanceProfile(_ string, _ *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
-	return &iam.TagInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) UntagInstanceProfile(_ string, _ *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
-	return &iam.UntagInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) ListInstanceProfileTags(_ string, _ *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
-	return &iam.ListInstanceProfileTagsOutput{}, nil
-}
-func (f *fakeIAMService) TagOpenIDConnectProvider(_ string, _ *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
-	return &iam.TagOpenIDConnectProviderOutput{}, nil
-}
-func (f *fakeIAMService) UntagOpenIDConnectProvider(_ string, _ *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
-	return &iam.UntagOpenIDConnectProviderOutput{}, nil
-}
-func (f *fakeIAMService) ListOpenIDConnectProviderTags(_ string, _ *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
-	return &iam.ListOpenIDConnectProviderTagsOutput{}, nil
 }

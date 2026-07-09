@@ -14,10 +14,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// stubSTSService implements handlers_sts.STSService for table tests. Each
-// method delegates to an injectable function so individual cases can simulate
-// the underlying service's behaviour without standing up NATS/JetStream.
+// stubSTSService implements handlers_sts.STSService for table tests. It embeds
+// the interface so it satisfies the full contract; each fn-field method
+// delegates to an injectable function so individual cases can simulate the
+// underlying service's behaviour without standing up NATS/JetStream. Any other
+// method nil-panics if a test reaches an unmocked path.
 type stubSTSService struct {
+	handlers_sts.STSService
+
 	assumeRoleFn        func(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 	getCallerIdentityFn func(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
 	getSessionTokenFn   func(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
@@ -30,13 +34,6 @@ func (s *stubSTSService) AssumeRole(callerAccountID, callerARN, callerIdentity s
 	if s.assumeRoleFn != nil {
 		return s.assumeRoleFn(callerAccountID, callerARN, callerIdentity, input)
 	}
-	return &sts.AssumeRoleOutput{}, nil
-}
-
-// AssumeRoleForInstance is the in-process IMDS entry point and is never
-// dispatched over the HTTPS gateway; the stub exists only to satisfy the
-// interface.
-func (s *stubSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
 	return &sts.AssumeRoleOutput{}, nil
 }
 
@@ -65,23 +62,13 @@ func (s *stubSTSService) LookupSessionCredential(akid string) (*handlers_sts.Ses
 	return nil, nil
 }
 
-func (s *stubSTSService) VerifySessionToken(_ *handlers_sts.SessionCredential, _ string) bool {
-	return true
-}
-
-func (s *stubSTSService) AssumeRoleWithWebIdentity(_ *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
-	return nil, errors.New(awserrors.ErrorNotImplemented)
-}
-
-func (s *stubSTSService) VerifyPresignedGetCallerIdentity(_, _ string) (*handlers_sts.PresignedCallerIdentity, error) {
-	return nil, errors.New(awserrors.ErrorNotImplemented)
-}
-
-// stubIAMService satisfies the IAM interface to the extent needed by
-// GetCallerIdentity (only GetUser is exercised). Every other method panics so
-// a test that triggers an unexpected call fails loudly instead of silently
-// returning zero values.
+// stubIAMService embeds the IAM interface and wires only GetUser, the sole
+// method GetCallerIdentity exercises. Every other method nil-panics so a test
+// that triggers an unexpected call fails loudly instead of silently returning
+// zero values.
 type stubIAMService struct {
+	handlers_iam.IAMService
+
 	getUserFn func(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error)
 }
 
@@ -92,200 +79,6 @@ func (s *stubIAMService) GetUser(accountID string, input *iam.GetUserInput) (*ia
 		return s.getUserFn(accountID, input)
 	}
 	return &iam.GetUserOutput{User: &iam.User{UserId: aws.String("AIDA00000000000000000")}}, nil
-}
-
-func (s *stubIAMService) CreateUser(string, *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
-	panic("unexpected CreateUser call")
-}
-func (s *stubIAMService) ListUsers(string, *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
-	panic("unexpected ListUsers call")
-}
-func (s *stubIAMService) DeleteUser(string, *iam.DeleteUserInput) (*iam.DeleteUserOutput, error) {
-	panic("unexpected DeleteUser call")
-}
-func (s *stubIAMService) CreateAccessKey(string, *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
-	panic("unexpected CreateAccessKey call")
-}
-func (s *stubIAMService) ListAccessKeys(string, *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error) {
-	panic("unexpected ListAccessKeys call")
-}
-func (s *stubIAMService) DeleteAccessKey(string, *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
-	panic("unexpected DeleteAccessKey call")
-}
-func (s *stubIAMService) UpdateAccessKey(string, *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error) {
-	panic("unexpected UpdateAccessKey call")
-}
-func (s *stubIAMService) CreatePolicy(string, *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
-	panic("unexpected CreatePolicy call")
-}
-func (s *stubIAMService) GetPolicy(string, *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
-	panic("unexpected GetPolicy call")
-}
-func (s *stubIAMService) GetPolicyVersion(string, *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
-	panic("unexpected GetPolicyVersion call")
-}
-func (s *stubIAMService) ListPolicyVersions(string, *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
-	panic("unexpected ListPolicyVersions call")
-}
-func (s *stubIAMService) ListPolicies(string, *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
-	panic("unexpected ListPolicies call")
-}
-func (s *stubIAMService) DeletePolicy(string, *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
-	panic("unexpected DeletePolicy call")
-}
-func (s *stubIAMService) AttachUserPolicy(string, *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
-	panic("unexpected AttachUserPolicy call")
-}
-func (s *stubIAMService) DetachUserPolicy(string, *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error) {
-	panic("unexpected DetachUserPolicy call")
-}
-func (s *stubIAMService) ListAttachedUserPolicies(string, *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
-	panic("unexpected ListAttachedUserPolicies call")
-}
-func (s *stubIAMService) CreateRole(string, *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
-	panic("unexpected CreateRole call")
-}
-func (s *stubIAMService) GetRole(string, *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-	panic("unexpected GetRole call")
-}
-func (s *stubIAMService) ListRoles(string, *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
-	panic("unexpected ListRoles call")
-}
-func (s *stubIAMService) DeleteRole(string, *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
-	panic("unexpected DeleteRole call")
-}
-func (s *stubIAMService) UpdateRole(string, *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
-	panic("unexpected UpdateRole call")
-}
-func (s *stubIAMService) UpdateAssumeRolePolicy(string, *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
-	panic("unexpected UpdateAssumeRolePolicy call")
-}
-func (s *stubIAMService) AttachRolePolicy(string, *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
-	panic("unexpected AttachRolePolicy call")
-}
-func (s *stubIAMService) DetachRolePolicy(string, *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
-	panic("unexpected DetachRolePolicy call")
-}
-func (s *stubIAMService) ListAttachedRolePolicies(string, *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
-	panic("unexpected ListAttachedRolePolicies call")
-}
-func (s *stubIAMService) PutRolePolicy(string, *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
-	panic("unexpected PutRolePolicy call")
-}
-func (s *stubIAMService) GetRolePolicy(string, *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
-	panic("unexpected GetRolePolicy call")
-}
-func (s *stubIAMService) DeleteRolePolicy(string, *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
-	panic("unexpected DeleteRolePolicy call")
-}
-func (s *stubIAMService) ListRolePolicies(string, *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
-	panic("unexpected ListRolePolicies call")
-}
-func (s *stubIAMService) CreateInstanceProfile(string, *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
-	panic("unexpected CreateInstanceProfile call")
-}
-func (s *stubIAMService) GetInstanceProfile(string, *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
-	panic("unexpected GetInstanceProfile call")
-}
-func (s *stubIAMService) ListInstanceProfiles(string, *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
-	panic("unexpected ListInstanceProfiles call")
-}
-func (s *stubIAMService) DeleteInstanceProfile(string, *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
-	panic("unexpected DeleteInstanceProfile call")
-}
-func (s *stubIAMService) ListInstanceProfilesForRole(string, *iam.ListInstanceProfilesForRoleInput) (*iam.ListInstanceProfilesForRoleOutput, error) {
-	panic("unexpected ListInstanceProfilesForRole call")
-}
-func (s *stubIAMService) AddRoleToInstanceProfile(string, *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
-	panic("unexpected AddRoleToInstanceProfile call")
-}
-func (s *stubIAMService) RemoveRoleFromInstanceProfile(string, *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
-	panic("unexpected RemoveRoleFromInstanceProfile call")
-}
-func (s *stubIAMService) ResolveInstanceProfile(string, string) (*handlers_iam.InstanceProfile, error) {
-	panic("unexpected ResolveInstanceProfile call")
-}
-func (s *stubIAMService) GetUserPolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
-	panic("unexpected GetUserPolicies call")
-}
-func (s *stubIAMService) GetRolePolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
-	panic("unexpected GetRolePolicies call")
-}
-func (s *stubIAMService) LookupAccessKey(string) (*handlers_iam.AccessKey, error) {
-	panic("unexpected LookupAccessKey call")
-}
-func (s *stubIAMService) DecryptSecret(string) (string, error) {
-	panic("unexpected DecryptSecret call")
-}
-func (s *stubIAMService) SeedBootstrap(*handlers_iam.BootstrapData) error {
-	panic("unexpected SeedBootstrap call")
-}
-func (s *stubIAMService) IsEmpty() (bool, error) { panic("unexpected IsEmpty call") }
-func (s *stubIAMService) CreateAccount(string) (*handlers_iam.Account, error) {
-	panic("unexpected CreateAccount call")
-}
-func (s *stubIAMService) GetAccount(string) (*handlers_iam.Account, error) {
-	panic("unexpected GetAccount call")
-}
-func (s *stubIAMService) ListAccounts() ([]*handlers_iam.Account, error) {
-	panic("unexpected ListAccounts call")
-}
-func (s *stubIAMService) GetAccountSummary(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
-	panic("unexpected GetAccountSummary call")
-}
-func (s *stubIAMService) CreateGroup(string, *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
-	panic("unexpected CreateGroup call")
-}
-func (s *stubIAMService) GetGroup(string, *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
-	panic("unexpected GetGroup call")
-}
-func (s *stubIAMService) ListGroups(string, *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
-	panic("unexpected ListGroups call")
-}
-func (s *stubIAMService) DeleteGroup(string, *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
-	panic("unexpected DeleteGroup call")
-}
-func (s *stubIAMService) AddUserToGroup(string, *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
-	panic("unexpected AddUserToGroup call")
-}
-func (s *stubIAMService) RemoveUserFromGroup(string, *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
-	panic("unexpected RemoveUserFromGroup call")
-}
-func (s *stubIAMService) ListGroupsForUser(string, *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
-	panic("unexpected ListGroupsForUser call")
-}
-func (s *stubIAMService) AttachGroupPolicy(string, *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
-	panic("unexpected AttachGroupPolicy call")
-}
-func (s *stubIAMService) DetachGroupPolicy(string, *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
-	panic("unexpected DetachGroupPolicy call")
-}
-func (s *stubIAMService) ListAttachedGroupPolicies(string, *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
-	panic("unexpected ListAttachedGroupPolicies call")
-}
-func (s *stubIAMService) PutGroupPolicy(string, *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
-	panic("unexpected PutGroupPolicy call")
-}
-func (s *stubIAMService) GetGroupPolicy(string, *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
-	panic("unexpected GetGroupPolicy call")
-}
-func (s *stubIAMService) DeleteGroupPolicy(string, *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
-	panic("unexpected DeleteGroupPolicy call")
-}
-func (s *stubIAMService) ListGroupPolicies(string, *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
-	panic("unexpected ListGroupPolicies call")
-}
-func (s *stubIAMService) PutUserPolicy(string, *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
-	panic("unexpected PutUserPolicy call")
-}
-func (s *stubIAMService) GetUserPolicy(string, *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
-	panic("unexpected GetUserPolicy call")
-}
-func (s *stubIAMService) DeleteUserPolicy(string, *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
-	panic("unexpected DeleteUserPolicy call")
-}
-func (s *stubIAMService) ListUserPolicies(string, *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
-	panic("unexpected ListUserPolicies call")
 }
 
 func TestAssumeRole_HappyPath(t *testing.T) {
@@ -552,50 +345,4 @@ func TestGetSessionToken_PropagatesServiceError(t *testing.T) {
 	_, err := GetSessionToken("000000000000", "s1", PrincipalTypeAssumedRole, "ASIAEXAMPLE", &sts.GetSessionTokenInput{}, svc)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
-}
-
-func (s *stubIAMService) TagUser(_ string, _ *iam.TagUserInput) (*iam.TagUserOutput, error) {
-	return &iam.TagUserOutput{}, nil
-}
-func (s *stubIAMService) UntagUser(_ string, _ *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
-	return &iam.UntagUserOutput{}, nil
-}
-func (s *stubIAMService) ListUserTags(_ string, _ *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
-	return &iam.ListUserTagsOutput{}, nil
-}
-func (s *stubIAMService) TagRole(_ string, _ *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
-	return &iam.TagRoleOutput{}, nil
-}
-func (s *stubIAMService) UntagRole(_ string, _ *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
-	return &iam.UntagRoleOutput{}, nil
-}
-func (s *stubIAMService) ListRoleTags(_ string, _ *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
-	return &iam.ListRoleTagsOutput{}, nil
-}
-func (s *stubIAMService) TagPolicy(_ string, _ *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
-	return &iam.TagPolicyOutput{}, nil
-}
-func (s *stubIAMService) UntagPolicy(_ string, _ *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
-	return &iam.UntagPolicyOutput{}, nil
-}
-func (s *stubIAMService) ListPolicyTags(_ string, _ *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
-	return &iam.ListPolicyTagsOutput{}, nil
-}
-func (s *stubIAMService) TagInstanceProfile(_ string, _ *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
-	return &iam.TagInstanceProfileOutput{}, nil
-}
-func (s *stubIAMService) UntagInstanceProfile(_ string, _ *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
-	return &iam.UntagInstanceProfileOutput{}, nil
-}
-func (s *stubIAMService) ListInstanceProfileTags(_ string, _ *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
-	return &iam.ListInstanceProfileTagsOutput{}, nil
-}
-func (s *stubIAMService) TagOpenIDConnectProvider(_ string, _ *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
-	return &iam.TagOpenIDConnectProviderOutput{}, nil
-}
-func (s *stubIAMService) UntagOpenIDConnectProvider(_ string, _ *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
-	return &iam.UntagOpenIDConnectProviderOutput{}, nil
-}
-func (s *stubIAMService) ListOpenIDConnectProviderTags(_ string, _ *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
-	return &iam.ListOpenIDConnectProviderTagsOutput{}, nil
 }

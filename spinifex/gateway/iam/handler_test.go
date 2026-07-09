@@ -12,9 +12,14 @@ import (
 
 const testAccountID = "000000000000"
 
-// stubIAMService returns empty non-nil outputs for all methods. Individual
-// tests can override a method by setting the matching function field.
+// stubIAMService embeds the IAMService interface and returns empty non-nil
+// outputs for the handler methods every happy-path test drives; those methods
+// are load-bearing and stay explicit. Methods no gateway/iam path reaches are
+// promoted from the embedded interface and nil-panic if unexpectedly called.
+// Individual tests can override a method by setting the matching function field.
 type stubIAMService struct {
+	handlers_iam.IAMService
+
 	getInstanceProfile func(string, *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
 }
 
@@ -86,28 +91,6 @@ func (s *stubIAMService) ListAttachedUserPolicies(_ string, _ *iam.ListAttachedU
 	return &iam.ListAttachedUserPoliciesOutput{}, nil
 }
 
-func (s *stubIAMService) GetUserPolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-
-func (s *stubIAMService) GetRolePolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-
-func (s *stubIAMService) LookupAccessKey(_ string) (*handlers_iam.AccessKey, error) {
-	return nil, nil
-}
-
-func (s *stubIAMService) DecryptSecret(_ string) (string, error)            { return "", nil }
-func (s *stubIAMService) SeedBootstrap(_ *handlers_iam.BootstrapData) error { return nil }
-func (s *stubIAMService) IsEmpty() (bool, error)                            { return true, nil }
-
-func (s *stubIAMService) CreateAccount(_ string) (*handlers_iam.Account, error) {
-	return nil, nil
-}
-func (s *stubIAMService) GetAccount(_ string) (*handlers_iam.Account, error) { return nil, nil }
-func (s *stubIAMService) ListAccounts() ([]*handlers_iam.Account, error)     { return nil, nil }
-
 func (s *stubIAMService) CreateRole(_ string, _ *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
 	return &iam.CreateRoleOutput{}, nil
 }
@@ -170,9 +153,6 @@ func (s *stubIAMService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInst
 }
 func (s *stubIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
 	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
-}
-func (s *stubIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
-	return nil, nil
 }
 
 func (s *stubIAMService) TagUser(_ string, _ *iam.TagUserInput) (*iam.TagUserOutput, error) {
@@ -274,9 +254,6 @@ func (s *stubIAMService) DeleteUserPolicy(_ string, _ *iam.DeleteUserPolicyInput
 }
 func (s *stubIAMService) ListUserPolicies(_ string, _ *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
 	return &iam.ListUserPoliciesOutput{}, nil
-}
-func (s *stubIAMService) GetAccountSummary(_ string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
-	return &iam.GetAccountSummaryOutput{}, nil
 }
 
 func TestCreateUser(t *testing.T) {

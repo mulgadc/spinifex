@@ -259,8 +259,8 @@ func TestAttachVolume_InUseDifferentInstance(t *testing.T) {
 
 // TestAttachVolume_IdempotentSameInstance_DeviceMismatch verifies that a
 // same-instance re-attach requesting a DIFFERENT device than the one
-// already attached is treated as a real CSI conflict (InvalidParameterValue
-// via vm.ErrVolumeDeviceMismatch), not silently echoed back or accepted.
+// already attached is treated as a real CSI conflict — AWS returns
+// VolumeInUse for this case — not silently echoed back or accepted.
 func TestAttachVolume_IdempotentSameInstance_DeviceMismatch(t *testing.T) {
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
@@ -312,5 +312,5 @@ func TestAttachVolume_IdempotentSameInstance_DeviceMismatch(t *testing.T) {
 		5*time.Second,
 	)
 	require.NoError(t, err)
-	assert.Contains(t, string(resp.Data), awserrors.ErrorInvalidParameterValue)
+	assert.Contains(t, string(resp.Data), awserrors.ErrorVolumeInUse)
 }

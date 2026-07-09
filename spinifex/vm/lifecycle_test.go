@@ -1007,6 +1007,98 @@ func TestSendQMPCommand_NoPathCannotReconnect(t *testing.T) {
 	assert.Contains(t, err.Error(), "no socket path")
 }
 
+// startSingleClientQMPListener models a real `-qmp unix:...,server,nowait`
+// QEMU monitor: single-threaded, serving exactly one connection at a time.
+// Unlike startWorkingQMPListener (which spawns a goroutine per accepted
+// connection and greets all of them concurrently, hiding the
+// reconnect-ordering bug), Accept is only called again once the current
+// connection's serve loop returns — so a second connection dialed while the
+// first is still open sits unaccepted (and ungreeted) in the kernel backlog,
+// exactly like a real single-client monitor, with no lock/goroutine race.
+func startSingleClientQMPListener(t *testing.T) (sockPath string, stop func()) {
+	t.Helper()
+	sockPath = filepath.Join(t.TempDir(), "qmp.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			serveSingleClientQMPConn(conn)
+		}
+	}()
+
+	stopped := false
+	stop = func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		_ = ln.Close()
+		<-done
+	}
+	t.Cleanup(stop)
+	return sockPath, stop
+}
+
+// serveSingleClientQMPConn greets conn, then echoes {"return":{}} for every
+// command line until the connection errors or closes. It blocks for the
+// life of the connection, which is what makes startSingleClientQMPListener's
+// accept loop strictly serial.
+func serveSingleClientQMPConn(conn net.Conn) {
+	defer func() { _ = conn.Close() }()
+	greeting := `{"QMP":{"version":{"qemu":{"major":8,"minor":0}},"capabilities":[]}}` + "\n"
+	if _, err := conn.Write([]byte(greeting)); err != nil {
+		return
+	}
+	dec := json.NewDecoder(conn)
+	for {
+		var cmd map[string]any
+		if err := dec.Decode(&cmd); err != nil {
+			return
+		}
+		if _, err := conn.Write([]byte(`{"return":{}}` + "\n")); err != nil {
+			return
+		}
+	}
+}
+
+// TestSendQMPCommand_ReconnectsAgainstSingleClientServer is the regression
+// test for the reconnectQMP ordering bug (PR #487): against a real QEMU
+// `server,nowait` QMP monitor, only one client may hold a connection at a
+// time. A wedged client's reconnect must close its own stale connection
+// BEFORE dialing fresh, freeing the slot — dialing fresh first (the pre-fix
+// ordering) leaves the old connection occupying the only slot, so the new
+// dial gets no greeting and reconnect fails, leaving q.Dead permanently
+// true and every later attach/detach on the VM erroring.
+func TestSendQMPCommand_ReconnectsAgainstSingleClientServer(t *testing.T) {
+	sockPath, stop := startSingleClientQMPListener(t)
+	defer stop()
+
+	client, err := qmp.NewQMPClient(sockPath)
+	require.NoError(t, err)
+	defer func() { _ = client.Conn.Close() }()
+
+	// The old connection is still open (not yet closed) when Dead is set —
+	// exactly the state a wedged decode leaves behind, and exactly what the
+	// pre-fix bare-dial-before-close ordering could not recover from against
+	// a single-client monitor.
+	client.Dead = true
+
+	resp, err := sendQMPCommand(t.Context(), client, qmp.QMPCommand{Execute: "query-status"}, "i-single-client")
+	require.NoError(t, err, "reconnect must close the stale connection before redialing so the single-client monitor's slot is free")
+	require.NotNil(t, resp)
+	assert.False(t, client.Dead, "reconnect must clear Dead so later commands reuse the fresh stream")
+
+	_, err = sendQMPCommand(t.Context(), client, qmp.QMPCommand{Execute: "query-status"}, "i-single-client")
+	require.NoError(t, err, "a second command must succeed over the reconnected stream")
+}
+
 // TestRemoveStaleQMPSocket covers the SIGKILL-leftover unlink: a stale socket
 // inode is removed, and a missing file is a no-op (not an error).
 func TestRemoveStaleQMPSocket(t *testing.T) {

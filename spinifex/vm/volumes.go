@@ -2,9 +2,11 @@ package vm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -428,13 +430,15 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 // while it runs) rather than going through sendQMPCommand, since the signal
 // we need is an async event, not a command reply.
 //
-// A timeout is treated the same as any other decode failure: q.Decoder is a
-// single shared *json.Decoder, and once Decode returns an error — including a
-// read-deadline timeout — that Decoder instance is permanently unusable, so
-// q.Dead is set exactly as sendQMPCommand does. The next QMP command
-// transparently redials via reconnectQMP. This is non-fatal either way:
-// DetachVolume falls back to the bounded blockdev-del retry, so a missed
-// event never blocks the caller forever.
+// A read-deadline timeout is benign (message boundary, connection stays
+// healthy once the deferred deadline reset below runs), so it must not force
+// the costly full QMP reconnect that q.Dead triggers. encoding/json.Decoder
+// caches read errors on itself permanently, though, so the *json.Decoder is
+// swapped in place instead — cheap, and safe since nothing was read off the
+// wire for the pending value. Any other decode error (EOF, malformed
+// message) leaves the stream position genuinely unknown, so q.Dead is set
+// exactly as sendQMPCommand does. Either way DetachVolume tolerates a miss
+// via the bounded blockdev-del retry, so this never blocks the caller.
 func waitForDeviceDeletedEvent(ctx context.Context, q *qmp.QMPClient, deviceID string, timeout time.Duration, instanceID string) error {
 	if q == nil || q.Conn == nil || q.Decoder == nil {
 		return fmt.Errorf("QMP client is not initialized")
@@ -461,7 +465,13 @@ func waitForDeviceDeletedEvent(ctx context.Context, q *qmp.QMPClient, deviceID s
 			} `json:"data"`
 		}
 		if err := q.Decoder.Decode(&msg); err != nil {
-			q.Dead = true
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				// Replace the poisoned Decoder but keep the healthy conn.
+				q.Decoder = json.NewDecoder(q.Conn)
+			} else {
+				q.Dead = true
+			}
 			return fmt.Errorf("decode error waiting for DEVICE_DELETED: %w", err)
 		}
 		if msg.Event != "DEVICE_DELETED" {

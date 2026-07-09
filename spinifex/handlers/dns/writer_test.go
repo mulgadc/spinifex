@@ -150,6 +150,33 @@ func TestWriterDeleteMissingZoneNoop(t *testing.T) {
 	assert.False(t, ok, "no zone materialised for a delete-only batch")
 }
 
+func TestWriterRejectsUpsertOverRecordQuota(t *testing.T) {
+	w, objects := newTestWriter(t)
+	w.quotas.RecordsPerHostedZone = 1 // base zone already holds the apex NS record
+
+	changes := []Change{{Action: ActionUpsert, Zone: "spx3.net", Name: "host.spx3.net", Type: "A", Value: "1.2.3.4"}}
+	_, err := w.ApplyBatch(&ChangeBatch{Changes: changes})
+	require.Error(t, err, "adding a new record set past the quota must be rejected")
+	assert.Contains(t, err.Error(), "record quota")
+	assert.NotContains(t, objects["spx3.net.toml"], "1.2.3.4", "the zone must not grow past the quota")
+}
+
+func TestWriterReplacingRecordSetNotQuotaLimited(t *testing.T) {
+	w, objects := newTestWriter(t)
+
+	add := []Change{{Action: ActionUpsert, Zone: "spx3.net", Name: "host.spx3.net", Type: "A", Value: "1.2.3.4"}}
+	_, err := w.ApplyBatch(&ChangeBatch{Changes: add})
+	require.NoError(t, err) // spx3.net now holds apex-NS + host = 2 record sets
+
+	// Pin the quota at the current size: replacing an existing record set (same
+	// label+type, new value) must still succeed — only new sets are capped.
+	w.quotas.RecordsPerHostedZone = 2
+	replace := []Change{{Action: ActionUpsert, Zone: "spx3.net", Name: "host.spx3.net", Type: "A", Value: "5.6.7.8"}}
+	_, err = w.ApplyBatch(&ChangeBatch{Changes: replace})
+	require.NoError(t, err, "replacing an existing record set must not hit the record quota")
+	assert.Contains(t, objects["spx3.net.toml"], `address = "5.6.7.8"`)
+}
+
 func TestWriterDisabledWithoutNorthstar(t *testing.T) {
 	w := NewWriter(&config.Config{}, nil)
 	assert.False(t, w.Enabled())

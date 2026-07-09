@@ -23,6 +23,7 @@ type Writer struct {
 	localNS    nsconfig.NameserverSeed
 	ttl        uint32
 	nc         *nats.Conn
+	quotas     Quotas
 }
 
 // NewWriter resolves the northstar S3 endpoint/bucket from the node's
@@ -30,7 +31,7 @@ type Writer struct {
 // writer is disabled (a no-op) when northstar is not configured for S3. The
 // NATS connection, when non-nil, is used to fan out per-zone reload events.
 func NewWriter(cfg *config.Config, nc *nats.Conn) *Writer {
-	w := &Writer{ttl: DefaultTTL, nc: nc}
+	w := &Writer{ttl: DefaultTTL, nc: nc, quotas: DefaultQuotas()}
 	s3cfg, baseDomain, ok := zoneS3Config(cfg)
 	if !ok {
 		slog.Info("dns writer: northstar S3 not configured, record registration disabled")
@@ -132,6 +133,12 @@ func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
 		}
 		switch c.Action {
 		case ActionUpsert:
+			// AWS caps a hosted zone at DefaultRecordsPerHostedZone record sets;
+			// reject a change that would add a new one past the quota. Replacing
+			// an existing record set (same label+type) is always allowed.
+			if !recordSetExists(cfg, label, rtype) && !w.quotas.withinRecordQuota(len(cfg.Records)) {
+				return false, fmt.Errorf("zone %q at record quota (%d): cannot add %s", zone, w.quotas.RecordsPerHostedZone, c.Name)
+			}
 			if cfg.UpsertRecord(label, rtype, nsconfig.ClassIN, c.Value, ttl) {
 				changed = true
 			}
@@ -170,6 +177,17 @@ func recordType(t string) uint16 {
 	default:
 		return nsconfig.TypeA
 	}
+}
+
+// recordSetExists reports whether the zone already holds a record set for
+// (label, rtype); an upsert to it replaces in place and never grows the count.
+func recordSetExists(cfg nsconfig.ConfigArr, label string, rtype uint16) bool {
+	for _, r := range cfg.Records {
+		if strings.EqualFold(r.Domain, label) && r.Type == rtype {
+			return true
+		}
+	}
+	return false
 }
 
 func hasUpsert(changes []Change) bool {

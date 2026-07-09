@@ -36,9 +36,12 @@ const dnsMaxInFlightPerTap = 256
 
 // dnsQueryRatePerTap / dnsQueryBurstPerTap bound a single tap's sustained and
 // burst query rate; a legitimate guest never approaches these, a flood is shed.
+// The rate mirrors AWS Route 53 Resolver's 10,000 UDP-QPS-per-endpoint-IP quota
+// (handlers/dns.DefaultResolverQPSPerIP): the per-tap .253 shim is our
+// resolver-endpoint analog, so this is the AWS-parity ceiling.
 const (
-	dnsQueryRatePerTap  = 200
-	dnsQueryBurstPerTap = 400
+	dnsQueryRatePerTap  = 10_000
+	dnsQueryBurstPerTap = 20_000
 )
 
 // dnsListenFunc binds the per-tap DNS shim sockets — UDP and TCP on

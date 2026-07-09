@@ -20,14 +20,6 @@ import (
 // gives a 20s budget.
 const blockdevDelMaxAttempts = 20
 
-// AttachVolumeResult carries the AWS-API device name (/dev/sd[f-p]) and the
-// in-guest path (/dev/vd*) discovered via QMP. DeviceName is echoed in the
-// API response and volume metadata; GuestDevice is used for diagnostics.
-type AttachVolumeResult struct {
-	DeviceName  string
-	GuestDevice string
-}
-
 // rollbackUnmount best-effort unmounts a volume while unwinding a failed
 // AttachVolume. The volume never took guest writes, so the unmount seal is a
 // no-op; a failure is logged and tolerated rather than masking the attach error.
@@ -55,14 +47,15 @@ func (m *Manager) delIothreadBestEffort(ctx context.Context, instance *VM, iothr
 // AttachVolume hot-plugs a volume via the QMP pipeline (mount → blockdev-add →
 // device_add). Partial state is rolled back on failure. If device is empty, the
 // next free /dev/sd[f-p] slot is allocated. Instance must be in StateRunning.
-func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string) (AttachVolumeResult, error) {
+// Returns the AWS-API device name (/dev/sd[f-p]) echoed in the API response.
+func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string) (string, error) {
 	instance, ok := m.Get(id)
 	if !ok {
-		return AttachVolumeResult{}, ErrInstanceNotFound
+		return "", ErrInstanceNotFound
 	}
 
 	if status := m.Status(instance); status != StateRunning {
-		return AttachVolumeResult{}, fmt.Errorf("%w: cannot attach to instance %s in state %s",
+		return "", fmt.Errorf("%w: cannot attach to instance %s in state %s",
 			ErrInvalidTransition, id, status)
 	}
 
@@ -76,7 +69,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	if device == "" {
 		m.UpdateState(id, func(v *VM) { device = nextAvailableDevice(v) })
 		if device == "" {
-			return AttachVolumeResult{}, ErrAttachmentLimitExceeded
+			return "", ErrAttachmentLimitExceeded
 		}
 	}
 
@@ -86,7 +79,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	}
 
 	if m.deps.VolumeMounter == nil {
-		return AttachVolumeResult{}, fmt.Errorf("VolumeMounter not wired")
+		return "", fmt.Errorf("VolumeMounter not wired")
 	}
 	if err := m.deps.VolumeMounter.MountOne(&ebsRequest); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: ebs.mount failed", "volumeId", volumeID, "err", err)
@@ -95,14 +88,14 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		if errors.Is(err, ErrMountAmbiguous) {
 			m.rollbackUnmount(ebsRequest)
 		}
-		return AttachVolumeResult{}, fmt.Errorf("mount volume %s: %w", volumeID, err)
+		return "", fmt.Errorf("mount volume %s: %w", volumeID, err)
 	}
 
 	serverType, socketPath, nbdHost, nbdPort, err := utils.ParseNBDURI(ebsRequest.NBDURI)
 	if err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
 		m.rollbackUnmount(ebsRequest)
-		return AttachVolumeResult{}, fmt.Errorf("parse NBDURI: %w", err)
+		return "", fmt.Errorf("parse NBDURI: %w", err)
 	}
 
 	var serverArg map[string]any
@@ -129,7 +122,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	if hotplugPort == 0 {
 		slog.ErrorContext(ctx, "AttachVolume: EBS hot-plug port pool exhausted", "volumeId", volumeID)
 		m.rollbackUnmount(ebsRequest)
-		return AttachVolumeResult{}, ErrAttachmentLimitExceeded
+		return "", ErrAttachmentLimitExceeded
 	}
 	ebsRequest.HotplugPort = hotplugPort
 
@@ -142,7 +135,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	}, instance.ID); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: QMP object-add iothread failed", "volumeId", volumeID, "err", err)
 		m.rollbackUnmount(ebsRequest)
-		return AttachVolumeResult{}, fmt.Errorf("QMP object-add iothread: %w", err)
+		return "", fmt.Errorf("QMP object-add iothread: %w", err)
 	}
 
 	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
@@ -158,7 +151,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		slog.ErrorContext(ctx, "AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)
 		m.delIothreadBestEffort(ctx, instance, iothreadID, volumeID)
 		m.rollbackUnmount(ebsRequest)
-		return AttachVolumeResult{}, fmt.Errorf("QMP blockdev-add: %w", err)
+		return "", fmt.Errorf("QMP blockdev-add: %w", err)
 	}
 
 	// The virtio-blk-pci device must land on a free hot-plug PCIe root port
@@ -195,7 +188,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 			m.delIothreadBestEffort(ctx, instance, iothreadID, volumeID)
 			m.rollbackUnmount(ebsRequest)
 		}
-		return AttachVolumeResult{}, fmt.Errorf("QMP device_add: %w", err)
+		return "", fmt.Errorf("QMP device_add: %w", err)
 	}
 
 	// Discover guest device. query-block may not include the device
@@ -274,7 +267,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		"volumeId", volumeID, "instanceId", instance.ID,
 		"apiDevice", device, "guestDevice", guestDevice)
 
-	return AttachVolumeResult{DeviceName: device, GuestDevice: guestDevice}, nil
+	return device, nil
 }
 
 // DetachVolume hot-unplugs a volume via the QMP pipeline (device_del →

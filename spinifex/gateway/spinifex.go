@@ -59,12 +59,12 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		output, err = gateway_spx.GetNodes(ctx, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx))
+		output, err = gateway_spx.GetNodes(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx))
 	case "GetVMs":
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		output, err = gateway_spx.GetVMs(ctx, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx))
+		output, err = gateway_spx.GetVMs(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx))
 	case "GetStorageStatus":
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)

@@ -12,25 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSplitSubjectTail(t *testing.T) {
-	cases := []struct {
-		name    string
-		subject string
-		prefix  string
-		want    string
-	}{
-		{"happy", "system.TerminateInstance.i-abc", "system.TerminateInstance.", "i-abc"},
-		{"empty tail equals prefix length", "system.TerminateInstance.", "system.TerminateInstance.", ""},
-		{"prefix mismatch", "other.subject", "system.TerminateInstance.", ""},
-		{"shorter than prefix", "sys", "system.TerminateInstance.", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, splitSubjectTail(tc.subject, tc.prefix))
-		})
-	}
-}
-
 func TestRespondWithSystemLaunchOutput(t *testing.T) {
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)

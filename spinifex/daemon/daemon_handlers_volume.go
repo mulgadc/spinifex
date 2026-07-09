@@ -75,7 +75,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 		return
 	}
 
-	res, err := d.vmMgr.AttachVolume(ctx, instance.ID, volumeID, command.AttachVolumeData.Device)
+	device, err := d.vmMgr.AttachVolume(ctx, instance.ID, volumeID, command.AttachVolumeData.Device)
 	if err != nil {
 		respondWithError(msg, attachDetachErrorCode(err))
 		return
@@ -88,7 +88,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 	// A guest-form name here breaks the immediate post-attach wait loop.
 	// This diverges intentionally from BlockDeviceMappings, which retain
 	// the guest path under mulga-599.
-	d.respondWithVolumeAttachment(msg, volumeID, command.ID, res.DeviceName, "attached")
+	d.respondWithVolumeAttachment(msg, volumeID, command.ID, device, "attached")
 }
 
 // handleDetachVolume dispatches the QMP/state-machine pipeline to

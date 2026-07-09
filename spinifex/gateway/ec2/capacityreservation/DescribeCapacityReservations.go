@@ -47,7 +47,7 @@ func DescribeCapacityReservations(ctx context.Context, input *ec2.DescribeCapaci
 		return output, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, _, err := utils.GatherCtx(ctx, natsConn, "ec2.DescribeCapacityReservations", payload,
+	frames, _, err := utils.Gather(ctx, natsConn, "ec2.DescribeCapacityReservations", payload,
 		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return output, err

@@ -970,11 +970,6 @@ func init() {
 	viper.BindEnv("encryption-key-file", "SPINIFEX_PREDASTORE_ENCRYPTION_KEY_FILE")
 	viper.BindPFlag("encryption-key-file", predastoreCmd.PersistentFlags().Lookup("encryption-key-file"))
 
-	// Predastore Backend
-	predastoreCmd.PersistentFlags().String("backend", "distributed", "Predastore (S3) backend")
-	viper.BindEnv("backend", "SPINIFEX_PREDASTORE_BACKEND")
-	viper.BindPFlag("backend", predastoreCmd.PersistentFlags().Lookup("backend"))
-
 	// Predastore Node ID. Default -1 is dev mode (launch every configured
 	// QUIC node in-process). Production deployments set this to the node's
 	// real ID (>= 1) via SPINIFEX_PREDASTORE_NODE_ID or --node-id.

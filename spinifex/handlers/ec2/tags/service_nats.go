@@ -22,13 +22,13 @@ func NewNATSTagsService(conn *nats.Conn) TagsService {
 }
 
 func (s *NATSTagsService) CreateTags(ctx context.Context, input *ec2.CreateTagsInput, accountID string) (*ec2.CreateTagsOutput, error) {
-	return utils.NATSRequestCtx[ec2.CreateTagsOutput](ctx, s.natsConn, "ec2.CreateTags", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.CreateTagsOutput](ctx, s.natsConn, "ec2.CreateTags", input, 30*time.Second, accountID)
 }
 
 func (s *NATSTagsService) DescribeTags(ctx context.Context, input *ec2.DescribeTagsInput, accountID string) (*ec2.DescribeTagsOutput, error) {
-	return utils.NATSRequestCtx[ec2.DescribeTagsOutput](ctx, s.natsConn, "ec2.DescribeTags", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DescribeTagsOutput](ctx, s.natsConn, "ec2.DescribeTags", input, 30*time.Second, accountID)
 }
 
 func (s *NATSTagsService) DeleteTags(ctx context.Context, input *ec2.DeleteTagsInput, accountID string) (*ec2.DeleteTagsOutput, error) {
-	return utils.NATSRequestCtx[ec2.DeleteTagsOutput](ctx, s.natsConn, "ec2.DeleteTags", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DeleteTagsOutput](ctx, s.natsConn, "ec2.DeleteTags", input, 30*time.Second, accountID)
 }

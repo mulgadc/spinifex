@@ -26,12 +26,12 @@ func NewNATSMetaStore(conn *nats.Conn) *NATSMetaStore {
 }
 
 func (s *NATSMetaStore) PutRepo(ctx context.Context, accountID string, meta RepoMeta) error {
-	_, err := utils.NATSRequestCtx[RepoCreateResponse](ctx, s.conn, SubjectRepoCreate, &RepoCreateRequest{Meta: meta}, metaRequestTimeout, accountID)
+	_, err := utils.NATSRequest[RepoCreateResponse](ctx, s.conn, SubjectRepoCreate, &RepoCreateRequest{Meta: meta}, metaRequestTimeout, accountID)
 	return err
 }
 
 func (s *NATSMetaStore) GetRepo(ctx context.Context, accountID, repo string) (RepoMeta, error) {
-	resp, err := utils.NATSRequestCtx[RepoDescribeResponse](ctx, s.conn, SubjectRepoDescribe, &RepoDescribeRequest{Repo: repo}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[RepoDescribeResponse](ctx, s.conn, SubjectRepoDescribe, &RepoDescribeRequest{Repo: repo}, metaRequestTimeout, accountID)
 	if err != nil {
 		return RepoMeta{}, err
 	}
@@ -42,7 +42,7 @@ func (s *NATSMetaStore) GetRepo(ctx context.Context, accountID, repo string) (Re
 }
 
 func (s *NATSMetaStore) ListRepos(ctx context.Context, accountID string) ([]string, error) {
-	resp, err := utils.NATSRequestCtx[RepoListResponse](ctx, s.conn, SubjectRepoList, &RepoListRequest{}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[RepoListResponse](ctx, s.conn, SubjectRepoList, &RepoListRequest{}, metaRequestTimeout, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (s *NATSMetaStore) ListRepos(ctx context.Context, accountID string) ([]stri
 }
 
 func (s *NATSMetaStore) DeleteRepo(ctx context.Context, accountID, repo string) error {
-	resp, err := utils.NATSRequestCtx[RepoDeleteResponse](ctx, s.conn, SubjectRepoDelete, &RepoDeleteRequest{Repo: repo}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[RepoDeleteResponse](ctx, s.conn, SubjectRepoDelete, &RepoDeleteRequest{Repo: repo}, metaRequestTimeout, accountID)
 	if err != nil {
 		return err
 	}
@@ -61,7 +61,7 @@ func (s *NATSMetaStore) DeleteRepo(ctx context.Context, accountID, repo string) 
 }
 
 func (s *NATSMetaStore) ListManifests(ctx context.Context, accountID, repo string) ([]string, error) {
-	resp, err := utils.NATSRequestCtx[ManifestListResponse](ctx, s.conn, SubjectManifestList, &ManifestListRequest{Repo: repo}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[ManifestListResponse](ctx, s.conn, SubjectManifestList, &ManifestListRequest{Repo: repo}, metaRequestTimeout, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -69,12 +69,12 @@ func (s *NATSMetaStore) ListManifests(ctx context.Context, accountID, repo strin
 }
 
 func (s *NATSMetaStore) PutRepoPolicy(ctx context.Context, accountID, repo string, policyText []byte) error {
-	_, err := utils.NATSRequestCtx[PolicyPutResponse](ctx, s.conn, SubjectPolicyPut, &PolicyPutRequest{Repo: repo, PolicyText: policyText}, metaRequestTimeout, accountID)
+	_, err := utils.NATSRequest[PolicyPutResponse](ctx, s.conn, SubjectPolicyPut, &PolicyPutRequest{Repo: repo, PolicyText: policyText}, metaRequestTimeout, accountID)
 	return err
 }
 
 func (s *NATSMetaStore) GetRepoPolicy(ctx context.Context, accountID, repo string) ([]byte, error) {
-	resp, err := utils.NATSRequestCtx[PolicyGetResponse](ctx, s.conn, SubjectPolicyGet, &PolicyGetRequest{Repo: repo}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[PolicyGetResponse](ctx, s.conn, SubjectPolicyGet, &PolicyGetRequest{Repo: repo}, metaRequestTimeout, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func (s *NATSMetaStore) GetRepoPolicy(ctx context.Context, accountID, repo strin
 }
 
 func (s *NATSMetaStore) DeleteRepoPolicy(ctx context.Context, accountID, repo string) ([]byte, error) {
-	resp, err := utils.NATSRequestCtx[PolicyDeleteResponse](ctx, s.conn, SubjectPolicyDelete, &PolicyDeleteRequest{Repo: repo}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[PolicyDeleteResponse](ctx, s.conn, SubjectPolicyDelete, &PolicyDeleteRequest{Repo: repo}, metaRequestTimeout, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -96,12 +96,12 @@ func (s *NATSMetaStore) DeleteRepoPolicy(ctx context.Context, accountID, repo st
 }
 
 func (s *NATSMetaStore) PutLifecyclePolicy(ctx context.Context, accountID, repo string, policyText []byte) error {
-	_, err := utils.NATSRequestCtx[LifecyclePutResponse](ctx, s.conn, SubjectLifecyclePut, &LifecyclePutRequest{Repo: repo, PolicyText: policyText}, metaRequestTimeout, accountID)
+	_, err := utils.NATSRequest[LifecyclePutResponse](ctx, s.conn, SubjectLifecyclePut, &LifecyclePutRequest{Repo: repo, PolicyText: policyText}, metaRequestTimeout, accountID)
 	return err
 }
 
 func (s *NATSMetaStore) GetLifecyclePolicy(ctx context.Context, accountID, repo string) ([]byte, error) {
-	resp, err := utils.NATSRequestCtx[LifecycleGetResponse](ctx, s.conn, SubjectLifecycleGet, &LifecycleGetRequest{Repo: repo}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[LifecycleGetResponse](ctx, s.conn, SubjectLifecycleGet, &LifecycleGetRequest{Repo: repo}, metaRequestTimeout, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (s *NATSMetaStore) GetLifecyclePolicy(ctx context.Context, accountID, repo 
 }
 
 func (s *NATSMetaStore) DeleteLifecyclePolicy(ctx context.Context, accountID, repo string) ([]byte, error) {
-	resp, err := utils.NATSRequestCtx[LifecycleDeleteResponse](ctx, s.conn, SubjectLifecycleDelete, &LifecycleDeleteRequest{Repo: repo}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[LifecycleDeleteResponse](ctx, s.conn, SubjectLifecycleDelete, &LifecycleDeleteRequest{Repo: repo}, metaRequestTimeout, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -123,12 +123,12 @@ func (s *NATSMetaStore) DeleteLifecyclePolicy(ctx context.Context, accountID, re
 }
 
 func (s *NATSMetaStore) PutTag(ctx context.Context, accountID, repo, tag, digest string) error {
-	_, err := utils.NATSRequestCtx[TagPutResponse](ctx, s.conn, SubjectTagPut, &TagPutRequest{Repo: repo, Tag: tag, Digest: digest}, metaRequestTimeout, accountID)
+	_, err := utils.NATSRequest[TagPutResponse](ctx, s.conn, SubjectTagPut, &TagPutRequest{Repo: repo, Tag: tag, Digest: digest}, metaRequestTimeout, accountID)
 	return err
 }
 
 func (s *NATSMetaStore) GetTag(ctx context.Context, accountID, repo, tag string) (string, error) {
-	resp, err := utils.NATSRequestCtx[TagGetResponse](ctx, s.conn, SubjectTagGet, &TagGetRequest{Repo: repo, Tag: tag}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[TagGetResponse](ctx, s.conn, SubjectTagGet, &TagGetRequest{Repo: repo, Tag: tag}, metaRequestTimeout, accountID)
 	if err != nil {
 		return "", err
 	}
@@ -139,7 +139,7 @@ func (s *NATSMetaStore) GetTag(ctx context.Context, accountID, repo, tag string)
 }
 
 func (s *NATSMetaStore) DeleteTag(ctx context.Context, accountID, repo, tag string) error {
-	resp, err := utils.NATSRequestCtx[TagDeleteResponse](ctx, s.conn, SubjectTagDelete, &TagDeleteRequest{Repo: repo, Tag: tag}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[TagDeleteResponse](ctx, s.conn, SubjectTagDelete, &TagDeleteRequest{Repo: repo, Tag: tag}, metaRequestTimeout, accountID)
 	if err != nil {
 		return err
 	}
@@ -150,7 +150,7 @@ func (s *NATSMetaStore) DeleteTag(ctx context.Context, accountID, repo, tag stri
 }
 
 func (s *NATSMetaStore) ListTags(ctx context.Context, accountID, repo string) ([]string, error) {
-	resp, err := utils.NATSRequestCtx[TagListResponse](ctx, s.conn, SubjectTagList, &TagListRequest{Repo: repo}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[TagListResponse](ctx, s.conn, SubjectTagList, &TagListRequest{Repo: repo}, metaRequestTimeout, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -158,12 +158,12 @@ func (s *NATSMetaStore) ListTags(ctx context.Context, accountID, repo string) ([
 }
 
 func (s *NATSMetaStore) PutManifestMeta(ctx context.Context, accountID, repo string, meta ManifestMeta) error {
-	_, err := utils.NATSRequestCtx[ManifestPutResponse](ctx, s.conn, SubjectManifestPut, &ManifestPutRequest{Repo: repo, Meta: meta}, metaRequestTimeout, accountID)
+	_, err := utils.NATSRequest[ManifestPutResponse](ctx, s.conn, SubjectManifestPut, &ManifestPutRequest{Repo: repo, Meta: meta}, metaRequestTimeout, accountID)
 	return err
 }
 
 func (s *NATSMetaStore) GetManifestMeta(ctx context.Context, accountID, repo, digest string) (ManifestMeta, error) {
-	resp, err := utils.NATSRequestCtx[ManifestDescribeResponse](ctx, s.conn, SubjectManifestDescribe, &ManifestDescribeRequest{Repo: repo, Digest: digest}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[ManifestDescribeResponse](ctx, s.conn, SubjectManifestDescribe, &ManifestDescribeRequest{Repo: repo, Digest: digest}, metaRequestTimeout, accountID)
 	if err != nil {
 		return ManifestMeta{}, err
 	}
@@ -174,7 +174,7 @@ func (s *NATSMetaStore) GetManifestMeta(ctx context.Context, accountID, repo, di
 }
 
 func (s *NATSMetaStore) DeleteManifestMeta(ctx context.Context, accountID, repo, digest string) error {
-	resp, err := utils.NATSRequestCtx[ManifestDeleteResponse](ctx, s.conn, SubjectManifestDelete, &ManifestDeleteRequest{Repo: repo, Digest: digest}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[ManifestDeleteResponse](ctx, s.conn, SubjectManifestDelete, &ManifestDeleteRequest{Repo: repo, Digest: digest}, metaRequestTimeout, accountID)
 	if err != nil {
 		return err
 	}
@@ -185,7 +185,7 @@ func (s *NATSMetaStore) DeleteManifestMeta(ctx context.Context, accountID, repo,
 }
 
 func (s *NATSMetaStore) PutUpload(ctx context.Context, accountID, uploadID string, state UploadState) (uint64, error) {
-	resp, err := utils.NATSRequestCtx[UploadCreateResponse](ctx, s.conn, SubjectUploadCreate, &UploadCreateRequest{UploadID: uploadID, State: state}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[UploadCreateResponse](ctx, s.conn, SubjectUploadCreate, &UploadCreateRequest{UploadID: uploadID, State: state}, metaRequestTimeout, accountID)
 	if err != nil {
 		return 0, err
 	}
@@ -193,7 +193,7 @@ func (s *NATSMetaStore) PutUpload(ctx context.Context, accountID, uploadID strin
 }
 
 func (s *NATSMetaStore) GetUpload(ctx context.Context, accountID, uploadID string) (UploadState, uint64, error) {
-	resp, err := utils.NATSRequestCtx[UploadGetResponse](ctx, s.conn, SubjectUploadGet, &UploadGetRequest{UploadID: uploadID}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[UploadGetResponse](ctx, s.conn, SubjectUploadGet, &UploadGetRequest{UploadID: uploadID}, metaRequestTimeout, accountID)
 	if err != nil {
 		return UploadState{}, 0, err
 	}
@@ -204,7 +204,7 @@ func (s *NATSMetaStore) GetUpload(ctx context.Context, accountID, uploadID strin
 }
 
 func (s *NATSMetaStore) UpdateUpload(ctx context.Context, accountID, uploadID string, state UploadState, rev uint64) (uint64, error) {
-	resp, err := utils.NATSRequestCtx[UploadUpdateResponse](ctx, s.conn, SubjectUploadUpdate, &UploadUpdateRequest{UploadID: uploadID, State: state, Revision: rev}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[UploadUpdateResponse](ctx, s.conn, SubjectUploadUpdate, &UploadUpdateRequest{UploadID: uploadID, State: state, Revision: rev}, metaRequestTimeout, accountID)
 	if err != nil {
 		return 0, err
 	}
@@ -218,7 +218,7 @@ func (s *NATSMetaStore) UpdateUpload(ctx context.Context, accountID, uploadID st
 }
 
 func (s *NATSMetaStore) DeleteUpload(ctx context.Context, accountID, uploadID string) error {
-	resp, err := utils.NATSRequestCtx[UploadDeleteResponse](ctx, s.conn, SubjectUploadDelete, &UploadDeleteRequest{UploadID: uploadID}, metaRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[UploadDeleteResponse](ctx, s.conn, SubjectUploadDelete, &UploadDeleteRequest{UploadID: uploadID}, metaRequestTimeout, accountID)
 	if err != nil {
 		return err
 	}

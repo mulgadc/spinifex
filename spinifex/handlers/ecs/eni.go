@@ -61,7 +61,7 @@ func (c *natsENIController) Allocate(ctx context.Context, accountID, subnetID st
 		Groups:      securityGroups,
 		Description: aws.String("ecs-awsvpc-task"),
 	}
-	out, err := utils.NATSRequestCtx[ec2.CreateNetworkInterfaceOutput](ctx, c.nc, "ec2.CreateNetworkInterface", in, c.timeout, accountID)
+	out, err := utils.NATSRequest[ec2.CreateNetworkInterfaceOutput](ctx, c.nc, "ec2.CreateNetworkInterface", in, c.timeout, accountID)
 	if err != nil {
 		return eniAllocation{}, fmt.Errorf("create task ENI: %w", err)
 	}
@@ -87,7 +87,7 @@ func (c *natsENIController) Attach(ctx context.Context, accountID, instanceID, e
 			DeviceIndex:        taskENIDeviceIndex,
 		},
 	}
-	out, err := utils.NATSRequestCtx[ec2.AttachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(instanceID), cmd, c.timeout, accountID)
+	out, err := utils.NATSRequest[ec2.AttachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(instanceID), cmd, c.timeout, accountID)
 	if err != nil {
 		return "", fmt.Errorf("attach task ENI %s -> %s: %w", eniID, instanceID, err)
 	}
@@ -109,14 +109,14 @@ func (c *natsENIController) Release(ctx context.Context, accountID string, rec *
 				Force:        true,
 			},
 		}
-		_, err := utils.NATSRequestCtx[ec2.DetachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(rec.ContainerInstanceID), cmd, c.timeout, accountID)
+		_, err := utils.NATSRequest[ec2.DetachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(rec.ContainerInstanceID), cmd, c.timeout, accountID)
 		if err != nil && !isENINotFound(err) {
 			return fmt.Errorf("detach task ENI %s: %w", rec.ENIID, err)
 		}
 	}
 
 	del := &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(rec.ENIID)}
-	_, err := utils.NATSRequestCtx[ec2.DeleteNetworkInterfaceOutput](ctx, c.nc, "ec2.DeleteNetworkInterface", del, c.timeout, accountID)
+	_, err := utils.NATSRequest[ec2.DeleteNetworkInterfaceOutput](ctx, c.nc, "ec2.DeleteNetworkInterface", del, c.timeout, accountID)
 	if err != nil && !isENINotFound(err) {
 		return fmt.Errorf("delete task ENI %s: %w", rec.ENIID, err)
 	}

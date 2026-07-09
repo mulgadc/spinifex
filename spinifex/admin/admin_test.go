@@ -222,7 +222,7 @@ func TestSetupAWSCredentials_CreatesFiles(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 
-	err := SetupAWSCredentials("AKIATEST123", "secret123", "us-east-1", "/path/to/ca.pem", "", "")
+	err := SetupAWSCredentials("AKIATEST123", "secret123", "us-east-1", "/path/to/ca.pem", "")
 	require.NoError(t, err)
 
 	credData, _ := os.ReadFile(filepath.Join(dir, ".aws", "credentials"))
@@ -245,7 +245,7 @@ func TestSetupAWSCredentials_PreservesExistingProfiles(t *testing.T) {
 		"aws_access_key_id": "EXISTING_KEY",
 	}))
 
-	err := SetupAWSCredentials("NEWAKEY", "NEWSECRET", "us-west-2", "/ca.pem", "", "")
+	err := SetupAWSCredentials("NEWAKEY", "NEWSECRET", "us-west-2", "/ca.pem", "")
 	require.NoError(t, err)
 
 	data, _ := os.ReadFile(filepath.Join(awsDir, "credentials"))
@@ -258,7 +258,7 @@ func TestSetupAWSCredentials_UsesBindIP(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 
-	err := SetupAWSCredentials("AKIATEST123", "secret123", "us-east-1", "/ca.pem", "10.11.12.1", "")
+	err := SetupAWSCredentials("AKIATEST123", "secret123", "us-east-1", "/ca.pem", "10.11.12.1")
 	require.NoError(t, err)
 
 	configData, _ := os.ReadFile(filepath.Join(dir, ".aws", "config"))
@@ -270,7 +270,7 @@ func TestSetupAWSCredentials_FallsBackToLocalhostForWildcard(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 
-	err := SetupAWSCredentials("AKIATEST123", "secret123", "us-east-1", "/ca.pem", "0.0.0.0", "")
+	err := SetupAWSCredentials("AKIATEST123", "secret123", "us-east-1", "/ca.pem", "0.0.0.0")
 	require.NoError(t, err)
 
 	configData, _ := os.ReadFile(filepath.Join(dir, ".aws", "config"))

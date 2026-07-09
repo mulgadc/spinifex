@@ -22,13 +22,13 @@ func NewNATSNatGatewayService(conn *nats.Conn) NatGatewayService {
 }
 
 func (s *NATSNatGatewayService) CreateNatGateway(ctx context.Context, input *ec2.CreateNatGatewayInput, accountID string) (*ec2.CreateNatGatewayOutput, error) {
-	return utils.NATSRequestCtx[ec2.CreateNatGatewayOutput](ctx, s.natsConn, "ec2.CreateNatGateway", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.CreateNatGatewayOutput](ctx, s.natsConn, "ec2.CreateNatGateway", input, 30*time.Second, accountID)
 }
 
 func (s *NATSNatGatewayService) DeleteNatGateway(ctx context.Context, input *ec2.DeleteNatGatewayInput, accountID string) (*ec2.DeleteNatGatewayOutput, error) {
-	return utils.NATSRequestCtx[ec2.DeleteNatGatewayOutput](ctx, s.natsConn, "ec2.DeleteNatGateway", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DeleteNatGatewayOutput](ctx, s.natsConn, "ec2.DeleteNatGateway", input, 30*time.Second, accountID)
 }
 
 func (s *NATSNatGatewayService) DescribeNatGateways(ctx context.Context, input *ec2.DescribeNatGatewaysInput, accountID string) (*ec2.DescribeNatGatewaysOutput, error) {
-	return utils.NATSRequestCtx[ec2.DescribeNatGatewaysOutput](ctx, s.natsConn, "ec2.DescribeNatGateways", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DescribeNatGatewaysOutput](ctx, s.natsConn, "ec2.DescribeNatGateways", input, 30*time.Second, accountID)
 }

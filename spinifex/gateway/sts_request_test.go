@@ -253,7 +253,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "GetSessionTokenResult")
 	assert.Contains(t, xmlStr, "ASIAEXAMPLE123")
 
-	// Verify forwarded identity fields and that checkPolicy did not block (GetSessionToken is in stsSkipPolicyCheck).
+	// Verify forwarded identity fields and that checkPolicy did not block (STS_Request runs no checkPolicy pass).
 	assert.Equal(t, utils.GlobalAccountID, got.accountID)
 	assert.Equal(t, "alice", got.userName)
 	assert.Equal(t, principalTypeUser, got.principalType)

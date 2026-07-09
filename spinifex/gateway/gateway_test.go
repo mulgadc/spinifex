@@ -285,7 +285,7 @@ func TestDiscoverActiveNodes_NilNATS(t *testing.T) {
 		NATSConn:      nil,
 	}
 
-	result := gw.DiscoverActiveNodes()
+	result := gw.DiscoverActiveNodes(context.Background())
 	assert.Equal(t, 3, result)
 }
 
@@ -297,7 +297,7 @@ func TestDiscoverActiveNodes_NoResponders(t *testing.T) {
 		NATSConn:      nc,
 	}
 
-	result := gw.DiscoverActiveNodes()
+	result := gw.DiscoverActiveNodes(context.Background())
 	assert.Equal(t, 5, result)
 }
 
@@ -320,7 +320,7 @@ func TestDiscoverActiveNodes_WithResponders(t *testing.T) {
 		NATSConn:      nc,
 	}
 
-	result := gw.DiscoverActiveNodes()
+	result := gw.DiscoverActiveNodes(context.Background())
 	assert.Equal(t, 2, result)
 }
 
@@ -338,7 +338,7 @@ func TestDiscoverActiveNodes_InvalidJSON(t *testing.T) {
 		NATSConn:      nc,
 	}
 
-	result := gw.DiscoverActiveNodes()
+	result := gw.DiscoverActiveNodes(context.Background())
 	assert.Equal(t, 4, result)
 }
 
@@ -360,7 +360,7 @@ func TestDiscoverActiveNodes_DuplicateNodes(t *testing.T) {
 		NATSConn:      nc,
 	}
 
-	result := gw.DiscoverActiveNodes()
+	result := gw.DiscoverActiveNodes(context.Background())
 	assert.Equal(t, 1, result)
 }
 
@@ -487,11 +487,6 @@ func TestGetService(t *testing.T) {
 			name:    "iam service",
 			ctxVal:  "iam",
 			wantSvc: "iam",
-		},
-		{
-			name:    "account service",
-			ctxVal:  "account",
-			wantSvc: "account",
 		},
 		{
 			name:    "tagging service",

@@ -29,7 +29,7 @@ func NewNATSImageService(conn *nats.Conn, expectedNodes int) ImageService {
 }
 
 func (s *NATSImageService) DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error) {
-	return utils.NATSRequestCtx[ec2.DescribeImagesOutput](ctx, s.natsConn, "ec2.DescribeImages", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DescribeImagesOutput](ctx, s.natsConn, "ec2.DescribeImages", input, 30*time.Second, accountID)
 }
 
 func (s *NATSImageService) CreateImage(ctx context.Context, input *ec2.CreateImageInput, accountID string) (*ec2.CreateImageOutput, error) {
@@ -38,7 +38,7 @@ func (s *NATSImageService) CreateImage(ctx context.Context, input *ec2.CreateIma
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, sum, err := utils.GatherCtx(ctx, s.natsConn, "ec2.CreateImage", jsonData,
+	frames, sum, err := utils.Gather(ctx, s.natsConn, "ec2.CreateImage", jsonData,
 		utils.GatherOpts{Timeout: 120 * time.Second, ExpectedNodes: s.expectedNodes, StopOnFirst: true, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -67,25 +67,25 @@ func (s *NATSImageService) CreateImage(ctx context.Context, input *ec2.CreateIma
 }
 
 func (s *NATSImageService) CopyImage(ctx context.Context, input *ec2.CopyImageInput, accountID string) (*ec2.CopyImageOutput, error) {
-	return utils.NATSRequestCtx[ec2.CopyImageOutput](ctx, s.natsConn, "ec2.CopyImage", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.CopyImageOutput](ctx, s.natsConn, "ec2.CopyImage", input, 30*time.Second, accountID)
 }
 
 func (s *NATSImageService) DescribeImageAttribute(ctx context.Context, input *ec2.DescribeImageAttributeInput, accountID string) (*ec2.DescribeImageAttributeOutput, error) {
-	return utils.NATSRequestCtx[ec2.DescribeImageAttributeOutput](ctx, s.natsConn, "ec2.DescribeImageAttribute", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DescribeImageAttributeOutput](ctx, s.natsConn, "ec2.DescribeImageAttribute", input, 30*time.Second, accountID)
 }
 
 func (s *NATSImageService) RegisterImage(ctx context.Context, input *ec2.RegisterImageInput, accountID string) (*ec2.RegisterImageOutput, error) {
-	return utils.NATSRequestCtx[ec2.RegisterImageOutput](ctx, s.natsConn, "ec2.RegisterImage", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.RegisterImageOutput](ctx, s.natsConn, "ec2.RegisterImage", input, 30*time.Second, accountID)
 }
 
 func (s *NATSImageService) DeregisterImage(ctx context.Context, input *ec2.DeregisterImageInput, accountID string) (*ec2.DeregisterImageOutput, error) {
-	return utils.NATSRequestCtx[ec2.DeregisterImageOutput](ctx, s.natsConn, "ec2.DeregisterImage", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DeregisterImageOutput](ctx, s.natsConn, "ec2.DeregisterImage", input, 30*time.Second, accountID)
 }
 
 func (s *NATSImageService) ModifyImageAttribute(ctx context.Context, input *ec2.ModifyImageAttributeInput, accountID string) (*ec2.ModifyImageAttributeOutput, error) {
-	return utils.NATSRequestCtx[ec2.ModifyImageAttributeOutput](ctx, s.natsConn, "ec2.ModifyImageAttribute", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.ModifyImageAttributeOutput](ctx, s.natsConn, "ec2.ModifyImageAttribute", input, 30*time.Second, accountID)
 }
 
 func (s *NATSImageService) ResetImageAttribute(ctx context.Context, input *ec2.ResetImageAttributeInput, accountID string) (*ec2.ResetImageAttributeOutput, error) {
-	return utils.NATSRequestCtx[ec2.ResetImageAttributeOutput](ctx, s.natsConn, "ec2.ResetImageAttribute", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.ResetImageAttributeOutput](ctx, s.natsConn, "ec2.ResetImageAttribute", input, 30*time.Second, accountID)
 }

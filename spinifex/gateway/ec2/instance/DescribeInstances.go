@@ -56,7 +56,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 		return nil, false, "", fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, sum, err := utils.GatherCtx(ctx, natsConn, "ec2.DescribeInstances", jsonData,
+	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstances", jsonData,
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, false, "", err

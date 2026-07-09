@@ -53,7 +53,7 @@ func DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceA
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, sum, err := utils.GatherCtx(ctx, natsConn, "ec2.DescribeInstanceAttribute", jsonData,
+	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstanceAttribute", jsonData,
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, StopOnFirst: true, AccountID: accountID})
 	if err != nil {
 		return nil, err

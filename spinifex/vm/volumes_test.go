@@ -776,13 +776,11 @@ func TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata(t *testing.T) {
 		QMPClient: qmpClient,
 	})
 
-	res, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	device, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.NoError(t, err)
 
-	assert.Equal(t, "/dev/sdf", res.DeviceName,
-		"AttachVolumeResult.DeviceName must echo the API-form name so the daemon's AttachVolume response and aws_volume_attachment's post-attach wait both round-trip the AWS-spec contract")
-	assert.Equal(t, "/dev/vdc", res.GuestDevice,
-		"AttachVolumeResult.GuestDevice must carry the in-guest virtio path discovered from query-block")
+	assert.Equal(t, "/dev/sdf", device,
+		"AttachVolume must return the API-form name so the daemon's AttachVolume response and aws_volume_attachment's post-attach wait both round-trip the AWS-spec contract")
 
 	calls := stateUpdater.snapshot()
 	require.Len(t, calls, 1,

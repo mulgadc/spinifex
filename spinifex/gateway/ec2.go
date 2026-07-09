@@ -97,7 +97,7 @@ func ec2HandlerWithReq[In any](handler func(ctx context.Context, input *In, gw *
 
 var ec2Actions = map[string]EC2Handler{
 	"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		out, err := gateway_ec2_instance.DescribeInstances(ctx, input, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx), accountID)
+		out, err := gateway_ec2_instance.DescribeInstances(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 		if err != nil {
 			return out, err
 		}
@@ -129,16 +129,16 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_instance.AssociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
 	}),
 	"DisassociateIamInstanceProfile": ec2Handler(func(ctx context.Context, input *ec2.DisassociateIamInstanceProfileInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DisassociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx), accountID)
+		return gateway_ec2_instance.DisassociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"ReplaceIamInstanceProfileAssociation": ec2HandlerWithReq(func(ctx context.Context, input *ec2.ReplaceIamInstanceProfileAssociationInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
 		}
-		return gateway_ec2_instance.ReplaceIamInstanceProfileAssociation(ctx, input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodesCtx(ctx), accountID, passRoleCheck)
+		return gateway_ec2_instance.ReplaceIamInstanceProfileAssociation(ctx, input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodes(ctx), accountID, passRoleCheck)
 	}),
 	"DescribeIamInstanceProfileAssociations": ec2Handler(func(ctx context.Context, input *ec2.DescribeIamInstanceProfileAssociationsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeIamInstanceProfileAssociations(ctx, input, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx), accountID)
+		return gateway_ec2_instance.DescribeIamInstanceProfileAssociations(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"StartInstances": ec2Handler(func(ctx context.Context, input *ec2.StartInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.StartInstances(ctx, input, gw.NATSConn, accountID)
@@ -156,7 +156,7 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_instance.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"DescribeInstanceStatus": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceStatusInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceStatus(ctx, input, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx), accountID, gw.AZ)
+		return gateway_ec2_instance.DescribeInstanceStatus(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, gw.AZ)
 	}),
 	"GetConsoleOutput": ec2Handler(func(ctx context.Context, input *ec2.GetConsoleOutputInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.GetConsoleOutput(ctx, input, gw.NATSConn, accountID)
@@ -183,7 +183,7 @@ var ec2Actions = map[string]EC2Handler{
 		return out, nil
 	}),
 	"DescribeInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceAttribute(ctx, input, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx), accountID)
+		return gateway_ec2_instance.DescribeInstanceAttribute(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"ModifyInstanceMetadataOptions": ec2Handler(func(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.ModifyInstanceMetadataOptions(ctx, input, gw.NATSConn, accountID)
@@ -213,7 +213,7 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_image.DescribeImages(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateImage": ec2Handler(func(ctx context.Context, input *ec2.CreateImageInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.CreateImage(ctx, input, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx), accountID)
+		return gateway_ec2_image.CreateImage(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"DeregisterImage": ec2Handler(func(ctx context.Context, input *ec2.DeregisterImageInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_image.DeregisterImage(ctx, input, gw.NATSConn, accountID)
@@ -255,7 +255,7 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_volume.CreateVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteVolume": ec2Handler(func(ctx context.Context, input *ec2.DeleteVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DeleteVolume(ctx, input, gw.NATSConn, gw.DiscoverActiveNodesCtx(ctx), accountID)
+		return gateway_ec2_volume.DeleteVolume(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"AttachVolume": ec2Handler(func(ctx context.Context, input *ec2.AttachVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_volume.AttachVolume(ctx, input, gw.NATSConn, accountID)

@@ -754,8 +754,7 @@ func GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath string, extraIP
 
 // SetupAWSCredentials updates ~/.aws/credentials and ~/.aws/config.
 // When running under sudo, writes to SUDO_USER's home instead of root's.
-func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP, wanIP string) error {
-	_ = wanIP
+func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err

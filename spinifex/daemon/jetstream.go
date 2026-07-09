@@ -450,34 +450,16 @@ func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) erro
 	return nil
 }
 
-// WriteStateBestEffort attempts to push instance state to KV with a deadline.
-// On timeout or error, it logs a warning and returns — never blocks the caller
-// past `timeout` and never returns an error. Used when the local state file is
-// the source of truth and KV is a best-effort cache. vms must be a snapshot
-// owned by the caller (e.g. from vm.Manager.SnapshotMap).
+// WriteStateBytesBestEffort attempts to push pre-marshalled instance state to KV
+// with a deadline. On timeout or error, it logs a warning and returns — never
+// blocks the caller past `timeout` and never returns an error. Used when the
+// local state file is the source of truth and KV is a best-effort cache; hot
+// paths marshal under a short-lived lock and commit lock-free.
 //
 // Note: kv.Put has no context API. On timeout, the in-flight Put goroutine
 // continues and completes (or fails) on its own. This leaks at most one
 // goroutine per write; under sustained partition the leak is bounded by
 // WriteState call cadence (per-state-transition, not a tight loop).
-func (m *JetStreamManager) WriteStateBestEffort(nodeID string, vms map[string]*vm.VM, timeout time.Duration) {
-	if m.kv == nil {
-		slog.Debug("KV bucket not initialized, skipping cluster sync", "node", nodeID)
-		return
-	}
-
-	jsonData, err := marshalInstanceState(vms)
-	if err != nil {
-		slog.Warn("KV sync skipped: marshal failed", "node", nodeID, "err", err)
-		return
-	}
-
-	m.WriteStateBytesBestEffort(nodeID, jsonData, timeout)
-}
-
-// WriteStateBytesBestEffort behaves like WriteStateBestEffort but accepts
-// pre-marshalled JSON. Used by hot paths that marshal under a short-lived lock
-// and commit lock-free.
 func (m *JetStreamManager) WriteStateBytesBestEffort(nodeID string, jsonData []byte, timeout time.Duration) {
 	if m.kv == nil {
 		slog.Debug("KV bucket not initialized, skipping cluster sync", "node", nodeID)

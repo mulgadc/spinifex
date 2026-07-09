@@ -75,7 +75,7 @@ func AssociateIamInstanceProfile(ctx context.Context, input *ec2.AssociateIamIns
 	}
 
 	subject := fmt.Sprintf("ec2.cmd.%s", *input.InstanceId)
-	assoc, err := utils.NatsRequest[ec2.IamInstanceProfileAssociation](ctx, natsConn, subject, command, fanOutTimeout, accountID)
+	assoc, err := utils.NATSRequest[ec2.IamInstanceProfileAssociation](ctx, natsConn, subject, command, fanOutTimeout, accountID)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {
 			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)

@@ -22,5 +22,5 @@ func ModifyInstanceMetadataOptions(ctx context.Context, input *ec2.ModifyInstanc
 	if !strings.HasPrefix(*input.InstanceId, "i-") {
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDMalformed)
 	}
-	return utils.NatsRequest[ec2.ModifyInstanceMetadataOptionsOutput](ctx, natsConn, "ec2.ModifyInstanceMetadataOptions", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.ModifyInstanceMetadataOptionsOutput](ctx, natsConn, "ec2.ModifyInstanceMetadataOptions", input, 30*time.Second, accountID)
 }

@@ -50,7 +50,7 @@ func (d *Daemon) RunWorkerInstanceOnNode(ctx context.Context, nodeID string, inp
 		return nil, errors.New("eks worker: NATS connection not initialized")
 	}
 	subject := fmt.Sprintf("ec2.RunInstances.%s.%s", aws.StringValue(input.InstanceType), nodeID)
-	return utils.NatsRequest[ec2.Reservation](ctx, d.natsConn, subject, input, 5*time.Minute, accountID)
+	return utils.NATSRequest[ec2.Reservation](ctx, d.natsConn, subject, input, 5*time.Minute, accountID)
 }
 
 // TerminateWorkerInstances terminates nodegroup workers by routing a terminate

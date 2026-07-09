@@ -256,7 +256,7 @@ func TestNATSRequest_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result, err := NatsRequest[Resp](context.Background(), nc, "test.greet", Req{Name: "world"}, 2*time.Second, "")
+	result, err := NATSRequest[Resp](context.Background(), nc, "test.greet", Req{Name: "world"}, 2*time.Second, "")
 	require.NoError(t, err)
 	assert.Equal(t, "hello world", result.Greeting)
 }
@@ -276,7 +276,7 @@ func TestNATSRequest_ErrorResponse(t *testing.T) {
 	require.NoError(t, err)
 
 	type Resp struct{}
-	_, err = NatsRequest[Resp](context.Background(), nc, "test.fail", struct{}{}, 2*time.Second, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.fail", struct{}{}, 2*time.Second, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidParameterValue")
 }
@@ -289,7 +289,7 @@ func TestNATSRequest_NoResponders(t *testing.T) {
 	defer nc.Close()
 
 	type Resp struct{}
-	_, err = NatsRequest[Resp](context.Background(), nc, "test.nobody", struct{}{}, 500*time.Millisecond, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.nobody", struct{}{}, 500*time.Millisecond, "")
 	assert.Error(t, err)
 }
 
@@ -307,7 +307,7 @@ func TestNATSRequest_Timeout(t *testing.T) {
 	require.NoError(t, err)
 
 	type Resp struct{}
-	_, err = NatsRequest[Resp](context.Background(), nc, "test.slow", struct{}{}, 100*time.Millisecond, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.slow", struct{}{}, 100*time.Millisecond, "")
 	assert.Error(t, err)
 }
 
@@ -327,7 +327,7 @@ func TestNATSRequest_InvalidUnmarshal(t *testing.T) {
 	type Resp struct {
 		Value int `json:"value"`
 	}
-	_, err = NatsRequest[Resp](context.Background(), nc, "test.badjson", struct{}{}, 2*time.Second, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.badjson", struct{}{}, 2*time.Second, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unmarshal")
 }
@@ -360,7 +360,7 @@ func TestNATSRequest_AccountIDHeader(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result, err := NatsRequest[Resp](context.Background(), nc, "test.account", Req{Name: "world"}, 2*time.Second, "111122223333")
+	result, err := NATSRequest[Resp](context.Background(), nc, "test.account", Req{Name: "world"}, 2*time.Second, "111122223333")
 	require.NoError(t, err)
 	assert.Equal(t, "hello world", result.Greeting)
 	assert.Equal(t, "111122223333", result.AccountID)
@@ -375,7 +375,7 @@ func TestNATSRequest_MarshalError(t *testing.T) {
 
 	type Resp struct{}
 	// Channels cannot be marshaled to JSON
-	_, err = NatsRequest[Resp](context.Background(), nc, "test.marshalfail", make(chan int), 2*time.Second, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.marshalfail", make(chan int), 2*time.Second, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to marshal input")
 }
@@ -511,7 +511,7 @@ func TestNATSRequest_DisconnectedFastFail(t *testing.T) {
 	require.Eventually(t, func() bool { return !nc.IsConnected() }, 3*time.Second, 50*time.Millisecond)
 
 	start := time.Now()
-	_, err = NatsRequest[map[string]any](context.Background(), nc, "ec2.Describe", struct{}{}, 5*time.Second, "")
+	_, err = NATSRequest[map[string]any](context.Background(), nc, "ec2.Describe", struct{}{}, 5*time.Second, "")
 	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, ErrClusterUnavailable)
@@ -522,7 +522,7 @@ func TestNATSRequest_DisconnectedFastFail(t *testing.T) {
 
 func TestNATSRequest_NilConn_ReturnsClusterUnavailable(t *testing.T) {
 	type Resp struct{}
-	_, err := NatsRequest[Resp](context.Background(), nil, "test.never", struct{}{}, 50*time.Millisecond, "")
+	_, err := NATSRequest[Resp](context.Background(), nil, "test.never", struct{}{}, 50*time.Millisecond, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrClusterUnavailable)
 }
@@ -534,7 +534,7 @@ func TestNATSRequest_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
 	nc.Close()
 
 	type Resp struct{}
-	_, err = NatsRequest[Resp](context.Background(), nc, "test.never", struct{}{}, 50*time.Millisecond, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.never", struct{}{}, 50*time.Millisecond, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrClusterUnavailable)
 }

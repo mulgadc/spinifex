@@ -174,7 +174,7 @@ func launchOnNodes(ctx context.Context, allocations []nodeAllocation, input *ec2
 			nodeInput.MaxCount = aws.Int64(int64(a.Assigned))
 
 			topic := fmt.Sprintf("ec2.RunInstances.%s.%s", instanceType, a.NodeID)
-			reservation, err := utils.NatsRequest[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID)
+			reservation, err := utils.NATSRequest[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID)
 			if err != nil {
 				results[idx] = nodeLaunchResult{NodeID: a.NodeID, Err: fmt.Errorf("launch on %s: %w", a.NodeID, err)}
 				return

@@ -207,7 +207,7 @@ const AccountIDHeader = "X-Account-ID"
 // PrincipalARNHeader carries the caller's resolved IAM principal ARN from gateway to daemon handlers.
 const PrincipalARNHeader = "X-Principal-ARN"
 
-// NATSHeader is an extra request header passed to NatsRequest beyond the
+// NATSHeader is an extra request header passed to NATSRequest beyond the
 // always-set X-Account-ID.
 type NATSHeader struct{ Key, Value string }
 
@@ -220,11 +220,11 @@ func PrincipalARNFromMsg(msg *nats.Msg) string {
 	return msg.Header.Get(PrincipalARNHeader)
 }
 
-// NatsRequest performs a NATS request-response with JSON marshaling. It sends
+// NATSRequest performs a NATS request-response with JSON marshaling. It sends
 // with X-Account-ID (plus any extra headers), unmarshals the successful response
 // into Out, and carries ctx's trace context onto the wire: it opens a client span
 // for the hop and injects traceparent so the consumer joins the same trace.
-func NatsRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (out *Out, err error) {
+func NATSRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (out *Out, err error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, ErrClusterUnavailable
 	}

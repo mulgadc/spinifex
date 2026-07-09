@@ -30,7 +30,7 @@ func (s *NATSInstanceService) RunInstances(ctx context.Context, input *ec2.RunIn
 		return nil, fmt.Errorf("instance type is required")
 	}
 	topic := fmt.Sprintf("ec2.RunInstances.%s", aws.StringValue(input.InstanceType))
-	return utils.NatsRequest[ec2.Reservation](ctx, s.natsConn, topic, input, 5*time.Minute, accountID)
+	return utils.NATSRequest[ec2.Reservation](ctx, s.natsConn, topic, input, 5*time.Minute, accountID)
 }
 
 // DescribeInstances is a fan-out operation; use the gateway's scatter-gather
@@ -52,29 +52,29 @@ func (s *NATSInstanceService) DescribeInstanceStatus(_ context.Context, _ *ec2.D
 }
 
 func (s *NATSInstanceService) DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error) {
-	return utils.NatsRequest[ec2.DescribeInstanceAttributeOutput](ctx, s.natsConn, "ec2.DescribeInstanceAttribute", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DescribeInstanceAttributeOutput](ctx, s.natsConn, "ec2.DescribeInstanceAttribute", input, 30*time.Second, accountID)
 }
 
 func (s *NATSInstanceService) DescribeStoppedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
-	return utils.NatsRequest[ec2.DescribeInstancesOutput](ctx, s.natsConn, "ec2.DescribeStoppedInstances", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DescribeInstancesOutput](ctx, s.natsConn, "ec2.DescribeStoppedInstances", input, 30*time.Second, accountID)
 }
 
 func (s *NATSInstanceService) DescribeTerminatedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
-	return utils.NatsRequest[ec2.DescribeInstancesOutput](ctx, s.natsConn, "ec2.DescribeTerminatedInstances", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DescribeInstancesOutput](ctx, s.natsConn, "ec2.DescribeTerminatedInstances", input, 30*time.Second, accountID)
 }
 
 func (s *NATSInstanceService) ModifyInstanceAttribute(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error) {
-	return utils.NatsRequest[ec2.ModifyInstanceAttributeOutput](ctx, s.natsConn, "ec2.ModifyInstanceAttribute", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.ModifyInstanceAttributeOutput](ctx, s.natsConn, "ec2.ModifyInstanceAttribute", input, 30*time.Second, accountID)
 }
 
 func (s *NATSInstanceService) ModifyInstanceMetadataOptions(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
-	return utils.NatsRequest[ec2.ModifyInstanceMetadataOptionsOutput](ctx, s.natsConn, "ec2.ModifyInstanceMetadataOptions", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.ModifyInstanceMetadataOptionsOutput](ctx, s.natsConn, "ec2.ModifyInstanceMetadataOptions", input, 30*time.Second, accountID)
 }
 
 func (s *NATSInstanceService) StartStoppedInstance(ctx context.Context, input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error) {
-	return utils.NatsRequest[StartStoppedInstanceOutput](ctx, s.natsConn, "ec2.StartStoppedInstance", input, 30*time.Second, accountID)
+	return utils.NATSRequest[StartStoppedInstanceOutput](ctx, s.natsConn, "ec2.StartStoppedInstance", input, 30*time.Second, accountID)
 }
 
 func (s *NATSInstanceService) TerminateStoppedInstance(ctx context.Context, input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error) {
-	return utils.NatsRequest[TerminateStoppedInstanceOutput](ctx, s.natsConn, "ec2.TerminateStoppedInstance", input, 30*time.Second, accountID)
+	return utils.NATSRequest[TerminateStoppedInstanceOutput](ctx, s.natsConn, "ec2.TerminateStoppedInstance", input, 30*time.Second, accountID)
 }

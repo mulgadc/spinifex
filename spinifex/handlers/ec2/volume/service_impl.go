@@ -1216,7 +1216,7 @@ func (s *VolumeServiceImpl) putVolumeConfigViaDetached(ctx context.Context, volu
 		return fmt.Errorf("marshal VolumeConfig: %w", err)
 	}
 	req := types.EBSConfigUpdateRequest{Volume: volumeID, VolumeConfig: cfgData}
-	resp, err := utils.NatsRequest[types.EBSConfigUpdateResponse](ctx, s.natsConn, "ebs.config", req, 30*time.Second, "")
+	resp, err := utils.NATSRequest[types.EBSConfigUpdateResponse](ctx, s.natsConn, "ebs.config", req, 30*time.Second, "")
 	if err != nil {
 		return fmt.Errorf("ebs.config request for %s: %w", volumeID, err)
 	}
@@ -1446,7 +1446,7 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 	// Notify viperblockd to stop nbdkit/WAL syncer (best-effort)
 	if s.natsConn != nil {
 		deleteReq := types.EBSDeleteRequest{Volume: volumeID}
-		deleteResp, err := utils.NatsRequest[types.EBSDeleteResponse](ctx, s.natsConn, "ebs.delete", deleteReq, 5*time.Second, accountID)
+		deleteResp, err := utils.NATSRequest[types.EBSDeleteResponse](ctx, s.natsConn, "ebs.delete", deleteReq, 5*time.Second, accountID)
 		if err != nil {
 			slog.WarnContext(ctx, "ebs.delete notification failed (volume may not be mounted)", "volumeId", volumeID, "err", err)
 		} else if deleteResp.Error != "" {

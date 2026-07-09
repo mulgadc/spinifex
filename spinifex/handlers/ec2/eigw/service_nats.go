@@ -23,13 +23,13 @@ func NewNATSEgressOnlyIGWService(conn *nats.Conn) EgressOnlyIGWService {
 }
 
 func (s *NATSEgressOnlyIGWService) CreateEgressOnlyInternetGateway(ctx context.Context, input *ec2.CreateEgressOnlyInternetGatewayInput, accountID string) (*ec2.CreateEgressOnlyInternetGatewayOutput, error) {
-	return utils.NatsRequest[ec2.CreateEgressOnlyInternetGatewayOutput](ctx, s.natsConn, "ec2.CreateEgressOnlyInternetGateway", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.CreateEgressOnlyInternetGatewayOutput](ctx, s.natsConn, "ec2.CreateEgressOnlyInternetGateway", input, 30*time.Second, accountID)
 }
 
 func (s *NATSEgressOnlyIGWService) DeleteEgressOnlyInternetGateway(ctx context.Context, input *ec2.DeleteEgressOnlyInternetGatewayInput, accountID string) (*ec2.DeleteEgressOnlyInternetGatewayOutput, error) {
-	return utils.NatsRequest[ec2.DeleteEgressOnlyInternetGatewayOutput](ctx, s.natsConn, "ec2.DeleteEgressOnlyInternetGateway", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DeleteEgressOnlyInternetGatewayOutput](ctx, s.natsConn, "ec2.DeleteEgressOnlyInternetGateway", input, 30*time.Second, accountID)
 }
 
 func (s *NATSEgressOnlyIGWService) DescribeEgressOnlyInternetGateways(ctx context.Context, input *ec2.DescribeEgressOnlyInternetGatewaysInput, accountID string) (*ec2.DescribeEgressOnlyInternetGatewaysOutput, error) {
-	return utils.NatsRequest[ec2.DescribeEgressOnlyInternetGatewaysOutput](ctx, s.natsConn, "ec2.DescribeEgressOnlyInternetGateways", input, 30*time.Second, accountID)
+	return utils.NATSRequest[ec2.DescribeEgressOnlyInternetGatewaysOutput](ctx, s.natsConn, "ec2.DescribeEgressOnlyInternetGateways", input, 30*time.Second, accountID)
 }

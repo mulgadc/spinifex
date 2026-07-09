@@ -9,15 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
 
 const (
-	ovnNBSock   = "/var/run/ovn/ovnnb_db.ctl"
-	ovnSBSock   = "/var/run/ovn/ovnsb_db.ctl"
-	ovnNBSchema = "OVN_Northbound"
-	ovnSBSchema = "OVN_Southbound"
+	ovnNBSock = "/var/run/ovn/ovnnb_db.ctl"
+	ovnSBSock = "/var/run/ovn/ovnsb_db.ctl"
 )
 
 // runOVNRaft asserts the clustered OVN control plane: every DB node's NB and SB
@@ -36,8 +35,8 @@ func runOVNRaft(t *testing.T, fix *Fixture) {
 
 	// 1. Quorum health: 3 servers + exactly one leader, per schema, per node.
 	for _, db := range []struct{ name, sock, schema string }{
-		{"NB", ovnNBSock, ovnNBSchema},
-		{"SB", ovnSBSock, ovnSBSchema},
+		{"NB", ovnNBSock, host.OVNNBSchema},
+		{"SB", ovnSBSock, host.OVNSBSchema},
 	} {
 		leaders := 0
 		for _, n := range dbNodes {
@@ -57,7 +56,7 @@ func runOVNRaft(t *testing.T, fix *Fixture) {
 	var leader harness.Node
 	var survivors []harness.Node
 	for _, n := range dbNodes {
-		if _, role := ovnClusterStatus(t, ssh, n, ovnNBSock, ovnNBSchema); role == "leader" {
+		if _, role := ovnClusterStatus(t, ssh, n, ovnNBSock, host.OVNNBSchema); role == "leader" {
 			leader = n
 		} else {
 			survivors = append(survivors, n)
@@ -125,23 +124,7 @@ func ovnClusterStatus(t *testing.T, ssh *harness.PeerSSH, n harness.Node, sock, 
 	defer cancel()
 	out, err := ssh.Run(ctx, n.Addr, fmt.Sprintf("sudo ovn-appctl -t %s cluster/status %s", sock, schema))
 	require.NoErrorf(t, err, "cluster/status %s on %s", schema, n.Name)
-	return parseClusterStatus(string(out))
-}
-
-// parseClusterStatus extracts the quorum size and this server's role from
-// ovs cluster/status output. Each member appears as a "<id> at tcp:<addr>" line
-// under Servers:; the "Role:" header reports the queried server's own role.
-func parseClusterStatus(out string) (servers int, role string) {
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Role:") {
-			role = strings.TrimSpace(strings.TrimPrefix(line, "Role:"))
-		}
-		if strings.Contains(line, " at tcp:") {
-			servers++
-		}
-	}
-	return servers, role
+	return host.ParseClusterStatus(string(out))
 }
 
 // nbEndpointList builds the comma-separated NB client endpoint list used by

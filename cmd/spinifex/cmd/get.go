@@ -138,6 +138,12 @@ func formatRoles(resp types.NodeStatusResponse) string {
 	if resp.NATSRole != "" {
 		roles = append(roles, "nats:"+resp.NATSRole)
 	}
+	if resp.OVNNBRole != "" {
+		roles = append(roles, "ovn-nb:"+resp.OVNNBRole)
+	}
+	if resp.OVNSBRole != "" {
+		roles = append(roles, "ovn-sb:"+resp.OVNSBRole)
+	}
 	if resp.PredastoreRole != "" {
 		roles = append(roles, "predastore:"+resp.PredastoreRole)
 	}

@@ -64,6 +64,11 @@ type NodeStatusResponse struct {
 	// Leader roles for clustered services (empty string = service not running or not clustered)
 	NATSRole       string `json:"nats_role,omitempty"`       // "leader" or "follower"
 	PredastoreRole string `json:"predastore_role,omitempty"` // "leader" or "follower"
+
+	// OVN DB Raft roles ("leader"/"follower"/""); empty when the node is not an
+	// OVN DB cluster member or OVN is standalone.
+	OVNNBRole string `json:"ovn_nb_role,omitempty"`
+	OVNSBRole string `json:"ovn_sb_role,omitempty"`
 }
 
 // InstanceTypeCap describes available capacity for one instance type on a node.

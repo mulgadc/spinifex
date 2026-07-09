@@ -6,14 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -307,11 +311,18 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 		InstanceTypes:  caps,
 	}
 
-	// Query service roles concurrently to halve worst-case latency (500ms vs 1s).
+	// Query service roles concurrently to keep worst-case latency bounded.
+	// OVN roles are probed only on DB quorum members; compute-only nodes skip
+	// the shell-out entirely.
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); resp.NATSRole = d.queryNATSRole() }()
 	go func() { defer wg.Done(); resp.PredastoreRole = d.queryPredastoreRole() }()
+	if d.isOVNDBQuorumMember() {
+		wg.Add(2)
+		go func() { defer wg.Done(); resp.OVNNBRole = host.OVNDBRole(host.OVNNBTarget, host.OVNNBSchema) }()
+		go func() { defer wg.Done(); resp.OVNSBRole = host.OVNDBRole(host.OVNSBTarget, host.OVNSBSchema) }()
+	}
 	wg.Wait()
 
 	respondWithJSON(msg, resp)
@@ -343,6 +354,17 @@ func (d *Daemon) queryPredastoreRole() string {
 	}
 	url := "https://" + net.JoinHostPort(d.daemonIP(), strconv.Itoa(predastoreDBPort)) + "/status"
 	return fetchPredastoreRole(url, roleTLSHTTPClient)
+}
+
+// isOVNDBQuorumMember reports whether this node hosts the clustered OVN NB/SB
+// databases. Compute-only nodes short-circuit OVN role probes to "" without
+// shelling out to ovn-appctl.
+func (d *Daemon) isOVNDBQuorumMember() bool {
+	if d.clusterConfig == nil {
+		return false
+	}
+	names := slices.Collect(maps.Keys(d.clusterConfig.Nodes))
+	return slices.Contains(formation.OVNDBQuorumNames(names), d.node)
 }
 
 var roleHTTPClient = &http.Client{Timeout: 500 * time.Millisecond}

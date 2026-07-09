@@ -2,9 +2,7 @@ package host
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -28,29 +26,18 @@ const ovnAppctlTimeout = 500 * time.Millisecond
 
 // OVNDBRole reports this node's OVSDB Raft role for the given ctl target and
 // schema: "leader", "follower", or "" when OVN is standalone or unreachable.
-// Callers gate this on quorum membership, so an appctl error means a DB that
-// should be reachable is not — logged at Warn rather than silently dropped.
+// A standalone (non-clustered) DB or any appctl error fails soft to "" at Debug,
+// matching the NATS/Predastore role probes.
 func OVNDBRole(target, schema string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), ovnAppctlTimeout)
 	defer cancel()
 	out, err := utils.SudoCommandContext(ctx, "ovn-appctl", "-t", target, "cluster/status", schema).Output()
 	if err != nil {
-		slog.Warn("Failed to query OVN cluster/status on a quorum member",
-			"schema", schema, "target", target, "err", err, "stderr", commandStderr(err))
+		slog.Debug("Failed to query OVN cluster/status", "schema", schema, "err", err)
 		return ""
 	}
 	_, role := ParseClusterStatus(string(out))
 	return role
-}
-
-// commandStderr returns the subprocess stderr captured by exec.Cmd.Output for an
-// ExitError; err.Error() alone reports only the exit code.
-func commandStderr(err error) string {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return strings.TrimSpace(string(exitErr.Stderr))
-	}
-	return ""
 }
 
 // ParseClusterStatus extracts the quorum size and this server's role from ovs

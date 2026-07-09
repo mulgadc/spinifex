@@ -348,6 +348,15 @@ jobs:
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
+      - name: Upload tofu log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tofu-log-cell-${{ matrix.cell }}-${{ github.run_id }}
+          path: ${{ env.TOFU_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Bare-metal single-node suite. Doesn't fit the tofu matrix shape, so it
   # runs as a sibling job via the reusable e2e-baremetal workflow. Gated like a
   # matrix cell ("cell 20"): every weeknight cron, or dispatch with 20 selected

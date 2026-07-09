@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -516,6 +517,9 @@ func TestParseVolumeParams_Io1WithIops(t *testing.T) {
 // --- Describe* coverage -----------------------------------------------------
 
 type fakeResourceCapacityProvider struct {
+	// mu guards the mutating fields below so concurrent-claim tests can
+	// call Allocate/Deallocate from multiple goroutines race-free.
+	mu             sync.Mutex
 	types          []*ec2.InstanceTypeInfo
 	supportedTypes []*ec2.InstanceTypeInfo
 	gotShowCap     bool
@@ -552,6 +556,8 @@ func (f *fakeResourceCapacityProvider) GetSupportedInstanceTypeInfos() []*ec2.In
 }
 
 func (f *fakeResourceCapacityProvider) Allocate(it *ec2.InstanceTypeInfo) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.allocateErr != nil {
 		return f.allocateErr
 	}
@@ -560,6 +566,8 @@ func (f *fakeResourceCapacityProvider) Allocate(it *ec2.InstanceTypeInfo) error 
 }
 
 func (f *fakeResourceCapacityProvider) Deallocate(it *ec2.InstanceTypeInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deallocated = append(f.deallocated, it)
 }
 
@@ -594,6 +602,7 @@ func (f *fakeResourceCapacityProvider) InstanceTypes() map[string]*ec2.InstanceT
 }
 
 type fakeStoppedStore struct {
+	mu              sync.Mutex
 	stopped         []*vm.VM
 	terminated      []*vm.VM
 	loadByID        map[string]*vm.VM
@@ -608,12 +617,22 @@ type fakeStoppedStore struct {
 	deleteErr       error
 	deleteFailFirst bool
 	deleteAttempts  int
+
+	// claimedStopped / claimErr drive ClaimStoppedInstance, the atomic
+	// claim used by StartStoppedInstance. Claiming removes the entry from
+	// loadByID (mirroring the real KV delete-as-claim), guarded by mu so
+	// concurrent StartStoppedInstance callers race exactly like production.
+	claimedStopped []string
+	claimErr       error
+	claimAttempts  int
 }
 
 func (f *fakeStoppedStore) LoadStoppedInstance(id string) (*vm.VM, error) {
 	if f.loadErr != nil {
 		return nil, f.loadErr
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if v, ok := f.loadByID[id]; ok {
 		return v, nil
 	}
@@ -623,18 +642,24 @@ func (f *fakeStoppedStore) ListStoppedInstances() ([]*vm.VM, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.stopped, nil
 }
 func (f *fakeStoppedStore) ListTerminatedInstances() ([]*vm.VM, error) {
 	if f.listTermErr != nil {
 		return nil, f.listTermErr
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.terminated, nil
 }
 func (f *fakeStoppedStore) WriteStoppedInstance(id string, instance *vm.VM) error {
 	if f.writeErr != nil {
 		return f.writeErr
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.wroteStopped == nil {
 		f.wroteStopped = make(map[string]*vm.VM)
 	}
@@ -645,6 +670,8 @@ func (f *fakeStoppedStore) WriteTerminatedInstance(id string, instance *vm.VM) e
 	if f.writeTermErr != nil {
 		return f.writeTermErr
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.wroteTerminated == nil {
 		f.wroteTerminated = make(map[string]*vm.VM)
 	}
@@ -652,17 +679,43 @@ func (f *fakeStoppedStore) WriteTerminatedInstance(id string, instance *vm.VM) e
 	return nil
 }
 func (f *fakeStoppedStore) DeleteStoppedInstance(id string) error {
+	f.mu.Lock()
 	f.deleteAttempts++
-	if f.deleteFailFirst && f.deleteAttempts == 1 {
+	attempt := f.deleteAttempts
+	f.mu.Unlock()
+	if f.deleteFailFirst && attempt == 1 {
 		return errors.New("transient delete failure")
 	}
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deletedStopped = append(f.deletedStopped, id)
 	return nil
 }
 func (f *fakeStoppedStore) DeleteTerminatedInstance(string) error { return nil }
+
+// ClaimStoppedInstance mimics the real atomic delete-as-claim: under the
+// store lock, remove and return loadByID[id], or vm.ErrStoppedInstanceClaimed
+// if it is already gone — mirroring the real KV's "revision conflict or
+// not-found" outcome for a losing racer. The lock makes this genuinely
+// exclusive under concurrent callers, matching the production guarantee.
+func (f *fakeStoppedStore) ClaimStoppedInstance(id string) (*vm.VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimAttempts++
+	if f.claimErr != nil {
+		return nil, f.claimErr
+	}
+	v, ok := f.loadByID[id]
+	if !ok {
+		return nil, vm.ErrStoppedInstanceClaimed
+	}
+	delete(f.loadByID, id)
+	f.claimedStopped = append(f.claimedStopped, id)
+	return v, nil
+}
 
 func TestDescribeInstanceTypes_NilResourceMgr(t *testing.T) {
 	svc := &InstanceServiceImpl{}
@@ -1942,6 +1995,12 @@ func TestStartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 	assert.Empty(t, prov.allocated, "no allocation should occur for unknown type")
+
+	// The claim removed the entry from KV before the instance-type check;
+	// the rollback must write it back so the instance is not lost.
+	assert.Contains(t, store.claimedStopped, id, "claim must run before the instance-type check")
+	require.NotNil(t, store.wroteStopped[id], "claimed instance must be restored to KV after a downstream failure")
+	assert.Equal(t, vm.StateStopped, store.wroteStopped[id].Status)
 }
 
 func TestStartStoppedInstance_AllocateFails(t *testing.T) {
@@ -1964,6 +2023,12 @@ func TestStartStoppedInstance_AllocateFails(t *testing.T) {
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+
+	// A failed Allocate must not leave the instance stranded — it was
+	// already claimed (removed from KV) by this point, so it must be
+	// restored.
+	require.NotNil(t, store.wroteStopped[id], "claimed instance must be restored to KV after Allocate failure")
+	assert.Equal(t, vm.StateStopped, store.wroteStopped[id].Status)
 }
 
 // GPU claim failure must roll back the resource allocation and remove the VM
@@ -1998,6 +2063,132 @@ func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
 	_, stillInMgr := mgr.Get(id)
 	assert.False(t, stillInMgr, "GPU claim failure must remove the VM from the manager map")
 	assert.Empty(t, store.deletedStopped, "stopped-KV entry must remain on rollback")
+
+	// The atomic claim removed the entry from KV before Allocate/GPU-claim
+	// ran; the rollback must write it back so it is not lost.
+	require.NotNil(t, store.wroteStopped[id], "claimed instance must be restored to KV after GPU claim failure")
+	assert.Equal(t, vm.StateStopped, store.wroteStopped[id].Status)
+}
+
+// TestStartStoppedInstance_ClaimConflict proves a lost claim race is
+// reported as ErrorIncorrectInstanceState and never reaches Allocate/Insert.
+func TestStartStoppedInstance_ClaimConflict(t *testing.T) {
+	id := "i-claim-conflict"
+	itype := "t3.micro"
+	store := &fakeStoppedStore{
+		loadByID: map[string]*vm.VM{
+			id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+		},
+		claimErr: vm.ErrStoppedInstanceClaimed,
+	}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{itype: {InstanceType: aws.String(itype)}},
+	}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        vm.NewManager(),
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	assert.Empty(t, prov.allocated, "a lost claim race must never reach Allocate")
+}
+
+// raceVolumeMounter is a no-op vm.VolumeMounter that lets vmMgr.Run proceed
+// past the mount step in the concurrent-claim race test below, so Run
+// reaches vm.Manager's (deliberately unwired) InstanceTypeResolver check and
+// fails fast and deterministically without touching a real qemu process.
+type raceVolumeMounter struct{}
+
+func (raceVolumeMounter) Mount(*vm.VM) error                   { return nil }
+func (raceVolumeMounter) Unmount(*vm.VM) error                 { return nil }
+func (raceVolumeMounter) MountOne(*spxtypes.EBSRequest) error  { return nil }
+func (raceVolumeMounter) UnmountOne(spxtypes.EBSRequest) error { return nil }
+
+// TestStartStoppedInstance_ConcurrentClaimRace is the regression test for
+// the double-start bug this claim closes: two nodes (or a forwarded call
+// racing a local fallback) could both observe the same stopped instance as
+// claimable and both launch it onto the same viperblock volume. It fires two
+// concurrent StartStoppedInstance calls at the same stopped instance id and
+// asserts the atomic claim lets exactly one of them proceed past it —
+// reaching resourceMgr.Allocate / vmMgr.Insert / vmMgr.Run — while the other
+// loses the race and never touches resourceMgr or vmMgr at all.
+//
+// The loser's error code depends on exactly when it lost: if it loses the
+// atomic ClaimStoppedInstance call itself, it gets ErrorIncorrectInstanceState;
+// if the winner's claim already completed before the loser's preliminary
+// (non-atomic, pre-claim) LoadStoppedInstance validation ran, the loser sees
+// the record as already gone and gets ErrorInvalidInstanceIDNotFound instead.
+// Both are safe, non-destructive outcomes — the property under test is that
+// exactly one caller ever reaches past the claim, not which of the two
+// equally-valid error codes the loser receives.
+//
+// The winner's vmMgr.Run is wired to fail fast (no InstanceTypeResolver) so
+// the test stays deterministic without exec'ing a real qemu process; that
+// failure also exercises restoreClaimedStoppedInstance, so this test doubles
+// as coverage that a downstream failure after a successful claim does not
+// lose the instance.
+func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	id := "i-race"
+	itype := "t3.micro"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+	}}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{itype: {InstanceType: aws.String(itype)}},
+	}
+	mgr := vm.NewManagerWithDeps(vm.Deps{VolumeMounter: raceVolumeMounter{}})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        mgr,
+	}
+
+	const n = 2
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	var conflicted, winnerFailed int
+	for _, err := range errs {
+		require.Error(t, err, "vmMgr.Run is wired to fail fast — no caller should succeed end-to-end")
+		switch err.Error() {
+		case awserrors.ErrorIncorrectInstanceState, awserrors.ErrorInvalidInstanceIDNotFound:
+			conflicted++
+		case awserrors.ErrorServerInternal:
+			winnerFailed++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	assert.Equal(t, 1, conflicted, "exactly one caller must lose the claim race")
+	assert.Equal(t, 1, winnerFailed, "exactly one caller must win the claim and proceed to vmMgr.Run")
+
+	assert.Len(t, prov.allocated, 1, "only the claim winner may reach resourceMgr.Allocate")
+	// Exactly one caller ever wins the atomic claim, regardless of whether
+	// the loser lost at the claim itself or earlier at the preliminary Load
+	// (see comment above) — it may not always attempt the claim at all.
+	assert.Len(t, store.claimedStopped, 1, "the atomic claim must succeed exactly once")
+	assert.GreaterOrEqual(t, store.claimAttempts, 1, "the winner must have attempted the claim")
+
+	require.NotNil(t, store.wroteStopped[id], "the winner's downstream Run failure must restore the instance to KV")
+	assert.Equal(t, vm.StateStopped, store.wroteStopped[id].Status)
+
+	_, stillInMgr := mgr.Get(id)
+	assert.False(t, stillInMgr, "a failed Run must not leave the VM in the manager map")
 }
 
 // --- PrepareRunInstances / ec2.cmd dispatch tests ---------------------------

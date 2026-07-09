@@ -181,11 +181,12 @@ func AccountBucketName(accountID string) string {
 }
 
 // GetOrCreateAccountBucket returns the per-account KV bucket for accountID,
-// creating it on first use. Idempotent: subsequent calls with the same
-// accountID return the existing handle.
-func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string) (nats.KeyValue, error) {
+// creating it on first use at the given replica count (clamped to a minimum
+// of 1). Idempotent: subsequent calls with the same accountID return the
+// existing handle.
+func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string, replicas int) (nats.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := utils.GetOrCreateKVBucket(js, bucket, KVBucketEKSAccountHistory)
+	kv, err := utils.GetOrCreateKVBucketWithReplicas(js, bucket, KVBucketEKSAccountHistory, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create EKS per-account KV bucket %s: %w", bucket, err)
 	}
@@ -196,16 +197,18 @@ func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string) (nats.
 }
 
 // InitLeaderBucket creates (or attaches to) the shared spinifex-eks-leader
-// bucket used for per-cluster reconciler leader-lease CAS locks. The bucket
-// is configured with History=1 and a 60s TTL so stale leases expire on their
-// own when a leader dies mid-cycle. utils.GetOrCreateKVBucket doesn't expose
-// a TTL knob, so this function takes the direct js.CreateKeyValue path and
-// falls back to js.KeyValue on already-exists.
-func InitLeaderBucket(js nats.JetStreamContext) (nats.KeyValue, error) {
+// bucket used for per-cluster reconciler leader-lease CAS locks, at the given
+// replica count (clamped to a minimum of 1). The bucket is configured with
+// History=1 and a 60s TTL so stale leases expire on their own when a leader
+// dies mid-cycle. utils.GetOrCreateKVBucketWithReplicas doesn't expose a TTL
+// knob, so this function sets Replicas directly on its own js.CreateKeyValue
+// call and falls back to js.KeyValue on already-exists.
+func InitLeaderBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
 	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:  KVBucketEKSLeader,
-		History: 1,
-		TTL:     KVBucketEKSLeaderTTL,
+		Bucket:   KVBucketEKSLeader,
+		History:  1,
+		TTL:      KVBucketEKSLeaderTTL,
+		Replicas: max(replicas, 1),
 	})
 	if err != nil {
 		kv, err = js.KeyValue(KVBucketEKSLeader)

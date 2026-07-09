@@ -86,6 +86,11 @@ type StoppedInstanceStore interface {
 	WriteStoppedInstance(instanceID string, instance *vm.VM) error
 	DeleteStoppedInstance(instanceID string) error
 	WriteTerminatedInstance(instanceID string, instance *vm.VM) error
+	// ClaimStoppedInstance atomically removes instanceID's record and
+	// returns the VM it held, so at most one caller can ever win a race to
+	// (re)launch the same stopped instance. Returns vm.ErrStoppedInstanceClaimed
+	// if a concurrent caller already claimed (or otherwise removed) the record.
+	ClaimStoppedInstance(instanceID string) (*vm.VM, error)
 }
 
 // InstanceTagWriter projects an instance record's full tag set into the

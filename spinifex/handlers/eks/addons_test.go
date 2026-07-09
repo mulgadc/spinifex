@@ -243,7 +243,7 @@ func TestStagingInstaller_StagesManifest(t *testing.T) {
 
 	js, err := svc.deps.NATSConn.JetStream()
 	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 	entry, err := kv.Get(AddonManifestKey("c1", albController))
 	require.NoError(t, err, "installer must stage a manifest for VM-side delivery")

@@ -252,6 +252,146 @@ func (m *JetStreamManager) recoverTerminatedKVBucket() (nats.KeyValue, error) {
 	}, &m.terminatedKV, TerminatedInstanceBucketVersion)
 }
 
+// maxCASRetries bounds the optimistic-concurrency retry loop in casUpdate.
+// A conflict this many times in a row means sustained write contention on
+// the key, not a single overlapping update — callers should surface an error.
+const maxCASRetries = 5
+
+// isRevisionConflict reports whether err is the nats.go "wrong last
+// sequence" error that KeyValue.Update/Create return when the key's
+// revision no longer matches what the caller expected, i.e. a concurrent
+// writer won the race. nats.go surfaces this as nats.ErrKeyExists for both
+// Update (stale revision) and Create (key already present).
+func isRevisionConflict(err error) bool {
+	return errors.Is(err, nats.ErrKeyExists)
+}
+
+// casUpdate performs an optimistic-concurrency read-modify-write against kv:
+// Get the current entry (or start from a zero value when absent and
+// createIfAbsent is set), apply mutate to the decoded value, then commit via
+// Update/Create using the observed revision. A concurrent writer that changes
+// the key between Get and Update/Create is detected via a revision conflict
+// and retried, bounded by maxCASRetries.
+func casUpdate[T any](kv nats.KeyValue, key string, mutate func(*T), createIfAbsent bool) (*T, error) {
+	var lastErr error
+	for range maxCASRetries {
+		var value T
+		var revision uint64
+
+		entry, err := kv.Get(key)
+		switch {
+		case err == nil:
+			if uerr := json.Unmarshal(entry.Value(), &value); uerr != nil {
+				return nil, uerr
+			}
+			revision = entry.Revision()
+		case errors.Is(err, nats.ErrKeyNotFound) && createIfAbsent:
+			revision = 0
+		default:
+			return nil, err
+		}
+
+		mutate(&value)
+
+		data, merr := json.Marshal(&value)
+		if merr != nil {
+			return nil, merr
+		}
+
+		if revision == 0 {
+			_, err = kv.Create(key, data)
+		} else {
+			_, err = kv.Update(key, data, revision)
+		}
+		if err == nil {
+			return &value, nil
+		}
+		if isRevisionConflict(err) {
+			lastErr = err
+			continue
+		}
+		return nil, err
+	}
+	return nil, fmt.Errorf("CAS update exhausted %d retries for key %s: %w", maxCASRetries, key, lastErr)
+}
+
+// casPut writes data to key under kv using optimistic concurrency: it reads
+// the current revision (or treats the key as absent, using Create, when
+// createIfAbsent is set) then commits via Update/Create, retrying on a
+// revision conflict up to maxCASRetries. This is the "replace wholesale"
+// counterpart to casUpdate, for values (like vm.VM, which embeds a
+// sync.Mutex) that cannot be safely decoded into and copied out of a shared
+// struct value.
+func casPut(kv nats.KeyValue, key string, data []byte, createIfAbsent bool) error {
+	var lastErr error
+	for range maxCASRetries {
+		var revision uint64
+
+		entry, err := kv.Get(key)
+		switch {
+		case err == nil:
+			revision = entry.Revision()
+		case errors.Is(err, nats.ErrKeyNotFound) && createIfAbsent:
+			revision = 0
+		default:
+			return err
+		}
+
+		if revision == 0 {
+			_, err = kv.Create(key, data)
+		} else {
+			_, err = kv.Update(key, data, revision)
+		}
+		if err == nil {
+			return nil
+		}
+		if isRevisionConflict(err) {
+			lastErr = err
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("CAS put exhausted %d retries for key %s: %w", maxCASRetries, key, lastErr)
+}
+
+// casClaim atomically removes key from kv, decoding its current value into T
+// first — the delete-side counterpart to casPut/casUpdate. It is the
+// primitive an exclusive "claim" is built on: at most one caller can ever
+// observe a successful delete for a given revision, so at most one caller
+// gets back a non-nil value. A concurrent writer that changes the key
+// between Get and Delete (another claim, or an unrelated update) is
+// detected via a revision conflict and retried, bounded by maxCASRetries,
+// so a losing racer only fails outright when the key is truly gone
+// (notFound) or retries are exhausted.
+func casClaim[T any](kv nats.KeyValue, key string) (value *T, notFound bool, err error) {
+	var lastErr error
+	for range maxCASRetries {
+		entry, gerr := kv.Get(key)
+		if gerr != nil {
+			if errors.Is(gerr, nats.ErrKeyNotFound) {
+				return nil, true, nil
+			}
+			return nil, false, gerr
+		}
+
+		var v T
+		if uerr := json.Unmarshal(entry.Value(), &v); uerr != nil {
+			return nil, false, uerr
+		}
+
+		if derr := kv.Delete(key, nats.LastRevision(entry.Revision())); derr != nil {
+			if isRevisionConflict(derr) {
+				lastErr = derr
+				continue
+			}
+			return nil, false, derr
+		}
+
+		return &v, false, nil
+	}
+	return nil, false, fmt.Errorf("CAS claim exhausted %d retries for key %s: %w", maxCASRetries, key, lastErr)
+}
+
 // Heartbeat represents a daemon's periodic health status published to cluster KV.
 //
 // AvailableVCPU / AvailableMem are observability-only (host - allocated,
@@ -313,17 +453,29 @@ type ClusterShutdownState struct {
 	NodesAcked map[string]string `json:"nodes_acked"`
 }
 
-// WriteClusterShutdown writes the cluster shutdown state to KV.
+// WriteClusterShutdown writes the cluster shutdown state to KV, replacing
+// any existing value. Uses CAS internally (bounded retry) so a write racing
+// a concurrent update is detected and retried rather than silently applied
+// out of order.
 func (m *JetStreamManager) WriteClusterShutdown(state *ClusterShutdownState) error {
 	if m.clusterKV == nil {
 		return errors.New("cluster state KV not initialized")
 	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	_, err = m.clusterKV.Put("cluster.shutdown", data)
+	_, err := casUpdate(m.clusterKV, "cluster.shutdown", func(s *ClusterShutdownState) {
+		*s = *state
+	}, true)
 	return err
+}
+
+// UpdateClusterShutdown atomically applies mutate to the current cluster
+// shutdown state (e.g. merging a node's ack into NodesAcked) and writes it
+// back with optimistic concurrency, retrying on a concurrent writer's
+// revision conflict. Returns nats.ErrKeyNotFound if no shutdown is in progress.
+func (m *JetStreamManager) UpdateClusterShutdown(mutate func(*ClusterShutdownState)) (*ClusterShutdownState, error) {
+	if m.clusterKV == nil {
+		return nil, errors.New("cluster state KV not initialized")
+	}
+	return casUpdate(m.clusterKV, "cluster.shutdown", mutate, false)
 }
 
 // ReadClusterShutdown reads the cluster shutdown state from KV.
@@ -628,7 +780,12 @@ func (m *JetStreamManager) UpdateReplicas(newReplicas int) error {
 	return nil
 }
 
-// WriteStoppedInstance writes a stopped instance to the shared KV store.
+// WriteStoppedInstance writes a stopped instance to the shared KV store,
+// replacing any existing record for instanceID. Uses CAS internally (bounded
+// retry) so a write racing a concurrent update is detected and retried
+// rather than silently overwriting it out of order. This is the substrate
+// callers that read-modify-write a stopped instance (e.g. tag/attribute
+// mutations) build on.
 func (m *JetStreamManager) WriteStoppedInstance(instanceID string, instance *vm.VM) error {
 	if m.kv == nil {
 		return errors.New("KV bucket not initialized")
@@ -640,7 +797,7 @@ func (m *JetStreamManager) WriteStoppedInstance(instanceID string, instance *vm.
 	}
 
 	key := StoppedInstancePrefix + instanceID
-	_, err = m.kv.Put(key, jsonData)
+	err = casPut(m.kv, key, jsonData, true)
 	if err != nil {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "WriteStoppedInstance", "key", key, "err", err)
@@ -648,7 +805,7 @@ func (m *JetStreamManager) WriteStoppedInstance(instanceID string, instance *vm.
 			if recoverErr != nil {
 				return err
 			}
-			if _, retryErr := kv.Put(key, jsonData); retryErr != nil {
+			if retryErr := casPut(kv, key, jsonData, true); retryErr != nil {
 				return retryErr
 			}
 			slog.Debug("Wrote stopped instance to JetStream KV (after recovery)", "key", key, "instanceId", instanceID)
@@ -731,6 +888,45 @@ func (m *JetStreamManager) DeleteStoppedInstance(instanceID string) error {
 	return nil
 }
 
+// ClaimStoppedInstance atomically removes instanceID's record from the
+// shared KV store and returns the VM it held, so that at most one caller
+// across the cluster can ever win a race to (re)launch the same stopped
+// instance. It is the first step of StartStoppedInstance, replacing the
+// unguarded Load+Delete pair that previously let two callers both observe
+// the instance as claimable. A losing racer (this node's local fallback
+// racing a forwarded call, two nodes racing the same forwarded call, or a
+// retry after the instance was already claimed) gets vm.ErrStoppedInstanceClaimed
+// instead of a VM and must not proceed to allocate resources or launch qemu.
+func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, error) {
+	if m.kv == nil {
+		return nil, errors.New("KV bucket not initialized")
+	}
+
+	key := StoppedInstancePrefix + instanceID
+	instance, notFound, err := casClaim[vm.VM](m.kv, key)
+	if err != nil {
+		if isStreamUnavailable(err) {
+			slog.Warn("KV stream unavailable, attempting recovery", "operation", "ClaimStoppedInstance", "key", key, "err", err)
+			kv, recoverErr := m.recoverKVBucket()
+			if recoverErr != nil {
+				return nil, err
+			}
+			instance, notFound, err = casClaim[vm.VM](kv, key)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	if notFound {
+		return nil, vm.ErrStoppedInstanceClaimed
+	}
+
+	slog.Debug("Claimed stopped instance from JetStream KV", "key", key, "instanceId", instanceID)
+	return instance, nil
+}
+
 // ListStoppedInstances returns all stopped instances from the shared KV store.
 func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
 	if m.kv == nil {
@@ -791,8 +987,14 @@ func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
 	return instances, nil
 }
 
-// WriteTerminatedInstance writes a terminated instance to the terminated KV bucket.
-// The entry will auto-expire after the bucket's TTL (1 hour).
+// WriteTerminatedInstance writes a terminated instance to the terminated KV
+// bucket, replacing any existing record for instanceID. The entry will
+// auto-expire after the bucket's TTL (1 hour). Uses CAS internally (bounded
+// retry) so a write racing a concurrent update (e.g. the teardown reaper
+// advancing the Teardown map) is detected and retried rather than silently
+// overwriting it out of order. Callers that need to merge into the current
+// record instead of replacing it wholesale should use
+// UpdateTerminatedInstance.
 func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *vm.VM) error {
 	if m.terminatedKV == nil {
 		return errors.New("terminated instance KV bucket not initialized")
@@ -804,7 +1006,7 @@ func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *
 	}
 
 	key := TerminatedInstancePrefix + instanceID
-	_, err = m.terminatedKV.Put(key, jsonData)
+	err = casPut(m.terminatedKV, key, jsonData, true)
 	if err != nil {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "WriteTerminatedInstance", "key", key, "err", err)
@@ -812,7 +1014,7 @@ func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *
 			if recoverErr != nil {
 				return err
 			}
-			if _, retryErr := kv.Put(key, jsonData); retryErr != nil {
+			if retryErr := casPut(kv, key, jsonData, true); retryErr != nil {
 				return retryErr
 			}
 			slog.Debug("Wrote terminated instance to JetStream KV (after recovery)", "key", key, "instanceId", instanceID)
@@ -823,6 +1025,33 @@ func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *
 
 	slog.Debug("Wrote terminated instance to JetStream KV", "key", key, "instanceId", instanceID)
 	return nil
+}
+
+// UpdateTerminatedInstance atomically applies mutate to the current
+// KV-stored terminated record for instanceID and writes it back using
+// optimistic concurrency (CAS), retrying on a concurrent writer's revision
+// conflict. Used by the teardown reaper to merge per-dependent Teardown
+// progress without clobbering marks written by a concurrent update to the
+// same record. Returns nats.ErrKeyNotFound if no record exists yet.
+func (m *JetStreamManager) UpdateTerminatedInstance(instanceID string, mutate func(*vm.VM)) (*vm.VM, error) {
+	if m.terminatedKV == nil {
+		return nil, errors.New("terminated instance KV bucket not initialized")
+	}
+
+	key := TerminatedInstancePrefix + instanceID
+	updated, err := casUpdate(m.terminatedKV, key, mutate, false)
+	if err != nil {
+		if isStreamUnavailable(err) {
+			slog.Warn("KV stream unavailable, attempting recovery", "operation", "UpdateTerminatedInstance", "key", key, "err", err)
+			kv, recoverErr := m.recoverTerminatedKVBucket()
+			if recoverErr != nil {
+				return nil, err
+			}
+			return casUpdate(kv, key, mutate, false)
+		}
+		return nil, err
+	}
+	return updated, nil
 }
 
 // ListTerminatedInstances returns all terminated instances from the terminated KV bucket.

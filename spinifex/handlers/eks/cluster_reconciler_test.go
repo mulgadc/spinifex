@@ -48,9 +48,9 @@ func (s *stubHTTPDoer) setResponse(status int, err error) {
 func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, nats.KeyValue, nats.KeyValue) {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	leaderKV, err := InitLeaderBucket(js)
+	leaderKV, err := InitLeaderBucket(js, 1)
 	require.NoError(t, err)
-	acctKV, err := GetOrCreateAccountBucket(js, testAccountID)
+	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 	require.NoError(t, PutClusterMeta(acctKV, sampleClusterMeta("alpha")))
 
@@ -61,9 +61,9 @@ func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOpti
 
 func TestNewClusterReconciler_EmptyInputsRejected(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	leaderKV, err := InitLeaderBucket(js)
+	leaderKV, err := InitLeaderBucket(js, 1)
 	require.NoError(t, err)
-	acctKV, err := GetOrCreateAccountBucket(js, testAccountID)
+	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 
 	_, err = NewClusterReconciler(nil, acctKV, testAccountID, "alpha", "h", "")

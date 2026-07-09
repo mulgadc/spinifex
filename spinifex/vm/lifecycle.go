@@ -197,8 +197,8 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 		}
 	}
 
-	// Mark boot volumes as "in-use" now that instance is confirmed running.
-	m.markBootVolumesInUse(instance)
+	// Mark attached volumes as "in-use" now that instance is confirmed running.
+	m.markAttachedVolumesInUse(instance)
 
 	if m.deps.Hooks.OnInstanceUp != nil {
 		// Launch path: per-instance subscribe failures are logged and the
@@ -214,21 +214,24 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	return nil
 }
 
-// markBootVolumesInUse re-asserts "in-use" status for an instance's boot
-// volumes once it is confirmed running. Used by the launch path and the
-// daemon-restart reconnect path so both keep volume state consistent with a
-// running instance. Errors are logged, not fatal.
-func (m *Manager) markBootVolumesInUse(instance *VM) {
+// markAttachedVolumesInUse re-asserts "in-use" status for every volume an
+// instance currently has attached (boot and non-boot) once it is confirmed
+// running. Used by the launch path and the daemon-restart reconnect path so
+// both keep volume state consistent with a running instance — otherwise a
+// non-boot volume (e.g. an EKS stateful-pod data volume) can read "available"
+// while the instance still has it attached. Errors are logged, not fatal.
+func (m *Manager) markAttachedVolumesInUse(instance *VM) {
 	if m.deps.VolumeStateUpdater == nil {
 		return
 	}
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 	for _, ebsReq := range instance.EBSRequests.Requests {
-		if !ebsReq.Boot {
+		// EFI pflash is not a KV-tracked EBS volume; skip it like the unmount gate.
+		if ebsReq.EFI {
 			continue
 		}
-		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(ebsReq.Name, "in-use", instance.ID, ""); err != nil {
+		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(ebsReq.Name, "in-use", instance.ID, ebsReq.DeviceName); err != nil {
 			slog.Error("Failed to update volume state to in-use", "volumeId", ebsReq.Name, "err", err)
 		}
 	}

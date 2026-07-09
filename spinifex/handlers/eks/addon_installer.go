@@ -35,14 +35,16 @@ type StagedAddonManifest struct {
 // The VM-side delivery slice applies it via the K3s auto-deploy dir; until then
 // the add-on sits CREATING.
 type stagingInstaller struct {
-	nc *nats.Conn
+	nc          *nats.Conn
+	clusterSize int
 }
 
 var _ AddonInstaller = (*stagingInstaller)(nil)
 
-// newStagingInstaller returns a stagingInstaller bound to the daemon NATS connection.
-func newStagingInstaller(nc *nats.Conn) *stagingInstaller {
-	return &stagingInstaller{nc: nc}
+// newStagingInstaller returns a stagingInstaller bound to the daemon NATS
+// connection, using clusterSize as the per-account bucket's replica count.
+func newStagingInstaller(nc *nats.Conn, clusterSize int) *stagingInstaller {
+	return &stagingInstaller{nc: nc, clusterSize: clusterSize}
 }
 
 func (i *stagingInstaller) acctKV(accountID string) (nats.KeyValue, error) {
@@ -53,7 +55,7 @@ func (i *stagingInstaller) acctKV(accountID string) (nats.KeyValue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	return GetOrCreateAccountBucket(js, accountID)
+	return GetOrCreateAccountBucket(js, accountID, max(i.clusterSize, 1))
 }
 
 func (i *stagingInstaller) Install(accountID, cluster string, rec *AddonRecord) error {

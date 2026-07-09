@@ -22,7 +22,7 @@ func seedDiscoveryCluster(t *testing.T) http.Handler {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
 
-	kv, err := handlers_eks.GetOrCreateAccountBucket(js, testDiscAccount)
+	kv, err := handlers_eks.GetOrCreateAccountBucket(js, testDiscAccount, 1)
 	if err != nil {
 		t.Fatalf("account bucket: %v", err)
 	}

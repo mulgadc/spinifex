@@ -1172,13 +1172,19 @@ func (s *signalingStore) SaveRunningState(string, map[string]*VM) error {
 func (s *signalingStore) LoadRunningState(string) (map[string]*VM, error) {
 	return map[string]*VM{}, nil
 }
-func (s *signalingStore) WriteStoppedInstance(string, *VM) error    { return nil }
-func (s *signalingStore) LoadStoppedInstance(string) (*VM, error)   { return nil, nil }
-func (s *signalingStore) DeleteStoppedInstance(string) error        { return nil }
-func (s *signalingStore) ListStoppedInstances() ([]*VM, error)      { return nil, nil }
+func (s *signalingStore) WriteStoppedInstance(string, *VM) error  { return nil }
+func (s *signalingStore) LoadStoppedInstance(string) (*VM, error) { return nil, nil }
+func (s *signalingStore) DeleteStoppedInstance(string) error      { return nil }
+func (s *signalingStore) ListStoppedInstances() ([]*VM, error)    { return nil, nil }
+func (s *signalingStore) ClaimStoppedInstance(string) (*VM, error) {
+	return nil, ErrStoppedInstanceClaimed
+}
 func (s *signalingStore) WriteTerminatedInstance(string, *VM) error { return nil }
 func (s *signalingStore) ListTerminatedInstances() ([]*VM, error)   { return nil, nil }
 func (s *signalingStore) DeleteTerminatedInstance(string) error     { return nil }
+func (s *signalingStore) UpdateTerminatedInstance(string, func(*VM)) (*VM, error) {
+	return nil, nil
+}
 
 var _ StateStore = (*signalingStore)(nil)
 

@@ -79,7 +79,7 @@ func TestFetchClusterJWKS_NotFoundReturnsNil(t *testing.T) {
 func TestFetchClusterJWKS_RoundTrip(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
-	kv, err := handlers_eks.GetOrCreateAccountBucket(js, "123456789012")
+	kv, err := handlers_eks.GetOrCreateAccountBucket(js, "123456789012", 1)
 	require.NoError(t, err)
 
 	want := &JWKS{Keys: []JWK{
@@ -102,7 +102,7 @@ func TestFetchClusterJWKS_RoundTrip(t *testing.T) {
 func TestFetchClusterJWKS_EmptyKeysIsError(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
-	kv, err := handlers_eks.GetOrCreateAccountBucket(js, "123456789012")
+	kv, err := handlers_eks.GetOrCreateAccountBucket(js, "123456789012", 1)
 	require.NoError(t, err)
 
 	_, err = kv.Put(handlers_eks.OIDCJWKSKey("empty-cluster"), []byte(`{"keys":[]}`))

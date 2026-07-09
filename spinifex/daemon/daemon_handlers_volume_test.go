@@ -1,13 +1,25 @@
 package daemon
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestAttachDetachErrorCode locks down the manager-error → AWS-API-code
@@ -85,4 +97,220 @@ func TestAttachDetachErrorCode(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// seedVolumeConfig writes a minimal VolumeConfig to config.json, matching
+// the seeding pattern used by the handleAttachVolume tests in
+// daemon_handlers_test.go.
+func seedVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, meta viperblock.VolumeMetadata) {
+	t.Helper()
+	wrapper := struct {
+		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
+	}{
+		VolumeConfig: viperblock.VolumeConfig{VolumeMetadata: meta},
+	}
+	data, err := json.Marshal(wrapper)
+	require.NoError(t, err)
+	_, err = store.PutObject(t.Context(), &awss3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String(volumeID + "/config.json"),
+		Body:   strings.NewReader(string(data)),
+	})
+	require.NoError(t, err)
+}
+
+// TestAttachVolume_IdempotentSameInstance verifies that re-attaching a
+// volume already attached to the requesting instance (e.g. a CSI
+// ControllerPublishVolume retry after a slow first attach) short-circuits
+// to an idempotent "attached" success instead of VolumeInUse, and does not
+// invoke vm.Manager.AttachVolume (the fake QMPClient on the seeded instance
+// has no live socket, so a real AttachVolume call would fail rather than
+// silently succeed with the pre-existing device).
+func TestAttachVolume_IdempotentSameInstance(t *testing.T) {
+	tests := []struct {
+		name            string
+		requestedDevice string
+	}{
+		{name: "no device specified", requestedDevice: ""},
+		{name: "device matches existing attachment", requestedDevice: "/dev/sdf"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+			instanceID := "i-attach-idempotent-" + strings.ReplaceAll(tt.name, " ", "-")
+			volumeID := "vol-idempotent-" + strings.ReplaceAll(tt.name, " ", "-")
+
+			instance := &vm.VM{
+				ID:           instanceID,
+				Status:       vm.StateRunning,
+				AccountID:    testAccountID,
+				InstanceType: getTestInstanceType(t),
+				Instance:     &ec2.Instance{},
+				QMPClient:    &qmp.QMPClient{},
+			}
+			daemon.vmMgr.Insert(instance)
+
+			seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+				VolumeID:         volumeID,
+				SizeGiB:          10,
+				State:            "in-use",
+				TenantID:         testAccountID,
+				AttachedInstance: instanceID,
+				DeviceName:       "/dev/sdf",
+			})
+
+			sub, err := daemon.natsConn.Subscribe(
+				fmt.Sprintf("ec2.cmd.%s", instanceID),
+				daemon.handleEC2Events,
+			)
+			require.NoError(t, err)
+			defer sub.Unsubscribe()
+
+			command := types.EC2InstanceCommand{
+				ID: instanceID,
+				Attributes: types.EC2CommandAttributes{
+					AttachVolume: true,
+				},
+				AttachVolumeData: &types.AttachVolumeData{
+					VolumeID: volumeID,
+					Device:   tt.requestedDevice,
+				},
+			}
+			cmdData, err := json.Marshal(command)
+			require.NoError(t, err)
+
+			resp, err := natsRequest(daemon.natsConn,
+				fmt.Sprintf("ec2.cmd.%s", instanceID),
+				cmdData,
+				5*time.Second,
+			)
+			require.NoError(t, err)
+
+			var attachment ec2.VolumeAttachment
+			require.NoError(t, json.Unmarshal(resp.Data, &attachment))
+
+			assert.Equal(t, volumeID, *attachment.VolumeId)
+			assert.Equal(t, instanceID, *attachment.InstanceId)
+			assert.Equal(t, "/dev/sdf", *attachment.Device)
+			assert.Equal(t, "attached", *attachment.State)
+		})
+	}
+}
+
+// TestAttachVolume_InUseDifferentInstance is a regression test locking down
+// that a volume attached to a DIFFERENT instance than the requester still
+// returns VolumeInUse unchanged, distinguishing it from the same-instance
+// idempotent short-circuit.
+func TestAttachVolume_InUseDifferentInstance(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	instanceID := "i-attach-vol-other-instance"
+	otherInstanceID := "i-already-attached-elsewhere"
+	volumeID := "vol-in-use-other-instance"
+
+	instance := &vm.VM{
+		ID:           instanceID,
+		Status:       vm.StateRunning,
+		AccountID:    testAccountID,
+		InstanceType: getTestInstanceType(t),
+		Instance:     &ec2.Instance{},
+		QMPClient:    &qmp.QMPClient{},
+	}
+	daemon.vmMgr.Insert(instance)
+
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		SizeGiB:          10,
+		State:            "in-use",
+		TenantID:         testAccountID,
+		AttachedInstance: otherInstanceID,
+		DeviceName:       "/dev/sdf",
+	})
+
+	sub, err := daemon.natsConn.Subscribe(
+		fmt.Sprintf("ec2.cmd.%s", instanceID),
+		daemon.handleEC2Events,
+	)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	command := types.EC2InstanceCommand{
+		ID: instanceID,
+		Attributes: types.EC2CommandAttributes{
+			AttachVolume: true,
+		},
+		AttachVolumeData: &types.AttachVolumeData{
+			VolumeID: volumeID,
+		},
+	}
+	cmdData, err := json.Marshal(command)
+	require.NoError(t, err)
+
+	resp, err := natsRequest(daemon.natsConn,
+		fmt.Sprintf("ec2.cmd.%s", instanceID),
+		cmdData,
+		5*time.Second,
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(resp.Data), "VolumeInUse")
+}
+
+// TestAttachVolume_IdempotentSameInstance_DeviceMismatch verifies that a
+// same-instance re-attach requesting a DIFFERENT device than the one
+// already attached is treated as a real CSI conflict (InvalidParameterValue
+// via vm.ErrVolumeDeviceMismatch), not silently echoed back or accepted.
+func TestAttachVolume_IdempotentSameInstance_DeviceMismatch(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	instanceID := "i-attach-device-mismatch"
+	volumeID := "vol-device-mismatch"
+
+	instance := &vm.VM{
+		ID:           instanceID,
+		Status:       vm.StateRunning,
+		AccountID:    testAccountID,
+		InstanceType: getTestInstanceType(t),
+		Instance:     &ec2.Instance{},
+		QMPClient:    &qmp.QMPClient{},
+	}
+	daemon.vmMgr.Insert(instance)
+
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		SizeGiB:          10,
+		State:            "in-use",
+		TenantID:         testAccountID,
+		AttachedInstance: instanceID,
+		DeviceName:       "/dev/sdf",
+	})
+
+	sub, err := daemon.natsConn.Subscribe(
+		fmt.Sprintf("ec2.cmd.%s", instanceID),
+		daemon.handleEC2Events,
+	)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	command := types.EC2InstanceCommand{
+		ID: instanceID,
+		Attributes: types.EC2CommandAttributes{
+			AttachVolume: true,
+		},
+		AttachVolumeData: &types.AttachVolumeData{
+			VolumeID: volumeID,
+			Device:   "/dev/sdg",
+		},
+	}
+	cmdData, err := json.Marshal(command)
+	require.NoError(t, err)
+
+	resp, err := natsRequest(daemon.natsConn,
+		fmt.Sprintf("ec2.cmd.%s", instanceID),
+		cmdData,
+		5*time.Second,
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(resp.Data), awserrors.ErrorInvalidParameterValue)
 }

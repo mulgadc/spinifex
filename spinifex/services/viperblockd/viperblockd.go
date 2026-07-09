@@ -885,19 +885,31 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		// Wait for 1 second to confirm nbdkit is running
-		time.Sleep(1 * time.Second)
+		// Poll for up to 1 second to confirm nbdkit is running, checking every
+		// 50ms so a fast failure is detected quickly instead of always
+		// costing the full second. Any exit within that window means NBDKit
+		// failed to stay up.
+		const nbdkitConfirmPollInterval = 50 * time.Millisecond
+		const nbdkitConfirmDeadline = 1 * time.Second
+		confirmDeadline := time.Now().Add(nbdkitConfirmDeadline)
+		for {
+			select {
+			case exitErr := <-exitChan:
+				ebsResponse.Error = fmt.Sprintf("nbdkit exited unexpectedly (code=%d)", exitErr)
+				respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
+				return
+			default:
+			}
 
-		// Any exit within the first second means NBDKit failed to stay up.
-		select {
-		case exitErr := <-exitChan:
-			ebsResponse.Error = fmt.Sprintf("nbdkit exited unexpectedly (code=%d)", exitErr)
-			respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
-			return
-		default:
-			// nbdkit is still running after 1 second, which means it started successfully
-			slog.InfoContext(ctx, "NBDKit started successfully and is running")
+			if time.Now().After(confirmDeadline) {
+				break
+			}
+
+			time.Sleep(nbdkitConfirmPollInterval)
 		}
+
+		// nbdkit is still running after the poll window, which means it started successfully
+		slog.InfoContext(ctx, "NBDKit started successfully and is running")
 
 		// NBDKit creates the socket with its own umask (typically 0755).
 		// The daemon (different user, same group) needs write access to connect.

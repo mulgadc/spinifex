@@ -14,7 +14,7 @@ func acctKVForTest(t *testing.T, svc *EKSServiceImpl) nats.KeyValue {
 	t.Helper()
 	js, err := svc.deps.NATSConn.JetStream()
 	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 	return kv
 }

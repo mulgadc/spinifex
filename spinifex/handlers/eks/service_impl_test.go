@@ -195,7 +195,7 @@ func seedTestCluster(t *testing.T, svc *EKSServiceImpl, cluster string) {
 	t.Helper()
 	js, err := svc.deps.NATSConn.JetStream()
 	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 	require.NoError(t, PutClusterMeta(kv, &ClusterMeta{Name: cluster, Status: ClusterStatusActive}))
 }
@@ -374,7 +374,7 @@ func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
 	js, err := svc.deps.NATSConn.JetStream()
 	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 
 	const arn = "arn:aws:eks:us-east-1:111122223333:cluster/c1"
@@ -417,7 +417,7 @@ func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
 	js, err := svc.deps.NATSConn.JetStream()
 	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 
 	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"

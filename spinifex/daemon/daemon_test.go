@@ -119,7 +119,8 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	require.NoError(t, err, "Failed to connect to NATS")
 
 	daemon.natsConn = nc
-	daemon.detachDelay = 0 // Skip sleep in tests
+	daemon.detachDelay = 0          // Skip sleep in tests
+	daemon.deviceDeletedTimeout = 0 // Skip DEVICE_DELETED wait in tests
 
 	// Initialize services (needed for handler tests).
 	// jsManager is nil here; pass a nil literal to keep the StoppedInstanceStore
@@ -133,10 +134,11 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	// AttachVolume / DetachVolume manager methods enough plumbing to drive
 	// ebs.mount/unmount over NATS using the test's connection.
 	daemon.vmMgr.SetDeps(vm.Deps{
-		NodeID:             daemon.node,
-		VolumeMounter:      newVolumeMounterAdapter(daemon.natsConn, daemon.node, daemon.volumeService),
-		VolumeStateUpdater: daemon.volumeService,
-		DetachDelay:        daemon.detachDelay,
+		NodeID:               daemon.node,
+		VolumeMounter:        newVolumeMounterAdapter(daemon.natsConn, daemon.node, daemon.volumeService),
+		VolumeStateUpdater:   daemon.volumeService,
+		DetachDelay:          daemon.detachDelay,
+		DeviceDeletedTimeout: daemon.deviceDeletedTimeout,
 	})
 
 	t.Cleanup(func() {

@@ -62,7 +62,7 @@ func newWebIdentityFixture(t *testing.T, svc *STSServiceImpl, accountID string) 
 	federatedARN := handlers_iam.OIDCProviderARN(accountID, issuerHostPath)
 
 	// Publish JWKS to the per-cluster EKS bucket.
-	kv, err := handlers_eks.GetOrCreateAccountBucket(svc.js, accountID)
+	kv, err := handlers_eks.GetOrCreateAccountBucket(svc.js, accountID, 1)
 	require.NoError(t, err)
 	raw, err := json.Marshal(jwks)
 	require.NoError(t, err)
@@ -352,7 +352,7 @@ func TestAssumeRoleWithWebIdentity_ProviderNotRegistered(t *testing.T) {
 	federatedARN := handlers_iam.OIDCProviderARN(testCallerAccountID, issuerHostPath)
 
 	// Publish JWKS — but skip the IAM provider registration.
-	kv, err := handlers_eks.GetOrCreateAccountBucket(svc.js, testCallerAccountID)
+	kv, err := handlers_eks.GetOrCreateAccountBucket(svc.js, testCallerAccountID, 1)
 	require.NoError(t, err)
 	jwks := &JWKS{Keys: []JWK{{
 		Kty: "EC", Crv: "P-256", Alg: "ES256", Use: "sig", Kid: kid,

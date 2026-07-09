@@ -57,7 +57,7 @@ type eksServiceFixture struct {
 func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 
 	nlb := newFakeNLBProvisioner()

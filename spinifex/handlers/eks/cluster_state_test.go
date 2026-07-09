@@ -15,7 +15,7 @@ import (
 func newClusterStateTestKV(t *testing.T) nats.KeyValue {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 	return kv
 }

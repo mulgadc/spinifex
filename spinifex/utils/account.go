@@ -69,11 +69,20 @@ func IsAccountID(s string) bool {
 	return true
 }
 
-// GetOrCreateKVBucket creates or retrieves a NATS KV bucket.
+// GetOrCreateKVBucket creates or retrieves a NATS KV bucket at Replicas=1.
 func GetOrCreateKVBucket(js nats.JetStreamContext, bucketName string, history int) (nats.KeyValue, error) {
+	return GetOrCreateKVBucketWithReplicas(js, bucketName, history, 1)
+}
+
+// GetOrCreateKVBucketWithReplicas creates or retrieves a NATS KV bucket at the
+// given replica count (clamped to a minimum of 1). The vendored nats.go
+// (v1.52.0) has no UpdateKeyValue to live-upgrade an existing under-replicated
+// bucket's replica count; existing buckets are upgraded on rebalance elsewhere.
+func GetOrCreateKVBucketWithReplicas(js nats.JetStreamContext, bucketName string, history int, replicas int) (nats.KeyValue, error) {
 	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:  bucketName,
-		History: SafeIntToUint8(history),
+		Bucket:   bucketName,
+		History:  SafeIntToUint8(history),
+		Replicas: max(replicas, 1),
 	})
 	if err != nil {
 		kv, err = js.KeyValue(bucketName)

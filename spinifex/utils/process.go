@@ -72,7 +72,22 @@ func ForceKillProcess(pid int, timeout time.Duration) error {
 	return WaitForProcessExit(pid, timeout)
 }
 
+// killProcessPollInterval and killProcessGracePeriod drive KillProcess's
+// liveness poll: check every pollInterval instead of blocking for the full
+// gracePeriod, so a process that dies quickly is detected almost immediately.
+const (
+	killProcessPollInterval = 50 * time.Millisecond
+	killProcessGracePeriod  = 120 * time.Second
+)
+
 func KillProcess(pid int) error {
+	return killProcessWithTiming(pid, killProcessPollInterval, killProcessGracePeriod)
+}
+
+// killProcessWithTiming implements KillProcess with an injectable poll
+// interval and grace period so tests can exercise the SIGKILL escalation
+// path without waiting out the full production grace period.
+func killProcessWithTiming(pid int, pollInterval, gracePeriod time.Duration) error {
 	process, err := os.FindProcess(pid)
 
 	if err != nil {
@@ -84,33 +99,25 @@ func KillProcess(pid int) error {
 		return err
 	}
 
-	checks := 0
+	deadline := time.Now().Add(gracePeriod)
 	for {
-		time.Sleep(1 * time.Second)
-		process, err = os.FindProcess(pid)
-
-		if err != nil {
-			return err
+		if !ProcessAlive(pid) {
+			return nil // process has terminated
 		}
 
-		err = process.Signal(syscall.Signal(0))
-
-		if err != nil {
-			break // Signal(0) error means process has terminated
-		}
-
-		checks++
-
-		if checks > 120 {
-			err = process.Kill() // SIGKILL after 120 s
-
+		if time.Now().After(deadline) {
+			process, err = os.FindProcess(pid)
 			if err != nil {
 				return err
 			}
 
-			break
-		}
-	}
+			if err := process.Kill(); err != nil { // SIGKILL after grace period
+				return err
+			}
 
-	return nil //nolint:nilerr // Signal(0) error means process exited — that's success
+			return nil
+		}
+
+		time.Sleep(pollInterval)
+	}
 }

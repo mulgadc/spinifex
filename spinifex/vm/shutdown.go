@@ -64,6 +64,14 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 		slog.Error("Failed to transition to stopped", "instanceId", instance.ID, "err", err)
 	}
 
+	if !instance.Attributes.StopInstance {
+		// Host DRAIN stop (not operator): keep the VM in the local running
+		// map at StateStopped so Restore relaunches it on the next boot. Do
+		// not migrate to the operator-stopped shared bucket or fire
+		// OnInstanceDown; QEMU is already down and resources released.
+		return false, nil
+	}
+
 	if !m.MigrateStoppedToSharedKV(instance) {
 		// Either StateStore unavailable / write failed (instance stays in
 		// local map; restoreInstances retries on next boot) OR a concurrent

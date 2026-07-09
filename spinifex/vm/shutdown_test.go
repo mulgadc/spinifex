@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -241,14 +242,12 @@ func TestStopAll_EmptyMap_FastPath(t *testing.T) {
 	assert.Empty(t, cleaner.cleanupMgmt, "empty StopAll must not invoke cleaner")
 }
 
-// TestStopAll_FiresOnInstanceDownAndMigratesPerVM verifies the DRAIN
-// hook contract: every Running VM transitions through Stopping → Stopped,
-// is migrated to the cluster-shared "stopped" bucket, fires
-// OnInstanceDown once, and is removed from the local running map. The
-// pre-fix StopAll only ran stopCleanup and left every VM stuck in
-// Running, so a daemon restart promoted user-stopped VMs through the
-// failed-recovery path and surfaced them as terminated — data-equivalent
-// loss for the customer.
+// TestStopAll_FiresOnInstanceDownAndMigratesPerVM verifies the
+// operator-stop hook contract: a Running VM stamped with the operator
+// StopInstance intent transitions through Stopping → Stopped, is migrated
+// to the cluster-shared "stopped" bucket, fires OnInstanceDown once, and
+// is removed from the local running map. Without honouring the operator
+// intent a restart would relaunch a deliberately stopped VM.
 func TestStopAll_FiresOnInstanceDownAndMigratesPerVM(t *testing.T) {
 	m, store, _, _, rt := shutdownTestManager(t)
 	var (
@@ -278,6 +277,7 @@ func TestStopAll_FiresOnInstanceDownAndMigratesPerVM(t *testing.T) {
 			Status:       StateRunning,
 			InstanceType: "t3.micro",
 			Instance:     &ec2.Instance{},
+			Attributes:   types.EC2CommandAttributes{StopInstance: true},
 		})
 	}
 
@@ -295,6 +295,56 @@ func TestStopAll_FiresOnInstanceDownAndMigratesPerVM(t *testing.T) {
 		require.NotNil(t, stored, "VM %s must be migrated to the stopped KV bucket", id)
 		assert.Equal(t, StateStopped, stored.Status,
 			"VM %s must be persisted in StateStopped", id)
+	}
+}
+
+// TestStopAll_DrainStopKeepsLocalNoMigrate verifies the host-DRAIN
+// contract: a Running VM with no operator StopInstance intent is stopped
+// gracefully (Stopping → Stopped) but stays in the local running map so
+// Restore relaunches it on the next boot. It must NOT be migrated to the
+// operator-stopped shared bucket and must NOT fire OnInstanceDown. This is
+// the reboot-resilience fix — DRAIN previously migrated every VM to the
+// shared bucket, hiding it from the node-local restore path.
+func TestStopAll_DrainStopKeepsLocalNoMigrate(t *testing.T) {
+	m, store, _, _, rt := shutdownTestManager(t)
+	var down atomic.Int64
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		StateStore:      store,
+		VolumeMounter:   &fakeVolumeMounter{},
+		InstanceCleaner: &recordingInstanceCleaner{},
+		TransitionState: rt.apply,
+		ShutdownSignal:  func() bool { return false },
+		Hooks: ManagerHooks{
+			OnInstanceDown: func(string) { down.Add(1) },
+		},
+	})
+
+	ids := []string{"i-1", "i-2", "i-3"}
+	for _, id := range ids {
+		m.Insert(&VM{
+			ID:           id,
+			Status:       StateRunning,
+			InstanceType: "t3.micro",
+			Instance:     &ec2.Instance{},
+			Attributes:   types.EC2CommandAttributes{},
+		})
+	}
+
+	require.NoError(t, m.StopAll())
+
+	assert.Zero(t, down.Load(),
+		"drain stop must not fire OnInstanceDown — the VM is being relaunched, not released")
+	assert.Equal(t, len(ids), m.Count(),
+		"drain-stopped VMs must stay in the local running map so Restore relaunches them")
+	for _, id := range ids {
+		v, ok := m.Get(id)
+		require.True(t, ok, "drain-stopped VM %s must remain in the local map", id)
+		assert.Equal(t, StateStopped, v.Status, "drain-stopped VM %s must be at StateStopped", id)
+		stored, err := store.LoadStoppedInstance(id)
+		require.NoError(t, err)
+		assert.Nil(t, stored,
+			"drain-stopped VM %s must NOT migrate to the operator-stopped shared bucket", id)
 	}
 }
 
@@ -381,6 +431,7 @@ func TestStopAll_WriteRunningStateFailure(t *testing.T) {
 			Status:       StateRunning,
 			InstanceType: "t3.micro",
 			Instance:     &ec2.Instance{},
+			Attributes:   types.EC2CommandAttributes{StopInstance: true},
 		})
 	}
 
@@ -505,6 +556,7 @@ func TestStop_FiresOnInstanceDownExactlyOnce(t *testing.T) {
 		Status:       StateRunning,
 		InstanceType: "t3.micro",
 		Instance:     &ec2.Instance{},
+		Attributes:   types.EC2CommandAttributes{StopInstance: true},
 	}
 	m.Insert(v)
 
@@ -544,6 +596,7 @@ func TestStop_DoesNotFireOnInstanceDown_OnSlotReclaim(t *testing.T) {
 		Status:       StateRunning,
 		InstanceType: "t3.micro",
 		Instance:     &ec2.Instance{},
+		Attributes:   types.EC2CommandAttributes{StopInstance: true},
 	}
 	m.Insert(v)
 

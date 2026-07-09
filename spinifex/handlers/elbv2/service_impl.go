@@ -1404,6 +1404,30 @@ func (s *ELBv2ServiceImpl) publishLBDNS(record *LoadBalancerRecord, action handl
 	handlers_dns.PublishChangesBestEffort(s.nc, record.AccountID, changes)
 }
 
+// DesiredDNSChanges returns the UPSERT records for every active load balancer
+// across all accounts, plus whether the enumeration was authoritative. The KV
+// store spans every tenant, so a successful list is a complete cross-account
+// view; a store error yields ok=false so the reconcile suppresses ELB pruning
+// rather than delete another tenant's live record on a partial view.
+func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
+	if s == nil || s.store == nil || s.dnsBaseDomain == "" {
+		return nil, false
+	}
+	lbs, err := s.store.ListLoadBalancers()
+	if err != nil {
+		return nil, false
+	}
+	for _, lb := range lbs {
+		if lb.State != StateActive {
+			continue
+		}
+		changes = append(changes, handlers_dns.ELBChanges(
+			handlers_dns.ActionUpsert, lb.DNSName, s.dnsBaseDomain, lbFrontendIP(lb),
+		)...)
+	}
+	return changes, true
+}
+
 // launchLBVMAsync runs provisionLBDataPlane on the background goroutine spawned
 // by CreateLoadBalancer; failures are logged (the record is already marked
 // failed inside provisionLBDataPlane). Runs after CreateLoadBalancer has returned.

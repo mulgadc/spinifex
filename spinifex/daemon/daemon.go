@@ -124,6 +124,7 @@ type Daemon struct {
 	resourceMgr           *ResourceManager
 	instanceService       *handlers_ec2_instance.InstanceServiceImpl
 	dnsWriter             *handlers_dns.Writer
+	dnsReconciler         *handlers_dns.Reconciler
 	dnsBaseDomain         string
 	dnsInternalDomain     string
 	keyService            *handlers_ec2_key.KeyServiceImpl
@@ -1236,6 +1237,7 @@ func (d *Daemon) startCluster() error {
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = handlers_dns.NewWriter(d.config, d.natsConn)
+	d.dnsReconciler = handlers_dns.NewReconciler(d.config, d.natsConn, d.dnsDesiredSet)
 	d.dnsBaseDomain = handlers_dns.ResolveBaseDomain(d.config)
 	d.dnsInternalDomain = handlers_dns.ResolveInternalDomain(d.config)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
@@ -1519,6 +1521,15 @@ func (d *Daemon) startCluster() error {
 	} else if sub != nil {
 		d.natsSubscriptions[handlers_dns.SubjectRecordsetChange] = sub
 		slog.Info("Subscribed DNS record writer", "subject", handlers_dns.SubjectRecordsetChange, "queue", handlers_dns.QueueGroup)
+	}
+
+	// DNS drift backstop (route53 V1.4): periodically rebuild managed records
+	// from the live cross-tenant inventory and converge the zone. It publishes
+	// through the same queue-group writer, so every node running it serialises on
+	// one writer and never races the zone. No-op when northstar is not configured.
+	if d.dnsReconciler.Enabled() {
+		go d.dnsReconciler.Run(d.ctx)
+		slog.Info("Started DNS reconcile backstop", "interval", handlers_dns.DefaultReconcileInterval)
 	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.

@@ -1855,6 +1855,47 @@ func (s *EKSServiceImpl) publishEKSDNS(accountID string, meta *ClusterMeta, acti
 	handlers_dns.PublishChangesBestEffort(s.deps.NATSConn, accountID, changes)
 }
 
+// DesiredDNSChanges returns the UPSERT records for every ACTIVE cluster across
+// all account buckets, plus whether the enumeration was authoritative. Clusters
+// live in per-account KV buckets, so a complete cross-tenant view requires
+// reading every one: any bucket-read failure yields ok=false so the reconcile
+// suppresses EKS pruning rather than delete a tenant's endpoint on a partial view.
+func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
+	if s == nil || s.baseDomain == "" {
+		return nil, false
+	}
+	js, err := s.deps.NATSConn.JetStream()
+	if err != nil {
+		return nil, false
+	}
+	for name := range js.KeyValueStoreNames() {
+		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
+			continue
+		}
+		acctKV, err := js.KeyValue(name)
+		if err != nil {
+			return nil, false
+		}
+		clusters, err := listClusterNames(acctKV)
+		if err != nil {
+			return nil, false
+		}
+		for _, cluster := range clusters {
+			meta, err := GetClusterMeta(acctKV, cluster)
+			if err != nil {
+				continue
+			}
+			if meta.Status != ClusterStatusActive {
+				continue
+			}
+			changes = append(changes, handlers_dns.EKSChanges(
+				handlers_dns.ActionUpsert, meta.EndpointDNSName, s.baseDomain, meta.EndpointIP,
+			)...)
+		}
+	}
+	return changes, true
+}
+
 func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {
 	if err := SetClusterStatus(kv, name, ClusterStatusFailed); err != nil {
 		slog.Warn("CreateCluster: SetClusterStatus(FAILED) failed", "cluster", name, "err", err)

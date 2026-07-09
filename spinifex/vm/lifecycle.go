@@ -870,7 +870,17 @@ func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
 	if q.Path == "" {
 		return fmt.Errorf("QMP client has no socket path")
 	}
-	fresh, err := qmp.NewQMPClient(q.Path)
+
+	// QEMU's monitor is a single-client `server,nowait` listener: the old
+	// connection must be closed before redialing, or it still holds the
+	// only client slot and the fresh dial gets no greeting, blocking until
+	// NewQMPClient's read deadline expires. dialQMPWithRetry absorbs the
+	// brief post-close ECONNREFUSED window while the listener re-arms.
+	if q.Conn != nil {
+		_ = q.Conn.Close()
+	}
+
+	fresh, err := dialQMPWithRetry(q.Path)
 	if err != nil {
 		return fmt.Errorf("redial QMP socket %s: %w", q.Path, err)
 	}
@@ -903,9 +913,6 @@ func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
 	}
 	_ = fresh.Conn.SetReadDeadline(time.Time{})
 
-	if q.Conn != nil {
-		_ = q.Conn.Close()
-	}
 	q.Conn = fresh.Conn
 	q.Decoder = fresh.Decoder
 	q.Encoder = fresh.Encoder

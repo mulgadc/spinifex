@@ -92,8 +92,8 @@ func (s *mockQMPServer) pushEvent(ev map[string]any) error {
 //
 // The listener keeps accepting connections for the life of the test (each
 // served on its own goroutine, greeting first) so a client-side reconnect —
-// e.g. reconnectQMP redialing after waitForDeviceDeletedEvent marks the
-// client Dead on timeout — is served exactly like the first connection.
+// e.g. reconnectQMP redialing after a genuine decode error marks the client
+// Dead — is served exactly like the first connection.
 func newMockQMPClientWithEvents(t *testing.T, responder func(qmp.QMPCommand, *mockQMPServer) map[string]any) (*qmp.QMPClient, func()) {
 	t.Helper()
 
@@ -1033,6 +1033,16 @@ func TestTryBlockdevDel(t *testing.T) {
 // pushed independently of any command/response exchange.
 func newMockQMPServerConn(t *testing.T) (*qmp.QMPClient, *json.Encoder, func()) {
 	t.Helper()
+	client, enc, _, cancel := newMockQMPServerConnRaw(t)
+	return client, enc, cancel
+}
+
+// newMockQMPServerConnRaw is newMockQMPServerConn plus the raw server-side
+// net.Conn, needed by tests that close the server side independently (e.g. to
+// force a genuine EOF decode error rather than a benign read-deadline
+// timeout).
+func newMockQMPServerConnRaw(t *testing.T) (*qmp.QMPClient, *json.Encoder, net.Conn, func()) {
+	t.Helper()
 
 	sockPath := filepath.Join(t.TempDir(), "qmp.sock")
 	ln, err := net.Listen("unix", sockPath)
@@ -1067,7 +1077,7 @@ func newMockQMPServerConn(t *testing.T) (*qmp.QMPClient, *json.Encoder, func()) 
 		_ = clientConn.Close()
 		_ = serverConn.Close()
 	}
-	return client, enc, cancel
+	return client, enc, serverConn, cancel
 }
 
 // TestWaitForDeviceDeletedEvent covers waitForDeviceDeletedEvent directly:
@@ -1110,18 +1120,33 @@ func TestWaitForDeviceDeletedEvent(t *testing.T) {
 		require.NoError(t, <-errCh)
 	})
 
-	t.Run("no event before timeout returns error and marks the client dead", func(t *testing.T) {
+	t.Run("no event before timeout returns error but leaves the client alive", func(t *testing.T) {
 		qmpClient, _, cancel := newMockQMPServerConn(t)
 		defer cancel()
 
 		err := waitForDeviceDeletedEvent(t.Context(), qmpClient, "vdisk-vol-1", 50*time.Millisecond, "i-1")
 		require.Error(t, err)
-		// q.Decoder is a single shared *json.Decoder: once Decode returns any
-		// error (including a deadline timeout) that instance is permanently
-		// unusable, so Dead must be set — exactly like sendQMPCommand — so the
-		// next QMP command redials via reconnectQMP instead of reusing it.
+		// A read-deadline timeout fires at a message boundary — nothing was
+		// partially consumed — and the deferred SetReadDeadline reset restores
+		// the connection, so this is benign: DEVICE_DELETED is frequently
+		// pre-swallowed by device_del's own reply loop, and poisoning the
+		// connection on every such miss was the wedge regression.
+		assert.False(t, qmpClient.Dead,
+			"a benign read-deadline timeout must not mark the client dead")
+	})
+
+	t.Run("genuine decode error marks the client dead", func(t *testing.T) {
+		qmpClient, _, serverConn, cancel := newMockQMPServerConnRaw(t)
+		defer cancel()
+
+		// Close only the server side: the client's next Decode fails with EOF,
+		// not a deadline timeout, so the stream position is genuinely unknown.
+		_ = serverConn.Close()
+
+		err := waitForDeviceDeletedEvent(t.Context(), qmpClient, "vdisk-vol-1", 5*time.Second, "i-1")
+		require.Error(t, err)
 		assert.True(t, qmpClient.Dead,
-			"a decode timeout must mark the client dead so the next command reconnects")
+			"a non-timeout decode error (EOF/connection close) must mark the client dead")
 	})
 
 	t.Run("nil client returns error", func(t *testing.T) {

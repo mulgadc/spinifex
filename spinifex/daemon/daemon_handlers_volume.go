@@ -66,7 +66,9 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 					"volumeId", volumeID, "instanceId", command.ID,
 					"requestedDevice", command.AttachVolumeData.Device,
 					"attachedDevice", volCfg.VolumeMetadata.DeviceName)
-				respondWithError(msg, attachDetachErrorCode(vm.ErrVolumeDeviceMismatch))
+				// AWS returns VolumeInUse (not InvalidParameterValue) when a
+				// re-attach targets a device other than the one already in use.
+				respondWithError(msg, awserrors.ErrorVolumeInUse)
 				return
 			}
 

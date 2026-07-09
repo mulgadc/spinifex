@@ -230,6 +230,9 @@ func (s *stubIAMService) GetAccount(string) (*handlers_iam.Account, error) {
 func (s *stubIAMService) ListAccounts() ([]*handlers_iam.Account, error) {
 	panic("unexpected ListAccounts call")
 }
+func (s *stubIAMService) GetAccountSummary(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	panic("unexpected GetAccountSummary call")
+}
 func (s *stubIAMService) CreateGroup(string, *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
 	panic("unexpected CreateGroup call")
 }

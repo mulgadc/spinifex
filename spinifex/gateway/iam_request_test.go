@@ -26,6 +26,8 @@ type flexMockIAMService struct {
 	listAccessKeysFn  func(string, *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error)
 	deleteAccessKeyFn func(string, *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error)
 	updateAccessKeyFn func(string, *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error)
+
+	getAccountSummaryFn func(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
 }
 
 func (m *flexMockIAMService) CreateUser(accountID string, input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
@@ -141,6 +143,13 @@ func (m *flexMockIAMService) CreateAccount(_ string) (*handlers_iam.Account, err
 }
 func (m *flexMockIAMService) GetAccount(_ string) (*handlers_iam.Account, error) { return nil, nil }
 func (m *flexMockIAMService) ListAccounts() ([]*handlers_iam.Account, error)     { return nil, nil }
+
+func (m *flexMockIAMService) GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	if m.getAccountSummaryFn != nil {
+		return m.getAccountSummaryFn(accountID, input)
+	}
+	return &iam.GetAccountSummaryOutput{}, nil
+}
 
 func (m *flexMockIAMService) CreateRole(_ string, _ *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
 	return &iam.CreateRoleOutput{}, nil
@@ -329,6 +338,35 @@ func TestIAMRequest_ListUsers_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "ListUsersResult")
 	assert.Contains(t, xmlStr, "alice")
 	assert.Contains(t, xmlStr, "bob")
+}
+
+// Locks in the xmlutil map behaviour: SummaryMap (map[string]*int64) must
+// marshal to <SummaryMap><entry><key>..</key><value>..</value></entry>. The Go
+// stdlib encoding/xml path cannot marshal a map, so this guards the xmlutil
+// builder wiring end to end.
+func TestIAMRequest_GetAccountSummary_Success(t *testing.T) {
+	svc := &flexMockIAMService{
+		getAccountSummaryFn: func(_ string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+			return &iam.GetAccountSummaryOutput{
+				SummaryMap: map[string]*int64{"Users": aws.Int64(2)},
+			}, nil
+		},
+	}
+	handler := setupIAMRequestHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=GetAccountSummary"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp := doRequest(handler, req)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	xmlStr := string(body)
+	assert.Contains(t, xmlStr, "GetAccountSummaryResult")
+	assert.Contains(t, xmlStr, "SummaryMap")
+	assert.Contains(t, xmlStr, "<entry>")
+	assert.Contains(t, xmlStr, "<key>Users</key>")
+	assert.Contains(t, xmlStr, "<value>2</value>")
 }
 
 func TestIAMRequest_UnknownAction(t *testing.T) {

@@ -1872,3 +1872,95 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 
 	return &doc, nil
 }
+
+// summaryQuotaDefaults holds the static SummaryMap entries returned by
+// GetAccountSummary. Spinifex's quota system (handlers/quota) only enforces
+// infrastructure dimensions (vCPUs, VPCs, subnets, EIPs, EBS) and models no IAM
+// entity limits, so these IAM quota values are AWS-parity constants for
+// informational compatibility only, not enforced limits. Resource types
+// Spinifex does not model are reported as 0 rather than omitted so CIS/audit
+// tooling that reads these keys keeps working. Real per-account resource counts
+// are overlaid on top of this table at call time.
+var summaryQuotaDefaults = map[string]int64{
+	// Account-wide quotas (AWS defaults).
+	"UsersQuota":               5000,
+	"GroupsQuota":              300,
+	"RolesQuota":               1000,
+	"PoliciesQuota":            1500,
+	"InstanceProfilesQuota":    1000,
+	"ServerCertificatesQuota":  20,
+	"PolicyVersionsInUseQuota": 10000,
+
+	// Per-principal quotas (AWS defaults).
+	"AccessKeysPerUserQuota":          maxAccessKeysPerUser,
+	"GroupsPerUserQuota":              10,
+	"AttachedPoliciesPerUserQuota":    10,
+	"AttachedPoliciesPerGroupQuota":   10,
+	"AttachedPoliciesPerRoleQuota":    10,
+	"SigningCertificatesPerUserQuota": 2,
+	"UserPolicySizeQuota":             2048,
+	"GroupPolicySizeQuota":            5120,
+	"PolicySizeQuota":                 6144,
+	"VersionsPerPolicyQuota":          5,
+
+	// Resource types Spinifex does not model — reported as 0.
+	"MFADevices":                 0,
+	"MFADevicesInUse":            0,
+	"AccountMFAEnabled":          0,
+	"ServerCertificates":         0,
+	"SigningCertificatesPerUser": 0,
+	"PolicyVersionsInUse":        0,
+}
+
+// countBucket counts records in a KV bucket that belong to accountID. Records
+// are keyed "accountID.name"; counting is by key prefix only (no Get/unmarshal)
+// so it stays cheap with many resources. The version key is skipped and a
+// missing bucket counts as zero.
+func countBucket(bucket nats.KeyValue, accountID string) (int64, error) {
+	keys, err := bucket.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	prefix := accountID + "."
+	var count int64
+	for _, key := range keys {
+		if key == utils.VersionKey {
+			continue
+		}
+		if strings.HasPrefix(key, prefix) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// GetAccountSummary returns account-wide IAM usage counts plus AWS-parity quota
+// values as a SummaryMap. Counts are scoped to accountID by key prefix; quota
+// values are static informational constants (see summaryQuotaDefaults).
+func (s *IAMServiceImpl) GetAccountSummary(accountID string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	counted := map[string]nats.KeyValue{
+		"Users":            s.usersBucket,
+		"Groups":           s.groupsBucket,
+		"Roles":            s.rolesBucket,
+		"Policies":         s.policiesBucket,
+		"InstanceProfiles": s.instanceProfilesBucket,
+	}
+
+	summary := make(map[string]*int64, len(summaryQuotaDefaults)+len(counted))
+	for key, value := range summaryQuotaDefaults {
+		summary[key] = aws.Int64(value)
+	}
+	for key, bucket := range counted {
+		n, err := countBucket(bucket, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("count %s: %w", key, err)
+		}
+		summary[key] = aws.Int64(n)
+	}
+
+	return &iam.GetAccountSummaryOutput{SummaryMap: summary}, nil
+}

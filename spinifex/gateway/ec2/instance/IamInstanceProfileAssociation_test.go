@@ -171,6 +171,9 @@ func (f *fakeIAMService) IsEmpty() (bool, error)                                
 func (f *fakeIAMService) CreateAccount(string) (*handlers_iam.Account, error)     { return nil, nil }
 func (f *fakeIAMService) GetAccount(string) (*handlers_iam.Account, error)        { return nil, nil }
 func (f *fakeIAMService) ListAccounts() ([]*handlers_iam.Account, error)          { return nil, nil }
+func (f *fakeIAMService) GetAccountSummary(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	return &iam.GetAccountSummaryOutput{}, nil
+}
 func (f *fakeIAMService) CreateGroup(string, *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
 	return &iam.CreateGroupOutput{}, nil
 }

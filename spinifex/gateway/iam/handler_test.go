@@ -275,6 +275,9 @@ func (s *stubIAMService) DeleteUserPolicy(_ string, _ *iam.DeleteUserPolicyInput
 func (s *stubIAMService) ListUserPolicies(_ string, _ *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
 	return &iam.ListUserPoliciesOutput{}, nil
 }
+func (s *stubIAMService) GetAccountSummary(_ string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	return &iam.GetAccountSummaryOutput{}, nil
+}
 
 func TestCreateUser(t *testing.T) {
 	svc := &stubIAMService{}

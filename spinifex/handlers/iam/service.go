@@ -135,4 +135,8 @@ type IAMService interface {
 	CreateAccount(name string) (*Account, error)
 	GetAccount(accountID string) (*Account, error)
 	ListAccounts() ([]*Account, error)
+
+	// GetAccountSummary returns account-wide IAM usage counts plus AWS-parity
+	// quota values as a SummaryMap. Read-only and account-scoped.
+	GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
 }

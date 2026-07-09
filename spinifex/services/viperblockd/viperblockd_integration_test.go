@@ -16,6 +16,7 @@ import (
 	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupEmbeddedNATS starts an embedded NATS server for testing
@@ -293,6 +294,102 @@ func TestIntegration_EBSUnmountNonExistentVolume(t *testing.T) {
 	assert.Equal(t, "vol-does-not-exist", response.Volume)
 	assert.NotEmpty(t, response.Error)
 	assert.Contains(t, response.Error, "not found")
+	assert.True(t, response.NotFound, "a volume absent from MountedVolumes must set NotFound so the caller treats the retry as an idempotent success")
+}
+
+// TestIntegration_EBSUnmountRetryAfterCompletedSealReportsNotFound verifies the
+// idempotency contract a slow-but-completed seal relies on: once a volume has
+// been fully unmounted (removed from MountedVolumes), a second ebs.unmount for
+// the same name reports NotFound=true rather than a bare "not found" the
+// caller could mistake for an unrelated failure.
+func TestIntegration_EBSUnmountRetryAfterCompletedSealReportsNotFound(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	cfg.MountedVolumes = []MountedVolume{
+		{Name: "vol-retry-unmount", PID: 99999},
+	}
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-retry-unmount"})
+	require.NoError(t, err)
+
+	// First call: volume is mounted, no local WAL to seal (not created via
+	// createMockVolumeState), so it completes and is dropped from MountedVolumes.
+	msg, err := nc.Request("ebs.test-node.unmount", requestData, 3*time.Second)
+	require.NoError(t, err)
+	var first types.EBSUnMountResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &first))
+	assert.Empty(t, first.Error)
+	assert.False(t, first.NotFound)
+
+	// Retry: the volume is gone from MountedVolumes, so this must report
+	// NotFound=true — the signal the caller's adapter treats as a completed,
+	// idempotent seal rather than a hard failure.
+	msg, err = nc.Request("ebs.test-node.unmount", requestData, 3*time.Second)
+	require.NoError(t, err)
+	var retry types.EBSUnMountResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &retry))
+	assert.True(t, retry.NotFound, "a retry after a completed unmount must report NotFound")
+}
+
+// TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted verifies the
+// seal-before-remove reorder: when a volume needs sealing (a local WAL
+// directory exists) and the seal fails, the volume must remain in
+// MountedVolumes rather than being dropped — a caller must never see NotFound
+// for a seal that actually failed, since that would flip an unattached
+// volume to available with no durable checkpoint.
+func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	// A local WAL directory makes volumeNeedsSeal true; the configured S3 host
+	// is an unreachable mock endpoint, so sealVolumeVB's LoadState fails.
+	createMockVolumeState(t, cfg.BaseDir, "vol-seal-fail")
+	cfg.MountedVolumes = []MountedVolume{
+		{Name: "vol-seal-fail", PID: 99999},
+	}
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-seal-fail"})
+	require.NoError(t, err)
+
+	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
+	require.NoError(t, err)
+
+	var resp types.EBSUnMountResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.NotEmpty(t, resp.Error, "a seal failure must surface as an error, not a silent success")
+	assert.False(t, resp.NotFound, "a failed seal must not report NotFound")
+
+	cfg.mu.Lock()
+	defer cfg.mu.Unlock()
+	require.Len(t, cfg.MountedVolumes, 1, "a failed seal must leave the volume in MountedVolumes for retry")
+	assert.Equal(t, "vol-seal-fail", cfg.MountedVolumes[0].Name)
 }
 
 // TestIntegration_ConcurrentMountRequests tests multiple concurrent mount requests

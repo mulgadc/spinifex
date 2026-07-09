@@ -475,8 +475,6 @@ func launchService(cfg *Config) (err error) {
 			if volume.Name == ebsRequest.Name {
 				matched = volume
 				matchIdx = i
-				// Remove from slice while we hold the lock
-				cfg.MountedVolumes = append(cfg.MountedVolumes[:i], cfg.MountedVolumes[i+1:]...)
 				break
 			}
 		}
@@ -532,12 +530,29 @@ func launchService(cfg *Config) (err error) {
 					slog.ErrorContext(ctx, "Failed to delete nbd socket", "err", err, "socket", matched.Socket)
 				}
 			}
+
+			// Only drop the volume from MountedVolumes once the seal actually
+			// succeeded (or none was needed): a failed seal must leave it
+			// mounted so a retry re-attempts sealVolumeVB, rather than a
+			// caller seeing "not found" and mistaking a failed seal for a
+			// completed one.
+			if ebsResponse.Error == "" {
+				cfg.mu.Lock()
+				for i, volume := range cfg.MountedVolumes {
+					if volume.Name == matched.Name {
+						cfg.MountedVolumes = append(cfg.MountedVolumes[:i], cfg.MountedVolumes[i+1:]...)
+						break
+					}
+				}
+				cfg.mu.Unlock()
+			}
 		}
 
 		if matchIdx < 0 {
 			ebsResponse = types.EBSUnMountResponse{
-				Volume: ebsRequest.Name,
-				Error:  fmt.Sprintf("Volume %s not found", ebsRequest.Name),
+				Volume:   ebsRequest.Name,
+				Error:    fmt.Sprintf("Volume %s not found", ebsRequest.Name),
+				NotFound: true,
 			}
 		}
 

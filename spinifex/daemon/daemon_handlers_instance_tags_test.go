@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -50,6 +51,17 @@ func (m *memStoppedStore) WriteStoppedInstance(id string, instance *vm.VM) error
 func (m *memStoppedStore) DeleteStoppedInstance(id string) error {
 	delete(m.instances, id)
 	return nil
+}
+
+// UpdateStoppedInstance mimics the real CAS semantics: a missing record
+// returns nats.ErrKeyNotFound instead of resurrecting it.
+func (m *memStoppedStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	v, ok := m.instances[id]
+	if !ok {
+		return nil, nats.ErrKeyNotFound
+	}
+	mutate(v)
+	return v, nil
 }
 
 func (m *memStoppedStore) ClaimStoppedInstance(id string) (*vm.VM, error) {

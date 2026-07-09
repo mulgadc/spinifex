@@ -151,12 +151,13 @@ func TestTagStoppedInstance_WritesRecordAndCentral(t *testing.T) {
 	require.NoError(t, err)
 
 	want := map[string]string{"Name": "web", "env": "prod"}
-	written := store.wroteStopped["i-123"]
+	written := store.loadByID["i-123"]
 	require.NotNil(t, written)
 	assert.Equal(t, want, tagsAsMap(written.Instance.Tags))
 	assert.Equal(t, want, writer.tags)
 	assert.Equal(t, "i-123", writer.resourceID)
 	assert.Equal(t, "111122223333", writer.accountID)
+	assert.Equal(t, 1, store.updateStoppedCalls)
 }
 
 func TestTagStoppedInstance_RemoveKeys(t *testing.T) {
@@ -171,7 +172,7 @@ func TestTagStoppedInstance_RemoveKeys(t *testing.T) {
 	require.NoError(t, err)
 
 	want := map[string]string{"Name": "web"}
-	assert.Equal(t, want, tagsAsMap(store.wroteStopped["i-123"].Instance.Tags))
+	assert.Equal(t, want, tagsAsMap(store.loadByID["i-123"].Instance.Tags))
 	assert.Equal(t, want, writer.tags)
 }
 
@@ -202,6 +203,26 @@ func TestTagStoppedInstance_CrossAccountRejected(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 	assert.Zero(t, writer.calls)
 	assert.Empty(t, store.wroteStopped)
+}
+
+// TestTagStoppedInstance_ConcurrentClaimDoesNotResurrect covers a
+// TagStoppedInstance racing a winning ClaimStoppedInstance (e.g.
+// StartStoppedInstance) that deletes the record between this call's Load and
+// its CAS write: the KV update must fail cleanly instead of resurrecting a
+// stale stopped entry, and the caller must see a NotFound-shaped error.
+func TestTagStoppedInstance_ConcurrentClaimDoesNotResurrect(t *testing.T) {
+	stored := stoppedTagInstance("i-123", "111122223333", tagList("Name", "web"))
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}, claimAfterLoad: true}
+	writer := &fakeTagWriter{}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
+		Tags: map[string]string{"env": "prod"},
+	}, false, writer, "111122223333")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.Empty(t, store.loadByID, "the claimed record must not be resurrected")
+	assert.Equal(t, []string{"i-123"}, store.claimedStopped)
 }
 
 func TestTagStoppedInstance_CentralWriteErrorSkipsRecordWrite(t *testing.T) {

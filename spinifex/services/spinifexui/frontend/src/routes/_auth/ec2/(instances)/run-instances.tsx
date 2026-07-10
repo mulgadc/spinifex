@@ -308,10 +308,6 @@ function CreateInstance() {
           <FieldTitle>
             <label htmlFor="launchTemplateId">Launch Template</label>
           </FieldTitle>
-          <FieldDescription>
-            Optionally launch from a saved template. Its configuration is used
-            as-is.
-          </FieldDescription>
           <Controller
             control={control}
             name="launchTemplateId"

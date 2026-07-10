@@ -465,6 +465,10 @@ func startBrokenQMPListener(t *testing.T) (string, func()) {
 func TestAttachQMP_DialFailure_NoHeartbeatLeak(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
+	orig := qmpSocketWaitTimeout
+	qmpSocketWaitTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { qmpSocketWaitTimeout = orig })
+
 	m := NewManager()
 	instance := &VM{
 		ID:     "i-dial-fail",
@@ -893,6 +897,8 @@ var _ NetworkPlumber = (*scriptedNetworkPlumber)(nil)
 func TestStartupTimeouts(t *testing.T) {
 	assert.Equal(t, 5*time.Second, qemuStartupTimeout)
 	assert.Equal(t, 5*time.Second, nbdReadyTimeout)
+	assert.Equal(t, 3*time.Second, qmpSocketWaitTimeout,
+		"production QMP socket wait default must stay 3s outside tests")
 }
 
 // TestRG4_GuestOOMTier asserts the RG-4 OOM ladder: a customer guest QEMU

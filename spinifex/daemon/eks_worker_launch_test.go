@@ -17,10 +17,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// noopTerminateRetrySleep replaces the terminate NoResponders backoff with a
+// no-op for the duration of the test, so retry paths do not burn real seconds.
+func noopTerminateRetrySleep(t *testing.T) {
+	t.Helper()
+	prev := terminateRetrySleep
+	terminateRetrySleep = func(time.Duration) {}
+	t.Cleanup(func() { terminateRetrySleep = prev })
+}
+
 // A worker with no owner (no responder on ec2.cmd.<id>) is already-gone, so
 // terminating it is an idempotent no-op success (a retried DeleteNodegroup /
 // scale-down must not wedge on drained instances).
 func TestTerminateWorkerInstances_NotFoundIsIdempotent(t *testing.T) {
+	noopTerminateRetrySleep(t)
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -105,6 +115,7 @@ func TestTerminateWorkerInstances_OwnerErrorSurfaces(t *testing.T) {
 // a stopped+wedged node's ENI pins the customer subnet/VPC undeletable and
 // DeleteCluster wedges in DELETING (mulga-siv-475).
 func TestTerminateWorkerInstances_StoppedFallbackToEC2Terminate(t *testing.T) {
+	noopTerminateRetrySleep(t)
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -133,6 +144,7 @@ func TestTerminateWorkerInstances_StoppedFallbackToEC2Terminate(t *testing.T) {
 // A NotFound payload from the ec2.terminate fallback (worker already drained) is
 // idempotent success, not a teardown failure.
 func TestTerminateWorkerInstances_StoppedFallbackNotFoundIdempotent(t *testing.T) {
+	noopTerminateRetrySleep(t)
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -150,6 +162,7 @@ func TestTerminateWorkerInstances_StoppedFallbackNotFoundIdempotent(t *testing.T
 // A non-NotFound error from the ec2.terminate fallback must surface so the
 // teardown backstop retries rather than orphaning the worker (and its ENI).
 func TestTerminateWorkerInstances_StoppedFallbackErrorSurfaces(t *testing.T) {
+	noopTerminateRetrySleep(t)
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)

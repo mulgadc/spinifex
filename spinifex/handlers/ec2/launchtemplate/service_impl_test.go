@@ -87,6 +87,27 @@ func TestCreateLaunchTemplate_DuplicateName(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException, err.Error())
 }
 
+func TestLaunchTemplateNameWithKVUnsafeCharacters(t *testing.T) {
+	for _, name := range []string{"foo(bar)", "foo."} {
+		t.Run(name, func(t *testing.T) {
+			svc := setupTestService(t)
+			createTemplate(t, svc, name, "t3.micro")
+
+			// Name-based operations must use the same encoded index key.
+			_, err := svc.CreateLaunchTemplateVersion(context.Background(), &ec2.CreateLaunchTemplateVersionInput{
+				LaunchTemplateName: aws.String(name),
+				LaunchTemplateData: &ec2.RequestLaunchTemplateData{InstanceType: aws.String("t3.large")},
+			}, testAccountID)
+			require.NoError(t, err)
+
+			_, err = svc.DeleteLaunchTemplate(context.Background(), &ec2.DeleteLaunchTemplateInput{
+				LaunchTemplateName: aws.String(name),
+			}, testAccountID)
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestCreateLaunchTemplate_DryRunNoPersist(t *testing.T) {
 	svc := setupTestService(t)
 	out, err := svc.CreateLaunchTemplate(context.Background(), &ec2.CreateLaunchTemplateInput{

@@ -2,6 +2,7 @@ package handlers_ec2_launchtemplate
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,9 +81,11 @@ func headerKey(accountID, ltID string) string {
 	return utils.AccountKey(accountID, ltID)
 }
 
-// nameKey returns the name-index key: account.name.<name>.
+// nameKey returns the name-index key: account.name.<hex-encoded-name>.
+// Launch template names allow characters such as parentheses that are not valid
+// in NATS KV keys, so the name must not be used in its raw form here.
 func nameKey(accountID, name string) string {
-	return utils.AccountKey(accountID, "name."+name)
+	return utils.AccountKey(accountID, "name."+hex.EncodeToString([]byte(name)))
 }
 
 // versionKey returns a version-body key: account.lt-<id>.v<n>.

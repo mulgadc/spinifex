@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrSliceTooLarge is returned when a list exceeds maxSliceLen entries.
@@ -160,6 +161,16 @@ func setFieldValue(field reflect.Value, value string) error {
 			return err
 		}
 		field.SetBool(b)
+	case reflect.Struct:
+		if field.Type() == reflect.TypeOf(time.Time{}) {
+			timestamp, err := time.Parse(time.RFC3339, value)
+			if err != nil {
+				return fmt.Errorf("parse RFC3339 timestamp: %w", err)
+			}
+			field.Set(reflect.ValueOf(timestamp))
+			return nil
+		}
+		return fmt.Errorf("unsupported struct type: %v", field.Type())
 	default:
 		return fmt.Errorf("unsupported field type: %v", field.Kind())
 	}

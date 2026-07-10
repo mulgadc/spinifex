@@ -18,6 +18,11 @@ import (
 // the LB VM. Callers can errors.Is on it to retry after capacity reclaim.
 var ErrLBTerminalFailed = errors.New("LB entered terminal failure state")
 
+// ErrLBProvisioningTimeout marks a load balancer that never left provisioning
+// within the wait window (no terminal failure, just stuck). Callers can
+// errors.Is on it to tear down and retry, same as a terminal failure.
+var ErrLBProvisioningTimeout = errors.New("LB stuck in provisioning past timeout")
+
 // WaitForLBActive polls describe-load-balancers until state=active. Bails
 // immediately if the LB enters a terminal failure state — no point waiting
 // the full timeout when provisioning has already given up. Progress emits
@@ -54,7 +59,7 @@ func WaitForLBActiveErr(t *testing.T, c *AWSClient, lbArn, label string, timeout
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%s did not become active within %s (last state=%s reason=%s)", label, timeout, lastState, lastReason)
+			return fmt.Errorf("%s did not become active within %s (last state=%s reason=%s): %w", label, timeout, lastState, lastReason, ErrLBProvisioningTimeout)
 		}
 		if time.Now().After(nextLog) {
 			Step(t, "%s: state=%s, still waiting...", label, lastState)

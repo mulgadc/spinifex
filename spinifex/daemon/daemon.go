@@ -1489,6 +1489,8 @@ func (d *Daemon) startCluster() error {
 			"err", err)
 	}
 
+	d.elbv2Service.StartLifecycleReaper(context.Background())
+
 	d.eksService, err = initServiceWithRetry("EKS service", func() (*handlers_eks.EKSServiceImpl, error) {
 		return handlers_eks.NewEKSServiceImpl(d.buildEKSServiceDeps())
 	})

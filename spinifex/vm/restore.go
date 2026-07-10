@@ -89,15 +89,24 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 		}
 
 		if instance.Status == StateStopped {
-			if !m.MigrateStoppedToSharedKV(instance) {
-				// KV write failed — keep in local state so the next restart
-				// retries the migration. Deleting here would create a "void":
-				// the instance disappears from both local state and the
-				// stopped KV, making it invisible to DescribeStoppedInstances.
-				slog.Warn("Stopped instance KV migration failed, will retry on next restart",
-					"instance", instance.ID)
+			if instance.Attributes.StopInstance {
+				if !m.MigrateStoppedToSharedKV(instance) {
+					// KV write failed — keep in local state so the next restart
+					// retries the migration. Deleting here would create a "void":
+					// the instance disappears from both local state and the
+					// stopped KV, making it invisible to DescribeStoppedInstances.
+					slog.Warn("Stopped instance KV migration failed, will retry on next restart",
+						"instance", instance.ID)
+				}
+				continue
 			}
-			continue
+
+			// StateStopped with no operator StopInstance intent means the
+			// host DRAIN sequence stopped it for a coordinated reboot/shutdown,
+			// not the operator. Treat it like a running instance whose QEMU
+			// exited: reset to Pending and relaunch.
+			slog.Info("Instance was drain-stopped (not operator-stopped), relaunching", "instance", instance.ID)
+			instance.Status = StatePending
 		}
 
 		// Recovery-failed instances stay in StateError until the operator
@@ -180,8 +189,11 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 
 // markUnschedulable flips an instance to Stopped with InsufficientInstanceCapacity
 // so DescribeInstances reports a useful error when the node can no longer host the type.
+// StopInstance is stamped so a future restore's drain-relaunch path (which
+// resumes StateStopped without operator intent) does not try to relaunch it.
 func markUnschedulable(instance *VM, reason string) {
 	instance.Status = StateStopped
+	instance.Attributes.StopInstance = true
 	if instance.Instance != nil {
 		instance.Instance.StateReason = &ec2.StateReason{}
 		instance.Instance.StateReason.SetCode("Server.InsufficientInstanceCapacity")

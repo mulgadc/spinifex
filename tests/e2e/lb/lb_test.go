@@ -861,17 +861,20 @@ func createActiveLB(t *testing.T, c *harness.AWSClient, f *sharedFixture, name, 
 			time.Sleep(wait)
 		}
 		lb := createLB(t, c, f, name, lbType, scheme)
+		// Register idempotent teardown up-front so no exit path (fatal, timeout,
+		// or success) can leak the LB/listener into the shared VPC. Deletes are
+		// idempotent server-side, so a retry's explicit teardown below is safe.
+		t.Cleanup(func() { deleteLB(t, c, lb) })
 		listener := ""
 		if proto != "" {
 			listener = createListener(t, c, lb.ARN, proto, port, tgArn)
+			t.Cleanup(func() { deleteListener(t, c, listener) })
 		}
 		lastErr = harness.WaitForLBActiveErr(t, c, lb.ARN, label, 5*time.Minute)
 		if lastErr == nil {
-			t.Cleanup(func() { deleteLB(t, c, lb) })
-			t.Cleanup(func() { deleteListener(t, c, listener) })
 			return lb, listener
 		}
-		if !errors.Is(lastErr, harness.ErrLBTerminalFailed) {
+		if !errors.Is(lastErr, harness.ErrLBTerminalFailed) && !errors.Is(lastErr, harness.ErrLBProvisioningTimeout) {
 			t.Fatalf("%s: %v", label, lastErr)
 		}
 		t.Logf("%s: attempt %d/%d: %v — tearing down and retrying", label, attempt, lbCreateAttempts, lastErr)

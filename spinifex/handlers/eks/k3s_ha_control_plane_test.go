@@ -583,3 +583,53 @@ func TestSpecForSystemType_RejectsNonSystem(t *testing.T) {
 	_, _, ok = instancetypes.SpecForSystemType("sys.nonexistent")
 	assert.False(t, ok, "unknown system size has no spec")
 }
+
+func TestProvisionFreshControlPlane_ClusterInitNoJoin(t *testing.T) {
+	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b"}}
+	inst := &seqK3sInst{}
+	svc := newPlacerService(sched, &fakePlacer{}, &seqK3sVPC{}, inst)
+	// IAM is unwired here, so the launch re-derives static system creds from
+	// deps (as ProvisionReplacementCP/CreateCluster do).
+	svc.deps.SystemAccessKey = "AKIATEST"
+	svc.deps.SystemSecretKey = "secret"
+	tmpl := validK3sInput()
+
+	node, err := svc.ProvisionFreshControlPlane(context.Background(), FreshCPRequest{
+		ClusterName:  "alpha",
+		Template:     &tmpl,
+		ExcludeHosts: []string{"node-a"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "node-b", node.NodeID, "placed on the one non-excluded host")
+	assert.Equal(t, "i-node-b", node.InstanceID)
+	assert.NotEmpty(t, node.ENIID, "fresh CP carries a fresh ENI")
+	ud := inst.userData["node-b"]
+	assert.Contains(t, ud, "cluster-init: true", "fresh CP seeds a new single-member etcd, not a join")
+	assert.NotContains(t, ud, "server: https://", "must not join a (nonexistent) survivor")
+	assert.Contains(t, ud, "EKS_ACCESS_KEY=AKIATEST", "re-derives system creds like ProvisionReplacementCP")
+	assert.Contains(t, ud, "SPINIFEX_PREDASTORE_AKID=AKIATEST", "re-derives predastore creds too")
+}
+
+func TestProvisionFreshControlPlane_NoFreeHostErrors(t *testing.T) {
+	sched := &fakeHostScheduler{hosts: []string{"node-a"}}
+	svc := newPlacerService(sched, &fakePlacer{}, &seqK3sVPC{}, &seqK3sInst{})
+	svc.deps.SystemAccessKey = "AKIATEST"
+	svc.deps.SystemSecretKey = "secret"
+	tmpl := validK3sInput()
+
+	_, err := svc.ProvisionFreshControlPlane(context.Background(), FreshCPRequest{
+		ClusterName:  "alpha",
+		Template:     &tmpl,
+		ExcludeHosts: []string{"node-a"},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no schedulable host")
+}
+
+func TestProvisionFreshControlPlane_NilTemplateRejected(t *testing.T) {
+	svc := newPlacerService(&fakeHostScheduler{}, &fakePlacer{}, &seqK3sVPC{}, &seqK3sInst{})
+	_, err := svc.ProvisionFreshControlPlane(context.Background(), FreshCPRequest{ClusterName: "alpha"})
+	require.Error(t, err, "nil template rejected")
+}

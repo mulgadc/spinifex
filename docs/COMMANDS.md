@@ -171,6 +171,11 @@ read.
 | `spx admin gpu mig enable` | `--profile <name>` (required, e.g. `1g.10gb`), `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → enables MIG mode on each target (`gpu.EnableMIGMode`) → lists available profiles (`gpu.ListProfiles`) and validates requested profile name → destroys any existing instances (`gpu.DestroyAllInstances`) → creates new instances filling GPU capacity (`gpu.CreateInstances`) → writes `mig_profile` to `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. |
 | `spx admin gpu mig disable` | `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → destroys all GPU instances (`gpu.DestroyAllInstances`) → disables MIG mode (`gpu.DisableMIGMode`) → clears `mig_profile` in `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. |
 
+### EKS Control-Plane Disaster Recovery
+
+| Command | Flags | Description |
+|---------|-------|-------------|
+| `spx admin eks restore-snapshot` | `--cluster` (required), `--snapshot` (optional, defaults to the latest snapshot in predastore), `--account` (optional, defaults to the bootstrap account) | Single-CP total-loss DR path: launches a fresh control-plane VM as a cluster-init seed (replaying the persisted create-time launch template) → sets a `RecoveryDirective` (`cluster-reset`, optionally restoring the resolved/given etcd snapshot) for the new instance so its boot-time recovery agent applies it before k3s starts → re-points the cluster NLB's apiserver and konnectivity target groups from the old CP's ENI to the new one → persists the replacement in cluster meta → best-effort terminates the old CP VM. HA clusters (a spread with a potentially surviving quorum) are rejected — recover those via quorum reformation instead. |
 
 ## AWS-Compatible API
 

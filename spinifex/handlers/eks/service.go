@@ -54,6 +54,11 @@ type EKSService interface {
 	// reconciler / operator CLI set it to drive an etcd cluster-reset recovery.
 	GetRecoveryDirective(ctx context.Context, input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error)
 	SetRecoveryDirective(ctx context.Context, input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error)
+	// RestoreSnapshot is an internal control-plane method (not an AWS-SDK
+	// action): the operator CLI (spx admin eks restore-snapshot) drives the
+	// single-CP total-loss DR path — fresh CP launch, recovery-directive wiring,
+	// and NLB re-point.
+	RestoreSnapshot(ctx context.Context, input *RestoreSnapshotInput, accountID string) (*RestoreSnapshotOutput, error)
 
 	// OIDC identity-provider configs.
 	AssociateIdentityProviderConfig(ctx context.Context, input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error)

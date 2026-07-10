@@ -180,6 +180,12 @@ func TestRunInstancesMultiCount(t *testing.T) {
 	runRunInstancesMultiCount(t, requireSingleNodeFixture(t))
 }
 
+// TestLaunchTemplates launches a throwaway VM to verify the referenced
+// template's effective image and instance type, so it runs sequentially.
+func TestLaunchTemplates(t *testing.T) {
+	runLaunchTemplates(t, requireSingleNodeFixture(t))
+}
+
 // TestSpotInstanceLifecycle drives the Spot Instance Request mock: request ->
 // fulfilled -> running -> cancel/terminate terminal transitions. Sequential: it
 // consumes node capacity for its own short-lived VMs like the multi-count test.

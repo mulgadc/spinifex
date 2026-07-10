@@ -41,6 +41,7 @@ import (
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
+	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
@@ -132,6 +133,7 @@ type Daemon struct {
 	eigwService           *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
 	igwService            *handlers_ec2_igw.IGWServiceImpl
 	placementGroupService *handlers_ec2_placementgroup.PlacementGroupServiceImpl
+	launchTemplateService *handlers_ec2_launchtemplate.LaunchTemplateServiceImpl
 	spotInstanceService   *handlers_ec2_spotinstance.SpotInstanceServiceImpl
 	vpcService            *handlers_ec2_vpc.VPCServiceImpl
 	eipService            handlers_ec2_eip.EIPService
@@ -806,6 +808,13 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RemoveInstanceFromPlacementGroup", d.handleEC2RemoveInstanceFromPlacementGroup, "spinifex-workers"},
 		{"ec2.ReserveClusterNode", d.handleEC2ReserveClusterNode, "spinifex-workers"},
 		{"ec2.FinalizeClusterInstances", d.handleEC2FinalizeClusterInstances, "spinifex-workers"},
+		{"ec2.CreateLaunchTemplate", d.handleEC2CreateLaunchTemplate, "spinifex-workers"},
+		{"ec2.CreateLaunchTemplateVersion", d.handleEC2CreateLaunchTemplateVersion, "spinifex-workers"},
+		{"ec2.DeleteLaunchTemplate", d.handleEC2DeleteLaunchTemplate, "spinifex-workers"},
+		{"ec2.DeleteLaunchTemplateVersions", d.handleEC2DeleteLaunchTemplateVersions, "spinifex-workers"},
+		{"ec2.ModifyLaunchTemplate", d.handleEC2ModifyLaunchTemplate, "spinifex-workers"},
+		{"ec2.DescribeLaunchTemplates", d.handleEC2DescribeLaunchTemplates, "spinifex-workers"},
+		{"ec2.DescribeLaunchTemplateVersions", d.handleEC2DescribeLaunchTemplateVersions, "spinifex-workers"},
 		{"ec2.PutSpotInstanceRequests", d.handleEC2PutSpotInstanceRequests, "spinifex-workers"},
 		{"ec2.DescribeSpotInstanceRequests", d.handleEC2DescribeSpotInstanceRequests, "spinifex-workers"},
 		{"ec2.CancelSpotInstanceRequests", d.handleEC2CancelSpotInstanceRequests, "spinifex-workers"},
@@ -1218,6 +1227,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.igwService must be nil before startCluster")
 	case d.placementGroupService != nil:
 		return errors.New("d.placementGroupService must be nil before startCluster")
+	case d.launchTemplateService != nil:
+		return errors.New("d.launchTemplateService must be nil before startCluster")
 	case d.spotInstanceService != nil:
 		return errors.New("d.spotInstanceService must be nil before startCluster")
 	case d.vpcService != nil:
@@ -1329,6 +1340,13 @@ func (d *Daemon) startCluster() error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize placement group service: %w", err)
+	}
+
+	d.launchTemplateService, err = initServiceWithRetry("launch template service", func() (*handlers_ec2_launchtemplate.LaunchTemplateServiceImpl, error) {
+		return handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize launch template service: %w", err)
 	}
 
 	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*handlers_ec2_spotinstance.SpotInstanceServiceImpl, error) {

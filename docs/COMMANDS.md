@@ -178,7 +178,7 @@ read.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn), `--capacity-reservation-specification` (CapacityReservationTarget.CapacityReservationId, targeted-by-id only), `--metadata-options` (HttpPutResponseHopLimit; IMDSv2-only enforced — rejects `http-tokens=optional`) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--launch-template`, `--hibernate-options` | **DONE** |
+| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn), `--capacity-reservation-specification` (CapacityReservationTarget.CapacityReservationId, targeted-by-id only), `--metadata-options` (HttpPutResponseHopLimit; IMDSv2-only enforced — rejects `http-tokens=optional`), `--launch-template` (LaunchTemplateId/LaunchTemplateName, Version — resolves `$Default`/`$Latest`; direct params override the template) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--hibernate-options` | **DONE** |
 | `describe-instances` | `--instance-ids`, `--filters` (instance-state-name, instance-id, instance-type, vpc-id, subnet-id, tag:*, tag-key, tag-value) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `start-instances` | `--instance-ids` | `--dry-run`, `--force` | **DONE** |
 | `stop-instances` | `--instance-ids` | `--force`, `--hibernate`, `--dry-run` | **DONE** |
@@ -480,11 +480,13 @@ EIP handlers are always registered. Without a public IPAM pool (external mode di
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-launch-template` | — | `--launch-template-name`, `--launch-template-data`, `--tag-specifications` | **NOT STARTED** |
-| `create-launch-template-version` | — | `--launch-template-id`/`--launch-template-name`, `--launch-template-data`, `--source-version` | **NOT STARTED** |
-| `delete-launch-template` | — | `--launch-template-id`/`--launch-template-name`, `--dry-run` | **NOT STARTED** |
-| `describe-launch-templates` | — | `--launch-template-ids`, `--launch-template-names`, `--filters` | **NOT STARTED** |
-| `describe-launch-template-versions` | — | `--launch-template-id`/`--launch-template-name`, `--versions`, `--min-version`, `--max-version` | **NOT STARTED** |
+| `create-launch-template` | `--launch-template-name`, `--launch-template-data` (full nested RequestLaunchTemplateData), `--version-description`, `--tag-specifications` (launch-template-scoped), `--dry-run` (no-op) | `--client-token` (idempotency) | **DONE** |
+| `create-launch-template-version` | `--launch-template-id`/`--launch-template-name`, `--launch-template-data`, `--source-version` (clone-and-override), `--version-description`, `--dry-run` (no-op) | `--client-token`, `--resolve-alias` | **DONE** |
+| `delete-launch-template` | `--launch-template-id`/`--launch-template-name`, `--dry-run` (no-op) | — | **DONE** |
+| `delete-launch-template-versions` | `--launch-template-id`/`--launch-template-name`, `--versions` (rejects the current default version), `--dry-run` (no-op) | — | **DONE** |
+| `modify-launch-template` | `--launch-template-id`/`--launch-template-name`, `--default-version`, `--dry-run` (no-op) | — | **DONE** |
+| `describe-launch-templates` | `--launch-template-ids`, `--launch-template-names`, `--filters` (launch-template-id, launch-template-name, create-time, tag:*, tag-key) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `describe-launch-template-versions` | `--launch-template-id`/`--launch-template-name`, `--versions` (`$Default`/`$Latest`/numeric), `--min-version`, `--max-version`, `--filters` (is-default-version, image-id, instance-type, kernel-id, ram-disk-id, ebs-optimized) | `--max-results`, `--next-token`, `--dry-run`, `--resolve-alias` | **DONE** |
 
 ### EC2 — Dedicated Hosts, IPv4 Pools, DHCP, Capacity Reservations
 

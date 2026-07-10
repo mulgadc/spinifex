@@ -65,6 +65,14 @@ type ECSService interface {
 	ListTagsForResource(ctx context.Context, input *ecs.ListTagsForResourceInput, accountID string) (*ecs.ListTagsForResourceOutput, error)
 	TagResource(ctx context.Context, input *ecs.TagResourceInput, accountID string) (*ecs.TagResourceOutput, error)
 	UntagResource(ctx context.Context, input *ecs.UntagResourceInput, accountID string) (*ecs.UntagResourceOutput, error)
+
+	// Capacity providers. Strategy is accepted and persisted but inert: no
+	// scheduler coupling, no scale loop (a separate follow-on binds this to an
+	// ASG primitive).
+	PutClusterCapacityProviders(ctx context.Context, input *ecs.PutClusterCapacityProvidersInput, accountID string) (*ecs.PutClusterCapacityProvidersOutput, error)
+	CreateCapacityProvider(ctx context.Context, input *ecs.CreateCapacityProviderInput, accountID string) (*ecs.CreateCapacityProviderOutput, error)
+	DescribeCapacityProviders(ctx context.Context, input *ecs.DescribeCapacityProvidersInput, accountID string) (*ecs.DescribeCapacityProvidersOutput, error)
+	DeleteCapacityProvider(ctx context.Context, input *ecs.DeleteCapacityProviderInput, accountID string) (*ecs.DeleteCapacityProviderOutput, error)
 }
 
 // ecsImageResolver is the narrow AMI surface for resolving the spinifex-ecs-node
@@ -312,12 +320,19 @@ func (s *Service) ListClusters(_ context.Context, _ *ecs.ListClustersInput, acco
 }
 
 func (r *ClusterRecord) toAWS() *ecs.Cluster {
-	return &ecs.Cluster{
+	c := &ecs.Cluster{
 		ClusterName: aws.String(r.Name),
 		ClusterArn:  aws.String(r.ARN),
 		Status:      aws.String(r.Status),
 		Tags:        tagsToAWS(r.Tags),
 	}
+	if len(r.CapacityProviders) > 0 {
+		c.CapacityProviders = aws.StringSlice(r.CapacityProviders)
+	}
+	for _, item := range r.DefaultCapacityProviderStrategy {
+		c.DefaultCapacityProviderStrategy = append(c.DefaultCapacityProviderStrategy, item.toAWS())
+	}
+	return c
 }
 
 // tagsToAWS converts a stored tag map into the AWS list form with a stable

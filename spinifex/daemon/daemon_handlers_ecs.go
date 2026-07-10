@@ -131,3 +131,21 @@ func (d *Daemon) handleECSUntagResource(msg *nats.Msg) {
 func (d *Daemon) handleECSListTagsForResource(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.ListTagsForResource)
 }
+
+// --- Capacity providers ---
+
+func (d *Daemon) handleECSPutClusterCapacityProviders(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.PutClusterCapacityProviders)
+}
+
+func (d *Daemon) handleECSCreateCapacityProvider(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.CreateCapacityProvider)
+}
+
+func (d *Daemon) handleECSDescribeCapacityProviders(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.DescribeCapacityProviders)
+}
+
+func (d *Daemon) handleECSDeleteCapacityProvider(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.DeleteCapacityProvider)
+}

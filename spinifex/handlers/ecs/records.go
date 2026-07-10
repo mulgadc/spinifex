@@ -50,6 +50,9 @@ const (
 	// circuitBreakerFailureThreshold trips the breaker once this many of the
 	// primary deployment's task launches stop before ever reaching RUNNING.
 	circuitBreakerFailureThreshold = 3
+
+	CapacityProviderStatusActive   = "ACTIVE"
+	CapacityProviderStatusInactive = "INACTIVE"
 )
 
 // Deployment is one rollout of a service's task definition. A service has exactly
@@ -94,6 +97,10 @@ func ServiceARN(region, accountID, cluster, name string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:service/%s/%s", region, accountID, cluster, name)
 }
 
+func CapacityProviderARN(region, accountID, name string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:capacity-provider/%s", region, accountID, name)
+}
+
 // serviceTaskGroup is the AWS task-group label a service stamps on its tasks
 // ("service:{name}"). The reconciler counts a service's tasks by this group and
 // the task-state hook resolves a task back to its owning service through it.
@@ -118,6 +125,52 @@ type ClusterRecord struct {
 	Status    string            `json:"status"`
 	Tags      map[string]string `json:"tags,omitempty"`
 	CreatedAt time.Time         `json:"createdAt"`
+	// CapacityProviders / DefaultCapacityProviderStrategy are accepted and
+	// persisted by PutClusterCapacityProviders but are otherwise inert in v1:
+	// no scheduler coupling, no scale loop (a separate follow-on binds them to
+	// an ASG primitive).
+	CapacityProviders               []string                       `json:"capacityProviders,omitempty"`
+	DefaultCapacityProviderStrategy []CapacityProviderStrategyItem `json:"defaultCapacityProviderStrategy,omitempty"`
+}
+
+// CapacityProviderStrategyItem is one entry of a capacity-provider strategy:
+// how many tasks (Base) and what share of the remainder (Weight) a named
+// capacity provider takes. Persisted verbatim; not consulted by placement.
+type CapacityProviderStrategyItem struct {
+	Provider string `json:"provider"`
+	Weight   int    `json:"weight,omitempty"`
+	Base     int    `json:"base,omitempty"`
+}
+
+// ManagedScalingRecord is the persisted subset of an AutoScalingGroupProvider's
+// managed-scaling configuration. Accepted and stored; no scale loop reads it.
+type ManagedScalingRecord struct {
+	Status                 string `json:"status,omitempty"`
+	TargetCapacity         int    `json:"targetCapacity,omitempty"`
+	MinimumScalingStepSize int    `json:"minimumScalingStepSize,omitempty"`
+	MaximumScalingStepSize int    `json:"maximumScalingStepSize,omitempty"`
+	InstanceWarmupPeriod   int    `json:"instanceWarmupPeriod,omitempty"`
+}
+
+// AutoScalingGroupProviderRecord is the persisted ASG binding for a capacity
+// provider. Spinifex has no ASG primitive in v1, so this is stored for API
+// parity only; nothing reads AutoScalingGroupARN to launch/terminate capacity.
+type AutoScalingGroupProviderRecord struct {
+	AutoScalingGroupARN          string               `json:"autoScalingGroupArn"`
+	ManagedScaling               ManagedScalingRecord `json:"managedScaling,omitzero"`
+	ManagedTerminationProtection string               `json:"managedTerminationProtection,omitempty"`
+}
+
+// CapacityProviderRecord is the persisted capacity provider at
+// CapacityProviderKey. Account-scoped (not cluster-scoped), matching the AWS
+// ARN shape; a cluster references providers by name via CapacityProviders.
+type CapacityProviderRecord struct {
+	Name                     string                         `json:"name"`
+	ARN                      string                         `json:"arn"`
+	Status                   string                         `json:"status"`
+	AutoScalingGroupProvider AutoScalingGroupProviderRecord `json:"autoScalingGroupProvider"`
+	Tags                     map[string]string              `json:"tags,omitempty"`
+	CreatedAt                time.Time                      `json:"createdAt"`
 }
 
 // ContainerDef is the persisted subset of an ecs.ContainerDefinition needed to

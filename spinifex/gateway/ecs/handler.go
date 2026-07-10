@@ -42,13 +42,19 @@ func NotImplemented(_ context.Context, _ *nats.Conn, _ string, _ []byte) (any, e
 // Wired actions point at their handler; unimplemented actions keep the
 // NotImplemented value. The key set is the v1 API contract.
 var Actions = map[string]Handler{
-	// Cluster. PutClusterCapacityProviders is a no-op stub in v1 (Q15).
+	// Cluster.
 	"CreateCluster":               CreateCluster,
 	"DescribeClusters":            DescribeClusters,
 	"ListClusters":                ListClusters,
 	"DeleteCluster":               DeleteCluster,
 	"UpdateCluster":               NotImplemented,
-	"PutClusterCapacityProviders": NotImplemented,
+	"PutClusterCapacityProviders": PutClusterCapacityProviders,
+
+	// Capacity providers. Strategy is accepted + persisted but inert in v1
+	// (no scheduler coupling, no scale loop).
+	"CreateCapacityProvider":    CreateCapacityProvider,
+	"DescribeCapacityProviders": DescribeCapacityProviders,
+	"DeleteCapacityProvider":    DeleteCapacityProvider,
 
 	// Task definition.
 	"RegisterTaskDefinition":     RegisterTaskDefinition,

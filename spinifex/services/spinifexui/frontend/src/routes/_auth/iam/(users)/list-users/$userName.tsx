@@ -31,10 +31,12 @@ import {
   iamAttachedUserPoliciesQueryOptions,
   iamGroupsForUserQueryOptions,
   iamPoliciesQueryOptions,
+  iamUserPoliciesQueryOptions,
   iamUserQueryOptions,
 } from "@/queries/iam"
 
 import { AccessKeyModal } from "../../-components/access-key-modal"
+import { InlinePoliciesPanel } from "../../-components/inline-policies-panel"
 
 export const Route = createFileRoute("/_auth/iam/(users)/list-users/$userName")(
   {
@@ -52,6 +54,9 @@ export const Route = createFileRoute("/_auth/iam/(users)/list-users/$userName")(
         context.queryClient.ensureQueryData(iamPoliciesQueryOptions),
         context.queryClient.ensureQueryData(
           iamGroupsForUserQueryOptions(params.userName),
+        ),
+        context.queryClient.ensureQueryData(
+          iamUserPoliciesQueryOptions(params.userName),
         ),
       ])
     },
@@ -399,6 +404,8 @@ function UserDetail() {
             )}
           </DetailCard.Content>
         </DetailCard>
+
+        <InlinePoliciesPanel kind="user" name={userName} />
 
         {/* Groups */}
         <DetailCard>

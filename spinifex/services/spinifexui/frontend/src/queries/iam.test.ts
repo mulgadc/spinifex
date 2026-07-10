@@ -11,6 +11,8 @@ import {
   iamAttachedGroupPoliciesQueryOptions,
   iamAttachedRolePoliciesQueryOptions,
   iamAttachedUserPoliciesQueryOptions,
+  iamGroupPoliciesQueryOptions,
+  iamGroupPolicyQueryOptions,
   iamGroupQueryOptions,
   iamGroupsForUserQueryOptions,
   iamGroupsQueryOptions,
@@ -20,8 +22,12 @@ import {
   iamPoliciesQueryOptions,
   iamPolicyQueryOptions,
   iamPolicyVersionQueryOptions,
+  iamRolePoliciesQueryOptions,
+  iamRolePolicyQueryOptions,
   iamRoleQueryOptions,
   iamRolesQueryOptions,
+  iamUserPoliciesQueryOptions,
+  iamUserPolicyQueryOptions,
   iamUserQueryOptions,
   iamUsersQueryOptions,
 } from "./iam"
@@ -136,6 +142,48 @@ describe("query keys", () => {
       "groups-for-user",
       "admin",
     ])
+  })
+
+  it("iamUserPoliciesQueryOptions includes userName in key", () => {
+    expect(iamUserPoliciesQueryOptions("admin").queryKey).toStrictEqual([
+      "iam",
+      "user-inline-policies",
+      "admin",
+    ])
+  })
+
+  it("iamUserPolicyQueryOptions includes userName and policyName in key", () => {
+    expect(
+      iamUserPolicyQueryOptions("admin", "s3-read").queryKey,
+    ).toStrictEqual(["iam", "user-inline-policies", "admin", "s3-read"])
+  })
+
+  it("iamRolePoliciesQueryOptions includes roleName in key", () => {
+    expect(iamRolePoliciesQueryOptions("my-role").queryKey).toStrictEqual([
+      "iam",
+      "role-inline-policies",
+      "my-role",
+    ])
+  })
+
+  it("iamRolePolicyQueryOptions includes roleName and policyName in key", () => {
+    expect(
+      iamRolePolicyQueryOptions("my-role", "s3-read").queryKey,
+    ).toStrictEqual(["iam", "role-inline-policies", "my-role", "s3-read"])
+  })
+
+  it("iamGroupPoliciesQueryOptions includes groupName in key", () => {
+    expect(iamGroupPoliciesQueryOptions("my-group").queryKey).toStrictEqual([
+      "iam",
+      "group-inline-policies",
+      "my-group",
+    ])
+  })
+
+  it("iamGroupPolicyQueryOptions includes groupName and policyName in key", () => {
+    expect(
+      iamGroupPolicyQueryOptions("my-group", "s3-read").queryKey,
+    ).toStrictEqual(["iam", "group-inline-policies", "my-group", "s3-read"])
   })
 })
 
@@ -333,6 +381,76 @@ describe("queryFn", () => {
     await queryFn({} as never)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
+    })
+  })
+
+  it("iamUserPoliciesQueryOptions sends ListUserPoliciesCommand", async () => {
+    const queryFn = iamUserPoliciesQueryOptions("admin").queryFn as (
+      ctx: never,
+    ) => Promise<unknown>
+    await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      UserName: "admin",
+    })
+  })
+
+  it("iamUserPolicyQueryOptions sends GetUserPolicyCommand and decodes document", async () => {
+    mockSend.mockResolvedValueOnce({
+      PolicyDocument: encodeURIComponent('{"Version":"2012-10-17"}'),
+    })
+    const queryFn = iamUserPolicyQueryOptions("admin", "s3-read").queryFn as (
+      ctx: never,
+    ) => Promise<unknown>
+    const document = await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      UserName: "admin",
+      PolicyName: "s3-read",
+    })
+    expect(document).toBe('{\n  "Version": "2012-10-17"\n}')
+  })
+
+  it("iamRolePoliciesQueryOptions sends ListRolePoliciesCommand", async () => {
+    const queryFn = iamRolePoliciesQueryOptions("my-role").queryFn as (
+      ctx: never,
+    ) => Promise<unknown>
+    await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      RoleName: "my-role",
+    })
+  })
+
+  it("iamRolePolicyQueryOptions sends GetRolePolicyCommand and formats raw JSON", async () => {
+    mockSend.mockResolvedValueOnce({
+      PolicyDocument: '{"Version":"2012-10-17"}',
+    })
+    const queryFn = iamRolePolicyQueryOptions("my-role", "s3-read").queryFn as (
+      ctx: never,
+    ) => Promise<unknown>
+    const document = await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      RoleName: "my-role",
+      PolicyName: "s3-read",
+    })
+    expect(document).toBe('{\n  "Version": "2012-10-17"\n}')
+  })
+
+  it("iamGroupPoliciesQueryOptions sends ListGroupPoliciesCommand", async () => {
+    const queryFn = iamGroupPoliciesQueryOptions("my-group").queryFn as (
+      ctx: never,
+    ) => Promise<unknown>
+    await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupName: "my-group",
+    })
+  })
+
+  it("iamGroupPolicyQueryOptions sends GetGroupPolicyCommand with names", async () => {
+    const queryFn = iamGroupPolicyQueryOptions("my-group", "s3-read")
+      .queryFn as (ctx: never) => Promise<unknown>
+    await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupName: "my-group",
+      PolicyName: "s3-read",
     })
   })
 })

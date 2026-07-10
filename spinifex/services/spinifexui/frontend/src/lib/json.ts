@@ -19,6 +19,19 @@ export function formatJson(value: string): string | null {
   }
 }
 
+// Normalise an AWS policy document for display in an editor. Documents arrive
+// URL-encoded for most principals but as raw JSON for roles, so decoding is
+// attempted and skipped when it fails, then the result is pretty-printed.
+export function decodePolicyDocument(document: string): string {
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(document)
+  } catch {
+    decoded = document
+  }
+  return formatJson(decoded) ?? decoded
+}
+
 // Zod field for a JSON document entered as a string. Messages derive from
 // `label` so they read naturally per field. When `allowEmpty` is true an
 // empty/whitespace value passes (optional field); otherwise it is required.

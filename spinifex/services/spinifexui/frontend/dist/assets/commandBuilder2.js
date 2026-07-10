@@ -1,1 +1,1 @@
-import{Jt as e}from"./awsClient.js";import{ct as t,ht as n}from"./auth.js";var r=n(e,`ElasticLoadBalancing_v10`,`ElasticLoadBalancingV2Client`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};
+import{on as e}from"./awsClient.js";import{ct as t,ht as n}from"./auth.js";var r=n(e,`ElasticLoadBalancing_v10`,`ElasticLoadBalancingV2Client`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

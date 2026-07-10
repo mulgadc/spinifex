@@ -25,6 +25,17 @@ export const createPolicySchema = z.object({
 
 export type CreatePolicyFormData = z.infer<typeof createPolicySchema>
 
+export const putInlinePolicySchema = z.object({
+  policyName: z
+    .string()
+    .min(1, "Policy name is required")
+    .max(128, "Policy name must be 128 characters or less")
+    .regex(/^[\w+=,.@-]+$/, "Policy name contains invalid characters"),
+  policyDocument: jsonStringSchema({ label: "Policy document" }),
+})
+
+export type PutInlinePolicyFormData = z.infer<typeof putInlinePolicySchema>
+
 export const DEFAULT_ASSUME_ROLE_POLICY_DOCUMENT = JSON.stringify(
   {
     Version: "2012-10-17",
@@ -119,4 +130,17 @@ export interface GroupPolicyParams {
 export interface GroupMembershipParams {
   groupName: string
   userName: string
+}
+
+// Inline-policy params are shared across users, roles and groups. `name` is the
+// principal (user/role/group) name; the mutation maps it to the right field.
+export interface PutInlinePolicyParams {
+  name: string
+  policyName: string
+  policyDocument: string
+}
+
+export interface DeleteInlinePolicyParams {
+  name: string
+  policyName: string
 }

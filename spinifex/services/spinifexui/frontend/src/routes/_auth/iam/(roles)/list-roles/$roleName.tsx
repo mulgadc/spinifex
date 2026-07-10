@@ -21,9 +21,11 @@ import {
   iamAttachedRolePoliciesQueryOptions,
   iamInstanceProfilesForRoleQueryOptions,
   iamPoliciesQueryOptions,
+  iamRolePoliciesQueryOptions,
   iamRoleQueryOptions,
 } from "@/queries/iam"
 
+import { InlinePoliciesPanel } from "../../-components/inline-policies-panel"
 import { PolicyDocumentViewer } from "../../-components/policy-document-viewer"
 
 export const Route = createFileRoute("/_auth/iam/(roles)/list-roles/$roleName")(
@@ -40,6 +42,9 @@ export const Route = createFileRoute("/_auth/iam/(roles)/list-roles/$roleName")(
           iamInstanceProfilesForRoleQueryOptions(params.roleName),
         ),
         context.queryClient.ensureQueryData(iamPoliciesQueryOptions),
+        context.queryClient.ensureQueryData(
+          iamRolePoliciesQueryOptions(params.roleName),
+        ),
       ])
     },
     head: ({ params }) => ({
@@ -258,6 +263,8 @@ function RoleDetail() {
             )}
           </DetailCard.Content>
         </DetailCard>
+
+        <InlinePoliciesPanel kind="role" name={roleName} />
 
         {/* Instance Profiles */}
         <DetailCard>

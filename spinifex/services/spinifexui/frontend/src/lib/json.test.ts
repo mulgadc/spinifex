@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 
-import { formatJson, isValidJson, jsonStringSchema } from "./json"
+import {
+  decodePolicyDocument,
+  formatJson,
+  isValidJson,
+  jsonStringSchema,
+} from "./json"
 
 type JsonSchema = ReturnType<typeof jsonStringSchema>
 
@@ -31,6 +36,23 @@ describe("formatJson", () => {
   it("returns null for malformed JSON", () => {
     expect(formatJson("{ not json")).toBeNull()
     expect(formatJson("")).toBeNull()
+  })
+})
+
+describe("decodePolicyDocument", () => {
+  it("decodes and pretty-prints a URL-encoded document", () => {
+    const encoded = encodeURIComponent('{"Version":"2012-10-17"}')
+    expect(decodePolicyDocument(encoded)).toBe(
+      '{\n  "Version": "2012-10-17"\n}',
+    )
+  })
+
+  it("pretty-prints a raw JSON document", () => {
+    expect(decodePolicyDocument('{"a":1}')).toBe('{\n  "a": 1\n}')
+  })
+
+  it("returns the original text when it is not JSON", () => {
+    expect(decodePolicyDocument("not json")).toBe("not json")
   })
 })
 

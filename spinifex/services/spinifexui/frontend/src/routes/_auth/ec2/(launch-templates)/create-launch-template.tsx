@@ -79,10 +79,12 @@ function CreateLaunchTemplate() {
 
   const onSubmit = async (data: LaunchTemplateFormData) => {
     const result = await createMutation.mutateAsync(data)
-    navigate({
-      to: "/ec2/describe-launch-templates/$id",
-      params: { id: result.LaunchTemplate?.LaunchTemplateId ?? "" },
-    })
+    const id = result.LaunchTemplate?.LaunchTemplateId
+    if (!id) {
+      navigate({ to: "/ec2/describe-launch-templates" })
+      return
+    }
+    navigate({ to: "/ec2/describe-launch-templates/$id", params: { id } })
   }
 
   return (

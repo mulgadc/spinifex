@@ -7,16 +7,23 @@ set -eu
 # but embedded etcd never reformed quorum after a simultaneous restart).
 #
 # The reconciler cannot push into the guest, so recovery is pull-based: this
-# fetches a per-member directive epoch<TAB>action<TAB>snapshot through the AWS
-# gateway (eks-gateway-fetch -resource recovery), epoch-guarded so a directive
-# applies exactly once. Ordered `before k3s` so the etcd datastore is mutated
-# while the apiserver is stopped. Actions:
+# fetches a per-member directive epoch<TAB>action<TAB>snapshot<TAB>required
+# through the AWS gateway (eks-gateway-fetch -resource recovery), epoch-guarded
+# so a directive applies exactly once. Ordered `before k3s` so the etcd datastore
+# is mutated while the apiserver is stopped. Actions:
 #   none          steady state — nothing to do
 #   cluster-reset seed member: `k3s server --cluster-reset` reforms a
 #                 single-member etcd from this node's intact data (optionally
 #                 --cluster-reset-restore-path=<snap> from a predastore snapshot)
 #   wipe-rejoin   follower: delete the local etcd datastore so k3s re-joins the
 #                 reset seed's quorum fresh on the next k3s start
+#
+# required=1 marks a snapshot that MUST restore (fresh DR seed via
+# `spx admin eks restore-snapshot`): a fresh seed has no intact local etcd, so a
+# cluster-reset without the snapshot would boot an EMPTY cluster. On a fetch
+# failure this drops BLOCK_MARKER and aborts boot; k3s.initd refuses to start on
+# the marker, so k3s never resets into an empty datastore. The fetch is retried
+# on the next boot (BLOCK_MARKER lives in /run tmpfs, cleared on reboot).
 #
 # Env knobs default to production paths; overridable so the logic is unit-testable
 # without root, IMDS, a gateway, or a real k3s.
@@ -25,6 +32,7 @@ ROLE_FILE=${ROLE_FILE:-/etc/spinifex-eks/role}
 ENVFILE=${ENVFILE:-/etc/spinifex-eks/first-boot.env}
 SNAPSHOT_ENVFILE=${SNAPSHOT_ENVFILE:-/etc/spinifex-eks/etcd-snapshot.env}
 EPOCH_FILE=${EPOCH_FILE:-/var/lib/spinifex-eks/recovery.epoch}
+BLOCK_MARKER=${BLOCK_MARKER:-/run/spinifex-eks/k3s-restore-block}
 K3S_BIN=${K3S_BIN:-/usr/local/bin/k3s}
 K3S_CONFIG=${K3S_CONFIG:-/etc/rancher/k3s/config.yaml}
 ETCD_DIR=${ETCD_DIR:-/var/lib/rancher/k3s/server/db/etcd}
@@ -72,12 +80,26 @@ fetch_snapshot() {
     [ -n "${SPINIFEX_PREDASTORE_SECRET:-}" ] || return 1
     _url="${SPINIFEX_PREDASTORE_ENDPOINT%/}/eks-backups-system/${EKS_ACCOUNT_ID}/${EKS_CLUSTER_NAME}/${_name}"
     mkdir -p "${SNAPSHOT_DIR}"
-    curl -fsSL \
+    # Capture curl's own exit — piping straight into logger would mask it behind
+    # logger's (near-always 0), so a failed download would look like success and
+    # the caller would wrongly cluster-reset from local etcd.
+    if _out=$(curl -fsSL \
         --aws-sigv4 "aws:amz:${AWS_REGION:-au-mel-1}:s3" \
         --user "${SPINIFEX_PREDASTORE_AKID}:${SPINIFEX_PREDASTORE_SECRET}" \
         -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" \
         -o "${SNAPSHOT_DIR}/${_name}" \
-        "${_url}" 2>&1 | logger -t "${LOGTAG}"
+        "${_url}" 2>&1); then
+        [ -n "${_out}" ] && printf '%s\n' "${_out}" | logger -t "${LOGTAG}"
+        return 0
+    else
+        # Capture rc as the first else statement: $? read after `fi` would be the
+        # if's own 0, re-masking the failure we are here to surface.
+        _rc=$?
+        [ -n "${_out}" ] && printf '%s\n' "${_out}" | logger -t "${LOGTAG}"
+        rm -f "${SNAPSHOT_DIR}/${_name}"
+        log "snapshot ${_name} download failed (curl rc=${_rc})"
+        return 1
+    fi
 }
 
 # Instance ID from IMDS keys the per-member directive. IMDSv2 token if enforced,
@@ -109,8 +131,11 @@ fi
 epoch=$(printf '%s' "${line}" | cut -f1)
 action=$(printf '%s' "${line}" | cut -f2)
 snapshot=$(printf '%s' "${line}" | cut -f3)
+snapshot_required=$(printf '%s' "${line}" | cut -f4)
 [ -n "${action}" ] || action=none
 case "${epoch}" in '' | *[!0-9]*) epoch=0 ;; esac
+# Absent 4th field (older gateway) reads as not-required, preserving HA-reform semantics.
+case "${snapshot_required}" in 1) snapshot_required=1 ;; *) snapshot_required=0 ;; esac
 
 if [ "${action}" = "none" ]; then
     log "directive action=none (epoch ${epoch}); nothing to do"
@@ -136,6 +161,13 @@ case "${action}" in
             if fetch_snapshot "${snapshot}"; then
                 restore_arg="--cluster-reset-restore-path=${SNAPSHOT_DIR}/${snapshot}"
                 log "cluster-reset restoring snapshot ${snapshot}"
+            elif [ "${snapshot_required}" = "1" ]; then
+                # Fresh DR seed: no intact local etcd, so a reset without the snapshot
+                # would boot an EMPTY cluster. Block k3s and abort; retry next boot.
+                log "ERROR: required snapshot ${snapshot} could not be fetched; aborting boot to avoid resetting into an EMPTY datastore (retries next boot)"
+                mkdir -p "$(dirname "${BLOCK_MARKER}")"
+                : > "${BLOCK_MARKER}"
+                exit 1
             else
                 log "WARN: snapshot ${snapshot} fetch failed; cluster-reset from local etcd only"
             fi

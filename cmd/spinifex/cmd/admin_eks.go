@@ -57,7 +57,9 @@ func runAdminEksRestoreSnapshot(cmd *cobra.Command, _ []string) {
 	defer nc.Close()
 
 	svc := handlers_eks.NewNATSEKSService(nc)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// The server side launches a VM (30-60s) then fences the old CP with retries,
+	// so the RPC needs generous headroom over a bare launch.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	fmt.Printf("Restoring control plane for cluster %q (account %s)...\n", clusterName, accountID)
@@ -70,5 +72,6 @@ func runAdminEksRestoreSnapshot(cmd *cobra.Command, _ []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Control plane restored: new instance %s, snapshot %s\n", out.NewInstanceID, out.Snapshot)
+	fmt.Printf("New control plane %s launched (snapshot %s)\n", out.NewInstanceID, out.Snapshot)
+	fmt.Printf("Status: %s\n", out.Status)
 }

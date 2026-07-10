@@ -684,7 +684,7 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 	// consuming an attempt (stopping without the cluster-reset directive would just
 	// reproduce the wedge); a follower failure logs and continues (that member stays
 	// wedged, retried next attempt).
-	if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, seed.InstanceID, RecoveryActionClusterReset, ""); err != nil {
+	if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, seed.InstanceID, RecoveryActionClusterReset, "", false); err != nil {
 		slog.Warn("ClusterReconciler: set cluster-reset directive failed",
 			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
 		return
@@ -692,7 +692,7 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 	r.resetAttempts++
 	r.resetIssued = true
 	for _, n := range members[1:] {
-		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionWipeRejoin, ""); err != nil {
+		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionWipeRejoin, "", false); err != nil {
 			slog.Warn("ClusterReconciler: set wipe-rejoin directive failed",
 				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
 		}
@@ -727,7 +727,7 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 // still prevents re-application of the already-applied directive.
 func (r *ClusterReconciler) clearRecoveryDirectives(meta *ClusterMeta) {
 	for _, n := range cpMemberNodes(meta) {
-		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionNone, ""); err != nil {
+		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionNone, "", false); err != nil {
 			slog.Warn("ClusterReconciler: clear recovery directive failed",
 				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
 		}

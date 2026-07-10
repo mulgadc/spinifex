@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -130,6 +131,8 @@ func TestRestoreSnapshot_HappyPathLaunchesDirectsAndRepoints(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, RecoveryActionClusterReset, dirOut.Directive.Action)
 	assert.Equal(t, "etcd-frequent-20260709T010000Z.snap", dirOut.Directive.Snapshot)
+	assert.True(t, dirOut.Directive.SnapshotRequired, "fresh DR seed must require the snapshot (abort, not reset-into-empty)")
+	assert.NotEmpty(t, out.Status, "success carries a provisional status, never a bare 'restored'")
 
 	// NLB re-pointed: old CP deregistered, new CP registered, on both TGs.
 	require.Len(t, f.nlb.deregisterCalls, 2, "apiserver + konnectivity TGs")
@@ -157,13 +160,56 @@ func TestRestoreSnapshot_HappyPathLaunchesDirectsAndRepoints(t *testing.T) {
 func TestRestoreSnapshot_ExplicitSnapshotUsedVerbatim(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
+	store := objectstore.NewMemoryObjectStore()
+	f.svc.deps.SnapshotStore = store
+	// A different (newer) snapshot exists; the explicit one must be used verbatim.
+	seedSnapshot(t, store, testAccountID, "alpha", "etcd-frequent-20260710T010000Z.snap")
+	seedSnapshot(t, store, testAccountID, "alpha", "etcd-daily-20260601T000000Z.snap")
 	meta := restoreSnapshotFixtureMeta("alpha")
 	require.NoError(t, PutClusterMeta(f.kv, meta))
 
 	out, err := f.svc.RestoreSnapshot(context.Background(),
 		&RestoreSnapshotInput{ClusterName: "alpha", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, "etcd-daily-20260601T000000Z.snap", out.Snapshot, "explicit snapshot is used verbatim, no store lookup")
+	assert.Equal(t, "etcd-daily-20260601T000000Z.snap", out.Snapshot, "explicit snapshot is used verbatim, no latest-resolution")
+
+	// The directive must mark the snapshot as required so the guest aborts on a
+	// fetch failure rather than resetting into an empty datastore.
+	dirOut, err := f.svc.GetRecoveryDirective(context.Background(),
+		&GetRecoveryDirectiveInput{ClusterName: "alpha", InstanceID: out.NewInstanceID}, testAccountID)
+	require.NoError(t, err)
+	assert.True(t, dirOut.Directive.SnapshotRequired)
+	assert.NotEmpty(t, out.Status, "a provisional status is always returned")
+}
+
+func TestRestoreSnapshot_ExplicitSnapshotMissingHardFailsBeforeLaunch(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
+	store := objectstore.NewMemoryObjectStore()
+	f.svc.deps.SnapshotStore = store
+	// Only an unrelated snapshot exists — the requested key is absent.
+	seedSnapshot(t, store, testAccountID, "alpha", "etcd-frequent-20260709T010000Z.snap")
+	meta := restoreSnapshotFixtureMeta("alpha")
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	_, err := f.svc.RestoreSnapshot(context.Background(),
+		&RestoreSnapshotInput{ClusterName: "alpha", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+	assert.Empty(t, f.inst.launchCalls, "a missing explicit snapshot must hard-fail before launching anything")
+}
+
+func TestRestoreSnapshot_ExplicitSnapshotWithNoStoreHardFails(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
+	f.svc.deps.SnapshotStore = nil
+	meta := restoreSnapshotFixtureMeta("alpha")
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	_, err := f.svc.RestoreSnapshot(context.Background(),
+		&RestoreSnapshotInput{ClusterName: "alpha", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
+	require.Error(t, err)
+	assert.Empty(t, f.inst.launchCalls, "cannot verify snapshot exists without a store — must not launch")
 }
 
 func TestRestoreSnapshot_HARejected(t *testing.T) {
@@ -197,4 +243,75 @@ func TestRestoreSnapshot_ClusterNotFound(t *testing.T) {
 	_, err := f.svc.RestoreSnapshot(context.Background(),
 		&RestoreSnapshotInput{ClusterName: "ghost", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
 	require.Error(t, err)
+}
+
+func TestRestoreSnapshot_NLBFailureIsProvisionalNotError(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
+	store := objectstore.NewMemoryObjectStore()
+	f.svc.deps.SnapshotStore = store
+	seedSnapshot(t, store, testAccountID, "alpha", "etcd-frequent-20260709T010000Z.snap")
+	// NLB register fails after meta is persisted: the new CP is already canonical.
+	f.nlb.registerErr = errors.New("TargetGroupNotFound")
+
+	meta := restoreSnapshotFixtureMeta("alpha")
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	out, err := f.svc.RestoreSnapshot(context.Background(), &RestoreSnapshotInput{ClusterName: "alpha"}, testAccountID)
+	require.NoError(t, err, "an NLB re-point failure after meta commit is provisional, not a hard error")
+	assert.Contains(t, out.Status, "NLB re-point is incomplete")
+
+	// Meta was persisted BEFORE the NLB step, so it already names the new CP and
+	// the reconciler can converge the target group.
+	got, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, out.NewInstanceID, got.ControlPlaneInstanceID, "meta persisted before NLB re-point")
+
+	// The new CP must NOT be torn down on an NLB failure (it is canonical now).
+	assert.NotContains(t, f.inst.terminateCalls, out.NewInstanceID)
+}
+
+func TestRestoreSnapshot_FenceFailureIsLoudError(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	// The old CP cannot be terminated (still alive) — split-brain risk.
+	f.inst.terminateErr = errors.New("InstanceStillRunning")
+
+	oldNode := ControlPlaneNode{NodeID: "node-old", InstanceID: "i-old111", ENIID: "eni-old111", ENIIP: "10.0.1.9"}
+	// Drive the fence helper directly with no delay so the retry budget is exercised fast.
+	err := f.svc.confirmOldCPTerminated(context.Background(), testAccountID, oldNode, 3, 0)
+	require.Error(t, err, "a persistently un-terminable old CP is a fence failure")
+	require.Len(t, f.inst.terminateCalls, 3, "terminate is retried up to the attempt budget")
+}
+
+func TestConfirmOldCPTerminated_NoOldNodeSucceeds(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	err := f.svc.confirmOldCPTerminated(context.Background(), testAccountID, ControlPlaneNode{}, 3, 0)
+	require.NoError(t, err, "no old CP to fence is trivially confirmed")
+	assert.Empty(t, f.inst.terminateCalls)
+}
+
+func TestUnwindFreshCP_TerminatesAndClearsDirective(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	meta := restoreSnapshotFixtureMeta("alpha")
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	// Pretend a directive was already set for the fresh CP (as the real flow does
+	// just before a meta-commit failure), then unwind.
+	node := ControlPlaneNode{NodeID: "node-new", InstanceID: "i-new999", ENIID: "eni-new999", ENIIP: "10.0.1.42"}
+	_, err := f.svc.SetRecoveryDirective(context.Background(), &SetRecoveryDirectiveInput{
+		ClusterName: "alpha", InstanceID: node.InstanceID,
+		Action: RecoveryActionClusterReset, Snapshot: "etcd-frequent-20260709T010000Z.snap", SnapshotRequired: true,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	f.svc.unwindFreshCP(context.Background(), testAccountID, "alpha", node)
+
+	// The fresh CP is terminated so it cannot boot and destructively reset.
+	assert.Contains(t, f.inst.terminateCalls, "i-new999")
+
+	// The directive is superseded with a no-op so a VM that boots first does not reset.
+	dirOut, err := f.svc.GetRecoveryDirective(context.Background(),
+		&GetRecoveryDirectiveInput{ClusterName: "alpha", InstanceID: node.InstanceID}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, RecoveryActionNone, dirOut.Directive.Action, "directive cleared to none on unwind")
 }

@@ -121,6 +121,10 @@ type PoolData struct {
 	PrefixLen  int      // Subnet prefix length (default 24)
 	DNSServers []string // DNS servers for VM DHCP (auto-detected from host)
 	DHCPMAC    string   // DHCP client MAC strategy: "derived" (default) or "interface"
+	// GwLrpRangeStart/End reserve gateway-LRP IPs for OVN routers. When empty
+	// the allocator auto-derives the top 16 host IPs of the pool subnet.
+	GwLrpRangeStart string
+	GwLrpRangeEnd   string
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.

@@ -10,7 +10,6 @@ package single
 
 import (
 	"bufio"
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,10 +116,9 @@ func (f *Fixture) ArtifactDir(t *testing.T) string {
 }
 
 // detectPoolMode reads external_mode from spinifex.toml. Defaults to false
-// (dev_networking) which is the single-node CI fixture. Mirrors the parser
-// used by lb/lb_test.go's skipIfDevNetworking but reads the positive side —
-// any non-empty external_mode value ("pool" / "nat") means external IPAM
-// is in play.
+// (dev_networking) which is the single-node CI fixture. Only external_mode
+// "pool" enables Phase 8b/8d — nat clusters have no EIP/NAT-GW support, so
+// AllocateAddress returns UnsupportedOperation and those phases must skip.
 func detectPoolMode(env *harness.Env) bool {
 	cfg := os.ExpandEnv("$HOME/spinifex/config/spinifex.toml")
 	if env.ConfigDir != "" {
@@ -146,11 +144,10 @@ func detectPoolMode(env *harness.Env) bool {
 		if !strings.HasPrefix(line, "external_mode") {
 			continue
 		}
-		// external_mode = "pool" — quoted value, anything non-empty == pool mode.
-		if i := bytes.IndexByte([]byte(line), '='); i >= 0 {
-			val := strings.TrimSpace(line[i+1:])
-			val = strings.Trim(val, "\"'")
-			return val != ""
+		// external_mode = "pool" — quoted value; only "pool" gates 8b/8d.
+		if _, rhs, ok := strings.Cut(line, "="); ok {
+			val := strings.Trim(strings.TrimSpace(rhs), "\"'")
+			return val == "pool"
 		}
 	}
 	return false

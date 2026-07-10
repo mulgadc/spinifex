@@ -20,6 +20,13 @@ const (
 	// segment; nat mode may carry a public pool alongside it.
 	NATTransitPoolName = "nat-transit"
 
+	// NATTransitGwLrpStart/End reserve gateway-LRP IPs for per-VPC routers on
+	// the transit segment. Auto-derivation would give only the top 16 host IPs
+	// (~15 gateways); this widens it to .16-.254 (239 VPCs). .1-.15 stay clear
+	// of the host gateway (.1) and infra headroom.
+	NATTransitGwLrpStart = "100.127.0.16"
+	NATTransitGwLrpEnd   = "100.127.0.254"
+
 	// NATTransitHostEnd carries the transit gateway IP in the host stack.
 	NATTransitHostEnd = "spx-nat-host"
 

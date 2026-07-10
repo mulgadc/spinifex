@@ -39,6 +39,10 @@ gateway     = "{{.Gateway}}"
 {{- if .GatewayIP}}
 gateway_ip  = "{{.GatewayIP}}"
 {{- end}}
+{{- if .GwLrpRangeStart}}
+gw_lrp_range_start = "{{.GwLrpRangeStart}}"
+gw_lrp_range_end   = "{{.GwLrpRangeEnd}}"
+{{- end}}
 prefix_len  = {{if .PrefixLen}}{{.PrefixLen}}{{else}}24{{end}}
 {{- if .DNSServers}}
 dns_servers = [{{range $i, $s := .DNSServers}}{{if $i}}, {{end}}"{{$s}}"{{end}}]

@@ -1180,6 +1180,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		externalPools = append(externalPools, admin.PoolData{
 			Name: host.NATTransitPoolName, Gateway: host.NATTransitGatewayIP,
 			PrefixLen: 24, DNSServers: dnsServers,
+			GwLrpRangeStart: host.NATTransitGwLrpStart, GwLrpRangeEnd: host.NATTransitGwLrpEnd,
 		})
 		if natPublicPool {
 			// WiFi/WWAN uplinks drop frames with foreign source MACs, so DHCP

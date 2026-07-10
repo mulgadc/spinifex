@@ -46,6 +46,55 @@ func TestSpinifexTomlTemplate_NATMode(t *testing.T) {
 	assert.NotContains(t, content, "range_start", "nat mode has no public IP range")
 }
 
+func TestSpinifexTomlTemplate_GwLrpRange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node: "node1", Az: "ap-southeast-2a", Port: "4432",
+		Region: "ap-southeast-2", BindIP: "10.11.12.1",
+		AccessKey: "AKIATEST", SecretKey: "SECRET", AccountID: "123456789012",
+		NatsToken: "token", ConfigDir: dir,
+		OVNNBAddr: "tcp:127.0.0.1:6641", OVNSBAddr: "tcp:127.0.0.1:6642",
+
+		ExternalMode: "nat", BridgeMode: "nat",
+		Pools: []admin.PoolData{{
+			Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24,
+			GwLrpRangeStart: "100.127.0.16", GwLrpRangeEnd: "100.127.0.254",
+		}},
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `gw_lrp_range_start = "100.127.0.16"`)
+	assert.Contains(t, content, `gw_lrp_range_end   = "100.127.0.254"`)
+}
+
+func TestSpinifexTomlTemplate_GwLrpRangeOmittedWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node: "node1", Az: "ap-southeast-2a", Port: "4432",
+		Region: "ap-southeast-2", BindIP: "10.11.12.1",
+		AccessKey: "AKIATEST", SecretKey: "SECRET", AccountID: "123456789012",
+		NatsToken: "token", ConfigDir: dir,
+		OVNNBAddr: "tcp:127.0.0.1:6641", OVNSBAddr: "tcp:127.0.0.1:6642",
+
+		ExternalMode: "pool", ExternalIface: "enp0s3",
+		Pools: []admin.PoolData{{
+			Name: "wan", Source: "static",
+			Start: "192.168.1.150", End: "192.168.1.250",
+			Gateway: "192.168.1.1", PrefixLen: 24,
+		}},
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "gw_lrp_range", "unset range must not render")
+}
+
 func TestSpinifexTomlTemplate_PoolModeOmitsBridgeMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "spinifex.toml")

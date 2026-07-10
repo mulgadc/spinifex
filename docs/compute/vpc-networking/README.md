@@ -198,6 +198,12 @@ public IPs, no Elastic IPs, and no inbound from WAN — all subnets behave as
 private subnets with internet access. On routed-NAT nodes, adding a public pool
 restores full public IP parity (see below).
 
+> **Limitation (routed-NAT v1):** System instances (ECS/EKS/load-balancer
+> agents) source egress from ExternalIPAM pool IPs, which do not exist in
+> `external_mode=nat`. Those features require `external_mode=pool`. A v2 will
+> either allocate transit IPs for system instances or reject the feature at the
+> API level in nat mode.
+
 The `gateway_ip` is the IP that OVN uses for SNAT. You can set it statically or
 use `setup-ovn.sh --dhcp` to obtain one from the router. This is the router's
 DHCP — not Spinifex's internal OVN DHCP for VMs.
@@ -549,6 +555,7 @@ dns_servers = ["8.8.8.8"]           # DNS for VMs (optional)
 | `region`      | No          | Scopes pool to a region. Instances in this region prefer this pool.                                                                                                    |
 | `az`          | No          | Scopes pool to an AZ. More specific than region.                                                                                                                       |
 | `dns_servers` | No          | DNS servers propagated to VMs via OVN DHCP.                                                                                                                            |
+| `gw_lrp_range_start` / `gw_lrp_range_end` | No | Reserve gateway-LRP IPs for per-VPC OVN routers. When unset, the allocator auto-derives the top 16 host IPs of the pool subnet (~15 concurrent VPCs). Widen to raise the concurrent-VPC ceiling — the `nat-transit` pool defaults to `100.127.0.16`-`100.127.0.254` (239 VPCs). Must not overlap `range_start`/`range_end`. |
 
 ### Why range_start/range_end Instead of CIDR?
 

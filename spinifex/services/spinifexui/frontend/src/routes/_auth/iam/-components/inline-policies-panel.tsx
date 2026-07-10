@@ -130,7 +130,7 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
             }}
             size="sm"
           >
-            Add inline policy
+            Add Inline Policy
           </Button>
         </div>
       </DetailCard.Header>

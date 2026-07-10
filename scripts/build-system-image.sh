@@ -116,7 +116,7 @@ import_ami() {
         args+=(--ami-name "$AMI_NAME")
     fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
-        args+=(--tag "$SYSTEM_TAG")
+        for _tag in ${SYSTEM_TAG}; do args+=(--tag "$_tag"); done
     fi
     spx admin images import "${args[@]}"
 }
@@ -367,7 +367,9 @@ else
     fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT} \\"
-        echo "    --tag ${SYSTEM_TAG}"
+        _tag_line=""
+        for _tag in ${SYSTEM_TAG}; do _tag_line="${_tag_line} --tag ${_tag}"; done
+        echo "   ${_tag_line}"
     else
         echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT}"
     fi

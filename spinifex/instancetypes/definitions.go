@@ -65,6 +65,24 @@ func GPUModelForVendorDevice(vendorID, deviceID string) *GPUModel {
 	return nil
 }
 
+// GPUVendorForType returns the lowercase GPU manufacturer (e.g. "nvidia") for
+// a GPU instance type's family prefix (e.g. "g5.xlarge" -> "g5"), or "" if
+// instanceType is not a known GPU family.
+func GPUVendorForType(instanceType string) string {
+	family, _, _ := strings.Cut(instanceType, ".")
+	for i := range knownGPUModels {
+		if knownGPUModels[i].Family == family {
+			return strings.ToLower(knownGPUModels[i].Manufacturer)
+		}
+	}
+	return ""
+}
+
+// IsGPUTypeName reports whether instanceType belongs to a known GPU family.
+func IsGPUTypeName(instanceType string) bool {
+	return GPUVendorForType(instanceType) != ""
+}
+
 // cpuGeneration represents a specific CPU microarchitecture generation
 // and the AWS instance families it maps to.
 type cpuGeneration struct {

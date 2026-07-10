@@ -729,6 +729,93 @@ func TestTerminateK3sServerVM_InstanceAlreadyGoneIsIdempotent(t *testing.T) {
 	require.Len(t, vpc.deleteCalls, 1, "ENI delete still runs after a tolerated instance-gone")
 }
 
+func gpuAMIImage(id, created, vendor string) *ec2.Image {
+	return &ec2.Image{
+		ImageId:      aws.String(id),
+		Name:         aws.String("spinifex-eks-node-gpu"),
+		CreationDate: aws.String(created),
+		Tags: []*ec2.Tag{
+			{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+			{Key: aws.String(tags.GPUVendorKey), Value: aws.String(vendor)},
+		},
+	}
+}
+
+func TestLookupEKSGPUNodeAMI_SelectsGPUTaggedAMI(t *testing.T) {
+	ami := &fakeK3sAMI{describeOut: &ec2.DescribeImagesOutput{
+		Images: []*ec2.Image{gpuAMIImage("ami-gpu-001", "2026-06-01T00:00:00.000Z", tags.GPUVendorNVIDIA)},
+	}}
+
+	got, err := lookupEKSGPUNodeAMI(context.Background(), ami, "000000000000", tags.GPUVendorNVIDIA)
+	require.NoError(t, err)
+	assert.Equal(t, "ami-gpu-001", got)
+
+	require.Len(t, ami.describeCalls, 1)
+	filters := ami.describeCalls[0].Filters
+	require.Len(t, filters, 2)
+	assert.Equal(t, "tag:"+tags.ManagedByKey, aws.StringValue(filters[0].Name))
+	assert.Equal(t, []string{tags.ManagedByEKS}, aws.StringValueSlice(filters[0].Values))
+	assert.Equal(t, "tag:"+tags.GPUVendorKey, aws.StringValue(filters[1].Name))
+	assert.Equal(t, []string{tags.GPUVendorNVIDIA}, aws.StringValueSlice(filters[1].Values))
+}
+
+func TestLookupEKSGPUNodeAMI_NoGPUAMINoFallback(t *testing.T) {
+	// Only a plain (non-GPU) eks AMI resolves; the GPU lookup must error, never
+	// fall back to the driverless image.
+	ami := &fakeK3sAMI{describeOut: &ec2.DescribeImagesOutput{}}
+
+	_, err := lookupEKSGPUNodeAMI(context.Background(), ami, "000000000000", tags.GPUVendorNVIDIA)
+	require.ErrorIs(t, err, ErrEKSGPUNodeAMINotFound)
+	assert.Contains(t, err.Error(), "gpu-vendor=nvidia")
+}
+
+func TestLookupEKSGPUNodeAMI_NewestCreationDateWins(t *testing.T) {
+	ami := &fakeK3sAMI{describeOut: &ec2.DescribeImagesOutput{
+		Images: []*ec2.Image{
+			gpuAMIImage("ami-gpu-old", "2026-01-01T00:00:00.000Z", tags.GPUVendorNVIDIA),
+			gpuAMIImage("ami-gpu-new", "2026-06-01T00:00:00.000Z", tags.GPUVendorNVIDIA),
+			gpuAMIImage("ami-gpu-mid", "2026-03-01T00:00:00.000Z", tags.GPUVendorNVIDIA),
+		},
+	}}
+
+	got, err := lookupEKSGPUNodeAMI(context.Background(), ami, "000000000000", tags.GPUVendorNVIDIA)
+	require.NoError(t, err)
+	assert.Equal(t, "ami-gpu-new", got)
+}
+
+func TestLookupEKSServerAMI_NewestCreationDateWins(t *testing.T) {
+	ami := &fakeK3sAMI{describeOut: &ec2.DescribeImagesOutput{
+		Images: []*ec2.Image{
+			{ImageId: aws.String("ami-old"), CreationDate: aws.String("2026-01-01T00:00:00.000Z"),
+				Tags: []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)}}},
+			{ImageId: aws.String("ami-new"), CreationDate: aws.String("2026-06-01T00:00:00.000Z"),
+				Tags: []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)}}},
+		},
+	}}
+
+	got, err := lookupEKSServerAMI(context.Background(), ami, "000000000000")
+	require.NoError(t, err)
+	assert.Equal(t, "ami-new", got)
+}
+
+func TestLookupEKSServerAMI_ExcludesGPUTaggedAMI(t *testing.T) {
+	// The GPU node AMI also carries managed-by=eks, so a managed-by DescribeImages
+	// returns it too. Even when it is newer, the plain server/worker lookup must
+	// skip it — otherwise ordinary nodes would boot the heavy driverless-mismatch
+	// GPU image.
+	ami := &fakeK3sAMI{describeOut: &ec2.DescribeImagesOutput{
+		Images: []*ec2.Image{
+			{ImageId: aws.String("ami-plain"), CreationDate: aws.String("2026-01-01T00:00:00.000Z"),
+				Tags: []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)}}},
+			gpuAMIImage("ami-gpu-newer", "2026-06-01T00:00:00.000Z", tags.GPUVendorNVIDIA),
+		},
+	}}
+
+	got, err := lookupEKSServerAMI(context.Background(), ami, "000000000000")
+	require.NoError(t, err)
+	assert.Equal(t, "ami-plain", got, "newer gpu-vendor-tagged AMI must not hijack the plain lookup")
+}
+
 func assertEC2TaggedAsEKSControlPlane(t *testing.T, ec2Tags []*ec2.Tag, clusterName string) {
 	t.Helper()
 	got := map[string]string{}

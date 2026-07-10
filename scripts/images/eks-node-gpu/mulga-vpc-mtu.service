@@ -1,0 +1,13 @@
+[Unit]
+Description=Pin VPC data NIC MTU so flannel fits the OVN geneve underlay
+After=network-online.target
+Wants=network-online.target
+Before=k3s-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mulga-vpc-mtu
+
+[Install]
+WantedBy=multi-user.target

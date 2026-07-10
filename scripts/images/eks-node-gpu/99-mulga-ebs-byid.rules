@@ -1,0 +1,14 @@
+# Mint the EBS-style /dev/disk/by-id symlink the upstream aws-ebs-csi-driver
+# node plugin resolves, for hot-attached Viperblock virtio-blk volumes (vd*,
+# serial = volume-id). This is the udev equivalent of the Alpine mdev rule
+# wired by scripts/images/eks-node/setup.sh into /etc/mdev.conf.
+#
+# The shared helper /usr/local/sbin/mulga-ebs-byid (reused verbatim from
+# scripts/images/eks-node/mulga-ebs-byid.sh) reads the device name from
+# $MDEV or, if unset, $1 — so passing the kernel name via %k as the sole
+# argument works without any udev-specific shim. udev already sets ACTION to
+# add/remove, matching the values the helper's case statement expects.
+# Already-attached devices at boot are coldplugged separately by
+# mulga-ebs-byid.service; this rule only covers hotplug events.
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="vd[a-z]", RUN+="/usr/local/sbin/mulga-ebs-byid %k"
+ACTION=="remove", SUBSYSTEM=="block", KERNEL=="vd[a-z]", RUN+="/usr/local/sbin/mulga-ebs-byid %k"

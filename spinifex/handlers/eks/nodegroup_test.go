@@ -3,6 +3,7 @@ package handlers_eks
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,10 +14,55 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// filteringK3sAMI applies its Filters against each image's tags, mirroring
+// AWS server-side tag filtering. fakeK3sAMI ignores Filters and returns every
+// image regardless, which cannot distinguish a GPU-tagged AMI from a plain one
+// when both are present — needed to verify the worker-launch path actually
+// threads the gpu-vendor filter through to DescribeImages.
+type filteringK3sAMI struct {
+	images []*ec2.Image
+}
+
+var _ k3sAMIResolver = (*filteringK3sAMI)(nil)
+
+func (f *filteringK3sAMI) DescribeImages(_ context.Context, input *ec2.DescribeImagesInput, _ string) (*ec2.DescribeImagesOutput, error) {
+	out := &ec2.DescribeImagesOutput{}
+	for _, img := range f.images {
+		if k3sImageMatchesFilters(img, input.Filters) {
+			out.Images = append(out.Images, img)
+		}
+	}
+	return out, nil
+}
+
+func k3sImageMatchesFilters(img *ec2.Image, filters []*ec2.Filter) bool {
+	tagVals := map[string]string{}
+	for _, t := range img.Tags {
+		tagVals[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+	for _, f := range filters {
+		name := aws.StringValue(f.Name)
+		const prefix = "tag:"
+		if len(name) <= len(prefix) || name[:len(prefix)] != prefix {
+			continue
+		}
+		val, ok := tagVals[name[len(prefix):]]
+		if !ok {
+			return false
+		}
+		matched := slices.Contains(aws.StringValueSlice(f.Values), val)
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
 
 // fakeWorkerLauncher records RunWorkerInstance / TerminateWorkerInstances calls
 // and hands back sequential instance IDs so tests can assert on the IDs a
@@ -309,6 +355,104 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	// Duplicate create → ResourceInUseException.
 	_, err = f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 2), testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
+}
+
+// A GPU instance type must mark the record GPUEnabled with the matching
+// vendor, so the worker-launch path resolves the GPU node AMI instead of the
+// default eks-node AMI.
+func TestCreateNodegroup_GPUInstanceTypeSetsGPUFields(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	in := createNGInput("c1", "ng-gpu", 1)
+	in.InstanceTypes = aws.StringSlice([]string{"g5.xlarge"})
+
+	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
+	require.NoError(t, err)
+
+	rec, err := GetNodegroupRecord(f.kv, "c1", "ng-gpu")
+	require.NoError(t, err)
+	assert.True(t, rec.GPUEnabled)
+	assert.Equal(t, "nvidia", rec.GPUVendor)
+
+	markWorkersReady(t, f, "c1", 1)
+	f.svc.WaitLaunches()
+}
+
+// A non-GPU instance type must leave the record's GPU fields unset, so the
+// worker-launch path keeps resolving the default eks-node AMI.
+func TestCreateNodegroup_NonGPUInstanceTypeClearsGPUFields(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+
+	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.False(t, rec.GPUEnabled)
+	assert.Empty(t, rec.GPUVendor)
+
+	markWorkersReady(t, f, "c1", 1)
+	f.svc.WaitLaunches()
+}
+
+// End-to-end: a GPU nodegroup's worker launch must resolve the GPU-tagged AMI
+// over a coexisting plain eks-node AMI, not merely set the record's GPU fields.
+func TestCreateNodegroup_GPUWorkerLaunchUsesGPUAMI(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	f.svc.deps.Image = &filteringK3sAMI{images: []*ec2.Image{
+		{ImageId: aws.String("ami-eks-plain"), CreationDate: aws.String("2026-01-01T00:00:00.000Z"),
+			Tags: []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)}}},
+		{ImageId: aws.String("ami-eks-gpu"), CreationDate: aws.String("2026-06-01T00:00:00.000Z"),
+			Tags: []*ec2.Tag{
+				{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+				{Key: aws.String(tags.GPUVendorKey), Value: aws.String(tags.GPUVendorNVIDIA)},
+			}},
+	}}
+
+	in := createNGInput("c1", "ng-gpu", 1)
+	in.InstanceTypes = aws.StringSlice([]string{"g5.xlarge"})
+	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
+	require.NoError(t, err)
+
+	markWorkersReady(t, f, "c1", 1)
+	f.svc.WaitLaunches()
+
+	rec, err := GetNodegroupRecord(f.kv, "c1", "ng-gpu")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusActive, rec.Status)
+
+	require.Len(t, f.worker.runCalls, 1)
+	assert.Equal(t, "ami-eks-gpu", aws.StringValue(f.worker.runCalls[0].ImageId))
+}
+
+// A GPU nodegroup with no matching GPU AMI must fail, never fall back to the
+// plain eks-node AMI (running a GPU workload on a driverless image is worse
+// than a clear failure).
+func TestCreateNodegroup_GPUWorkerLaunchNoGPUAMINoFallback(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	f.svc.deps.Image = &filteringK3sAMI{images: []*ec2.Image{
+		{ImageId: aws.String("ami-eks-plain"), CreationDate: aws.String("2026-01-01T00:00:00.000Z"),
+			Tags: []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)}}},
+	}}
+
+	in := createNGInput("c1", "ng-gpu", 1)
+	in.InstanceTypes = aws.StringSlice([]string{"g5.xlarge"})
+	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
+	require.NoError(t, err)
+
+	f.svc.WaitLaunches()
+
+	rec, err := GetNodegroupRecord(f.kv, "c1", "ng-gpu")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusCreateFailed, rec.Status)
+	assert.Contains(t, rec.StatusReason, "resolve eks-node AMI")
+	assert.Empty(t, f.worker.runCalls, "no worker must launch on the driverless plain AMI")
 }
 
 // Workers that launch but never register Ready (no rise in the cluster's Ready-

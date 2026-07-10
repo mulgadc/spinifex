@@ -22,6 +22,9 @@ import (
 // Compile-time check that Daemon satisfies the EKS worker-launch surface.
 var _ handlers_eks.WorkerLauncher = (*Daemon)(nil)
 
+// terminateRetrySleep is the backoff seam between NoResponders retries; tests override it.
+var terminateRetrySleep = time.Sleep
+
 // RunWorkerInstance launches a nodegroup worker on the local node.
 func (d *Daemon) RunWorkerInstance(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
 	return d.RunWorkerInstanceOnNode(ctx, "", input, accountID)
@@ -111,7 +114,7 @@ func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accoun
 			break
 		}
 		if attempt < 2 {
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			terminateRetrySleep(time.Duration(attempt+1) * time.Second)
 		}
 	}
 	if errors.Is(err, nats.ErrNoResponders) {

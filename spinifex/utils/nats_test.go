@@ -300,9 +300,9 @@ func TestNATSRequest_Timeout(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	// Responder that never responds
+	// Responder that outlives the 100ms client timeout without replying.
 	_, err = nc.QueueSubscribe("test.slow", "q", func(msg *nats.Msg) {
-		time.Sleep(5 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	})
 	require.NoError(t, err)
 

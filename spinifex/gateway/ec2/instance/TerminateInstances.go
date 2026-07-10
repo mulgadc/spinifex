@@ -20,6 +20,9 @@ type terminateStoppedInstanceRequest struct {
 	InstanceID string `json:"instance_id"`
 }
 
+// terminateRetrySleep is the backoff seam between NoResponders retries; tests override it.
+var terminateRetrySleep = time.Sleep
+
 func ValidateTerminateInstancesInput(input *ec2.TerminateInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -75,7 +78,7 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 			if attempt < 2 {
 				slog.DebugContext(ctx, "TerminateInstances: No responder on per-instance topic, retrying",
 					"instance_id", instanceID, "attempt", attempt+1)
-				time.Sleep(time.Duration(attempt+1) * time.Second)
+				terminateRetrySleep(time.Duration(attempt+1) * time.Second)
 			}
 		}
 		if err != nil {

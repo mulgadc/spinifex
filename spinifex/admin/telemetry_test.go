@@ -63,7 +63,9 @@ func TestSendTelemetry_RespectsTimeout(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(10 * time.Second)
+		// Outlive the 100ms client deadline so SendTelemetry aborts on its own
+		// context, but return quickly enough that server.Close() does not block.
+		time.Sleep(300 * time.Millisecond)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()

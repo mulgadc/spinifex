@@ -313,10 +313,16 @@ var externalCIDRFromBridge = func(bridge string) (netip.Prefix, error) {
 	return netip.Prefix{}, fmt.Errorf("no IPv4 address on %q", bridge)
 }
 
+// externalCIDRRetryDelay is the poll interval between resolve attempts; tests shorten it.
+var externalCIDRRetryDelay = 500 * time.Millisecond
+
+// externalCIDRResolveTimeout bounds startup resolution of the WAN bridge CIDR; tests shorten it.
+var externalCIDRResolveTimeout = 30 * time.Second
+
 // resolveExternalCIDR blocks until the WAN bridge has an IPv4 address or timeout elapses.
 // Guards the boot race where vpcd starts before systemd-networkd or netplan assigns the uplink address.
 func resolveExternalCIDR(ctx context.Context, bridge string, timeout time.Duration) (netip.Prefix, error) {
-	const retryDelay = 500 * time.Millisecond
+	retryDelay := externalCIDRRetryDelay
 	deadline := time.Now().Add(timeout)
 	attempt := 0
 	for {
@@ -348,7 +354,7 @@ func ensureExternalCIDRReady(ctx context.Context, externalMode, bridge string) e
 	if externalMode == "" {
 		return nil
 	}
-	cidr, err := resolveExternalCIDR(ctx, bridge, 30*time.Second)
+	cidr, err := resolveExternalCIDR(ctx, bridge, externalCIDRResolveTimeout)
 	if err != nil {
 		slog.Error("vpcd: external CIDR resolution failed", "bridge", bridge, "err", err)
 		return err

@@ -104,7 +104,7 @@ func mergeWholeField(base, override any) {
 			continue
 		}
 		switch f.Kind() {
-		case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Interface:
+		case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface:
 			if !f.IsNil() {
 				bv.Field(i).Set(f)
 			}

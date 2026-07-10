@@ -146,14 +146,14 @@ func fullRequestData() *ec2.RequestLaunchTemplateData {
 func assertNoNilPointerFields(t *testing.T, v any, ctx string) {
 	t.Helper()
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	rt := rv.Type()
 	for i := 0; i < rv.NumField(); i++ {
 		f := rv.Field(i)
 		switch f.Kind() {
-		case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Interface:
+		case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface:
 			assert.Falsef(t, f.IsNil(), "%s: field %s is nil", ctx, rt.Field(i).Name)
 		}
 	}
@@ -191,8 +191,8 @@ func TestMapperResponseToRunInstances_NoSilentDrop(t *testing.T) {
 	respType := reflect.TypeOf(*resp)
 	riVal := reflect.ValueOf(*ri)
 	riType := riVal.Type()
-	for i := 0; i < respType.NumField(); i++ {
-		name := respType.Field(i).Name
+	for field := range respType.Fields() {
+		name := field.Name
 		switch name {
 		case "InstanceRequirements":
 			continue // no RunInstances equivalent
@@ -209,7 +209,7 @@ func TestMapperResponseToRunInstances_NoSilentDrop(t *testing.T) {
 		}
 		f := riVal.FieldByIndex(sf.Index)
 		switch f.Kind() {
-		case reflect.Ptr, reflect.Slice, reflect.Map:
+		case reflect.Pointer, reflect.Slice, reflect.Map:
 			assert.Falsef(t, f.IsNil(), "RunInstancesInput field %s dropped", name)
 		}
 	}

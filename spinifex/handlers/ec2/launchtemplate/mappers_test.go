@@ -205,6 +205,7 @@ func TestMapperResponseToRunInstances_NoSilentDrop(t *testing.T) {
 		}
 		sf, ok := riType.FieldByName(name)
 		if !ok {
+			t.Errorf("ResponseLaunchTemplateData.%s has no identically-named RunInstancesInput field and is not a known dropped/renamed field; responseToRunInstances would silently drop it", name)
 			continue
 		}
 		f := riVal.FieldByIndex(sf.Index)

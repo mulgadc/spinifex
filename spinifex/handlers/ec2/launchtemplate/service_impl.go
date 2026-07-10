@@ -504,7 +504,10 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplate(ctx context.Context, in
 	if err := s.kv.Delete(nameKey(accountID, header.LaunchTemplateName)); err != nil {
 		slog.WarnContext(ctx, "DeleteLaunchTemplate: name index cleanup failed", "name", header.LaunchTemplateName, "err", err)
 	}
-	nums, _ := s.listVersionNumbers(accountID, header.LaunchTemplateId)
+	nums, err := s.listVersionNumbers(accountID, header.LaunchTemplateId)
+	if err != nil {
+		slog.WarnContext(ctx, "DeleteLaunchTemplate: version enumeration failed, bodies left in place", "launchTemplateId", header.LaunchTemplateId, "err", err)
+	}
 	for _, n := range nums {
 		if err := s.kv.Delete(versionKey(accountID, header.LaunchTemplateId, n)); err != nil {
 			slog.WarnContext(ctx, "DeleteLaunchTemplate: version cleanup failed", "launchTemplateId", header.LaunchTemplateId, "version", n, "err", err)
@@ -622,6 +625,7 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		}
 		entry, err := s.kv.Get(k)
 		if err != nil {
+			slog.WarnContext(ctx, "DescribeLaunchTemplates: header read failed", "key", k, "err", err)
 			continue
 		}
 		var h LaunchTemplateHeader

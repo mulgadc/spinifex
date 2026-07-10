@@ -300,6 +300,21 @@ func gpuFieldsForInstanceTypes(instanceTypes []string) (gpuEnabled bool, gpuVend
 	return false, ""
 }
 
+// stageGPUDeviceAddon idempotently stages nvidia-device-plugin for a GPU
+// nodegroup's cluster via the normal CreateAddon path. Already-staged
+// (ResourceInUse) is expected on scale-up/repeat nodegroups, not an error;
+// any other failure only logs — a GPU nodegroup must still come up even if
+// addon staging fails.
+func (s *EKSServiceImpl) stageGPUDeviceAddon(ctx context.Context, accountID, cluster string) {
+	_, err := s.CreateAddon(ctx, &eks.CreateAddonInput{
+		ClusterName: aws.String(cluster),
+		AddonName:   aws.String(nvidiaDevicePluginAddonName),
+	}, accountID)
+	if err != nil && err.Error() != awserrors.ErrorEKSResourceInUse {
+		slog.WarnContext(ctx, "createNodegroup: stage nvidia-device-plugin addon", "cluster", cluster, "err", err)
+	}
+}
+
 // resolveWorkerAMI resolves the worker AMI for a nodegroup: the GPU node AMI
 // when rec is GPU-enabled, otherwise the default eks-node AMI. A GPU nodegroup
 // with no matching GPU AMI errors rather than silently falling back to the
@@ -352,6 +367,10 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 	if err != nil {
 		s.markNodegroupFailed(acctKV, cluster, ng, "resolve eks-node AMI: "+err.Error())
 		return
+	}
+
+	if rec.GPUEnabled {
+		s.stageGPUDeviceAddon(ctx, accountID, cluster)
 	}
 
 	if _, err := s.launchWorkers(ctx, acctKV, accountID, rec, meta, ngSGID, amiID, token, lc.desired); err != nil {
@@ -477,6 +496,8 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 		AccountID:     accountID,
 		RegistryHost:  registryHost,
 		GatewayIP:     gatewayIP,
+		GPUEnabled:    rec.GPUEnabled,
+		GPUVendor:     rec.GPUVendor,
 	})
 	runInput := &ec2.RunInstancesInput{
 		ImageId:          aws.String(amiID),

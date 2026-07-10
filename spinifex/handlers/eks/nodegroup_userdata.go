@@ -28,6 +28,11 @@ type agentUserDataInput struct {
 	AccountID     string
 	RegistryHost  string
 	GatewayIP     string
+
+	// GPUEnabled/GPUVendor gate the GPU node label + default scheduling taint;
+	// set from the owning NodegroupRecord (see gpuFieldsForInstanceTypes).
+	GPUEnabled bool
+	GPUVendor  string
 }
 
 // registryMirrorHosts returns the distinct registry hosts a worker must accept on
@@ -51,6 +56,9 @@ func buildAgentUserData(in agentUserDataInput) string {
 	// lives in the unpeered managed CP VPC and is unreachable from the worker VPC.
 	k3sURL := in.ServerURL
 	nodeLabel := "eks.amazonaws.com/nodegroup=" + in.NodegroupName
+	if in.GPUEnabled {
+		nodeLabel += ",nvidia.com/gpu.present=true"
+	}
 
 	envBody := strings.Join([]string{
 		"SPINIFEX_K3S_ROLE=agent",
@@ -127,6 +135,19 @@ func buildAgentUserData(in agentUserDataInput) string {
 		{Path: "/etc/rancher/k3s/registries.yaml", Perms: "0644", Body: registriesYAML},
 		{Path: "/etc/rancher/k3s/config.yaml.d/20-ecr-credential-provider.yaml", Perms: "0644", Body: credProviderDropin},
 		{Path: "/etc/spinifex-eks/credential-provider-config.yaml", Perms: "0644", Body: credProviderConfig},
+	}
+
+	// Default GPU nodes to NoSchedule so ordinary workloads don't consume scarce
+	// GPU capacity; the device plugin and GPU pods tolerate it. Non-GPU
+	// nodegroups get no drop-in, keeping their user-data byte-identical.
+	if in.GPUEnabled {
+		gpuTaintDropin := strings.Join([]string{
+			"node-taint:",
+			"  - \"nvidia.com/gpu=present:NoSchedule\"",
+		}, "\n")
+		files = append(files, userDataFile{
+			Path: "/etc/rancher/k3s/config.yaml.d/20-gpu-taint.yaml", Perms: "0644", Body: gpuTaintDropin,
+		})
 	}
 
 	var buf strings.Builder

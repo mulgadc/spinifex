@@ -2,6 +2,10 @@ package handlers_eks
 
 import "slices"
 
+// nvidiaDevicePluginAddonName is auto-staged on GPU nodegroup create (see
+// stageGPUDeviceAddon in nodegroup.go), never user-requested directly.
+const nvidiaDevicePluginAddonName = "nvidia-device-plugin"
+
 // AddonSpec describes one Spinifex-supported managed add-on in the static
 // in-binary catalog. DescribeAddonVersions and CreateAddon validate against it.
 type AddonSpec struct {
@@ -30,6 +34,12 @@ var addonCatalog = buildAddonCatalog(
 	newAddonSpec("aws-ebs-csi-driver", true,
 		"Container Storage Interface driver for Amazon EBS (Viperblock) volumes.",
 		"1.40.1"),
+	// nvidia-device-plugin is auto-staged (never user-requested) on GPU
+	// nodegroup create, so it is hidden from the public catalog like
+	// spinifex-noop but still creatable by name.
+	hiddenAddonSpec(newAddonSpec(nvidiaDevicePluginAddonName, false,
+		"NVIDIA device plugin exposing nvidia.com/gpu allocatable via CDI on GPU-tainted nodes.",
+		"0.17.4")),
 	// spinifex-noop is the delivery-transport fixture: a trivial bundle
 	// (Namespace + ConfigMap) used by the addon e2e to prove stage → render →
 	// auto-deploy → ACTIVE → delete round-trips end-to-end without depending on

@@ -975,6 +975,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"eks.ListStagedAddonManifests", d.handleEKSListStagedAddonManifests, "spinifex-workers"},
 			natsSub{"eks.GetRecoveryDirective", d.handleEKSGetRecoveryDirective, "spinifex-workers"},
 			natsSub{"eks.SetRecoveryDirective", d.handleEKSSetRecoveryDirective, "spinifex-workers"},
+			natsSub{"eks.RestoreSnapshot", d.handleEKSRestoreSnapshot, "spinifex-workers"},
 			natsSub{"eks.AssociateIdentityProviderConfig", d.handleEKSAssociateIdentityProviderConfig, "spinifex-workers"},
 			natsSub{"eks.DescribeIdentityProviderConfig", d.handleEKSDescribeIdentityProviderConfig, "spinifex-workers"},
 			natsSub{"eks.ListIdentityProviderConfigs", d.handleEKSListIdentityProviderConfigs, "spinifex-workers"},

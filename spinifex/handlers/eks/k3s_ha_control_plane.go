@@ -162,6 +162,8 @@ func (s *EKSServiceImpl) ProvisionReplacementCP(ctx context.Context, req Replace
 		in.AccessKey = s.deps.SystemAccessKey
 		in.SecretKey = s.deps.SystemSecretKey
 	}
+	in.PredastoreAccessKey = s.deps.SystemAccessKey
+	in.PredastoreSecretKey = s.deps.SystemSecretKey
 
 	instanceType := in.InstanceType
 	if instanceType == "" {
@@ -182,6 +184,65 @@ func (s *EKSServiceImpl) ProvisionReplacementCP(ctx context.Context, req Replace
 	return controlPlaneNode(target, out), nil
 }
 
+// FreshCPRequest carries everything ProvisionFreshControlPlane needs to launch a
+// brand-new single-node control plane from a persisted template — the no-survivor
+// case, where there is no live quorum member to join.
+type FreshCPRequest struct {
+	AccountID    string
+	ClusterName  string
+	Template     *K3sServerInput
+	ExcludeHosts []string
+}
+
+// ProvisionFreshControlPlane launches a single control-plane VM as a fresh
+// cluster-init seed (ServerURL empty), replaying the create-time template with
+// rotating creds re-derived. It is the single-node analogue of
+// ProvisionReplacementCP for the case where the entire control plane (VM +
+// volume) is gone and there is no surviving etcd quorum to join — the caller
+// (restore-snapshot) drives the etcd restore via a RecoveryDirective set after
+// launch, not via any state this function knows about.
+func (s *EKSServiceImpl) ProvisionFreshControlPlane(ctx context.Context, req FreshCPRequest) (ControlPlaneNode, error) {
+	if req.Template == nil {
+		return ControlPlaneNode{}, errors.New("eks: ProvisionFreshControlPlane nil template")
+	}
+
+	in := *req.Template
+	in.ServerURL = ""
+	in.KonnServerCount = 1
+	in.PrunePeerIP = ""
+
+	sysAcct := admin.SystemAccountID()
+	in.IamInstanceProfileArn = ""
+	in.AccessKey = ""
+	in.SecretKey = ""
+	if profileARN := s.ensureCPInstanceProfile(sysAcct); profileARN != "" {
+		in.IamInstanceProfileArn = profileARN
+	} else {
+		in.AccessKey = s.deps.SystemAccessKey
+		in.SecretKey = s.deps.SystemSecretKey
+	}
+	in.PredastoreAccessKey = s.deps.SystemAccessKey
+	in.PredastoreSecretKey = s.deps.SystemSecretKey
+
+	instanceType := in.InstanceType
+	if instanceType == "" {
+		instanceType = defaultK3sServerInstanceType
+	}
+	target, err := s.pickReplacementHost(ctx, instanceType, req.ExcludeHosts)
+	if err != nil {
+		return ControlPlaneNode{}, err
+	}
+	in.TargetNodeID = target
+
+	out, err := LaunchK3sServerVM(ctx, s.deps.VPCK3s, s.deps.Instance, s.deps.Image, in)
+	if err != nil {
+		return ControlPlaneNode{}, err
+	}
+	slog.Info("ProvisionFreshControlPlane: fresh control plane launched",
+		"cluster", req.ClusterName, "instanceId", out.InstanceID, "host", target)
+	return controlPlaneNode(target, out), nil
+}
+
 // pickReplacementHost returns a schedulable host for the given instance type that
 // is not already holding a live control-plane member, preserving one-member-per-host
 // spread. Errors when every schedulable host is excluded (host permanently down),
@@ -191,10 +252,17 @@ func (s *EKSServiceImpl) pickReplacementHost(ctx context.Context, instanceType s
 	for _, h := range exclude {
 		ex[h] = true
 	}
-	for _, h := range s.deps.Scheduler.SchedulableHosts(ctx, instanceType) {
+	hosts := s.deps.Scheduler.SchedulableHosts(ctx, instanceType)
+	for _, h := range hosts {
 		if !ex[h] {
 			return h, nil
 		}
+	}
+	// On a single-node deployment the sole schedulable host is the old CP's
+	// own host. placeControlPlane already supports a <2-host single-CP
+	// topology, so fall back to it when that host is the only one available.
+	if len(hosts) == 1 {
+		return hosts[0], nil
 	}
 	return "", fmt.Errorf("eks: no schedulable host for replacement control plane (excluding %d live-member host(s))", len(exclude))
 }

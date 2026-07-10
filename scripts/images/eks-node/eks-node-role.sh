@@ -49,13 +49,25 @@ if [ -z "${ROLE}" ] && [ -f "${AGENT_ENVFILE}" ]; then
 fi
 
 case "${ROLE}" in
+    server | server-join | agent) ;;
+    *)
+        die "SPINIFEX_K3S_ROLE missing or invalid: '${ROLE}'"
+        ;;
+esac
+
+# Written before the rc-service calls below: mulga-eks-k3s-recovery, started
+# inline for server/server-join, reads ROLE_FILE at the top of its own logic
+# and must find it already in place, not empty.
+mkdir -p "$(dirname "${ROLE_FILE}")"
+printf '%s\n' "${ROLE}" > "${ROLE_FILE}"
+
+case "${ROLE}" in
     server)
         log "configuring server role"
         rc-update add eks-token-webhook default
-        # Pre-k3s etcd recovery: added to the runlevel so it runs before k3s on
-        # every subsequent boot, but not started now — a fresh cluster has no
-        # directive and the role file it guards on is written at the end of this
-        # script. It first acts on the reboot the reconciler triggers.
+        # Pre-k3s etcd recovery: enabled for later boots and started inline
+        # now too, so a restore-snapshot DR seed's directive applies before
+        # k3s starts on this first boot. A plain create has no directive, so it's a no-op.
         rc-update add mulga-eks-k3s-recovery default
         rc-update add k3s default
         # konnectivity-server fronts apiserver egress; every server replica runs
@@ -69,6 +81,7 @@ case "${ROLE}" in
         # (mulga-siv-231.7); server-join nodes do not run it.
         rc-update add mulga-eks-addon-sync default
         rc-service eks-token-webhook start
+        rc-service mulga-eks-k3s-recovery start
         rc-service k3s start
         rc-service konnectivity-server start
         rc-service k3s-first-boot start
@@ -79,12 +92,14 @@ case "${ROLE}" in
         log "configuring server-join role"
         rc-update add eks-token-webhook default
         # Pre-k3s etcd recovery (see server role): server-join members are the
-        # wipe-rejoin followers of a cluster-reset, so they need it too.
+        # wipe-rejoin followers of a cluster-reset, so they need it too, and for
+        # the same first-boot reason must be started here, not deferred.
         rc-update add mulga-eks-k3s-recovery default
         rc-update add k3s default
         rc-update add konnectivity-server default
         rc-update add mulga-eks-state-report default
         rc-service eks-token-webhook start
+        rc-service mulga-eks-k3s-recovery start
         rc-service k3s start
         rc-service konnectivity-server start
         rc-service mulga-eks-state-report start
@@ -99,7 +114,5 @@ case "${ROLE}" in
         ;;
 esac
 
-mkdir -p "$(dirname "${ROLE_FILE}")"
-printf '%s\n' "${ROLE}" > "${ROLE_FILE}"
 rc-update del eks-node-role default 2>/dev/null || true
 log "role '${ROLE}' configured"

@@ -24,7 +24,9 @@ printf '%s\n' "${DIRECTIVE_LINE}"
 EOF
 
 # curl stub: answers the IMDS token PUT + instance-id GET, and materialises a
-# snapshot file for any `-o <path>` download. Records every call.
+# snapshot file for any `-o <path>` download. Records every call. A snapshot
+# download (an `-o` arg) fails with a non-zero exit when CURL_SNAP_FAIL=1, so the
+# harness can exercise the fetch-failure path.
 cat > "${STUBBIN}/curl" <<'EOF'
 #!/bin/sh
 echo "curl $*" >> "${CURL_CALLS}"
@@ -36,7 +38,10 @@ for a in "$@"; do
 done
 prev=""
 for a in "$@"; do
-    [ "$prev" = "-o" ] && echo snapdata > "$a"
+    if [ "$prev" = "-o" ]; then
+        [ "${CURL_SNAP_FAIL:-0}" = "1" ] && { echo "curl: (22) 404" >&2; exit 22; }
+        echo snapdata > "$a"
+    fi
     prev="$a"
 done
 exit 0
@@ -80,7 +85,7 @@ pass() { echo "ok: $*"; }
 
 # run <role> <directive-line>: reset capture files + state, then run the script
 # with every path knob pointed into the temp dir.
-run() {
+_setup_run() {
     _role=$1
     DIRECTIVE_LINE=$2
     K3S_CALLS="${WORK}/k3s.calls"
@@ -89,13 +94,29 @@ run() {
     EPOCH_FILE="${WORK}/recovery.epoch"
     ETCD_DIR="${WORK}/etcd"
     SNAPSHOT_DIR="${WORK}/snapshots"
+    BLOCK_MARKER="${WORK}/run/k3s-restore-block"
     : > "${K3S_CALLS}"
     : > "${CURL_CALLS}"
+    rm -f "${BLOCK_MARKER}"
     printf '%s' "${_role}" > "${ROLE_FILE}"
-    export DIRECTIVE_LINE K3S_CALLS CURL_CALLS ROLE_FILE EPOCH_FILE ETCD_DIR SNAPSHOT_DIR
+    export DIRECTIVE_LINE K3S_CALLS CURL_CALLS ROLE_FILE EPOCH_FILE ETCD_DIR SNAPSHOT_DIR BLOCK_MARKER
     export ENVFILE SNAPSHOT_ENVFILE
     export K3S_BIN=k3s FETCH_BIN=eks-gateway-fetch
-    sh "${SCRIPT}" </dev/null || fail "role=${_role}: non-zero exit"
+}
+
+# run <role> <directive-line>: expects a zero exit (the steady-state path).
+run() {
+    _setup_run "$1" "$2"
+    sh "${SCRIPT}" </dev/null || fail "role=${1}: non-zero exit"
+}
+
+# run_abort <role> <directive-line>: expects a NON-zero exit (the required-snapshot
+# fetch-failure abort). CURL_SNAP_FAIL must be set by the caller.
+run_abort() {
+    _setup_run "$1" "$2"
+    if sh "${SCRIPT}" </dev/null; then
+        fail "role=${1}: expected non-zero exit (required-snapshot abort)"
+    fi
 }
 
 TAB=$(printf '\t')
@@ -148,6 +169,36 @@ grep -q 'aws-sigv4' "${WORK}/curl.calls" \
     && pass "snapshot: SigV4 download issued" || fail "snapshot: no download: $(cat "${WORK}/curl.calls")"
 [ -f "${WORK}/snapshots/etcd-daily-20260706T000000Z.snap" ] \
     && pass "snapshot: fetched into snapshot dir" || fail "snapshot: file not materialised"
+
+# --- Case 7: REQUIRED snapshot, fetch OK -> restore-path + no block marker ---
+rm -f "${WORK}/recovery.epoch"
+CURL_SNAP_FAIL=0; export CURL_SNAP_FAIL
+run server "5${TAB}cluster-reset${TAB}etcd-frequent-20260709T010000Z.snap${TAB}1"
+grep -q 'cluster-reset-restore-path=.*etcd-frequent-20260709T010000Z.snap' "${WORK}/k3s.calls" \
+    && pass "required-ok: restore-path passed" || fail "required-ok: no restore-path: $(cat "${WORK}/k3s.calls")"
+[ -f "${WORK}/run/k3s-restore-block" ] && fail "required-ok: must not block k3s on success" || pass "required-ok: no block marker"
+
+# --- Case 8: REQUIRED snapshot, fetch FAILS -> abort: block marker, no k3s, no epoch ---
+rm -f "${WORK}/recovery.epoch"
+CURL_SNAP_FAIL=1; export CURL_SNAP_FAIL
+run_abort server "6${TAB}cluster-reset${TAB}etcd-frequent-20260709T010000Z.snap${TAB}1"
+[ -f "${WORK}/run/k3s-restore-block" ] \
+    && pass "required-fail: block marker dropped to stop k3s" || fail "required-fail: no block marker"
+[ -s "${WORK}/k3s.calls" ] && fail "required-fail: must NOT cluster-reset into empty datastore" || pass "required-fail: k3s not reset"
+[ -f "${WORK}/recovery.epoch" ] && fail "required-fail: epoch must not record (retry next boot)" || pass "required-fail: epoch not recorded"
+
+# --- Case 9: NON-required snapshot, fetch FAILS -> local reset, no block, epoch recorded ---
+rm -f "${WORK}/recovery.epoch"
+CURL_SNAP_FAIL=1; export CURL_SNAP_FAIL
+run server "7${TAB}cluster-reset${TAB}etcd-frequent-20260709T010000Z.snap${TAB}0"
+grep -q 'server --config .* --cluster-reset' "${WORK}/k3s.calls" \
+    && pass "optional-fail: falls back to local cluster-reset" || fail "optional-fail: no reset: $(cat "${WORK}/k3s.calls")"
+grep -q 'cluster-reset-restore-path' "${WORK}/k3s.calls" \
+    && fail "optional-fail: must not pass a restore-path for a failed fetch" || pass "optional-fail: local-data reset only"
+[ -f "${WORK}/run/k3s-restore-block" ] && fail "optional-fail: must not block k3s (HA-reform semantics)" || pass "optional-fail: no block marker"
+[ "$(cat "${WORK}/recovery.epoch" 2>/dev/null)" = 7 ] \
+    && pass "optional-fail: epoch recorded" || fail "optional-fail: epoch not recorded"
+CURL_SNAP_FAIL=0; export CURL_SNAP_FAIL
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all mulga-eks-k3s-recovery cases"

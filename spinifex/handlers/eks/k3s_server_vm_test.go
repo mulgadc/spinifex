@@ -178,6 +178,10 @@ func validK3sInput() K3sServerInput {
 		SecretKey:         "s3cr3t-key",
 		GatewayCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
 		JoinToken:         "clustertok-deadbeef",
+
+		PredastoreEndpoint:  "https://10.15.8.1:8443",
+		PredastoreAccessKey: "AKIAPREDASTORE",
+		PredastoreSecretKey: "pred-s3cr3t-key",
 	}
 }
 
@@ -205,6 +209,9 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		{"empty AccessKey", mk(func(in *K3sServerInput) { in.AccessKey = "" })},
 		{"empty SecretKey", mk(func(in *K3sServerInput) { in.SecretKey = "" })},
 		{"empty GatewayCACert", mk(func(in *K3sServerInput) { in.GatewayCACert = "  \n" })},
+		{"empty PredastoreEndpoint", mk(func(in *K3sServerInput) { in.PredastoreEndpoint = "" })},
+		{"empty PredastoreAccessKey", mk(func(in *K3sServerInput) { in.PredastoreAccessKey = "" })},
+		{"empty PredastoreSecretKey", mk(func(in *K3sServerInput) { in.PredastoreSecretKey = "" })},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -237,6 +244,16 @@ func TestBuildK3sUserData_StaticCredsBakeKeys(t *testing.T) {
 	ud := buildK3sUserData(validK3sInput())
 	assert.Contains(t, ud, "EKS_ACCESS_KEY=AKIAEXAMPLE")
 	assert.Contains(t, ud, "EKS_SECRET_KEY=s3cr3t-key")
+}
+
+func TestBuildK3sUserData_WritesEtcdSnapshotEnv(t *testing.T) {
+	ud := buildK3sUserData(validK3sInput())
+	require.Contains(t, ud, "path: "+k3sSnapshotEnvPath)
+	assert.Contains(t, ud, "EKS_ACCOUNT_ID=111122223333")
+	assert.Contains(t, ud, "EKS_CLUSTER_NAME=alpha")
+	assert.Contains(t, ud, "SPINIFEX_PREDASTORE_ENDPOINT=https://10.15.8.1:8443")
+	assert.Contains(t, ud, "SPINIFEX_PREDASTORE_AKID=AKIAPREDASTORE")
+	assert.Contains(t, ud, "SPINIFEX_PREDASTORE_SECRET=pred-s3cr3t-key")
 }
 
 func TestBuildK3sUserData_ProfileModeOmitsKeys(t *testing.T) {

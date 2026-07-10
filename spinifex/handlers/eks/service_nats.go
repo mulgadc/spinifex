@@ -153,6 +153,10 @@ func (s *NATSEKSService) SetRecoveryDirective(ctx context.Context, input *SetRec
 	return utils.NATSRequest[SetRecoveryDirectiveOutput](ctx, s.natsConn, "eks.SetRecoveryDirective", input, defaultTimeout, accountID)
 }
 
+func (s *NATSEKSService) RestoreSnapshot(ctx context.Context, input *RestoreSnapshotInput, accountID string) (*RestoreSnapshotOutput, error) {
+	return utils.NATSRequest[RestoreSnapshotOutput](ctx, s.natsConn, "eks.RestoreSnapshot", input, defaultTimeout, accountID)
+}
+
 // --- OIDC identity-provider configs ---
 
 func (s *NATSEKSService) AssociateIdentityProviderConfig(ctx context.Context, input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error) {

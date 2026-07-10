@@ -156,9 +156,10 @@ func emitAddonsTSV(out io.Writer, body []byte) error {
 // recoveryDirective mirrors the gateway's RecoveryDirective wire shape; duplicated
 // here to keep this tiny VM binary free of the handler package's dependency graph.
 type recoveryDirective struct {
-	Epoch    int64  `json:"epoch"`
-	Action   string `json:"action"`
-	Snapshot string `json:"snapshot"`
+	Epoch            int64  `json:"epoch"`
+	Action           string `json:"action"`
+	Snapshot         string `json:"snapshot"`
+	SnapshotRequired bool   `json:"snapshotRequired"`
 }
 
 type internalRecoveryResponse struct {
@@ -166,8 +167,10 @@ type internalRecoveryResponse struct {
 }
 
 // emitRecoveryTSV decodes the recovery directive and writes a single
-// epoch\taction\tsnapshot line the on-VM k3s-recovery agent consumes without a
-// JSON parser. An unset action defaults to "none" (steady state).
+// epoch\taction\tsnapshot\tsnapshotRequired line the on-VM k3s-recovery agent
+// consumes without a JSON parser. An unset action defaults to "none" (steady
+// state); snapshotRequired is 1 when the snapshot MUST restore (fresh DR seed
+// aborts boot on fetch failure) else 0.
 func emitRecoveryTSV(out io.Writer, body []byte) error {
 	var resp internalRecoveryResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -177,7 +180,11 @@ func emitRecoveryTSV(out io.Writer, body []byte) error {
 	if d.Action == "" {
 		d.Action = "none"
 	}
-	if _, err := fmt.Fprintf(out, "%d\t%s\t%s\n", d.Epoch, d.Action, d.Snapshot); err != nil {
+	required := "0"
+	if d.SnapshotRequired {
+		required = "1"
+	}
+	if _, err := fmt.Fprintf(out, "%d\t%s\t%s\t%s\n", d.Epoch, d.Action, d.Snapshot, required); err != nil {
 		return err
 	}
 	return nil

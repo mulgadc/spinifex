@@ -66,14 +66,24 @@ fi
 #
 # Note: --aws-sigv4 requires curl >= 7.75 (Alpine 3.21 ships 8.x).
 URL="${SPINIFEX_PREDASTORE_ENDPOINT%/}/${BUCKET}/${KEY}"
-curl -fsSL \
+# Capture curl's own exit: piping straight into logger masks it behind logger's
+# (near-always 0), so a failed upload would log "uploaded" and delete the only
+# copy — snapshots would silently never land. Keep the local snapshot and exit
+# non-zero on failure so cron surfaces it and the next run still has data on disk.
+if UPLOAD_OUT=$(curl -fsSL \
     --aws-sigv4 "aws:amz:${AWS_REGION:-au-mel-1}:s3" \
     --user "${SPINIFEX_PREDASTORE_AKID}:${SPINIFEX_PREDASTORE_SECRET}" \
     -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" \
     --upload-file "${SNAPSHOT_FILE}" \
-    "${URL}" 2>&1 | logger -t mulga-eks-etcd-snapshot
-
-# Remove the local snapshot to bound disk usage; the canonical copy lives in
-# predastore. Restore path (`spx admin eks restore-snapshot`) pulls from there.
-rm -f "${SNAPSHOT_FILE}"
-logger -t mulga-eks-etcd-snapshot "uploaded ${KEY}"
+    "${URL}" 2>&1); then
+    [ -n "${UPLOAD_OUT}" ] && printf '%s\n' "${UPLOAD_OUT}" | logger -t mulga-eks-etcd-snapshot
+    # Remove the local snapshot only after a confirmed upload to bound disk usage;
+    # the canonical copy lives in predastore (`spx admin eks restore-snapshot`).
+    rm -f "${SNAPSHOT_FILE}"
+    logger -t mulga-eks-etcd-snapshot "uploaded ${KEY}"
+else
+    UPLOAD_RC=$?
+    [ -n "${UPLOAD_OUT}" ] && printf '%s\n' "${UPLOAD_OUT}" | logger -t mulga-eks-etcd-snapshot
+    logger -t mulga-eks-etcd-snapshot "ERROR: upload of ${KEY} failed (curl rc=${UPLOAD_RC}); keeping local snapshot ${SNAPSHOT_FILE}"
+    exit 1
+fi

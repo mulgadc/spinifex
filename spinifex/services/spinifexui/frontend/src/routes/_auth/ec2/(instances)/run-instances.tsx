@@ -269,18 +269,14 @@ function CreateInstance() {
   }, [selectedImageId, selectedRoot.deviceName, setValue])
 
   const onSubmit = async (data: CreateInstanceFormData) => {
-    // Launch wholly from the template (plus count); clear direct-config fields
-    // so nothing overrides what the template defines.
+    // Launch wholly from the template (plus count). Build params from only the
+    // fields that apply so no direct-config field — including hidden ones left
+    // in form state — overrides what the template defines.
     const params: CreateInstanceParams = data.launchTemplateId
       ? {
-          ...data,
-          imageId: undefined,
-          instanceType: undefined,
-          keyName: undefined,
-          subnetId: undefined,
-          placementGroupName: undefined,
-          securityGroupMode: undefined,
-          securityGroupIds: [],
+          count: data.count,
+          launchTemplateId: data.launchTemplateId,
+          launchTemplateVersion: data.launchTemplateVersion,
           resolvedVpcId: effectiveVpcId,
         }
       : { ...data, resolvedVpcId: effectiveVpcId }

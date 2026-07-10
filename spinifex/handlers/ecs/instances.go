@@ -55,6 +55,9 @@ func (s *Service) RegisterContainerInstance(_ context.Context, input *ecs.Regist
 				r.TotalMemoryMiB = int(aws.Int64Value(res.IntegerValue))
 			}
 		}
+		if len(input.Tags) > 0 {
+			r.Tags = tagsToMap(input.Tags)
+		}
 		// The agent heartbeats by re-registering. A re-register from a reaped
 		// (involuntarily drained) instance proves the agent is back, so restore
 		// it to ACTIVE. An operator drain (Reaped=false) is left untouched.
@@ -157,6 +160,7 @@ func (s *Service) instanceToAWS(r *InstanceRecord) *ecs.ContainerInstance {
 		RegisteredResources:  registered,
 		RemainingResources:   remaining,
 		VersionInfo:          &ecs.VersionInfo{AgentVersion: aws.String(r.AgentVersion)},
+		Tags:                 tagsToAWS(r.Tags),
 	}
 }
 

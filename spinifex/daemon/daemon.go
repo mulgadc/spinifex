@@ -1014,6 +1014,13 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.SubmitTaskStateChange", d.handleECSSubmitTaskStateChange, "spinifex-workers"},
 			natsSub{"ecs.PollAssignments", d.handleECSPollAssignments, "spinifex-workers"},
 			natsSub{"ecs.ProvisionCapacity", d.handleECSProvisionCapacity, "spinifex-workers"},
+			natsSub{"ecs.TagResource", d.handleECSTagResource, "spinifex-workers"},
+			natsSub{"ecs.UntagResource", d.handleECSUntagResource, "spinifex-workers"},
+			natsSub{"ecs.ListTagsForResource", d.handleECSListTagsForResource, "spinifex-workers"},
+			natsSub{"ecs.PutClusterCapacityProviders", d.handleECSPutClusterCapacityProviders, "spinifex-workers"},
+			natsSub{"ecs.CreateCapacityProvider", d.handleECSCreateCapacityProvider, "spinifex-workers"},
+			natsSub{"ecs.DescribeCapacityProviders", d.handleECSDescribeCapacityProviders, "spinifex-workers"},
+			natsSub{"ecs.DeleteCapacityProvider", d.handleECSDeleteCapacityProvider, "spinifex-workers"},
 		)
 	}
 

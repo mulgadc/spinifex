@@ -243,3 +243,63 @@ func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body 
 	}
 	return handlers_ecs.NewNATSECSService(nc).PollAssignments(ctx, input, accountID)
 }
+
+// --- Tags ---
+
+func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.TagResourceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).TagResource(ctx, input, accountID)
+}
+
+func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.UntagResourceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).UntagResource(ctx, input, accountID)
+}
+
+func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.ListTagsForResourceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).ListTagsForResource(ctx, input, accountID)
+}
+
+// --- Capacity providers ---
+
+func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.PutClusterCapacityProvidersInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).PutClusterCapacityProviders(ctx, input, accountID)
+}
+
+func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.CreateCapacityProviderInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).CreateCapacityProvider(ctx, input, accountID)
+}
+
+func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DescribeCapacityProvidersInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DescribeCapacityProviders(ctx, input, accountID)
+}
+
+func DeleteCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.DeleteCapacityProviderInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).DeleteCapacityProvider(ctx, input, accountID)
+}

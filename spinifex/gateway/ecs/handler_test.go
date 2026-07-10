@@ -33,6 +33,9 @@ var wiredActions = map[string]bool{
 	"DescribeServices": true, "ListServices": true,
 	"SubmitTaskStateChange": true,
 	"PollAssignments":       true,
+	"TagResource":           true, "UntagResource": true, "ListTagsForResource": true,
+	"PutClusterCapacityProviders": true,
+	"CreateCapacityProvider":      true, "DescribeCapacityProviders": true, "DeleteCapacityProvider": true,
 }
 
 func TestActions_StubsReturnNotImplemented(t *testing.T) {

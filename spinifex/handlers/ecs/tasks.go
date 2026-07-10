@@ -74,6 +74,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 		rec.NetworkMode = mode
 		rec.Group = aws.StringValue(input.Group)
 		rec.StartedBy = aws.StringValue(input.StartedBy)
+		rec.Tags = tagsToMap(input.Tags)
 		if mode == NetworkModeAwsvpc {
 			if failure := s.provisionTaskENI(ctx, kv, accountID, cluster, rec, netCfg); failure != nil {
 				out.Failures = append(out.Failures, failure)
@@ -271,6 +272,7 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		DesiredStatus:        aws.String(r.DesiredStatus),
 		LastStatus:           aws.String(r.LastStatus),
 		ContainerInstanceArn: aws.String(r.ContainerInstanceARN),
+		Tags:                 tagsToAWS(r.Tags),
 	}
 	if r.Group != "" {
 		t.Group = aws.String(r.Group)

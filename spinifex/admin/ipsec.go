@@ -60,7 +60,7 @@ func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP st
 		return err
 	}
 
-	peerKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	peerKey, err := rsa.GenerateKey(rand.Reader, certKeyBits)
 	if err != nil {
 		return fmt.Errorf("ipsec peer cert: generate key: %w", err)
 	}

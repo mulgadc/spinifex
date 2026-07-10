@@ -134,6 +134,9 @@ func (s *LaunchTemplateServiceImpl) resolveHeader(accountID string, ltID, name *
 	case id != "" && nm != "":
 		return nil, nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	case id != "":
+		if err := validateTemplateID(id); err != nil {
+			return nil, nil, err
+		}
 		return s.getHeaderByID(accountID, id)
 	case nm != "":
 		return s.getHeaderByName(accountID, nm)
@@ -548,6 +551,12 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	for _, id := range input.LaunchTemplateIds {
+		if err := validateTemplateID(aws.StringValue(id)); err != nil {
+			return nil, err
+		}
+	}
+
 	nameSet := stringSet(input.LaunchTemplateNames)
 	idSet := stringSet(input.LaunchTemplateIds)
 
@@ -841,6 +850,15 @@ func stringSet(in []*string) map[string]bool {
 		}
 	}
 	return set
+}
+
+// validateTemplateID enforces the lt- id prefix so a syntactically invalid id
+// returns Malformed rather than NotFound, matching image/volume id handling.
+func validateTemplateID(id string) error {
+	if !strings.HasPrefix(id, "lt-") {
+		return errors.New(awserrors.ErrorInvalidLaunchTemplateIdMalformed)
+	}
+	return nil
 }
 
 // validateTemplateName enforces the AWS 3-128 char and allowed-character rules.

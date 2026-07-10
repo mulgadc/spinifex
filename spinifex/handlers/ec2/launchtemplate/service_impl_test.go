@@ -467,3 +467,21 @@ func TestResolveHeader_IdNameConflict(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
+
+func TestResolveHeader_MalformedId(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.DeleteLaunchTemplate(context.Background(), &ec2.DeleteLaunchTemplateInput{
+		LaunchTemplateId: aws.String("not-an-lt-id"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdMalformed, err.Error())
+}
+
+func TestDescribeLaunchTemplates_MalformedId(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.DescribeLaunchTemplates(context.Background(), &ec2.DescribeLaunchTemplatesInput{
+		LaunchTemplateIds: []*string{aws.String("bad-id")},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdMalformed, err.Error())
+}

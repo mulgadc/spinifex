@@ -281,6 +281,27 @@ func TestNATSRequest_ErrorResponse(t *testing.T) {
 	assert.Contains(t, err.Error(), "InvalidParameterValue")
 }
 
+func TestNATSRequest_ErrorResponseSurfacesMessage(t *testing.T) {
+	ns := startTestNATSServer(t)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	// Code is sanitized to ServerInternal, but the actionable message must
+	// still reach the caller instead of the bare code.
+	const reason = "eks: snapshot \"snap-bogus\" not found; refusing to restore"
+	_, err = nc.Subscribe("test.fail.msg", func(msg *nats.Msg) {
+		msg.Respond(GenerateErrorPayloadWithMessage("ServerInternal", reason))
+	})
+	require.NoError(t, err)
+
+	type Resp struct{}
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.fail.msg", struct{}{}, 2*time.Second, "")
+	assert.Error(t, err)
+	assert.Equal(t, reason, err.Error())
+}
+
 func TestNATSRequest_NoResponders(t *testing.T) {
 	ns := startTestNATSServer(t)
 

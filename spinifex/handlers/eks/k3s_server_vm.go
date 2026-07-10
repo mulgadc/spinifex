@@ -615,6 +615,9 @@ func buildK3sUserData(in K3sServerInput) string {
 		"SPINIFEX_PREDASTORE_ENDPOINT=" + in.PredastoreEndpoint,
 		"SPINIFEX_PREDASTORE_AKID=" + in.PredastoreAccessKey,
 		"SPINIFEX_PREDASTORE_SECRET=" + in.PredastoreSecretKey,
+		// Without AWS_REGION the snapshot SigV4 PUT signs with the fallback
+		// region and predastore rejects it with 403.
+		"AWS_REGION=" + in.Region,
 	}, "\n")
 
 	files := []userDataFile{

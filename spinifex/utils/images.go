@@ -436,6 +436,23 @@ var AvailableImages = map[string]Images{
 		Tags:         map[string]string{"spinifex:managed-by": "eks"},
 	},
 
+	// GPU EKS node system AMI. Resolved by spinifex:managed-by=eks + gpu-vendor=nvidia
+	// tags — CreateNodegroup selects it for GPU instance types instead of the Alpine AMI.
+	"spinifex-eks-node-gpu": {
+		Name:         "spinifex-eks-node-gpu",
+		Description:  "Mulga EKS GPU node image — Ubuntu 26.04 + NVIDIA driver + K3s v1.32.5 + eks-token-webhook (server|agent role selected at first boot)",
+		Distro:       "ubuntu",
+		Version:      "26.04",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/spinifex-eks-node-gpu-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-eks-node-gpu-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "bios",
+		Tags:         map[string]string{"spinifex:managed-by": "eks", "gpu-vendor": "nvidia"},
+	},
+
 	// ECS container-instance system AMI. Resolved by spinifex:managed-by=ecs tag —
 	// importing this entry lets ECS launch container instances that register and run tasks.
 	"spinifex-ecs-node": {
@@ -451,6 +468,23 @@ var AvailableImages = map[string]Images{
 		ChecksumType: "sha256",
 		BootMode:     "bios",
 		Tags:         map[string]string{"spinifex:managed-by": "ecs"},
+	},
+
+	// GPU ECS node system AMI. Resolved by spinifex:managed-by=ecs + gpu-vendor=nvidia
+	// tags — ProvisionCapacity selects it for GPU instance types instead of the Alpine AMI.
+	"spinifex-ecs-node-gpu": {
+		Name:         "spinifex-ecs-node-gpu",
+		Description:  "Mulga ECS GPU node image — Ubuntu 26.04 + NVIDIA driver + containerd + ecs-agent (registers as a container instance at first boot)",
+		Distro:       "ubuntu",
+		Version:      "26.04",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/spinifex-ecs-node-gpu-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-ecs-node-gpu-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "bios",
+		Tags:         map[string]string{"spinifex:managed-by": "ecs", "gpu-vendor": "nvidia"},
 	},
 }
 

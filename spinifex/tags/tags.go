@@ -22,6 +22,16 @@ const (
 
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.
 	LBARNKey = "spinifex:lb-arn"
+
+	// GPUVendorKey marks a system AMI (eks/ecs node) with the GPU vendor its
+	// drivers target. Absent on non-GPU AMIs.
+	GPUVendorKey = "gpu-vendor"
+
+	// GPUVendorNVIDIA identifies an NVIDIA-driver GPU node AMI.
+	GPUVendorNVIDIA = "nvidia"
+
+	// GPUVendorAMD identifies an AMD-driver GPU node AMI.
+	GPUVendorAMD = "amd"
 )
 
 // IsSystemManaged reports whether a ManagedBy value denotes a Spinifex

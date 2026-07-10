@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/nats-io/nats.go"
 )
 
@@ -229,6 +230,8 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 		version = meta.Version
 	}
 
+	gpuEnabled, gpuVendor := gpuFieldsForInstanceTypes(instanceTypes)
+
 	now := time.Now().UTC()
 	rec := &NodegroupRecord{
 		ClusterName:    cluster,
@@ -246,6 +249,8 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 		NodeRole:       aws.StringValue(input.NodeRole),
 		Labels:         aws.StringValueMap(input.Labels),
 		Tags:           aws.StringValueMap(input.Tags),
+		GPUEnabled:     gpuEnabled,
+		GPUVendor:      gpuVendor,
 		CreatedAt:      now,
 		ModifiedAt:     now,
 	}
@@ -281,6 +286,29 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 	})
 
 	return out, nil
+}
+
+// gpuFieldsForInstanceTypes scans instanceTypes for the first GPU family and
+// returns its vendor, so a nodegroup's worker AMI resolution can branch to the
+// matching GPU node AMI without re-scanning InstanceTypes on every launch.
+func gpuFieldsForInstanceTypes(instanceTypes []string) (gpuEnabled bool, gpuVendor string) {
+	for _, t := range instanceTypes {
+		if instancetypes.IsGPUTypeName(t) {
+			return true, instancetypes.GPUVendorForType(t)
+		}
+	}
+	return false, ""
+}
+
+// resolveWorkerAMI resolves the worker AMI for a nodegroup: the GPU node AMI
+// when rec is GPU-enabled, otherwise the default eks-node AMI. A GPU nodegroup
+// with no matching GPU AMI errors rather than silently falling back to the
+// non-GPU image.
+func resolveWorkerAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID string, rec *NodegroupRecord) (string, error) {
+	if rec.GPUEnabled {
+		return lookupEKSGPUNodeAMI(ctx, amiSvc, accountID, rec.GPUVendor)
+	}
+	return lookupEKSServerAMI(ctx, amiSvc, accountID)
 }
 
 // nodegroupLaunchCtx carries the immutable inputs for an asynchronous nodegroup
@@ -320,7 +348,7 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 		return
 	}
 
-	amiID, err := lookupEKSServerAMI(ctx, s.deps.Image, accountID)
+	amiID, err := resolveWorkerAMI(ctx, s.deps.Image, accountID, rec)
 	if err != nil {
 		s.markNodegroupFailed(acctKV, cluster, ng, "resolve eks-node AMI: "+err.Error())
 		return
@@ -765,9 +793,13 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV nats.KeyVa
 	if err != nil {
 		return nil, fmt.Errorf("decrypt node token: %w", err)
 	}
-	amiID, err := lookupEKSServerAMI(ctx, s.deps.Image, accountID)
+	recForAMI, _, err := getNodegroupEntry(acctKV, cluster, ng)
 	if err != nil {
-		if errors.Is(err, ErrEKSServerAMINotFound) {
+		return nil, err
+	}
+	amiID, err := resolveWorkerAMI(ctx, s.deps.Image, accountID, recForAMI)
+	if err != nil {
+		if errors.Is(err, ErrEKSServerAMINotFound) || errors.Is(err, ErrEKSGPUNodeAMINotFound) {
 			return nil, errors.New(awserrors.ErrorServiceUnavailable)
 		}
 		return nil, fmt.Errorf("resolve eks-node AMI: %w", err)

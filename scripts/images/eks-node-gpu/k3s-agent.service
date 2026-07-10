@@ -1,0 +1,21 @@
+[Unit]
+Description=K3s Kubernetes agent (Mulga EKS GPU worker)
+# K3S_URL points at the cluster's NLB endpoint (https://{cluster}.{account}
+# .eks.{region}.{suffix}:443) so the agent join path stays stable across the
+# v2 HA migration (single-VM v1 -> 3-node etcd quorum v2). No AMI rebuild
+# needed when the control plane expands.
+After=network-online.target mulga-eks-provider-id.service mulga-vpc-mtu.service mulga-ebs-byid.service mulga-cdi-generate.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Cloud-init drops K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL here at
+# RunInstances time per the Nodegroup bootstrap flow.
+EnvironmentFile=-/etc/spinifex-eks/agent.env
+ExecStartPre=/usr/local/sbin/k3s-agent-prestart
+ExecStart=/bin/sh -c '. /run/k3s-agent-extra-args.env 2>/dev/null || true; exec /usr/local/bin/k3s agent ${K3S_AGENT_EXTRA_ARGS:-}'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

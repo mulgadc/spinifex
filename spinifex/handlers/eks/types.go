@@ -49,8 +49,13 @@ type NodegroupRecord struct {
 	Tags           map[string]string `json:"tags,omitempty"`
 	InstanceIDs    []string          `json:"instanceIds,omitempty"`
 	Health         string            `json:"health,omitempty"`
-	CreatedAt      time.Time         `json:"createdAt"`
-	ModifiedAt     time.Time         `json:"modifiedAt"`
+	// GPUEnabled/GPUVendor cache whether InstanceTypes includes a GPU family and
+	// which vendor, so worker launches resolve the matching GPU node AMI without
+	// re-scanning InstanceTypes on every launch.
+	GPUEnabled bool      `json:"gpuEnabled,omitempty"`
+	GPUVendor  string    `json:"gpuVendor,omitempty"`
+	CreatedAt  time.Time `json:"createdAt"`
+	ModifiedAt time.Time `json:"modifiedAt"`
 }
 
 // AccessEntryRecord is the persisted-state envelope for an EKS API-mode

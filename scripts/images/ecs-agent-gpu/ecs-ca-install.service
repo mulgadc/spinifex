@@ -1,0 +1,22 @@
+[Unit]
+Description=Install Spinifex gateway CA into the system trust (first boot)
+# The CA is delivered per-instance (not baked) at
+# /etc/spinifex-ecs/gateway-ca.pem by cloud-init user-data, mirroring how EKS
+# delivers EKS_GATEWAY_CA. No-op when the file is absent — containerd then
+# relies on the stock system trust.
+Before=containerd.service ecs-agent.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '\
+    if [ -f /etc/spinifex-ecs/gateway-ca.pem ]; then \
+        install -D -m 0644 /etc/spinifex-ecs/gateway-ca.pem /usr/local/share/ca-certificates/spinifex-gateway.crt && \
+        update-ca-certificates >/dev/null 2>&1; \
+    else \
+        echo "no gateway CA at /etc/spinifex-ecs/gateway-ca.pem; using stock system trust"; \
+    fi'
+
+[Install]
+WantedBy=multi-user.target

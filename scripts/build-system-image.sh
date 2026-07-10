@@ -72,8 +72,10 @@ for field in IMAGE_NAME IMAGE_SIZE; do
     fi
 done
 
-# Derived paths
-BUILD_DIR="/tmp/${IMAGE_NAME}-image-build"
+# Derived paths. BUILD_DIR defaults to /tmp, but Ubuntu GPU images are 16G and a
+# typical /tmp is a RAM-backed tmpfs too small to hold the qcow2 + expanded raw,
+# so allow an override onto a real disk (SYSTEM_IMAGE_BUILD_DIR).
+BUILD_DIR="${SYSTEM_IMAGE_BUILD_DIR:-/tmp}/${IMAGE_NAME}-image-build"
 
 case "$DISTRO" in
     alpine)
@@ -116,7 +118,7 @@ import_ami() {
         args+=(--ami-name "$AMI_NAME")
     fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
-        args+=(--tag "$SYSTEM_TAG")
+        for _tag in ${SYSTEM_TAG}; do args+=(--tag "$_tag"); done
     fi
     spx admin images import "${args[@]}"
 }
@@ -367,7 +369,9 @@ else
     fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT} \\"
-        echo "    --tag ${SYSTEM_TAG}"
+        _tag_line=""
+        for _tag in ${SYSTEM_TAG}; do _tag_line="${_tag_line} --tag ${_tag}"; done
+        echo "   ${_tag_line}"
     else
         echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT}"
     fi

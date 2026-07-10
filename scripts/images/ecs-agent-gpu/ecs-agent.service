@@ -1,0 +1,22 @@
+[Unit]
+Description=Spinifex ECS container-instance agent
+# Resolves host identity from IMDSv2, registers + heartbeats + polls task
+# assignments through the AWS gateway over TLS+SigV4 (no NATS), and pulls
+# task images through containerd.
+Requires=containerd.service
+After=containerd.service ecs-ca-install.service network-online.target mulga-cdi-generate.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Static config (gateway URL, CA, region, cluster, seeded IAM creds,
+# containerd socket) comes from /etc/spinifex-ecs/agent.env, dropped by
+# cloud-init at launch. Absent file is tolerated — the agent falls back to
+# its built-in defaults.
+EnvironmentFile=-/etc/spinifex-ecs/agent.env
+ExecStart=/usr/local/bin/ecs-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

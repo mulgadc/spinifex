@@ -22,6 +22,12 @@ import (
 // exists. Signals an operator/config gap (image not built/imported).
 var ErrEKSServerAMINotFound = errors.New("eks: eks-server AMI not found")
 
+// ErrEKSGPUNodeAMINotFound is returned when no AMI carries both the EKS
+// managed-by tag and the requested gpu-vendor tag. A GPU nodegroup must never
+// silently fall back to the non-GPU AMI, so callers surface this as a hard
+// failure rather than substituting the driverless image.
+var ErrEKSGPUNodeAMINotFound = errors.New("eks: eks GPU node AMI not found")
+
 // k3sVPCProvisioner is the narrow VPC surface the K3s server VM launcher needs.
 type k3sVPCProvisioner interface {
 	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
@@ -328,13 +334,48 @@ func isENINotFound(err error) bool {
 // lookupEKSServerAMI resolves the EKS CP AMI by the spinifex:managed-by=eks tag
 // rather than a brittle exact name. If multiple AMIs match, the newest wins.
 func lookupEKSServerAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID string) (string, error) {
-	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{
-		Filters: []*ec2.Filter{
-			{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByEKS})},
-		},
-	}, accountID)
+	filters := []*ec2.Filter{
+		{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByEKS})},
+	}
+	desc := fmt.Sprintf("tag:%s=%s", tags.ManagedByKey, tags.ManagedByEKS)
+	return resolveNewestAMI(ctx, amiSvc, accountID, filters, true,
+		"describe eks AMI ("+desc+")", ErrEKSServerAMINotFound, desc,
+		"eks: multiple AMIs match managed-by=eks; using newest")
+}
+
+// lookupEKSGPUNodeAMI resolves the GPU-tagged EKS node AMI for vendor (e.g.
+// "nvidia") by the spinifex:managed-by=eks + gpu-vendor tags. There is no
+// fallback to the non-GPU AMI: a missing GPU image is a hard failure, since
+// running a GPU workload on a driverless image is worse than a clear error.
+func lookupEKSGPUNodeAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID, vendor string) (string, error) {
+	filters := []*ec2.Filter{
+		{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByEKS})},
+		{Name: aws.String("tag:" + tags.GPUVendorKey), Values: aws.StringSlice([]string{vendor})},
+	}
+	desc := fmt.Sprintf("tag:%s=%s, tag:%s=%s", tags.ManagedByKey, tags.ManagedByEKS, tags.GPUVendorKey, vendor)
+	return resolveNewestAMI(ctx, amiSvc, accountID, filters, false,
+		"describe eks GPU node AMI ("+desc+")", ErrEKSGPUNodeAMINotFound, desc,
+		"eks: multiple GPU AMIs match managed-by=eks+gpu-vendor; using newest")
+}
+
+// hasTagKey reports whether img carries a tag with the given key.
+func hasTagKey(img *ec2.Image, key string) bool {
+	for _, t := range img.Tags {
+		if aws.StringValue(t.Key) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveNewestAMI runs DescribeImages with filters and returns the newest
+// (by CreationDate) matching image ID. describeErrCtx prefixes a DescribeImages
+// failure; notFoundDesc/warnMsg describe the filter for the not-found error and
+// the multi-match log line respectively.
+func resolveNewestAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID string, filters []*ec2.Filter, excludeGPUTagged bool, describeErrCtx string, notFound error, notFoundDesc, warnMsg string) (string, error) {
+	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{Filters: filters}, accountID)
 	if err != nil {
-		return "", fmt.Errorf("describe eks AMI (tag:%s=%s): %w", tags.ManagedByKey, tags.ManagedByEKS, err)
+		return "", fmt.Errorf("%s: %w", describeErrCtx, err)
 	}
 
 	var (
@@ -346,6 +387,12 @@ func lookupEKSServerAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID st
 		if img == nil || img.ImageId == nil || *img.ImageId == "" {
 			continue
 		}
+		// The GPU node AMI also carries managed-by=eks; DescribeImages filters
+		// have no negation, so exclude gpu-vendor-tagged images client-side from
+		// the non-GPU lookup or a newer GPU AMI would hijack ordinary nodes.
+		if excludeGPUTagged && hasTagKey(img, tags.GPUVendorKey) {
+			continue
+		}
 		matches++
 		// CreationDate is a fixed-width RFC3339 timestamp, so lexicographic
 		// comparison orders it correctly without parsing.
@@ -354,11 +401,10 @@ func lookupEKSServerAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID st
 		}
 	}
 	if newestID == "" {
-		return "", fmt.Errorf("%w (tag:%s=%s, account %s)", ErrEKSServerAMINotFound, tags.ManagedByKey, tags.ManagedByEKS, accountID)
+		return "", fmt.Errorf("%w (%s, account %s)", notFound, notFoundDesc, accountID)
 	}
 	if matches > 1 {
-		slog.WarnContext(ctx, "eks: multiple AMIs match managed-by=eks; using newest",
-			"count", matches, "imageId", newestID, "created", newestCreated)
+		slog.WarnContext(ctx, warnMsg, "count", matches, "imageId", newestID, "created", newestCreated)
 	}
 	return newestID, nil
 }

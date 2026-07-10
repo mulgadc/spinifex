@@ -656,6 +656,11 @@ const (
 	qmpDialRetryInterval = 50 * time.Millisecond
 )
 
+// qmpSocketWaitTimeout bounds how long newQMPClientWithHandshake waits for the
+// QMP socket inode to appear before dialling. Mirrors qmpDialTimeout; a test
+// seam overrides it to keep dial-failure tests off the wall clock.
+var qmpSocketWaitTimeout = 3 * time.Second
+
 // removeStaleQMPSocket unlinks a leftover QMP socket inode from a prior QEMU so
 // the startup probe and QMP dial cannot race a dead listener. A missing file is
 // not an error.
@@ -698,7 +703,7 @@ func isTransientDialError(err error) bool {
 func newQMPClientWithHandshake(ctx context.Context, v *VM) (*qmp.QMPClient, error) {
 	// QMP socket bind lags the pidfile under recovery load; wait for the
 	// socket inode to exist before dialling to avoid an ENOENT race.
-	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, 3*time.Second); err != nil {
+	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, qmpSocketWaitTimeout); err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
 	client, err := dialQMPWithRetry(v.Config.QMPSocket)

@@ -500,9 +500,14 @@ func GenerateNATSToken() (string, error) {
 	return "nats_" + base64.URLEncoding.EncodeToString(bytes)[:32], nil
 }
 
+// certKeyBits is the RSA key size used when generating certificate keys.
+// It is a seam so tests can lower it for faster key generation; production
+// keeps the 4096-bit default.
+var certKeyBits = 4096
+
 // GenerateCACert generates a Certificate Authority certificate and key.
 func GenerateCACert(caCertPath, caKeyPath string) error {
-	caPrivateKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	caPrivateKey, err := rsa.GenerateKey(rand.Reader, certKeyBits)
 	if err != nil {
 		return fmt.Errorf("failed to generate CA private key: %w", err)
 	}
@@ -653,7 +658,7 @@ func GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath string, extraIP
 		return fmt.Errorf("CA key is not RSA")
 	}
 
-	serverPrivateKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	serverPrivateKey, err := rsa.GenerateKey(rand.Reader, certKeyBits)
 	if err != nil {
 		return fmt.Errorf("failed to generate server private key: %w", err)
 	}

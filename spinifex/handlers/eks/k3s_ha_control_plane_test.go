@@ -612,7 +612,10 @@ func TestProvisionFreshControlPlane_ClusterInitNoJoin(t *testing.T) {
 }
 
 func TestProvisionFreshControlPlane_NoFreeHostErrors(t *testing.T) {
-	sched := &fakeHostScheduler{hosts: []string{"node-a"}}
+	// Two hosts, both excluded: genuinely nothing schedulable. A single
+	// excluded host is covered separately since that falls back to it
+	// (single-node topology).
+	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b"}}
 	svc := newPlacerService(sched, &fakePlacer{}, &seqK3sVPC{}, &seqK3sInst{})
 	svc.deps.SystemAccessKey = "AKIATEST"
 	svc.deps.SystemSecretKey = "secret"
@@ -621,11 +624,30 @@ func TestProvisionFreshControlPlane_NoFreeHostErrors(t *testing.T) {
 	_, err := svc.ProvisionFreshControlPlane(context.Background(), FreshCPRequest{
 		ClusterName:  "alpha",
 		Template:     &tmpl,
-		ExcludeHosts: []string{"node-a"},
+		ExcludeHosts: []string{"node-a", "node-b"},
 	})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no schedulable host")
+}
+
+func TestProvisionFreshControlPlane_SingleHostFallsBack(t *testing.T) {
+	// Single-node deployment: the only schedulable host is also the excluded
+	// (old CP) host. pickReplacementHost falls back to it rather than erroring.
+	sched := &fakeHostScheduler{hosts: []string{"node-a"}}
+	svc := newPlacerService(sched, &fakePlacer{}, &seqK3sVPC{}, &seqK3sInst{})
+	svc.deps.SystemAccessKey = "AKIATEST"
+	svc.deps.SystemSecretKey = "secret"
+	tmpl := validK3sInput()
+
+	node, err := svc.ProvisionFreshControlPlane(context.Background(), FreshCPRequest{
+		ClusterName:  "alpha",
+		Template:     &tmpl,
+		ExcludeHosts: []string{"node-a"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "node-a", node.NodeID)
 }
 
 func TestProvisionFreshControlPlane_NilTemplateRejected(t *testing.T) {

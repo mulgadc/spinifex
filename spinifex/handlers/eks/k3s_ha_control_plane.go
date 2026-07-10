@@ -252,10 +252,17 @@ func (s *EKSServiceImpl) pickReplacementHost(ctx context.Context, instanceType s
 	for _, h := range exclude {
 		ex[h] = true
 	}
-	for _, h := range s.deps.Scheduler.SchedulableHosts(ctx, instanceType) {
+	hosts := s.deps.Scheduler.SchedulableHosts(ctx, instanceType)
+	for _, h := range hosts {
 		if !ex[h] {
 			return h, nil
 		}
+	}
+	// On a single-node deployment the sole schedulable host is the old CP's
+	// own host. placeControlPlane already supports a <2-host single-CP
+	// topology, so fall back to it when that host is the only one available.
+	if len(hosts) == 1 {
+		return hosts[0], nil
 	}
 	return "", fmt.Errorf("eks: no schedulable host for replacement control plane (excluding %d live-member host(s))", len(exclude))
 }

@@ -65,8 +65,11 @@ check "server: enables k3s-first-boot" "yes" "$(grep -q 'rc-update add k3s-first
 check "server: starts k3s" "yes" "$(grep -q 'rc-service k3s start' "${CALLS}" && echo yes || echo no)"
 check "server: enables konnectivity-server" "yes" "$(grep -q 'rc-update add konnectivity-server default' "${CALLS}" && echo yes || echo no)"
 check "server: enables k3s-recovery" "yes" "$(grep -q 'rc-update add mulga-eks-k3s-recovery default' "${CALLS}" && echo yes || echo no)"
-# Recovery is added to the runlevel (pre-k3s on later boots) but not started now.
-check "server: does not start k3s-recovery" "no" "$(grep -q 'rc-service mulga-eks-k3s-recovery' "${CALLS}" && echo yes || echo no)"
+# Recovery is added to the runlevel (so it also runs pre-k3s on later boots)
+# AND started inline now — a restore-snapshot DR seed's directive must apply
+# on this very first boot, before k3s starts.
+check "server: starts k3s-recovery" "yes" "$(grep -q 'rc-service mulga-eks-k3s-recovery start' "${CALLS}" && echo yes || echo no)"
+check "server: starts k3s-recovery before k3s" "yes" "$(awk '/rc-service mulga-eks-k3s-recovery start/{r=NR} /rc-service k3s start/{k=NR} END{print (r>0 && k>0 && r<k) ? "yes" : "no"}' "${CALLS}")"
 check "server: no k3s-agent" "no" "$(grep -q 'k3s-agent' "${CALLS}" && echo yes || echo no)"
 check "server: self-disables" "yes" "$(grep -q 'rc-update del eks-node-role default' "${CALLS}" && echo yes || echo no)"
 
@@ -81,6 +84,7 @@ check "server-join: enables k3s" "yes" "$(grep -q 'rc-update add k3s default' "$
 check "server-join: enables state-report" "yes" "$(grep -q 'rc-update add mulga-eks-state-report default' "${CALLS}" && echo yes || echo no)"
 check "server-join: enables konnectivity-server" "yes" "$(grep -q 'rc-update add konnectivity-server default' "${CALLS}" && echo yes || echo no)"
 check "server-join: enables k3s-recovery" "yes" "$(grep -q 'rc-update add mulga-eks-k3s-recovery default' "${CALLS}" && echo yes || echo no)"
+check "server-join: starts k3s-recovery" "yes" "$(grep -q 'rc-service mulga-eks-k3s-recovery start' "${CALLS}" && echo yes || echo no)"
 # Join servers must NOT re-publish bootstrap; the first server already did.
 check "server-join: no k3s-first-boot" "no" "$(grep -q 'k3s-first-boot' "${CALLS}" && echo yes || echo no)"
 check "server-join: no k3s-agent" "no" "$(grep -q 'k3s-agent' "${CALLS}" && echo yes || echo no)"

@@ -220,15 +220,15 @@ func latestVersionsFromKeys(keys []string, prefix string) map[string]int64 {
 		if !strings.HasPrefix(rest, "lt-") {
 			continue
 		}
-		sep := strings.Index(rest, ".v")
-		if sep < 0 {
+		id, vStr, found := strings.Cut(rest, ".v")
+		if !found {
 			continue
 		}
-		n, err := strconv.ParseInt(rest[sep+2:], 10, 64)
+		n, err := strconv.ParseInt(vStr, 10, 64)
 		if err != nil {
 			continue
 		}
-		if id := rest[:sep]; n > latest[id] {
+		if n > latest[id] {
 			latest[id] = n
 		}
 	}

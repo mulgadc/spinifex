@@ -162,7 +162,7 @@ func setFieldValue(field reflect.Value, value string) error {
 		}
 		field.SetBool(b)
 	case reflect.Struct:
-		if field.Type() == reflect.TypeOf(time.Time{}) {
+		if field.Type() == reflect.TypeFor[time.Time]() {
 			timestamp, err := time.Parse(time.RFC3339, value)
 			if err != nil {
 				return fmt.Errorf("parse RFC3339 timestamp: %w", err)

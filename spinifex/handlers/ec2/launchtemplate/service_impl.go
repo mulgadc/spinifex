@@ -204,6 +204,34 @@ func (s *LaunchTemplateServiceImpl) latestVersionNumber(accountID, ltID string) 
 	return highest, nil
 }
 
+// latestVersionsFromKeys derives the highest existing version number per template
+// from a single bucket key listing (all keys under prefix account.), avoiding a
+// per-template rescan. Version keys have the shape account.lt-<id>.v<n>.
+func latestVersionsFromKeys(keys []string, prefix string) map[string]int64 {
+	latest := make(map[string]int64)
+	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		rest := k[len(prefix):]
+		if !strings.HasPrefix(rest, "lt-") {
+			continue
+		}
+		sep := strings.Index(rest, ".v")
+		if sep < 0 {
+			continue
+		}
+		n, err := strconv.ParseInt(rest[sep+2:], 10, 64)
+		if err != nil {
+			continue
+		}
+		if id := rest[:sep]; n > latest[id] {
+			latest[id] = n
+		}
+	}
+	return latest
+}
+
 // resolveVersionNumber maps a selector ("", $Default, $Latest, or numeric) to a
 // concrete version number. It does not verify the body exists — callers load the
 // body and surface VersionNotFound when it is missing.
@@ -291,8 +319,16 @@ func (s *LaunchTemplateServiceImpl) claimName(accountID, name, ltID string) erro
 	if err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.kv.Get(headerKey(accountID, string(entry.Value()))); err == nil {
+	// Only a genuinely missing header is a crash orphan safe to reclaim. A live
+	// header means the name is taken; any other read error (transient fault, or a
+	// concurrent in-flight create whose header is not yet written) fails closed so
+	// the name is never stolen from a possibly-live template.
+	_, herr := s.kv.Get(headerKey(accountID, string(entry.Value())))
+	switch {
+	case herr == nil:
 		return errors.New(awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException)
+	case !errors.Is(herr, nats.ErrKeyNotFound):
+		return errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.kv.Update(key, []byte(ltID), entry.Revision()); err != nil {
 		return errors.New(awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException)
@@ -376,8 +412,12 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if _, err := s.kv.Create(versionKey(accountID, header.LaunchTemplateId, next), body); err != nil {
-			slog.DebugContext(ctx, "CreateLaunchTemplateVersion: version-number collision, retrying", "attempt", attempt, "next", next)
-			continue
+			if errors.Is(err, nats.ErrKeyExists) {
+				slog.DebugContext(ctx, "CreateLaunchTemplateVersion: version-number collision, retrying", "attempt", attempt, "next", next)
+				continue
+			}
+			slog.ErrorContext(ctx, "CreateLaunchTemplateVersion: version-key create failed", "next", next, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		slog.InfoContext(ctx, "CreateLaunchTemplateVersion completed", "launchTemplateId", header.LaunchTemplateId, "version", next, "accountID", accountID)
 		return &ec2.CreateLaunchTemplateVersionOutput{
@@ -566,6 +606,10 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// Derive every template's latest version number from this single key list so
+	// the loop below does not re-scan the whole bucket once per matched template.
+	latestByID := latestVersionsFromKeys(keys, prefix)
+
 	var templates []*ec2.LaunchTemplate
 	foundNames := make(map[string]bool)
 	foundIDs := make(map[string]bool)
@@ -591,13 +635,9 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		if !templateMatchesFilters(&h, filters) {
 			continue
 		}
-		latest, err := s.latestVersionNumber(accountID, h.LaunchTemplateId)
-		if err != nil {
-			return nil, err
-		}
 		foundNames[h.LaunchTemplateName] = true
 		foundIDs[h.LaunchTemplateId] = true
-		templates = append(templates, headerToEC2(&h, latest))
+		templates = append(templates, headerToEC2(&h, latestByID[h.LaunchTemplateId]))
 	}
 
 	for name := range nameSet {

@@ -301,31 +301,38 @@ function ResourceTable({ nodes }: { nodes: NodeInfo[] }) {
         <thead>
           <tr className="border-b text-left text-muted-foreground">
             <th className="pr-4 pb-1 font-medium">Name</th>
-            <th className="pr-4 pb-1 font-medium">CPU (used/total)</th>
-            <th className="pr-4 pb-1 font-medium">MEM (used/total)</th>
+            <th className="pr-4 pb-1 font-medium">CPU (used/sched)</th>
+            <th className="pr-4 pb-1 font-medium">MEM (used/sched)</th>
             <th className="pr-4 pb-1 font-medium">GPU (used/total)</th>
             <th className="pb-1 font-medium">EC2</th>
           </tr>
         </thead>
         <tbody>
-          {nodes.map((node) => (
-            <tr key={node.node} className="border-b last:border-0">
-              <td className="py-1.5 pr-4 font-mono font-medium">{node.node}</td>
-              <td className="py-1.5 pr-4 font-mono">
-                {node.alloc_vcpu}/{node.total_vcpu}
-              </td>
-              <td className="py-1.5 pr-4 font-mono">
-                {formatMemory(node.alloc_mem_gb)}/
-                {formatMemory(node.total_mem_gb)}
-              </td>
-              <td className="py-1.5 pr-4 font-mono">
-                {node.total_gpus > 0
-                  ? `${node.alloc_gpus}/${node.total_gpus}`
-                  : "-"}
-              </td>
-              <td className="py-1.5">{node.vm_count}</td>
-            </tr>
-          ))}
+          {nodes.map((node) => {
+            // Schedulable = host total minus the daemon reserve; this is the
+            // capacity a tenant deployment can actually consume.
+            const schedVcpu = node.total_vcpu - (node.reserved_vcpu ?? 0)
+            const schedMemGb = node.total_mem_gb - (node.reserved_mem_gb ?? 0)
+            return (
+              <tr key={node.node} className="border-b last:border-0">
+                <td className="py-1.5 pr-4 font-mono font-medium">
+                  {node.node}
+                </td>
+                <td className="py-1.5 pr-4 font-mono">
+                  {node.alloc_vcpu}/{schedVcpu}
+                </td>
+                <td className="py-1.5 pr-4 font-mono">
+                  {formatMemory(node.alloc_mem_gb)}/{formatMemory(schedMemGb)}
+                </td>
+                <td className="py-1.5 pr-4 font-mono">
+                  {node.total_gpus > 0
+                    ? `${node.alloc_gpus}/${node.total_gpus}`
+                    : "-"}
+                </td>
+                <td className="py-1.5">{node.vm_count}</td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>

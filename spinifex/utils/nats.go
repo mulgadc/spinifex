@@ -257,6 +257,9 @@ func NATSRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, 
 
 	responseError, err := ValidateErrorPayload(msg.Data)
 	if err != nil {
+		if responseError.Message != nil && *responseError.Message != "" {
+			return nil, errors.New(*responseError.Message)
+		}
 		return nil, errors.New(*responseError.Code)
 	}
 
@@ -289,7 +292,7 @@ func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *
 	out, err := fn(ctx, input)
 	if err != nil {
 		MarkSpanError(span, err)
-		respondNATS(msg, GenerateErrorPayload(awserrors.ValidErrorCode(err.Error())))
+		respondNATS(msg, GenerateErrorPayloadWithMessage(awserrors.ValidErrorCode(err.Error()), err.Error()))
 		return
 	}
 	data, err := json.Marshal(out)

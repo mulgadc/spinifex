@@ -139,3 +139,35 @@ func (s *NATSECSService) PollAssignments(ctx context.Context, input *PollAssignm
 func (s *NATSECSService) ProvisionCapacity(ctx context.Context, input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error) {
 	return utils.NATSRequest[ProvisionCapacityOutput](ctx, s.natsConn, "ecs.ProvisionCapacity", input, defaultTimeout, accountID)
 }
+
+// --- Tags ---
+
+func (s *NATSECSService) ListTagsForResource(ctx context.Context, input *ecs.ListTagsForResourceInput, accountID string) (*ecs.ListTagsForResourceOutput, error) {
+	return utils.NATSRequest[ecs.ListTagsForResourceOutput](ctx, s.natsConn, "ecs.ListTagsForResource", input, defaultTimeout, accountID)
+}
+
+func (s *NATSECSService) TagResource(ctx context.Context, input *ecs.TagResourceInput, accountID string) (*ecs.TagResourceOutput, error) {
+	return utils.NATSRequest[ecs.TagResourceOutput](ctx, s.natsConn, "ecs.TagResource", input, defaultTimeout, accountID)
+}
+
+func (s *NATSECSService) UntagResource(ctx context.Context, input *ecs.UntagResourceInput, accountID string) (*ecs.UntagResourceOutput, error) {
+	return utils.NATSRequest[ecs.UntagResourceOutput](ctx, s.natsConn, "ecs.UntagResource", input, defaultTimeout, accountID)
+}
+
+// --- Capacity providers ---
+
+func (s *NATSECSService) PutClusterCapacityProviders(ctx context.Context, input *ecs.PutClusterCapacityProvidersInput, accountID string) (*ecs.PutClusterCapacityProvidersOutput, error) {
+	return utils.NATSRequest[ecs.PutClusterCapacityProvidersOutput](ctx, s.natsConn, "ecs.PutClusterCapacityProviders", input, defaultTimeout, accountID)
+}
+
+func (s *NATSECSService) CreateCapacityProvider(ctx context.Context, input *ecs.CreateCapacityProviderInput, accountID string) (*ecs.CreateCapacityProviderOutput, error) {
+	return utils.NATSRequest[ecs.CreateCapacityProviderOutput](ctx, s.natsConn, "ecs.CreateCapacityProvider", input, defaultTimeout, accountID)
+}
+
+func (s *NATSECSService) DescribeCapacityProviders(ctx context.Context, input *ecs.DescribeCapacityProvidersInput, accountID string) (*ecs.DescribeCapacityProvidersOutput, error) {
+	return utils.NATSRequest[ecs.DescribeCapacityProvidersOutput](ctx, s.natsConn, "ecs.DescribeCapacityProviders", input, defaultTimeout, accountID)
+}
+
+func (s *NATSECSService) DeleteCapacityProvider(ctx context.Context, input *ecs.DeleteCapacityProviderInput, accountID string) (*ecs.DeleteCapacityProviderOutput, error) {
+	return utils.NATSRequest[ecs.DeleteCapacityProviderOutput](ctx, s.natsConn, "ecs.DeleteCapacityProvider", input, defaultTimeout, accountID)
+}

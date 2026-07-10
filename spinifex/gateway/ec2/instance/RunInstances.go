@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -76,6 +77,12 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 // launchQuotaCheck may be nil to skip quota enforcement; when present it runs
 // after validation and PassRole authorization, but before any launch dispatch.
 func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+	// Expand a referenced launch template before validation so validation, quota,
+	// and downstream routing all see the effective (post-merge) parameters.
+	if err = expandLaunchTemplate(ctx, natsConn, input, accountID); err != nil {
+		return reservation, err
+	}
+
 	if err = ValidateRunInstancesInput(input); err != nil {
 		return reservation, err
 	}
@@ -234,6 +241,16 @@ func capacityReservationTargetID(input *ec2.RunInstancesInput) string {
 		return ""
 	}
 	return aws.StringValue(spec.CapacityReservationTarget.CapacityReservationId)
+}
+
+// expandLaunchTemplate folds a referenced launch template into input, delegating
+// to the launch-template service over NATS. A no-op when no template is referenced.
+func expandLaunchTemplate(ctx context.Context, natsConn *nats.Conn, input *ec2.RunInstancesInput, accountID string) error {
+	if input == nil || input.LaunchTemplate == nil {
+		return nil
+	}
+	ltSvc := handlers_ec2_launchtemplate.NewNATSLaunchTemplateService(natsConn)
+	return handlers_ec2_launchtemplate.ExpandRunInstances(ctx, ltSvc, input, accountID)
 }
 
 // lookupPlacementGroupStrategy returns the strategy of a placement group, or an error if absent/unavailable.

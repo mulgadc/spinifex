@@ -20,6 +20,7 @@ import (
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_key "github.com/mulgadc/spinifex/spinifex/gateway/ec2/key"
+	gateway_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/gateway/ec2/launchtemplate"
 	gateway_ec2_natgw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/natgw"
 	gateway_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/gateway/ec2/placementgroup"
 	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
@@ -352,6 +353,27 @@ var ec2Actions = map[string]EC2Handler{
 	}),
 	"CancelCapacityReservation": ec2Handler(func(ctx context.Context, input *ec2.CancelCapacityReservationInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_capacityreservation.CancelCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
+	}),
+	"CreateLaunchTemplate": ec2Handler(func(ctx context.Context, input *ec2.CreateLaunchTemplateInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_launchtemplate.CreateLaunchTemplate(ctx, input, gw.NATSConn, accountID)
+	}),
+	"CreateLaunchTemplateVersion": ec2Handler(func(ctx context.Context, input *ec2.CreateLaunchTemplateVersionInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_launchtemplate.CreateLaunchTemplateVersion(ctx, input, gw.NATSConn, accountID)
+	}),
+	"DeleteLaunchTemplate": ec2Handler(func(ctx context.Context, input *ec2.DeleteLaunchTemplateInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_launchtemplate.DeleteLaunchTemplate(ctx, input, gw.NATSConn, accountID)
+	}),
+	"DeleteLaunchTemplateVersions": ec2Handler(func(ctx context.Context, input *ec2.DeleteLaunchTemplateVersionsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_launchtemplate.DeleteLaunchTemplateVersions(ctx, input, gw.NATSConn, accountID)
+	}),
+	"ModifyLaunchTemplate": ec2Handler(func(ctx context.Context, input *ec2.ModifyLaunchTemplateInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_launchtemplate.ModifyLaunchTemplate(ctx, input, gw.NATSConn, accountID)
+	}),
+	"DescribeLaunchTemplates": ec2Handler(func(ctx context.Context, input *ec2.DescribeLaunchTemplatesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_launchtemplate.DescribeLaunchTemplates(ctx, input, gw.NATSConn, accountID)
+	}),
+	"DescribeLaunchTemplateVersions": ec2Handler(func(ctx context.Context, input *ec2.DescribeLaunchTemplateVersionsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_launchtemplate.DescribeLaunchTemplateVersions(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RequestSpotInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RequestSpotInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {

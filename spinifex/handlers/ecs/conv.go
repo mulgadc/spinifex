@@ -48,6 +48,16 @@ func taskShortID(ref string) string {
 	return ref
 }
 
+// capacityProviderShortName extracts the capacity-provider name from a name
+// or a capacity-provider ARN.
+func capacityProviderShortName(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if i := strings.LastIndex(ref, "capacity-provider/"); i >= 0 {
+		return ref[i+len("capacity-provider/"):]
+	}
+	return ref
+}
+
 // containerDefsFromAWS maps SDK container definitions to the persisted subset.
 func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 	out := make([]ContainerDef, 0, len(in))

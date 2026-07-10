@@ -135,6 +135,18 @@ func LeaderLeaseKey(accountID, clusterName string) string {
 	return fmt.Sprintf("%s/%s", accountID, clusterName)
 }
 
+// CapacityProvidersPrefix returns the KV key prefix under which all
+// capacity-provider records live. Account-scoped (not cluster-scoped),
+// matching the AWS ARN shape; a cluster references providers by name.
+func CapacityProvidersPrefix() string {
+	return "capacity-providers/"
+}
+
+// CapacityProviderKey returns the KV key for a named capacity-provider record.
+func CapacityProviderKey(name string) string {
+	return CapacityProvidersPrefix() + name
+}
+
 // Store is the per-daemon ECS KV handle. Per-account and leader buckets are
 // accessed via the package-level factories below.
 type Store struct {

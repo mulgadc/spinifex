@@ -3,6 +3,7 @@ package awsec2query
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -648,4 +649,28 @@ func TestQueryParamsToStruct_SparseHugeIndexNoOp(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Empty(t, input.Filters)
+}
+
+func TestQueryParamsToStruct_CreateLaunchTemplateNestedData(t *testing.T) {
+	args := map[string]string{
+		"LaunchTemplateName":                                              "web-template",
+		"LaunchTemplateData.ImageId":                                      "ami-0abcdef1234567890",
+		"LaunchTemplateData.InstanceType":                                 "t3.micro",
+		"LaunchTemplateData.BlockDeviceMapping.1.DeviceName":              "/dev/sda1",
+		"LaunchTemplateData.BlockDeviceMapping.1.Ebs.VolumeSize":          "20",
+		"LaunchTemplateData.InstanceMarketOptions.SpotOptions.ValidUntil": "2026-07-10T12:00:00Z",
+	}
+
+	input := &ec2.CreateLaunchTemplateInput{}
+	err := QueryParamsToStruct(args, input)
+
+	require.NoError(t, err)
+	require.NotNil(t, input.LaunchTemplateData)
+	assert.Equal(t, "ami-0abcdef1234567890", aws.StringValue(input.LaunchTemplateData.ImageId))
+	require.Len(t, input.LaunchTemplateData.BlockDeviceMappings, 1)
+	assert.Equal(t, int64(20), aws.Int64Value(input.LaunchTemplateData.BlockDeviceMappings[0].Ebs.VolumeSize))
+	require.NotNil(t, input.LaunchTemplateData.InstanceMarketOptions)
+	require.NotNil(t, input.LaunchTemplateData.InstanceMarketOptions.SpotOptions)
+	assert.Equal(t, time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC),
+		*input.LaunchTemplateData.InstanceMarketOptions.SpotOptions.ValidUntil)
 }

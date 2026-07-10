@@ -93,6 +93,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 		rec.NetworkMode = mode
 		rec.Group = group
 		rec.StartedBy = startedBy
+		rec.Tags = tagsToMap(input.Tags)
 		if mode == NetworkModeAwsvpc {
 			if failure := s.provisionTaskENI(ctx, kv, accountID, cluster, rec, netCfg); failure != nil {
 				out.Failures = append(out.Failures, failure)

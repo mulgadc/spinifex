@@ -59,6 +59,20 @@ type ECSService interface {
 
 	// ProvisionCapacity launches container-instance EC2 capacity into a cluster.
 	ProvisionCapacity(ctx context.Context, input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error)
+
+	// Tags. Dispatched on the resourceArn shape (ecs-v1.md §1); the ACM inline-tags
+	// pattern (map stored on the record, mutated in place).
+	ListTagsForResource(ctx context.Context, input *ecs.ListTagsForResourceInput, accountID string) (*ecs.ListTagsForResourceOutput, error)
+	TagResource(ctx context.Context, input *ecs.TagResourceInput, accountID string) (*ecs.TagResourceOutput, error)
+	UntagResource(ctx context.Context, input *ecs.UntagResourceInput, accountID string) (*ecs.UntagResourceOutput, error)
+
+	// Capacity providers. Strategy is accepted and persisted but inert: no
+	// scheduler coupling, no scale loop (a separate follow-on binds this to an
+	// ASG primitive).
+	PutClusterCapacityProviders(ctx context.Context, input *ecs.PutClusterCapacityProvidersInput, accountID string) (*ecs.PutClusterCapacityProvidersOutput, error)
+	CreateCapacityProvider(ctx context.Context, input *ecs.CreateCapacityProviderInput, accountID string) (*ecs.CreateCapacityProviderOutput, error)
+	DescribeCapacityProviders(ctx context.Context, input *ecs.DescribeCapacityProvidersInput, accountID string) (*ecs.DescribeCapacityProvidersOutput, error)
+	DeleteCapacityProvider(ctx context.Context, input *ecs.DeleteCapacityProviderInput, accountID string) (*ecs.DeleteCapacityProviderOutput, error)
 }
 
 // ecsImageResolver is the narrow AMI surface for resolving the spinifex-ecs-node
@@ -306,12 +320,19 @@ func (s *Service) ListClusters(_ context.Context, _ *ecs.ListClustersInput, acco
 }
 
 func (r *ClusterRecord) toAWS() *ecs.Cluster {
-	return &ecs.Cluster{
+	c := &ecs.Cluster{
 		ClusterName: aws.String(r.Name),
 		ClusterArn:  aws.String(r.ARN),
 		Status:      aws.String(r.Status),
 		Tags:        tagsToAWS(r.Tags),
 	}
+	if len(r.CapacityProviders) > 0 {
+		c.CapacityProviders = aws.StringSlice(r.CapacityProviders)
+	}
+	for _, item := range r.DefaultCapacityProviderStrategy {
+		c.DefaultCapacityProviderStrategy = append(c.DefaultCapacityProviderStrategy, item.toAWS())
+	}
+	return c
 }
 
 // tagsToAWS converts a stored tag map into the AWS list form with a stable
@@ -324,6 +345,25 @@ func tagsToAWS(tags map[string]string) []*ecs.Tag {
 	out := make([]*ecs.Tag, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, &ecs.Tag{Key: aws.String(k), Value: aws.String(tags[k])})
+	}
+	return out
+}
+
+// tagsToMap is the inverse of tagsToAWS: it converts the AWS tag list form
+// into a stored map, dropping nil entries and empty keys.
+func tagsToMap(tags []*ecs.Tag) map[string]string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(tags))
+	for _, t := range tags {
+		if t == nil || aws.StringValue(t.Key) == "" {
+			continue
+		}
+		out[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -360,6 +400,7 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 		TaskRoleArn:      aws.StringValue(input.TaskRoleArn),
 		ExecutionRoleArn: aws.StringValue(input.ExecutionRoleArn),
 		Status:           TaskDefStatusActive,
+		Tags:             tagsToMap(input.Tags),
 		RegisteredAt:     time.Now().UTC(),
 		Containers:       containerDefsFromAWS(input.ContainerDefinitions),
 	}
@@ -369,7 +410,7 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 	if err := putJSON(kv, TaskDefLatestRevKey(family), rev); err != nil {
 		return nil, err
 	}
-	return &ecs.RegisterTaskDefinitionOutput{TaskDefinition: rec.toAWS()}, nil
+	return &ecs.RegisterTaskDefinitionOutput{TaskDefinition: rec.toAWS(), Tags: tagsToAWS(rec.Tags)}, nil
 }
 
 // validateContainerDefs hard-rejects taskdef features the data plane cannot honor.
@@ -451,7 +492,7 @@ func (s *Service) DescribeTaskDefinition(_ context.Context, input *ecs.DescribeT
 	if err != nil {
 		return nil, err
 	}
-	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: rec.toAWS()}, nil
+	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: rec.toAWS(), Tags: tagsToAWS(rec.Tags)}, nil
 }
 
 // ListTaskDefinitions returns revision ARNs, optionally filtered by family and

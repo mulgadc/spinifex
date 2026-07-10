@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 
-import { formatJson, isValidJson, jsonStringSchema } from "./json"
+import {
+  decodePolicyDocument,
+  formatJson,
+  isValidJson,
+  jsonStringSchema,
+} from "./json"
 
 type JsonSchema = ReturnType<typeof jsonStringSchema>
 
@@ -31,6 +36,30 @@ describe("formatJson", () => {
   it("returns null for malformed JSON", () => {
     expect(formatJson("{ not json")).toBeNull()
     expect(formatJson("")).toBeNull()
+  })
+})
+
+describe("decodePolicyDocument", () => {
+  it("decodes and pretty-prints a URL-encoded document", () => {
+    const encoded = encodeURIComponent('{"Version":"2012-10-17"}')
+    expect(decodePolicyDocument(encoded, true)).toBe(
+      '{\n  "Version": "2012-10-17"\n}',
+    )
+  })
+
+  it("pretty-prints a raw JSON document without decoding", () => {
+    expect(decodePolicyDocument('{"a":1}', false)).toBe('{\n  "a": 1\n}')
+  })
+
+  it("leaves literal percent sequences intact for raw documents", () => {
+    const raw = '{"Resource":"arn:aws:s3:::bucket/logs%2Fpath"}'
+    expect(decodePolicyDocument(raw, false)).toBe(
+      '{\n  "Resource": "arn:aws:s3:::bucket/logs%2Fpath"\n}',
+    )
+  })
+
+  it("returns the original text when it is not JSON", () => {
+    expect(decodePolicyDocument("not json", true)).toBe("not json")
   })
 })
 

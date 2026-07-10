@@ -175,6 +175,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 		PlacementStrategy:  placementStrategyFromAWS(input.PlacementStrategy),
 		LoadBalancers:      loadBalancersFromAWS(input.LoadBalancers),
 		DeploymentID:       uuid.NewString(),
+		Tags:               tagsToMap(input.Tags),
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -612,6 +613,7 @@ func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service 
 		PendingCount:       aws.Int64(int64(r.PendingCount)),
 		SchedulingStrategy: aws.String(r.SchedulingStrategy),
 		TaskDefinition:     aws.String(r.TaskDefARN),
+		Tags:               tagsToAWS(r.Tags),
 	}
 	if r.LaunchType != "" {
 		svc.LaunchType = aws.String(r.LaunchType)

@@ -139,3 +139,17 @@ func (s *NATSECSService) PollAssignments(ctx context.Context, input *PollAssignm
 func (s *NATSECSService) ProvisionCapacity(ctx context.Context, input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error) {
 	return utils.NATSRequest[ProvisionCapacityOutput](ctx, s.natsConn, "ecs.ProvisionCapacity", input, defaultTimeout, accountID)
 }
+
+// --- Tags ---
+
+func (s *NATSECSService) ListTagsForResource(ctx context.Context, input *ecs.ListTagsForResourceInput, accountID string) (*ecs.ListTagsForResourceOutput, error) {
+	return utils.NATSRequest[ecs.ListTagsForResourceOutput](ctx, s.natsConn, "ecs.ListTagsForResource", input, defaultTimeout, accountID)
+}
+
+func (s *NATSECSService) TagResource(ctx context.Context, input *ecs.TagResourceInput, accountID string) (*ecs.TagResourceOutput, error) {
+	return utils.NATSRequest[ecs.TagResourceOutput](ctx, s.natsConn, "ecs.TagResource", input, defaultTimeout, accountID)
+}
+
+func (s *NATSECSService) UntagResource(ctx context.Context, input *ecs.UntagResourceInput, accountID string) (*ecs.UntagResourceOutput, error) {
+	return utils.NATSRequest[ecs.UntagResourceOutput](ctx, s.natsConn, "ecs.UntagResource", input, defaultTimeout, accountID)
+}

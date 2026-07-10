@@ -117,3 +117,17 @@ func (d *Daemon) handleECSPollAssignments(msg *nats.Msg) {
 func (d *Daemon) handleECSProvisionCapacity(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.ProvisionCapacity)
 }
+
+// --- Tags ---
+
+func (d *Daemon) handleECSTagResource(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.TagResource)
+}
+
+func (d *Daemon) handleECSUntagResource(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.UntagResource)
+}
+
+func (d *Daemon) handleECSListTagsForResource(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.ListTagsForResource)
+}

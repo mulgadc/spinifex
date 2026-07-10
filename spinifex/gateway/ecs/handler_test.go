@@ -33,6 +33,7 @@ var wiredActions = map[string]bool{
 	"DescribeServices": true, "ListServices": true,
 	"SubmitTaskStateChange": true,
 	"PollAssignments":       true,
+	"TagResource":           true, "UntagResource": true, "ListTagsForResource": true,
 }
 
 func TestActions_StubsReturnNotImplemented(t *testing.T) {

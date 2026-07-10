@@ -91,9 +91,9 @@ var Actions = map[string]Handler{
 	"ListAccountSettings": NotImplemented,
 
 	// Tags.
-	"TagResource":         NotImplemented,
-	"UntagResource":       NotImplemented,
-	"ListTagsForResource": NotImplemented,
+	"TagResource":         TagResource,
+	"UntagResource":       UntagResource,
+	"ListTagsForResource": ListTagsForResource,
 }
 
 // RawJSONActions encode their response with encoding/json instead of jsonutil.

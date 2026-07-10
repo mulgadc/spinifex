@@ -243,3 +243,29 @@ func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body 
 	}
 	return handlers_ecs.NewNATSECSService(nc).PollAssignments(ctx, input, accountID)
 }
+
+// --- Tags ---
+
+func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.TagResourceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).TagResource(ctx, input, accountID)
+}
+
+func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.UntagResourceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).UntagResource(ctx, input, accountID)
+}
+
+func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(ecs.ListTagsForResourceInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).ListTagsForResource(ctx, input, accountID)
+}

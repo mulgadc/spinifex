@@ -144,17 +144,18 @@ const LogDriverJSONFile = "json-file"
 
 // TaskDefRecord is the persisted task definition revision at TaskDefRevKey.
 type TaskDefRecord struct {
-	Family           string         `json:"family"`
-	Revision         int            `json:"revision"`
-	ARN              string         `json:"arn"`
-	NetworkMode      string         `json:"networkMode,omitempty"`
-	CPU              string         `json:"cpu,omitempty"`
-	Memory           string         `json:"memory,omitempty"`
-	TaskRoleArn      string         `json:"taskRoleArn,omitempty"`
-	ExecutionRoleArn string         `json:"executionRoleArn,omitempty"`
-	Containers       []ContainerDef `json:"containers"`
-	Status           string         `json:"status"`
-	RegisteredAt     time.Time      `json:"registeredAt"`
+	Family           string            `json:"family"`
+	Revision         int               `json:"revision"`
+	ARN              string            `json:"arn"`
+	NetworkMode      string            `json:"networkMode,omitempty"`
+	CPU              string            `json:"cpu,omitempty"`
+	Memory           string            `json:"memory,omitempty"`
+	TaskRoleArn      string            `json:"taskRoleArn,omitempty"`
+	ExecutionRoleArn string            `json:"executionRoleArn,omitempty"`
+	Containers       []ContainerDef    `json:"containers"`
+	Status           string            `json:"status"`
+	Tags             map[string]string `json:"tags,omitempty"`
+	RegisteredAt     time.Time         `json:"registeredAt"`
 }
 
 // reservedCPU/reservedMemory sum the task definition's per-container reservations
@@ -180,14 +181,15 @@ func (t *TaskDefRecord) reservedMemory() int {
 // scheduler writes it from the Layer-2 bus (register/heartbeat) and reserves
 // capacity by appending placed task IDs.
 type InstanceRecord struct {
-	InstanceID     string `json:"instanceId"`
-	ARN            string `json:"arn"`
-	Cluster        string `json:"cluster"`
-	AZ             string `json:"availabilityZone,omitempty"`
-	Hostname       string `json:"hostname,omitempty"`
-	Status         string `json:"status"`
-	TotalCPU       int    `json:"totalCpu"`
-	TotalMemoryMiB int    `json:"totalMemoryMiB"`
+	InstanceID     string            `json:"instanceId"`
+	ARN            string            `json:"arn"`
+	Cluster        string            `json:"cluster"`
+	AZ             string            `json:"availabilityZone,omitempty"`
+	Hostname       string            `json:"hostname,omitempty"`
+	Status         string            `json:"status"`
+	Tags           map[string]string `json:"tags,omitempty"`
+	TotalCPU       int               `json:"totalCpu"`
+	TotalMemoryMiB int               `json:"totalMemoryMiB"`
 	// ReservedCPU/ReservedMemoryMiB track capacity committed to placed tasks;
 	// placement increments them under a KV CAS and the task-state STOPPED path
 	// releases them. Remaining = Total - Reserved.
@@ -221,19 +223,20 @@ type TaskRecord struct {
 	// Group / StartedBy mirror the AWS task fields. A service's tasks carry
 	// Group="service:{name}" so the reconciler counts them and the task-state
 	// hook resolves a RUNNING/STOPPED task back to its owning service.
-	Group                string           `json:"group,omitempty"`
-	StartedBy            string           `json:"startedBy,omitempty"`
-	TaskDefFamily        string           `json:"taskDefFamily"`
-	TaskDefRevision      int              `json:"taskDefRevision"`
-	TaskDefARN           string           `json:"taskDefArn"`
-	ContainerInstanceID  string           `json:"containerInstanceId,omitempty"`
-	ContainerInstanceARN string           `json:"containerInstanceArn,omitempty"`
-	DesiredStatus        string           `json:"desiredStatus"`
-	LastStatus           string           `json:"lastStatus"`
-	StoppedReason        string           `json:"stoppedReason,omitempty"`
-	ReservedCPU          int              `json:"reservedCpu"`
-	ReservedMemoryMiB    int              `json:"reservedMemoryMiB"`
-	Containers           []ContainerState `json:"containers,omitempty"`
+	Group                string            `json:"group,omitempty"`
+	StartedBy            string            `json:"startedBy,omitempty"`
+	TaskDefFamily        string            `json:"taskDefFamily"`
+	TaskDefRevision      int               `json:"taskDefRevision"`
+	TaskDefARN           string            `json:"taskDefArn"`
+	ContainerInstanceID  string            `json:"containerInstanceId,omitempty"`
+	ContainerInstanceARN string            `json:"containerInstanceArn,omitempty"`
+	DesiredStatus        string            `json:"desiredStatus"`
+	LastStatus           string            `json:"lastStatus"`
+	StoppedReason        string            `json:"stoppedReason,omitempty"`
+	ReservedCPU          int               `json:"reservedCpu"`
+	ReservedMemoryMiB    int               `json:"reservedMemoryMiB"`
+	Tags                 map[string]string `json:"tags,omitempty"`
+	Containers           []ContainerState  `json:"containers,omitempty"`
 	// NetworkMode is the resolved task network mode (awsvpc|bridge|host). The
 	// STOPPED path consults it to decide whether an ENI must be reclaimed.
 	NetworkMode string `json:"networkMode,omitempty"`
@@ -286,6 +289,7 @@ type ServiceRecord struct {
 	DeploymentID       string               `json:"deploymentId"`
 	RunningCount       int                  `json:"runningCount"`
 	PendingCount       int                  `json:"pendingCount"`
+	Tags               map[string]string    `json:"tags,omitempty"`
 	// Rolling-update configuration (deploymentConfiguration) and its live state.
 	// MinimumHealthyPercent / MaximumPercent gate the rollout; the circuit breaker
 	// trips a failing deployment and optionally rolls back to LastGoodTaskDefARN.

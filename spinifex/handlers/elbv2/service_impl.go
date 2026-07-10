@@ -40,6 +40,13 @@ const (
 
 	// heartbeatPersistInterval is how often a no-op heartbeat writes to KV.
 	heartbeatPersistInterval = 60 * time.Second
+	// lbProvisioningTimeout bounds how long an LB may sit in provisioning
+	// waiting for its lb-agent's first heartbeat before the reaper marks it
+	// failed. Kept below the e2e 5m wait so a wedged LB terminal-fails and the
+	// harness can retry rather than time out.
+	lbProvisioningTimeout = 4 * time.Minute
+	// lbReaperInterval is how often the lifecycle reaper sweeps for stuck LBs.
+	lbReaperInterval = 30 * time.Second
 
 	// Health check fields are interpolated into the HAProxy template; restrict
 	// to characters that cannot terminate or inject directives.
@@ -118,6 +125,7 @@ type ELBv2ServiceImpl struct {
 	ctx                        context.Context
 	cancel                     context.CancelFunc
 	hc                         *healthChecker
+	reaperInterval             time.Duration // lifecycle reaper tick; 0 falls back to lbReaperInterval
 
 	recoveryLBIndexMu sync.Mutex
 	recoveryLBIndex   map[string]*LoadBalancerRecord
@@ -159,15 +167,16 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 	hc := newHealthChecker(store)
 
 	return &ELBv2ServiceImpl{
-		config:   cfg,
-		store:    store,
-		acmStore: acmStore,
-		nc:       nc,
-		nodeID:   nodeID,
-		region:   region,
-		ctx:      ctx,
-		cancel:   cancel,
-		hc:       hc,
+		config:         cfg,
+		store:          store,
+		acmStore:       acmStore,
+		nc:             nc,
+		nodeID:         nodeID,
+		region:         region,
+		ctx:            ctx,
+		cancel:         cancel,
+		hc:             hc,
+		reaperInterval: lbReaperInterval,
 	}, nil
 }
 
@@ -1243,6 +1252,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 	willLaunch := s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0
 	if willLaunch {
 		state = StateProvisioning
+		stateReason = "awaiting first lb-agent heartbeat"
 		// Internal LBs without a mgmt return route would hang in provisioning;
 		// mark failed immediately so the broken path is visible.
 		if scheme == SchemeInternal {
@@ -1417,6 +1427,57 @@ func (s *ELBv2ServiceImpl) markLBFailed(lbArn, reason string) {
 	if putErr := s.store.PutLoadBalancer(record); putErr != nil {
 		slog.Error("CreateLoadBalancer: failed to persist failed state", "lbArn", lbArn, "err", putErr)
 	}
+}
+
+// reapStuckProvisioningLBs marks failed any LB that has sat in provisioning past
+// lbProvisioningTimeout without a single lb-agent heartbeat. Such an LB launched
+// its VM but the agent never reached the daemon, so it would otherwise wedge in
+// provisioning forever. Synchronous; caller supplies now for testability.
+func (s *ELBv2ServiceImpl) reapStuckProvisioningLBs(now time.Time) {
+	lbs, err := s.store.ListLoadBalancers()
+	if err != nil {
+		slog.Error("ELBv2 lifecycle reaper: failed to list load balancers", "err", err)
+		return
+	}
+	for _, lb := range lbs {
+		if lb == nil || lb.State != StateProvisioning {
+			continue
+		}
+		if !lb.LastHeartbeat.IsZero() || lb.CreatedAt.IsZero() {
+			continue
+		}
+		if now.Sub(lb.CreatedAt) < lbProvisioningTimeout {
+			continue
+		}
+		reason := fmt.Sprintf("lb-agent did not heartbeat within %s of provisioning", lbProvisioningTimeout)
+		slog.Warn("ELBv2 lifecycle reaper: LB stuck in provisioning, marking failed",
+			"lbArn", lb.LoadBalancerArn, "lbId", lb.LoadBalancerID,
+			"instanceId", lb.InstanceID, "createdAt", lb.CreatedAt)
+		s.markLBFailed(lb.LoadBalancerArn, reason)
+	}
+}
+
+// StartLifecycleReaper runs reapStuckProvisioningLBs on a ticker until the
+// service context is cancelled (via Close). Call once at daemon startup.
+func (s *ELBv2ServiceImpl) StartLifecycleReaper(ctx context.Context) {
+	interval := s.reaperInterval
+	if interval <= 0 {
+		interval = lbReaperInterval
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.reapStuckProvisioningLBs(time.Now().UTC())
+			}
+		}
+	}()
 }
 
 func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error) {

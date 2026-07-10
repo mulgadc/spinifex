@@ -162,6 +162,8 @@ func (s *EKSServiceImpl) ProvisionReplacementCP(ctx context.Context, req Replace
 		in.AccessKey = s.deps.SystemAccessKey
 		in.SecretKey = s.deps.SystemSecretKey
 	}
+	in.PredastoreAccessKey = s.deps.SystemAccessKey
+	in.PredastoreSecretKey = s.deps.SystemSecretKey
 
 	instanceType := in.InstanceType
 	if instanceType == "" {

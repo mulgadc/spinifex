@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -59,6 +60,16 @@ type EKSServiceDeps struct {
 	SystemAccessKey  string
 	SystemSecretKey  string
 	GatewayCACert    string
+
+	// SystemPredastoreURL is the mgmt-bridge-reachable predastore endpoint baked
+	// into the CP VM's etcd-snapshot.env (SystemAccessKey/SystemSecretKey double
+	// as the predastore SigV4 creds — same system credential used for the gateway).
+	SystemPredastoreURL string
+
+	// SnapshotStore lists/reads etcd snapshots from the eks-backups-system bucket
+	// for restore-snapshot's latest-snapshot resolution. Nil disables that lookup
+	// (callers must pass --snapshot explicitly).
+	SnapshotStore objectstore.ObjectStore
 
 	VPCSG     sgProvisioner
 	VPCK3s    k3sVPCProvisioner
@@ -707,24 +718,27 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	elbSubnets := dedupSubnetsByAZ(ctx, s.deps.VPCSubnet, accountID, lc.subnetIDs)
 
 	serverIn := K3sServerInput{
-		AccountID:         sysAcct,
-		ClusterAccountID:  accountID,
-		ClusterName:       name,
-		Region:            region,
-		SubnetID:          cpRefs.PrivateSubnetIDs[0],
-		VpcID:             meta.ResourcesVpcConfig.VpcId,
-		ELBSubnetIDs:      elbSubnets,
-		ControlPlaneSGID:  cpSG,
-		NLBDNS:            nlb.DNSName,
-		EndpointIP:        nlb.FrontendIP,
-		PrivateEndpointIP: meta.PrivateEndpointIP,
-		OIDCIssuer:        oidcIssuer,
-		OIDCPrivateKeyPEM: privPEM,
-		OIDCPublicKeyPEM:  pubPEM,
-		GatewayURL:        s.deps.SystemGatewayURL,
-		AddonGatewayURL:   s.deps.GatewayBaseURL,
-		GatewayCACert:     s.deps.GatewayCACert,
-		JoinToken:         joinToken,
+		AccountID:           sysAcct,
+		ClusterAccountID:    accountID,
+		ClusterName:         name,
+		Region:              region,
+		SubnetID:            cpRefs.PrivateSubnetIDs[0],
+		VpcID:               meta.ResourcesVpcConfig.VpcId,
+		ELBSubnetIDs:        elbSubnets,
+		ControlPlaneSGID:    cpSG,
+		NLBDNS:              nlb.DNSName,
+		EndpointIP:          nlb.FrontendIP,
+		PrivateEndpointIP:   meta.PrivateEndpointIP,
+		OIDCIssuer:          oidcIssuer,
+		OIDCPrivateKeyPEM:   privPEM,
+		OIDCPublicKeyPEM:    pubPEM,
+		GatewayURL:          s.deps.SystemGatewayURL,
+		AddonGatewayURL:     s.deps.GatewayBaseURL,
+		GatewayCACert:       s.deps.GatewayCACert,
+		JoinToken:           joinToken,
+		PredastoreEndpoint:  s.deps.SystemPredastoreURL,
+		PredastoreAccessKey: s.deps.SystemAccessKey,
+		PredastoreSecretKey: s.deps.SystemSecretKey,
 	}
 
 	// Prefer IMDS instance-role creds: attach a system instance profile so the
@@ -767,6 +781,8 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	tmpl.AccessKey = ""
 	tmpl.SecretKey = ""
 	tmpl.IamInstanceProfileArn = ""
+	tmpl.PredastoreAccessKey = ""
+	tmpl.PredastoreSecretKey = ""
 	meta.ControlPlaneTemplate = &tmpl
 
 	// Persist the CP VM + ENI + spread-group refs now, before any further fallible

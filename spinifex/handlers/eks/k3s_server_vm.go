@@ -61,6 +61,10 @@ const (
 	// k3sFirstBootEnvPath is the env file k3s-first-boot.sh sources at boot.
 	k3sFirstBootEnvPath = "/etc/spinifex-eks/first-boot.env"
 
+	// k3sSnapshotEnvPath is the env file mulga-eks-etcd-snapshot.sh (cron) and
+	// mulga-eks-k3s-recovery.sh (boot-time restore) source for predastore creds.
+	k3sSnapshotEnvPath = "/etc/spinifex-eks/etcd-snapshot.env"
+
 	// agentEnvPath is the env file the k3s-agent OpenRC service sources for
 	// K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL.
 	agentEnvPath = "/etc/spinifex-eks/agent.env"
@@ -164,6 +168,13 @@ type K3sServerInput struct {
 	// EKS_KONNECTIVITY_SERVER_COUNT so the konnectivity-server advertises
 	// --server-count=N and every agent holds a tunnel to every replica (HA-correct).
 	KonnServerCount int `json:"konnServerCount,omitempty"`
+	// PredastoreEndpoint/PredastoreAccessKey/PredastoreSecretKey are the
+	// mgmt-bridge-reachable predastore SigV4 creds baked into etcd-snapshot.env.
+	// The guest snapshot cron and boot-time recovery script have no IMDS-role
+	// support, so these are always static (unlike AccessKey/SecretKey above).
+	PredastoreEndpoint  string `json:"predastoreEndpoint,omitempty"`
+	PredastoreAccessKey string `json:"predastoreAccessKey,omitempty"`
+	PredastoreSecretKey string `json:"predastoreSecretKey,omitempty"`
 }
 
 // K3sServerOutput carries identifiers to persist in ClusterMeta and register with the NLB.
@@ -401,6 +412,12 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput AccessKey and SecretKey must both be set or both empty")
 	case strings.TrimSpace(in.GatewayCACert) == "":
 		return errors.New("eks: K3sServerInput empty GatewayCACert")
+	case in.PredastoreEndpoint == "":
+		return errors.New("eks: K3sServerInput empty PredastoreEndpoint")
+	case in.PredastoreAccessKey == "":
+		return errors.New("eks: K3sServerInput empty PredastoreAccessKey")
+	case in.PredastoreSecretKey == "":
+		return errors.New("eks: K3sServerInput empty PredastoreSecretKey")
 	case in.ServerURL != "" && in.JoinToken == "":
 		return errors.New("eks: K3sServerInput join server (ServerURL set) requires JoinToken")
 	}
@@ -592,9 +609,19 @@ func buildK3sUserData(in K3sServerInput) string {
 	)
 	k3sConfig := strings.Join(configLines, "\n")
 
+	snapshotEnvBody := strings.Join([]string{
+		"EKS_ACCOUNT_ID=" + in.ClusterAccountID,
+		"EKS_CLUSTER_NAME=" + in.ClusterName,
+		"SPINIFEX_PREDASTORE_ENDPOINT=" + in.PredastoreEndpoint,
+		"SPINIFEX_PREDASTORE_AKID=" + in.PredastoreAccessKey,
+		"SPINIFEX_PREDASTORE_SECRET=" + in.PredastoreSecretKey,
+	}, "\n")
+
 	files := []userDataFile{
 		// 0600: may contain a system SigV4 secret key (static-cred mode).
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
+		// 0600: carries predastore SigV4 static creds for the snapshot cron + boot-time recovery.
+		{Path: k3sSnapshotEnvPath, Perms: "0600", Body: snapshotEnvBody},
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
 		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},

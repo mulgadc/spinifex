@@ -25,11 +25,14 @@ export const LAUNCH_WIZARD_SG_PREFIX = "launch-wizard-"
 
 export const createInstanceSchema = z
   .object({
-    imageId: z.string("Please select an Image"),
-    instanceType: z.string("Please select an instance type"),
-    keyName: z
-      .string("Please select a key pair")
-      .min(1, "Key pair is required"),
+    // Image / type / key are required for a direct launch, but a launch
+    // template supplies them, so they are optional here and enforced below
+    // only when no launchTemplateId is set.
+    imageId: z.string().optional(),
+    instanceType: z.string().optional(),
+    keyName: z.string().optional(),
+    launchTemplateId: z.string().optional(),
+    launchTemplateVersion: z.string().optional(),
     subnetId: z.string().optional(),
     placementGroupName: z.string().optional(),
     count: z
@@ -59,6 +62,31 @@ export const createInstanceSchema = z
     customCidr: z.string().optional(),
   })
   .superRefine((data, ctx) => {
+    // Direct launch (no template) requires image, type and key. When a
+    // launch template is selected, those fields are inherited from it.
+    if (!data.launchTemplateId) {
+      if (!data.imageId) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Please select an image",
+          path: ["imageId"],
+        })
+      }
+      if (!data.instanceType) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Please select an instance type",
+          path: ["instanceType"],
+        })
+      }
+      if (!data.keyName) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Please select a key pair",
+          path: ["keyName"],
+        })
+      }
+    }
     if (!data.securityGroupMode) {
       return
     }
@@ -411,3 +439,77 @@ export const securityGroupRuleSchema = z.object({
 })
 
 export type SecurityGroupRuleFormData = z.infer<typeof securityGroupRuleSchema>
+
+// AWS launch-template name charset: letters, digits and ()./_- (3–128 chars).
+const LAUNCH_TEMPLATE_NAME_REGEX = /^[a-zA-Z0-9()./_-]+$/
+const LAUNCH_TEMPLATE_NAME_MIN = 3
+const LAUNCH_TEMPLATE_NAME_MAX = 128
+
+// launchTemplateFormSchema is the launch-data subset a template version carries.
+// Both the create-template and create-version forms infer this same shape so the
+// shared data-fields component and the buildLaunchTemplateData helper have one
+// field set to maintain. launchTemplateName / sourceVersion apply only to their
+// respective flows and are enforced there.
+export const launchTemplateFormSchema = z.object({
+  launchTemplateName: z.string().optional(),
+  versionDescription: z.string().optional(),
+  sourceVersion: z.string().optional(),
+  imageId: z.string().min(1, "Please select an image"),
+  instanceType: z.string().min(1, "Please select an instance type"),
+  keyName: z.string().optional(),
+  subnetId: z.string().optional(),
+  securityGroupIds: z.array(z.string()).optional(),
+  userData: z.string().optional(),
+  rootVolumeSize: z
+    .number()
+    .int("Volume size must be a whole number")
+    .min(1, "Volume size must be at least 1 GiB")
+    .max(16_384, "Volume size must be at most 16384 GiB")
+    .optional(),
+  rootVolumeType: z.enum(VOLUME_TYPES).optional(),
+})
+
+export type LaunchTemplateFormData = z.infer<typeof launchTemplateFormSchema>
+
+export const createLaunchTemplateSchema = launchTemplateFormSchema.superRefine(
+  (data, ctx) => {
+    const name = data.launchTemplateName ?? ""
+    if (
+      name.length < LAUNCH_TEMPLATE_NAME_MIN ||
+      name.length > LAUNCH_TEMPLATE_NAME_MAX
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: `Name must be ${LAUNCH_TEMPLATE_NAME_MIN}–${LAUNCH_TEMPLATE_NAME_MAX} characters`,
+        path: ["launchTemplateName"],
+      })
+      return
+    }
+    if (!LAUNCH_TEMPLATE_NAME_REGEX.test(name)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Name may contain only letters, digits and ()./_-",
+        path: ["launchTemplateName"],
+      })
+    }
+  },
+)
+
+// A new version reuses the same data subset; the name is not editable.
+export const createLaunchTemplateVersionSchema = launchTemplateFormSchema
+
+export type CreateLaunchTemplateParams = LaunchTemplateFormData
+
+export type CreateLaunchTemplateVersionParams = LaunchTemplateFormData & {
+  launchTemplateId: string
+}
+
+export interface SetDefaultLaunchTemplateVersionParams {
+  launchTemplateId: string
+  defaultVersion: string
+}
+
+export interface DeleteLaunchTemplateVersionsParams {
+  launchTemplateId: string
+  versions: string[]
+}

@@ -1,6 +1,7 @@
 import {
   type _InstanceType,
   type PlacementStrategy,
+  type RequestLaunchTemplateData,
   type Tag,
   type TagSpecification,
   type Tenancy,
@@ -17,6 +18,8 @@ import {
   DeregisterImageCommand,
   CreateInternetGatewayCommand,
   CreateKeyPairCommand,
+  CreateLaunchTemplateCommand,
+  CreateLaunchTemplateVersionCommand,
   CreateNatGatewayCommand,
   CreatePlacementGroupCommand,
   CreateRouteCommand,
@@ -28,6 +31,8 @@ import {
   CreateVpcCommand,
   DeleteInternetGatewayCommand,
   DeleteKeyPairCommand,
+  DeleteLaunchTemplateCommand,
+  DeleteLaunchTemplateVersionsCommand,
   DeleteNatGatewayCommand,
   DeletePlacementGroupCommand,
   DeleteRouteCommand,
@@ -46,6 +51,7 @@ import {
   GetConsoleOutputCommand,
   ImportKeyPairCommand,
   ModifyInstanceAttributeCommand,
+  ModifyLaunchTemplateCommand,
   ModifySubnetAttributeCommand,
   ModifyVolumeCommand,
   RebootInstancesCommand,
@@ -69,6 +75,8 @@ import type {
   CreateImageParams,
   CreateInstanceParams,
   CreateKeyPairData,
+  CreateLaunchTemplateParams,
+  CreateLaunchTemplateVersionParams,
   CreatePlacementGroupFormData,
   CreateSecurityGroupFormData,
   CreateSnapshotFormData,
@@ -76,11 +84,14 @@ import type {
   CreateVolumeFormData,
   CreateVpcFormData,
   CreateVpcWizardFormData,
+  DeleteLaunchTemplateVersionsParams,
   DetachVolumeFormData,
   ImportKeyPairData,
+  LaunchTemplateFormData,
   ModifyInstanceTypeFormData,
   ModifyVolumeParams,
   SecurityGroupRuleFormData,
+  SetDefaultLaunchTemplateVersionParams,
 } from "@/types/ec2"
 import type { AssociateInstanceProfileParams } from "@/types/iam"
 
@@ -153,10 +164,14 @@ export function useCreateInstance() {
       const client = getEc2Client()
       const securityGroupIds = await resolveSecurityGroupIds(client, params)
       const command = new RunInstancesCommand({
-        ImageId: params.imageId,
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
-        InstanceType: params.instanceType as _InstanceType,
-        KeyName: params.keyName,
+        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+        ImageId: params.imageId || undefined,
+        InstanceType: params.instanceType
+          ? // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
+            (params.instanceType as _InstanceType)
+          : undefined,
+        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+        KeyName: params.keyName || undefined,
         MinCount: params.count,
         MaxCount: params.count,
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
@@ -167,6 +182,15 @@ export function useCreateInstance() {
           ? { GroupName: params.placementGroupName }
           : undefined,
         BlockDeviceMappings: buildBlockDeviceMappings(params),
+        // When a template is chosen the backend expands it, then the direct
+        // params above overlay it (direct params win, matching AWS).
+        LaunchTemplate: params.launchTemplateId
+          ? {
+              LaunchTemplateId: params.launchTemplateId,
+              // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+              Version: params.launchTemplateVersion || "$Default",
+            }
+          : undefined,
       })
       return await client.send(command)
     },
@@ -257,6 +281,190 @@ function buildBlockDeviceMappings(params: CreateInstanceParams) {
         },
       ]
     : undefined
+}
+
+const DEFAULT_ROOT_DEVICE_NAME = "/dev/sda1"
+
+// encodeUserData base64-encodes user data (UTF-8 safe). Launch-template user
+// data must already be base64 when sent to the API, unlike RunInstances which
+// the SDK encodes for us.
+function encodeUserData(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let binary = ""
+  for (const byte of bytes) {
+    binary += String.fromCodePoint(byte)
+  }
+  return btoa(binary)
+}
+
+// buildLaunchTemplateData maps the shared launch-data form subset to the nested
+// RequestLaunchTemplateData the SDK expects. A subnet is expressed as the
+// primary network interface (templates have no top-level SubnetId); security
+// groups attach to that interface, or at the top level when no subnet is set.
+export function buildLaunchTemplateData(
+  data: LaunchTemplateFormData,
+): RequestLaunchTemplateData {
+  const out: RequestLaunchTemplateData = {}
+  if (data.imageId) {
+    out.ImageId = data.imageId
+  }
+  if (data.instanceType) {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
+    out.InstanceType = data.instanceType as _InstanceType
+  }
+  if (data.keyName) {
+    out.KeyName = data.keyName
+  }
+  const sgIds = data.securityGroupIds ?? []
+  if (data.subnetId) {
+    out.NetworkInterfaces = [
+      {
+        DeviceIndex: 0,
+        SubnetId: data.subnetId,
+        Groups: sgIds.length > 0 ? sgIds : undefined,
+      },
+    ]
+  } else if (sgIds.length > 0) {
+    out.SecurityGroupIds = sgIds
+  }
+  if (data.rootVolumeSize !== undefined || data.rootVolumeType !== undefined) {
+    out.BlockDeviceMappings = [
+      {
+        DeviceName: DEFAULT_ROOT_DEVICE_NAME,
+        Ebs: {
+          ...(data.rootVolumeSize !== undefined && {
+            VolumeSize: data.rootVolumeSize,
+          }),
+          ...(data.rootVolumeType !== undefined && {
+            VolumeType: data.rootVolumeType,
+          }),
+        },
+      },
+    ]
+  }
+  if (data.userData) {
+    out.UserData = encodeUserData(data.userData)
+  }
+  return out
+}
+
+export function useCreateLaunchTemplate() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: CreateLaunchTemplateParams) => {
+      const command = new CreateLaunchTemplateCommand({
+        LaunchTemplateName: params.launchTemplateName,
+        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+        VersionDescription: params.versionDescription || undefined,
+        LaunchTemplateData: buildLaunchTemplateData(params),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "launchTemplates"],
+      })
+    },
+  })
+}
+
+export function useCreateLaunchTemplateVersion() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: CreateLaunchTemplateVersionParams) => {
+      const command = new CreateLaunchTemplateVersionCommand({
+        LaunchTemplateId: params.launchTemplateId,
+        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+        SourceVersion: params.sourceVersion || undefined,
+        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+        VersionDescription: params.versionDescription || undefined,
+        LaunchTemplateData: buildLaunchTemplateData(params),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "launchTemplates"],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: [
+          "ec2",
+          "launchTemplates",
+          params.launchTemplateId,
+          "versions",
+        ],
+      })
+    },
+  })
+}
+
+export function useModifyLaunchTemplate() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: SetDefaultLaunchTemplateVersionParams) => {
+      const command = new ModifyLaunchTemplateCommand({
+        LaunchTemplateId: params.launchTemplateId,
+        DefaultVersion: params.defaultVersion,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "launchTemplates"],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: [
+          "ec2",
+          "launchTemplates",
+          params.launchTemplateId,
+          "versions",
+        ],
+      })
+    },
+  })
+}
+
+export function useDeleteLaunchTemplateVersions() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: DeleteLaunchTemplateVersionsParams) => {
+      const command = new DeleteLaunchTemplateVersionsCommand({
+        LaunchTemplateId: params.launchTemplateId,
+        Versions: params.versions,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "launchTemplates"],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: [
+          "ec2",
+          "launchTemplates",
+          params.launchTemplateId,
+          "versions",
+        ],
+      })
+    },
+  })
+}
+
+export function useDeleteLaunchTemplate() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (launchTemplateId: string) => {
+      const command = new DeleteLaunchTemplateCommand({
+        LaunchTemplateId: launchTemplateId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "launchTemplates"],
+      })
+    },
+  })
 }
 
 export function useCreateKeyPair() {

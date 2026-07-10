@@ -19,17 +19,23 @@ export function formatJson(value: string): string | null {
   }
 }
 
-// Normalise an AWS policy document for display in an editor. Documents arrive
-// URL-encoded for most principals but as raw JSON for roles, so decoding is
-// attempted and skipped when it fails, then the result is pretty-printed.
-export function decodePolicyDocument(document: string): string {
-  let decoded: string
-  try {
-    decoded = decodeURIComponent(document)
-  } catch {
-    decoded = document
+// Normalise an AWS policy document for display in an editor. Most principals
+// return the document URL-encoded, but roles return raw JSON, so callers pass
+// `encoded` to control decoding — decoding raw JSON could corrupt literal
+// percent sequences. The result is pretty-printed when it parses.
+export function decodePolicyDocument(
+  document: string,
+  encoded: boolean,
+): string {
+  let text = document
+  if (encoded) {
+    try {
+      text = decodeURIComponent(document)
+    } catch {
+      text = document
+    }
   }
-  return formatJson(decoded) ?? decoded
+  return formatJson(text) ?? text
 }
 
 // Zod field for a JSON document entered as a string. Messages derive from

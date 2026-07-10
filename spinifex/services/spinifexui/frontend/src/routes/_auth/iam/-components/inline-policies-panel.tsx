@@ -1,6 +1,7 @@
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { DetailCard } from "@/components/detail-card"
 import { ErrorBanner } from "@/components/error-banner"
 import { Button } from "@/components/ui/button"
@@ -104,107 +105,123 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
 
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
-  const handleDelete = async (policyName: string) => {
-    setPendingDelete(policyName)
+  const handleDelete = async () => {
+    if (!confirmDelete) {
+      return
+    }
+    const policyName = confirmDelete
     try {
       await remove.mutateAsync({ name, policyName })
       if (editing === policyName) {
         setEditing(null)
       }
     } finally {
-      setPendingDelete(null)
+      setConfirmDelete(null)
     }
   }
 
   return (
-    <DetailCard>
-      <DetailCard.Header>
-        <div className="flex items-center justify-between">
-          <span>Inline Policies</span>
-          <Button
-            onClick={() => {
-              setAdding((open) => !open)
-              setEditing(null)
-            }}
-            size="sm"
-          >
-            Add Inline Policy
-          </Button>
-        </div>
-      </DetailCard.Header>
-      <DetailCard.Content>
-        {remove.error && (
-          <div className="col-span-2">
-            <ErrorBanner
-              error={remove.error}
-              msg="Failed to delete inline policy"
-            />
+    <>
+      <DetailCard>
+        <DetailCard.Header>
+          <div className="flex items-center justify-between">
+            <span>Inline Policies</span>
+            <Button
+              onClick={() => {
+                setAdding((open) => !open)
+                setEditing(null)
+              }}
+              size="sm"
+            >
+              Add Inline Policy
+            </Button>
           </div>
-        )}
+        </DetailCard.Header>
+        <DetailCard.Content>
+          {remove.error && (
+            <div className="col-span-2">
+              <ErrorBanner
+                error={remove.error}
+                msg="Failed to delete inline policy"
+              />
+            </div>
+          )}
 
-        {adding && (
-          <div className="col-span-2">
-            <AddInlinePolicyForm
-              name={name}
-              onClose={() => setAdding(false)}
-              put={put}
-            />
-          </div>
-        )}
+          {adding && (
+            <div className="col-span-2">
+              <AddInlinePolicyForm
+                name={name}
+                onClose={() => setAdding(false)}
+                put={put}
+              />
+            </div>
+          )}
 
-        {policyNames.length > 0 ? (
-          <div className="col-span-2 space-y-3">
-            {policyNames.map((policyName) => (
-              <div className="rounded-md border" key={policyName}>
-                <div className="flex items-center justify-between p-3">
-                  <p className="text-sm font-medium">{policyName}</p>
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={() =>
-                        setEditing((current) =>
-                          current === policyName ? null : policyName,
-                        )
-                      }
-                      size="sm"
-                      variant="outline"
-                    >
-                      {editing === policyName ? "Close" : "Edit"}
-                    </Button>
-                    <Button
-                      disabled={pendingDelete === policyName}
-                      onClick={() => void handleDelete(policyName)}
-                      size="sm"
-                      variant="destructive"
-                    >
-                      Delete
-                    </Button>
+          {policyNames.length > 0 ? (
+            <div className="col-span-2 space-y-3">
+              {policyNames.map((policyName) => (
+                <div className="rounded-md border" key={policyName}>
+                  <div className="flex items-center justify-between p-3">
+                    <p className="text-sm font-medium">{policyName}</p>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={() =>
+                          setEditing((current) =>
+                            current === policyName ? null : policyName,
+                          )
+                        }
+                        size="sm"
+                        variant="outline"
+                      >
+                        {editing === policyName ? "Close" : "Edit"}
+                      </Button>
+                      <Button
+                        onClick={() => setConfirmDelete(policyName)}
+                        size="sm"
+                        variant="destructive"
+                      >
+                        Delete
+                      </Button>
+                    </div>
                   </div>
+                  {editing === policyName && (
+                    <div className="border-t p-3">
+                      <EditInlinePolicyForm
+                        name={name}
+                        onClose={() => setEditing(null)}
+                        policyName={policyName}
+                        put={put}
+                        queryOptions={policyQuery(name, policyName)}
+                      />
+                    </div>
+                  )}
                 </div>
-                {editing === policyName && (
-                  <div className="border-t p-3">
-                    <EditInlinePolicyForm
-                      name={name}
-                      onClose={() => setEditing(null)}
-                      policyName={policyName}
-                      put={put}
-                      queryOptions={policyQuery(name, policyName)}
-                    />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          !adding && (
-            <p className="col-span-2 text-sm text-muted-foreground">
-              No inline policies.
-            </p>
-          )
-        )}
-      </DetailCard.Content>
-    </DetailCard>
+              ))}
+            </div>
+          ) : (
+            !adding && (
+              <p className="col-span-2 text-sm text-muted-foreground">
+                No inline policies.
+              </p>
+            )
+          )}
+        </DetailCard.Content>
+      </DetailCard>
+      <DeleteConfirmationDialog
+        description={`Are you sure you want to delete the inline policy "${confirmDelete ?? ""}"? This action cannot be undone.`}
+        isPending={remove.isPending}
+        onConfirm={() => void handleDelete()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmDelete(null)
+          }
+        }}
+        open={confirmDelete !== null}
+        title="Delete Inline Policy"
+      />
+    </>
   )
 }
 
@@ -298,7 +315,7 @@ function EditInlinePolicyForm({
   put,
   onClose,
 }: EditInlinePolicyFormProps) {
-  const { data: savedDocument, isLoading } = useQuery(queryOptions)
+  const { data: savedDocument, isLoading, error } = useQuery(queryOptions)
   const [draft, setDraft] = useState("")
 
   // Re-seed from the stored document (save invalidates the query) so the
@@ -321,6 +338,10 @@ function EditInlinePolicyForm({
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>
+  }
+
+  if (error) {
+    return <ErrorBanner error={error} msg="Failed to load inline policy" />
   }
 
   return (

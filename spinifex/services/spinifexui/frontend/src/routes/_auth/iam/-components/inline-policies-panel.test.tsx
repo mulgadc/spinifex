@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import {
@@ -92,7 +92,7 @@ describe("InlinePoliciesPanel", () => {
     })
   })
 
-  it("deletes an inline policy via DeleteUserPolicy", async () => {
+  it("deletes an inline policy after confirmation via DeleteUserPolicy", async () => {
     send.mockResolvedValue({})
     renderWithClient(
       <InlinePoliciesPanel kind="user" name={USER} />,
@@ -100,11 +100,41 @@ describe("InlinePoliciesPanel", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
 
+    const dialog = await screen.findByRole("alertdialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }))
+
     await waitFor(() => expect(send).toHaveBeenCalled())
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       UserName: USER,
       PolicyName: POLICY,
     })
+  })
+
+  it("does not delete when the confirmation is cancelled", async () => {
+    send.mockResolvedValue({})
+    renderWithClient(
+      <InlinePoliciesPanel kind="user" name={USER} />,
+      seed([POLICY]),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = await screen.findByRole("alertdialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }))
+
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it("surfaces a failed policy load in the edit form", async () => {
+    send.mockRejectedValue(new Error("Boom"))
+    renderWithClient(
+      <InlinePoliciesPanel kind="user" name={USER} />,
+      seed([POLICY]),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }))
+
+    expect(
+      await screen.findByText("Failed to load inline policy"),
+    ).toBeInTheDocument()
   })
 
   it("edits an inline policy and saves via PutUserPolicy", async () => {

@@ -127,7 +127,7 @@ export const iamUserPolicyQueryOptions = (
       })
       const result = await getIamClient().send(command)
       return result.PolicyDocument
-        ? decodePolicyDocument(result.PolicyDocument)
+        ? decodePolicyDocument(result.PolicyDocument, true)
         : ""
     },
     staleTime: 300_000,
@@ -187,7 +187,7 @@ export const iamRolePolicyQueryOptions = (
       })
       const result = await getIamClient().send(command)
       return result.PolicyDocument
-        ? decodePolicyDocument(result.PolicyDocument)
+        ? decodePolicyDocument(result.PolicyDocument, false)
         : ""
     },
     staleTime: 300_000,
@@ -280,7 +280,7 @@ export const iamGroupPolicyQueryOptions = (
       })
       const result = await getIamClient().send(command)
       return result.PolicyDocument
-        ? decodePolicyDocument(result.PolicyDocument)
+        ? decodePolicyDocument(result.PolicyDocument, true)
         : ""
     },
     staleTime: 300_000,

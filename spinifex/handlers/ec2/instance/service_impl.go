@@ -1385,16 +1385,7 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 	}
 
 	vb, err := viperblock.New(&vbconfig, "s3", cfg)
-	restoreSlogDefault()
 	return vb, err
-}
-
-// restoreSlogDefault re-installs the Info-level slog handler after viperblock.New
-// resets it to LevelError via SetDebug, silencing all Info/Warn globally.
-func restoreSlogDefault() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
 }
 
 // prepareRootVolume handles creation/cloning of the root volume

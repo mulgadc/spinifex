@@ -9,9 +9,22 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# k3s embeds containerd + kubelet in-process, so on a cgroup-v2 host the unit
+# must delegate a cgroup subtree or the kubelet cannot create /kubepods and
+# ContainerManager.Start fails before Node registration (OpenRC ran k3s in the
+# root cgroup, so this was implicit). overlay/br_netfilter feed the embedded
+# containerd snapshotter + kube-proxy.
+Delegate=yes
+KillMode=process
+TasksMax=infinity
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
 # Cloud-init drops K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL here at
 # RunInstances time per the Nodegroup bootstrap flow.
 EnvironmentFile=-/etc/spinifex-eks/agent.env
+ExecStartPre=-/sbin/modprobe overlay
+ExecStartPre=-/sbin/modprobe br_netfilter
 ExecStartPre=/usr/local/sbin/k3s-agent-prestart
 ExecStart=/bin/sh -c '. /run/k3s-agent-extra-args.env 2>/dev/null || true; exec /usr/local/bin/k3s agent ${K3S_AGENT_EXTRA_ARGS:-}'
 Restart=on-failure

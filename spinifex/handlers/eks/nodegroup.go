@@ -33,9 +33,11 @@ const defaultNodegroupInstanceType = "t3.medium"
 // defaultNodegroupReadyTimeout / defaultNodegroupReadyPoll bound how long
 // launchNodegroupInfra waits for its workers to register Ready (observed via the
 // CP state report's Ready-node count, refreshed at the reconcile cadence) before
-// marking the nodegroup CREATE_FAILED.
+// marking the nodegroup CREATE_FAILED. GPU workers spend ~7min on first-boot
+// driver + CDI work before k3s-agent even starts, so the budget must clear that
+// plus the join.
 const (
-	defaultNodegroupReadyTimeout = 10 * time.Minute
+	defaultNodegroupReadyTimeout = 20 * time.Minute
 	defaultNodegroupReadyPoll    = 15 * time.Second
 )
 

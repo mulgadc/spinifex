@@ -103,14 +103,20 @@ func TestBuildAgentUserData_GPUEnabledAddsLabelAndTaint(t *testing.T) {
 
 	got := buildAgentUserData(in)
 
-	if !strings.Contains(got, "K3S_NODE_LABEL=eks.amazonaws.com/nodegroup=ng-1,nvidia.com/gpu.present=true") {
-		t.Errorf("expected GPU node label, got:\n%s", got)
+	// The label must ride a node-label config drop-in, not K3S_NODE_LABEL (k3s
+	// has no such env var — it would be a no-op and the device-plugin
+	// nodeSelector would never match).
+	if !strings.Contains(got, "/etc/rancher/k3s/config.yaml.d/20-gpu.yaml") {
+		t.Errorf("expected GPU drop-in path, got:\n%s", got)
 	}
-	if !strings.Contains(got, "/etc/rancher/k3s/config.yaml.d/20-gpu-taint.yaml") {
-		t.Errorf("expected GPU taint drop-in path, got:\n%s", got)
+	if !strings.Contains(got, "node-label:") || !strings.Contains(got, "nvidia.com/gpu.present=true") {
+		t.Errorf("expected GPU node-label drop-in value, got:\n%s", got)
 	}
 	if !strings.Contains(got, "nvidia.com/gpu=present:NoSchedule") {
 		t.Errorf("expected GPU taint value, got:\n%s", got)
+	}
+	if strings.Contains(got, "K3S_NODE_LABEL=eks.amazonaws.com/nodegroup=ng-1,nvidia.com/gpu.present=true") {
+		t.Errorf("GPU label must not ride the no-op K3S_NODE_LABEL env, got:\n%s", got)
 	}
 }
 
@@ -122,8 +128,8 @@ func TestBuildAgentUserData_NonGPUHasNoLabelOrTaint(t *testing.T) {
 	if strings.Contains(got, "nvidia.com/gpu") {
 		t.Errorf("non-GPU nodegroup user-data must not reference nvidia.com/gpu, got:\n%s", got)
 	}
-	if strings.Contains(got, "20-gpu-taint.yaml") {
-		t.Errorf("non-GPU nodegroup user-data must not carry the GPU taint drop-in, got:\n%s", got)
+	if strings.Contains(got, "20-gpu.yaml") {
+		t.Errorf("non-GPU nodegroup user-data must not carry the GPU drop-in, got:\n%s", got)
 	}
 	if !strings.Contains(got, "K3S_NODE_LABEL=eks.amazonaws.com/nodegroup=ng-1") {
 		t.Errorf("expected plain nodegroup label, got:\n%s", got)

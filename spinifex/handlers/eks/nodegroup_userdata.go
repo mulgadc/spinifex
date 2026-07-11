@@ -56,9 +56,6 @@ func buildAgentUserData(in agentUserDataInput) string {
 	// lives in the unpeered managed CP VPC and is unreachable from the worker VPC.
 	k3sURL := in.ServerURL
 	nodeLabel := "eks.amazonaws.com/nodegroup=" + in.NodegroupName
-	if in.GPUEnabled {
-		nodeLabel += ",nvidia.com/gpu.present=true"
-	}
 
 	envBody := strings.Join([]string{
 		"SPINIFEX_K3S_ROLE=agent",
@@ -137,16 +134,21 @@ func buildAgentUserData(in agentUserDataInput) string {
 		{Path: "/etc/spinifex-eks/credential-provider-config.yaml", Perms: "0644", Body: credProviderConfig},
 	}
 
-	// Default GPU nodes to NoSchedule so ordinary workloads don't consume scarce
-	// GPU capacity; the device plugin and GPU pods tolerate it. Non-GPU
-	// nodegroups get no drop-in, keeping their user-data byte-identical.
+	// GPU nodes advertise nvidia.com/gpu.present=true (so the device-plugin
+	// DaemonSet nodeSelector matches) and default to NoSchedule so ordinary
+	// workloads don't consume scarce GPU capacity. Both must come from k3s
+	// config keys — k3s has no K3S_NODE_LABEL env, so the label rides a
+	// node-label drop-in, not agent.env. Non-GPU nodegroups get no drop-in,
+	// keeping their user-data byte-identical.
 	if in.GPUEnabled {
-		gpuTaintDropin := strings.Join([]string{
+		gpuDropin := strings.Join([]string{
+			"node-label:",
+			"  - \"nvidia.com/gpu.present=true\"",
 			"node-taint:",
 			"  - \"nvidia.com/gpu=present:NoSchedule\"",
 		}, "\n")
 		files = append(files, userDataFile{
-			Path: "/etc/rancher/k3s/config.yaml.d/20-gpu-taint.yaml", Perms: "0644", Body: gpuTaintDropin,
+			Path: "/etc/rancher/k3s/config.yaml.d/20-gpu.yaml", Perms: "0644", Body: gpuDropin,
 		})
 	}
 

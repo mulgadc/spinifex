@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
@@ -1103,6 +1104,21 @@ func TestSendQMPCommand_ReconnectsAgainstSingleClientServer(t *testing.T) {
 
 	_, err = sendQMPCommand(t.Context(), client, qmp.QMPCommand{Execute: "query-status"}, "i-single-client")
 	require.NoError(t, err, "a second command must succeed over the reconnected stream")
+}
+
+// TestQMPGreetingTimeout pins the VFIO scaling: a GPU passthrough guest must
+// pin all its RAM through the IOMMU before the monitor answers, so it gets the
+// larger greeting deadline; a plain VM keeps the default.
+func TestQMPGreetingTimeout(t *testing.T) {
+	plain := &VM{}
+	assert.Equal(t, qmp.DefaultGreetingTimeout, qmpGreetingTimeout(plain),
+		"a plain VM keeps the default greeting deadline")
+
+	gpuVM := &VM{GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:5e:00.0"}}}
+	assert.Equal(t, qmpVFIOGreetingTimeout, qmpGreetingTimeout(gpuVM),
+		"a VFIO passthrough VM gets the larger greeting deadline")
+	assert.Greater(t, qmpVFIOGreetingTimeout, qmp.DefaultGreetingTimeout,
+		"the VFIO deadline must exceed the plain default")
 }
 
 // TestRemoveStaleQMPSocket covers the SIGKILL-leftover unlink: a stale socket

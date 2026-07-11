@@ -149,14 +149,27 @@ type QMPClient struct {
 	Dead bool
 }
 
+// DefaultGreetingTimeout bounds the wait for QEMU's QMP greeting on a plain VM.
+// A VFIO/GPU guest must lock+DMA-map its entire RAM before the monitor answers,
+// which exceeds this — such callers pass a larger value via
+// NewQMPClientWithGreetingTimeout.
+const DefaultGreetingTimeout = 30 * time.Second
+
 func NewQMPClient(path string) (*QMPClient, error) {
+	return NewQMPClientWithGreetingTimeout(path, DefaultGreetingTimeout)
+}
+
+// NewQMPClientWithGreetingTimeout is NewQMPClient with an explicit deadline for
+// the QMP greeting. VFIO passthrough guests pin all guest RAM before the monitor
+// responds, so the greeting can take far longer than DefaultGreetingTimeout.
+func NewQMPClientWithGreetingTimeout(path string, greetingTimeout time.Duration) (*QMPClient, error) {
 	conn, err := net.Dial("unix", path)
 	if err != nil {
 		return nil, err
 	}
 
 	// Deadline prevents a hung QEMU from blocking forever.
-	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(greetingTimeout)); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}

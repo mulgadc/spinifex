@@ -23,6 +23,12 @@ LimitCORE=infinity
 # Cloud-init drops K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL here at
 # RunInstances time per the Nodegroup bootstrap flow.
 EnvironmentFile=-/etc/spinifex-eks/agent.env
+# Tee k3s (and its embedded kubelet's klog) stderr to the serial console as well
+# as journald: Ubuntu logs to journald only, which is off-box-invisible on a
+# worker in an isolated customer VPC, so a kubelet that fails to register the
+# Node leaves no trace. The serial console is captured per-VM by the daemon.
+StandardOutput=journal+console
+StandardError=journal+console
 ExecStartPre=-/sbin/modprobe overlay
 ExecStartPre=-/sbin/modprobe br_netfilter
 ExecStartPre=/usr/local/sbin/k3s-agent-prestart

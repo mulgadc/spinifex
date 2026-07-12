@@ -137,6 +137,35 @@ func TestRunTask_GPUPinsAndReportsUUIDs(t *testing.T) {
 	}
 }
 
+// TestRunTask_GPUIDsReachRunSpec covers C4: the ledger's pinned UUIDs for a
+// container reach RunSpec.GPUIDs (not just the RunSpec.GPU count), so the
+// runner can inject them as CDI devices; a non-GPU container's RunSpec
+// carries no GPUIDs.
+func TestRunTask_GPUIDsReachRunSpec(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa", "GPU-bbb"), cp, rt, rt, nil)
+	as := testAssign()
+	as.Containers = append(as.Containers, bus.AssignContainer{
+		Name: "trainer", Image: "registry/trainer:1", GPU: 1,
+	})
+	a.runTask(context.Background(), as)
+
+	if len(rt.Runs) != 2 {
+		t.Fatalf("expected two runs, got %+v", rt.Runs)
+	}
+	if len(rt.Runs[0].GPUIDs) != 0 {
+		t.Errorf("web container: want no GPUIDs, got %+v", rt.Runs[0].GPUIDs)
+	}
+	trainer := rt.Runs[1]
+	if len(trainer.GPUIDs) != 1 {
+		t.Fatalf("trainer container: want one pinned GPUID, got %+v", trainer.GPUIDs)
+	}
+	if trainer.GPUIDs[0] != "GPU-aaa" && trainer.GPUIDs[0] != "GPU-bbb" {
+		t.Errorf("unexpected pinned UUID %q", trainer.GPUIDs[0])
+	}
+}
+
 // A container with no GPU request never triggers a ReportTaskGPU call.
 func TestRunTask_NoGPUSkipsReport(t *testing.T) {
 	cp := &fakeCP{}
@@ -152,8 +181,7 @@ func TestRunTask_NoGPUSkipsReport(t *testing.T) {
 
 // A GPU request exceeding the ledger's free devices (discovery found none, or
 // fewer than requested) is best-effort: the container still runs, it just
-// carries no pinned UUIDs — CDI injection needing the real device is a later
-// stage, not C3.
+// carries no pinned UUIDs and so no CDI devices are injected.
 func TestRunTask_GPUShortLedgerStillRuns(t *testing.T) {
 	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}

@@ -125,6 +125,7 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 		}
 
 		cid := containerID(as.TaskID, c.Name)
+		gpuIDs := a.pinContainerGPUs(as.TaskID, c.Name, c.GPU)
 		spec := ctrruntime.RunSpec{
 			Image:     c.Image,
 			Command:   c.Command,
@@ -132,6 +133,7 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 			Labels:    taskLabels(as, c.Name),
 			NetnsPath: netnsPath,
 			GPU:       c.GPU,
+			GPUIDs:    gpuIDs,
 		}
 		id, err := a.runner.Run(ctx, cid, spec)
 		if err != nil {
@@ -141,7 +143,7 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 			return
 		}
 		statuses = append(statuses, bus.ContainerStatus{
-			Name: c.Name, Status: bus.TaskStatusRunning, ContainerID: id, GPUIDs: a.pinContainerGPUs(as.TaskID, c.Name, c.GPU),
+			Name: c.Name, Status: bus.TaskStatusRunning, ContainerID: id, GPUIDs: gpuIDs,
 		})
 		go a.waitContainer(ctx, as, c.Name, id)
 	}
@@ -239,10 +241,11 @@ func withCredEnv(env map[string]string, credID string) map[string]string {
 }
 
 // pinContainerGPUs reserves n device UUIDs for a container from the local
-// ledger. A short ledger (fewer free devices than requested, e.g. discovery
-// found none) is logged and treated as best-effort: the container still runs
-// without pinned UUIDs rather than failing the task — CDI injection (which
-// would actually need the device) is a later stage, not C3.
+// ledger, before the container is started so the runner can inject them as
+// CDI devices. A short ledger (fewer free devices than requested, e.g.
+// discovery found none) is logged and treated as best-effort: the container
+// still runs without pinned UUIDs (and without GPU access) rather than
+// failing the task.
 func (a *Agent) pinContainerGPUs(taskID, containerName string, n int) []string {
 	if n <= 0 || a.gpu == nil {
 		return nil

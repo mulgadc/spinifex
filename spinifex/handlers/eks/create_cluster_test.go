@@ -189,6 +189,12 @@ func TestCreateCluster_FailedClusterVisibleInDescribeAndList(t *testing.T) {
 	desc, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, eks.ClusterStatusFailed, aws.StringValue(desc.Cluster.Status))
+	// The failure cause must be visible, not just the bare FAILED status — otherwise
+	// describe-cluster gives no way to diagnose why the launch failed.
+	require.NotNil(t, desc.Cluster.Health)
+	require.Len(t, desc.Cluster.Health.Issues, 1)
+	assert.Equal(t, eks.ClusterIssueCodeInternalFailure, aws.StringValue(desc.Cluster.Health.Issues[0].Code))
+	assert.Contains(t, aws.StringValue(desc.Cluster.Health.Issues[0].Message), "bootstrap failed: boom")
 
 	list, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{}, testAccountID)
 	require.NoError(t, err)

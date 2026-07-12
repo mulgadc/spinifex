@@ -2,6 +2,8 @@ package handlers_eks
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -73,21 +75,45 @@ type ClusterNLB struct {
 	FrontendIP string
 }
 
-// ClusterNLBName returns the deterministic NLB name for a cluster.
+// ClusterNLBName returns the deterministic NLB name for a cluster, truncated
+// (with a stable hash suffix) so it never exceeds the ELBv2 32-char limit.
 func ClusterNLBName(clusterName string) string {
-	return "eks-" + clusterName
+	return safeELBv2Name("eks-", clusterName, "")
 }
 
 // ClusterTargetGroupName returns the deterministic target-group name for a
-// cluster's control-plane TG.
+// cluster's control-plane TG, truncated (with a stable hash suffix) so it
+// never exceeds the ELBv2 32-char limit.
 func ClusterTargetGroupName(clusterName string) string {
-	return "eks-" + clusterName + "-cp"
+	return safeELBv2Name("eks-", clusterName, "-cp")
 }
 
 // ClusterKonnTargetGroupName returns the deterministic target-group name for a
-// cluster's konnectivity TG (:8132 → 3 CP servers).
+// cluster's konnectivity TG (:8132 → 3 CP servers), truncated (with a stable
+// hash suffix) so it never exceeds the ELBv2 32-char limit.
 func ClusterKonnTargetGroupName(clusterName string) string {
-	return "eks-" + clusterName + "-konn"
+	return safeELBv2Name("eks-", clusterName, "-konn")
+}
+
+// safeELBv2Name derives prefix+clusterName+suffix, and — only when that would
+// exceed the ELBv2 32-char name limit — deterministically truncates
+// clusterName and appends a short stable hash of the FULL cluster name so long
+// names stay unique and the derived name is identical across calls (create,
+// lookup, delete all agree without persisting anything extra).
+func safeELBv2Name(prefix, clusterName, suffix string) string {
+	full := prefix + clusterName + suffix
+	if len(full) <= maxELBv2NameLen {
+		return full
+	}
+	sum := sha256.Sum256([]byte(clusterName))
+	hash := hex.EncodeToString(sum[:])[:8]
+	// "-" + hash separates the truncated name from the disambiguating hash.
+	budget := max(maxELBv2NameLen-len(prefix)-len(suffix)-len(hash)-1, 0)
+	truncated := clusterName
+	if len(truncated) > budget {
+		truncated = truncated[:budget]
+	}
+	return prefix + truncated + "-" + hash + suffix
 }
 
 // EnsureClusterNLB provisions (or returns) the cluster's NLB + target group +

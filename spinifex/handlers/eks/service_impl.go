@@ -242,6 +242,13 @@ type EKSServiceImpl struct {
 	// CREATE_FAILED. Tests inject small values.
 	nodegroupReadyTimeout time.Duration
 	nodegroupReadyPoll    time.Duration
+
+	// workerLaunchRetryTimeout / workerLaunchRetryBackoff bound how long
+	// launchNodegroupInfra retries a shortfall (a worker RunInstances call that
+	// failed, e.g. a transient QMP timeout or host capacity pressure) before
+	// giving up and marking the nodegroup CREATE_FAILED. Tests inject small values.
+	workerLaunchRetryTimeout time.Duration
+	workerLaunchRetryBackoff time.Duration
 }
 
 var _ EKSService = (*EKSServiceImpl)(nil)
@@ -266,13 +273,15 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &EKSServiceImpl{
-		deps:                  deps,
-		leaderKV:              leaderKV,
-		registry:              NewReconcilerRegistry(),
-		bgCtx:                 ctx,
-		bgCancel:              cancel,
-		nodegroupReadyTimeout: defaultNodegroupReadyTimeout,
-		nodegroupReadyPoll:    defaultNodegroupReadyPoll,
+		deps:                     deps,
+		leaderKV:                 leaderKV,
+		registry:                 NewReconcilerRegistry(),
+		bgCtx:                    ctx,
+		bgCancel:                 cancel,
+		nodegroupReadyTimeout:    defaultNodegroupReadyTimeout,
+		nodegroupReadyPoll:       defaultNodegroupReadyPoll,
+		workerLaunchRetryTimeout: defaultWorkerLaunchRetryTimeout,
+		workerLaunchRetryBackoff: defaultWorkerLaunchRetryBackoff,
 	}, nil
 }
 
@@ -2034,13 +2043,24 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 			PublicAccessCidrs:     aws.StringSlice(meta.ResourcesVpcConfig.PublicAccessCidrs),
 		}
 	}
+	var issues []*eks.ClusterIssue
 	if meta.HealthIssue != "" {
-		out.Health = &eks.ClusterHealth{
-			Issues: []*eks.ClusterIssue{{
-				Code:    aws.String(eks.ClusterIssueCodeClusterUnreachable),
-				Message: aws.String(meta.HealthIssue),
-			}},
-		}
+		issues = append(issues, &eks.ClusterIssue{
+			Code:    aws.String(eks.ClusterIssueCodeClusterUnreachable),
+			Message: aws.String(meta.HealthIssue),
+		})
+	}
+	// StatusReason is the launch-failure cause MarkClusterFailed recorded; surface
+	// it here too, since the real EKS DescribeCluster response has no dedicated
+	// "why did CREATE_FAILED happen" field and Health.Issues is the analogue.
+	if meta.Status == ClusterStatusFailed && meta.StatusReason != "" {
+		issues = append(issues, &eks.ClusterIssue{
+			Code:    aws.String(eks.ClusterIssueCodeInternalFailure),
+			Message: aws.String(meta.StatusReason),
+		})
+	}
+	if len(issues) > 0 {
+		out.Health = &eks.ClusterHealth{Issues: issues}
 	}
 	if len(meta.Tags) > 0 {
 		out.Tags = aws.StringMap(meta.Tags)

@@ -135,6 +135,13 @@ spec:
                     operator: DoesNotExist
       nodeSelector:
         kubernetes.io/os: linux
+      # With internalTrafficPolicy=Local each worker resolves through its OWN
+      # CoreDNS pod, so a GPU-only worker (tainted nvidia.com/gpu=present:
+      # NoSchedule) with no local pod would have no DNS at all for its pods.
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: coredns
           image: rancher/mirrored-coredns-coredns:1.12.1

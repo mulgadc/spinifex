@@ -105,6 +105,10 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	// production 10m timeout; tests drive meta.NodeCount to simulate the reconciler.
 	svc.nodegroupReadyTimeout = 1 * time.Second
 	svc.nodegroupReadyPoll = 2 * time.Millisecond
+	// Tight worker-launch-retry knobs so a launch-failure retry test resolves
+	// quickly instead of against the production 5m/10s budget.
+	svc.workerLaunchRetryTimeout = 100 * time.Millisecond
+	svc.workerLaunchRetryBackoff = 20 * time.Millisecond
 	t.Cleanup(svc.Shutdown)
 
 	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip, sg: sg, worker: worker, vpcMgr: vpcMgr, igw: igw, ngw: ngw, rt: rt}

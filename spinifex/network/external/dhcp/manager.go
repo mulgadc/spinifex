@@ -74,9 +74,11 @@ type Manager struct {
 
 // leaseLoop is the handle stored in Manager.loops. Pointer-identity lets
 // run() distinguish its own loop from a successor (e.g. re-acquired lease
-// with the same client-id).
+// with the same client-id). done closes when run() exits so release can
+// wait for an in-flight renewal Put to quiesce before deleting the KV entry.
 type leaseLoop struct {
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // NewManager constructs a Manager. Start must be called before
@@ -220,7 +222,7 @@ func (m *Manager) spawnLoop(e Entry, reaffirm bool) {
 		delete(m.loops, e.Lease.ClientID)
 	}
 	loopCtx, cancel := context.WithCancel(m.parentCtx)
-	loop := &leaseLoop{cancel: cancel}
+	loop := &leaseLoop{cancel: cancel, done: make(chan struct{})}
 	m.loops[e.Lease.ClientID] = loop
 	m.wg.Add(1)
 	m.mu.Unlock()
@@ -230,6 +232,7 @@ func (m *Manager) spawnLoop(e Entry, reaffirm bool) {
 
 func (m *Manager) run(ctx context.Context, self *leaseLoop, e Entry, reaffirm bool) {
 	defer m.wg.Done()
+	defer close(self.done)
 	defer func() {
 		m.mu.Lock()
 		if cur, ok := m.loops[e.Lease.ClientID]; ok && cur == self {
@@ -604,11 +607,19 @@ func (m *Manager) handleRelease(ctx context.Context, clientID string) error {
 	}
 
 	m.mu.Lock()
-	if loop, ok := m.loops[clientID]; ok {
+	loop, ok := m.loops[clientID]
+	if ok {
 		loop.cancel()
 		delete(m.loops, clientID)
 	}
 	m.mu.Unlock()
+
+	// Wait for the renewal goroutine to exit so any in-flight reaffirm/renew
+	// Put has landed before we Delete; otherwise a late Put re-creates the
+	// lease after drain, leaking a KV record.
+	if ok {
+		<-loop.done
+	}
 
 	if err := m.client.Release(ctx, entry.Lease); err != nil {
 		slog.Warn("dhcp manager: client release failed; deleting KV entry anyway", "client_id", clientID, "err", err)

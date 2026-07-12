@@ -1625,6 +1625,9 @@ func (d *Daemon) startCluster() error {
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)
 		}
+		if gpuRec := d.newGPUPoolReconciler(); gpuRec != nil {
+			reapers = append(reapers, gpuRec)
+		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
 		}

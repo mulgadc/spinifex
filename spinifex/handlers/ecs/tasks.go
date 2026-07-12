@@ -308,6 +308,9 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		if c.ExitCode != nil {
 			ctr.ExitCode = aws.Int64(int64(*c.ExitCode))
 		}
+		if len(c.GPUIDs) > 0 {
+			ctr.GpuIds = aws.StringSlice(c.GPUIDs)
+		}
 		t.Containers = append(t.Containers, ctr)
 	}
 	return t

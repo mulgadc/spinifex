@@ -6,9 +6,11 @@ import "time"
 type InstanceCapacity struct {
 	CPU       int `json:"cpu"`       // total vCPU units (1 vCPU = 1024)
 	MemoryMiB int `json:"memoryMiB"` // total memory in MiB
-	// GPU is the total whole-GPU count from the agent's nvidia-smi discovery
-	// (Epic C3); zero until the agent reports it.
+	// GPU is the total whole-GPU count from the agent's nvidia-smi discovery.
 	GPU int `json:"gpu,omitempty"`
+	// GPUIDs holds the discovered device UUIDs backing GPU; nil on a non-GPU
+	// host or a build with no nvidia-smi.
+	GPUIDs []string `json:"gpuIds,omitempty"`
 }
 
 // RegisterInstance is published on RegisterSubject when an ecs-agent boots and
@@ -122,6 +124,9 @@ type ContainerStatus struct {
 	Status      string `json:"status"` // PENDING | RUNNING | STOPPED
 	ContainerID string `json:"containerId,omitempty"`
 	ExitCode    *int   `json:"exitCode,omitempty"`
+	// GPUIDs are the device UUIDs the agent's local ledger pinned to this
+	// container (empty when the container requested no GPU).
+	GPUIDs []string `json:"gpuIds,omitempty"`
 }
 
 // TaskState is published on TaskStateSubject as the agent drives a task through

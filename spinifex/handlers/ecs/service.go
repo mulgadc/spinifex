@@ -57,6 +57,10 @@ type ECSService interface {
 	// PollAssignments drains an instance's task-assignment inbox (agent → gateway).
 	PollAssignments(ctx context.Context, input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error)
 
+	// ReportTaskGPU records the agent's local ledger's pinned device UUIDs for
+	// a task's containers (agent → gateway); not an AWS SDK shape.
+	ReportTaskGPU(ctx context.Context, input *ReportTaskGPUInput, accountID string) (*ReportTaskGPUOutput, error)
+
 	// ProvisionCapacity launches container-instance EC2 capacity into a cluster.
 	ProvisionCapacity(ctx context.Context, input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error)
 

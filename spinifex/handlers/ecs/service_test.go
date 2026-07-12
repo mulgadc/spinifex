@@ -619,6 +619,21 @@ func TestRegisterContainerInstance_GPU_StringSetResource(t *testing.T) {
 	assert.ElementsMatch(t, []string{"GPU-aaa", "GPU-bbb"}, aws.StringValueSlice(gpuRes.StringSetValue))
 }
 
+// The Layer-2 bus register path (recordRegister) also carries the agent's
+// discovered device UUIDs, mirroring the AWS-API RegisterContainerInstance
+// path (Epic C3 register report-back).
+func TestRecordRegister_GPU_CarriesDeviceUUIDs(t *testing.T) {
+	svc, _ := newTestService(t)
+	require.NoError(t, svc.recordRegister(&bus.RegisterInstance{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
+		Capacity: bus.InstanceCapacity{CPU: 1024, MemoryMiB: 2048, GPU: 2, GPUIDs: []string{"GPU-aaa", "GPU-bbb"}},
+	}))
+
+	rec := instanceStatus(t, svc, "web", "i-1")
+	assert.Equal(t, 2, rec.TotalGPU)
+	assert.Equal(t, []string{"GPU-aaa", "GPU-bbb"}, rec.GPUIDs)
+}
+
 func TestAccountIDFromBucket(t *testing.T) {
 	id, ok := accountIDFromBucket(AccountBucketName(testAccountID))
 	assert.True(t, ok)

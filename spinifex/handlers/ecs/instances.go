@@ -196,6 +196,7 @@ func (s *Service) recordRegister(msg *bus.RegisterInstance) error {
 		r.TotalCPU = msg.Capacity.CPU
 		r.TotalMemoryMiB = msg.Capacity.MemoryMiB
 		r.TotalGPU = msg.Capacity.GPU
+		r.GPUIDs = msg.Capacity.GPUIDs
 		r.Status = InstanceStatusActive
 	})
 	return err
@@ -238,7 +239,7 @@ func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error
 		task.Containers = task.Containers[:0]
 		for _, c := range msg.Containers {
 			task.Containers = append(task.Containers, ContainerState{
-				Name: c.Name, Status: c.Status, ContainerID: c.ContainerID, ExitCode: c.ExitCode,
+				Name: c.Name, Status: c.Status, ContainerID: c.ContainerID, ExitCode: c.ExitCode, GPUIDs: c.GPUIDs,
 			})
 		}
 	}

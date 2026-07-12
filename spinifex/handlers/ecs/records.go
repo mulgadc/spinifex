@@ -269,9 +269,9 @@ type InstanceRecord struct {
 	// ReservedGPU mirrors ReservedCPU/ReservedMemoryMiB for whole-GPU counts.
 	ReservedGPU int `json:"reservedGpu"`
 	// GPUIDs holds the instance's total GPU device UUIDs, as reported at
-	// registration (AWS "GPU" STRINGSET resource). Populated by the agent's
-	// nvidia-smi discovery in Epic C3; empty until then, so TotalGPU (not len(GPUIDs))
-	// is the authoritative capacity count in the interim.
+	// registration (AWS "GPU" STRINGSET resource) from the agent's nvidia-smi
+	// discovery. Empty on a non-GPU host; TotalGPU (not len(GPUIDs)) stays the
+	// authoritative capacity count.
 	GPUIDs       []string  `json:"gpuIds,omitempty"`
 	AgentVersion string    `json:"agentVersion,omitempty"`
 	PlacedTasks  []string  `json:"placedTasks,omitempty"`
@@ -290,6 +290,9 @@ type ContainerState struct {
 	Status      string `json:"status"`
 	ContainerID string `json:"containerId,omitempty"`
 	ExitCode    *int   `json:"exitCode,omitempty"`
+	// GPUIDs are the agent-reported device UUIDs pinned to this container,
+	// surfaced verbatim as the AWS Container.gpuIds field on DescribeTasks.
+	GPUIDs []string `json:"gpuIds,omitempty"`
 }
 
 // TaskRecord is the persisted task state at TaskKey; source of truth for

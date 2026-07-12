@@ -76,6 +76,9 @@ var Actions = map[string]Handler{
 	// Agent assignment polling (agent drains its inbox over the gateway).
 	"PollAssignments": PollAssignments,
 
+	// Agent per-task GPU device-assignment report (agent → gateway → task record).
+	"ReportTaskGPU": ReportTaskGPU,
+
 	// Service. ListServicesByNamespace is a no-op stub in v1.
 	"CreateService":           CreateService,
 	"UpdateService":           UpdateService,

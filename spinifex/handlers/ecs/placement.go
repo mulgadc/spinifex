@@ -23,8 +23,8 @@ func (r *InstanceRecord) remainingGPU() int    { return r.TotalGPU - r.ReservedG
 
 // remainingGPUIDs returns the instance's free GPU device UUIDs: GPUIDs with the
 // first ReservedGPU entries dropped. Which UUID a given task actually holds is
-// reported by the agent (Epic C3); until then this is a count-consistent
-// placeholder, empty whenever GPUIDs itself is unpopulated.
+// the agent's local ledger's call (reported back per-task); this is only a
+// count-consistent view of the instance's total inventory.
 func (r *InstanceRecord) remainingGPUIDs() []string {
 	if r.ReservedGPU >= len(r.GPUIDs) {
 		return nil

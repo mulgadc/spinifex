@@ -8,6 +8,7 @@ import (
 	"time"
 
 	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
+	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
@@ -139,7 +140,9 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 			a.reportTaskState(as, bus.TaskStatusStopped, "container start failed: "+err.Error(), statuses)
 			return
 		}
-		statuses = append(statuses, bus.ContainerStatus{Name: c.Name, Status: bus.TaskStatusRunning, ContainerID: id})
+		statuses = append(statuses, bus.ContainerStatus{
+			Name: c.Name, Status: bus.TaskStatusRunning, ContainerID: id, GPUIDs: a.pinContainerGPUs(as.TaskID, c.Name, c.GPU),
+		})
 		go a.waitContainer(ctx, as, c.Name, id)
 	}
 
@@ -235,8 +238,25 @@ func withCredEnv(env map[string]string, credID string) map[string]string {
 	return out
 }
 
+// pinContainerGPUs reserves n device UUIDs for a container from the local
+// ledger. A short ledger (fewer free devices than requested, e.g. discovery
+// found none) is logged and treated as best-effort: the container still runs
+// without pinned UUIDs rather than failing the task — CDI injection (which
+// would actually need the device) is a later stage, not C3.
+func (a *Agent) pinContainerGPUs(taskID, containerName string, n int) []string {
+	if n <= 0 || a.gpu == nil {
+		return nil
+	}
+	uuids, err := a.gpu.Pin(gpuKey(taskID, containerName), n)
+	if err != nil {
+		slog.Warn("ecs-agent: gpu pin short", "task", taskID, "container", containerName, "err", err)
+	}
+	return uuids
+}
+
 // reportTaskState reports a task transition through the gateway's
-// SubmitTaskStateChange action.
+// SubmitTaskStateChange action, then (RUNNING with pinned GPUs) reports the
+// per-container device UUIDs, and (STOPPED) releases them back to the ledger.
 func (a *Agent) reportTaskState(as *bus.Assign, status, reason string, containers []bus.ContainerStatus) {
 	if a.cp == nil {
 		return
@@ -253,6 +273,28 @@ func (a *Agent) reportTaskState(as *bus.Assign, status, reason string, container
 	}
 	if err := a.cp.SubmitTaskState(msg); err != nil {
 		slog.Error("ecs-agent: report task-state failed", "task", as.TaskID, "err", err)
+	}
+	a.reportTaskGPUs(as.TaskID, containers)
+	if status == bus.TaskStatusStopped && a.gpu != nil {
+		a.gpu.ReleaseTask(as.TaskID)
+	}
+}
+
+// reportTaskGPUs sends the control plane the pinned device UUIDs for any
+// container in the report that has them, so DescribeTasks can surface gpuIds.
+// A no-op when nothing was pinned (the common non-GPU-task case).
+func (a *Agent) reportTaskGPUs(taskID string, containers []bus.ContainerStatus) {
+	reports := make([]handlers_ecs.ContainerGPUReport, 0, len(containers))
+	for _, c := range containers {
+		if len(c.GPUIDs) > 0 {
+			reports = append(reports, handlers_ecs.ContainerGPUReport{Name: c.Name, GPUIDs: c.GPUIDs})
+		}
+	}
+	if len(reports) == 0 {
+		return
+	}
+	if err := a.cp.ReportTaskGPU(a.id.ClusterName, taskID, reports); err != nil {
+		slog.Error("ecs-agent: report task-gpu failed", "task", taskID, "err", err)
 	}
 }
 

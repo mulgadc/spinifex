@@ -2020,13 +2020,24 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 			PublicAccessCidrs:     aws.StringSlice(meta.ResourcesVpcConfig.PublicAccessCidrs),
 		}
 	}
+	var issues []*eks.ClusterIssue
 	if meta.HealthIssue != "" {
-		out.Health = &eks.ClusterHealth{
-			Issues: []*eks.ClusterIssue{{
-				Code:    aws.String(eks.ClusterIssueCodeClusterUnreachable),
-				Message: aws.String(meta.HealthIssue),
-			}},
-		}
+		issues = append(issues, &eks.ClusterIssue{
+			Code:    aws.String(eks.ClusterIssueCodeClusterUnreachable),
+			Message: aws.String(meta.HealthIssue),
+		})
+	}
+	// StatusReason is the launch-failure cause MarkClusterFailed recorded; surface
+	// it here too, since the real EKS DescribeCluster response has no dedicated
+	// "why did CREATE_FAILED happen" field and Health.Issues is the analogue.
+	if meta.Status == ClusterStatusFailed && meta.StatusReason != "" {
+		issues = append(issues, &eks.ClusterIssue{
+			Code:    aws.String(eks.ClusterIssueCodeInternalFailure),
+			Message: aws.String(meta.StatusReason),
+		})
+	}
+	if len(issues) > 0 {
+		out.Health = &eks.ClusterHealth{Issues: issues}
 	}
 	if len(meta.Tags) > 0 {
 		out.Tags = aws.StringMap(meta.Tags)

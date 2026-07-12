@@ -304,14 +304,47 @@ func TestEnsureClusterNLB_EmptyInputsRejected(t *testing.T) {
 	assert.Empty(t, nlbp.createLBCalls)
 }
 
-func TestEnsureClusterNLB_NameTooLongRejected(t *testing.T) {
+func TestEnsureClusterNLB_LongNameTruncatedDeterministically(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	longName := strings.Repeat("x", maxELBv2NameLen) // "eks-" + 32x = 36 chars
-	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", longName, []string{"subnet-aaa"}, false, nil, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds")
-	assert.Empty(t, nlbp.createLBCalls)
+	longName := strings.Repeat("x", maxELBv2NameLen) // "eks-" + 32x = 36 chars, over the ELBv2 limit
+	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", longName, []string{"subnet-aaa"}, false, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	require.Len(t, nlbp.createLBCalls, 1)
+	lbName := aws.StringValue(nlbp.createLBCalls[0].Name)
+	assert.LessOrEqual(t, len(lbName), maxELBv2NameLen)
+
+	require.Len(t, nlbp.createTGCalls, 2)
+	tgName := aws.StringValue(nlbp.createTGCalls[0].Name)
+	konnTGName := aws.StringValue(nlbp.createTGCalls[1].Name)
+	assert.LessOrEqual(t, len(tgName), maxELBv2NameLen)
+	assert.LessOrEqual(t, len(konnTGName), maxELBv2NameLen)
+	// The three derived names must stay distinct (different suffixes) despite truncation.
+	assert.NotEqual(t, lbName, tgName)
+	assert.NotEqual(t, tgName, konnTGName)
+
+	// Deterministic + stable: recomputing from the same cluster name yields the
+	// same names, so create/lookup/delete all agree without persisting anything extra.
+	assert.Equal(t, lbName, ClusterNLBName(longName))
+	assert.Equal(t, tgName, ClusterTargetGroupName(longName))
+	assert.Equal(t, konnTGName, ClusterKonnTargetGroupName(longName))
+}
+
+func TestSafeELBv2Name(t *testing.T) {
+	short := ClusterNLBName("alpha")
+	assert.Equal(t, "eks-alpha", short)
+
+	long := strings.Repeat("y", 64)
+	name1 := ClusterNLBName(long)
+	name2 := ClusterNLBName(long)
+	assert.LessOrEqual(t, len(name1), maxELBv2NameLen)
+	assert.Equal(t, name1, name2, "must be stable across calls for the same cluster name")
+
+	// Two different long names must not collide onto the same truncated name.
+	other := strings.Repeat("z", 64)
+	assert.NotEqual(t, name1, ClusterNLBName(other))
 }
 
 func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {

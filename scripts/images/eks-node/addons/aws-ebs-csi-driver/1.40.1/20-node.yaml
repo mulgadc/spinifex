@@ -46,6 +46,13 @@ spec:
                 - a1.4xlarge
       nodeSelector:
         kubernetes.io/os: linux
+      # The node plugin must run on every worker, including GPU-only workers
+      # tainted nvidia.com/gpu=present:NoSchedule, or GPU pods there cannot
+      # mount EBS volumes (no node plugin = no CSI NodeStage/NodePublish).
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
       serviceAccountName: ebs-csi-node-sa
       terminationGracePeriodSeconds: 30
       priorityClassName: system-node-critical

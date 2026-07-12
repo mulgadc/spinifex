@@ -300,6 +300,26 @@ func SetClusterHealthState(kv nats.KeyValue, name, issue string, nodeCount int) 
 	})
 }
 
+// ClearClusterManagedCPVPC clears meta.ManagedCPVPC once the managed CP VPC's
+// EC2 teardown has converged (including converging from an already-gone VPC).
+// purgeClusterInfra calls it immediately after a successful DeleteClusterCPVPC
+// so a re-drive of a wedged DELETING — with some unrelated step still failing —
+// never retries EC2/OVN calls against a stale VpcId, which is what turns a
+// single DependencyViolation into a permanent teardown loop. No-op if already
+// cleared. Returns ErrClusterNotFound if the cluster was deleted concurrently.
+func ClearClusterManagedCPVPC(kv nats.KeyValue, name string) error {
+	if name == "" {
+		return errors.New("eks: ClearClusterManagedCPVPC empty name")
+	}
+	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+		if m.ManagedCPVPC == nil {
+			return false
+		}
+		m.ManagedCPVPC = nil
+		return true
+	})
+}
+
 // SwapControlPlaneMember atomically replaces a lost control-plane member
 // (deadInstanceID) with a freshly provisioned one in meta.ControlPlaneNodes and
 // refreshes the scalar [0] mirrors if the primary changed. A no-op (no error)

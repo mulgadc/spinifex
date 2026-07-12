@@ -11,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 )
 
 // The managed control-plane VPC ("Set B") is the spinifex analogue of AWS EKS's
@@ -105,17 +107,21 @@ type CPVPCDeps struct {
 	RT  routeTableProvisioner
 	NGW natGatewayProvisioner
 	EIP eipProvisioner
+	// NATSConn republishes vpc.delete for OVN topology GC (see
+	// gcClusterCPVPCTopology). Nil is tolerated (GC is skipped, never blocking).
+	NATSConn *nats.Conn
 }
 
 // cpVPCDeps adapts the service's EC2-family deps onto CPVPCDeps for the managed
 // control-plane VPC build + teardown.
 func (s *EKSServiceImpl) cpVPCDeps() CPVPCDeps {
 	return CPVPCDeps{
-		VPC: s.deps.VPCMgr,
-		IGW: s.deps.IGW,
-		RT:  s.deps.RouteTable,
-		NGW: s.deps.NATGW,
-		EIP: s.deps.EIP,
+		VPC:      s.deps.VPCMgr,
+		IGW:      s.deps.IGW,
+		RT:       s.deps.RouteTable,
+		NGW:      s.deps.NATGW,
+		EIP:      s.deps.EIP,
+		NATSConn: s.deps.NATSConn,
 	}
 }
 
@@ -423,7 +429,13 @@ func ensureCPNatGateway(ctx context.Context, deps CPVPCDeps, accountID, clusterN
 // clean delete. Best-effort: every step is attempted and failures are logged;
 // the final VPC delete failure is returned so the caller can surface a leak.
 // Safe to call when nothing was provisioned (all describes return empty).
-func DeleteClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterName string) error {
+//
+// knownRefs is the caller's last-persisted cp-vpc state record (ClusterMeta's
+// ManagedCPVPC), used only as an OVN-GC target fallback when the tag-indexed
+// EC2 VPC is already gone — the live describe can no longer name it, but the
+// record still can. Pass nil when no such record exists (e.g. the billable
+// reaper, which acts once the cluster meta itself is gone).
+func DeleteClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterName string, knownRefs *ManagedCPVPC) error {
 	if clusterName == "" {
 		return errors.New("eks: DeleteClusterCPVPC empty cluster name")
 	}
@@ -509,7 +521,15 @@ func DeleteClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterN
 	if err != nil {
 		return fmt.Errorf("eks: describe cp vpc for delete (%s): %w", clusterName, err)
 	}
+
+	// The tag-indexed VPC is already gone — a prior re-drive completed the EC2
+	// delete, or it was reclaimed out-of-band. Idempotent success: nothing left
+	// to delete here. Its OVN logical router/subnets/egress-drop policies may
+	// still be orphaned if that prior delete's fire-and-forget vpc.delete event
+	// never reached vpcd (e.g. NATS was down), so GC still runs below against
+	// knownRefs — the only surviving reference to its identity.
 	if vpcOut == nil || len(vpcOut.Vpcs) == 0 {
+		gcClusterCPVPCTopology(ctx, deps.NATSConn, clusterName, cpVPCGCTarget(knownRefs))
 		return nil
 	}
 	vpcID := aws.StringValue(vpcOut.Vpcs[0].VpcId)
@@ -520,6 +540,38 @@ func DeleteClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterN
 	if _, err := deps.VPC.DeleteVpc(ctx, &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, accountID); err != nil && !awserrors.IsNotFound(err) {
 		return fmt.Errorf("eks: delete cp vpc %s: %w", vpcID, err)
 	}
+	gcClusterCPVPCTopology(ctx, deps.NATSConn, clusterName, vpcID)
 	slog.InfoContext(ctx, "DeleteClusterCPVPC: managed control-plane VPC removed", "cluster", clusterName, "vpc", vpcID)
 	return nil
+}
+
+// cpVPCGCTarget resolves the best-known VpcId for OVN GC when the tag-indexed
+// EC2 record is already gone: the persisted (internal cp-vpc state record)
+// VpcId, or "" if none was ever recorded (nil knownRefs).
+func cpVPCGCTarget(knownRefs *ManagedCPVPC) string {
+	if knownRefs == nil {
+		return ""
+	}
+	return knownRefs.VpcId
+}
+
+// gcClusterCPVPCTopology republishes vpc.delete for vpcID so vpcd's topology
+// manager gets another chance to remove the CP VPC's OVN logical router,
+// subnets, DHCP options, and SubnetEgressPriorityDrop policies (owned by the
+// router row, so OVSDB cascades their removal with it). That cleanup normally
+// runs only as a side effect of a *live* DeleteVpc KV mutation — a re-drive
+// against an already-gone VPC does not mutate the KV again, so a lost or
+// never-delivered event would otherwise orphan the OVN state forever.
+// Best-effort and idempotent: a nil conn or empty vpcID is a no-op, and vpcd
+// tolerates re-deleting an already-absent router.
+func gcClusterCPVPCTopology(ctx context.Context, nc *nats.Conn, clusterName, vpcID string) {
+	if nc == nil || vpcID == "" {
+		return
+	}
+	utils.PublishEvent(nc, "vpc.delete", struct {
+		VpcId     string `json:"vpc_id"`
+		CidrBlock string `json:"cidr_block"`
+		VNI       int64  `json:"vni"`
+	}{VpcId: vpcID})
+	slog.InfoContext(ctx, "DeleteClusterCPVPC: republished vpc.delete for OVN GC", "cluster", clusterName, "vpc", vpcID)
 }

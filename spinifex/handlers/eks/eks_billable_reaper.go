@@ -103,7 +103,7 @@ func (r *EKSBillableReaper) reclaimOrphanInfra(ctx context.Context, account, clu
 	if err := DeleteClusterNLB(ctx, r.svc.deps.NLB, account, clusterName); err != nil {
 		slog.WarnContext(ctx, "eks-billable: reclaim orphan NLB failed", "cluster", clusterName, "err", err)
 	}
-	if err := DeleteClusterCPVPC(ctx, r.svc.cpVPCDeps(), account, clusterName); err != nil {
+	if err := DeleteClusterCPVPC(ctx, r.svc.cpVPCDeps(), account, clusterName, nil); err != nil {
 		slog.WarnContext(ctx, "eks-billable: reclaim orphan CP VPC (NAT-GW EIP) failed", "cluster", clusterName, "err", err)
 	}
 }

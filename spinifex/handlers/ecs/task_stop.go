@@ -74,7 +74,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 	if mode == NetworkModeAwsvpc && netCfg.firstSubnet() == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	cpu, mem := taskDef.reservedCPU(), taskDef.reservedMemory()
+	cpu, mem, gpu := taskDef.reservedCPU(), taskDef.reservedMemory(), taskDef.reservedGPU()
 	group := aws.StringValue(input.Group)
 	startedBy := aws.StringValue(input.StartedBy)
 
@@ -89,7 +89,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 			})
 			continue
 		}
-		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem)
+		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem, gpu)
 		rec.NetworkMode = mode
 		rec.Group = group
 		rec.StartedBy = startedBy

@@ -1,6 +1,8 @@
 package handlers_ecs
 
 import (
+	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -58,6 +60,27 @@ func capacityProviderShortName(ref string) string {
 	return ref
 }
 
+// gpuCountFromResourceRequirements sums the whole-GPU count from a container's
+// resourceRequirements (AWS ECS GPU semantics: type=GPU, value=stringified
+// int). Entries with a non-numeric or negative value are skipped and warned —
+// AWS itself rejects those at RegisterTaskDefinition, so this only guards
+// against malformed input reaching the scheduler.
+func gpuCountFromResourceRequirements(in []*ecs.ResourceRequirement) int {
+	total := 0
+	for _, rr := range in {
+		if rr == nil || aws.StringValue(rr.Type) != ecs.ResourceTypeGpu {
+			continue
+		}
+		n, err := strconv.Atoi(aws.StringValue(rr.Value))
+		if err != nil || n < 0 {
+			slog.Warn("ECS: ignoring invalid GPU resourceRequirement value", "value", aws.StringValue(rr.Value))
+			continue
+		}
+		total += n
+	}
+	return total
+}
+
 // containerDefsFromAWS maps SDK container definitions to the persisted subset.
 func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 	out := make([]ContainerDef, 0, len(in))
@@ -70,6 +93,7 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 			Image:     aws.StringValue(c.Image),
 			CPU:       int(aws.Int64Value(c.Cpu)),
 			MemoryMiB: int(aws.Int64Value(c.Memory)),
+			GPU:       gpuCountFromResourceRequirements(c.ResourceRequirements),
 			Essential: aws.BoolValue(c.Essential),
 			Command:   awsStringSlice(c.Command),
 		}
@@ -118,6 +142,12 @@ func (c ContainerDef) toAWS() *ecs.ContainerDefinition {
 	if c.MemoryMiB > 0 {
 		cd.Memory = aws.Int64(int64(c.MemoryMiB))
 	}
+	if c.GPU > 0 {
+		cd.ResourceRequirements = []*ecs.ResourceRequirement{{
+			Type:  aws.String(ecs.ResourceTypeGpu),
+			Value: aws.String(strconv.Itoa(c.GPU)),
+		}}
+	}
 	for _, cmd := range c.Command {
 		cd.Command = append(cd.Command, aws.String(cmd))
 	}
@@ -154,6 +184,7 @@ func (c ContainerDef) toAssignContainer() bus.AssignContainer {
 		Image:        c.Image,
 		CPU:          c.CPU,
 		MemoryMiB:    c.MemoryMiB,
+		GPU:          c.GPU,
 		Essential:    c.Essential,
 		Command:      c.Command,
 		Environment:  c.Environment,

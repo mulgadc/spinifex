@@ -57,10 +57,13 @@ type PortMapping struct {
 
 // AssignContainer is one container the agent must pull and run for a task.
 type AssignContainer struct {
-	Name         string            `json:"name"`
-	Image        string            `json:"image"`
-	CPU          int               `json:"cpu,omitempty"`
-	MemoryMiB    int               `json:"memoryMiB,omitempty"`
+	Name      string `json:"name"`
+	Image     string `json:"image"`
+	CPU       int    `json:"cpu,omitempty"`
+	MemoryMiB int    `json:"memoryMiB,omitempty"`
+	// GPU is the whole-GPU count requested via resourceRequirements type=GPU.
+	// Device pinning/CDI injection is not wired yet (later Epic C tasks).
+	GPU          int               `json:"gpu,omitempty"`
 	Essential    bool              `json:"essential"`
 	Command      []string          `json:"command,omitempty"`
 	Environment  map[string]string `json:"environment,omitempty"`

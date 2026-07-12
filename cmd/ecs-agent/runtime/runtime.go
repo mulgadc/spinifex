@@ -48,6 +48,9 @@ type RunSpec struct {
 	// (awsvpc task ENI). Empty keeps the container in the host (VM) netns —
 	// bridge/host mode behaviour.
 	NetnsPath string
+	// GPU is the whole-GPU count requested for this container. Not yet consumed
+	// by the runtime — CDI device injection lands in a later Epic C task.
+	GPU int
 }
 
 // RunStatus is a finished container's outcome.

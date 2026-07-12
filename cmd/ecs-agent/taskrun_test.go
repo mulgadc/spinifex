@@ -70,6 +70,30 @@ func TestRunTask_PullRunReportsRunning(t *testing.T) {
 	}
 }
 
+// TestRunTask_GPUCarriedToRunSpec covers mulga-11opz (Epic C task C1): the
+// AssignContainer's GPU count reaches the runtime RunSpec unchanged; a
+// container with no GPU request keeps RunSpec.GPU at zero (regression).
+func TestRunTask_GPUCarriedToRunSpec(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(cp, rt)
+	as := testAssign()
+	as.Containers = append(as.Containers, bus.AssignContainer{
+		Name: "trainer", Image: "registry/trainer:1", GPU: 2,
+	})
+	a.runTask(context.Background(), as)
+
+	if len(rt.Runs) != 2 {
+		t.Fatalf("expected two runs, got %+v", rt.Runs)
+	}
+	if rt.Runs[0].GPU != 0 {
+		t.Errorf("web container: want GPU=0, got %d", rt.Runs[0].GPU)
+	}
+	if rt.Runs[1].GPU != 2 {
+		t.Errorf("trainer container: want GPU=2, got %d", rt.Runs[1].GPU)
+	}
+}
+
 // A pull failure reports STOPPED and never starts the container.
 func TestRunTask_PullFailureReportsStopped(t *testing.T) {
 	cp := &fakeCP{}

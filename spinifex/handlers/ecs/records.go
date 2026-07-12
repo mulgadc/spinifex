@@ -176,10 +176,14 @@ type CapacityProviderRecord struct {
 // ContainerDef is the persisted subset of an ecs.ContainerDefinition needed to
 // pull and run a container (bridge mode v1).
 type ContainerDef struct {
-	Name         string            `json:"name"`
-	Image        string            `json:"image"`
-	CPU          int               `json:"cpu,omitempty"`
-	MemoryMiB    int               `json:"memoryMiB,omitempty"`
+	Name      string `json:"name"`
+	Image     string `json:"image"`
+	CPU       int    `json:"cpu,omitempty"`
+	MemoryMiB int    `json:"memoryMiB,omitempty"`
+	// GPU is the whole-GPU count from a resourceRequirements entry of type GPU
+	// (AWS ECS semantics; the value is a stringified integer). Device pinning and
+	// placement accounting land in later Epic C tasks.
+	GPU          int               `json:"gpu,omitempty"`
 	Essential    bool              `json:"essential"`
 	Command      []string          `json:"command,omitempty"`
 	Environment  map[string]string `json:"environment,omitempty"`
@@ -230,6 +234,17 @@ func (t *TaskDefRecord) reservedMemory() int {
 	return total
 }
 
+// reservedGPU sums the task definition's per-container whole-GPU counts.
+// Placement/reservation against instance capacity is a later Epic C task; this
+// is the task-level total carried onto the task record and the bus assign.
+func (t *TaskDefRecord) reservedGPU() int {
+	total := 0
+	for _, c := range t.Containers {
+		total += c.GPU
+	}
+	return total
+}
+
 // InstanceRecord is the persisted container-instance state at InstanceKey. The
 // scheduler writes it from the Layer-2 bus (register/heartbeat) and reserves
 // capacity by appending placed task IDs.
@@ -276,20 +291,23 @@ type TaskRecord struct {
 	// Group / StartedBy mirror the AWS task fields. A service's tasks carry
 	// Group="service:{name}" so the reconciler counts them and the task-state
 	// hook resolves a RUNNING/STOPPED task back to its owning service.
-	Group                string            `json:"group,omitempty"`
-	StartedBy            string            `json:"startedBy,omitempty"`
-	TaskDefFamily        string            `json:"taskDefFamily"`
-	TaskDefRevision      int               `json:"taskDefRevision"`
-	TaskDefARN           string            `json:"taskDefArn"`
-	ContainerInstanceID  string            `json:"containerInstanceId,omitempty"`
-	ContainerInstanceARN string            `json:"containerInstanceArn,omitempty"`
-	DesiredStatus        string            `json:"desiredStatus"`
-	LastStatus           string            `json:"lastStatus"`
-	StoppedReason        string            `json:"stoppedReason,omitempty"`
-	ReservedCPU          int               `json:"reservedCpu"`
-	ReservedMemoryMiB    int               `json:"reservedMemoryMiB"`
-	Tags                 map[string]string `json:"tags,omitempty"`
-	Containers           []ContainerState  `json:"containers,omitempty"`
+	Group                string `json:"group,omitempty"`
+	StartedBy            string `json:"startedBy,omitempty"`
+	TaskDefFamily        string `json:"taskDefFamily"`
+	TaskDefRevision      int    `json:"taskDefRevision"`
+	TaskDefARN           string `json:"taskDefArn"`
+	ContainerInstanceID  string `json:"containerInstanceId,omitempty"`
+	ContainerInstanceARN string `json:"containerInstanceArn,omitempty"`
+	DesiredStatus        string `json:"desiredStatus"`
+	LastStatus           string `json:"lastStatus"`
+	StoppedReason        string `json:"stoppedReason,omitempty"`
+	ReservedCPU          int    `json:"reservedCpu"`
+	ReservedMemoryMiB    int    `json:"reservedMemoryMiB"`
+	// GPU is the task-level whole-GPU total (sum of its container defs' GPU
+	// counts). Not yet reserved against instance capacity (Epic C placement).
+	GPU        int               `json:"gpu,omitempty"`
+	Tags       map[string]string `json:"tags,omitempty"`
+	Containers []ContainerState  `json:"containers,omitempty"`
 	// NetworkMode is the resolved task network mode (awsvpc|bridge|host). The
 	// STOPPED path consults it to decide whether an ENI must be reclaimed.
 	NetworkMode string `json:"networkMode,omitempty"`

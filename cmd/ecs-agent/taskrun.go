@@ -130,6 +130,7 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 			Env:       withCredEnv(c.Environment, credID),
 			Labels:    taskLabels(as, c.Name),
 			NetnsPath: netnsPath,
+			GPU:       c.GPU,
 		}
 		id, err := a.runner.Run(ctx, cid, spec)
 		if err != nil {

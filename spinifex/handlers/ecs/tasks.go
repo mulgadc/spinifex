@@ -50,7 +50,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 		count = 1
 	}
 	strategy := placementStrategyFromAWS(input.PlacementStrategy)
-	cpu, mem := taskDef.reservedCPU(), taskDef.reservedMemory()
+	cpu, mem, gpu := taskDef.reservedCPU(), taskDef.reservedMemory(), taskDef.reservedGPU()
 
 	mode := resolveNetworkMode(taskDef)
 	netCfg, err := parseAwsvpcConfig(input, mode)
@@ -70,7 +70,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 			continue
 		}
 
-		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem)
+		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem, gpu)
 		rec.NetworkMode = mode
 		rec.Group = aws.StringValue(input.Group)
 		rec.StartedBy = aws.StringValue(input.StartedBy)
@@ -165,7 +165,7 @@ func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu
 }
 
 // newTaskRecord builds a PENDING task record for a placed task.
-func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRecord, inst *InstanceRecord, cpu, mem int) *TaskRecord {
+func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRecord, inst *InstanceRecord, cpu, mem, gpu int) *TaskRecord {
 	now := time.Now().UTC()
 	rec := &TaskRecord{
 		TaskID:               taskID,
@@ -180,6 +180,7 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRe
 		LastStatus:           TaskStatusPending,
 		ReservedCPU:          cpu,
 		ReservedMemoryMiB:    mem,
+		GPU:                  gpu,
 		CreatedAt:            now,
 	}
 	for _, c := range td.Containers {

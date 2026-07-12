@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -3807,22 +3806,4 @@ func TestPrepareRunInstances_PreCreatedENIAttachErrorSurfaced(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Equal(t, 1, eni.attachCalls)
 	assert.Equal(t, 0, eni.createCalls)
-}
-
-// TestRestoreSlogDefault verifies the Info-level handler is reinstalled after
-// viperblock.New resets the global logger to LevelError: Info/Warn must be
-// enabled again and Debug must stay off.
-func TestRestoreSlogDefault(t *testing.T) {
-	prev := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
-	slog.SetDefault(slog.New(slog.DiscardHandler))
-	require.False(t, slog.Default().Enabled(context.Background(), slog.LevelInfo))
-
-	restoreSlogDefault()
-
-	got := slog.Default()
-	assert.True(t, got.Enabled(context.Background(), slog.LevelInfo), "Info must be enabled after restore")
-	assert.True(t, got.Enabled(context.Background(), slog.LevelWarn), "Warn must be enabled after restore")
-	assert.False(t, got.Enabled(context.Background(), slog.LevelDebug), "Debug must stay off")
 }

@@ -1185,8 +1185,9 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		// New topology: SGs + IGW + subnets + route tables + NAT GW + VPC all live
 		// in the managed CP VPC under the system account. DeleteClusterCPVPC removes
 		// the IGW + VPC after the SGs, so SG cleanup must precede it.
-		if err := DeleteClusterSGs(ctx, s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", err))
+		cpSGErr := DeleteClusterSGs(ctx, s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId)
+		if cpSGErr != nil {
+			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", cpSGErr))
 		}
 		// launchNodegroupInfra also creates the cluster SGs in the customer VPC for
 		// worker<->control-plane networking; reclaim them here too, or they orphan
@@ -1196,8 +1197,21 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 				teardownErrs = append(teardownErrs, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
 			}
 		}
-		if err := DeleteClusterCPVPC(ctx, s.cpVPCDeps(), infraAcct, name); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", err))
+		cpVPCErr := DeleteClusterCPVPC(ctx, s.cpVPCDeps(), infraAcct, name, meta.ManagedCPVPC)
+		if cpVPCErr != nil {
+			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", cpVPCErr))
+		}
+		if cpSGErr == nil && cpVPCErr == nil {
+			// The CP VPC (including when already gone — tolerated as success)
+			// and its own SGs are both confirmed torn down. Clear the internal
+			// cp-vpc state record right now, independent of whatever else in
+			// this run still fails below: otherwise a re-drive keeps retrying
+			// SG/VPC API calls against a stale VpcId forever, turning a single
+			// DependencyViolation into a permanent DELETING loop.
+			meta.ManagedCPVPC = nil
+			if perr := ClearClusterManagedCPVPC(acctKV, name); perr != nil && !errors.Is(perr, ErrClusterNotFound) {
+				teardownErrs = append(teardownErrs, fmt.Errorf("clear managed CP VPC state: %w", perr))
+			}
 		}
 	} else if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 		// Legacy topology: CP lived in the customer VPC; reclaim its SGs + the

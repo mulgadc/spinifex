@@ -61,7 +61,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 	out := &ecs.RunTaskOutput{}
 	for i := 0; i < count; i++ {
 		taskID := uuid.NewString()
-		inst, err := s.reservePlacement(kv, cluster, taskID, cpu, mem, strategy)
+		inst, err := s.reservePlacement(kv, cluster, taskID, cpu, mem, gpu, strategy)
 		if err != nil {
 			out.Failures = append(out.Failures, &ecs.Failure{
 				Reason: aws.String("RESOURCE:placement"),
@@ -99,7 +99,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 // the caller skips it without leaking the ENI or the reserved capacity.
 func (s *Service) provisionTaskENI(ctx context.Context, kv nats.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
 	rollback := func(reason string, err error) *ecs.Failure {
-		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB); rerr != nil {
+		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB, rec.GPU); rerr != nil {
 			slog.ErrorContext(ctx, "ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
 		}
 		return &ecs.Failure{Reason: aws.String(reason), Detail: aws.String(err.Error())}
@@ -126,13 +126,13 @@ func (s *Service) provisionTaskENI(ctx context.Context, kv nats.KeyValue, accoun
 
 // reservePlacement bin-packs a task onto an ACTIVE instance and commits the
 // reservation under a KV CAS, retrying on contention.
-func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu, mem int, strategy string) (*InstanceRecord, error) {
+func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu, mem, gpu int, strategy string) (*InstanceRecord, error) {
 	for range reservePlacementRetries {
 		instances, err := s.listInstanceRecords(kv, cluster)
 		if err != nil {
 			return nil, err
 		}
-		chosen, err := placeTask(instances, cpu, mem, strategy)
+		chosen, err := placeTask(instances, cpu, mem, gpu, strategy)
 		if err != nil {
 			return nil, err
 		}
@@ -146,11 +146,12 @@ func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu
 		if uerr := json.Unmarshal(entry.Value(), &live); uerr != nil {
 			return nil, uerr
 		}
-		if !live.fits(cpu, mem) {
+		if !live.fits(cpu, mem, gpu) {
 			continue
 		}
 		live.ReservedCPU += cpu
 		live.ReservedMemoryMiB += mem
+		live.ReservedGPU += gpu
 		live.PlacedTasks = append(live.PlacedTasks, taskID)
 		data, merr := json.Marshal(&live)
 		if merr != nil {

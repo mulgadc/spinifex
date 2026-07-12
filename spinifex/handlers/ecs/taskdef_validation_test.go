@@ -116,7 +116,7 @@ func TestRunTask_AssignCarriesGPU(t *testing.T) {
 		},
 	}, testAccountID)
 	require.NoError(t, err)
-	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+	registerInstanceGPU(t, svc, "web", "i-1", 1024, 2048, 1)
 
 	out, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{
 		Cluster: aws.String("web"), TaskDefinition: aws.String("gpu-app"), Count: aws.Int64(1),

@@ -16,29 +16,43 @@ const (
 // ErrNoCapacity is returned when no ACTIVE instance can fit the task.
 var ErrNoCapacity = errors.New("no container instance has capacity for the task")
 
-// remainingCPU/remainingMemory report an instance's unreserved capacity.
+// remainingCPU/remainingMemory/remainingGPU report an instance's unreserved capacity.
 func (r *InstanceRecord) remainingCPU() int    { return r.TotalCPU - r.ReservedCPU }
 func (r *InstanceRecord) remainingMemory() int { return r.TotalMemoryMiB - r.ReservedMemoryMiB }
+func (r *InstanceRecord) remainingGPU() int    { return r.TotalGPU - r.ReservedGPU }
+
+// remainingGPUIDs returns the instance's free GPU device UUIDs: GPUIDs with the
+// first ReservedGPU entries dropped. Which UUID a given task actually holds is
+// reported by the agent (Epic C3); until then this is a count-consistent
+// placeholder, empty whenever GPUIDs itself is unpopulated.
+func (r *InstanceRecord) remainingGPUIDs() []string {
+	if r.ReservedGPU >= len(r.GPUIDs) {
+		return nil
+	}
+	return r.GPUIDs[r.ReservedGPU:]
+}
 
 // fits reports whether the instance is ACTIVE and has room for the reservation.
-func (r *InstanceRecord) fits(cpu, mem int) bool {
+func (r *InstanceRecord) fits(cpu, mem, gpu int) bool {
 	if r.Status != InstanceStatusActive {
 		return false
 	}
-	return r.remainingCPU() >= cpu && r.remainingMemory() >= mem
+	return r.remainingCPU() >= cpu && r.remainingMemory() >= mem && r.remainingGPU() >= gpu
 }
 
-// placeTask selects a container instance for a task reserving (cpu, mem) using
-// the requested strategy. Candidates are filtered to ACTIVE instances that fit;
-// ties broken by instance ID for determinism. strategy "" defaults to binpack.
+// placeTask selects a container instance for a task reserving (cpu, mem, gpu)
+// using the requested strategy. Candidates are filtered to ACTIVE instances that
+// fit; ties broken by instance ID for determinism. strategy "" defaults to binpack.
 //
 // binpack: pick the instance with the LEAST remaining memory that still fits
 // (tightest pack). spread: pick the MOST remaining memory (widest spread).
-// random: caller-stable first fit by instance ID.
-func placeTask(instances []InstanceRecord, cpu, mem int, strategy string) (*InstanceRecord, error) {
+// random: caller-stable first fit by instance ID. GPU is a fit gate only; it does
+// not participate in the memory-based sort (non-GPU tasks request gpu=0 and are
+// unaffected).
+func placeTask(instances []InstanceRecord, cpu, mem, gpu int, strategy string) (*InstanceRecord, error) {
 	candidates := make([]InstanceRecord, 0, len(instances))
 	for _, inst := range instances {
-		if inst.fits(cpu, mem) {
+		if inst.fits(cpu, mem, gpu) {
 			candidates = append(candidates, inst)
 		}
 	}

@@ -53,6 +53,12 @@ func (s *Service) RegisterContainerInstance(_ context.Context, input *ecs.Regist
 				r.TotalCPU = int(aws.Int64Value(res.IntegerValue))
 			case "MEMORY":
 				r.TotalMemoryMiB = int(aws.Int64Value(res.IntegerValue))
+			case "GPU":
+				// AWS reports GPU as a STRINGSET of device UUIDs; the count is the
+				// capacity, the UUIDs are the placeholder inventory (Epic C3 populates
+				// them for real from the agent's nvidia-smi discovery).
+				r.GPUIDs = aws.StringValueSlice(res.StringSetValue)
+				r.TotalGPU = len(r.GPUIDs)
 			}
 		}
 		if len(input.Tags) > 0 {
@@ -151,6 +157,17 @@ func (s *Service) instanceToAWS(r *InstanceRecord) *ecs.ContainerInstance {
 		{Name: aws.String("CPU"), Type: aws.String("INTEGER"), IntegerValue: aws.Int64(int64(r.TotalCPU - r.ReservedCPU))},
 		{Name: aws.String("MEMORY"), Type: aws.String("INTEGER"), IntegerValue: aws.Int64(int64(r.TotalMemoryMiB - r.ReservedMemoryMiB))},
 	}
+	// GPU is only reported for GPU-capable instances (AWS parity); the STRINGSET
+	// values are the device UUIDs when known, empty pending the agent's Epic C3
+	// report-back — TotalGPU/ReservedGPU remain the authoritative counts either way.
+	if r.TotalGPU > 0 {
+		registered = append(registered, &ecs.Resource{
+			Name: aws.String("GPU"), Type: aws.String("STRINGSET"), StringSetValue: aws.StringSlice(r.GPUIDs),
+		})
+		remaining = append(remaining, &ecs.Resource{
+			Name: aws.String("GPU"), Type: aws.String("STRINGSET"), StringSetValue: aws.StringSlice(r.remainingGPUIDs()),
+		})
+	}
 	return &ecs.ContainerInstance{
 		ContainerInstanceArn: aws.String(r.ARN),
 		Ec2InstanceId:        aws.String(r.InstanceID),
@@ -178,6 +195,7 @@ func (s *Service) recordRegister(msg *bus.RegisterInstance) error {
 		r.AgentVersion = msg.AgentVersion
 		r.TotalCPU = msg.Capacity.CPU
 		r.TotalMemoryMiB = msg.Capacity.MemoryMiB
+		r.TotalGPU = msg.Capacity.GPU
 		r.Status = InstanceStatusActive
 	})
 	return err
@@ -261,7 +279,7 @@ func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error
 		if perr := putJSON(kv, TaskKey(msg.ClusterName, msg.TaskID), &task); perr != nil {
 			slog.ErrorContext(ctx, "ECS task STOPPED: persist after EIP release failed", "task", msg.TaskID, "err", perr)
 		}
-		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB)
+		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB, task.GPU)
 	}
 	return nil
 }
@@ -324,7 +342,7 @@ func (s *Service) recordDeploymentFailure(ctx context.Context, kv nats.KeyValue,
 }
 
 // releaseReservation returns a stopped task's capacity to its instance under CAS.
-func (s *Service) releaseReservation(kv nats.KeyValue, cluster, instanceID, taskID string, cpu, mem int) error {
+func (s *Service) releaseReservation(kv nats.KeyValue, cluster, instanceID, taskID string, cpu, mem, gpu int) error {
 	for range reservePlacementRetries {
 		entry, err := kv.Get(InstanceKey(cluster, instanceID))
 		if err != nil {
@@ -336,6 +354,7 @@ func (s *Service) releaseReservation(kv nats.KeyValue, cluster, instanceID, task
 		}
 		rec.ReservedCPU = max(rec.ReservedCPU-cpu, 0)
 		rec.ReservedMemoryMiB = max(rec.ReservedMemoryMiB-mem, 0)
+		rec.ReservedGPU = max(rec.ReservedGPU-gpu, 0)
 		rec.PlacedTasks = slices.DeleteFunc(rec.PlacedTasks, func(v string) bool { return v == taskID })
 		data, merr := json.Marshal(&rec)
 		if merr != nil {

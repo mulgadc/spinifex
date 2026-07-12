@@ -6,6 +6,9 @@ import "time"
 type InstanceCapacity struct {
 	CPU       int `json:"cpu"`       // total vCPU units (1 vCPU = 1024)
 	MemoryMiB int `json:"memoryMiB"` // total memory in MiB
+	// GPU is the total whole-GPU count from the agent's nvidia-smi discovery
+	// (Epic C3); zero until the agent reports it.
+	GPU int `json:"gpu,omitempty"`
 }
 
 // RegisterInstance is published on RegisterSubject when an ecs-agent boots and

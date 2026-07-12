@@ -258,15 +258,25 @@ type InstanceRecord struct {
 	Tags           map[string]string `json:"tags,omitempty"`
 	TotalCPU       int               `json:"totalCpu"`
 	TotalMemoryMiB int               `json:"totalMemoryMiB"`
+	// TotalGPU is the instance's whole-GPU count, mirroring TotalCPU/TotalMemoryMiB.
+	// It is the placement/capacity source of truth even before GPUIDs is populated.
+	TotalGPU int `json:"totalGpu"`
 	// ReservedCPU/ReservedMemoryMiB track capacity committed to placed tasks;
 	// placement increments them under a KV CAS and the task-state STOPPED path
 	// releases them. Remaining = Total - Reserved.
-	ReservedCPU       int       `json:"reservedCpu"`
-	ReservedMemoryMiB int       `json:"reservedMemoryMiB"`
-	AgentVersion      string    `json:"agentVersion,omitempty"`
-	PlacedTasks       []string  `json:"placedTasks,omitempty"`
-	RegisteredAt      time.Time `json:"registeredAt"`
-	LastSeen          time.Time `json:"lastSeen"`
+	ReservedCPU       int `json:"reservedCpu"`
+	ReservedMemoryMiB int `json:"reservedMemoryMiB"`
+	// ReservedGPU mirrors ReservedCPU/ReservedMemoryMiB for whole-GPU counts.
+	ReservedGPU int `json:"reservedGpu"`
+	// GPUIDs holds the instance's total GPU device UUIDs, as reported at
+	// registration (AWS "GPU" STRINGSET resource). Populated by the agent's
+	// nvidia-smi discovery in Epic C3; empty until then, so TotalGPU (not len(GPUIDs))
+	// is the authoritative capacity count in the interim.
+	GPUIDs       []string  `json:"gpuIds,omitempty"`
+	AgentVersion string    `json:"agentVersion,omitempty"`
+	PlacedTasks  []string  `json:"placedTasks,omitempty"`
+	RegisteredAt time.Time `json:"registeredAt"`
+	LastSeen     time.Time `json:"lastSeen"`
 	// Reaped marks a DRAINING caused by the heartbeat reaper (involuntary), as
 	// opposed to an operator UpdateContainerInstancesState drain. A reaped
 	// instance is restored to ACTIVE when its agent re-registers; an operator

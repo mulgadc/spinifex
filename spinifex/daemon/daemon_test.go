@@ -2986,16 +2986,47 @@ func TestGetAvailableInstanceTypeInfos_GPUType_ShowCapacity(t *testing.T) {
 	assert.Equal(t, 2, count12xl, "4 GPUs → 2 slots for g7e.12xlarge")
 }
 
-// canAllocate for GPU types returns count without CPU/memory gating.
-func TestCanAllocate_GPUType_BypassesCPUMemory(t *testing.T) {
+// canAllocate for GPU types is gated by CPU/memory like any other instance
+// type. Regression for mulga-jeo02: the whole-GPU early return used to
+// bypass this check entirely, letting a launch proceed on a host with no
+// memory headroom.
+func TestCanAllocate_GPUType_GatedByCPUMemory(t *testing.T) {
 	rm := &ResourceManager{
 		hostVCPU:      4,   // deliberately tiny
 		hostMemGB:     8.0, // deliberately tiny
 		instanceTypes: map[string]*ec2.InstanceTypeInfo{},
+		gpuManager:    gpu.NewManager([]gpu.GPUDevice{makeGPUDevice()}),
 	}
 	gpuType := makeGPUInstanceType("g7e.4xlarge", 16, 128*1024)
-	assert.Equal(t, 1, rm.canAllocate(gpuType, 1),
-		"GPU type must be allocatable even when CPU/memory would normally block it")
+	assert.Equal(t, 0, rm.canAllocate(gpuType, 1),
+		"GPU type must be blocked by cpu/mem exhaustion like any other instance type")
+}
+
+// canAllocate for GPU types succeeds once both cpu/mem headroom and a free
+// GPU slot exist.
+func TestCanAllocate_GPUType_SucceedsWithRoomAndSlot(t *testing.T) {
+	rm := &ResourceManager{
+		hostVCPU:      32,
+		hostMemGB:     256.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{},
+		gpuManager:    gpu.NewManager([]gpu.GPUDevice{makeGPUDevice()}),
+	}
+	gpuType := makeGPUInstanceType("g7e.4xlarge", 16, 128*1024)
+	assert.Equal(t, 1, rm.canAllocate(gpuType, 1))
+}
+
+// canAllocate for GPU types is refused up front when the GPU pool has no
+// free slot, even with abundant cpu/mem headroom.
+func TestCanAllocate_GPUType_RefusedWhenGPUPoolExhausted(t *testing.T) {
+	rm := &ResourceManager{
+		hostVCPU:      32,
+		hostMemGB:     256.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{},
+		gpuManager:    gpu.NewManager(nil),
+	}
+	gpuType := makeGPUInstanceType("g7e.4xlarge", 16, 128*1024)
+	assert.Equal(t, 0, rm.canAllocate(gpuType, 1),
+		"no GPU in the pool must refuse admission regardless of cpu/mem headroom")
 }
 
 // --- GetSupportedInstanceTypeInfos ---

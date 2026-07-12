@@ -661,6 +661,22 @@ const (
 // seam overrides it to keep dial-failure tests off the wall clock.
 var qmpSocketWaitTimeout = 3 * time.Second
 
+// qmpVFIOGreetingTimeout is the QMP greeting wait for a VFIO passthrough guest.
+// QEMU must lock+DMA-map the entire guest RAM through the IOMMU before the
+// monitor answers, which scales with RAM and far exceeds the plain-VM default
+// (a 16GB EKS GPU worker takes >30s on wattle). Generous to cover larger guests
+// and a loaded host.
+const qmpVFIOGreetingTimeout = 180 * time.Second
+
+// qmpGreetingTimeout picks the QMP greeting deadline for a VM: the plain default
+// unless the guest has GPU/VFIO passthrough, whose RAM pinning delays the monitor.
+func qmpGreetingTimeout(v *VM) time.Duration {
+	if len(v.GPUAttachments) > 0 {
+		return qmpVFIOGreetingTimeout
+	}
+	return qmp.DefaultGreetingTimeout
+}
+
 // removeStaleQMPSocket unlinks a leftover QMP socket inode from a prior QEMU so
 // the startup probe and QMP dial cannot race a dead listener. A missing file is
 // not an error.
@@ -677,10 +693,10 @@ func removeStaleQMPSocket(path string) error {
 // first connect; a single dial then loses the race. Only transient connect
 // errors are retried — a greeting/handshake failure means we reached a listener,
 // so it surfaces immediately.
-func dialQMPWithRetry(path string) (*qmp.QMPClient, error) {
+func dialQMPWithRetry(path string, greetingTimeout time.Duration) (*qmp.QMPClient, error) {
 	deadline := time.Now().Add(qmpDialTimeout)
 	for {
-		client, err := qmp.NewQMPClient(path)
+		client, err := qmp.NewQMPClientWithGreetingTimeout(path, greetingTimeout)
 		if err == nil {
 			return client, nil
 		}
@@ -706,7 +722,7 @@ func newQMPClientWithHandshake(ctx context.Context, v *VM) (*qmp.QMPClient, erro
 	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, qmpSocketWaitTimeout); err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
-	client, err := dialQMPWithRetry(v.Config.QMPSocket)
+	client, err := dialQMPWithRetry(v.Config.QMPSocket, qmpGreetingTimeout(v))
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
@@ -885,7 +901,9 @@ func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
 		_ = q.Conn.Close()
 	}
 
-	fresh, err := dialQMPWithRetry(q.Path)
+	// A reconnect targets an already-running QEMU whose RAM is long pinned, so
+	// the greeting returns promptly — the plain default deadline is enough.
+	fresh, err := dialQMPWithRetry(q.Path, qmp.DefaultGreetingTimeout)
 	if err != nil {
 		return fmt.Errorf("redial QMP socket %s: %w", q.Path, err)
 	}

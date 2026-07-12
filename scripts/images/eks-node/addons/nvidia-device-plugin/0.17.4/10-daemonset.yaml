@@ -1,0 +1,74 @@
+# nvidia-device-plugin 0.17.4 — CDI-mode DaemonSet exposing nvidia.com/gpu
+# allocatable on GPU-tainted nodes. Gated to GPU nodes via nodeSelector on the
+# K3S_NODE_LABEL nvidia.com/gpu.present=true (nodegroup_userdata.go); inert
+# elsewhere. --device-list-strategy=cdi-cri makes the plugin generate a CDI spec
+# for GPU workloads (containerd 2.x resolves the CRI-passed CDI devices; no
+# enable_cdi drop-in needed on k3s v1.32.5). The plugin's OWN container needs
+# NVML + the driver tree to run nvml.Init and generate that spec, so it runs
+# under the k3s-auto-configured "nvidia" runtimeClass with the host root mounted
+# at /driver-root and the host /var/run/cdi mounted writable so the generated
+# spec is visible to containerd. GPU workloads themselves need only
+# resources.limits nvidia.com/gpu — no runtimeClass.
+---
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: nvidia-device-plugin-daemonset
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: nvidia-device-plugin
+spec:
+  selector:
+    matchLabels:
+      name: nvidia-device-plugin-ds
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        name: nvidia-device-plugin-ds
+    spec:
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      priorityClassName: "system-node-critical"
+      runtimeClassName: nvidia
+      containers:
+      - image: nvcr.io/nvidia/k8s-device-plugin:v0.17.4
+        name: nvidia-device-plugin-ctr
+        args:
+        - --device-list-strategy=cdi-cri
+        env:
+          - name: FAIL_ON_INIT_ERROR
+            value: "false"
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: all
+          - name: NVIDIA_DRIVER_CAPABILITIES
+            value: all
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: kubelet-device-plugins-dir
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: driver-root
+          mountPath: /driver-root
+          readOnly: true
+        - name: cdi-root
+          mountPath: /var/run/cdi
+      volumes:
+      - name: kubelet-device-plugins-dir
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+          type: Directory
+      - name: driver-root
+        hostPath:
+          path: /
+      - name: cdi-root
+        hostPath:
+          path: /var/run/cdi
+          type: DirectoryOrCreate

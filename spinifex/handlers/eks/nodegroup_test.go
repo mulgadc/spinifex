@@ -379,6 +379,42 @@ func TestCreateNodegroup_GPUInstanceTypeSetsGPUFields(t *testing.T) {
 	f.svc.WaitLaunches()
 }
 
+// A GPU nodegroup create must auto-stage the nvidia-device-plugin addon so
+// GPU-tainted nodes get nvidia.com/gpu allocatable without a manual CreateAddon.
+func TestCreateNodegroup_GPUNodegroupStagesDevicePluginAddon(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	in := createNGInput("c1", "ng-gpu", 1)
+	in.InstanceTypes = aws.StringSlice([]string{"g5.xlarge"})
+
+	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
+	require.NoError(t, err)
+
+	markWorkersReady(t, f, "c1", 1)
+	f.svc.WaitLaunches()
+
+	rec, err := GetAddonRecord(f.kv, "c1", nvidiaDevicePluginAddonName)
+	require.NoError(t, err, "nvidia-device-plugin must be staged for a GPU nodegroup")
+	assert.Equal(t, "0.17.4", rec.AddonVersion)
+}
+
+// A non-GPU nodegroup create must not stage nvidia-device-plugin — it stays
+// dormant on non-GPU clusters, and it isn't user-visible in the catalog.
+func TestCreateNodegroup_NonGPUNodegroupDoesNotStageDevicePluginAddon(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+
+	markWorkersReady(t, f, "c1", 1)
+	f.svc.WaitLaunches()
+
+	_, err = GetAddonRecord(f.kv, "c1", nvidiaDevicePluginAddonName)
+	require.ErrorIs(t, err, ErrAddonNotFound)
+}
+
 // A non-GPU instance type must leave the record's GPU fields unset, so the
 // worker-launch path keeps resolving the default eks-node AMI.
 func TestCreateNodegroup_NonGPUInstanceTypeClearsGPUFields(t *testing.T) {

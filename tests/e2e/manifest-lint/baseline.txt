@@ -2,8 +2,6 @@
 # Regenerate with: make manifest-lint-update. Migrate entries away over time.
 # Lines: "create\t<file>\t<API>\t#<n>" or "subject\t<file>\t<subject>".
 create	tests/e2e/eks/eks_test.go	CreateCluster	#1
-create	tests/e2e/eks/eks_test.go	CreateSubnet	#1
-create	tests/e2e/eks/eks_test.go	CreateVpc	#1
 create	tests/e2e/gpu/gpu_test.go	RunInstances	#1
 create	tests/e2e/gpu/gpu_test.go	RunInstances	#2
 create	tests/e2e/gpu/helpers_test.go	RunInstances	#1

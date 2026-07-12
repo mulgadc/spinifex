@@ -242,6 +242,13 @@ type EKSServiceImpl struct {
 	// CREATE_FAILED. Tests inject small values.
 	nodegroupReadyTimeout time.Duration
 	nodegroupReadyPoll    time.Duration
+
+	// workerLaunchRetryTimeout / workerLaunchRetryBackoff bound how long
+	// launchNodegroupInfra retries a shortfall (a worker RunInstances call that
+	// failed, e.g. a transient QMP timeout or host capacity pressure) before
+	// giving up and marking the nodegroup CREATE_FAILED. Tests inject small values.
+	workerLaunchRetryTimeout time.Duration
+	workerLaunchRetryBackoff time.Duration
 }
 
 var _ EKSService = (*EKSServiceImpl)(nil)
@@ -266,13 +273,15 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &EKSServiceImpl{
-		deps:                  deps,
-		leaderKV:              leaderKV,
-		registry:              NewReconcilerRegistry(),
-		bgCtx:                 ctx,
-		bgCancel:              cancel,
-		nodegroupReadyTimeout: defaultNodegroupReadyTimeout,
-		nodegroupReadyPoll:    defaultNodegroupReadyPoll,
+		deps:                     deps,
+		leaderKV:                 leaderKV,
+		registry:                 NewReconcilerRegistry(),
+		bgCtx:                    ctx,
+		bgCancel:                 cancel,
+		nodegroupReadyTimeout:    defaultNodegroupReadyTimeout,
+		nodegroupReadyPoll:       defaultNodegroupReadyPoll,
+		workerLaunchRetryTimeout: defaultWorkerLaunchRetryTimeout,
+		workerLaunchRetryBackoff: defaultWorkerLaunchRetryBackoff,
 	}, nil
 }
 

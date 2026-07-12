@@ -77,6 +77,10 @@ type fakeWorkerLauncher struct {
 	nextID  int
 	runErr  error
 	termErr error
+	// failNextN makes the next N RunWorkerInstanceOnNode calls fail with runErr
+	// before subsequent calls succeed — simulates a transient launch failure
+	// (QMP timeout, host pressure) that clears on retry.
+	failNextN int
 }
 
 var _ WorkerLauncher = (*fakeWorkerLauncher)(nil)
@@ -94,6 +98,17 @@ func (f *fakeWorkerLauncher) RunWorkerInstanceOnNode(_ context.Context, nodeID s
 	defer f.mu.Unlock()
 	f.runCalls = append(f.runCalls, input)
 	f.runNodes = append(f.runNodes, nodeID)
+	if f.failNextN > 0 {
+		f.failNextN--
+		err := f.runErr
+		if f.failNextN == 0 {
+			// Transient window exhausted: clear runErr so later calls succeed
+			// unless the test also wants a permanent failure (it wouldn't set
+			// failNextN in that case).
+			f.runErr = nil
+		}
+		return nil, err
+	}
 	if f.runErr != nil {
 		return nil, f.runErr
 	}
@@ -151,13 +166,14 @@ func seedActiveClusterWithToken(t *testing.T, f *eksServiceFixture, cluster stri
 	require.NoError(t, err)
 }
 
-// markWorkersReady simulates the cluster reconciler observing n Ready nodes from
-// the CP state report, so launchNodegroupInfra's Ready-gate (waitWorkersReady)
-// can resolve. Seed clusters start at NodeCount 0, so n is the create baseline
-// (0) plus the worker count the test expects Ready.
-func markWorkersReady(t *testing.T, f *eksServiceFixture, cluster string, n int) {
+// markWorkersReady simulates the cluster reconciler observing n Ready nodes,
+// scoped to nodegroup ng's eks.amazonaws.com/nodegroup label, from the CP state
+// report, so launchNodegroupInfra's Ready-gate (waitWorkersReady) can resolve.
+// Seed clusters start at NodeCount/NodegroupNodeCounts 0, so n is the create
+// baseline (0) plus the worker count the test expects Ready.
+func markWorkersReady(t *testing.T, f *eksServiceFixture, cluster, ng string, n int) {
 	t.Helper()
-	require.NoError(t, SetClusterHealthState(f.kv, cluster, "", n))
+	require.NoError(t, SetClusterHealthState(f.kv, cluster, "", n, map[string]int{ng: n}))
 }
 
 func createNGInput(cluster, ng string, desired int64) *eks.CreateNodegroupInput {
@@ -324,7 +340,7 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	assert.Contains(t, aws.StringValue(out.Nodegroup.NodegroupArn), ":nodegroup/c1/ng1/")
 
 	// Both workers register Ready → the Ready-gate lets the nodegroup go ACTIVE.
-	markWorkersReady(t, f, "c1", 2)
+	markWorkersReady(t, f, "c1", "ng1", 2)
 	f.svc.WaitLaunches()
 
 	// The async launch transitions the record to ACTIVE once workers run.
@@ -375,7 +391,7 @@ func TestCreateNodegroup_GPUInstanceTypeSetsGPUFields(t *testing.T) {
 	assert.True(t, rec.GPUEnabled)
 	assert.Equal(t, "nvidia", rec.GPUVendor)
 
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng-gpu", 1)
 	f.svc.WaitLaunches()
 }
 
@@ -391,7 +407,7 @@ func TestCreateNodegroup_GPUNodegroupStagesDevicePluginAddon(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
 	require.NoError(t, err)
 
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng-gpu", 1)
 	f.svc.WaitLaunches()
 
 	rec, err := GetAddonRecord(f.kv, "c1", nvidiaDevicePluginAddonName)
@@ -408,7 +424,7 @@ func TestCreateNodegroup_NonGPUNodegroupDoesNotStageDevicePluginAddon(t *testing
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
 
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 
 	_, err = GetAddonRecord(f.kv, "c1", nvidiaDevicePluginAddonName)
@@ -429,7 +445,7 @@ func TestCreateNodegroup_NonGPUInstanceTypeClearsGPUFields(t *testing.T) {
 	assert.False(t, rec.GPUEnabled)
 	assert.Empty(t, rec.GPUVendor)
 
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 }
 
@@ -454,7 +470,7 @@ func TestCreateNodegroup_GPUWorkerLaunchUsesGPUAMI(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
 	require.NoError(t, err)
 
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng-gpu", 1)
 	f.svc.WaitLaunches()
 
 	rec, err := GetNodegroupRecord(f.kv, "c1", "ng-gpu")
@@ -511,6 +527,84 @@ func TestCreateNodegroup_WorkersNeverReady_CreateFailed(t *testing.T) {
 	assert.Len(t, rec.InstanceIDs, 2, "launched workers retained for the reclaim path")
 }
 
+// The Ready-gate must be scoped to each nodegroup's OWN workers
+// (eks.amazonaws.com/nodegroup=<name>), never a cluster-wide tally: one
+// nodegroup's Ready nodes must never mask another nodegroup whose own workers
+// never registered. Regresses a bug where waitWorkersReady compared against the
+// global cluster Ready-node count, so ng-a's Ready worker could have falsely
+// satisfied ng-b's gate too.
+func TestCreateNodegroup_ReadyGateScopedPerNodegroupNotGlobal(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng-a", 1), testAccountID)
+	require.NoError(t, err)
+	_, err = f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng-b", 1), testAccountID)
+	require.NoError(t, err)
+
+	// Only ng-a's worker registers Ready; ng-b's worker never does. If the
+	// Ready-gate were still scoped globally, the cluster-wide count (1) would
+	// wrongly satisfy ng-b's gate too.
+	markWorkersReady(t, f, "c1", "ng-a", 1)
+	f.svc.WaitLaunches()
+
+	ngA, err := GetNodegroupRecord(f.kv, "c1", "ng-a")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusActive, ngA.Status, "ng-a's own Ready worker must activate it")
+
+	ngB, err := GetNodegroupRecord(f.kv, "c1", "ng-b")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusCreateFailed, ngB.Status,
+		"ng-b must not be marked ACTIVE by ng-a's Ready nodes — its own workers never registered")
+	assert.Contains(t, ngB.StatusReason, "did not become Ready")
+}
+
+// A worker launch that fails transiently (QMP timeout / host pressure) must be
+// retried, not abandon the nodegroup at its first failed RunInstances call —
+// the relaunch converges to desired capacity within the retry budget.
+func TestCreateNodegroup_RelaunchesOnWorkerLaunchFailure(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	// The first RunInstances call fails; the retry must relaunch the shortfall
+	// and succeed on its next attempt instead of leaving the nodegroup stuck.
+	f.worker.runErr = errors.New("qmp: timeout waiting for launch")
+	f.worker.failNextN = 1
+
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	f.svc.WaitLaunches()
+
+	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusActive, rec.Status,
+		"the retried launch must converge to ACTIVE, not CREATE_FAILED")
+	assert.Len(t, rec.InstanceIDs, 1)
+	assert.GreaterOrEqual(t, len(f.worker.runCalls), 2, "must have retried after the first failed launch")
+}
+
+// A worker launch that keeps failing must still terminate (CREATE_FAILED) once
+// the retry budget is exhausted — retrying must never hang the nodegroup
+// forever — while having genuinely retried at least once before giving up.
+func TestCreateNodegroup_WorkerLaunchFailureExhaustsRetryBudget(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	f.worker.runErr = errors.New("qmp: timeout waiting for launch")
+
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusCreateFailed, rec.Status)
+	assert.Contains(t, rec.StatusReason, "worker launch shortfall after")
+	assert.Greater(t, len(f.worker.runCalls), 1, "must have retried at least once before giving up")
+}
+
 func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
@@ -520,7 +614,7 @@ func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
 	require.NoError(t, err)
 
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 
 	require.Len(t, f.worker.runCalls, 1)
@@ -537,7 +631,7 @@ func TestCreateNodegroup_NoDiskSizeOmitsBlockDeviceMapping(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
 
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 
 	require.Len(t, f.worker.runCalls, 1)
@@ -569,7 +663,7 @@ func TestDescribeAndListNodegroups(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 
 	desc, err := f.svc.DescribeNodegroup(context.Background(), &eks.DescribeNodegroupInput{
@@ -594,7 +688,7 @@ func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 	require.Len(t, f.worker.runCalls, 1)
 
@@ -634,7 +728,7 @@ func TestUpdateNodegroupConfig_ConcurrentScaleUpConverges(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 	require.Len(t, f.worker.runCalls, 1)
 
@@ -680,7 +774,7 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 		seedActiveClusterWithToken(t, f, "c1")
 		_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
 		require.NoError(t, err)
-		markWorkersReady(t, f, "c1", 1)
+		markWorkersReady(t, f, "c1", "ng1", 1)
 		f.svc.WaitLaunches()
 
 		f.worker.runErr = runErr
@@ -711,7 +805,7 @@ func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 2), testAccountID)
 	require.NoError(t, err)
-	markWorkersReady(t, f, "c1", 2)
+	markWorkersReady(t, f, "c1", "ng1", 2)
 	f.svc.WaitLaunches()
 
 	_, err = f.svc.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{

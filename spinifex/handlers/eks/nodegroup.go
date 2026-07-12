@@ -41,6 +41,17 @@ const (
 	defaultNodegroupReadyPoll    = 15 * time.Second
 )
 
+// defaultWorkerLaunchRetryTimeout / defaultWorkerLaunchRetryBackoff bound how
+// long launchNodegroupInfra retries a worker-launch shortfall (a RunInstances
+// call that failed — e.g. a transient QMP timeout or host capacity pressure)
+// before giving up. Distinct from nodegroupReadyTimeout: this bounds getting the
+// desired instance count RUNNING, not the subsequent wait for k3s-agent to
+// register Ready.
+const (
+	defaultWorkerLaunchRetryTimeout = 5 * time.Minute
+	defaultWorkerLaunchRetryBackoff = 10 * time.Second
+)
+
 // ngCASMaxRetries bounds the compare-and-swap retry loop that serializes
 // concurrent nodegroup-record mutations (overlapping UpdateNodegroupConfig).
 const ngCASMaxRetries = 16
@@ -375,7 +386,7 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 		s.stageGPUDeviceAddon(ctx, accountID, cluster)
 	}
 
-	if _, err := s.launchWorkers(ctx, acctKV, accountID, rec, meta, ngSGID, amiID, token, lc.desired); err != nil {
+	if _, err := s.launchWorkersUntilDesired(ctx, acctKV, accountID, rec, meta, ngSGID, amiID, token, lc.desired); err != nil {
 		// launchWorkers persisted each worker it launched (incrementally), so the
 		// reclaim path can already tear them down; just record the terminal failure.
 		rec.Status = eks.NodegroupStatusCreateFailed
@@ -388,10 +399,13 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 	}
 
 	// Gate ACTIVE on the workers registering Ready (observed via the CP state
-	// report's Ready-node count), not merely on RunInstances success — a worker
-	// that boots but never joins must surface CREATE_FAILED, not falsely ACTIVE.
-	// Baseline is the create-time node count; the workers add lc.desired Ready nodes.
-	if err := s.waitWorkersReady(acctKV, cluster, meta.NodeCount, lc.desired); err != nil {
+	// report's per-nodegroup Ready count, eks.amazonaws.com/nodegroup=ng), not
+	// merely on RunInstances success — a worker that boots but never joins must
+	// surface CREATE_FAILED, not falsely ACTIVE. Scoped to THIS nodegroup so
+	// another nodegroup's Ready workers can never mask this one's shortfall.
+	// Baseline is the create-time count for this nodegroup; the workers add
+	// lc.desired Ready nodes.
+	if err := s.waitWorkersReady(acctKV, cluster, ng, meta.NodegroupNodeCounts[ng], lc.desired); err != nil {
 		rec.Status = eks.NodegroupStatusCreateFailed
 		rec.StatusReason = "workers did not become Ready: " + err.Error()
 		rec.ModifiedAt = time.Now().UTC()
@@ -408,13 +422,16 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 	}
 }
 
-// waitWorkersReady blocks until the cluster's Ready-node count rises by want over
-// baseline — every nodegroup worker registered Ready — or the timeout / bgCtx
-// fires. Ready count is meta.NodeCount, which the ClusterReconciler refreshes
-// from the CP's NATS state report (Ready nodes only). Mirrors the CP reconciler's
-// healthy-observe gating: a nodegroup is ACTIVE only once its workers are observed
-// Ready, not merely launched.
-func (s *EKSServiceImpl) waitWorkersReady(acctKV nats.KeyValue, cluster string, baseline, want int) error {
+// waitWorkersReady blocks until nodegroup ng's own Ready-node count rises by
+// want over baseline — every worker THIS nodegroup launched registered Ready —
+// or the timeout / bgCtx fires. Ready count is
+// meta.NodegroupNodeCounts[ng], scoped to nodes carrying the
+// eks.amazonaws.com/nodegroup=ng label, which the ClusterReconciler refreshes
+// from the CP's NATS state report. Scoping per-nodegroup (rather than the
+// cluster-wide NodeCount total) is deliberate: in a multi-nodegroup cluster,
+// another nodegroup's Ready workers must never let this one falsely reach
+// ACTIVE while its own workers never joined.
+func (s *EKSServiceImpl) waitWorkersReady(acctKV nats.KeyValue, cluster, ng string, baseline, want int) error {
 	target := baseline + want
 	deadline := time.Now().Add(s.nodegroupReadyTimeout)
 	for {
@@ -422,12 +439,13 @@ func (s *EKSServiceImpl) waitWorkersReady(acctKV nats.KeyValue, cluster string, 
 		if err != nil {
 			return err
 		}
-		if meta.NodeCount >= target {
+		ready := meta.NodegroupNodeCounts[ng]
+		if ready >= target {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out after %s: cluster reports %d Ready nodes, want >= %d (baseline %d + %d workers)",
-				s.nodegroupReadyTimeout, meta.NodeCount, target, baseline, want)
+			return fmt.Errorf("timed out after %s: nodegroup %s reports %d Ready nodes, want >= %d (baseline %d + %d workers)",
+				s.nodegroupReadyTimeout, ng, ready, target, baseline, want)
 		}
 		select {
 		case <-s.bgCtx.Done():
@@ -464,6 +482,39 @@ func (s *EKSServiceImpl) launchWorkers(ctx context.Context, acctKV nats.KeyValue
 		}
 	}
 	return ids, nil
+}
+
+// launchWorkersUntilDesired launches count workers, retrying the shortfall when
+// launchWorkers fails partway (a transient RunInstances failure — QMP timeout,
+// host capacity pressure) instead of abandoning the nodegroup at its first
+// failed launch. Each retry relaunches only what's still missing —
+// already-launched workers are never reissued — until the desired count is
+// reached, workerLaunchRetryTimeout elapses, or bgCtx is cancelled. Every retry
+// is logged so a stuck launch is diagnosable without live-tailing the daemon.
+func (s *EKSServiceImpl) launchWorkersUntilDesired(ctx context.Context, acctKV nats.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
+	deadline := time.Now().Add(s.workerLaunchRetryTimeout)
+	all := make([]string, 0, count)
+	remaining := count
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		ids, err := s.launchWorkers(ctx, acctKV, accountID, rec, meta, ngSGID, amiID, token, remaining)
+		all = append(all, ids...)
+		remaining -= len(ids)
+		if remaining <= 0 {
+			return all, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return all, fmt.Errorf("worker launch shortfall after %d attempt(s), %d still missing: %w", attempt, remaining, lastErr)
+		}
+		slog.WarnContext(ctx, "launchNodegroupInfra: worker launch failed short of desired capacity, relaunching shortfall",
+			"cluster", rec.ClusterName, "nodegroup", rec.Name, "attempt", attempt, "remaining", remaining, "err", err)
+		select {
+		case <-s.bgCtx.Done():
+			return all, fmt.Errorf("shutdown during worker relaunch retry (%d still missing): %w", remaining, s.bgCtx.Err())
+		case <-time.After(s.workerLaunchRetryBackoff):
+		}
+	}
 }
 
 // launchOneWorker provisions a single tagged worker VM and returns its instance

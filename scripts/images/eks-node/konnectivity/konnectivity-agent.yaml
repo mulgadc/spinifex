@@ -9,7 +9,9 @@
 #
 # Runs on workers only: it carries no toleration for the control-plane
 # CriticalAddonsOnly=true:NoExecute taint, so it is never scheduled onto the CP
-# nodes (which run the server, not an agent).
+# nodes (which run the server, not an agent). It DOES tolerate the GPU
+# nvidia.com/gpu=present:NoSchedule taint — a GPU-only worker still needs
+# kubectl logs/exec against pods there, which routes through this agent.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -39,6 +41,13 @@ spec:
     spec:
       serviceAccountName: konnectivity-agent
       priorityClassName: system-node-critical
+      # Without this, a GPU-only worker (tainted nvidia.com/gpu=present:NoSchedule)
+      # shows DESIRED=0 for this DaemonSet and kubectl logs/exec against pods
+      # scheduled there fails "No agent available".
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
       # hostNetwork so the agent reaches the NLB over the node network and
       # identifies itself to the server by the node's own IP (the address the
       # apiserver dials back through for kubelet/pod egress).

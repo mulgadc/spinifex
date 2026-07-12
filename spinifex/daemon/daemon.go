@@ -2254,18 +2254,26 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 // canAllocateLocked is the lock-free body of canAllocate. Caller must already
 // hold rm.mu for read or write. Extracted so allocate can re-check capacity
 // while holding the write lock without dropping it.
+//
+// GPU instance types (whole-GPU and MIG alike) are gated on BOTH the cpu/mem
+// calc AND GPU-slot availability. cpu/mem still applies to whole-GPU types —
+// the guest still consumes real host vCPU/RAM even though a GPU backs it —
+// and GPU-slot count is an additional hard constraint layered on top, so
+// admission never advertises more instances than there are GPU slots to
+// back them.
 func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo, count int) int {
-	// Whole-GPU passthrough: gpuManager.Claim is the sole gate — one GPU per
-	// slot, so host CPU/memory is never the binding constraint.
-	// MIG types fall through to the normal check: one physical GPU backs many
-	// concurrent slices, each consuming real host CPU and memory, so those
-	// resources must be tracked and enforced like any non-GPU instance type.
 	instanceTypeName := ""
 	if instanceType.InstanceType != nil {
 		instanceTypeName = *instanceType.InstanceType
 	}
-	if instancetypes.IsGPUType(instanceType) && !instancetypes.IsMIGType(instanceTypeName) {
-		return count
+
+	requiresGPU := instancetypes.IsGPUType(instanceType)
+	availGPU := 0
+	if requiresGPU && rm.gpuManager != nil {
+		gpusNeeded := instancetypes.GPUCountForType(instanceTypeName)
+		if gpusNeeded > 0 {
+			availGPU = rm.gpuManager.Available() / gpusNeeded
+		}
 	}
 
 	n := canAllocateCount(
@@ -2274,7 +2282,7 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 		instanceTypeVCPUs(instanceType),
 		rm.instanceMemChargeMiB(instanceType),
 		count,
-		0, false,
+		availGPU, requiresGPU,
 	)
 	return rm.liveMemGate(n, instanceType)
 }

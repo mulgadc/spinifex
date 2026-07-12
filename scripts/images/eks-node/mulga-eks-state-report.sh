@@ -70,11 +70,21 @@ publish_report() {
     # Probe /healthz through the node's admin kubeconfig (apiserver runs
     # anonymous-auth=false, CIS): an unauthenticated curl would return 401.
     reason=
+    nodegroup_ready='{}'
     if kubectl get --raw='/healthz' 2>/dev/null | grep -q '^ok$'; then
         health=ok
         # Count Ready nodes only — k3s retains terminated workers as NotReady
         # until manually pruned, so a raw node count never drops on scale-down.
         node_count=$(kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready"' | wc -l | tr -d ' ')
+        # Per-nodegroup Ready breakdown: -L appends the node's
+        # eks.amazonaws.com/nodegroup label as the last column ("<none>" when
+        # absent, e.g. the control-plane node itself). Grouping by that label —
+        # rather than only totalling — lets each nodegroup's own Ready-gate be
+        # scoped to its own workers instead of the cluster-wide count, so one
+        # nodegroup's Ready nodes can never mask another's stuck launch.
+        nodegroup_ready=$(kubectl get nodes --no-headers -L eks.amazonaws.com/nodegroup 2>/dev/null \
+            | awk '$2=="Ready" && $NF!="<none>"{c[$NF]++} END{sep=""; printf "{"; for (k in c) {printf "%s\"%s\":%d", sep, k, c[k]; sep=","}; printf "}"}')
+        [ -n "${nodegroup_ready}" ] || nodegroup_ready='{}'
     else
         health=fail
         node_count=0
@@ -91,11 +101,11 @@ publish_report() {
         } > "${CONSOLE:-/dev/console}" 2>&1 || true
     fi
     if [ -n "${reason}" ]; then
-        payload=$(printf '{"healthz":"%s","node_count":%s,"reason":"%s","ts":%s}' \
-            "${health}" "${node_count}" "${reason}" "$(date +%s)")
+        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,"reason":"%s","ts":%s}' \
+            "${health}" "${node_count}" "${nodegroup_ready}" "${reason}" "$(date +%s)")
     else
-        payload=$(printf '{"healthz":"%s","node_count":%s,"ts":%s}' \
-            "${health}" "${node_count}" "$(date +%s)")
+        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,"ts":%s}' \
+            "${health}" "${node_count}" "${nodegroup_ready}" "$(date +%s)")
     fi
     printf '%s' "${payload}" | eks-gateway-publish -channel state 2>&1 \
         | logger -t mulga-eks-state-report

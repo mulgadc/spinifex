@@ -24,6 +24,7 @@ case "$*" in
     *"--raw=/healthz/etcd"*)   printf '%s\n' "${ETCD_BODY:-ok}" ;;
     *"--raw=/readyz?verbose"*) printf '%s\n' "${READYZ_BODY:-}" ;;
     *"--raw=/healthz"*)        printf '%s\n' "${HEALTHZ_BODY:-ok}" ;;
+    *"get nodes"*" -L "*)      printf '%s\n' "${NODES_LABELED_BODY:-}" ;;
     *"get nodes"*)             printf '%s\n' "${NODES_BODY:-}" ;;
     *) : ;;
 esac
@@ -75,15 +76,23 @@ run_agent() {
 }
 
 # --- Case 1: healthy apiserver, 3 Ready nodes -> no reason, quiet console ---
+# NODES_LABELED_BODY carries the -L eks.amazonaws.com/nodegroup breakdown: a
+# CP node ("<none>", excluded), 2 Ready ng-a workers, 1 Ready ng-b worker, and
+# a NotReady ng-b worker that must not count — proving the per-nodegroup tally
+# scopes to THAT nodegroup's own Ready nodes, not the cluster-wide total.
 HEALTHZ_BODY=ok
 NODES_BODY=$(printf 'ip-a Ready s\nip-b Ready s\nip-c Ready s\n')
+NODES_LABELED_BODY=$(printf 'ip-cp Ready s <none>\nip-a Ready s ng-a\nip-b Ready s ng-a\nip-c Ready s ng-b\nip-d NotReady s ng-b\n')
 ETCD_DB_DIR="${WORK}"
-export HEALTHZ_BODY NODES_BODY
+export HEALTHZ_BODY NODES_BODY NODES_LABELED_BODY
 run_agent
 P=$(cat "${WORK}/payload.json")
 case "${P}" in *'"healthz":"ok"'*) pass "healthy: healthz ok" ;; *) fail "healthy: healthz not ok: ${P}" ;; esac
 case "${P}" in *'"node_count":3'*) pass "healthy: node_count 3" ;; *) fail "healthy: node_count wrong: ${P}" ;; esac
 case "${P}" in *'"reason"'*) fail "healthy: reason must be absent: ${P}" ;; *) pass "healthy: no reason field" ;; esac
+case "${P}" in *'"nodegroup_ready":{'*) pass "healthy: nodegroup_ready object present" ;; *) fail "healthy: nodegroup_ready missing: ${P}" ;; esac
+case "${P}" in *'"ng-a":2'*) pass "healthy: ng-a Ready count scoped to its own 2 workers" ;; *) fail "healthy: ng-a count wrong: ${P}" ;; esac
+case "${P}" in *'"ng-b":1'*) pass "healthy: ng-b Ready count excludes its NotReady worker" ;; *) fail "healthy: ng-b count wrong: ${P}" ;; esac
 [ -s "${WORK}/console.out" ] && fail "healthy: console must be quiet" || pass "healthy: console quiet"
 
 # --- Case 2: unhealthy, etcd subcheck failing, etcd unreachable, disk ok ---
@@ -95,6 +104,7 @@ export HEALTHZ_BODY READYZ_BODY ETCD_BODY DF_AVAIL_KB
 run_agent
 P=$(cat "${WORK}/payload.json")
 case "${P}" in *'"healthz":"fail"'*) pass "unhealthy: healthz fail" ;; *) fail "unhealthy: healthz wrong: ${P}" ;; esac
+case "${P}" in *'"nodegroup_ready":{}'*) pass "unhealthy: nodegroup_ready empty (no kubectl node query on a failing apiserver)" ;; *) fail "unhealthy: nodegroup_ready wrong: ${P}" ;; esac
 case "${P}" in *'"reason":"readyz:[etcd poststarthook/start-service-ip-repair-controllers]; etcd:unreachable; disk:ok"'*) pass "unhealthy: reason names failing subchecks + etcd + disk" ;; *) fail "unhealthy: reason wrong: ${P}" ;; esac
 case "${P}" in *'"reason":"'*'"'*'"'*) : ;; esac
 C=$(cat "${WORK}/console.out")

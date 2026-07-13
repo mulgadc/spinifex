@@ -71,6 +71,10 @@ type IGWManagerConfig struct {
 	NATMode       policy.NATMode
 	FlowsBarrier  FlowsBarrier
 	RoutedIngress *RoutedIngressHooks
+	// NexthopSeed installs a static OVN MAC binding for the gateway router's
+	// upstream nexthop, removing the dependency on lazy dynamic ARP. Optional;
+	// nil skips seeding.
+	NexthopSeed func(ctx context.Context, lrpName, nexthopIP string) error
 }
 
 type igwManager struct {
@@ -83,6 +87,7 @@ type igwManager struct {
 	natMode       policy.NATMode
 	barrier       FlowsBarrier
 	routedIngress *RoutedIngressHooks
+	nexthopSeed   func(ctx context.Context, lrpName, nexthopIP string) error
 }
 
 var _ IGWManager = (*igwManager)(nil)
@@ -115,6 +120,7 @@ func NewIGWManager(cfg IGWManagerConfig) (IGWManager, error) {
 		natMode:       cfg.NATMode,
 		barrier:       barrier,
 		routedIngress: cfg.RoutedIngress,
+		nexthopSeed:   cfg.NexthopSeed,
 	}, nil
 }
 
@@ -207,6 +213,13 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 
 	if err := m.routes.AddDefaultRoute(ctx, spec.VPCID, wanNexthop, gwPortName); err != nil {
 		return fmt.Errorf("add default route on %s: %w", routerName, err)
+	}
+
+	if m.nexthopSeed != nil && m.gatewayOwnsNAT() && wanNexthop != "" {
+		if err := m.nexthopSeed(ctx, gwPortName, wanNexthop); err != nil {
+			slog.Warn("external: seed nexthop MAC binding failed; egress relies on dynamic ARP",
+				"vpc_id", spec.VPCID, "gw_port", gwPortName, "nexthop", wanNexthop, "err", err)
+		}
 	}
 
 	// Routed mode: egress SNATs the VPC CIDR to the gateway LRP transit IP so

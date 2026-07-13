@@ -52,6 +52,16 @@ const (
 	defaultWorkerLaunchRetryBackoff = 10 * time.Second
 )
 
+// spawnScanMaxAttempts / defaultSpawnScanRetryBackoff bound the boot-time
+// reconciler scan. JetStream bucket/key enumeration is eventually consistent, so
+// a single scan right after connect can miss a bucket or a just-committed cluster
+// key and silently skip resuming its reconciler. The scan re-runs until the
+// observed cluster count stops growing (Spawn is idempotent) or the cap is hit.
+const (
+	spawnScanMaxAttempts         = 5
+	defaultSpawnScanRetryBackoff = 100 * time.Millisecond
+)
+
 // ngCASMaxRetries bounds the compare-and-swap retry loop that serializes
 // concurrent nodegroup-record mutations (overlapping UpdateNodegroupConfig).
 const ngCASMaxRetries = 16

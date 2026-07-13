@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 
 import { ErrorBanner } from "@/components/error-banner"
+import { GpuInstanceTypeSelect } from "@/components/gpu-instance-type-select"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,6 +17,7 @@ import { Field, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { useProvisionCapacity } from "@/mutations/ecs"
 import {
+  ec2InstanceTypesQueryOptions,
   ec2KeyPairsQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
@@ -39,10 +41,12 @@ export function ProvisionCapacityDialog({
   const { data: subnetsData } = useQuery(ec2SubnetsQueryOptions)
   const { data: sgData } = useQuery(ec2SecurityGroupsQueryOptions)
   const { data: keyPairsData } = useQuery(ec2KeyPairsQueryOptions)
+  const { data: instanceTypesData } = useQuery(ec2InstanceTypesQueryOptions)
 
   const subnets = subnetsData?.Subnets ?? []
   const securityGroups = sgData?.SecurityGroups ?? []
   const keyPairs = keyPairsData?.KeyPairs ?? []
+  const instanceTypes = instanceTypesData?.InstanceTypes ?? []
 
   const [instanceType, setInstanceType] = useState("t3.small")
   const [count, setCount] = useState(1)
@@ -97,10 +101,10 @@ export function ProvisionCapacityDialog({
             <FieldTitle>
               <label htmlFor="provision-instance-type">Instance type</label>
             </FieldTitle>
-            <Input
+            <GpuInstanceTypeSelect
               id="provision-instance-type"
-              onChange={(e) => setInstanceType(e.target.value)}
-              placeholder="t3.small"
+              instanceTypes={instanceTypes}
+              onValueChange={setInstanceType}
               value={instanceType}
             />
           </Field>

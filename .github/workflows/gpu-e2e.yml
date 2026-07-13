@@ -154,35 +154,38 @@ jobs:
           ssh ${{ env.ssh_opts }} "${WATTLE_SSH_USER}@${WATTLE_SSH_HOST}" \
             'AWS_PROFILE=spinifex aws ec2 describe-regions --output text'
 
-      # Fail fast with an actionable message if the base GPU AMI (raw-EC2 GPU
-      # suite) isn't imported. The ECS/EKS GPU node AMIs are checked too but
-      # only warn — their tests skip cleanly (requireECSGPUFixture /
-      # requireEKSGPUFixture) rather than failing when absent.
-      - name: Preflight — confirm GPU AMIs registered
+      # Advisory inventory — the suite is self-guarding: each test t.Skip()s
+      # when its AMI is absent (raw EC2 -> ubuntu base GPU AMI; ECS ->
+      # managed-by=ecs; EKS -> spinifex-eks-node + -gpu). So do NOT hard-fail
+      # per-AMI; only fail when ZERO GPU AMIs are present (nothing could run,
+      # which would otherwise pass as an all-skipped false green).
+      - name: Preflight — inventory GPU AMIs
         if: steps.gate.outputs.paused != 'true'
         run: |
           set -euo pipefail
           REMOTE='
             set -e
-            BASE=$(AWS_PROFILE=spinifex aws ec2 describe-images \
-              --filters "Name=name,Values=ubuntu-26.04-nvidia-gpu-x86_64" "Name=state,Values=available" \
-              --query "Images[0].ImageId" --output text)
-            if [ -z "$BASE" ] || [ "$BASE" = "None" ]; then
-              echo "base GPU AMI ubuntu-26.04-nvidia-gpu-x86_64 not imported on wattle" >&2
-              echo "run: spx admin images import --name ubuntu-26.04-nvidia-gpu-x86_64" >&2
+            PRESENT=0
+            check() {
+              ID=$(AWS_PROFILE=spinifex aws ec2 describe-images \
+                --filters "Name=name,Values=$1" "Name=state,Values=available" \
+                --query "Images[0].ImageId" --output text 2>/dev/null)
+              if [ -z "$ID" ] || [ "$ID" = "None" ]; then
+                echo "::warning::$1 not imported — its GPU test(s) will skip"
+              else
+                echo "present: $1 = $ID"
+                PRESENT=$((PRESENT+1))
+              fi
+            }
+            check ubuntu-26.04-nvidia-gpu-x86_64
+            check spinifex-ecs-node-gpu
+            check spinifex-eks-node
+            check spinifex-eks-node-gpu
+            if [ "$PRESENT" -eq 0 ]; then
+              echo "no GPU AMIs imported on wattle — nothing to test. Import at least one first." >&2
               exit 1
             fi
-            echo "base GPU AMI: $BASE"
-            for NAME in spinifex-ecs-node-gpu spinifex-eks-node spinifex-eks-node-gpu; do
-              ID=$(AWS_PROFILE=spinifex aws ec2 describe-images \
-                --filters "Name=name,Values=$NAME" "Name=state,Values=available" \
-                --query "Images[0].ImageId" --output text)
-              if [ -z "$ID" ] || [ "$ID" = "None" ]; then
-                echo "::warning::$NAME not imported — its GPU test(s) will skip"
-              else
-                echo "$NAME AMI: $ID"
-              fi
-            done
+            echo "$PRESENT GPU AMI(s) available — running the self-guarding suite (absent ones skip)."
           '
           ssh ${{ env.ssh_opts }} "${WATTLE_SSH_USER}@${WATTLE_SSH_HOST}" "$REMOTE"
 

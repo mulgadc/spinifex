@@ -70,6 +70,160 @@ func TestRunTask_PullRunReportsRunning(t *testing.T) {
 	}
 }
 
+// TestRunTask_GPUCarriedToRunSpec covers mulga-11opz (Epic C task C1): the
+// AssignContainer's GPU count reaches the runtime RunSpec unchanged; a
+// container with no GPU request keeps RunSpec.GPU at zero (regression).
+func TestRunTask_GPUCarriedToRunSpec(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(cp, rt)
+	as := testAssign()
+	as.Containers = append(as.Containers, bus.AssignContainer{
+		Name: "trainer", Image: "registry/trainer:1", GPU: 2,
+	})
+	a.runTask(context.Background(), as)
+
+	if len(rt.Runs) != 2 {
+		t.Fatalf("expected two runs, got %+v", rt.Runs)
+	}
+	if rt.Runs[0].GPU != 0 {
+		t.Errorf("web container: want GPU=0, got %d", rt.Runs[0].GPU)
+	}
+	if rt.Runs[1].GPU != 2 {
+		t.Errorf("trainer container: want GPU=2, got %d", rt.Runs[1].GPU)
+	}
+}
+
+// TestRunTask_GPUPinsAndReportsUUIDs covers C3: a container's GPU request is
+// pinned from the agent's local ledger, carried on the RUNNING report's
+// ContainerStatus, and forwarded to the control plane via ReportTaskGPU.
+func TestRunTask_GPUPinsAndReportsUUIDs(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa", "GPU-bbb"), cp, rt, rt, nil)
+	as := testAssign()
+	as.Containers = append(as.Containers, bus.AssignContainer{
+		Name: "trainer", Image: "registry/trainer:1", GPU: 1,
+	})
+	a.runTask(context.Background(), as)
+
+	st := cp.taskStates()
+	if len(st) == 0 || st[len(st)-1].LastStatus != bus.TaskStatusRunning {
+		t.Fatalf("want RUNNING final state, got %+v", st)
+	}
+	last := st[len(st)-1]
+	var trainer *bus.ContainerStatus
+	for i := range last.Containers {
+		if last.Containers[i].Name == "trainer" {
+			trainer = &last.Containers[i]
+		}
+	}
+	if trainer == nil || len(trainer.GPUIDs) != 1 {
+		t.Fatalf("trainer container missing pinned GPU UUID: %+v", last.Containers)
+	}
+	if trainer.GPUIDs[0] != "GPU-aaa" && trainer.GPUIDs[0] != "GPU-bbb" {
+		t.Errorf("unexpected pinned UUID %q", trainer.GPUIDs[0])
+	}
+
+	reports := cp.gpuReportsFor(as.TaskID)
+	if len(reports) != 1 {
+		t.Fatalf("want one ReportTaskGPU call, got %d", len(reports))
+	}
+	if reports[0].cluster != as.ClusterName {
+		t.Errorf("report cluster = %q, want %q", reports[0].cluster, as.ClusterName)
+	}
+	if len(reports[0].containers) != 1 || reports[0].containers[0].Name != "trainer" {
+		t.Errorf("report containers = %+v, want one trainer entry", reports[0].containers)
+	}
+}
+
+// TestRunTask_GPUIDsReachRunSpec covers C4: the ledger's pinned UUIDs for a
+// container reach RunSpec.GPUIDs (not just the RunSpec.GPU count), so the
+// runner can inject them as CDI devices; a non-GPU container's RunSpec
+// carries no GPUIDs.
+func TestRunTask_GPUIDsReachRunSpec(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa", "GPU-bbb"), cp, rt, rt, nil)
+	as := testAssign()
+	as.Containers = append(as.Containers, bus.AssignContainer{
+		Name: "trainer", Image: "registry/trainer:1", GPU: 1,
+	})
+	a.runTask(context.Background(), as)
+
+	if len(rt.Runs) != 2 {
+		t.Fatalf("expected two runs, got %+v", rt.Runs)
+	}
+	if len(rt.Runs[0].GPUIDs) != 0 {
+		t.Errorf("web container: want no GPUIDs, got %+v", rt.Runs[0].GPUIDs)
+	}
+	trainer := rt.Runs[1]
+	if len(trainer.GPUIDs) != 1 {
+		t.Fatalf("trainer container: want one pinned GPUID, got %+v", trainer.GPUIDs)
+	}
+	if trainer.GPUIDs[0] != "GPU-aaa" && trainer.GPUIDs[0] != "GPU-bbb" {
+		t.Errorf("unexpected pinned UUID %q", trainer.GPUIDs[0])
+	}
+}
+
+// A container with no GPU request never triggers a ReportTaskGPU call.
+func TestRunTask_NoGPUSkipsReport(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(cp, rt)
+	as := testAssign()
+	a.runTask(context.Background(), as)
+
+	if reports := cp.gpuReportsFor(as.TaskID); len(reports) != 0 {
+		t.Errorf("want no GPU report for a non-GPU task, got %+v", reports)
+	}
+}
+
+// A GPU request exceeding the ledger's free devices (discovery found none, or
+// fewer than requested) is best-effort: the container still runs, it just
+// carries no pinned UUIDs and so no CDI devices are injected.
+func TestRunTask_GPUShortLedgerStillRuns(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(cp, rt) // testIdentity() has no discovered GPU UUIDs
+	as := testAssign()
+	as.Containers = append(as.Containers, bus.AssignContainer{
+		Name: "trainer", Image: "registry/trainer:1", GPU: 2,
+	})
+	a.runTask(context.Background(), as)
+
+	if len(rt.Runs) != 2 {
+		t.Fatalf("expected both containers to run despite the short ledger, got %+v", rt.Runs)
+	}
+	if reports := cp.gpuReportsFor(as.TaskID); len(reports) != 0 {
+		t.Errorf("want no GPU report when nothing was pinned, got %+v", reports)
+	}
+}
+
+// stopTask releases the task's pinned GPU UUIDs back to the ledger so a later
+// task on the same instance can reuse them.
+func TestStopTask_ReleasesGPUsBackToLedger(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{
+		{ID: "t-001-trainer", Running: true, Labels: map[string]string{
+			"mulga.ecs.taskID": "t-001", "mulga.ecs.containerName": "trainer",
+		}},
+	}}
+	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa"), cp, rt, rt, nil)
+	if _, err := a.gpu.Pin(gpuKey("t-001", "trainer"), 1); err != nil {
+		t.Fatalf("seed pin: %v", err)
+	}
+	if len(a.gpu.free) != 0 {
+		t.Fatalf("setup: want ledger fully pinned, free = %v", a.gpu.free)
+	}
+
+	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "bye"})
+
+	if len(a.gpu.free) != 1 {
+		t.Errorf("want the GPU released back to the ledger, free = %v", a.gpu.free)
+	}
+}
+
 // A pull failure reports STOPPED and never starts the container.
 func TestRunTask_PullFailureReportsStopped(t *testing.T) {
 	cp := &fakeCP{}

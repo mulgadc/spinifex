@@ -33,6 +33,7 @@ var wiredActions = map[string]bool{
 	"DescribeServices": true, "ListServices": true,
 	"SubmitTaskStateChange": true,
 	"PollAssignments":       true,
+	"ReportTaskGPU":         true,
 	"TagResource":           true, "UntagResource": true, "ListTagsForResource": true,
 	"PutClusterCapacityProviders": true,
 	"CreateCapacityProvider":      true, "DescribeCapacityProviders": true, "DeleteCapacityProvider": true,

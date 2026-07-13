@@ -6,11 +6,40 @@ import (
 	"sort"
 
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/cdi"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
+
+// cdiVendorGPU is the NVIDIA CDI vendor/class prefix for whole-GPU devices, per
+// the NVIDIA CDI naming convention (nvidia.com/gpu=<uuid>).
+const cdiVendorGPU = "nvidia.com/gpu"
+
+// cdiDeviceNames maps a container's pinned GPU device UUIDs to CDI device
+// names. Empty input (non-GPU container) returns nil so no CDI opt is added.
+func cdiDeviceNames(uuids []string) []string {
+	if len(uuids) == 0 {
+		return nil
+	}
+	names := make([]string, len(uuids))
+	for i, id := range uuids {
+		names[i] = cdiVendorGPU + "=" + id
+	}
+	return names
+}
+
+// cdiSpecOpts returns the oci.SpecOpts needed to inject gpuIDs (via
+// containerd's CDI machinery) as devices into a container's OCI spec. It
+// returns nil for a non-GPU container so Run adds nothing to the opts list.
+func cdiSpecOpts(gpuIDs []string) []oci.SpecOpts {
+	devices := cdiDeviceNames(gpuIDs)
+	if len(devices) == 0 {
+		return nil
+	}
+	return []oci.SpecOpts{cdi.WithCDIDevices(devices...)}
+}
 
 var _ Runner = (*containerdPuller)(nil)
 
@@ -51,6 +80,7 @@ func (p *containerdPuller) Run(ctx context.Context, id string, spec RunSpec) (st
 	if len(spec.Env) > 0 {
 		specOpts = append(specOpts, oci.WithEnv(envSlice(spec.Env)))
 	}
+	specOpts = append(specOpts, cdiSpecOpts(spec.GPUIDs)...)
 
 	container, err := p.client.NewContainer(ctx, id,
 		containerd.WithNewSnapshot(id+"-snapshot", image),

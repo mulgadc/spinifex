@@ -42,12 +42,25 @@ func TestAgent_RunRegistersThenStopsOnContext(t *testing.T) {
 }
 
 func TestDetectCapacity_Positive(t *testing.T) {
-	c := detectCapacity()
+	c := detectCapacity(nil)
 	if c.CPU <= 0 {
 		t.Errorf("CPU = %d, want > 0", c.CPU)
 	}
 	// MemoryMiB may be 0 on platforms without /proc/meminfo; just assert non-negative.
 	if c.MemoryMiB < 0 {
 		t.Errorf("MemoryMiB = %d, want >= 0", c.MemoryMiB)
+	}
+	if c.GPU != 0 || c.GPUIDs != nil {
+		t.Errorf("no GPU UUIDs given: want GPU=0/GPUIDs=nil, got %d/%v", c.GPU, c.GPUIDs)
+	}
+}
+
+func TestDetectCapacity_WithGPUUUIDs(t *testing.T) {
+	c := detectCapacity([]string{"GPU-aaa", "GPU-bbb"})
+	if c.GPU != 2 {
+		t.Errorf("GPU = %d, want 2", c.GPU)
+	}
+	if len(c.GPUIDs) != 2 {
+		t.Errorf("GPUIDs = %v, want 2 entries", c.GPUIDs)
 	}
 }

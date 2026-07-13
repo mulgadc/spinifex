@@ -112,6 +112,10 @@ func (d *Daemon) handleECSPollAssignments(msg *nats.Msg) {
 	handleNATSRequest(msg, d.ecsService.PollAssignments)
 }
 
+func (d *Daemon) handleECSReportTaskGPU(msg *nats.Msg) {
+	handleNATSRequest(msg, d.ecsService.ReportTaskGPU)
+}
+
 // --- Capacity ---
 
 func (d *Daemon) handleECSProvisionCapacity(msg *nats.Msg) {

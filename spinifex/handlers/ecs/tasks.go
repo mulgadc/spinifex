@@ -50,7 +50,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 		count = 1
 	}
 	strategy := placementStrategyFromAWS(input.PlacementStrategy)
-	cpu, mem := taskDef.reservedCPU(), taskDef.reservedMemory()
+	cpu, mem, gpu := taskDef.reservedCPU(), taskDef.reservedMemory(), taskDef.reservedGPU()
 
 	mode := resolveNetworkMode(taskDef)
 	netCfg, err := parseAwsvpcConfig(input, mode)
@@ -61,7 +61,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 	out := &ecs.RunTaskOutput{}
 	for i := 0; i < count; i++ {
 		taskID := uuid.NewString()
-		inst, err := s.reservePlacement(kv, cluster, taskID, cpu, mem, strategy)
+		inst, err := s.reservePlacement(kv, cluster, taskID, cpu, mem, gpu, strategy)
 		if err != nil {
 			out.Failures = append(out.Failures, &ecs.Failure{
 				Reason: aws.String("RESOURCE:placement"),
@@ -70,7 +70,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 			continue
 		}
 
-		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem)
+		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem, gpu)
 		rec.NetworkMode = mode
 		rec.Group = aws.StringValue(input.Group)
 		rec.StartedBy = aws.StringValue(input.StartedBy)
@@ -99,7 +99,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 // the caller skips it without leaking the ENI or the reserved capacity.
 func (s *Service) provisionTaskENI(ctx context.Context, kv nats.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
 	rollback := func(reason string, err error) *ecs.Failure {
-		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB); rerr != nil {
+		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB, rec.GPU); rerr != nil {
 			slog.ErrorContext(ctx, "ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
 		}
 		return &ecs.Failure{Reason: aws.String(reason), Detail: aws.String(err.Error())}
@@ -126,13 +126,13 @@ func (s *Service) provisionTaskENI(ctx context.Context, kv nats.KeyValue, accoun
 
 // reservePlacement bin-packs a task onto an ACTIVE instance and commits the
 // reservation under a KV CAS, retrying on contention.
-func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu, mem int, strategy string) (*InstanceRecord, error) {
+func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu, mem, gpu int, strategy string) (*InstanceRecord, error) {
 	for range reservePlacementRetries {
 		instances, err := s.listInstanceRecords(kv, cluster)
 		if err != nil {
 			return nil, err
 		}
-		chosen, err := placeTask(instances, cpu, mem, strategy)
+		chosen, err := placeTask(instances, cpu, mem, gpu, strategy)
 		if err != nil {
 			return nil, err
 		}
@@ -146,11 +146,12 @@ func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu
 		if uerr := json.Unmarshal(entry.Value(), &live); uerr != nil {
 			return nil, uerr
 		}
-		if !live.fits(cpu, mem) {
+		if !live.fits(cpu, mem, gpu) {
 			continue
 		}
 		live.ReservedCPU += cpu
 		live.ReservedMemoryMiB += mem
+		live.ReservedGPU += gpu
 		live.PlacedTasks = append(live.PlacedTasks, taskID)
 		data, merr := json.Marshal(&live)
 		if merr != nil {
@@ -165,7 +166,7 @@ func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu
 }
 
 // newTaskRecord builds a PENDING task record for a placed task.
-func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRecord, inst *InstanceRecord, cpu, mem int) *TaskRecord {
+func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRecord, inst *InstanceRecord, cpu, mem, gpu int) *TaskRecord {
 	now := time.Now().UTC()
 	rec := &TaskRecord{
 		TaskID:               taskID,
@@ -180,6 +181,7 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRe
 		LastStatus:           TaskStatusPending,
 		ReservedCPU:          cpu,
 		ReservedMemoryMiB:    mem,
+		GPU:                  gpu,
 		CreatedAt:            now,
 	}
 	for _, c := range td.Containers {
@@ -305,6 +307,9 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		ctr := &ecs.Container{Name: aws.String(c.Name), LastStatus: aws.String(c.Status)}
 		if c.ExitCode != nil {
 			ctr.ExitCode = aws.Int64(int64(*c.ExitCode))
+		}
+		if len(c.GPUIDs) > 0 {
+			ctr.GpuIds = aws.StringSlice(c.GPUIDs)
 		}
 		t.Containers = append(t.Containers, ctr)
 	}

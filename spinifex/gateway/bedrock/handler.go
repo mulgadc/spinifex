@@ -56,6 +56,17 @@ func WriteJSONResponse(w http.ResponseWriter, obj any) {
 	}
 }
 
+// WriteRawResponse writes body verbatim with contentType and a 200 status,
+// bypassing JSON marshaling. Used by InvokeModel, whose response is the
+// provider-native body rather than a struct.
+func WriteRawResponse(w http.ResponseWriter, body []byte, contentType string) {
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(body); err != nil {
+		slog.Error("Failed to write bedrock raw response", "err", err)
+	}
+}
+
 // WriteJSONError emits the AWS REST-JSON error envelope with the given code,
 // message, and HTTP status.
 func WriteJSONError(w http.ResponseWriter, code, message string, httpStatus int) {

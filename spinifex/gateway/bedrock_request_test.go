@@ -35,6 +35,23 @@ func newVLLMStub(t *testing.T) *httptest.Server {
 	return ts
 }
 
+// newLlamaCompletionsStub stands up an httptest server that answers the
+// OpenAI completions wire, mirroring gateway/bedrock/invoke_llama_test.go's
+// stub, for the InvokeModel self-host path.
+func newLlamaCompletionsStub(t *testing.T) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [{"text": "hi from llama invoke", "finish_reason": "stop"}],
+			"usage": {"prompt_tokens": 5, "completion_tokens": 3}
+		}`))
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
 // newBedrockRequestGateway builds a GatewayConfig with a real NATS connection
 // (satisfying Bedrock_Request/BedrockRuntime_Request's nil-check only — no
 // NATS subject handling is required for these routes), no IAMService (so
@@ -152,6 +169,25 @@ func TestBedrockRuntimeRequest_MalformedBodyReturnsValidationException(t *testin
 	err := gw.BedrockRuntime_Request(w, req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
+}
+
+func TestBedrockRuntimeRequest_InvokeModel(t *testing.T) {
+	ts := newLlamaCompletionsStub(t)
+	gw := newBedrockRequestGateway(t, ts.URL)
+
+	body := `{"prompt":"hello","max_gen_len":128}`
+	req := bedrockRequestWithAccount(http.MethodPost, "/model/"+bedrockTestLlamaModelID+"/invoke", body)
+	w := httptest.NewRecorder()
+	require.NoError(t, gw.BedrockRuntime_Request(w, req))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+	assert.JSONEq(t, `{
+		"generation": "hi from llama invoke",
+		"prompt_token_count": 5,
+		"generation_token_count": 3,
+		"stop_reason": "stop"
+	}`, w.Body.String())
 }
 
 func TestBedrockRuntimeRequest_MissingAccountIDReturnsServerInternal(t *testing.T) {

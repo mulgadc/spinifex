@@ -52,9 +52,17 @@ import {
   EKS_CAPACITY_TYPES,
 } from "@/types/eks"
 
-// A nodegroup is GPU-enabled iff its primary (first) instance type is a GPU
-// type. NodegroupRecord does not expose a GPU flag over the API, so this is
-// derived structurally from InstanceTypes, mirroring isGpuInstanceType.
+// GPU AMI types per the AWS EKS AMITypes enum (AL2_x86_64_GPU,
+// BOTTLEROCKET_x86_64_NVIDIA, BOTTLEROCKET_ARM_64_NVIDIA). DescribeNodegroup
+// forces amiType to the GPU variant whenever the nodegroup is GPU-enabled, so
+// an already-created nodegroup's GPU badge reads that response field instead
+// of re-deriving it from instance types.
+function isGpuAmiType(amiType: string | undefined): boolean {
+  return !!amiType && (amiType.endsWith("_GPU") || amiType.endsWith("_NVIDIA"))
+}
+
+// Pre-create only: the selected instance type is the sole GPU signal before a
+// nodegroup exists, driving the AMI/taint note in the add-nodegroup form.
 function isGpuNodegroup(
   primaryInstanceType: string | undefined,
   instanceTypes: InstanceTypeInfo[],
@@ -177,7 +185,6 @@ function NodegroupRow({
   const { data } = useQuery(
     eksNodegroupQueryOptions(clusterName, nodegroupName),
   )
-  const { data: instanceTypesData } = useQuery(ec2InstanceTypesQueryOptions)
   const updateVersion = useUpdateNodegroupVersion()
   const ng = data?.nodegroup
   const scaling = ng?.scalingConfig
@@ -186,10 +193,7 @@ function NodegroupRow({
 
   const updateAvailable =
     !!clusterVersion && !!ng?.version && ng.version !== clusterVersion
-  const isGpu = isGpuNodegroup(
-    ng?.instanceTypes?.[0],
-    instanceTypesData?.InstanceTypes ?? [],
-  )
+  const isGpu = isGpuAmiType(ng?.amiType)
 
   return (
     <DetailCard>

@@ -46,7 +46,7 @@ function seed(opts?: { nodegroupVersion?: string; gpuNodegroup?: boolean }) {
       status: "ACTIVE",
       version: opts?.nodegroupVersion ?? "1.29",
       instanceTypes: [opts?.gpuNodegroup ? "g5.xlarge" : "t3.medium"],
-      amiType: "AL2_x86_64",
+      amiType: opts?.gpuNodegroup ? "AL2_x86_64_GPU" : "AL2_x86_64",
       capacityType: "ON_DEMAND",
       scalingConfig: { minSize: 1, desiredSize: 2, maxSize: 3 },
     },

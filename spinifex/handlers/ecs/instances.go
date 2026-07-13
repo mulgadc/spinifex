@@ -236,10 +236,23 @@ func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error
 	prev := task.LastStatus
 	task.LastStatus = msg.LastStatus
 	if len(msg.Containers) > 0 {
+		// Preserve pinned GPU UUIDs across a state change that omits them — the
+		// STOPPED report carries no GPUIDs and would otherwise wipe the device
+		// IDs the RUNNING report set, leaving DescribeTasks gpuIds empty.
+		prevGPUIDs := make(map[string][]string, len(task.Containers))
+		for _, c := range task.Containers {
+			if len(c.GPUIDs) > 0 {
+				prevGPUIDs[c.Name] = c.GPUIDs
+			}
+		}
 		task.Containers = task.Containers[:0]
 		for _, c := range msg.Containers {
+			gpuIDs := c.GPUIDs
+			if len(gpuIDs) == 0 {
+				gpuIDs = prevGPUIDs[c.Name]
+			}
 			task.Containers = append(task.Containers, ContainerState{
-				Name: c.Name, Status: c.Status, ContainerID: c.ContainerID, ExitCode: c.ExitCode, GPUIDs: c.GPUIDs,
+				Name: c.Name, Status: c.Status, ContainerID: c.ContainerID, ExitCode: c.ExitCode, GPUIDs: gpuIDs,
 			})
 		}
 	}

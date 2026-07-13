@@ -7,6 +7,7 @@ import { BackLink } from "@/components/back-link"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
+import { GpuInstanceTypeSelect } from "@/components/gpu-instance-type-select"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import {
@@ -21,15 +22,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Field, FieldTitle } from "@/components/ui/field"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { useAdmin } from "@/contexts/admin-context"
-import { formatDateTime, formatVRAMMiB } from "@/lib/utils"
+import { formatDateTime } from "@/lib/utils"
 import {
   useGetConsoleOutput,
   useModifyInstanceAttribute,
@@ -43,6 +37,7 @@ import {
 
 import { AmiDetails } from "../../-components/ami-details"
 import { CreateImageDialog } from "../../-components/create-image-dialog"
+import { GpuDetailCard } from "../../-components/gpu-detail-card"
 import { IamRolePanel } from "../../-components/iam-role-panel"
 import { InstanceActions } from "../../-components/instance-actions"
 
@@ -98,14 +93,6 @@ function InstanceDetail() {
   const [showConsole, setShowConsole] = useState(false)
   const [consoleOutput, setConsoleOutput] = useState<string | null>(null)
   const [showCreateImage, setShowCreateImage] = useState(false)
-
-  const instanceTypes = [
-    ...new Set(
-      instanceTypesData.InstanceTypes?.flatMap((t) =>
-        t.InstanceType ? [t.InstanceType] : [],
-      ),
-    ),
-  ].toSorted()
 
   if (!instance?.InstanceId) {
     return (
@@ -335,31 +322,7 @@ function InstanceDetail() {
         <IamRolePanel instanceId={instance.InstanceId} />
 
         {/* GPU */}
-        {isAdmin && vmInfo?.gpu && (
-          <DetailCard>
-            <DetailCard.Header>GPU</DetailCard.Header>
-            <DetailCard.Content>
-              <DetailRow label="Model" value={vmInfo.gpu.model} />
-              <DetailRow
-                label="VRAM"
-                value={formatVRAMMiB(vmInfo.gpu.vram_mib)}
-              />
-              <DetailRow
-                label="Attachment"
-                value={vmInfo.gpu.profile ? "MIG slice" : "PCIe passthrough"}
-              />
-              {vmInfo.gpu.profile && (
-                <DetailRow label="Profile" value={vmInfo.gpu.profile} />
-              )}
-              {vmInfo.gpu.mdev_path && (
-                <DetailRow label="Mdev path" value={vmInfo.gpu.mdev_path} />
-              )}
-              {vmInfo.gpu.pci_address && (
-                <DetailRow label="PCI address" value={vmInfo.gpu.pci_address} />
-              )}
-            </DetailCard.Content>
-          </DetailCard>
-        )}
+        {isAdmin && <GpuDetailCard gpu={vmInfo?.gpu} />}
 
         {/* Block Device Mappings */}
         {instance.BlockDeviceMappings &&
@@ -422,21 +385,13 @@ function InstanceDetail() {
             <FieldTitle>
               <label htmlFor="instanceType">Instance Type</label>
             </FieldTitle>
-            <Select
-              onValueChange={(value) => setSelectedType(value ?? "")}
+            <GpuInstanceTypeSelect
+              className="w-full"
+              id="instanceType"
+              instanceTypes={instanceTypesData.InstanceTypes ?? []}
+              onValueChange={setSelectedType}
               value={selectedType}
-            >
-              <SelectTrigger className="w-full" id="instanceType">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {instanceTypes.map((type) => (
-                  <SelectItem key={type} value={type}>
-                    {type}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            />
           </Field>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>

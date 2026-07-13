@@ -197,6 +197,75 @@ func TestVLLMProvider_ConverseStream_UpstreamNon2xxMapsStatus(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorThrottlingException, err.Error())
 }
 
+// A usage-only chunk that arrives without a preceding finish_reason chunk must
+// still yield contentBlockStop+messageStop before metadata, not metadata first.
+func TestVLLMProvider_ConverseStream_UsageWithoutFinishReasonKeepsOrder(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":3}}\n\n" +
+		"data: [DONE]\n\n"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-70b-instruct-v1:0"
+	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	p.httpClient = ts.Client()
+
+	src, err := p.ConverseStream(context.Background(), modelID, &bedrockruntime.ConverseStreamInput{})
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	events := drainConverseStream(t, src)
+	kinds := make([]converseStreamEventKind, len(events))
+	for i, ev := range events {
+		kinds[i] = ev.Kind
+	}
+	assert.Equal(t, []converseStreamEventKind{
+		converseStreamEventMessageStart,
+		converseStreamEventContentBlockStart,
+		converseStreamEventContentBlockDelta,
+		converseStreamEventContentBlockStop,
+		converseStreamEventMessageStop,
+		converseStreamEventMetadata,
+	}, kinds)
+}
+
+// A zero-content stream (upstream closes before any choice chunk) must still be
+// well-formed: messageStart before the synthesized stop events, never orphaned.
+func TestVLLMProvider_ConverseStream_EmptyStreamIsWellFormed(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-70b-instruct-v1:0"
+	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	p.httpClient = ts.Client()
+
+	src, err := p.ConverseStream(context.Background(), modelID, &bedrockruntime.ConverseStreamInput{})
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	events := drainConverseStream(t, src)
+	require.NotEmpty(t, events)
+	assert.Equal(t, converseStreamEventMessageStart, events[0].Kind)
+	kinds := make([]converseStreamEventKind, len(events))
+	for i, ev := range events {
+		kinds[i] = ev.Kind
+	}
+	assert.Equal(t, []converseStreamEventKind{
+		converseStreamEventMessageStart,
+		converseStreamEventContentBlockStart,
+		converseStreamEventContentBlockStop,
+		converseStreamEventMessageStop,
+		converseStreamEventMetadata,
+	}, kinds)
+}
+
 func TestVLLMConverseStreamSource_MidStreamDecodeErrorSurfacesAsStreamFault(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

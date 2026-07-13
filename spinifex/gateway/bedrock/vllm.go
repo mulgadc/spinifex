@@ -368,26 +368,17 @@ func (s *vllmConverseStreamSource) consume(chunk vllmStreamChunk) {
 	}
 	if len(chunk.Choices) == 0 {
 		// The trailing usage-only chunk from stream_options.include_usage.
+		// Close the block/message before metadata so the taxonomy stays ordered
+		// even if the upstream sends usage without a prior finish_reason chunk.
 		if chunk.Usage != nil {
+			s.closeOut(bedrockruntime.StopReasonEndTurn)
 			s.emitMetadata()
 		}
 		return
 	}
 
 	choice := chunk.Choices[0]
-	if !s.started {
-		s.started = true
-		s.queue = append(s.queue,
-			ConverseStreamEvent{
-				Kind:         converseStreamEventMessageStart,
-				MessageStart: &bedrockruntime.MessageStartEvent{Role: aws.String(bedrockruntime.ConversationRoleAssistant)},
-			},
-			ConverseStreamEvent{
-				Kind:              converseStreamEventContentBlockStart,
-				ContentBlockStart: &bedrockruntime.ContentBlockStartEvent{ContentBlockIndex: aws.Int64(0), Start: &bedrockruntime.ContentBlockStart{}},
-			},
-		)
-	}
+	s.ensureStarted()
 
 	if choice.Delta.Content != "" {
 		s.queue = append(s.queue, ConverseStreamEvent{
@@ -404,11 +395,31 @@ func (s *vllmConverseStreamSource) consume(chunk vllmStreamChunk) {
 	}
 }
 
+// ensureStarted queues messageStart+contentBlockStart exactly once, so the stop
+// events can never appear without a preceding start on a zero-content stream.
+func (s *vllmConverseStreamSource) ensureStarted() {
+	if s.started {
+		return
+	}
+	s.started = true
+	s.queue = append(s.queue,
+		ConverseStreamEvent{
+			Kind:         converseStreamEventMessageStart,
+			MessageStart: &bedrockruntime.MessageStartEvent{Role: aws.String(bedrockruntime.ConversationRoleAssistant)},
+		},
+		ConverseStreamEvent{
+			Kind:              converseStreamEventContentBlockStart,
+			ContentBlockStart: &bedrockruntime.ContentBlockStartEvent{ContentBlockIndex: aws.Int64(0), Start: &bedrockruntime.ContentBlockStart{}},
+		},
+	)
+}
+
 // closeOut queues contentBlockStop+messageStop exactly once.
 func (s *vllmConverseStreamSource) closeOut(stopReason string) {
 	if s.stopped {
 		return
 	}
+	s.ensureStarted()
 	s.stopped = true
 	s.queue = append(s.queue,
 		ConverseStreamEvent{

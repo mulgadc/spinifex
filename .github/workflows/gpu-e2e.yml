@@ -154,38 +154,69 @@ jobs:
           ssh ${{ env.ssh_opts }} "${WATTLE_SSH_USER}@${WATTLE_SSH_HOST}" \
             'AWS_PROFILE=spinifex aws ec2 describe-regions --output text'
 
-      # Advisory inventory — the suite is self-guarding: each test t.Skip()s
-      # when its AMI is absent (raw EC2 -> ubuntu base GPU AMI; ECS ->
-      # managed-by=ecs; EKS -> spinifex-eks-node + -gpu). So do NOT hard-fail
-      # per-AMI; only fail when ZERO GPU AMIs are present (nothing could run,
-      # which would otherwise pass as an all-skipped false green).
-      - name: Preflight — inventory GPU AMIs
+      # Ensure the base EC2 GPU AMI is present — the raw-EC2 GPU passthrough
+      # test is the always-on baseline, so CI self-provisions it rather than
+      # depending on a manual import. Import-by-name pulls the prebuilt image
+      # from the catalog (iso.mulgadc.com) and names the AMI exactly
+      # ubuntu-26.04-nvidia-gpu-x86_64 (what tests/e2e/gpu filters for);
+      # idempotent — skipped once wattle's persistent loop-fs already has it.
+      # `spx admin images import` writes local spinifex storage, so it needs
+      # the `spinifex` group active (sg); aws-CLI calls hit the gateway over
+      # HTTPS and don't.
+      - name: Ensure base GPU AMI present (import-if-absent)
         if: steps.gate.outputs.paused != 'true'
         run: |
           set -euo pipefail
           REMOTE='
             set -e
-            PRESENT=0
-            check() {
-              ID=$(AWS_PROFILE=spinifex aws ec2 describe-images \
+            BASE=ubuntu-26.04-nvidia-gpu-x86_64
+            ID=$(AWS_PROFILE=spinifex aws ec2 describe-images \
+              --filters "Name=name,Values=$BASE" "Name=state,Values=available" \
+              --query "Images[0].ImageId" --output text 2>/dev/null)
+            if [ -n "$ID" ] && [ "$ID" != "None" ]; then
+              echo "base GPU AMI already present: $BASE = $ID"; exit 0
+            fi
+            echo "base GPU AMI $BASE absent — importing prebuilt from catalog..."
+            sg spinifex -c "AWS_PROFILE=spinifex spx admin images import --name $BASE"
+            ID=$(AWS_PROFILE=spinifex aws ec2 describe-images \
+              --filters "Name=name,Values=$BASE" "Name=state,Values=available" \
+              --query "Images[0].ImageId" --output text 2>/dev/null)
+            [ -n "$ID" ] && [ "$ID" != "None" ] || { echo "import ran but $BASE still not available" >&2; exit 1; }
+            echo "imported base GPU AMI: $BASE = $ID"
+          '
+          ssh ${{ env.ssh_opts }} "${WATTLE_SSH_USER}@${WATTLE_SSH_HOST}" "$REMOTE"
+
+      # Preflight — the base GPU AMI is REQUIRED: the setup step above just
+      # ensured it, so a miss here means the import silently failed. Hard-fail
+      # rather than run a false-green all-skipped suite. ECS/EKS node AMIs are
+      # opt-in tiers (heavier — node AMIs + cluster spin-up); their tests
+      # self-skip when absent, so only warn.
+      - name: Preflight — verify GPU AMIs
+        if: steps.gate.outputs.paused != 'true'
+        run: |
+          set -euo pipefail
+          REMOTE='
+            set -e
+            present() {
+              AWS_PROFILE=spinifex aws ec2 describe-images \
                 --filters "Name=name,Values=$1" "Name=state,Values=available" \
-                --query "Images[0].ImageId" --output text 2>/dev/null)
-              if [ -z "$ID" ] || [ "$ID" = "None" ]; then
-                echo "::warning::$1 not imported — its GPU test(s) will skip"
-              else
-                echo "present: $1 = $ID"
-                PRESENT=$((PRESENT+1))
-              fi
+                --query "Images[0].ImageId" --output text 2>/dev/null
             }
-            check ubuntu-26.04-nvidia-gpu-x86_64
-            check spinifex-ecs-node-gpu
-            check spinifex-eks-node
-            check spinifex-eks-node-gpu
-            if [ "$PRESENT" -eq 0 ]; then
-              echo "no GPU AMIs imported on wattle — nothing to test. Import at least one first." >&2
+            BASE=ubuntu-26.04-nvidia-gpu-x86_64
+            ID=$(present "$BASE")
+            if [ -z "$ID" ] || [ "$ID" = "None" ]; then
+              echo "required base GPU AMI $BASE missing — cannot run the baseline EC2 GPU test" >&2
               exit 1
             fi
-            echo "$PRESENT GPU AMI(s) available — running the self-guarding suite (absent ones skip)."
+            echo "required: $BASE = $ID"
+            for OPT in spinifex-ecs-node-gpu spinifex-eks-node spinifex-eks-node-gpu; do
+              OID=$(present "$OPT")
+              if [ -z "$OID" ] || [ "$OID" = "None" ]; then
+                echo "::warning::$OPT not imported — its GPU test(s) will skip (opt-in tier)"
+              else
+                echo "opt-in: $OPT = $OID"
+              fi
+            done
           '
           ssh ${{ env.ssh_opts }} "${WATTLE_SSH_USER}@${WATTLE_SSH_HOST}" "$REMOTE"
 

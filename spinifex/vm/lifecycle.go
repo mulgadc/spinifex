@@ -661,20 +661,39 @@ const (
 // seam overrides it to keep dial-failure tests off the wall clock.
 var qmpSocketWaitTimeout = 3 * time.Second
 
-// qmpVFIOGreetingTimeout is the QMP greeting wait for a VFIO passthrough guest.
-// QEMU must lock+DMA-map the entire guest RAM through the IOMMU before the
-// monitor answers, which scales with RAM and far exceeds the plain-VM default
-// (a 16GB EKS GPU worker takes >30s on wattle). Generous to cover larger guests
-// and a loaded host.
-const qmpVFIOGreetingTimeout = 180 * time.Second
+const (
+	// qmpVFIOGreetingBase is the fixed VFIO startup overhead before RAM pinning
+	// dominates (IOMMU domain setup, device realize). The RAM term is added on
+	// top; the result is floored so small guests keep the proven deadline.
+	qmpVFIOGreetingBase = 30 * time.Second
+	// qmpVFIOGreetingPerGiB is the wait added per GiB of guest RAM: the VFIO pin
+	// is synchronous and its cost grows ~linearly with RAM and host memory
+	// pressure, so a flat deadline under-waits large guests and SIGKILLs a QEMU
+	// that would have come up. Generous to cover a loaded host.
+	qmpVFIOGreetingPerGiB = 8 * time.Second
+	// qmpVFIOGreetingFloor is the minimum VFIO greeting wait. QEMU must
+	// lock+DMA-map the whole guest RAM before the monitor answers, which far
+	// exceeds the plain-VM default even for a small guest (a 16GB EKS GPU worker
+	// takes >30s on wattle). Small guests land here.
+	qmpVFIOGreetingFloor = 180 * time.Second
+	// qmpVFIOGreetingCap bounds the scaled wait so a mis-sized guest cannot
+	// wedge a launch indefinitely.
+	qmpVFIOGreetingCap = 600 * time.Second
+)
 
 // qmpGreetingTimeout picks the QMP greeting deadline for a VM: the plain default
-// unless the guest has GPU/VFIO passthrough, whose RAM pinning delays the monitor.
+// unless the guest has GPU/VFIO passthrough, whose synchronous RAM pin delays the
+// monitor. For VFIO the deadline is base + perGiB*RAM, floored so small guests
+// keep the proven deadline and capped so a huge guest cannot wedge a launch.
 func qmpGreetingTimeout(v *VM) time.Duration {
-	if len(v.GPUAttachments) > 0 {
-		return qmpVFIOGreetingTimeout
+	if len(v.GPUAttachments) == 0 {
+		return qmp.DefaultGreetingTimeout
 	}
-	return qmp.DefaultGreetingTimeout
+	memGiB := v.Config.Memory / 1024
+	scaled := qmpVFIOGreetingBase + time.Duration(memGiB)*qmpVFIOGreetingPerGiB
+	scaled = max(scaled, qmpVFIOGreetingFloor)
+	scaled = min(scaled, qmpVFIOGreetingCap)
+	return scaled
 }
 
 // removeStaleQMPSocket unlinks a leftover QMP socket inode from a prior QEMU so
@@ -726,7 +745,11 @@ func newQMPClientWithHandshake(ctx context.Context, v *VM) (*qmp.QMPClient, erro
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
-	if _, err := sendQMPCommand(ctx, client, qmp.QMPCommand{Execute: "qmp_capabilities"}, v.ID); err != nil {
+	// A VFIO guest greets before its RAM pin completes, then cannot service
+	// qmp_capabilities until the pin finishes — which scales with guest RAM and
+	// host memory pressure. Give the handshake the same budget as the greeting so
+	// the reply is not decode-timed-out and the launch SIGKILLed mid-pin.
+	if _, err := sendQMPCommandWithTimeout(ctx, client, qmp.QMPCommand{Execute: "qmp_capabilities"}, v.ID, qmpGreetingTimeout(v)); err != nil {
 		_ = client.Conn.Close()
 		return nil, err
 	}
@@ -814,8 +837,19 @@ func (m *Manager) recordQMPSuccess(instance *VM) {
 	})
 }
 
+// qmpCommandTimeout bounds a QMP command's response decode for a running guest.
+// The handshake on a VFIO launch needs longer (the monitor greets before the RAM
+// pin finishes, then stalls the qmp_capabilities reply) and passes its own value.
+const qmpCommandTimeout = 30 * time.Second
+
 // sendQMPCommand encodes cmd and decodes the response, skipping event messages.
-func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (_ *qmp.QMPResponse, err error) {
+func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*qmp.QMPResponse, error) {
+	return sendQMPCommandWithTimeout(ctx, q, cmd, instanceID, qmpCommandTimeout)
+}
+
+// sendQMPCommandWithTimeout is sendQMPCommand with an explicit response deadline,
+// re-armed after each interleaved event. VFIO handshakes pass a RAM-scaled value.
+func sendQMPCommandWithTimeout(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string, timeout time.Duration) (_ *qmp.QMPResponse, err error) {
 	if ctx.Value(noTraceKey{}) == nil {
 		var span trace.Span
 		_, span = otel.Tracer(vmTracerName).Start(ctx, "qmp "+cmd.Execute,
@@ -842,7 +876,7 @@ func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, i
 		}
 	}
 
-	if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := q.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 	defer func() { _ = q.Conn.SetReadDeadline(time.Time{}) }()
@@ -861,7 +895,7 @@ func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, i
 		}
 		if _, ok := msg["event"]; ok {
 			slog.InfoContext(ctx, "QMP event", "event", msg["event"], "instanceId", instanceID)
-			if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			if err := q.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 				return nil, fmt.Errorf("set read deadline: %w", err)
 			}
 			continue

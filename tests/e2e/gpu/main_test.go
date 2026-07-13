@@ -115,19 +115,30 @@ func requireGPUFixture(t *testing.T) *Fixture {
 	return pkgFix
 }
 
-// discoverGPUInstanceType returns the first GPU instance type advertised by the
-// node. A non-empty reason means none are advertised and the suite should skip.
+// discoverGPUInstanceType returns the SMALLEST GPU instance type advertised by
+// the node (fewest vCPUs, then least memory) so it fits on a single dev host —
+// picking an arbitrary/large type (e.g. g5.8xlarge) fails with
+// InsufficientInstanceCapacity. A non-empty reason means none are advertised.
 func discoverGPUInstanceType(c *harness.AWSClient) (gpuType, reason string) {
 	typesOut, err := c.EC2.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{})
 	if err != nil {
 		return "", "DescribeInstanceTypes: " + err.Error()
 	}
+	var bestVCPU, bestMem int64
 	for _, it := range typesOut.InstanceTypes {
-		if it.GpuInfo != nil && len(it.GpuInfo.Gpus) > 0 {
-			return aws.StringValue(it.InstanceType), ""
+		if it.GpuInfo == nil || len(it.GpuInfo.Gpus) == 0 {
+			continue
+		}
+		vcpu := aws.Int64Value(it.VCpuInfo.DefaultVCpus)
+		mem := aws.Int64Value(it.MemoryInfo.SizeInMiB)
+		if gpuType == "" || vcpu < bestVCPU || (vcpu == bestVCPU && mem < bestMem) {
+			gpuType, bestVCPU, bestMem = aws.StringValue(it.InstanceType), vcpu, mem
 		}
 	}
-	return "", "no GPU instance types advertised — node has no GPU or gpu_passthrough is disabled"
+	if gpuType == "" {
+		return "", "no GPU instance types advertised — node has no GPU or gpu_passthrough is disabled"
+	}
+	return gpuType, ""
 }
 
 // discoverBaseGPUAMI returns the ubuntu-26.04-nvidia-gpu-x86_64 image ID, or ""

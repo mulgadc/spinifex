@@ -709,9 +709,10 @@ func removeStaleQMPSocket(path string) error {
 // dialQMPWithRetry redials the QMP socket until the connect+greeting succeeds or
 // the deadline passes. A just-relaunched QEMU can present the socket inode a beat
 // before it listen()s, and a stale inode from a SIGKILLed predecessor refuses the
-// first connect; a single dial then loses the race. Only transient connect
-// errors are retried — a greeting/handshake failure means we reached a listener,
-// so it surfaces immediately.
+// first connect; a fresh QEMU also accepts the connect then resets mid-greeting
+// while it initialises. A single dial then loses the race. Only transient connect
+// or reset errors are retried — a decode/handshake failure from a settled QEMU
+// surfaces immediately.
 func dialQMPWithRetry(path string, greetingTimeout time.Duration) (*qmp.QMPClient, error) {
 	deadline := time.Now().Add(qmpDialTimeout)
 	for {
@@ -728,9 +729,13 @@ func dialQMPWithRetry(path string, greetingTimeout time.Duration) (*qmp.QMPClien
 
 // isTransientDialError reports whether a QMP connect failed because the listener
 // is not up yet: connection refused (bound but pre-listen, or a stale dead
-// inode) or the socket momentarily absent between unlink and rebind.
+// inode), the socket momentarily absent between unlink and rebind, or the peer
+// tearing the connection down mid-greeting (reset/broken pipe) — a fresh QEMU
+// that accepts then resets before it can service the monitor. Each clears once
+// QEMU finishes initialising, so the dial is retried rather than surfaced.
 func isTransientDialError(err error) bool {
-	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }
 
 // newQMPClientWithHandshake dials the QMP socket and runs the qmp_capabilities

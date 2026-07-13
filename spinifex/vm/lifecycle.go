@@ -43,6 +43,21 @@ func endSpanWithError(span trace.Span, err error) {
 	span.End()
 }
 
+// recordInstanceFailure surfaces a reaped-launch as an APM error event on the
+// active span so the failure reason is queryable in the error stream,
+// correlated by trace id. No-op when ctx carries no recording span.
+func recordInstanceFailure(ctx context.Context, instanceID, reason string) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	span.RecordError(fmt.Errorf("instance %s launch failed: %s", instanceID, reason),
+		trace.WithAttributes(
+			attribute.String("instance.id", instanceID),
+			attribute.String("failure.reason", reason),
+		))
+}
+
 // RG-4 guest OOM tiers: user guests are reaped first; system instances (ELBv2,
 // EKS) rank above user guests but below infra (OOMScoreAdjust=-500).
 const (

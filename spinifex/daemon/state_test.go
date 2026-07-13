@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -1025,7 +1026,7 @@ func TestPendingWatchdog_MarksStuckInstanceFailed(t *testing.T) {
 	stuckBefore, _ := daemon.vmMgr.Get("i-stuck")
 	require.NotNil(t, stuckBefore)
 	for _, instance := range stuck {
-		daemon.vmMgr.MarkFailed(instance, "launch_timeout")
+		daemon.vmMgr.MarkFailed(context.Background(), instance, "launch_timeout")
 	}
 
 	// MarkFailed sets the StateReason synchronously, then runs the cleanup
@@ -1123,7 +1124,7 @@ func TestMarkInstanceFailed_AlreadyShuttingDown(t *testing.T) {
 	daemon.vmMgr.Insert(instance)
 
 	// Should be a no-op — instance is already being cleaned up
-	daemon.vmMgr.MarkFailed(instance, "test_reason")
+	daemon.vmMgr.MarkFailed(context.Background(), instance, "test_reason")
 
 	// Status should not change
 	assert.Equal(t, vm.StateShuttingDown, instance.Status)
@@ -1139,7 +1140,7 @@ func TestMarkInstanceFailed_AlreadyTerminated(t *testing.T) {
 	}
 	daemon.vmMgr.Insert(instance)
 
-	daemon.vmMgr.MarkFailed(instance, "test_reason")
+	daemon.vmMgr.MarkFailed(context.Background(), instance, "test_reason")
 
 	// Status should not change
 	assert.Equal(t, vm.StateTerminated, instance.Status)

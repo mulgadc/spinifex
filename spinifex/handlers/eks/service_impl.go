@@ -249,6 +249,10 @@ type EKSServiceImpl struct {
 	// giving up and marking the nodegroup CREATE_FAILED. Tests inject small values.
 	workerLaunchRetryTimeout time.Duration
 	workerLaunchRetryBackoff time.Duration
+
+	// spawnScanRetryBackoff paces the boot-time reconciler re-scan when JetStream
+	// enumeration is still catching up. Tests inject a small value.
+	spawnScanRetryBackoff time.Duration
 }
 
 var _ EKSService = (*EKSServiceImpl)(nil)
@@ -282,6 +286,7 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 		nodegroupReadyPoll:       defaultNodegroupReadyPoll,
 		workerLaunchRetryTimeout: defaultWorkerLaunchRetryTimeout,
 		workerLaunchRetryBackoff: defaultWorkerLaunchRetryBackoff,
+		spawnScanRetryBackoff:    defaultSpawnScanRetryBackoff,
 	}, nil
 }
 
@@ -297,7 +302,12 @@ func (s *EKSServiceImpl) Shutdown() {
 	s.registry.StopAll()
 }
 
-// SpawnRegisteredReconcilers resumes reconciler goroutines for all CREATING/ACTIVE clusters on daemon boot.
+// SpawnRegisteredReconcilers resumes reconciler goroutines for all CREATING/ACTIVE
+// clusters on daemon boot. JetStream bucket/key enumeration is eventually
+// consistent, so the scan is retried until the observed cluster count stops
+// growing across two passes (Spawn is idempotent, so re-runs only pick up
+// stragglers a lagging enumeration first missed), capped to return promptly on a
+// genuinely empty daemon.
 func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 	if !s.depsReadyForOrchestration() {
 		slog.Debug("SpawnRegisteredReconcilers: deps not ready, skipping")
@@ -307,6 +317,25 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
+	prev := -1
+	for attempt := range spawnScanMaxAttempts {
+		observed := s.spawnRegisteredReconcilersScan(js)
+		if observed <= prev {
+			break
+		}
+		prev = observed
+		if attempt < spawnScanMaxAttempts-1 {
+			time.Sleep(s.spawnScanRetryBackoff)
+		}
+	}
+	return nil
+}
+
+// spawnRegisteredReconcilersScan runs one enumeration pass and resumes reconcilers
+// for every CREATING/ACTIVE cluster it can see, returning the count observed so the
+// caller can detect when a lagging JetStream enumeration has settled.
+func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(js nats.JetStreamContext) int {
+	observed := 0
 	buckets := js.KeyValueStoreNames()
 	for name := range buckets {
 		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
@@ -331,6 +360,7 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 			if meta.Status != ClusterStatusCreating && meta.Status != ClusterStatusActive {
 				continue
 			}
+			observed++
 			// Reclaim any nodegroup workers stranded by the restart: a launch that
 			// was in flight when the prior process died left a CREATING (or
 			// partially-launched CREATE_FAILED) record whose workers nothing else
@@ -347,7 +377,7 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 			s.spawnReconciler(accountID, cluster, meta)
 		}
 	}
-	return nil
+	return observed
 }
 
 func (s *EKSServiceImpl) depsReadyForOrchestration() bool {

@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,9 +19,13 @@ func TestSpawnRegisteredReconcilers_ResumesNonTerminal(t *testing.T) {
 	active.Status = ClusterStatusActive
 	require.NoError(t, PutClusterMeta(f.kv, active))
 
-	// CREATING resumes both the bootstrap re-subscribe and the reconciler.
+	// CREATING resumes both the bootstrap re-subscribe and the reconciler. Stamp a
+	// recent CreatedAt so the resumed reconciler stays CREATING (the shared fixture
+	// meta is weeks old, which trips the CREATE timeout and self-deregisters before
+	// the assertion — the race this test previously flaked on).
 	creating := sampleClusterMeta("beta")
 	creating.Status = ClusterStatusCreating
+	creating.CreatedAt = time.Now()
 	require.NoError(t, PutClusterMeta(f.kv, creating))
 
 	failed := sampleClusterMeta("zeta")

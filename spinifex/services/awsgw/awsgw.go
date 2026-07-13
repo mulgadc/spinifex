@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
@@ -283,24 +284,40 @@ func launchService(config *config.ClusterConfig) error {
 		registryHost = nodeConfig.AdvertiseIP
 	}
 
+	// Bedrock provider credentials: per-account keys live in the
+	// bedrock-credentials KV bucket; OCHRE_ANTHROPIC_API_KEY seeds an optional
+	// platform-wide default so accounts work before onboarding their own key.
+	bedrockPlatformDefaults := map[string]string{}
+	if key := os.Getenv("OCHRE_ANTHROPIC_API_KEY"); key != "" {
+		bedrockPlatformDefaults["anthropic"] = key
+	}
+	bedrockCredentials := gateway_bedrock.NewCredentialStore(js, masterKey, len(config.Nodes), bedrockPlatformDefaults)
+
+	// Bedrock self-host endpoints: Phase 1 models are pinned, so their
+	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
+	// is a comma-separated list of modelId=baseURL pairs.
+	bedrockEndpoints := parseBedrockEndpoints(os.Getenv("OCHRE_VLLM_ENDPOINTS"))
+
 	gw := gateway.GatewayConfig{
-		Debug:            nodeConfig.AWSGW.Debug,
-		DisableLogging:   false,
-		NATSConn:         natsConn,
-		Config:           nodeConfig.AWSGW.Config,
-		ExpectedNodes:    len(config.Nodes),
-		Region:           nodeConfig.Region,
-		InternalSuffix:   config.AWS.InternalSuffix,
-		RegistryPort:     registryPort,
-		RegistryHost:     registryHost,
-		AZ:               nodeConfig.AZ,
-		IAMService:       iamService,
-		STSService:       stsService,
-		Version:          version,
-		Commit:           commit,
-		ECRRegistry:      ecrRegistry,
-		ECRTokenIssuer:   gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
-		ECRTokenVerifier: gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
+		Debug:              nodeConfig.AWSGW.Debug,
+		DisableLogging:     false,
+		NATSConn:           natsConn,
+		Config:             nodeConfig.AWSGW.Config,
+		ExpectedNodes:      len(config.Nodes),
+		Region:             nodeConfig.Region,
+		InternalSuffix:     config.AWS.InternalSuffix,
+		RegistryPort:       registryPort,
+		RegistryHost:       registryHost,
+		AZ:                 nodeConfig.AZ,
+		IAMService:         iamService,
+		STSService:         stsService,
+		Version:            version,
+		Commit:             commit,
+		ECRRegistry:        ecrRegistry,
+		ECRTokenIssuer:     gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
+		ECRTokenVerifier:   gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
+		BedrockCredentials: bedrockCredentials,
+		BedrockEndpoints:   bedrockEndpoints,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
@@ -447,4 +464,29 @@ func findBootstrapFile(baseDir string) string {
 // bind addresses are rejected so the registry URI never hands back 0.0.0.0/::.
 func isConcreteRegistryHost(host string) bool {
 	return host != "" && host != "0.0.0.0" && host != "::"
+}
+
+// parseBedrockEndpoints parses a comma-separated list of modelId=baseURL pairs
+// into a map for the bedrock self-host endpoint resolver. Malformed or empty
+// entries are skipped. Returns nil for empty input.
+func parseBedrockEndpoints(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	endpoints := map[string]string{}
+	for pair := range strings.SplitSeq(raw, ",") {
+		modelID, baseURL, ok := strings.Cut(pair, "=")
+		modelID = strings.TrimSpace(modelID)
+		baseURL = strings.TrimSpace(baseURL)
+		if !ok || modelID == "" || baseURL == "" {
+			slog.Warn("awsgw: skipping malformed OCHRE_VLLM_ENDPOINTS entry", "entry", pair)
+			continue
+		}
+		endpoints[modelID] = baseURL
+	}
+	if len(endpoints) == 0 {
+		return nil
+	}
+	return endpoints
 }

@@ -1282,6 +1282,12 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
+	// Set the default KV replica count before any handler creates a bucket, so
+	// lazily-created buckets are born at cluster-size replication instead of R1.
+	if d.clusterConfig != nil {
+		utils.SetDefaultKVReplicas(len(d.clusterConfig.Nodes))
+	}
+
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
 	if js, jsErr := d.natsConn.JetStream(); jsErr == nil {
 		if err := utils.DeleteKVBucketIfExists(js, "spinifex-dhcp-leases"); err != nil {

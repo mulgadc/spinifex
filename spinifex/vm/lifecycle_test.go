@@ -1156,11 +1156,17 @@ func TestRemoveStaleQMPSocket(t *testing.T) {
 }
 
 // TestIsTransientDialError pins which connect failures the QMP dial retries: a
-// listener-not-up-yet (refused) or a socket briefly absent (enoent) are
-// transient; a greeting/handshake error is not — it means a listener answered.
+// listener-not-up-yet (refused), a socket briefly absent (enoent), or a peer
+// resetting mid-greeting (reset/broken pipe from a QEMU still initialising) are
+// transient; a clean decode/handshake failure is not — it means a settled
+// listener answered.
 func TestIsTransientDialError(t *testing.T) {
 	assert.True(t, isTransientDialError(syscall.ECONNREFUSED), "pre-listen/stale refuses connect")
 	assert.True(t, isTransientDialError(syscall.ENOENT), "socket absent between unlink and rebind")
+	assert.True(t, isTransientDialError(syscall.ECONNRESET), "fresh QEMU resets mid-greeting while initialising")
+	assert.True(t, isTransientDialError(syscall.EPIPE), "peer tears down the greeting connection")
+	assert.True(t, isTransientDialError(fmt.Errorf("waiting for QMP greeting: %w", syscall.ECONNRESET)),
+		"a wrapped connection-reset from the greeting read is still transient")
 	assert.False(t, isTransientDialError(fmt.Errorf("waiting for QMP greeting: eof")),
 		"a reached-listener handshake failure must not be retried")
 }

@@ -11,9 +11,54 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// gpuBackedCleaner is a minimal InstanceCleaner whose ReleaseGPU calls a real
+// gpu.Manager (every other method is a no-op), mirroring the production
+// instanceCleanerAdapter closely enough that crash-recovery GPU-release
+// tests can assert against gpuManager.Available() directly instead of just
+// recording that ReleaseGPU was called.
+type gpuBackedCleaner struct {
+	mgr *gpu.Manager
+}
+
+func (c *gpuBackedCleaner) DeleteVolumes(*VM) error            { return nil }
+func (c *gpuBackedCleaner) CleanupMgmtNetwork(*VM)             {}
+func (c *gpuBackedCleaner) ReleasePublicIP(*VM) error          { return nil }
+func (c *gpuBackedCleaner) DetachAndDeleteENI(*VM) error       { return nil }
+func (c *gpuBackedCleaner) RemoveFromPlacementGroup(*VM) error { return nil }
+func (c *gpuBackedCleaner) RemoveFromSpotRequest(*VM) error    { return nil }
+
+func (c *gpuBackedCleaner) ReleaseGPU(v *VM) error {
+	if c.mgr == nil || len(v.GPUAttachments) == 0 {
+		return nil
+	}
+	return c.mgr.Release(v.ID)
+}
+
+var _ InstanceCleaner = (*gpuBackedCleaner)(nil)
+
+// claimMIGSliceForTest seeds a one-slice MIG pool and claims it for
+// instanceID, returning the manager and the mdev path now attached. Uses the
+// MIG path (not whole-GPU) so the test never touches real VFIO/sysfs state —
+// MIG release is pure in-memory bookkeeping.
+func claimMIGSliceForTest(t *testing.T, instanceID string) (*gpu.Manager, string) {
+	t.Helper()
+	mdevPath := filepath.Join(t.TempDir(), "mdev0")
+	require.NoError(t, os.WriteFile(mdevPath, []byte("x"), 0o600))
+
+	mgr := gpu.NewManager(nil)
+	mgr.AddMIGInstances(gpu.GPUDevice{PCIAddress: "0000:03:00.0"}, []gpu.MIGInstance{
+		{Profile: gpu.MIGProfile{Name: "1g.10gb"}, MdevPath: mdevPath},
+	})
+	_, _, err := mgr.Claim(instanceID, "1g.10gb")
+	require.NoError(t, err)
+	require.Equal(t, 0, mgr.Available(), "GPU slot must be claimed before the crash")
+	return mgr, mdevPath
+}
 
 func TestClassifyCrashReason_CleanExit(t *testing.T) {
 	assert.Equal(t, "clean-exit", ClassifyCrashReason(nil))
@@ -277,6 +322,41 @@ func TestMaybeRestart_ExceedsMaxInWindow(t *testing.T) {
 		"RestartCount must not increment when exceeded")
 }
 
+// TestMaybeRestart_ExceedsMaxInWindow_ReleasesGPU is the regression test for
+// mulga-keptb: a GPU instance that crashes past restart-exhaustion must
+// release its GPU pool slot instead of holding it forever in StateError,
+// since no restart will ever be scheduled to reclaim it.
+func TestMaybeRestart_ExceedsMaxInWindow_ReleasesGPU(t *testing.T) {
+	m, _, _, _ := crashTestManager(t)
+	mgr, mdevPath := claimMIGSliceForTest(t, "i-gpu-exhausted")
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		Resources:       newFakeResourceController(),
+		InstanceTypes:   fakeInstanceTypeResolver{"t3.micro": {VCPUs: 1, MemoryMiB: 1024, Architecture: "x86_64"}},
+		InstanceCleaner: &gpuBackedCleaner{mgr: mgr},
+	})
+
+	instance := &VM{
+		ID:             "i-gpu-exhausted",
+		Status:         StateError,
+		InstanceType:   "t3.micro",
+		GPUAttachments: []gpu.GPUAttachment{{MdevPath: mdevPath}},
+		Health: InstanceHealthState{
+			CrashCount:     MaxRestartsInWindow + 1,
+			FirstCrashTime: time.Now(),
+			RestartCount:   MaxRestartsInWindow,
+		},
+	}
+	m.Insert(instance)
+
+	m.MaybeRestart(instance)
+
+	assert.Equal(t, 1, mgr.Available(),
+		"GPU slot must return to the pool once restarts are exhausted")
+	assert.Empty(t, instance.GPUAttachments,
+		"GPUAttachments must be cleared once the slot is released")
+}
+
 func TestMaybeRestart_ResetsAfterWindow(t *testing.T) {
 	m, _, _, _ := crashTestManager(t)
 
@@ -532,6 +612,41 @@ func TestRestartCrashedInstance_RunFailureRollback(t *testing.T) {
 	assert.Equal(t, StateError, targets[1])
 	assert.Equal(t, StateError, m.Status(instance),
 		"instance must end in StateError after Run-failure rollback")
+}
+
+// TestRestartCrashedInstance_RunFailureReleasesGPU is the regression test for
+// mulga-keptb: when the relaunch attempt itself fails, the instance settles
+// back in StateError for good — the GPU pool slot it still held from before
+// the crash must be released, not left claimed forever.
+func TestRestartCrashedInstance_RunFailureReleasesGPU(t *testing.T) {
+	m, rc, rt, _ := crashTestManager(t)
+	mgr, mdevPath := claimMIGSliceForTest(t, "i-rollback-gpu")
+
+	mounter := &fakeVolumeMounter{mountErr: errors.New("mount failed during restart")}
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		Resources:       rc,
+		VolumeMounter:   mounter,
+		InstanceTypes:   fakeInstanceTypeResolver{"t3.micro": {VCPUs: 1, MemoryMiB: 1024, Architecture: "x86_64"}},
+		TransitionState: rt.apply,
+		InstanceCleaner: &gpuBackedCleaner{mgr: mgr},
+	})
+
+	instance := &VM{
+		ID:             "i-rollback-gpu",
+		Status:         StateError,
+		InstanceType:   "t3.micro",
+		GPUAttachments: []gpu.GPUAttachment{{MdevPath: mdevPath}},
+	}
+	m.Insert(instance)
+
+	m.RestartCrashedInstance(instance)
+
+	assert.Equal(t, StateError, m.Status(instance))
+	assert.Equal(t, 1, mgr.Available(),
+		"GPU slot must return to the pool when the relaunch attempt fails")
+	assert.Empty(t, instance.GPUAttachments,
+		"GPUAttachments must be cleared once the slot is released")
 }
 
 func TestRecordQMPFailure_StampsImpairedAtThreshold(t *testing.T) {

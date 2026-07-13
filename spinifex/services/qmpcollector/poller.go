@@ -14,12 +14,19 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // userHZ is the kernel jiffy rate exposed in /proc/<pid>/stat. USER_HZ is 100
 // on every Linux architecture spinifex targets (x86_64, aarch64).
 const userHZ = 100.0
+
+// pollerTracerName is the instrumentation scope for per-instance poll spans.
+const pollerTracerName = "github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
 
 // sample is one raw counter snapshot; published values are deltas between
 // consecutive samples.
@@ -94,7 +101,7 @@ func (p *poller) run(ctx context.Context) {
 	ticker := time.NewTicker(period)
 	defer ticker.Stop()
 	for {
-		p.tick()
+		p.tick(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -109,13 +116,20 @@ func (p *poller) run(ctx context.Context) {
 
 // tick takes a snapshot and publishes the delta against the previous one.
 // The first snapshot only primes counters; any error or counter regression
-// (QEMU restarted) re-primes instead of publishing garbage.
-func (p *poller) tick() {
+// (QEMU restarted) re-primes instead of publishing garbage. Each call opens a
+// root span so poll failures surface in APM alongside the journald warning.
+func (p *poller) tick(ctx context.Context) {
 	meta := p.snapshotMeta()
+	ctx, span := otel.Tracer(pollerTracerName).Start(ctx, "qmp.poll_instance",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(attribute.String("instance.id", meta.InstanceID)))
+	defer span.End()
+
 	cur, err := p.collect(meta)
 	if err != nil {
-		slog.Warn("qmp-collector: collect failed, re-priming",
+		slog.WarnContext(ctx, "qmp-collector: collect failed, re-priming",
 			"instanceId", meta.InstanceID, "err", err)
+		utils.MarkSpanError(span, err)
 		p.mu.Lock()
 		p.prev = nil
 		p.mu.Unlock()
@@ -136,14 +150,16 @@ func (p *poller) tick() {
 	}
 	data, err := json.Marshal(batch)
 	if err != nil {
-		slog.Error("qmp-collector: marshal batch", "instanceId", meta.InstanceID, "err", err)
+		slog.ErrorContext(ctx, "qmp-collector: marshal batch", "instanceId", meta.InstanceID, "err", err)
+		utils.MarkSpanError(span, err)
 		return
 	}
 	if err := p.nc.Publish(types.MetricsEC2SubjectPrefix+meta.InstanceID, data); err != nil {
-		slog.Warn("qmp-collector: publish failed", "instanceId", meta.InstanceID, "err", err)
+		slog.WarnContext(ctx, "qmp-collector: publish failed", "instanceId", meta.InstanceID, "err", err)
+		utils.MarkSpanError(span, err)
 		return
 	}
-	slog.Debug("qmp-collector: published", "instanceId", meta.InstanceID, "series", len(batch.Series))
+	slog.DebugContext(ctx, "qmp-collector: published", "instanceId", meta.InstanceID, "series", len(batch.Series))
 }
 
 // collect dials the telemetry socket fresh each tick (no held connection to

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
@@ -1105,6 +1106,42 @@ func TestSendQMPCommand_ReconnectsAgainstSingleClientServer(t *testing.T) {
 	require.NoError(t, err, "a second command must succeed over the reconnected stream")
 }
 
+// TestQMPGreetingTimeout pins the VFIO scaling: a GPU passthrough guest must
+// pin all its RAM through the IOMMU before the monitor answers, so its greeting
+// deadline sits at the floor for a small guest and grows with RAM up to the cap;
+// a plain VM keeps the default.
+func TestQMPGreetingTimeout(t *testing.T) {
+	plain := &VM{}
+	assert.Equal(t, qmp.DefaultGreetingTimeout, qmpGreetingTimeout(plain),
+		"a plain VM keeps the default greeting deadline")
+
+	// A small GPU guest (<1 GiB scaling contribution) sits at the floor.
+	smallGPU := &VM{
+		GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:5e:00.0"}},
+		Config:         Config{Memory: 4096},
+	}
+	assert.Equal(t, qmpVFIOGreetingFloor, qmpGreetingTimeout(smallGPU),
+		"a small VFIO guest gets the floor greeting deadline")
+	assert.Greater(t, qmpVFIOGreetingFloor, qmp.DefaultGreetingTimeout,
+		"the VFIO floor must exceed the plain default")
+
+	// A large GPU guest scales above the floor: 64 GiB -> floor + 64*8s.
+	largeGPU := &VM{
+		GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:5e:00.0"}},
+		Config:         Config{Memory: 64 * 1024},
+	}
+	assert.Equal(t, qmpVFIOGreetingBase+64*qmpVFIOGreetingPerGiB, qmpGreetingTimeout(largeGPU),
+		"a large VFIO guest scales its deadline with RAM")
+
+	// An oversized guest is clamped to the cap, not left unbounded.
+	hugeGPU := &VM{
+		GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:5e:00.0"}},
+		Config:         Config{Memory: 1024 * 1024},
+	}
+	assert.Equal(t, qmpVFIOGreetingCap, qmpGreetingTimeout(hugeGPU),
+		"a huge VFIO guest is clamped to the cap")
+}
+
 // TestRemoveStaleQMPSocket covers the SIGKILL-leftover unlink: a stale socket
 // inode is removed, and a missing file is a no-op (not an error).
 func TestRemoveStaleQMPSocket(t *testing.T) {
@@ -1119,11 +1156,17 @@ func TestRemoveStaleQMPSocket(t *testing.T) {
 }
 
 // TestIsTransientDialError pins which connect failures the QMP dial retries: a
-// listener-not-up-yet (refused) or a socket briefly absent (enoent) are
-// transient; a greeting/handshake error is not — it means a listener answered.
+// listener-not-up-yet (refused), a socket briefly absent (enoent), or a peer
+// resetting mid-greeting (reset/broken pipe from a QEMU still initialising) are
+// transient; a clean decode/handshake failure is not — it means a settled
+// listener answered.
 func TestIsTransientDialError(t *testing.T) {
 	assert.True(t, isTransientDialError(syscall.ECONNREFUSED), "pre-listen/stale refuses connect")
 	assert.True(t, isTransientDialError(syscall.ENOENT), "socket absent between unlink and rebind")
+	assert.True(t, isTransientDialError(syscall.ECONNRESET), "fresh QEMU resets mid-greeting while initialising")
+	assert.True(t, isTransientDialError(syscall.EPIPE), "peer tears down the greeting connection")
+	assert.True(t, isTransientDialError(fmt.Errorf("waiting for QMP greeting: %w", syscall.ECONNRESET)),
+		"a wrapped connection-reset from the greeting read is still transient")
 	assert.False(t, isTransientDialError(fmt.Errorf("waiting for QMP greeting: eof")),
 		"a reached-listener handshake failure must not be retried")
 }

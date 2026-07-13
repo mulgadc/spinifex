@@ -244,6 +244,17 @@ func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body 
 	return handlers_ecs.NewNATSECSService(nc).PollAssignments(ctx, input, accountID)
 }
 
+// ReportTaskGPU carries the agent's local ledger's per-task GPU device
+// assignment (agent → gateway). Internal action, not an AWS SDK shape: real
+// AWS's SubmitTaskStateChange has no gpuIds field.
+func ReportTaskGPU(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	input := new(handlers_ecs.ReportTaskGPUInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	return handlers_ecs.NewNATSECSService(nc).ReportTaskGPU(ctx, input, accountID)
+}
+
 // --- Tags ---
 
 func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {

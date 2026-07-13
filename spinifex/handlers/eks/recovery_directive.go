@@ -30,10 +30,15 @@ const (
 // RecoveryDirective is the per-member recovery instruction. Epoch increases on
 // each set so the guest applies a directive at most once: it records the
 // last-applied epoch and ignores an equal-or-older one across reboots.
+// SnapshotRequired marks a snapshot the guest MUST restore (fresh DR seed): if
+// the fetch fails the guest aborts boot rather than cluster-reset into an empty
+// datastore. It stays false for the HA-reform path, whose seed cluster-resets
+// from intact local etcd when no snapshot is present.
 type RecoveryDirective struct {
-	Epoch    int64          `json:"epoch"`
-	Action   RecoveryAction `json:"action"`
-	Snapshot string         `json:"snapshot,omitempty"`
+	Epoch            int64          `json:"epoch"`
+	Action           RecoveryAction `json:"action"`
+	Snapshot         string         `json:"snapshot,omitempty"`
+	SnapshotRequired bool           `json:"snapshotRequired,omitempty"`
 }
 
 // GetRecoveryDirectiveInput names the cluster + member whose directive to read.
@@ -50,10 +55,11 @@ type GetRecoveryDirectiveOutput struct {
 // SetRecoveryDirectiveInput sets a member's directive; Epoch is assigned by the
 // store (previous+1), so callers supply only the action + optional snapshot key.
 type SetRecoveryDirectiveInput struct {
-	ClusterName string         `json:"clusterName"`
-	InstanceID  string         `json:"instanceId"`
-	Action      RecoveryAction `json:"action"`
-	Snapshot    string         `json:"snapshot,omitempty"`
+	ClusterName      string         `json:"clusterName"`
+	InstanceID       string         `json:"instanceId"`
+	Action           RecoveryAction `json:"action"`
+	Snapshot         string         `json:"snapshot,omitempty"`
+	SnapshotRequired bool           `json:"snapshotRequired,omitempty"`
 }
 
 // SetRecoveryDirectiveOutput returns the stored directive incl. the assigned epoch.
@@ -83,12 +89,12 @@ func LoadRecoveryDirective(acctKV nats.KeyValue, cluster, instanceID string) (Re
 
 // StoreRecoveryDirective writes a member's directive with epoch = previous+1 and
 // returns the stored value. Used by the reconciler escalation and the operator CLI.
-func StoreRecoveryDirective(acctKV nats.KeyValue, cluster, instanceID string, action RecoveryAction, snapshot string) (RecoveryDirective, error) {
+func StoreRecoveryDirective(acctKV nats.KeyValue, cluster, instanceID string, action RecoveryAction, snapshot string, snapshotRequired bool) (RecoveryDirective, error) {
 	prev, err := LoadRecoveryDirective(acctKV, cluster, instanceID)
 	if err != nil {
 		return RecoveryDirective{}, err
 	}
-	next := RecoveryDirective{Epoch: prev.Epoch + 1, Action: action, Snapshot: snapshot}
+	next := RecoveryDirective{Epoch: prev.Epoch + 1, Action: action, Snapshot: snapshot, SnapshotRequired: snapshotRequired}
 	data, err := json.Marshal(&next)
 	if err != nil {
 		return RecoveryDirective{}, fmt.Errorf("marshal recovery directive: %w", err)
@@ -130,7 +136,7 @@ func (s *EKSServiceImpl) SetRecoveryDirective(_ context.Context, input *SetRecov
 	if err != nil {
 		return nil, err
 	}
-	d, err := StoreRecoveryDirective(acctKV, input.ClusterName, input.InstanceID, input.Action, input.Snapshot)
+	d, err := StoreRecoveryDirective(acctKV, input.ClusterName, input.InstanceID, input.Action, input.Snapshot, input.SnapshotRequired)
 	if err != nil {
 		return nil, err
 	}

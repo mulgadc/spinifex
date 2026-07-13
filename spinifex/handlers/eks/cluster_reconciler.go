@@ -499,7 +499,7 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 				"cluster", r.clusterName, "reason", reason)
 			return r.failIfCreateTimedOut(meta, "bootstrap not ready: "+reason)
 		}
-		issue, nodeCount := r.observe(ctx)
+		issue, nodeCount, nodegroupReady := r.observe(ctx)
 		if issue != "" {
 			slog.Info("ClusterReconciler: health not ready",
 				"cluster", r.clusterName, "issue", issue)
@@ -508,7 +508,7 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 		if err := SetClusterStatus(r.acctKV, r.clusterName, ClusterStatusActive); err != nil {
 			return err
 		}
-		if err := SetClusterHealthState(r.acctKV, r.clusterName, "", nodeCount); err != nil {
+		if err := SetClusterHealthState(r.acctKV, r.clusterName, "", nodeCount, nodegroupReady); err != nil {
 			if errors.Is(err, ErrClusterNotFound) {
 				return ErrClusterNotFound
 			}
@@ -517,12 +517,12 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 		slog.Info("ClusterReconciler: cluster transitioned to ACTIVE",
 			"cluster", r.clusterName, "nodes", nodeCount)
 	case ClusterStatusActive:
-		issue, nodeCount := r.observe(ctx)
+		issue, nodeCount, nodegroupReady := r.observe(ctx)
 		if issue != "" {
 			slog.Warn("ClusterReconciler: health failing for ACTIVE cluster",
 				"cluster", r.clusterName, "issue", issue)
 		}
-		if err := SetClusterHealthState(r.acctKV, r.clusterName, issue, nodeCount); err != nil {
+		if err := SetClusterHealthState(r.acctKV, r.clusterName, issue, nodeCount, nodegroupReady); err != nil {
 			if errors.Is(err, ErrClusterNotFound) {
 				return ErrClusterNotFound
 			}
@@ -684,7 +684,7 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 	// consuming an attempt (stopping without the cluster-reset directive would just
 	// reproduce the wedge); a follower failure logs and continues (that member stays
 	// wedged, retried next attempt).
-	if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, seed.InstanceID, RecoveryActionClusterReset, ""); err != nil {
+	if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, seed.InstanceID, RecoveryActionClusterReset, "", false); err != nil {
 		slog.Warn("ClusterReconciler: set cluster-reset directive failed",
 			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
 		return
@@ -692,7 +692,7 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 	r.resetAttempts++
 	r.resetIssued = true
 	for _, n := range members[1:] {
-		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionWipeRejoin, ""); err != nil {
+		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionWipeRejoin, "", false); err != nil {
 			slog.Warn("ClusterReconciler: set wipe-rejoin directive failed",
 				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
 		}
@@ -727,7 +727,7 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 // still prevents re-application of the already-applied directive.
 func (r *ClusterReconciler) clearRecoveryDirectives(meta *ClusterMeta) {
 	for _, n := range cpMemberNodes(meta) {
-		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionNone, ""); err != nil {
+		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionNone, "", false); err != nil {
 			slog.Warn("ClusterReconciler: clear recovery directive failed",
 				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
 		}
@@ -958,30 +958,32 @@ func liveHosts(live []ControlPlaneNode) []string {
 	return hosts
 }
 
-// observe returns the health issue ("" = healthy) and node count from the CP's
-// latest NATS self-report, or from the HTTP /healthz probe when no NATS source is set.
-func (r *ClusterReconciler) observe(ctx context.Context) (issue string, nodeCount int) {
+// observe returns the health issue ("" = healthy), node count, and per-nodegroup
+// Ready breakdown from the CP's latest NATS self-report, or from the HTTP
+// /healthz probe when no NATS source is set (nodegroupReady is nil in that case
+// — the probe carries no per-node label data).
+func (r *ClusterReconciler) observe(ctx context.Context) (issue string, nodeCount int, nodegroupReady map[string]int) {
 	if r.stateSub != nil && r.stateSubject != "" {
 		report := r.latest.Load()
 		if report == nil {
-			return "no control-plane state report received yet", 0
+			return "no control-plane state report received yet", 0, nil
 		}
 		age := time.Since(time.Unix(report.TS, 0))
 		if age > r.stateStaleAfter {
-			return fmt.Sprintf("control-plane state report stale (%s old)", age.Round(time.Second)), report.NodeCount
+			return fmt.Sprintf("control-plane state report stale (%s old)", age.Round(time.Second)), report.NodeCount, report.NodegroupReady
 		}
 		if !report.Healthy() {
 			if report.Reason != "" {
-				return fmt.Sprintf("apiserver healthz=%q: %s", report.Healthz, report.Reason), report.NodeCount
+				return fmt.Sprintf("apiserver healthz=%q: %s", report.Healthz, report.Reason), report.NodeCount, report.NodegroupReady
 			}
-			return fmt.Sprintf("apiserver healthz=%q", report.Healthz), report.NodeCount
+			return fmt.Sprintf("apiserver healthz=%q", report.Healthz), report.NodeCount, report.NodegroupReady
 		}
-		return "", report.NodeCount
+		return "", report.NodeCount, report.NodegroupReady
 	}
 	if err := r.probeHealthz(ctx); err != nil {
-		return err.Error(), 0
+		return err.Error(), 0, nil
 	}
-	return "", 0
+	return "", 0, nil
 }
 
 // failIfCreateTimedOut marks the cluster FAILED once createTimeout has elapsed

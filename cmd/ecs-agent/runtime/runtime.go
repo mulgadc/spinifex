@@ -48,6 +48,12 @@ type RunSpec struct {
 	// (awsvpc task ENI). Empty keeps the container in the host (VM) netns —
 	// bridge/host mode behaviour.
 	NetnsPath string
+	// GPU is the whole-GPU count requested for this container.
+	GPU int
+	// GPUIDs are the ledger-pinned device UUIDs assigned to this container, one
+	// per GPU requested. Empty for non-GPU containers or if pinning fell short.
+	// The runner injects these as CDI devices into the OCI spec.
+	GPUIDs []string
 }
 
 // RunStatus is a finished container's outcome.

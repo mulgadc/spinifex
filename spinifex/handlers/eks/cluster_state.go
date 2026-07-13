@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -99,6 +100,12 @@ type ClusterMeta struct {
 	LastHealthProbe time.Time `json:"lastHealthProbe"`
 	// NodeCount is the node total from the CP's last NATS state report.
 	NodeCount int `json:"nodeCount,omitempty"`
+	// NodegroupNodeCounts is the per-nodegroup Ready count from the CP's last NATS
+	// state report, keyed by the eks.amazonaws.com/nodegroup node label value.
+	// waitWorkersReady gates a nodegroup's ACTIVE transition on ITS OWN entry here,
+	// never the cluster-wide NodeCount total — otherwise one nodegroup's Ready
+	// workers could mask another nodegroup whose own workers never registered.
+	NodegroupNodeCounts map[string]int `json:"nodegroupNodeCounts,omitempty"`
 	// Tags are the create-time resource tags, stored verbatim so DescribeCluster
 	// echoes them back. Without the round-trip a stock terraform-aws provider
 	// reconciling default_tags sees perpetual drift and issues TagResource on
@@ -283,19 +290,49 @@ func SetClusterHealth(kv nats.KeyValue, name, issue string) error {
 	})
 }
 
-// SetClusterHealthState records health + node count. LastHealthProbe is stamped
-// on any change; no KV write when both are unchanged.
-func SetClusterHealthState(kv nats.KeyValue, name, issue string, nodeCount int) error {
+// SetClusterHealthState records health + node count (cluster-wide and, when the
+// CP state report carries it, per-nodegroup). LastHealthProbe is stamped on any
+// change; no KV write when nothing changed. nodegroupReady may be nil (older
+// AMI / no report yet), in which case the persisted per-nodegroup counts are
+// left untouched.
+func SetClusterHealthState(kv nats.KeyValue, name, issue string, nodeCount int, nodegroupReady map[string]int) error {
 	if name == "" {
 		return errors.New("eks: SetClusterHealthState empty name")
 	}
 	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
-		if m.HealthIssue == issue && m.NodeCount == nodeCount {
+		changed := m.HealthIssue != issue || m.NodeCount != nodeCount
+		if nodegroupReady != nil && !maps.Equal(m.NodegroupNodeCounts, nodegroupReady) {
+			changed = true
+		}
+		if !changed {
 			return false
 		}
 		m.HealthIssue = issue
 		m.NodeCount = nodeCount
+		if nodegroupReady != nil {
+			m.NodegroupNodeCounts = nodegroupReady
+		}
 		m.LastHealthProbe = time.Now().UTC()
+		return true
+	})
+}
+
+// ClearClusterManagedCPVPC clears meta.ManagedCPVPC once the managed CP VPC's
+// EC2 teardown has converged (including converging from an already-gone VPC).
+// purgeClusterInfra calls it immediately after a successful DeleteClusterCPVPC
+// so a re-drive of a wedged DELETING — with some unrelated step still failing —
+// never retries EC2/OVN calls against a stale VpcId, which is what turns a
+// single DependencyViolation into a permanent teardown loop. No-op if already
+// cleared. Returns ErrClusterNotFound if the cluster was deleted concurrently.
+func ClearClusterManagedCPVPC(kv nats.KeyValue, name string) error {
+	if name == "" {
+		return errors.New("eks: ClearClusterManagedCPVPC empty name")
+	}
+	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+		if m.ManagedCPVPC == nil {
+			return false
+		}
+		m.ManagedCPVPC = nil
 		return true
 	})
 }

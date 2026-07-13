@@ -846,7 +846,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 		volumeInfos, err := s.GenerateVolumes(ctx, input, instance)
 		if err != nil {
 			slog.ErrorContext(ctx, "LaunchRunInstances: GenerateVolumes failed", "instanceId", instance.ID, "err", err)
-			s.vmMgr.MarkFailed(instance, "volume_preparation_failed")
+			s.vmMgr.MarkFailed(ctx, instance, "volume_preparation_failed")
 			continue
 		}
 
@@ -867,7 +867,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 			att, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName)
 			if gpuErr != nil {
 				slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim failed", "instanceId", instance.ID, "err", gpuErr)
-				s.vmMgr.MarkFailed(instance, "gpu_claim_failed")
+				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
 				continue
 			}
 			instance.GPUAttachments = []gpu.GPUAttachment{*att}
@@ -883,7 +883,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 						"instanceId", instance.ID, "err", releaseErr)
 				}
 			}
-			s.vmMgr.MarkFailed(instance, "launch_failed")
+			s.vmMgr.MarkFailed(ctx, instance, "launch_failed")
 			continue
 		}
 
@@ -1385,16 +1385,7 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 	}
 
 	vb, err := viperblock.New(&vbconfig, "s3", cfg)
-	restoreSlogDefault()
 	return vb, err
-}
-
-// restoreSlogDefault re-installs the Info-level slog handler after viperblock.New
-// resets it to LevelError via SetDebug, silencing all Info/Warn globally.
-func restoreSlogDefault() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
 }
 
 // prepareRootVolume handles creation/cloning of the root volume

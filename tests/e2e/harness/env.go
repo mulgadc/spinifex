@@ -81,6 +81,20 @@ func LoadEnv(t *testing.T) *Env {
 	}
 
 	wanHost := getenv("SPINIFEX_WAN_IP", "")
+	if wanHost == "" && mode == ModeSingle {
+		// Prefer the node's advertised address so multi-bridge shared hosts
+		// resolve the advertised WAN bridge, not an arbitrary co-tenant bridge
+		// picked by interface-enumeration order.
+		wanHost = advertiseIP(configDir)
+	}
+	if wanHost == "" {
+		for _, ip := range nodeIPs {
+			if !strings.HasPrefix(ip, "127.") {
+				wanHost = ip
+				break
+			}
+		}
+	}
 	if wanHost == "" && len(nodeIPs) > 0 {
 		wanHost = nodeIPs[0]
 	}
@@ -195,4 +209,55 @@ func awsgwBindIP(configDir string) string {
 		}
 	}
 	return ""
+}
+
+var (
+	tomlNodeLine      = regexp.MustCompile(`(?i)^\s*node\s*=\s*"([^"]+)"`)
+	tomlAdvertiseLine = regexp.MustCompile(`(?i)^\s*advertise\s*=\s*"([^":]+)`)
+	tomlHostLine      = regexp.MustCompile(`(?i)^\s*host\s*=\s*"([^":]+)`)
+)
+
+// advertiseIP returns the externally-reachable address of the local node from
+// spinifex.toml (nodes.<node>.advertise, or that node's host when advertise is
+// unset). The local node is named by the top-level node key. Returns "" when
+// the file or node cannot be resolved so callers fall back to interface scan.
+func advertiseIP(configDir string) string {
+	if configDir == "" {
+		return ""
+	}
+	f, err := os.Open(filepath.Join(configDir, "spinifex.toml"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	var node, advertise, host string
+	inNode := false
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "[") {
+			// Match only the [nodes.<node>] top-level table, not sub-tables
+			// like [nodes.<node>.awsgw].
+			inNode = node != "" && line == "[nodes."+node+"]"
+			continue
+		}
+		if !inNode {
+			if node == "" {
+				if m := tomlNodeLine.FindStringSubmatch(line); m != nil {
+					node = m[1]
+				}
+			}
+			continue
+		}
+		if m := tomlAdvertiseLine.FindStringSubmatch(line); m != nil {
+			advertise = m[1]
+		} else if m := tomlHostLine.FindStringSubmatch(line); m != nil {
+			host = m[1]
+		}
+	}
+	if advertise != "" {
+		return advertise
+	}
+	return host
 }

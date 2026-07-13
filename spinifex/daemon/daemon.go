@@ -975,6 +975,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"eks.ListStagedAddonManifests", d.handleEKSListStagedAddonManifests, "spinifex-workers"},
 			natsSub{"eks.GetRecoveryDirective", d.handleEKSGetRecoveryDirective, "spinifex-workers"},
 			natsSub{"eks.SetRecoveryDirective", d.handleEKSSetRecoveryDirective, "spinifex-workers"},
+			natsSub{"eks.RestoreSnapshot", d.handleEKSRestoreSnapshot, "spinifex-workers"},
 			natsSub{"eks.AssociateIdentityProviderConfig", d.handleEKSAssociateIdentityProviderConfig, "spinifex-workers"},
 			natsSub{"eks.DescribeIdentityProviderConfig", d.handleEKSDescribeIdentityProviderConfig, "spinifex-workers"},
 			natsSub{"eks.ListIdentityProviderConfigs", d.handleEKSListIdentityProviderConfigs, "spinifex-workers"},
@@ -1013,6 +1014,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.ListServices", d.handleECSListServices, "spinifex-workers"},
 			natsSub{"ecs.SubmitTaskStateChange", d.handleECSSubmitTaskStateChange, "spinifex-workers"},
 			natsSub{"ecs.PollAssignments", d.handleECSPollAssignments, "spinifex-workers"},
+			natsSub{"ecs.ReportTaskGPU", d.handleECSReportTaskGPU, "spinifex-workers"},
 			natsSub{"ecs.ProvisionCapacity", d.handleECSProvisionCapacity, "spinifex-workers"},
 			natsSub{"ecs.TagResource", d.handleECSTagResource, "spinifex-workers"},
 			natsSub{"ecs.UntagResource", d.handleECSUntagResource, "spinifex-workers"},
@@ -1278,6 +1280,12 @@ func (d *Daemon) startCluster() error {
 
 	if err := d.initJetStream(); err != nil {
 		return fmt.Errorf("initialize JetStream: %w", err)
+	}
+
+	// Set the default KV replica count before any handler creates a bucket, so
+	// lazily-created buckets are born at cluster-size replication instead of R1.
+	if d.clusterConfig != nil {
+		utils.SetDefaultKVReplicas(len(d.clusterConfig.Nodes))
 	}
 
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
@@ -1623,6 +1631,9 @@ func (d *Daemon) startCluster() error {
 		}
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)
+		}
+		if gpuRec := d.newGPUPoolReconciler(); gpuRec != nil {
+			reapers = append(reapers, gpuRec)
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
@@ -2187,7 +2198,11 @@ func (d *Daemon) setupShutdown() {
 		for _, sub := range d.natsSubscriptions {
 			slog.Info("Unsubscribing from NATS", "subject", sub.Subject)
 			if err := sub.Unsubscribe(); err != nil {
-				slog.Error("Error unsubscribing from NATS", "err", err)
+				if errors.Is(err, nats.ErrBadSubscription) {
+					slog.Debug("NATS subscription already invalid during shutdown", "subject", sub.Subject)
+				} else {
+					slog.Error("Error unsubscribing from NATS", "err", err)
+				}
 			}
 		}
 
@@ -2253,18 +2268,26 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 // canAllocateLocked is the lock-free body of canAllocate. Caller must already
 // hold rm.mu for read or write. Extracted so allocate can re-check capacity
 // while holding the write lock without dropping it.
+//
+// GPU instance types (whole-GPU and MIG alike) are gated on BOTH the cpu/mem
+// calc AND GPU-slot availability. cpu/mem still applies to whole-GPU types —
+// the guest still consumes real host vCPU/RAM even though a GPU backs it —
+// and GPU-slot count is an additional hard constraint layered on top, so
+// admission never advertises more instances than there are GPU slots to
+// back them.
 func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo, count int) int {
-	// Whole-GPU passthrough: gpuManager.Claim is the sole gate — one GPU per
-	// slot, so host CPU/memory is never the binding constraint.
-	// MIG types fall through to the normal check: one physical GPU backs many
-	// concurrent slices, each consuming real host CPU and memory, so those
-	// resources must be tracked and enforced like any non-GPU instance type.
 	instanceTypeName := ""
 	if instanceType.InstanceType != nil {
 		instanceTypeName = *instanceType.InstanceType
 	}
-	if instancetypes.IsGPUType(instanceType) && !instancetypes.IsMIGType(instanceTypeName) {
-		return count
+
+	requiresGPU := instancetypes.IsGPUType(instanceType)
+	availGPU := 0
+	if requiresGPU && rm.gpuManager != nil {
+		gpusNeeded := instancetypes.GPUCountForType(instanceTypeName)
+		if gpusNeeded > 0 {
+			availGPU = rm.gpuManager.Available() / gpusNeeded
+		}
 	}
 
 	n := canAllocateCount(
@@ -2273,7 +2296,7 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 		instanceTypeVCPUs(instanceType),
 		rm.instanceMemChargeMiB(instanceType),
 		count,
-		0, false,
+		availGPU, requiresGPU,
 	)
 	return rm.liveMemGate(n, instanceType)
 }

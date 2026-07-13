@@ -499,6 +499,17 @@ var (
 	ErrorELBv2IncompatibleProtocols        = "IncompatibleProtocols"
 	ErrorELBv2CertificateNotFound          = "CertificateNotFound"
 	ErrorELBv2SSLPolicyNotFound            = "SSLPolicyNotFound"
+
+	// Bedrock/bedrock-runtime error codes
+	ErrorValidationException = "ValidationException"
+	// ErrorResourceNotFoundException aliases ErrorEKSResourceNotFound: both
+	// services use the same wire code, so it is not a second ErrorLookup entry.
+	ErrorResourceNotFoundException   = ErrorEKSResourceNotFound
+	ErrorAccessDeniedException       = "AccessDeniedException"
+	ErrorThrottlingException         = "ThrottlingException"
+	ErrorModelNotReadyException      = "ModelNotReadyException"
+	ErrorServiceUnavailableException = "ServiceUnavailableException"
+	ErrorModelErrorException         = "ModelErrorException"
 )
 
 // ValidErrorCode returns the error code if it exists in ErrorLookup,
@@ -1021,4 +1032,13 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2IncompatibleProtocols:        {HTTPCode: 400, Message: "The listener protocol is incompatible with the target group protocol."},
 	ErrorELBv2CertificateNotFound:          {HTTPCode: 400, Message: "One or more specified certificates do not exist."},
 	ErrorELBv2SSLPolicyNotFound:            {HTTPCode: 400, Message: "The specified SSL policy does not exist."},
+
+	// Bedrock/bedrock-runtime error codes. ResourceNotFoundException reuses the
+	// EKS entry (ErrorEKSResourceNotFound) — same wire code, same HTTP status.
+	ErrorValidationException:         {HTTPCode: 400, Message: "The input fails to satisfy the constraints specified by the model or service."},
+	ErrorAccessDeniedException:       {HTTPCode: 403, Message: "You do not have sufficient access to perform this action."},
+	ErrorThrottlingException:         {HTTPCode: 429, Message: "The request was denied due to request throttling."},
+	ErrorModelNotReadyException:      {HTTPCode: 429, Message: "The model specified in the request is not ready to serve inference requests."},
+	ErrorServiceUnavailableException: {HTTPCode: 503, Message: "The service isn't currently available. Try again later."},
+	ErrorModelErrorException:         {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/predastore/pkg/iampolicy"
 	"github.com/mulgadc/predastore/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
@@ -110,6 +111,14 @@ type GatewayConfig struct {
 	// in unit tests of unrelated routes).
 	ECRTokenIssuer   *gateway_ecrauth.Issuer
 	ECRTokenVerifier *gateway_ecrauth.Verifier
+	// BedrockCredentials resolves per-account provider API keys for bedrock
+	// routes. Nil falls back to no external providers (self-host models only).
+	BedrockCredentials *gateway_bedrock.CredentialStore
+	// BedrockEndpoints maps a self-hosted modelId to its OpenAI-compatible base
+	// URL. Phase 1 endpoints are pinned/always-resident, so this is static
+	// config; a later phase backs it with the daemon's dynamic endpoint
+	// registry. Nil/empty means no self-hosted models are reachable.
+	BedrockEndpoints map[string]string
 }
 
 var supportedServices = map[string]bool{
@@ -123,6 +132,8 @@ var supportedServices = map[string]bool{
 	"acm":                  true,
 	"tagging":              true,
 	"spinifex":             true,
+	"bedrock":              true,
+	"bedrock-runtime":      true,
 }
 
 // EC2ErrorResponse is the EC2 query-API error envelope.
@@ -340,6 +351,10 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ELBv2_Request(w, r)
 	case "eks":
 		err = gw.EKS_Request(w, r)
+	case "bedrock":
+		err = gw.Bedrock_Request(w, r)
+	case "bedrock-runtime":
+		err = gw.BedrockRuntime_Request(w, r)
 	case "ecs":
 		err = gw.ECS_Request(w, r)
 	case "ecr":
@@ -501,8 +516,9 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	// EKS, ECR, ACM, ECS, and tagging use AWS JSON 1.1; query/XML services fall through.
-	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" {
+	// EKS, ECR, ACM, ECS, tagging, and bedrock/bedrock-runtime use AWS JSON 1.1;
+	// query/XML services fall through.
+	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" || svc == "bedrock" || svc == "bedrock-runtime" {
 		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err.Error(), "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)

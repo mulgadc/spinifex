@@ -98,6 +98,9 @@ type Client interface {
 	DeleteAllNATsByExternalIP(ctx context.Context, natType, externalIP string) (int, error)
 	FindNATByExternalIP(ctx context.Context, natType, externalIP string) (*nbdb.NAT, error)
 	FindNATByLogicalIP(ctx context.Context, routerName, natType, logicalIP string) (*nbdb.NAT, error)
+	// ListNATs returns every NAT row in OVN NB. The reconciler uses it to prune
+	// orphan dnat_and_snat rows whose stamped owning ENI is gone from intent.
+	ListNATs(ctx context.Context) ([]nbdb.NAT, error)
 	// SetNATExemptedExtIPs updates exempted_ext_ips in place on the NAT rule
 	// matching (natType, logicalIP) on routerName — no delete/re-add flow gap.
 	// nil clears the ref. Returns ErrNATNotFound when the rule is absent.

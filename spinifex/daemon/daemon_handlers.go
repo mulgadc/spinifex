@@ -84,6 +84,10 @@ func handleNATSRequest[I any, O any](msg *nats.Msg, serviceFn func(context.Conte
 	}
 	output, err := serviceFn(ctx, input, accountID)
 	if err != nil {
+		// The error was otherwise only recorded on the OTel span, invisible
+		// without a trace backend. Log at Error so handler failures show up
+		// in the journal too.
+		slog.ErrorContext(ctx, "handleNATSRequest: service call failed", "subject", msg.Subject, "err", err)
 		utils.MarkSpanError(span, err)
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return

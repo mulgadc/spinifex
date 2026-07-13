@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -59,6 +60,16 @@ type EKSServiceDeps struct {
 	SystemAccessKey  string
 	SystemSecretKey  string
 	GatewayCACert    string
+
+	// SystemPredastoreURL is the mgmt-bridge-reachable predastore endpoint baked
+	// into the CP VM's etcd-snapshot.env (SystemAccessKey/SystemSecretKey double
+	// as the predastore SigV4 creds — same system credential used for the gateway).
+	SystemPredastoreURL string
+
+	// SnapshotStore lists/reads etcd snapshots from the eks-backups-system bucket
+	// for restore-snapshot's latest-snapshot resolution. Nil disables that lookup
+	// (callers must pass --snapshot explicitly).
+	SnapshotStore objectstore.ObjectStore
 
 	VPCSG     sgProvisioner
 	VPCK3s    k3sVPCProvisioner
@@ -231,6 +242,17 @@ type EKSServiceImpl struct {
 	// CREATE_FAILED. Tests inject small values.
 	nodegroupReadyTimeout time.Duration
 	nodegroupReadyPoll    time.Duration
+
+	// workerLaunchRetryTimeout / workerLaunchRetryBackoff bound how long
+	// launchNodegroupInfra retries a shortfall (a worker RunInstances call that
+	// failed, e.g. a transient QMP timeout or host capacity pressure) before
+	// giving up and marking the nodegroup CREATE_FAILED. Tests inject small values.
+	workerLaunchRetryTimeout time.Duration
+	workerLaunchRetryBackoff time.Duration
+
+	// spawnScanRetryBackoff paces the boot-time reconciler re-scan when JetStream
+	// enumeration is still catching up. Tests inject a small value.
+	spawnScanRetryBackoff time.Duration
 }
 
 var _ EKSService = (*EKSServiceImpl)(nil)
@@ -255,13 +277,16 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &EKSServiceImpl{
-		deps:                  deps,
-		leaderKV:              leaderKV,
-		registry:              NewReconcilerRegistry(),
-		bgCtx:                 ctx,
-		bgCancel:              cancel,
-		nodegroupReadyTimeout: defaultNodegroupReadyTimeout,
-		nodegroupReadyPoll:    defaultNodegroupReadyPoll,
+		deps:                     deps,
+		leaderKV:                 leaderKV,
+		registry:                 NewReconcilerRegistry(),
+		bgCtx:                    ctx,
+		bgCancel:                 cancel,
+		nodegroupReadyTimeout:    defaultNodegroupReadyTimeout,
+		nodegroupReadyPoll:       defaultNodegroupReadyPoll,
+		workerLaunchRetryTimeout: defaultWorkerLaunchRetryTimeout,
+		workerLaunchRetryBackoff: defaultWorkerLaunchRetryBackoff,
+		spawnScanRetryBackoff:    defaultSpawnScanRetryBackoff,
 	}, nil
 }
 
@@ -277,7 +302,12 @@ func (s *EKSServiceImpl) Shutdown() {
 	s.registry.StopAll()
 }
 
-// SpawnRegisteredReconcilers resumes reconciler goroutines for all CREATING/ACTIVE clusters on daemon boot.
+// SpawnRegisteredReconcilers resumes reconciler goroutines for all CREATING/ACTIVE
+// clusters on daemon boot. JetStream bucket/key enumeration is eventually
+// consistent, so the scan is retried until the observed cluster count stops
+// growing across two passes (Spawn is idempotent, so re-runs only pick up
+// stragglers a lagging enumeration first missed), capped to return promptly on a
+// genuinely empty daemon.
 func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 	if !s.depsReadyForOrchestration() {
 		slog.Debug("SpawnRegisteredReconcilers: deps not ready, skipping")
@@ -287,6 +317,25 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
+	prev := -1
+	for attempt := range spawnScanMaxAttempts {
+		observed := s.spawnRegisteredReconcilersScan(js)
+		if observed <= prev {
+			break
+		}
+		prev = observed
+		if attempt < spawnScanMaxAttempts-1 {
+			time.Sleep(s.spawnScanRetryBackoff)
+		}
+	}
+	return nil
+}
+
+// spawnRegisteredReconcilersScan runs one enumeration pass and resumes reconcilers
+// for every CREATING/ACTIVE cluster it can see, returning the count observed so the
+// caller can detect when a lagging JetStream enumeration has settled.
+func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(js nats.JetStreamContext) int {
+	observed := 0
 	buckets := js.KeyValueStoreNames()
 	for name := range buckets {
 		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
@@ -311,6 +360,7 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 			if meta.Status != ClusterStatusCreating && meta.Status != ClusterStatusActive {
 				continue
 			}
+			observed++
 			// Reclaim any nodegroup workers stranded by the restart: a launch that
 			// was in flight when the prior process died left a CREATING (or
 			// partially-launched CREATE_FAILED) record whose workers nothing else
@@ -327,7 +377,7 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 			s.spawnReconciler(accountID, cluster, meta)
 		}
 	}
-	return nil
+	return observed
 }
 
 func (s *EKSServiceImpl) depsReadyForOrchestration() bool {
@@ -707,24 +757,27 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	elbSubnets := dedupSubnetsByAZ(ctx, s.deps.VPCSubnet, accountID, lc.subnetIDs)
 
 	serverIn := K3sServerInput{
-		AccountID:         sysAcct,
-		ClusterAccountID:  accountID,
-		ClusterName:       name,
-		Region:            region,
-		SubnetID:          cpRefs.PrivateSubnetIDs[0],
-		VpcID:             meta.ResourcesVpcConfig.VpcId,
-		ELBSubnetIDs:      elbSubnets,
-		ControlPlaneSGID:  cpSG,
-		NLBDNS:            nlb.DNSName,
-		EndpointIP:        nlb.FrontendIP,
-		PrivateEndpointIP: meta.PrivateEndpointIP,
-		OIDCIssuer:        oidcIssuer,
-		OIDCPrivateKeyPEM: privPEM,
-		OIDCPublicKeyPEM:  pubPEM,
-		GatewayURL:        s.deps.SystemGatewayURL,
-		AddonGatewayURL:   s.deps.GatewayBaseURL,
-		GatewayCACert:     s.deps.GatewayCACert,
-		JoinToken:         joinToken,
+		AccountID:           sysAcct,
+		ClusterAccountID:    accountID,
+		ClusterName:         name,
+		Region:              region,
+		SubnetID:            cpRefs.PrivateSubnetIDs[0],
+		VpcID:               meta.ResourcesVpcConfig.VpcId,
+		ELBSubnetIDs:        elbSubnets,
+		ControlPlaneSGID:    cpSG,
+		NLBDNS:              nlb.DNSName,
+		EndpointIP:          nlb.FrontendIP,
+		PrivateEndpointIP:   meta.PrivateEndpointIP,
+		OIDCIssuer:          oidcIssuer,
+		OIDCPrivateKeyPEM:   privPEM,
+		OIDCPublicKeyPEM:    pubPEM,
+		GatewayURL:          s.deps.SystemGatewayURL,
+		AddonGatewayURL:     s.deps.GatewayBaseURL,
+		GatewayCACert:       s.deps.GatewayCACert,
+		JoinToken:           joinToken,
+		PredastoreEndpoint:  s.deps.SystemPredastoreURL,
+		PredastoreAccessKey: s.deps.SystemAccessKey,
+		PredastoreSecretKey: s.deps.SystemSecretKey,
 	}
 
 	// Prefer IMDS instance-role creds: attach a system instance profile so the
@@ -767,6 +820,8 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	tmpl.AccessKey = ""
 	tmpl.SecretKey = ""
 	tmpl.IamInstanceProfileArn = ""
+	tmpl.PredastoreAccessKey = ""
+	tmpl.PredastoreSecretKey = ""
 	meta.ControlPlaneTemplate = &tmpl
 
 	// Persist the CP VM + ENI + spread-group refs now, before any further fallible
@@ -1169,8 +1224,9 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		// New topology: SGs + IGW + subnets + route tables + NAT GW + VPC all live
 		// in the managed CP VPC under the system account. DeleteClusterCPVPC removes
 		// the IGW + VPC after the SGs, so SG cleanup must precede it.
-		if err := DeleteClusterSGs(ctx, s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", err))
+		cpSGErr := DeleteClusterSGs(ctx, s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId)
+		if cpSGErr != nil {
+			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", cpSGErr))
 		}
 		// launchNodegroupInfra also creates the cluster SGs in the customer VPC for
 		// worker<->control-plane networking; reclaim them here too, or they orphan
@@ -1180,8 +1236,21 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 				teardownErrs = append(teardownErrs, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
 			}
 		}
-		if err := DeleteClusterCPVPC(ctx, s.cpVPCDeps(), infraAcct, name); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", err))
+		cpVPCErr := DeleteClusterCPVPC(ctx, s.cpVPCDeps(), infraAcct, name, meta.ManagedCPVPC)
+		if cpVPCErr != nil {
+			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", cpVPCErr))
+		}
+		if cpSGErr == nil && cpVPCErr == nil {
+			// The CP VPC (including when already gone — tolerated as success)
+			// and its own SGs are both confirmed torn down. Clear the internal
+			// cp-vpc state record right now, independent of whatever else in
+			// this run still fails below: otherwise a re-drive keeps retrying
+			// SG/VPC API calls against a stale VpcId forever, turning a single
+			// DependencyViolation into a permanent DELETING loop.
+			meta.ManagedCPVPC = nil
+			if perr := ClearClusterManagedCPVPC(acctKV, name); perr != nil && !errors.Is(perr, ErrClusterNotFound) {
+				teardownErrs = append(teardownErrs, fmt.Errorf("clear managed CP VPC state: %w", perr))
+			}
 		}
 	} else if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 		// Legacy topology: CP lived in the customer VPC; reclaim its SGs + the
@@ -2004,13 +2073,24 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 			PublicAccessCidrs:     aws.StringSlice(meta.ResourcesVpcConfig.PublicAccessCidrs),
 		}
 	}
+	var issues []*eks.ClusterIssue
 	if meta.HealthIssue != "" {
-		out.Health = &eks.ClusterHealth{
-			Issues: []*eks.ClusterIssue{{
-				Code:    aws.String(eks.ClusterIssueCodeClusterUnreachable),
-				Message: aws.String(meta.HealthIssue),
-			}},
-		}
+		issues = append(issues, &eks.ClusterIssue{
+			Code:    aws.String(eks.ClusterIssueCodeClusterUnreachable),
+			Message: aws.String(meta.HealthIssue),
+		})
+	}
+	// StatusReason is the launch-failure cause MarkClusterFailed recorded; surface
+	// it here too, since the real EKS DescribeCluster response has no dedicated
+	// "why did CREATE_FAILED happen" field and Health.Issues is the analogue.
+	if meta.Status == ClusterStatusFailed && meta.StatusReason != "" {
+		issues = append(issues, &eks.ClusterIssue{
+			Code:    aws.String(eks.ClusterIssueCodeInternalFailure),
+			Message: aws.String(meta.StatusReason),
+		})
+	}
+	if len(issues) > 0 {
+		out.Health = &eks.ClusterHealth{Issues: issues}
 	}
 	if len(meta.Tags) > 0 {
 		out.Tags = aws.StringMap(meta.Tags)

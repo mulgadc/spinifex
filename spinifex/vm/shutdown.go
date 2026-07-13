@@ -147,7 +147,7 @@ func (m *Manager) Terminate(id string) error {
 // MarkFailed sets a failure reason, transitions to shutting-down synchronously,
 // then runs the cleanup chain in a goroutine so callers return immediately.
 // Tolerates instances already in a cleanup state (no-op).
-func (m *Manager) MarkFailed(instance *VM, reason string) {
+func (m *Manager) MarkFailed(ctx context.Context, instance *VM, reason string) {
 	skip := false
 	var observed InstanceState
 	m.Inspect(instance, func(v *VM) {
@@ -177,7 +177,8 @@ func (m *Manager) MarkFailed(instance *VM, reason string) {
 			return
 		}
 	}
-	slog.Info("Instance marked as failed", "instanceId", instance.ID, "reason", reason)
+	recordInstanceFailure(ctx, instance.ID, reason)
+	slog.ErrorContext(ctx, "Instance marked as failed", "instanceId", instance.ID, "reason", reason)
 
 	m.goroutineWg.Go(func() {
 		m.terminateCleanup(instance)

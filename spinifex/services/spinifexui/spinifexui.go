@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -219,7 +220,8 @@ func (svc *Service) launchService() error {
 	compressor := middleware.NewCompressor(5, "text/html", "text/css",
 		"application/javascript", "text/javascript", "application/json",
 		"image/svg+xml", "text/plain")
-	finalHandler := securityHeadersMiddleware(compressor.Handler(mux))
+	traced := otelsetup.HTTPMiddleware("spinifex-ui")(mux)
+	finalHandler := securityHeadersMiddleware(compressor.Handler(traced))
 
 	addr := fmt.Sprintf("%s:%d", svc.Config.Host, svc.Config.Port)
 

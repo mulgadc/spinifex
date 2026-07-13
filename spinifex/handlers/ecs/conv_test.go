@@ -81,3 +81,68 @@ func TestContainerDefRoundTrip(t *testing.T) {
 func TestContainerDefsFromAWS_SkipsNil(t *testing.T) {
 	assert.Empty(t, containerDefsFromAWS([]*ecs.ContainerDefinition{nil}))
 }
+
+// TestContainerDefsFromAWS_GPU covers mulga-11opz (Epic C task C1): a
+// resourceRequirements entry of type=GPU is parsed as a whole-GPU count and
+// carried onto ContainerDef, its AWS round trip, and the bus AssignContainer.
+func TestContainerDefsFromAWS_GPU(t *testing.T) {
+	in := []*ecs.ContainerDefinition{{
+		Name: aws.String("gpu-app"), Image: aws.String("registry/gpu-app:1"), Essential: aws.Bool(true),
+		ResourceRequirements: []*ecs.ResourceRequirement{
+			{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("2")},
+		},
+	}}
+	defs := containerDefsFromAWS(in)
+	require.Len(t, defs, 1)
+	assert.Equal(t, 2, defs[0].GPU)
+
+	back := defs[0].toAWS()
+	require.Len(t, back.ResourceRequirements, 1)
+	assert.Equal(t, ecs.ResourceTypeGpu, aws.StringValue(back.ResourceRequirements[0].Type))
+	assert.Equal(t, "2", aws.StringValue(back.ResourceRequirements[0].Value))
+
+	ac := defs[0].toAssignContainer()
+	assert.Equal(t, 2, ac.GPU)
+}
+
+// TestContainerDefsFromAWS_NoGPU_Regression covers the non-GPU path: no
+// resourceRequirements means GPU stays 0 and toAWS omits the field.
+func TestContainerDefsFromAWS_NoGPU_Regression(t *testing.T) {
+	in := []*ecs.ContainerDefinition{{Name: aws.String("web"), Image: aws.String("registry/web:1"), Essential: aws.Bool(true)}}
+	defs := containerDefsFromAWS(in)
+	require.Len(t, defs, 1)
+	assert.Zero(t, defs[0].GPU)
+	assert.Empty(t, defs[0].toAWS().ResourceRequirements)
+	assert.Zero(t, defs[0].toAssignContainer().GPU)
+}
+
+// TestGPUCountFromResourceRequirements covers the extraction edge cases: nil
+// entries, non-GPU types, multiple GPU entries summed, and an invalid value
+// (non-numeric or negative) skipped rather than erroring.
+func TestGPUCountFromResourceRequirements(t *testing.T) {
+	assert.Zero(t, gpuCountFromResourceRequirements(nil))
+	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{nil}))
+	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{
+		{Type: aws.String(ecs.ResourceTypeInferenceAccelerator), Value: aws.String("device1")},
+	}))
+	assert.Equal(t, 3, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{
+		{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("1")},
+		{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("2")},
+	}))
+	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{
+		{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("not-a-number")},
+	}))
+	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{
+		{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("-1")},
+	}))
+}
+
+// TestTaskDefReservedGPU covers the task-level GPU aggregate (sum across
+// container defs), mirroring TestTaskDefReservedSums for CPU/memory.
+func TestTaskDefReservedGPU(t *testing.T) {
+	td := &TaskDefRecord{Containers: []ContainerDef{{GPU: 1}, {GPU: 3}}}
+	assert.Equal(t, 4, td.reservedGPU())
+
+	empty := &TaskDefRecord{Containers: []ContainerDef{{CPU: 128}}}
+	assert.Zero(t, empty.reservedGPU())
+}

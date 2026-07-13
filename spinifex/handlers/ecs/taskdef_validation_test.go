@@ -90,3 +90,53 @@ func TestRunTask_AssignCarriesExecutionRoleAndLogDriver(t *testing.T) {
 	require.Len(t, poll.Assignments[0].Containers, 1)
 	assert.Equal(t, LogDriverJSONFile, poll.Assignments[0].Containers[0].LogDriver)
 }
+
+// TestRunTask_AssignCarriesGPU covers mulga-11opz (Epic C task C1): a
+// resourceRequirements GPU count on the task def is threaded end-to-end —
+// conv -> ContainerDef -> task-level aggregate (TaskRecord.GPU) -> the
+// AssignContainer the agent polls for.
+func TestRunTask_AssignCarriesGPU(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("gpu-app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{
+			{
+				Name: aws.String("trainer"), Image: aws.String("registry/trainer:1"),
+				Cpu: aws.Int64(512), Memory: aws.Int64(1024), Essential: aws.Bool(true),
+				ResourceRequirements: []*ecs.ResourceRequirement{
+					{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("1")},
+				},
+			},
+			{
+				Name: aws.String("sidecar"), Image: aws.String("registry/sidecar:1"),
+				Cpu: aws.Int64(64), Memory: aws.Int64(128), Essential: aws.Bool(false),
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	registerInstanceGPU(t, svc, "web", "i-1", 1024, 2048, 1)
+
+	out, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("gpu-app"), Count: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Tasks, 1)
+
+	poll, err := svc.PollAssignments(context.Background(), &PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, poll.Assignments, 1)
+	require.Len(t, poll.Assignments[0].Containers, 2)
+	assert.Equal(t, 1, poll.Assignments[0].Containers[0].GPU)
+	assert.Zero(t, poll.Assignments[0].Containers[1].GPU)
+
+	taskID := taskShortID(aws.StringValue(out.Tasks[0].TaskArn))
+	kv, err := svc.bucket(testAccountID)
+	require.NoError(t, err)
+	var rec TaskRecord
+	found, err := getJSON(kv, TaskKey("web", taskID), &rec)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, 1, rec.GPU)
+}

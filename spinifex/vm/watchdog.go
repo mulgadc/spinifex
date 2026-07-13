@@ -48,6 +48,6 @@ func (m *Manager) scanAndMarkStuckPending(now time.Time) {
 		slog.Warn("Instance stuck in pending, marking failed",
 			"instanceId", instance.ID, "status", instance.Status,
 			"elapsed", now.Sub(*instance.Instance.LaunchTime))
-		m.MarkFailed(instance, "launch_timeout")
+		m.MarkFailed(context.Background(), instance, "launch_timeout")
 	}
 }

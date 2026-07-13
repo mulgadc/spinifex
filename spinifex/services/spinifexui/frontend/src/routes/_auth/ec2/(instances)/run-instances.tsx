@@ -1,7 +1,7 @@
 import type { LaunchTemplateVersion } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router"
 import { ChevronDown } from "lucide-react"
 import { useEffect } from "react"
 import { Controller, useForm } from "react-hook-form"
@@ -12,6 +12,7 @@ import {
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
+import { GpuInstanceTypeSelect } from "@/components/gpu-instance-type-select"
 import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
 import {
@@ -29,10 +30,7 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
-  SelectGroup,
   SelectItem,
-  SelectLabel,
-  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -97,9 +95,9 @@ export const Route = createFileRoute("/_auth/ec2/(instances)/run-instances")({
   component: CreateInstance,
 })
 
-function CreateInstance() {
+export function CreateInstance() {
   const navigate = useNavigate()
-  const search = Route.useSearch()
+  const search = useSearch({ from: Route.id })
   const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
   const { data: keyPairsData } = useSuspenseQuery(ec2KeyPairsQueryOptions)
   const { data: instanceTypesData } = useSuspenseQuery(
@@ -123,31 +121,15 @@ function CreateInstance() {
     securityGroups.map((sg) => sg.GroupName ?? ""),
   )
   const instanceTypeCounts: Record<string, number> = {}
-  const gpuInfoByType = new Map<string, { totalMiB: number; gpuName: string }>()
   for (const type of instanceTypesData.InstanceTypes ?? []) {
     const typeName = type.InstanceType
     if (!typeName) {
       continue
     }
     instanceTypeCounts[typeName] = (instanceTypeCounts[typeName] ?? 0) + 1
-    if (!gpuInfoByType.has(typeName)) {
-      const gpus = type.GpuInfo?.Gpus
-      if (gpus && gpus.length > 0) {
-        gpuInfoByType.set(typeName, {
-          totalMiB: type.GpuInfo?.TotalGpuMemoryInMiB ?? 0,
-          gpuName: gpus[0]?.Name ?? "",
-        })
-      }
-    }
   }
 
   const uniqueInstanceTypes = Object.keys(instanceTypeCounts).toSorted()
-  const gpuInstanceTypes = uniqueInstanceTypes.filter((t) =>
-    gpuInfoByType.has(t),
-  )
-  const standardInstanceTypes = uniqueInstanceTypes.filter(
-    (t) => !gpuInfoByType.has(t),
-  )
 
   // Compute default values from loaded data
   const defaultImageId = images[0]?.ImageId
@@ -220,8 +202,12 @@ function CreateInstance() {
   const maxCount = selectedInstanceType
     ? (instanceTypeCounts[selectedInstanceType] ?? 1)
     : 1
-  const selectedGPUInfo = selectedInstanceType
-    ? gpuInfoByType.get(selectedInstanceType)
+  const selectedTypeInfo = instanceTypesData.InstanceTypes?.find(
+    (t) => t.InstanceType === selectedInstanceType,
+  )
+  const selectedGpuDevice = selectedTypeInfo?.GpuInfo?.Gpus?.[0]
+  const selectedGpuMigProfile = selectedGpuDevice?.Name?.startsWith("MIG ")
+    ? selectedGpuDevice.Name.slice("MIG ".length)
     : undefined
   const selectedImageId = watch("imageId")
   const selectedRoot = getRootMapping(
@@ -452,57 +438,24 @@ function CreateInstance() {
                 control={control}
                 name="instanceType"
                 render={({ field }) => (
-                  <Select
-                    onValueChange={(value) => field.onChange(value)}
+                  <GpuInstanceTypeSelect
+                    aria-invalid={!!errors.instanceType}
+                    availabilityByType={instanceTypeCounts}
+                    className="w-full"
+                    id="instanceType"
+                    instanceTypes={instanceTypesData.InstanceTypes ?? []}
+                    onValueChange={field.onChange}
                     value={field.value ?? ""}
-                  >
-                    <SelectTrigger
-                      aria-invalid={!!errors.instanceType}
-                      className="w-full"
-                      id="instanceType"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {standardInstanceTypes.length > 0 && (
-                        <SelectGroup>
-                          {gpuInstanceTypes.length > 0 && (
-                            <SelectLabel>Standard</SelectLabel>
-                          )}
-                          {standardInstanceTypes.map((type) => (
-                            <SelectItem key={type} value={type}>
-                              {type} ({instanceTypeCounts[type]} available)
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      )}
-                      {gpuInstanceTypes.length > 0 &&
-                        standardInstanceTypes.length > 0 && <SelectSeparator />}
-                      {gpuInstanceTypes.length > 0 && (
-                        <SelectGroup>
-                          <SelectLabel>GPU-Accelerated</SelectLabel>
-                          {gpuInstanceTypes.map((type) => {
-                            const gpu = gpuInfoByType.get(type)
-                            return (
-                              <SelectItem key={type} value={type}>
-                                {type}
-                                {gpu
-                                  ? ` — ${formatVRAMMiB(gpu.totalMiB)}`
-                                  : ""}{" "}
-                                ({instanceTypeCounts[type]} available)
-                              </SelectItem>
-                            )
-                          })}
-                        </SelectGroup>
-                      )}
-                    </SelectContent>
-                  </Select>
+                  />
                 )}
               />
-              {selectedGPUInfo && (
+              {selectedGpuDevice && (
                 <FieldDescription>
-                  GPU: {selectedGPUInfo.gpuName} ·{" "}
-                  {formatVRAMMiB(selectedGPUInfo.totalMiB)} VRAM
+                  GPU: {selectedGpuDevice.Name}
+                  {selectedGpuDevice.MemoryInfo?.SizeInMiB !== undefined &&
+                    ` · ${formatVRAMMiB(selectedGpuDevice.MemoryInfo.SizeInMiB)} VRAM`}
+                  {selectedGpuMigProfile &&
+                    ` · MIG ${selectedGpuMigProfile} slice`}
                 </FieldDescription>
               )}
               <FieldError errors={[errors.instanceType]} />

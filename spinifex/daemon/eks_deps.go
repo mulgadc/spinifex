@@ -8,6 +8,7 @@ import (
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"log/slog"
 )
 
@@ -74,33 +75,37 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 	}
 
 	deps := handlers_eks.EKSServiceDeps{
-		Config:           d.config,
-		NATSConn:         d.natsConn,
-		MasterKey:        masterKey,
-		GatewayBaseURL:   d.resolveGatewayBaseURL(),
-		Region:           d.config.Region,
-		HolderID:         d.node,
-		ClusterSize:      clusterSize,
-		InternalSuffix:   internalSuffix,
-		SystemGatewayURL: d.resolveSystemGatewayBaseURL(),
-		SystemAccessKey:  d.config.Predastore.AccessKey,
-		SystemSecretKey:  d.config.Predastore.SecretKey,
-		GatewayCACert:    gatewayCA,
-		VPCSG:            d.vpcService,
-		VPCK3s:           d.vpcService,
-		VPCSubnet:        &daemonEKSSubnetResolver{d: d},
-		NLB:              d.elbv2Service,
-		Instance:         d,
-		Image:            d.imageService,
-		EIP:              d.eipService,
-		IGW:              d.igwService,
-		Worker:           d,
-		VPCMgr:           d.vpcService,
-		NATGW:            d.natGatewayService,
-		RouteTable:       d.routeTableService,
-		PlacementGroup:   handlers_ec2_placementgroup.NewNATSPlacementGroupService(d.natsConn),
-		Scheduler:        handlers_eks.NewNATSHostScheduler(d.natsConn),
-		CPControl:        d.newEKSCPControl(),
+		Config:              d.config,
+		NATSConn:            d.natsConn,
+		MasterKey:           masterKey,
+		GatewayBaseURL:      d.resolveGatewayBaseURL(),
+		Region:              d.config.Region,
+		HolderID:            d.node,
+		ClusterSize:         clusterSize,
+		InternalSuffix:      internalSuffix,
+		SystemGatewayURL:    d.resolveSystemGatewayBaseURL(),
+		SystemAccessKey:     d.config.Predastore.AccessKey,
+		SystemSecretKey:     d.config.Predastore.SecretKey,
+		GatewayCACert:       gatewayCA,
+		SystemPredastoreURL: d.resolveSystemPredastoreURL(),
+		SnapshotStore: objectstore.NewS3ObjectStoreFromConfig(
+			d.config.Predastore.Host, d.config.Predastore.Region,
+			d.config.Predastore.AccessKey, d.config.Predastore.SecretKey),
+		VPCSG:          d.vpcService,
+		VPCK3s:         d.vpcService,
+		VPCSubnet:      &daemonEKSSubnetResolver{d: d},
+		NLB:            d.elbv2Service,
+		Instance:       d,
+		Image:          d.imageService,
+		EIP:            d.eipService,
+		IGW:            d.igwService,
+		Worker:         d,
+		VPCMgr:         d.vpcService,
+		NATGW:          d.natGatewayService,
+		RouteTable:     d.routeTableService,
+		PlacementGroup: handlers_ec2_placementgroup.NewNATSPlacementGroupService(d.natsConn),
+		Scheduler:      handlers_eks.NewNATSHostScheduler(d.natsConn),
+		CPControl:      d.newEKSCPControl(),
 	}
 
 	// A KV-backed IAM service (sharing the gateway's buckets over NATS) lets EKS
@@ -175,4 +180,26 @@ func (d *Daemon) resolveSystemGatewayBaseURL() string {
 		}
 	}
 	return "https://" + net.JoinHostPort(d.mgmtBridgeIP, gatewayPort)
+}
+
+// resolveSystemPredastoreURL derives the predastore URL a system instance (the
+// K3s server VM) fetches/PUTs etcd snapshots to. Same mgmt-bridge-only
+// reachability constraint as resolveSystemGatewayBaseURL: config.Predastore.Host
+// is rewritten to 127.0.0.1 for the local daemon, which a guest cannot dial, so
+// the bridge IP is substituted with the configured port. Falls back to the
+// configured Predastore.Host (scheme-prefixed) when no mgmt bridge exists.
+func (d *Daemon) resolveSystemPredastoreURL() string {
+	predastorePort := "8443"
+	if d.config.Predastore.Host != "" {
+		if _, port, splitErr := net.SplitHostPort(d.config.Predastore.Host); splitErr == nil && port != "" {
+			predastorePort = port
+		}
+	}
+	if d.mgmtBridgeIP == "" {
+		if d.config.Predastore.Host == "" {
+			return ""
+		}
+		return "https://" + d.config.Predastore.Host
+	}
+	return "https://" + net.JoinHostPort(d.mgmtBridgeIP, predastorePort)
 }

@@ -3,6 +3,7 @@
 package subscribers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,13 @@ import (
 // QueueGroup ensures one vpcd processes each event (shared OVN NB DB).
 const QueueGroup = "vpcd-workers"
 
+// MACBindingFlusher removes stale SB MAC_Binding rows resolving a private IP so a
+// reused address re-resolves to the new owner's MAC rather than the terminated
+// instance's. Optional dependency; a nil flusher makes the flush a no-op.
+type MACBindingFlusher interface {
+	FlushMACBinding(ctx context.Context, ip string) error
+}
+
 // Subscriber wires VPC lifecycle NATS topics to the network managers.
 type Subscriber struct {
 	topology topology.Manager
@@ -23,15 +31,17 @@ type Subscriber struct {
 	eip      external.EIPManager
 	natgw    external.NATGWManager
 	igw      external.IGWManager
+	mac      MACBindingFlusher
 }
 
-// Config: all fields required.
+// Config: all manager fields required. MAC is optional (nil disables the flush).
 type Config struct {
 	Topology topology.Manager
 	SG       policy.SecurityGroupManager
 	EIP      external.EIPManager
 	NATGW    external.NATGWManager
 	IGW      external.IGWManager
+	MAC      MACBindingFlusher
 }
 
 // New constructs a Subscriber, returning an error when any manager is nil.
@@ -54,6 +64,7 @@ func New(cfg Config) (*Subscriber, error) {
 		eip:      cfg.EIP,
 		natgw:    cfg.NATGW,
 		igw:      cfg.IGW,
+		mac:      cfg.MAC,
 	}, nil
 }
 

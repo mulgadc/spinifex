@@ -26,11 +26,11 @@ func TestStoreRecoveryDirective_EpochIncrements(t *testing.T) {
 	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 
-	first, err := StoreRecoveryDirective(acctKV, "alpha", "i-0", RecoveryActionClusterReset, "")
+	first, err := StoreRecoveryDirective(acctKV, "alpha", "i-0", RecoveryActionClusterReset, "", false)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), first.Epoch, "first set starts at epoch 1")
 
-	second, err := StoreRecoveryDirective(acctKV, "alpha", "i-0", RecoveryActionWipeRejoin, "snap.snap")
+	second, err := StoreRecoveryDirective(acctKV, "alpha", "i-0", RecoveryActionWipeRejoin, "snap.snap", false)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), second.Epoch, "each set advances the epoch")
 
@@ -39,6 +39,21 @@ func TestStoreRecoveryDirective_EpochIncrements(t *testing.T) {
 	assert.Equal(t, RecoveryActionWipeRejoin, got.Action)
 	assert.Equal(t, "snap.snap", got.Snapshot)
 	assert.Equal(t, int64(2), got.Epoch)
+}
+
+func TestStoreRecoveryDirective_SnapshotRequiredRoundTrips(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	require.NoError(t, err)
+
+	stored, err := StoreRecoveryDirective(acctKV, "alpha", "i-seed", RecoveryActionClusterReset, "etcd-frequent-20260709T010000Z.snap", true)
+	require.NoError(t, err)
+	assert.True(t, stored.SnapshotRequired, "a required snapshot is recorded so the guest aborts on fetch failure")
+
+	got, err := LoadRecoveryDirective(acctKV, "alpha", "i-seed")
+	require.NoError(t, err)
+	assert.True(t, got.SnapshotRequired, "SnapshotRequired survives the KV round-trip")
+	assert.Equal(t, "etcd-frequent-20260709T010000Z.snap", got.Snapshot)
 }
 
 func TestSetRecoveryDirective_RejectsBadInput(t *testing.T) {

@@ -76,6 +76,9 @@ var serviceName = "vpcd"
 // Compile-time check: host.GatewayClaimProber implements reconcile.GatewayClaimVerifier.
 var _ reconcile.GatewayClaimVerifier = (*host.GatewayClaimProber)(nil)
 
+// Compile-time check: host.GatewayClaimProber implements subscribers.MACBindingFlusher.
+var _ subscribers.MACBindingFlusher = (*host.GatewayClaimProber)(nil)
+
 // BootstrapVPC holds the default VPC IDs from spinifex.toml used to seed OVN topology on first boot.
 type BootstrapVPC struct {
 	AccountID  string
@@ -572,6 +575,9 @@ func launchService(cfg *Config) error {
 		NATMode:       natMode,
 		FlowsBarrier:  waitForFlowsHV,
 		RoutedIngress: routedIngress,
+		NexthopSeed: func(ctx context.Context, lrpName, nexthopIP string) error {
+			return host.SeedNexthopMAC(ctx, host.NewExecRunner(), lrpName, nexthopIP)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("construct IGW manager: %w", err)
@@ -596,6 +602,7 @@ func launchService(cfg *Config) error {
 		EIP:      eipMgr,
 		NATGW:    natgwMgr,
 		IGW:      igwMgr,
+		MAC:      host.NewGatewayClaimProber(cfg.OVNSBAddr),
 	})
 	if err != nil {
 		return fmt.Errorf("construct subscriber: %w", err)

@@ -1,0 +1,18 @@
+[Unit]
+# Role-agnostic boot oneshot that coldplugs the EBS by-id symlink bridge for
+# the aws-ebs-csi-driver node plugin — any virtio-blk volume already attached
+# at boot. Hot-attached volumes are handled separately by the udev rule
+# 99-mulga-ebs-byid.rules, which fires the same helper (see
+# scripts/images/eks-node-gpu/99-mulga-ebs-byid.rules).
+Description=Mulga EBS /dev/disk/by-id symlink bridge (coldplug)
+After=local-fs.target
+Before=k3s-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=ACTION=coldplug
+ExecStart=/usr/local/sbin/mulga-ebs-byid
+
+[Install]
+WantedBy=multi-user.target

@@ -49,6 +49,13 @@ type NATManager interface {
 	// identically. Idempotent.
 	DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP, portName string) error
 
+	// PruneOrphanEIPs deletes every dnat_and_snat row whose stamped
+	// spinifex:logical_port owning ENI is absent from livePorts (the set of live
+	// intent port names), flushing the host ARP entry and unbinding routed-mode
+	// host state for each. Rows with no stamped logical port are left untouched
+	// (owner undeterminable). Returns the number of rows removed.
+	PruneOrphanEIPs(ctx context.Context, livePorts map[string]struct{}) (int, error)
+
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
 
@@ -231,11 +238,22 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		natRule.LogicalPort = &port
 	}
 
-	// Skip when the existing row already matches; avoids the
-	// delete-then-add flow-install gap on duplicate publishes.
-	if existing, err := m.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", eip.ExternalIP); err != nil {
-		slog.Warn("policy: AddEIP idempotency lookup failed", "external_ip", eip.ExternalIP, "err", err)
-	} else if existing != nil && existing.LogicalIP == eip.LogicalIP &&
+	// Look up the existing row to decide between an idempotent skip and a re-point.
+	existing, lookupErr := m.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", eip.ExternalIP)
+	if lookupErr != nil {
+		slog.Warn("policy: AddEIP idempotency lookup failed", "external_ip", eip.ExternalIP, "err", lookupErr)
+	}
+	// A changed owning ENI must force a re-point even when external+logical IP are
+	// unchanged. The spinifex:logical_port external-id is stamped in both NAT modes
+	// (the native LogicalPort column is empty in centralised mode), so it is the
+	// portable discriminator when a recycled IP pair is taken over by a new ENI —
+	// without it the datapath keeps targeting the dead predecessor's port.
+	ownerChanged := existing != nil && eip.PortName != "" &&
+		existing.ExternalIDs["spinifex:logical_port"] != eip.PortName
+
+	// Skip when the existing row already matches; avoids the delete-then-add
+	// flow-install gap on duplicate publishes. Never skip on an owner change.
+	if existing != nil && !ownerChanged && existing.LogicalIP == eip.LogicalIP &&
 		existing.ExternalIDs["spinifex:vpc_id"] == eip.VPCID &&
 		(!distributed ||
 			(existing.ExternalMAC != nil && *existing.ExternalMAC == eip.MAC &&
@@ -257,6 +275,11 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		// Host state (routes, proxy-ARP) is volatile even when the OVN row
 		// survives — reconcile lands here after a reboot, so re-bind.
 		return m.bindHostEIP(ctx, eip)
+	}
+	if ownerChanged {
+		slog.Info("policy: AddEIP re-pointing dnat_and_snat — owning ENI changed",
+			"router", router, "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP,
+			"old_port", existing.ExternalIDs["spinifex:logical_port"], "new_port", eip.PortName)
 	}
 
 	// Search every router for stale rules — vpc.delete-nat is fire-and-forget.
@@ -396,6 +419,52 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 		}
 	}
 	return nil
+}
+
+func (m *natManager) PruneOrphanEIPs(ctx context.Context, livePorts map[string]struct{}) (int, error) {
+	nats, err := m.ovn.ListNATs(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list NATs for orphan EIP prune: %w", err)
+	}
+	pruned := 0
+	for i := range nats {
+		n := nats[i]
+		if n.Type != "dnat_and_snat" {
+			continue
+		}
+		port := n.ExternalIDs["spinifex:logical_port"]
+		// No stamp: owner undeterminable (legacy row). Leave it so a live EIP
+		// whose owner cannot be proven absent is never swept.
+		if port == "" {
+			continue
+		}
+		if _, live := livePorts[port]; live {
+			continue
+		}
+		removed, derr := m.ovn.DeleteAllNATsByExternalIP(ctx, "dnat_and_snat", n.ExternalIP)
+		if derr != nil {
+			slog.Warn("policy: orphan EIP prune delete failed",
+				"external_ip", n.ExternalIP, "logical_port", port, "err", derr)
+			continue
+		}
+		if removed == 0 {
+			continue
+		}
+		pruned += removed
+		// Flush host ARP so the freed external IP is not shadowed by the dead
+		// owner's MAC, and tear down routed-mode host plumbing. Best-effort.
+		if err := m.neigh(n.ExternalIP); err != nil {
+			slog.Warn("policy: orphan EIP prune neighbour flush failed", "external_ip", n.ExternalIP, "err", err)
+		}
+		if m.mode == NATModeRouted && m.hostBinder != nil {
+			if err := m.hostBinder.Unbind(n.ExternalIP); err != nil {
+				slog.Warn("policy: orphan EIP prune host unbind failed", "external_ip", n.ExternalIP, "err", err)
+			}
+		}
+		slog.Info("policy: pruned orphan dnat_and_snat — owning ENI absent from intent",
+			"external_ip", n.ExternalIP, "logical_ip", n.LogicalIP, "logical_port", port)
+	}
+	return pruned, nil
 }
 
 func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {

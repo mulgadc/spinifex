@@ -130,6 +130,10 @@ func (d *Daemon) handleEKSSetRecoveryDirective(msg *nats.Msg) {
 	handleNATSRequest(msg, d.eksService.SetRecoveryDirective)
 }
 
+func (d *Daemon) handleEKSRestoreSnapshot(msg *nats.Msg) {
+	handleNATSRequest(msg, d.eksService.RestoreSnapshot)
+}
+
 // --- OIDC identity-provider configs ---
 
 func (d *Daemon) handleEKSAssociateIdentityProviderConfig(msg *nats.Msg) {

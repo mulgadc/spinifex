@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -73,36 +74,44 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	rt := newFakeRouteTableProvisioner()
 
 	svc, err := NewEKSServiceImpl(EKSServiceDeps{
-		NATSConn:         nc,
-		MasterKey:        bootstrapTestMasterKey,
-		GatewayBaseURL:   "https://gw.local:9999",
-		Region:           "us-east-1",
-		HolderID:         "node-1",
-		SystemGatewayURL: "https://gw.local:9999",
-		SystemAccessKey:  "AKIAEXAMPLE",
-		SystemSecretKey:  "s3cr3t-key",
-		GatewayCACert:    "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
-		VPCSG:            sg,
-		VPCK3s:           vpc,
-		VPCSubnet:        fakeSubnetResolver{},
-		IAM:              newFakeEnsurer(),
-		NLB:              nlb,
-		Instance:         inst,
-		Image:            ami,
-		EIP:              eip,
-		Worker:           worker,
-		VPCMgr:           vpcMgr,
-		IGW:              igw,
-		NATGW:            ngw,
-		RouteTable:       rt,
-		PlacementGroup:   &fakePlacer{},
-		Scheduler:        &fakeHostScheduler{},
+		NATSConn:            nc,
+		MasterKey:           bootstrapTestMasterKey,
+		GatewayBaseURL:      "https://gw.local:9999",
+		Region:              "us-east-1",
+		HolderID:            "node-1",
+		SystemGatewayURL:    "https://gw.local:9999",
+		SystemAccessKey:     "AKIAEXAMPLE",
+		SystemSecretKey:     "s3cr3t-key",
+		SystemPredastoreURL: "https://10.15.8.1:8443",
+		GatewayCACert:       "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
+		VPCSG:               sg,
+		VPCK3s:              vpc,
+		VPCSubnet:           fakeSubnetResolver{},
+		IAM:                 newFakeEnsurer(),
+		NLB:                 nlb,
+		Instance:            inst,
+		Image:               ami,
+		EIP:                 eip,
+		Worker:              worker,
+		VPCMgr:              vpcMgr,
+		IGW:                 igw,
+		NATGW:               ngw,
+		RouteTable:          rt,
+		PlacementGroup:      &fakePlacer{},
+		Scheduler:           &fakeHostScheduler{},
 	})
 	require.NoError(t, err)
 	// Tight Ready-gating knobs so nodegroup launches resolve in tests without the
 	// production 10m timeout; tests drive meta.NodeCount to simulate the reconciler.
 	svc.nodegroupReadyTimeout = 1 * time.Second
 	svc.nodegroupReadyPoll = 2 * time.Millisecond
+	// Tight worker-launch-retry knobs so a launch-failure retry test resolves
+	// quickly instead of against the production 5m/10s budget.
+	svc.workerLaunchRetryTimeout = 100 * time.Millisecond
+	svc.workerLaunchRetryBackoff = 20 * time.Millisecond
+	// Tight boot-scan re-scan backoff so the eventually-consistent JetStream
+	// enumeration settles fast in tests instead of the production 100ms.
+	svc.spawnScanRetryBackoff = 2 * time.Millisecond
 	t.Cleanup(svc.Shutdown)
 
 	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip, sg: sg, worker: worker, vpcMgr: vpcMgr, igw: igw, ngw: ngw, rt: rt}
@@ -189,7 +198,7 @@ func TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes(t *testing.T) {
 		tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRolePrivateRT},
 	}}
 
-	require.NoError(t, DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha"))
+	require.NoError(t, DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha", nil))
 
 	require.Len(t, f.ngw.gws, 1)
 	assert.Equal(t, "deleted", f.ngw.gws[0].state, "NAT GW must delete after routes are cleared (rule #3 guard not tripped)")
@@ -215,7 +224,7 @@ func TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC(t *testing.T) {
 		f.vpcMgr.vpcs = cpVPC
 		f.vpcMgr.deleteVpcErr = errors.New(awserrors.ErrorInvalidVpcIDNotFound)
 
-		require.NoErrorf(t, DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha"),
+		require.NoErrorf(t, DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha", nil),
 			"RLC rule #1: teardown must tolerate DeleteVpc NotFound (resource already gone), not abort")
 	})
 
@@ -224,7 +233,7 @@ func TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC(t *testing.T) {
 		f.vpcMgr.vpcs = cpVPC
 		f.vpcMgr.deleteVpcErr = errors.New(awserrors.ErrorDependencyViolation)
 
-		err := DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha")
+		err := DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha", nil)
 		require.Error(t, err, "a non-NotFound DeleteVpc failure must surface so the teardown backstop retries")
 		assert.Contains(t, err.Error(), awserrors.ErrorDependencyViolation)
 	})
@@ -397,4 +406,115 @@ func TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs(t *testing.T) {
 	}
 	assert.Contains(t, deleted, "sg-cust-cp", "customer-VPC control-plane SG must be reclaimed on teardown")
 	assert.Contains(t, deleted, "sg-cust-ng", "customer-VPC nodegroup SG must be reclaimed on teardown")
+}
+
+// TestDeleteCluster_ManagedCPVPCAlreadyGoneClearsStateRecord locks the
+// mulga-jbb2i teardown-idempotency fix: when the managed CP VPC is already
+// gone (its tag-indexed EC2 record is absent — the "InvalidVpcID.NotFound"
+// case confirmed live), DeleteClusterCPVPC converges to success, and the
+// internal cp-vpc state record (meta.ManagedCPVPC) must be cleared right away —
+// even while an unrelated step (here, the NLB delete) keeps failing and the
+// overall teardown still surfaces an error. Without this, every re-drive keeps
+// retrying SG/VPC API calls against the stale VpcId, which is what turns a
+// single failure into the reaper's permanent "DependencyViolation" loop. A
+// later re-drive, once the unrelated failure clears, must then fully converge.
+func TestDeleteCluster_ManagedCPVPCAlreadyGoneClearsStateRecord(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+
+	meta, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	meta.ManagedCPVPC = &ManagedCPVPC{VpcId: "vpc-cp-gone", PublicSubnetId: "subnet-cp-pub"}
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	// The CP VPC's own EC2 record is already gone: f.vpcMgr has nothing tagged
+	// for "alpha", so DeleteClusterCPVPC's describe-by-tag finds zero VPCs and
+	// converges to success. An unrelated NLB failure must still surface.
+	lbName := ClusterNLBName("alpha")
+	f.nlb.lbByName[lbName] = &elbv2.LoadBalancer{
+		LoadBalancerArn:  aws.String("arn:lb"),
+		LoadBalancerName: aws.String(lbName),
+	}
+	f.nlb.deleteLBErr = errors.New("elbv2 unavailable")
+
+	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
+	require.Error(t, err, "the unrelated NLB failure must still surface")
+
+	stuck, getErr := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, getErr, "meta must survive for retry")
+	assert.Equal(t, ClusterStatusDeleting, stuck.Status)
+	assert.Nil(t, stuck.ManagedCPVPC,
+		"the internal cp-vpc state record must be cleared once its VPC converges to deleted, independent of the NLB failure")
+
+	// Re-drive: the NLB failure clears, teardown must now fully converge —
+	// and must NOT re-attempt any CP-VPC/SG calls against the stale VpcId,
+	// since the state record is already cleared.
+	f.nlb.deleteLBErr = nil
+	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
+	require.NoError(t, err, "the re-drive must converge to fully deleted")
+
+	_, getErr = GetClusterMeta(f.kv, "alpha")
+	assert.ErrorIs(t, getErr, ErrClusterNotFound, "meta must be swept once teardown converges")
+}
+
+// subscribeVPCDelete subscribes to the vpc.delete OVN-GC signal and returns a
+// getter that blocks for (and unmarshals) the next message's vpc_id.
+func subscribeVPCDelete(t *testing.T, nc *nats.Conn) func() string {
+	t.Helper()
+	sub, err := nc.SubscribeSync("vpc.delete")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	return func() string {
+		t.Helper()
+		msg, err := sub.NextMsg(2 * time.Second)
+		require.NoError(t, err, "expected a vpc.delete OVN-GC event")
+		var evt struct {
+			VpcId string `json:"vpc_id"`
+		}
+		require.NoError(t, json.Unmarshal(msg.Data, &evt))
+		return evt.VpcId
+	}
+}
+
+// TestDeleteClusterCPVPC_OVNGCSelection locks the OVN-GC half of the
+// mulga-jbb2i fix: DeleteClusterCPVPC must republish vpc.delete for the CP
+// VPC so vpcd's topology manager gets another chance to remove the orphaned
+// logical router/subnets/egress-drop policies — both when the EC2 VPC is
+// actually deleted this call, and when it was already gone, where the only
+// surviving reference to its identity is the caller's persisted ManagedCPVPC
+// record (knownRefs). With no known record at all, there is nothing to GC.
+func TestDeleteClusterCPVPC_OVNGCSelection(t *testing.T) {
+	t.Run("VPC deleted this call: GC targets the live vpc id", func(t *testing.T) {
+		f := newEKSServiceFixture(t)
+		f.vpcMgr.vpcs = []*fakeCPVPC{{
+			id:   "vpc-cp-live",
+			cidr: "10.0.0.0/16",
+			tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRoleCPVPC},
+		}}
+		nextVPCID := subscribeVPCDelete(t, f.svc.deps.NATSConn)
+
+		require.NoError(t, DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha", nil))
+		assert.Equal(t, "vpc-cp-live", nextVPCID())
+	})
+
+	t.Run("VPC already gone: GC falls back to the persisted state record", func(t *testing.T) {
+		f := newEKSServiceFixture(t) // vpcMgr has nothing tagged — already gone
+		nextVPCID := subscribeVPCDelete(t, f.svc.deps.NATSConn)
+
+		knownRefs := &ManagedCPVPC{VpcId: "vpc-cp-orphaned"}
+		require.NoError(t, DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha", knownRefs))
+		assert.Equal(t, "vpc-cp-orphaned", nextVPCID())
+	})
+
+	t.Run("VPC already gone, no known record: nothing to GC, no event published", func(t *testing.T) {
+		f := newEKSServiceFixture(t)
+		sub, err := f.svc.deps.NATSConn.SubscribeSync("vpc.delete")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+		require.NoError(t, DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha", nil))
+		require.NoError(t, f.svc.deps.NATSConn.Flush())
+
+		_, err = sub.NextMsg(50 * time.Millisecond)
+		assert.ErrorIs(t, err, nats.ErrTimeout, "no known vpc id: nothing to GC, must not publish")
+	})
 }

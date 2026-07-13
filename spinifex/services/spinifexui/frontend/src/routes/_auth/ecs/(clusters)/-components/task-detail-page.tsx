@@ -55,6 +55,7 @@ export function TaskDetailPage({
     (a) => a.type === "ElasticNetworkInterface",
   )
   const containers = task.containers ?? []
+  const hasGpuIds = containers.some((c) => (c.gpuIds?.length ?? 0) > 0)
 
   return (
     <>
@@ -145,6 +146,7 @@ export function TaskDetailPage({
                   <th className="px-4 py-2 font-medium">Status</th>
                   <th className="px-4 py-2 font-medium">Health</th>
                   <th className="px-4 py-2 font-medium">Exit Code / Reason</th>
+                  {hasGpuIds && <th className="px-4 py-2 font-medium">GPUs</th>}
                 </tr>
               </thead>
               <tbody>
@@ -166,6 +168,13 @@ export function TaskDetailPage({
                         ? (container.reason ?? "")
                         : String(container.exitCode)}
                     </td>
+                    {hasGpuIds && (
+                      <td className="px-4 py-2 font-mono text-xs">
+                        {container.gpuIds && container.gpuIds.length > 0
+                          ? container.gpuIds.join(", ")
+                          : "—"}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

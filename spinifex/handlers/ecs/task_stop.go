@@ -74,7 +74,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 	if mode == NetworkModeAwsvpc && netCfg.firstSubnet() == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	cpu, mem := taskDef.reservedCPU(), taskDef.reservedMemory()
+	cpu, mem, gpu := taskDef.reservedCPU(), taskDef.reservedMemory(), taskDef.reservedGPU()
 	group := aws.StringValue(input.Group)
 	startedBy := aws.StringValue(input.StartedBy)
 
@@ -82,14 +82,14 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
 		instanceID := containerInstanceShortID(ref)
 		taskID := uuid.NewString()
-		inst, rerr := s.reserveOnInstance(kv, cluster, instanceID, taskID, cpu, mem)
+		inst, rerr := s.reserveOnInstance(kv, cluster, instanceID, taskID, cpu, mem, gpu)
 		if rerr != nil {
 			out.Failures = append(out.Failures, &ecs.Failure{
 				Arn: aws.String(ref), Reason: aws.String("RESOURCE:placement"), Detail: aws.String(rerr.Error()),
 			})
 			continue
 		}
-		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem)
+		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem, gpu)
 		rec.NetworkMode = mode
 		rec.Group = group
 		rec.StartedBy = startedBy
@@ -114,7 +114,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 // reserveOnInstance commits a task's capacity reservation onto a specific
 // container instance under a KV CAS. Unlike reservePlacement it does not bin-pack;
 // the instance is fixed by the caller (StartTask).
-func (s *Service) reserveOnInstance(kv nats.KeyValue, cluster, instanceID, taskID string, cpu, mem int) (*InstanceRecord, error) {
+func (s *Service) reserveOnInstance(kv nats.KeyValue, cluster, instanceID, taskID string, cpu, mem, gpu int) (*InstanceRecord, error) {
 	for range reservePlacementRetries {
 		entry, err := kv.Get(InstanceKey(cluster, instanceID))
 		if errors.Is(err, nats.ErrKeyNotFound) {
@@ -127,11 +127,12 @@ func (s *Service) reserveOnInstance(kv nats.KeyValue, cluster, instanceID, taskI
 		if uerr := json.Unmarshal(entry.Value(), &live); uerr != nil {
 			return nil, uerr
 		}
-		if live.Status != InstanceStatusActive || !live.fits(cpu, mem) {
+		if live.Status != InstanceStatusActive || !live.fits(cpu, mem, gpu) {
 			return nil, errors.New("instance has insufficient capacity")
 		}
 		live.ReservedCPU += cpu
 		live.ReservedMemoryMiB += mem
+		live.ReservedGPU += gpu
 		live.PlacedTasks = append(live.PlacedTasks, taskID)
 		data, merr := json.Marshal(&live)
 		if merr != nil {
@@ -195,7 +196,7 @@ func (s *Service) forceStopTask(ctx context.Context, kv nats.KeyValue, accountID
 	s.reclaimAssignInbox(kv, task.Cluster, task.ContainerInstanceID, task.TaskID)
 	s.reclaimStopInbox(kv, task.Cluster, task.ContainerInstanceID, task.TaskID)
 	s.reclaimTaskENI(ctx, accountID, task)
-	if rerr := s.releaseReservation(kv, task.Cluster, task.ContainerInstanceID, task.TaskID, task.ReservedCPU, task.ReservedMemoryMiB); rerr != nil {
+	if rerr := s.releaseReservation(kv, task.Cluster, task.ContainerInstanceID, task.TaskID, task.ReservedCPU, task.ReservedMemoryMiB, task.GPU); rerr != nil {
 		slog.ErrorContext(ctx, "ECS forceStopTask: release reservation failed", "task", task.TaskID, "err", rerr)
 	}
 }

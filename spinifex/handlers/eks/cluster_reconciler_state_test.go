@@ -79,7 +79,7 @@ func TestClusterReconciler_CreatingStaysOnUnhealthyReport(t *testing.T) {
 func TestClusterReconciler_ActiveRecordsNodeCountAndClearsIssue(t *testing.T) {
 	r, _, acctKV := newStateReconcilerHarness(t)
 	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
-	require.NoError(t, SetClusterHealthState(acctKV, "alpha", "stale", 0))
+	require.NoError(t, SetClusterHealthState(acctKV, "alpha", "stale", 0, nil))
 	r.latest.Store(freshReport("ok", 4))
 
 	require.NoError(t, r.reconcileOnce(context.Background()))

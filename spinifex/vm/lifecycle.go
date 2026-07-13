@@ -43,6 +43,21 @@ func endSpanWithError(span trace.Span, err error) {
 	span.End()
 }
 
+// recordInstanceFailure surfaces a reaped-launch as an APM error event on the
+// active span so the failure reason is queryable in the error stream,
+// correlated by trace id. No-op when ctx carries no recording span.
+func recordInstanceFailure(ctx context.Context, instanceID, reason string) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	span.RecordError(fmt.Errorf("instance %s launch failed: %s", instanceID, reason),
+		trace.WithAttributes(
+			attribute.String("instance.id", instanceID),
+			attribute.String("failure.reason", reason),
+		))
+}
+
 // RG-4 guest OOM tiers: user guests are reaped first; system instances (ELBv2,
 // EKS) rank above user guests but below infra (OOMScoreAdjust=-500).
 const (
@@ -661,6 +676,41 @@ const (
 // seam overrides it to keep dial-failure tests off the wall clock.
 var qmpSocketWaitTimeout = 3 * time.Second
 
+const (
+	// qmpVFIOGreetingBase is the fixed VFIO startup overhead before RAM pinning
+	// dominates (IOMMU domain setup, device realize). The RAM term is added on
+	// top; the result is floored so small guests keep the proven deadline.
+	qmpVFIOGreetingBase = 30 * time.Second
+	// qmpVFIOGreetingPerGiB is the wait added per GiB of guest RAM: the VFIO pin
+	// is synchronous and its cost grows ~linearly with RAM and host memory
+	// pressure, so a flat deadline under-waits large guests and SIGKILLs a QEMU
+	// that would have come up. Generous to cover a loaded host.
+	qmpVFIOGreetingPerGiB = 8 * time.Second
+	// qmpVFIOGreetingFloor is the minimum VFIO greeting wait. QEMU must
+	// lock+DMA-map the whole guest RAM before the monitor answers, which far
+	// exceeds the plain-VM default even for a small guest (a 16GB EKS GPU worker
+	// takes >30s on wattle). Small guests land here.
+	qmpVFIOGreetingFloor = 180 * time.Second
+	// qmpVFIOGreetingCap bounds the scaled wait so a mis-sized guest cannot
+	// wedge a launch indefinitely.
+	qmpVFIOGreetingCap = 600 * time.Second
+)
+
+// qmpGreetingTimeout picks the QMP greeting deadline for a VM: the plain default
+// unless the guest has GPU/VFIO passthrough, whose synchronous RAM pin delays the
+// monitor. For VFIO the deadline is base + perGiB*RAM, floored so small guests
+// keep the proven deadline and capped so a huge guest cannot wedge a launch.
+func qmpGreetingTimeout(v *VM) time.Duration {
+	if len(v.GPUAttachments) == 0 {
+		return qmp.DefaultGreetingTimeout
+	}
+	memGiB := v.Config.Memory / 1024
+	scaled := qmpVFIOGreetingBase + time.Duration(memGiB)*qmpVFIOGreetingPerGiB
+	scaled = max(scaled, qmpVFIOGreetingFloor)
+	scaled = min(scaled, qmpVFIOGreetingCap)
+	return scaled
+}
+
 // removeStaleQMPSocket unlinks a leftover QMP socket inode from a prior QEMU so
 // the startup probe and QMP dial cannot race a dead listener. A missing file is
 // not an error.
@@ -674,13 +724,14 @@ func removeStaleQMPSocket(path string) error {
 // dialQMPWithRetry redials the QMP socket until the connect+greeting succeeds or
 // the deadline passes. A just-relaunched QEMU can present the socket inode a beat
 // before it listen()s, and a stale inode from a SIGKILLed predecessor refuses the
-// first connect; a single dial then loses the race. Only transient connect
-// errors are retried — a greeting/handshake failure means we reached a listener,
-// so it surfaces immediately.
-func dialQMPWithRetry(path string) (*qmp.QMPClient, error) {
+// first connect; a fresh QEMU also accepts the connect then resets mid-greeting
+// while it initialises. A single dial then loses the race. Only transient connect
+// or reset errors are retried — a decode/handshake failure from a settled QEMU
+// surfaces immediately.
+func dialQMPWithRetry(path string, greetingTimeout time.Duration) (*qmp.QMPClient, error) {
 	deadline := time.Now().Add(qmpDialTimeout)
 	for {
-		client, err := qmp.NewQMPClient(path)
+		client, err := qmp.NewQMPClientWithGreetingTimeout(path, greetingTimeout)
 		if err == nil {
 			return client, nil
 		}
@@ -693,9 +744,13 @@ func dialQMPWithRetry(path string) (*qmp.QMPClient, error) {
 
 // isTransientDialError reports whether a QMP connect failed because the listener
 // is not up yet: connection refused (bound but pre-listen, or a stale dead
-// inode) or the socket momentarily absent between unlink and rebind.
+// inode), the socket momentarily absent between unlink and rebind, or the peer
+// tearing the connection down mid-greeting (reset/broken pipe) — a fresh QEMU
+// that accepts then resets before it can service the monitor. Each clears once
+// QEMU finishes initialising, so the dial is retried rather than surfaced.
 func isTransientDialError(err error) bool {
-	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }
 
 // newQMPClientWithHandshake dials the QMP socket and runs the qmp_capabilities
@@ -706,11 +761,15 @@ func newQMPClientWithHandshake(ctx context.Context, v *VM) (*qmp.QMPClient, erro
 	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, qmpSocketWaitTimeout); err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
-	client, err := dialQMPWithRetry(v.Config.QMPSocket)
+	client, err := dialQMPWithRetry(v.Config.QMPSocket, qmpGreetingTimeout(v))
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
-	if _, err := sendQMPCommand(ctx, client, qmp.QMPCommand{Execute: "qmp_capabilities"}, v.ID); err != nil {
+	// A VFIO guest greets before its RAM pin completes, then cannot service
+	// qmp_capabilities until the pin finishes — which scales with guest RAM and
+	// host memory pressure. Give the handshake the same budget as the greeting so
+	// the reply is not decode-timed-out and the launch SIGKILLed mid-pin.
+	if _, err := sendQMPCommandWithTimeout(ctx, client, qmp.QMPCommand{Execute: "qmp_capabilities"}, v.ID, qmpGreetingTimeout(v)); err != nil {
 		_ = client.Conn.Close()
 		return nil, err
 	}
@@ -798,8 +857,19 @@ func (m *Manager) recordQMPSuccess(instance *VM) {
 	})
 }
 
+// qmpCommandTimeout bounds a QMP command's response decode for a running guest.
+// The handshake on a VFIO launch needs longer (the monitor greets before the RAM
+// pin finishes, then stalls the qmp_capabilities reply) and passes its own value.
+const qmpCommandTimeout = 30 * time.Second
+
 // sendQMPCommand encodes cmd and decodes the response, skipping event messages.
-func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (_ *qmp.QMPResponse, err error) {
+func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*qmp.QMPResponse, error) {
+	return sendQMPCommandWithTimeout(ctx, q, cmd, instanceID, qmpCommandTimeout)
+}
+
+// sendQMPCommandWithTimeout is sendQMPCommand with an explicit response deadline,
+// re-armed after each interleaved event. VFIO handshakes pass a RAM-scaled value.
+func sendQMPCommandWithTimeout(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string, timeout time.Duration) (_ *qmp.QMPResponse, err error) {
 	if ctx.Value(noTraceKey{}) == nil {
 		var span trace.Span
 		_, span = otel.Tracer(vmTracerName).Start(ctx, "qmp "+cmd.Execute,
@@ -826,7 +896,7 @@ func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, i
 		}
 	}
 
-	if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := q.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 	defer func() { _ = q.Conn.SetReadDeadline(time.Time{}) }()
@@ -845,7 +915,7 @@ func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, i
 		}
 		if _, ok := msg["event"]; ok {
 			slog.InfoContext(ctx, "QMP event", "event", msg["event"], "instanceId", instanceID)
-			if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			if err := q.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 				return nil, fmt.Errorf("set read deadline: %w", err)
 			}
 			continue
@@ -885,7 +955,9 @@ func reconnectQMP(q *qmp.QMPClient, instanceID string) error {
 		_ = q.Conn.Close()
 	}
 
-	fresh, err := dialQMPWithRetry(q.Path)
+	// A reconnect targets an already-running QEMU whose RAM is long pinned, so
+	// the greeting returns promptly — the plain default deadline is enough.
+	fresh, err := dialQMPWithRetry(q.Path, qmp.DefaultGreetingTimeout)
 	if err != nil {
 		return fmt.Errorf("redial QMP socket %s: %w", q.Path, err)
 	}

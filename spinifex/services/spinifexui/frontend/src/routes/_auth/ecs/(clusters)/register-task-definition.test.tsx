@@ -120,6 +120,57 @@ describe("register-task-definition route", () => {
     expect(sdk.send).not.toHaveBeenCalled()
   })
 
+  it("omits resourceRequirements when GPU count is 0", async () => {
+    const user = userEvent.setup()
+    sdk.setHandler("RegisterTaskDefinitionCommand", () => ({
+      taskDefinition: { taskDefinitionArn: "arn:td:app:1" },
+    }))
+
+    setup()
+
+    await user.type(await screen.findByLabelText("Family"), "app")
+    await user.type(screen.getByLabelText("Name"), "web")
+    await user.type(screen.getByLabelText("Image"), "nginx")
+    await user.click(
+      screen.getByRole("button", { name: "Register Task Definition" }),
+    )
+
+    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    const input = sdk.send.mock.calls[0]?.[0].input as {
+      containerDefinitions: { resourceRequirements?: unknown }[]
+    }
+    expect(input.containerDefinitions[0]?.resourceRequirements).toBeUndefined()
+  })
+
+  it("emits a GPU resourceRequirement for a non-zero GPU count", async () => {
+    const user = userEvent.setup()
+    sdk.setHandler("RegisterTaskDefinitionCommand", () => ({
+      taskDefinition: { taskDefinitionArn: "arn:td:app:1" },
+    }))
+
+    setup()
+
+    await user.type(await screen.findByLabelText("Family"), "app")
+    await user.type(screen.getByLabelText("Name"), "web")
+    await user.type(screen.getByLabelText("Image"), "nginx")
+    const gpuCount = screen.getByLabelText("GPU count")
+    await user.clear(gpuCount)
+    await user.type(gpuCount, "2")
+    await user.click(
+      screen.getByRole("button", { name: "Register Task Definition" }),
+    )
+
+    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    const input = sdk.send.mock.calls[0]?.[0].input as {
+      containerDefinitions: {
+        resourceRequirements?: { type: string; value: string }[]
+      }[]
+    }
+    expect(input.containerDefinitions[0]?.resourceRequirements).toStrictEqual([
+      { type: "GPU", value: "2" },
+    ])
+  })
+
   it("includes port mappings when added", async () => {
     const user = userEvent.setup()
     sdk.setHandler("RegisterTaskDefinitionCommand", () => ({

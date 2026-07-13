@@ -134,6 +134,10 @@ func (s *NATSECSService) PollAssignments(ctx context.Context, input *PollAssignm
 	return utils.NATSRequest[PollAssignmentsOutput](ctx, s.natsConn, "ecs.PollAssignments", input, defaultTimeout, accountID)
 }
 
+func (s *NATSECSService) ReportTaskGPU(ctx context.Context, input *ReportTaskGPUInput, accountID string) (*ReportTaskGPUOutput, error) {
+	return utils.NATSRequest[ReportTaskGPUOutput](ctx, s.natsConn, "ecs.ReportTaskGPU", input, defaultTimeout, accountID)
+}
+
 // --- Capacity ---
 
 func (s *NATSECSService) ProvisionCapacity(ctx context.Context, input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error) {

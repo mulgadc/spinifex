@@ -472,7 +472,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 	// Management NIC must be set before LaunchRunInstances so the fw_cfg netcfg
 	// blob (built during launch) carries the static mgmt0 address.
 	if err := d.attachSystemMgmtNIC(inst); err != nil {
-		d.vmMgr.MarkFailed(inst, "mgmt_nic_setup_failed")
+		d.vmMgr.MarkFailed(context.Background(), inst, "mgmt_nic_setup_failed")
 		return nil, err
 	}
 
@@ -485,7 +485,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 			extraAccount := resolveENIAccount(extra.AccountID, input.AccountID)
 			if _, attachErr := d.vpcService.AttachENI(extraAccount, extra.ENIID, inst.ID, int64(idx+1)); attachErr != nil {
 				slog.Error("launchAMISystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", inst.ID, "err", attachErr)
-				d.vmMgr.MarkFailed(inst, "extra_eni_attach_failed")
+				d.vmMgr.MarkFailed(context.Background(), inst, "extra_eni_attach_failed")
 				return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
 			}
 		}
@@ -684,7 +684,7 @@ func (d *Daemon) releaseSystemInstanceEIP(instance *vm.VM) {
 // state migration to terminated KV).
 func (d *Daemon) cleanupFailedSystemInstance(instance *vm.VM, _ *ec2.InstanceTypeInfo) {
 	d.releaseSystemInstanceEIP(instance)
-	d.vmMgr.MarkFailed(instance, "system_instance_launch_failed")
+	d.vmMgr.MarkFailed(context.Background(), instance, "system_instance_launch_failed")
 }
 
 // WaitForSystemInstance polls until the instance reaches running state or times out.
@@ -757,9 +757,17 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 	//   i8042.no{pnp,aux,kbd}   — microvm has no PS/2; skip i8042 probe timeouts
 	var sb strings.Builder
 	sb.WriteString("console=ttyS0 quiet loglevel=3 mitigations=off tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")
-	for i := range input.NICs {
+	// Slots must stay packed in the same order QEMU actually creates
+	// -device entries (buildNICNetdevs), so an unprovisioned mgmt NIC
+	// (skipped there) must not reserve a slot here either.
+	slot := 0
+	for i, nic := range input.NICs {
+		if !nicProvisioned(i, nic) {
+			continue
+		}
 		fmt.Fprintf(&sb, " virtio_mmio.device=0x200@0x%x:%d",
-			0xfeb00000+i*0x200, 5+i)
+			0xfeb00000+slot*0x200, 5+slot)
+		slot++
 	}
 	cmdline := sb.String()
 
@@ -805,11 +813,15 @@ func microvmMachineType() string {
 // buildNICNetdevs produces QEMU -netdev and -device entries for each NIC in
 // input. The NIC order determines the netdev IDs: net0 = primary ENI,
 // net1 = mgmt (if present), net2+ = extra ENIs. Extra ENIs beyond the primary
-// are only included when corresponding ExtraENIs entries exist.
+// are only included when corresponding ExtraENIs entries exist. A gap at
+// net1 (single-node hosts with no br-mgmt) is expected and fine for QEMU.
 func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInput, machineType string) nicNetdevResult {
 	var res nicNetdevResult
 
 	for i, nic := range input.NICs {
+		if !nicProvisioned(i, nic) {
+			continue
+		}
 		netID := fmt.Sprintf("net%d", i)
 		// Resolve the tap name from the corresponding ENI.
 		tapName := tapNameForNIC(i, nic, instanceID, input)
@@ -820,6 +832,15 @@ func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInpu
 	}
 
 	return res
+}
+
+// nicProvisioned reports whether NIC[i] has a real tap/device behind it.
+// The mgmt NIC (index 1) is only wired when br-mgmt allocated it a MAC at
+// launch (LaunchSystemInstance); single-node hosts without br-mgmt leave it
+// blank, so it must be excluded from netdevs, mmio slots, and guest config —
+// not just any empty-MAC NIC, only this specific, expected slot.
+func nicProvisioned(i int, nic handlers_elbv2.NICConfig) bool {
+	return i != 1 || nic.MAC != ""
 }
 
 // tapNameForNIC returns the Linux tap device name for a NIC at the given index.
@@ -850,7 +871,17 @@ func (d *Daemon) writeFwCfgBlobs(instanceID string, input *handlers_elbv2.System
 	lbenvPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-lbenv.tmp", instanceID))
 	cacertPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-cacert.tmp", instanceID))
 
-	netcfg, err := buildNetcfgBlob(input.NICs)
+	// Exclude any unprovisioned mgmt NIC so the guest is only ever told about
+	// interfaces that physically exist — mirrors the netdev/mmio-slot skip
+	// in buildNICNetdevs/buildDirectBootConfig.
+	provisionedNICs := make([]handlers_elbv2.NICConfig, 0, len(input.NICs))
+	for i, nic := range input.NICs {
+		if nicProvisioned(i, nic) {
+			provisionedNICs = append(provisionedNICs, nic)
+		}
+	}
+
+	netcfg, err := buildNetcfgBlob(provisionedNICs)
 	if err != nil {
 		return nil, err
 	}

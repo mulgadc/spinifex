@@ -29,10 +29,13 @@ done
 :
 EOF
 
-# curl stub: record the full argument line (carries --upload-file + URL).
+# curl stub: record the full argument line (carries --upload-file + URL). Exits
+# non-zero when CURL_FAIL=1 so the harness can exercise the failed-upload path.
 cat > "${STUBBIN}/curl" <<'EOF'
 #!/bin/sh
 echo "curl $*" >> "${CURL_CALLS}"
+[ "${CURL_FAIL:-0}" = "1" ] && { echo "curl: (7) connection refused" >&2; exit 7; }
+exit 0
 EOF
 
 # logger stub: swallow.
@@ -101,6 +104,24 @@ ENVFILE_SAVE="${ENVFILE}"; ENVFILE="${WORK}/missing.env"
 run server "${WORK}/15min/mulga-eks-etcd-snapshot"
 [ -s "${WORK}/curl.calls" ] && fail "no-env: must not upload" || pass "no-env: no upload without creds"
 ENVFILE="${ENVFILE_SAVE}"
+
+# --- Case 5: upload FAILS -> non-zero exit + local snapshot KEPT (not masked) ---
+# Set up like run() but expect a non-zero exit and assert the snapshot survives.
+K3S_CALLS="${WORK}/k3s.calls"; CURL_CALLS="${WORK}/curl.calls"
+SNAPSHOT_DIR="${WORK}/snapshots"; ROLE_FILE="${WORK}/role"; K3S_BIN=k3s
+: > "${K3S_CALLS}"; : > "${CURL_CALLS}"; rm -rf "${SNAPSHOT_DIR}"
+printf '%s' server > "${ROLE_FILE}"
+export K3S_CALLS CURL_CALLS SNAPSHOT_DIR ROLE_FILE K3S_BIN ENVFILE
+export TIER=frequent CURL_FAIL=1
+if sh "${WORK}/15min/mulga-eks-etcd-snapshot" </dev/null; then
+    fail "upload-fail: must exit non-zero when curl fails"
+else
+    pass "upload-fail: non-zero exit surfaces the failure"
+fi
+ls "${SNAPSHOT_DIR}"/etcd-frequent-* >/dev/null 2>&1 \
+    && pass "upload-fail: local snapshot kept for the next run" \
+    || fail "upload-fail: local snapshot deleted despite failed upload"
+unset TIER CURL_FAIL
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all mulga-eks-etcd-snapshot cases"

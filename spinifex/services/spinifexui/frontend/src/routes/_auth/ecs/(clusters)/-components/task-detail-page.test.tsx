@@ -106,6 +106,51 @@ describe("TaskDetailPage", () => {
     expect(screen.getByText("HEALTHY")).toBeInTheDocument()
   })
 
+  it("renders a GPUs column with device UUIDs when gpuIds is present", () => {
+    const qc = seedTask([{ name: "privateIPv4Address", value: "10.0.1.5" }])
+    qc.setQueryData(
+      ["ecs", "clusters", "web", "tasks"],
+      [
+        {
+          taskArn: TASK_ARN,
+          lastStatus: "RUNNING",
+          desiredStatus: "RUNNING",
+          taskDefinitionArn:
+            "arn:aws:ecs:ap-southeast-2:123456789012:task-definition/app:3",
+          launchType: "EC2",
+          attachments: [
+            {
+              type: "ElasticNetworkInterface",
+              details: [{ name: "privateIPv4Address", value: "10.0.1.5" }],
+            },
+          ],
+          containers: [
+            {
+              name: "app",
+              image: "nginx:latest",
+              lastStatus: "RUNNING",
+              healthStatus: "HEALTHY",
+              gpuIds: ["GPU-abc123", "GPU-def456"],
+            },
+          ],
+        },
+      ],
+    )
+    renderWithClient(<TaskDetailPage clusterName="web" taskId={TASK_ID} />, qc)
+
+    expect(screen.getByText("GPUs")).toBeInTheDocument()
+    expect(screen.getByText("GPU-abc123, GPU-def456")).toBeInTheDocument()
+  })
+
+  it("omits the GPUs column when no container has gpuIds", () => {
+    renderWithClient(
+      <TaskDetailPage clusterName="web" taskId={TASK_ID} />,
+      seedTask([{ name: "privateIPv4Address", value: "10.0.1.5" }]),
+    )
+
+    expect(screen.queryByText("GPUs")).not.toBeInTheDocument()
+  })
+
   it("shows a not-found message when the task is missing", () => {
     const qc = createTestQueryClient()
     qc.setQueryData(["ecs", "clusters", "web", "tasks"], [])

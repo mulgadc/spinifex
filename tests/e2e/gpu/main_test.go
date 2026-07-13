@@ -51,7 +51,10 @@ func (f *Fixture) ArtifactDir(t *testing.T) string {
 // on first call. Skips the calling test when:
 //   - SPINIFEX_E2E is unset
 //   - no GPU instance types are advertised (node has no GPU or gpu_passthrough=false)
-//   - the NVIDIA GPU AMI has not been imported yet
+//
+// The ubuntu base GPU AMI is resolved best-effort into Fixture.AMIID; tests that
+// launch from it must additionally call requireBaseGPUAMI. The ECS test resolves
+// its own spinifex-ecs-node-gpu AMI and does not need the base image.
 func requireGPUFixture(t *testing.T) *Fixture {
 	t.Helper()
 	pkgFixOnce.Do(func() {
@@ -73,11 +76,12 @@ func requireGPUFixture(t *testing.T) *Fixture {
 		}
 		awsCli := harness.NewAWSClient(t, env)
 
-		gpuType, amiID, reason := discoverGPUResources(awsCli)
+		gpuType, reason := discoverGPUInstanceType(awsCli)
 		if reason != "" {
 			pkgSkipReason = reason
 			return
 		}
+		amiID := discoverBaseGPUAMI(awsCli) // empty if not imported; gated per-test
 
 		h, err := harness.NewProcessFixture(awsCli)
 		if err != nil {
@@ -111,24 +115,24 @@ func requireGPUFixture(t *testing.T) *Fixture {
 	return pkgFix
 }
 
-// discoverGPUResources returns the first GPU instance type and the NVIDIA GPU
-// AMI ID available on this node. A non-empty reason means one or both are
-// absent and the suite should be skipped.
-func discoverGPUResources(c *harness.AWSClient) (gpuType, amiID, reason string) {
+// discoverGPUInstanceType returns the first GPU instance type advertised by the
+// node. A non-empty reason means none are advertised and the suite should skip.
+func discoverGPUInstanceType(c *harness.AWSClient) (gpuType, reason string) {
 	typesOut, err := c.EC2.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{})
 	if err != nil {
-		return "", "", "DescribeInstanceTypes: " + err.Error()
+		return "", "DescribeInstanceTypes: " + err.Error()
 	}
 	for _, it := range typesOut.InstanceTypes {
 		if it.GpuInfo != nil && len(it.GpuInfo.Gpus) > 0 {
-			gpuType = aws.StringValue(it.InstanceType)
-			break
+			return aws.StringValue(it.InstanceType), ""
 		}
 	}
-	if gpuType == "" {
-		return "", "", "no GPU instance types advertised — node has no GPU or gpu_passthrough is disabled"
-	}
+	return "", "no GPU instance types advertised — node has no GPU or gpu_passthrough is disabled"
+}
 
+// discoverBaseGPUAMI returns the ubuntu-26.04-nvidia-gpu-x86_64 image ID, or ""
+// if it has not been imported. Only the raw-EC2 GPU tests launch from it.
+func discoverBaseGPUAMI(c *harness.AWSClient) string {
 	imgsOut, err := c.EC2.DescribeImages(&ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("name"), Values: []*string{aws.String("ubuntu-26.04-nvidia-gpu-x86_64")}},
@@ -136,7 +140,17 @@ func discoverGPUResources(c *harness.AWSClient) (gpuType, amiID, reason string) 
 		},
 	})
 	if err != nil || len(imgsOut.Images) == 0 {
-		return "", "", "ubuntu-26.04-nvidia-gpu-x86_64 AMI not imported — run: spx admin images import --name ubuntu-26.04-nvidia-gpu-x86_64"
+		return ""
 	}
-	return gpuType, aws.StringValue(imgsOut.Images[0].ImageId), ""
+	return aws.StringValue(imgsOut.Images[0].ImageId)
+}
+
+// requireBaseGPUAMI skips the calling test unless the ubuntu base GPU image is
+// imported. Tests that launch a VM directly from the base AMI call this after
+// requireGPUFixture; the ECS test uses its own node AMI and does not.
+func requireBaseGPUAMI(t *testing.T, fix *Fixture) {
+	t.Helper()
+	if fix.AMIID == "" {
+		t.Skip("ubuntu-26.04-nvidia-gpu-x86_64 AMI not imported — run: spx admin images import --name ubuntu-26.04-nvidia-gpu-x86_64")
+	}
 }

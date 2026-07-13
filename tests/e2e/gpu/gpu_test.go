@@ -18,6 +18,7 @@ import (
 // type succeeds and reaches running state, confirming the VFIO bind path.
 func TestGPUPassthrough_Launch(t *testing.T) {
 	fix := requireGPUFixture(t)
+	requireBaseGPUAMI(t, fix)
 	harness.Phase(t, "GPU — Launch: RunInstances with %s", fix.GPUInstanceType)
 
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
@@ -35,6 +36,7 @@ func TestGPUPassthrough_Launch(t *testing.T) {
 // wired the device into the guest.
 func TestGPUPassthrough_DeviceVisible(t *testing.T) {
 	fix := requireGPUFixture(t)
+	requireBaseGPUAMI(t, fix)
 	harness.Phase(t, "GPU — DeviceVisible: NVIDIA PCI device present in VM sysfs")
 
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
@@ -60,6 +62,7 @@ func TestGPUPassthrough_DeviceVisible(t *testing.T) {
 // proving the guest OS can communicate with the passed-through GPU.
 func TestGPUPassthrough_DriverAccess(t *testing.T) {
 	fix := requireGPUFixture(t)
+	requireBaseGPUAMI(t, fix)
 	harness.Phase(t, "GPU — DriverAccess: nvidia-smi succeeds in VM")
 
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
@@ -88,6 +91,7 @@ func TestGPUPassthrough_DriverAccess(t *testing.T) {
 // insufficient-capacity error.
 func TestGPUPassthrough_Release(t *testing.T) {
 	fix := requireGPUFixture(t)
+	requireBaseGPUAMI(t, fix)
 	harness.Phase(t, "GPU — Release: GPU returns to pool after termination")
 
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)

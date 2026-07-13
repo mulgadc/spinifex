@@ -135,9 +135,9 @@ func (p *anthropicProvider) Converse(ctx context.Context, modelID string, input 
 		slog.Error("anthropic: failed to build request", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
-	httpReq.Header.Set("x-api-key", apiKey)
-	httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
-	httpReq.Header.Set("content-type", "application/json")
+	httpReq.Header.Set("X-Api-Key", apiKey)
+	httpReq.Header.Set("Anthropic-Version", anthropicAPIVersion)
+	httpReq.Header.Set("Content-Type", "application/json")
 
 	start := time.Now()
 	resp, err := p.httpClient.Do(httpReq)

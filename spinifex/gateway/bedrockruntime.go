@@ -29,7 +29,9 @@ type bedrockRuntimeRoute struct {
 // gw.bedrockEndpointResolver() over the configured pinned self-host endpoints.
 type bedrockRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver) (any, error)
 
-// bedrockRuntimeRoutes is the dispatch table.
+// bedrockRuntimeRoutes is the dispatch table. InvokeModel has no handler
+// function here: BedrockRuntime_Request special-cases its action to bypass
+// the JSON-marshaling dispatch below, since its response is raw bytes.
 var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/converse$`), "Converse",
 		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver) (any, error) {
@@ -41,6 +43,7 @@ var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 			}
 			return gateway_bedrock.Converse(ctx, acct, p[0], input, resolver, endpoints)
 		}},
+	{"POST", regexp.MustCompile(`^/model/([^/]+)/invoke$`), "InvokeModel", nil},
 }
 
 // lookupBedrockRuntimeAction matches method+path against bedrockRuntimeRoutes,
@@ -101,6 +104,17 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	if err != nil {
 		slog.ErrorContext(r.Context(), "BedrockRuntime_Request: failed to read body", "err", err)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	// InvokeModel returns provider-native bytes, not a struct WriteJSONResponse
+	// could marshal, so it writes its own response body directly.
+	if action == "InvokeModel" {
+		respBody, contentType, err := gateway_bedrock.InvokeModel(r.Context(), accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver())
+		if err != nil {
+			return err
+		}
+		gateway_bedrock.WriteRawResponse(w, respBody, contentType)
+		return nil
 	}
 
 	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver())

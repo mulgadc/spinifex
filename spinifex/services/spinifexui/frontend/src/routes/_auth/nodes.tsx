@@ -9,11 +9,12 @@ import { formatVRAMMiB } from "@/lib/utils"
 import {
   adminNodesQueryOptions,
   adminVMsQueryOptions,
-  type GPUInfo,
   type InstanceTypeCap,
   type NodeInfo,
   type VMInfo,
 } from "@/queries/admin"
+
+import { GPUInventoryCard } from "./-components/gpu-inventory-card"
 
 export const Route = createFileRoute("/_auth/nodes")({
   head: () => ({
@@ -240,12 +241,12 @@ function NodesTable({ nodes }: { nodes: NodeInfo[] }) {
   )
 }
 
-function formatVMGPU(gpu: VMInfo["gpu"]): string {
+export function formatVMGPU(gpu: VMInfo["gpu"]): string {
   if (!gpu) {
     return "-"
   }
   if (gpu.profile) {
-    return `${formatVRAMMiB(gpu.vram_mib)} (${gpu.profile})`
+    return `${gpu.profile} ${formatVRAMMiB(gpu.vram_mib)}`
   }
   return `${gpu.model} ${formatVRAMMiB(gpu.vram_mib)}`
 }
@@ -366,81 +367,6 @@ function InstanceTypesTable({
           ))}
         </tbody>
       </table>
-    </div>
-  )
-}
-
-function GPUCard({ gpu }: { gpu: GPUInfo }) {
-  return (
-    <div className="rounded border p-2 text-xs">
-      <div className="flex flex-wrap items-center gap-3 font-mono">
-        <span className="font-medium">{gpu.model}</span>
-        <span className="text-muted-foreground">
-          {formatVRAMMiB(gpu.vram_mib)}
-        </span>
-        <span className="text-muted-foreground">{gpu.pci_address}</span>
-        {gpu.mig_enabled ? (
-          <Badge className="text-[0.625rem]" variant="secondary">
-            MIG
-          </Badge>
-        ) : (
-          <span
-            className={gpu.instance_id ? "text-amber-500" : "text-green-600"}
-          >
-            {gpu.instance_id ? `in-use: ${gpu.instance_id}` : "free"}
-          </span>
-        )}
-      </div>
-      {gpu.mig_enabled && gpu.slices && gpu.slices.length > 0 && (
-        <table className="mt-2 w-full">
-          <thead>
-            <tr className="text-left text-muted-foreground">
-              <th className="pr-4 pb-0.5 font-normal">GI</th>
-              <th className="pr-4 pb-0.5 font-normal">Profile</th>
-              <th className="pr-4 pb-0.5 font-normal">VRAM</th>
-              <th className="pb-0.5 font-normal">Instance</th>
-            </tr>
-          </thead>
-          <tbody>
-            {gpu.slices.map((slice) => (
-              <tr key={slice.gi_id}>
-                <td className="py-0.5 pr-4 font-mono">{slice.gi_id}</td>
-                <td className="py-0.5 pr-4 font-mono">{slice.profile}</td>
-                <td className="py-0.5 pr-4">{formatVRAMMiB(slice.vram_mib)}</td>
-                <td
-                  className={
-                    slice.instance_id
-                      ? "py-0.5 font-mono text-amber-500"
-                      : "py-0.5 text-green-600"
-                  }
-                >
-                  {slice.instance_id ?? "free"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  )
-}
-
-function GPUInventoryCard({ nodes }: { nodes: NodeInfo[] }) {
-  const gpuNodes = nodes.filter((n) => (n.gpus?.length ?? 0) > 0)
-  return (
-    <div className="space-y-4">
-      {gpuNodes.map((node) => (
-        <div key={node.node}>
-          <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">
-            {node.node}
-          </h4>
-          <div className="space-y-2">
-            {node.gpus?.map((gpu) => (
-              <GPUCard key={gpu.pci_address} gpu={gpu} />
-            ))}
-          </div>
-        </div>
-      ))}
     </div>
   )
 }

@@ -44,6 +44,7 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
       image: "",
       containerCpu: "",
       containerMemory: "",
+      containerGpuCount: 0,
       essential: true,
       portMappings: [],
     },
@@ -154,7 +155,7 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
               />
               <FieldError errors={[errors.image]} />
             </Field>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <Field>
                 <FieldTitle>
                   <label htmlFor="containerCpu">CPU (units)</label>
@@ -174,6 +175,19 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
                   placeholder="optional"
                   {...field("containerMemory")}
                 />
+              </Field>
+              <Field>
+                <FieldTitle>
+                  <label htmlFor="containerGpuCount">GPU count</label>
+                </FieldTitle>
+                <Input
+                  id="containerGpuCount"
+                  min={0}
+                  placeholder="0"
+                  type="number"
+                  {...field("containerGpuCount", { valueAsNumber: true })}
+                />
+                <FieldError errors={[errors.containerGpuCount]} />
               </Field>
             </div>
             <label className="flex items-center gap-2 text-sm">

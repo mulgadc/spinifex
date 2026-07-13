@@ -661,20 +661,39 @@ const (
 // seam overrides it to keep dial-failure tests off the wall clock.
 var qmpSocketWaitTimeout = 3 * time.Second
 
-// qmpVFIOGreetingTimeout is the QMP greeting wait for a VFIO passthrough guest.
-// QEMU must lock+DMA-map the entire guest RAM through the IOMMU before the
-// monitor answers, which scales with RAM and far exceeds the plain-VM default
-// (a 16GB EKS GPU worker takes >30s on wattle). Generous to cover larger guests
-// and a loaded host.
-const qmpVFIOGreetingTimeout = 180 * time.Second
+const (
+	// qmpVFIOGreetingBase is the fixed VFIO startup overhead before RAM pinning
+	// dominates (IOMMU domain setup, device realize). The RAM term is added on
+	// top; the result is floored so small guests keep the proven deadline.
+	qmpVFIOGreetingBase = 30 * time.Second
+	// qmpVFIOGreetingPerGiB is the wait added per GiB of guest RAM: the VFIO pin
+	// is synchronous and its cost grows ~linearly with RAM and host memory
+	// pressure, so a flat deadline under-waits large guests and SIGKILLs a QEMU
+	// that would have come up. Generous to cover a loaded host.
+	qmpVFIOGreetingPerGiB = 8 * time.Second
+	// qmpVFIOGreetingFloor is the minimum VFIO greeting wait. QEMU must
+	// lock+DMA-map the whole guest RAM before the monitor answers, which far
+	// exceeds the plain-VM default even for a small guest (a 16GB EKS GPU worker
+	// takes >30s on wattle). Small guests land here.
+	qmpVFIOGreetingFloor = 180 * time.Second
+	// qmpVFIOGreetingCap bounds the scaled wait so a mis-sized guest cannot
+	// wedge a launch indefinitely.
+	qmpVFIOGreetingCap = 600 * time.Second
+)
 
 // qmpGreetingTimeout picks the QMP greeting deadline for a VM: the plain default
-// unless the guest has GPU/VFIO passthrough, whose RAM pinning delays the monitor.
+// unless the guest has GPU/VFIO passthrough, whose synchronous RAM pin delays the
+// monitor. For VFIO the deadline is base + perGiB*RAM, floored so small guests
+// keep the proven deadline and capped so a huge guest cannot wedge a launch.
 func qmpGreetingTimeout(v *VM) time.Duration {
-	if len(v.GPUAttachments) > 0 {
-		return qmpVFIOGreetingTimeout
+	if len(v.GPUAttachments) == 0 {
+		return qmp.DefaultGreetingTimeout
 	}
-	return qmp.DefaultGreetingTimeout
+	memGiB := v.Config.Memory / 1024
+	scaled := qmpVFIOGreetingBase + time.Duration(memGiB)*qmpVFIOGreetingPerGiB
+	scaled = max(scaled, qmpVFIOGreetingFloor)
+	scaled = min(scaled, qmpVFIOGreetingCap)
+	return scaled
 }
 
 // removeStaleQMPSocket unlinks a leftover QMP socket inode from a prior QEMU so

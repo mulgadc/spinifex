@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
+	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -468,18 +469,50 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 	}
 }
 
-// applyEIPs runs every intent EIP through NATManager.AddEIP; idempotent. After the
+// applyEIPs runs every floating IP through NATManager.AddEIP; idempotent. After the
 // DNAT row is in place it gates on the guest ENI's SB Port_Binding: AddEIP only
 // proves the gateway-chassis flow exists, not the gatewayLRP->guest hop, so a guest
 // whose port has not converged (e.g. just after a host reboot) stays dark while
 // every other signal is green.
 func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ ActualState) {
-	for _, spec := range intent.EIPs {
+	for _, spec := range r.floatingIPSpecs(intent) {
 		if err := r.nat.AddEIP(ctx, spec); err != nil {
 			slog.Error("reconcile/apply: AddEIP failed", "external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP, "err", err)
 		}
 		r.ensureGuestPortDatapath(ctx, spec.VPCID, spec.PortName)
 	}
+}
+
+// floatingIPSpecs is every dnat_and_snat the datapath must carry: user EIPs
+// (intent.EIPs) plus auto-assigned/ELB public IPs recorded on ENIs (intent.Ports).
+// Both need the same DNAT row and gatewayLRP->guest convergence, but only user EIPs
+// were reconciled before — an auto-assigned IP's rule was created once at launch and
+// never re-asserted, so a vpcd/OVN rebuild dropped it and its guest-port hop never
+// converged (inbound DNATs at the gateway but never reaches the guest; ICMP is
+// answered by the gateway LR, so ping works while TCP hangs). A user EIP on the same
+// private IP wins; the auto-assigned entry is skipped to avoid a duplicate rule.
+func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
+	specs := make([]policy.EIPSpec, 0, len(intent.EIPs)+len(intent.Ports))
+	for _, spec := range intent.EIPs {
+		specs = append(specs, spec)
+	}
+	for _, p := range intent.Ports {
+		if !p.PublicIP.IsValid() {
+			continue
+		}
+		logicalIP := p.PrivateIP.String()
+		if _, hasEIP := intent.EIPs[logicalIP]; hasEIP {
+			continue
+		}
+		specs = append(specs, policy.EIPSpec{
+			VPCID:      p.VPCID,
+			ExternalIP: p.PublicIP.String(),
+			LogicalIP:  logicalIP,
+			PortName:   topology.Port(p.PortID),
+			MAC:        p.MAC.String(),
+		})
+	}
+	return specs
 }
 
 // applyPublicInstanceEgress exempts every public-IP instance from its subnet egress

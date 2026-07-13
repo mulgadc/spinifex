@@ -570,3 +570,63 @@ func sortedCopy(in []string) []string {
 	slices.Sort(out)
 	return out
 }
+
+// TestFloatingIPSpecs covers the auto-assigned NAT reconcile gap: an ENI's
+// auto-assigned public IP must be re-asserted as a dnat_and_snat (and run through
+// guest-port convergence) alongside user EIPs, deduped when a user EIP already
+// covers the same private IP.
+func TestFloatingIPSpecs(t *testing.T) {
+	mac, _ := net.ParseMAC("02:00:00:00:00:01")
+	r := &reconciler{}
+
+	intent := IntentState{
+		EIPs: map[string]policy.EIPSpec{
+			// User EIP on 172.31.0.9.
+			"172.31.0.9": {VPCID: "vpc-a", ExternalIP: "192.168.1.200", LogicalIP: "172.31.0.9", PortName: topology.Port("eni-eip")},
+			// User EIP that also has an auto-assigned public IP recorded on its
+			// port: the EIP must win and the auto-assigned entry be skipped.
+			"172.31.0.4": {VPCID: "vpc-a", ExternalIP: "192.168.1.201", LogicalIP: "172.31.0.4", PortName: topology.Port("eni-dup")},
+		},
+		Ports: map[string]topology.PortSpec{
+			// Auto-assigned public IP with no user EIP -> must produce a spec.
+			"eni-auto": {PortID: "eni-auto", VPCID: "vpc-b", PrivateIP: netip.MustParseAddr("172.31.0.5"),
+				PublicIP: netip.MustParseAddr("192.168.1.116"), MAC: mac},
+			// Same private IP as the user EIP above -> deduped out.
+			"eni-dup": {PortID: "eni-dup", VPCID: "vpc-a", PrivateIP: netip.MustParseAddr("172.31.0.4"),
+				PublicIP: netip.MustParseAddr("192.168.1.117"), MAC: mac},
+			// No public IP -> skipped.
+			"eni-nopub": {PortID: "eni-nopub", VPCID: "vpc-b", PrivateIP: netip.MustParseAddr("172.31.0.6")},
+		},
+	}
+
+	specs := r.floatingIPSpecs(intent)
+
+	byExternal := map[string]policy.EIPSpec{}
+	for _, s := range specs {
+		byExternal[s.ExternalIP] = s
+	}
+
+	// Both user EIPs present.
+	if _, ok := byExternal["192.168.1.200"]; !ok {
+		t.Errorf("user EIP 192.168.1.200 missing from specs")
+	}
+	if _, ok := byExternal["192.168.1.201"]; !ok {
+		t.Errorf("user EIP 192.168.1.201 missing from specs")
+	}
+	// Auto-assigned public IP produced with the port's identity.
+	auto, ok := byExternal["192.168.1.116"]
+	if !ok {
+		t.Fatalf("auto-assigned 192.168.1.116 missing from specs")
+	}
+	if auto.LogicalIP != "172.31.0.5" || auto.PortName != topology.Port("eni-auto") || auto.MAC != "02:00:00:00:00:01" {
+		t.Errorf("auto-assigned spec malformed: %+v", auto)
+	}
+	// Deduped: the auto-assigned IP colliding with a user EIP's private IP is gone.
+	if _, ok := byExternal["192.168.1.117"]; ok {
+		t.Errorf("auto-assigned 192.168.1.117 should be deduped by the user EIP on 172.31.0.4")
+	}
+	// No public IP -> no spec for that port.
+	if len(specs) != 3 {
+		t.Errorf("want 3 specs (2 EIP + 1 auto), got %d: %+v", len(specs), specs)
+	}
+}

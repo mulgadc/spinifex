@@ -125,7 +125,7 @@ func (p *vllmProvider) Converse(ctx context.Context, modelID string, input *bedr
 		slog.Error("vllm: failed to build request", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
-	httpReq.Header.Set("content-type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 
 	start := time.Now()
 	resp, err := p.httpClient.Do(httpReq)

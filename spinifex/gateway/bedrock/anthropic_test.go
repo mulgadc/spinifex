@@ -19,7 +19,7 @@ func TestAnthropicProvider_Converse_MapsResponse(t *testing.T) {
 	var capturedAPIKey string
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedAPIKey = r.Header.Get("x-api-key")
+		capturedAPIKey = r.Header.Get("X-Api-Key")
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -96,7 +96,7 @@ func TestAnthropicProvider_Converse_401ReturnsAccessDenied(t *testing.T) {
 // redirect it at an httptest stub instead of the network.
 func TestAnthropicBoundProvider_Converse(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "sk-bound-test", r.Header.Get("x-api-key"))
+		assert.Equal(t, "sk-bound-test", r.Header.Get("X-Api-Key"))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{

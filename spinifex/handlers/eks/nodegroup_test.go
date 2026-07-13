@@ -449,6 +449,50 @@ func TestCreateNodegroup_NonGPUInstanceTypeClearsGPUFields(t *testing.T) {
 	f.svc.WaitLaunches()
 }
 
+// DescribeNodegroup must surface GPU-ness to API clients via amiType, the
+// real AWS field EKS uses to signal a GPU-flavored node AMI — even though the
+// caller requested the plain AL2_x86_64 default.
+func TestCreateNodegroup_GPUInstanceTypeExposesGPUAmiTypeInDescribe(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	in := createNGInput("c1", "ng-gpu", 1)
+	in.InstanceTypes = aws.StringSlice([]string{"g5.xlarge"})
+
+	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
+	require.NoError(t, err)
+
+	out, err := f.svc.DescribeNodegroup(context.Background(), &eks.DescribeNodegroupInput{
+		ClusterName:   aws.String("c1"),
+		NodegroupName: aws.String("ng-gpu"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, eks.AMITypesAl2X8664Gpu, aws.StringValue(out.Nodegroup.AmiType))
+
+	markWorkersReady(t, f, "c1", "ng-gpu", 1)
+	f.svc.WaitLaunches()
+}
+
+// A non-GPU nodegroup's DescribeNodegroup response must keep the plain amiType
+// so the UI does not mistake it for a GPU nodegroup.
+func TestCreateNodegroup_NonGPUInstanceTypeKeepsPlainAmiTypeInDescribe(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+
+	out, err := f.svc.DescribeNodegroup(context.Background(), &eks.DescribeNodegroupInput{
+		ClusterName:   aws.String("c1"),
+		NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, eks.AMITypesAl2X8664, aws.StringValue(out.Nodegroup.AmiType))
+
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	f.svc.WaitLaunches()
+}
+
 // End-to-end: a GPU nodegroup's worker launch must resolve the GPU-tagged AMI
 // over a coexisting plain eks-node AMI, not merely set the record's GPU fields.
 func TestCreateNodegroup_GPUWorkerLaunchUsesGPUAMI(t *testing.T) {

@@ -515,6 +515,31 @@ func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
 	return specs
 }
 
+// pruneOrphanEIPs sweeps dnat_and_snat rows whose stamped owning ENI is gone from
+// intent. vpc.delete-nat is fire-and-forget and can be lost, leaking rows across
+// dead VPCs; NATManager.PruneOrphanEIPs deletes any row whose spinifex:logical_port
+// is absent from the live-port set. The live set is keyed the same way
+// floatingIPSpecs derives PortName (topology.Port(p.PortID) for auto-assigned ports,
+// e.PortName for user EIPs), so a currently-live auto-assigned EIP is never pruned.
+// Runs only on the prune pass (drift), so an in-flight association whose port event
+// has not converged is never swept.
+func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState) {
+	live := make(map[string]struct{}, len(intent.Ports)+len(intent.EIPs))
+	for portID := range intent.Ports {
+		live[topology.Port(portID)] = struct{}{}
+	}
+	for _, e := range intent.EIPs {
+		if e.PortName != "" {
+			live[e.PortName] = struct{}{}
+		}
+	}
+	if pruned, err := r.nat.PruneOrphanEIPs(ctx, live); err != nil {
+		slog.Warn("reconcile/apply: orphan EIP prune failed", "err", err)
+	} else if pruned > 0 {
+		slog.Info("reconcile/apply: pruned orphan dnat_and_snat rows", "count", pruned)
+	}
+}
+
 // applyPublicInstanceEgress exempts every public-IP instance from its subnet egress
 // drop gate. Public IPs come from two disjoint sources: auto-assigned and ELB
 // addresses recorded on the ENI (intent.Ports) and user EIPs in the EIP bucket

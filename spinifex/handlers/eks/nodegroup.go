@@ -234,16 +234,23 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 	}
 	minSize, maxSize, desired := scalingFromInput(input.ScalingConfig)
 
+	gpuEnabled, gpuVendor := gpuFieldsForInstanceTypes(instanceTypes)
+
 	amiType := aws.StringValue(input.AmiType)
 	if amiType == "" {
 		amiType = eks.AMITypesAl2X8664
+	}
+	// Worker AMI resolution (resolveWorkerAMI) always picks the GPU node AMI
+	// when GPUEnabled, regardless of the caller-supplied amiType, so the
+	// reported amiType is forced to the GPU variant to stay truthful about
+	// what actually launches.
+	if gpuEnabled {
+		amiType = eks.AMITypesAl2X8664Gpu
 	}
 	version := aws.StringValue(input.Version)
 	if version == "" {
 		version = meta.Version
 	}
-
-	gpuEnabled, gpuVendor := gpuFieldsForInstanceTypes(instanceTypes)
 
 	now := time.Now().UTC()
 	rec := &NodegroupRecord{

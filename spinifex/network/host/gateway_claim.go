@@ -96,6 +96,37 @@ func (p *GatewayClaimProber) ResetSBClusterState(_ context.Context) error {
 	return nil
 }
 
+// FlushMACBinding removes SB MAC_Binding rows resolving ip so a reused private IP
+// re-resolves to the new owner's MAC rather than a terminated instance's. OVN
+// re-learns the binding on the next ARP, so an over-broad flush is self-healing.
+// Best-effort: an absent binding is success. Output() not CombinedOutput(): sudo
+// PAM noise on stderr must not be misread as a row UUID.
+func (p *GatewayClaimProber) FlushMACBinding(_ context.Context, ip string) error {
+	if ip == "" {
+		return nil
+	}
+	findArgs := []string{"--no-leader-only"}
+	if p.sbAddr != "" {
+		findArgs = append(findArgs, "--db="+p.sbAddr)
+	}
+	findArgs = append(findArgs, "--bare", "--columns=_uuid", "find", "MAC_Binding", "ip="+ip)
+	out, err := utils.SudoCommand("ovn-sbctl", findArgs...).Output()
+	if err != nil {
+		return fmt.Errorf("ovn-sbctl find MAC_Binding ip=%s: %w", ip, err)
+	}
+	for uuid := range strings.FieldsSeq(string(out)) {
+		delArgs := []string{"--no-leader-only"}
+		if p.sbAddr != "" {
+			delArgs = append(delArgs, "--db="+p.sbAddr)
+		}
+		delArgs = append(delArgs, "--if-exists", "destroy", "MAC_Binding", uuid)
+		if dout, derr := utils.SudoCommand("ovn-sbctl", delArgs...).CombinedOutput(); derr != nil {
+			return fmt.Errorf("ovn-sbctl destroy MAC_Binding %s: %s: %w", uuid, strings.TrimSpace(string(dout)), derr)
+		}
+	}
+	return nil
+}
+
 // RepairDatapath re-asserts the WAN-glue veth admin state, then forces a recompute.
 // A post-reboot boot race (ovs-vswitchd/ovn-controller start after the passive
 // network.target, concurrently with systemd-networkd) can leave veth-wan-ovs

@@ -594,6 +594,16 @@ func (m *Client) DeleteAllNATsByExternalIP(_ context.Context, natType, externalI
 	return len(foundUUIDs), nil
 }
 
+func (m *Client) ListNATs(_ context.Context) ([]nbdb.NAT, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	result := make([]nbdb.NAT, 0, len(m.NATs))
+	for _, n := range m.NATs {
+		result = append(result, *n)
+	}
+	return result, nil
+}
+
 func (m *Client) FindNATByExternalIP(_ context.Context, natType, externalIP string) (*nbdb.NAT, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()

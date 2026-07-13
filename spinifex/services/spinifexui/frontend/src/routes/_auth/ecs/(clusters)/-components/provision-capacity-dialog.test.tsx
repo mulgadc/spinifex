@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import {
@@ -38,6 +39,25 @@ function seed() {
   qc.setQueryData(["ec2", "keypairs"], {
     KeyPairs: [{ KeyPairId: "key-1", KeyName: "my-key" }],
   })
+  qc.setQueryData(["ec2", "instances", "types"], {
+    InstanceTypes: [
+      { InstanceType: "t3.small" },
+      {
+        InstanceType: "mig.1g.24gb",
+        GpuInfo: {
+          Gpus: [
+            {
+              Name: "RTX Pro 6000 Blackwell SE",
+              Manufacturer: "NVIDIA",
+              Count: 1,
+              MemoryInfo: { SizeInMiB: 24_576 },
+            },
+          ],
+          TotalGpuMemoryInMiB: 24_576,
+        },
+      },
+    ],
+  })
   return qc
 }
 
@@ -47,7 +67,7 @@ describe("ProvisionCapacityDialog", () => {
       <ProvisionCapacityDialog clusterName="web" onOpenChange={vi.fn()} open />,
       seed(),
     )
-    expect(screen.getByLabelText("Instance type")).toHaveValue("t3.small")
+    expect(screen.getByLabelText("Instance type")).toHaveTextContent("t3.small")
     expect(screen.getByLabelText("Count")).toHaveValue(1)
     expect(screen.getByLabelText("Subnet")).toBeInTheDocument()
     expect(screen.getByLabelText("Security group")).toBeInTheDocument()
@@ -99,5 +119,56 @@ describe("ProvisionCapacityDialog", () => {
       seed(),
     )
     expect(screen.getByRole("button", { name: "Provision" })).toBeDisabled()
+  })
+
+  it("uses the shared GPU instance-type picker, grouping GPU types", async () => {
+    const user = userEvent.setup()
+    renderWithClient(
+      <ProvisionCapacityDialog clusterName="web" onOpenChange={vi.fn()} open />,
+      seed(),
+    )
+
+    await user.click(screen.getByLabelText("Instance type"))
+
+    expect(screen.getByText("Standard")).toBeInTheDocument()
+    expect(screen.getByText("GPU-Accelerated")).toBeInTheDocument()
+
+    await user.click(screen.getByRole("option", { name: /mig\.1g\.24gb/ }))
+
+    expect(screen.getByLabelText("Instance type")).toHaveTextContent(
+      "mig.1g.24gb",
+    )
+  })
+
+  it("provisions with the selected GPU instance type", async () => {
+    provisionCapacity.mockResolvedValue({ InstanceIDs: ["i-123"] })
+    const user = userEvent.setup()
+    const onOpenChange = vi.fn()
+    renderWithClient(
+      <ProvisionCapacityDialog
+        clusterName="web"
+        onOpenChange={onOpenChange}
+        open
+      />,
+      seed(),
+    )
+
+    await user.click(screen.getByLabelText("Instance type"))
+    await user.click(screen.getByRole("option", { name: /mig\.1g\.24gb/ }))
+
+    fireEvent.change(screen.getByLabelText("Subnet"), {
+      target: { value: "subnet-1" },
+    })
+    fireEvent.change(screen.getByLabelText("Security group"), {
+      target: { value: "sg-1" },
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Provision" }))
+
+    await waitFor(() => {
+      expect(provisionCapacity).toHaveBeenCalledWith(
+        expect.objectContaining({ InstanceType: "mig.1g.24gb" }),
+      )
+    })
   })
 })

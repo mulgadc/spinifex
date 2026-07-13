@@ -565,6 +565,56 @@ func freshIntent(t *testing.T) IntentState {
 	}
 }
 
+// The prune pass must sweep dnat_and_snat rows whose stamped owning ENI is absent
+// from intent (leaked across dead VPCs by a lost vpc.delete-nat), keying on the
+// union of intent port names and EIP port names, while leaving live rows intact.
+func TestReconcile_PruneOrphanEIPs_SweepsAbsentOwners(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	deadRouter := topology.VPCRouter("vpc-dead")
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: deadRouter}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: topology.VPCRouter("vpc-a")}); err != nil {
+		t.Fatalf("CreateLogicalRouter live: %v", err)
+	}
+	// Live row: owned by an ENI present in intent.Ports.
+	if err := m.AddNAT(ctx, topology.VPCRouter("vpc-a"), &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.1.10", LogicalIP: "10.0.1.10",
+		ExternalIDs: map[string]string{"spinifex:logical_port": topology.Port("eni-a")},
+	}); err != nil {
+		t.Fatalf("AddNAT live: %v", err)
+	}
+	// Orphan row: owner ENI is gone from intent.
+	if err := m.AddNAT(ctx, deadRouter, &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.1.11", LogicalIP: "172.31.0.4",
+		ExternalIDs: map[string]string{"spinifex:logical_port": topology.Port("eni-dead")},
+	}); err != nil {
+		t.Fatalf("AddNAT orphan: %v", err)
+	}
+
+	intent := freshIntent(t) // Ports has eni-a only
+	r.pruneOrphanEIPs(ctx, intent)
+
+	if findNATByExternal(m, "dnat_and_snat", "192.168.1.10") == nil {
+		t.Errorf("live EIP row must survive the prune")
+	}
+	if findNATByExternal(m, "dnat_and_snat", "192.168.1.11") != nil {
+		t.Errorf("orphan EIP row must be pruned")
+	}
+}
+
+// findNATByExternal returns the first NAT row matching (type, externalIP), or nil.
+func findNATByExternal(m *mock.Client, natType, externalIP string) *nbdb.NAT {
+	for _, n := range m.NATs {
+		if n.Type == natType && n.ExternalIP == externalIP {
+			return n
+		}
+	}
+	return nil
+}
+
 func sortedCopy(in []string) []string {
 	out := append([]string(nil), in...)
 	slices.Sort(out)

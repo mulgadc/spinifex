@@ -745,7 +745,11 @@ func newQMPClientWithHandshake(ctx context.Context, v *VM) (*qmp.QMPClient, erro
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
-	if _, err := sendQMPCommand(ctx, client, qmp.QMPCommand{Execute: "qmp_capabilities"}, v.ID); err != nil {
+	// A VFIO guest greets before its RAM pin completes, then cannot service
+	// qmp_capabilities until the pin finishes — which scales with guest RAM and
+	// host memory pressure. Give the handshake the same budget as the greeting so
+	// the reply is not decode-timed-out and the launch SIGKILLed mid-pin.
+	if _, err := sendQMPCommandWithTimeout(ctx, client, qmp.QMPCommand{Execute: "qmp_capabilities"}, v.ID, qmpGreetingTimeout(v)); err != nil {
 		_ = client.Conn.Close()
 		return nil, err
 	}
@@ -833,8 +837,19 @@ func (m *Manager) recordQMPSuccess(instance *VM) {
 	})
 }
 
+// qmpCommandTimeout bounds a QMP command's response decode for a running guest.
+// The handshake on a VFIO launch needs longer (the monitor greets before the RAM
+// pin finishes, then stalls the qmp_capabilities reply) and passes its own value.
+const qmpCommandTimeout = 30 * time.Second
+
 // sendQMPCommand encodes cmd and decodes the response, skipping event messages.
-func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (_ *qmp.QMPResponse, err error) {
+func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*qmp.QMPResponse, error) {
+	return sendQMPCommandWithTimeout(ctx, q, cmd, instanceID, qmpCommandTimeout)
+}
+
+// sendQMPCommandWithTimeout is sendQMPCommand with an explicit response deadline,
+// re-armed after each interleaved event. VFIO handshakes pass a RAM-scaled value.
+func sendQMPCommandWithTimeout(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string, timeout time.Duration) (_ *qmp.QMPResponse, err error) {
 	if ctx.Value(noTraceKey{}) == nil {
 		var span trace.Span
 		_, span = otel.Tracer(vmTracerName).Start(ctx, "qmp "+cmd.Execute,
@@ -861,7 +876,7 @@ func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, i
 		}
 	}
 
-	if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := q.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 	defer func() { _ = q.Conn.SetReadDeadline(time.Time{}) }()
@@ -880,7 +895,7 @@ func sendQMPCommand(ctx context.Context, q *qmp.QMPClient, cmd qmp.QMPCommand, i
 		}
 		if _, ok := msg["event"]; ok {
 			slog.InfoContext(ctx, "QMP event", "event", msg["event"], "instanceId", instanceID)
-			if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			if err := q.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 				return nil, fmt.Errorf("set read deadline: %w", err)
 			}
 			continue

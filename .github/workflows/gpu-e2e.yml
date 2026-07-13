@@ -156,10 +156,13 @@ jobs:
 
       # Ensure the base EC2 GPU AMI is present — the raw-EC2 GPU passthrough
       # test is the always-on baseline, so CI self-provisions it rather than
-      # depending on a manual import. Import-by-name pulls the prebuilt image
-      # from the catalog (iso.mulgadc.com) and names the AMI exactly
-      # ubuntu-26.04-nvidia-gpu-x86_64 (what tests/e2e/gpu filters for);
-      # idempotent — skipped once wattle's persistent loop-fs already has it.
+      # depending on a manual import. `--name` selects the catalog entry (pulls
+      # the prebuilt image from iso.mulgadc.com); `--ami-name` is REQUIRED to
+      # name the AMI ubuntu-26.04-nvidia-gpu-x86_64 — without it the import
+      # falls back to the generic ami-<distro>-<version>-<arch>, which the
+      # tests/e2e/gpu filter would never match. Idempotent — skipped once
+      # wattle's persistent loop-fs already has the named AMI (the 4.4G source
+      # qcow2 is cached in the images dir, so a re-import wouldn't re-download).
       # `spx admin images import` writes local spinifex storage, so it needs
       # the `spinifex` group active (sg); aws-CLI calls hit the gateway over
       # HTTPS and don't.
@@ -170,17 +173,22 @@ jobs:
           REMOTE='
             set -e
             BASE=ubuntu-26.04-nvidia-gpu-x86_64
-            ID=$(AWS_PROFILE=spinifex aws ec2 describe-images \
-              --filters "Name=name,Values=$BASE" "Name=state,Values=available" \
-              --query "Images[0].ImageId" --output text 2>/dev/null)
+            present() {
+              AWS_PROFILE=spinifex aws ec2 describe-images \
+                --filters "Name=name,Values=$BASE" "Name=state,Values=available" \
+                --query "Images[0].ImageId" --output text 2>/dev/null
+            }
+            ID=$(present)
             if [ -n "$ID" ] && [ "$ID" != "None" ]; then
               echo "base GPU AMI already present: $BASE = $ID"; exit 0
             fi
             echo "base GPU AMI $BASE absent — importing prebuilt from catalog..."
-            sg spinifex -c "AWS_PROFILE=spinifex spx admin images import --name $BASE"
-            ID=$(AWS_PROFILE=spinifex aws ec2 describe-images \
-              --filters "Name=name,Values=$BASE" "Name=state,Values=available" \
-              --query "Images[0].ImageId" --output text 2>/dev/null)
+            sg spinifex -c "AWS_PROFILE=spinifex spx admin images import --name $BASE --ami-name $BASE"
+            for i in 1 2 3 4 5 6; do
+              ID=$(present)
+              [ -n "$ID" ] && [ "$ID" != "None" ] && break
+              sleep 5
+            done
             [ -n "$ID" ] && [ "$ID" != "None" ] || { echo "import ran but $BASE still not available" >&2; exit 1; }
             echo "imported base GPU AMI: $BASE = $ID"
           '

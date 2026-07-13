@@ -14,6 +14,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return {
     ...actual,
     useNavigate: () => vi.fn(),
+    useSearch: () => ({}),
     Link: ({ children, to }: { children: ReactNode; to?: string }) => (
       <a href={to}>{children}</a>
     ),
@@ -24,6 +25,7 @@ import {
   ec2ImagesQueryOptions,
   ec2InstanceTypesQueryOptions,
   ec2KeyPairsQueryOptions,
+  ec2LaunchTemplatesQueryOptions,
   ec2PlacementGroupsQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
@@ -90,6 +92,10 @@ function setup() {
   queryClient.setQueryData(ec2SecurityGroupsQueryOptions.queryKey, {
     $metadata: {},
     SecurityGroups: [],
+  })
+  queryClient.setQueryData(ec2LaunchTemplatesQueryOptions.queryKey, {
+    $metadata: {},
+    LaunchTemplates: [],
   })
   return renderWithClient(<CreateInstance />, queryClient)
 }

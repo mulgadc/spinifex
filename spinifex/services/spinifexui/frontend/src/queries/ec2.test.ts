@@ -16,6 +16,8 @@ import {
   ec2InstanceTypesQueryOptions,
   ec2KeyPairQueryOptions,
   ec2KeyPairsQueryOptions,
+  ec2LaunchTemplateVersionsQueryOptions,
+  ec2LaunchTemplatesQueryOptions,
   ec2PlacementGroupQueryOptions,
   ec2PlacementGroupsQueryOptions,
   ec2RegionsQueryOptions,
@@ -165,6 +167,19 @@ describe("query keys", () => {
       "sg-123",
     ])
   })
+
+  it("ec2LaunchTemplatesQueryOptions has correct key", () => {
+    expect(ec2LaunchTemplatesQueryOptions.queryKey).toStrictEqual([
+      "ec2",
+      "launchTemplates",
+    ])
+  })
+
+  it("ec2LaunchTemplateVersionsQueryOptions includes id and versions in key", () => {
+    expect(
+      ec2LaunchTemplateVersionsQueryOptions("lt-123").queryKey,
+    ).toStrictEqual(["ec2", "launchTemplates", "lt-123", "versions"])
+  })
 })
 
 describe("staleTime and refetchInterval", () => {
@@ -190,6 +205,16 @@ describe("staleTime and refetchInterval", () => {
 
   it("instance types refetch on interval", () => {
     expect(ec2InstanceTypesQueryOptions.refetchInterval).toBe(5000)
+  })
+
+  it("launch templates refetch on interval", () => {
+    expect(ec2LaunchTemplatesQueryOptions.refetchInterval).toBe(5000)
+  })
+
+  it("launch template versions refetch on interval", () => {
+    expect(ec2LaunchTemplateVersionsQueryOptions("lt-1").refetchInterval).toBe(
+      5000,
+    )
   })
 })
 
@@ -224,6 +249,25 @@ describe("queryFn", () => {
     await queryFn({} as never)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
+  })
+
+  it("ec2LaunchTemplatesQueryOptions sends DescribeLaunchTemplatesCommand", async () => {
+    const queryFn = ec2LaunchTemplatesQueryOptions.queryFn as (
+      ctx: never,
+    ) => Promise<unknown>
+    await queryFn({} as never)
+    expect(mockSend).toHaveBeenCalledOnce()
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
+  })
+
+  it("ec2LaunchTemplateVersionsQueryOptions sends command with ID", async () => {
+    const queryFn = ec2LaunchTemplateVersionsQueryOptions("lt-123").queryFn as (
+      ctx: never,
+    ) => Promise<unknown>
+    await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      LaunchTemplateId: "lt-123",
+    })
   })
 
   it("ec2InstanceQueryOptions sends DescribeInstancesCommand with ID", async () => {

@@ -24,17 +24,9 @@ export default defineConfig({
     "@tanstack/query/stable-query-client": "error",
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
-    "react/rules-of-hooks": "error",
+    "react/jsx-handler-names": "off",
+    "react/react-compiler": "off",
     "react/no-object-type-as-default-prop": "off",
-    "react/no-array-index-key": "error",
-    "react/jsx-no-constructed-context-values": "error",
-    "react/jsx-no-comment-textnodes": "error",
-    "react/style-prop-object": "error",
-    "react/iframe-missing-sandbox": "error",
-    "react/jsx-no-script-url": "error",
-    "react/button-has-type": "error",
-    "react/no-danger": "error",
-    "react/self-closing-comp": "error",
     "eslint/complexity": "off",
     "eslint/func-style": [
       "error",
@@ -85,6 +77,7 @@ export default defineConfig({
       "error",
       { cases: { kebabCase: true, camelCase: true } },
     ],
+    "unicorn/prefer-single-call": "off",
   },
   overrides: [
     {

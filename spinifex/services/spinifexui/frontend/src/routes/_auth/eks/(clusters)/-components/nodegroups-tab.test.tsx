@@ -1,4 +1,6 @@
+import type { InstanceTypeInfo } from "@aws-sdk/client-ec2"
 import { fireEvent, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import {
@@ -16,7 +18,25 @@ import { NodegroupsTab } from "./nodegroups-tab"
 
 const CLUSTER = "demo"
 
-function seed(opts?: { nodegroupVersion?: string }) {
+const INSTANCE_TYPES = [
+  { InstanceType: "t3.medium" },
+  {
+    InstanceType: "g5.xlarge",
+    GpuInfo: {
+      Gpus: [
+        {
+          Name: "A10G",
+          Manufacturer: "NVIDIA",
+          Count: 1,
+          MemoryInfo: { SizeInMiB: 24_576 },
+        },
+      ],
+      TotalGpuMemoryInMiB: 24_576,
+    },
+  },
+] as InstanceTypeInfo[]
+
+function seed(opts?: { nodegroupVersion?: string; gpuNodegroup?: boolean }) {
   const qc = createTestQueryClient()
   qc.setQueryData(["eks", "clusters", CLUSTER, "nodegroups"], {
     nodegroups: ["ng-1"],
@@ -25,7 +45,7 @@ function seed(opts?: { nodegroupVersion?: string }) {
     nodegroup: {
       status: "ACTIVE",
       version: opts?.nodegroupVersion ?? "1.29",
-      instanceTypes: ["t3.medium"],
+      instanceTypes: [opts?.gpuNodegroup ? "g5.xlarge" : "t3.medium"],
       amiType: "AL2_x86_64",
       capacityType: "ON_DEMAND",
       scalingConfig: { minSize: 1, desiredSize: 2, maxSize: 3 },
@@ -38,6 +58,9 @@ function seed(opts?: { nodegroupVersion?: string }) {
     Subnets: [
       { SubnetId: "subnet-a", CidrBlock: "10.0.1.0/24", VpcId: "vpc-1" },
     ],
+  })
+  qc.setQueryData(["ec2", "instances", "types"], {
+    InstanceTypes: INSTANCE_TYPES,
   })
   return qc
 }
@@ -148,6 +171,72 @@ describe("NodegroupsTab", () => {
       screen.getByText(
         /Delete node group "ng-1"\? This terminates its nodes\./,
       ),
+    ).toBeInTheDocument()
+  })
+
+  it("does not badge a standard node group", () => {
+    renderWithClient(
+      <NodegroupsTab
+        clusterName={CLUSTER}
+        clusterVersion="1.29"
+        vpcId="vpc-1"
+      />,
+      seed(),
+    )
+    expect(screen.queryByText("GPU")).not.toBeInTheDocument()
+  })
+
+  it("badges a GPU node group", () => {
+    renderWithClient(
+      <NodegroupsTab
+        clusterName={CLUSTER}
+        clusterVersion="1.29"
+        vpcId="vpc-1"
+      />,
+      seed({ gpuNodegroup: true }),
+    )
+    expect(screen.getByText("GPU")).toBeInTheDocument()
+  })
+
+  it("uses the shared GPU instance-type picker in the add node group form", () => {
+    renderWithClient(
+      <NodegroupsTab
+        clusterName={CLUSTER}
+        clusterVersion="1.29"
+        vpcId="vpc-1"
+      />,
+      seed(),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Add node group" }))
+    expect(
+      screen.getByRole("combobox", { name: "Instance type" }),
+    ).toBeInTheDocument()
+  })
+
+  it("shows the GPU AMI/taint note only when a GPU instance type is selected", async () => {
+    const user = userEvent.setup()
+    renderWithClient(
+      <NodegroupsTab
+        clusterName={CLUSTER}
+        clusterVersion="1.29"
+        vpcId="vpc-1"
+      />,
+      seed(),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Add node group" }))
+
+    expect(
+      screen.queryByText(/GPU node AMI is auto-selected/),
+    ).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole("combobox", { name: "Instance type" }))
+    await user.click(screen.getByRole("option", { name: /g5\.xlarge/ }))
+
+    expect(
+      screen.getByText(/GPU node AMI is auto-selected/),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("nvidia.com/gpu=present:NoSchedule"),
     ).toBeInTheDocument()
   })
 })

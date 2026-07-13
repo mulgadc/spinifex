@@ -23,6 +23,11 @@ type tapListenFunc func(ctx context.Context, endpoint string) (net.Listener, err
 // responder manager is unit-testable without a live ENI bucket.
 type resolveENIFunc func(ctx context.Context, eniID string) (*eniFacts, error)
 
+// errENIRecordGone marks a start failure caused by a definitively absent ENI
+// record (as opposed to a transient resolve error). reconcile suspends retries
+// for such ENIs so a torn-down instance does not churn the log every pass.
+var errENIRecordGone = errors.New("ENI record gone")
+
 // ifindexFunc resolves an endpoint device's current kernel ifindex. Injected so
 // the recreated-endpoint check is unit-testable without real devices.
 type ifindexFunc func(dev string) (int, error)
@@ -47,8 +52,9 @@ type tapResponderManager struct {
 	listen  tapListenFunc
 	ifindex ifindexFunc
 
-	mu     sync.Mutex
-	active map[string]*activeTapResponder // eniID → responder
+	mu      sync.Mutex
+	active  map[string]*activeTapResponder // eniID → responder
+	missing map[string]struct{}            // eniID → record gone, retries suspended
 }
 
 func newTapResponderManager(handler http.Handler, resolve resolveENIFunc, listen tapListenFunc) *tapResponderManager {
@@ -58,6 +64,7 @@ func newTapResponderManager(handler http.Handler, resolve resolveENIFunc, listen
 		listen:  listen,
 		ifindex: deviceIfindex,
 		active:  make(map[string]*activeTapResponder),
+		missing: make(map[string]struct{}),
 	}
 }
 
@@ -89,7 +96,7 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 		return fmt.Errorf("resolve eni %s: %w", eniID, err)
 	}
 	if eni == nil {
-		return fmt.Errorf("no ENI record for %s", eniID)
+		return fmt.Errorf("no ENI record for %s: %w", eniID, errENIRecordGone)
 	}
 
 	listener, err := m.listen(ctx, endpoint)
@@ -158,7 +165,23 @@ func (m *tapResponderManager) endpointRecreated(cur *activeTapResponder, endpoin
 // failure is logged and retried next reconcile so one stalled tap can't block the rest.
 func (m *tapResponderManager) reconcile(ctx context.Context, live map[string]string) {
 	for eniID, endpoint := range live {
+		m.mu.Lock()
+		_, suspended := m.missing[eniID]
+		m.mu.Unlock()
+		if suspended {
+			continue
+		}
 		if err := m.start(ctx, eniID, endpoint); err != nil {
+			if errors.Is(err, errENIRecordGone) {
+				// The ENI record is gone but its tap lingers. Retrying every pass just
+				// churns the log; suspend until the tap leaves the live set.
+				m.mu.Lock()
+				m.missing[eniID] = struct{}{}
+				m.mu.Unlock()
+				slog.InfoContext(ctx, "IMDS: ENI record gone; suspending tap responder retries until tap is removed",
+					"eni_id", eniID, "endpoint", endpoint)
+				continue
+			}
 			slog.WarnContext(ctx, "IMDS: tap responder start failed during reconcile", "eni_id", eniID, "endpoint", endpoint, "err", err)
 		}
 	}
@@ -168,6 +191,12 @@ func (m *tapResponderManager) reconcile(ctx context.Context, live map[string]str
 	for eniID := range m.active {
 		if _, ok := live[eniID]; !ok {
 			stale = append(stale, eniID)
+		}
+	}
+	// Clear suspensions whose tap has gone so a re-created ENI retries next pass.
+	for eniID := range m.missing {
+		if _, ok := live[eniID]; !ok {
+			delete(m.missing, eniID)
 		}
 	}
 	m.mu.Unlock()

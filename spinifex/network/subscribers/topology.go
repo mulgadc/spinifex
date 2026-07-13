@@ -142,7 +142,21 @@ func (s *Subscriber) handleCreatePort(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
+	// Clear any stale SB MAC_Binding for the private IP so a reused address
+	// resolves to this port's MAC, not a terminated predecessor's.
+	s.flushMACBinding(evt.NetworkInterfaceId, evt.PrivateIpAddress)
 	respond(msg, nil)
+}
+
+// flushMACBinding drops stale SB MAC_Binding rows for ip. Best-effort: the flush
+// never fails the handler, and OVN re-learns the binding on the next ARP.
+func (s *Subscriber) flushMACBinding(eniID, ip string) {
+	if s.mac == nil || ip == "" {
+		return
+	}
+	if err := s.mac.FlushMACBinding(context.Background(), ip); err != nil {
+		slog.Warn("subscribers: flush stale mac_binding failed", "eni_id", eniID, "ip", ip, "err", err)
+	}
 }
 
 func (s *Subscriber) handleDeletePort(msg *nats.Msg) {
@@ -161,6 +175,9 @@ func (s *Subscriber) handleDeletePort(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
+	// Flush the freed private IP's SB MAC_Binding so a successor reusing the address
+	// is not resolved to this now-dead port's MAC.
+	s.flushMACBinding(evt.NetworkInterfaceId, evt.PrivateIpAddress)
 	respond(msg, nil)
 }
 

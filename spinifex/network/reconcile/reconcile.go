@@ -183,6 +183,9 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 	r.applyPorts(ctx, intent, actual, pruneOrphans)
 	r.applyIGWs(ctx, intent, actual)
 	r.applyEIPs(ctx, intent, actual)
+	if pruneOrphans {
+		r.pruneOrphanEIPs(ctx, intent)
+	}
 	r.applyNATGWs(ctx, intent, actual)
 	r.applyIGWRoutes(ctx, intent, actual)
 	r.applyNATGWRoutes(ctx, intent, actual)

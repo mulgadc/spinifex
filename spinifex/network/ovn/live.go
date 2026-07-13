@@ -1018,6 +1018,15 @@ func (c *LiveClient) DeleteAllNATsByExternalIP(ctx context.Context, natType, ext
 	return len(nats), nil
 }
 
+// ListNATs returns every NAT row in OVN NB.
+func (c *LiveClient) ListNATs(ctx context.Context) ([]nbdb.NAT, error) {
+	var nats []nbdb.NAT
+	if err := c.client.List(ctx, &nats); err != nil {
+		return nil, fmt.Errorf("list NATs: %w", err)
+	}
+	return nats, nil
+}
+
 // FindNATByExternalIP returns the first NAT rule matching (natType, externalIP), or nil.
 func (c *LiveClient) FindNATByExternalIP(ctx context.Context, natType, externalIP string) (*nbdb.NAT, error) {
 	var nats []nbdb.NAT

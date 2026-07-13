@@ -2192,7 +2192,11 @@ func (d *Daemon) setupShutdown() {
 		for _, sub := range d.natsSubscriptions {
 			slog.Info("Unsubscribing from NATS", "subject", sub.Subject)
 			if err := sub.Unsubscribe(); err != nil {
-				slog.Error("Error unsubscribing from NATS", "err", err)
+				if errors.Is(err, nats.ErrBadSubscription) {
+					slog.Debug("NATS subscription already invalid during shutdown", "subject", sub.Subject)
+				} else {
+					slog.Error("Error unsubscribing from NATS", "err", err)
+				}
 			}
 		}
 

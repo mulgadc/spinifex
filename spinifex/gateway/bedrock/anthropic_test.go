@@ -88,6 +88,44 @@ func TestAnthropicProvider_Converse_401ReturnsAccessDenied(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorAccessDeniedException, err.Error())
 }
 
+// TestAnthropicBoundProvider_Converse exercises newAnthropicProvider,
+// newAnthropicProviderClient, and anthropicBoundProvider.Converse (the
+// Provider used by Router for the "provider:anthropic" tier). The real
+// Anthropic base URL is hardcoded by newAnthropicProvider, so — same package
+// as production code — the test reaches into the unexported inner client to
+// redirect it at an httptest stub instead of the network.
+func TestAnthropicBoundProvider_Converse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "sk-bound-test", r.Header.Get("x-api-key"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"content": [{"type": "text", "text": "bound response"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 3, "output_tokens": 2}
+		}`))
+	}))
+	defer ts.Close()
+
+	p := newAnthropicProvider("sk-bound-test")
+	bound, ok := p.(*anthropicBoundProvider)
+	require.True(t, ok)
+	require.NotNil(t, bound.inner)
+	bound.inner.httpClient = ts.Client()
+	bound.inner.baseURL = ts.URL
+
+	input := &bedrockruntime.ConverseInput{
+		Messages: []*bedrockruntime.Message{
+			{Role: aws.String(bedrockruntime.ConversationRoleUser), Content: []*bedrockruntime.ContentBlock{{Text: aws.String("hi")}}},
+		},
+	}
+
+	out, err := p.Converse(context.Background(), "anthropic.claude-3-5-sonnet-20240620-v1:0", input)
+	require.NoError(t, err)
+	require.NotNil(t, out.Output.Message)
+	assert.Equal(t, "bound response", *out.Output.Message.Content[0].Text)
+}
+
 func TestAnthropicModelID(t *testing.T) {
 	cases := []struct {
 		name, in, want string

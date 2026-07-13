@@ -575,6 +575,9 @@ func launchService(cfg *Config) error {
 		NATMode:       natMode,
 		FlowsBarrier:  waitForFlowsHV,
 		RoutedIngress: routedIngress,
+		NexthopSeed: func(ctx context.Context, lrpName, nexthopIP string) error {
+			return host.SeedNexthopMAC(ctx, host.NewExecRunner(), lrpName, nexthopIP)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("construct IGW manager: %w", err)

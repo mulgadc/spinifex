@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // newProxyTransport creates an *http.Transport that trusts the given CA
@@ -40,7 +42,10 @@ func newProxyTransport(caCertPath string) (*http.Transport, error) {
 
 // newReverseProxy forwards requests to backendHost after stripping pathPrefix.
 // Sets req.Host to the backend so SigV4 canonical-host verification passes.
-func newReverseProxy(backendHost, pathPrefix string, transport *http.Transport) http.Handler {
+// The transport is wrapped with otelhttp so proxied requests inject
+// traceparent, letting a UI-initiated trace continue into awsgw/predastore
+// instead of stopping at spinifex-ui.
+func newReverseProxy(backendHost, pathPrefix string, transport http.RoundTripper) http.Handler {
 	target := &url.URL{
 		Scheme: "https",
 		Host:   backendHost,
@@ -57,7 +62,7 @@ func newReverseProxy(backendHost, pathPrefix string, transport *http.Transport) 
 				pr.Out.URL.Path = "/"
 			}
 		},
-		Transport: transport,
+		Transport: otelhttp.NewTransport(transport),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			slog.Error("Proxy error", "backend", backendHost, "path", r.URL.Path, "error", err)
 			w.Header().Set("Content-Type", "application/xml")

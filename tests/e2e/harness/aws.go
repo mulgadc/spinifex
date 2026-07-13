@@ -14,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/acm"
+	"github.com/aws/aws-sdk-go/service/bedrock"
+	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -30,15 +32,17 @@ type AWSClient struct {
 	// EC2 is wrapped so RunInstances auto-serialises against cluster capacity
 	// (see capacityRetryEC2). EC2Conf is the underlying SDK client shared by
 	// both; kept for call sites that read or mutate its Config.
-	EC2     ec2iface.EC2API
-	EC2Conf *ec2.EC2
-	ELBv2   *elbv2.ELBV2
-	IAM     *iam.IAM
-	STS     *sts.STS
-	EKS     *eks.EKS
-	ACM     *acm.ACM
-	ECR     *ecr.ECR
-	ECS     *ecs.ECS
+	EC2            ec2iface.EC2API
+	EC2Conf        *ec2.EC2
+	ELBv2          *elbv2.ELBV2
+	IAM            *iam.IAM
+	STS            *sts.STS
+	EKS            *eks.EKS
+	ACM            *acm.ACM
+	ECR            *ecr.ECR
+	ECS            *ecs.ECS
+	Bedrock        *bedrock.Bedrock
+	BedrockRuntime *bedrockruntime.BedrockRuntime
 }
 
 // NewAWSClient builds clients pointed at the spinifex gateway using the
@@ -128,15 +132,17 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 
 	rawEC2 := ec2.New(sess)
 	return &AWSClient{
-		EC2:     &capacityRetryEC2{EC2API: rawEC2},
-		EC2Conf: rawEC2,
-		ELBv2:   elbv2.New(sess),
-		IAM:     iam.New(sess),
-		STS:     sts.New(sess),
-		EKS:     eks.New(sess),
-		ACM:     acm.New(sess),
-		ECR:     ecr.New(sess),
-		ECS:     ecs.New(sess),
+		EC2:            &capacityRetryEC2{EC2API: rawEC2},
+		EC2Conf:        rawEC2,
+		ELBv2:          elbv2.New(sess),
+		IAM:            iam.New(sess),
+		STS:            sts.New(sess),
+		EKS:            eks.New(sess),
+		ACM:            acm.New(sess),
+		ECR:            ecr.New(sess),
+		ECS:            ecs.New(sess),
+		Bedrock:        bedrock.New(sess),
+		BedrockRuntime: bedrockruntime.New(sess),
 	}
 }
 

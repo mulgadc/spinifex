@@ -1,0 +1,130 @@
+//go:build e2e
+
+package bedrock
+
+import (
+	"os"
+	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/bedrock"
+	"github.com/aws/aws-sdk-go/service/bedrockruntime"
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// Catalog model IDs mirror the static Phase-1 catalog in gateway_bedrock.
+const (
+	modelSelfHostLlama = "meta.llama3-70b-instruct-v1:0"
+	modelAnthropic     = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+	modelBogus         = "does.not-exist-v1:0"
+)
+
+// TestListFoundationModels confirms the self-host model is always advertised;
+// the Anthropic model is only asserted on when present, since its advertisement
+// depends on cluster credential configuration.
+func TestListFoundationModels(t *testing.T) {
+	f := requireBedrockFixture(t)
+
+	out, err := f.AWS.Bedrock.ListFoundationModels(&bedrock.ListFoundationModelsInput{})
+	require.NoError(t, err, "list-foundation-models")
+
+	ids := make(map[string]*bedrock.FoundationModelSummary, len(out.ModelSummaries))
+	for _, m := range out.ModelSummaries {
+		ids[aws.StringValue(m.ModelId)] = m
+	}
+
+	assert.Contains(t, ids, modelSelfHostLlama, "self-host model must always be advertised")
+
+	if anthropic, ok := ids[modelAnthropic]; ok {
+		assert.Equal(t, "Anthropic", aws.StringValue(anthropic.ProviderName),
+			"anthropic model advertised with unexpected provider name")
+	}
+}
+
+// TestGetFoundationModel round-trips a known model and asserts
+// ResourceNotFoundException for an unknown one.
+func TestGetFoundationModel(t *testing.T) {
+	f := requireBedrockFixture(t)
+
+	t.Run("known model", func(t *testing.T) {
+		out, err := f.AWS.Bedrock.GetFoundationModel(&bedrock.GetFoundationModelInput{
+			ModelIdentifier: aws.String(modelSelfHostLlama),
+		})
+		require.NoError(t, err, "get-foundation-model %s", modelSelfHostLlama)
+		require.NotNil(t, out.ModelDetails, "empty ModelDetails")
+		assert.Equal(t, modelSelfHostLlama, aws.StringValue(out.ModelDetails.ModelId))
+	})
+
+	t.Run("unknown model", func(t *testing.T) {
+		harness.ExpectError(t, "ResourceNotFoundException", func() error {
+			_, e := f.AWS.Bedrock.GetFoundationModel(&bedrock.GetFoundationModelInput{
+				ModelIdentifier: aws.String(modelBogus),
+			})
+			return e
+		})
+	})
+}
+
+// TestConverseSelfHost exercises the real vLLM Converse path. Gated behind
+// OCHRE_E2E_SELFHOST=1 — it needs a GPU-backed vLLM endpoint configured on the
+// gateway via OCHRE_VLLM_ENDPOINTS at boot.
+func TestConverseSelfHost(t *testing.T) {
+	if os.Getenv("OCHRE_E2E_SELFHOST") != "1" {
+		t.Skip("OCHRE_E2E_SELFHOST!=1; skipping real self-host Converse")
+	}
+	f := requireBedrockFixture(t)
+
+	out, err := f.AWS.BedrockRuntime.Converse(&bedrockruntime.ConverseInput{
+		ModelId: aws.String(modelSelfHostLlama),
+		Messages: []*bedrockruntime.Message{{
+			Role:    aws.String(bedrockruntime.ConversationRoleUser),
+			Content: []*bedrockruntime.ContentBlock{{Text: aws.String("Say hello in one word.")}},
+		}},
+		InferenceConfig: &bedrockruntime.InferenceConfiguration{MaxTokens: aws.Int64(64)},
+	})
+	require.NoError(t, err, "converse self-host")
+	require.NotNil(t, out.Output, "nil output")
+	require.NotNil(t, out.Output.Message, "nil output message")
+	assert.NotEmpty(t, converseText(out.Output.Message), "empty assistant text")
+	require.NotNil(t, out.Usage, "nil usage")
+	assert.Greater(t, aws.Int64Value(out.Usage.OutputTokens), int64(0), "OutputTokens must be > 0")
+}
+
+// TestConverseAnthropic exercises the real Anthropic-direct Converse path.
+// Gated behind OCHRE_E2E_ANTHROPIC=1 — it needs a live Anthropic API key
+// configured on the cluster (OCHRE_ANTHROPIC_API_KEY or a per-account KV entry).
+func TestConverseAnthropic(t *testing.T) {
+	if os.Getenv("OCHRE_E2E_ANTHROPIC") != "1" {
+		t.Skip("OCHRE_E2E_ANTHROPIC!=1; skipping real Anthropic Converse")
+	}
+	f := requireBedrockFixture(t)
+
+	out, err := f.AWS.BedrockRuntime.Converse(&bedrockruntime.ConverseInput{
+		ModelId: aws.String(modelAnthropic),
+		Messages: []*bedrockruntime.Message{{
+			Role:    aws.String(bedrockruntime.ConversationRoleUser),
+			Content: []*bedrockruntime.ContentBlock{{Text: aws.String("Say hello in one word.")}},
+		}},
+		InferenceConfig: &bedrockruntime.InferenceConfiguration{MaxTokens: aws.Int64(64)},
+	})
+	require.NoError(t, err, "converse anthropic")
+	require.NotNil(t, out.Output, "nil output")
+	require.NotNil(t, out.Output.Message, "nil output message")
+	assert.NotEmpty(t, converseText(out.Output.Message), "empty assistant text")
+	require.NotNil(t, out.Usage, "nil usage")
+	assert.Greater(t, aws.Int64Value(out.Usage.InputTokens), int64(0), "InputTokens must be > 0")
+	assert.Greater(t, aws.Int64Value(out.Usage.OutputTokens), int64(0), "OutputTokens must be > 0")
+}
+
+// converseText concatenates the text content blocks of a Converse output message.
+func converseText(msg *bedrockruntime.Message) string {
+	var text string
+	for _, c := range msg.Content {
+		if c != nil && c.Text != nil {
+			text += *c.Text
+		}
+	}
+	return text
+}

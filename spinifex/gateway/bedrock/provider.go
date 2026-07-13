@@ -84,3 +84,62 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver) (*bedrockruntime.ConverseOutput, error) {
 	return NewRouter(resolver, endpointResolver).Converse(ctx, accountID, modelID, input)
 }
+
+// ConverseStreamProvider is the optional streaming capability a Provider may
+// implement. Both shipped backends (vLLM, Anthropic) do; Router.ConverseStream
+// type-asserts the resolved Provider to it rather than widening Provider
+// itself, so a future non-streaming-capable backend still compiles.
+type ConverseStreamProvider interface {
+	ConverseStream(ctx context.Context, modelID string, input *bedrockruntime.ConverseStreamInput) (converseStreamSource, error)
+}
+
+// converseStreamToConverseInput adapts a ConverseStreamInput to a
+// ConverseInput carrying only the fields buildVLLMRequest/buildAnthropicRequest
+// read (Messages, System, InferenceConfig). The two generated types are
+// otherwise structurally identical field-for-field; this lets the streaming
+// path reuse the exact same request builders as Converse.
+func converseStreamToConverseInput(input *bedrockruntime.ConverseStreamInput) *bedrockruntime.ConverseInput {
+	return &bedrockruntime.ConverseInput{
+		Messages:        input.Messages,
+		System:          input.System,
+		InferenceConfig: input.InferenceConfig,
+	}
+}
+
+// ConverseStream routes modelID to its provider via the catalog, exactly like
+// Converse, then requires the resolved provider to also implement
+// ConverseStreamProvider.
+func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseStreamInput) (converseStreamSource, error) {
+	entry, ok := lookupCatalogEntry(modelID)
+	if !ok {
+		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	}
+
+	var p Provider
+	switch {
+	case entry.Provider == tierSelfHost:
+		p = newVLLMProvider(rt.endpointResolver)
+	case strings.HasPrefix(entry.Provider, providerPrefix):
+		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
+		case vendorAnthropic:
+			key, ok, err := rt.resolver.Resolve(ctx, accountID, vendorAnthropic)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, errors.New(awserrors.ErrorAccessDeniedException)
+			}
+			p = newAnthropicProvider(key)
+		default:
+			return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		}
+	default:
+		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	}
+
+	sp, ok := p.(ConverseStreamProvider)
+	if !ok {
+		return nil, errors.New(awserrors.ErrorValidationException)
+	}
+	return sp.ConverseStream(ctx, modelID, input)
+}

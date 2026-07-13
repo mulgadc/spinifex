@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -47,12 +48,31 @@ type vllmMessage struct {
 }
 
 type vllmChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []vllmMessage `json:"messages"`
-	MaxTokens   *int64        `json:"max_tokens,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	TopP        *float64      `json:"top_p,omitempty"`
-	Stop        []string      `json:"stop,omitempty"`
+	Model         string             `json:"model"`
+	Messages      []vllmMessage      `json:"messages"`
+	MaxTokens     *int64             `json:"max_tokens,omitempty"`
+	Temperature   *float64           `json:"temperature,omitempty"`
+	TopP          *float64           `json:"top_p,omitempty"`
+	Stop          []string           `json:"stop,omitempty"`
+	Stream        bool               `json:"stream,omitempty"`
+	StreamOptions *vllmStreamOptions `json:"stream_options,omitempty"`
+}
+
+// vllmStreamOptions requests the trailing usage-only chunk vLLM/OpenAI
+// otherwise omits from a streaming response.
+type vllmStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+// vllmStreamChunk is one OpenAI chat-completions streaming SSE "data:" chunk.
+type vllmStreamChunk struct {
+	Choices []vllmStreamChoice `json:"choices"`
+	Usage   *vllmUsage         `json:"usage"`
+}
+
+type vllmStreamChoice struct {
+	Delta        vllmMessage `json:"delta"`
+	FinishReason *string     `json:"finish_reason"`
 }
 
 type vllmChoice struct {
@@ -221,4 +241,202 @@ func vllmToConverseOutput(cr vllmChatResponse, latency time.Duration) (*bedrockr
 		},
 		Metrics: &bedrockruntime.ConverseMetrics{LatencyMs: aws.Int64(latency.Milliseconds())},
 	}, nil
+}
+
+var _ ConverseStreamProvider = (*vllmProvider)(nil)
+
+// ConverseStream resolves modelID's endpoint, opens a streaming OpenAI
+// chat-completions request (stream:true, stream_options.include_usage for
+// the trailing usage chunk), and returns a converseStreamSource that
+// reframes the SSE into the normalized Bedrock ConverseStream taxonomy.
+func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input *bedrockruntime.ConverseStreamInput) (converseStreamSource, error) {
+	baseURL, ok, err := p.endpointResolver.Endpoint(ctx, modelID)
+	if err != nil {
+		slog.Error("vllm stream: endpoint resolution failed", "model", modelID, "err", err)
+		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+	}
+	if !ok {
+		return nil, errors.New(awserrors.ErrorModelNotReadyException)
+	}
+
+	req := buildVLLMRequest(modelID, converseStreamToConverseInput(input))
+	req.Stream = true
+	req.StreamOptions = &vllmStreamOptions{IncludeUsage: true}
+
+	reqBody, err := json.Marshal(req)
+	if err != nil {
+		slog.Error("vllm stream: failed to marshal request", "model", modelID, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+vllmChatCompletionsPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: baseURL is a resolved pinned self-host endpoint, not user input
+	if err != nil {
+		slog.Error("vllm stream: failed to build request", "model", modelID, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := p.httpClient.Do(httpReq) //nolint:gosec // G704: httpReq targets the resolved pinned self-host endpoint, not user input
+	if err != nil {
+		slog.Error("vllm stream: request failed", "model", modelID, "endpoint", baseURL, "err", err)
+		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		slog.Error("vllm stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
+		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
+	}
+
+	return &vllmConverseStreamSource{
+		resp:    resp,
+		scanner: newSSEScanner(resp.Body),
+		start:   time.Now(),
+	}, nil
+}
+
+// vllmConverseStreamSource reframes a vLLM (OpenAI chat-completions) SSE
+// stream into the normalized Bedrock ConverseStream event taxonomy:
+// messageStart+contentBlockStart on the first chunk, contentBlockDelta per
+// content delta, contentBlockStop+messageStop on finish_reason, metadata on
+// the trailing usage-only chunk (or defensively at EOF if the upstream never
+// sends one). Events are queued because a single upstream chunk can fan out
+// to more than one normalized event.
+type vllmConverseStreamSource struct {
+	resp    *http.Response
+	scanner *sseScanner
+	start   time.Time
+
+	queue           []ConverseStreamEvent
+	started         bool
+	stopped         bool
+	metadataEmitted bool
+	inputTokens     int64
+	outputTokens    int64
+}
+
+var _ converseStreamSource = (*vllmConverseStreamSource)(nil)
+
+func (s *vllmConverseStreamSource) Close() error {
+	return s.resp.Body.Close()
+}
+
+func (s *vllmConverseStreamSource) Next(_ context.Context) (ConverseStreamEvent, bool, error) {
+	for len(s.queue) == 0 {
+		ev, ok, err := s.scanner.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				s.closeOut(bedrockruntime.StopReasonEndTurn)
+				if !s.metadataEmitted {
+					s.emitMetadata()
+				}
+				break
+			}
+			return ConverseStreamEvent{}, false, newStreamFault(err)
+		}
+		if !ok {
+			continue
+		}
+		data := strings.TrimSpace(ev.Data)
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+
+		var chunk vllmStreamChunk
+		if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
+			return ConverseStreamEvent{}, false, newStreamFault(fmt.Errorf("vllm stream: decode chunk: %w", err))
+		}
+		s.consume(chunk)
+	}
+
+	if len(s.queue) == 0 {
+		return ConverseStreamEvent{}, false, nil
+	}
+	next := s.queue[0]
+	s.queue = s.queue[1:]
+	return next, true, nil
+}
+
+// consume folds one decoded chat-completion chunk into the queued normalized
+// events and running usage totals.
+func (s *vllmConverseStreamSource) consume(chunk vllmStreamChunk) {
+	if chunk.Usage != nil {
+		s.inputTokens = chunk.Usage.PromptTokens
+		s.outputTokens = chunk.Usage.CompletionTokens
+	}
+	if len(chunk.Choices) == 0 {
+		// The trailing usage-only chunk from stream_options.include_usage.
+		if chunk.Usage != nil {
+			s.emitMetadata()
+		}
+		return
+	}
+
+	choice := chunk.Choices[0]
+	if !s.started {
+		s.started = true
+		s.queue = append(s.queue,
+			ConverseStreamEvent{
+				Kind:         converseStreamEventMessageStart,
+				MessageStart: &bedrockruntime.MessageStartEvent{Role: aws.String(bedrockruntime.ConversationRoleAssistant)},
+			},
+			ConverseStreamEvent{
+				Kind:              converseStreamEventContentBlockStart,
+				ContentBlockStart: &bedrockruntime.ContentBlockStartEvent{ContentBlockIndex: aws.Int64(0), Start: &bedrockruntime.ContentBlockStart{}},
+			},
+		)
+	}
+
+	if choice.Delta.Content != "" {
+		s.queue = append(s.queue, ConverseStreamEvent{
+			Kind: converseStreamEventContentBlockDelta,
+			ContentBlockDelta: &bedrockruntime.ContentBlockDeltaEvent{
+				ContentBlockIndex: aws.Int64(0),
+				Delta:             &bedrockruntime.ContentBlockDelta{Text: aws.String(choice.Delta.Content)},
+			},
+		})
+	}
+
+	if choice.FinishReason != nil {
+		s.closeOut(mapVLLMFinishReason(*choice.FinishReason))
+	}
+}
+
+// closeOut queues contentBlockStop+messageStop exactly once.
+func (s *vllmConverseStreamSource) closeOut(stopReason string) {
+	if s.stopped {
+		return
+	}
+	s.stopped = true
+	s.queue = append(s.queue,
+		ConverseStreamEvent{
+			Kind:             converseStreamEventContentBlockStop,
+			ContentBlockStop: &bedrockruntime.ContentBlockStopEvent{ContentBlockIndex: aws.Int64(0)},
+		},
+		ConverseStreamEvent{
+			Kind:        converseStreamEventMessageStop,
+			MessageStop: &bedrockruntime.MessageStopEvent{StopReason: aws.String(stopReason)},
+		},
+	)
+}
+
+// emitMetadata queues the trailing metadata event exactly once.
+func (s *vllmConverseStreamSource) emitMetadata() {
+	if s.metadataEmitted {
+		return
+	}
+	s.metadataEmitted = true
+	s.queue = append(s.queue, ConverseStreamEvent{
+		Kind: converseStreamEventMetadata,
+		Metadata: &bedrockruntime.ConverseStreamMetadataEvent{
+			Usage: &bedrockruntime.TokenUsage{
+				InputTokens:  aws.Int64(s.inputTokens),
+				OutputTokens: aws.Int64(s.outputTokens),
+				TotalTokens:  aws.Int64(s.inputTokens + s.outputTokens),
+			},
+			Metrics: &bedrockruntime.ConverseStreamMetrics{LatencyMs: aws.Int64(time.Since(s.start).Milliseconds())},
+		},
+	})
 }

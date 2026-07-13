@@ -28,6 +28,20 @@ func (w *statusRecorder) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap returns the wrapped ResponseWriter, letting http.ResponseController
+// (and any other Unwrap-aware caller) walk past statusRecorder to reach the
+// real flusher underneath.
+func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Flush implements http.Flusher by delegating to the wrapped ResponseWriter.
+// Without this, statusRecorder blocks every downstream Flush call (including
+// chi's WrapResponseWriter, which wraps statusRecorder) from ever reaching
+// the real writer: the call succeeds as a no-op but no bytes reach the
+// socket, silently breaking streaming handlers.
+func (w *statusRecorder) Flush() {
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
 // HTTPMiddleware opens a server span per request, honoring an inbound W3C
 // traceparent header, and records request count/duration metrics. Handlers
 // rename the span (and SetRequestAction) once they resolve a logical

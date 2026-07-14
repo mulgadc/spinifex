@@ -3,7 +3,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import { ErrorBanner } from "@/components/error-banner"
@@ -82,7 +82,6 @@ export function CreateClusterPage() {
     handleSubmit,
     register,
     setValue,
-    watch,
   } = useForm<CreateClusterFormData>({
     resolver: zodResolver(createClusterSchema),
     defaultValues: {
@@ -98,10 +97,10 @@ export function CreateClusterPage() {
     },
   })
 
-  const selectedVpc = watch("vpcId")
-  const selectedSubnets = watch("subnetIds")
-  const publicAccess = watch("endpointPublicAccess")
-  const publicCidrs = watch("publicAccessCidrs")
+  const selectedVpc = useWatch({ control, name: "vpcId" })
+  const selectedSubnets = useWatch({ control, name: "subnetIds" })
+  const publicAccess = useWatch({ control, name: "endpointPublicAccess" })
+  const publicCidrs = useWatch({ control, name: "publicAccessCidrs" })
 
   const vpcSubnets = allSubnets.filter((s) => s.VpcId === selectedVpc)
 
@@ -135,7 +134,7 @@ export function CreateClusterPage() {
       { shouldValidate: true },
     )
 
-  const clusterName = watch("name")
+  const clusterName = useWatch({ control, name: "name" })
 
   const handleRoleCreated = async (roleArn: string) => {
     await queryClient.invalidateQueries({

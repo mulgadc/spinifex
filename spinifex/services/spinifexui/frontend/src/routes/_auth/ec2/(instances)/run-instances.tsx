@@ -4,7 +4,7 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router"
 import { ChevronDown } from "lucide-react"
 import { useEffect } from "react"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -198,7 +198,7 @@ export function CreateInstance() {
     },
   })
 
-  const selectedInstanceType = watch("instanceType")
+  const selectedInstanceType = useWatch({ control, name: "instanceType" })
   const maxCount = selectedInstanceType
     ? (instanceTypeCounts[selectedInstanceType] ?? 1)
     : 1
@@ -209,20 +209,23 @@ export function CreateInstance() {
   const selectedGpuMigProfile = selectedGpuDevice?.Name?.startsWith("MIG ")
     ? selectedGpuDevice.Name.slice("MIG ".length)
     : undefined
-  const selectedImageId = watch("imageId")
+  const selectedImageId = useWatch({ control, name: "imageId" })
   const selectedRoot = getRootMapping(
     images.find((img) => img.ImageId === selectedImageId),
   )
 
-  const selectedSubnetId = watch("subnetId")
-  const sgMode = watch("securityGroupMode")
-  const ruleSource = watch("ruleSource")
-  const selectedSgIds = watch("securityGroupIds") ?? []
+  const selectedSubnetId = useWatch({ control, name: "subnetId" })
+  const sgMode = useWatch({ control, name: "securityGroupMode" })
+  const ruleSource = useWatch({ control, name: "ruleSource" })
+  const selectedSgIds = useWatch({ control, name: "securityGroupIds" }) ?? []
 
   // Launch template: when one is selected the instance is launched from it and
   // the direct-config fields below are hidden — the template supplies them.
-  const selectedTemplateId = watch("launchTemplateId")
-  const selectedTemplateVersion = watch("launchTemplateVersion")
+  const selectedTemplateId = useWatch({ control, name: "launchTemplateId" })
+  const selectedTemplateVersion = useWatch({
+    control,
+    name: "launchTemplateVersion",
+  })
   const templateVersionsQuery = useQuery({
     ...ec2LaunchTemplateVersionsQueryOptions(selectedTemplateId ?? ""),
     enabled: !!selectedTemplateId,

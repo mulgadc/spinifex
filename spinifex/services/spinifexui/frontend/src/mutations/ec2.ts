@@ -302,7 +302,7 @@ function encodeUserData(text: string): string {
 // primary network interface (templates have no top-level SubnetId); security
 // groups attach to that interface, or at the top level when no subnet is set.
 export function buildLaunchTemplateData(
-  data: LaunchTemplateFormData,
+  data: Partial<LaunchTemplateFormData>,
 ): RequestLaunchTemplateData {
   const out: RequestLaunchTemplateData = {}
   if (data.imageId) {

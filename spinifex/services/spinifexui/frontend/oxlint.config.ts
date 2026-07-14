@@ -25,7 +25,6 @@ export default defineConfig({
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
     "react/jsx-handler-names": "off",
-    "react/react-compiler": "off",
     "react/no-object-type-as-default-prop": "off",
     "eslint/complexity": "off",
     "eslint/func-style": [

@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import { ErrorBanner } from "@/components/error-banner"
@@ -47,7 +47,6 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
     control,
     handleSubmit,
     register: field,
-    watch,
     setValue,
     getValues,
     formState: { errors, isSubmitting },
@@ -63,14 +62,14 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
     },
   })
 
-  const selectedTaskDef = watch("taskDefinition")
+  const selectedTaskDef = useWatch({ control, name: "taskDefinition" })
   const { data: describedTaskDef } = useQuery(
     ecsTaskDefinitionQueryOptions(selectedTaskDef),
   )
   const awsvpc = describedTaskDef?.networkMode === "awsvpc"
 
-  const selectedSubnets = watch("subnets")
-  const selectedSgs = watch("securityGroups")
+  const selectedSubnets = useWatch({ control, name: "subnets" })
+  const selectedSgs = useWatch({ control, name: "securityGroups" })
   const toggle = (name: "subnets" | "securityGroups", id: string) => {
     const current = getValues(name)
     setValue(

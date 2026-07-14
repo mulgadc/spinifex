@@ -1,7 +1,7 @@
 import type { RequestLaunchTemplateData } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -61,7 +61,6 @@ function CreateLaunchTemplate() {
     control,
     handleSubmit,
     register,
-    watch,
     formState: { errors, isSubmitting },
   } = useForm<LaunchTemplateFormData>({
     resolver: zodResolver(createLaunchTemplateSchema),
@@ -75,7 +74,7 @@ function CreateLaunchTemplate() {
     },
   })
 
-  const values = watch()
+  const values = useWatch({ control })
 
   const onSubmit = async (data: LaunchTemplateFormData) => {
     const result = await createMutation.mutateAsync(data)

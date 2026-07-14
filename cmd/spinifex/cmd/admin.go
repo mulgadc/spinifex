@@ -334,7 +334,6 @@ func init() {
 	adminInitCmd.Flags().String("external-gateway", "", "WAN gateway IP (auto-detected from default route)")
 	adminInitCmd.Flags().String("gateway-ip", "", "OVN gateway router's external IP for SNAT (default: pool range_start for pool mode, required for nat mode without DHCP)")
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
-	adminInitCmd.Flags().Bool("no-external", false, "Disable external networking (overlay-only, no internet for VMs)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
 	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
 
@@ -1018,7 +1017,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	externalGateway, _ := cmd.Flags().GetString("external-gateway")
 	externalPrefixLen, _ := cmd.Flags().GetInt("external-prefix-len")
 	gatewayIP, _ := cmd.Flags().GetString("gateway-ip")
-	noExternal, _ := cmd.Flags().GetBool("no-external")
 	gpuPassthrough, _ := cmd.Flags().GetBool("gpu-passthrough")
 	ipsecEnabled, _ := cmd.Flags().GetBool("ipsec")
 
@@ -1051,59 +1049,56 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// Auto-detect network topology
 	var poolStart, poolEnd string
 	var detectedNet *admin.DetectedNetwork
-	if !noExternal {
-		detected, err := admin.DetectNetwork()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Network auto-detection failed: %v\n", err)
-			fmt.Fprintf(os.Stderr, "   Use --no-external to skip, or specify flags manually.\n")
+	detected, err := admin.DetectNetwork()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Network auto-detection failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "   Use --external-mode=nat for outbound-only VMs on a non-bridgeable uplink, or specify --external-* flags manually.\n")
+	} else {
+		detectedNet = detected
+
+		// Print detected topology
+		fmt.Println("\n🔍 Detected network topology:")
+		fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", "Interface", "IP", "Subnet", "Gateway", "Role")
+		for _, iface := range detected.Interfaces {
+			gw := "—"
+			if iface.Gateway != "" {
+				gw = iface.Gateway
+			}
+			fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", iface.Name, iface.IP, iface.Subnet, gw, strings.ToUpper(iface.Role))
+		}
+		if detected.LANCount == 0 {
+			fmt.Println("\n  Mode: single-NIC (veth-bridged external)")
 		} else {
-			detectedNet = detected
+			fmt.Printf("\n  Mode: %d LAN + 1 WAN (veth-bridged external)\n", detected.LANCount)
+		}
 
-			// Print detected topology
-			fmt.Println("\n🔍 Detected network topology:")
-			fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", "Interface", "IP", "Subnet", "Gateway", "Role")
-			for _, iface := range detected.Interfaces {
-				gw := "—"
-				if iface.Gateway != "" {
-					gw = iface.Gateway
-				}
-				fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", iface.Name, iface.IP, iface.Subnet, gw, strings.ToUpper(iface.Role))
+		// Apply auto-detected values when flags not explicitly set
+		if detected.WAN != nil {
+			if externalIface == "" {
+				externalIface = detected.WAN.Name
 			}
-			if detected.LANCount == 0 {
-				fmt.Println("\n  Mode: single-NIC (veth-bridged external)")
-			} else {
-				fmt.Printf("\n  Mode: %d LAN + 1 WAN (veth-bridged external)\n", detected.LANCount)
+			if externalGateway == "" {
+				externalGateway = detected.WAN.Gateway
+			}
+			if !cmd.Flags().Changed("external-prefix-len") {
+				externalPrefixLen = detected.WAN.PrefixLen
 			}
 
-			// Apply auto-detected values when flags not explicitly set
-			if detected.WAN != nil {
-				if externalIface == "" {
-					externalIface = detected.WAN.Name
+			// Default mode: always "pool". Source defaults to "static"; if
+			// --external-pool is omitted the validator below will error with
+			// a SuggestPoolRange hint.
+			if externalMode == "" && !cmd.Flags().Changed("external-mode") {
+				if isNonBridgeableUplink(detected.WAN.Name) {
+					fmt.Fprintf(os.Stderr, "\n❌ Detected WAN interface %s cannot be bridged (WiFi/cellular/PPP).\n", detected.WAN.Name)
+					fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead (outbound-only VM networking):\n")
+					fmt.Fprintf(os.Stderr, "     ./scripts/setup-ovn.sh --management --nat-uplink\n")
+					fmt.Fprintf(os.Stderr, "     spx admin init --external-mode=nat\n")
+					os.Exit(1)
 				}
-				if externalGateway == "" {
-					externalGateway = detected.WAN.Gateway
-				}
-				if !cmd.Flags().Changed("external-prefix-len") {
-					externalPrefixLen = detected.WAN.PrefixLen
-				}
-
-				// Default mode: always "pool". Source defaults to "static"; if
-				// --external-pool is omitted the validator below will error with
-				// a SuggestPoolRange hint.
-				if externalMode == "" && !cmd.Flags().Changed("external-mode") {
-					if isNonBridgeableUplink(detected.WAN.Name) {
-						fmt.Fprintf(os.Stderr, "\n❌ Detected WAN interface %s cannot be bridged (WiFi/cellular/PPP).\n", detected.WAN.Name)
-						fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead (outbound-only VM networking):\n")
-						fmt.Fprintf(os.Stderr, "     ./scripts/setup-ovn.sh --management --nat-uplink\n")
-						fmt.Fprintf(os.Stderr, "     spx admin init --external-mode=nat\n")
-						os.Exit(1)
-					}
-					externalMode = "pool"
-				}
+				externalMode = "pool"
 			}
 		}
 	}
-
 	// Validate external networking flags
 	if externalMode != "" && externalMode != "pool" && externalMode != "nat" {
 		fmt.Fprintf(os.Stderr, "❌ Error: --external-mode must be 'pool', 'nat', or empty, got: %s\n", externalMode)
@@ -1209,8 +1204,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Resolve the off-host advertise IP. DetectNetwork may have been skipped
-	// when --no-external is set; detect lazily if we need the WAN IP.
+	// Resolve the off-host advertise IP. DetectNetwork may have failed earlier;
+	// detect lazily if we still need the WAN IP.
 	if advertiseFlag == "" && (bindIP == "0.0.0.0" || bindIP == "127.0.0.1") && detectedNet == nil {
 		if d, derr := admin.DetectNetwork(); derr == nil {
 			detectedNet = d

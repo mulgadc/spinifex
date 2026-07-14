@@ -2671,6 +2671,9 @@ func loadAdminCredentials(bootstrapDir string, masterKey []byte) (accessKey, sec
 	if bd.Admin == nil {
 		return "", "", fmt.Errorf("bootstrap data has no admin credentials")
 	}
+	if bd.Admin.AccessKeyID == "" {
+		return "", "", fmt.Errorf("bootstrap admin credentials missing access key")
+	}
 	secretKey, err = handlers_iam.DecryptSecret(bd.Admin.EncryptedSecret, masterKey)
 	if err != nil {
 		return "", "", fmt.Errorf("decrypt admin secret: %w", err)
@@ -2750,13 +2753,6 @@ func ensureViperblockEncryptionKey(configDir string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("save viperblock encryption key: %w", err)
 	}
 	return key, keyPath, nil
-}
-
-// writeViperblockEncryptionKey load-or-generates the viperblock key and returns
-// its path only; callers needing the bytes use ensureViperblockEncryptionKey.
-func writeViperblockEncryptionKey(configDir string) (string, error) {
-	_, keyPath, err := ensureViperblockEncryptionKey(configDir)
-	return keyPath, err
 }
 
 // saveViperblockEncryptionKey writes an already-generated 32-byte viperblock

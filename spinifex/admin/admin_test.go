@@ -277,6 +277,32 @@ func TestSetupAWSCredentials_FallsBackToLocalhostForWildcard(t *testing.T) {
 	assert.Contains(t, string(configData), "https://localhost:9999")
 }
 
+// On a --force re-init the preserve path passes empty admin credentials: the
+// existing ~/.aws/credentials must be left intact while ~/.aws/config is still
+// refreshed (endpoint/CA for a changed bind IP).
+func TestSetupAWSCredentials_EmptyCredsRefreshesConfigOnly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	awsDir := filepath.Join(dir, ".aws")
+	require.NoError(t, os.MkdirAll(awsDir, 0700))
+	require.NoError(t, UpdateAWSINIFile(filepath.Join(awsDir, "credentials"), "spinifex", map[string]string{
+		"aws_access_key_id":     "PRESERVED_KEY",
+		"aws_secret_access_key": "PRESERVED_SECRET",
+	}))
+
+	err := SetupAWSCredentials("", "", "ap-southeast-2", "/new/ca.pem", "10.11.12.5")
+	require.NoError(t, err)
+
+	credData, _ := os.ReadFile(filepath.Join(awsDir, "credentials"))
+	assert.Contains(t, string(credData), "PRESERVED_KEY", "existing admin credentials must be preserved on re-init")
+	assert.Contains(t, string(credData), "PRESERVED_SECRET")
+
+	configData, _ := os.ReadFile(filepath.Join(awsDir, "config"))
+	assert.Contains(t, string(configData), "https://10.11.12.5:9999", "config endpoint must be refreshed")
+	assert.Contains(t, string(configData), "/new/ca.pem")
+}
+
 // --- Certificate generation ---
 
 func TestGenerateCACert_CreatesValidCA(t *testing.T) {
@@ -617,12 +643,34 @@ func TestGenerateCertificatesIfNeeded(t *testing.T) {
 		assert.Equal(t, origModTime, caInfo2.ModTime())
 	})
 
-	t.Run("ForceRegenerates", func(t *testing.T) {
+	// --force must preserve the CA (trust anchor for joined nodes / baked AMIs)
+	// and only re-sign the server cert, which stays verifiable against that CA.
+	t.Run("ForcePreservesCARegeneratesServerCert", func(t *testing.T) {
 		origCA, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
+		origCAKey, _ := os.ReadFile(filepath.Join(dir, "ca.key"))
+		origServer, _ := os.ReadFile(filepath.Join(dir, "server.pem"))
 
-		GenerateCertificatesIfNeeded(dir, true, "", "us-east-1", "spinifex.internal")
+		GenerateCertificatesIfNeeded(dir, true, "10.9.8.7", "us-east-1", "spinifex.internal")
+
 		newCA, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
-		assert.NotEqual(t, origCA, newCA)
+		newCAKey, _ := os.ReadFile(filepath.Join(dir, "ca.key"))
+		newServer, _ := os.ReadFile(filepath.Join(dir, "server.pem"))
+		assert.Equal(t, origCA, newCA, "CA cert must be preserved on --force")
+		assert.Equal(t, origCAKey, newCAKey, "CA key must be preserved on --force")
+		assert.NotEqual(t, origServer, newServer, "server cert must be re-signed on --force")
+
+		// The re-signed server cert must verify against the preserved CA.
+		caBlock, _ := pem.Decode(newCA)
+		caCert, err := x509.ParseCertificate(caBlock.Bytes)
+		require.NoError(t, err)
+		pool := x509.NewCertPool()
+		pool.AddCert(caCert)
+
+		srvBlock, _ := pem.Decode(newServer)
+		srvCert, err := x509.ParseCertificate(srvBlock.Bytes)
+		require.NoError(t, err)
+		_, err = srvCert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+		assert.NoError(t, err, "re-signed server cert must verify against preserved CA")
 	})
 }
 

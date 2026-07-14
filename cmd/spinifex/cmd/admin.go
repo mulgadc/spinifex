@@ -1267,66 +1267,91 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 	fmt.Printf("✅ Created config directory: %s\n", configDir)
 
-	// Generate system credentials (for service-to-service auth in config files)
-	accessKey, err := admin.GenerateAWSAccessKey()
+	// Identity and crypto material is load-or-generate: a fresh install mints a
+	// new identity bundle, but a --force re-init preserves the existing one so
+	// data sealed under it (NATS KV secrets, sealed fragments, encrypted volumes)
+	// stays decryptable.
+	masterKey, masterKeyExisted, err := ensureMasterKey(configDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating access key: %v\n", err)
-		os.Exit(1)
-	}
-	secretKey, err := admin.GenerateAWSSecretKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating secret key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error preparing IAM master key: %v\n", err)
 		os.Exit(1)
 	}
 	accountID := admin.SystemAccountID()
-
-	// Generate IAM master key (AES-256, used to encrypt secrets in NATS KV)
-	masterKey, err := handlers_iam.GenerateMasterKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating IAM master key: %v\n", err)
-		os.Exit(1)
-	}
 	bootstrapDir := filepath.Join(spxRoot, "awsgw")
-	bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing bootstrap files: %v\n", err)
-		os.Exit(1)
-	}
-	if err := writeSystemCredentials(configDir, accessKey, secretKey); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing system credentials: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("\n🔐 Generated IAM master key")
-	fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
-	fmt.Printf("   Bootstrap: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
-	fmt.Printf("   System creds: %s\n", filepath.Join(configDir, "system-credentials.json"))
 
-	// Predastore encryption key is per-node and never transmitted; generate
-	// it locally now so the service has it on first start.
+	var accessKey, secretKey, adminAccessKey, adminSecretKey string
+	if masterKeyExisted {
+		// Preserve path: reuse the existing identity. The system credentials must
+		// match what seeded the NATS KV `system` secret, so load them rather than
+		// mint new ones. The admin credentials are not recovered: bootstrap.json is
+		// consumed and deleted by awsgw after first boot, and the operator's copy
+		// already lives in ~/.aws/credentials. Leaving them empty makes
+		// finalizeNodeSetup refresh only ~/.aws/config (endpoint/CA for a changed
+		// bind IP), not the credentials.
+		accessKey, secretKey, err = loadSystemCredentials(configDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading preserved system credentials: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("\n🔐 Preserved existing identity (master key, credentials and CA unchanged)")
+		fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
+	} else {
+		// Fresh install: mint system + admin credentials and seed the bootstrap files.
+		accessKey, err = admin.GenerateAWSAccessKey()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating access key: %v\n", err)
+			os.Exit(1)
+		}
+		secretKey, err = admin.GenerateAWSSecretKey()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating secret key: %v\n", err)
+			os.Exit(1)
+		}
+		bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing bootstrap files: %v\n", err)
+			os.Exit(1)
+		}
+		if err := writeSystemCredentials(configDir, accessKey, secretKey); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing system credentials: %v\n", err)
+			os.Exit(1)
+		}
+		adminAccessKey = bootstrapResult.AdminAccessKey
+		adminSecretKey = bootstrapResult.AdminSecretKey
+		fmt.Println("\n🔐 Generated IAM master key")
+		fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
+		fmt.Printf("   Bootstrap: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
+		fmt.Printf("   System creds: %s\n", filepath.Join(configDir, "system-credentials.json"))
+	}
+
+	// Predastore encryption key is per-node and never transmitted; load-or-generate
+	// so the service has it on first start and a re-init keeps sealed fragments.
 	predastoreKeyPath, err := writePredastoreEncryptionKey(configDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating predastore encryption key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error preparing predastore encryption key: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("\n🔐 Generated predastore encryption key (per-node, never transmitted)")
+	fmt.Println("\n🔐 Predastore encryption key ready (per-node, never transmitted)")
 	fmt.Printf("   Key: %s\n", predastoreKeyPath)
 
-	// Viperblock at-rest encryption key is cluster-wide; on a single-node init
-	// there are no joiners, so generate it locally and enable encryption by
-	// default for all volumes created on this install.
-	viperblockKeyPath, err := writeViperblockEncryptionKey(configDir)
+	// Viperblock at-rest encryption key is cluster-wide; load-or-generate so a
+	// re-init keeps the existing key (and its sealed volumes). The bytes feed the
+	// multi-node leader's key distribution below.
+	viperblockKey, viperblockKeyPath, err := ensureViperblockEncryptionKey(configDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating viperblock encryption key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error preparing viperblock encryption key: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("\n🔐 Generated viperblock at-rest encryption key")
+	fmt.Println("\n🔐 Viperblock at-rest encryption key ready")
 	fmt.Printf("   Key: %s\n", viperblockKeyPath)
 
-	fmt.Printf("\n🔑 Generated admin credentials (save these — they won't be shown again):\n")
-	fmt.Printf("   Access Key:  %s\n", bootstrapResult.AdminAccessKey)
-	fmt.Printf("   Secret Key:  %s\n", bootstrapResult.AdminSecretKey)
-	fmt.Printf("   Account:     %s (%s)\n", admin.DefaultAccountName(), admin.DefaultAccountID())
-	fmt.Printf("   AWS Profile: spinifex\n")
+	if !masterKeyExisted {
+		fmt.Printf("\n🔑 Generated admin credentials (save these — they won't be shown again):\n")
+		fmt.Printf("   Access Key:  %s\n", adminAccessKey)
+		fmt.Printf("   Secret Key:  %s\n", adminSecretKey)
+		fmt.Printf("   Account:     %s (%s)\n", admin.DefaultAccountName(), admin.DefaultAccountID())
+		fmt.Printf("   AWS Profile: spinifex\n")
+	}
 
 	// Generate SSL certificates (with bind IP in SANs for multi-node support)
 	certPath := admin.GenerateCertificatesIfNeeded(configDir, force, bindIP, region, config.DefaultAWSInternalSuffix)
@@ -1392,7 +1417,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			networkConfig.BootstrapSubnetCidr = handlers_ec2_vpc.DefaultSubnetCidr
 		}
 
-		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, natsToken, clusterName,
+		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey,
+			masterKey, viperblockKey, natsToken, clusterName,
 			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email,
 			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig)
 		return
@@ -1544,7 +1570,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP)
+	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
 
 	// Write node.conf so spx admin banner works on source installs (not just ISO).
 	nodeHostname, _ := os.Hostname()
@@ -1575,7 +1601,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 // runAdminInitMultiNode handles the multi-node formation path for admin init.
 // It starts a formation server, registers this node, waits for all nodes to join,
 // then generates configs with complete cluster topology.
-func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, natsToken, clusterName,
+func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey string,
+	masterKey, viperblockKey []byte, natsToken, clusterName,
 	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email string,
 	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig) {
 	formationTimeout, err := time.ParseDuration(formationTimeoutStr)
@@ -1602,47 +1629,11 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		os.Exit(1)
 	}
 
-	// Generate IAM master key for the cluster
-	masterKey, err := handlers_iam.GenerateMasterKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error generating IAM master key: %v\n", err)
-		os.Exit(1)
-	}
-	bootstrapDir := filepath.Join(spxRoot, "awsgw")
-	bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error writing bootstrap files: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("\n🔐 Generated IAM master key")
-	fmt.Printf("   Bootstrap: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
-
-	// Predastore encryption key is per-node and never distributed via the
-	// formation server. Generate only the leader's own key here; each
-	// joiner generates its own during `spx admin join`.
-	predastoreKeyPath, err := writePredastoreEncryptionKey(configDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error generating predastore encryption key: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("\n🔐 Generated predastore encryption key (per-node, never transmitted)")
-	fmt.Printf("   Key: %s\n", predastoreKeyPath)
-
-	// Viperblock at-rest encryption key is cluster-wide and shared: the leader
-	// generates it once and distributes it to joiners via the formation server
-	// so a volume sealed on any node can be opened on any other.
-	viperblockKey, err := handlers_iam.GenerateMasterKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error generating viperblock encryption key: %v\n", err)
-		os.Exit(1)
-	}
-	viperblockKeyPath, err := saveViperblockEncryptionKey(configDir, viperblockKey)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error saving viperblock encryption key: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("\n🔐 Generated viperblock at-rest encryption key (cluster-wide, shared with joiners)")
-	fmt.Printf("   Key: %s\n", viperblockKeyPath)
+	// Identity, predastore and viperblock keys were prepared load-or-generate by
+	// the caller: reuse them here so a re-init never rotates cluster crypto and
+	// the leader distributes the same viperblock key to joiners. The path is
+	// deterministic and already written on disk.
+	viperblockKeyPath := filepath.Join(configDir, "viperblock", "encryption.key")
 
 	// Read CA cert/key for distribution to joining nodes
 	caCertData, err := os.ReadFile(filepath.Join(configDir, "ca.pem"))
@@ -1663,8 +1654,8 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		NatsToken:      natsToken,
 		ClusterName:    clusterName,
 		Region:         region,
-		AdminAccessKey: bootstrapResult.AdminAccessKey,
-		AdminSecretKey: bootstrapResult.AdminSecretKey,
+		AdminAccessKey: adminAccessKey,
+		AdminSecretKey: adminSecretKey,
 	}
 
 	fs := formation.NewFormationServer(expectedNodes, creds, string(caCertData), string(caKeyData), networkConfig, joinToken, tokenTTL)
@@ -1801,7 +1792,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP)
+	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
 
 	// Keep formation server running briefly so joining nodes can fetch complete status
 	fmt.Println("\n⏳ Waiting for joining nodes to fetch cluster data...")
@@ -2625,6 +2616,48 @@ type writeBootstrapResult struct {
 	AdminSecretKey string
 }
 
+// ensureMasterKey load-or-generates the IAM master key at <configDir>/master.key.
+// It returns the key bytes and whether the key already existed on disk. On a
+// --force re-init the existing key is preserved: rotating it would orphan every
+// IAM secret in NATS KV (e.g. the ECR signing key) that was encrypted under it.
+func ensureMasterKey(configDir string) (key []byte, existed bool, err error) {
+	keyPath := filepath.Join(configDir, "master.key")
+	if admin.FileExists(keyPath) {
+		key, err = handlers_iam.LoadMasterKey(keyPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("load master key: %w", err)
+		}
+		return key, true, nil
+	}
+	key, err = handlers_iam.GenerateMasterKey()
+	if err != nil {
+		return nil, false, fmt.Errorf("generate master key: %w", err)
+	}
+	return key, false, nil
+}
+
+// loadSystemCredentials reads the preserved system access/secret key from
+// <configDir>/system-credentials.json. On a re-init the configs must render the
+// same system credentials that seeded the NATS KV `system` secret, else SigV4
+// auth between services fails.
+func loadSystemCredentials(configDir string) (accessKey, secretKey string, err error) {
+	data, err := os.ReadFile(filepath.Join(configDir, "system-credentials.json"))
+	if err != nil {
+		return "", "", fmt.Errorf("read system credentials: %w", err)
+	}
+	var creds struct {
+		AccessKeyID     string `json:"access_key_id"`
+		SecretAccessKey string `json:"secret_access_key"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return "", "", fmt.Errorf("parse system credentials: %w", err)
+	}
+	if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
+		return "", "", fmt.Errorf("system credentials missing access/secret key")
+	}
+	return creds.AccessKeyID, creds.SecretAccessKey, nil
+}
+
 // writeBootstrapFiles generates new admin credentials and writes the bootstrap
 // files (master.key to configDir, bootstrap.json to bootstrapDir).
 // Used by init flows (single and multi-node).
@@ -2646,47 +2679,57 @@ func writeBootstrapFiles(configDir, bootstrapDir string, masterKey []byte, acces
 	}, nil
 }
 
-// writePredastoreEncryptionKey generates a fresh 32-byte AES-256 master key
-// for this node's predastore data dir and writes it to
-// <configDir>/predastore/encryption.key with mode 0600. The key is per-node:
-// every node generates its own at init/join time and never transmits it,
-// because predastore only opens fragments on the node that sealed them.
+// writePredastoreEncryptionKey load-or-generates this node's per-node predastore
+// key at <configDir>/predastore/encryption.key (mode 0600). The key is per-node:
+// every node generates its own at init/join time and never transmits it, because
+// predastore only opens fragments on the node that sealed them. An existing key
+// is preserved so a --force re-init does not orphan already-sealed fragments.
 func writePredastoreEncryptionKey(configDir string) (string, error) {
 	predastoreDir := filepath.Join(configDir, "predastore")
 	if err := os.MkdirAll(predastoreDir, 0750); err != nil {
 		return "", fmt.Errorf("create predastore config dir: %w", err)
 	}
+	keyPath := filepath.Join(predastoreDir, "encryption.key")
+	if admin.FileExists(keyPath) {
+		return keyPath, nil
+	}
 	key, err := handlers_iam.GenerateMasterKey()
 	if err != nil {
 		return "", fmt.Errorf("generate predastore encryption key: %w", err)
 	}
-	keyPath := filepath.Join(predastoreDir, "encryption.key")
 	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
 		return "", fmt.Errorf("save predastore encryption key: %w", err)
 	}
 	return keyPath, nil
 }
 
-// writeViperblockEncryptionKey generates a fresh 32-byte AES-256 master key for
-// viperblock at-rest encryption and writes it to
-// <configDir>/viperblock/encryption.key with mode 0600. Unlike the predastore
-// key, this key is cluster-wide and shared: the leader generates it once at init
-// and distributes it to joiners via the formation server, so a volume sealed on
-// any node can be opened on any other. Loaded at startup via masterkey.LoadShared.
-func writeViperblockEncryptionKey(configDir string) (string, error) {
+// ensureViperblockEncryptionKey load-or-generates the cluster-wide viperblock
+// at-rest key at <configDir>/viperblock/encryption.key (mode 0600) and returns
+// its bytes and path. Unlike the predastore key it is shared: the leader loads
+// these bytes to distribute the same key to joiners via the formation server, so
+// a volume sealed on any node can be opened on any other. An existing key is
+// preserved so a --force re-init does not orphan already-encrypted volumes.
+func ensureViperblockEncryptionKey(configDir string) ([]byte, string, error) {
 	viperblockDir := filepath.Join(configDir, "viperblock")
 	if err := os.MkdirAll(viperblockDir, 0750); err != nil {
-		return "", fmt.Errorf("create viperblock config dir: %w", err)
+		return nil, "", fmt.Errorf("create viperblock config dir: %w", err)
+	}
+	keyPath := filepath.Join(viperblockDir, "encryption.key")
+	if admin.FileExists(keyPath) {
+		key, err := handlers_iam.LoadMasterKey(keyPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("load viperblock encryption key: %w", err)
+		}
+		return key, keyPath, nil
 	}
 	key, err := handlers_iam.GenerateMasterKey()
 	if err != nil {
-		return "", fmt.Errorf("generate viperblock encryption key: %w", err)
+		return nil, "", fmt.Errorf("generate viperblock encryption key: %w", err)
 	}
-	keyPath := filepath.Join(viperblockDir, "encryption.key")
 	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
-		return "", fmt.Errorf("save viperblock encryption key: %w", err)
+		return nil, "", fmt.Errorf("save viperblock encryption key: %w", err)
 	}
-	return keyPath, nil
+	return key, keyPath, nil
 }
 
 // saveViperblockEncryptionKey writes an already-generated 32-byte viperblock

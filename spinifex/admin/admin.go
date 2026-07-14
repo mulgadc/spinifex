@@ -185,20 +185,19 @@ func AWSGWServiceDNSNames(region, suffix string) []string {
 	}
 }
 
+// GenerateCertificatesIfNeeded prepares the TLS material for a node. The CA is
+// preserved across re-inits — it anchors trust for already-joined nodes, IPsec
+// peer certs, and CA-baked AMIs — so it is regenerated only when absent, never on
+// force. The CA-signed server cert is cheap to reissue, so force refreshes it to
+// pick up a changed bind IP / SANs while keeping the CA (and all trust) intact.
 func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, awsRegion, internalSuffix string) (caCertPath string) {
 	caCertPath = filepath.Join(configDir, "ca.pem")
 	caKeyPath := filepath.Join(configDir, "ca.key")
 	serverCertPath := filepath.Join(configDir, "server.pem")
 	serverKeyPath := filepath.Join(configDir, "server.key")
 
-	// Check if we need to generate certificates
-	needsGeneration := force ||
-		!FileExists(caCertPath) || !FileExists(caKeyPath) ||
-		!FileExists(serverCertPath) || !FileExists(serverKeyPath)
-
-	if needsGeneration {
-		fmt.Println("\n🔐 Generating Certificate Authority and SSL certificates...")
-
+	if !FileExists(caCertPath) || !FileExists(caKeyPath) {
+		fmt.Println("\n🔐 Generating Certificate Authority...")
 		if err := GenerateCACert(caCertPath, caKeyPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating CA certificate: %v\n", err)
 			os.Exit(1)
@@ -206,15 +205,6 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, a
 		fmt.Printf("✅ CA certificate generated:\n")
 		fmt.Printf("   CA Certificate: %s\n", caCertPath)
 		fmt.Printf("   CA Key: %s\n", caKeyPath)
-
-		extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
-		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS); err != nil {
-			fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("✅ Server certificate generated (signed by CA):\n")
-		fmt.Printf("   Certificate: %s\n", serverCertPath)
-		fmt.Printf("   Key: %s\n", serverKeyPath)
 
 		// Print manual instructions only when not root (root gets auto-install)
 		if os.Getuid() != 0 {
@@ -224,7 +214,20 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, a
 			fmt.Println("\n   This allows AWS CLI and other tools to trust Spinifex services automatically.")
 		}
 	} else {
-		fmt.Println("\n✅ CA and SSL certificates already exist")
+		fmt.Println("\n✅ Certificate Authority already exists (preserved)")
+	}
+
+	if force || !FileExists(serverCertPath) || !FileExists(serverKeyPath) {
+		extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
+		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Server certificate generated (signed by CA):\n")
+		fmt.Printf("   Certificate: %s\n", serverCertPath)
+		fmt.Printf("   Key: %s\n", serverKeyPath)
+	} else {
+		fmt.Println("✅ Server certificate already exists")
 	}
 
 	return caCertPath
@@ -786,11 +789,16 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 
 	profileName := "spinifex"
 
-	if err := UpdateAWSINIFile(credPath, profileName, map[string]string{
-		"aws_access_key_id":     accessKey,
-		"aws_secret_access_key": secretKey,
-	}); err != nil {
-		return err
+	// Empty credentials mean a --force re-init preserving the existing identity:
+	// the admin secret is not recoverable from disk and is unchanged, so leave the
+	// credentials file as-is and refresh only the config (endpoint/CA/region).
+	if accessKey != "" && secretKey != "" {
+		if err := UpdateAWSINIFile(credPath, profileName, map[string]string{
+			"aws_access_key_id":     accessKey,
+			"aws_secret_access_key": secretKey,
+		}); err != nil {
+			return err
+		}
 	}
 
 	configSection := profileName

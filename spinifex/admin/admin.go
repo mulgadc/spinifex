@@ -21,6 +21,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/config"
 	toml "github.com/pelletier/go-toml/v2"
 	"gopkg.in/ini.v1"
 )
@@ -219,7 +220,10 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, a
 
 	if force || !FileExists(serverCertPath) || !FileExists(serverKeyPath) {
 		extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
-		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS); err != nil {
+		// Always pin the canonical mgmt-bridge IP; the control plane publishes to
+		// it regardless of whether br-mgmt is up when this cert is minted.
+		extraIPs := []string{bindIP, config.DefaultMgmtBridgeIP}
+		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
 			os.Exit(1)
 		}
@@ -247,7 +251,9 @@ func GenerateServerCertOnly(configDir string, bindIP, awsRegion, internalSuffix 
 	}
 
 	extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
-	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, []string{bindIP}, extraDNS)
+	// Always pin the canonical mgmt-bridge IP (see GenerateCertificatesIfNeeded).
+	extraIPs := []string{bindIP, config.DefaultMgmtBridgeIP}
+	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS)
 }
 
 func CreateServiceDirectories(spxRoot string) {

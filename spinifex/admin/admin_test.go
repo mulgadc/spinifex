@@ -11,9 +11,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// certHasIP reports whether a PEM-encoded cert carries ip as an IP SAN.
+func certHasIP(t *testing.T, certPath, ip string) bool {
+	t.Helper()
+	certPEM, err := os.ReadFile(certPath)
+	require.NoError(t, err)
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	for _, got := range cert.IPAddresses {
+		if got.Equal(net.ParseIP(ip)) {
+			return true
+		}
+	}
+	return false
+}
 
 // --- Key / Token generation ---
 
@@ -672,6 +690,17 @@ func TestGenerateCertificatesIfNeeded(t *testing.T) {
 		_, err = srvCert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
 		assert.NoError(t, err, "re-signed server cert must verify against preserved CA")
 	})
+
+	// The mgmt-bridge IP must be a SAN even though br-mgmt is not a live
+	// interface here (interface enumeration cannot discover it), mirroring a
+	// host where br-mgmt is down when the cert is minted. Without the explicit
+	// pin the control-plane publish to https://<mgmt-ip> would fail cert verify.
+	t.Run("MgmtBridgeIPAlwaysInSAN", func(t *testing.T) {
+		certDir := t.TempDir()
+		GenerateCertificatesIfNeeded(certDir, false, "10.0.0.5", "us-east-1", "spinifex.internal")
+		assert.True(t, certHasIP(t, filepath.Join(certDir, "server.pem"), config.DefaultMgmtBridgeIP),
+			"server cert must carry the canonical mgmt-bridge IP SAN regardless of br-mgmt state")
+	})
 }
 
 func TestGenerateServerCertOnly(t *testing.T) {
@@ -708,6 +737,10 @@ func TestGenerateServerCertOnly(t *testing.T) {
 		// AWS-parity ECR SANs must be present.
 		assert.Contains(t, cert.DNSNames, "ecr.us-east-1.spinifex.internal")
 		assert.Contains(t, cert.DNSNames, "*.dkr.ecr.us-east-1.spinifex.internal")
+
+		// Joining nodes must also pin the mgmt-bridge IP regardless of br-mgmt state.
+		assert.True(t, certHasIP(t, filepath.Join(dir, "server.pem"), config.DefaultMgmtBridgeIP),
+			"server cert must carry the canonical mgmt-bridge IP SAN")
 	})
 
 	t.Run("MissingCA", func(t *testing.T) {

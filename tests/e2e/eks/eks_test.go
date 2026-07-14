@@ -4,8 +4,10 @@ package eks
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -214,6 +216,11 @@ func TestEKS(t *testing.T) {
 		runIRSAWebIdentity(t, c, env, artifacts, fx)
 	})
 
+	t.Run("IRSAPod", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runIRSAPod(t, c, env, artifacts, fx)
+	})
+
 	t.Run("EBSCSIVolume", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		runEBSCSIVolume(t, c, env, artifacts, fx)
@@ -237,47 +244,15 @@ func TestEKS(t *testing.T) {
 func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string, fx *clusterFixture) {
 	require.NotNil(t, fx.Cluster.Identity, "ACTIVE cluster must expose Identity")
 	require.NotNil(t, fx.Cluster.Identity.Oidc, "ACTIVE cluster must expose Identity.Oidc")
-	issuer := aws.StringValue(fx.Cluster.Identity.Oidc.Issuer)
-	require.NotEmpty(t, issuer, "cluster OIDC issuer must be published")
-	t.Logf("OIDC issuer: %s", issuer)
 
-	// 1) Register the cluster's OIDC provider in the caller account so the STS
-	//    handler will accept tokens carrying this issuer.
-	oidcOut, err := c.IAM.CreateOpenIDConnectProvider(&iam.CreateOpenIDConnectProviderInput{
-		Url:            aws.String(issuer),
-		ClientIDList:   aws.StringSlice([]string{"sts.amazonaws.com"}),
-		ThumbprintList: aws.StringSlice([]string{"0000000000000000000000000000000000000000"}),
-	})
-	require.NoError(t, err, "create-open-id-connect-provider")
-	providerArn := aws.StringValue(oidcOut.OpenIDConnectProviderArn)
-	require.NotEmpty(t, providerArn, "OIDC provider ARN empty")
-	t.Cleanup(func() {
-		_, _ = c.IAM.DeleteOpenIDConnectProvider(&iam.DeleteOpenIDConnectProviderInput{
-			OpenIDConnectProviderArn: aws.String(providerArn),
-		})
-	})
+	// 1) Register the cluster's OIDC provider in the caller account and create a
+	//    role whose trust policy federates it, so the STS handler accepts
+	//    web-identity tokens carrying this issuer.
+	providerArn, roleArn, roleName := registerOIDCRole(t, c, fx, "irsa", "E2E IRSA web-identity role")
 	t.Logf("OIDC provider: %s", providerArn)
-
-	// 2) Create a role whose trust policy federates the OIDC provider. No
-	//    Condition block — the Federated principal + AssumeRoleWithWebIdentity
-	//    action are sufficient to grant, which keeps the test independent of the
-	//    condition-key issuer-prefix format.
-	roleName := fmt.Sprintf("%s-irsa", fx.ClusterName)
-	trustPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"}]}`, providerArn)
-	roleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
-		RoleName:                 aws.String(roleName),
-		AssumeRolePolicyDocument: aws.String(trustPolicy),
-		Description:              aws.String("E2E IRSA web-identity role"),
-	})
-	require.NoError(t, err, "create-role")
-	roleArn := aws.StringValue(roleOut.Role.Arn)
-	require.NotEmpty(t, roleArn, "role ARN empty")
-	t.Cleanup(func() {
-		_, _ = c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(roleName)})
-	})
 	t.Logf("role: %s", roleArn)
 
-	// 3) Mint a ServiceAccount token bound to sts.amazonaws.com. `kubectl create
+	// 2) Mint a ServiceAccount token bound to sts.amazonaws.com. `kubectl create
 	//    token` uses the TokenRequest API — no pod required. The token's iss is
 	//    the cluster OIDC issuer and aud includes sts.amazonaws.com (k3s is wired
 	//    with --service-account-issuer / --api-audiences at CreateCluster).
@@ -289,7 +264,7 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	token := strings.TrimSpace(tokenOut)
 	require.Equal(t, 2, strings.Count(token, "."), "web-identity token must be a JWT (3 dot-separated parts)")
 
-	// 4) Exchange the token. AssumeRoleWithWebIdentity is anonymous (the SDK
+	// 3) Exchange the token. AssumeRoleWithWebIdentity is anonymous (the SDK
 	//    strips SigV4 for this op); the JWT is the identity.
 	const sessionName = "e2e-irsa"
 	var assumeOut *sts.AssumeRoleWithWebIdentityOutput
@@ -311,7 +286,7 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	require.True(t, strings.HasPrefix(aws.StringValue(assumeOut.Credentials.AccessKeyId), "ASIA"),
 		"web-identity credentials must be temporary (ASIA…)")
 
-	// 5) The returned temporary credentials must be usable: GetCallerIdentity
+	// 4) The returned temporary credentials must be usable: GetCallerIdentity
 	//    must resolve to the assumed-role principal.
 	sessClient := harness.NewAWSClientWithSessionCreds(t, env,
 		aws.StringValue(assumeOut.Credentials.AccessKeyId),
@@ -323,6 +298,304 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	assert.Contains(t, aws.StringValue(ident.Arn), "assumed-role/"+roleName,
 		"caller ARN must reflect the assumed IRSA role")
 	t.Logf("GetCallerIdentity (web-identity creds): %s", aws.StringValue(ident.Arn))
+}
+
+// registerOIDCRole registers the cluster's OIDC provider in the caller account
+// and creates a role whose trust policy federates it — the shared setup every
+// IRSA scenario needs before a web-identity token can be exchanged. No
+// Condition block on the trust policy — the Federated principal +
+// AssumeRoleWithWebIdentity action are sufficient to grant, which keeps
+// callers independent of the condition-key issuer-prefix format. Both
+// resources are torn down via t.Cleanup (LIFO: role before provider).
+func registerOIDCRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, roleNameSuffix, description string) (providerArn, roleArn, roleName string) {
+	t.Helper()
+	require.NotNil(t, fx.Cluster.Identity, "ACTIVE cluster must expose Identity")
+	require.NotNil(t, fx.Cluster.Identity.Oidc, "ACTIVE cluster must expose Identity.Oidc")
+	issuer := aws.StringValue(fx.Cluster.Identity.Oidc.Issuer)
+	require.NotEmpty(t, issuer, "cluster OIDC issuer must be published")
+
+	oidcOut, err := c.IAM.CreateOpenIDConnectProvider(&iam.CreateOpenIDConnectProviderInput{
+		Url:            aws.String(issuer),
+		ClientIDList:   aws.StringSlice([]string{"sts.amazonaws.com"}),
+		ThumbprintList: aws.StringSlice([]string{"0000000000000000000000000000000000000000"}),
+	})
+	require.NoError(t, err, "create-open-id-connect-provider")
+	providerArn = aws.StringValue(oidcOut.OpenIDConnectProviderArn)
+	require.NotEmpty(t, providerArn, "OIDC provider ARN empty")
+	t.Cleanup(func() {
+		_, _ = c.IAM.DeleteOpenIDConnectProvider(&iam.DeleteOpenIDConnectProviderInput{
+			OpenIDConnectProviderArn: aws.String(providerArn),
+		})
+	})
+
+	roleName = fmt.Sprintf("%s-%s", fx.ClusterName, roleNameSuffix)
+	trustPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"}]}`, providerArn)
+	roleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
+		RoleName:                 aws.String(roleName),
+		AssumeRolePolicyDocument: aws.String(trustPolicy),
+		Description:              aws.String(description),
+	})
+	require.NoError(t, err, "create-role")
+	roleArn = aws.StringValue(roleOut.Role.Arn)
+	require.NotEmpty(t, roleArn, "role ARN empty")
+	t.Cleanup(func() {
+		_, _ = c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(roleName)})
+	})
+	return providerArn, roleArn, roleName
+}
+
+// runIRSAPod exercises the in-cluster IRSA path a real workload depends on:
+// spinifex ships no pod-identity webhook, so a pod must wire the projected SA
+// token + AWS_* env explicitly (mirroring
+// scripts/images/eks-node/mulga-eks-addon-sync.sh's {{IRSA_ENV}}/{{IRSA_VOLUME}}
+// blocks). The pod runs `aws sts get-caller-identity` against the awsgw STS
+// endpoint from inside the cluster; the returned ARN must resolve to the
+// assumed IRSA role, proving token mount + env wiring + in-cluster egress all
+// work together (unlike IRSAWebIdentity, which only proves the API exchange).
+func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string, fx *clusterFixture) {
+	require.NotNil(t, fx.Cluster.Identity, "ACTIVE cluster must expose Identity")
+	require.NotNil(t, fx.Cluster.Identity.Oidc, "ACTIVE cluster must expose Identity.Oidc")
+	issuer := aws.StringValue(fx.Cluster.Identity.Oidc.Issuer)
+
+	_, roleArn, roleName := registerOIDCRole(t, c, fx, "irsa-pod", "E2E IRSA pod role")
+	t.Logf("IRSA pod role: %s", roleArn)
+
+	// awsgw enforces IAM on assumed-role STS calls, so the role needs a
+	// permission policy allowing GetCallerIdentity — an AWS-managed ARN is
+	// opaque and grants nothing, so use a customer-managed policy with an
+	// explicit allow (same pattern as the EBS CSI role below).
+	const stsPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}]}`
+	polOut, err := c.IAM.CreatePolicy(&iam.CreatePolicyInput{
+		PolicyName:     aws.String(roleName + "-policy"),
+		PolicyDocument: aws.String(stsPolicy),
+	})
+	require.NoError(t, err, "create-policy")
+	policyArn := aws.StringValue(polOut.Policy.Arn)
+	t.Cleanup(func() {
+		_, _ = c.IAM.DeletePolicy(&iam.DeletePolicyInput{PolicyArn: aws.String(policyArn)})
+	})
+	_, err = c.IAM.AttachRolePolicy(&iam.AttachRolePolicyInput{
+		RoleName:  aws.String(roleName),
+		PolicyArn: aws.String(policyArn),
+	})
+	require.NoError(t, err, "attach-role-policy")
+	t.Cleanup(func() {
+		_, _ = c.IAM.DetachRolePolicy(&iam.DetachRolePolicyInput{
+			RoleName:  aws.String(roleName),
+			PolicyArn: aws.String(policyArn),
+		})
+	})
+
+	// gatewayBaseURL is the issuer with its /oidc/eks/<region>/<acct>/<cluster>
+	// path stripped — the customer-facing WAN advertise addr (:9999) in-cluster
+	// pods reach, exactly what the addon-sync agent injects as
+	// AWS_ENDPOINT_URL_STS.
+	u, err := url.Parse(issuer)
+	require.NoErrorf(t, err, "parse issuer URL %q", issuer)
+	require.NotEmpty(t, u.Scheme, "issuer URL must carry a scheme")
+	require.NotEmpty(t, u.Host, "issuer URL must carry a host")
+	gatewayBaseURL := u.Scheme + "://" + u.Host
+	t.Logf("gateway base URL: %s", gatewayBaseURL)
+
+	region := envOr("SPINIFEX_AWS_REGION", "ap-southeast-2")
+
+	kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
+	kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
+
+	// The control-plane node carries CriticalAddonsOnly=true:NoExecute (EKS
+	// parity: k3s_server_vm.go taints it to keep user workloads off), so this
+	// pod needs a customer worker node like EBSCSIVolume — there is no
+	// untainted node to land on. A 1-node nodegroup is created and the pod is
+	// pinned to it via the eks.amazonaws.com/nodegroup label the worker
+	// registers under (never set on the control-plane node).
+	//
+	// CreateNodegroup's worker launch attaches an instance profile for the
+	// declared NodeRole (ensureNodeInstanceProfile in nodegroup.go), which
+	// requires the role to actually exist in IAM — real EKS has the same
+	// prerequisite (the customer creates the node instance role before
+	// CreateNodegroup). Standard EC2-service trust policy, no permission
+	// policy needed: the pod pulls from public.ecr.aws directly, never
+	// touching the node's own instance-profile credentials.
+	nodeRoleName := fx.ClusterName + "-node"
+	const ec2TrustPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	nodeRoleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
+		RoleName:                 aws.String(nodeRoleName),
+		AssumeRolePolicyDocument: aws.String(ec2TrustPolicy),
+		Description:              aws.String("E2E IRSA pod nodegroup worker role"),
+	})
+	require.NoError(t, err, "create-node-role")
+	nodeRoleArn := aws.StringValue(nodeRoleOut.Role.Arn)
+	t.Cleanup(func() {
+		_, _ = c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(nodeRoleName)})
+	})
+
+	const nodegroup = "irsa-pod-e2e-ng"
+	harness.Phase(t, "Creating worker nodegroup %s", nodegroup)
+	// e2e:allow-create — the worker nodegroup is the subject under test (customer-space node the IRSA pod schedules onto).
+	_, err = c.EKS.CreateNodegroup(&eks.CreateNodegroupInput{
+		ClusterName:   aws.String(fx.ClusterName),
+		NodegroupName: aws.String(nodegroup),
+		Subnets:       aws.StringSlice([]string{fx.SubnetID}),
+		NodeRole:      aws.String(nodeRoleArn),
+		ScalingConfig: &eks.NodegroupScalingConfig{
+			MinSize:     aws.Int64(1),
+			MaxSize:     aws.Int64(1),
+			DesiredSize: aws.Int64(1),
+		},
+	})
+	require.NoError(t, err, "create-nodegroup")
+	t.Cleanup(func() {
+		_, _ = c.EKS.DeleteNodegroup(&eks.DeleteNodegroupInput{
+			ClusterName:   aws.String(fx.ClusterName),
+			NodegroupName: aws.String(nodegroup),
+		})
+	})
+	harness.EventuallyErr(t, func() error {
+		out, derr := c.EKS.DescribeNodegroup(&eks.DescribeNodegroupInput{
+			ClusterName:   aws.String(fx.ClusterName),
+			NodegroupName: aws.String(nodegroup),
+		})
+		if derr != nil {
+			return fmt.Errorf("describe-nodegroup: %w", derr)
+		}
+		if s := aws.StringValue(out.Nodegroup.Status); s != eks.NodegroupStatusActive {
+			return fmt.Errorf("nodegroup status %q, want ACTIVE", s)
+		}
+		return nil
+	}, 8*time.Minute, 10*time.Second)
+
+	// Deliver the awsgw CA into the pod via a ConfigMap — the same CA the host
+	// already trusts for awsgw (harness.ResolveCACert), mounted read-only.
+	caPath, err := harness.ResolveCACert(env)
+	require.NoError(t, err, "resolve gateway CA cert")
+	const caConfigMap = "irsa-pod-gateway-ca"
+	out, err := kc.Run(30*time.Second, "create", "configmap", caConfigMap,
+		"-n", "default", "--from-file=ca.pem="+caPath)
+	require.NoErrorf(t, err, "create gateway-ca configmap:\n%s", out)
+	t.Cleanup(func() {
+		_, _ = kc.Run(30*time.Second, "delete", "configmap", caConfigMap, "-n", "default", "--ignore-not-found")
+	})
+
+	const sa = "irsa-pod-e2e"
+	const podName = "irsa-pod-e2e"
+	nodeSelector := fmt.Sprintf("  nodeSelector:\n    eks.amazonaws.com/nodegroup: %s\n", nodegroup)
+	manifestPath := filepath.Join(artifacts, "irsa-pod.yaml")
+	require.NoError(t, os.WriteFile(manifestPath,
+		[]byte(irsaPodManifest(sa, podName, roleArn, gatewayBaseURL, region, caConfigMap, nodeSelector)), 0o600))
+	t.Cleanup(func() {
+		_, _ = kc.Run(60*time.Second, "delete", "-f", manifestPath, "--ignore-not-found", "--wait=false")
+	})
+
+	harness.OnFailure(t, func() {
+		dumps := map[string][]string{
+			"irsa-pod-describe.txt": {"-n", "default", "describe", "pod", podName},
+			"irsa-pod-events.txt":   {"-n", "default", "get", "events", "--sort-by", ".lastTimestamp"},
+			"irsa-pod-nodes.txt":    {"get", "nodes", "-o", "wide", "--show-labels"},
+		}
+		for name, args := range dumps {
+			out, _ := kc.Run(45*time.Second, args...)
+			harness.DumpFile(t, artifacts, name, []byte(out))
+		}
+		errOut, _ := kc.Run(30*time.Second, "-n", "default", "exec", podName, "--", "cat", "/tmp/err.txt")
+		harness.DumpFile(t, artifacts, "irsa-pod-err.txt", []byte(errOut))
+	})
+
+	harness.Phase(t, "Applying IRSA pod")
+	out, err = kc.Run(60*time.Second, "apply", "-f", manifestPath)
+	require.NoErrorf(t, err, "apply irsa pod:\n%s", out)
+
+	waitPodReady(t, kc, podName)
+
+	// aws sts get-caller-identity writes JSON to /tmp/out.json inside the pod;
+	// poll (not just wait-once) since network egress + the STS round trip can
+	// outlast the container's Ready flip (Ready only means the shell started).
+	var ident struct {
+		UserId  string `json:"UserId"`
+		Account string `json:"Account"`
+		Arn     string `json:"Arn"`
+	}
+	harness.EventuallyErr(t, func() error {
+		raw, err := kc.Run(30*time.Second, "-n", "default", "exec", podName, "--", "cat", "/tmp/out.json")
+		if err != nil {
+			return fmt.Errorf("exec cat out.json: %v\n%s", err, raw)
+		}
+		if jerr := json.Unmarshal([]byte(raw), &ident); jerr != nil {
+			return fmt.Errorf("parse out.json: %v\nraw: %s", jerr, raw)
+		}
+		return nil
+	}, 3*time.Minute, 5*time.Second)
+
+	t.Logf("in-cluster GetCallerIdentity: %+v", ident)
+	assert.Equal(t, fx.AccountID, ident.Account, "caller account must match")
+	assert.Contains(t, ident.Arn, "assumed-role/"+roleName,
+		"caller ARN must reflect the assumed IRSA role")
+}
+
+// irsaPodManifest renders a ServiceAccount (carrying the decorative
+// eks.amazonaws.com/role-arn annotation) plus a pod wired for IRSA exactly as
+// mulga-eks-addon-sync.sh's {{IRSA_ENV}}/{{IRSA_VOLUME}}/{{IRSA_VOLUME_MOUNT}}
+// blocks would: a projected SA token (audience sts.amazonaws.com) mounted at
+// the well-known eks.amazonaws.com path, the AWS_* env pointing the SDK at the
+// awsgw STS endpoint, and the gateway CA trusted via ConfigMap. extraSpec is
+// injected verbatim into the Pod spec (e.g. a nodeSelector), or "" for none.
+func irsaPodManifest(sa, pod, roleArn, gatewayBaseURL, region, caConfigMap, extraSpec string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: %[1]s
+  namespace: default
+  annotations:
+    eks.amazonaws.com/role-arn: %[3]q
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: %[2]s
+  namespace: default
+spec:
+  serviceAccountName: %[1]s
+  restartPolicy: Never
+%[7]s  containers:
+  - name: aws-cli
+    image: public.ecr.aws/aws-cli/aws-cli:latest
+    command: ["sh", "-c", "aws sts get-caller-identity --output json >/tmp/out.json 2>/tmp/err.txt; sleep 3600"]
+    env:
+    - name: AWS_ROLE_ARN
+      value: %[3]q
+    - name: AWS_WEB_IDENTITY_TOKEN_FILE
+      value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+    - name: AWS_STS_REGIONAL_ENDPOINTS
+      value: regional
+    - name: AWS_REGION
+      value: %[5]q
+    - name: AWS_DEFAULT_REGION
+      value: %[5]q
+    - name: AWS_ENDPOINT_URL_STS
+      value: %[4]q
+    - name: AWS_CA_BUNDLE
+      value: /etc/spinifex/gateway-ca/ca.pem
+    - name: SSL_CERT_FILE
+      value: /etc/spinifex/gateway-ca/ca.pem
+    volumeMounts:
+    - name: aws-iam-token
+      mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+      readOnly: true
+    - name: gateway-ca
+      mountPath: /etc/spinifex/gateway-ca
+      readOnly: true
+  volumes:
+  - name: aws-iam-token
+    projected:
+      defaultMode: 420
+      sources:
+      - serviceAccountToken:
+          audience: sts.amazonaws.com
+          expirationSeconds: 86400
+          path: token
+  - name: gateway-ca
+    configMap:
+      name: %[6]s
+`, sa, pod, roleArn, gatewayBaseURL, region, caConfigMap, extraSpec)
 }
 
 // runEBSCSIVolume exercises the full EBS CSI data path on the live cluster:

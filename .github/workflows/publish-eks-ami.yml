@@ -105,7 +105,13 @@ jobs:
           cache: false
 
       - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore
+        # Idempotent: the ci-single runner reuses one workspace across matrix
+        # legs and runs, and checkout never scrubs the root go.work. Remove any
+        # stale file so each leg re-inits cleanly instead of failing on
+        # "go.work already exists".
+        run: |
+          rm -f go.work go.work.sum
+          go work init ./spinifex ./viperblock ./predastore
 
       - name: Install build + upload tooling
         run: |

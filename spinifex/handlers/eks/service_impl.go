@@ -718,15 +718,15 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	} else {
 		meta.EndpointIP = meta.PrivateEndpointIP
 	}
-	// With northstar configured, publish an AWS-shaped DNS endpoint
-	// ({cluster}.{region}.eks.{baseDomain}) that resolves to EndpointIP and is
-	// SANed on the apiserver cert (below), so TLS validates. Without northstar the
-	// bare IP endpoint is published as before. Workers still join by IP
+	// With northstar configured, publish an account-qualified DNS endpoint
+	// ({cluster}.{accountID}.{region}.eks.{baseDomain}) that resolves to EndpointIP
+	// and is SANed on the apiserver cert (below), so TLS validates. Without northstar
+	// the bare IP endpoint is published as before. Workers still join by IP
 	// (clusterJoinEndpoint), so cluster bring-up never waits on DNS propagation —
 	// only external SDK/kubectl clients use the name.
 	meta.EndpointDNSName = ""
 	if s.baseDomain != "" {
-		meta.EndpointDNSName = handlers_dns.EKSName(name, region, s.baseDomain)
+		meta.EndpointDNSName = handlers_dns.EKSName(name, accountID, region, s.baseDomain)
 	}
 	endpointHost := meta.EndpointIP
 	if meta.EndpointDNSName != "" {
@@ -1996,9 +1996,9 @@ func clusterJoinEndpoint(meta *ClusterMeta) string {
 	return meta.Endpoint
 }
 
-// publishEKSDNS registers or withdraws the cluster's apiserver endpoint A record
-// ({cluster}.{region}.eks.{baseDomain} → EndpointIP) with the control-plane DNS
-// writer. Best-effort and a no-op when northstar is not configured; the reconcile
+// publishEKSDNS registers or withdraws the cluster's account-qualified apiserver
+// endpoint A record ({cluster}.{accountID}.{region}.eks.{baseDomain} → EndpointIP)
+// with the control-plane DNS writer. Best-effort and a no-op when northstar is not configured; the reconcile
 // loop repairs any miss and it never blocks the cluster operation.
 func (s *EKSServiceImpl) publishEKSDNS(accountID string, meta *ClusterMeta, action handlers_dns.Action) {
 	if s.baseDomain == "" || meta == nil || meta.EndpointDNSName == "" {
@@ -2036,7 +2036,8 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 		for _, cluster := range clusters {
 			meta, err := GetClusterMeta(acctKV, cluster)
 			if err != nil {
-				continue
+				slog.Warn("DesiredDNSChanges: read cluster metadata", "bucket", name, "cluster", cluster, "err", err)
+				return nil, false
 			}
 			if meta.Status != ClusterStatusActive {
 				continue

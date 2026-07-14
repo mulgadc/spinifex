@@ -93,10 +93,11 @@ func ELBChanges(action Action, dnsName, baseDomain, frontendIP string) []Change 
 	}}
 }
 
-// EKSName is the AWS-shaped DNS name for a cluster's apiserver endpoint:
-// {cluster}.{region}.eks.{baseDomain}.
-func EKSName(cluster, region, baseDomain string) string {
-	return fmt.Sprintf("%s.%s.eks.%s", cluster, region, baseDomain)
+// EKSName is the account-qualified DNS name for a cluster's apiserver endpoint:
+// {cluster}.{accountID}.{region}.eks.{baseDomain}. Cluster names are only unique
+// within an account, so the account label prevents cross-tenant RRset collisions.
+func EKSName(cluster, accountID, region, baseDomain string) string {
+	return fmt.Sprintf("%s.%s.%s.eks.%s", cluster, accountID, region, baseDomain)
 }
 
 // EKSChanges builds the record-set change for a cluster's apiserver endpoint.

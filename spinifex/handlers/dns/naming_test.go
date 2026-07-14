@@ -59,10 +59,14 @@ func TestELBNameAndChanges(t *testing.T) {
 }
 
 func TestEKSNameAndChanges(t *testing.T) {
-	assert.Equal(t, "my-cluster.ap-southeast-2.eks.spx3.net",
-		EKSName("my-cluster", "ap-southeast-2", "spx3.net"))
+	assert.Equal(t, "my-cluster.111122223333.ap-southeast-2.eks.spx3.net",
+		EKSName("my-cluster", "111122223333", "ap-southeast-2", "spx3.net"))
+	assert.NotEqual(t,
+		EKSName("my-cluster", "111122223333", "ap-southeast-2", "spx3.net"),
+		EKSName("my-cluster", "444455556666", "ap-southeast-2", "spx3.net"),
+		"same-name EKS clusters in different accounts require distinct RRsets")
 
-	changes := EKSChanges(ActionDelete, "my-cluster.ap-southeast-2.eks.spx3.net", "spx3.net", "10.0.0.9")
+	changes := EKSChanges(ActionDelete, "my-cluster.111122223333.ap-southeast-2.eks.spx3.net", "spx3.net", "10.0.0.9")
 	require.Len(t, changes, 1)
 	assert.Equal(t, ActionDelete, changes[0].Action)
 	assert.Equal(t, "spx3.net", changes[0].Zone)

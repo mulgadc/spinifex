@@ -22,9 +22,9 @@ Usage:
 Options:
   --type TYPE    EC2 instance type to launch (required)
   --disk GB      Root disk size in GB (default: 50)
-  --ami  NAME    Override the AMI name to use (default: ubuntu-amd-gpu or ubuntu-nvidia-gpu)
+  --ami  NAME    Override the AMI name to use (default: ubuntu-amd-gpu or ubuntu-26.04-nvidia-gpu-x86_64)
   --amd          Force AMD GPU AMI  (ubuntu-amd-gpu)
-  --nvidia       Force NVIDIA GPU AMI (ubuntu-nvidia-gpu)
+  --nvidia       Force NVIDIA GPU AMI (ubuntu-26.04-nvidia-gpu-x86_64)
 
 Env overrides:
   SSH_KEY      Path to SSH private key (default: ~/.ssh/spinifex-key)
@@ -96,7 +96,7 @@ fi
 
 case "$GPU_BRAND" in
     amd)    AMI_NAME="ubuntu-amd-gpu" ;;
-    nvidia) AMI_NAME="ubuntu-nvidia-gpu" ;;
+    nvidia) AMI_NAME="ubuntu-26.04-nvidia-gpu-x86_64" ;;
 esac
 
 # --- Resolve AMI ---

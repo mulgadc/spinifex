@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -60,10 +62,6 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	if input.KeyName == nil || *input.KeyName == "" {
-		return errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	if !strings.HasPrefix(*input.ImageId, "ami-") {
 		return errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
@@ -78,33 +76,39 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 // passRoleCheck may be nil to skip PassRole enforcement.
 // launchQuotaCheck may be nil to skip quota enforcement; when present it runs
 // after validation and PassRole authorization, but before any launch dispatch.
-func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+	// Expand a referenced launch template before validation so validation, quota,
+	// and downstream routing all see the effective (post-merge) parameters.
+	if err = expandLaunchTemplate(ctx, natsConn, input, accountID); err != nil {
+		return reservation, err
+	}
+
 	if err = ValidateRunInstancesInput(input); err != nil {
 		return reservation, err
 	}
 
 	token := aws.StringValue(input.ClientToken)
 	if token == "" {
-		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
+		return runInstancesInner(ctx, input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	}
 
 	// ClientToken set: dedup concurrent/retried launches; store failure is fatal
 	// to avoid a double launch on retry.
-	store, serr := getClientTokenStore(natsConn)
+	store, serr := getClientTokenStore(ctx, natsConn)
 	if serr != nil {
-		slog.Error("RunInstances: client-token store unavailable", "err", serr)
+		slog.ErrorContext(ctx, "RunInstances: client-token store unavailable", "err", serr)
 		return reservation, errors.New(awserrors.ErrorServerInternal)
 	}
 	// Hash before any mutation so the same token+params always matches.
 	paramHash := clientTokenParamHash(input)
 	return runInstancesWithClientToken(store, accountID, token, paramHash, func() (ec2.Reservation, error) {
-		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
+		return runInstancesInner(ctx, input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	})
 }
 
 // runInstancesInner performs the actual launch: profile resolution, placement
 // routing, and capacity-aware distribution. Wrapped by RunInstances for idempotency.
-func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	resolvedProfile, err := resolveAndAuthorizeInstanceProfile(input, iamSvc, accountID, passRoleCheck)
 	if err != nil {
 		return reservation, err
@@ -126,7 +130,7 @@ func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc
 		if placementGroupName(input) != "" {
 			return reservation, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		reservationPtr, err := runIntoReservation(input, natsConn, accountID, crID)
+		reservationPtr, err := runIntoReservation(ctx, input, natsConn, accountID, crID)
 		if err != nil {
 			return reservation, err
 		}
@@ -136,21 +140,21 @@ func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc
 
 	groupName := placementGroupName(input)
 	if groupName != "" {
-		strategy, err := lookupPlacementGroupStrategy(natsConn, accountID, groupName)
+		strategy, err := lookupPlacementGroupStrategy(ctx, natsConn, accountID, groupName)
 		if err != nil {
 			return reservation, err
 		}
 
 		switch strategy {
 		case ec2.PlacementStrategySpread:
-			reservationPtr, err := distributeInstancesSpread(input, natsConn, accountID, groupName, expectedNodes)
+			reservationPtr, err := distributeInstancesSpread(ctx, input, natsConn, accountID, groupName, expectedNodes)
 			if err != nil {
 				return reservation, err
 			}
 			enrichReservationWithProfileID(reservationPtr, resolvedProfile)
 			return *reservationPtr, nil
 		case ec2.PlacementStrategyCluster:
-			reservationPtr, err := distributeInstancesCluster(input, natsConn, accountID, groupName, expectedNodes)
+			reservationPtr, err := distributeInstancesCluster(ctx, input, natsConn, accountID, groupName, expectedNodes)
 			if err != nil {
 				return reservation, err
 			}
@@ -161,11 +165,11 @@ func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc
 		}
 	}
 
-	reservationPtr, err := distributeInstances(input, natsConn, accountID, expectedNodes)
+	reservationPtr, err := distributeInstances(ctx, input, natsConn, accountID, expectedNodes)
 	if err != nil {
 		// Distinguish "unknown type" from "no capacity" via DescribeInstanceTypes.
 		if err.Error() == awserrors.ErrorInsufficientInstanceCapacity {
-			if !isKnownInstanceType(natsConn, *input.InstanceType) {
+			if !isKnownInstanceType(ctx, natsConn, *input.InstanceType) {
 				return reservation, errors.New(awserrors.ErrorInvalidInstanceType)
 			}
 		}
@@ -239,10 +243,20 @@ func capacityReservationTargetID(input *ec2.RunInstancesInput) string {
 	return aws.StringValue(spec.CapacityReservationTarget.CapacityReservationId)
 }
 
+// expandLaunchTemplate folds a referenced launch template into input, delegating
+// to the launch-template service over NATS. A no-op when no template is referenced.
+func expandLaunchTemplate(ctx context.Context, natsConn *nats.Conn, input *ec2.RunInstancesInput, accountID string) error {
+	if input == nil || input.LaunchTemplate == nil {
+		return nil
+	}
+	ltSvc := handlers_ec2_launchtemplate.NewNATSLaunchTemplateService(natsConn)
+	return handlers_ec2_launchtemplate.ExpandRunInstances(ctx, ltSvc, input, accountID)
+}
+
 // lookupPlacementGroupStrategy returns the strategy of a placement group, or an error if absent/unavailable.
-func lookupPlacementGroupStrategy(natsConn *nats.Conn, accountID, groupName string) (string, error) {
+func lookupPlacementGroupStrategy(ctx context.Context, natsConn *nats.Conn, accountID, groupName string) (string, error) {
 	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
-	out, err := pgSvc.DescribePlacementGroups(&ec2.DescribePlacementGroupsInput{
+	out, err := pgSvc.DescribePlacementGroups(ctx, &ec2.DescribePlacementGroupsInput{
 		GroupNames: []*string{aws.String(groupName)},
 	}, accountID)
 	if err != nil {
@@ -259,9 +273,8 @@ func lookupPlacementGroupStrategy(natsConn *nats.Conn, accountID, groupName stri
 }
 
 // isKnownInstanceType checks whether any daemon recognizes the given instance type.
-func isKnownInstanceType(natsConn *nats.Conn, instanceType string) bool {
-	result, err := utils.NATSRequest[ec2.DescribeInstanceTypesOutput](
-		natsConn, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesInput{}, 3*time.Second, utils.GlobalAccountID)
+func isKnownInstanceType(ctx context.Context, natsConn *nats.Conn, instanceType string) bool {
+	result, err := utils.NATSRequest[ec2.DescribeInstanceTypesOutput](ctx, natsConn, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesInput{}, 3*time.Second, utils.GlobalAccountID)
 	if err != nil || result == nil {
 		return false
 	}

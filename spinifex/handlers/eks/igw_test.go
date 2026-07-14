@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -32,7 +33,7 @@ func newFakeIGWProvisioner() *fakeIGWProvisioner {
 	return &fakeIGWProvisioner{gateways: map[string]*ec2.InternetGateway{}, nextID: "igw-fake0001"}
 }
 
-func (f *fakeIGWProvisioner) DescribeInternetGateways(input *ec2.DescribeInternetGatewaysInput, _ string) (*ec2.DescribeInternetGatewaysOutput, error) {
+func (f *fakeIGWProvisioner) DescribeInternetGateways(_ context.Context, input *ec2.DescribeInternetGatewaysInput, _ string) (*ec2.DescribeInternetGatewaysOutput, error) {
 	f.describeCalls = append(f.describeCalls, input)
 	var wantVPC string
 	for _, flt := range input.Filters {
@@ -51,7 +52,7 @@ func (f *fakeIGWProvisioner) DescribeInternetGateways(input *ec2.DescribeInterne
 	return &ec2.DescribeInternetGatewaysOutput{InternetGateways: out}, nil
 }
 
-func (f *fakeIGWProvisioner) CreateInternetGateway(input *ec2.CreateInternetGatewayInput, _ string) (*ec2.CreateInternetGatewayOutput, error) {
+func (f *fakeIGWProvisioner) CreateInternetGateway(_ context.Context, input *ec2.CreateInternetGatewayInput, _ string) (*ec2.CreateInternetGatewayOutput, error) {
 	f.createCalls = append(f.createCalls, input)
 	if f.createErr != nil {
 		return nil, f.createErr
@@ -64,7 +65,7 @@ func (f *fakeIGWProvisioner) CreateInternetGateway(input *ec2.CreateInternetGate
 	return &ec2.CreateInternetGatewayOutput{InternetGateway: igw}, nil
 }
 
-func (f *fakeIGWProvisioner) AttachInternetGateway(input *ec2.AttachInternetGatewayInput, _ string) (*ec2.AttachInternetGatewayOutput, error) {
+func (f *fakeIGWProvisioner) AttachInternetGateway(_ context.Context, input *ec2.AttachInternetGatewayInput, _ string) (*ec2.AttachInternetGatewayOutput, error) {
 	f.attachCalls = append(f.attachCalls, input)
 	if igw, ok := f.gateways[aws.StringValue(input.InternetGatewayId)]; ok {
 		igw.Attachments = append(igw.Attachments, &ec2.InternetGatewayAttachment{
@@ -75,7 +76,7 @@ func (f *fakeIGWProvisioner) AttachInternetGateway(input *ec2.AttachInternetGate
 	return &ec2.AttachInternetGatewayOutput{}, nil
 }
 
-func (f *fakeIGWProvisioner) DetachInternetGateway(input *ec2.DetachInternetGatewayInput, _ string) (*ec2.DetachInternetGatewayOutput, error) {
+func (f *fakeIGWProvisioner) DetachInternetGateway(_ context.Context, input *ec2.DetachInternetGatewayInput, _ string) (*ec2.DetachInternetGatewayOutput, error) {
 	f.detachCalls = append(f.detachCalls, input)
 	if igw, ok := f.gateways[aws.StringValue(input.InternetGatewayId)]; ok {
 		igw.Attachments = nil
@@ -83,7 +84,7 @@ func (f *fakeIGWProvisioner) DetachInternetGateway(input *ec2.DetachInternetGate
 	return &ec2.DetachInternetGatewayOutput{}, nil
 }
 
-func (f *fakeIGWProvisioner) DeleteInternetGateway(input *ec2.DeleteInternetGatewayInput, _ string) (*ec2.DeleteInternetGatewayOutput, error) {
+func (f *fakeIGWProvisioner) DeleteInternetGateway(_ context.Context, input *ec2.DeleteInternetGatewayInput, _ string) (*ec2.DeleteInternetGatewayOutput, error) {
 	f.deleteCalls = append(f.deleteCalls, input)
 	delete(f.gateways, aws.StringValue(input.InternetGatewayId))
 	return &ec2.DeleteInternetGatewayOutput{}, nil
@@ -104,7 +105,7 @@ func (f *fakeIGWProvisioner) seedAttached(igwID, vpcID string, tagKV ...string) 
 func TestEnsureClusterIGW_FreshCreatesAndAttaches(t *testing.T) {
 	f := newFakeIGWProvisioner()
 
-	require.NoError(t, EnsureClusterIGW(f, "acct", "vpc-1", "demo"))
+	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
 
 	require.Len(t, f.createCalls, 1)
 	require.Len(t, f.attachCalls, 1)
@@ -120,7 +121,7 @@ func TestEnsureClusterIGW_ExistingIsReusedNotRecreated(t *testing.T) {
 	f := newFakeIGWProvisioner()
 	f.seedAttached("igw-customer", "vpc-1") // untagged, customer-provisioned
 
-	require.NoError(t, EnsureClusterIGW(f, "acct", "vpc-1", "demo"))
+	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
 
 	assert.Empty(t, f.createCalls, "must not create when VPC already has an attached IGW")
 	assert.Empty(t, f.attachCalls)
@@ -128,8 +129,8 @@ func TestEnsureClusterIGW_ExistingIsReusedNotRecreated(t *testing.T) {
 
 func TestEnsureClusterIGW_Idempotent(t *testing.T) {
 	f := newFakeIGWProvisioner()
-	require.NoError(t, EnsureClusterIGW(f, "acct", "vpc-1", "demo"))
-	require.NoError(t, EnsureClusterIGW(f, "acct", "vpc-1", "demo"))
+	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
+	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
 	assert.Len(t, f.createCalls, 1, "second call reuses the IGW created by the first")
 }
 
@@ -137,7 +138,7 @@ func TestDeleteClusterIGW_RemovesOnlyOwned(t *testing.T) {
 	f := newFakeIGWProvisioner()
 	f.seedAttached("igw-owned", "vpc-1", tags.ManagedByKey, tags.ManagedByEKS, clusterEKSClusterTagKey, "demo")
 
-	require.NoError(t, DeleteClusterIGW(f, "acct", "vpc-1", "demo"))
+	require.NoError(t, DeleteClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
 
 	require.Len(t, f.detachCalls, 1)
 	require.Len(t, f.deleteCalls, 1)
@@ -149,7 +150,7 @@ func TestDeleteClusterIGW_LeavesCustomerIGW(t *testing.T) {
 	f := newFakeIGWProvisioner()
 	f.seedAttached("igw-customer", "vpc-1") // untagged
 
-	require.NoError(t, DeleteClusterIGW(f, "acct", "vpc-1", "demo"))
+	require.NoError(t, DeleteClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
 
 	assert.Empty(t, f.detachCalls, "must not touch a customer-provisioned IGW")
 	assert.Empty(t, f.deleteCalls)
@@ -160,7 +161,7 @@ func TestDeleteClusterIGW_WrongClusterTagNotOwned(t *testing.T) {
 	f := newFakeIGWProvisioner()
 	f.seedAttached("igw-other", "vpc-1", tags.ManagedByKey, tags.ManagedByEKS, clusterEKSClusterTagKey, "other-cluster")
 
-	require.NoError(t, DeleteClusterIGW(f, "acct", "vpc-1", "demo"))
+	require.NoError(t, DeleteClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
 
 	assert.Empty(t, f.deleteCalls, "must not delete another cluster's IGW")
 }
@@ -168,7 +169,7 @@ func TestDeleteClusterIGW_WrongClusterTagNotOwned(t *testing.T) {
 func TestEnsureClusterIGW_CreateErrorPropagates(t *testing.T) {
 	f := newFakeIGWProvisioner()
 	f.createErr = errors.New("boom")
-	err := EnsureClusterIGW(f, "acct", "vpc-1", "demo")
+	err := EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create cluster IGW")
 }

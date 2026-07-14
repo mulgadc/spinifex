@@ -21,7 +21,7 @@ func TestMemoryObjectStore_PutAndGet(t *testing.T) {
 		Key:    aws.String("test-key"),
 		Body:   bytes.NewReader([]byte("test data")),
 	}
-	_, err := store.PutObject(putInput)
+	_, err := store.PutObject(t.Context(), putInput)
 	require.NoError(t, err)
 
 	// Get the object
@@ -29,7 +29,7 @@ func TestMemoryObjectStore_PutAndGet(t *testing.T) {
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("test-key"),
 	}
-	output, err := store.GetObject(getInput)
+	output, err := store.GetObject(t.Context(), getInput)
 	require.NoError(t, err)
 
 	data, _ := io.ReadAll(output.Body)
@@ -44,7 +44,7 @@ func TestMemoryObjectStore_GetNonExistent(t *testing.T) {
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("non-existent"),
 	}
-	_, err := store.GetObject(getInput)
+	_, err := store.GetObject(t.Context(), getInput)
 
 	assert.Error(t, err)
 	assert.True(t, IsNoSuchKeyError(err))
@@ -58,18 +58,18 @@ func TestMemoryObjectStore_GetNonExistent(t *testing.T) {
 
 func TestMemoryObjectStore_HeadObject(t *testing.T) {
 	store := NewMemoryObjectStore()
-	_, err := store.PutObject(&s3.PutObjectInput{
+	_, err := store.PutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String("b"),
 		Key:    aws.String("k"),
 		Body:   bytes.NewReader([]byte("twelve bytes")),
 	})
 	require.NoError(t, err)
 
-	out, err := store.HeadObject(&s3.HeadObjectInput{Bucket: aws.String("b"), Key: aws.String("k")})
+	out, err := store.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String("b"), Key: aws.String("k")})
 	require.NoError(t, err)
 	assert.Equal(t, int64(12), *out.ContentLength)
 
-	_, err = store.HeadObject(&s3.HeadObjectInput{Bucket: aws.String("b"), Key: aws.String("missing")})
+	_, err = store.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String("b"), Key: aws.String("missing")})
 	assert.True(t, IsNoSuchKeyError(err))
 }
 
@@ -82,7 +82,7 @@ func TestMemoryObjectStore_Delete(t *testing.T) {
 		Key:    aws.String("to-delete"),
 		Body:   bytes.NewReader([]byte("data")),
 	}
-	_, err := store.PutObject(putInput)
+	_, err := store.PutObject(t.Context(), putInput)
 	require.NoError(t, err)
 
 	// Verify it exists
@@ -93,14 +93,14 @@ func TestMemoryObjectStore_Delete(t *testing.T) {
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("to-delete"),
 	}
-	_, err = store.DeleteObject(deleteInput)
+	_, err = store.DeleteObject(t.Context(), deleteInput)
 	require.NoError(t, err)
 
 	// Verify it's gone
 	assert.Equal(t, 0, store.Count())
 
 	// Getting it should fail
-	_, err = store.GetObject(&s3.GetObjectInput{
+	_, err = store.GetObject(t.Context(), &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("to-delete"),
 	})
@@ -115,7 +115,7 @@ func TestMemoryObjectStore_DeleteNonExistent(t *testing.T) {
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("never-existed"),
 	}
-	_, err := store.DeleteObject(deleteInput)
+	_, err := store.DeleteObject(t.Context(), deleteInput)
 	assert.NoError(t, err)
 }
 
@@ -132,7 +132,7 @@ func TestMemoryObjectStore_ListObjects(t *testing.T) {
 	}
 
 	for key, value := range objects {
-		_, err := store.PutObject(&s3.PutObjectInput{
+		_, err := store.PutObject(t.Context(), &s3.PutObjectInput{
 			Bucket: aws.String("spinifex-metadata"),
 			Key:    aws.String(key),
 			Body:   bytes.NewReader([]byte(value)),
@@ -141,14 +141,14 @@ func TestMemoryObjectStore_ListObjects(t *testing.T) {
 	}
 
 	// List all objects in bucket
-	output, err := store.ListObjectsV2(&s3.ListObjectsV2Input{
+	output, err := store.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{
 		Bucket: aws.String("spinifex-metadata"),
 	})
 	require.NoError(t, err)
 	assert.Len(t, output.Contents, 5)
 
 	// List objects with prefix
-	output, err = store.ListObjectsV2(&s3.ListObjectsV2Input{
+	output, err = store.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{
 		Bucket: aws.String("spinifex-metadata"),
 		Prefix: aws.String("images/"),
 	})
@@ -178,7 +178,7 @@ func TestMemoryObjectStore_ListObjectsWithDelimiter(t *testing.T) {
 	}
 
 	for _, key := range objects {
-		_, err := store.PutObject(&s3.PutObjectInput{
+		_, err := store.PutObject(t.Context(), &s3.PutObjectInput{
 			Bucket: aws.String("spinifex"),
 			Key:    aws.String(key),
 			Body:   bytes.NewReader([]byte("{}")),
@@ -187,7 +187,7 @@ func TestMemoryObjectStore_ListObjectsWithDelimiter(t *testing.T) {
 	}
 
 	// List with delimiter at root level
-	output, err := store.ListObjectsV2(&s3.ListObjectsV2Input{
+	output, err := store.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{
 		Bucket:    aws.String("spinifex"),
 		Delimiter: aws.String("/"),
 	})
@@ -206,7 +206,7 @@ func TestMemoryObjectStore_Clear(t *testing.T) {
 
 	// Add some objects
 	for i := range 5 {
-		_, _ = store.PutObject(&s3.PutObjectInput{
+		_, _ = store.PutObject(t.Context(), &s3.PutObjectInput{
 			Bucket: aws.String("bucket"),
 			Key:    aws.String("key-" + string(rune('0'+i))),
 			Body:   bytes.NewReader([]byte("data")),
@@ -224,31 +224,31 @@ func TestMemoryObjectStore_MultipleBuckets(t *testing.T) {
 	store := NewMemoryObjectStore()
 
 	// Put objects in different buckets
-	_, _ = store.PutObject(&s3.PutObjectInput{
+	_, _ = store.PutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String("bucket-a"),
 		Key:    aws.String("key1"),
 		Body:   bytes.NewReader([]byte("data-a")),
 	})
-	_, _ = store.PutObject(&s3.PutObjectInput{
+	_, _ = store.PutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String("bucket-b"),
 		Key:    aws.String("key1"),
 		Body:   bytes.NewReader([]byte("data-b")),
 	})
 
 	// List bucket-a
-	outputA, _ := store.ListObjectsV2(&s3.ListObjectsV2Input{
+	outputA, _ := store.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{
 		Bucket: aws.String("bucket-a"),
 	})
 	assert.Len(t, outputA.Contents, 1)
 
 	// List bucket-b
-	outputB, _ := store.ListObjectsV2(&s3.ListObjectsV2Input{
+	outputB, _ := store.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{
 		Bucket: aws.String("bucket-b"),
 	})
 	assert.Len(t, outputB.Contents, 1)
 
 	// Get from bucket-a
-	objA, _ := store.GetObject(&s3.GetObjectInput{
+	objA, _ := store.GetObject(t.Context(), &s3.GetObjectInput{
 		Bucket: aws.String("bucket-a"),
 		Key:    aws.String("key1"),
 	})
@@ -256,7 +256,7 @@ func TestMemoryObjectStore_MultipleBuckets(t *testing.T) {
 	assert.Equal(t, "data-a", string(dataA))
 
 	// Get from bucket-b
-	objB, _ := store.GetObject(&s3.GetObjectInput{
+	objB, _ := store.GetObject(t.Context(), &s3.GetObjectInput{
 		Bucket: aws.String("bucket-b"),
 		Key:    aws.String("key1"),
 	})
@@ -268,21 +268,21 @@ func TestMemoryObjectStore_Overwrite(t *testing.T) {
 	store := NewMemoryObjectStore()
 
 	// Put initial object
-	_, _ = store.PutObject(&s3.PutObjectInput{
+	_, _ = store.PutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String("bucket"),
 		Key:    aws.String("key"),
 		Body:   bytes.NewReader([]byte("initial")),
 	})
 
 	// Overwrite
-	_, _ = store.PutObject(&s3.PutObjectInput{
+	_, _ = store.PutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String("bucket"),
 		Key:    aws.String("key"),
 		Body:   bytes.NewReader([]byte("updated")),
 	})
 
 	// Verify overwrite
-	output, _ := store.GetObject(&s3.GetObjectInput{
+	output, _ := store.GetObject(t.Context(), &s3.GetObjectInput{
 		Bucket: aws.String("bucket"),
 		Key:    aws.String("key"),
 	})
@@ -304,7 +304,7 @@ func TestMemoryObjectStore_ConcurrentAccess(t *testing.T) {
 	for i := range numGoroutines {
 		go func(idx int) {
 			defer wg.Done()
-			_, _ = store.PutObject(&s3.PutObjectInput{
+			_, _ = store.PutObject(t.Context(), &s3.PutObjectInput{
 				Bucket: aws.String("bucket"),
 				Key:    aws.String("key-" + string(rune('a'+idx%26)) + "-" + string(rune('0'+idx/26))),
 				Body:   bytes.NewReader([]byte("data")),
@@ -318,7 +318,7 @@ func TestMemoryObjectStore_ConcurrentAccess(t *testing.T) {
 	for range numGoroutines {
 		go func() {
 			defer wg.Done()
-			_, _ = store.ListObjectsV2(&s3.ListObjectsV2Input{
+			_, _ = store.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{
 				Bucket: aws.String("bucket"),
 			})
 		}()

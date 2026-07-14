@@ -44,6 +44,10 @@ type EBSUnMountResponse struct {
 	Volume  string `json:"Volume"`
 	Mounted bool   `json:"Mounted"`
 	Error   string `json:"Error"`
+	// NotFound signals the volume was already unmounted and sealed (a retry
+	// after a request that timed out client-side but completed server-side).
+	// The caller treats this as a successful, idempotent seal.
+	NotFound bool `json:"NotFound"`
 }
 
 type EBSSyncRequest struct {
@@ -64,17 +68,6 @@ type EBSDeleteResponse struct {
 	Volume  string `json:"Volume"`
 	Success bool   `json:"Success"`
 	Error   string `json:"Error"`
-}
-
-type EBSSnapshotRequest struct {
-	Volume     string `json:"Volume"`
-	SnapshotID string `json:"SnapshotID"`
-}
-
-type EBSSnapshotResponse struct {
-	SnapshotID string `json:"SnapshotID"`
-	Success    bool   `json:"Success"`
-	Error      string `json:"Error"`
 }
 
 // EBSConfigUpdateRequest carries a control-plane VolumeConfig update for an

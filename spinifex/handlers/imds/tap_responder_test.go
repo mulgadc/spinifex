@@ -32,7 +32,7 @@ func loopbackTapListen(addrs *sync.Map) tapListenFunc {
 
 // staticResolve returns a resolveENIFunc serving a fixed eniID → facts table.
 func staticResolve(table map[string]*eniFacts) resolveENIFunc {
-	return func(eniID string) (*eniFacts, error) { return table[eniID], nil }
+	return func(_ context.Context, eniID string) (*eniFacts, error) { return table[eniID], nil }
 }
 
 func TestTapResponder_ThreadsENIIdentity(t *testing.T) {
@@ -247,7 +247,7 @@ func TestTapResponder_StartRejectsMissAndError(t *testing.T) {
 
 	// A resolve backend error propagates.
 	boom := newTapResponderManager(http.NewServeMux(),
-		func(string) (*eniFacts, error) { return nil, errors.New("kv down") }, listen)
+		func(context.Context, string) (*eniFacts, error) { return nil, errors.New("kv down") }, listen)
 	require.Error(t, boom.start(context.Background(), "eni-x", "ime-x"))
 }
 
@@ -338,4 +338,42 @@ func tapGet(t *testing.T, addr, path, token string) tapResult {
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	return tapResult{code: resp.StatusCode, body: string(body)}
+}
+
+// A tap whose ENI record is gone must be retried once then suspended, not churned
+// every reconcile pass; once the tap leaves the live set the suspension clears so a
+// re-created ENI resumes retrying.
+func TestTapResponder_ReconcileSuspendsRetriesForGoneENI(t *testing.T) {
+	const (
+		eniID    = "eni-gone1234"
+		endpoint = "ime-gone1234"
+	)
+	var mu sync.Mutex
+	var resolveCalls int
+	resolve := func(_ context.Context, _ string) (*eniFacts, error) {
+		mu.Lock()
+		resolveCalls++
+		mu.Unlock()
+		return nil, nil // record definitively gone
+	}
+	m := newTapResponderManager(http.NewServeMux(), resolve, loopbackTapListen(&sync.Map{}))
+	ctx := context.Background()
+	live := map[string]string{eniID: endpoint}
+
+	m.reconcile(ctx, live)
+	m.reconcile(ctx, live)
+	m.reconcile(ctx, live)
+
+	mu.Lock()
+	got := resolveCalls
+	mu.Unlock()
+	assert.Equal(t, 1, got, "a gone ENI record must be resolved once then suspended, not retried each pass")
+
+	// Tap leaves the live set: the suspension must clear so a re-created ENI retries.
+	m.reconcile(ctx, map[string]string{})
+	m.reconcile(ctx, live)
+	mu.Lock()
+	got = resolveCalls
+	mu.Unlock()
+	assert.Equal(t, 2, got, "a re-created tap must resume retrying after the suspension clears")
 }

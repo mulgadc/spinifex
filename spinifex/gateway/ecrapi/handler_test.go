@@ -1,6 +1,8 @@
 package gateway_ecrapi
 
 import (
+	"context"
+
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +14,7 @@ import (
 )
 
 func TestNotImplemented(t *testing.T) {
-	out, err := NotImplemented(nil, "123456789012", []byte("{}"))
+	out, err := NotImplemented(context.Background(), nil, "123456789012", []byte("{}"))
 	assert.Nil(t, out)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
@@ -28,14 +30,14 @@ func TestActions_CoreRegisteredAsStub(t *testing.T) {
 	for _, action := range core {
 		h, ok := Actions[action]
 		require.True(t, ok, "action %q should be registered", action)
-		_, err := h(nil, "123456789012", nil)
+		_, err := h(context.Background(), nil, "123456789012", nil)
 		assert.Equal(t, awserrors.ErrorNotImplemented, err.Error(),
 			"action %q should resolve to the 501 stub", action)
 	}
 }
 
 func TestScanningNotSupported(t *testing.T) {
-	out, err := ScanningNotSupported(nil, "123456789012", []byte("{}"))
+	out, err := ScanningNotSupported(context.Background(), nil, "123456789012", []byte("{}"))
 	assert.Nil(t, out)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error())
@@ -51,7 +53,7 @@ func TestActions_ScanSurfaceUnsupported(t *testing.T) {
 	for _, action := range scan {
 		h, ok := Actions[action]
 		require.True(t, ok, "action %q should be registered", action)
-		_, err := h(nil, "123456789012", nil)
+		_, err := h(context.Background(), nil, "123456789012", nil)
 		assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error(),
 			"action %q should resolve to the OperationNotSupported stub", action)
 	}

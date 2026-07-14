@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"encoding/xml"
 	"path/filepath"
 	"testing"
@@ -180,7 +181,7 @@ func TestGetLBConfig_DeliversCertFiles(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(rec))
 
-	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-deliver1")}, testAccountID)
+	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{LBID: aws.String("lb-deliver1")}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.CertFiles, 1)
 	assert.Equal(t, "/etc/haproxy/certs/lb-deliver1-lst.pem", *out.CertFiles[0].Path)

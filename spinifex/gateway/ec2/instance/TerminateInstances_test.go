@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestTerminateInstances_Success(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	output, err := TerminateInstances(input, nc, "123456789012")
+	output, err := TerminateInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -63,7 +64,7 @@ func TestTerminateInstances_MultipleInstances(t *testing.T) {
 		InstanceIds: []*string{aws.String(ids[0]), aws.String(ids[1]), aws.String(ids[2])},
 	}
 
-	output, err := TerminateInstances(input, nc, "123456789012")
+	output, err := TerminateInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.Len(t, output.TerminatingInstances, 3)
@@ -82,7 +83,7 @@ func TestTerminateInstances_EmptyInstanceIds(t *testing.T) {
 		InstanceIds: []*string{},
 	}
 
-	_, err := TerminateInstances(input, nc, "123456789012")
+	_, err := TerminateInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -99,7 +100,7 @@ func TestTerminateInstances_NilInstanceIdSkipped(t *testing.T) {
 		InstanceIds: []*string{nil, aws.String(instanceID), nil},
 	}
 
-	output, err := TerminateInstances(input, nc, "123456789012")
+	output, err := TerminateInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	assert.Len(t, output.TerminatingInstances, 1)
@@ -108,6 +109,7 @@ func TestTerminateInstances_NilInstanceIdSkipped(t *testing.T) {
 
 func TestTerminateInstances_NATSRequestFails(t *testing.T) {
 	_, nc := startTestNATSServer(t)
+	noopTerminateRetrySleep(t)
 
 	instanceID := "i-nosubscriber"
 
@@ -117,13 +119,14 @@ func TestTerminateInstances_NATSRequestFails(t *testing.T) {
 
 	// When no subscriber exists and all fallback paths fail, an error is
 	// returned so the caller knows the terminate did not succeed.
-	_, err := TerminateInstances(input, nc, "123456789012")
+	_, err := TerminateInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), instanceID)
 }
 
 func TestTerminateInstances_MixedSuccessAndFailure(t *testing.T) {
 	_, nc := startTestNATSServer(t)
+	noopTerminateRetrySleep(t)
 
 	goodID := "i-good"
 	badID := "i-bad"
@@ -139,7 +142,7 @@ func TestTerminateInstances_MixedSuccessAndFailure(t *testing.T) {
 	// When a running instance cannot be reached (ErrNoResponders exhausted after
 	// retries), TerminateInstances returns an error rather than silently
 	// reporting the instance as "running".
-	_, err := TerminateInstances(input, nc, "123456789012")
+	_, err := TerminateInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), badID)
 }
@@ -159,7 +162,7 @@ func TestTerminateInstances_VerifiesQMPAttributes(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	_, err := TerminateInstances(input, nc, "123456789012")
+	_, err := TerminateInstances(context.Background(), input, nc, "123456789012")
 	require.NoError(t, err)
 
 	// Terminate should set both stop and terminate flags
@@ -170,6 +173,7 @@ func TestTerminateInstances_VerifiesQMPAttributes(t *testing.T) {
 
 func TestTerminateInstances_StoppedInstanceFallback(t *testing.T) {
 	_, nc := startTestNATSServer(t)
+	noopTerminateRetrySleep(t)
 
 	instanceID := "i-stopped-term"
 
@@ -186,7 +190,7 @@ func TestTerminateInstances_StoppedInstanceFallback(t *testing.T) {
 		InstanceIds: []*string{aws.String(instanceID)},
 	}
 
-	output, err := TerminateInstances(input, nc, "123456789012")
+	output, err := TerminateInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.Len(t, output.TerminatingInstances, 1)
@@ -201,6 +205,7 @@ func TestTerminateInstances_StoppedInstanceFallback(t *testing.T) {
 
 func TestTerminateInstances_MixedRunningAndStopped(t *testing.T) {
 	_, nc := startTestNATSServer(t)
+	noopTerminateRetrySleep(t)
 
 	runningID := "i-running-mix"
 	stoppedID := "i-stopped-mix"
@@ -221,7 +226,7 @@ func TestTerminateInstances_MixedRunningAndStopped(t *testing.T) {
 		InstanceIds: []*string{aws.String(runningID), aws.String(stoppedID)},
 	}
 
-	output, err := TerminateInstances(input, nc, "123456789012")
+	output, err := TerminateInstances(context.Background(), input, nc, "123456789012")
 
 	require.NoError(t, err)
 	require.Len(t, output.TerminatingInstances, 2)

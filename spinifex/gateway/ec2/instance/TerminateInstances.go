@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,9 @@ type terminateStoppedInstanceRequest struct {
 	InstanceID string `json:"instance_id"`
 }
 
+// terminateRetrySleep is the backoff seam between NoResponders retries; tests override it.
+var terminateRetrySleep = time.Sleep
+
 func ValidateTerminateInstancesInput(input *ec2.TerminateInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -30,12 +34,12 @@ func ValidateTerminateInstancesInput(input *ec2.TerminateInstancesInput) error {
 }
 
 // TerminateInstances sends terminate commands via NATS with stop_instance set to prevent restart.
-func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.TerminateInstancesOutput, error) {
+func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.TerminateInstancesOutput, error) {
 	if err := ValidateTerminateInstancesInput(input); err != nil {
 		return nil, err
 	}
 
-	slog.Info("TerminateInstances: Processing request", "instance_count", len(input.InstanceIds))
+	slog.InfoContext(ctx, "TerminateInstances: Processing request", "instance_count", len(input.InstanceIds))
 
 	var stateChanges []*ec2.InstanceStateChange
 
@@ -55,7 +59,7 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 
 		jsonData, err := json.Marshal(command)
 		if err != nil {
-			slog.Error("TerminateInstances: Failed to marshal command", "instance_id", instanceID, "err", err)
+			slog.ErrorContext(ctx, "TerminateInstances: Failed to marshal command", "instance_id", instanceID, "err", err)
 			continue
 		}
 
@@ -66,33 +70,35 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 			reqMsg := nats.NewMsg(subject)
 			reqMsg.Data = jsonData
 			reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+			utils.InjectTraceContext(ctx, reqMsg.Header)
 			msg, err = natsConn.RequestMsg(reqMsg, 5*time.Second)
 			if err == nil || !errors.Is(err, nats.ErrNoResponders) {
 				break
 			}
 			if attempt < 2 {
-				slog.Debug("TerminateInstances: No responder on per-instance topic, retrying",
+				slog.DebugContext(ctx, "TerminateInstances: No responder on per-instance topic, retrying",
 					"instance_id", instanceID, "attempt", attempt+1)
-				time.Sleep(time.Duration(attempt+1) * time.Second)
+				terminateRetrySleep(time.Duration(attempt+1) * time.Second)
 			}
 		}
 		if err != nil {
 			// If no daemon owns this instance, try the ec2.terminate topic for stopped instances
 			if errors.Is(err, nats.ErrNoResponders) {
-				slog.Info("TerminateInstances: No responder on per-instance topic, trying ec2.terminate", "instance_id", instanceID)
+				slog.InfoContext(ctx, "TerminateInstances: No responder on per-instance topic, trying ec2.terminate", "instance_id", instanceID)
 
 				terminateReq, err := json.Marshal(terminateStoppedInstanceRequest{InstanceID: instanceID})
 				if err != nil {
-					slog.Error("TerminateInstances: Failed to marshal terminate request", "instance_id", instanceID, "err", err)
+					slog.ErrorContext(ctx, "TerminateInstances: Failed to marshal terminate request", "instance_id", instanceID, "err", err)
 					continue
 				}
 				terminateReqMsg := nats.NewMsg("ec2.terminate")
 				terminateReqMsg.Data = terminateReq
 				terminateReqMsg.Header.Set(utils.AccountIDHeader, accountID)
+				utils.InjectTraceContext(ctx, terminateReqMsg.Header)
 				terminateMsg, terminateErr := natsConn.RequestMsg(terminateReqMsg, 30*time.Second)
 				if terminateErr == nil {
 					if _, parseErr := utils.ValidateErrorPayload(terminateMsg.Data); parseErr == nil {
-						slog.Info("TerminateInstances: Stopped instance terminated via ec2.terminate", "instance_id", instanceID)
+						slog.InfoContext(ctx, "TerminateInstances: Stopped instance terminated via ec2.terminate", "instance_id", instanceID)
 						stateChanges = append(stateChanges, newStateChange(instanceID, 32, "shutting-down", 80, "stopped"))
 						continue
 					}
@@ -104,31 +110,31 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 				// tofu destroy retries converge. KV-health gated: a failed query does
 				// NOT fabricate success (never trust an empty desired-state we cannot
 				// read — ADR-0003 §3).
-				found, queryOK := lookupTerminated(natsConn, instanceID, accountID)
+				found, queryOK := lookupTerminated(ctx, natsConn, instanceID, accountID)
 				if found {
-					slog.Info("TerminateInstances: Instance already terminated", "instance_id", instanceID)
+					slog.InfoContext(ctx, "TerminateInstances: Instance already terminated", "instance_id", instanceID)
 					stateChanges = append(stateChanges, newStateChange(instanceID, 48, "terminated", 48, "terminated"))
 					continue
 				}
 				if queryOK {
-					slog.Info("TerminateInstances: Instance absent, terminate is idempotent", "instance_id", instanceID)
+					slog.InfoContext(ctx, "TerminateInstances: Instance absent, terminate is idempotent", "instance_id", instanceID)
 					stateChanges = append(stateChanges, newStateChange(instanceID, 48, "terminated", 48, "terminated"))
 					continue
 				}
-				slog.Error("TerminateInstances: terminated-bucket query failed, cannot confirm absence",
+				slog.ErrorContext(ctx, "TerminateInstances: terminated-bucket query failed, cannot confirm absence",
 					"instance_id", instanceID)
 			}
 
-			slog.Error("TerminateInstances: Failed to send command", "instance_id", instanceID, "err", err)
+			slog.ErrorContext(ctx, "TerminateInstances: Failed to send command", "instance_id", instanceID, "err", err)
 			return nil, fmt.Errorf("failed to terminate instance %s: %w", instanceID, err)
 		}
 
 		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
-			slog.Error("TerminateInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
+			slog.ErrorContext(ctx, "TerminateInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 			return nil, errors.New(*responseError.Code)
 		}
 
-		slog.Info("TerminateInstances: Command sent successfully", "instance_id", instanceID, "response", string(msg.Data))
+		slog.InfoContext(ctx, "TerminateInstances: Command sent successfully", "instance_id", instanceID, "response", string(msg.Data))
 
 		stateChanges = append(stateChanges, newStateChange(instanceID, 32, "shutting-down", 16, "running"))
 	}
@@ -137,7 +143,7 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 		TerminatingInstances: stateChanges,
 	}
 
-	slog.Info("TerminateInstances: Completed", "total_instances", len(stateChanges))
+	slog.InfoContext(ctx, "TerminateInstances: Completed", "total_instances", len(stateChanges))
 	return output, nil
 }
 
@@ -145,26 +151,27 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 // bucket. queryOK is false when the lookup itself failed (KV unreachable /
 // malformed reply), so callers can KV-health gate any idempotent-absence
 // decision rather than treating a failed query as "not found".
-func lookupTerminated(natsConn *nats.Conn, instanceID, accountID string) (found, queryOK bool) {
+func lookupTerminated(ctx context.Context, natsConn *nats.Conn, instanceID, accountID string) (found, queryOK bool) {
 	describeInput := &ec2.DescribeInstancesInput{
 		InstanceIds: []*string{&instanceID},
 	}
 	reqData, err := json.Marshal(describeInput)
 	if err != nil {
-		slog.Warn("lookupTerminated: failed to marshal request", "instanceId", instanceID, "err", err)
+		slog.WarnContext(ctx, "lookupTerminated: failed to marshal request", "instanceId", instanceID, "err", err)
 		return false, false
 	}
 	reqMsg := nats.NewMsg("ec2.DescribeTerminatedInstances")
 	reqMsg.Data = reqData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 3*time.Second)
 	if err != nil {
-		slog.Warn("lookupTerminated: failed to query terminated instances", "instanceId", instanceID, "err", err)
+		slog.WarnContext(ctx, "lookupTerminated: failed to query terminated instances", "instanceId", instanceID, "err", err)
 		return false, false
 	}
 	var output ec2.DescribeInstancesOutput
 	if unmarshalErr := json.Unmarshal(msg.Data, &output); unmarshalErr != nil {
-		slog.Warn("lookupTerminated: failed to unmarshal response", "instanceId", instanceID, "err", unmarshalErr)
+		slog.WarnContext(ctx, "lookupTerminated: failed to unmarshal response", "instanceId", instanceID, "err", unmarshalErr)
 		return false, false
 	}
 	for _, res := range output.Reservations {

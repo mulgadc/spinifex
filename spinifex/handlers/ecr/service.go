@@ -1,5 +1,7 @@
 package ecr
 
+import "context"
+
 // NATS subjects for the daemon-served ECR metadata surface. The daemon owns the
 // JetStream KV; the gateway is a request/reply client. Blob and manifest bytes
 // do NOT travel these subjects — only metadata records and upload-state CAS.
@@ -229,31 +231,31 @@ type UploadDeleteResponse struct {
 // response. Absence and CAS conflicts are encoded in the response, not as a
 // transport error, so they survive the AWS-error-code-only NATS reply.
 type MetaService interface {
-	RepoCreate(req *RepoCreateRequest, accountID string) (*RepoCreateResponse, error)
-	RepoDescribe(req *RepoDescribeRequest, accountID string) (*RepoDescribeResponse, error)
-	RepoList(req *RepoListRequest, accountID string) (*RepoListResponse, error)
-	RepoDelete(req *RepoDeleteRequest, accountID string) (*RepoDeleteResponse, error)
+	RepoCreate(ctx context.Context, req *RepoCreateRequest, accountID string) (*RepoCreateResponse, error)
+	RepoDescribe(ctx context.Context, req *RepoDescribeRequest, accountID string) (*RepoDescribeResponse, error)
+	RepoList(ctx context.Context, req *RepoListRequest, accountID string) (*RepoListResponse, error)
+	RepoDelete(ctx context.Context, req *RepoDeleteRequest, accountID string) (*RepoDeleteResponse, error)
 
-	PolicyPut(req *PolicyPutRequest, accountID string) (*PolicyPutResponse, error)
-	PolicyGet(req *PolicyGetRequest, accountID string) (*PolicyGetResponse, error)
-	PolicyDelete(req *PolicyDeleteRequest, accountID string) (*PolicyDeleteResponse, error)
+	PolicyPut(ctx context.Context, req *PolicyPutRequest, accountID string) (*PolicyPutResponse, error)
+	PolicyGet(ctx context.Context, req *PolicyGetRequest, accountID string) (*PolicyGetResponse, error)
+	PolicyDelete(ctx context.Context, req *PolicyDeleteRequest, accountID string) (*PolicyDeleteResponse, error)
 
-	LifecyclePut(req *LifecyclePutRequest, accountID string) (*LifecyclePutResponse, error)
-	LifecycleGet(req *LifecycleGetRequest, accountID string) (*LifecycleGetResponse, error)
-	LifecycleDelete(req *LifecycleDeleteRequest, accountID string) (*LifecycleDeleteResponse, error)
+	LifecyclePut(ctx context.Context, req *LifecyclePutRequest, accountID string) (*LifecyclePutResponse, error)
+	LifecycleGet(ctx context.Context, req *LifecycleGetRequest, accountID string) (*LifecycleGetResponse, error)
+	LifecycleDelete(ctx context.Context, req *LifecycleDeleteRequest, accountID string) (*LifecycleDeleteResponse, error)
 
-	TagPut(req *TagPutRequest, accountID string) (*TagPutResponse, error)
-	TagGet(req *TagGetRequest, accountID string) (*TagGetResponse, error)
-	TagList(req *TagListRequest, accountID string) (*TagListResponse, error)
-	TagDelete(req *TagDeleteRequest, accountID string) (*TagDeleteResponse, error)
+	TagPut(ctx context.Context, req *TagPutRequest, accountID string) (*TagPutResponse, error)
+	TagGet(ctx context.Context, req *TagGetRequest, accountID string) (*TagGetResponse, error)
+	TagList(ctx context.Context, req *TagListRequest, accountID string) (*TagListResponse, error)
+	TagDelete(ctx context.Context, req *TagDeleteRequest, accountID string) (*TagDeleteResponse, error)
 
-	ManifestPut(req *ManifestPutRequest, accountID string) (*ManifestPutResponse, error)
-	ManifestDescribe(req *ManifestDescribeRequest, accountID string) (*ManifestDescribeResponse, error)
-	ManifestList(req *ManifestListRequest, accountID string) (*ManifestListResponse, error)
-	ManifestDelete(req *ManifestDeleteRequest, accountID string) (*ManifestDeleteResponse, error)
+	ManifestPut(ctx context.Context, req *ManifestPutRequest, accountID string) (*ManifestPutResponse, error)
+	ManifestDescribe(ctx context.Context, req *ManifestDescribeRequest, accountID string) (*ManifestDescribeResponse, error)
+	ManifestList(ctx context.Context, req *ManifestListRequest, accountID string) (*ManifestListResponse, error)
+	ManifestDelete(ctx context.Context, req *ManifestDeleteRequest, accountID string) (*ManifestDeleteResponse, error)
 
-	UploadCreate(req *UploadCreateRequest, accountID string) (*UploadCreateResponse, error)
-	UploadGet(req *UploadGetRequest, accountID string) (*UploadGetResponse, error)
-	UploadUpdate(req *UploadUpdateRequest, accountID string) (*UploadUpdateResponse, error)
-	UploadDelete(req *UploadDeleteRequest, accountID string) (*UploadDeleteResponse, error)
+	UploadCreate(ctx context.Context, req *UploadCreateRequest, accountID string) (*UploadCreateResponse, error)
+	UploadGet(ctx context.Context, req *UploadGetRequest, accountID string) (*UploadGetResponse, error)
+	UploadUpdate(ctx context.Context, req *UploadUpdateRequest, accountID string) (*UploadUpdateResponse, error)
+	UploadDelete(ctx context.Context, req *UploadDeleteRequest, accountID string) (*UploadDeleteResponse, error)
 }

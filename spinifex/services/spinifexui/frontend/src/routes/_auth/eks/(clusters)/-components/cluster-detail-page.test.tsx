@@ -53,6 +53,29 @@ describe("ClusterDetailPage", () => {
     expect(screen.getByRole("tab", { name: "Compute" })).toBeInTheDocument()
   })
 
+  it("surfaces cluster health issues while keeping the status badge", () => {
+    const qc = createTestQueryClient()
+    qc.setQueryData(["eks", "clusters", CLUSTER], {
+      cluster: {
+        status: "ACTIVE",
+        health: {
+          issues: [
+            {
+              code: "ClusterUnreachable",
+              message: "apiserver healthz=fail: etcd:unreachable",
+            },
+          ],
+        },
+      },
+    })
+    renderWithClient(<ClusterDetailPage clusterName={CLUSTER} />, qc)
+    expect(screen.getAllByText("ACTIVE").length).toBeGreaterThan(0)
+    expect(screen.getByText("1 health issue")).toBeInTheDocument()
+    expect(
+      screen.getByText("apiserver healthz=fail: etcd:unreachable"),
+    ).toBeInTheDocument()
+  })
+
   it("falls back to UNKNOWN status when the cluster has none", () => {
     const qc = createTestQueryClient()
     qc.setQueryData(["eks", "clusters", CLUSTER], { cluster: {} })

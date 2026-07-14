@@ -7,6 +7,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
 	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
+	"github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifex"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
@@ -30,6 +31,7 @@ var (
 	_ Service = (*awsgw.Service)(nil)
 	_ Service = (*spinifexui.Service)(nil)
 	_ Service = (*vpcd.Service)(nil)
+	_ Service = (*qmpcollector.Service)(nil)
 )
 
 func New(btype string, config any) (Service, error) {
@@ -57,6 +59,9 @@ func New(btype string, config any) (Service, error) {
 
 	case "vpcd":
 		return vpcd.New(config)
+
+	case "qmp-collector":
+		return qmpcollector.New(config)
 	}
 
 	return nil, fmt.Errorf("unknown service type: %s", btype)

@@ -41,6 +41,13 @@ const (
 
 	// heartbeatPersistInterval is how often a no-op heartbeat writes to KV.
 	heartbeatPersistInterval = 60 * time.Second
+	// lbProvisioningTimeout bounds how long an LB may sit in provisioning
+	// waiting for its lb-agent's first heartbeat before the reaper marks it
+	// failed. Kept below the e2e 5m wait so a wedged LB terminal-fails and the
+	// harness can retry rather than time out.
+	lbProvisioningTimeout = 4 * time.Minute
+	// lbReaperInterval is how often the lifecycle reaper sweeps for stuck LBs.
+	lbReaperInterval = 30 * time.Second
 
 	// Health check fields are interpolated into the HAProxy template; restrict
 	// to characters that cannot terminate or inject directives.
@@ -120,6 +127,7 @@ type ELBv2ServiceImpl struct {
 	ctx                        context.Context
 	cancel                     context.CancelFunc
 	hc                         *healthChecker
+	reaperInterval             time.Duration // lifecycle reaper tick; 0 falls back to lbReaperInterval
 
 	recoveryLBIndexMu sync.Mutex
 	recoveryLBIndex   map[string]*LoadBalancerRecord
@@ -161,16 +169,17 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 	hc := newHealthChecker(store)
 
 	return &ELBv2ServiceImpl{
-		config:        cfg,
-		store:         store,
-		acmStore:      acmStore,
-		nc:            nc,
-		nodeID:        nodeID,
-		region:        region,
-		dnsBaseDomain: handlers_dns.ResolveBaseDomain(cfg),
-		ctx:           ctx,
-		cancel:        cancel,
-		hc:            hc,
+		config:         cfg,
+		store:          store,
+		acmStore:       acmStore,
+		nc:             nc,
+		nodeID:         nodeID,
+		region:         region,
+		dnsBaseDomain:  handlers_dns.ResolveBaseDomain(cfg),
+		ctx:            ctx,
+		cancel:         cancel,
+		hc:             hc,
+		reaperInterval: lbReaperInterval,
 	}, nil
 }
 
@@ -379,7 +388,7 @@ func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnet
 
 // describeENIs resolves ENI IDs in one VPC call, keyed by NetworkInterfaceId.
 // Returns an empty map when the VPC service is unavailable or the call errors.
-func (s *ELBv2ServiceImpl) describeENIs(eniIDs []string, accountID string) map[string]*ec2.NetworkInterface {
+func (s *ELBv2ServiceImpl) describeENIs(ctx context.Context, eniIDs []string, accountID string) map[string]*ec2.NetworkInterface {
 	eniDetails := make(map[string]*ec2.NetworkInterface, len(eniIDs))
 	if s.VPCService == nil || len(eniIDs) == 0 {
 		return eniDetails
@@ -388,11 +397,11 @@ func (s *ELBv2ServiceImpl) describeENIs(eniIDs []string, accountID string) map[s
 	for _, id := range eniIDs {
 		eniPtrs = append(eniPtrs, aws.String(id))
 	}
-	result, err := s.VPCService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	result, err := s.VPCService.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: eniPtrs,
 	}, accountID)
 	if err != nil {
-		slog.Error("VPC describe ENIs failed", "count", len(eniIDs), "err", err)
+		slog.ErrorContext(ctx, "VPC describe ENIs failed", "count", len(eniIDs), "err", err)
 		return eniDetails
 	}
 	for _, eni := range result.NetworkInterfaces {
@@ -426,25 +435,26 @@ func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInte
 }
 
 // lbVMLaunch is the outcome of booting the LB system VM. failed is true when
-// the VM could not be launched.
+// the VM could not be launched; failReason carries the cause for State.Reason.
 type lbVMLaunch struct {
 	instanceID string
 	vpcIP      string
 	publicIP   string
 	hostPorts  map[int]int
 	failed     bool
+	failReason string
 }
 
 // launchLBVM boots the system VM for a load balancer. The first ENI is the
 // primary NIC; extras give multi-subnet data-plane presence. No-op when no
 // launcher is configured. Shared by CreateLoadBalancer and SetSubnets.
-func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []string, accountID string, crossAccountENIs []ExtraENIInput) lbVMLaunch {
+func (s *ELBv2ServiceImpl) launchLBVM(ctx context.Context, lbID, scheme string, eniIDs, subnets []string, accountID string, crossAccountENIs []ExtraENIInput) lbVMLaunch {
 	var res lbVMLaunch
 	if s.InstanceLauncher == nil || len(eniIDs) == 0 || len(subnets) == 0 {
 		return res
 	}
 
-	eniDetails := s.describeENIs(eniIDs, accountID)
+	eniDetails := s.describeENIs(ctx, eniIDs, accountID)
 	primary := eniDetails[eniIDs[0]]
 	primaryIP := ""
 	primaryMAC := ""
@@ -460,8 +470,9 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 	extraENIInputs = append(extraENIInputs, crossAccountENIs...)
 
 	if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
-		slog.Error("launchLBVM: system credentials not configured — cannot launch LB VM", "lbId", lbID)
+		slog.ErrorContext(ctx, "launchLBVM: system credentials not configured — cannot launch LB VM", "lbId", lbID)
 		res.failed = true
+		res.failReason = "system credentials not configured for LB VM launch"
 		return res
 	}
 
@@ -495,8 +506,9 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 
 	out, launchErr := s.InstanceLauncher.LaunchSystemInstance(launchInput)
 	if launchErr != nil {
-		slog.Error("launchLBVM: failed to launch LB VM", "lbId", lbID, "err", launchErr)
+		slog.ErrorContext(ctx, "launchLBVM: failed to launch LB VM", "lbId", lbID, "err", launchErr)
 		res.failed = true
+		res.failReason = fmt.Sprintf("LB VM launch failed: %v", launchErr)
 		return res
 	}
 
@@ -504,7 +516,7 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 	res.vpcIP = out.PrivateIP
 	res.publicIP = out.PublicIP
 	res.hostPorts = out.HostfwdMap
-	slog.Info("launchLBVM: LB VM launched", "lbId", lbID, "instanceId", out.InstanceID, "ip", out.PrivateIP, "publicIp", out.PublicIP, "hostfwd", out.HostfwdMap)
+	slog.InfoContext(ctx, "launchLBVM: LB VM launched", "lbId", lbID, "instanceId", out.InstanceID, "ip", out.PrivateIP, "publicIp", out.PublicIP, "hostfwd", out.HostfwdMap)
 	return res
 }
 
@@ -545,7 +557,7 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 		return nil, fmt.Errorf("lb %s has no subnets/ENIs to rebuild from", lb.LoadBalancerID)
 	}
 
-	eniDetails := s.describeENIs(lb.ENIs, lb.AccountID)
+	eniDetails := s.describeENIs(context.Background(), lb.ENIs, lb.AccountID)
 	// For multi-ENI LBs the VPC store must supply all MAC/IP/subnet details.
 	if len(lb.ENIs) > 1 && len(eniDetails) < len(lb.ENIs) {
 		return nil, fmt.Errorf("describe lb %s ENIs: got %d/%d", lb.LoadBalancerID, len(eniDetails), len(lb.ENIs))
@@ -596,16 +608,16 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 
 // resolveENIBindAddr looks up the private IP of the first ENI belonging to the ALB.
 // Returns empty string if VPC service is unavailable or no ENIs exist.
-func (s *ELBv2ServiceImpl) resolveENIBindAddr(lb *LoadBalancerRecord) string {
+func (s *ELBv2ServiceImpl) resolveENIBindAddr(ctx context.Context, lb *LoadBalancerRecord) string {
 	if s.VPCService == nil || len(lb.ENIs) == 0 {
 		return ""
 	}
 
-	result, err := s.VPCService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	result, err := s.VPCService.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(lb.ENIs[0])},
 	}, lb.AccountID)
 	if err != nil || len(result.NetworkInterfaces) == 0 {
-		slog.Debug("Could not resolve ALB ENI bind address", "eniId", lb.ENIs[0], "err", err)
+		slog.DebugContext(ctx, "Could not resolve ALB ENI bind address", "eniId", lb.ENIs[0], "err", err)
 		return ""
 	}
 
@@ -617,18 +629,18 @@ func (s *ELBv2ServiceImpl) resolveENIBindAddr(lb *LoadBalancerRecord) string {
 
 // updateStoredConfig generates the data-plane config, hashes it, and stores it
 // on the LB record. The agent fetches it on the next heartbeat when the hash changes.
-func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
+func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalancerRecord) error {
 	if lb.InstanceID == "" {
 		return nil
 	}
 
 	listeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
 	if err != nil {
-		slog.Error("updateStoredConfig: failed to list listeners", "lbArn", lb.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "updateStoredConfig: failed to list listeners", "lbArn", lb.LoadBalancerArn, "err", err)
 		return fmt.Errorf("list listeners: %w", err)
 	}
 
-	bindAddr := s.resolveENIBindAddr(lb)
+	bindAddr := s.resolveENIBindAddr(ctx, lb)
 
 	// Collect rules per listener and target groups referenced by listeners + rules.
 	rulesByListener := make(map[string][]*RuleRecord)
@@ -643,7 +655,7 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 		}
 		tg, tgErr := s.store.GetTargetGroupByArn(tgArn)
 		if tgErr != nil || tg == nil {
-			slog.Debug("updateStoredConfig: target group not found", "tgArn", tgArn)
+			slog.DebugContext(ctx, "updateStoredConfig: target group not found", "tgArn", tgArn)
 			return
 		}
 		tgByArn[tgArn] = tg
@@ -655,7 +667,7 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 		}
 		rules, rErr := s.store.ListRulesByListener(l.ListenerArn)
 		if rErr != nil {
-			slog.Error("updateStoredConfig: failed to list rules", "listenerArn", l.ListenerArn, "err", rErr)
+			slog.ErrorContext(ctx, "updateStoredConfig: failed to list rules", "listenerArn", l.ListenerArn, "err", rErr)
 			return fmt.Errorf("list rules: %w", rErr)
 		}
 		if len(rules) > 0 {
@@ -670,13 +682,13 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 
 	certPEMByArn, err := s.resolveListenerCerts(listeners, lb.AccountID)
 	if err != nil {
-		slog.Error("updateStoredConfig: failed to resolve certs", "lbId", lb.LoadBalancerID, "err", err)
+		slog.ErrorContext(ctx, "updateStoredConfig: failed to resolve certs", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("resolve certs: %w", err)
 	}
 
 	configContent, certFiles, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, rulesByListener, bindAddr, certPEMByArn)
 	if err != nil {
-		slog.Error("updateStoredConfig: failed to generate config", "lbId", lb.LoadBalancerID, "err", err)
+		slog.ErrorContext(ctx, "updateStoredConfig: failed to generate config", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("generate config: %w", err)
 	}
 
@@ -692,11 +704,11 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 	}
 
 	if err := s.store.PutLoadBalancer(lb); err != nil {
-		slog.Error("updateStoredConfig: failed to persist LB", "lbId", lb.LoadBalancerID, "err", err)
+		slog.ErrorContext(ctx, "updateStoredConfig: failed to persist LB", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("persist LB: %w", err)
 	}
 
-	slog.Info("updateStoredConfig: config stored",
+	slog.InfoContext(ctx, "updateStoredConfig: config stored",
 		"lbId", lb.LoadBalancerID, "hash", hash[:12], "size", len(configContent), "certs", len(certFiles))
 	return nil
 }
@@ -781,10 +793,10 @@ func configCertHash(configContent string, certFiles map[string]string) string {
 
 // updateStoredConfigForTargetGroup finds all LBs that reference the given target
 // group (via listeners) and updates their stored config.
-func (s *ELBv2ServiceImpl) updateStoredConfigForTargetGroup(tgArn string) error {
+func (s *ELBv2ServiceImpl) updateStoredConfigForTargetGroup(ctx context.Context, tgArn string) error {
 	allListeners, err := s.store.ListListeners()
 	if err != nil {
-		slog.Error("updateStoredConfigForTargetGroup: failed to list listeners", "err", err)
+		slog.ErrorContext(ctx, "updateStoredConfigForTargetGroup: failed to list listeners", "err", err)
 		return fmt.Errorf("list listeners: %w", err)
 	}
 
@@ -800,7 +812,7 @@ func (s *ELBv2ServiceImpl) updateStoredConfigForTargetGroup(tgArn string) error 
 	// Rules may forward to a TG even if the listener default action does not.
 	allRules, rulesErr := s.store.ListRules()
 	if rulesErr != nil {
-		slog.Error("updateStoredConfigForTargetGroup: failed to list rules", "err", rulesErr)
+		slog.ErrorContext(ctx, "updateStoredConfigForTargetGroup: failed to list rules", "err", rulesErr)
 		return fmt.Errorf("list rules: %w", rulesErr)
 	}
 	listenerLB := make(map[string]string, len(allListeners))
@@ -823,7 +835,7 @@ func (s *ELBv2ServiceImpl) updateStoredConfigForTargetGroup(tgArn string) error 
 		if lbErr != nil || lb == nil {
 			continue
 		}
-		if err := s.updateStoredConfig(lb); err != nil {
+		if err := s.updateStoredConfig(ctx, lb); err != nil {
 			return err
 		}
 	}
@@ -832,21 +844,21 @@ func (s *ELBv2ServiceImpl) updateStoredConfigForTargetGroup(tgArn string) error 
 
 // LBAgentHeartbeat processes a heartbeat from an LB agent. On first heartbeat
 // transitions LB provisioning→active, processes health, and returns the config hash.
-func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accountID string) (*LBAgentHeartbeatOutput, error) {
+func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentHeartbeatInput, accountID string) (*LBAgentHeartbeatOutput, error) {
 	if input.LBID == nil || *input.LBID == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	lbID := *input.LBID
-	slog.Debug("LBAgentHeartbeat received", "lbId", lbID, "accountId", accountID)
+	slog.DebugContext(ctx, "LBAgentHeartbeat received", "lbId", lbID, "accountId", accountID)
 	lb, err := s.store.GetLoadBalancer(lbID)
 	if err != nil {
-		slog.Error("LBAgentHeartbeat: failed to get LB", "lbId", lbID, "err", err)
+		slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to get LB", "lbId", lbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
 		// Log to distinguish a stuck-in-provisioning LB from one whose heartbeat never arrived.
-		slog.Warn("LBAgentHeartbeat: LB not found or account mismatch",
+		slog.WarnContext(ctx, "LBAgentHeartbeat: LB not found or account mismatch",
 			"lbId", lbID, "accountId", accountID, "found", lb != nil)
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
@@ -855,8 +867,9 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 	stateChanged := false
 	if lb.State == StateProvisioning {
 		lb.State = StateActive
+		lb.StateReason = ""
 		stateChanged = true
-		slog.Info("LB transitioned to active via heartbeat", "lbId", lbID)
+		slog.InfoContext(ctx, "LB transitioned to active via heartbeat", "lbId", lbID)
 	}
 
 	now := time.Now().UTC()
@@ -867,21 +880,21 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 	case stateChanged:
 		// Build data-plane config on activation: reactive calls during create
 		// no-op while InstanceID is empty, so we build it now from existing listeners/targets.
-		if err := s.updateStoredConfig(lb); err != nil {
-			slog.Error("LBAgentHeartbeat: failed to build config on activation", "lbId", lbID, "err", err)
+		if err := s.updateStoredConfig(ctx, lb); err != nil {
+			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to build config on activation", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	case heartbeatStale:
 		// Refresh the heartbeat timestamp only; avoid writing the full record on every tick.
 		if err := s.store.PutLoadBalancer(lb); err != nil {
-			slog.Error("LBAgentHeartbeat: failed to persist LB", "lbId", lbID, "err", err)
+			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to persist LB", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
 
 	// Process health report directly — no JSON round-trip needed.
 	if len(input.Servers) > 0 {
-		s.hc.handleHealthReportDirect(input.toHealthReport())
+		s.hc.handleHealthReportDirect(ctx, input.toHealthReport())
 	}
 
 	return &LBAgentHeartbeatOutput{
@@ -891,7 +904,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 }
 
 // GetLBConfig returns the stored HAProxy config and hash for a load balancer.
-func (s *ELBv2ServiceImpl) GetLBConfig(input *GetLBConfigInput, accountID string) (*GetLBConfigOutput, error) {
+func (s *ELBv2ServiceImpl) GetLBConfig(ctx context.Context, input *GetLBConfigInput, accountID string) (*GetLBConfigOutput, error) {
 	if input.LBID == nil || *input.LBID == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -899,7 +912,7 @@ func (s *ELBv2ServiceImpl) GetLBConfig(input *GetLBConfigInput, accountID string
 	lbID := *input.LBID
 	lb, err := s.store.GetLoadBalancer(lbID)
 	if err != nil {
-		slog.Error("GetLBConfig: failed to get LB", "lbId", lbID, "err", err)
+		slog.ErrorContext(ctx, "GetLBConfig: failed to get LB", "lbId", lbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
@@ -962,18 +975,18 @@ func buildLBArn(region, accountID, name, lbID, lbType string) string {
 
 // resolveTargetIP looks up the private IP for an instance by finding its primary ENI.
 // Returns empty string if VPC service is unavailable or no ENI found.
-func (s *ELBv2ServiceImpl) resolveTargetIP(instanceID, accountID string) string {
+func (s *ELBv2ServiceImpl) resolveTargetIP(ctx context.Context, instanceID, accountID string) string {
 	if s.VPCService == nil {
 		return ""
 	}
 
-	result, err := s.VPCService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	result, err := s.VPCService.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("attachment.instance-id"), Values: []*string{aws.String(instanceID)}},
 		},
 	}, accountID)
 	if err != nil || len(result.NetworkInterfaces) == 0 {
-		slog.Warn("Could not resolve target IP — target will not receive traffic until ENI is attached", "instanceId", instanceID, "err", err)
+		slog.WarnContext(ctx, "Could not resolve target IP — target will not receive traffic until ENI is attached", "instanceId", instanceID, "err", err)
 		return ""
 	}
 
@@ -987,20 +1000,20 @@ func (s *ELBv2ServiceImpl) resolveTargetIP(instanceID, accountID string) string 
 // resolveRegisteredTargetIP returns the private IP for a target being registered.
 // For ip-type targets the ID is the IP; for instance targets it is resolved via
 // the primary ENI. Returns an error if the ID doesn't match the target type.
-func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(targetType, id, accountID string) (string, error) {
+func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(ctx context.Context, targetType, id, accountID string) (string, error) {
 	switch targetType {
 	case TargetTypeIP:
 		if net.ParseIP(id) == nil {
-			slog.Warn("RegisterTargets: ip target id is not a valid IP", "id", id)
+			slog.WarnContext(ctx, "RegisterTargets: ip target id is not a valid IP", "id", id)
 			return "", errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 		return id, nil
 	default: // instance
 		if net.ParseIP(id) != nil {
-			slog.Warn("RegisterTargets: instance target group given an IP address", "id", id)
+			slog.WarnContext(ctx, "RegisterTargets: instance target group given an IP address", "id", id)
 			return "", errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		return s.resolveTargetIP(id, accountID), nil
+		return s.resolveTargetIP(ctx, id, accountID), nil
 	}
 }
 
@@ -1069,8 +1082,8 @@ func isCompatibleProtocol(listenerProto, tgProto string) bool {
 // responder, which then times out and re-publishes the create). Callers that
 // need the LB's front-end address before proceeding — e.g. EKS, which bakes the
 // IP into the control-plane apiserver cert SAN — must use CreateLoadBalancerSync.
-func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
-	return s.createLoadBalancer(input, accountID, false, nil)
+func (s *ELBv2ServiceImpl) CreateLoadBalancer(ctx context.Context, input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
+	return s.createLoadBalancer(ctx, input, accountID, false, nil)
 }
 
 // CreateLoadBalancerSync creates the LB and drives its data-plane launch
@@ -1081,7 +1094,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 // running it on the shared gateway responder would reintroduce 267.4. The LB
 // still flips provisioning → active on the lb-agent's first heartbeat.
 func (s *ELBv2ServiceImpl) CreateLoadBalancerSync(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
-	return s.createLoadBalancer(input, accountID, true, nil)
+	return s.createLoadBalancer(context.Background(), input, accountID, true, nil)
 }
 
 // CreateClusterNLBSync creates an NLB synchronously (like CreateLoadBalancerSync)
@@ -1091,10 +1104,10 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancerSync(input *elbv2.CreateLoadBalance
 // while inheriting CP-level HA from the NLB target group. Each ExtraENIInput
 // carries its own AccountID (the customer account that owns the Set A ENI).
 func (s *ELBv2ServiceImpl) CreateClusterNLBSync(input *elbv2.CreateLoadBalancerInput, accountID string, crossAccountENIs []ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error) {
-	return s.createLoadBalancer(input, accountID, true, crossAccountENIs)
+	return s.createLoadBalancer(context.Background(), input, accountID, true, crossAccountENIs)
 }
 
-func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string, syncLaunch bool, crossAccountENIs []ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error) {
+func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.CreateLoadBalancerInput, accountID string, syncLaunch bool, crossAccountENIs []ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error) {
 	if input.Name == nil || *input.Name == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -1104,7 +1117,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	// Check for duplicate name
 	existing, err := s.store.GetLoadBalancerByName(name, accountID)
 	if err != nil {
-		slog.Error("CreateLoadBalancer: failed to check duplicate name", "name", name, "err", err)
+		slog.ErrorContext(ctx, "CreateLoadBalancer: failed to check duplicate name", "name", name, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if existing != nil {
@@ -1154,7 +1167,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	// orphaned claims from crashed creates are reclaimed. Every failure releases it.
 	claimOK, claimDup, claimErr := s.store.ClaimLBName(name, accountID, lbID)
 	if claimErr != nil {
-		slog.Error("CreateLoadBalancer: name claim failed", "name", name, "err", claimErr)
+		slog.ErrorContext(ctx, "CreateLoadBalancer: name claim failed", "name", name, "err", claimErr)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if claimDup {
@@ -1187,9 +1200,9 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		// the caller supplies SGs they replace the managed SG and own the rules.
 		eniGroups := securityGroups
 		if lbType == LoadBalancerTypeNetwork && len(securityGroups) == 0 {
-			sgID, sgErr := s.createNLBManagedSG(lbID, lbArn, subnets[0], accountID)
+			sgID, sgErr := s.createNLBManagedSG(ctx, lbID, lbArn, subnets[0], accountID)
 			if sgErr != nil {
-				slog.Error("CreateLoadBalancer: failed to create managed NLB SG", "lbId", lbID, "err", sgErr)
+				slog.ErrorContext(ctx, "CreateLoadBalancer: failed to create managed NLB SG", "lbId", lbID, "err", sgErr)
 				s.releaseLBNameClaim(name, accountID)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
@@ -1216,11 +1229,11 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			if len(eniGroups) > 0 {
 				eniIn.Groups = aws.StringSlice(eniGroups)
 			}
-			eniOut, eniErr := s.VPCService.CreateNetworkInterface(eniIn, accountID)
+			eniOut, eniErr := s.VPCService.CreateNetworkInterface(ctx, eniIn, accountID)
 			if eniErr != nil {
 				// Rollback so a partial ENI creation doesn't leak resources.
-				s.rollbackLBInfra(eniIDs, nlbManagedSGID, name, accountID)
-				slog.Error("CreateLoadBalancer: failed to create ENI", "subnet", subnetID, "err", eniErr)
+				s.rollbackLBInfra(ctx, eniIDs, nlbManagedSGID, name, accountID)
+				slog.ErrorContext(ctx, "CreateLoadBalancer: failed to create ENI", "subnet", subnetID, "err", eniErr)
 				return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
 			}
 
@@ -1244,18 +1257,21 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	// VM boot is async to avoid blocking the gateway responder. The create
 	// returns provisioning immediately; launcher-less deployments are active on the spot.
 	state := StateActive
+	stateReason := ""
 	willLaunch := s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0
 	if willLaunch {
 		state = StateProvisioning
+		stateReason = "awaiting first lb-agent heartbeat"
 		// Internal LBs without a mgmt return route would hang in provisioning;
 		// mark failed immediately so the broken path is visible.
 		if scheme == SchemeInternal {
 			if gw, tgt := s.resolveMgmtRoute(scheme); gw == "" || tgt == "" {
-				slog.Error("CreateLoadBalancer: internal LB has no mgmt return route; marking failed (lb-agent cannot heartbeat AWSGW)",
+				slog.ErrorContext(ctx, "CreateLoadBalancer: internal LB has no mgmt return route; marking failed (lb-agent cannot heartbeat AWSGW)",
 					"lbId", lbID,
 					"mgmtBridgeIP", s.MgmtBridgeIP,
 					"advertiseIP", s.AdvertiseIP)
 				state = StateFailed
+				stateReason = "internal LB has no mgmt return route (lb-agent cannot heartbeat AWSGW)"
 			}
 		}
 	}
@@ -1270,6 +1286,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		Scheme:           scheme,
 		Type:             lbType,
 		State:            state,
+		StateReason:      stateReason,
 		VpcId:            vpcID,
 		SecurityGroups:   securityGroups,
 		NLBManagedSGID:   nlbManagedSGID,
@@ -1285,9 +1302,9 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	}
 
 	if err := s.store.PutLoadBalancer(record); err != nil {
-		slog.Error("CreateLoadBalancer: failed to persist record", "lbId", lbID, "err", err)
+		slog.ErrorContext(ctx, "CreateLoadBalancer: failed to persist record", "lbId", lbID, "err", err)
 		// Rollback so unowned ENIs/SG don't leak.
-		s.rollbackLBInfra(eniIDs, nlbManagedSGID, name, accountID)
+		s.rollbackLBInfra(ctx, eniIDs, nlbManagedSGID, name, accountID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -1300,13 +1317,13 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			// allocated front-end IP. The caller is off the gateway responder, so
 			// 267.4 does not apply. provisionLBDataPlane leaves the record marked
 			// failed on launch failure for diagnosis.
-			if err := s.provisionLBDataPlane(lc); err != nil {
-				slog.Error("CreateLoadBalancerSync: data-plane launch failed", "lbArn", lbArn, "err", err)
+			if err := s.provisionLBDataPlane(ctx, lc); err != nil {
+				slog.ErrorContext(ctx, "CreateLoadBalancerSync: data-plane launch failed", "lbArn", lbArn, "err", err)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			launched, lerr := s.store.GetLoadBalancerByArn(lbArn)
 			if lerr != nil || launched == nil {
-				slog.Error("CreateLoadBalancerSync: reload after launch failed", "lbArn", lbArn, "err", lerr)
+				slog.ErrorContext(ctx, "CreateLoadBalancerSync: reload after launch failed", "lbArn", lbArn, "err", lerr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			record = launched
@@ -1314,21 +1331,21 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			s.launchWG.Go(func() {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Error("CreateLoadBalancer: async launch panic", "lbId", lc.lbID, "panic", r)
-						s.markLBFailed(lc.lbArn)
+						slog.ErrorContext(ctx, "CreateLoadBalancer: async launch panic", "lbId", lc.lbID, "panic", r)
+						s.markLBFailed(lc.lbArn, fmt.Sprintf("LB VM launch panicked: %v", r))
 					}
 				}()
-				s.launchLBVMAsync(lc)
+				s.launchLBVMAsync(ctx, lc)
 			})
 		}
 	}
 
 	// Agent heartbeat will transition provisioning → active on first contact.
 
-	slog.Info("CreateLoadBalancer accepted", "name", name, "lbArn", lbArn, "enis", len(eniIDs), "state", record.State, "accountID", accountID, "sync", syncLaunch)
+	slog.InfoContext(ctx, "CreateLoadBalancer accepted", "name", name, "lbArn", lbArn, "enis", len(eniIDs), "state", record.State, "accountID", accountID, "sync", syncLaunch)
 
 	return &elbv2.CreateLoadBalancerOutput{
-		LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(record)},
+		LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(ctx, record)},
 	}, nil
 }
 
@@ -1353,8 +1370,8 @@ type lbLaunchCtx struct {
 // the allocated front-end IP before the guest boot completes. Callers choose
 // whether to run it inline (CreateLoadBalancerSync) or on a background goroutine
 // (launchLBVMAsync).
-func (s *ELBv2ServiceImpl) provisionLBDataPlane(lc lbLaunchCtx) error {
-	launch := s.launchLBVM(lc.lbID, lc.scheme, lc.eniIDs, lc.subnets, lc.accountID, lc.crossAccountENIs)
+func (s *ELBv2ServiceImpl) provisionLBDataPlane(ctx context.Context, lc lbLaunchCtx) error {
+	launch := s.launchLBVM(ctx, lc.lbID, lc.scheme, lc.eniIDs, lc.subnets, lc.accountID, lc.crossAccountENIs)
 
 	record, err := s.store.GetLoadBalancerByArn(lc.lbArn)
 	if err != nil || record == nil {
@@ -1363,10 +1380,11 @@ func (s *ELBv2ServiceImpl) provisionLBDataPlane(lc lbLaunchCtx) error {
 
 	if launch.failed {
 		record.State = StateFailed
+		record.StateReason = launch.failReason
 		if putErr := s.store.PutLoadBalancer(record); putErr != nil {
 			return fmt.Errorf("persist failed state for %s: %w", lc.lbArn, putErr)
 		}
-		return fmt.Errorf("lb-vm launch failed for %s", lc.lbArn)
+		return fmt.Errorf("lb-vm launch failed for %s: %s", lc.lbArn, launch.failReason)
 	}
 
 	record.InstanceID = launch.instanceID
@@ -1431,48 +1449,101 @@ func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, o
 // launchLBVMAsync runs provisionLBDataPlane on the background goroutine spawned
 // by CreateLoadBalancer; failures are logged (the record is already marked
 // failed inside provisionLBDataPlane). Runs after CreateLoadBalancer has returned.
-func (s *ELBv2ServiceImpl) launchLBVMAsync(lc lbLaunchCtx) {
-	if err := s.provisionLBDataPlane(lc); err != nil {
-		slog.Error("CreateLoadBalancer: async launch failed", "lbArn", lc.lbArn, "err", err)
+func (s *ELBv2ServiceImpl) launchLBVMAsync(ctx context.Context, lc lbLaunchCtx) {
+	if err := s.provisionLBDataPlane(ctx, lc); err != nil {
+		slog.ErrorContext(ctx, "CreateLoadBalancer: async launch failed", "lbArn", lc.lbArn, "err", err)
 	}
 }
 
 // rollbackLBInfra tears down ENIs, the NLB managed SG, and the name claim created
 // by a partial CreateLoadBalancer. Each step is best-effort and idempotent.
-func (s *ELBv2ServiceImpl) rollbackLBInfra(eniIDs []string, nlbManagedSGID, name, accountID string) {
+func (s *ELBv2ServiceImpl) rollbackLBInfra(ctx context.Context, eniIDs []string, nlbManagedSGID, name, accountID string) {
 	if s.VPCService != nil {
 		for _, eniID := range eniIDs {
-			if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+			if _, delErr := s.VPCService.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 				NetworkInterfaceId: aws.String(eniID),
 			}, accountID); delErr != nil {
-				slog.Error("CreateLoadBalancer: rollback failed to delete ENI", "eni", eniID, "err", delErr)
+				slog.ErrorContext(ctx, "CreateLoadBalancer: rollback failed to delete ENI", "eni", eniID, "err", delErr)
 			}
 		}
 	}
-	s.deleteNLBManagedSG(nlbManagedSGID, accountID)
+	s.deleteNLBManagedSG(ctx, nlbManagedSGID, accountID)
 	s.releaseLBNameClaim(name, accountID)
 }
 
-// markLBFailed reloads the LB record and flips it to the failed state.
-func (s *ELBv2ServiceImpl) markLBFailed(lbArn string) {
+// markLBFailed reloads the LB record and flips it to the failed state,
+// recording reason for State.Reason.
+func (s *ELBv2ServiceImpl) markLBFailed(lbArn, reason string) {
 	record, err := s.store.GetLoadBalancerByArn(lbArn)
 	if err != nil || record == nil {
 		return
 	}
 	record.State = StateFailed
+	record.StateReason = reason
 	if putErr := s.store.PutLoadBalancer(record); putErr != nil {
 		slog.Error("CreateLoadBalancer: failed to persist failed state", "lbArn", lbArn, "err", putErr)
 	}
 }
 
-func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error) {
+// reapStuckProvisioningLBs marks failed any LB that has sat in provisioning past
+// lbProvisioningTimeout without a single lb-agent heartbeat. Such an LB launched
+// its VM but the agent never reached the daemon, so it would otherwise wedge in
+// provisioning forever. Synchronous; caller supplies now for testability.
+func (s *ELBv2ServiceImpl) reapStuckProvisioningLBs(now time.Time) {
+	lbs, err := s.store.ListLoadBalancers()
+	if err != nil {
+		slog.Error("ELBv2 lifecycle reaper: failed to list load balancers", "err", err)
+		return
+	}
+	for _, lb := range lbs {
+		if lb == nil || lb.State != StateProvisioning {
+			continue
+		}
+		if !lb.LastHeartbeat.IsZero() || lb.CreatedAt.IsZero() {
+			continue
+		}
+		if now.Sub(lb.CreatedAt) < lbProvisioningTimeout {
+			continue
+		}
+		reason := fmt.Sprintf("lb-agent did not heartbeat within %s of provisioning", lbProvisioningTimeout)
+		slog.Warn("ELBv2 lifecycle reaper: LB stuck in provisioning, marking failed",
+			"lbArn", lb.LoadBalancerArn, "lbId", lb.LoadBalancerID,
+			"instanceId", lb.InstanceID, "createdAt", lb.CreatedAt)
+		s.markLBFailed(lb.LoadBalancerArn, reason)
+	}
+}
+
+// StartLifecycleReaper runs reapStuckProvisioningLBs on a ticker until the
+// service context is cancelled (via Close). Call once at daemon startup.
+func (s *ELBv2ServiceImpl) StartLifecycleReaper(ctx context.Context) {
+	interval := s.reaperInterval
+	if interval <= 0 {
+		interval = lbReaperInterval
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.reapStuckProvisioningLBs(time.Now().UTC())
+			}
+		}
+	}()
+}
+
+func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error) {
 	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
 	if err != nil {
-		slog.Error("DeleteLoadBalancer: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || lb.AccountID != accountID {
@@ -1483,12 +1554,12 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 	// Cascade-delete all listeners and their rules so no orphan pins a TG as ResourceInUse.
 	listeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
 	if err != nil {
-		slog.Error("DeleteLoadBalancer: failed to list listeners for cascade", "lbArn", lb.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to list listeners for cascade", "lbArn", lb.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, l := range listeners {
 		if err := s.deleteListenerCascade(l); err != nil {
-			slog.Error("DeleteLoadBalancer: failed to cascade listener delete", "listenerID", l.ListenerID, "err", err)
+			slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to cascade listener delete", "listenerID", l.ListenerID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -1501,7 +1572,7 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		instanceID := lb.InstanceID
 		go func() {
 			if err := s.InstanceLauncher.TerminateSystemInstance(instanceID); err != nil {
-				slog.Warn("Failed to terminate ALB VM during LB deletion", "lbId", lb.LoadBalancerID, "instanceId", instanceID, "err", err)
+				slog.WarnContext(ctx, "Failed to terminate ALB VM during LB deletion", "lbId", lb.LoadBalancerID, "instanceId", instanceID, "err", err)
 			}
 		}()
 	}
@@ -1509,21 +1580,21 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 	// Delete system-managed ENIs. Detach first to clear in-use status.
 	if s.VPCService != nil {
 		for _, eniID := range lb.ENIs {
-			if detachErr := s.VPCService.DetachENI(accountID, eniID); detachErr != nil {
-				slog.Warn("Failed to detach ALB ENI during cleanup", "eniId", eniID, "err", detachErr)
+			if detachErr := s.VPCService.DetachENI(ctx, accountID, eniID); detachErr != nil {
+				slog.WarnContext(ctx, "Failed to detach ALB ENI during cleanup", "eniId", eniID, "err", detachErr)
 			}
-			if _, eniErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+			if _, eniErr := s.VPCService.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 				NetworkInterfaceId: aws.String(eniID),
 			}, accountID); eniErr != nil {
-				slog.Warn("Failed to delete ALB ENI during cleanup", "eniId", eniID, "err", eniErr)
+				slog.WarnContext(ctx, "Failed to delete ALB ENI during cleanup", "eniId", eniID, "err", eniErr)
 			}
 		}
 		// The managed NLB SG can only be removed once its ENIs are gone.
-		s.deleteNLBManagedSG(lb.NLBManagedSGID, accountID)
+		s.deleteNLBManagedSG(ctx, lb.NLBManagedSGID, accountID)
 	}
 
 	if err := s.store.DeleteLoadBalancer(lb.LoadBalancerID); err != nil {
-		slog.Error("DeleteLoadBalancer: failed to delete record", "lbId", lb.LoadBalancerID, "err", err)
+		slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to delete record", "lbId", lb.LoadBalancerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -1534,7 +1605,7 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 	// Withdraw the frontend A record (best-effort; reconcile repairs a miss).
 	s.publishLBDNS(lb, handlers_dns.ActionDelete)
 
-	slog.Info("DeleteLoadBalancer completed", "lbArn", *input.LoadBalancerArn, "enis", len(lb.ENIs), "accountID", accountID)
+	slog.InfoContext(ctx, "DeleteLoadBalancer completed", "lbArn", *input.LoadBalancerArn, "enis", len(lb.ENIs), "accountID", accountID)
 
 	return &elbv2.DeleteLoadBalancerOutput{}, nil
 }
@@ -1569,10 +1640,10 @@ func (s *ELBv2ServiceImpl) reapFloatingIPNAT(lb *LoadBalancerRecord) {
 		"lbId", lb.LoadBalancerID, "externalIp", publicIP, "logicalIp", lb.VPCIP)
 }
 
-func (s *ELBv2ServiceImpl) DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error) {
 	allLBs, err := s.store.ListLoadBalancers()
 	if err != nil {
-		slog.Error("DescribeLoadBalancers: failed to list LBs", "err", err)
+		slog.ErrorContext(ctx, "DescribeLoadBalancers: failed to list LBs", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -1601,7 +1672,7 @@ func (s *ELBv2ServiceImpl) DescribeLoadBalancers(input *elbv2.DescribeLoadBalanc
 		if len(nameFilter) > 0 && !nameFilter[lb.Name] {
 			continue
 		}
-		result = append(result, s.lbRecordToSDK(lb))
+		result = append(result, s.lbRecordToSDK(ctx, lb))
 	}
 
 	return &elbv2.DescribeLoadBalancersOutput{
@@ -1611,7 +1682,7 @@ func (s *ELBv2ServiceImpl) DescribeLoadBalancers(input *elbv2.DescribeLoadBalanc
 
 // --- Target Group operations ---
 
-func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput, accountID string) (*elbv2.CreateTargetGroupOutput, error) {
+func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.CreateTargetGroupInput, accountID string) (*elbv2.CreateTargetGroupOutput, error) {
 	if input.Name == nil || *input.Name == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -1661,7 +1732,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	// Check duplicate name within VPC
 	existing, err := s.store.GetTargetGroupByName(name, vpcID)
 	if err != nil {
-		slog.Error("CreateTargetGroup: failed to check duplicate name", "name", name, "err", err)
+		slog.ErrorContext(ctx, "CreateTargetGroup: failed to check duplicate name", "name", name, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if existing != nil {
@@ -1673,7 +1744,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 		targetType = *input.TargetType
 	}
 	if targetType != TargetTypeInstance && targetType != TargetTypeIP {
-		slog.Warn("CreateTargetGroup: unsupported target type", "targetType", targetType)
+		slog.WarnContext(ctx, "CreateTargetGroup: unsupported target type", "targetType", targetType)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -1740,25 +1811,25 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	}
 
 	if err := s.store.PutTargetGroup(record); err != nil {
-		slog.Error("CreateTargetGroup: failed to persist record", "tgId", tgID, "err", err)
+		slog.ErrorContext(ctx, "CreateTargetGroup: failed to persist record", "tgId", tgID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("CreateTargetGroup completed", "name", name, "tgArn", tgArn, "accountID", accountID)
+	slog.InfoContext(ctx, "CreateTargetGroup completed", "name", name, "tgArn", tgArn, "accountID", accountID)
 
 	return &elbv2.CreateTargetGroupOutput{
 		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record)},
 	}, nil
 }
 
-func (s *ELBv2ServiceImpl) ModifyTargetGroup(input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
+func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	tg, err := s.store.GetTargetGroupByArn(*input.TargetGroupArn)
 	if err != nil {
-		slog.Error("ModifyTargetGroup: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil || tg.AccountID != accountID {
@@ -1802,25 +1873,25 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(input *elbv2.ModifyTargetGroupInput
 	tg.HealthCheck = hc
 
 	if err := s.store.PutTargetGroup(tg); err != nil {
-		slog.Error("ModifyTargetGroup: failed to persist record", "arn", tg.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to persist record", "arn", tg.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
+	slog.InfoContext(ctx, "ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
 
 	return &elbv2.ModifyTargetGroupOutput{
 		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg)},
 	}, nil
 }
 
-func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput, accountID string) (*elbv2.DeleteTargetGroupOutput, error) {
+func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.DeleteTargetGroupInput, accountID string) (*elbv2.DeleteTargetGroupOutput, error) {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	tg, err := s.store.GetTargetGroupByArn(*input.TargetGroupArn)
 	if err != nil {
-		slog.Error("DeleteTargetGroup: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "DeleteTargetGroup: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil || tg.AccountID != accountID {
@@ -1831,7 +1902,7 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 	// Only live listeners/rules (whose LB still exists) pin the TG as ResourceInUse.
 	lbs, err := s.store.ListLoadBalancers()
 	if err != nil {
-		slog.Error("DeleteTargetGroup: failed to list load balancers for in-use check", "err", err)
+		slog.ErrorContext(ctx, "DeleteTargetGroup: failed to list load balancers for in-use check", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	liveLB := make(map[string]bool, len(lbs))
@@ -1842,7 +1913,7 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 	// Check if any live listener references this target group.
 	listeners, err := s.store.ListListeners()
 	if err != nil {
-		slog.Error("DeleteTargetGroup: failed to list listeners for in-use check", "err", err)
+		slog.ErrorContext(ctx, "DeleteTargetGroup: failed to list listeners for in-use check", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	liveListener := make(map[string]bool, len(listeners))
@@ -1861,7 +1932,7 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 	// Block deletion when a live rule still forwards to the target group.
 	allRules, err := s.store.ListRules()
 	if err != nil {
-		slog.Error("DeleteTargetGroup: failed to list rules for in-use check", "err", err)
+		slog.ErrorContext(ctx, "DeleteTargetGroup: failed to list rules for in-use check", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, r := range allRules {
@@ -1876,19 +1947,19 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 	}
 
 	if err := s.store.DeleteTargetGroup(tg.TargetGroupID); err != nil {
-		slog.Error("DeleteTargetGroup: failed to delete record", "tgId", tg.TargetGroupID, "err", err)
+		slog.ErrorContext(ctx, "DeleteTargetGroup: failed to delete record", "tgId", tg.TargetGroupID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("DeleteTargetGroup completed", "tgArn", *input.TargetGroupArn, "accountID", accountID)
+	slog.InfoContext(ctx, "DeleteTargetGroup completed", "tgArn", *input.TargetGroupArn, "accountID", accountID)
 
 	return &elbv2.DeleteTargetGroupOutput{}, nil
 }
 
-func (s *ELBv2ServiceImpl) DescribeTargetGroups(input *elbv2.DescribeTargetGroupsInput, accountID string) (*elbv2.DescribeTargetGroupsOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv2.DescribeTargetGroupsInput, accountID string) (*elbv2.DescribeTargetGroupsOutput, error) {
 	allTGs, err := s.store.ListTargetGroups()
 	if err != nil {
-		slog.Error("DescribeTargetGroups: failed to list TGs", "err", err)
+		slog.ErrorContext(ctx, "DescribeTargetGroups: failed to list TGs", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -1942,14 +2013,14 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(input *elbv2.DescribeTargetGroup
 
 // --- Target registration ---
 
-func (s *ELBv2ServiceImpl) RegisterTargets(input *elbv2.RegisterTargetsInput, accountID string) (*elbv2.RegisterTargetsOutput, error) {
+func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.RegisterTargetsInput, accountID string) (*elbv2.RegisterTargetsOutput, error) {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	tg, err := s.store.GetTargetGroupByArn(*input.TargetGroupArn)
 	if err != nil {
-		slog.Error("RegisterTargets: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "RegisterTargets: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil {
@@ -1977,7 +2048,7 @@ func (s *ELBv2ServiceImpl) RegisterTargets(input *elbv2.RegisterTargetsInput, ac
 		}
 
 		// Resolve target ID → private IP (instance ENI lookup, or raw IP for ip-type TGs)
-		privateIP, err := s.resolveRegisteredTargetIP(tg.TargetType, *td.Id, accountID)
+		privateIP, err := s.resolveRegisteredTargetIP(ctx, tg.TargetType, *td.Id, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -1992,29 +2063,29 @@ func (s *ELBv2ServiceImpl) RegisterTargets(input *elbv2.RegisterTargetsInput, ac
 	}
 
 	if err := s.store.PutTargetGroup(tg); err != nil {
-		slog.Error("RegisterTargets: failed to persist TG", "arn", *input.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "RegisterTargets: failed to persist TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Reload HAProxy for any LBs that reference this target group
-	if err := s.updateStoredConfigForTargetGroup(tg.TargetGroupArn); err != nil {
-		slog.Error("RegisterTargets: failed to update config", "arn", *input.TargetGroupArn, "err", err)
+	if err := s.updateStoredConfigForTargetGroup(ctx, tg.TargetGroupArn); err != nil {
+		slog.ErrorContext(ctx, "RegisterTargets: failed to update config", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("RegisterTargets completed", "tgArn", *input.TargetGroupArn, "targetsAdded", len(input.Targets), "accountID", accountID)
+	slog.InfoContext(ctx, "RegisterTargets completed", "tgArn", *input.TargetGroupArn, "targetsAdded", len(input.Targets), "accountID", accountID)
 
 	return &elbv2.RegisterTargetsOutput{}, nil
 }
 
-func (s *ELBv2ServiceImpl) DeregisterTargets(input *elbv2.DeregisterTargetsInput, accountID string) (*elbv2.DeregisterTargetsOutput, error) {
+func (s *ELBv2ServiceImpl) DeregisterTargets(ctx context.Context, input *elbv2.DeregisterTargetsInput, accountID string) (*elbv2.DeregisterTargetsOutput, error) {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	tg, err := s.store.GetTargetGroupByArn(*input.TargetGroupArn)
 	if err != nil {
-		slog.Error("DeregisterTargets: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "DeregisterTargets: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil {
@@ -2046,29 +2117,29 @@ func (s *ELBv2ServiceImpl) DeregisterTargets(input *elbv2.DeregisterTargetsInput
 	tg.Targets = remaining
 
 	if err := s.store.PutTargetGroup(tg); err != nil {
-		slog.Error("DeregisterTargets: failed to persist TG", "arn", *input.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "DeregisterTargets: failed to persist TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Reload HAProxy for any LBs that reference this target group
-	if err := s.updateStoredConfigForTargetGroup(tg.TargetGroupArn); err != nil {
-		slog.Error("DeregisterTargets: failed to update config", "arn", *input.TargetGroupArn, "err", err)
+	if err := s.updateStoredConfigForTargetGroup(ctx, tg.TargetGroupArn); err != nil {
+		slog.ErrorContext(ctx, "DeregisterTargets: failed to update config", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("DeregisterTargets completed", "tgArn", *input.TargetGroupArn, "targetsRemoved", len(input.Targets), "accountID", accountID)
+	slog.InfoContext(ctx, "DeregisterTargets completed", "tgArn", *input.TargetGroupArn, "targetsRemoved", len(input.Targets), "accountID", accountID)
 
 	return &elbv2.DeregisterTargetsOutput{}, nil
 }
 
-func (s *ELBv2ServiceImpl) DescribeTargetHealth(input *elbv2.DescribeTargetHealthInput, accountID string) (*elbv2.DescribeTargetHealthOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeTargetHealth(ctx context.Context, input *elbv2.DescribeTargetHealthInput, accountID string) (*elbv2.DescribeTargetHealthOutput, error) {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	tg, err := s.store.GetTargetGroupByArn(*input.TargetGroupArn)
 	if err != nil {
-		slog.Error("DescribeTargetHealth: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "DescribeTargetHealth: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil {
@@ -2087,7 +2158,7 @@ func (s *ELBv2ServiceImpl) DescribeTargetHealth(input *elbv2.DescribeTargetHealt
 	// targets report "unused" (AWS Target.NotInUse), not "initial".
 	inUse, err := s.store.TargetGroupInUse(tg.TargetGroupArn)
 	if err != nil {
-		slog.Error("DescribeTargetHealth: failed to check TG association", "arn", tg.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "DescribeTargetHealth: failed to check TG association", "arn", tg.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -2269,7 +2340,7 @@ func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPoli
 	return certs, policy, nil
 }
 
-func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, accountID string) (*elbv2.CreateListenerOutput, error) {
+func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.CreateListenerInput, accountID string) (*elbv2.CreateListenerOutput, error) {
 	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -2279,7 +2350,7 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 
 	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
 	if err != nil {
-		slog.Error("CreateListener: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "CreateListener: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil {
@@ -2317,7 +2388,7 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 	// Check for duplicate listener on same port
 	existingListeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
 	if err != nil {
-		slog.Error("CreateListener: failed to list existing listeners", "lbArn", lb.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "CreateListener: failed to list existing listeners", "lbArn", lb.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, l := range existingListeners {
@@ -2331,7 +2402,7 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		if a.Type != nil && *a.Type == ActionTypeForward && a.TargetGroupArn != nil {
 			tg, tgErr := s.store.GetTargetGroupByArn(*a.TargetGroupArn)
 			if tgErr != nil {
-				slog.Error("CreateListener: failed to get target group", "arn", *a.TargetGroupArn, "err", tgErr)
+				slog.ErrorContext(ctx, "CreateListener: failed to get target group", "arn", *a.TargetGroupArn, "err", tgErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			if tg == nil {
@@ -2380,7 +2451,7 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 	}
 
 	if err := s.store.PutListener(record); err != nil {
-		slog.Error("CreateListener: failed to persist record", "listenerId", listenerID, "err", err)
+		slog.ErrorContext(ctx, "CreateListener: failed to persist record", "listenerId", listenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -2389,28 +2460,28 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 	// (NLB ENIs would otherwise sit in the intra-SG-only default SG).
 	var authorizedCIDRs []string
 	if lb.Type == LoadBalancerTypeNetwork && lb.NLBManagedSGID != "" && s.VPCService != nil {
-		cidrs, cidrErr := s.resolveNLBIngressCIDRs(lb)
+		cidrs, cidrErr := s.resolveNLBIngressCIDRs(ctx, lb)
 		if cidrErr != nil {
-			slog.Error("CreateListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
-			s.rollbackListener(record, lb, protocol, port, nil, accountID)
+			slog.ErrorContext(ctx, "CreateListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
+			s.rollbackListener(ctx, record, lb, protocol, port, nil, accountID)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		if authErr := s.authorizeNLBListenerPort(lb, protocol, port, cidrs, accountID); authErr != nil {
-			slog.Error("CreateListener: authorize listener port failed", "lbArn", lb.LoadBalancerArn, "port", port, "err", authErr)
-			s.rollbackListener(record, lb, protocol, port, nil, accountID)
+		if authErr := s.authorizeNLBListenerPort(ctx, lb, protocol, port, cidrs, accountID); authErr != nil {
+			slog.ErrorContext(ctx, "CreateListener: authorize listener port failed", "lbArn", lb.LoadBalancerArn, "port", port, "err", authErr)
+			s.rollbackListener(ctx, record, lb, protocol, port, nil, accountID)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		authorizedCIDRs = cidrs
 	}
 
 	// Start or reload HAProxy now that a listener exists
-	if err := s.updateStoredConfig(lb); err != nil {
-		slog.Error("CreateListener: failed to update config", "listenerId", listenerID, "err", err)
-		s.rollbackListener(record, lb, protocol, port, authorizedCIDRs, accountID)
+	if err := s.updateStoredConfig(ctx, lb); err != nil {
+		slog.ErrorContext(ctx, "CreateListener: failed to update config", "listenerId", listenerID, "err", err)
+		s.rollbackListener(ctx, record, lb, protocol, port, authorizedCIDRs, accountID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("CreateListener completed", "listenerArn", listenerArn, "lbArn", lb.LoadBalancerArn, "port", port, "accountID", accountID)
+	slog.InfoContext(ctx, "CreateListener completed", "listenerArn", listenerArn, "lbArn", lb.LoadBalancerArn, "port", port, "accountID", accountID)
 
 	return &elbv2.CreateListenerOutput{
 		Listeners: []*elbv2.Listener{s.listenerRecordToSDK(record)},
@@ -2420,14 +2491,14 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 // rollbackListener removes a listener persisted before post-persist wiring failed.
 // authorizedCIDRs is non-empty when the NLB port was already opened — it is
 // revoked first. Cleanup errors are logged but not returned.
-func (s *ELBv2ServiceImpl) rollbackListener(record *ListenerRecord, lb *LoadBalancerRecord, protocol string, port int64, authorizedCIDRs []string, accountID string) {
+func (s *ELBv2ServiceImpl) rollbackListener(ctx context.Context, record *ListenerRecord, lb *LoadBalancerRecord, protocol string, port int64, authorizedCIDRs []string, accountID string) {
 	if len(authorizedCIDRs) > 0 {
-		if err := s.revokeNLBListenerPort(lb, protocol, port, authorizedCIDRs, accountID); err != nil {
-			slog.Error("CreateListener: rollback failed to revoke listener port", "lbArn", lb.LoadBalancerArn, "port", port, "err", err)
+		if err := s.revokeNLBListenerPort(ctx, lb, protocol, port, authorizedCIDRs, accountID); err != nil {
+			slog.ErrorContext(ctx, "CreateListener: rollback failed to revoke listener port", "lbArn", lb.LoadBalancerArn, "port", port, "err", err)
 		}
 	}
 	if err := s.deleteListenerCascade(record); err != nil {
-		slog.Error("CreateListener: rollback failed to delete listener", "listenerArn", record.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "CreateListener: rollback failed to delete listener", "listenerArn", record.ListenerArn, "err", err)
 	}
 }
 
@@ -2450,14 +2521,14 @@ func (s *ELBv2ServiceImpl) deleteListenerCascade(listener *ListenerRecord) error
 	return nil
 }
 
-func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, accountID string) (*elbv2.DeleteListenerOutput, error) {
+func (s *ELBv2ServiceImpl) DeleteListener(ctx context.Context, input *elbv2.DeleteListenerInput, accountID string) (*elbv2.DeleteListenerOutput, error) {
 	if input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
 	if err != nil {
-		slog.Error("DeleteListener: failed to get listener", "arn", *input.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "DeleteListener: failed to get listener", "arn", *input.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if listener == nil || listener.AccountID != accountID {
@@ -2467,7 +2538,7 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 
 	// Cascade-delete rules so a recreated listener doesn't inherit orphans.
 	if err := s.deleteListenerCascade(listener); err != nil {
-		slog.Error("DeleteListener: failed to cascade-delete listener", "listenerArn", listener.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "DeleteListener: failed to cascade-delete listener", "listenerArn", listener.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -2476,33 +2547,33 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 	if lbErr == nil && lb != nil {
 		// Close the listener port on the NLB's managed front-end SG.
 		if lb.Type == LoadBalancerTypeNetwork && lb.NLBManagedSGID != "" && s.VPCService != nil {
-			if cidrs, cidrErr := s.resolveNLBIngressCIDRs(lb); cidrErr == nil {
-				if revokeErr := s.revokeNLBListenerPort(lb, listener.Protocol, listener.Port, cidrs, accountID); revokeErr != nil {
-					slog.Warn("DeleteListener: revoke listener port failed", "lbArn", lb.LoadBalancerArn, "port", listener.Port, "err", revokeErr)
+			if cidrs, cidrErr := s.resolveNLBIngressCIDRs(ctx, lb); cidrErr == nil {
+				if revokeErr := s.revokeNLBListenerPort(ctx, lb, listener.Protocol, listener.Port, cidrs, accountID); revokeErr != nil {
+					slog.WarnContext(ctx, "DeleteListener: revoke listener port failed", "lbArn", lb.LoadBalancerArn, "port", listener.Port, "err", revokeErr)
 				}
 			} else {
-				slog.Warn("DeleteListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
+				slog.WarnContext(ctx, "DeleteListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
 			}
 		}
-		if err := s.updateStoredConfig(lb); err != nil {
-			slog.Error("DeleteListener: failed to update config", "listenerArn", *input.ListenerArn, "err", err)
+		if err := s.updateStoredConfig(ctx, lb); err != nil {
+			slog.ErrorContext(ctx, "DeleteListener: failed to update config", "listenerArn", *input.ListenerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
 
-	slog.Info("DeleteListener completed", "listenerArn", *input.ListenerArn, "accountID", accountID)
+	slog.InfoContext(ctx, "DeleteListener completed", "listenerArn", *input.ListenerArn, "accountID", accountID)
 
 	return &elbv2.DeleteListenerOutput{}, nil
 }
 
-func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, accountID string) (*elbv2.ModifyListenerOutput, error) {
+func (s *ELBv2ServiceImpl) ModifyListener(ctx context.Context, input *elbv2.ModifyListenerInput, accountID string) (*elbv2.ModifyListenerOutput, error) {
 	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
 	if err != nil {
-		slog.Error("ModifyListener: failed to get listener", "arn", *input.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "ModifyListener: failed to get listener", "arn", *input.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if listener == nil || listener.AccountID != accountID {
@@ -2511,7 +2582,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 
 	lb, err := s.store.GetLoadBalancerByArn(listener.LoadBalancerArn)
 	if err != nil {
-		slog.Error("ModifyListener: failed to get LB", "arn", listener.LoadBalancerArn, "err", err)
+		slog.ErrorContext(ctx, "ModifyListener: failed to get LB", "arn", listener.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil {
@@ -2544,7 +2615,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 		if newPort != updated.Port {
 			existingListeners, listErr := s.store.ListListenersByLB(lb.LoadBalancerArn)
 			if listErr != nil {
-				slog.Error("ModifyListener: failed to list existing listeners", "lbArn", lb.LoadBalancerArn, "err", listErr)
+				slog.ErrorContext(ctx, "ModifyListener: failed to list existing listeners", "lbArn", lb.LoadBalancerArn, "err", listErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			for _, l := range existingListeners {
@@ -2569,7 +2640,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 			if action.Type == ActionTypeForward && action.TargetGroupArn != "" {
 				tg, tgErr := s.store.GetTargetGroupByArn(action.TargetGroupArn)
 				if tgErr != nil {
-					slog.Error("ModifyListener: failed to get target group", "arn", action.TargetGroupArn, "err", tgErr)
+					slog.ErrorContext(ctx, "ModifyListener: failed to get target group", "arn", action.TargetGroupArn, "err", tgErr)
 					return nil, errors.New(awserrors.ErrorServerInternal)
 				}
 				if tg == nil {
@@ -2589,7 +2660,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 			}
 			tg, tgErr := s.store.GetTargetGroupByArn(a.TargetGroupArn)
 			if tgErr != nil {
-				slog.Error("ModifyListener: failed to get target group", "arn", a.TargetGroupArn, "err", tgErr)
+				slog.ErrorContext(ctx, "ModifyListener: failed to get target group", "arn", a.TargetGroupArn, "err", tgErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			if tg == nil {
@@ -2634,23 +2705,23 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 	}
 
 	if err := s.store.PutListener(&updated); err != nil {
-		slog.Error("ModifyListener: failed to persist record", "listenerId", updated.ListenerID, "err", err)
+		slog.ErrorContext(ctx, "ModifyListener: failed to persist record", "listenerId", updated.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if err := s.updateStoredConfig(lb); err != nil {
-		slog.Error("ModifyListener: failed to update config", "listenerArn", updated.ListenerArn, "err", err)
+	if err := s.updateStoredConfig(ctx, lb); err != nil {
+		slog.ErrorContext(ctx, "ModifyListener: failed to update config", "listenerArn", updated.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("ModifyListener completed", "listenerArn", updated.ListenerArn, "lbArn", lb.LoadBalancerArn, "port", updated.Port, "protocol", updated.Protocol, "accountID", accountID)
+	slog.InfoContext(ctx, "ModifyListener completed", "listenerArn", updated.ListenerArn, "lbArn", lb.LoadBalancerArn, "port", updated.Port, "protocol", updated.Protocol, "accountID", accountID)
 
 	return &elbv2.ModifyListenerOutput{
 		Listeners: []*elbv2.Listener{s.listenerRecordToSDK(&updated)},
 	}, nil
 }
 
-func (s *ELBv2ServiceImpl) DescribeListeners(input *elbv2.DescribeListenersInput, accountID string) (*elbv2.DescribeListenersOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.DescribeListenersInput, accountID string) (*elbv2.DescribeListenersOutput, error) {
 	var listeners []*ListenerRecord
 	var err error
 
@@ -2660,7 +2731,7 @@ func (s *ELBv2ServiceImpl) DescribeListeners(input *elbv2.DescribeListenersInput
 		listeners, err = s.store.ListListeners()
 	}
 	if err != nil {
-		slog.Error("DescribeListeners: failed to list listeners", "err", err)
+		slog.ErrorContext(ctx, "DescribeListeners: failed to list listeners", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -2692,7 +2763,7 @@ func (s *ELBv2ServiceImpl) DescribeListeners(input *elbv2.DescribeListenersInput
 
 // DescribeTags returns tags for ELBv2 resources read from the record stores.
 // Cross-account or unknown ARNs return a not-found error.
-func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -2720,7 +2791,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 			notFoundError = awserrors.ErrorELBv2LoadBalancerNotFound
 			lb, lbErr := s.store.GetLoadBalancerByArn(arn)
 			if lbErr != nil {
-				slog.Error("DescribeTags: failed to get LB", "arn", arn, "err", lbErr)
+				slog.ErrorContext(ctx, "DescribeTags: failed to get LB", "arn", arn, "err", lbErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			if lb != nil {
@@ -2732,7 +2803,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 			notFoundError = awserrors.ErrorELBv2TargetGroupNotFound
 			tg, tgErr := s.store.GetTargetGroupByArn(arn)
 			if tgErr != nil {
-				slog.Error("DescribeTags: failed to get target group", "arn", arn, "err", tgErr)
+				slog.ErrorContext(ctx, "DescribeTags: failed to get target group", "arn", arn, "err", tgErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			if tg != nil {
@@ -2744,7 +2815,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 			notFoundError = awserrors.ErrorELBv2ListenerNotFound
 			l, lErr := s.store.GetListenerByArn(arn)
 			if lErr != nil {
-				slog.Error("DescribeTags: failed to get listener", "arn", arn, "err", lErr)
+				slog.ErrorContext(ctx, "DescribeTags: failed to get listener", "arn", arn, "err", lErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			if l != nil {
@@ -2756,7 +2827,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 			notFoundError = awserrors.ErrorELBv2RuleNotFound
 			r, rErr := s.store.GetRuleByArn(arn)
 			if rErr != nil {
-				slog.Error("DescribeTags: failed to get rule", "arn", arn, "err", rErr)
+				slog.ErrorContext(ctx, "DescribeTags: failed to get rule", "arn", arn, "err", rErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			if r != nil {
@@ -2769,7 +2840,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 				// gets an empty TagDescription instead of an error.
 				l, lErr := s.store.GetListenerByArn(lArn)
 				if lErr != nil {
-					slog.Error("DescribeTags: failed to get listener", "arn", lArn, "err", lErr)
+					slog.ErrorContext(ctx, "DescribeTags: failed to get listener", "arn", lArn, "err", lErr)
 					return nil, errors.New(awserrors.ErrorServerInternal)
 				}
 				if l != nil {
@@ -2819,7 +2890,7 @@ func tagsMapToSDK(tags map[string]string) []*elbv2.Tag {
 	return out
 }
 
-func (s *ELBv2ServiceImpl) lbRecordToSDK(r *LoadBalancerRecord) *elbv2.LoadBalancer {
+func (s *ELBv2ServiceImpl) lbRecordToSDK(ctx context.Context, r *LoadBalancerRecord) *elbv2.LoadBalancer {
 	lb := &elbv2.LoadBalancer{
 		LoadBalancerArn:  aws.String(r.LoadBalancerArn),
 		LoadBalancerName: aws.String(r.Name),
@@ -2833,6 +2904,9 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(r *LoadBalancerRecord) *elbv2.LoadBalan
 			Code: aws.String(r.State),
 		},
 	}
+	if r.StateReason != "" {
+		lb.State.Reason = aws.String(r.StateReason)
+	}
 
 	for _, sg := range r.SecurityGroups {
 		lb.SecurityGroups = append(lb.SecurityGroups, aws.String(sg))
@@ -2845,11 +2919,11 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(r *LoadBalancerRecord) *elbv2.LoadBalan
 		for _, eniID := range r.ENIs {
 			eniPtrs = append(eniPtrs, aws.String(eniID))
 		}
-		result, err := s.VPCService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		result, err := s.VPCService.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 			NetworkInterfaceIds: eniPtrs,
 		}, r.AccountID)
 		if err != nil {
-			slog.Debug("lbRecordToSDK: failed to describe ALB ENIs — private IPs omitted from response",
+			slog.DebugContext(ctx, "lbRecordToSDK: failed to describe ALB ENIs — private IPs omitted from response",
 				"lbArn", r.LoadBalancerArn, "err", err)
 		} else {
 			for _, eni := range result.NetworkInterfaces {

@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -15,7 +16,7 @@ import (
 // pre-creates.
 func firstSubnet(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) (subnetID, vpcID string) {
 	t.Helper()
-	subnets, err := vpcSvc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
 	require.NoError(t, err)
 	require.NotEmpty(t, subnets.Subnets)
 	return *subnets.Subnets[0].SubnetId, *subnets.Subnets[0].VpcId
@@ -24,7 +25,7 @@ func firstSubnet(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) (subnetI
 // describeSG returns the security group record by ID.
 func describeSG(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl, sgID string) *ec2.SecurityGroup {
 	t.Helper()
-	out, err := vpcSvc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := vpcSvc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: aws.StringSlice([]string{sgID}),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -52,7 +53,7 @@ func sgHasRule(sg *ec2.SecurityGroup, proto string, port int64, cidr string) boo
 
 func managedENI(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) *ec2.NetworkInterface {
 	t.Helper()
-	out, err := vpcSvc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	out, err := vpcSvc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	require.NoError(t, err)
 	for _, eni := range out.NetworkInterfaces {
 		if eni.RequesterManaged != nil && *eni.RequesterManaged {
@@ -72,7 +73,7 @@ func createNLB(t *testing.T, svc *ELBv2ServiceImpl, name, scheme, subnetID strin
 	if scheme != "" {
 		in.Scheme = aws.String(scheme)
 	}
-	out, err := svc.CreateLoadBalancer(in, testAccountID)
+	out, err := svc.CreateLoadBalancer(context.Background(), in, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.LoadBalancers, 1)
 	return out.LoadBalancers[0]
@@ -80,13 +81,13 @@ func createNLB(t *testing.T, svc *ELBv2ServiceImpl, name, scheme, subnetID strin
 
 func createTCPListener(t *testing.T, svc *ELBv2ServiceImpl, lbArn *string, port int64) {
 	t.Helper()
-	tg, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tg, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-nlb-sg"),
 		Protocol: aws.String(elbv2.ProtocolEnumTcp),
 		Port:     aws.Int64(port),
 	}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err = svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbArn,
 		Protocol:        aws.String(elbv2.ProtocolEnumTcp),
 		Port:            aws.Int64(port),
@@ -141,7 +142,7 @@ func TestCreateNLB_WithCustomerSGs_AttachesThemNoManagedSG(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, vpcID := firstSubnet(t, vpcSvc)
 
-	sgOut, err := vpcSvc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	sgOut, err := vpcSvc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("nlb-customer-sg"),
 		Description: aws.String("NLB ingress"),
 		VpcId:       aws.String(vpcID),
@@ -149,7 +150,7 @@ func TestCreateNLB_WithCustomerSGs_AttachesThemNoManagedSG(t *testing.T) {
 	require.NoError(t, err)
 	sgID := *sgOut.GroupId
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("nlb-customer-sg"),
 		Type:           aws.String("network"),
 		Subnets:        []*string{aws.String(subnetID)},
@@ -174,7 +175,7 @@ func TestCreateALB_NoManagedSG(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("alb-no-sg"),
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
@@ -225,13 +226,13 @@ func TestCreateListener_TCPUDP_OpensBothProtocols(t *testing.T) {
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
 	lb := createNLB(t, svc, "nlb-tcpudp", "internet-facing", subnetID)
-	tg, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tg, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-tcpudp"),
 		Protocol: aws.String(elbv2.ProtocolEnumTcpUdp),
 		Port:     aws.Int64(53),
 	}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err = svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lb.LoadBalancerArn,
 		Protocol:        aws.String(elbv2.ProtocolEnumTcpUdp),
 		Port:            aws.Int64(53),
@@ -289,7 +290,7 @@ func TestSetLoadBalancerIngressCIDRs_RejectsBadInput(t *testing.T) {
 	require.Error(t, err)
 
 	// ALB is rejected — managed SG is NLB-only.
-	albOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	albOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("alb-reject"),
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
@@ -307,7 +308,7 @@ func TestDeleteListener_RevokesPort(t *testing.T) {
 	lb := createNLB(t, svc, "nlb-del-lst", "internet-facing", subnetID)
 	createTCPListener(t, svc, lb.LoadBalancerArn, 443)
 
-	lst, err := svc.DescribeListeners(&elbv2.DescribeListenersInput{LoadBalancerArn: lb.LoadBalancerArn}, testAccountID)
+	lst, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{LoadBalancerArn: lb.LoadBalancerArn}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, lst.Listeners, 1)
 
@@ -315,7 +316,7 @@ func TestDeleteListener_RevokesPort(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, sgHasRule(describeSG(t, vpcSvc, rec.NLBManagedSGID), "tcp", 443, "0.0.0.0/0"))
 
-	_, err = svc.DeleteListener(&elbv2.DeleteListenerInput{ListenerArn: lst.Listeners[0].ListenerArn}, testAccountID)
+	_, err = svc.DeleteListener(context.Background(), &elbv2.DeleteListenerInput{ListenerArn: lst.Listeners[0].ListenerArn}, testAccountID)
 	require.NoError(t, err)
 
 	assert.False(t, sgHasRule(describeSG(t, vpcSvc, rec.NLBManagedSGID), "tcp", 443, "0.0.0.0/0"),
@@ -334,10 +335,10 @@ func TestDeleteNLB_DeletesManagedSG(t *testing.T) {
 	sgID := rec.NLBManagedSGID
 	require.NotEmpty(t, sgID)
 
-	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lb.LoadBalancerArn}, testAccountID)
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lb.LoadBalancerArn}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := vpcSvc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+	out, err := vpcSvc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: aws.StringSlice([]string{sgID}),
 	}, testAccountID)
 	// Deleted SG: either an empty result or a not-found error is acceptable.

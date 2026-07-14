@@ -31,7 +31,8 @@ Spinifex's hybrid mode enables bidirectional data synchronization between local 
 
 ## Prerequisites
 
-Ensure the AWS profile is set:
+- A running Spinifex cluster (see [Setting Up Your Cluster](/docs/setting-up-your-cluster))
+- AWS CLI configured with the `spinifex` profile:
 
 ```bash
 export AWS_PROFILE=spinifex

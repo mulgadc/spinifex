@@ -29,13 +29,13 @@ type listTapsFunc func(ctx context.Context) (map[string]string, error)
 
 // profileLookup is the IAMService slice needed for credential + iam/* paths.
 type profileLookup interface {
-	ResolveInstanceProfile(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
-	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
+	ResolveInstanceProfile(ctx context.Context, accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
+	GetRole(ctx context.Context, accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
 }
 
 // publicKeyLookup fetches the SSH public key material for the public-keys path.
 type publicKeyLookup interface {
-	GetPublicKey(accountID, keyName string) (string, error)
+	GetPublicKey(ctx context.Context, accountID, keyName string) (string, error)
 }
 
 // IMDSService is the host-served EC2 Instance Metadata Service (169.254.169.254).
@@ -47,11 +47,11 @@ var _ IMDSService = (*IMDSServiceImpl)(nil)
 
 // eniResolver maps a tap's ENI ID to ENI + instance facts.
 type eniResolver interface {
-	resolveENIByID(eniID string) (*eniFacts, error)
-	resolveInstance(eni *eniFacts) (*instanceFacts, error)
-	resolveSGNames(accountID string, sgIDs []string) []string
-	resolveSubnetCIDR(accountID, subnetID string) (string, error)
-	resolveVPCCIDR(accountID, vpcID string) (string, error)
+	resolveENIByID(ctx context.Context, eniID string) (*eniFacts, error)
+	resolveInstance(ctx context.Context, eni *eniFacts) (*instanceFacts, error)
+	resolveSGNames(ctx context.Context, accountID string, sgIDs []string) []string
+	resolveSubnetCIDR(ctx context.Context, accountID, subnetID string) (string, error)
+	resolveVPCCIDR(ctx context.Context, accountID, vpcID string) (string, error)
 }
 
 // IMDSServiceImpl is the in-process IMDS implementation. It runs one per-tap
@@ -195,7 +195,7 @@ func (s *IMDSServiceImpl) reconcileTaps(ctx context.Context) {
 func (s *IMDSServiceImpl) reconcileTapsOnce(ctx context.Context) {
 	live, err := s.listTaps(ctx)
 	if err != nil {
-		slog.Warn("IMDS: list taps during reconcile failed, retrying next tick", "err", err)
+		slog.WarnContext(ctx, "IMDS: list taps during reconcile failed, retrying next tick", "err", err)
 		return
 	}
 	s.tapResp.reconcile(ctx, live)

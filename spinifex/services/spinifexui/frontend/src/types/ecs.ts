@@ -16,6 +16,7 @@ export const registerTaskDefinitionSchema = z.object({
   image: z.string().min(1, "Image is required"),
   containerCpu: z.string(),
   containerMemory: z.string(),
+  containerGpuCount: z.number().int().min(0),
   essential: z.boolean(),
   portMappings: z.array(portMappingSchema),
 })

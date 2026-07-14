@@ -1,24 +1,38 @@
 #!/bin/sh
 set -eu
 
-# mulga-eks-etcd-snapshot — nightly K3s embedded etcd snapshot to predastore.
-# Run from /etc/periodic/daily (Alpine crond).
-# K3s has a built-in `k3s etcd-snapshot` command that handles the snapshot
-# semantics; this wrapper exposes it on cron and uploads to the system-bucket
-# (see eks-v1.md Q6 + Q17).
+# mulga-eks-etcd-snapshot — K3s embedded etcd snapshot to predastore, on two
+# cron cadences. The same script is installed into two Alpine crond periodic
+# dirs and picks its cadence tier from the dir it was invoked from:
+#   /etc/periodic/15min/mulga-eks-etcd-snapshot -> tier "frequent" (RPO window)
+#   /etc/periodic/daily/mulga-eks-etcd-snapshot -> tier "daily"    (nightly)
+# Nightly alone is too coarse a recovery point for a young cluster; the frequent
+# tier bounds data loss to the cron interval. K3s has a built-in
+# `k3s etcd-snapshot` command that handles the snapshot semantics; this wrapper
+# exposes it on cron and uploads to the system-bucket (see eks-v1.md Q6 + Q17).
 #
-# Bucket layout (Q17):
-#   eks-backups-system/{accountID}/{clusterName}/etcd-{timestamp}.snap
-# Retention: managed via S3 lifecycle policy on the bucket; this script does
-# not prune.
+# Bucket layout (Q17): the tier is a key-prefix segment so a predastore S3
+# lifecycle rule can expire the frequent rolling window shallow while keeping
+# the nightly copies deep:
+#   eks-backups-system/{accountID}/{clusterName}/etcd-{tier}-{timestamp}.snap
+# This script does not prune; retention is the bucket lifecycle policy's job.
+
+# Cadence tier from the invoking crond dir; TIER overrides it (unit test).
+if [ -z "${TIER:-}" ]; then
+    case "$0" in
+        */15min/*) TIER=frequent ;;
+        *)         TIER=daily ;;
+    esac
+fi
 
 # Worker nodes share the unified eks-node AMI but have no etcd/SQLite datastore
 # to snapshot. The role file is written once by eks-node-role at first boot.
-if [ "$(cat /etc/spinifex-eks/role 2>/dev/null)" = "agent" ]; then
+ROLE_FILE=${ROLE_FILE:-/etc/spinifex-eks/role}
+if [ "$(cat "${ROLE_FILE}" 2>/dev/null)" = "agent" ]; then
     exit 0
 fi
 
-ENVFILE=/etc/spinifex-eks/etcd-snapshot.env
+ENVFILE=${ENVFILE:-/etc/spinifex-eks/etcd-snapshot.env}
 [ -f "${ENVFILE}" ] || { logger -t mulga-eks-etcd-snapshot "${ENVFILE} missing"; exit 0; }
 # shellcheck disable=SC1090
 . "${ENVFILE}"
@@ -29,13 +43,16 @@ ENVFILE=/etc/spinifex-eks/etcd-snapshot.env
 : "${SPINIFEX_PREDASTORE_AKID:?}"
 : "${SPINIFEX_PREDASTORE_SECRET:?}"
 
-SNAPSHOT_DIR=/var/lib/rancher/k3s/server/db/snapshots
+K3S_BIN=${K3S_BIN:-/usr/local/bin/k3s}
+SNAPSHOT_DIR=${SNAPSHOT_DIR:-/var/lib/rancher/k3s/server/db/snapshots}
 TS=$(date -u +%Y%m%dT%H%M%SZ)
-NAME="etcd-${TS}"
+# Tier in the name keeps the two cadences from colliding on an identical second
+# (both dirs can fire at 02:00) and prefix-filters cleanly for S3 lifecycle.
+NAME="etcd-${TIER}-${TS}"
 BUCKET="eks-backups-system"
 KEY="${EKS_ACCOUNT_ID}/${EKS_CLUSTER_NAME}/${NAME}.snap"
 
-/usr/local/bin/k3s etcd-snapshot save --name "${NAME}" 2>&1 | logger -t mulga-eks-etcd-snapshot
+"${K3S_BIN}" etcd-snapshot save --name "${NAME}" 2>&1 | logger -t mulga-eks-etcd-snapshot
 
 SNAPSHOT_FILE=$(ls -t "${SNAPSHOT_DIR}/${NAME}"* 2>/dev/null | head -1 || true)
 if [ -z "${SNAPSHOT_FILE}" ]; then
@@ -49,14 +66,24 @@ fi
 #
 # Note: --aws-sigv4 requires curl >= 7.75 (Alpine 3.21 ships 8.x).
 URL="${SPINIFEX_PREDASTORE_ENDPOINT%/}/${BUCKET}/${KEY}"
-curl -fsSL \
+# Capture curl's own exit: piping straight into logger masks it behind logger's
+# (near-always 0), so a failed upload would log "uploaded" and delete the only
+# copy — snapshots would silently never land. Keep the local snapshot and exit
+# non-zero on failure so cron surfaces it and the next run still has data on disk.
+if UPLOAD_OUT=$(curl -fsSL \
     --aws-sigv4 "aws:amz:${AWS_REGION:-au-mel-1}:s3" \
     --user "${SPINIFEX_PREDASTORE_AKID}:${SPINIFEX_PREDASTORE_SECRET}" \
     -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" \
     --upload-file "${SNAPSHOT_FILE}" \
-    "${URL}" 2>&1 | logger -t mulga-eks-etcd-snapshot
-
-# Remove the local snapshot to bound disk usage; the canonical copy lives in
-# predastore. Restore path (`spx admin eks restore-snapshot`) pulls from there.
-rm -f "${SNAPSHOT_FILE}"
-logger -t mulga-eks-etcd-snapshot "uploaded ${KEY}"
+    "${URL}" 2>&1); then
+    [ -n "${UPLOAD_OUT}" ] && printf '%s\n' "${UPLOAD_OUT}" | logger -t mulga-eks-etcd-snapshot
+    # Remove the local snapshot only after a confirmed upload to bound disk usage;
+    # the canonical copy lives in predastore (`spx admin eks restore-snapshot`).
+    rm -f "${SNAPSHOT_FILE}"
+    logger -t mulga-eks-etcd-snapshot "uploaded ${KEY}"
+else
+    UPLOAD_RC=$?
+    [ -n "${UPLOAD_OUT}" ] && printf '%s\n' "${UPLOAD_OUT}" | logger -t mulga-eks-etcd-snapshot
+    logger -t mulga-eks-etcd-snapshot "ERROR: upload of ${KEY} failed (curl rc=${UPLOAD_RC}); keeping local snapshot ${SNAPSHOT_FILE}"
+    exit 1
+fi

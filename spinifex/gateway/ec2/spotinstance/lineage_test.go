@@ -1,6 +1,7 @@
 package gateway_ec2_spotinstance
 
 import (
+	"context"
 	"encoding/json"
 	"sync/atomic"
 	"testing"
@@ -35,7 +36,7 @@ func TestStampSpotLineage_TargetsOwnerWithSIRAndAccount(t *testing.T) {
 		InstanceId:            aws.String("i-owner"),
 		SpotInstanceRequestId: aws.String("sir-owner-1"),
 	}}
-	stampSpotLineage(nc, requests, lineageTestAccount)
+	stampSpotLineage(context.Background(), nc, requests, lineageTestAccount)
 
 	select {
 	case m := <-got:
@@ -68,7 +69,7 @@ func TestSendSpotLineageCommand_RetriesPastNoResponders(t *testing.T) {
 		}
 	}()
 
-	err := sendSpotLineageCommand(nc, "i-late", "sir-late-1", lineageTestAccount)
+	err := sendSpotLineageCommand(context.Background(), nc, "i-late", "sir-late-1", lineageTestAccount)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), received.Load())
 }
@@ -78,7 +79,7 @@ func TestSendSpotLineageCommand_RetriesPastNoResponders(t *testing.T) {
 func TestSendSpotLineageCommand_ReturnsErrorWhenNoOwner(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	err := sendSpotLineageCommand(nc, "i-absent", "sir-absent-1", lineageTestAccount)
+	err := sendSpotLineageCommand(context.Background(), nc, "i-absent", "sir-absent-1", lineageTestAccount)
 	require.Error(t, err)
 }
 
@@ -99,7 +100,7 @@ func TestStampSpotLineage_SkipsRequestsWithNoInstance(t *testing.T) {
 		{SpotInstanceRequestId: aws.String("sir-no-instance")},
 		{InstanceId: aws.String("i-no-sir")},
 	}
-	stampSpotLineage(nc, requests, lineageTestAccount)
+	stampSpotLineage(context.Background(), nc, requests, lineageTestAccount)
 
 	assert.Equal(t, int32(0), received.Load())
 }

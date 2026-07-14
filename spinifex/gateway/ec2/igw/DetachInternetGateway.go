@@ -1,6 +1,7 @@
 package gateway_ec2_igw
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -23,7 +24,7 @@ func ValidateDetachInternetGatewayInput(input *ec2.DetachInternetGatewayInput) e
 }
 
 // DetachInternetGateway handles the EC2 DetachInternetGateway API call
-func DetachInternetGateway(input *ec2.DetachInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.DetachInternetGatewayOutput, error) {
+func DetachInternetGateway(ctx context.Context, input *ec2.DetachInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.DetachInternetGatewayOutput, error) {
 	var output ec2.DetachInternetGatewayOutput
 
 	if err := ValidateDetachInternetGatewayInput(input); err != nil {
@@ -31,7 +32,7 @@ func DetachInternetGateway(input *ec2.DetachInternetGatewayInput, natsConn *nats
 	}
 
 	svc := handlers_ec2_igw.NewNATSIGWService(natsConn)
-	result, err := svc.DetachInternetGateway(input, accountID)
+	result, err := svc.DetachInternetGateway(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

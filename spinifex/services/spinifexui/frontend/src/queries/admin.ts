@@ -47,6 +47,8 @@ interface NodeInfo {
   vm_count: number
   total_vcpu: number
   total_mem_gb: number
+  reserved_vcpu: number
+  reserved_mem_gb: number
   alloc_vcpu: number
   alloc_mem_gb: number
   total_gpus: number

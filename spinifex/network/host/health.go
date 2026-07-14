@@ -1,7 +1,6 @@
 package host
 
 import (
-	"os"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -24,14 +23,18 @@ func HealthStatus() OVNHealth {
 		status.BrIntExists = true
 	}
 
-	// Trixie OVN moved the pid file to /var/run/ovn/; older installs use
-	// /var/run/openvswitch/. Probe at runtime so the same binary works on both.
-	ovnTarget := "ovn-controller"
-	if _, err := os.Stat("/var/run/ovn/ovn-controller.pid"); err == nil {
-		ovnTarget = "/var/run/ovn/ovn-controller"
-	}
-	if out, err := utils.SudoCommand("ovs-appctl", "-t", ovnTarget, "version").CombinedOutput(); err == nil && len(out) > 0 {
-		status.OVNControllerUp = true
+	// Report OVN readiness from the controller's SB connection, not bare process
+	// liveness. `ovn-appctl -t ovn-controller` resolves the ctl socket via OVN_RUNDIR
+	// regardless of the Trixie (/var/run/ovn) vs older (/var/run/openvswitch) layout;
+	// the previous `ovs-appctl -t /var/run/ovn/ovn-controller version` passed a slashed
+	// target that ovs-appctl treats as a literal socket path — the real socket is
+	// ovn-controller.<pid>.ctl — so it always failed and healthy nodes falsely read
+	// not_running. connection-status == "connected" is the meaningful signal: it is
+	// true only when the process is up AND synced with the SB RAFT cluster, so a
+	// stale-SB wedge correctly surfaces as not_running instead of hiding behind a
+	// process-alive check.
+	if out, err := utils.SudoCommand("ovn-appctl", "-t", "ovn-controller", "connection-status").Output(); err == nil {
+		status.OVNControllerUp = strings.TrimSpace(string(out)) == "connected"
 	}
 
 	if out, err := utils.SudoCommand("ovs-vsctl", "get", "Open_vSwitch", ".", "external_ids:system-id").CombinedOutput(); err == nil {

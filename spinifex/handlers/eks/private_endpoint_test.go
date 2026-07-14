@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROnAPIServerPorts(t *testing.T)
 	sgp := newFakeSGProvisioner()
 	sgp.createIDs = []string{"sg-pe-001"}
 
-	sgID, err := EnsurePrivateEndpointSG(sgp, "111122223333", "alpha", "vpc-aaa", "10.0.0.0/16")
+	sgID, err := EnsurePrivateEndpointSG(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "10.0.0.0/16")
 	require.NoError(t, err)
 	assert.Equal(t, "sg-pe-001", sgID)
 
@@ -102,11 +103,11 @@ func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROnAPIServerPorts(t *testing.T)
 
 func TestEnsurePrivateEndpointSG_EmptyInputsRejected(t *testing.T) {
 	sgp := newFakeSGProvisioner()
-	_, err := EnsurePrivateEndpointSG(sgp, "111122223333", "", "vpc-aaa", "10.0.0.0/16")
+	_, err := EnsurePrivateEndpointSG(context.Background(), sgp, "111122223333", "", "vpc-aaa", "10.0.0.0/16")
 	require.Error(t, err)
-	_, err = EnsurePrivateEndpointSG(sgp, "111122223333", "alpha", "", "10.0.0.0/16")
+	_, err = EnsurePrivateEndpointSG(context.Background(), sgp, "111122223333", "alpha", "", "10.0.0.0/16")
 	require.Error(t, err)
-	_, err = EnsurePrivateEndpointSG(sgp, "111122223333", "alpha", "vpc-aaa", "")
+	_, err = EnsurePrivateEndpointSG(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.Error(t, err)
 	assert.Empty(t, sgp.createCalls)
 }
@@ -115,7 +116,7 @@ func TestEnsurePrivateEndpointSG_DuplicateIngressTolerated(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 
-	_, err := EnsurePrivateEndpointSG(sgp, "111122223333", "alpha", "vpc-aaa", "10.0.0.0/16")
+	_, err := EnsurePrivateEndpointSG(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "10.0.0.0/16")
 	require.NoError(t, err, "a duplicate :443 rule on re-run must be treated as success")
 }
 
@@ -133,7 +134,7 @@ func TestEnsurePrivateEndpointENI_HappyPath(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.createIDs = []string{"sg-pe-001"}
 
-	pe, err := EnsurePrivateEndpointENI(vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "subnet-aaa", "vpc-aaa")
+	pe, err := EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "subnet-aaa", "vpc-aaa")
 	require.NoError(t, err)
 	assert.Equal(t, "eni-pe-001", pe.ENIID)
 	assert.Equal(t, "10.0.1.50", pe.ENIIP)
@@ -151,11 +152,11 @@ func TestEnsurePrivateEndpointENI_HappyPath(t *testing.T) {
 func TestEnsurePrivateEndpointENI_EmptyInputsRejected(t *testing.T) {
 	vpcSvc := &fakeK3sVPC{}
 	sgp := newFakeSGProvisioner()
-	_, err := EnsurePrivateEndpointENI(vpcSvc, sgp, fakeSubnetResolver{}, "", "alpha", "subnet-aaa", "vpc-aaa")
+	_, err := EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "", "alpha", "subnet-aaa", "vpc-aaa")
 	require.Error(t, err)
-	_, err = EnsurePrivateEndpointENI(vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "", "vpc-aaa")
+	_, err = EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "", "vpc-aaa")
 	require.Error(t, err)
-	_, err = EnsurePrivateEndpointENI(vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "subnet-aaa", "")
+	_, err = EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "subnet-aaa", "")
 	require.Error(t, err)
 	assert.Empty(t, vpcSvc.createCalls)
 }
@@ -170,7 +171,7 @@ func TestEnsureClusterNLB_ThreadsCrossAccountENIToSyncCreate(t *testing.T) {
 		AccountID: "111122223333",
 	}}
 
-	_, err := EnsureClusterNLB(nlbp, "000000000000", "alpha", []string{"subnet-cp"}, false, nil, extras)
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "000000000000", "alpha", []string{"subnet-cp"}, false, nil, extras)
 	require.NoError(t, err)
 
 	require.Len(t, nlbp.createClusterNLBExtras, 1, "extras present must route through CreateClusterNLBSync")
@@ -182,7 +183,7 @@ func TestEnsureClusterNLB_ThreadsCrossAccountENIToSyncCreate(t *testing.T) {
 func TestEnsureClusterNLB_NoExtrasUsesPlainSync(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	_, err := EnsureClusterNLB(nlbp, "000000000000", "alpha", []string{"subnet-cp"}, false, nil, nil)
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "000000000000", "alpha", []string{"subnet-cp"}, false, nil, nil)
 	require.NoError(t, err)
 
 	assert.Empty(t, nlbp.createClusterNLBExtras, "no extras must use the plain sync create path")

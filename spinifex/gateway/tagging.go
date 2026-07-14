@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -12,13 +13,13 @@ import (
 )
 
 // taggingHandler invokes a per-action Resource Groups Tagging API function.
-type taggingHandler func(gw *GatewayConfig, accountID string, body []byte) (any, error)
+type taggingHandler func(ctx context.Context, gw *GatewayConfig, accountID string, body []byte) (any, error)
 
 // taggingActions maps the action suffix of X-Amz-Target to its handler.
 // The action is carried in "X-Amz-Target: ResourceGroupsTaggingAPI_20170126.<Action>".
 var taggingActions = map[string]taggingHandler{
-	"GetResources": func(gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_tagging.GetResources(gw.NATSConn, gw.Region, acct, b)
+	"GetResources": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
+		return gateway_tagging.GetResources(ctx, gw.NATSConn, gw.Region, acct, b)
 	},
 }
 
@@ -64,7 +65,7 @@ func (gw *GatewayConfig) Tagging_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	output, err := handler(gw, accountID, body)
+	output, err := handler(r.Context(), gw, accountID, body)
 	if err != nil {
 		return err
 	}

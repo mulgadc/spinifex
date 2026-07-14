@@ -134,7 +134,7 @@ func TestExecProcessAndKill(t *testing.T) {
 	err = WaitForPidFileRemoval("utilsunittest", 100*time.Millisecond)
 	assert.Error(t, err) // Should timeout since file should still exist
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 
 	// Kill the process
 	err = StopProcess("utilsunittest")

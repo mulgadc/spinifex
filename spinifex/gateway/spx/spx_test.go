@@ -44,7 +44,7 @@ func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn) {
 func TestGetNodes_NoResponders(t *testing.T) {
 	_, nc := startEmbeddedNATS(t)
 
-	out, err := GetNodes(nc, 0)
+	out, err := GetNodes(t.Context(), nc, 0)
 	require.NoError(t, err)
 	assert.Empty(t, out.Nodes)
 	assert.Equal(t, "single-node", out.ClusterMode)
@@ -75,7 +75,7 @@ func TestGetNodes_SingleNode(t *testing.T) {
 	defer sub.Unsubscribe()
 	nc.Flush()
 
-	out, err := GetNodes(nc, 1)
+	out, err := GetNodes(t.Context(), nc, 1)
 	require.NoError(t, err)
 	require.Len(t, out.Nodes, 1)
 	assert.Equal(t, "node1", out.Nodes[0].Node)
@@ -102,7 +102,7 @@ func TestGetNodes_MultiNode(t *testing.T) {
 	}
 	nc.Flush()
 
-	out, err := GetNodes(nc, 3)
+	out, err := GetNodes(t.Context(), nc, 3)
 	require.NoError(t, err)
 	require.Len(t, out.Nodes, 3)
 	assert.Equal(t, "multi-node", out.ClusterMode)
@@ -111,7 +111,7 @@ func TestGetNodes_MultiNode(t *testing.T) {
 func TestGetVMs_NoResponders(t *testing.T) {
 	_, nc := startEmbeddedNATS(t)
 
-	out, err := GetVMs(nc, 0)
+	out, err := GetVMs(t.Context(), nc, 0)
 	require.NoError(t, err)
 	assert.Empty(t, out.VMs)
 }
@@ -135,7 +135,7 @@ func TestGetVMs_WithVMs(t *testing.T) {
 	defer sub.Unsubscribe()
 	nc.Flush()
 
-	out, err := GetVMs(nc, 1)
+	out, err := GetVMs(t.Context(), nc, 1)
 	require.NoError(t, err)
 	require.Len(t, out.VMs, 2)
 	assert.Equal(t, "i-abc123", out.VMs[0].InstanceID)
@@ -164,7 +164,7 @@ func TestGetVMs_MultiNode(t *testing.T) {
 	}
 	nc.Flush()
 
-	out, err := GetVMs(nc, 2)
+	out, err := GetVMs(t.Context(), nc, 2)
 	require.NoError(t, err)
 	require.Len(t, out.VMs, 2)
 }

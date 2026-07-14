@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -10,7 +11,7 @@ import (
 )
 
 // DescribeTargetGroups handles the ELBv2 DescribeTargetGroups API call.
-func DescribeTargetGroups(input *elbv2.DescribeTargetGroupsInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTargetGroupsOutput, error) {
+func DescribeTargetGroups(ctx context.Context, input *elbv2.DescribeTargetGroupsInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTargetGroupsOutput, error) {
 	var output elbv2.DescribeTargetGroupsOutput
 
 	if input == nil {
@@ -18,7 +19,7 @@ func DescribeTargetGroups(input *elbv2.DescribeTargetGroupsInput, natsConn *nats
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.DescribeTargetGroups(input, accountID)
+	result, err := svc.DescribeTargetGroups(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

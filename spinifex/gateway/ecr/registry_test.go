@@ -1,6 +1,8 @@
 package gateway_ecr
 
 import (
+	"context"
+
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -47,7 +49,7 @@ func do(reg *Registry, method, path string, body []byte, hdr map[string]string) 
 // existing repository — accept writes. Idempotent.
 func seedRepo(t *testing.T, reg *Registry, repo string) {
 	t.Helper()
-	require.NoError(t, reg.Meta.PutRepo(testAccount, ecr.RepoMeta{Name: repo}))
+	require.NoError(t, reg.Meta.PutRepo(context.Background(), testAccount, ecr.RepoMeta{Name: repo}))
 }
 
 // pushBlob runs the monolithic upload-start + PUT?digest round-trip.

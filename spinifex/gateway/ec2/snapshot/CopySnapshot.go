@@ -1,6 +1,7 @@
 package gateway_ec2_snapshot
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -32,7 +33,7 @@ func ValidateCopySnapshotInput(input *ec2.CopySnapshotInput) error {
 }
 
 // CopySnapshot handles the EC2 CopySnapshot API call
-func CopySnapshot(input *ec2.CopySnapshotInput, natsConn *nats.Conn, accountID string) (ec2.CopySnapshotOutput, error) {
+func CopySnapshot(ctx context.Context, input *ec2.CopySnapshotInput, natsConn *nats.Conn, accountID string) (ec2.CopySnapshotOutput, error) {
 	var output ec2.CopySnapshotOutput
 
 	if err := ValidateCopySnapshotInput(input); err != nil {
@@ -40,7 +41,7 @@ func CopySnapshot(input *ec2.CopySnapshotInput, natsConn *nats.Conn, accountID s
 	}
 
 	svc := handlers_ec2_snapshot.NewNATSSnapshotService(natsConn)
-	result, err := svc.CopySnapshot(input, accountID)
+	result, err := svc.CopySnapshot(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

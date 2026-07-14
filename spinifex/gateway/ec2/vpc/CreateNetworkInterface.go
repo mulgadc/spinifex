@@ -1,6 +1,7 @@
 package gateway_ec2_vpc
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,7 +21,7 @@ func ValidateCreateNetworkInterfaceInput(input *ec2.CreateNetworkInterfaceInput)
 }
 
 // CreateNetworkInterface handles the EC2 CreateNetworkInterface API call
-func CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.CreateNetworkInterfaceOutput, error) {
+func CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.CreateNetworkInterfaceOutput, error) {
 	var output ec2.CreateNetworkInterfaceOutput
 
 	if err := ValidateCreateNetworkInterfaceInput(input); err != nil {
@@ -28,7 +29,7 @@ func CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, natsConn *na
 	}
 
 	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
-	result, err := svc.CreateNetworkInterface(input, accountID)
+	result, err := svc.CreateNetworkInterface(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

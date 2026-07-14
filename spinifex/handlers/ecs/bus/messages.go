@@ -6,6 +6,11 @@ import "time"
 type InstanceCapacity struct {
 	CPU       int `json:"cpu"`       // total vCPU units (1 vCPU = 1024)
 	MemoryMiB int `json:"memoryMiB"` // total memory in MiB
+	// GPU is the total whole-GPU count from the agent's nvidia-smi discovery.
+	GPU int `json:"gpu,omitempty"`
+	// GPUIDs holds the discovered device UUIDs backing GPU; nil on a non-GPU
+	// host or a build with no nvidia-smi.
+	GPUIDs []string `json:"gpuIds,omitempty"`
 }
 
 // RegisterInstance is published on RegisterSubject when an ecs-agent boots and
@@ -57,14 +62,20 @@ type PortMapping struct {
 
 // AssignContainer is one container the agent must pull and run for a task.
 type AssignContainer struct {
-	Name         string            `json:"name"`
-	Image        string            `json:"image"`
-	CPU          int               `json:"cpu,omitempty"`
-	MemoryMiB    int               `json:"memoryMiB,omitempty"`
+	Name      string `json:"name"`
+	Image     string `json:"image"`
+	CPU       int    `json:"cpu,omitempty"`
+	MemoryMiB int    `json:"memoryMiB,omitempty"`
+	// GPU is the whole-GPU count requested via resourceRequirements type=GPU.
+	// Device pinning/CDI injection is not wired yet (later Epic C tasks).
+	GPU          int               `json:"gpu,omitempty"`
 	Essential    bool              `json:"essential"`
 	Command      []string          `json:"command,omitempty"`
 	Environment  map[string]string `json:"environment,omitempty"`
 	PortMappings []PortMapping     `json:"portMappings,omitempty"`
+	// LogDriver is the requested container log driver; only json-file is honored
+	// (host-side). Any other value means logs are discarded (warned at register).
+	LogDriver string `json:"logDriver,omitempty"`
 }
 
 // Assign is published on AssignSubject when the scheduler places a task on this
@@ -89,9 +100,22 @@ type Assign struct {
 	// TaskRoleARN is the task's IAM role (from the taskdef); when set, the agent
 	// serves its credentials at 169.254.170.2 under CredID, defaulting CredID to
 	// the taskID when the scheduler leaves it empty.
-	CredID      string    `json:"credId,omitempty"`
-	TaskRoleARN string    `json:"taskRoleArn,omitempty"`
-	AssignedAt  time.Time `json:"assignedAt"`
+	CredID      string `json:"credId,omitempty"`
+	TaskRoleARN string `json:"taskRoleArn,omitempty"`
+	// ExecutionRoleARN is the task's execution role (from the taskdef); when set,
+	// the agent assumes it to authorize ECR image pulls instead of the container-
+	// instance role. Empty falls back to the instance role.
+	ExecutionRoleARN string    `json:"executionRoleArn,omitempty"`
+	AssignedAt       time.Time `json:"assignedAt"`
+}
+
+// StopDirective is one pending task-stop the scheduler places in an instance's
+// stop inbox (scheduler → agent). The agent kills + reaps the task's containers,
+// then reports STOPPED with Reason. Delivery is idempotent; the STOPPED
+// transition deletes the inbox entry.
+type StopDirective struct {
+	TaskID string `json:"taskId"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // ContainerStatus is a single container's reported lifecycle state.
@@ -100,6 +124,9 @@ type ContainerStatus struct {
 	Status      string `json:"status"` // PENDING | RUNNING | STOPPED
 	ContainerID string `json:"containerId,omitempty"`
 	ExitCode    *int   `json:"exitCode,omitempty"`
+	// GPUIDs are the device UUIDs the agent's local ledger pinned to this
+	// container (empty when the container requested no GPU).
+	GPUIDs []string `json:"gpuIds,omitempty"`
 }
 
 // TaskState is published on TaskStateSubject as the agent drives a task through

@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -10,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 )
 
 // The managed control-plane VPC ("Set B") is the spinifex analogue of AWS EKS's
@@ -69,31 +72,31 @@ func managedCPVPCFromRefs(r *ManagedCPVPCRefs) *ManagedCPVPC {
 // vpcProvisioner is the narrow VPC + subnet surface the managed CP VPC needs.
 // The daemon adapts the concrete VPC service onto this.
 type vpcProvisioner interface {
-	CreateVpc(input *ec2.CreateVpcInput, accountID string) (*ec2.CreateVpcOutput, error)
-	DeleteVpc(input *ec2.DeleteVpcInput, accountID string) (*ec2.DeleteVpcOutput, error)
-	DescribeVpcs(input *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error)
-	CreateSubnet(input *ec2.CreateSubnetInput, accountID string) (*ec2.CreateSubnetOutput, error)
-	DeleteSubnet(input *ec2.DeleteSubnetInput, accountID string) (*ec2.DeleteSubnetOutput, error)
-	DescribeSubnets(input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error)
+	CreateVpc(ctx context.Context, input *ec2.CreateVpcInput, accountID string) (*ec2.CreateVpcOutput, error)
+	DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInput, accountID string) (*ec2.DeleteVpcOutput, error)
+	DescribeVpcs(ctx context.Context, input *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error)
+	CreateSubnet(ctx context.Context, input *ec2.CreateSubnetInput, accountID string) (*ec2.CreateSubnetOutput, error)
+	DeleteSubnet(ctx context.Context, input *ec2.DeleteSubnetInput, accountID string) (*ec2.DeleteSubnetOutput, error)
+	DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error)
 }
 
 // routeTableProvisioner is the narrow route-table surface the managed CP VPC
 // needs to express public (0/0→IGW) and private (0/0→NAT GW) egress.
 type routeTableProvisioner interface {
-	CreateRouteTable(input *ec2.CreateRouteTableInput, accountID string) (*ec2.CreateRouteTableOutput, error)
-	DeleteRouteTable(input *ec2.DeleteRouteTableInput, accountID string) (*ec2.DeleteRouteTableOutput, error)
-	DescribeRouteTables(input *ec2.DescribeRouteTablesInput, accountID string) (*ec2.DescribeRouteTablesOutput, error)
-	CreateRoute(input *ec2.CreateRouteInput, accountID string) (*ec2.CreateRouteOutput, error)
-	AssociateRouteTable(input *ec2.AssociateRouteTableInput, accountID string) (*ec2.AssociateRouteTableOutput, error)
-	DisassociateRouteTable(input *ec2.DisassociateRouteTableInput, accountID string) (*ec2.DisassociateRouteTableOutput, error)
+	CreateRouteTable(ctx context.Context, input *ec2.CreateRouteTableInput, accountID string) (*ec2.CreateRouteTableOutput, error)
+	DeleteRouteTable(ctx context.Context, input *ec2.DeleteRouteTableInput, accountID string) (*ec2.DeleteRouteTableOutput, error)
+	DescribeRouteTables(ctx context.Context, input *ec2.DescribeRouteTablesInput, accountID string) (*ec2.DescribeRouteTablesOutput, error)
+	CreateRoute(ctx context.Context, input *ec2.CreateRouteInput, accountID string) (*ec2.CreateRouteOutput, error)
+	AssociateRouteTable(ctx context.Context, input *ec2.AssociateRouteTableInput, accountID string) (*ec2.AssociateRouteTableOutput, error)
+	DisassociateRouteTable(ctx context.Context, input *ec2.DisassociateRouteTableInput, accountID string) (*ec2.DisassociateRouteTableOutput, error)
 }
 
 // natGatewayProvisioner is the narrow NAT-gateway surface the managed CP VPC
 // needs to give the private control-plane subnet egress.
 type natGatewayProvisioner interface {
-	CreateNatGateway(input *ec2.CreateNatGatewayInput, accountID string) (*ec2.CreateNatGatewayOutput, error)
-	DeleteNatGateway(input *ec2.DeleteNatGatewayInput, accountID string) (*ec2.DeleteNatGatewayOutput, error)
-	DescribeNatGateways(input *ec2.DescribeNatGatewaysInput, accountID string) (*ec2.DescribeNatGatewaysOutput, error)
+	CreateNatGateway(ctx context.Context, input *ec2.CreateNatGatewayInput, accountID string) (*ec2.CreateNatGatewayOutput, error)
+	DeleteNatGateway(ctx context.Context, input *ec2.DeleteNatGatewayInput, accountID string) (*ec2.DeleteNatGatewayOutput, error)
+	DescribeNatGateways(ctx context.Context, input *ec2.DescribeNatGatewaysInput, accountID string) (*ec2.DescribeNatGatewaysOutput, error)
 }
 
 // CPVPCDeps bundles the EC2-family collaborators EnsureClusterCPVPC composes the
@@ -104,17 +107,21 @@ type CPVPCDeps struct {
 	RT  routeTableProvisioner
 	NGW natGatewayProvisioner
 	EIP eipProvisioner
+	// NATSConn republishes vpc.delete for OVN topology GC (see
+	// gcClusterCPVPCTopology). Nil is tolerated (GC is skipped, never blocking).
+	NATSConn *nats.Conn
 }
 
 // cpVPCDeps adapts the service's EC2-family deps onto CPVPCDeps for the managed
 // control-plane VPC build + teardown.
 func (s *EKSServiceImpl) cpVPCDeps() CPVPCDeps {
 	return CPVPCDeps{
-		VPC: s.deps.VPCMgr,
-		IGW: s.deps.IGW,
-		RT:  s.deps.RouteTable,
-		NGW: s.deps.NATGW,
-		EIP: s.deps.EIP,
+		VPC:      s.deps.VPCMgr,
+		IGW:      s.deps.IGW,
+		RT:       s.deps.RouteTable,
+		NGW:      s.deps.NATGW,
+		EIP:      s.deps.EIP,
+		NATSConn: s.deps.NATSConn,
 	}
 }
 
@@ -195,23 +202,23 @@ func cpClusterRoleFilters(clusterName, role string) []*ec2.Filter {
 // events the per-subnet egress subscribers consume, so the OVN policy split
 // (public 1000 / NAT-GW reroute / private 1100 drop) falls out without any
 // direct OVN mutation here.
-func EnsureClusterCPVPC(deps CPVPCDeps, accountID, clusterName, region string, privateCount int) (*ManagedCPVPCRefs, error) {
+func EnsureClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterName, region string, privateCount int) (*ManagedCPVPCRefs, error) {
 	if clusterName == "" {
 		return nil, errors.New("eks: EnsureClusterCPVPC empty cluster name")
 	}
 	vpcCIDR, publicCIDR, privateCIDRs := cpVPCCIDRs(clusterName, privateCount)
 	refs := &ManagedCPVPCRefs{VpcCIDR: vpcCIDR, PublicSubnetCIDR: publicCIDR, PrivateSubnetCIDRs: privateCIDRs}
 
-	vpcID, err := ensureCPVPC(deps.VPC, accountID, clusterName, vpcCIDR)
+	vpcID, err := ensureCPVPC(ctx, deps.VPC, accountID, clusterName, vpcCIDR)
 	if err != nil {
 		return nil, err
 	}
 	refs.VpcID = vpcID
 
-	if err := EnsureClusterIGW(deps.IGW, accountID, vpcID, clusterName); err != nil {
+	if err := EnsureClusterIGW(ctx, deps.IGW, accountID, vpcID, clusterName); err != nil {
 		return nil, err
 	}
-	igw, err := attachedVPCIGW(deps.IGW, accountID, vpcID)
+	igw, err := attachedVPCIGW(ctx, deps.IGW, accountID, vpcID)
 	if err != nil {
 		return nil, err
 	}
@@ -220,14 +227,14 @@ func EnsureClusterCPVPC(deps CPVPCDeps, accountID, clusterName, region string, p
 	}
 	refs.IGWID = aws.StringValue(igw.InternetGatewayId)
 
-	pubSubnet, err := ensureCPSubnet(deps.VPC, accountID, clusterName, vpcID, publicCIDR, clusterEKSRolePublicSubnet, cpVPCAZ(region, 0))
+	pubSubnet, err := ensureCPSubnet(ctx, deps.VPC, accountID, clusterName, vpcID, publicCIDR, clusterEKSRolePublicSubnet, cpVPCAZ(region, 0))
 	if err != nil {
 		return nil, err
 	}
 	refs.PublicSubnetID = pubSubnet
 
 	for k, cidr := range privateCIDRs {
-		priv, err := ensureCPSubnet(deps.VPC, accountID, clusterName, vpcID, cidr, clusterEKSRolePrivateSubnet, cpVPCAZ(region, k))
+		priv, err := ensureCPSubnet(ctx, deps.VPC, accountID, clusterName, vpcID, cidr, clusterEKSRolePrivateSubnet, cpVPCAZ(region, k))
 		if err != nil {
 			return nil, err
 		}
@@ -236,7 +243,7 @@ func EnsureClusterCPVPC(deps CPVPCDeps, accountID, clusterName, region string, p
 
 	// Public route table: 0.0.0.0/0 → IGW, associated to the public subnet. The
 	// association publishes vpc.add-igw-route → EnsureSubnetEgress (1000 reroute).
-	pubRT, err := ensureCPRouteTable(deps.RT, accountID, clusterName, vpcID, clusterEKSRolePublicRT,
+	pubRT, err := ensureCPRouteTable(ctx, deps.RT, accountID, clusterName, vpcID, clusterEKSRolePublicRT,
 		&ec2.CreateRouteInput{DestinationCidrBlock: aws.String("0.0.0.0/0"), GatewayId: aws.String(refs.IGWID)},
 		[]string{refs.PublicSubnetID})
 	if err != nil {
@@ -246,7 +253,7 @@ func EnsureClusterCPVPC(deps CPVPCDeps, accountID, clusterName, region string, p
 
 	// NAT gateway in the public subnet, fed by a dedicated EIP. The private CP
 	// subnets route 0.0.0.0/0 → this NAT GW for egress-only internet (image pulls).
-	natID, allocID, natIP, err := ensureCPNatGateway(deps, accountID, clusterName, refs.PublicSubnetID)
+	natID, allocID, natIP, err := ensureCPNatGateway(ctx, deps, accountID, clusterName, refs.PublicSubnetID)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +263,7 @@ func EnsureClusterCPVPC(deps CPVPCDeps, accountID, clusterName, region string, p
 
 	// Private route table: 0.0.0.0/0 → NAT GW, associated to every private subnet.
 	// The association publishes vpc.add-nat-gateway → EnsureNATGatewaySubnetEgress.
-	privRT, err := ensureCPRouteTable(deps.RT, accountID, clusterName, vpcID, clusterEKSRolePrivateRT,
+	privRT, err := ensureCPRouteTable(ctx, deps.RT, accountID, clusterName, vpcID, clusterEKSRolePrivateRT,
 		&ec2.CreateRouteInput{DestinationCidrBlock: aws.String("0.0.0.0/0"), NatGatewayId: aws.String(natID)},
 		refs.PrivateSubnetIDs)
 	if err != nil {
@@ -264,21 +271,21 @@ func EnsureClusterCPVPC(deps CPVPCDeps, accountID, clusterName, region string, p
 	}
 	refs.PrivateRouteTableID = privRT
 
-	slog.Info("EnsureClusterCPVPC: managed control-plane VPC ready",
+	slog.InfoContext(ctx, "EnsureClusterCPVPC: managed control-plane VPC ready",
 		"cluster", clusterName, "vpc", refs.VpcID, "publicSubnet", refs.PublicSubnetID,
 		"privateSubnets", refs.PrivateSubnetIDs, "natgw", refs.NatGatewayID)
 	return refs, nil
 }
 
-func ensureCPVPC(vpcp vpcProvisioner, accountID, clusterName, cidr string) (string, error) {
-	out, err := vpcp.DescribeVpcs(&ec2.DescribeVpcsInput{Filters: cpClusterRoleFilters(clusterName, clusterEKSRoleCPVPC)}, accountID)
+func ensureCPVPC(ctx context.Context, vpcp vpcProvisioner, accountID, clusterName, cidr string) (string, error) {
+	out, err := vpcp.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{Filters: cpClusterRoleFilters(clusterName, clusterEKSRoleCPVPC)}, accountID)
 	if err != nil {
 		return "", fmt.Errorf("eks: describe cp vpc for %s: %w", clusterName, err)
 	}
 	if out != nil && len(out.Vpcs) > 0 {
 		return aws.StringValue(out.Vpcs[0].VpcId), nil
 	}
-	created, err := vpcp.CreateVpc(&ec2.CreateVpcInput{
+	created, err := vpcp.CreateVpc(ctx, &ec2.CreateVpcInput{
 		CidrBlock:         aws.String(cidr),
 		TagSpecifications: cpVPCTagSpec("vpc", clusterName, clusterEKSRoleCPVPC),
 	}, accountID)
@@ -291,8 +298,8 @@ func ensureCPVPC(vpcp vpcProvisioner, accountID, clusterName, cidr string) (stri
 	return aws.StringValue(created.Vpc.VpcId), nil
 }
 
-func ensureCPSubnet(vpcp vpcProvisioner, accountID, clusterName, vpcID, cidr, role, az string) (string, error) {
-	out, err := vpcp.DescribeSubnets(&ec2.DescribeSubnetsInput{Filters: append(
+func ensureCPSubnet(ctx context.Context, vpcp vpcProvisioner, accountID, clusterName, vpcID, cidr, role, az string) (string, error) {
+	out, err := vpcp.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{Filters: append(
 		cpClusterRoleFilters(clusterName, role),
 		&ec2.Filter{Name: aws.String("cidr-block"), Values: aws.StringSlice([]string{cidr})},
 	)}, accountID)
@@ -302,7 +309,7 @@ func ensureCPSubnet(vpcp vpcProvisioner, accountID, clusterName, vpcID, cidr, ro
 	if out != nil && len(out.Subnets) > 0 {
 		return aws.StringValue(out.Subnets[0].SubnetId), nil
 	}
-	created, err := vpcp.CreateSubnet(&ec2.CreateSubnetInput{
+	created, err := vpcp.CreateSubnet(ctx, &ec2.CreateSubnetInput{
 		VpcId:             aws.String(vpcID),
 		CidrBlock:         aws.String(cidr),
 		AvailabilityZone:  aws.String(az),
@@ -321,14 +328,14 @@ func ensureCPSubnet(vpcp vpcProvisioner, accountID, clusterName, vpcID, cidr, ro
 // the default route, and associates it to subnetIDs. Idempotent: a re-run reuses
 // the existing table and its associations (AssociateRouteTable is a no-op for an
 // already-associated subnet at the service layer).
-func ensureCPRouteTable(rtp routeTableProvisioner, accountID, clusterName, vpcID, role string, route *ec2.CreateRouteInput, subnetIDs []string) (string, error) {
-	rtID, fresh, err := describeOrCreateCPRouteTable(rtp, accountID, clusterName, vpcID, role)
+func ensureCPRouteTable(ctx context.Context, rtp routeTableProvisioner, accountID, clusterName, vpcID, role string, route *ec2.CreateRouteInput, subnetIDs []string) (string, error) {
+	rtID, fresh, err := describeOrCreateCPRouteTable(ctx, rtp, accountID, clusterName, vpcID, role)
 	if err != nil {
 		return "", err
 	}
 	if fresh {
 		route.RouteTableId = aws.String(rtID)
-		if _, err := rtp.CreateRoute(route, accountID); err != nil {
+		if _, err := rtp.CreateRoute(ctx, route, accountID); err != nil {
 			return "", fmt.Errorf("eks: create cp route (%s) on %s: %w", role, rtID, err)
 		}
 	}
@@ -336,7 +343,7 @@ func ensureCPRouteTable(rtp routeTableProvisioner, accountID, clusterName, vpcID
 		if sn == "" {
 			continue
 		}
-		if _, err := rtp.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		if _, err := rtp.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
 			RouteTableId: aws.String(rtID),
 			SubnetId:     aws.String(sn),
 		}, accountID); err != nil {
@@ -346,15 +353,15 @@ func ensureCPRouteTable(rtp routeTableProvisioner, accountID, clusterName, vpcID
 	return rtID, nil
 }
 
-func describeOrCreateCPRouteTable(rtp routeTableProvisioner, accountID, clusterName, vpcID, role string) (rtID string, fresh bool, err error) {
-	out, err := rtp.DescribeRouteTables(&ec2.DescribeRouteTablesInput{Filters: cpClusterRoleFilters(clusterName, role)}, accountID)
+func describeOrCreateCPRouteTable(ctx context.Context, rtp routeTableProvisioner, accountID, clusterName, vpcID, role string) (rtID string, fresh bool, err error) {
+	out, err := rtp.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{Filters: cpClusterRoleFilters(clusterName, role)}, accountID)
 	if err != nil {
 		return "", false, fmt.Errorf("eks: describe cp route table (%s): %w", role, err)
 	}
 	if out != nil && len(out.RouteTables) > 0 {
 		return aws.StringValue(out.RouteTables[0].RouteTableId), false, nil
 	}
-	created, err := rtp.CreateRouteTable(&ec2.CreateRouteTableInput{
+	created, err := rtp.CreateRouteTable(ctx, &ec2.CreateRouteTableInput{
 		VpcId:             aws.String(vpcID),
 		TagSpecifications: cpVPCTagSpec("route-table", clusterName, role),
 	}, accountID)
@@ -367,8 +374,8 @@ func describeOrCreateCPRouteTable(rtp routeTableProvisioner, accountID, clusterN
 	return aws.StringValue(created.RouteTable.RouteTableId), true, nil
 }
 
-func ensureCPNatGateway(deps CPVPCDeps, accountID, clusterName, publicSubnetID string) (natID, allocID, publicIP string, err error) {
-	out, err := deps.NGW.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{Filter: append(
+func ensureCPNatGateway(ctx context.Context, deps CPVPCDeps, accountID, clusterName, publicSubnetID string) (natID, allocID, publicIP string, err error) {
+	out, err := deps.NGW.DescribeNatGateways(ctx, &ec2.DescribeNatGatewaysInput{Filter: append(
 		cpClusterRoleFilters(clusterName, clusterEKSRoleCPNatGW),
 		&ec2.Filter{Name: aws.String("state"), Values: aws.StringSlice([]string{"available", "pending"})},
 	)}, accountID)
@@ -385,7 +392,7 @@ func ensureCPNatGateway(deps CPVPCDeps, accountID, clusterName, publicSubnetID s
 		return aws.StringValue(ng.NatGatewayId), alloc, ip, nil
 	}
 
-	eip, err := deps.EIP.AllocateAddress(&ec2.AllocateAddressInput{
+	eip, err := deps.EIP.AllocateAddress(ctx, &ec2.AllocateAddressInput{
 		Domain:            aws.String("vpc"),
 		TagSpecifications: cpVPCTagSpec("elastic-ip", clusterName, clusterEKSRoleCPNatGW),
 	}, accountID)
@@ -398,15 +405,15 @@ func ensureCPNatGateway(deps CPVPCDeps, accountID, clusterName, publicSubnetID s
 	allocID = aws.StringValue(eip.AllocationId)
 	publicIP = aws.StringValue(eip.PublicIp)
 
-	created, err := deps.NGW.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	created, err := deps.NGW.CreateNatGateway(ctx, &ec2.CreateNatGatewayInput{
 		SubnetId:          aws.String(publicSubnetID),
 		AllocationId:      aws.String(allocID),
 		TagSpecifications: cpVPCTagSpec("natgateway", clusterName, clusterEKSRoleCPNatGW),
 	}, accountID)
 	if err != nil {
 		// Release the orphaned EIP so a failed NAT-GW create does not leak it.
-		if _, relErr := deps.EIP.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)}, accountID); relErr != nil {
-			slog.Warn("ensureCPNatGateway: failed to release EIP after NAT-GW create failure", "alloc", allocID, "err", relErr)
+		if _, relErr := deps.EIP.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)}, accountID); relErr != nil {
+			slog.WarnContext(ctx, "ensureCPNatGateway: failed to release EIP after NAT-GW create failure", "alloc", allocID, "err", relErr)
 		}
 		return "", "", "", fmt.Errorf("eks: create cp nat gateway for %s: %w", clusterName, err)
 	}
@@ -422,7 +429,13 @@ func ensureCPNatGateway(deps CPVPCDeps, accountID, clusterName, publicSubnetID s
 // clean delete. Best-effort: every step is attempted and failures are logged;
 // the final VPC delete failure is returned so the caller can surface a leak.
 // Safe to call when nothing was provisioned (all describes return empty).
-func DeleteClusterCPVPC(deps CPVPCDeps, accountID, clusterName string) error {
+//
+// knownRefs is the caller's last-persisted cp-vpc state record (ClusterMeta's
+// ManagedCPVPC), used only as an OVN-GC target fallback when the tag-indexed
+// EC2 VPC is already gone — the live describe can no longer name it, but the
+// record still can. Pass nil when no such record exists (e.g. the billable
+// reaper, which acts once the cluster meta itself is gone).
+func DeleteClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterName string, knownRefs *ManagedCPVPC) error {
 	if clusterName == "" {
 		return errors.New("eks: DeleteClusterCPVPC empty cluster name")
 	}
@@ -434,9 +447,9 @@ func DeleteClusterCPVPC(deps CPVPCDeps, accountID, clusterName string) error {
 	// while the private RT still routes 0.0.0.0/0 to it would fail (and strand
 	// its billable EIP).
 	for _, role := range []string{clusterEKSRolePublicRT, clusterEKSRolePrivateRT} {
-		rtOut, err := deps.RT.DescribeRouteTables(&ec2.DescribeRouteTablesInput{Filters: cpClusterRoleFilters(clusterName, role)}, accountID)
+		rtOut, err := deps.RT.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{Filters: cpClusterRoleFilters(clusterName, role)}, accountID)
 		if err != nil {
-			slog.Warn("DeleteClusterCPVPC: describe route tables failed", "role", role, "err", err)
+			slog.WarnContext(ctx, "DeleteClusterCPVPC: describe route tables failed", "role", role, "err", err)
 			continue
 		}
 		if rtOut == nil {
@@ -449,36 +462,36 @@ func DeleteClusterCPVPC(deps CPVPCDeps, accountID, clusterName string) error {
 					continue
 				}
 				if aID := aws.StringValue(assoc.RouteTableAssociationId); aID != "" {
-					if _, err := deps.RT.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{AssociationId: aws.String(aID)}, accountID); err != nil {
-						slog.Warn("DeleteClusterCPVPC: disassociate route table failed", "assoc", aID, "err", err)
+					if _, err := deps.RT.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{AssociationId: aws.String(aID)}, accountID); err != nil {
+						slog.WarnContext(ctx, "DeleteClusterCPVPC: disassociate route table failed", "assoc", aID, "err", err)
 					}
 				}
 			}
-			if _, err := deps.RT.DeleteRouteTable(&ec2.DeleteRouteTableInput{RouteTableId: aws.String(rtID)}, accountID); err != nil {
-				slog.Warn("DeleteClusterCPVPC: delete route table failed", "rt", rtID, "err", err)
+			if _, err := deps.RT.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{RouteTableId: aws.String(rtID)}, accountID); err != nil {
+				slog.WarnContext(ctx, "DeleteClusterCPVPC: delete route table failed", "rt", rtID, "err", err)
 			}
 		}
 	}
 
 	// 2. NAT gateway + its EIP. DeleteNatGateway publishes the SNAT removal and
 	// disassociates the EIP; release follows so the billable address is reclaimed.
-	if ngOut, err := deps.NGW.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	if ngOut, err := deps.NGW.DescribeNatGateways(ctx, &ec2.DescribeNatGatewaysInput{
 		Filter: cpClusterRoleFilters(clusterName, clusterEKSRoleCPNatGW),
 	}, accountID); err != nil {
-		slog.Warn("DeleteClusterCPVPC: describe NAT gateways failed", "cluster", clusterName, "err", err)
+		slog.WarnContext(ctx, "DeleteClusterCPVPC: describe NAT gateways failed", "cluster", clusterName, "err", err)
 	} else if ngOut != nil {
 		for _, ng := range ngOut.NatGateways {
 			if state := aws.StringValue(ng.State); state == "deleted" || state == "deleting" {
 				continue
 			}
 			ngID := aws.StringValue(ng.NatGatewayId)
-			if _, err := deps.NGW.DeleteNatGateway(&ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(ngID)}, accountID); err != nil {
-				slog.Warn("DeleteClusterCPVPC: delete NAT gateway failed", "natgw", ngID, "err", err)
+			if _, err := deps.NGW.DeleteNatGateway(ctx, &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(ngID)}, accountID); err != nil {
+				slog.WarnContext(ctx, "DeleteClusterCPVPC: delete NAT gateway failed", "natgw", ngID, "err", err)
 			}
 			for _, addr := range ng.NatGatewayAddresses {
 				if alloc := aws.StringValue(addr.AllocationId); alloc != "" {
-					if _, err := deps.EIP.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(alloc)}, accountID); err != nil {
-						slog.Warn("DeleteClusterCPVPC: release NAT EIP failed", "alloc", alloc, "err", err)
+					if _, err := deps.EIP.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{AllocationId: aws.String(alloc)}, accountID); err != nil {
+						slog.WarnContext(ctx, "DeleteClusterCPVPC: release NAT EIP failed", "alloc", alloc, "err", err)
 					}
 				}
 			}
@@ -487,9 +500,9 @@ func DeleteClusterCPVPC(deps CPVPCDeps, accountID, clusterName string) error {
 
 	// 3. Subnets (public + private).
 	for _, role := range []string{clusterEKSRolePublicSubnet, clusterEKSRolePrivateSubnet} {
-		snOut, err := deps.VPC.DescribeSubnets(&ec2.DescribeSubnetsInput{Filters: cpClusterRoleFilters(clusterName, role)}, accountID)
+		snOut, err := deps.VPC.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{Filters: cpClusterRoleFilters(clusterName, role)}, accountID)
 		if err != nil {
-			slog.Warn("DeleteClusterCPVPC: describe subnets failed", "role", role, "err", err)
+			slog.WarnContext(ctx, "DeleteClusterCPVPC: describe subnets failed", "role", role, "err", err)
 			continue
 		}
 		if snOut == nil {
@@ -497,28 +510,68 @@ func DeleteClusterCPVPC(deps CPVPCDeps, accountID, clusterName string) error {
 		}
 		for _, sn := range snOut.Subnets {
 			snID := aws.StringValue(sn.SubnetId)
-			if _, err := deps.VPC.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(snID)}, accountID); err != nil {
-				slog.Warn("DeleteClusterCPVPC: delete subnet failed", "subnet", snID, "err", err)
+			if _, err := deps.VPC.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{SubnetId: aws.String(snID)}, accountID); err != nil {
+				slog.WarnContext(ctx, "DeleteClusterCPVPC: delete subnet failed", "subnet", snID, "err", err)
 			}
 		}
 	}
 
 	// 4. VPC + its IGW. Resolve the VPC first so DeleteClusterIGW can detach.
-	vpcOut, err := deps.VPC.DescribeVpcs(&ec2.DescribeVpcsInput{Filters: cpClusterRoleFilters(clusterName, clusterEKSRoleCPVPC)}, accountID)
+	vpcOut, err := deps.VPC.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{Filters: cpClusterRoleFilters(clusterName, clusterEKSRoleCPVPC)}, accountID)
 	if err != nil {
 		return fmt.Errorf("eks: describe cp vpc for delete (%s): %w", clusterName, err)
 	}
+
+	// The tag-indexed VPC is already gone — a prior re-drive completed the EC2
+	// delete, or it was reclaimed out-of-band. Idempotent success: nothing left
+	// to delete here. Its OVN logical router/subnets/egress-drop policies may
+	// still be orphaned if that prior delete's fire-and-forget vpc.delete event
+	// never reached vpcd (e.g. NATS was down), so GC still runs below against
+	// knownRefs — the only surviving reference to its identity.
 	if vpcOut == nil || len(vpcOut.Vpcs) == 0 {
+		gcClusterCPVPCTopology(ctx, deps.NATSConn, clusterName, cpVPCGCTarget(knownRefs))
 		return nil
 	}
 	vpcID := aws.StringValue(vpcOut.Vpcs[0].VpcId)
 
-	if err := DeleteClusterIGW(deps.IGW, accountID, vpcID, clusterName); err != nil {
-		slog.Warn("DeleteClusterCPVPC: delete IGW failed", "vpc", vpcID, "err", err)
+	if err := DeleteClusterIGW(ctx, deps.IGW, accountID, vpcID, clusterName); err != nil {
+		slog.WarnContext(ctx, "DeleteClusterCPVPC: delete IGW failed", "vpc", vpcID, "err", err)
 	}
-	if _, err := deps.VPC.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, accountID); err != nil && !awserrors.IsNotFound(err) {
+	if _, err := deps.VPC.DeleteVpc(ctx, &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, accountID); err != nil && !awserrors.IsNotFound(err) {
 		return fmt.Errorf("eks: delete cp vpc %s: %w", vpcID, err)
 	}
-	slog.Info("DeleteClusterCPVPC: managed control-plane VPC removed", "cluster", clusterName, "vpc", vpcID)
+	gcClusterCPVPCTopology(ctx, deps.NATSConn, clusterName, vpcID)
+	slog.InfoContext(ctx, "DeleteClusterCPVPC: managed control-plane VPC removed", "cluster", clusterName, "vpc", vpcID)
 	return nil
+}
+
+// cpVPCGCTarget resolves the best-known VpcId for OVN GC when the tag-indexed
+// EC2 record is already gone: the persisted (internal cp-vpc state record)
+// VpcId, or "" if none was ever recorded (nil knownRefs).
+func cpVPCGCTarget(knownRefs *ManagedCPVPC) string {
+	if knownRefs == nil {
+		return ""
+	}
+	return knownRefs.VpcId
+}
+
+// gcClusterCPVPCTopology republishes vpc.delete for vpcID so vpcd's topology
+// manager gets another chance to remove the CP VPC's OVN logical router,
+// subnets, DHCP options, and SubnetEgressPriorityDrop policies (owned by the
+// router row, so OVSDB cascades their removal with it). That cleanup normally
+// runs only as a side effect of a *live* DeleteVpc KV mutation — a re-drive
+// against an already-gone VPC does not mutate the KV again, so a lost or
+// never-delivered event would otherwise orphan the OVN state forever.
+// Best-effort and idempotent: a nil conn or empty vpcID is a no-op, and vpcd
+// tolerates re-deleting an already-absent router.
+func gcClusterCPVPCTopology(ctx context.Context, nc *nats.Conn, clusterName, vpcID string) {
+	if nc == nil || vpcID == "" {
+		return
+	}
+	utils.PublishEvent(nc, "vpc.delete", struct {
+		VpcId     string `json:"vpc_id"`
+		CidrBlock string `json:"cidr_block"`
+		VNI       int64  `json:"vni"`
+	}{VpcId: vpcID})
+	slog.InfoContext(ctx, "DeleteClusterCPVPC: republished vpc.delete for OVN GC", "cluster", clusterName, "vpc", vpcID)
 }

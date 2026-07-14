@@ -141,8 +141,8 @@ export function useDeregisterContainerInstance() {
 }
 
 // useRegisterTaskDefinition registers a single-container revision. Container
-// CPU/memory and port mappings are optional; an empty value is omitted so the
-// gateway applies its defaults.
+// CPU/memory, GPU count, and port mappings are optional; an empty/zero value
+// is omitted so the gateway applies its defaults.
 export function useRegisterTaskDefinition() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -162,6 +162,10 @@ export function useRegisterTaskDefinition() {
                 hostPort: pm.containerPort,
                 protocol: pm.protocol,
               }))
+            : undefined,
+        resourceRequirements:
+          params.containerGpuCount > 0
+            ? [{ type: "GPU", value: String(params.containerGpuCount) }]
             : undefined,
       }
       const command = new RegisterTaskDefinitionCommand({

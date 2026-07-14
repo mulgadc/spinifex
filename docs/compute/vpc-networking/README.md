@@ -191,11 +191,18 @@ is identical:
 Both support the same AWS features: public subnets, Elastic IPs, security groups,
 DescribeInstances showing public IPs.
 
-## `nat` — Outbound Only (Simple)
+## `nat` — Shared SNAT (Simple)
 
-All VMs share a single external IP for outbound SNAT. No public IPs, no Elastic
-IPs, no inbound from WAN. All subnets behave as private subnets with internet
-access.
+All VMs share a single external IP for outbound SNAT. By default there are no
+public IPs, no Elastic IPs, and no inbound from WAN — all subnets behave as
+private subnets with internet access. On routed-NAT nodes, adding a public pool
+restores full public IP parity (see below).
+
+> **Limitation (routed-NAT v1):** System instances (ECS/EKS/load-balancer
+> agents) source egress from ExternalIPAM pool IPs, which do not exist in
+> `external_mode=nat`. Those features require `external_mode=pool`. A v2 will
+> either allocate transit IPs for system instances or reject the feature at the
+> API level in nat mode.
 
 The `gateway_ip` is the IP that OVN uses for SNAT. You can set it statically or
 use `setup-ovn.sh --dhcp` to obtain one from the router. This is the router's
@@ -215,6 +222,90 @@ gateway_ip = "192.168.1.100"     # Single IP for all VM outbound SNAT
 prefix_len = 24
 ```
 
+### Host access to instances (jumpbox pattern)
+
+The spinifex host automatically reaches every instance's **private IP**: IGW
+attach installs a host route into OVN (`<vpc-cidr> via <gateway-transit-ip>
+dev spx-nat-host`) and exempts the transit net from SNAT, so replies to
+host-initiated connections come back un-NATted. No per-instance setup.
+
+Security groups still apply and the default SG is closed to the host, same as
+AWS — open SSH/ICMP from the transit net first:
+
+```bash
+aws ec2 authorize-security-group-ingress --group-id $SG \
+  --protocol tcp --port 22 --cidr 100.127.0.0/24
+```
+
+Then use the host as a jumpbox for remote access:
+
+```bash
+ssh -J admin@<spinifex-host> ubuntu@<instance-private-ip>
+```
+
+Extra networks that must reach instances without SNAT (e.g. a management LAN)
+can be added via `[network] nat_exempt_cidrs = ["192.168.50.0/24"]`.
+
+### Public IPs in NAT mode (public pool)
+
+A routed-NAT node (`setup-ovn.sh --nat-uplink` + `spx admin init
+--external-mode=nat`) can carry a public pool alongside the internal
+`nat-transit` pool. With one configured, nat mode behaves like pool mode for
+public IPs: `MapPublicIpOnLaunch` on the default subnet, auto-assigned public
+IPs, and Elastic IPs all work. Spinifex delivers each public IP at the host —
+a `/32` route steers it into OVN and a proxy-ARP neighbor entry answers for it
+on the uplink (L3 only, same MAC, so it works on WiFi and other non-bridgeable
+uplinks).
+
+Static range carved out of the router's DHCP scope:
+
+```bash
+spx admin init --external-mode=nat \
+  --external-pool 192.168.1.150-192.168.1.250 \
+  --external-gateway 192.168.1.1
+```
+
+Or lease public IPs from the upstream router's DHCP:
+
+```bash
+spx admin init --external-mode=nat --external-source=dhcp \
+  --external-bind-bridge wlan0
+```
+
+On WiFi/WWAN uplinks the leases are requested with the interface's own MAC
+(`dhcp_mac = "interface"`, written automatically) and distinguished by DHCP
+client-id. Some routers key leases by MAC and ignore the client-id — Spinifex
+detects this (the router hands the same IP to two client-ids) and fails the
+allocation with advice to switch to a static range.
+
+Resulting config:
+
+```toml
+[network]
+external_mode = "nat"
+bridge_mode   = "nat"
+
+[[network.external_pools]]
+name       = "nat-transit"        # internal transit net (auto-generated)
+gateway    = "100.127.0.1"
+prefix_len = 24
+
+[[network.external_pools]]
+name        = "wan"               # public pool
+range_start = "192.168.1.150"
+range_end   = "192.168.1.250"
+gateway     = "192.168.1.1"
+prefix_len  = 24
+```
+
+**Caveat — reaching an EIP from the spinifex host itself.** Host-sourced
+traffic enters OVN from the transit net, which is exempt from NAT (that is what
+makes the jumpbox pattern work) — so a host connection to an EIP that carries
+the transit source IP would skip DNAT. Spinifex stamps the EIP route with the
+uplink's LAN IP as source to avoid this, but if no uplink address can be
+determined, connect to the instance's **private IP** from the host instead.
+Other machines on the LAN are unaffected.
+
 ## Disabled (Empty/Omitted)
 
 VPC networking is overlay-only. No external connectivity. Instances can only
@@ -222,19 +313,21 @@ communicate within their VPC.
 
 ## Mode Comparison
 
-| Capability                        | `pool` (static) | `pool` (dhcp) | `nat`    | Disabled |
-| --------------------------------- | --------------- | ------------- | -------- | -------- |
-| Outbound internet                 | Yes             | Yes           | Yes      | No       |
-| Inbound from WAN                  | Yes (1:1 NAT)   | Yes (1:1 NAT) | No       | No       |
-| Public subnets                    | Yes             | Yes           | No       | No       |
-| Auto-assign public IPs            | Yes             | Yes           | No       | No       |
-| Elastic IPs                       | Yes             | Yes           | No       | No       |
-| DescribeInstances shows public IP | Yes             | Yes           | No       | No       |
-| Admin must reserve IP range       | Yes             | No            | No       | No       |
-| Needs router DHCP                 | No              | Yes           | Optional | No       |
+| Capability                        | `pool` (static) | `pool` (dhcp) | `nat`             | Disabled |
+| --------------------------------- | --------------- | ------------- | ----------------- | -------- |
+| Outbound internet                 | Yes             | Yes           | Yes               | No       |
+| Host reaches instance private IPs | No              | No            | Yes (routed)      | No       |
+| Inbound from WAN                  | Yes (1:1 NAT)   | Yes (1:1 NAT) | With public pool  | No       |
+| Public subnets                    | Yes             | Yes           | With public pool  | No       |
+| Auto-assign public IPs            | Yes             | Yes           | With public pool  | No       |
+| Elastic IPs                       | Yes             | Yes           | With public pool  | No       |
+| DescribeInstances shows public IP | Yes             | Yes           | With public pool  | No       |
+| Admin must reserve IP range       | Yes             | No            | Only static pool  | No       |
+| Needs router DHCP                 | No              | Yes           | Optional          | No       |
 
-If you start with `nat` and later need public subnets, switch to `pool` and
-define a range (or use `source = "dhcp"`) — no data migration needed.
+If you start with `nat` and later need public subnets: on a bridgeable uplink
+switch to `pool` and define a range (or use `source = "dhcp"`); on a routed-NAT
+node just add a public pool alongside `nat-transit` — no data migration needed.
 
 ## Bridge Setup — Physical Network Wiring
 
@@ -452,7 +545,7 @@ dns_servers = ["8.8.8.8"]           # DNS for VMs (optional)
 
 | Field         | Required    | Description                                                                                                                                                            |
 | ------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`        | Yes         | Unique pool name. Used as NATS KV key and in `AllocateAddress`.                                                                                                        |
+| `name`        | Yes         | Unique pool name. Referenced by `AllocateAddress` to target a specific pool.                                                                                           |
 | `source`      | No          | IP source: `"static"` (default) uses `range_start`/`range_end`. `"dhcp"` obtains IPs from the router's DHCP server on each VM launch.                                  |
 | `range_start` | Static only | First IP in the range. First IP is reserved for OVN gateway SNAT (unless `gateway_ip` overrides).                                                                      |
 | `range_end`   | Static only | Last IP in the range.                                                                                                                                                  |
@@ -462,6 +555,7 @@ dns_servers = ["8.8.8.8"]           # DNS for VMs (optional)
 | `region`      | No          | Scopes pool to a region. Instances in this region prefer this pool.                                                                                                    |
 | `az`          | No          | Scopes pool to an AZ. More specific than region.                                                                                                                       |
 | `dns_servers` | No          | DNS servers propagated to VMs via OVN DHCP.                                                                                                                            |
+| `gw_lrp_range_start` / `gw_lrp_range_end` | No | Reserve gateway-LRP IPs for per-VPC OVN routers. When unset, the allocator auto-derives the top 16 host IPs of the pool subnet (~15 concurrent VPCs). Widen to raise the concurrent-VPC ceiling — the `nat-transit` pool defaults to `100.127.0.16`-`100.127.0.254` (239 VPCs). Must not overlap `range_start`/`range_end`. |
 
 ### Why range_start/range_end Instead of CIDR?
 
@@ -509,26 +603,10 @@ When an instance needs a public IP:
 
 ## IPAM Storage
 
-Each pool gets a NATS KV entry in bucket `spinifex-external-ipam`, keyed by pool
-name. Allocation uses CAS (Compare-And-Set) for lock-free concurrent access:
-
-```json
-{
-  "pool_name": "wan",
-  "range_start": "192.168.1.150",
-  "range_end": "192.168.1.250",
-  "allocated": {
-    "192.168.1.150": { "type": "gateway" },
-    "192.168.1.151": {
-      "type": "auto_assign",
-      "eni_id": "eni-abc",
-      "instance_id": "i-123"
-    }
-  }
-}
-```
-
-Pools are initialized from `spinifex.toml` on vpcd startup (idempotent).
+Pool allocation state is stored durably in the cluster (NATS KV bucket
+`spinifex-external-ipam`, one entry per pool) and survives restarts. Each
+allocation records the ENI and instance holding the address. Pools are
+initialized from `spinifex.toml` on vpcd startup (idempotent).
 
 ## Deployment Examples
 
@@ -1338,12 +1416,10 @@ OVNSB commit failed, force recompute next time.
 Repeated millions of times. Port binding never happens (`up: false`).
 
 **Cause:** Stale entries in the OVN Southbound DB (old chassis records, port
-bindings, datapath bindings) conflict with ovn-controller's expected state.
-Happens when `reset-dev-env.sh` cleans NB but not SB, or after ungraceful
-shutdowns.
+bindings, datapath bindings) conflict with ovn-controller's expected state,
+typically after an ungraceful shutdown.
 
-**Fix:** Delete both OVN DB files and restart. `reset-dev-env.sh` does this
-automatically:
+**Fix:** Delete both OVN DB files and restart:
 
 ```bash
 sudo systemctl stop ovn-central ovn-controller
@@ -1352,21 +1428,6 @@ sudo systemctl start ovn-central ovn-controller
 # vpcd reconcile will recreate the NB topology on next startup
 ```
 
-### Chassis Name Mismatch
-
-After mulga-999, vpcd uses the OVS-managed UUID (persisted at
-`/etc/openvswitch/system-id.conf` by the `openvswitch-switch` package and
-re-applied on every boot) as the canonical chassis identity. The chassis name
-across OVS `external_ids:system-id`, OVN SB `Chassis.name`, and NB
-`Gateway_Chassis.chassis_name` is always the same value, so the mismatch
-class that this section previously documented can no longer recur.
-
-`ReconcileFromKV` runs a `reconcileGatewayChassis` pre-step on every vpcd
-startup that deletes any stale `Gateway_Chassis` row left over from earlier
-installs (where `setup-ovn.sh` fabricated `chassis-$(hostname -s)`) and
-re-binds every gateway LRP against the live SBDB chassis. Pre-mulga-999
-brokenness recovers automatically on the first vpcd restart after upgrade —
-no manual `ovn-nbctl destroy` required.
 
 ### WAN NIC Not Enslaved to a Bridge
 

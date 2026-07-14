@@ -22,11 +22,12 @@ resources:
 - [Overview](#overview)
 - [Launch](#launch)
 - [Manage](#manage)
-- [Reboot](#reboot)
 - [Modify Instance Attributes](#modify-instance-attributes)
+- [Instance Metadata Options](#instance-metadata-options)
+- [Spot Instances](#spot-instances)
 - [Console Output](#console-output)
 - [Instance Types](#instance-types)
-- [SSH (Development)](#ssh-development)
+- [SSH](#ssh)
 - [Troubleshooting](#troubleshooting)
   - [Instance Fails to Boot](#instance-fails-to-boot)
   - [Cannot SSH Into Instance](#cannot-ssh-into-instance)
@@ -37,22 +38,12 @@ resources:
 
 Spinifex provides EC2-compatible VM management built on QEMU/KVM. Instances support cloud-init, SSH key injection, VPC networking, and standard AWS lifecycle operations.
 
-**Supported operations:**
-
-- `run-instances` — Launch new VMs
-- `describe-instances` — Query state
-- `stop-instances` / `start-instances` — Lifecycle
-- `reboot-instances` — In-place restart (QMP reset)
-- `terminate-instances` — Permanent removal
-- `modify-instance-attribute` — Change type, user data, or source/dest check
-- `get-console-output` — Retrieve serial console log
-- `describe-instance-types` — List available instance types
-
 ## Instructions
 
 ## Prerequisites
 
-Ensure the AWS profile is set:
+- A running Spinifex cluster (see [Setting Up Your Cluster](/docs/setting-up-your-cluster))
+- AWS CLI configured with the `spinifex` profile:
 
 ```bash
 export AWS_PROFILE=spinifex
@@ -61,18 +52,20 @@ export AWS_PROFILE=spinifex
 ## Launch
 
 ```bash
-aws ec2 run-instances \
+INSTANCE_ID=$(aws ec2 run-instances \
   --image-id $SPINIFEX_AMI \
   --instance-type t3.small \
-  --key-name spinifex-key
-
-export INSTANCE_ID="i-XXX"
+  --key-name spinifex-key \
+  --query 'Instances[0].InstanceId' --output text)
 ```
+
+Other supported launch flags: `--subnet-id`, `--security-group-ids`, `--tag-specifications`, `--user-data`, `--iam-instance-profile`, `--block-device-mappings`, `--placement`, `--count`.
 
 ## Manage
 
 ```bash
 aws ec2 describe-instances --instance-ids $INSTANCE_ID
+aws ec2 describe-instance-status --instance-ids $INSTANCE_ID --include-all-instances
 aws ec2 stop-instances --instance-ids $INSTANCE_ID
 aws ec2 start-instances --instance-ids $INSTANCE_ID
 aws ec2 terminate-instances --instance-ids $INSTANCE_ID
@@ -81,7 +74,7 @@ aws ec2 reboot-instances --instance-ids $INSTANCE_ID
 
 ## Modify Instance Attributes
 
-Change instance type, user data, or source/dest check. Instance type and user data require the instance to be **stopped** first.
+Change instance type, user data, or termination protection. Instance type and user data require the instance to be **stopped** first.
 
 ### Change Instance Type
 
@@ -93,6 +86,37 @@ aws ec2 modify-instance-attribute \
   --instance-type t3.medium
 
 aws ec2 start-instances --instance-ids $INSTANCE_ID
+```
+
+### Termination Protection
+
+```bash
+aws ec2 modify-instance-attribute \
+  --instance-id $INSTANCE_ID \
+  --disable-api-termination
+```
+
+## Instance Metadata Options
+
+IMDSv2 is always enforced — `--http-tokens optional` and `--http-endpoint disabled` are rejected with `UnsupportedOperation`, matching AWS account-level IMDSv2 enforcement. The hop limit is adjustable (raise it for containerised workloads that reach IMDS through an extra network hop):
+
+```bash
+aws ec2 modify-instance-metadata-options \
+  --instance-id $INSTANCE_ID \
+  --http-put-response-hop-limit 2
+```
+
+## Spot Instances
+
+Spot requests are supported as a compatibility layer over the on-demand path: requests launch real VMs on your own compute immediately and report `active`/`fulfilled`. There is no spot market — no bidding, interruption, or reclamation.
+
+```bash
+aws ec2 request-spot-instances \
+  --instance-count 1 \
+  --launch-specification '{"ImageId":"'$SPINIFEX_AMI'","InstanceType":"t3.small","KeyName":"spinifex-key"}'
+
+aws ec2 describe-spot-instance-requests
+aws ec2 cancel-spot-instance-requests --spot-instance-request-ids $SIR_ID
 ```
 
 ## Console Output
@@ -121,7 +145,8 @@ aws ec2 describe-instance-types
 Filter to a specific type:
 
 ```bash
-aws ec2 describe-instance-types --instance-types t3.micro t3.small
+aws ec2 describe-instance-types \
+  --query "InstanceTypes[?InstanceType=='t3.small']"
 ```
 
 Show capacity (how many of each type can still be launched):
@@ -131,16 +156,9 @@ aws ec2 describe-instance-types \
   --filters Name=capacity,Values=true
 ```
 
-## SSH (Development)
+## SSH
 
-In development mode, find the QEMU port forward and connect via localhost:
-
-```bash
-ps auxw | grep $INSTANCE_ID
-ssh -i ~/.ssh/spinifex-key ubuntu@127.0.0.1 -p <port>
-```
-
-For production SSH via public IPs, see [Setting Up Your Cluster](/docs/setting-up-your-cluster).
+To SSH into instances via their public IPs, see [Setting Up Your Cluster](/docs/setting-up-your-cluster).
 
 ## Troubleshooting
 

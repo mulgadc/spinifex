@@ -21,10 +21,13 @@ import {
 } from "@/mutations/iam"
 import {
   iamAttachedGroupPoliciesQueryOptions,
+  iamGroupPoliciesQueryOptions,
   iamGroupQueryOptions,
   iamPoliciesQueryOptions,
   iamUsersQueryOptions,
 } from "@/queries/iam"
+
+import { InlinePoliciesPanel } from "../../-components/inline-policies-panel"
 
 export const Route = createFileRoute(
   "/_auth/iam/(groups)/list-groups/$groupName",
@@ -39,6 +42,9 @@ export const Route = createFileRoute(
       ),
       context.queryClient.ensureQueryData(iamPoliciesQueryOptions),
       context.queryClient.ensureQueryData(iamUsersQueryOptions),
+      context.queryClient.ensureQueryData(
+        iamGroupPoliciesQueryOptions(params.groupName),
+      ),
     ])
   },
   head: ({ params }) => ({
@@ -359,6 +365,8 @@ function GroupDetail() {
             )}
           </DetailCard.Content>
         </DetailCard>
+
+        <InlinePoliciesPanel kind="group" name={groupName} />
       </div>
 
       <DeleteConfirmationDialog

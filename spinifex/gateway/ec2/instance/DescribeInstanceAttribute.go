@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,21 +39,21 @@ func ValidateDescribeInstanceAttributeInput(input *ec2.DescribeInstanceAttribute
 // those NotFound replies and surfaces a real success, falling back to
 // ErrorInvalidInstanceIDNotFound only when every node confirmed the instance
 // is absent.
-func DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeInstanceAttributeOutput, error) {
+func DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeInstanceAttributeOutput, error) {
 	if err := ValidateDescribeInstanceAttributeInput(input); err != nil {
 		return nil, err
 	}
 
-	slog.Info("DescribeInstanceAttribute: Processing request",
+	slog.InfoContext(ctx, "DescribeInstanceAttribute: Processing request",
 		"instance_id", *input.InstanceId, "attribute", *input.Attribute)
 
 	jsonData, err := json.Marshal(input)
 	if err != nil {
-		slog.Error("DescribeInstanceAttribute: Failed to marshal input", "err", err)
+		slog.ErrorContext(ctx, "DescribeInstanceAttribute: Failed to marshal input", "err", err)
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, sum, err := utils.Gather(natsConn, "ec2.DescribeInstanceAttribute", jsonData,
+	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstanceAttribute", jsonData,
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, StopOnFirst: true, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -61,7 +62,7 @@ func DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, natsCo
 	if len(frames) > 0 {
 		var out ec2.DescribeInstanceAttributeOutput
 		if json.Unmarshal(frames[0], &out) == nil {
-			slog.Info("DescribeInstanceAttribute: Completed successfully",
+			slog.InfoContext(ctx, "DescribeInstanceAttribute: Completed successfully",
 				"instance_id", *input.InstanceId, "responses", sum.Received)
 			return &out, nil
 		}
@@ -77,7 +78,7 @@ func DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, natsCo
 	}
 	// Every node confirmed absence, or none answered — surface NotFound so
 	// terraform retries cleanly.
-	slog.Warn("DescribeInstanceAttribute: instance absent or no responses",
+	slog.WarnContext(ctx, "DescribeInstanceAttribute: instance absent or no responses",
 		"instance_id", *input.InstanceId, "received", sum.Received, "expected", expectedNodes)
 	return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 }

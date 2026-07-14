@@ -1,6 +1,7 @@
 package handlers_quota
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -96,10 +97,14 @@ func TestEnforceVolumeExemptShortCircuits(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"create disabled", func() error { return disabled.EnforceVolumeCreate(nil, normalAccount, 1) }},
-		{"modify disabled", func() error { return disabled.EnforceVolumeModify(nil, normalAccount, "vol-a", 1) }},
-		{"create system account", func() error { return enabled.EnforceVolumeCreate(nil, utils.GlobalAccountID, 1) }},
-		{"modify system account", func() error { return enabled.EnforceVolumeModify(nil, utils.GlobalAccountID, "vol-a", 1) }},
+		{"create disabled", func() error { return disabled.EnforceVolumeCreate(context.Background(), nil, normalAccount, 1) }},
+		{"modify disabled", func() error {
+			return disabled.EnforceVolumeModify(context.Background(), nil, normalAccount, "vol-a", 1)
+		}},
+		{"create system account", func() error { return enabled.EnforceVolumeCreate(context.Background(), nil, utils.GlobalAccountID, 1) }},
+		{"modify system account", func() error {
+			return enabled.EnforceVolumeModify(context.Background(), nil, utils.GlobalAccountID, "vol-a", 1)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

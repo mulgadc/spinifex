@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -10,7 +11,7 @@ import (
 )
 
 // DescribeListeners handles the ELBv2 DescribeListeners API call.
-func DescribeListeners(input *elbv2.DescribeListenersInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeListenersOutput, error) {
+func DescribeListeners(ctx context.Context, input *elbv2.DescribeListenersInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeListenersOutput, error) {
 	var output elbv2.DescribeListenersOutput
 
 	if input == nil {
@@ -18,7 +19,7 @@ func DescribeListeners(input *elbv2.DescribeListenersInput, natsConn *nats.Conn,
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.DescribeListeners(input, accountID)
+	result, err := svc.DescribeListeners(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

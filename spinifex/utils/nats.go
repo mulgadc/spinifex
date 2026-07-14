@@ -220,12 +220,17 @@ func PrincipalARNFromMsg(msg *nats.Msg) string {
 	return msg.Header.Get(PrincipalARNHeader)
 }
 
-// NATSRequest performs a NATS request-response with JSON marshaling.
-// Sends with X-Account-ID (plus any extra headers) and unmarshals the successful response into Out.
-func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (*Out, error) {
+// NATSRequest performs a NATS request-response with JSON marshaling. It sends
+// with X-Account-ID (plus any extra headers), unmarshals the successful response
+// into Out, and carries ctx's trace context onto the wire: it opens a client span
+// for the hop and injects traceparent so the consumer joins the same trace.
+func NATSRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (out *Out, err error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, ErrClusterUnavailable
 	}
+
+	ctx, span := startProducerSpan(ctx, subject)
+	defer func() { endSpanWithError(span, err) }()
 
 	jsonData, err := json.Marshal(input)
 	if err != nil {
@@ -235,6 +240,7 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(AccountIDHeader, accountID)
+	InjectTraceContext(ctx, reqMsg.Header)
 	for _, h := range headers {
 		if h.Key != "" {
 			reqMsg.Header.Set(h.Key, h.Value)
@@ -251,6 +257,9 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 
 	responseError, err := ValidateErrorPayload(msg.Data)
 	if err != nil {
+		if responseError.Message != nil && *responseError.Message != "" {
+			return nil, errors.New(*responseError.Message)
+		}
 		return nil, errors.New(*responseError.Code)
 	}
 
@@ -263,19 +272,32 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 }
 
 // ServeNATSRequest unmarshals the request into *I, invokes fn, and replies with JSON or an awserrors envelope.
+// A consumer span joins the producer's trace when the message carries traceparent.
 func ServeNATSRequest[I any, O any](msg *nats.Msg, fn func(*I) (*O, error)) {
+	ServeNATSRequestCtx(msg, func(_ context.Context, in *I) (*O, error) { return fn(in) })
+}
+
+// ServeNATSRequestCtx is ServeNATSRequest for handlers that take the consumer
+// span's context, so their logs and child spans correlate to the trace.
+func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *I) (*O, error)) {
+	ctx, span := StartConsumerSpan(msg)
+	defer span.End()
+
 	input := new(I)
 	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		respondNATS(msg, errResp)
 		return
 	}
-	out, err := fn(input)
+	out, err := fn(ctx, input)
 	if err != nil {
-		respondNATS(msg, GenerateErrorPayload(awserrors.ValidErrorCode(err.Error())))
+		MarkSpanError(span, err)
+		respondNATS(msg, GenerateErrorPayloadWithMessage(awserrors.ValidErrorCode(err.Error()), err.Error()))
 		return
 	}
 	data, err := json.Marshal(out)
 	if err != nil {
+		MarkSpanError(span, err)
 		respondNATS(msg, GenerateErrorPayload(awserrors.ErrorServerInternal))
 		return
 	}
@@ -312,15 +334,21 @@ type GatherOpts struct {
 	AccountID     string        // sets X-Account-ID header when non-empty
 }
 
-// Gather publishes payload to subject over a fresh inbox and collects reply frames
-// until ExpectedNodes answer, StopOnFirst yields a success, or Timeout elapses.
-// Error envelopes and oversized frames are dropped from frames but counted in sum;
-// returned frames are raw daemon replies for the caller to decode and merge.
-func Gather(conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
+// Gather publishes payload to subject over a fresh inbox and collects reply
+// frames until ExpectedNodes answer, StopOnFirst yields a success, or Timeout
+// elapses. Error envelopes and oversized frames are dropped from frames but
+// counted in sum; returned frames are raw daemon replies for the caller to
+// decode and merge. It carries ctx's trace context onto the wire: it opens a
+// producer span for the fan-out and injects traceparent so every consumer joins
+// the same trace.
+func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
 	sum.ErrorCodes = map[string]int{}
 	if conn == nil || !conn.IsConnected() {
 		return nil, sum, ErrClusterUnavailable
 	}
+
+	ctx, span := startProducerSpan(ctx, subject)
+	defer func() { endSpanWithError(span, err) }()
 
 	inbox := nats.NewInbox()
 	sub, err := conn.SubscribeSync(inbox)
@@ -335,6 +363,7 @@ func Gather(conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (f
 	if opts.AccountID != "" {
 		pubMsg.Header.Set(AccountIDHeader, opts.AccountID)
 	}
+	InjectTraceContext(ctx, pubMsg.Header)
 	if err := conn.PublishMsg(pubMsg); err != nil {
 		return nil, sum, fmt.Errorf("failed to publish request: %w", err)
 	}
@@ -419,13 +448,21 @@ type natEvent struct {
 	MAC        string `json:"mac"`
 }
 
-// AddNAT requests vpcd commit the OVN dnat_and_snat rule via NATS request-reply (10 s timeout).
+// addNATTimeout bounds the vpc.add-nat request-reply. vpcd's handler holds the
+// reply until the flows barrier (ovn-nbctl --wait=hv sync, bounded 30 s) confirms
+// every chassis realised the rule. On a cold multi-node cluster the gateway SB
+// chassisredirect binding can take most of that budget to converge, so the caller
+// deadline must exceed 30 s or it abandons a still-committing rule and rolls back
+// the EIP mid-launch — surfacing as a spurious ServerInternal on RunInstances.
+const addNATTimeout = 45 * time.Second
+
+// AddNAT requests vpcd commit the OVN dnat_and_snat rule via NATS request-reply.
 // A non-nil return means the rule may not be committed; callers must roll back and publish vpc.delete-nat.
 func AddNAT(nc *nats.Conn, vpcID, externalIP, logicalIP, portName, mac string) error {
 	return RequestEvent(nc, "vpc.add-nat", natEvent{
 		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
 		PortName: portName, MAC: mac,
-	}, 10*time.Second)
+	}, addNATTimeout)
 }
 
 // PublishNATEvent sends a NAT lifecycle event. vpc.add-nat uses request-reply (prevents ARP races);
@@ -437,7 +474,7 @@ func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portNam
 	}
 
 	if topic == "vpc.add-nat" {
-		if err := RequestEvent(nc, topic, evt, 10*time.Second); err != nil {
+		if err := RequestEvent(nc, topic, evt, addNATTimeout); err != nil {
 			slog.Warn("PublishNATEvent: failed to add NAT rule — OVN dnat_and_snat rule not created; restart vpcd or re-associate EIP to recover",
 				"topic", topic, "externalIP", externalIP, "logicalIP", logicalIP, "err", err)
 		}

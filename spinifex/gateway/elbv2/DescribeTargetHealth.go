@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -20,7 +21,7 @@ func ValidateDescribeTargetHealthInput(input *elbv2.DescribeTargetHealthInput) e
 }
 
 // DescribeTargetHealth handles the ELBv2 DescribeTargetHealth API call.
-func DescribeTargetHealth(input *elbv2.DescribeTargetHealthInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTargetHealthOutput, error) {
+func DescribeTargetHealth(ctx context.Context, input *elbv2.DescribeTargetHealthInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTargetHealthOutput, error) {
 	var output elbv2.DescribeTargetHealthOutput
 
 	if err := ValidateDescribeTargetHealthInput(input); err != nil {
@@ -28,7 +29,7 @@ func DescribeTargetHealth(input *elbv2.DescribeTargetHealthInput, natsConn *nats
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.DescribeTargetHealth(input, accountID)
+	result, err := svc.DescribeTargetHealth(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

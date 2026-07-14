@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -37,7 +38,7 @@ func ValidateDescribeImageAttributeInput(input *ec2.DescribeImageAttributeInput)
 	return nil
 }
 
-func DescribeImageAttribute(input *ec2.DescribeImageAttributeInput, natsConn *nats.Conn, accountID string) (ec2.DescribeImageAttributeOutput, error) {
+func DescribeImageAttribute(ctx context.Context, input *ec2.DescribeImageAttributeInput, natsConn *nats.Conn, accountID string) (ec2.DescribeImageAttributeOutput, error) {
 	var output ec2.DescribeImageAttributeOutput
 
 	if err := ValidateDescribeImageAttributeInput(input); err != nil {
@@ -45,7 +46,7 @@ func DescribeImageAttribute(input *ec2.DescribeImageAttributeInput, natsConn *na
 	}
 
 	svc := handlers_ec2_image.NewNATSImageService(natsConn, 0)
-	result, err := svc.DescribeImageAttribute(input, accountID)
+	result, err := svc.DescribeImageAttribute(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

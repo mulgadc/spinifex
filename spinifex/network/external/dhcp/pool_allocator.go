@@ -59,11 +59,12 @@ func (a *DHCPPoolAllocator) Allocate(ctx context.Context, req external.AllocateR
 	}
 
 	lease, err := a.client.RequestAcquire(ctx, AcquireParams{
-		Bridge:   a.pool.BindBridge,
-		ClientID: clientID,
-		HWAddr:   a.hwAddrFor(clientID),
-		Purpose:  poolPurpose(req),
-		PoolName: a.pool.Name,
+		Bridge:      a.pool.BindBridge,
+		ClientID:    clientID,
+		HWAddr:      a.hwAddrFor(clientID),
+		UseIfaceMAC: a.pool.UsesIfaceMAC(),
+		Purpose:     poolPurpose(req),
+		PoolName:    a.pool.Name,
 	})
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("dhcp pool allocate: %w", err)

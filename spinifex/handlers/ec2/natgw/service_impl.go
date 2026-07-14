@@ -1,6 +1,7 @@
 package handlers_ec2_natgw
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,7 +101,7 @@ type natGatewayEvent struct {
 }
 
 // CreateNatGateway creates a NAT Gateway in a public subnet with an EIP
-func (s *NatGatewayServiceImpl) CreateNatGateway(input *ec2.CreateNatGatewayInput, accountID string) (*ec2.CreateNatGatewayOutput, error) {
+func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2.CreateNatGatewayInput, accountID string) (*ec2.CreateNatGatewayOutput, error) {
 	if input.SubnetId == nil || *input.SubnetId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -152,7 +153,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(input *ec2.CreateNatGatewayInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.natgwKV.Put(utils.AccountKey(accountID, natgwID), data); err != nil {
-		slog.Error("Failed to store NAT Gateway", "natGatewayId", natgwID, "err", err)
+		slog.ErrorContext(ctx, "Failed to store NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -165,11 +166,11 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(input *ec2.CreateNatGatewayInpu
 	eipRecord.State = "associated"
 	if eipData, err := json.Marshal(eipRecord); err == nil {
 		if _, err := s.eipKV.Update(utils.AccountKey(accountID, allocID), eipData, eipEntry.Revision()); err != nil {
-			slog.Warn("CreateNatGateway: failed to mark EIP associated", "natGatewayId", natgwID, "allocationId", allocID, "err", err)
+			slog.WarnContext(ctx, "CreateNatGateway: failed to mark EIP associated", "natGatewayId", natgwID, "allocationId", allocID, "err", err)
 		}
 	}
 
-	slog.Info("CreateNatGateway completed", "natGatewayId", natgwID, "subnetId", subnetID,
+	slog.InfoContext(ctx, "CreateNatGateway completed", "natGatewayId", natgwID, "subnetId", subnetID,
 		"allocationId", allocID, "publicIp", eipRecord.PublicIp, "vpcId", subnetRecord.VpcId, "accountID", accountID)
 
 	return &ec2.CreateNatGatewayOutput{
@@ -178,7 +179,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(input *ec2.CreateNatGatewayInpu
 }
 
 // DeleteNatGateway deletes a NAT Gateway and removes OVN SNAT rules
-func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInput, accountID string) (*ec2.DeleteNatGatewayOutput, error) {
+func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2.DeleteNatGatewayInput, accountID string) (*ec2.DeleteNatGatewayOutput, error) {
 	if input.NatGatewayId == nil || *input.NatGatewayId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -193,7 +194,7 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInpu
 			// tolerates it on destroy); destroy orchestration tolerates it too.
 			return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)
 		}
-		slog.Error("Failed to read NAT Gateway", "natGatewayId", natgwID, "err", err)
+		slog.ErrorContext(ctx, "Failed to read NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -205,7 +206,7 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInpu
 	// AWS-faithful: a NAT gateway deletes even while routes still forward to it
 	// (the route blackholes), so there is no route-reference dependency guard.
 	// Tear down the SNAT for each subnet routed through it so egress stops.
-	s.publishDeleteEventsForNatGateway(&record, accountID)
+	s.publishDeleteEventsForNatGateway(ctx, &record, accountID)
 
 	// Move to deleted bucket (auto-expires via TTL) so DescribeNatGateways can
 	// return state=deleted while Terraform polls after deletion.
@@ -215,20 +216,20 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.deletedNatgwKV.Put(key, deleted); err != nil {
-		slog.Error("Failed to write deleted NAT Gateway", "natGatewayId", natgwID, "err", err)
+		slog.ErrorContext(ctx, "Failed to write deleted NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Remove from active bucket
 	if err := s.natgwKV.Delete(key); err != nil {
-		slog.Error("Failed to delete NAT Gateway from active bucket", "natGatewayId", natgwID, "err", err)
+		slog.ErrorContext(ctx, "Failed to delete NAT Gateway from active bucket", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Disassociate the EIP, keeping the allocation (AWS parity).
-	s.disassociateEIP(&record, accountID)
+	s.disassociateEIP(ctx, &record, accountID)
 
-	slog.Info("DeleteNatGateway completed", "natGatewayId", natgwID, "accountID", accountID)
+	slog.InfoContext(ctx, "DeleteNatGateway completed", "natGatewayId", natgwID, "accountID", accountID)
 
 	return &ec2.DeleteNatGatewayOutput{
 		NatGatewayId: aws.String(natgwID),
@@ -245,13 +246,13 @@ const kvBucketRouteTables = "spinifex-vpc-route-tables"
 // target it and publishing vpc.delete-nat-gateway per associated subnet. Called
 // on delete so egress stops even though the route entry survives (blackhole).
 // Best-effort: a scan error only delays SNAT teardown until the route is deleted.
-func (s *NatGatewayServiceImpl) publishDeleteEventsForNatGateway(record *NatGatewayRecord, accountID string) {
+func (s *NatGatewayServiceImpl) publishDeleteEventsForNatGateway(ctx context.Context, record *NatGatewayRecord, accountID string) {
 	if s.natsConn == nil {
 		return
 	}
 	rtbKV, err := utils.GetOrCreateKVBucket(mustJS(s.natsConn), kvBucketRouteTables, 10)
 	if err != nil {
-		slog.Warn("DeleteNatGateway: route-table scan failed, SNAT teardown deferred to route delete", "natGatewayId", record.NatGatewayId, "err", err)
+		slog.WarnContext(ctx, "DeleteNatGateway: route-table scan failed, SNAT teardown deferred to route delete", "natGatewayId", record.NatGatewayId, "err", err)
 		return
 	}
 	keys, err := rtbKV.Keys()
@@ -317,7 +318,7 @@ func mustJS(nc *nats.Conn) nats.JetStreamContext {
 // disassociateEIP clears the EIP's association to this NAT gateway, keeping the
 // allocation (AWS parity). Idempotent and non-fatal: the NAT gateway is already
 // gone, so a stale association only delays the EIP's reuse.
-func (s *NatGatewayServiceImpl) disassociateEIP(record *NatGatewayRecord, accountID string) {
+func (s *NatGatewayServiceImpl) disassociateEIP(ctx context.Context, record *NatGatewayRecord, accountID string) {
 	if record.AllocationId == "" {
 		return
 	}
@@ -325,7 +326,7 @@ func (s *NatGatewayServiceImpl) disassociateEIP(record *NatGatewayRecord, accoun
 	entry, err := s.eipKV.Get(key)
 	if err != nil {
 		if !errors.Is(err, nats.ErrKeyNotFound) {
-			slog.Warn("DeleteNatGateway: EIP read failed during disassociate", "allocationId", record.AllocationId, "err", err)
+			slog.WarnContext(ctx, "DeleteNatGateway: EIP read failed during disassociate", "allocationId", record.AllocationId, "err", err)
 		}
 		return
 	}
@@ -348,7 +349,7 @@ func (s *NatGatewayServiceImpl) disassociateEIP(record *NatGatewayRecord, accoun
 		return
 	}
 	if _, err := s.eipKV.Update(key, data, entry.Revision()); err != nil {
-		slog.Warn("DeleteNatGateway: failed to disassociate EIP", "allocationId", record.AllocationId, "err", err)
+		slog.WarnContext(ctx, "DeleteNatGateway: failed to disassociate EIP", "allocationId", record.AllocationId, "err", err)
 	}
 }
 
@@ -360,10 +361,10 @@ var describeNatGatewaysValidFilters = map[string]bool{
 }
 
 // DescribeNatGateways lists NAT Gateways, optionally filtered
-func (s *NatGatewayServiceImpl) DescribeNatGateways(input *ec2.DescribeNatGatewaysInput, accountID string) (*ec2.DescribeNatGatewaysOutput, error) {
+func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *ec2.DescribeNatGatewaysInput, accountID string) (*ec2.DescribeNatGatewaysOutput, error) {
 	parsedFilters, err := filterutil.ParseFilters(input.Filter, describeNatGatewaysValidFilters)
 	if err != nil {
-		slog.Warn("DescribeNatGateways: invalid filter", "err", err)
+		slog.WarnContext(ctx, "DescribeNatGateways: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -393,13 +394,13 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(input *ec2.DescribeNatGatewa
 			if errors.Is(err, nats.ErrKeyNotFound) {
 				continue
 			}
-			slog.Error("Failed to read NAT Gateway", "key", key, "err", err)
+			slog.ErrorContext(ctx, "Failed to read NAT Gateway", "key", key, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
 		var record NatGatewayRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.Error("Corrupt NAT Gateway record", "key", key, "err", err)
+			slog.ErrorContext(ctx, "Corrupt NAT Gateway record", "key", key, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
@@ -528,4 +529,27 @@ func recordToEC2(record *NatGatewayRecord) *ec2.NatGateway {
 	ngw.Tags = utils.MapToEC2Tags(record.Tags)
 
 	return ngw
+}
+
+// ApplyRecordTags mirrors CreateTags into the owning NAT gateway KV record so
+// tag-filtered describes observe tags added after create. Resource ids this
+// service does not own are skipped; absent records are a no-op.
+func (s *NatGatewayServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.natgwKV, accountID, "nat-", input.Resources,
+		func(r *NatGatewayRecord) *map[string]string { return &r.Tags },
+		utils.MergeTagsMut(input))
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning NAT gateway KV record
+// with AWS-faithful delete semantics.
+func (s *NatGatewayServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.natgwKV, accountID, "nat-", input.Resources,
+		func(r *NatGatewayRecord) *map[string]string { return &r.Tags },
+		utils.RemoveTagsMut(input))
 }

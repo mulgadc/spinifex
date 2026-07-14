@@ -38,6 +38,26 @@ func TestFormatRoles(t *testing.T) {
 			resp: types.NodeStatusResponse{NATSRole: "leader", PredastoreRole: "leader"},
 			want: "nats:leader,predastore:leader",
 		},
+		{
+			name: "ovn roles only",
+			resp: types.NodeStatusResponse{OVNNBRole: "leader", OVNSBRole: "follower"},
+			want: "ovn-nb:leader,ovn-sb:follower",
+		},
+		{
+			name: "all four roles ordered",
+			resp: types.NodeStatusResponse{
+				NATSRole:       "leader",
+				OVNNBRole:      "leader",
+				OVNSBRole:      "follower",
+				PredastoreRole: "follower",
+			},
+			want: "nats:leader,ovn-nb:leader,ovn-sb:follower,predastore:follower",
+		},
+		{
+			name: "ovn-nb leader with nats, sb absent",
+			resp: types.NodeStatusResponse{NATSRole: "follower", OVNNBRole: "leader"},
+			want: "nats:follower,ovn-nb:leader",
+		},
 	}
 
 	for _, tt := range tests {

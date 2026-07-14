@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -60,6 +62,119 @@ func newMockQMPClient(t *testing.T, responder func(qmp.QMPCommand) map[string]an
 		_ = clientConn.Close()
 		_ = serverConn.Close()
 		<-done
+	}
+	return client, cancel
+}
+
+// mockQMPServer lets a responder push asynchronous QMP events (e.g.
+// DEVICE_DELETED) onto the same stream as command replies. Writes are
+// serialized so a delayed event push never interleaves with a reply.
+type mockQMPServer struct {
+	mu  sync.Mutex
+	enc *json.Encoder
+}
+
+func (s *mockQMPServer) pushEvent(ev map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enc.Encode(ev)
+}
+
+// newMockQMPClientWithEvents is newMockQMPClient plus a *mockQMPServer handle
+// so the responder can schedule out-of-band events (typically from a
+// goroutine) in addition to its synchronous command reply.
+//
+// This uses a real unix socket rather than net.Pipe: net.Pipe's deadline
+// implementation does not reliably support "timeout, then clear the deadline,
+// then read again" on the same conn (verified against Go's net.Pipe — a real
+// unix socket, matching production QMP transport, does not have this
+// limitation), and DEVICE_DELETED-wait tests need exactly that sequence.
+//
+// The listener keeps accepting connections for the life of the test (each
+// served on its own goroutine, greeting first) so a client-side reconnect —
+// e.g. reconnectQMP redialing after a genuine decode error marks the client
+// Dead — is served exactly like the first connection.
+func newMockQMPClientWithEvents(t *testing.T, responder func(qmp.QMPCommand, *mockQMPServer) map[string]any) (*qmp.QMPClient, func()) {
+	t.Helper()
+
+	sockPath := filepath.Join(t.TempDir(), "qmp.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	serveConn := func(conn net.Conn) {
+		defer wg.Done()
+		defer conn.Close()
+
+		srv := &mockQMPServer{enc: json.NewEncoder(conn)}
+		if err := srv.pushEvent(map[string]any{
+			"QMP": map[string]any{
+				"version":      map[string]any{"qemu": map[string]any{"major": 8, "minor": 0}},
+				"capabilities": []string{},
+			},
+		}); err != nil {
+			return
+		}
+
+		dec := json.NewDecoder(conn)
+		for {
+			var cmd qmp.QMPCommand
+			if err := dec.Decode(&cmd); err != nil {
+				return
+			}
+			if cmd.Execute == "qmp_capabilities" {
+				if err := srv.pushEvent(map[string]any{"return": map[string]any{}}); err != nil {
+					return
+				}
+				continue
+			}
+			var reply map[string]any
+			if responder != nil {
+				reply = responder(cmd, srv)
+			}
+			if reply == nil {
+				reply = map[string]any{"return": map[string]any{}}
+			}
+			if err := srv.pushEvent(reply); err != nil {
+				return
+			}
+		}
+	}
+
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			wg.Add(1)
+			go serveConn(conn)
+		}
+	}()
+
+	clientConn, err := net.Dial("unix", sockPath)
+	require.NoError(t, err)
+
+	dec := json.NewDecoder(clientConn)
+	var greeting qmp.QMPGreeting
+	require.NoError(t, dec.Decode(&greeting), "mock QMP server greeting")
+
+	client := &qmp.QMPClient{
+		Conn:    clientConn,
+		Decoder: dec,
+		Encoder: json.NewEncoder(clientConn),
+		Path:    sockPath,
+	}
+
+	cancel := func() {
+		_ = ln.Close()
+		// client.Conn may have been swapped by reconnectQMP after a Dead
+		// redial, so close the current field value, not the initial dial.
+		_ = client.Conn.Close()
+		<-acceptDone
+		wg.Wait()
 	}
 	return client, cancel
 }
@@ -251,7 +366,7 @@ func TestIsQMPNodeNotFound(t *testing.T) {
 
 func TestAttachVolume_InstanceNotFound(t *testing.T) {
 	m := NewManager()
-	_, err := m.AttachVolume("i-missing", "vol-1", "")
+	_, err := m.AttachVolume(t.Context(), "i-missing", "vol-1", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInstanceNotFound)
 }
@@ -260,7 +375,7 @@ func TestAttachVolume_NotRunning(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateStopped, Instance: &ec2.Instance{}})
 
-	_, err := m.AttachVolume("i-1", "vol-1", "")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidTransition)
 }
@@ -274,14 +389,14 @@ func TestAttachVolume_AttachmentLimitExceeded(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{BlockDeviceMappings: bdms}})
 
-	_, err := m.AttachVolume("i-1", "vol-1", "")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrAttachmentLimitExceeded)
 }
 
 func TestDetachVolume_InstanceNotFound(t *testing.T) {
 	m := NewManager()
-	_, err := m.DetachVolume("i-missing", "vol-1", "", false)
+	_, err := m.DetachVolume(t.Context(), "i-missing", "vol-1", "", false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInstanceNotFound)
 }
@@ -290,7 +405,7 @@ func TestDetachVolume_NotRunning(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateStopped})
 
-	_, err := m.DetachVolume("i-1", "vol-1", "", false)
+	_, err := m.DetachVolume(t.Context(), "i-1", "vol-1", "", false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidTransition)
 }
@@ -299,7 +414,7 @@ func TestDetachVolume_VolumeNotAttached(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{}})
 
-	_, err := m.DetachVolume("i-1", "vol-missing", "", false)
+	_, err := m.DetachVolume(t.Context(), "i-1", "vol-missing", "", false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrVolumeNotAttached)
 }
@@ -372,7 +487,7 @@ func TestDetachVolume_DeviceGuards(t *testing.T) {
 				},
 			})
 
-			device, err := m.DetachVolume("i-1", tt.req.Name, tt.requestDevice, false)
+			device, err := m.DetachVolume(t.Context(), "i-1", tt.req.Name, tt.requestDevice, false)
 
 			if tt.wantErr != nil {
 				require.Error(t, err)
@@ -431,7 +546,7 @@ func TestDetachVolume_SealFailureGatesAvailable(t *testing.T) {
 		},
 	})
 
-	_, err := m.DetachVolume("i-1", "vol-1", "", false)
+	_, err := m.DetachVolume(t.Context(), "i-1", "vol-1", "", false)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sealErr,
@@ -457,7 +572,7 @@ func TestDetachVolume_SealFailureGatesAvailable(t *testing.T) {
 
 func TestReboot_InstanceNotFound(t *testing.T) {
 	m := NewManager()
-	err := m.Reboot("i-missing")
+	err := m.Reboot(t.Context(), "i-missing")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInstanceNotFound)
 }
@@ -466,7 +581,7 @@ func TestReboot_NotRunning(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateStopped})
 
-	err := m.Reboot("i-1")
+	err := m.Reboot(t.Context(), "i-1")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidTransition)
 }
@@ -492,7 +607,7 @@ func TestReboot_DoesNotFireHooks(t *testing.T) {
 	m := NewManagerWithDeps(Deps{Hooks: hooks})
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
 
-	require.NoError(t, m.Reboot("i-1"))
+	require.NoError(t, m.Reboot(t.Context(), "i-1"))
 
 	assert.Equal(t, 0, upCalls, "Reboot must not fire OnInstanceUp")
 	assert.Equal(t, 0, downCalls, "Reboot must not fire OnInstanceDown")
@@ -510,7 +625,7 @@ func TestReboot_DoesNotChangeStatus(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
 
-	require.NoError(t, m.Reboot("i-1"))
+	require.NoError(t, m.Reboot(t.Context(), "i-1"))
 
 	v, ok := m.Get("i-1")
 	require.True(t, ok)
@@ -531,7 +646,7 @@ func TestReboot_QMPFailureSurfacesError(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
 
-	err := m.Reboot("i-1")
+	err := m.Reboot(t.Context(), "i-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "QMP system_reset")
 }
@@ -559,7 +674,7 @@ func TestAttachVolume_MountAmbiguous_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneErr: ErrMountAmbiguous}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMountAmbiguous)
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne,
@@ -573,7 +688,7 @@ func TestAttachVolume_GenericMountError_DoesNotUnmount(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneErr: errors.New("ebs.mount NATS request: timeout")}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrMountAmbiguous)
 	assert.Empty(t, mounter.unmountedOne,
@@ -587,7 +702,7 @@ func TestAttachVolume_NBDURIParseFailure_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "not-a-valid-nbd-uri"}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse NBDURI")
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
@@ -613,7 +728,7 @@ func TestAttachVolume_ObjectAddFailure_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "object-add")
 	assert.Equal(t, []string{"object-add"}, recorder.executes(),
@@ -641,7 +756,7 @@ func TestAttachVolume_BlockdevAddFailure_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "blockdev-add")
 	assert.Equal(t, []string{"object-add", "blockdev-add", "object-del"}, recorder.executes())
@@ -668,7 +783,7 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelOK_Unmounts(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device_add")
 	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del", "object-del"}, recorder.executes())
@@ -701,7 +816,7 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelFails_SkipsUnmountOne(t *testi
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device_add")
 	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del"}, recorder.executes())
@@ -776,13 +891,11 @@ func TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata(t *testing.T) {
 		QMPClient: qmpClient,
 	})
 
-	res, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	device, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.NoError(t, err)
 
-	assert.Equal(t, "/dev/sdf", res.DeviceName,
-		"AttachVolumeResult.DeviceName must echo the API-form name so the daemon's AttachVolume response and aws_volume_attachment's post-attach wait both round-trip the AWS-spec contract")
-	assert.Equal(t, "/dev/vdc", res.GuestDevice,
-		"AttachVolumeResult.GuestDevice must carry the in-guest virtio path discovered from query-block")
+	assert.Equal(t, "/dev/sdf", device,
+		"AttachVolume must return the API-form name so the daemon's AttachVolume response and aws_volume_attachment's post-attach wait both round-trip the AWS-spec contract")
 
 	calls := stateUpdater.snapshot()
 	require.Len(t, calls, 1,
@@ -830,7 +943,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.NoError(t, err)
 		assert.Equal(t, int32(1), attempts.Load())
 		assert.NotContains(t, buf.String(), "succeeded after retry",
@@ -851,7 +964,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.NoError(t, err)
 		assert.Equal(t, int32(3), attempts.Load())
 		logs := buf.String()
@@ -873,7 +986,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "permission denied")
 		assert.Equal(t, int32(2), attempts.Load(),
@@ -889,7 +1002,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.NoError(t, err,
 			"an already-removed block node must be idempotent so a detach retry can re-drive the unmount seal")
 		assert.Equal(t, int32(1), attempts.Load(),
@@ -905,11 +1018,271 @@ func TestTryBlockdevDel(t *testing.T) {
 		defer cancel()
 
 		m := NewManagerWithDeps(Deps{})
-		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		err := m.tryBlockdevDel(t.Context(), &VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.Error(t, err)
 		assert.True(t, isQMPNodeInUse(err),
 			"exhaustion must return the last 'in use' error, not a wrapped or sentinel value")
 		assert.Equal(t, int32(blockdevDelMaxAttempts), attempts.Load(),
 			"retry must cap at blockdevDelMaxAttempts attempts")
 	})
+}
+
+// newMockQMPServerConn wires a QMPClient over net.Pipe with no command-reply
+// loop at all — the test drives the server side directly via the returned
+// json.Encoder, which is what waitForDeviceDeletedEvent tests need: an event
+// pushed independently of any command/response exchange.
+func newMockQMPServerConn(t *testing.T) (*qmp.QMPClient, *json.Encoder, func()) {
+	t.Helper()
+	client, enc, _, cancel := newMockQMPServerConnRaw(t)
+	return client, enc, cancel
+}
+
+// newMockQMPServerConnRaw is newMockQMPServerConn plus the raw server-side
+// net.Conn, needed by tests that close the server side independently (e.g. to
+// force a genuine EOF decode error rather than a benign read-deadline
+// timeout).
+func newMockQMPServerConnRaw(t *testing.T) (*qmp.QMPClient, *json.Encoder, net.Conn, func()) {
+	t.Helper()
+
+	sockPath := filepath.Join(t.TempDir(), "qmp.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			close(accepted)
+			return
+		}
+		accepted <- conn
+	}()
+
+	clientConn, err := net.Dial("unix", sockPath)
+	require.NoError(t, err)
+
+	serverConn := <-accepted
+	_ = ln.Close()
+	require.NotNil(t, serverConn, "mock QMP server failed to accept")
+
+	client := &qmp.QMPClient{
+		Conn:    clientConn,
+		Decoder: json.NewDecoder(clientConn),
+		Encoder: json.NewEncoder(clientConn),
+		Path:    sockPath,
+	}
+	enc := json.NewEncoder(serverConn)
+
+	cancel := func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	}
+	return client, enc, serverConn, cancel
+}
+
+// TestWaitForDeviceDeletedEvent covers waitForDeviceDeletedEvent directly:
+// matching event, non-matching event followed by a match, and timeout. Uses
+// a short timeout so the timeout sub-test stays fast.
+func TestWaitForDeviceDeletedEvent(t *testing.T) {
+	t.Run("matching event returns nil", func(t *testing.T) {
+		qmpClient, enc, cancel := newMockQMPServerConn(t)
+		defer cancel()
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- waitForDeviceDeletedEvent(t.Context(), qmpClient, "vdisk-vol-1", 2*time.Second, "i-1")
+		}()
+
+		require.NoError(t, enc.Encode(map[string]any{
+			"event": "DEVICE_DELETED",
+			"data":  map[string]any{"device": "vdisk-vol-1", "path": "/machine/peripheral/vdisk-vol-1"},
+		}))
+		require.NoError(t, <-errCh)
+	})
+
+	t.Run("non-matching event is skipped, later match returns nil", func(t *testing.T) {
+		qmpClient, enc, cancel := newMockQMPServerConn(t)
+		defer cancel()
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- waitForDeviceDeletedEvent(t.Context(), qmpClient, "vdisk-vol-2", 2*time.Second, "i-1")
+		}()
+
+		require.NoError(t, enc.Encode(map[string]any{
+			"event": "DEVICE_DELETED",
+			"data":  map[string]any{"device": "vdisk-vol-1", "path": "/machine/peripheral/vdisk-vol-1"},
+		}))
+		require.NoError(t, enc.Encode(map[string]any{
+			"event": "DEVICE_DELETED",
+			"data":  map[string]any{"device": "vdisk-vol-2", "path": "/machine/peripheral/vdisk-vol-2"},
+		}))
+		require.NoError(t, <-errCh)
+	})
+
+	t.Run("no event before timeout returns error but leaves the client alive", func(t *testing.T) {
+		qmpClient, _, cancel := newMockQMPServerConn(t)
+		defer cancel()
+
+		err := waitForDeviceDeletedEvent(t.Context(), qmpClient, "vdisk-vol-1", 50*time.Millisecond, "i-1")
+		require.Error(t, err)
+		// A read-deadline timeout fires at a message boundary — nothing was
+		// partially consumed — and the deferred SetReadDeadline reset restores
+		// the connection, so this is benign: DEVICE_DELETED is frequently
+		// pre-swallowed by device_del's own reply loop, and poisoning the
+		// connection on every such miss was the wedge regression.
+		assert.False(t, qmpClient.Dead,
+			"a benign read-deadline timeout must not mark the client dead")
+	})
+
+	t.Run("genuine decode error marks the client dead", func(t *testing.T) {
+		qmpClient, _, serverConn, cancel := newMockQMPServerConnRaw(t)
+		defer cancel()
+
+		// Close only the server side: the client's next Decode fails with EOF,
+		// not a deadline timeout, so the stream position is genuinely unknown.
+		_ = serverConn.Close()
+
+		err := waitForDeviceDeletedEvent(t.Context(), qmpClient, "vdisk-vol-1", 5*time.Second, "i-1")
+		require.Error(t, err)
+		assert.True(t, qmpClient.Dead,
+			"a non-timeout decode error (EOF/connection close) must mark the client dead")
+	})
+
+	t.Run("nil client returns error", func(t *testing.T) {
+		err := waitForDeviceDeletedEvent(t.Context(), nil, "vdisk-vol-1", time.Second, "i-1")
+		require.Error(t, err)
+	})
+}
+
+// TestDetachVolume_WaitsForDeviceDeletedBeforeBlockdevDel is the regression
+// guard for the "node in use" wedge: blockdev-del only ever succeeds once
+// DEVICE_DELETED has been observed, so if DetachVolume attempted it before
+// waiting for the event, this test would exhaust blockdevDelMaxAttempts and
+// fail exactly like the reported bug. Release of the event is gated on an
+// explicit signal (not a race against wall-clock timing) so the test is
+// deterministic; a minimum-elapsed-time assertion confirms DetachVolume
+// actually blocked on the event rather than skipping the wait.
+func TestDetachVolume_WaitsForDeviceDeletedBeforeBlockdevDel(t *testing.T) {
+	var blockdevAttempts atomic.Int32
+	releaseEvent := make(chan struct{})
+
+	qmpClient, cancel := newMockQMPClientWithEvents(t, func(cmd qmp.QMPCommand, srv *mockQMPServer) map[string]any {
+		switch cmd.Execute {
+		case "device_del":
+			go func() {
+				<-releaseEvent
+				_ = srv.pushEvent(map[string]any{
+					"event": "DEVICE_DELETED",
+					"data":  map[string]any{"device": "vdisk-vol-1", "path": "/machine/peripheral/vdisk-vol-1"},
+				})
+			}()
+			return nil
+		case "blockdev-del":
+			blockdevAttempts.Add(1)
+			return nil
+		}
+		return nil
+	})
+	defer cancel()
+
+	mounter := &fakeVolumeMounter{}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, DeviceDeletedTimeout: 5 * time.Second})
+	m.Insert(&VM{
+		ID:        "i-1",
+		Status:    StateRunning,
+		Instance:  &ec2.Instance{},
+		QMPClient: qmpClient,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		},
+	})
+
+	const releaseDelay = 100 * time.Millisecond
+	go func() {
+		time.Sleep(releaseDelay)
+		close(releaseEvent)
+	}()
+
+	start := time.Now()
+	device, err := m.DetachVolume(t.Context(), "i-1", "vol-1", "", false)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Equal(t, "/dev/sdf", device)
+	assert.Equal(t, int32(1), blockdevAttempts.Load(),
+		"waiting for DEVICE_DELETED before the first blockdev-del attempt must avoid any 'node in use' retry")
+	assert.GreaterOrEqual(t, elapsed, releaseDelay/2,
+		"DetachVolume must actually block on the DEVICE_DELETED event rather than proceeding immediately")
+}
+
+// TestDetachVolume_DeviceDeletedTimeout_FallsBackToRetry covers the case
+// where DEVICE_DELETED is never observed within DeviceDeletedTimeout (e.g. a
+// lost event, or a QEMU version quirk): DetachVolume must still fall back to
+// the bounded blockdev-del retry and succeed once the node frees up, rather
+// than surfacing the wait timeout as a hard failure.
+func TestDetachVolume_DeviceDeletedTimeout_FallsBackToRetry(t *testing.T) {
+	var blockdevAttempts atomic.Int32
+
+	qmpClient, cancel := newMockQMPClientWithEvents(t, func(cmd qmp.QMPCommand, srv *mockQMPServer) map[string]any {
+		if cmd.Execute == "blockdev-del" {
+			n := blockdevAttempts.Add(1)
+			if n < 2 {
+				return map[string]any{"error": map[string]any{"class": "GenericError", "desc": "Node 'nbd-vol-1' is in use"}}
+			}
+		}
+		return nil
+	})
+	defer cancel()
+
+	mounter := &fakeVolumeMounter{}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, DeviceDeletedTimeout: 30 * time.Millisecond})
+	m.Insert(&VM{
+		ID:        "i-1",
+		Status:    StateRunning,
+		Instance:  &ec2.Instance{},
+		QMPClient: qmpClient,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		},
+	})
+
+	device, err := m.DetachVolume(t.Context(), "i-1", "vol-1", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "/dev/sdf", device)
+	assert.Equal(t, int32(2), blockdevAttempts.Load(),
+		"a missed DEVICE_DELETED event must still resolve via the bounded blockdev-del retry")
+}
+
+// TestDetachVolume_BlockdevDelAlreadyRemoved_IdempotentSuccess covers the
+// AWS-CLI-retry resume path end to end: a prior detach removed the block
+// node, so blockdev-del returns "Failed to find node" on the second call.
+// DetachVolume must treat that as success and complete the detach, not
+// surface it as a hard failure.
+func TestDetachVolume_BlockdevDelAlreadyRemoved_IdempotentSuccess(t *testing.T) {
+	qmpClient, cancel := newMockQMPClientWithEvents(t, func(cmd qmp.QMPCommand, srv *mockQMPServer) map[string]any {
+		if cmd.Execute == "blockdev-del" {
+			return map[string]any{"error": map[string]any{"class": "GenericError", "desc": "Failed to find node with node-name='nbd-vol-1'"}}
+		}
+		return nil
+	})
+	defer cancel()
+
+	mounter := &fakeVolumeMounter{}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, DeviceDeletedTimeout: 30 * time.Millisecond})
+	m.Insert(&VM{
+		ID:        "i-1",
+		Status:    StateRunning,
+		Instance:  &ec2.Instance{},
+		QMPClient: qmpClient,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		},
+	})
+
+	device, err := m.DetachVolume(t.Context(), "i-1", "vol-1", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "/dev/sdf", device)
+	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne,
+		"an already-removed block node must resume through to the unmount seal")
 }

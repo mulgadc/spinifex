@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -37,8 +38,8 @@ func NewNATSSTSAssumer(nc *nats.Conn) *NATSSTSAssumer {
 	return &NATSSTSAssumer{nc: nc}
 }
 
-func (a *NATSSTSAssumer) AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
-	return utils.NATSRequest[sts.AssumeRoleOutput](a.nc, handlers_sts.SubjectAssumeRoleForInstance, handlers_sts.AssumeRoleForInstanceRequest{
+func (a *NATSSTSAssumer) AssumeRoleForInstance(ctx context.Context, accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
+	return utils.NATSRequest[sts.AssumeRoleOutput](ctx, a.nc, handlers_sts.SubjectAssumeRoleForInstance, handlers_sts.AssumeRoleForInstanceRequest{
 		AccountID:       accountID,
 		RoleARN:         roleARN,
 		InstanceID:      instanceID,
@@ -64,12 +65,12 @@ func NewNATSProfileLookup(nc *nats.Conn) *NATSProfileLookup {
 	}
 }
 
-func (p *NATSProfileLookup) ResolveInstanceProfile(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+func (p *NATSProfileLookup) ResolveInstanceProfile(ctx context.Context, accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
 	key := accountID + "\x00" + nameOrARN
 	if v, ok := p.profiles.get(key); ok {
 		return v, nil
 	}
-	out, err := utils.NATSRequest[handlers_iam.InstanceProfile](p.nc, handlers_iam.SubjectResolveInstanceProfile, handlers_iam.ResolveInstanceProfileRequest{
+	out, err := utils.NATSRequest[handlers_iam.InstanceProfile](ctx, p.nc, handlers_iam.SubjectResolveInstanceProfile, handlers_iam.ResolveInstanceProfileRequest{
 		AccountID: accountID,
 		NameOrARN: nameOrARN,
 	}, imdsRPCTimeout, accountID)
@@ -80,12 +81,12 @@ func (p *NATSProfileLookup) ResolveInstanceProfile(accountID, nameOrARN string) 
 	return out, nil
 }
 
-func (p *NATSProfileLookup) GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+func (p *NATSProfileLookup) GetRole(ctx context.Context, accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
 	key := accountID + "\x00" + aws.StringValue(input.RoleName)
 	if v, ok := p.roles.get(key); ok {
 		return v, nil
 	}
-	out, err := utils.NATSRequest[iam.GetRoleOutput](p.nc, handlers_iam.SubjectGetRole, handlers_iam.GetRoleRequest{
+	out, err := utils.NATSRequest[iam.GetRoleOutput](ctx, p.nc, handlers_iam.SubjectGetRole, handlers_iam.GetRoleRequest{
 		AccountID: accountID,
 		Input:     input,
 	}, imdsRPCTimeout, accountID)
@@ -112,12 +113,12 @@ func NewNATSPublicKeyLookup(nc *nats.Conn) *NATSPublicKeyLookup {
 	}
 }
 
-func (p *NATSPublicKeyLookup) GetPublicKey(accountID, keyName string) (string, error) {
+func (p *NATSPublicKeyLookup) GetPublicKey(ctx context.Context, accountID, keyName string) (string, error) {
 	key := accountID + "\x00" + keyName
 	if v, ok := p.cache.get(key); ok {
 		return v, nil
 	}
-	out, err := utils.NATSRequest[handlers_ec2_key.GetPublicKeyResponse](p.nc, "imds.ec2.get_public_key", handlers_ec2_key.GetPublicKeyRequest{
+	out, err := utils.NATSRequest[handlers_ec2_key.GetPublicKeyResponse](ctx, p.nc, "imds.ec2.get_public_key", handlers_ec2_key.GetPublicKeyRequest{
 		AccountID: accountID,
 		KeyName:   keyName,
 	}, imdsRPCTimeout, accountID)

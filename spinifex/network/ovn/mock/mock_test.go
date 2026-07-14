@@ -2,11 +2,54 @@ package mock
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 )
+
+// ReplaceACLs must no-op on an unchanged set (stable ACL UUIDs) and swap on a
+// changed set, mirroring LiveClient.
+func TestMockReplaceACLs_IdempotentNoChurn(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	if _, _, err := m.EnsurePortGroup(ctx, "pg-acl", nil); err != nil {
+		t.Fatalf("EnsurePortGroup: %v", err)
+	}
+	specs := []ovn.ACLSpec{
+		{Direction: "to-lport", Priority: 1001, Match: "ip4", Action: "allow-related"},
+		{Direction: "from-lport", Priority: 1002, Match: "ip4", Action: "allow-related"},
+	}
+
+	if err := m.ReplaceACLs(ctx, "pg-acl", specs); err != nil {
+		t.Fatalf("ReplaceACLs #1: %v", err)
+	}
+	before := append([]string(nil), m.PortGroups["pg-acl"].ACLs...)
+
+	if err := m.ReplaceACLs(ctx, "pg-acl", specs); err != nil {
+		t.Fatalf("ReplaceACLs #2 (identical): %v", err)
+	}
+	after := m.PortGroups["pg-acl"].ACLs
+	if len(before) != len(after) {
+		t.Fatalf("ACL count changed on identical ReplaceACLs: %d → %d", len(before), len(after))
+	}
+	for i := range before {
+		if before[i] != after[i] {
+			t.Fatalf("identical ReplaceACLs churned ACL UUID: %q → %q", before[i], after[i])
+		}
+	}
+
+	if err := m.ReplaceACLs(ctx, "pg-acl", specs[:1]); err != nil {
+		t.Fatalf("ReplaceACLs #3 (changed): %v", err)
+	}
+	if got := len(m.PortGroups["pg-acl"].ACLs); got != 1 {
+		t.Fatalf("changed ReplaceACLs: ACL count = %d, want 1", got)
+	}
+}
 
 func TestClient_DeleteAllNATsByExternalIP(t *testing.T) {
 	m := New()
@@ -176,7 +219,7 @@ func TestEnsureLogicalRouter_ConcurrentSingleSurvivor(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			lr, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
+			lr, _, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
 				Name:        "vpc-vpc-X",
 				ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-X"},
 			})
@@ -216,19 +259,25 @@ func TestEnsureLogicalRouter_ReturnsExistingOnSecondCall(t *testing.T) {
 	_ = m.Connect(context.Background())
 	ctx := context.Background()
 
-	first, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
+	first, created, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
 		Name:        "vpc-vpc-Y",
 		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-Y", "spinifex:cidr": ""},
 	})
 	if err != nil {
 		t.Fatalf("EnsureLogicalRouter first call: %v", err)
 	}
-	second, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
+	if !created {
+		t.Errorf("first call should report created=true")
+	}
+	second, created, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
 		Name:        "vpc-vpc-Y",
 		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-Y", "spinifex:cidr": "10.0.0.0/16"},
 	})
 	if err != nil {
 		t.Fatalf("EnsureLogicalRouter second call: %v", err)
+	}
+	if created {
+		t.Errorf("second call should report created=false")
 	}
 	if first.UUID != second.UUID {
 		t.Errorf("second call returned different UUID: %q vs %q", second.UUID, first.UUID)
@@ -249,7 +298,7 @@ func TestEnsureLogicalSwitch_ConcurrentSingleSurvivor(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			ls, err := m.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+			ls, _, err := m.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{
 				Name:        "subnet-subnet-Z",
 				ExternalIDs: map[string]string{"spinifex:subnet_id": "subnet-Z"},
 			})
@@ -292,7 +341,7 @@ func TestEnsurePortGroup_ConcurrentSingleSurvivor(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			pg, err := m.EnsurePortGroup(ctx, "sg-pg-A", nil)
+			pg, _, err := m.EnsurePortGroup(ctx, "sg-pg-A", nil)
 			if err != nil {
 				t.Errorf("EnsurePortGroup[%d]: %v", i, err)
 				return
@@ -419,5 +468,89 @@ func TestLogicalRouterPolicies_DanglingUUIDsIgnored(t *testing.T) {
 	}
 	if len(policies) != 0 {
 		t.Fatalf("expected 0 policies, got %d", len(policies))
+	}
+}
+
+// EnsureAddressSet must create on first call, keep the UUID stable, and
+// converge addresses on subsequent calls (mirrors LiveClient).
+func TestEnsureAddressSet_IdempotentConverge(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	uuid1, err := m.EnsureAddressSet(ctx, "spinifex_nat_exempt", []string{"100.127.0.0/24"})
+	if err != nil {
+		t.Fatalf("EnsureAddressSet #1: %v", err)
+	}
+	if uuid1 == "" {
+		t.Fatal("EnsureAddressSet returned empty UUID")
+	}
+
+	uuid2, err := m.EnsureAddressSet(ctx, "spinifex_nat_exempt", []string{"100.127.0.0/24", "192.168.1.0/24"})
+	if err != nil {
+		t.Fatalf("EnsureAddressSet #2: %v", err)
+	}
+	if uuid2 != uuid1 {
+		t.Fatalf("UUID changed on re-ensure: %q → %q", uuid1, uuid2)
+	}
+
+	as, err := m.GetAddressSet(ctx, "spinifex_nat_exempt")
+	if err != nil {
+		t.Fatalf("GetAddressSet: %v", err)
+	}
+	if len(as.Addresses) != 2 || as.Addresses[0] != "100.127.0.0/24" || as.Addresses[1] != "192.168.1.0/24" {
+		t.Fatalf("addresses not converged: %v", as.Addresses)
+	}
+}
+
+func TestGetAddressSet_NotFound(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+
+	_, err := m.GetAddressSet(context.Background(), "no-such-set")
+	if !errors.Is(err, ovn.ErrAddressSetNotFound) {
+		t.Fatalf("err = %v, want ErrAddressSetNotFound", err)
+	}
+}
+
+// SetNATExemptedExtIPs must mutate the stored NAT row in place, clear on nil,
+// and return ErrNATNotFound when no rule matches.
+func TestSetNATExemptedExtIPs(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-r1"}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	if err := m.AddNAT(ctx, "vpc-r1", &nbdb.NAT{
+		Type: "snat", ExternalIP: "100.127.0.10", LogicalIP: "10.0.0.0/16",
+	}); err != nil {
+		t.Fatalf("AddNAT: %v", err)
+	}
+
+	setUUID := "as-1234"
+	if err := m.SetNATExemptedExtIPs(ctx, "vpc-r1", "snat", "10.0.0.0/16", &setUUID); err != nil {
+		t.Fatalf("SetNATExemptedExtIPs: %v", err)
+	}
+	nat, err := m.FindNATByLogicalIP(ctx, "vpc-r1", "snat", "10.0.0.0/16")
+	if err != nil || nat == nil {
+		t.Fatalf("FindNATByLogicalIP: nat=%v err=%v", nat, err)
+	}
+	if nat.ExemptedExtIps == nil || *nat.ExemptedExtIps != setUUID {
+		t.Fatalf("ExemptedExtIps = %v, want %q", nat.ExemptedExtIps, setUUID)
+	}
+
+	if err := m.SetNATExemptedExtIPs(ctx, "vpc-r1", "snat", "10.0.0.0/16", nil); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	nat, _ = m.FindNATByLogicalIP(ctx, "vpc-r1", "snat", "10.0.0.0/16")
+	if nat.ExemptedExtIps != nil {
+		t.Fatalf("ExemptedExtIps not cleared: %v", *nat.ExemptedExtIps)
+	}
+
+	err = m.SetNATExemptedExtIPs(ctx, "vpc-r1", "snat", "10.99.0.0/16", &setUUID)
+	if !errors.Is(err, ovn.ErrNATNotFound) {
+		t.Fatalf("missing NAT: err = %v, want ErrNATNotFound", err)
 	}
 }

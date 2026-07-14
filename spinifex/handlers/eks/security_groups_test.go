@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -63,7 +64,7 @@ func newFakeSGProvisioner() *fakeSGProvisioner {
 	return &fakeSGProvisioner{existing: map[string]string{}}
 }
 
-func (f *fakeSGProvisioner) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput, _ string) (*ec2.CreateSecurityGroupOutput, error) {
+func (f *fakeSGProvisioner) CreateSecurityGroup(_ context.Context, input *ec2.CreateSecurityGroupInput, _ string) (*ec2.CreateSecurityGroupOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.createCalls = append(f.createCalls, input)
@@ -81,7 +82,7 @@ func (f *fakeSGProvisioner) CreateSecurityGroup(input *ec2.CreateSecurityGroupIn
 	return &ec2.CreateSecurityGroupOutput{GroupId: aws.String(id)}, nil
 }
 
-func (f *fakeSGProvisioner) DescribeSecurityGroups(input *ec2.DescribeSecurityGroupsInput, _ string) (*ec2.DescribeSecurityGroupsOutput, error) {
+func (f *fakeSGProvisioner) DescribeSecurityGroups(_ context.Context, input *ec2.DescribeSecurityGroupsInput, _ string) (*ec2.DescribeSecurityGroupsOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.describeCalls = append(f.describeCalls, input)
@@ -145,7 +146,7 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(input *ec2.DescribeSecurityGr
 	return out, nil
 }
 
-func (f *fakeSGProvisioner) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput, _ string) (*ec2.DeleteSecurityGroupOutput, error) {
+func (f *fakeSGProvisioner) DeleteSecurityGroup(_ context.Context, input *ec2.DeleteSecurityGroupInput, _ string) (*ec2.DeleteSecurityGroupOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleteCalls = append(f.deleteCalls, input)
@@ -162,7 +163,7 @@ func (f *fakeSGProvisioner) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupIn
 	return &ec2.DeleteSecurityGroupOutput{}, nil
 }
 
-func (f *fakeSGProvisioner) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGroupIngressInput, _ string) (*ec2.RevokeSecurityGroupIngressOutput, error) {
+func (f *fakeSGProvisioner) RevokeSecurityGroupIngress(_ context.Context, input *ec2.RevokeSecurityGroupIngressInput, _ string) (*ec2.RevokeSecurityGroupIngressOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.revokeCalls = append(f.revokeCalls, input)
@@ -172,7 +173,7 @@ func (f *fakeSGProvisioner) RevokeSecurityGroupIngress(input *ec2.RevokeSecurity
 	return &ec2.RevokeSecurityGroupIngressOutput{}, nil
 }
 
-func (f *fakeSGProvisioner) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGroupEgressInput, _ string) (*ec2.RevokeSecurityGroupEgressOutput, error) {
+func (f *fakeSGProvisioner) RevokeSecurityGroupEgress(_ context.Context, input *ec2.RevokeSecurityGroupEgressInput, _ string) (*ec2.RevokeSecurityGroupEgressOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.revokeEgressCall = append(f.revokeEgressCall, input)
@@ -182,7 +183,7 @@ func (f *fakeSGProvisioner) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityG
 	return &ec2.RevokeSecurityGroupEgressOutput{}, nil
 }
 
-func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, _ string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
+func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(_ context.Context, input *ec2.AuthorizeSecurityGroupIngressInput, _ string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.authorizeCalls = append(f.authorizeCalls, input)
@@ -195,10 +196,10 @@ func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSe
 func TestEnsureClusterSGs_EmptyInputsRejected(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 
-	_, _, err := EnsureClusterSGs(sgp, "111122223333", "", "vpc-aaa")
+	_, _, err := EnsureClusterSGs(context.Background(), sgp, "111122223333", "", "vpc-aaa")
 	require.Error(t, err)
 
-	_, _, err = EnsureClusterSGs(sgp, "111122223333", "alpha", "")
+	_, _, err = EnsureClusterSGs(context.Background(), sgp, "111122223333", "alpha", "")
 	require.Error(t, err)
 
 	assert.Empty(t, sgp.createCalls)
@@ -209,7 +210,7 @@ func TestEnsureClusterSGs_FreshCreatesBoth(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.createIDs = []string{"sg-cp-001", "sg-ng-002"}
 
-	cpID, ngID, err := EnsureClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	cpID, ngID, err := EnsureClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.NoError(t, err)
 	assert.Equal(t, "sg-cp-001", cpID)
 	assert.Equal(t, "sg-ng-002", ngID)
@@ -225,7 +226,7 @@ func TestEnsureClusterSGs_IdempotentReusesExisting(t *testing.T) {
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-existing-ng"
 
-	cpID, ngID, err := EnsureClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	cpID, ngID, err := EnsureClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.NoError(t, err)
 	assert.Equal(t, "sg-existing-cp", cpID)
 	assert.Equal(t, "sg-existing-ng", ngID)
@@ -237,7 +238,7 @@ func TestEnsureClusterSGs_MixedExistenceCreatesMissing(t *testing.T) {
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.createIDs = []string{"sg-new-ng"}
 
-	cpID, ngID, err := EnsureClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	cpID, ngID, err := EnsureClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.NoError(t, err)
 	assert.Equal(t, "sg-existing-cp", cpID)
 	assert.Equal(t, "sg-new-ng", ngID)
@@ -250,7 +251,7 @@ func TestEnsureClusterSGs_CreateErrorSurfacedFromControlPlane(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.createErr = errors.New("vpcd unavailable")
 
-	_, _, err := EnsureClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	_, _, err := EnsureClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create SG eks-cluster-alpha-control-plane-sg")
 }
@@ -260,7 +261,7 @@ func TestDeleteClusterSGs_DeletesBothExisting(t *testing.T) {
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-existing-ng"
 
-	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.NoError(t, err)
 
 	require.Len(t, sgp.deleteCalls, 2)
@@ -283,7 +284,7 @@ func TestDeleteClusterSGs_ReapsLBCTaggedSGs(t *testing.T) {
 		"sg-lbc-other": {{Key: aws.String(lbcClusterOwnershipTagKey), Value: aws.String("beta")}},
 	}
 
-	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.NoError(t, err)
 
 	deleted := map[string]bool{}
@@ -300,7 +301,7 @@ func TestDeleteClusterSGs_ReapsLBCTaggedSGs(t *testing.T) {
 func TestDeleteClusterSGs_MissingSGsNoOp(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 
-	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.NoError(t, err)
 	assert.Empty(t, sgp.deleteCalls, "no delete calls expected when SGs already absent")
 }
@@ -313,7 +314,7 @@ func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	// after a single attempt per SG (the retry path is covered separately).
 	sgp.deleteErr = errors.New("vpcd unavailable")
 
-	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sg-existing-cp")
 	assert.Len(t, sgp.deleteCalls, 2, "both delete calls should be attempted despite first error")
@@ -335,7 +336,7 @@ func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteFailsBefore = map[string]int{"sg-ng": 2} // 2 DepViolations, then ok
 
-		err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 		require.NoError(t, err, "delete must succeed once the ENI detaches")
 		assert.GreaterOrEqual(t, len(sgp.deleteCalls), 3, "retried past the transient violations")
 	})
@@ -345,7 +346,7 @@ func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteErr = errors.New("DependencyViolation: still referenced")
 
-		err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 		require.Error(t, err, "a persistent DependencyViolation must surface, not leak the SG")
 		assert.Contains(t, err.Error(), "sg-ng")
 	})
@@ -367,7 +368,7 @@ func TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete(t *testing.T) {
 	// AWS refuses to delete an SG still referenced by a sibling's rule.
 	sgp.enforceDepViolation = true
 
-	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.NoError(t, err, "revoke-then-delete must clear the cp<->ng cycle so both SGs delete")
 
 	require.Len(t, sgp.revokeCalls, 2, "ingress on both SGs must be revoked before delete")
@@ -402,7 +403,7 @@ func TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers(t *testing.T) {
 	}
 	sgp.enforceDepViolation = true
 
-	err := DeleteClusterSGs(sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
 	require.NoError(t, err, "revoking both directions on all non-default SGs must clear every cycle")
 
 	revokedEgress := map[string]bool{}
@@ -441,7 +442,7 @@ func groupRefPerm(proto string, port int64, refSG string) *ec2.IpPermission {
 func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 
-	err := EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
+	err := EnsureControlPlaneIngress(context.Background(), sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
 	require.NoError(t, err)
 
 	// NLB → apiserver (:6443) and NLB → konnectivity-server (:8132).
@@ -464,8 +465,8 @@ func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) 
 func TestEnsureControlPlaneIngress_EmptyInputsRejected(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 
-	require.Error(t, EnsureControlPlaneIngress(sgp, "111122223333", "", "10.0.0.0/16"))
-	require.Error(t, EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", ""))
+	require.Error(t, EnsureControlPlaneIngress(context.Background(), sgp, "111122223333", "", "10.0.0.0/16"))
+	require.Error(t, EnsureControlPlaneIngress(context.Background(), sgp, "111122223333", "sg-cp-001", ""))
 	assert.Empty(t, sgp.authorizeCalls)
 }
 
@@ -473,7 +474,7 @@ func TestEnsureControlPlaneIngress_DuplicateTolerated(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 
-	err := EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
+	err := EnsureControlPlaneIngress(context.Background(), sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
 	require.NoError(t, err, "a duplicate rule on re-run must be treated as success")
 }
 
@@ -481,7 +482,7 @@ func TestEnsureControlPlaneIngress_AuthorizeErrorSurfaced(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New("vpcd unavailable")
 
-	err := EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
+	err := EnsureControlPlaneIngress(context.Background(), sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sg-cp-001")
 }
@@ -489,7 +490,7 @@ func TestEnsureControlPlaneIngress_AuthorizeErrorSurfaced(t *testing.T) {
 func TestEnsureControlPlaneHAIngress_AuthorizesEtcdAndKubeletSelfReferenced(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 
-	err := EnsureControlPlaneHAIngress(sgp, "111122223333", "sg-cp-001")
+	err := EnsureControlPlaneHAIngress(context.Background(), sgp, "111122223333", "sg-cp-001")
 	require.NoError(t, err)
 
 	require.Len(t, sgp.authorizeCalls, 2, "etcd peer/client + kubelet")
@@ -524,7 +525,7 @@ func TestEnsureControlPlaneHAIngress_AuthorizesEtcdAndKubeletSelfReferenced(t *t
 func TestEnsureControlPlaneHAIngress_EmptyInputRejected(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 
-	require.Error(t, EnsureControlPlaneHAIngress(sgp, "111122223333", ""))
+	require.Error(t, EnsureControlPlaneHAIngress(context.Background(), sgp, "111122223333", ""))
 	assert.Empty(t, sgp.authorizeCalls)
 }
 
@@ -532,7 +533,7 @@ func TestEnsureControlPlaneHAIngress_DuplicateTolerated(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 
-	err := EnsureControlPlaneHAIngress(sgp, "111122223333", "sg-cp-001")
+	err := EnsureControlPlaneHAIngress(context.Background(), sgp, "111122223333", "sg-cp-001")
 	require.NoError(t, err, "a duplicate rule on re-run must be treated as success")
 }
 
@@ -540,7 +541,7 @@ func TestEnsureControlPlaneHAIngress_AuthorizeErrorSurfaced(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New("vpcd unavailable")
 
-	err := EnsureControlPlaneHAIngress(sgp, "111122223333", "sg-cp-001")
+	err := EnsureControlPlaneHAIngress(context.Background(), sgp, "111122223333", "sg-cp-001")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sg-cp-001")
 }

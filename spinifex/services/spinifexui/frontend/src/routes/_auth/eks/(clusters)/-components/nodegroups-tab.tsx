@@ -1,12 +1,17 @@
+import type { InstanceTypeInfo } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { ArrowUpCircle, SlidersHorizontal, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
-import { useForm } from "react-hook-form"
+import { Controller, useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
+import {
+  GpuInstanceTypeSelect,
+  isGpuInstanceType,
+} from "@/components/gpu-instance-type-select"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,8 +21,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldTitle,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
   useCreateNodegroup,
@@ -25,7 +36,10 @@ import {
   useScaleNodegroup,
   useUpdateNodegroupVersion,
 } from "@/mutations/eks"
-import { ec2SubnetsQueryOptions } from "@/queries/ec2"
+import {
+  ec2InstanceTypesQueryOptions,
+  ec2SubnetsQueryOptions,
+} from "@/queries/ec2"
 import {
   eksNodegroupQueryOptions,
   eksNodegroupsQueryOptions,
@@ -37,6 +51,25 @@ import {
   EKS_AMI_TYPES,
   EKS_CAPACITY_TYPES,
 } from "@/types/eks"
+
+// GPU AMI types per the AWS EKS AMITypes enum (AL2_x86_64_GPU,
+// BOTTLEROCKET_x86_64_NVIDIA, BOTTLEROCKET_ARM_64_NVIDIA). DescribeNodegroup
+// forces amiType to the GPU variant whenever the nodegroup is GPU-enabled, so
+// an already-created nodegroup's GPU badge reads that response field instead
+// of re-deriving it from instance types.
+function isGpuAmiType(amiType: string | undefined): boolean {
+  return !!amiType && (amiType.endsWith("_GPU") || amiType.endsWith("_NVIDIA"))
+}
+
+// Pre-create only: the selected instance type is the sole GPU signal before a
+// nodegroup exists, driving the AMI/taint note in the add-nodegroup form.
+function isGpuNodegroup(
+  primaryInstanceType: string | undefined,
+  instanceTypes: InstanceTypeInfo[],
+): boolean {
+  const info = instanceTypes.find((t) => t.InstanceType === primaryInstanceType)
+  return !!info && isGpuInstanceType(info)
+}
 
 function ScaleNodegroupDialog({
   clusterName,
@@ -160,12 +193,16 @@ function NodegroupRow({
 
   const updateAvailable =
     !!clusterVersion && !!ng?.version && ng.version !== clusterVersion
+  const isGpu = isGpuAmiType(ng?.amiType)
 
   return (
     <DetailCard>
       <DetailCard.Header>
         <div className="flex items-center justify-between">
-          <span>{nodegroupName}</span>
+          <div className="flex items-center gap-2">
+            <span>{nodegroupName}</span>
+            {isGpu && <Badge variant="secondary">GPU</Badge>}
+          </div>
           <div className="flex items-center gap-1">
             {updateAvailable && (
               <Button
@@ -261,12 +298,15 @@ function AddNodegroupDialog({
 }) {
   const { data: rolesData } = useQuery(iamRolesQueryOptions)
   const { data: subnetsData } = useQuery(ec2SubnetsQueryOptions)
+  const { data: instanceTypesData } = useQuery(ec2InstanceTypesQueryOptions)
   const createNodegroup = useCreateNodegroup()
 
   const roles = rolesData?.Roles ?? []
   const subnets = (subnetsData?.Subnets ?? []).filter((s) => s.VpcId === vpcId)
+  const instanceTypes = instanceTypesData?.InstanceTypes ?? []
 
   const {
+    control,
     formState: { errors },
     handleSubmit,
     register,
@@ -290,6 +330,8 @@ function AddNodegroupDialog({
   })
 
   const selectedSubnets = watch("subnetIds")
+  const selectedInstanceType = watch("instanceTypes")
+  const selectedIsGpu = isGpuNodegroup(selectedInstanceType, instanceTypes)
 
   const toggleSubnet = (subnetId: string) => {
     const next = selectedSubnets.includes(subnetId)
@@ -391,13 +433,29 @@ function AddNodegroupDialog({
 
           <Field>
             <FieldTitle>
-              <label htmlFor="ng-instance-types">Instance types</label>
+              <label htmlFor="ng-instance-type">Instance type</label>
             </FieldTitle>
-            <Input
-              id="ng-instance-types"
-              placeholder="t3.medium, t3.large"
-              {...register("instanceTypes")}
+            <Controller
+              control={control}
+              name="instanceTypes"
+              render={({ field }) => (
+                <GpuInstanceTypeSelect
+                  aria-invalid={!!errors.instanceTypes}
+                  id="ng-instance-type"
+                  instanceTypes={instanceTypes}
+                  onValueChange={field.onChange}
+                  value={field.value}
+                />
+              )}
             />
+            {selectedIsGpu && (
+              <FieldDescription>
+                GPU node AMI is auto-selected for this instance type. This node
+                group is tainted <code>nvidia.com/gpu=present:NoSchedule</code>{" "}
+                by default, so ordinary pods won&apos;t schedule onto GPU
+                workers.
+              </FieldDescription>
+            )}
             <FieldError errors={[errors.instanceTypes]} />
           </Field>
 

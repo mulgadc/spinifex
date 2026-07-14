@@ -180,26 +180,32 @@ func (c *LiveClient) CreateLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSw
 	return nil
 }
 
-func (c *LiveClient) EnsureLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, error) {
+func (c *LiveClient) EnsureLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, bool, error) {
 	if existing, err := c.GetLogicalSwitch(ctx, ls.Name); err == nil {
-		return existing, nil
+		return existing, false, nil
 	}
 	if ls.UUID == "" {
 		ls.UUID = namedUUID("ls_", ls.Name)
 	}
 	ops, err := c.ensureNamedRowOps("Logical_Switch", ls.Name, ls)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := c.transactOps(ctx, ops); err != nil {
 		if existing, refErr := c.waitForCachedSwitch(ctx, ls.Name); refErr == nil {
 			slog.Info("ovn: EnsureLogicalSwitch lost race, reusing existing",
 				"name", ls.Name, "existing_uuid", existing.UUID)
-			return existing, nil
+			return existing, false, nil
 		}
-		return nil, fmt.Errorf("ensure logical switch %q: %w", ls.Name, err)
+		return nil, false, fmt.Errorf("ensure logical switch %q: %w", ls.Name, err)
 	}
-	return ls, nil
+	// The insert path returns a client-side named-uuid; resolve the persisted
+	// server UUID from the monitored cache before returning.
+	created, refErr := c.waitForCachedSwitch(ctx, ls.Name)
+	if refErr != nil {
+		return nil, false, fmt.Errorf("resolve logical switch %q uuid after insert: %w", ls.Name, refErr)
+	}
+	return created, true, nil
 }
 
 func (c *LiveClient) waitForCachedSwitch(ctx context.Context, name string) (*nbdb.LogicalSwitch, error) {
@@ -429,26 +435,32 @@ func (c *LiveClient) CreateLogicalRouter(ctx context.Context, lr *nbdb.LogicalRo
 	return nil
 }
 
-func (c *LiveClient) EnsureLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error) {
+func (c *LiveClient) EnsureLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, bool, error) {
 	if existing, err := c.GetLogicalRouter(ctx, lr.Name); err == nil {
-		return existing, nil
+		return existing, false, nil
 	}
 	if lr.UUID == "" {
 		lr.UUID = namedUUID("lr_", lr.Name)
 	}
 	ops, err := c.ensureNamedRowOps("Logical_Router", lr.Name, lr)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := c.transactOps(ctx, ops); err != nil {
 		if existing, refErr := c.waitForCachedRouter(ctx, lr.Name); refErr == nil {
 			slog.Info("ovn: EnsureLogicalRouter lost race, reusing existing",
 				"name", lr.Name, "existing_uuid", existing.UUID)
-			return existing, nil
+			return existing, false, nil
 		}
-		return nil, fmt.Errorf("ensure logical router %q: %w", lr.Name, err)
+		return nil, false, fmt.Errorf("ensure logical router %q: %w", lr.Name, err)
 	}
-	return lr, nil
+	// The insert path returns a client-side named-uuid; resolve the persisted
+	// server UUID from the monitored cache before returning.
+	created, refErr := c.waitForCachedRouter(ctx, lr.Name)
+	if refErr != nil {
+		return nil, false, fmt.Errorf("resolve logical router %q uuid after insert: %w", lr.Name, refErr)
+	}
+	return created, true, nil
 }
 
 func (c *LiveClient) UpdateLogicalRouterExternalIDs(ctx context.Context, name string, externalIDs map[string]string) error {
@@ -1006,6 +1018,15 @@ func (c *LiveClient) DeleteAllNATsByExternalIP(ctx context.Context, natType, ext
 	return len(nats), nil
 }
 
+// ListNATs returns every NAT row in OVN NB.
+func (c *LiveClient) ListNATs(ctx context.Context) ([]nbdb.NAT, error) {
+	var nats []nbdb.NAT
+	if err := c.client.List(ctx, &nats); err != nil {
+		return nil, fmt.Errorf("list NATs: %w", err)
+	}
+	return nats, nil
+}
+
 // FindNATByExternalIP returns the first NAT rule matching (natType, externalIP), or nil.
 func (c *LiveClient) FindNATByExternalIP(ctx context.Context, natType, externalIP string) (*nbdb.NAT, error) {
 	var nats []nbdb.NAT
@@ -1045,6 +1066,27 @@ func (c *LiveClient) FindNATByLogicalIP(ctx context.Context, routerName, natType
 		return nil, nil
 	}
 	return &nats[0], nil
+}
+
+// SetNATExemptedExtIPs updates exempted_ext_ips in place on the NAT rule
+// matching (natType, logicalIP) on routerName. nil clears the ref.
+func (c *LiveClient) SetNATExemptedExtIPs(ctx context.Context, routerName, natType, logicalIP string, addressSetUUID *string) error {
+	nat, err := c.FindNATByLogicalIP(ctx, routerName, natType, logicalIP)
+	if err != nil {
+		return fmt.Errorf("set NAT exempted_ext_ips lookup: %w", err)
+	}
+	if nat == nil {
+		return fmt.Errorf("NAT %s %s on %s: %w", natType, logicalIP, routerName, ErrNATNotFound)
+	}
+	nat.ExemptedExtIps = addressSetUUID
+	ops, err := c.client.Where(nat).Update(nat, &nat.ExemptedExtIps)
+	if err != nil {
+		return fmt.Errorf("set NAT exempted_ext_ips ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("set NAT exempted_ext_ips transact: %w", err)
+	}
+	return nil
 }
 
 func (c *LiveClient) AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error {
@@ -1107,9 +1149,23 @@ func (c *LiveClient) FindStaticRoute(ctx context.Context, routerName, ipPrefix s
 }
 
 func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get logical router for route delete: %w", err)
+	}
+	// Scope the prefix match to this router's rows — every VPC router carries
+	// 0.0.0.0/0, so an unscoped cache match can grab another router's route.
+	owned := make(map[string]struct{}, len(lr.StaticRoutes))
+	for _, u := range lr.StaticRoutes {
+		owned[u] = struct{}{}
+	}
 	var routes []nbdb.LogicalRouterStaticRoute
-	err := c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
-		return r.IPPrefix == ipPrefix
+	err = c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
+		if r.IPPrefix != ipPrefix {
+			return false
+		}
+		_, ok := owned[r.UUID]
+		return ok
 	}).List(ctx, &routes)
 	if err != nil {
 		return fmt.Errorf("find static route: %w", err)
@@ -1119,10 +1175,6 @@ func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, i
 	}
 
 	route := &routes[0]
-	lr, err := c.GetLogicalRouter(ctx, routerName)
-	if err != nil {
-		return fmt.Errorf("get logical router for route delete: %w", err)
-	}
 
 	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
 		Field:   &lr.StaticRoutes,
@@ -1284,9 +1336,9 @@ func (c *LiveClient) CreatePortGroup(ctx context.Context, name string, ports []s
 	return nil
 }
 
-func (c *LiveClient) EnsurePortGroup(ctx context.Context, name string, ports []string) (*nbdb.PortGroup, error) {
+func (c *LiveClient) EnsurePortGroup(ctx context.Context, name string, ports []string) (*nbdb.PortGroup, bool, error) {
 	if existing, err := c.getPortGroup(ctx, name); err == nil {
-		return existing, nil
+		return existing, false, nil
 	}
 	pg := &nbdb.PortGroup{
 		UUID:        namedUUID("pg_", name),
@@ -1296,17 +1348,23 @@ func (c *LiveClient) EnsurePortGroup(ctx context.Context, name string, ports []s
 	}
 	ops, err := c.ensureNamedRowOps("Port_Group", name, pg)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := c.transactOps(ctx, ops); err != nil {
 		if existing, refErr := c.waitForCachedPortGroup(ctx, name); refErr == nil {
 			slog.Info("ovn: EnsurePortGroup lost race, reusing existing",
 				"name", name, "existing_uuid", existing.UUID)
-			return existing, nil
+			return existing, false, nil
 		}
-		return nil, fmt.Errorf("ensure port group %q: %w", name, err)
+		return nil, false, fmt.Errorf("ensure port group %q: %w", name, err)
 	}
-	return pg, nil
+	// The insert path returns a client-side named-uuid; resolve the persisted
+	// server UUID from the monitored cache before returning.
+	created, refErr := c.waitForCachedPortGroup(ctx, name)
+	if refErr != nil {
+		return nil, false, fmt.Errorf("resolve port group %q uuid after insert: %w", name, refErr)
+	}
+	return created, true, nil
 }
 
 func (c *LiveClient) waitForCachedPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error) {
@@ -1413,6 +1471,97 @@ func (c *LiveClient) ListPortGroups(ctx context.Context) ([]nbdb.PortGroup, erro
 		return nil, fmt.Errorf("list port groups: %w", err)
 	}
 	return pgs, nil
+}
+
+// EnsureAddressSet atomically creates the named address set or converges the
+// addresses on the existing row. Wait-op serialises concurrent writers (NB has
+// no unique-Name constraint). Returns the persisted row UUID.
+func (c *LiveClient) EnsureAddressSet(ctx context.Context, name string, addresses []string) (string, error) {
+	if existing, err := c.getAddressSet(ctx, name); err == nil {
+		return existing.UUID, c.convergeAddressSet(ctx, existing, addresses)
+	}
+	as := &nbdb.AddressSet{
+		UUID:        namedUUID("as_", name),
+		Name:        name,
+		Addresses:   addresses,
+		ExternalIDs: map[string]string{},
+	}
+	ops, err := c.ensureNamedRowOps("Address_Set", name, as)
+	if err != nil {
+		return "", err
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		if existing, refErr := c.waitForCachedAddressSet(ctx, name); refErr == nil {
+			slog.Info("ovn: EnsureAddressSet lost race, reusing existing",
+				"name", name, "existing_uuid", existing.UUID)
+			return existing.UUID, c.convergeAddressSet(ctx, existing, addresses)
+		}
+		return "", fmt.Errorf("ensure address set %q: %w", name, err)
+	}
+	created, refErr := c.waitForCachedAddressSet(ctx, name)
+	if refErr != nil {
+		return "", fmt.Errorf("resolve address set %q uuid after insert: %w", name, refErr)
+	}
+	return created.UUID, nil
+}
+
+// convergeAddressSet updates the row's addresses when they differ from want.
+func (c *LiveClient) convergeAddressSet(ctx context.Context, existing *nbdb.AddressSet, want []string) error {
+	have := slices.Clone(existing.Addresses)
+	wantSorted := slices.Clone(want)
+	slices.Sort(have)
+	slices.Sort(wantSorted)
+	if slices.Equal(have, wantSorted) {
+		return nil
+	}
+	existing.Addresses = want
+	ops, err := c.client.Where(existing).Update(existing, &existing.Addresses)
+	if err != nil {
+		return fmt.Errorf("converge address set %q ops: %w", existing.Name, err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("converge address set %q transact: %w", existing.Name, err)
+	}
+	return nil
+}
+
+func (c *LiveClient) waitForCachedAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
+	deadline := time.Now().Add(ensureRefetchTimeout)
+	var lastErr error
+	for {
+		v, err := c.getAddressSet(ctx, name)
+		if err == nil {
+			return v, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(ensureRefetchInterval):
+		}
+	}
+}
+
+// GetAddressSet returns the named address set.
+func (c *LiveClient) GetAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
+	return c.getAddressSet(ctx, name)
+}
+
+func (c *LiveClient) getAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
+	var sets []nbdb.AddressSet
+	err := c.client.WhereCache(func(as *nbdb.AddressSet) bool {
+		return as.Name == name
+	}).List(ctx, &sets)
+	if err != nil {
+		return nil, fmt.Errorf("get address set: %w", err)
+	}
+	if len(sets) == 0 {
+		return nil, fmt.Errorf("%w: %q", ErrAddressSetNotFound, name)
+	}
+	return &sets[0], nil
 }
 
 // ListPortGroupsForPort returns port group names containing the LSP. Empty (not error) when none.
@@ -1526,12 +1675,37 @@ func (c *LiveClient) ClearACLs(ctx context.Context, portGroupName string) error 
 	return nil
 }
 
+// aclSetUnchanged reports whether the port group's current ACL rows are the same
+// multiset as the desired specs, so ReplaceACLs can no-op and avoid UUID churn.
+func (c *LiveClient) aclSetUnchanged(ctx context.Context, pg *nbdb.PortGroup, specs []ACLSpec) (bool, error) {
+	if len(pg.ACLs) != len(specs) {
+		return false, nil
+	}
+	rows := make([]nbdb.ACL, 0, len(pg.ACLs))
+	for _, aclUUID := range pg.ACLs {
+		acl := &nbdb.ACL{UUID: aclUUID}
+		if err := c.client.Get(ctx, acl); err != nil {
+			return false, fmt.Errorf("get ACL %s: %w", aclUUID, err)
+		}
+		rows = append(rows, *acl)
+	}
+	return ACLSetEqual(rows, specs), nil
+}
+
 // ReplaceACLs atomically swaps the port group's ACL set in one transaction.
 // Avoids the zero-ACL window that ClearACLs+AddACLs would expose (default-drop).
+// No-ops when the current ACL set already matches specs, so an unchanged SG does
+// not churn NB rows (and force ovn-northd flow recompute) on every drift tick.
 func (c *LiveClient) ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error {
 	pg, err := c.getPortGroup(ctx, portGroupName)
 	if err != nil {
 		return fmt.Errorf("replace ACLs port group lookup: %w", err)
+	}
+
+	if unchanged, uErr := c.aclSetUnchanged(ctx, pg, specs); uErr != nil {
+		return fmt.Errorf("replace ACLs diff on %s: %w", portGroupName, uErr)
+	} else if unchanged {
+		return nil
 	}
 
 	var ops []ovsdb.Operation

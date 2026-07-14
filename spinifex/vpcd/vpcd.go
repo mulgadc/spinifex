@@ -32,9 +32,11 @@ import (
 // Bridge mode selects how the WAN NIC reaches the OVS bridge.
 // Direct: WAN NIC added to OVS (distributed NAT, not safe on mgmt NIC).
 // Veth: veth pair links a Linux bridge to OVS (requires centralized NAT).
+// NAT: no WAN NIC bridged; transit veth + host masquerade (routed NAT).
 const (
 	BridgeModeDirect = "direct"
 	BridgeModeVeth   = "veth"
+	BridgeModeNAT    = "nat"
 	// OvnExternalBridge is the OVS bridge targeted by ovn-bridge-mappings for the "external" localnet.
 	OvnExternalBridge = "br-ext"
 )
@@ -74,6 +76,9 @@ var serviceName = "vpcd"
 // Compile-time check: host.GatewayClaimProber implements reconcile.GatewayClaimVerifier.
 var _ reconcile.GatewayClaimVerifier = (*host.GatewayClaimProber)(nil)
 
+// Compile-time check: host.GatewayClaimProber implements subscribers.MACBindingFlusher.
+var _ subscribers.MACBindingFlusher = (*host.GatewayClaimProber)(nil)
+
 // BootstrapVPC holds the default VPC IDs from spinifex.toml used to seed OVN topology on first boot.
 type BootstrapVPC struct {
 	AccountID  string
@@ -100,7 +105,7 @@ type Config struct {
 	BaseDir string
 	// Debug enables debug logging.
 	Debug bool
-	// ExternalMode is "pool" or "" (disabled).
+	// ExternalMode is "pool", "nat" (routed, outbound-only), or "" (disabled).
 	ExternalMode string
 	// ExternalPools holds the cluster-wide external IP pool configs.
 	ExternalPools []external.ExternalPoolConfig
@@ -126,6 +131,9 @@ type Config struct {
 	// the link-local VPC DNS address (169.254.169.253) instead of the upstream
 	// pool DNS.
 	ResolverNameservers []string
+	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT,
+	// appended to the transit /24 in the spinifex_nat_exempt set. nat mode only.
+	NATExemptCIDRs []string
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -317,10 +325,16 @@ var externalCIDRFromBridge = func(bridge string) (netip.Prefix, error) {
 	return netip.Prefix{}, fmt.Errorf("no IPv4 address on %q", bridge)
 }
 
+// externalCIDRRetryDelay is the poll interval between resolve attempts; tests shorten it.
+var externalCIDRRetryDelay = 500 * time.Millisecond
+
+// externalCIDRResolveTimeout bounds startup resolution of the WAN bridge CIDR; tests shorten it.
+var externalCIDRResolveTimeout = 30 * time.Second
+
 // resolveExternalCIDR blocks until the WAN bridge has an IPv4 address or timeout elapses.
 // Guards the boot race where vpcd starts before systemd-networkd or netplan assigns the uplink address.
 func resolveExternalCIDR(ctx context.Context, bridge string, timeout time.Duration) (netip.Prefix, error) {
-	const retryDelay = 500 * time.Millisecond
+	retryDelay := externalCIDRRetryDelay
 	deadline := time.Now().Add(timeout)
 	attempt := 0
 	for {
@@ -352,7 +366,7 @@ func ensureExternalCIDRReady(ctx context.Context, externalMode, bridge string) e
 	if externalMode == "" {
 		return nil
 	}
-	cidr, err := resolveExternalCIDR(ctx, bridge, 30*time.Second)
+	cidr, err := resolveExternalCIDR(ctx, bridge, externalCIDRResolveTimeout)
 	if err != nil {
 		slog.Error("vpcd: external CIDR resolution failed", "bridge", bridge, "err", err)
 		return err
@@ -400,6 +414,22 @@ func launchService(cfg *Config) error {
 		return err
 	}
 
+	if bridgeMode == BridgeModeNAT {
+		// Re-ensure kernel egress rules on every start so they survive reboots
+		// and firewall flushes without iptables-persistent.
+		if err := host.EnsureNATEgressRules(ctx, host.NewExecRunner()); err != nil {
+			slog.Error("vpcd: NAT egress rule install failed", "err", err)
+			return err
+		}
+		if cfg.ExternalMode == "nat" && len(cfg.ExternalPools) == 0 {
+			slog.Warn("vpcd: nat mode with no external pool; synthesizing default transit pool",
+				"name", host.NATTransitPoolName, "gateway", host.NATTransitGatewayIP)
+			cfg.ExternalPools = append(cfg.ExternalPools, external.ExternalPoolConfig{
+				Name: host.NATTransitPoolName, Gateway: host.NATTransitGatewayIP, PrefixLen: 24,
+			})
+		}
+	}
+
 	if err := ensureExternalCIDRReady(ctx, cfg.ExternalMode, wanBridge); err != nil {
 		return err
 	}
@@ -418,8 +448,11 @@ func launchService(cfg *Config) error {
 	slog.Info("vpcd: gateway chassis discovered", "chassis", chassisNames)
 
 	uplinkMode := host.UplinkModePhysical
-	if bridgeMode == BridgeModeVeth {
+	switch bridgeMode {
+	case BridgeModeVeth:
 		uplinkMode = host.UplinkModeVeth
+	case BridgeModeNAT:
+		uplinkMode = host.UplinkModeRouted
 	}
 	natMode := policy.NATModeFromUplinkMode(uplinkMode)
 
@@ -429,22 +462,26 @@ func launchService(cfg *Config) error {
 	}
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
 
+	igwPool, publicPool := selectExternalPools(cfg.ExternalMode, cfg.ExternalPools)
+
 	sgMgr := policy.NewSecurityGroupManager(liveClient)
-	natMgr, err := policy.NewNATManager(liveClient, natMode,
+	natOpts := []policy.Option{
 		policy.WithFlowsBarrier(waitForFlowsHV),
 		policy.WithNeighFlusher(neighFlusher(wanBridge)),
 		policy.WithNeighPrimer(neighPrimer(wanBridge)),
-	)
+	}
+	if natMode == policy.NATModeRouted {
+		natOpts = append(natOpts, policy.WithSNATExemptSet(policy.NATExemptSetName,
+			append([]string{host.NATTransitCIDR}, cfg.NATExemptCIDRs...)))
+	}
+	if natMode == policy.NATModeRouted && publicPool != nil {
+		natOpts = append(natOpts, policy.WithHostEIPBinder(hostEIPBinder(publicPool)))
+	}
+	natMgr, err := policy.NewNATManager(liveClient, natMode, natOpts...)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
 	}
 	routeMgr := policy.NewRouteManager(liveClient)
-
-	var igwPool *external.ExternalPoolConfig
-	if cfg.ExternalMode != "" && len(cfg.ExternalPools) > 0 {
-		p := cfg.ExternalPools[0]
-		igwPool = &p
-	}
 
 	js, err := nc.JetStream()
 	if err != nil {
@@ -499,16 +536,56 @@ func launchService(cfg *Config) error {
 		}
 	}()
 
+	// Host ingress plumbing only exists in routed-NAT mode; other modes keep
+	// nil hooks so the IGW manager never touches host routes.
+	var routedIngress *external.RoutedIngressHooks
+	if bridgeMode == BridgeModeNAT {
+		ingressRunner := host.NewExecRunner()
+		// Duplicate VPC CIDRs (every account's default VPC is 172.31.0.0/16)
+		// collide on the single host route table: the bootstrap VPC always
+		// wins; other VPCs only install when the CIDR is free and only remove
+		// a route their own gateway IP holds.
+		preferredVPC := ""
+		if cfg.Bootstrap != nil {
+			preferredVPC = cfg.Bootstrap.VpcId
+		}
+		routedIngress = &external.RoutedIngressHooks{
+			Ensure: func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
+				if vpcID != preferredVPC {
+					holder, err := host.VPCIngressRouteVia(ctx, ingressRunner, vpcCIDR)
+					if err == nil && holder != "" && holder != gwLrpIP {
+						slog.Warn("vpcd: host ingress route conflict, keeping existing holder",
+							"vpc_id", vpcID, "vpc_cidr", vpcCIDR, "holder_gw", holder, "skipped_gw", gwLrpIP)
+						return nil
+					}
+				}
+				return host.EnsureVPCIngressRoute(ctx, ingressRunner, vpcCIDR, gwLrpIP)
+			},
+			Remove: func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
+				if gwLrpIP != "" {
+					holder, err := host.VPCIngressRouteVia(ctx, ingressRunner, vpcCIDR)
+					if err == nil && holder != "" && holder != gwLrpIP {
+						slog.Info("vpcd: leaving host ingress route held by another VPC",
+							"vpc_id", vpcID, "vpc_cidr", vpcCIDR, "holder_gw", holder)
+						return nil
+					}
+				}
+				return host.RemoveVPCIngressRoute(ctx, ingressRunner, vpcCIDR)
+			},
+		}
+	}
+
 	gwAllocator := pickGatewayAllocator(igwPool, liveClient, dhcpMgr)
 	igwMgr, err := external.NewIGWManager(external.IGWManagerConfig{
-		OVN:          liveClient,
-		Routes:       routeMgr,
-		NAT:          natMgr,
-		Pool:         igwPool,
-		Allocator:    gwAllocator,
-		Chassis:      chassisNames,
-		NATMode:      natMode,
-		FlowsBarrier: waitForFlowsHV,
+		OVN:           liveClient,
+		Routes:        routeMgr,
+		NAT:           natMgr,
+		Pool:          igwPool,
+		Allocator:     gwAllocator,
+		Chassis:       chassisNames,
+		NATMode:       natMode,
+		FlowsBarrier:  waitForFlowsHV,
+		RoutedIngress: routedIngress,
 	})
 	if err != nil {
 		return fmt.Errorf("construct IGW manager: %w", err)
@@ -533,6 +610,7 @@ func launchService(cfg *Config) error {
 		EIP:      eipMgr,
 		NATGW:    natgwMgr,
 		IGW:      igwMgr,
+		MAC:      host.NewGatewayClaimProber(cfg.OVNSBAddr),
 	})
 	if err != nil {
 		return fmt.Errorf("construct subscriber: %w", err)
@@ -586,6 +664,12 @@ func launchService(cfg *Config) error {
 		reconcile.DriftLoop(loopCtx, rec, nc, cfg.AZ, holder)
 		close(loopDone)
 	}()
+
+	// Per-host ovn-controller wedge watchdog. Not leader-gated: a stale-SB wedge is
+	// local to this chassis and usually strikes a non-leader placement host, so the
+	// recovery must run on every node. Backstops the bring-up settle pass for runtime
+	// SB re-bootstraps (snapshot install / compaction) with no deploy in flight.
+	go runOVNControllerWatchdog(loopCtx, newOVNWatchdog(host.NewGatewayClaimProber(cfg.OVNSBAddr)))
 
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
 		"subscriptions", len(subs))
@@ -670,13 +754,57 @@ func pickGatewayAllocator(pool *external.ExternalPoolConfig, ovnClient ovn.Clien
 	return external.NewStaticRangeAllocator(ovnClient)
 }
 
-// resolveBridgeConfig picks bridge mode (auto-detecting when unset) and always uses "br-wan" as the WAN bridge.
+// resolveBridgeConfig picks bridge mode (auto-detecting when unset) and the WAN
+// bridge: "br-wan" for bridged modes, the transit veth host end for nat mode.
 func resolveBridgeConfig(cfgBridgeMode, externalIface string) (string, string) {
 	bridgeMode := cfgBridgeMode
 	if bridgeMode == "" && externalIface != "" {
 		bridgeMode = detectBridgeMode(externalIface)
 	}
+	if bridgeMode == BridgeModeNAT {
+		return bridgeMode, host.NATTransitHostEnd
+	}
 	return bridgeMode, "br-wan"
+}
+
+// selectExternalPools splits configured pools by role. In nat mode the IGW
+// gateway-LRP allocator draws from the transit pool (matched by name, never
+// by index); any other pool carries public EIPs delivered via host plumbing.
+// Other modes keep the first pool for the IGW and have no public split.
+func selectExternalPools(externalMode string, pools []external.ExternalPoolConfig) (igwPool, publicPool *external.ExternalPoolConfig) {
+	for i := range pools {
+		p := pools[i]
+		if externalMode == "nat" && p.Name != host.NATTransitPoolName {
+			if publicPool == nil {
+				publicPool = &p
+			}
+			continue
+		}
+		if igwPool == nil {
+			igwPool = &p
+		}
+	}
+	return igwPool, publicPool
+}
+
+// hostEIPBinder builds the routed-mode host plumbing hooks for EIPs on the
+// public pool: /32 route into OVN plus proxy-ARP on the uplink. Static pools
+// locate the uplink via the pool gateway; dhcp pools via their bind bridge.
+func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
+	runner := host.NewExecRunner()
+	gateway, uplinkHint := pool.Gateway, pool.BindBridge
+	return policy.HostEIPBinder{
+		Bind: func(eip policy.EIPSpec, gwLrpIP string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return host.EnsureEIPIngress(ctx, runner, eip.ExternalIP, gwLrpIP, gateway, uplinkHint)
+		},
+		Unbind: func(externalIP string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return host.RemoveEIPIngress(ctx, runner, externalIP, gateway, uplinkHint)
+		},
+	}
 }
 
 // neighFlusher builds the ARP-flush hook for AddEIP/DeleteEIP so recycled IPs re-resolve L2 immediately.
@@ -710,9 +838,14 @@ var ifaceExists = func(name string) bool {
 	return exec.Command("ip", "link", "show", name).Run() == nil
 }
 
-// detectBridgeMode infers bridge mode: veth when veth-wan-ovs exists, direct otherwise.
+// detectBridgeMode infers bridge mode: nat when spx-nat-ovs exists, veth when
+// veth-wan-ovs exists, direct otherwise.
 // Each branch logs at Info/Warn so `journalctl | grep bridge` shows the full detection trail.
 func detectBridgeMode(externalIface string) string {
+	if ifaceExists(host.NATTransitOVSEnd) {
+		slog.Info("vpcd: detected routed-NAT transit veth", "mode", BridgeModeNAT)
+		return BridgeModeNAT
+	}
 	if ifaceExists("veth-wan-ovs") {
 		slog.Info("vpcd: detected veth pair linking Linux bridge to OVS", "mode", BridgeModeVeth)
 		return BridgeModeVeth
@@ -788,8 +921,23 @@ func verifyBridgeMode(mode, externalIface, wanBridge string) error {
 				master, wanBridge)
 		}
 		return nil
+	case BridgeModeNAT:
+		br, err := portToBr(host.NATTransitOVSEnd)
+		if err != nil {
+			return fmt.Errorf("vpcd: nat bridge mode: %s not on OVS — run setup-ovn.sh --nat-uplink: %w",
+				host.NATTransitOVSEnd, err)
+		}
+		if br != OvnExternalBridge {
+			return fmt.Errorf("vpcd: nat bridge mode: %s is on OVS bridge %q, expected %q",
+				host.NATTransitOVSEnd, br, OvnExternalBridge)
+		}
+		if !ifaceExists(host.NATTransitHostEnd) {
+			return fmt.Errorf("vpcd: nat bridge mode: %s link missing — run setup-ovn.sh --nat-uplink",
+				host.NATTransitHostEnd)
+		}
+		return nil
 	default:
-		return fmt.Errorf("vpcd: unknown bridge_mode %q — supported values: %q, %q",
-			mode, BridgeModeDirect, BridgeModeVeth)
+		return fmt.Errorf("vpcd: unknown bridge_mode %q — supported values: %q, %q, %q",
+			mode, BridgeModeDirect, BridgeModeVeth, BridgeModeNAT)
 	}
 }

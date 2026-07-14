@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -37,7 +38,7 @@ func TestCreateCluster_NLBArnPersistedBeforeLaterFailure(t *testing.T) {
 
 	// CreateCluster accepts the request (CREATING) and launches asynchronously;
 	// the launch failure surfaces as FAILED status, not the call's return value.
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
@@ -54,14 +55,14 @@ func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.inst.launchErr = errors.New("no capacity")
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
 	// The NLB the partial create provisioned exists in the fake.
 	require.NotEmpty(t, f.nlb.createLBCalls, "create provisioned an NLB")
 
-	_, err = f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
 	require.NoError(t, err)
 
 	assert.NotEmpty(t, f.nlb.deleteLBCalls, "DeleteCluster must tear down the NLB recorded by the failed create")
@@ -79,7 +80,7 @@ func TestCreateCluster_PostPlacementFailureLeavesControlPlaneRecorded(t *testing
 	// Placement succeeds and launches the CP VM, then target registration fails.
 	f.nlb.registerErr = errors.New("TargetGroupNotFound")
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 	require.NotEmpty(t, f.inst.launchCalls, "control-plane VM was launched before the register-targets step")
@@ -98,12 +99,12 @@ func TestCreateCluster_PostPlacementFailedThenDeleteTerminatesControlPlane(t *te
 	f := newEKSServiceFixture(t)
 	f.nlb.registerErr = errors.New("TargetGroupNotFound")
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 	require.NotEmpty(t, f.inst.launchCalls, "create launched a CP VM")
 
-	_, err = f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
 	require.NoError(t, err)
 
 	assert.NotEmpty(t, f.inst.terminateCalls, "DeleteCluster must terminate the CP VM recorded by the failed create")
@@ -121,7 +122,7 @@ func TestCreateCluster_FailedLaunchEagerlyPurgesInfra(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.inst.launchErr = errors.New("no capacity")
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
@@ -143,7 +144,7 @@ func TestCreateCluster_ExistingClusterReturnsResourceInUse(t *testing.T) {
 	meta.Status = ClusterStatusActive
 	require.NoError(t, PutClusterMeta(f.kv, meta))
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
 }
 
@@ -154,7 +155,7 @@ func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
 
 	// First attempt fails at VM launch, leaving a FAILED meta with NLB ARNs.
 	f.inst.launchErr = errors.New("no capacity")
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 	failed, err := GetClusterMeta(f.kv, "alpha")
@@ -165,7 +166,7 @@ func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
 	// failed attempt's NLB and the create starts clean. The relaunch then runs to
 	// completion, leaving the cluster CREATING (ACTIVE is the reconciler's job).
 	f.inst.launchErr = nil
-	_, err = f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	_, err = f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
@@ -185,11 +186,17 @@ func TestCreateCluster_FailedClusterVisibleInDescribeAndList(t *testing.T) {
 	meta.StatusReason = "bootstrap failed: boom"
 	require.NoError(t, PutClusterMeta(f.kv, meta))
 
-	desc, err := f.svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	desc, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, eks.ClusterStatusFailed, aws.StringValue(desc.Cluster.Status))
+	// The failure cause must be visible, not just the bare FAILED status — otherwise
+	// describe-cluster gives no way to diagnose why the launch failed.
+	require.NotNil(t, desc.Cluster.Health)
+	require.Len(t, desc.Cluster.Health.Issues, 1)
+	assert.Equal(t, eks.ClusterIssueCodeInternalFailure, aws.StringValue(desc.Cluster.Health.Issues[0].Code))
+	assert.Contains(t, aws.StringValue(desc.Cluster.Health.Issues[0].Message), "bootstrap failed: boom")
 
-	list, err := f.svc.ListClusters(&eks.ListClustersInput{}, testAccountID)
+	list, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Contains(t, aws.StringValueSlice(list.Clusters), "alpha")
 }
@@ -205,7 +212,7 @@ func TestDescribeCluster_SurfacesHealthIssueForActiveCluster(t *testing.T) {
 	require.NoError(t, PutClusterMeta(f.kv, meta))
 	require.NoError(t, SetClusterHealth(f.kv, "alpha", "healthz request: connection refused"))
 
-	desc, err := f.svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	desc, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, eks.ClusterStatusActive, aws.StringValue(desc.Cluster.Status))
 	require.NotNil(t, desc.Cluster.Health)
@@ -222,7 +229,7 @@ func TestDescribeCluster_HealthyActiveClusterHasNoIssues(t *testing.T) {
 	meta.Status = ClusterStatusActive
 	require.NoError(t, PutClusterMeta(f.kv, meta))
 
-	desc, err := f.svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	desc, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
 	require.NoError(t, err)
 	assert.Nil(t, desc.Cluster.Health, "healthy cluster must not report a ClusterHealth issue")
 }
@@ -234,7 +241,7 @@ func TestCreateCluster_MissingAMIReturnsServiceUnavailable(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.ami.describeOut = &ec2.DescribeImagesOutput{} // no images tagged managed-by=eks
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
@@ -246,7 +253,7 @@ func TestCreateCluster_MissingAMIReturnsServiceUnavailable(t *testing.T) {
 func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
-	out, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	out, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	f.svc.WaitLaunches()
@@ -266,7 +273,7 @@ func TestCreateCluster_SeedsCreatorAdminAccessEntry(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	const caller = "arn:aws:iam::111122223333:role/admin"
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, caller)
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, caller)
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
@@ -286,7 +293,7 @@ func TestCreateCluster_SkipsCreatorAdminWhenDisabled(t *testing.T) {
 		BootstrapClusterCreatorAdminPermissions: aws.Bool(false),
 	}
 
-	_, err := f.svc.CreateCluster(in, testAccountID, caller)
+	_, err := f.svc.CreateCluster(context.Background(), in, testAccountID, caller)
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
@@ -302,7 +309,7 @@ func TestCreateCluster_SkipsCreatorAdminWhenDisabled(t *testing.T) {
 func TestCreateCluster_BuildsManagedCPVPCUnderSystemAccount(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
-	_, err := f.svc.CreateCluster(createInput("setb"), testAccountID, "")
+	_, err := f.svc.CreateCluster(context.Background(), createInput("setb"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 

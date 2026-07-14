@@ -1,6 +1,7 @@
 package handlers_acm
 
 import (
+	"context"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/acm"
@@ -22,30 +23,30 @@ func NewNATSACMService(conn *nats.Conn) ACMService {
 	return &NATSACMService{natsConn: conn}
 }
 
-func (s *NATSACMService) ImportCertificate(input *acm.ImportCertificateInput, accountID string) (*acm.ImportCertificateOutput, error) {
-	return utils.NATSRequest[acm.ImportCertificateOutput](s.natsConn, "acm.ImportCertificate", input, defaultTimeout, accountID)
+func (s *NATSACMService) ImportCertificate(ctx context.Context, input *acm.ImportCertificateInput, accountID string) (*acm.ImportCertificateOutput, error) {
+	return utils.NATSRequest[acm.ImportCertificateOutput](ctx, s.natsConn, "acm.ImportCertificate", input, defaultTimeout, accountID)
 }
 
-func (s *NATSACMService) DescribeCertificate(input *acm.DescribeCertificateInput, accountID string) (*acm.DescribeCertificateOutput, error) {
-	return utils.NATSRequest[acm.DescribeCertificateOutput](s.natsConn, "acm.DescribeCertificate", input, defaultTimeout, accountID)
+func (s *NATSACMService) DescribeCertificate(ctx context.Context, input *acm.DescribeCertificateInput, accountID string) (*acm.DescribeCertificateOutput, error) {
+	return utils.NATSRequest[acm.DescribeCertificateOutput](ctx, s.natsConn, "acm.DescribeCertificate", input, defaultTimeout, accountID)
 }
 
-func (s *NATSACMService) ListCertificates(input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
-	return utils.NATSRequest[acm.ListCertificatesOutput](s.natsConn, "acm.ListCertificates", input, defaultTimeout, accountID)
+func (s *NATSACMService) ListCertificates(ctx context.Context, input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
+	return utils.NATSRequest[acm.ListCertificatesOutput](ctx, s.natsConn, "acm.ListCertificates", input, defaultTimeout, accountID)
 }
 
-func (s *NATSACMService) DeleteCertificate(input *acm.DeleteCertificateInput, accountID string) (*acm.DeleteCertificateOutput, error) {
-	return utils.NATSRequest[acm.DeleteCertificateOutput](s.natsConn, "acm.DeleteCertificate", input, defaultTimeout, accountID)
+func (s *NATSACMService) DeleteCertificate(ctx context.Context, input *acm.DeleteCertificateInput, accountID string) (*acm.DeleteCertificateOutput, error) {
+	return utils.NATSRequest[acm.DeleteCertificateOutput](ctx, s.natsConn, "acm.DeleteCertificate", input, defaultTimeout, accountID)
 }
 
-func (s *NATSACMService) ListTagsForCertificate(input *acm.ListTagsForCertificateInput, accountID string) (*acm.ListTagsForCertificateOutput, error) {
-	return utils.NATSRequest[acm.ListTagsForCertificateOutput](s.natsConn, "acm.ListTagsForCertificate", input, defaultTimeout, accountID)
+func (s *NATSACMService) ListTagsForCertificate(ctx context.Context, input *acm.ListTagsForCertificateInput, accountID string) (*acm.ListTagsForCertificateOutput, error) {
+	return utils.NATSRequest[acm.ListTagsForCertificateOutput](ctx, s.natsConn, "acm.ListTagsForCertificate", input, defaultTimeout, accountID)
 }
 
-func (s *NATSACMService) AddTagsToCertificate(input *acm.AddTagsToCertificateInput, accountID string) (*acm.AddTagsToCertificateOutput, error) {
-	return utils.NATSRequest[acm.AddTagsToCertificateOutput](s.natsConn, "acm.AddTagsToCertificate", input, defaultTimeout, accountID)
+func (s *NATSACMService) AddTagsToCertificate(ctx context.Context, input *acm.AddTagsToCertificateInput, accountID string) (*acm.AddTagsToCertificateOutput, error) {
+	return utils.NATSRequest[acm.AddTagsToCertificateOutput](ctx, s.natsConn, "acm.AddTagsToCertificate", input, defaultTimeout, accountID)
 }
 
-func (s *NATSACMService) RemoveTagsFromCertificate(input *acm.RemoveTagsFromCertificateInput, accountID string) (*acm.RemoveTagsFromCertificateOutput, error) {
-	return utils.NATSRequest[acm.RemoveTagsFromCertificateOutput](s.natsConn, "acm.RemoveTagsFromCertificate", input, defaultTimeout, accountID)
+func (s *NATSACMService) RemoveTagsFromCertificate(ctx context.Context, input *acm.RemoveTagsFromCertificateInput, accountID string) (*acm.RemoveTagsFromCertificateOutput, error) {
+	return utils.NATSRequest[acm.RemoveTagsFromCertificateOutput](ctx, s.natsConn, "acm.RemoveTagsFromCertificate", input, defaultTimeout, accountID)
 }

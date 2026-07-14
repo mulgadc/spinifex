@@ -103,6 +103,7 @@ func (f *Fake) Acquire(_ context.Context, req AcquireRequest) (*Lease, error) {
 		Hostname:      req.Hostname,
 		VendorClass:   req.VendorClass,
 		HWAddr:        append(net.HardwareAddr(nil), req.HWAddr...),
+		UseIfaceMAC:   req.UseIfaceMAC,
 		IP:            tmpl.IP,
 		SubnetMask:    tmpl.SubnetMask,
 		Routers:       tmpl.Routers,

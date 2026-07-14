@@ -77,7 +77,7 @@ Any medium in any of these roles on a Spinifex node has held, or may have held, 
 | Viperblock chunk cache / local backing | NVMe/SATA SSD or HDD | Encrypted volume chunks. |
 | Predastore object store | NVMe/SATA SSD or HDD | All S3 object data — AMIs, snapshots, user-uploaded artifacts, IAM state files, tenant data. |
 | NATS JetStream disk | NVMe/SATA SSD | IAM NATS token, cluster metadata, pending job state, NATS KV entries (including wrapped DEKs). |
-| Removable master-key media | USB flash token, HSM, smart card | Master encryption key (Phase 4 USB-mount path). Destroying this sanitizes every DEK-encrypted volume cluster-wide. |
+| Removable master-key media | USB flash token, HSM, smart card | Master encryption key (USB-mount path). Destroying this sanitizes every DEK-encrypted volume cluster-wide. |
 | Backup media | LTO tape, removable HDD/SSD, off-site cloud backup | Any of the above, point-in-time. |
 | BMC / iDRAC / iLO storage | Embedded flash | Console recordings, SEL logs, BMC credentials, cached operator certificates. Sanitize via the BMC "Reset to defaults" / "Erase user data" command before disposal. |
 | Switch / router config storage | Embedded flash | Cluster VLAN, management IPs, ACLs. Operator network kit, out of Spinifex scope but noted for completeness. |
@@ -193,7 +193,7 @@ Third-party destruction vendors must provide a certificate of destruction listin
 When retiring a whole node:
 
 1. **Drain** — migrate or terminate all instances hosted on the node; confirm Predastore and Viperblock roles are reassigned if the node held one. Volume DEKs of terminated instances are already cryptographically erased per [§3.1](#31-cryptographic-erase-via-dek-deletion).
-2. **Deregister** — `bd`-linked change ticket; the operator removes the node from the cluster (`spx admin node remove`) so NATS routes, OVN chassis, and predastore distributed membership drop it.
+2. **Deregister** — raise a change ticket; the operator removes the node from the cluster (`spx admin node remove`) so NATS routes, OVN chassis, and predastore distributed membership drop it.
 3. **Stop services and unmount** — `systemctl stop 'spinifex-*'`, `nbdkit` sessions, OVN agent. Confirm `/run/spinifex/nbd/` is empty.
 4. **Destroy on-disk keys** — see [§5](#5-key-destruction). This is the single most important step: sanitization of volume data reduces to sanitization of keys once data is encrypted.
 5. **Sanitize each drive** by media type per [§4.1](#41-nvme-ssd) – [§4.3](#43-hdd). Every drive bay is sanitized, including any unpopulated cache or WAL devices.
@@ -211,7 +211,7 @@ Cryptographic erase relies on the key being unrecoverable. A drive that previous
 | Cluster CA private key (`/etc/spinifex/ca.key`) | Leader node system disk | Same treatment. Loss of the CA key does not sanitize data, but prevents impersonation of the cluster identity post-disposal. |
 | Per-node TLS private key (`/etc/spinifex/server.key`) | Each node system disk | `shred -u` before drive sanitization. |
 | Wrapped DEKs in NATS KV | `/var/lib/spinifex/nats/` on NATS-carrying nodes | Deleted via the `DeleteVolume` API; the KV record is compacted. Sanitization of the NATS JetStream disk per [§4](#4-whole-drive-and-node-decommissioning--before-disposal-mpl1-383-a) ensures no recoverable copies. |
-| Removable master-key media (Phase 4 USB) | USB flash token | Physically destroy the token when the cluster is decommissioned; alternatively retain inside a secured location as evidence of cluster-wide cryptographic erase. Do not reuse for another cluster without full sanitization (see [§6](#6-removable-and-backup-media)). |
+| Removable master-key media (USB) | USB flash token | Physically destroy the token when the cluster is decommissioned; alternatively retain inside a secured location as evidence of cluster-wide cryptographic erase. Do not reuse for another cluster without full sanitization (see [§6](#6-removable-and-backup-media)). |
 | Backup-copy keys | Any off-site or escrow copy | Destroy simultaneously with the primary. A surviving backup defeats the cryptographic erase. |
 
 If even one copy of the master key survives and the encrypted drives are recoverable, cryptographic erase has **not** been achieved. Track every key copy in the device register ([Physical Security Guide §5](/docs/security/physical-security-guide#5-manage-physical-access-devices-pel1-3105)).

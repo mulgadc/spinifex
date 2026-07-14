@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
@@ -31,11 +31,13 @@ const (
 	testProfileIDOther   = "AIPAEXAMPLE0000000002"
 )
 
-// fakeIAMService is a minimal IAMService stub for gateway-side tests. Only the
-// methods the EC2 IAM-profile gateway code actually touches are wired with
-// configurable behaviour — the rest return zero-value outputs to satisfy the
-// interface contract.
+// fakeIAMService embeds the IAMService interface so it satisfies the contract
+// without hand-writing every method. The EC2 IAM-profile gateway code only
+// touches ResolveInstanceProfile; any other method nil-panics, surfacing an
+// unexpected call rather than masking it with a zero value.
 type fakeIAMService struct {
+	handlers_iam.IAMService
+
 	resolveFn func(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
 }
 
@@ -44,185 +46,6 @@ func (f *fakeIAMService) ResolveInstanceProfile(accountID, nameOrARN string) (*h
 		return f.resolveFn(accountID, nameOrARN)
 	}
 	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-}
-
-func (f *fakeIAMService) CreateUser(string, *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
-	return &iam.CreateUserOutput{}, nil
-}
-func (f *fakeIAMService) GetUser(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
-	return &iam.GetUserOutput{}, nil
-}
-func (f *fakeIAMService) ListUsers(string, *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
-	return &iam.ListUsersOutput{}, nil
-}
-func (f *fakeIAMService) DeleteUser(string, *iam.DeleteUserInput) (*iam.DeleteUserOutput, error) {
-	return &iam.DeleteUserOutput{}, nil
-}
-func (f *fakeIAMService) CreateAccessKey(string, *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
-	return &iam.CreateAccessKeyOutput{}, nil
-}
-func (f *fakeIAMService) ListAccessKeys(string, *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error) {
-	return &iam.ListAccessKeysOutput{}, nil
-}
-func (f *fakeIAMService) DeleteAccessKey(string, *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
-	return &iam.DeleteAccessKeyOutput{}, nil
-}
-func (f *fakeIAMService) UpdateAccessKey(string, *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error) {
-	return &iam.UpdateAccessKeyOutput{}, nil
-}
-func (f *fakeIAMService) CreatePolicy(string, *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
-	return &iam.CreatePolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetPolicy(string, *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
-	return &iam.GetPolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetPolicyVersion(string, *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
-	return &iam.GetPolicyVersionOutput{}, nil
-}
-func (f *fakeIAMService) ListPolicyVersions(string, *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
-	return &iam.ListPolicyVersionsOutput{}, nil
-}
-func (f *fakeIAMService) ListPolicies(string, *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
-	return &iam.ListPoliciesOutput{}, nil
-}
-func (f *fakeIAMService) DeletePolicy(string, *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
-	return &iam.DeletePolicyOutput{}, nil
-}
-func (f *fakeIAMService) AttachUserPolicy(string, *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
-	return &iam.AttachUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) DetachUserPolicy(string, *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error) {
-	return &iam.DetachUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListAttachedUserPolicies(string, *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
-	return &iam.ListAttachedUserPoliciesOutput{}, nil
-}
-func (f *fakeIAMService) CreateRole(string, *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
-	return &iam.CreateRoleOutput{}, nil
-}
-func (f *fakeIAMService) GetRole(string, *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-	return &iam.GetRoleOutput{}, nil
-}
-func (f *fakeIAMService) ListRoles(string, *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
-	return &iam.ListRolesOutput{}, nil
-}
-func (f *fakeIAMService) DeleteRole(string, *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
-	return &iam.DeleteRoleOutput{}, nil
-}
-func (f *fakeIAMService) UpdateRole(string, *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
-	return &iam.UpdateRoleOutput{}, nil
-}
-func (f *fakeIAMService) UpdateAssumeRolePolicy(string, *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
-	return &iam.UpdateAssumeRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) AttachRolePolicy(string, *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
-	return &iam.AttachRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) DetachRolePolicy(string, *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
-	return &iam.DetachRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListAttachedRolePolicies(string, *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
-	return &iam.ListAttachedRolePoliciesOutput{}, nil
-}
-func (f *fakeIAMService) PutRolePolicy(string, *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
-	return &iam.PutRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetRolePolicy(string, *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
-	return &iam.GetRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) DeleteRolePolicy(string, *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
-	return &iam.DeleteRolePolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListRolePolicies(string, *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
-	return &iam.ListRolePoliciesOutput{}, nil
-}
-func (f *fakeIAMService) CreateInstanceProfile(string, *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
-	return &iam.CreateInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) GetInstanceProfile(string, *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
-	return &iam.GetInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) ListInstanceProfiles(string, *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
-	return &iam.ListInstanceProfilesOutput{}, nil
-}
-func (f *fakeIAMService) DeleteInstanceProfile(string, *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
-	return &iam.DeleteInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) ListInstanceProfilesForRole(string, *iam.ListInstanceProfilesForRoleInput) (*iam.ListInstanceProfilesForRoleOutput, error) {
-	return &iam.ListInstanceProfilesForRoleOutput{}, nil
-}
-func (f *fakeIAMService) AddRoleToInstanceProfile(string, *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
-	return &iam.AddRoleToInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) RemoveRoleFromInstanceProfile(string, *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
-	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
-}
-func (f *fakeIAMService) GetUserPolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-func (f *fakeIAMService) GetRolePolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-func (f *fakeIAMService) LookupAccessKey(string) (*handlers_iam.AccessKey, error) { return nil, nil }
-func (f *fakeIAMService) DecryptSecret(string) (string, error)                    { return "", nil }
-func (f *fakeIAMService) SeedBootstrap(*handlers_iam.BootstrapData) error         { return nil }
-func (f *fakeIAMService) IsEmpty() (bool, error)                                  { return true, nil }
-func (f *fakeIAMService) CreateAccount(string) (*handlers_iam.Account, error)     { return nil, nil }
-func (f *fakeIAMService) GetAccount(string) (*handlers_iam.Account, error)        { return nil, nil }
-func (f *fakeIAMService) ListAccounts() ([]*handlers_iam.Account, error)          { return nil, nil }
-func (f *fakeIAMService) CreateGroup(string, *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
-	return &iam.CreateGroupOutput{}, nil
-}
-func (f *fakeIAMService) GetGroup(string, *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
-	return &iam.GetGroupOutput{}, nil
-}
-func (f *fakeIAMService) ListGroups(string, *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
-	return &iam.ListGroupsOutput{}, nil
-}
-func (f *fakeIAMService) DeleteGroup(string, *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
-	return &iam.DeleteGroupOutput{}, nil
-}
-func (f *fakeIAMService) AddUserToGroup(string, *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
-	return &iam.AddUserToGroupOutput{}, nil
-}
-func (f *fakeIAMService) RemoveUserFromGroup(string, *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
-	return &iam.RemoveUserFromGroupOutput{}, nil
-}
-func (f *fakeIAMService) ListGroupsForUser(string, *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
-	return &iam.ListGroupsForUserOutput{}, nil
-}
-func (f *fakeIAMService) AttachGroupPolicy(string, *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
-	return &iam.AttachGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) DetachGroupPolicy(string, *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
-	return &iam.DetachGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListAttachedGroupPolicies(string, *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
-	return &iam.ListAttachedGroupPoliciesOutput{}, nil
-}
-func (f *fakeIAMService) PutGroupPolicy(string, *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
-	return &iam.PutGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetGroupPolicy(string, *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
-	return &iam.GetGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) DeleteGroupPolicy(string, *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
-	return &iam.DeleteGroupPolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListGroupPolicies(string, *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
-	return &iam.ListGroupPoliciesOutput{}, nil
-}
-func (f *fakeIAMService) PutUserPolicy(string, *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
-	return &iam.PutUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) GetUserPolicy(string, *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
-	return &iam.GetUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) DeleteUserPolicy(string, *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
-	return &iam.DeleteUserPolicyOutput{}, nil
-}
-func (f *fakeIAMService) ListUserPolicies(string, *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
-	return &iam.ListUserPoliciesOutput{}, nil
 }
 
 var _ handlers_iam.IAMService = (*fakeIAMService)(nil)
@@ -383,7 +206,7 @@ func TestEnrichProfileID_NilInnerProfileIsAllocated(t *testing.T) {
 // --- AssociateIamInstanceProfile ---------------------------------------------
 
 func TestAssociateIamInstanceProfile_NilInput(t *testing.T) {
-	_, err := AssociateIamInstanceProfile(nil, nil, &fakeIAMService{}, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), nil, nil, &fakeIAMService{}, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -392,14 +215,14 @@ func TestAssociateIamInstanceProfile_MissingInstanceID(t *testing.T) {
 	in := &ec2.AssociateIamInstanceProfileInput{
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}
-	_, err := AssociateIamInstanceProfile(in, nil, &fakeIAMService{}, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nil, &fakeIAMService{}, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestAssociateIamInstanceProfile_MissingProfileSpec(t *testing.T) {
 	in := &ec2.AssociateIamInstanceProfileInput{InstanceId: aws.String("i-001")}
-	_, err := AssociateIamInstanceProfile(in, nil, &fakeIAMService{}, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nil, &fakeIAMService{}, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -410,7 +233,7 @@ func TestAssociateIamInstanceProfile_ProfileNotFound(t *testing.T) {
 		InstanceId:         aws.String("i-001"),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String("ghost")},
 	}
-	_, err := AssociateIamInstanceProfile(in, nil, svc, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nil, svc, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidIamInstanceProfileNotFound, err.Error())
 }
@@ -424,7 +247,7 @@ func TestAssociateIamInstanceProfile_PassRoleDenied(t *testing.T) {
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}
 	check := func(string) error { return errors.New(awserrors.ErrorAccessDenied) }
-	_, err := AssociateIamInstanceProfile(in, nil, svc, testGwAccountID, check)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nil, svc, testGwAccountID, check)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }
@@ -441,7 +264,7 @@ func TestAssociateIamInstanceProfile_NoResponders(t *testing.T) {
 	// No subscriber on ec2.cmd.* → ErrNoResponders → maps to
 	// InvalidInstanceID.NotFound so callers get an AWS-shaped 400 instead of
 	// a raw NATS timeout.
-	_, err := AssociateIamInstanceProfile(in, nc, svc, testGwAccountID, nil)
+	_, err := AssociateIamInstanceProfile(context.Background(), in, nc, svc, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -474,7 +297,7 @@ func TestAssociateIamInstanceProfile_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out, err := AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
+	out, err := AssociateIamInstanceProfile(context.Background(), &ec2.AssociateIamInstanceProfileInput{
 		InstanceId:         aws.String(instanceID),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}, nc, svc, testGwAccountID, func(string) error { return nil })
@@ -502,7 +325,7 @@ func TestAssociateIamInstanceProfile_DaemonAlreadyAssociated(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
+	_, err = AssociateIamInstanceProfile(context.Background(), &ec2.AssociateIamInstanceProfileInput{
 		InstanceId:         aws.String(instanceID),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameOther)},
 	}, nc, svc, testGwAccountID, nil)
@@ -513,13 +336,13 @@ func TestAssociateIamInstanceProfile_DaemonAlreadyAssociated(t *testing.T) {
 // --- DisassociateIamInstanceProfile -----------------------------------------
 
 func TestDisassociateIamInstanceProfile_MissingAssociationID(t *testing.T) {
-	_, err := DisassociateIamInstanceProfile(&ec2.DisassociateIamInstanceProfileInput{}, nil, 0, testGwAccountID)
+	_, err := DisassociateIamInstanceProfile(context.Background(), &ec2.DisassociateIamInstanceProfileInput{}, nil, 0, testGwAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestDisassociateIamInstanceProfile_NilInput(t *testing.T) {
-	_, err := DisassociateIamInstanceProfile(nil, nil, 0, testGwAccountID)
+	_, err := DisassociateIamInstanceProfile(context.Background(), nil, nil, 0, testGwAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -558,7 +381,7 @@ func TestDisassociateIamInstanceProfile_Success(t *testing.T) {
 	require.NoError(t, nc.Flush())
 	require.NoError(t, nc2.Flush())
 
-	out, err := DisassociateIamInstanceProfile(&ec2.DisassociateIamInstanceProfileInput{
+	out, err := DisassociateIamInstanceProfile(context.Background(), &ec2.DisassociateIamInstanceProfileInput{
 		AssociationId: aws.String(assocID),
 	}, nc, 2, testGwAccountID)
 	require.NoError(t, err)
@@ -581,7 +404,7 @@ func TestDisassociateIamInstanceProfile_NoSuchAssociation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DisassociateIamInstanceProfile(&ec2.DisassociateIamInstanceProfileInput{
+	_, err = DisassociateIamInstanceProfile(context.Background(), &ec2.DisassociateIamInstanceProfileInput{
 		AssociationId: aws.String("iip-assoc-stale-id"),
 	}, nc, 1, testGwAccountID)
 	require.Error(t, err)
@@ -591,7 +414,7 @@ func TestDisassociateIamInstanceProfile_NoSuchAssociation(t *testing.T) {
 // --- ReplaceIamInstanceProfileAssociation -----------------------------------
 
 func TestReplaceIamInstanceProfileAssociation_NilInput(t *testing.T) {
-	_, err := ReplaceIamInstanceProfileAssociation(nil, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
+	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), nil, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -600,14 +423,14 @@ func TestReplaceIamInstanceProfileAssociation_MissingAssociationID(t *testing.T)
 	in := &ec2.ReplaceIamInstanceProfileAssociationInput{
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}
-	_, err := ReplaceIamInstanceProfileAssociation(in, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
+	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), in, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestReplaceIamInstanceProfileAssociation_MissingProfileSpec(t *testing.T) {
 	in := &ec2.ReplaceIamInstanceProfileAssociationInput{AssociationId: aws.String("iip-assoc-x")}
-	_, err := ReplaceIamInstanceProfileAssociation(in, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
+	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), in, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -618,7 +441,7 @@ func TestReplaceIamInstanceProfileAssociation_PassRoleDeniedBeforeBroadcast(t *t
 		return profileWithRole(), nil
 	}}
 	check := func(string) error { return errors.New(awserrors.ErrorAccessDenied) }
-	_, err := ReplaceIamInstanceProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), &ec2.ReplaceIamInstanceProfileAssociationInput{
 		AssociationId:      aws.String("iip-assoc-old"),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}, nil, svc, 0, testGwAccountID, check)
@@ -653,7 +476,7 @@ func TestReplaceIamInstanceProfileAssociation_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out, err := ReplaceIamInstanceProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+	out, err := ReplaceIamInstanceProfileAssociation(context.Background(), &ec2.ReplaceIamInstanceProfileAssociationInput{
 		AssociationId:      aws.String(oldID),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}, nc, svc, 1, testGwAccountID, func(string) error { return nil })
@@ -676,7 +499,7 @@ func TestReplaceIamInstanceProfileAssociation_NoSuchAssociation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = ReplaceIamInstanceProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+	_, err = ReplaceIamInstanceProfileAssociation(context.Background(), &ec2.ReplaceIamInstanceProfileAssociationInput{
 		AssociationId:      aws.String("iip-assoc-stale"),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameOther)},
 	}, nc, svc, 1, testGwAccountID, nil)
@@ -720,8 +543,7 @@ func TestDescribeIamInstanceProfileAssociations_FanOutAggregates(t *testing.T) {
 	require.NoError(t, nc.Flush())
 	require.NoError(t, nc2.Flush())
 
-	out, err := DescribeIamInstanceProfileAssociations(
-		&ec2.DescribeIamInstanceProfileAssociationsInput{}, nc, 2, testGwAccountID)
+	out, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{}, nc, 2, testGwAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Len(t, out.IamInstanceProfileAssociations, 2)
@@ -737,7 +559,7 @@ func TestDescribeIamInstanceProfileAssociations_ForwardsFilters(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = DescribeIamInstanceProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
+	_, err = DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{
 		AssociationIds: []*string{aws.String("iip-assoc-1"), aws.String("iip-assoc-2")},
 		Filters: []*ec2.Filter{
 			{Name: aws.String("instance-id"), Values: []*string{aws.String("i-001"), aws.String("i-002")}},
@@ -754,7 +576,7 @@ func TestDescribeIamInstanceProfileAssociations_ForwardsFilters(t *testing.T) {
 
 func TestDescribeIamInstanceProfileAssociations_InvalidFilterName(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	_, err := DescribeIamInstanceProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
+	_, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("not-a-valid-filter")}},
 	}, nc, 1, testGwAccountID)
 	require.Error(t, err)
@@ -769,8 +591,7 @@ func TestDescribeIamInstanceProfileAssociations_EmptyResultIsValid(t *testing.T)
 	})
 	require.NoError(t, err)
 
-	out, err := DescribeIamInstanceProfileAssociations(
-		&ec2.DescribeIamInstanceProfileAssociationsInput{}, nc, 1, testGwAccountID)
+	out, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{}, nc, 1, testGwAccountID)
 	require.NoError(t, err, "no records is a valid response, not an error")
 	assert.Empty(t, out.IamInstanceProfileAssociations)
 }
@@ -791,7 +612,7 @@ func TestCountInstanceProfileAssociations_MatchesByARN(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, err := CountInstanceProfileAssociations(nc, 1, testGwAccountID, testProfileARNApp)
+	got, err := CountInstanceProfileAssociations(context.Background(), nc, 1, testGwAccountID, testProfileARNApp)
 	require.NoError(t, err)
 	assert.Equal(t, 2, got, "only associations whose ARN matches must count")
 }
@@ -807,7 +628,7 @@ func TestCountInstanceProfileAssociations_NoMatches(t *testing.T) {
 		nc.Publish(msg.Reply, resp)
 	})
 	require.NoError(t, err)
-	got, err := CountInstanceProfileAssociations(nc, 1, testGwAccountID, testProfileARNApp)
+	got, err := CountInstanceProfileAssociations(context.Background(), nc, 1, testGwAccountID, testProfileARNApp)
 	require.NoError(t, err)
 	assert.Equal(t, 0, got)
 }

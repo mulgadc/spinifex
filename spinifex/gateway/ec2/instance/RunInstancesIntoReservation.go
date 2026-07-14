@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -15,9 +16,9 @@ import (
 // so NATS addresses it without any cr→node lookup. ErrNoResponders means the
 // reservation is gone (cancelled or lost to a restart) → NotFound; any semantic
 // error (type mismatch, full) rides back as the daemon's awserror code.
-func runIntoReservation(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID, crID string) (*ec2.Reservation, error) {
+func runIntoReservation(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID, crID string) (*ec2.Reservation, error) {
 	subject := "ec2.RunInstances.cr." + crID
-	reservation, err := utils.NATSRequest[ec2.Reservation](natsConn, subject, input, 5*time.Minute, accountID)
+	reservation, err := utils.NATSRequest[ec2.Reservation](ctx, natsConn, subject, input, 5*time.Minute, accountID)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {
 			return nil, errors.New(awserrors.ErrorInvalidCapacityReservationIdNotFound)

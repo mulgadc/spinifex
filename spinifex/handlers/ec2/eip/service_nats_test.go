@@ -1,6 +1,7 @@
 package handlers_ec2_eip
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -11,14 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(*In, string) (*Out, error)) {
+func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In, string) (*Out, error)) {
 	var input In
 	if err := json.Unmarshal(msg.Data, &input); err != nil {
 		_ = msg.Respond(utils.GenerateErrorPayload("ValidationError"))
 		return
 	}
 	accountID := msg.Header.Get(utils.AccountIDHeader)
-	result, err := fn(&input, accountID)
+	result, err := fn(context.Background(), &input, accountID)
 	if err != nil {
 		_ = msg.Respond(utils.GenerateErrorPayload(err.Error()))
 		return
@@ -57,7 +58,7 @@ func setupNATSEIPServiceTest(t *testing.T) (EIPService, *EIPServiceImpl) {
 func TestNATSEIPService_AllocateAddress(t *testing.T) {
 	client, _ := setupNATSEIPServiceTest(t)
 
-	out, err := client.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := client.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.NotEmpty(t, *out.AllocationId)
@@ -68,10 +69,10 @@ func TestNATSEIPService_AllocateAddress(t *testing.T) {
 func TestNATSEIPService_DescribeAddresses(t *testing.T) {
 	client, _ := setupNATSEIPServiceTest(t)
 
-	_, err := client.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	_, err := client.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := client.DescribeAddresses(&ec2.DescribeAddressesInput{}, testAccountID)
+	out, err := client.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(out.Addresses), 1)
 }
@@ -79,10 +80,10 @@ func TestNATSEIPService_DescribeAddresses(t *testing.T) {
 func TestNATSEIPService_ReleaseAddress(t *testing.T) {
 	client, _ := setupNATSEIPServiceTest(t)
 
-	allocOut, err := client.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	allocOut, err := client.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = client.ReleaseAddress(&ec2.ReleaseAddressInput{
+	_, err = client.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
 		AllocationId: allocOut.AllocationId,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -92,7 +93,7 @@ func TestNATSEIPService_AssociateAddress_MissingParams(t *testing.T) {
 	client, _ := setupNATSEIPServiceTest(t)
 
 	// Missing AllocationId should return error through NATS
-	_, err := client.AssociateAddress(&ec2.AssociateAddressInput{}, testAccountID)
+	_, err := client.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{}, testAccountID)
 	assert.Error(t, err)
 }
 
@@ -100,7 +101,7 @@ func TestNATSEIPService_DisassociateAddress_MissingParams(t *testing.T) {
 	client, _ := setupNATSEIPServiceTest(t)
 
 	// Missing AssociationId should return error through NATS
-	_, err := client.DisassociateAddress(&ec2.DisassociateAddressInput{}, testAccountID)
+	_, err := client.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{}, testAccountID)
 	assert.Error(t, err)
 }
 
@@ -108,21 +109,21 @@ func TestNATSEIPService_AllocateAndDescribeRoundTrip(t *testing.T) {
 	client, _ := setupNATSEIPServiceTest(t)
 
 	// Allocate two EIPs
-	out1, err := client.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out1, err := client.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	out2, err := client.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out2, err := client.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
 	// Describe should show both
-	desc, err := client.DescribeAddresses(&ec2.DescribeAddressesInput{}, testAccountID)
+	desc, err := client.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, desc.Addresses, 2)
 
 	// Release one and verify count drops
-	_, err = client.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: out1.AllocationId}, testAccountID)
+	_, err = client.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: out1.AllocationId}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err = client.DescribeAddresses(&ec2.DescribeAddressesInput{}, testAccountID)
+	desc, err = client.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, desc.Addresses, 1)
 	assert.Equal(t, *out2.AllocationId, *desc.Addresses[0].AllocationId)

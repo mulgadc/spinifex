@@ -19,11 +19,16 @@ type fakeClaimVerifier struct {
 	nudgeErr       error
 	reachErr       error
 	guestErr       error
+	sbNotConnected bool  // SBConnectionState reports the wedge ("not connected")
+	sbStateErr     error // SBConnectionState probe error
+	sbResetErr     error // ResetSBClusterState error
 	checks         int
 	nudges         int
 	repairs        int
 	reachChecks    int
 	guestChecks    int
+	sbChecks       int
+	sbResets       int
 	lastPort       string // most recent port name passed to GatewayPortClaimed
 	lastGwIP       string // most recent IP passed to GatewayReachable
 	lastEIP        string // most recent IP passed to EIPReachable
@@ -95,6 +100,23 @@ func (f *fakeClaimVerifier) GuestPortUp(_ context.Context, lspName string) (bool
 		return false, nil
 	}
 	return f.nudges >= f.guestUpAfter, nil
+}
+
+// SBConnectionState reports "connected" by default; sbNotConnected scripts the wedge.
+func (f *fakeClaimVerifier) SBConnectionState(_ context.Context) (string, error) {
+	f.sbChecks++
+	if f.sbStateErr != nil {
+		return "", f.sbStateErr
+	}
+	if f.sbNotConnected {
+		return "not connected", nil
+	}
+	return "connected", nil
+}
+
+func (f *fakeClaimVerifier) ResetSBClusterState(_ context.Context) error {
+	f.sbResets++
+	return f.sbResetErr
 }
 
 func withFastGuestPortBounds(t *testing.T) {
@@ -467,5 +489,82 @@ func TestEnsureGuestPortDatapath_ContextCancelStops(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ensureGuestPortDatapath ignored context cancellation")
+	}
+}
+
+func withSmallSBResetThreshold(t *testing.T) {
+	t.Helper()
+	prev := sbResetEscalateAfter
+	sbResetEscalateAfter = 2
+	t.Cleanup(func() { sbResetEscalateAfter = prev })
+}
+
+func runToDeadline(t *testing.T, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { fn(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("readiness loop did not return within deadline; blocking reconcile")
+	}
+}
+
+func TestEnsureGatewayClaimed_WedgedSBEscalatesResetOnce(t *testing.T) {
+	withFastClaimBounds(t)
+	withSmallSBResetThreshold(t)
+	// Never claims AND the SB is wedged: recompute cannot converge a stale-SB wedge,
+	// so after the miss threshold the loop escalates to exactly one reset.
+	f := &fakeClaimVerifier{claimedAfter: -1, sbNotConnected: true}
+	r := &reconciler{gwClaim: f}
+
+	runToDeadline(t, func() { r.ensureGatewayClaimed(context.Background(), "gw-vpc-a") })
+
+	if f.sbResets != 1 {
+		t.Errorf("sbResets = %d, want exactly 1 (escalate once, then stop resetting)", f.sbResets)
+	}
+	if f.nudges < 2 {
+		t.Errorf("nudges = %d, want >=2 (recompute still runs each miss)", f.nudges)
+	}
+}
+
+func TestEnsureGatewayClaimed_ConnectedSBNeverResets(t *testing.T) {
+	withFastClaimBounds(t)
+	withSmallSBResetThreshold(t)
+	// Never claims but SB is connected: the miss is not a wedge, so no reset —
+	// recompute is the right tool and a reset would needlessly churn the SB sync.
+	f := &fakeClaimVerifier{claimedAfter: -1, sbNotConnected: false}
+	r := &reconciler{gwClaim: f}
+
+	runToDeadline(t, func() { r.ensureGatewayClaimed(context.Background(), "gw-vpc-a") })
+
+	if f.sbResets != 0 {
+		t.Errorf("sbResets = %d, want 0 (connected SB must never be reset)", f.sbResets)
+	}
+}
+
+func TestEnsureGuestPortDatapath_WedgedSBEscalatesResetOnce(t *testing.T) {
+	withFastGuestPortBounds(t)
+	withSmallSBResetThreshold(t)
+	f := &fakeClaimVerifier{guestUpAfter: -1, sbNotConnected: true}
+	r := &reconciler{gwClaim: f}
+
+	runToDeadline(t, func() { r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1") })
+
+	if f.sbResets != 1 {
+		t.Errorf("sbResets = %d, want exactly 1 (escalate once on a wedged SB)", f.sbResets)
+	}
+}
+
+func TestEnsureGuestPortDatapath_ConnectedSBNeverResets(t *testing.T) {
+	withFastGuestPortBounds(t)
+	withSmallSBResetThreshold(t)
+	f := &fakeClaimVerifier{guestUpAfter: -1, sbNotConnected: false}
+	r := &reconciler{gwClaim: f}
+
+	runToDeadline(t, func() { r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1") })
+
+	if f.sbResets != 0 {
+		t.Errorf("sbResets = %d, want 0 (connected SB must never be reset)", f.sbResets)
 	}
 }

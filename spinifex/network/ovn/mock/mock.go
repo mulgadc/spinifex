@@ -29,6 +29,7 @@ type Client struct {
 	PortGroups     map[string]*nbdb.PortGroup                // keyed by name
 	ACLs           map[string]*nbdb.ACL                      // keyed by UUID
 	GatewayChassis map[string]*nbdb.GatewayChassis           // keyed by UUID
+	AddressSets    map[string]*nbdb.AddressSet               // keyed by name
 
 	// Call counters so tests can assert idempotent / drift-only write paths.
 	UpdateLogicalSwitchPortCalls int
@@ -62,6 +63,7 @@ func New() *Client {
 		PortGroups:     make(map[string]*nbdb.PortGroup),
 		ACLs:           make(map[string]*nbdb.ACL),
 		GatewayChassis: make(map[string]*nbdb.GatewayChassis),
+		AddressSets:    make(map[string]*nbdb.AddressSet),
 	}
 }
 
@@ -102,12 +104,12 @@ func (m *Client) CreateLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) 
 
 // EnsureLogicalSwitch mirrors the live client's wait-op semantics under the
 // mock's single mutex: concurrent callers see the row on the second arrival.
-func (m *Client) EnsureLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, error) {
+func (m *Client) EnsureLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, bool, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	if existing, ok := m.Switches[ls.Name]; ok {
 		result := *existing
-		return &result, nil
+		return &result, false, nil
 	}
 	if ls.UUID == "" {
 		ls.UUID = utils.GenerateResourceID("ovn")
@@ -115,7 +117,7 @@ func (m *Client) EnsureLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) 
 	stored := *ls
 	m.Switches[ls.Name] = &stored
 	result := stored
-	return &result, nil
+	return &result, true, nil
 }
 
 func (m *Client) DeleteLogicalSwitch(_ context.Context, name string) error {
@@ -283,12 +285,12 @@ func (m *Client) CreateLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) 
 
 // EnsureLogicalRouter mirrors the live client's wait-op semantics under the
 // mock's single mutex.
-func (m *Client) EnsureLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error) {
+func (m *Client) EnsureLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, bool, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	if existing, ok := m.Routers[lr.Name]; ok {
 		result := *existing
-		return &result, nil
+		return &result, false, nil
 	}
 	if lr.UUID == "" {
 		lr.UUID = utils.GenerateResourceID("ovn")
@@ -296,7 +298,7 @@ func (m *Client) EnsureLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) 
 	stored := *lr
 	m.Routers[lr.Name] = &stored
 	result := stored
-	return &result, nil
+	return &result, true, nil
 }
 
 func (m *Client) DeleteLogicalRouter(_ context.Context, name string) error {
@@ -592,6 +594,16 @@ func (m *Client) DeleteAllNATsByExternalIP(_ context.Context, natType, externalI
 	return len(foundUUIDs), nil
 }
 
+func (m *Client) ListNATs(_ context.Context) ([]nbdb.NAT, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	result := make([]nbdb.NAT, 0, len(m.NATs))
+	for _, n := range m.NATs {
+		result = append(result, *n)
+	}
+	return result, nil
+}
+
 func (m *Client) FindNATByExternalIP(_ context.Context, natType, externalIP string) (*nbdb.NAT, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -620,6 +632,27 @@ func (m *Client) FindNATByLogicalIP(_ context.Context, routerName, natType, logi
 		}
 	}
 	return nil, nil
+}
+
+// SetNATExemptedExtIPs updates exempted_ext_ips in place on the matching NAT row.
+func (m *Client) SetNATExemptedExtIPs(_ context.Context, routerName, natType, logicalIP string, addressSetUUID *string) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return fmt.Errorf("logical router %q not found", routerName)
+	}
+	for _, uuid := range lr.NAT {
+		n, ok := m.NATs[uuid]
+		if !ok {
+			continue
+		}
+		if n.Type == natType && n.LogicalIP == logicalIP {
+			n.ExemptedExtIps = addressSetUUID
+			return nil
+		}
+	}
+	return fmt.Errorf("NAT %s %s on %s: %w", natType, logicalIP, routerName, ovn.ErrNATNotFound)
 }
 
 // Static Routes
@@ -667,9 +700,11 @@ func (m *Client) DeleteStaticRoute(_ context.Context, routerName string, ipPrefi
 	if !exists {
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
+	// Scope the prefix match to this router's rows — every VPC router carries
+	// 0.0.0.0/0, so an unscoped match can grab another router's route.
 	var foundUUID string
-	for uuid, r := range m.StaticRoutes {
-		if r.IPPrefix == ipPrefix {
+	for _, uuid := range lr.StaticRoutes {
+		if r, ok := m.StaticRoutes[uuid]; ok && r.IPPrefix == ipPrefix {
 			foundUUID = uuid
 			break
 		}
@@ -790,12 +825,12 @@ func (m *Client) CreatePortGroup(_ context.Context, name string, ports []string)
 }
 
 // EnsurePortGroup mirrors the live client's wait-op semantics.
-func (m *Client) EnsurePortGroup(_ context.Context, name string, ports []string) (*nbdb.PortGroup, error) {
+func (m *Client) EnsurePortGroup(_ context.Context, name string, ports []string) (*nbdb.PortGroup, bool, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	if existing, ok := m.PortGroups[name]; ok {
 		result := *existing
-		return &result, nil
+		return &result, false, nil
 	}
 	pg := &nbdb.PortGroup{
 		UUID:  utils.GenerateResourceID("pg"),
@@ -804,7 +839,7 @@ func (m *Client) EnsurePortGroup(_ context.Context, name string, ports []string)
 	}
 	m.PortGroups[name] = pg
 	result := *pg
-	return &result, nil
+	return &result, true, nil
 }
 
 func (m *Client) DeletePortGroup(_ context.Context, name string) error {
@@ -895,6 +930,36 @@ func (m *Client) ListPortGroups(_ context.Context) ([]nbdb.PortGroup, error) {
 	return out, nil
 }
 
+// EnsureAddressSet mirrors the live client's wait-op semantics: creates the
+// named set or converges the addresses on the existing row.
+func (m *Client) EnsureAddressSet(_ context.Context, name string, addresses []string) (string, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if existing, ok := m.AddressSets[name]; ok {
+		existing.Addresses = slices.Clone(addresses)
+		return existing.UUID, nil
+	}
+	as := &nbdb.AddressSet{
+		UUID:      utils.GenerateResourceID("as"),
+		Name:      name,
+		Addresses: slices.Clone(addresses),
+	}
+	m.AddressSets[name] = as
+	return as.UUID, nil
+}
+
+// GetAddressSet returns the address set, or ovn.ErrAddressSetNotFound.
+func (m *Client) GetAddressSet(_ context.Context, name string) (*nbdb.AddressSet, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	as, exists := m.AddressSets[name]
+	if !exists {
+		return nil, fmt.Errorf("%w: %q", ovn.ErrAddressSetNotFound, name)
+	}
+	result := *as
+	return &result, nil
+}
+
 // ACLs
 
 func (m *Client) AddACLs(_ context.Context, portGroupName string, specs []ovn.ACLSpec) error {
@@ -946,6 +1011,23 @@ func (m *Client) ClearACLs(_ context.Context, portGroupName string) error {
 	return nil
 }
 
+// aclSetUnchangedLocked reports whether pg's current ACL rows are the same
+// multiset as specs. Caller holds m.Mu.
+func (m *Client) aclSetUnchangedLocked(pg *nbdb.PortGroup, specs []ovn.ACLSpec) bool {
+	if len(pg.ACLs) != len(specs) {
+		return false
+	}
+	rows := make([]nbdb.ACL, 0, len(pg.ACLs))
+	for _, aclUUID := range pg.ACLs {
+		acl, ok := m.ACLs[aclUUID]
+		if !ok {
+			return false
+		}
+		rows = append(rows, *acl)
+	}
+	return ovn.ACLSetEqual(rows, specs)
+}
+
 // ReplaceACLs atomically swaps the port group's ACL set under a single mutex
 // hold — semantically equivalent to ClearACLs+AddACLs but with no observable
 // mid-flight window where pg.ACLs is empty.
@@ -960,6 +1042,11 @@ func (m *Client) ReplaceACLs(_ context.Context, portGroupName string, specs []ov
 	pg, exists := m.PortGroups[portGroupName]
 	if !exists {
 		return fmt.Errorf("port group %q not found", portGroupName)
+	}
+	// No-op when the current ACL set already matches specs, mirroring LiveClient:
+	// unchanged SGs must not churn ACL UUIDs on every reconcile pass.
+	if m.aclSetUnchangedLocked(pg, specs) {
+		return nil
 	}
 	for _, aclUUID := range pg.ACLs {
 		delete(m.ACLs, aclUUID)

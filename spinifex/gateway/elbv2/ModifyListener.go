@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -20,7 +21,7 @@ func ValidateModifyListenerInput(input *elbv2.ModifyListenerInput) error {
 }
 
 // ModifyListener handles the ELBv2 ModifyListener API call.
-func ModifyListener(input *elbv2.ModifyListenerInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyListenerOutput, error) {
+func ModifyListener(ctx context.Context, input *elbv2.ModifyListenerInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyListenerOutput, error) {
 	var output elbv2.ModifyListenerOutput
 
 	if err := ValidateModifyListenerInput(input); err != nil {
@@ -28,7 +29,7 @@ func ModifyListener(input *elbv2.ModifyListenerInput, natsConn *nats.Conn, accou
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.ModifyListener(input, accountID)
+	result, err := svc.ModifyListener(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

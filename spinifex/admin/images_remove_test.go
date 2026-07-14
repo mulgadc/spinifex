@@ -38,7 +38,7 @@ func putAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, o
 	}
 	data, err := json.Marshal(state)
 	require.NoError(t, err)
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(testRemoveBucket),
 		Key:    aws.String(imageID + "/config.json"),
 		Body:   bytes.NewReader(data),
@@ -52,7 +52,7 @@ func putAMIBlocks(t *testing.T, store *objectstore.MemoryObjectStore, imageID st
 	t.Helper()
 	body := bytes.Repeat([]byte{0xab}, size)
 	for i := range n {
-		_, err := store.PutObject(&awss3.PutObjectInput{
+		_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
 			Bucket: aws.String(testRemoveBucket),
 			Key:    aws.String(imageID + "/chunks/" + string(rune('a'+i)) + ".dat"),
 			Body:   bytes.NewReader(body),
@@ -65,7 +65,7 @@ func putSnapBlocks(t *testing.T, store *objectstore.MemoryObjectStore, snapID st
 	t.Helper()
 	body := bytes.Repeat([]byte{0xcd}, size)
 	for i := range n {
-		_, err := store.PutObject(&awss3.PutObjectInput{
+		_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
 			Bucket: aws.String(testRemoveBucket),
 			Key:    aws.String(snapID + "/cp/" + string(rune('a'+i)) + ".bin"),
 			Body:   bytes.NewReader(body),
@@ -101,7 +101,7 @@ func putVolume(t *testing.T, store *objectstore.MemoryObjectStore, volID, snapsh
 	}
 	data, err := json.Marshal(wrapper)
 	require.NoError(t, err)
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(testRemoveBucket),
 		Key:    aws.String(volID + "/config.json"),
 		Body:   bytes.NewReader(data),
@@ -174,7 +174,7 @@ func TestRemoveSystemImage_MissingConfig_NotFound(t *testing.T) {
 func TestRemoveSystemImage_CorruptConfig_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-corrupt"
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(testRemoveBucket),
 		Key:    aws.String(id + "/config.json"),
 		Body:   bytes.NewReader([]byte("{not valid json")),
@@ -247,12 +247,12 @@ func TestRemoveSystemImage_Force_OverridesDependents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Greater(t, res.ObjectsDeleted, 0)
 	// vol-orphan/config.json remains; the AMI is gone.
-	_, err = store.GetObject(&awss3.GetObjectInput{
+	_, err = store.GetObject(t.Context(), &awss3.GetObjectInput{
 		Bucket: aws.String(testRemoveBucket),
 		Key:    aws.String(id + "/config.json"),
 	})
 	require.Error(t, err)
-	_, err = store.GetObject(&awss3.GetObjectInput{
+	_, err = store.GetObject(t.Context(), &awss3.GetObjectInput{
 		Bucket: aws.String(testRemoveBucket),
 		Key:    aws.String("vol-orphan/config.json"),
 	})
@@ -281,7 +281,7 @@ func TestRemoveSystemImage_Salvage_MissingConfig_ForceCleans(t *testing.T) {
 func TestRemoveSystemImage_Salvage_CorruptConfig_ForceCleans(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-salvage-2"
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(testRemoveBucket),
 		Key:    aws.String(id + "/config.json"),
 		Body:   bytes.NewReader([]byte("garbage")),
@@ -345,7 +345,7 @@ func TestPreviewRemoveSystemImage_Salvage(t *testing.T) {
 func TestPreviewRemoveSystemImage_CorruptConfig(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-corrupt-preview"
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(testRemoveBucket),
 		Key:    aws.String(id + "/config.json"),
 		Body:   bytes.NewReader([]byte("{nope")),

@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -10,8 +12,8 @@ import (
 // handleAssociateIamInstanceProfile services the per-instance Associate path.
 // Gateway pre-validates the profile reference and iam:PassRole; ownership is
 // checked by checkInstanceOwnership before dispatch.
-func (d *Daemon) handleAssociateIamInstanceProfile(msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
-	result, err := d.instanceService.AssociateIamInstanceProfile(instance, command)
+func (d *Daemon) handleAssociateIamInstanceProfile(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+	result, err := d.instanceService.AssociateIamInstanceProfile(ctx, instance, command)
 	if err != nil {
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return

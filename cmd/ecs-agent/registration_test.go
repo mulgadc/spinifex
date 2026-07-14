@@ -7,22 +7,34 @@ import (
 	"testing"
 	"time"
 
+	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
-// fakeCP is a test double for the gateway control-plane. It records registers and
-// task-state reports, and replays a scripted queue of poll responses.
+// fakeCP is a test double for the gateway control-plane. It records registers,
+// task-state reports and GPU reports, and replays a scripted queue of poll
+// responses.
 type fakeCP struct {
 	mu sync.Mutex
 
-	registers   int
-	states      []bus.TaskState
-	pollAcks    [][]string
-	pollReplies [][]bus.Assign
-	pollCalls   int
+	registers    int
+	states       []bus.TaskState
+	gpuReports   []gpuReport
+	pollAcks     [][]string
+	pollStopAcks [][]string
+	pollReplies  [][]bus.Assign
+	stopReplies  [][]bus.StopDirective
+	pollCalls    int
 
 	registerErr bool
 	submitErr   bool
+}
+
+// gpuReport is one recorded ReportTaskGPU call.
+type gpuReport struct {
+	cluster    string
+	task       string
+	containers []handlers_ecs.ContainerGPUReport
 }
 
 var _ controlPlane = (*fakeCP)(nil)
@@ -47,17 +59,40 @@ func (f *fakeCP) SubmitTaskState(st bus.TaskState) error {
 	return nil
 }
 
-func (f *fakeCP) PollAssignments(_, _ string, ack []string) ([]bus.Assign, error) {
+func (f *fakeCP) PollAssignments(_, _ string, ackAssigns, ackStops []string) ([]bus.Assign, []bus.StopDirective, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	cp := append([]string(nil), ack...)
-	f.pollAcks = append(f.pollAcks, cp)
+	f.pollAcks = append(f.pollAcks, append([]string(nil), ackAssigns...))
+	f.pollStopAcks = append(f.pollStopAcks, append([]string(nil), ackStops...))
 	var out []bus.Assign
 	if f.pollCalls < len(f.pollReplies) {
 		out = f.pollReplies[f.pollCalls]
 	}
+	var stops []bus.StopDirective
+	if f.pollCalls < len(f.stopReplies) {
+		stops = f.stopReplies[f.pollCalls]
+	}
 	f.pollCalls++
-	return out, nil
+	return out, stops, nil
+}
+
+func (f *fakeCP) ReportTaskGPU(cluster, task string, containers []handlers_ecs.ContainerGPUReport) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gpuReports = append(f.gpuReports, gpuReport{cluster: cluster, task: task, containers: containers})
+	return nil
+}
+
+func (f *fakeCP) gpuReportsFor(taskID string) []gpuReport {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []gpuReport
+	for _, r := range f.gpuReports {
+		if r.task == taskID {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (f *fakeCP) registerCount() int {
@@ -78,6 +113,12 @@ func (f *fakeCP) acks() [][]string {
 	return append([][]string(nil), f.pollAcks...)
 }
 
+func (f *fakeCP) stopAcks() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]string(nil), f.pollStopAcks...)
+}
+
 func testIdentity() identity {
 	return identity{
 		AccountID:    "123456789012",
@@ -88,6 +129,15 @@ func testIdentity() identity {
 		Capacity:     bus.InstanceCapacity{CPU: 2048, MemoryMiB: 4096},
 		AgentVersion: "test",
 	}
+}
+
+// testIdentityWithGPUs is testIdentity seeded with discovered GPU UUIDs, so
+// newAgent's ledger has real devices to pin from.
+func testIdentityWithGPUs(uuids ...string) identity {
+	id := testIdentity()
+	id.Capacity.GPU = len(uuids)
+	id.Capacity.GPUIDs = uuids
+	return id
 }
 
 func TestRegistrar_Register(t *testing.T) {

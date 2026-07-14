@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -19,7 +20,7 @@ type fakeAssumer struct {
 	calls int
 }
 
-func (f *fakeAssumer) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
+func (f *fakeAssumer) AssumeRoleForInstance(_ context.Context, _, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
 	f.calls++
 	return f.out, f.err
 }
@@ -42,7 +43,7 @@ func TestCredCache_MintsAndRendersAWSShape(t *testing.T) {
 	cache := newCredCache(assumer)
 
 	eni := &eniFacts{eniID: "eni-aaa", accountID: "111122223333", instanceID: "i-123"}
-	body, err := cache.get(eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
+	body, err := cache.get(context.Background(), eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
 	require.NoError(t, err)
 
 	var cred instanceCredential
@@ -63,10 +64,10 @@ func TestCredCache_ServesCachedUntilRefreshWindow(t *testing.T) {
 	cache := newCredCache(assumer)
 	eni := &eniFacts{eniID: "eni-aaa", accountID: "111122223333", instanceID: "i-123"}
 
-	_, err := cache.get(eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
+	_, err := cache.get(context.Background(), eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
 	require.NoError(t, err)
 	// Still well outside the 5-minute refresh window → cached, no new mint.
-	_, err = cache.get(eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now.Add(50*time.Minute))
+	_, err = cache.get(context.Background(), eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now.Add(50*time.Minute))
 	require.NoError(t, err)
 	assert.Equal(t, 1, assumer.calls, "second request inside the refresh window must hit the cache")
 }
@@ -78,11 +79,11 @@ func TestCredCache_RemintsInsideRefreshWindow(t *testing.T) {
 	cache := newCredCache(assumer)
 	eni := &eniFacts{eniID: "eni-aaa", accountID: "111122223333", instanceID: "i-123"}
 
-	_, err := cache.get(eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
+	_, err := cache.get(context.Background(), eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
 	require.NoError(t, err)
 	// 56 minutes in → within 5 min of expiry → re-mint.
 	assumer.out = assumeOutput("ASIAREFRESHED", now.Add(2*time.Hour))
-	_, err = cache.get(eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now.Add(56*time.Minute))
+	_, err = cache.get(context.Background(), eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now.Add(56*time.Minute))
 	require.NoError(t, err)
 	assert.Equal(t, 2, assumer.calls, "request inside the refresh window must re-mint")
 }
@@ -93,7 +94,7 @@ func TestCredCache_PropagatesAssumeError(t *testing.T) {
 	cache := newCredCache(assumer)
 	eni := &eniFacts{eniID: "eni-aaa", accountID: "111122223333", instanceID: "i-123"}
 
-	_, err := cache.get(eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
+	_, err := cache.get(context.Background(), eni, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
 	require.Error(t, err)
 }
 
@@ -104,13 +105,13 @@ func TestCredCache_SweepEvictsExpiredOnly(t *testing.T) {
 
 	stale := &eniFacts{eniID: "eni-gone", accountID: "111122223333", instanceID: "i-old"}
 	live := &eniFacts{eniID: "eni-live", accountID: "111122223333", instanceID: "i-new"}
-	_, err := cache.get(stale, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
+	_, err := cache.get(context.Background(), stale, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
 	require.NoError(t, err)
 
 	// Mint the live entry an hour later so its expiry is still in the future
 	// when we sweep at the original expiry boundary.
 	assumer.out = assumeOutput("ASIALIVE", now.Add(2*time.Hour))
-	_, err = cache.get(live, "app-role", "arn:aws:iam::111122223333:role/app-role", now.Add(time.Hour))
+	_, err = cache.get(context.Background(), live, "app-role", "arn:aws:iam::111122223333:role/app-role", now.Add(time.Hour))
 	require.NoError(t, err)
 
 	// Sweep just past the stale entry's full expiry (mint + 1h). The live entry
@@ -133,7 +134,7 @@ func TestCredCache_PerENIPerRoleKeying(t *testing.T) {
 
 	a := &eniFacts{eniID: "eni-aaa", accountID: "111122223333", instanceID: "i-1"}
 	b := &eniFacts{eniID: "eni-bbb", accountID: "111122223333", instanceID: "i-2"}
-	_, _ = cache.get(a, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
-	_, _ = cache.get(b, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
+	_, _ = cache.get(context.Background(), a, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
+	_, _ = cache.get(context.Background(), b, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
 	assert.Equal(t, 2, assumer.calls, "distinct ENIs must not share a cache entry")
 }

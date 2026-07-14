@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -61,6 +62,14 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 
 	if err := m.transitionWithPrecheck(instance, StateStopped); err != nil {
 		slog.Error("Failed to transition to stopped", "instanceId", instance.ID, "err", err)
+	}
+
+	if !instance.Attributes.StopInstance {
+		// Host DRAIN stop (not operator): keep the VM in the local running
+		// map at StateStopped so Restore relaunches it on the next boot. Do
+		// not migrate to the operator-stopped shared bucket or fire
+		// OnInstanceDown; QEMU is already down and resources released.
+		return false, nil
 	}
 
 	if !m.MigrateStoppedToSharedKV(instance) {
@@ -352,7 +361,7 @@ func (m *Manager) terminateCleanup(instance *VM) {
 // attached volume. Each step tolerates failure of the previous one.
 func (m *Manager) shutdownAndUnmount(instance *VM) {
 	if instance.QMPClient != nil {
-		if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{Execute: "system_powerdown"}, instance.ID); err != nil {
+		if _, err := sendQMPCommand(context.Background(), instance.QMPClient, qmp.QMPCommand{Execute: "system_powerdown"}, instance.ID); err != nil {
 			slog.Warn("QMP system_powerdown failed (VM may already be stopped)",
 				"id", instance.ID, "err", err)
 		}
@@ -387,6 +396,8 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 			slog.Warn("Failed to remove fw_cfg temp file", "file", fw.File, "id", instance.ID, "err", err)
 		}
 	}
+
+	removeTelemetryArtifacts(instance)
 }
 
 // cleanupTapDevices removes the primary VPC tap, every extra ENI tap, and

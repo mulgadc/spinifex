@@ -1,15 +1,50 @@
 package handlers_imds
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	"github.com/nats-io/nats.go"
 )
+
+// imdsLookupRetries bounds transient-gather retries for IMDS instance lookups so
+// a momentary NATS gather timeout under load does not starve the guest bootstrap.
+const imdsLookupRetries = 3
+
+// retryBackoff sleeps a short increasing delay between IMDS lookup attempts,
+// returning false if ctx is cancelled first.
+func retryBackoff(ctx context.Context, attempt int) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+		return true
+	}
+}
+
+// retryGather retries fn on transient error up to imdsLookupRetries times with a
+// short backoff, honouring ctx. Returns the last result and error.
+func retryGather[T any](ctx context.Context, label, instanceID string, fn func() (*T, error)) (*T, error) {
+	var out *T
+	var err error
+	for attempt := 1; attempt <= imdsLookupRetries; attempt++ {
+		out, err = fn()
+		if err == nil {
+			return out, nil
+		}
+		if attempt == imdsLookupRetries || !retryBackoff(ctx, attempt) {
+			return out, err
+		}
+		slog.WarnContext(ctx, "IMDS: "+label+" failed, retrying", "instance_id", instanceID, "attempt", attempt, "err", err)
+	}
+	return out, err
+}
 
 // natsInstanceLookup resolves instance-only metadata fields via DescribeInstances fan-out.
 type natsInstanceLookup struct {
@@ -19,10 +54,12 @@ type natsInstanceLookup struct {
 
 var _ instanceLookup = (*natsInstanceLookup)(nil)
 
-func (l *natsInstanceLookup) describe(accountID, instanceID string) (*instanceFacts, error) {
-	out, err := gateway_ec2_instance.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String(instanceID)},
-	}, l.nc, l.expectedNodes, accountID)
+func (l *natsInstanceLookup) describe(ctx context.Context, accountID, instanceID string) (*instanceFacts, error) {
+	out, err := retryGather(ctx, "describe instance", instanceID, func() (*ec2.DescribeInstancesOutput, error) {
+		return gateway_ec2_instance.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []*string{aws.String(instanceID)},
+		}, l.nc, l.expectedNodes, accountID)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("describe instance %s: %w", instanceID, err)
 	}
@@ -46,22 +83,24 @@ func (l *natsInstanceLookup) describe(accountID, instanceID string) (*instanceFa
 		facts.iamInstanceProfileArn = aws.StringValue(inst.IamInstanceProfile.Arn)
 	}
 
-	facts.userData = l.userData(accountID, instanceID)
+	facts.userData = l.userData(ctx, accountID, instanceID)
 	return facts, nil
 }
 
 // userData fetches and decodes the instance's base64 user-data, returning nil on miss or error.
-func (l *natsInstanceLookup) userData(accountID, instanceID string) []byte {
-	attr, err := gateway_ec2_instance.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
-		InstanceId: aws.String(instanceID),
-		Attribute:  aws.String("userData"),
-	}, l.nc, l.expectedNodes, accountID)
+func (l *natsInstanceLookup) userData(ctx context.Context, accountID, instanceID string) []byte {
+	attr, err := retryGather(ctx, "describe instance attribute", instanceID, func() (*ec2.DescribeInstanceAttributeOutput, error) {
+		return gateway_ec2_instance.DescribeInstanceAttribute(ctx, &ec2.DescribeInstanceAttributeInput{
+			InstanceId: aws.String(instanceID),
+			Attribute:  aws.String("userData"),
+		}, l.nc, l.expectedNodes, accountID)
+	})
 	if err != nil || attr == nil || attr.UserData == nil || attr.UserData.Value == nil {
 		return nil
 	}
 	decoded, err := base64.StdEncoding.DecodeString(aws.StringValue(attr.UserData.Value))
 	if err != nil {
-		slog.Warn("IMDS: failed to decode instance user-data", "instance_id", instanceID, "err", err)
+		slog.WarnContext(ctx, "IMDS: failed to decode instance user-data", "instance_id", instanceID, "err", err)
 		return nil
 	}
 	return decoded

@@ -28,6 +28,11 @@ type agentUserDataInput struct {
 	AccountID     string
 	RegistryHost  string
 	GatewayIP     string
+
+	// GPUEnabled/GPUVendor gate the GPU node label + default scheduling taint;
+	// set from the owning NodegroupRecord (see gpuFieldsForInstanceTypes).
+	GPUEnabled bool
+	GPUVendor  string
 }
 
 // registryMirrorHosts returns the distinct registry hosts a worker must accept on
@@ -127,6 +132,24 @@ func buildAgentUserData(in agentUserDataInput) string {
 		{Path: "/etc/rancher/k3s/registries.yaml", Perms: "0644", Body: registriesYAML},
 		{Path: "/etc/rancher/k3s/config.yaml.d/20-ecr-credential-provider.yaml", Perms: "0644", Body: credProviderDropin},
 		{Path: "/etc/spinifex-eks/credential-provider-config.yaml", Perms: "0644", Body: credProviderConfig},
+	}
+
+	// GPU nodes advertise nvidia.com/gpu.present=true (so the device-plugin
+	// DaemonSet nodeSelector matches) and default to NoSchedule so ordinary
+	// workloads don't consume scarce GPU capacity. Both must come from k3s
+	// config keys — k3s has no K3S_NODE_LABEL env, so the label rides a
+	// node-label drop-in, not agent.env. Non-GPU nodegroups get no drop-in,
+	// keeping their user-data byte-identical.
+	if in.GPUEnabled {
+		gpuDropin := strings.Join([]string{
+			"node-label:",
+			"  - \"nvidia.com/gpu.present=true\"",
+			"node-taint:",
+			"  - \"nvidia.com/gpu=present:NoSchedule\"",
+		}, "\n")
+		files = append(files, userDataFile{
+			Path: "/etc/rancher/k3s/config.yaml.d/20-gpu.yaml", Perms: "0644", Body: gpuDropin,
+		})
 	}
 
 	var buf strings.Builder

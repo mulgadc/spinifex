@@ -1,0 +1,16 @@
+[Unit]
+Description=Generate NVIDIA CDI spec for the container runtime (GPU-gated, first boot)
+After=systemd-modules-load.service
+Before=k3s-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Silently skip on non-GPU boots: only generate when an NVIDIA GPU is
+# actually present and the driver has bound.
+ExecCondition=/bin/sh -c 'command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1'
+ExecStartPre=/bin/mkdir -p /etc/cdi
+ExecStart=/usr/bin/nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+
+[Install]
+WantedBy=multi-user.target

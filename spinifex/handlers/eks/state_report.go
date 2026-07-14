@@ -23,6 +23,15 @@ type ServerStateReport struct {
 	Healthz   string `json:"healthz"`
 	NodeCount int    `json:"node_count"`
 	TS        int64  `json:"ts"`
+	// Reason is a compact in-guest diagnosis emitted only when the apiserver is
+	// unhealthy (failing /readyz subchecks, etcd reachability, etcd-disk free).
+	// Empty from a healthy CP or an older AMI that predates the field.
+	Reason string `json:"reason,omitempty"`
+	// NodegroupReady is the Ready-node count grouped by the
+	// eks.amazonaws.com/nodegroup label value, so each nodegroup's readiness can
+	// be gated on its OWN workers rather than the cluster-wide total. Nil from an
+	// older AMI that predates per-nodegroup reporting.
+	NodegroupReady map[string]int `json:"nodegroup_ready,omitempty"`
 }
 
 // Healthy reports whether the apiserver was serving at publish time.

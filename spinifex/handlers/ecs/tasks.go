@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,7 @@ const reservePlacementRetries = 5
 // bin-pack, reserves their capacity in KV, writes PENDING task records, and
 // publishes an assign on the Layer-2 bus for each. Placement failures for a task
 // are returned as RunTask failures; already-placed tasks in the same call stay.
-func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error) {
+func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -49,7 +50,7 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 		count = 1
 	}
 	strategy := placementStrategyFromAWS(input.PlacementStrategy)
-	cpu, mem := taskDef.reservedCPU(), taskDef.reservedMemory()
+	cpu, mem, gpu := taskDef.reservedCPU(), taskDef.reservedMemory(), taskDef.reservedGPU()
 
 	mode := resolveNetworkMode(taskDef)
 	netCfg, err := parseAwsvpcConfig(input, mode)
@@ -60,7 +61,7 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 	out := &ecs.RunTaskOutput{}
 	for i := 0; i < count; i++ {
 		taskID := uuid.NewString()
-		inst, err := s.reservePlacement(kv, cluster, taskID, cpu, mem, strategy)
+		inst, err := s.reservePlacement(kv, cluster, taskID, cpu, mem, gpu, strategy)
 		if err != nil {
 			out.Failures = append(out.Failures, &ecs.Failure{
 				Reason: aws.String("RESOURCE:placement"),
@@ -69,12 +70,13 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 			continue
 		}
 
-		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem)
+		rec := s.newTaskRecord(accountID, cluster, taskID, taskDef, inst, cpu, mem, gpu)
 		rec.NetworkMode = mode
 		rec.Group = aws.StringValue(input.Group)
 		rec.StartedBy = aws.StringValue(input.StartedBy)
+		rec.Tags = tagsToMap(input.Tags)
 		if mode == NetworkModeAwsvpc {
-			if failure := s.provisionTaskENI(kv, accountID, cluster, rec, netCfg); failure != nil {
+			if failure := s.provisionTaskENI(ctx, kv, accountID, cluster, rec, netCfg); failure != nil {
 				out.Failures = append(out.Failures, failure)
 				continue
 			}
@@ -84,7 +86,7 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 			return nil, err
 		}
 		if err := s.publishAssign(kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
-			slog.Error("ECS RunTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
+			slog.ErrorContext(ctx, "ECS RunTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
 		}
 		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
 	}
@@ -95,15 +97,15 @@ func (s *Service) RunTask(input *ecs.RunTaskInput, accountID string) (*ecs.RunTa
 // identity onto rec. On any failure it rolls back (releases a half-allocated ENI
 // and the placement reservation) and returns a RunTask failure for this task —
 // the caller skips it without leaking the ENI or the reserved capacity.
-func (s *Service) provisionTaskENI(kv nats.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
+func (s *Service) provisionTaskENI(ctx context.Context, kv nats.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
 	rollback := func(reason string, err error) *ecs.Failure {
-		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB); rerr != nil {
-			slog.Error("ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
+		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB, rec.GPU); rerr != nil {
+			slog.ErrorContext(ctx, "ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
 		}
 		return &ecs.Failure{Reason: aws.String(reason), Detail: aws.String(err.Error())}
 	}
 
-	alloc, err := s.eni.Allocate(accountID, netCfg.firstSubnet(), netCfg.securityGroupPtrs())
+	alloc, err := s.eni.Allocate(ctx, accountID, netCfg.firstSubnet(), netCfg.securityGroupPtrs())
 	if err != nil {
 		return rollback("RESOURCE:eni", err)
 	}
@@ -112,9 +114,9 @@ func (s *Service) provisionTaskENI(kv nats.KeyValue, accountID, cluster string, 
 	rec.ENIPrivateIP = alloc.PrivateIP
 	rec.ENISubnetID = alloc.SubnetID
 
-	attachmentID, err := s.eni.Attach(accountID, rec.ContainerInstanceID, alloc.ENIID)
+	attachmentID, err := s.eni.Attach(ctx, accountID, rec.ContainerInstanceID, alloc.ENIID)
 	if err != nil {
-		s.reclaimTaskENI(accountID, rec)
+		s.reclaimTaskENI(ctx, accountID, rec)
 		rec.ENIID, rec.ENIMacAddress, rec.ENIPrivateIP, rec.ENISubnetID = "", "", "", ""
 		return rollback("RESOURCE:eni", err)
 	}
@@ -124,13 +126,13 @@ func (s *Service) provisionTaskENI(kv nats.KeyValue, accountID, cluster string, 
 
 // reservePlacement bin-packs a task onto an ACTIVE instance and commits the
 // reservation under a KV CAS, retrying on contention.
-func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu, mem int, strategy string) (*InstanceRecord, error) {
+func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu, mem, gpu int, strategy string) (*InstanceRecord, error) {
 	for range reservePlacementRetries {
 		instances, err := s.listInstanceRecords(kv, cluster)
 		if err != nil {
 			return nil, err
 		}
-		chosen, err := placeTask(instances, cpu, mem, strategy)
+		chosen, err := placeTask(instances, cpu, mem, gpu, strategy)
 		if err != nil {
 			return nil, err
 		}
@@ -144,11 +146,12 @@ func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu
 		if uerr := json.Unmarshal(entry.Value(), &live); uerr != nil {
 			return nil, uerr
 		}
-		if !live.fits(cpu, mem) {
+		if !live.fits(cpu, mem, gpu) {
 			continue
 		}
 		live.ReservedCPU += cpu
 		live.ReservedMemoryMiB += mem
+		live.ReservedGPU += gpu
 		live.PlacedTasks = append(live.PlacedTasks, taskID)
 		data, merr := json.Marshal(&live)
 		if merr != nil {
@@ -163,7 +166,7 @@ func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu
 }
 
 // newTaskRecord builds a PENDING task record for a placed task.
-func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRecord, inst *InstanceRecord, cpu, mem int) *TaskRecord {
+func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRecord, inst *InstanceRecord, cpu, mem, gpu int) *TaskRecord {
 	now := time.Now().UTC()
 	rec := &TaskRecord{
 		TaskID:               taskID,
@@ -178,6 +181,7 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRe
 		LastStatus:           TaskStatusPending,
 		ReservedCPU:          cpu,
 		ReservedMemoryMiB:    mem,
+		GPU:                  gpu,
 		CreatedAt:            now,
 	}
 	for _, c := range td.Containers {
@@ -192,19 +196,20 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRe
 // an unacked assign survives an agent crash and is re-delivered on the next poll.
 func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID string, rec *TaskRecord, td *TaskDefRecord) error {
 	msg := bus.Assign{
-		AccountID:       accountID,
-		ClusterName:     cluster,
-		InstanceID:      instanceID,
-		TaskID:          rec.TaskID,
-		TaskARN:         rec.ARN,
-		TaskDefFamily:   td.Family,
-		TaskDefRevision: td.Revision,
-		TaskRoleARN:     td.TaskRoleArn,
-		ENIID:           rec.ENIID,
-		ENIMacAddress:   rec.ENIMacAddress,
-		ENIPrivateIP:    rec.ENIPrivateIP,
-		ENISubnetID:     rec.ENISubnetID,
-		AssignedAt:      time.Now().UTC(),
+		AccountID:        accountID,
+		ClusterName:      cluster,
+		InstanceID:       instanceID,
+		TaskID:           rec.TaskID,
+		TaskARN:          rec.ARN,
+		TaskDefFamily:    td.Family,
+		TaskDefRevision:  td.Revision,
+		TaskRoleARN:      td.TaskRoleArn,
+		ExecutionRoleARN: td.ExecutionRoleArn,
+		ENIID:            rec.ENIID,
+		ENIMacAddress:    rec.ENIMacAddress,
+		ENIPrivateIP:     rec.ENIPrivateIP,
+		ENISubnetID:      rec.ENISubnetID,
+		AssignedAt:       time.Now().UTC(),
 	}
 	for _, c := range td.Containers {
 		msg.Containers = append(msg.Containers, c.toAssignContainer())
@@ -213,7 +218,7 @@ func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID
 }
 
 // DescribeTasks returns task records for the named tasks in a cluster.
-func (s *Service) DescribeTasks(input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error) {
+func (s *Service) DescribeTasks(_ context.Context, input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -237,7 +242,7 @@ func (s *Service) DescribeTasks(input *ecs.DescribeTasksInput, accountID string)
 }
 
 // ListTasks returns the ARNs of all tasks in a cluster.
-func (s *Service) ListTasks(input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
+func (s *Service) ListTasks(_ context.Context, input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -269,6 +274,7 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		DesiredStatus:        aws.String(r.DesiredStatus),
 		LastStatus:           aws.String(r.LastStatus),
 		ContainerInstanceArn: aws.String(r.ContainerInstanceARN),
+		Tags:                 tagsToAWS(r.Tags),
 	}
 	if r.Group != "" {
 		t.Group = aws.String(r.Group)
@@ -301,6 +307,9 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		ctr := &ecs.Container{Name: aws.String(c.Name), LastStatus: aws.String(c.Status)}
 		if c.ExitCode != nil {
 			ctr.ExitCode = aws.Int64(int64(*c.ExitCode))
+		}
+		if len(c.GPUIDs) > 0 {
+			ctr.GpuIds = aws.StringSlice(c.GPUIDs)
 		}
 		t.Containers = append(t.Containers, ctr)
 	}

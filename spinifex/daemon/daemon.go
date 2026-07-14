@@ -42,6 +42,7 @@ import (
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
+	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
@@ -60,6 +61,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -136,9 +138,10 @@ type Daemon struct {
 	eigwService           *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
 	igwService            *handlers_ec2_igw.IGWServiceImpl
 	placementGroupService *handlers_ec2_placementgroup.PlacementGroupServiceImpl
+	launchTemplateService *handlers_ec2_launchtemplate.LaunchTemplateServiceImpl
 	spotInstanceService   *handlers_ec2_spotinstance.SpotInstanceServiceImpl
 	vpcService            *handlers_ec2_vpc.VPCServiceImpl
-	eipService            *handlers_ec2_eip.EIPServiceImpl
+	eipService            handlers_ec2_eip.EIPService
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
 	ecsService            *handlers_ecs.Service
@@ -179,8 +182,14 @@ type Daemon struct {
 	// initJetStream succeeds.
 	stateStore vm.StateStore
 
-	// Delay after QMP device_del before blockdev-del (default 1s, 0 in tests)
+	// Delay after QMP device_del before blockdev-del (default 1s, 0 in tests).
+	// Only used as a fallback when deviceDeletedTimeout is 0.
 	detachDelay time.Duration
+
+	// deviceDeletedTimeout bounds how long DetachVolume waits for QEMU's
+	// DEVICE_DELETED event after device_del before falling back to the
+	// blockdev-del retry loop (default 15s, 0 disables the wait in tests).
+	deviceDeletedTimeout time.Duration
 
 	// NATS connect retry options (nil uses defaults: 5min max, 500ms initial delay)
 	natsRetryOpts []utils.RetryOption
@@ -705,26 +714,48 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		node:               cfg.Node,
-		clusterConfig:      cfg,
-		config:             &nodeCfg,
-		resourceMgr:        rm,
-		gpuProbe:           gpuProbe,
-		gpuManager:         gpuMgr,
-		ctx:                ctx,
-		cancel:             cancel,
-		vmMgr:              vm.NewManager(),
-		natsSubscriptions:  make(map[string]*nats.Subscription),
-		startTime:          time.Now(),
-		detachDelay:        1 * time.Second,
-		requireNATSTimeout: 30 * time.Second,
-		exitFunc:           os.Exit,
+		node:                 cfg.Node,
+		clusterConfig:        cfg,
+		config:               &nodeCfg,
+		resourceMgr:          rm,
+		gpuProbe:             gpuProbe,
+		gpuManager:           gpuMgr,
+		ctx:                  ctx,
+		cancel:               cancel,
+		vmMgr:                vm.NewManager(),
+		natsSubscriptions:    make(map[string]*nats.Subscription),
+		startTime:            time.Now(),
+		detachDelay:          1 * time.Second,
+		deviceDeletedTimeout: 15 * time.Second,
+		requireNATSTimeout:   30 * time.Second,
+		exitFunc:             os.Exit,
 	}
 	// Initialise peersReachable true so the first probe tick never fires a
 	// spurious reconcileOnHeal at startup. Mode() still requires natsConnected
 	// (starts false), so this can't falsely report cluster mode.
 	d.peersReachable.Store(true)
 	return d, nil
+}
+
+// natsMetricsHandler wraps a NATS handler to record request count and
+// duration under the given action. Handler outcome is not observable at
+// this chokepoint, so the outcome attribute is omitted.
+func natsMetricsHandler(action string, h nats.MsgHandler) nats.MsgHandler {
+	return func(msg *nats.Msg) {
+		start := time.Now()
+		h(msg)
+		otelsetup.RecordRequest(context.Background(), action, "", time.Since(start))
+	}
+}
+
+// natsMetricAction strips the node name from a topic so node-targeted
+// subjects share one low-cardinality metric action across the cluster.
+func natsMetricAction(topic, node string) string {
+	if node == "" {
+		return topic
+	}
+	action := strings.ReplaceAll(topic, "."+node+".", ".")
+	return strings.TrimSuffix(action, "."+node)
 }
 
 // natsSub defines a single NATS subscription entry for the table-driven setup.
@@ -782,6 +813,13 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RemoveInstanceFromPlacementGroup", d.handleEC2RemoveInstanceFromPlacementGroup, "spinifex-workers"},
 		{"ec2.ReserveClusterNode", d.handleEC2ReserveClusterNode, "spinifex-workers"},
 		{"ec2.FinalizeClusterInstances", d.handleEC2FinalizeClusterInstances, "spinifex-workers"},
+		{"ec2.CreateLaunchTemplate", d.handleEC2CreateLaunchTemplate, "spinifex-workers"},
+		{"ec2.CreateLaunchTemplateVersion", d.handleEC2CreateLaunchTemplateVersion, "spinifex-workers"},
+		{"ec2.DeleteLaunchTemplate", d.handleEC2DeleteLaunchTemplate, "spinifex-workers"},
+		{"ec2.DeleteLaunchTemplateVersions", d.handleEC2DeleteLaunchTemplateVersions, "spinifex-workers"},
+		{"ec2.ModifyLaunchTemplate", d.handleEC2ModifyLaunchTemplate, "spinifex-workers"},
+		{"ec2.DescribeLaunchTemplates", d.handleEC2DescribeLaunchTemplates, "spinifex-workers"},
+		{"ec2.DescribeLaunchTemplateVersions", d.handleEC2DescribeLaunchTemplateVersions, "spinifex-workers"},
 		{"ec2.PutSpotInstanceRequests", d.handleEC2PutSpotInstanceRequests, "spinifex-workers"},
 		{"ec2.DescribeSpotInstanceRequests", d.handleEC2DescribeSpotInstanceRequests, "spinifex-workers"},
 		{"ec2.CancelSpotInstanceRequests", d.handleEC2CancelSpotInstanceRequests, "spinifex-workers"},
@@ -854,6 +892,7 @@ func (d *Daemon) subscribeAll() error {
 		{"spinifex.node.status", d.handleNodeStatus, ""},
 		{"spinifex.node.vms", d.handleNodeVMs, ""},
 		{"spinifex.storage.config", d.handleStorageConfig, ""},
+		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
 		// Account creation → create default VPC for new account
 		{"iam.account.created", d.handleAccountCreated, "spinifex-workers"},
 		// Coordinated cluster shutdown phases (fan-out, no queue group)
@@ -939,6 +978,9 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"eks.DescribeAddon", d.handleEKSDescribeAddon, "spinifex-workers"},
 			natsSub{"eks.UpdateAddon", d.handleEKSUpdateAddon, "spinifex-workers"},
 			natsSub{"eks.ListStagedAddonManifests", d.handleEKSListStagedAddonManifests, "spinifex-workers"},
+			natsSub{"eks.GetRecoveryDirective", d.handleEKSGetRecoveryDirective, "spinifex-workers"},
+			natsSub{"eks.SetRecoveryDirective", d.handleEKSSetRecoveryDirective, "spinifex-workers"},
+			natsSub{"eks.RestoreSnapshot", d.handleEKSRestoreSnapshot, "spinifex-workers"},
 			natsSub{"eks.AssociateIdentityProviderConfig", d.handleEKSAssociateIdentityProviderConfig, "spinifex-workers"},
 			natsSub{"eks.DescribeIdentityProviderConfig", d.handleEKSDescribeIdentityProviderConfig, "spinifex-workers"},
 			natsSub{"eks.ListIdentityProviderConfigs", d.handleEKSListIdentityProviderConfigs, "spinifex-workers"},
@@ -977,7 +1019,15 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.ListServices", d.handleECSListServices, "spinifex-workers"},
 			natsSub{"ecs.SubmitTaskStateChange", d.handleECSSubmitTaskStateChange, "spinifex-workers"},
 			natsSub{"ecs.PollAssignments", d.handleECSPollAssignments, "spinifex-workers"},
+			natsSub{"ecs.ReportTaskGPU", d.handleECSReportTaskGPU, "spinifex-workers"},
 			natsSub{"ecs.ProvisionCapacity", d.handleECSProvisionCapacity, "spinifex-workers"},
+			natsSub{"ecs.TagResource", d.handleECSTagResource, "spinifex-workers"},
+			natsSub{"ecs.UntagResource", d.handleECSUntagResource, "spinifex-workers"},
+			natsSub{"ecs.ListTagsForResource", d.handleECSListTagsForResource, "spinifex-workers"},
+			natsSub{"ecs.PutClusterCapacityProviders", d.handleECSPutClusterCapacityProviders, "spinifex-workers"},
+			natsSub{"ecs.CreateCapacityProvider", d.handleECSCreateCapacityProvider, "spinifex-workers"},
+			natsSub{"ecs.DescribeCapacityProviders", d.handleECSDescribeCapacityProviders, "spinifex-workers"},
+			natsSub{"ecs.DeleteCapacityProvider", d.handleECSDeleteCapacityProvider, "spinifex-workers"},
 		)
 	}
 
@@ -1023,26 +1073,26 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
-	// EIP operations require external IPAM (pool mode). Only subscribe when available;
-	// without a subscriber the gateway returns a NATS timeout → clean error to the client.
-	if d.eipService != nil {
-		subs = append(subs,
-			natsSub{"ec2.AllocateAddress", d.handleEC2AllocateAddress, "spinifex-workers"},
-			natsSub{"ec2.ReleaseAddress", d.handleEC2ReleaseAddress, "spinifex-workers"},
-			natsSub{"ec2.AssociateAddress", d.handleEC2AssociateAddress, "spinifex-workers"},
-			natsSub{"ec2.DisassociateAddress", d.handleEC2DisassociateAddress, "spinifex-workers"},
-			natsSub{"ec2.DescribeAddresses", d.handleEC2DescribeAddresses, "spinifex-workers"},
-			natsSub{"ec2.DescribeAddressesAttribute", d.handleEC2DescribeAddressesAttribute, "spinifex-workers"},
-		)
-	}
+	// EIP handlers are always registered: without external IPAM d.eipService is
+	// the disabled stub, so reads return empty lists and mutations a clean
+	// UnsupportedOperation instead of a NATS timeout.
+	subs = append(subs,
+		natsSub{"ec2.AllocateAddress", d.handleEC2AllocateAddress, "spinifex-workers"},
+		natsSub{"ec2.ReleaseAddress", d.handleEC2ReleaseAddress, "spinifex-workers"},
+		natsSub{"ec2.AssociateAddress", d.handleEC2AssociateAddress, "spinifex-workers"},
+		natsSub{"ec2.DisassociateAddress", d.handleEC2DisassociateAddress, "spinifex-workers"},
+		natsSub{"ec2.DescribeAddresses", d.handleEC2DescribeAddresses, "spinifex-workers"},
+		natsSub{"ec2.DescribeAddressesAttribute", d.handleEC2DescribeAddressesAttribute, "spinifex-workers"},
+	)
 
 	for _, s := range subs {
 		var sub *nats.Subscription
 		var err error
+		handler := natsMetricsHandler(natsMetricAction(s.topic, d.node), s.handler)
 		if s.queueGroup != "" {
-			sub, err = d.natsConn.QueueSubscribe(s.topic, s.queueGroup, s.handler)
+			sub, err = d.natsConn.QueueSubscribe(s.topic, s.queueGroup, handler)
 		} else {
-			sub, err = d.natsConn.Subscribe(s.topic, s.handler)
+			sub, err = d.natsConn.Subscribe(s.topic, handler)
 		}
 		if err != nil {
 			return fmt.Errorf("failed to subscribe to %s: %w", s.topic, err)
@@ -1141,6 +1191,34 @@ func (d *Daemon) startLocal() error {
 	return nil
 }
 
+// publicExternalPools filters out the routed-NAT transit pool: it carries
+// gateway plumbing addresses, never allocatable public IPs.
+func publicExternalPools(pools []config.ExternalPool) []config.ExternalPool {
+	var public []config.ExternalPool
+	for _, p := range pools {
+		if p.Name == host.NATTransitPoolName {
+			continue
+		}
+		public = append(public, p)
+	}
+	return public
+}
+
+// hasPublicIPPools reports whether the cluster can allocate routable public
+// IPs: pool mode always, nat mode only with a public pool beside the transit.
+func (d *Daemon) hasPublicIPPools() bool {
+	if d.clusterConfig == nil {
+		return false
+	}
+	switch d.clusterConfig.Network.ExternalMode {
+	case "pool":
+		return true
+	case "nat":
+		return len(publicExternalPools(d.clusterConfig.Network.ExternalPools)) > 0
+	}
+	return false
+}
+
 // assertNoClusterServicesInitialised enforces the DDIL §1e-audit invariant:
 // no NATS-dependent handle may exist at the end of startLocal.
 func (d *Daemon) assertNoClusterServicesInitialised() error {
@@ -1163,6 +1241,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.igwService must be nil before startCluster")
 	case d.placementGroupService != nil:
 		return errors.New("d.placementGroupService must be nil before startCluster")
+	case d.launchTemplateService != nil:
+		return errors.New("d.launchTemplateService must be nil before startCluster")
 	case d.spotInstanceService != nil:
 		return errors.New("d.spotInstanceService must be nil before startCluster")
 	case d.vpcService != nil:
@@ -1207,6 +1287,12 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
+	// Set the default KV replica count before any handler creates a bucket, so
+	// lazily-created buckets are born at cluster-size replication instead of R1.
+	if d.clusterConfig != nil {
+		utils.SetDefaultKVReplicas(len(d.clusterConfig.Nodes))
+	}
+
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
 	if js, jsErr := d.natsConn.JetStream(); jsErr == nil {
 		if err := utils.DeleteKVBucketIfExists(js, "spinifex-dhcp-leases"); err != nil {
@@ -1241,7 +1327,7 @@ func (d *Daemon) startCluster() error {
 	d.dnsBaseDomain = handlers_dns.ResolveBaseDomain(d.config)
 	d.dnsInternalDomain = handlers_dns.ResolveInternalDomain(d.config)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
-	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
+	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config)
 
 	type snapResult struct {
 		svc *handlers_ec2_snapshot.SnapshotServiceImpl
@@ -1280,6 +1366,13 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize placement group service: %w", err)
 	}
 
+	d.launchTemplateService, err = initServiceWithRetry("launch template service", func() (*handlers_ec2_launchtemplate.LaunchTemplateServiceImpl, error) {
+		return handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize launch template service: %w", err)
+	}
+
 	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*handlers_ec2_spotinstance.SpotInstanceServiceImpl, error) {
 		return handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(d.config, d.natsConn)
 	})
@@ -1293,6 +1386,10 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
 	}
+	// Default subnets request a public IP on launch only when the cluster has
+	// pools that hand out routable public IPs (pool mode always; nat mode only
+	// when a public pool rides alongside the transit segment).
+	d.vpcService.SetDefaultPublicIPMapping(d.hasPublicIPPools())
 
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
 		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.config, d.natsConn)
@@ -1311,19 +1408,22 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
 	}
 
-	// Initialize external IPAM for pool mode (per-VM public IPs).
-	if d.clusterConfig != nil && d.clusterConfig.Network.ExternalMode == "pool" {
+	// Initialize external IPAM when public IP pools exist (pool mode, or nat
+	// mode with a public pool alongside the transit segment). The transit pool
+	// never enters IPAM — its addresses are gateway-LRP plumbing, not EIPs.
+	if d.hasPublicIPPools() {
 		js, jsErr := d.natsConn.JetStream()
 		if jsErr != nil {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
 			var pools []external.ExternalPoolConfig
 			anyDHCP := false
-			for _, p := range d.clusterConfig.Network.ExternalPools {
+			for _, p := range publicExternalPools(d.clusterConfig.Network.ExternalPools) {
 				pools = append(pools, external.ExternalPoolConfig{
 					Name:            p.Name,
 					Source:          p.Source,
 					BindBridge:      p.BindBridge,
+					DHCPMAC:         p.DHCPMAC,
 					RangeStart:      p.RangeStart,
 					RangeEnd:        p.RangeEnd,
 					Gateway:         p.Gateway,
@@ -1378,7 +1478,14 @@ func (d *Daemon) startCluster() error {
 		}
 	}
 
-	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM)
+	// Without external IPAM (nat mode or external disabled) serve EIP requests
+	// from the disabled stub so the API surface stays registered.
+	if d.eipService == nil {
+		d.eipService = handlers_ec2_eip.NewDisabledEIPService()
+		slog.Info("EIP service disabled — no external IPAM; serving empty/unsupported responses")
+	}
+
+	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM, d.tagsService)
 	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, d.externalIPAM)
 
 	if d.gpuManager != nil {
@@ -1423,6 +1530,8 @@ func (d *Daemon) startCluster() error {
 		slog.Warn("ELBv2: target-health reset failed; continuing with stale state",
 			"err", err)
 	}
+
+	d.elbv2Service.StartLifecycleReaper(context.Background())
 
 	d.eksService, err = initServiceWithRetry("EKS service", func() (*handlers_eks.EKSServiceImpl, error) {
 		return handlers_eks.NewEKSServiceImpl(d.buildEKSServiceDeps())
@@ -1549,6 +1658,9 @@ func (d *Daemon) startCluster() error {
 		}
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)
+		}
+		if gpuRec := d.newGPUPoolReconciler(); gpuRec != nil {
+			reapers = append(reapers, gpuRec)
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
@@ -1835,6 +1947,19 @@ func (d *Daemon) computeConfigHash() (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
+// routeActionMiddleware names cluster API requests by chi route pattern for
+// request metrics, keeping metric attribute cardinality bounded.
+func routeActionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		if rc := chi.RouteContext(r.Context()); rc != nil {
+			if pattern := rc.RoutePattern(); pattern != "" {
+				otelsetup.SetRequestAction(r.Context(), r.Method+" "+pattern)
+			}
+		}
+	})
+}
+
 // ClusterManager starts the HTTPS cluster management server.
 func (d *Daemon) ClusterManager() error {
 	daemonHost := d.config.Daemon.Host
@@ -1843,6 +1968,8 @@ func (d *Daemon) ClusterManager() error {
 	}
 
 	r := chi.NewRouter()
+	r.Use(otelsetup.HTTPMiddleware("spinifex-daemon"))
+	r.Use(routeActionMiddleware)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		configHash, err := d.computeConfigHash()
@@ -2098,7 +2225,11 @@ func (d *Daemon) setupShutdown() {
 		for _, sub := range d.natsSubscriptions {
 			slog.Info("Unsubscribing from NATS", "subject", sub.Subject)
 			if err := sub.Unsubscribe(); err != nil {
-				slog.Error("Error unsubscribing from NATS", "err", err)
+				if errors.Is(err, nats.ErrBadSubscription) {
+					slog.Debug("NATS subscription already invalid during shutdown", "subject", sub.Subject)
+				} else {
+					slog.Error("Error unsubscribing from NATS", "err", err)
+				}
 			}
 		}
 
@@ -2164,11 +2295,26 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 // canAllocateLocked is the lock-free body of canAllocate. Caller must already
 // hold rm.mu for read or write. Extracted so allocate can re-check capacity
 // while holding the write lock without dropping it.
+//
+// GPU instance types (whole-GPU and MIG alike) are gated on BOTH the cpu/mem
+// calc AND GPU-slot availability. cpu/mem still applies to whole-GPU types —
+// the guest still consumes real host vCPU/RAM even though a GPU backs it —
+// and GPU-slot count is an additional hard constraint layered on top, so
+// admission never advertises more instances than there are GPU slots to
+// back them.
 func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo, count int) int {
-	// GPU capacity is managed exclusively by gpuManager.Claim; don't double-gate
-	// on host CPU/memory which is always abundant on GPU-class hardware.
-	if instancetypes.IsGPUType(instanceType) {
-		return count
+	instanceTypeName := ""
+	if instanceType.InstanceType != nil {
+		instanceTypeName = *instanceType.InstanceType
+	}
+
+	requiresGPU := instancetypes.IsGPUType(instanceType)
+	availGPU := 0
+	if requiresGPU && rm.gpuManager != nil {
+		gpusNeeded := instancetypes.GPUCountForType(instanceTypeName)
+		if gpusNeeded > 0 {
+			availGPU = rm.gpuManager.Available() / gpusNeeded
+		}
 	}
 
 	n := canAllocateCount(
@@ -2177,7 +2323,7 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 		instanceTypeVCPUs(instanceType),
 		rm.instanceMemChargeMiB(instanceType),
 		count,
-		0, false,
+		availGPU, requiresGPU,
 	)
 	return rm.liveMemGate(n, instanceType)
 }
@@ -2312,6 +2458,7 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 		}
 
 		queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
+		handler = natsMetricsHandler(queueTopic, handler)
 		_, subscribed := rm.instanceSubs[queueTopic]
 		if canFit && !subscribed {
 			sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, handler)

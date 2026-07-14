@@ -95,6 +95,23 @@ type IAMService interface {
 	ListOpenIDConnectProviders(accountID string, input *iam.ListOpenIDConnectProvidersInput) (*iam.ListOpenIDConnectProvidersOutput, error)
 	DeleteOpenIDConnectProvider(accountID string, input *iam.DeleteOpenIDConnectProviderInput) (*iam.DeleteOpenIDConnectProviderOutput, error)
 
+	// Resource tagging — account-scoped
+	TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error)
+	UntagUser(accountID string, input *iam.UntagUserInput) (*iam.UntagUserOutput, error)
+	ListUserTags(accountID string, input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error)
+	TagRole(accountID string, input *iam.TagRoleInput) (*iam.TagRoleOutput, error)
+	UntagRole(accountID string, input *iam.UntagRoleInput) (*iam.UntagRoleOutput, error)
+	ListRoleTags(accountID string, input *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error)
+	TagPolicy(accountID string, input *iam.TagPolicyInput) (*iam.TagPolicyOutput, error)
+	UntagPolicy(accountID string, input *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error)
+	ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error)
+	TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error)
+	UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error)
+	ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error)
+	TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error)
+	UntagOpenIDConnectProvider(accountID string, input *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error)
+	ListOpenIDConnectProviderTags(accountID string, input *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error)
+
 	// ResolveInstanceProfile dereferences a RunInstancesInput.IamInstanceProfile
 	// reference (name or ARN) to the canonical InstanceProfile record. Used by
 	// EC2 paths only. Cross-account ARNs are rejected as a defence-in-depth
@@ -118,4 +135,8 @@ type IAMService interface {
 	CreateAccount(name string) (*Account, error)
 	GetAccount(accountID string) (*Account, error)
 	ListAccounts() ([]*Account, error)
+
+	// GetAccountSummary returns account-wide IAM usage counts plus AWS-parity
+	// quota values as a SummaryMap. Read-only and account-scoped.
+	GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
 }

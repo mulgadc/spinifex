@@ -1,6 +1,7 @@
 package handlers_ec2_vpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,7 +83,7 @@ func eniIsLiveAttachment(r *ENIRecord) bool {
 }
 
 // CreateNetworkInterface creates a new ENI in the specified subnet
-func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
+func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	if input.SubnetId == nil || *input.SubnetId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -163,14 +164,14 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("CreateNetworkInterface completed", "eniId", eniId, "subnetId", subnetId, "ip", privateIP, "accountID", accountID)
+	slog.InfoContext(ctx, "CreateNetworkInterface completed", "eniId", eniId, "subnetId", subnetId, "ip", privateIP, "accountID", accountID)
 
 	// Send vpc.create-port synchronously so vpcd OVSDB errors surface to the
 	// caller. Fire-and-forget would let CreateNetworkInterface return success
 	// while the LSP joins zero port groups (NATS hiccup or vpcd OVSDB error),
 	// leaving the port unrestricted until the 30s reconciler heals it.
 	if err := s.requestPortEvent("vpc.create-port", eniId, subnetId, subnet.VpcId, privateIP, macAddr, sgIdsIn); err != nil {
-		slog.Error("CreateNetworkInterface: vpcd create-port failed", "eniId", eniId, "err", err)
+		slog.ErrorContext(ctx, "CreateNetworkInterface: vpcd create-port failed", "eniId", eniId, "err", err)
 		return nil, err
 	}
 
@@ -181,26 +182,26 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 
 // DeleteNetworkInterface deletes an ENI. An in-use ENI is rejected; instance
 // teardown of its own ENI uses ForceDeleteInstanceENI instead.
-func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error) {
+func (s *VPCServiceImpl) DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return s.deleteNetworkInterface(*input.NetworkInterfaceId, accountID, false)
+	return s.deleteNetworkInterface(ctx, *input.NetworkInterfaceId, accountID, false)
 }
 
 // ForceDeleteInstanceENI deletes an instance's own ENI, bypassing the in-use
 // guard. The guard protects against deleting an ENI a *different* live instance
 // holds; an instance tearing down its own ENI is always permitted (ADR-0003 §2),
 // which breaks the un-terminable-ENI deadlock. Absent is success (idempotent).
-func (s *VPCServiceImpl) ForceDeleteInstanceENI(accountID, eniId string) error {
+func (s *VPCServiceImpl) ForceDeleteInstanceENI(ctx context.Context, accountID, eniId string) error {
 	if eniId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	_, err := s.deleteNetworkInterface(eniId, accountID, true)
+	_, err := s.deleteNetworkInterface(ctx, eniId, accountID, true)
 	return err
 }
 
-func (s *VPCServiceImpl) deleteNetworkInterface(eniId, accountID string, force bool) (*ec2.DeleteNetworkInterfaceOutput, error) {
+func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, accountID string, force bool) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	key := utils.AccountKey(accountID, eniId)
 
 	// Get the ENI record
@@ -232,24 +233,24 @@ func (s *VPCServiceImpl) deleteNetworkInterface(eniId, accountID string, force b
 
 	// Release the private IP back to the IPAM pool
 	if err := s.ipam.ReleaseIP(record.SubnetId, record.PrivateIpAddress); err != nil {
-		slog.Warn("Failed to release IP during ENI delete", "eni", eniId, "ip", record.PrivateIpAddress, "err", err)
+		slog.WarnContext(ctx, "Failed to release IP during ENI delete", "eni", eniId, "ip", record.PrivateIpAddress, "err", err)
 	}
 
 	// Release auto-assigned public IP (if any) and remove NAT rule.
 	// Skip if the public IP belongs to an EIP — those are managed independently.
 	if record.PublicIpAddress != "" && s.externalIPAM != nil {
-		owned, err := s.isEIPOwned(eniId, accountID)
+		owned, err := s.isEIPOwned(ctx, eniId, accountID)
 		if err != nil {
-			slog.Error("DeleteNetworkInterface: failed to check EIP ownership, skipping public IP release to avoid data loss", "eniId", eniId, "err", err)
+			slog.ErrorContext(ctx, "DeleteNetworkInterface: failed to check EIP ownership, skipping public IP release to avoid data loss", "eniId", eniId, "err", err)
 		} else if owned {
-			slog.Info("DeleteNetworkInterface: public IP owned by EIP, skipping release", "eniId", eniId, "publicIp", record.PublicIpAddress)
+			slog.InfoContext(ctx, "DeleteNetworkInterface: public IP owned by EIP, skipping release", "eniId", eniId, "publicIp", record.PublicIpAddress)
 		} else {
 			portName := topology.Port(eniId)
 			s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIpAddress, record.PrivateIpAddress, portName, record.MacAddress)
-			if err := s.externalIPAM.ReleaseIP(record.PublicIpPool, record.PublicIpAddress, eniId); err != nil {
-				slog.Warn("Failed to release public IP during ENI delete", "eni", eniId, "ip", record.PublicIpAddress, "pool", record.PublicIpPool, "err", err)
+			if err := s.externalIPAM.ReleaseIP(ctx, record.PublicIpPool, record.PublicIpAddress, eniId); err != nil {
+				slog.WarnContext(ctx, "Failed to release public IP during ENI delete", "eni", eniId, "ip", record.PublicIpAddress, "pool", record.PublicIpPool, "err", err)
 			} else {
-				slog.Info("Released auto-assigned public IP during ENI delete", "eniId", eniId, "publicIp", record.PublicIpAddress, "pool", record.PublicIpPool)
+				slog.InfoContext(ctx, "Released auto-assigned public IP during ENI delete", "eniId", eniId, "publicIp", record.PublicIpAddress, "pool", record.PublicIpPool)
 			}
 		}
 	}
@@ -258,7 +259,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(eniId, accountID string, force b
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("DeleteNetworkInterface completed", "eniId", eniId, "accountID", accountID)
+	slog.InfoContext(ctx, "DeleteNetworkInterface completed", "eniId", eniId, "accountID", accountID)
 
 	// Publish vpc.delete-port event for vpcd topology cleanup. SG IDs are
 	// included for consistency with create-port; vpcd's delete handler reads
@@ -268,13 +269,18 @@ func (s *VPCServiceImpl) deleteNetworkInterface(eniId, accountID string, force b
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
 
-// ModifyNetworkInterfaceAttribute modifies ENI attributes (security groups, description).
-func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error) {
+// ModifyNetworkInterfaceAttribute modifies ENI attributes (security groups,
+// description). SourceDestCheck=true is accepted as a no-op.
+func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error) {
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if len(input.Groups) == 0 && input.Description == nil {
+	if len(input.Groups) == 0 && input.Description == nil && input.SourceDestCheck == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	// Disabling source/dest check is unsupported: OVN port security enforces it.
+	if input.SourceDestCheck != nil && input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
+		return nil, errors.New(awserrors.ErrorUnsupported)
 	}
 
 	eniId := *input.NetworkInterfaceId
@@ -287,7 +293,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetwor
 
 	var record ENIRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		slog.Error("ModifyNetworkInterfaceAttribute: corrupted ENI record", "eniId", eniId, "accountID", accountID, "err", err)
+		slog.ErrorContext(ctx, "ModifyNetworkInterfaceAttribute: corrupted ENI record", "eniId", eniId, "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -312,19 +318,19 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetwor
 
 	data, err := json.Marshal(record)
 	if err != nil {
-		slog.Error("ModifyNetworkInterfaceAttribute: failed to marshal ENI record", "eniId", eniId, "accountID", accountID, "err", err)
+		slog.ErrorContext(ctx, "ModifyNetworkInterfaceAttribute: failed to marshal ENI record", "eniId", eniId, "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.eniKV.Update(key, data, entry.Revision()); err != nil {
-		slog.Error("ModifyNetworkInterfaceAttribute: KV update failed", "eniId", eniId, "accountID", accountID, "err", err)
+		slog.ErrorContext(ctx, "ModifyNetworkInterfaceAttribute: KV update failed", "eniId", eniId, "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("ModifyNetworkInterfaceAttribute completed", "eniId", eniId, "accountID", accountID)
+	slog.InfoContext(ctx, "ModifyNetworkInterfaceAttribute completed", "eniId", eniId, "accountID", accountID)
 
 	if sgsChanged {
 		if err := s.requestUpdatePortSGsEvent(eniId, record.PrivateIpAddress, record.SecurityGroupIds); err != nil {
-			slog.Error("ModifyNetworkInterfaceAttribute: vpcd request failed", "eniId", eniId, "err", err)
+			slog.ErrorContext(ctx, "ModifyNetworkInterfaceAttribute: vpcd request failed", "eniId", eniId, "err", err)
 			return nil, err
 		}
 	}
@@ -348,10 +354,10 @@ var describeNetworkInterfacesValidFilters = map[string]bool{
 }
 
 // DescribeNetworkInterfaces lists ENIs with optional filters
-func (s *VPCServiceImpl) DescribeNetworkInterfaces(input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error) {
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeNetworkInterfacesValidFilters)
 	if err != nil {
-		slog.Warn("DescribeNetworkInterfaces: invalid filter", "err", err)
+		slog.WarnContext(ctx, "DescribeNetworkInterfaces: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -380,13 +386,13 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(input *ec2.DescribeNetworkInt
 
 		entry, err := s.eniKV.Get(key)
 		if err != nil {
-			slog.Warn("Failed to get ENI record", "key", key, "error", err)
+			slog.WarnContext(ctx, "Failed to get ENI record", "key", key, "error", err)
 			continue
 		}
 
 		var record ENIRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.Warn("Failed to unmarshal ENI record", "key", key, "error", err)
+			slog.WarnContext(ctx, "Failed to unmarshal ENI record", "key", key, "error", err)
 			continue
 		}
 
@@ -415,7 +421,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(input *ec2.DescribeNetworkInt
 		}
 	}
 
-	slog.Info("DescribeNetworkInterfaces completed", "count", len(enis), "accountID", accountID)
+	slog.InfoContext(ctx, "DescribeNetworkInterfaces completed", "count", len(enis), "accountID", accountID)
 
 	return &ec2.DescribeNetworkInterfacesOutput{
 		NetworkInterfaces: enis,
@@ -533,7 +539,7 @@ func (s *VPCServiceImpl) AttachENI(accountID, eniId, instanceId string, deviceIn
 
 // DetachENI marks an ENI as detached from an instance (internal use by TerminateInstances).
 // accountID scopes the lookup to the correct KV key.
-func (s *VPCServiceImpl) DetachENI(accountID, eniId string) error {
+func (s *VPCServiceImpl) DetachENI(ctx context.Context, accountID, eniId string) error {
 	key := utils.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(key)
 	if err != nil {
@@ -558,7 +564,7 @@ func (s *VPCServiceImpl) DetachENI(accountID, eniId string) error {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("ENI detached", "eniId", eniId)
+	slog.InfoContext(ctx, "ENI detached", "eniId", eniId)
 	return nil
 }
 
@@ -858,7 +864,7 @@ func (s *VPCServiceImpl) validateSGAttachment(accountID string, sgIds []string, 
 // isEIPOwned checks whether the given ENI's public IP is owned by an Elastic IP.
 // Returns (true, nil) if an EIP record references this ENI, (false, nil) if none
 // match, or (false, err) if the KV store could not be read.
-func (s *VPCServiceImpl) isEIPOwned(eniId, accountID string) (bool, error) {
+func (s *VPCServiceImpl) isEIPOwned(ctx context.Context, eniId, accountID string) (bool, error) {
 	if s.eipKV == nil {
 		return false, nil
 	}
@@ -882,7 +888,7 @@ func (s *VPCServiceImpl) isEIPOwned(eniId, accountID string) (bool, error) {
 			ENIId string `json:"eni_id"`
 		}
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.Warn("isEIPOwned: malformed EIP record", "key", k, "err", err)
+			slog.WarnContext(ctx, "isEIPOwned: malformed EIP record", "key", k, "err", err)
 			continue
 		}
 		if record.ENIId == eniId {

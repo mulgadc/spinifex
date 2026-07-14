@@ -1,6 +1,7 @@
 package handlers_ec2_eip
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,7 +66,7 @@ func NewEIPServiceImpl(natsConn *nats.Conn, externalIPAM *handlers_ec2_vpc.Exter
 }
 
 // AllocateAddress allocates a new Elastic IP from the external IPAM pool.
-func (s *EIPServiceImpl) AllocateAddress(input *ec2.AllocateAddressInput, accountID string) (*ec2.AllocateAddressOutput, error) {
+func (s *EIPServiceImpl) AllocateAddress(ctx context.Context, input *ec2.AllocateAddressInput, accountID string) (*ec2.AllocateAddressOutput, error) {
 	allocID := utils.GenerateResourceID("eipalloc")
 
 	var publicIP, poolName string
@@ -74,18 +75,18 @@ func (s *EIPServiceImpl) AllocateAddress(input *ec2.AllocateAddressInput, accoun
 	if input.PublicIpv4Pool != nil && *input.PublicIpv4Pool != "" {
 		// Allocate from a specific named pool.
 		poolName = *input.PublicIpv4Pool
-		publicIP, err = s.externalIPAM.AllocateFromPool(poolName, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
+		publicIP, err = s.externalIPAM.AllocateFromPool(ctx, poolName, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
 		if err != nil {
-			slog.Error("AllocateAddress: IPAM pool allocation failed", "pool", poolName, "err", err)
+			slog.ErrorContext(ctx, "AllocateAddress: IPAM pool allocation failed", "pool", poolName, "err", err)
 			return nil, errors.New(awserrors.ErrorInsufficientAddressCapacity)
 		}
 	} else {
 		// Allocate from the best pool matching region/AZ (empty strings = global fallback).
 		region := ""
 		az := ""
-		publicIP, poolName, err = s.externalIPAM.AllocateIP(region, az, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
+		publicIP, poolName, err = s.externalIPAM.AllocateIP(ctx, region, az, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
 		if err != nil {
-			slog.Error("AllocateAddress: IPAM allocation failed", "err", err)
+			slog.ErrorContext(ctx, "AllocateAddress: IPAM allocation failed", "err", err)
 			return nil, errors.New(awserrors.ErrorInsufficientAddressCapacity)
 		}
 	}
@@ -107,7 +108,7 @@ func (s *EIPServiceImpl) AllocateAddress(input *ec2.AllocateAddressInput, accoun
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("AllocateAddress completed", "allocationId", allocID, "publicIp", publicIP, "pool", poolName, "accountID", accountID)
+	slog.InfoContext(ctx, "AllocateAddress completed", "allocationId", allocID, "publicIp", publicIP, "pool", poolName, "accountID", accountID)
 
 	return &ec2.AllocateAddressOutput{
 		AllocationId:   aws.String(allocID),
@@ -118,7 +119,7 @@ func (s *EIPServiceImpl) AllocateAddress(input *ec2.AllocateAddressInput, accoun
 }
 
 // ReleaseAddress releases a previously allocated Elastic IP back to the IPAM pool.
-func (s *EIPServiceImpl) ReleaseAddress(input *ec2.ReleaseAddressInput, accountID string) (*ec2.ReleaseAddressOutput, error) {
+func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseAddressInput, accountID string) (*ec2.ReleaseAddressOutput, error) {
 	if input.AllocationId == nil || *input.AllocationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -143,21 +144,21 @@ func (s *EIPServiceImpl) ReleaseAddress(input *ec2.ReleaseAddressInput, accountI
 
 	// Release IP back to IPAM pool. User-driven release of an already-detached
 	// EIP — unconditional (no owner ENI to scope to).
-	if err := s.externalIPAM.ReleaseIP(record.PoolName, record.PublicIp, ""); err != nil {
-		slog.Warn("Failed to release IP back to IPAM pool", "allocationId", allocID, "ip", record.PublicIp, "pool", record.PoolName, "err", err)
+	if err := s.externalIPAM.ReleaseIP(ctx, record.PoolName, record.PublicIp, ""); err != nil {
+		slog.WarnContext(ctx, "Failed to release IP back to IPAM pool", "allocationId", allocID, "ip", record.PublicIp, "pool", record.PoolName, "err", err)
 	}
 
 	if err := s.eipKV.Delete(key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("ReleaseAddress completed", "allocationId", allocID, "publicIp", record.PublicIp, "accountID", accountID)
+	slog.InfoContext(ctx, "ReleaseAddress completed", "allocationId", allocID, "publicIp", record.PublicIp, "accountID", accountID)
 
 	return &ec2.ReleaseAddressOutput{}, nil
 }
 
 // AssociateAddress associates an Elastic IP with an ENI or instance.
-func (s *EIPServiceImpl) AssociateAddress(input *ec2.AssociateAddressInput, accountID string) (*ec2.AssociateAddressOutput, error) {
+func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.AssociateAddressInput, accountID string) (*ec2.AssociateAddressOutput, error) {
 	if input.AllocationId == nil || *input.AllocationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -180,7 +181,7 @@ func (s *EIPServiceImpl) AssociateAddress(input *ec2.AssociateAddressInput, acco
 
 	if input.NetworkInterfaceId != nil && *input.NetworkInterfaceId != "" {
 		eniID = *input.NetworkInterfaceId
-		eni, err := s.lookupENI(accountID, eniID)
+		eni, err := s.lookupENI(ctx, accountID, eniID)
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +191,7 @@ func (s *EIPServiceImpl) AssociateAddress(input *ec2.AssociateAddressInput, acco
 		macAddr = eni.MacAddress
 	} else if input.InstanceId != nil && *input.InstanceId != "" {
 		instanceID = *input.InstanceId
-		eni, err := s.lookupENIByInstance(accountID, instanceID)
+		eni, err := s.lookupENIByInstance(ctx, accountID, instanceID)
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +229,7 @@ func (s *EIPServiceImpl) AssociateAddress(input *ec2.AssociateAddressInput, acco
 	// Publish vpc.add-nat event (fire-and-forget).
 	s.publishNATEvent("vpc.add-nat", vpcID, record.PublicIp, privateIP, eniID, macAddr)
 
-	slog.Info("AssociateAddress completed",
+	slog.InfoContext(ctx, "AssociateAddress completed",
 		"allocationId", allocID,
 		"associationId", associationID,
 		"eniId", eniID,
@@ -243,7 +244,7 @@ func (s *EIPServiceImpl) AssociateAddress(input *ec2.AssociateAddressInput, acco
 }
 
 // DisassociateAddress removes an Elastic IP association from an ENI.
-func (s *EIPServiceImpl) DisassociateAddress(input *ec2.DisassociateAddressInput, accountID string) (*ec2.DisassociateAddressOutput, error) {
+func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.DisassociateAddressInput, accountID string) (*ec2.DisassociateAddressOutput, error) {
 	if input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -258,7 +259,7 @@ func (s *EIPServiceImpl) DisassociateAddress(input *ec2.DisassociateAddressInput
 
 	// Publish vpc.delete-nat event before clearing association (fire-and-forget).
 	if record.ENIId != "" {
-		eni, lookupErr := s.lookupENI(accountID, record.ENIId)
+		eni, lookupErr := s.lookupENI(ctx, accountID, record.ENIId)
 		macAddr := ""
 		if lookupErr == nil {
 			macAddr = eni.MacAddress
@@ -283,7 +284,7 @@ func (s *EIPServiceImpl) DisassociateAddress(input *ec2.DisassociateAddressInput
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("DisassociateAddress completed", "associationId", associationID, "accountID", accountID)
+	slog.InfoContext(ctx, "DisassociateAddress completed", "associationId", associationID, "accountID", accountID)
 
 	return &ec2.DisassociateAddressOutput{}, nil
 }
@@ -298,7 +299,7 @@ var describeAddressesValidFilters = map[string]bool{
 }
 
 // DescribeAddresses lists Elastic IPs with optional filtering by allocation ID.
-func (s *EIPServiceImpl) DescribeAddresses(input *ec2.DescribeAddressesInput, accountID string) (*ec2.DescribeAddressesOutput, error) {
+func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.DescribeAddressesInput, accountID string) (*ec2.DescribeAddressesOutput, error) {
 	allocIDs := make(map[string]bool)
 	for _, id := range input.AllocationIds {
 		if id != nil {
@@ -315,7 +316,7 @@ func (s *EIPServiceImpl) DescribeAddresses(input *ec2.DescribeAddressesInput, ac
 
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeAddressesValidFilters)
 	if err != nil {
-		slog.Warn("DescribeAddresses: invalid filter", "err", err)
+		slog.WarnContext(ctx, "DescribeAddresses: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -336,13 +337,13 @@ func (s *EIPServiceImpl) DescribeAddresses(input *ec2.DescribeAddressesInput, ac
 
 		entry, err := s.eipKV.Get(k)
 		if err != nil {
-			slog.Warn("Failed to get EIP record", "key", k, "error", err)
+			slog.WarnContext(ctx, "Failed to get EIP record", "key", k, "error", err)
 			continue
 		}
 
 		var record EIPRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.Warn("Failed to unmarshal EIP record", "key", k, "error", err)
+			slog.WarnContext(ctx, "Failed to unmarshal EIP record", "key", k, "error", err)
 			continue
 		}
 
@@ -375,7 +376,7 @@ func (s *EIPServiceImpl) DescribeAddresses(input *ec2.DescribeAddressesInput, ac
 		}
 	}
 
-	slog.Info("DescribeAddresses completed", "count", len(addresses), "accountID", accountID)
+	slog.InfoContext(ctx, "DescribeAddresses completed", "count", len(addresses), "accountID", accountID)
 
 	return &ec2.DescribeAddressesOutput{
 		Addresses: addresses,
@@ -415,7 +416,7 @@ func addressMatchesFilters(record *EIPRecord, filters map[string][]string) bool 
 
 // DescribeAddressesAttribute returns per-EIP attributes. PtrRecord is always nil
 // (no reverse-DNS support). Returns an empty list, not an error, for missing IDs.
-func (s *EIPServiceImpl) DescribeAddressesAttribute(input *ec2.DescribeAddressesAttributeInput, accountID string) (*ec2.DescribeAddressesAttributeOutput, error) {
+func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *ec2.DescribeAddressesAttributeInput, accountID string) (*ec2.DescribeAddressesAttributeOutput, error) {
 	var addresses []*ec2.AddressAttribute
 
 	if len(input.AllocationIds) > 0 {
@@ -431,7 +432,7 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(input *ec2.DescribeAddresses
 			}
 			var record EIPRecord
 			if err := json.Unmarshal(entry.Value(), &record); err != nil {
-				slog.Warn("Failed to unmarshal EIP record", "key", key, "error", err)
+				slog.WarnContext(ctx, "Failed to unmarshal EIP record", "key", key, "error", err)
 				continue
 			}
 			addresses = append(addresses, &ec2.AddressAttribute{
@@ -455,12 +456,12 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(input *ec2.DescribeAddresses
 			}
 			entry, err := s.eipKV.Get(k)
 			if err != nil {
-				slog.Warn("Failed to get EIP record", "key", k, "error", err)
+				slog.WarnContext(ctx, "Failed to get EIP record", "key", k, "error", err)
 				continue
 			}
 			var record EIPRecord
 			if err := json.Unmarshal(entry.Value(), &record); err != nil {
-				slog.Warn("Failed to unmarshal EIP record", "key", k, "error", err)
+				slog.WarnContext(ctx, "Failed to unmarshal EIP record", "key", k, "error", err)
 				continue
 			}
 			addresses = append(addresses, &ec2.AddressAttribute{
@@ -470,7 +471,7 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(input *ec2.DescribeAddresses
 		}
 	}
 
-	slog.Info("DescribeAddressesAttribute completed", "count", len(addresses), "accountID", accountID)
+	slog.InfoContext(ctx, "DescribeAddressesAttribute completed", "count", len(addresses), "accountID", accountID)
 
 	return &ec2.DescribeAddressesAttributeOutput{
 		Addresses: addresses,
@@ -478,8 +479,8 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(input *ec2.DescribeAddresses
 }
 
 // lookupENI retrieves an ENI record by its ID using the VPC service.
-func (s *EIPServiceImpl) lookupENI(accountID, eniID string) (*handlers_ec2_vpc.ENIRecord, error) {
-	output, err := s.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+func (s *EIPServiceImpl) lookupENI(ctx context.Context, accountID, eniID string) (*handlers_ec2_vpc.ENIRecord, error) {
+	output, err := s.vpcService.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniID)},
 	}, accountID)
 	if err != nil {
@@ -504,8 +505,8 @@ func (s *EIPServiceImpl) lookupENI(accountID, eniID string) (*handlers_ec2_vpc.E
 }
 
 // lookupENIByInstance finds the primary ENI for an instance.
-func (s *EIPServiceImpl) lookupENIByInstance(accountID, instanceID string) (*handlers_ec2_vpc.ENIRecord, error) {
-	output, err := s.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+func (s *EIPServiceImpl) lookupENIByInstance(ctx context.Context, accountID, instanceID string) (*handlers_ec2_vpc.ENIRecord, error) {
+	output, err := s.vpcService.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
 			{
 				Name:   aws.String("attachment.instance-id"),
@@ -572,7 +573,7 @@ func (s *EIPServiceImpl) findByAssociationID(accountID, associationID string) (*
 // AssociatedPublicIPForInstance returns the public IP of the EIP associated with
 // instanceID, if any. Used by the daemon to re-announce dnat_and_snat on relaunch
 // when the instance's own PublicIP field is unset (EIP-assigned vs auto-assigned).
-func (s *EIPServiceImpl) AssociatedPublicIPForInstance(accountID, instanceID string) (string, bool) {
+func (s *EIPServiceImpl) AssociatedPublicIPForInstance(ctx context.Context, accountID, instanceID string) (string, bool) {
 	if instanceID == "" {
 		return "", false
 	}
@@ -638,13 +639,13 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 			continue
 		}
 		if record.AssociationId != "" {
-			if _, err := s.DisassociateAddress(&ec2.DisassociateAddressInput{
+			if _, err := s.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{
 				AssociationId: aws.String(record.AssociationId),
 			}, accountID); err != nil {
 				errs = append(errs, fmt.Errorf("disassociate %s: %w", record.AllocationId, err))
 			}
 		}
-		if _, err := s.ReleaseAddress(&ec2.ReleaseAddressInput{
+		if _, err := s.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
 			AllocationId: aws.String(record.AllocationId),
 		}, accountID); err != nil {
 			errs = append(errs, fmt.Errorf("release %s: %w", record.AllocationId, err))
@@ -691,4 +692,27 @@ func (s *EIPServiceImpl) eipRecordToEC2(record *EIPRecord) *ec2.Address {
 	addr.Tags = utils.MapToEC2Tags(record.Tags)
 
 	return addr
+}
+
+// ApplyRecordTags mirrors CreateTags into the owning EIP KV record so
+// tag-filtered describes observe tags added after create. Resource ids this
+// service does not own are skipped; absent records are a no-op.
+func (s *EIPServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.eipKV, accountID, "eipalloc-", input.Resources,
+		func(r *EIPRecord) *map[string]string { return &r.Tags },
+		utils.MergeTagsMut(input))
+}
+
+// RemoveRecordTags mirrors DeleteTags into the owning EIP KV record with
+// AWS-faithful delete semantics.
+func (s *EIPServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
+	if input == nil {
+		return nil
+	}
+	return utils.MirrorKVRecordTags(s.eipKV, accountID, "eipalloc-", input.Resources,
+		func(r *EIPRecord) *map[string]string { return &r.Tags },
+		utils.RemoveTagsMut(input))
 }

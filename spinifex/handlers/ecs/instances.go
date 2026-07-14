@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"slices"
@@ -35,7 +36,7 @@ func (s *Service) listInstanceRecords(kv nats.KeyValue, cluster string) ([]Insta
 // RegisterContainerInstance is the AWS-API registration path. In 4e the agent
 // normally registers over the Layer-2 bus; this keeps API parity by writing the
 // same record shape from an explicit call.
-func (s *Service) RegisterContainerInstance(input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error) {
+func (s *Service) RegisterContainerInstance(_ context.Context, input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	instanceID := aws.StringValue(input.InstanceIdentityDocument)
 	if instanceID == "" {
@@ -52,7 +53,16 @@ func (s *Service) RegisterContainerInstance(input *ecs.RegisterContainerInstance
 				r.TotalCPU = int(aws.Int64Value(res.IntegerValue))
 			case "MEMORY":
 				r.TotalMemoryMiB = int(aws.Int64Value(res.IntegerValue))
+			case "GPU":
+				// AWS reports GPU as a STRINGSET of device UUIDs; the count is the
+				// capacity, the UUIDs are the placeholder inventory (Epic C3 populates
+				// them for real from the agent's nvidia-smi discovery).
+				r.GPUIDs = aws.StringValueSlice(res.StringSetValue)
+				r.TotalGPU = len(r.GPUIDs)
 			}
+		}
+		if len(input.Tags) > 0 {
+			r.Tags = tagsToMap(input.Tags)
 		}
 		// The agent heartbeats by re-registering. A re-register from a reaped
 		// (involuntarily drained) instance proves the agent is back, so restore
@@ -69,7 +79,7 @@ func (s *Service) RegisterContainerInstance(input *ecs.RegisterContainerInstance
 }
 
 // DescribeContainerInstances returns records for the named container instances.
-func (s *Service) DescribeContainerInstances(input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error) {
+func (s *Service) DescribeContainerInstances(_ context.Context, input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -93,7 +103,7 @@ func (s *Service) DescribeContainerInstances(input *ecs.DescribeContainerInstanc
 }
 
 // ListContainerInstances returns the ARNs of all container instances in a cluster.
-func (s *Service) ListContainerInstances(input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error) {
+func (s *Service) ListContainerInstances(_ context.Context, input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -147,6 +157,17 @@ func (s *Service) instanceToAWS(r *InstanceRecord) *ecs.ContainerInstance {
 		{Name: aws.String("CPU"), Type: aws.String("INTEGER"), IntegerValue: aws.Int64(int64(r.TotalCPU - r.ReservedCPU))},
 		{Name: aws.String("MEMORY"), Type: aws.String("INTEGER"), IntegerValue: aws.Int64(int64(r.TotalMemoryMiB - r.ReservedMemoryMiB))},
 	}
+	// GPU is only reported for GPU-capable instances (AWS parity); the STRINGSET
+	// values are the device UUIDs when known, empty pending the agent's Epic C3
+	// report-back — TotalGPU/ReservedGPU remain the authoritative counts either way.
+	if r.TotalGPU > 0 {
+		registered = append(registered, &ecs.Resource{
+			Name: aws.String("GPU"), Type: aws.String("STRINGSET"), StringSetValue: aws.StringSlice(r.GPUIDs),
+		})
+		remaining = append(remaining, &ecs.Resource{
+			Name: aws.String("GPU"), Type: aws.String("STRINGSET"), StringSetValue: aws.StringSlice(r.remainingGPUIDs()),
+		})
+	}
 	return &ecs.ContainerInstance{
 		ContainerInstanceArn: aws.String(r.ARN),
 		Ec2InstanceId:        aws.String(r.InstanceID),
@@ -156,6 +177,7 @@ func (s *Service) instanceToAWS(r *InstanceRecord) *ecs.ContainerInstance {
 		RegisteredResources:  registered,
 		RemainingResources:   remaining,
 		VersionInfo:          &ecs.VersionInfo{AgentVersion: aws.String(r.AgentVersion)},
+		Tags:                 tagsToAWS(r.Tags),
 	}
 }
 
@@ -173,6 +195,8 @@ func (s *Service) recordRegister(msg *bus.RegisterInstance) error {
 		r.AgentVersion = msg.AgentVersion
 		r.TotalCPU = msg.Capacity.CPU
 		r.TotalMemoryMiB = msg.Capacity.MemoryMiB
+		r.TotalGPU = msg.Capacity.GPU
+		r.GPUIDs = msg.Capacity.GPUIDs
 		r.Status = InstanceStatusActive
 	})
 	return err
@@ -198,7 +222,7 @@ func (s *Service) recordHeartbeat(msg *bus.Heartbeat) error {
 
 // recordTaskState applies an agent task-state report: it updates the task record
 // and, on STOPPED, releases the reserved capacity back to the instance.
-func (s *Service) recordTaskState(msg *bus.TaskState) error {
+func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error {
 	kv, err := s.bucket(msg.AccountID)
 	if err != nil {
 		return err
@@ -212,10 +236,23 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 	prev := task.LastStatus
 	task.LastStatus = msg.LastStatus
 	if len(msg.Containers) > 0 {
+		// Preserve pinned GPU UUIDs across a state change that omits them — the
+		// STOPPED report carries no GPUIDs and would otherwise wipe the device
+		// IDs the RUNNING report set, leaving DescribeTasks gpuIds empty.
+		prevGPUIDs := make(map[string][]string, len(task.Containers))
+		for _, c := range task.Containers {
+			if len(c.GPUIDs) > 0 {
+				prevGPUIDs[c.Name] = c.GPUIDs
+			}
+		}
 		task.Containers = task.Containers[:0]
 		for _, c := range msg.Containers {
+			gpuIDs := c.GPUIDs
+			if len(gpuIDs) == 0 {
+				gpuIDs = prevGPUIDs[c.Name]
+			}
 			task.Containers = append(task.Containers, ContainerState{
-				Name: c.Name, Status: c.Status, ContainerID: c.ContainerID, ExitCode: c.ExitCode,
+				Name: c.Name, Status: c.Status, ContainerID: c.ContainerID, ExitCode: c.ExitCode, GPUIDs: gpuIDs,
 			})
 		}
 	}
@@ -236,21 +273,27 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 	// Register ELBv2 targets and assign a public IP on the transition into
 	// RUNNING (Q8). assignTaskPublicIP persists the EIP onto the task itself.
 	if msg.LastStatus == TaskStatusRunning && prev != TaskStatusRunning {
-		s.registerServiceTargets(kv, msg.AccountID, &task)
-		s.assignTaskPublicIP(kv, msg.AccountID, &task)
+		s.registerServiceTargets(ctx, kv, msg.AccountID, &task)
+		s.assignTaskPublicIP(ctx, kv, msg.AccountID, &task)
 	}
 
 	// Deregister targets, release the public IP, release capacity + reclaim the
 	// task ENI once, on the transition into STOPPED.
 	if msg.LastStatus == TaskStatusStopped && prev != TaskStatusStopped {
-		s.deregisterServiceTargets(kv, msg.AccountID, &task)
-		s.releaseTaskPublicIP(msg.AccountID, &task)
-		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
-		s.reclaimTaskENI(msg.AccountID, &task)
-		if perr := putJSON(kv, TaskKey(msg.ClusterName, msg.TaskID), &task); perr != nil {
-			slog.Error("ECS task STOPPED: persist after EIP release failed", "task", msg.TaskID, "err", perr)
+		// A task that stops without ever reaching RUNNING is a deployment failure;
+		// feed the owning deployment's circuit breaker.
+		if task.StartedAt.IsZero() {
+			s.recordDeploymentFailure(ctx, kv, msg.ClusterName, &task)
 		}
-		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB)
+		s.deregisterServiceTargets(ctx, kv, msg.AccountID, &task)
+		s.releaseTaskPublicIP(ctx, msg.AccountID, &task)
+		s.reclaimAssignInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
+		s.reclaimStopInbox(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
+		s.reclaimTaskENI(ctx, msg.AccountID, &task)
+		if perr := putJSON(kv, TaskKey(msg.ClusterName, msg.TaskID), &task); perr != nil {
+			slog.ErrorContext(ctx, "ECS task STOPPED: persist after EIP release failed", "task", msg.TaskID, "err", perr)
+		}
+		return s.releaseReservation(kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB, task.GPU)
 	}
 	return nil
 }
@@ -259,7 +302,7 @@ func (s *Service) recordTaskState(msg *bus.TaskState) error {
 // It maps the SDK input onto the same bus.TaskState shape the Layer-2 bus
 // delivers and converges on recordTaskState, so a gateway-routed agent reports
 // state without touching NATS. The account is authoritative from accountID.
-func (s *Service) SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error) {
+func (s *Service) SubmitTaskStateChange(ctx context.Context, input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error) {
 	msg := bus.TaskState{
 		AccountID:   accountID,
 		ClusterName: clusterShortName(aws.StringValue(input.Cluster)),
@@ -280,14 +323,40 @@ func (s *Service) SubmitTaskStateChange(input *ecs.SubmitTaskStateChangeInput, a
 		}
 		msg.Containers = append(msg.Containers, cs)
 	}
-	if err := s.recordTaskState(&msg); err != nil {
+	if err := s.recordTaskState(ctx, &msg); err != nil {
 		return nil, err
 	}
 	return &ecs.SubmitTaskStateChangeOutput{Acknowledgment: aws.String("OK")}, nil
 }
 
+// recordDeploymentFailure increments the failed-task counter on the deployment
+// that launched a task which stopped before ever running, driving the service's
+// deployment circuit breaker. No-op for a non-service task or an unknown deployment.
+func (s *Service) recordDeploymentFailure(ctx context.Context, kv nats.KeyValue, cluster string, task *TaskRecord) {
+	name := serviceNameFromGroup(task.Group)
+	depID := deploymentIDFromStartedBy(task.StartedBy)
+	if name == "" || depID == "" {
+		return
+	}
+	var svc ServiceRecord
+	found, err := getJSON(kv, ServiceKey(cluster, name), &svc)
+	if err != nil || !found {
+		return
+	}
+	for i := range svc.Deployments {
+		if svc.Deployments[i].ID == depID {
+			svc.Deployments[i].FailedTasks++
+			svc.Deployments[i].UpdatedAt = time.Now().UTC()
+			if perr := putJSON(kv, ServiceKey(cluster, name), &svc); perr != nil {
+				slog.ErrorContext(ctx, "ECS deployment failure accounting: persist failed", "service", name, "err", perr)
+			}
+			return
+		}
+	}
+}
+
 // releaseReservation returns a stopped task's capacity to its instance under CAS.
-func (s *Service) releaseReservation(kv nats.KeyValue, cluster, instanceID, taskID string, cpu, mem int) error {
+func (s *Service) releaseReservation(kv nats.KeyValue, cluster, instanceID, taskID string, cpu, mem, gpu int) error {
 	for range reservePlacementRetries {
 		entry, err := kv.Get(InstanceKey(cluster, instanceID))
 		if err != nil {
@@ -299,6 +368,7 @@ func (s *Service) releaseReservation(kv nats.KeyValue, cluster, instanceID, task
 		}
 		rec.ReservedCPU = max(rec.ReservedCPU-cpu, 0)
 		rec.ReservedMemoryMiB = max(rec.ReservedMemoryMiB-mem, 0)
+		rec.ReservedGPU = max(rec.ReservedGPU-gpu, 0)
 		rec.PlacedTasks = slices.DeleteFunc(rec.PlacedTasks, func(v string) bool { return v == taskID })
 		data, merr := json.Marshal(&rec)
 		if merr != nil {

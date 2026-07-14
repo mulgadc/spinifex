@@ -1,6 +1,8 @@
 package gateway_ecrapi
 
 import (
+	"context"
+
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -9,7 +11,7 @@ import (
 )
 
 func TestListTagsForResource_ReturnsEmpty(t *testing.T) {
-	out, err := ListTagsForResource(nil, "123456789012", []byte(`{"resourceArn":"arn:aws:ecr:ap-southeast-2:123456789012:repository/demo"}`))
+	out, err := ListTagsForResource(context.Background(), nil, "123456789012", []byte(`{"resourceArn":"arn:aws:ecr:ap-southeast-2:123456789012:repository/demo"}`))
 	require.NoError(t, err)
 
 	resp, ok := out.(*ecr.ListTagsForResourceOutput)
@@ -21,6 +23,6 @@ func TestListTagsForResource_ReturnsEmpty(t *testing.T) {
 func TestListTagsForResource_RegisteredNotStub(t *testing.T) {
 	h, ok := Actions["ListTagsForResource"]
 	require.True(t, ok)
-	_, err := h(nil, "123456789012", []byte("{}"))
+	_, err := h(context.Background(), nil, "123456789012", []byte("{}"))
 	assert.NoError(t, err, "ListTagsForResource should not resolve to the 501 stub")
 }

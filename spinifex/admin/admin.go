@@ -73,17 +73,10 @@ type ConfigSettings struct {
 	OVNSBAddr string
 
 	// External networking for public subnets
-	ExternalMode   string   // "pool" or "" (disabled)
-	ExternalIface  string   // WAN NIC name (e.g., "eth0", "eth1")
-	PoolName       string   // External pool name (e.g., "wan")
-	PoolSource     string   // IP source: "static" or "dhcp"
-	PoolBindBridge string   // Linux bridge for upstream DORA (source=dhcp only)
-	PoolStart      string   // First IP in external pool range (static only)
-	PoolEnd        string   // Last IP in external pool range (static only)
-	PoolGateway    string   // WAN gateway IP
-	PoolGatewayIP  string   // Explicit SNAT IP (overrides default of first IP in range)
-	PoolPrefixLen  int      // Subnet prefix length (default 24)
-	PoolDNSServers []string // DNS servers for VM DHCP (auto-detected from host)
+	ExternalMode  string     // "pool", "nat" (routed), or "" (disabled)
+	ExternalIface string     // WAN NIC name (e.g., "eth0", "eth1")
+	BridgeMode    string     // vpcd bridge_mode; only written for "nat" (bridged modes auto-detect)
+	Pools         []PoolData // External pools rendered in order (nat mode: transit first, then optional public pool)
 
 	// OperatorEmail is the address collected at install time. Written under [operator]
 	// in spinifex.toml so it survives wipes. Empty means no identity was supplied.
@@ -124,6 +117,28 @@ type ConfigSettings struct {
 	NorthstarDefaultDomain  string // authoritative base domain (default "spx3.net")
 	NorthstarInternalDomain string // AWS-parity private zone (default "compute.internal")
 	NorthstarConfigPath     string // path to northstar.toml, rendered into spinifex.toml
+
+	// PoolDNSServers are the host-detected upstream DNS servers northstar forwards
+	// recursive queries to, rendered into northstar.toml's [recursion] nameservers.
+	PoolDNSServers []string
+}
+
+// PoolData is one [[network.external_pools]] block rendered into spinifex.toml.
+type PoolData struct {
+	Name       string   // Pool name (e.g., "wan", "nat-transit")
+	Source     string   // IP source: "static" or "dhcp"
+	BindBridge string   // Linux bridge / interface for upstream DORA (source=dhcp only)
+	Start      string   // First IP in range (static only)
+	End        string   // Last IP in range (static only)
+	Gateway    string   // WAN gateway IP
+	GatewayIP  string   // Explicit SNAT IP (overrides default of first IP in range)
+	PrefixLen  int      // Subnet prefix length (default 24)
+	DNSServers []string // DNS servers for VM DHCP (auto-detected from host)
+	DHCPMAC    string   // DHCP client MAC strategy: "derived" (default) or "interface"
+	// GwLrpRangeStart/End reserve gateway-LRP IPs for OVN routers. When empty
+	// the allocator auto-derives the top 16 host IPs of the pool subnet.
+	GwLrpRangeStart string
+	GwLrpRangeEnd   string
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.
@@ -515,9 +530,14 @@ func GenerateNATSToken() (string, error) {
 	return "nats_" + base64.URLEncoding.EncodeToString(bytes)[:32], nil
 }
 
+// certKeyBits is the RSA key size used when generating certificate keys.
+// It is a seam so tests can lower it for faster key generation; production
+// keeps the 4096-bit default.
+var certKeyBits = 4096
+
 // GenerateCACert generates a Certificate Authority certificate and key.
 func GenerateCACert(caCertPath, caKeyPath string) error {
-	caPrivateKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	caPrivateKey, err := rsa.GenerateKey(rand.Reader, certKeyBits)
 	if err != nil {
 		return fmt.Errorf("failed to generate CA private key: %w", err)
 	}
@@ -668,7 +688,7 @@ func GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath string, extraIP
 		return fmt.Errorf("CA key is not RSA")
 	}
 
-	serverPrivateKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	serverPrivateKey, err := rsa.GenerateKey(rand.Reader, certKeyBits)
 	if err != nil {
 		return fmt.Errorf("failed to generate server private key: %w", err)
 	}
@@ -769,8 +789,7 @@ func GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath string, extraIP
 
 // SetupAWSCredentials updates ~/.aws/credentials and ~/.aws/config.
 // When running under sudo, writes to SUDO_USER's home instead of root's.
-func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP, wanIP string) error {
-	_ = wanIP
+func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err

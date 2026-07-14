@@ -1,6 +1,7 @@
 package gateway_ec2_natgw
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -16,19 +17,24 @@ func ValidateCreateNatGatewayInput(input *ec2.CreateNatGatewayInput) error {
 	if input.SubnetId == nil || *input.SubnetId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
+	// Private NAT gateways (ConnectivityType=private) are not implemented.
+	if input.ConnectivityType != nil && *input.ConnectivityType == "private" {
+		return errors.New(awserrors.ErrorUnsupported)
+	}
+	// AllocationId is required for public NAT gateways, matching AWS.
 	if input.AllocationId == nil || *input.AllocationId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 	return nil
 }
 
-func CreateNatGateway(input *ec2.CreateNatGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateNatGatewayOutput, error) {
+func CreateNatGateway(ctx context.Context, input *ec2.CreateNatGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateNatGatewayOutput, error) {
 	var output ec2.CreateNatGatewayOutput
 	if err := ValidateCreateNatGatewayInput(input); err != nil {
 		return output, err
 	}
 	svc := handlers_ec2_natgw.NewNATSNatGatewayService(natsConn)
-	result, err := svc.CreateNatGateway(input, accountID)
+	result, err := svc.CreateNatGateway(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

@@ -1,6 +1,7 @@
 package handlers_ec2_tags
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -33,7 +34,7 @@ func TestCreateTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags for an instance
-	result, err := svc.CreateTags(&ec2.CreateTagsInput{
+	result, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("test-instance")},
@@ -45,7 +46,7 @@ func TestCreateTags(t *testing.T) {
 	require.NotNil(t, result)
 
 	// Verify tags were created
-	describeResult, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	describeResult, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-id"), Values: []*string{aws.String("i-test123")}},
 		},
@@ -59,7 +60,7 @@ func TestCreateTags_MultipleResources(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags for multiple resources
-	result, err := svc.CreateTags(&ec2.CreateTagsInput{
+	result, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{
 			aws.String("i-test1"),
 			aws.String("i-test2"),
@@ -74,7 +75,7 @@ func TestCreateTags_MultipleResources(t *testing.T) {
 	require.NotNil(t, result)
 
 	// Verify tags were created for all resources
-	describeResult, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, testAccountID)
+	describeResult, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, describeResult.Tags, 3)
 }
@@ -84,7 +85,7 @@ func TestCreateTags_UpdateExisting(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create initial tag
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("original")},
@@ -93,7 +94,7 @@ func TestCreateTags_UpdateExisting(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update the tag
-	_, err = svc.CreateTags(&ec2.CreateTagsInput{
+	_, err = svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("updated")},
@@ -102,7 +103,7 @@ func TestCreateTags_UpdateExisting(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify tag was updated
-	describeResult, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	describeResult, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-id"), Values: []*string{aws.String("i-test123")}},
 		},
@@ -116,7 +117,7 @@ func TestCreateTags_UpdateExisting(t *testing.T) {
 func TestCreateTags_MissingResources(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("test")},
 		},
@@ -129,7 +130,7 @@ func TestCreateTags_MissingResources(t *testing.T) {
 func TestCreateTags_MissingTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 	}, testAccountID)
 	require.Error(t, err)
@@ -141,20 +142,20 @@ func TestDescribeTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags for different resource types
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test1")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("instance1")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateTags(&ec2.CreateTagsInput{
+	_, err = svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("vol-test1")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("volume1")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Describe all tags
-	result, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, testAccountID)
+	result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, result.Tags, 2)
 }
@@ -164,20 +165,20 @@ func TestDescribeTags_FilterByResourceID(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags for different resources
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test1")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("instance1")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateTags(&ec2.CreateTagsInput{
+	_, err = svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test2")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("instance2")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Filter by resource ID
-	result, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-id"), Values: []*string{aws.String("i-test1")}},
 		},
@@ -192,20 +193,20 @@ func TestDescribeTags_FilterByResourceType(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags for different resource types
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test1")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("instance1")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateTags(&ec2.CreateTagsInput{
+	_, err = svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("vol-test1")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("volume1")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Filter by resource type
-	result, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-type"), Values: []*string{aws.String("instance")}},
 		},
@@ -220,7 +221,7 @@ func TestDescribeTags_FilterByKey(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags with different keys
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test1")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("instance1")},
@@ -230,7 +231,7 @@ func TestDescribeTags_FilterByKey(t *testing.T) {
 	require.NoError(t, err)
 
 	// Filter by key
-	result, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("key"), Values: []*string{aws.String("Name")}},
 		},
@@ -245,7 +246,7 @@ func TestDescribeTags_FilterByValue(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags with different values
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test1")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Environment"), Value: aws.String("production")},
@@ -253,7 +254,7 @@ func TestDescribeTags_FilterByValue(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateTags(&ec2.CreateTagsInput{
+	_, err = svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test2")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Environment"), Value: aws.String("test")},
@@ -262,7 +263,7 @@ func TestDescribeTags_FilterByValue(t *testing.T) {
 	require.NoError(t, err)
 
 	// Filter by value
-	result, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("value"), Values: []*string{aws.String("production")}},
 		},
@@ -276,7 +277,7 @@ func TestDescribeTags_FilterByValue(t *testing.T) {
 func TestDescribeTags_Empty(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
-	result, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, testAccountID)
+	result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, result.Tags)
 }
@@ -285,7 +286,7 @@ func TestDescribeTags_Empty(t *testing.T) {
 func TestDescribeTags_InvalidFilterName(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
-	_, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	_, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resouce-id"), Values: []*string{aws.String("i-test1")}},
 		},
@@ -299,7 +300,7 @@ func TestDeleteTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("test")},
@@ -309,7 +310,7 @@ func TestDeleteTags(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete one tag
-	_, err = svc.DeleteTags(&ec2.DeleteTagsInput{
+	_, err = svc.DeleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name")},
@@ -318,7 +319,7 @@ func TestDeleteTags(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify only one tag remains
-	result, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-id"), Values: []*string{aws.String("i-test123")}},
 		},
@@ -333,7 +334,7 @@ func TestDeleteTags_AllTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("test")},
@@ -343,13 +344,13 @@ func TestDeleteTags_AllTags(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete all tags (no tags specified)
-	_, err = svc.DeleteTags(&ec2.DeleteTagsInput{
+	_, err = svc.DeleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify no tags remain
-	result, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-id"), Values: []*string{aws.String("i-test123")}},
 		},
@@ -363,7 +364,7 @@ func TestDeleteTags_ValueConditional(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	// Create tags
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Environment"), Value: aws.String("production")},
@@ -373,7 +374,7 @@ func TestDeleteTags_ValueConditional(t *testing.T) {
 	require.NoError(t, err)
 
 	// Try to delete Environment=staging (wrong value) — should NOT delete
-	_, err = svc.DeleteTags(&ec2.DeleteTagsInput{
+	_, err = svc.DeleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Environment"), Value: aws.String("staging")},
@@ -382,7 +383,7 @@ func TestDeleteTags_ValueConditional(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify both tags still exist
-	result, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-id"), Values: []*string{aws.String("i-test123")}},
 		},
@@ -391,7 +392,7 @@ func TestDeleteTags_ValueConditional(t *testing.T) {
 	assert.Len(t, result.Tags, 2)
 
 	// Delete Environment=production (correct value) — should delete
-	_, err = svc.DeleteTags(&ec2.DeleteTagsInput{
+	_, err = svc.DeleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String("i-test123")},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Environment"), Value: aws.String("production")},
@@ -400,7 +401,7 @@ func TestDeleteTags_ValueConditional(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify only Team remains
-	result, err = svc.DescribeTags(&ec2.DescribeTagsInput{
+	result, err = svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-id"), Values: []*string{aws.String("i-test123")}},
 		},
@@ -414,7 +415,7 @@ func TestDeleteTags_ValueConditional(t *testing.T) {
 func TestDeleteTags_MissingResources(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
-	_, err := svc.DeleteTags(&ec2.DeleteTagsInput{
+	_, err := svc.DeleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name")},
 		},
@@ -439,6 +440,11 @@ func TestGetResourceType(t *testing.T) {
 		{"rtb-abc123", "route-table"},
 		{"igw-abc123", "internet-gateway"},
 		{"eigw-abc123", "egress-only-internet-gateway"},
+		{"eni-abc123", "network-interface"},
+		{"eipalloc-abc123", "elastic-ip"},
+		{"nat-abc123", "natgateway"},
+		{"key-abc123", "key-pair"},
+		{"pg-abc123", "placement-group"},
 		{"unknown-abc123", "unknown"},
 	}
 
@@ -454,7 +460,7 @@ func TestMemoryObjectStore(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 
 	// Test that GetObject returns NoSuchKeyError for missing objects
-	_, err := store.GetObject(&s3.GetObjectInput{
+	_, err := store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("nonexistent"),
 	})
@@ -469,28 +475,28 @@ func TestAccountIsolation_CreateAndDescribe(t *testing.T) {
 	accountB := "222222222222"
 
 	// Account A creates tags
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-aaa111")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("account-a-instance")}},
 	}, accountA)
 	require.NoError(t, err)
 
 	// Account B creates tags on a different resource
-	_, err = svc.CreateTags(&ec2.CreateTagsInput{
+	_, err = svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-bbb222")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("account-b-instance")}},
 	}, accountB)
 	require.NoError(t, err)
 
 	// Account A should only see its own tags
-	resultA, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, accountA)
+	resultA, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, accountA)
 	require.NoError(t, err)
 	assert.Len(t, resultA.Tags, 1)
 	assert.Equal(t, "i-aaa111", *resultA.Tags[0].ResourceId)
 	assert.Equal(t, "account-a-instance", *resultA.Tags[0].Value)
 
 	// Account B should only see its own tags
-	resultB, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, accountB)
+	resultB, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, accountB)
 	require.NoError(t, err)
 	assert.Len(t, resultB.Tags, 1)
 	assert.Equal(t, "i-bbb222", *resultB.Tags[0].ResourceId)
@@ -504,20 +510,20 @@ func TestAccountIsolation_SameResourceID(t *testing.T) {
 	accountB := "222222222222"
 
 	// Both accounts tag the same resource ID
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-shared")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("from-account-a")}},
 	}, accountA)
 	require.NoError(t, err)
 
-	_, err = svc.CreateTags(&ec2.CreateTagsInput{
+	_, err = svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-shared")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("from-account-b")}},
 	}, accountB)
 	require.NoError(t, err)
 
 	// Each account sees its own tag value
-	resultA, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	resultA, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-id"), Values: []*string{aws.String("i-shared")}},
 		},
@@ -526,7 +532,7 @@ func TestAccountIsolation_SameResourceID(t *testing.T) {
 	assert.Len(t, resultA.Tags, 1)
 	assert.Equal(t, "from-account-a", *resultA.Tags[0].Value)
 
-	resultB, err := svc.DescribeTags(&ec2.DescribeTagsInput{
+	resultB, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("resource-id"), Values: []*string{aws.String("i-shared")}},
 		},
@@ -543,33 +549,66 @@ func TestAccountIsolation_DeleteDoesNotAffectOtherAccount(t *testing.T) {
 	accountB := "222222222222"
 
 	// Both accounts create tags on same resource ID
-	_, err := svc.CreateTags(&ec2.CreateTagsInput{
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-shared")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
 	}, accountA)
 	require.NoError(t, err)
 
-	_, err = svc.CreateTags(&ec2.CreateTagsInput{
+	_, err = svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 		Resources: []*string{aws.String("i-shared")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("staging")}},
 	}, accountB)
 	require.NoError(t, err)
 
 	// Account A deletes its tag
-	_, err = svc.DeleteTags(&ec2.DeleteTagsInput{
+	_, err = svc.DeleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String("i-shared")},
 		Tags:      []*ec2.Tag{{Key: aws.String("Env")}},
 	}, accountA)
 	require.NoError(t, err)
 
 	// Account A should have no tags
-	resultA, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, accountA)
+	resultA, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, accountA)
 	require.NoError(t, err)
 	assert.Empty(t, resultA.Tags)
 
 	// Account B's tag should still exist
-	resultB, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, accountB)
+	resultB, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, accountB)
 	require.NoError(t, err)
 	assert.Len(t, resultB.Tags, 1)
 	assert.Equal(t, "staging", *resultB.Tags[0].Value)
+}
+
+// TestDeleteAllTags tests that the resource's stored tag object is removed
+// entirely and other accounts' entries for the same resource ID survive
+func TestDeleteAllTags(t *testing.T) {
+	svc, _ := setupTestTagsService(t)
+	accountA := "111111111111"
+	accountB := "222222222222"
+
+	for _, acct := range []string{accountA, accountB} {
+		_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
+			Resources: []*string{aws.String("i-gone")},
+			Tags:      []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+		}, acct)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, svc.DeleteAllTags(context.Background(), accountA, "i-gone"))
+
+	resultA, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, accountA)
+	require.NoError(t, err)
+	assert.Empty(t, resultA.Tags)
+
+	resultB, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, accountB)
+	require.NoError(t, err)
+	assert.Len(t, resultB.Tags, 1)
+}
+
+// TestDeleteAllTags_MissingResourceIsNoError tests idempotency for a resource
+// that never had tags
+func TestDeleteAllTags_MissingResourceIsNoError(t *testing.T) {
+	svc, _ := setupTestTagsService(t)
+	require.NoError(t, svc.DeleteAllTags(context.Background(), "111111111111", "i-never-tagged"))
 }

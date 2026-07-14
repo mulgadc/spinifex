@@ -3,9 +3,12 @@ package subscribers
 import (
 	"context"
 	"encoding/json"
+	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -574,4 +577,110 @@ func TestBadJSON_AllRequestReplies(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fakeMACFlusher records the IPs it was asked to flush.
+type fakeMACFlusher struct {
+	mu      sync.Mutex
+	flushed []string
+	err     error
+}
+
+func (f *fakeMACFlusher) FlushMACBinding(_ context.Context, ip string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.flushed = append(f.flushed, ip)
+	return f.err
+}
+
+func (f *fakeMACFlusher) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.flushed...)
+}
+
+// newTestSubscriberWithMAC mirrors newTestSubscriber but injects a MAC flusher and
+// returns the shared topology manager so tests can seed the VPC/subnet.
+func newTestSubscriberWithMAC(t *testing.T, mac MACBindingFlusher) (*Subscriber, topology.Manager) {
+	t.Helper()
+	m := mock.New()
+	_ = m.Connect(context.Background())
+
+	topo := topology.NewLiveManager(m)
+	sg := policy.NewSecurityGroupManager(m)
+	nat, err := policy.NewNATManager(m, policy.NATModeDistributed)
+	if err != nil {
+		t.Fatalf("NewNATManager: %v", err)
+	}
+	routes := policy.NewRouteManager(m)
+	igw, err := external.NewIGWManager(external.IGWManagerConfig{
+		OVN: m, Routes: routes, NAT: nat,
+		Allocator: external.NewStaticRangeAllocator(m), Chassis: []string{"hv1"},
+		NATMode: policy.NATModeDistributed,
+	})
+	if err != nil {
+		t.Fatalf("NewIGWManager: %v", err)
+	}
+	eip, err := external.NewEIPManager(nat, nil)
+	if err != nil {
+		t.Fatalf("NewEIPManager: %v", err)
+	}
+	natgw, err := external.NewNATGWManager(nat)
+	if err != nil {
+		t.Fatalf("NewNATGWManager: %v", err)
+	}
+	s, err := New(Config{Topology: topo, SG: sg, EIP: eip, NATGW: natgw, IGW: igw, MAC: mac})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s, topo
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
+}
+
+// A successor reusing a private IP must get a clean SB MAC_Binding: both the
+// create-port (successor bind) and delete-port (predecessor teardown) handlers
+// flush the private IP so OVN re-resolves it to the live owner's MAC.
+func TestHandlePort_FlushesStaleMACBinding(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeMACFlusher{}
+	sub, topo := newTestSubscriberWithMAC(t, fake)
+
+	require.NoError(t, topo.EnsureVPC(ctx, topology.VPCSpec{VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/16")}))
+	require.NoError(t, topo.EnsureSubnet(ctx, topology.SubnetSpec{SubnetID: "subnet-a", VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/24")}))
+
+	evt := PortEvent{
+		NetworkInterfaceId: "eni-new", SubnetId: "subnet-a", VpcId: "vpc-a",
+		PrivateIpAddress: "172.31.0.4", MacAddress: "02:00:00:00:00:aa",
+	}
+
+	sub.handleCreatePort(&nats.Msg{Data: mustJSON(t, evt)})
+	assert.Contains(t, fake.calls(), "172.31.0.4", "create-port must flush the private IP's mac_binding")
+
+	sub.handleDeletePort(&nats.Msg{Data: mustJSON(t, evt)})
+	assert.Equal(t, 2, len(fake.calls()), "delete-port must also flush the freed private IP's mac_binding")
+}
+
+// A nil flusher must be a no-op (the dependency is optional).
+func TestHandlePort_NilFlusherIsNoop(t *testing.T) {
+	ctx := context.Background()
+	sub, topo := newTestSubscriberWithMAC(t, nil)
+
+	require.NoError(t, topo.EnsureVPC(ctx, topology.VPCSpec{VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/16")}))
+	require.NoError(t, topo.EnsureSubnet(ctx, topology.SubnetSpec{SubnetID: "subnet-a", VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/24")}))
+
+	evt := PortEvent{
+		NetworkInterfaceId: "eni-new", SubnetId: "subnet-a", VpcId: "vpc-a",
+		PrivateIpAddress: "172.31.0.4", MacAddress: "02:00:00:00:00:aa",
+	}
+	// Reaching here without panic is the assertion.
+	sub.handleCreatePort(&nats.Msg{Data: mustJSON(t, evt)})
+	sub.handleDeletePort(&nats.Msg{Data: mustJSON(t, evt)})
 }

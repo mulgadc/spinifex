@@ -34,6 +34,9 @@ Service lifecycle commands for starting, stopping, and checking status of all Sp
 | `spx service northstar start` | `--northstar-config` (overrides `nodes.<node>.northstar.config_path`) | Loads cluster config → reads `northstar.toml` → starts the northstar DNS server (authoritative for internal `*.spx3.net`, recursive via upstream forwarders), syncing zones from its S3 bucket. Guests resolve via `169.254.169.253`, served by vpcd's per-tap DNS shim which forwards to northstar |
 | `spx service northstar stop` | — | Stops the northstar service |
 | `spx service northstar status` | — | Reports northstar service status |
+| `spx service qmp-collector start` | — | Starts the guest-metrics collector (polls per-VM telemetry QMP sockets + tap counters, publishes CloudWatch-shaped series to NATS `metrics.ec2.*`) |
+| `spx service qmp-collector stop` | — | Stops the qmp-collector service |
+| `spx service qmp-collector status` | — | Reports qmp-collector service status |
 
 ### Cluster Inspection
 
@@ -54,7 +57,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `spx admin init` | `--nodes`, `--node`, `--bind`, `--port`, `--region`, `--az`, `--cluster-name`, `--cluster-bind`, `--cluster-routes`, `--predastore-nodes`, `--services`, `--formation-timeout`, `--token-ttl`, `--force` | Generates root IAM credentials (AKIA-prefixed access key + secret) → creates master.key (AES-256, 32 bytes, 0600) → writes bootstrap.json (consumed on first start) → generates CA + server TLS certificates → generates join token (written to `join-token` file, displayed in join command) → creates NATS config with auth token → writes spinifex.toml, awsgw.toml, predastore.toml → configures AWS CLI `spx` profile → creates directory structure under `~/spinifex/` |
+| `spx admin init` | `--nodes`, `--node`, `--bind`, `--port`, `--region`, `--az`, `--cluster-name`, `--cluster-bind`, `--cluster-routes`, `--predastore-nodes`, `--services`, `--formation-timeout`, `--token-ttl`, `--force`, `--external-mode` (`pool` \| `nat` routed NAT for non-bridgeable uplinks, single-node; pair with `setup-ovn.sh --nat-uplink`; add `--external-pool start-end --external-gateway <ip>` or `--external-source=dhcp [--external-bind-bridge <iface>]` for a public pool with full EIP support; note: system instances (ECS/EKS/load-balancer agents) are unsupported in nat v1 — they require `pool` mode), `--no-external` | Generates root IAM credentials (AKIA-prefixed access key + secret) → creates master.key (AES-256, 32 bytes, 0600) → writes bootstrap.json (consumed on first start) → generates CA + server TLS certificates → generates join token (written to `join-token` file, displayed in join command) → creates NATS config with auth token → writes spinifex.toml, awsgw.toml, predastore.toml → configures AWS CLI `spx` profile → creates directory structure under `~/spinifex/` |
 | `spx admin join` | `--host` (required), `--node` (required), `--token` (required), `--bind`, `--port`, `--region`, `--az`, `--cluster-bind`, `--cluster-routes`, `--data-dir`, `--services` | Connects to leader node with join token (Authorization: Bearer header) → retrieves cluster configuration → configures local node to join cluster and participate in distributed operations |
 
 ### Version
@@ -96,7 +99,68 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 |---------|-------|-------------|
 | `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | Catalog imports (`--name`) download the image, fetch the catalog `Checksum` URL, verify the SHA-256/SHA-512 digest, and inherit `BootMode` from the catalog entry. `--boot-mode` overrides the catalog value when set. Mismatch fails closed; the cached file is left on disk and `--force` re-downloads. `--file` imports skip checksum verification (operator-supplied media is outside Spinifex's trust boundary, the skip is logged at INFO for audit) and require an explicit `--boot-mode` because there is no catalog metadata to inherit from. `--skip-verify` bypasses verification for catalog imports and emits a WARN slog + stderr notice; use only for debugging or when upstream mirrors are confirmed-broken. On every import a best-effort `virt-customize` step bakes the deployment CA (`<data-root>/config/ca.pem`) into the image's trust store before the block copy, so in-guest SDK-over-TLS calls to Spinifex endpoints trust the gateway from first boot; an image libguestfs cannot customize is imported as-is (CA-free) and logs a skip. Because the CA is fixed into the image, rotating the cluster CA requires re-importing affected images. |
 | `spx admin images list` | — | Lists available OS images that can be imported or downloaded |
+| `spx admin images promote` | `--image-id` (required), `--yes` | Reads `ami-<id>/config.json`, validates the AMI is account-owned, then rewrites `ImageOwnerAlias` to `"system"` in-place. No block data is copied. The change takes effect immediately — the AMI becomes visible to all accounts via `DescribeImages`. Prompts for confirmation (skipped with `--yes`). Already-system AMIs are refused. |
 | `spx admin images remove` | `--image-id` (required), `--force`, `--yes` | Loads `ami-<id>/config.json`, walks transitive dependents — copied snapshots whose `VolumeID == imageID`, volumes whose `SnapshotID` references the internal `snap-ami-<id>` or any derived snap, and account AMIs created via `CopyImage` whose `SnapshotID` is a derived snap — then prompts (skipped with `--yes`) before deleting `ami-<id>/config.json` (the DescribeImages barrier) followed by the rest of `ami-<id>/` and `snap-ami-<id>/`. Account-owned AMIs are refused with a hint pointing at `aws ec2 deregister-image` + `aws ec2 delete-snapshot`. `--force` bypasses the dependency, ownership and config-corrupt checks for salvage of orphaned blocks. |
+
+#### Image integrity verification (CMMC SI.L1-3.14.2)
+
+Catalog imports (`spx admin images import --name <name>`) verify the image
+against the catalog-declared SHA-256/SHA-512 digest before extraction. The sums
+file is fetched from the catalog `Checksum` URL over HTTPS only (cross-scheme
+redirects refused), and verification runs on both fresh downloads and cache
+hits so a poisoned cache is caught on the next import.
+
+On mismatch the import exits non-zero, the cached file is left on disk for
+inspection, and the printed guidance is `spx admin images import --name <name>
+--force` to re-download.
+
+`--file` imports skip verification by design: operator-supplied media is
+outside Spinifex's trust boundary and the operator is responsible for
+integrity (e.g. `sha256sum` against a trusted upstream digest before import).
+The skip is recorded as an INFO `slog` event with `reason=local-file-import`
+so a CMMC assessor can audit the decision from journald.
+
+`--skip-verify` bypasses the checksum step for catalog imports. The command
+still downloads via the catalog URL but does not compare the image digest
+against the sums file. Intended for narrow cases such as debugging upstream
+mirror issues or running against a transiently-broken `latest/` path; the
+skip is logged at WARN with `reason=skip-verify-flag` and printed to stderr
+so operators and assessors see it. Prefer `--file` with an out-of-band
+verified image over `--skip-verify` whenever possible.
+
+**Limitation:** verification confirms the image matches the digest the mirror
+served. A mirror compromise that swaps both image and sums file is not
+detected; closing that gap requires GPG signature verification of the sums
+file, deferred to a later phase.
+
+#### `spx admin images remove` caveats
+
+Admin-imported AMIs (`ImageOwnerAlias = "system"`) live
+under the `ami-<id>/` S3 prefix and use a viperblock-internal snap checkpoint
+at `snap-ami-<id>/` — there is no `snap-<id>/metadata.json`. The AWS handlers
+(`DeregisterImage`, `DeleteSnapshot`) reject system owners with
+`UnauthorizedOperation`, which is the right behaviour for tenant API callers
+but leaves no AWS-flow path to reclaim space. `spx admin images remove` is
+the admin-trust-boundary counterpart that performs the dependency walk and
+hard-deletes the blocks directly against predastore.
+
+`CopyImage` of a system AMI is metadata-only: it writes a fresh
+`snap-<acct>/metadata.json` whose `VolumeID` points at `ami-<sys>` and a new
+`ami-<acct>/config.json` referencing that snap. Volumes launched from the
+copied AMI read transitively from `ami-<sys>/chunks/...`. The remove command
+walks this transitive set and refuses if anything references the target.
+
+**TOCTOU window:** between the safety scan and the `config.json` delete a
+concurrent `RunInstances` against the AMI could create a new dependent
+volume. The window is sub-second on a healthy cluster. The admin running
+this command is expected to know the fleet's operational state; if the race
+fires the result is a `vol-<id>` with deleted backing blocks, recovered by
+terminating the orphaned instance.
+
+**`--force` bypasses every safety check** (dependents, ownership, missing /
+corrupt `config.json`). Use only for salvage of orphaned blocks. Running it
+against a live system AMI corrupts every dependent volume on the next disk
+read.
 
 ### GPU Management
 
@@ -110,6 +174,11 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 | `spx admin gpu mig enable` | `--profile <name>` (required, e.g. `1g.10gb`), `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → enables MIG mode on each target (`gpu.EnableMIGMode`) → lists available profiles (`gpu.ListProfiles`) and validates requested profile name → destroys any existing instances (`gpu.DestroyAllInstances`) → creates new instances filling GPU capacity (`gpu.CreateInstances`) → writes `mig_profile` to `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. |
 | `spx admin gpu mig disable` | `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → destroys all GPU instances (`gpu.DestroyAllInstances`) → disables MIG mode (`gpu.DisableMIGMode`) → clears `mig_profile` in `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. |
 
+### EKS Control-Plane Disaster Recovery
+
+| Command | Flags | Description |
+|---------|-------|-------------|
+| `spx admin eks restore-snapshot` | `--cluster` (required), `--snapshot` (optional, defaults to the latest snapshot in predastore), `--account` (optional, defaults to the bootstrap account) | Single-CP total-loss DR path (fail-safe): validates the snapshot exists in predastore BEFORE any mutation (a typo'd/missing key hard-fails, never resets into an empty datastore) → launches a fresh control-plane VM as a cluster-init seed (replaying the persisted create-time launch template) → sets a required-snapshot `RecoveryDirective` (`cluster-reset`) so the boot-time recovery agent aborts rather than resets-into-empty if it cannot fetch the snapshot → persists the replacement in cluster meta BEFORE re-pointing the NLB (so an NLB failure is convergeable by the reconciler, returned as a provisional status, not a hard error) → re-points the cluster NLB's apiserver and konnectivity target groups from the old CP's ENI to the new one → fences the old CP with retries, failing loudly if it cannot be confirmed terminated (split-brain guard). Any failure before the meta commit unwinds the fresh CP (terminate + clear directive) so a re-run does not stack a second resetting control plane. The returned status is provisional — success means the sequence completed, not that etcd is restored and serving; verify cluster health. HA clusters (a spread with a potentially surviving quorum) are rejected — recover those via quorum reformation instead. |
 
 ## AWS-Compatible API
 
@@ -117,7 +186,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn), `--capacity-reservation-specification` (CapacityReservationTarget.CapacityReservationId, targeted-by-id only), `--metadata-options` (HttpPutResponseHopLimit; IMDSv2-only enforced — rejects `http-tokens=optional`) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--launch-template`, `--hibernate-options` | **DONE** |
+| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn), `--capacity-reservation-specification` (CapacityReservationTarget.CapacityReservationId, targeted-by-id only), `--metadata-options` (HttpPutResponseHopLimit; IMDSv2-only enforced — rejects `http-tokens=optional`), `--launch-template` (LaunchTemplateId/LaunchTemplateName, Version — resolves `$Default`/`$Latest`; direct params override the template) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--hibernate-options` | **DONE** |
 | `describe-instances` | `--instance-ids`, `--filters` (instance-state-name, instance-id, instance-type, vpc-id, subnet-id, tag:*, tag-key, tag-value) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `start-instances` | `--instance-ids` | `--dry-run`, `--force` | **DONE** |
 | `stop-instances` | `--instance-ids` | `--force`, `--hibernate`, `--dry-run` | **DONE** |
@@ -158,10 +227,10 @@ Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` 
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-key-pair` | `--key-name`, `--key-type` (rsa/ed25519) | `--key-format`, `--tag-specifications`, `--dry-run` | **DONE** |
+| `create-key-pair` | `--key-name`, `--key-type` (rsa/ed25519), `--tag-specifications` | `--key-format`, `--dry-run` | **DONE** |
 | `describe-key-pairs` | `--key-names`, `--key-pair-ids`, `--filters` (key-pair-id, key-name, fingerprint, tag:*) | `--max-results`, `--dry-run` | **DONE** |
 | `delete-key-pair` | `--key-name`, `--key-pair-id` | `--dry-run` | **DONE** |
-| `import-key-pair` | `--key-name`, `--public-key-material` | `--tag-specifications`, `--dry-run` | **DONE** |
+| `import-key-pair` | `--key-name`, `--public-key-material`, `--tag-specifications` | `--dry-run` | **DONE** |
 
 ### EC2 — AMI Images
 
@@ -184,7 +253,7 @@ Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
 | `describe-volumes` | `--volume-ids`, `--filters` (volume-id, status, size, volume-type, attachment.instance-id, attachment.status, attachment.device, availability-zone, tag:*), persisted `DeleteOnTermination` | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
-| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3), `--snapshot-id` | `--iops` (hardcoded 3000), `--encrypted` (hardcoded false), `--throughput`, `--tag-specifications` | **DONE** |
+| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3), `--snapshot-id`, `--tag-specifications` | `--iops` (hardcoded 3000), `--encrypted` (hardcoded false), `--throughput` | **DONE** |
 | `delete-volume` | `--volume-id` | `--dry-run` | **DONE** |
 | `modify-volume` | `--volume-id`, `--size`, `--volume-type`, `--iops` | `--throughput`, `--dry-run`, `--multi-attach-enabled` | **DONE** |
 | `attach-volume` | `--volume-id`, `--instance-id`, `--device` (auto-assigns `/dev/sd[f-p]`) | `--dry-run` | **DONE** |
@@ -296,7 +365,7 @@ KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on 
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-route-table` | `--vpc-id` | `--tag-specifications`, `--dry-run` | **DONE** |
+| `create-route-table` | `--vpc-id`, `--tag-specifications` | `--dry-run` | **DONE** |
 | `delete-route-table` | `--route-table-id` | `--dry-run` | **DONE** |
 | `describe-route-tables` | `--route-table-ids`, `--filters` (vpc-id, route-table-id, association.main, association.route-table-association-id, association.subnet-id, route.destination-cidr-block, route.gateway-id) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `create-route` | `--route-table-id`, `--destination-cidr-block`, `--gateway-id`, `--nat-gateway-id` | `--egress-only-internet-gateway-id`, `--vpc-peering-connection-id`, `--dry-run` | **DONE** |
@@ -324,7 +393,7 @@ termination. Standalone attach/detach API is internal-only.
 
 ### EC2 — Elastic IP
 
-EIP commands are only registered when an external IPAM pool is configured.
+EIP handlers are always registered. Without a public IPAM pool (external mode disabled, or `nat` without a public pool), `describe-addresses` returns an empty list and mutating commands return `UnsupportedOperation`. In `nat` mode a public pool (`--external-pool` or `--external-source=dhcp` at init) enables the full EIP surface with host-delivered ingress.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -339,7 +408,7 @@ EIP commands are only registered when an external IPAM pool is configured.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-nat-gateway` | `--subnet-id`, `--allocation-id` | `--connectivity-type`, `--tag-specifications`, `--dry-run` | **DONE** |
+| `create-nat-gateway` | `--subnet-id`, `--allocation-id`, `--tag-specifications` | `--connectivity-type`, `--dry-run` | **DONE** |
 | `delete-nat-gateway` | `--nat-gateway-id` | `--dry-run` | **DONE** |
 | `describe-nat-gateways` | `--nat-gateway-ids`, `--filters` (vpc-id, state) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `assign-private-nat-gateway-address` | — | `--nat-gateway-id`, `--private-ip-addresses` | **NOT STARTED** |
@@ -349,9 +418,9 @@ EIP commands are only registered when an external IPAM pool is configured.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-placement-group` | `--group-name`, `--strategy` (spread/cluster) | `--partition-count`, `--spread-level`, `--tag-specifications`, `--dry-run` | **DONE** |
+| `create-placement-group` | `--group-name`, `--strategy` (spread/cluster), `--tag-specifications` | `--partition-count`, `--spread-level`, `--dry-run` | **DONE** |
 | `delete-placement-group` | `--group-name` | `--dry-run` | **DONE** |
-| `describe-placement-groups` | `--group-names`, `--group-ids`, `--filters` (strategy, state, spread-level, group-name) | `--dry-run` | **DONE** |
+| `describe-placement-groups` | `--group-names`, `--group-ids`, `--filters` (strategy, state, spread-level, group-name, tag:*, tag-key, tag-value) | `--dry-run` | **DONE** |
 
 ### EC2 — VPC Peering
 
@@ -419,11 +488,13 @@ EIP commands are only registered when an external IPAM pool is configured.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-launch-template` | — | `--launch-template-name`, `--launch-template-data`, `--tag-specifications` | **NOT STARTED** |
-| `create-launch-template-version` | — | `--launch-template-id`/`--launch-template-name`, `--launch-template-data`, `--source-version` | **NOT STARTED** |
-| `delete-launch-template` | — | `--launch-template-id`/`--launch-template-name`, `--dry-run` | **NOT STARTED** |
-| `describe-launch-templates` | — | `--launch-template-ids`, `--launch-template-names`, `--filters` | **NOT STARTED** |
-| `describe-launch-template-versions` | — | `--launch-template-id`/`--launch-template-name`, `--versions`, `--min-version`, `--max-version` | **NOT STARTED** |
+| `create-launch-template` | `--launch-template-name`, `--launch-template-data` (full nested RequestLaunchTemplateData), `--version-description`, `--tag-specifications` (launch-template-scoped), `--dry-run` (no-op) | `--client-token` (idempotency) | **DONE** |
+| `create-launch-template-version` | `--launch-template-id`/`--launch-template-name`, `--launch-template-data`, `--source-version` (clone-and-override), `--version-description`, `--dry-run` (no-op) | `--client-token`, `--resolve-alias` | **DONE** |
+| `delete-launch-template` | `--launch-template-id`/`--launch-template-name`, `--dry-run` (no-op) | — | **DONE** |
+| `delete-launch-template-versions` | `--launch-template-id`/`--launch-template-name`, `--versions` (rejects the current default version), `--dry-run` (no-op) | — | **DONE** |
+| `modify-launch-template` | `--launch-template-id`/`--launch-template-name`, `--default-version`, `--dry-run` (no-op) | — | **DONE** |
+| `describe-launch-templates` | `--launch-template-ids`, `--launch-template-names`, `--filters` (launch-template-id, launch-template-name, create-time, tag:*, tag-key) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `describe-launch-template-versions` | `--launch-template-id`/`--launch-template-name`, `--versions` (`$Default`/`$Latest`/numeric), `--min-version`, `--max-version`, `--filters` (is-default-version, image-id, instance-type, kernel-id, ram-disk-id, ebs-optimized) | `--max-results`, `--next-token`, `--dry-run`, `--resolve-alias` | **DONE** |
 
 ### EC2 — Dedicated Hosts, IPv4 Pools, DHCP, Capacity Reservations
 
@@ -482,9 +553,9 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `get-user-policy` | `--user-name`, `--policy-name` | — | **DONE** |
 | `delete-user-policy` | `--user-name`, `--policy-name` | — | **DONE** |
 | `list-user-policies` | `--user-name` | `--max-items`, `--marker` | **DONE** |
-| `tag-user` | — | `--user-name`, `--tags` | **NOT STARTED** |
-| `untag-user` | — | `--user-name`, `--tag-keys` | **NOT STARTED** |
-| `list-user-tags` | — | `--user-name` | **NOT STARTED** |
+| `tag-user` | `--user-name`, `--tags` | — | **DONE** |
+| `untag-user` | `--user-name`, `--tag-keys` | — | **DONE** |
+| `list-user-tags` | `--user-name` | `--max-items`, `--marker` | **DONE** |
 | `put-user-permissions-boundary` | — | `--user-name`, `--permissions-boundary` | **NOT STARTED** |
 | `delete-user-permissions-boundary` | — | `--user-name` | **NOT STARTED** |
 | `create-login-profile` | — | `--user-name`, `--password` | **NOT STARTED** |
@@ -520,9 +591,9 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `delete-policy-version` | — | `--policy-arn`, `--version-id` | **NOT STARTED** |
 | `set-default-policy-version` | — | `--policy-arn`, `--version-id` | **NOT STARTED** |
 | `list-entities-for-policy` | — | `--policy-arn`, `--entity-filter`, `--path-prefix`, `--policy-usage-filter` | **NOT STARTED** |
-| `tag-policy` | — | `--policy-arn`, `--tags` | **NOT STARTED** |
-| `untag-policy` | — | `--policy-arn`, `--tag-keys` | **NOT STARTED** |
-| `list-policy-tags` | — | `--policy-arn` | **NOT STARTED** |
+| `tag-policy` | `--policy-arn`, `--tags` | — | **DONE** |
+| `untag-policy` | `--policy-arn`, `--tag-keys` | — | **DONE** |
+| `list-policy-tags` | `--policy-arn` | `--max-items`, `--marker` | **DONE** |
 | `generate-service-last-accessed-details` | — | `--arn`, `--granularity` | **NOT STARTED** |
 | `get-service-last-accessed-details` | — | `--job-id` | **NOT STARTED** |
 | `get-service-last-accessed-details-with-entities` | — | `--job-id`, `--service-namespace` | **NOT STARTED** |
@@ -547,9 +618,9 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `delete-role-policy` | `--role-name`, `--policy-name` | — | **DONE** |
 | `put-role-permissions-boundary` | — | `--role-name`, `--permissions-boundary` | **NOT STARTED** |
 | `delete-role-permissions-boundary` | — | `--role-name` | **NOT STARTED** |
-| `tag-role` | — | `--role-name`, `--tags` | **NOT STARTED** |
-| `untag-role` | — | `--role-name`, `--tag-keys` | **NOT STARTED** |
-| `list-role-tags` | — | `--role-name` | **NOT STARTED** |
+| `tag-role` | `--role-name`, `--tags` | — | **DONE** |
+| `untag-role` | `--role-name`, `--tag-keys` | — | **DONE** |
+| `list-role-tags` | `--role-name` | `--max-items`, `--marker` | **DONE** |
 | `update-role-description` | — | `--role-name`, `--description` | **NOT STARTED** |
 
 ### IAM — Instance Profiles
@@ -563,9 +634,9 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `delete-instance-profile` | `--instance-profile-name` | — | **DONE** |
 | `add-role-to-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
 | `remove-role-from-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
-| `tag-instance-profile` | — | `--instance-profile-name`, `--tags` | **NOT STARTED** |
-| `untag-instance-profile` | — | `--instance-profile-name`, `--tag-keys` | **NOT STARTED** |
-| `list-instance-profile-tags` | — | `--instance-profile-name` | **NOT STARTED** |
+| `tag-instance-profile` | `--instance-profile-name`, `--tags` | — | **DONE** |
+| `untag-instance-profile` | `--instance-profile-name`, `--tag-keys` | — | **DONE** |
+| `list-instance-profile-tags` | `--instance-profile-name` | `--max-items`, `--marker` | **DONE** |
 
 ### IAM — OIDC Providers
 
@@ -578,8 +649,8 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `add-client-id-to-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--client-id` | **NOT STARTED** |
 | `remove-client-id-from-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--client-id` | **NOT STARTED** |
 | `update-open-id-connect-provider-thumbprint` | — | `--open-id-connect-provider-arn`, `--thumbprint-list` | **NOT STARTED** |
-| `tag-open-id-connect-provider` / `untag-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--tags`/`--tag-keys` | **NOT STARTED** |
-| `list-open-id-connect-provider-tags` | — | `--open-id-connect-provider-arn` | **NOT STARTED** |
+| `tag-open-id-connect-provider` / `untag-open-id-connect-provider` | `--open-id-connect-provider-arn`, `--tags`/`--tag-keys` | — | **DONE** |
+| `list-open-id-connect-provider-tags` | `--open-id-connect-provider-arn` | `--max-items`, `--marker` | **DONE** |
 
 ### IAM — Groups
 
@@ -600,6 +671,12 @@ All IAM operations are account-scoped. Root user (account `000000000000`) bypass
 | `get-group-policy` | `--group-name`, `--policy-name` | — | **DONE** |
 | `delete-group-policy` | `--group-name`, `--policy-name` | — | **DONE** |
 | `list-group-policies` | `--group-name` | `--max-items`, `--marker` | **DONE** |
+
+### IAM — Account
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `get-account-summary` | — | — | **DONE** |
 
 ---
 

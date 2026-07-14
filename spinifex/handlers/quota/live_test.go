@@ -1,6 +1,7 @@
 package handlers_quota
 
 import (
+	"context"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -50,12 +51,12 @@ func TestEnforceLiveExemptShortCircuits(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"vpc disabled", func() error { return disabled.EnforceVPCs(nil, normalAccount, 1) }},
-		{"subnet disabled", func() error { return disabled.EnforceSubnets(nil, normalAccount, 1) }},
-		{"eip disabled", func() error { return disabled.EnforceEIPs(nil, normalAccount, 1) }},
-		{"vpc system account", func() error { return enabled.EnforceVPCs(nil, utils.GlobalAccountID, 1) }},
-		{"subnet system account", func() error { return enabled.EnforceSubnets(nil, utils.GlobalAccountID, 1) }},
-		{"eip system account", func() error { return enabled.EnforceEIPs(nil, utils.GlobalAccountID, 1) }},
+		{"vpc disabled", func() error { return disabled.EnforceVPCs(context.Background(), nil, normalAccount, 1) }},
+		{"subnet disabled", func() error { return disabled.EnforceSubnets(context.Background(), nil, normalAccount, 1) }},
+		{"eip disabled", func() error { return disabled.EnforceEIPs(context.Background(), nil, normalAccount, 1) }},
+		{"vpc system account", func() error { return enabled.EnforceVPCs(context.Background(), nil, utils.GlobalAccountID, 1) }},
+		{"subnet system account", func() error { return enabled.EnforceSubnets(context.Background(), nil, utils.GlobalAccountID, 1) }},
+		{"eip system account", func() error { return enabled.EnforceEIPs(context.Background(), nil, utils.GlobalAccountID, 1) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

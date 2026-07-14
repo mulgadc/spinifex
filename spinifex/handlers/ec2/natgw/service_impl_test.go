@@ -1,6 +1,7 @@
 package handlers_ec2_natgw
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -50,7 +51,7 @@ func setupTestServiceJS(t *testing.T) (*NatGatewayServiceImpl, nats.JetStreamCon
 
 func TestCreateNatGateway(t *testing.T) {
 	svc := setupTestService(t)
-	out, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	out, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
@@ -71,7 +72,7 @@ func TestCreateNatGateway(t *testing.T) {
 // makes the tag-filtered describe return empty, leaking the NAT-GW EIP.
 func TestCreateNatGateway_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 		TagSpecifications: []*ec2.TagSpecification{{
@@ -84,7 +85,7 @@ func TestCreateNatGateway_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err := svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{
 			{Name: aws.String("tag:spinifex:eks-cluster"), Values: aws.StringSlice([]string{"alpha"})},
 			{Name: aws.String("tag:spinifex:eks-role"), Values: aws.StringSlice([]string{"cp-natgw"})},
@@ -99,7 +100,7 @@ func TestCreateNatGateway_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 
 func TestCreateNatGateway_SubnetNotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-nope"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
@@ -108,7 +109,7 @@ func TestCreateNatGateway_SubnetNotFound(t *testing.T) {
 
 func TestCreateNatGateway_EIPNotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-nope"),
 	}, testAccountID)
@@ -117,7 +118,7 @@ func TestCreateNatGateway_EIPNotFound(t *testing.T) {
 
 func TestCreateNatGateway_EIPAlreadyAssociated(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-used"),
 	}, testAccountID)
@@ -126,14 +127,14 @@ func TestCreateNatGateway_EIPAlreadyAssociated(t *testing.T) {
 
 func TestDeleteNatGateway(t *testing.T) {
 	svc := setupTestService(t)
-	createOut, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	createOut, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 	natgwID := *createOut.NatGateway.NatGatewayId
 
-	deleteOut, err := svc.DeleteNatGateway(&ec2.DeleteNatGatewayInput{
+	deleteOut, err := svc.DeleteNatGateway(context.Background(), &ec2.DeleteNatGatewayInput{
 		NatGatewayId: aws.String(natgwID),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -146,13 +147,13 @@ func TestDeleteNatGateway(t *testing.T) {
 
 func TestDescribeNatGateways(t *testing.T) {
 	svc := setupTestService(t)
-	createOut, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	createOut, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{}, testAccountID)
+	out, err := svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.NatGateways, 1)
 	assert.Equal(t, *createOut.NatGateway.NatGatewayId, *out.NatGateways[0].NatGatewayId)
@@ -160,21 +161,21 @@ func TestDescribeNatGateways(t *testing.T) {
 
 func TestDescribeNatGateways_ByID(t *testing.T) {
 	svc := setupTestService(t)
-	createOut, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	createOut, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 	natgwID := *createOut.NatGateway.NatGatewayId
 
-	out, err := svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err := svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		NatGatewayIds: []*string{aws.String(natgwID)},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.NatGateways, 1)
 
 	// Non-existent ID
-	_, err = svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	_, err = svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		NatGatewayIds: []*string{aws.String("nat-nope")},
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
@@ -182,7 +183,7 @@ func TestDescribeNatGateways_ByID(t *testing.T) {
 
 func TestDescribeNatGateways_FilterByState(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
@@ -190,14 +191,14 @@ func TestDescribeNatGateways_FilterByState(t *testing.T) {
 
 	name := "state"
 	val := "available"
-	out, err := svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err := svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{{Name: &name, Values: []*string{&val}}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.NatGateways, 1)
 
 	val2 := "deleted"
-	out, err = svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err = svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{{Name: &name, Values: []*string{&val2}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -206,7 +207,7 @@ func TestDescribeNatGateways_FilterByState(t *testing.T) {
 
 func TestGetNatGateway(t *testing.T) {
 	svc := setupTestService(t)
-	createOut, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	createOut, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
@@ -229,12 +230,12 @@ func TestGetNatGateway_NotFound(t *testing.T) {
 func TestCreateNatGateway_MissingParams(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err = svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId: aws.String("subnet-pub1"),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
@@ -242,20 +243,20 @@ func TestCreateNatGateway_MissingParams(t *testing.T) {
 
 func TestDescribeNatGateways_DeletedGatewayVisible(t *testing.T) {
 	svc := setupTestService(t)
-	createOut, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	createOut, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 	natgwID := *createOut.NatGateway.NatGatewayId
 
-	_, err = svc.DeleteNatGateway(&ec2.DeleteNatGatewayInput{
+	_, err = svc.DeleteNatGateway(context.Background(), &ec2.DeleteNatGatewayInput{
 		NatGatewayId: aws.String(natgwID),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Describe by ID should return the deleted gateway with state=deleted
-	out, err := svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err := svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		NatGatewayIds: []*string{aws.String(natgwID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -263,12 +264,12 @@ func TestDescribeNatGateways_DeletedGatewayVisible(t *testing.T) {
 	assert.Equal(t, "deleted", *out.NatGateways[0].State)
 
 	// Describe without filter should NOT include deleted gateways
-	out, err = svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{}, testAccountID)
+	out, err = svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.NatGateways)
 
 	// Non-existent ID should still error
-	_, err = svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	_, err = svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		NatGatewayIds: []*string{aws.String("nat-never-existed")},
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
@@ -276,7 +277,7 @@ func TestDescribeNatGateways_DeletedGatewayVisible(t *testing.T) {
 
 func TestDescribeNatGateways_FilterByNatGatewayId(t *testing.T) {
 	svc := setupTestService(t)
-	createOut, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	createOut, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
@@ -284,7 +285,7 @@ func TestDescribeNatGateways_FilterByNatGatewayId(t *testing.T) {
 	natgwID := *createOut.NatGateway.NatGatewayId
 
 	// Exact match
-	out, err := svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err := svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{{Name: aws.String("nat-gateway-id"), Values: []*string{aws.String(natgwID)}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -292,14 +293,14 @@ func TestDescribeNatGateways_FilterByNatGatewayId(t *testing.T) {
 	assert.Equal(t, natgwID, *out.NatGateways[0].NatGatewayId)
 
 	// Non-match
-	out, err = svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err = svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{{Name: aws.String("nat-gateway-id"), Values: []*string{aws.String("nat-000000")}}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.NatGateways)
 
 	// Wildcard
-	out, err = svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err = svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{{Name: aws.String("nat-gateway-id"), Values: []*string{aws.String("nat-*")}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -308,21 +309,21 @@ func TestDescribeNatGateways_FilterByNatGatewayId(t *testing.T) {
 
 func TestDescribeNatGateways_FilterBySubnetId(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Exact match
-	out, err := svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err := svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{{Name: aws.String("subnet-id"), Values: []*string{aws.String("subnet-pub1")}}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.NatGateways, 1)
 
 	// Non-match
-	out, err = svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err = svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{{Name: aws.String("subnet-id"), Values: []*string{aws.String("subnet-000000")}}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -331,7 +332,7 @@ func TestDescribeNatGateways_FilterBySubnetId(t *testing.T) {
 
 func TestDescribeNatGateways_FilterByVpcId(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
@@ -339,14 +340,14 @@ func TestDescribeNatGateways_FilterByVpcId(t *testing.T) {
 
 	name := "vpc-id"
 	val := "vpc-test1"
-	out, err := svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err := svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{{Name: &name, Values: []*string{&val}}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.NatGateways, 1)
 
 	val2 := "vpc-nope"
-	out, err = svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+	out, err = svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
 		Filter: []*ec2.Filter{{Name: &name, Values: []*string{&val2}}},
 	}, testAccountID)
 	require.NoError(t, err)

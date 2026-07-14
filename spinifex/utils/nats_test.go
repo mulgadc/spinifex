@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -255,7 +256,7 @@ func TestNATSRequest_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result, err := NATSRequest[Resp](nc, "test.greet", Req{Name: "world"}, 2*time.Second, "")
+	result, err := NATSRequest[Resp](context.Background(), nc, "test.greet", Req{Name: "world"}, 2*time.Second, "")
 	require.NoError(t, err)
 	assert.Equal(t, "hello world", result.Greeting)
 }
@@ -275,9 +276,30 @@ func TestNATSRequest_ErrorResponse(t *testing.T) {
 	require.NoError(t, err)
 
 	type Resp struct{}
-	_, err = NATSRequest[Resp](nc, "test.fail", struct{}{}, 2*time.Second, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.fail", struct{}{}, 2*time.Second, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidParameterValue")
+}
+
+func TestNATSRequest_ErrorResponseSurfacesMessage(t *testing.T) {
+	ns := startTestNATSServer(t)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	// Code is sanitized to ServerInternal, but the actionable message must
+	// still reach the caller instead of the bare code.
+	const reason = "eks: snapshot \"snap-bogus\" not found; refusing to restore"
+	_, err = nc.Subscribe("test.fail.msg", func(msg *nats.Msg) {
+		msg.Respond(GenerateErrorPayloadWithMessage("ServerInternal", reason))
+	})
+	require.NoError(t, err)
+
+	type Resp struct{}
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.fail.msg", struct{}{}, 2*time.Second, "")
+	assert.Error(t, err)
+	assert.Equal(t, reason, err.Error())
 }
 
 func TestNATSRequest_NoResponders(t *testing.T) {
@@ -288,7 +310,7 @@ func TestNATSRequest_NoResponders(t *testing.T) {
 	defer nc.Close()
 
 	type Resp struct{}
-	_, err = NATSRequest[Resp](nc, "test.nobody", struct{}{}, 500*time.Millisecond, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.nobody", struct{}{}, 500*time.Millisecond, "")
 	assert.Error(t, err)
 }
 
@@ -299,14 +321,14 @@ func TestNATSRequest_Timeout(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	// Responder that never responds
+	// Responder that outlives the 100ms client timeout without replying.
 	_, err = nc.QueueSubscribe("test.slow", "q", func(msg *nats.Msg) {
-		time.Sleep(5 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	})
 	require.NoError(t, err)
 
 	type Resp struct{}
-	_, err = NATSRequest[Resp](nc, "test.slow", struct{}{}, 100*time.Millisecond, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.slow", struct{}{}, 100*time.Millisecond, "")
 	assert.Error(t, err)
 }
 
@@ -326,7 +348,7 @@ func TestNATSRequest_InvalidUnmarshal(t *testing.T) {
 	type Resp struct {
 		Value int `json:"value"`
 	}
-	_, err = NATSRequest[Resp](nc, "test.badjson", struct{}{}, 2*time.Second, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.badjson", struct{}{}, 2*time.Second, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unmarshal")
 }
@@ -359,7 +381,7 @@ func TestNATSRequest_AccountIDHeader(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result, err := NATSRequest[Resp](nc, "test.account", Req{Name: "world"}, 2*time.Second, "111122223333")
+	result, err := NATSRequest[Resp](context.Background(), nc, "test.account", Req{Name: "world"}, 2*time.Second, "111122223333")
 	require.NoError(t, err)
 	assert.Equal(t, "hello world", result.Greeting)
 	assert.Equal(t, "111122223333", result.AccountID)
@@ -374,7 +396,7 @@ func TestNATSRequest_MarshalError(t *testing.T) {
 
 	type Resp struct{}
 	// Channels cannot be marshaled to JSON
-	_, err = NATSRequest[Resp](nc, "test.marshalfail", make(chan int), 2*time.Second, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.marshalfail", make(chan int), 2*time.Second, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to marshal input")
 }
@@ -510,7 +532,7 @@ func TestNATSRequest_DisconnectedFastFail(t *testing.T) {
 	require.Eventually(t, func() bool { return !nc.IsConnected() }, 3*time.Second, 50*time.Millisecond)
 
 	start := time.Now()
-	_, err = NATSRequest[map[string]any](nc, "ec2.Describe", struct{}{}, 5*time.Second, "")
+	_, err = NATSRequest[map[string]any](context.Background(), nc, "ec2.Describe", struct{}{}, 5*time.Second, "")
 	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, ErrClusterUnavailable)
@@ -521,7 +543,7 @@ func TestNATSRequest_DisconnectedFastFail(t *testing.T) {
 
 func TestNATSRequest_NilConn_ReturnsClusterUnavailable(t *testing.T) {
 	type Resp struct{}
-	_, err := NATSRequest[Resp](nil, "test.never", struct{}{}, 50*time.Millisecond, "")
+	_, err := NATSRequest[Resp](context.Background(), nil, "test.never", struct{}{}, 50*time.Millisecond, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrClusterUnavailable)
 }
@@ -533,7 +555,7 @@ func TestNATSRequest_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
 	nc.Close()
 
 	type Resp struct{}
-	_, err = NATSRequest[Resp](nc, "test.never", struct{}{}, 50*time.Millisecond, "")
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.never", struct{}{}, 50*time.Millisecond, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrClusterUnavailable)
 }
@@ -713,7 +735,7 @@ func TestGather_EarlyExitBeforeTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	frames, sum, err := Gather(nc, "test.gather.early", []byte("{}"),
+	frames, sum, err := Gather(context.Background(), nc, "test.gather.early", []byte("{}"),
 		GatherOpts{Timeout: 5 * time.Second, ExpectedNodes: 3})
 	elapsed := time.Since(start)
 
@@ -735,7 +757,7 @@ func TestGather_TimesOutBelowExpected(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	frames, sum, err := Gather(nc, "test.gather.timeout", []byte("{}"),
+	frames, sum, err := Gather(context.Background(), nc, "test.gather.timeout", []byte("{}"),
 		GatherOpts{Timeout: 300 * time.Millisecond, ExpectedNodes: 3})
 
 	require.NoError(t, err)
@@ -763,7 +785,7 @@ func TestGather_MixedSuccessAndErrors(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	frames, sum, err := Gather(nc, "test.gather.mixed", []byte("{}"),
+	frames, sum, err := Gather(context.Background(), nc, "test.gather.mixed", []byte("{}"),
 		GatherOpts{Timeout: 2 * time.Second, ExpectedNodes: 4})
 
 	require.NoError(t, err)
@@ -791,7 +813,7 @@ func TestGather_StopOnFirstSkipsErrors(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	frames, sum, err := Gather(nc, "test.gather.first", []byte("{}"),
+	frames, sum, err := Gather(context.Background(), nc, "test.gather.first", []byte("{}"),
 		GatherOpts{Timeout: 2 * time.Second, ExpectedNodes: 3, StopOnFirst: true})
 
 	require.NoError(t, err)
@@ -830,7 +852,7 @@ func TestGather_OversizedFrameDropped(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	frames, sum, err := Gather(nc, "test.gather.oversized", []byte("{}"),
+	frames, sum, err := Gather(context.Background(), nc, "test.gather.oversized", []byte("{}"),
 		GatherOpts{Timeout: 2 * time.Second, ExpectedNodes: 1})
 
 	require.NoError(t, err)
@@ -858,7 +880,7 @@ func TestGather_AccountIDHeaderSet(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	frames, _, err := Gather(nc, "test.gather.acct.set", []byte("{}"),
+	frames, _, err := Gather(context.Background(), nc, "test.gather.acct.set", []byte("{}"),
 		GatherOpts{Timeout: time.Second, ExpectedNodes: 1, AccountID: "111122223333"})
 	require.NoError(t, err)
 	require.Len(t, frames, 1)
@@ -882,7 +904,7 @@ func TestGather_AccountIDHeaderAbsentWhenEmpty(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	frames, _, err := Gather(nc, "test.gather.acct.empty", []byte("{}"),
+	frames, _, err := Gather(context.Background(), nc, "test.gather.acct.empty", []byte("{}"),
 		GatherOpts{Timeout: time.Second, ExpectedNodes: 1})
 	require.NoError(t, err)
 	require.Len(t, frames, 1)
@@ -894,7 +916,7 @@ func TestGather_AccountIDHeaderAbsentWhenEmpty(t *testing.T) {
 }
 
 func TestGather_NilConn_ReturnsClusterUnavailable(t *testing.T) {
-	frames, sum, err := Gather(nil, "test.never", []byte("{}"),
+	frames, sum, err := Gather(context.Background(), nil, "test.never", []byte("{}"),
 		GatherOpts{Timeout: 50 * time.Millisecond, ExpectedNodes: 1})
 	require.ErrorIs(t, err, ErrClusterUnavailable)
 	assert.Nil(t, frames)
@@ -907,7 +929,7 @@ func TestGather_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
 	require.NoError(t, err)
 	nc.Close()
 
-	_, _, err = Gather(nc, "test.never", []byte("{}"),
+	_, _, err = Gather(context.Background(), nc, "test.never", []byte("{}"),
 		GatherOpts{Timeout: 50 * time.Millisecond, ExpectedNodes: 1})
 	require.ErrorIs(t, err, ErrClusterUnavailable)
 }

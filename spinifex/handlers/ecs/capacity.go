@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
@@ -26,6 +28,12 @@ const (
 // ErrECSNodeAMINotFound is returned when no spinifex-ecs-node AMI resolves for
 // the account. Callers translate it to the AWS shape at the service boundary.
 var ErrECSNodeAMINotFound = errors.New("ecs: spinifex-ecs-node AMI not found")
+
+// ErrECSGPUNodeAMINotFound is returned when no AMI carries both the ECS
+// managed-by tag and the requested gpu-vendor tag. There is no fallback to
+// the non-GPU AMI: running a GPU workload on a driverless image is worse than
+// a clear failure.
+var ErrECSGPUNodeAMINotFound = errors.New("ecs: ecs GPU node AMI not found")
 
 // ProvisionCapacityInput requests N container instances into a cluster.
 type ProvisionCapacityInput struct {
@@ -46,7 +54,7 @@ type ProvisionCapacityOutput struct {
 // ECS instance role/profile, resolves the spinifex-ecs-node AMI, renders
 // keyless user-data (IMDS instance-role creds), and launches via the customer
 // RunInstances path with the profile attached and a cluster-association tag.
-func (s *Service) ProvisionCapacity(input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error) {
+func (s *Service) ProvisionCapacity(ctx context.Context, input *ProvisionCapacityInput, accountID string) (*ProvisionCapacityOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -80,7 +88,12 @@ func (s *Service) ProvisionCapacity(input *ProvisionCapacityInput, accountID str
 		return nil, fmt.Errorf("ensure ECS instance profile: %w", err)
 	}
 
-	amiID, err := lookupECSNodeAMI(s.deps.Images, accountID)
+	var amiID string
+	if instancetypes.IsGPUTypeName(instanceType) {
+		amiID, err = lookupECSGPUNodeAMI(ctx, s.deps.Images, accountID, instancetypes.GPUVendorForType(instanceType))
+	} else {
+		amiID, err = lookupECSNodeAMI(ctx, s.deps.Images, accountID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +127,7 @@ func (s *Service) ProvisionCapacity(input *ProvisionCapacityInput, accountID str
 		runInput.KeyName = aws.String(input.KeyName)
 	}
 
-	res, err := s.deps.RunInstances(runInput, accountID)
+	res, err := s.deps.RunInstances(ctx, runInput, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -131,14 +144,48 @@ func (s *Service) ProvisionCapacity(input *ProvisionCapacityInput, accountID str
 // lookupECSNodeAMI resolves the spinifex-ecs-node AMI by the
 // spinifex:managed-by=ecs tag rather than a brittle exact name. The newest
 // matching image (by CreationDate) wins.
-func lookupECSNodeAMI(amiSvc ecsImageResolver, accountID string) (string, error) {
-	out, err := amiSvc.DescribeImages(&ec2.DescribeImagesInput{
-		Filters: []*ec2.Filter{
-			{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByECS})},
-		},
-	}, accountID)
+func lookupECSNodeAMI(ctx context.Context, amiSvc ecsImageResolver, accountID string) (string, error) {
+	filters := []*ec2.Filter{
+		{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByECS})},
+	}
+	desc := fmt.Sprintf("tag:%s=%s", tags.ManagedByKey, tags.ManagedByECS)
+	return resolveNewestAMI(ctx, amiSvc, accountID, filters, true,
+		"describe ecs AMI ("+desc+")", ErrECSNodeAMINotFound, desc,
+		"ecs: multiple AMIs match managed-by=ecs; using newest")
+}
+
+// lookupECSGPUNodeAMI resolves the GPU-tagged ECS node AMI for vendor (e.g.
+// "nvidia") by the spinifex:managed-by=ecs + gpu-vendor tags. There is no
+// fallback to the non-GPU AMI: a missing GPU image is a hard failure.
+func lookupECSGPUNodeAMI(ctx context.Context, amiSvc ecsImageResolver, accountID, vendor string) (string, error) {
+	filters := []*ec2.Filter{
+		{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByECS})},
+		{Name: aws.String("tag:" + tags.GPUVendorKey), Values: aws.StringSlice([]string{vendor})},
+	}
+	desc := fmt.Sprintf("tag:%s=%s, tag:%s=%s", tags.ManagedByKey, tags.ManagedByECS, tags.GPUVendorKey, vendor)
+	return resolveNewestAMI(ctx, amiSvc, accountID, filters, false,
+		"describe ecs GPU node AMI ("+desc+")", ErrECSGPUNodeAMINotFound, desc,
+		"ecs: multiple GPU AMIs match managed-by=ecs+gpu-vendor; using newest")
+}
+
+// hasTagKey reports whether img carries a tag with the given key.
+func hasTagKey(img *ec2.Image, key string) bool {
+	for _, t := range img.Tags {
+		if aws.StringValue(t.Key) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveNewestAMI runs DescribeImages with filters and returns the newest
+// (by CreationDate) matching image ID. describeErrCtx prefixes a DescribeImages
+// failure; notFoundDesc/warnMsg describe the filter for the not-found error and
+// the multi-match log line respectively.
+func resolveNewestAMI(ctx context.Context, amiSvc ecsImageResolver, accountID string, filters []*ec2.Filter, excludeGPUTagged bool, describeErrCtx string, notFound error, notFoundDesc, warnMsg string) (string, error) {
+	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{Filters: filters}, accountID)
 	if err != nil {
-		return "", fmt.Errorf("describe ecs AMI (tag:%s=%s): %w", tags.ManagedByKey, tags.ManagedByECS, err)
+		return "", fmt.Errorf("%s: %w", describeErrCtx, err)
 	}
 
 	var (
@@ -150,6 +197,12 @@ func lookupECSNodeAMI(amiSvc ecsImageResolver, accountID string) (string, error)
 		if img == nil || img.ImageId == nil || *img.ImageId == "" {
 			continue
 		}
+		// The GPU node AMI also carries managed-by=ecs; DescribeImages filters
+		// have no negation, so exclude gpu-vendor-tagged images client-side from
+		// the non-GPU lookup or a newer GPU AMI would hijack ordinary instances.
+		if excludeGPUTagged && hasTagKey(img, tags.GPUVendorKey) {
+			continue
+		}
 		matches++
 		// CreationDate is a fixed-width RFC3339 timestamp, so lexicographic
 		// comparison orders it correctly without parsing.
@@ -158,11 +211,10 @@ func lookupECSNodeAMI(amiSvc ecsImageResolver, accountID string) (string, error)
 		}
 	}
 	if newestID == "" {
-		return "", fmt.Errorf("%w (tag:%s=%s, account %s)", ErrECSNodeAMINotFound, tags.ManagedByKey, tags.ManagedByECS, accountID)
+		return "", fmt.Errorf("%w (%s, account %s)", notFound, notFoundDesc, accountID)
 	}
 	if matches > 1 {
-		slog.Warn("ecs: multiple AMIs match managed-by=ecs; using newest",
-			"count", matches, "imageId", newestID, "created", newestCreated)
+		slog.WarnContext(ctx, warnMsg, "count", matches, "imageId", newestID, "created", newestCreated)
 	}
 	return newestID, nil
 }

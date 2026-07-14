@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"maps"
 	"net"
 	"net/netip"
 	"slices"
@@ -110,7 +111,7 @@ func TestReconcile_Idempotent(t *testing.T) {
 	switchCountBefore := len(m.Switches)
 	portCountBefore := len(m.Ports)
 	pgCountBefore := len(m.PortGroups)
-	addACLsBefore := m.AddACLCalls
+	aclUUIDsBefore := aclUUIDSet(m)
 
 	if err := rec.Reconcile(ctx, intent); err != nil {
 		t.Fatalf("Reconcile #2: %v", err)
@@ -128,10 +129,24 @@ func TestReconcile_Idempotent(t *testing.T) {
 	if len(m.PortGroups) != pgCountBefore {
 		t.Errorf("second reconcile created duplicate port groups: %d → %d", pgCountBefore, len(m.PortGroups))
 	}
-	// EnsureSG has replace-all semantics: AddACL count must grow each pass.
-	if m.AddACLCalls < addACLsBefore {
-		t.Errorf("second reconcile fewer AddACL calls than first — replace-all semantics regressed")
+	// An unchanged SG must not churn ACL rows: ReplaceACLs no-ops, so every ACL
+	// UUID from the first pass survives the second identical reconcile.
+	aclUUIDsAfter := aclUUIDSet(m)
+	if !maps.Equal(aclUUIDsBefore, aclUUIDsAfter) {
+		t.Errorf("second reconcile churned ACL UUIDs: %v → %v", aclUUIDsBefore, aclUUIDsAfter)
 	}
+}
+
+// aclUUIDSet snapshots the mock's current ACL UUIDs so idempotency can assert no
+// churn across reconciles.
+func aclUUIDSet(m *mock.Client) map[string]struct{} {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	out := make(map[string]struct{}, len(m.ACLs))
+	for uuid := range m.ACLs {
+		out[uuid] = struct{}{}
+	}
+	return out
 }
 
 func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
@@ -550,8 +565,118 @@ func freshIntent(t *testing.T) IntentState {
 	}
 }
 
+// The prune pass must sweep dnat_and_snat rows whose stamped owning ENI is absent
+// from intent (leaked across dead VPCs by a lost vpc.delete-nat), keying on the
+// union of intent port names and EIP port names, while leaving live rows intact.
+func TestReconcile_PruneOrphanEIPs_SweepsAbsentOwners(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	deadRouter := topology.VPCRouter("vpc-dead")
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: deadRouter}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: topology.VPCRouter("vpc-a")}); err != nil {
+		t.Fatalf("CreateLogicalRouter live: %v", err)
+	}
+	// Live row: owned by an ENI present in intent.Ports.
+	if err := m.AddNAT(ctx, topology.VPCRouter("vpc-a"), &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.1.10", LogicalIP: "10.0.1.10",
+		ExternalIDs: map[string]string{"spinifex:logical_port": topology.Port("eni-a")},
+	}); err != nil {
+		t.Fatalf("AddNAT live: %v", err)
+	}
+	// Orphan row: owner ENI is gone from intent.
+	if err := m.AddNAT(ctx, deadRouter, &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.1.11", LogicalIP: "172.31.0.4",
+		ExternalIDs: map[string]string{"spinifex:logical_port": topology.Port("eni-dead")},
+	}); err != nil {
+		t.Fatalf("AddNAT orphan: %v", err)
+	}
+
+	intent := freshIntent(t) // Ports has eni-a only
+	r.pruneOrphanEIPs(ctx, intent)
+
+	if findNATByExternal(m, "dnat_and_snat", "192.168.1.10") == nil {
+		t.Errorf("live EIP row must survive the prune")
+	}
+	if findNATByExternal(m, "dnat_and_snat", "192.168.1.11") != nil {
+		t.Errorf("orphan EIP row must be pruned")
+	}
+}
+
+// findNATByExternal returns the first NAT row matching (type, externalIP), or nil.
+func findNATByExternal(m *mock.Client, natType, externalIP string) *nbdb.NAT {
+	for _, n := range m.NATs {
+		if n.Type == natType && n.ExternalIP == externalIP {
+			return n
+		}
+	}
+	return nil
+}
+
 func sortedCopy(in []string) []string {
 	out := append([]string(nil), in...)
 	slices.Sort(out)
 	return out
+}
+
+// TestFloatingIPSpecs covers the auto-assigned NAT reconcile gap: an ENI's
+// auto-assigned public IP must be re-asserted as a dnat_and_snat (and run through
+// guest-port convergence) alongside user EIPs, deduped when a user EIP already
+// covers the same private IP.
+func TestFloatingIPSpecs(t *testing.T) {
+	mac, _ := net.ParseMAC("02:00:00:00:00:01")
+	r := &reconciler{}
+
+	intent := IntentState{
+		EIPs: map[string]policy.EIPSpec{
+			// User EIP on 172.31.0.9.
+			"172.31.0.9": {VPCID: "vpc-a", ExternalIP: "192.168.1.200", LogicalIP: "172.31.0.9", PortName: topology.Port("eni-eip")},
+			// User EIP that also has an auto-assigned public IP recorded on its
+			// port: the EIP must win and the auto-assigned entry be skipped.
+			"172.31.0.4": {VPCID: "vpc-a", ExternalIP: "192.168.1.201", LogicalIP: "172.31.0.4", PortName: topology.Port("eni-dup")},
+		},
+		Ports: map[string]topology.PortSpec{
+			// Auto-assigned public IP with no user EIP -> must produce a spec.
+			"eni-auto": {PortID: "eni-auto", VPCID: "vpc-b", PrivateIP: netip.MustParseAddr("172.31.0.5"),
+				PublicIP: netip.MustParseAddr("192.168.1.116"), MAC: mac},
+			// Same private IP as the user EIP above -> deduped out.
+			"eni-dup": {PortID: "eni-dup", VPCID: "vpc-a", PrivateIP: netip.MustParseAddr("172.31.0.4"),
+				PublicIP: netip.MustParseAddr("192.168.1.117"), MAC: mac},
+			// No public IP -> skipped.
+			"eni-nopub": {PortID: "eni-nopub", VPCID: "vpc-b", PrivateIP: netip.MustParseAddr("172.31.0.6")},
+		},
+	}
+
+	specs := r.floatingIPSpecs(intent)
+
+	byExternal := map[string]policy.EIPSpec{}
+	for _, s := range specs {
+		byExternal[s.ExternalIP] = s
+	}
+
+	// Both user EIPs present.
+	if _, ok := byExternal["192.168.1.200"]; !ok {
+		t.Errorf("user EIP 192.168.1.200 missing from specs")
+	}
+	if _, ok := byExternal["192.168.1.201"]; !ok {
+		t.Errorf("user EIP 192.168.1.201 missing from specs")
+	}
+	// Auto-assigned public IP produced with the port's identity.
+	auto, ok := byExternal["192.168.1.116"]
+	if !ok {
+		t.Fatalf("auto-assigned 192.168.1.116 missing from specs")
+	}
+	if auto.LogicalIP != "172.31.0.5" || auto.PortName != topology.Port("eni-auto") || auto.MAC != "02:00:00:00:00:01" {
+		t.Errorf("auto-assigned spec malformed: %+v", auto)
+	}
+	// Deduped: the auto-assigned IP colliding with a user EIP's private IP is gone.
+	if _, ok := byExternal["192.168.1.117"]; ok {
+		t.Errorf("auto-assigned 192.168.1.117 should be deduped by the user EIP on 172.31.0.4")
+	}
+	// No public IP -> no spec for that port.
+	if len(specs) != 3 {
+		t.Errorf("want 3 specs (2 EIP + 1 auto), got %d: %+v", len(specs), specs)
+	}
 }

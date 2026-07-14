@@ -42,6 +42,18 @@ func NewIMDS(ctx context.Context, region string) (*Signer, error) {
 	return &Signer{provider: cfg.Credentials}, nil
 }
 
+// EnsureCredentials retrieves once from the provider, surfacing the error so a
+// caller can warm the IMDS instance-role datapath before the first Sign. The
+// SDK's IMDS client fast-fails each probe (250ms dial), so a cold per-tap
+// datapath returns "context deadline exceeded" / "no EC2 IMDS role found" here;
+// a caller loops until this succeeds. A static signer always succeeds.
+func (s *Signer) EnsureCredentials(ctx context.Context) error {
+	if _, err := s.provider.Retrieve(ctx); err != nil {
+		return fmt.Errorf("retrieve credentials: %w", err)
+	}
+	return nil
+}
+
 // Sign signs r in place for service/region. payloadHash is the hex SHA-256 of
 // the body (or a SigV4 sentinel). Credentials are retrieved per call so rotated
 // IMDS credentials take effect without a restart; the SDK signer sets

@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -66,7 +67,7 @@ func Authenticate(
 // never speaks NATS. Returns an error only for a genuine infrastructure fault
 // (no JetStream / missing account bucket); a forged token resolves to an
 // Authenticated=false result, not an error.
-func ResolveTokenReview(nc *nats.Conn, accountID, clusterName, token string, verifyTimeout time.Duration) (WebhookTokenReviewResult, error) {
+func ResolveTokenReview(ctx context.Context, nc *nats.Conn, accountID, clusterName, token string, verifyTimeout time.Duration) (WebhookTokenReviewResult, error) {
 	if nc == nil {
 		return WebhookTokenReviewResult{}, fmt.Errorf("eks: ResolveTokenReview nil nats conn")
 	}
@@ -81,7 +82,7 @@ func ResolveTokenReview(nc *nats.Conn, accountID, clusterName, token string, ver
 
 	verify := func(presignedURL string) (*TokenVerifyResponse, error) {
 		return utils.NATSRequest[TokenVerifyResponse](
-			nc, TokenVerifySubject,
+			ctx, nc, TokenVerifySubject,
 			TokenVerifyRequest{PresignedURL: presignedURL, ClusterName: clusterName},
 			verifyTimeout, "")
 	}

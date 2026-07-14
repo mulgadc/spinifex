@@ -1,6 +1,7 @@
 package handlers_ec2_eip
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func setupTestEIP(t *testing.T) (*EIPServiceImpl, *handlers_ec2_vpc.ExternalIPAM
 func TestEIP_Allocate(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 
@@ -58,7 +59,7 @@ func TestEIP_Allocate(t *testing.T) {
 func TestEIP_AllocateFromSpecificPool(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
 		Domain: aws.String("vpc"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -73,19 +74,19 @@ func TestEIP_Release(t *testing.T) {
 	svc, ipam := setupTestEIP(t)
 
 	// Allocate
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	allocatedIP := *out.PublicIp
 
 	// Release
-	_, err = svc.ReleaseAddress(&ec2.ReleaseAddressInput{
+	_, err = svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
 		AllocationId: out.AllocationId,
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Round-robin: re-allocating does NOT hand back the just-released IP;
 	// the cursor advances, so the new EIP differs.
-	out2, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out2, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.NotEqual(t, allocatedIP, *out2.PublicIp, "released EIP must not be reused immediately")
 
@@ -96,7 +97,7 @@ func TestEIP_Release(t *testing.T) {
 	assert.False(t, stillAllocated, "released IP stays free until the cursor cycles the range")
 
 	// The released allocation is gone; describing it by its old ID errors.
-	_, descErr := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	_, descErr := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		AllocationIds: []*string{out.AllocationId},
 	}, testAccountID)
 	assert.Error(t, descErr)
@@ -106,7 +107,7 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
 	// Allocate
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
 	// Manually mark as associated by writing to KV (simulates AssociateAddress without needing a real VPCService)
@@ -134,7 +135,7 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now try to release — should fail
-	_, err = svc.ReleaseAddress(&ec2.ReleaseAddressInput{
+	_, err = svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
 		AllocationId: aws.String(allocID),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -144,7 +145,7 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	allocID := *out.AllocationId
 
@@ -165,7 +166,7 @@ func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
 	// Backstop release by instance disassociates then frees the allocation.
 	require.NoError(t, svc.ReleaseAddressByInstanceID("i-alb-test"))
 
-	_, err = svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)}, testAccountID)
+	_, err = svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)}, testAccountID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidAllocationID.NotFound")
 }
@@ -173,7 +174,7 @@ func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
 func TestEIP_ReleaseByInstanceID_NoMatchIsNoOp(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	allocID := *out.AllocationId
 
@@ -191,18 +192,18 @@ func TestEIP_ReleaseMissingParams(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
 	// Nil AllocationId
-	_, err := svc.ReleaseAddress(&ec2.ReleaseAddressInput{}, testAccountID)
+	_, err := svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{}, testAccountID)
 	assert.Error(t, err)
 
 	// Empty AllocationId
-	_, err = svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String("")}, testAccountID)
+	_, err = svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String("")}, testAccountID)
 	assert.Error(t, err)
 }
 
 func TestEIP_ReleaseNotFound(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	_, err := svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-nonexistent")}, testAccountID)
+	_, err := svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-nonexistent")}, testAccountID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidAllocationID.NotFound")
 }
@@ -211,18 +212,18 @@ func TestEIP_AssociateMissingAllocationId(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
 	// Nil AllocationId
-	_, err := svc.AssociateAddress(&ec2.AssociateAddressInput{}, testAccountID)
+	_, err := svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{}, testAccountID)
 	assert.Error(t, err)
 
 	// Empty AllocationId
-	_, err = svc.AssociateAddress(&ec2.AssociateAddressInput{AllocationId: aws.String("")}, testAccountID)
+	_, err = svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{AllocationId: aws.String("")}, testAccountID)
 	assert.Error(t, err)
 }
 
 func TestEIP_AssociateInvalidAllocationId(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	_, err := svc.AssociateAddress(&ec2.AssociateAddressInput{
+	_, err := svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
 		AllocationId:       aws.String("eipalloc-nonexistent"),
 		NetworkInterfaceId: aws.String("eni-test"),
 	}, testAccountID)
@@ -234,11 +235,11 @@ func TestEIP_AssociateMissingTarget(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
 	// Allocate first
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
 	// Associate without NetworkInterfaceId or InstanceId
-	_, err = svc.AssociateAddress(&ec2.AssociateAddressInput{
+	_, err = svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
 		AllocationId: out.AllocationId,
 	}, testAccountID)
 	assert.Error(t, err)
@@ -248,18 +249,18 @@ func TestEIP_DisassociateMissingParams(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
 	// Nil AssociationId
-	_, err := svc.DisassociateAddress(&ec2.DisassociateAddressInput{}, testAccountID)
+	_, err := svc.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{}, testAccountID)
 	assert.Error(t, err)
 
 	// Empty AssociationId
-	_, err = svc.DisassociateAddress(&ec2.DisassociateAddressInput{AssociationId: aws.String("")}, testAccountID)
+	_, err = svc.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{AssociationId: aws.String("")}, testAccountID)
 	assert.Error(t, err)
 }
 
 func TestEIP_DisassociateNotFound(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	_, err := svc.DisassociateAddress(&ec2.DisassociateAddressInput{
+	_, err := svc.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{
 		AssociationId: aws.String("eipassoc-nonexistent"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -325,13 +326,13 @@ func TestEIP_DescribeAddressesAttribute(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
 	// Allocate multiple EIPs
-	out1, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	out2, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out2, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
 	// Describe all — should return both
-	desc, err := svc.DescribeAddressesAttribute(&ec2.DescribeAddressesAttributeInput{}, testAccountID)
+	desc, err := svc.DescribeAddressesAttribute(context.Background(), &ec2.DescribeAddressesAttributeInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, desc.Addresses, 2)
 
@@ -343,7 +344,7 @@ func TestEIP_DescribeAddressesAttribute(t *testing.T) {
 	}
 
 	// Filter by specific allocation ID
-	desc2, err := svc.DescribeAddressesAttribute(&ec2.DescribeAddressesAttributeInput{
+	desc2, err := svc.DescribeAddressesAttribute(context.Background(), &ec2.DescribeAddressesAttributeInput{
 		AllocationIds: []*string{out1.AllocationId},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -352,7 +353,7 @@ func TestEIP_DescribeAddressesAttribute(t *testing.T) {
 	assert.Equal(t, *out1.PublicIp, *desc2.Addresses[0].PublicIp)
 
 	// Filter by unknown allocation ID — returns empty, not error
-	desc3, err := svc.DescribeAddressesAttribute(&ec2.DescribeAddressesAttributeInput{
+	desc3, err := svc.DescribeAddressesAttribute(context.Background(), &ec2.DescribeAddressesAttributeInput{
 		AllocationIds: []*string{aws.String("eipalloc-nonexistent")},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -365,15 +366,15 @@ func TestEIP_DescribeAddresses(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
 	// Allocate multiple EIPs
-	out1, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	out2, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out2, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	out3, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out3, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
 	// Describe all
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{}, testAccountID)
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, desc.Addresses, 3)
 
@@ -385,7 +386,7 @@ func TestEIP_DescribeAddresses(t *testing.T) {
 	assert.Len(t, ips, 3)
 
 	// Describe by specific allocation ID
-	desc2, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc2, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		AllocationIds: []*string{out1.AllocationId},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -399,12 +400,12 @@ func TestEIP_DescribeAddresses(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterByAllocationId(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out1, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	_, err = svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("allocation-id"), Values: []*string{out1.AllocationId}},
 		},
@@ -417,12 +418,12 @@ func TestEIP_DescribeAddresses_FilterByAllocationId(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterByPublicIp(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out1, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	_, err = svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("public-ip"), Values: []*string{out1.PublicIp}},
 		},
@@ -435,10 +436,10 @@ func TestEIP_DescribeAddresses_FilterByPublicIp(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterByDomain(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	_, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("domain"), Values: []*string{aws.String("vpc")}},
 		},
@@ -447,7 +448,7 @@ func TestEIP_DescribeAddresses_FilterByDomain(t *testing.T) {
 	assert.Len(t, desc.Addresses, 1)
 
 	// Non-matching domain
-	desc, err = svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err = svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("domain"), Values: []*string{aws.String("standard")}},
 		},
@@ -459,7 +460,7 @@ func TestEIP_DescribeAddresses_FilterByDomain(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterByInstanceId(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
 	// Manually set instance-id on the record
@@ -475,10 +476,10 @@ func TestEIP_DescribeAddresses_FilterByInstanceId(t *testing.T) {
 	require.NoError(t, err)
 
 	// Allocate another without association
-	_, err = svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	_, err = svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("instance-id"), Values: []*string{aws.String("i-test123")}},
 		},
@@ -491,14 +492,14 @@ func TestEIP_DescribeAddresses_FilterByInstanceId(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterMultipleValues_OR(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out1, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	out2, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out2, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	_, err = svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("allocation-id"), Values: []*string{out1.AllocationId, out2.AllocationId}},
 		},
@@ -510,13 +511,13 @@ func TestEIP_DescribeAddresses_FilterMultipleValues_OR(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterMultipleFilters_AND(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	_, err = svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
 	// Match both allocation-id and domain
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("allocation-id"), Values: []*string{out.AllocationId}},
 			{Name: aws.String("domain"), Values: []*string{aws.String("vpc")}},
@@ -526,7 +527,7 @@ func TestEIP_DescribeAddresses_FilterMultipleFilters_AND(t *testing.T) {
 	assert.Len(t, desc.Addresses, 1)
 
 	// Mismatch: correct allocation-id but wrong domain
-	desc, err = svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err = svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("allocation-id"), Values: []*string{out.AllocationId}},
 			{Name: aws.String("domain"), Values: []*string{aws.String("standard")}},
@@ -539,7 +540,7 @@ func TestEIP_DescribeAddresses_FilterMultipleFilters_AND(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterUnknownName_Error(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	_, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	_, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("bogus-filter"), Values: []*string{aws.String("x")}},
 		},
@@ -550,10 +551,10 @@ func TestEIP_DescribeAddresses_FilterUnknownName_Error(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterWildcard(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("allocation-id"), Values: []*string{aws.String("eipalloc-*")}},
 		},
@@ -566,10 +567,10 @@ func TestEIP_DescribeAddresses_FilterWildcard(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterNoResults(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	_, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("public-ip"), Values: []*string{aws.String("1.1.1.1")}},
 		},
@@ -581,7 +582,7 @@ func TestEIP_DescribeAddresses_FilterNoResults(t *testing.T) {
 func TestEIP_DescribeAddresses_FilterByTag(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	out, err := svc.AllocateAddress(&ec2.AllocateAddressInput{
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
 		TagSpecifications: []*ec2.TagSpecification{
 			{
 				ResourceType: aws.String("elastic-ip"),
@@ -592,10 +593,10 @@ func TestEIP_DescribeAddresses_FilterByTag(t *testing.T) {
 		},
 	}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	_, err = svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("tag:Env"), Values: []*string{aws.String("prod")}},
 		},

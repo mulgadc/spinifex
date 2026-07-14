@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,7 +60,7 @@ type instanceFacts struct {
 
 // instanceLookup resolves instance-only metadata fields by instance ID.
 type instanceLookup interface {
-	describe(accountID, instanceID string) (*instanceFacts, error)
+	describe(ctx context.Context, accountID, instanceID string) (*instanceFacts, error)
 }
 
 // sgNameRecord holds the human-readable group name for the /security-groups path.
@@ -97,7 +98,7 @@ var _ eniResolver = (*metadataResolver)(nil)
 // identity path, where the tap maps one-to-one to an ENI so no (vpcID, srcIP) lookup
 // is needed. The owning account is recovered by suffix-scanning the ENI bucket
 // (keyed "{accountID}.{eniID}"). Returns (nil, nil) on miss.
-func (r *metadataResolver) resolveENIByID(eniID string) (*eniFacts, error) {
+func (r *metadataResolver) resolveENIByID(ctx context.Context, eniID string) (*eniFacts, error) {
 	if eniID == "" {
 		return nil, nil
 	}
@@ -164,15 +165,15 @@ func eniFactsFromRecord(accountID string, rec *eniRecord) *eniFacts {
 }
 
 // resolveInstance fetches instance-only fields for an ENI's attached instance, or (nil, nil) if unattached.
-func (r *metadataResolver) resolveInstance(eni *eniFacts) (*instanceFacts, error) {
+func (r *metadataResolver) resolveInstance(ctx context.Context, eni *eniFacts) (*instanceFacts, error) {
 	if eni.instanceID == "" {
 		return nil, nil
 	}
-	return r.lookup.describe(eni.iamAccountID(), eni.instanceID)
+	return r.lookup.describe(ctx, eni.iamAccountID(), eni.instanceID)
 }
 
 // resolveSGNames maps SG IDs to group names for /security-groups. Best-effort; falls back to IDs.
-func (r *metadataResolver) resolveSGNames(accountID string, sgIDs []string) []string {
+func (r *metadataResolver) resolveSGNames(ctx context.Context, accountID string, sgIDs []string) []string {
 	names := make([]string, len(sgIDs))
 	for i, id := range sgIDs {
 		names[i] = id
@@ -182,13 +183,13 @@ func (r *metadataResolver) resolveSGNames(accountID string, sgIDs []string) []st
 		raw, err := r.sgKV.Get(accountID + "." + id)
 		if err != nil {
 			if !errors.Is(err, nats.ErrKeyNotFound) {
-				slog.Warn("IMDS: security-group name lookup failed", "account_id", accountID, "sg_id", id, "err", err)
+				slog.WarnContext(ctx, "IMDS: security-group name lookup failed", "account_id", accountID, "sg_id", id, "err", err)
 			}
 			continue
 		}
 		var rec sgNameRecord
 		if err := json.Unmarshal(raw.Value(), &rec); err != nil {
-			slog.Warn("IMDS: security-group unmarshal failed", "sg_id", id, "err", err)
+			slog.WarnContext(ctx, "IMDS: security-group unmarshal failed", "sg_id", id, "err", err)
 			continue
 		}
 		if rec.GroupName != "" {
@@ -203,11 +204,11 @@ type cidrRecord struct {
 	CidrBlock string `json:"cidr_block"`
 }
 
-func (r *metadataResolver) resolveSubnetCIDR(accountID, subnetID string) (string, error) {
+func (r *metadataResolver) resolveSubnetCIDR(_ context.Context, accountID, subnetID string) (string, error) {
 	return cidrFromKV(r.subnetKV, accountID, subnetID)
 }
 
-func (r *metadataResolver) resolveVPCCIDR(accountID, vpcID string) (string, error) {
+func (r *metadataResolver) resolveVPCCIDR(_ context.Context, accountID, vpcID string) (string, error) {
 	return cidrFromKV(r.vpcKV, accountID, vpcID)
 }
 

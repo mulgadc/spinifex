@@ -1,6 +1,7 @@
 package gateway_ec2_volume
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -59,7 +60,7 @@ func volumeHeldByInstance(reservations []*ec2.Reservation, volumeID string) stri
 // which the attach/detach lifecycle can leave desynced (a running root with
 // State:"" / AttachedInstance:""), so a drifted-but-live volume could be
 // deleted under a running QEMU. The check fails closed on an incomplete view.
-func DeleteVolume(input *ec2.DeleteVolumeInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.DeleteVolumeOutput, error) {
+func DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.DeleteVolumeOutput, error) {
 	var output ec2.DeleteVolumeOutput
 
 	err := ValidateDeleteVolumeInput(input)
@@ -73,24 +74,23 @@ func DeleteVolume(input *ec2.DeleteVolumeInput, natsConn *nats.Conn, expectedNod
 	// both instance buckets queried, so a node that owns the attachment cannot be
 	// silently missing from the survey. Refuse rather than delete against a
 	// partial view of the cluster.
-	reservations, complete, err := gateway_ec2_instance.DescribeInstancesForReconcile(
-		&ec2.DescribeInstancesInput{}, natsConn, expectedNodes, accountID)
+	reservations, complete, err := gateway_ec2_instance.DescribeInstancesForReconcile(ctx, &ec2.DescribeInstancesInput{}, natsConn, expectedNodes, accountID)
 	if err != nil {
-		slog.Error("DeleteVolume: in-use precheck fan-out failed", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "DeleteVolume: in-use precheck fan-out failed", "volumeId", volumeID, "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 	if !complete {
-		slog.Error("DeleteVolume: refusing delete on incomplete instance view", "volumeId", volumeID)
+		slog.ErrorContext(ctx, "DeleteVolume: refusing delete on incomplete instance view", "volumeId", volumeID)
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 	if holder := volumeHeldByInstance(reservations, volumeID); holder != "" {
-		slog.Error("DeleteVolume: volume still attached to a live instance",
+		slog.ErrorContext(ctx, "DeleteVolume: volume still attached to a live instance",
 			"volumeId", volumeID, "instanceId", holder)
 		return output, errors.New(awserrors.ErrorVolumeInUse)
 	}
 
 	volumeService := handlers_ec2_volume.NewNATSVolumeService(natsConn)
-	result, err := volumeService.DeleteVolume(input, accountID)
+	result, err := volumeService.DeleteVolume(ctx, input, accountID)
 
 	if err != nil {
 		return output, err

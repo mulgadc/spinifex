@@ -43,6 +43,9 @@ const (
 	KVBucketGroupsVersion           = 1
 
 	maxAccessKeysPerUser = 2
+	maxTagsPerResource   = 50
+	maxTagKeyLength      = 128
+	maxTagValueLength    = 256
 
 	// LongLivedAccessKeyIDPrefix is the AWS-defined prefix for long-lived IAM access keys.
 	// The access-keys bucket rejects writes with any other prefix to prevent silent privilege escalation.
@@ -230,6 +233,81 @@ func copyTags(tags []*iam.Tag) []Tag {
 	return out
 }
 
+// tagsToSDK converts stored Tags into the SDK shape.
+func tagsToSDK(tags []Tag) []*iam.Tag {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]*iam.Tag, 0, len(tags))
+	for _, t := range tags {
+		out = append(out, &iam.Tag{Key: aws.String(t.Key), Value: aws.String(t.Value)})
+	}
+	return out
+}
+
+// validateTags enforces the AWS IAM tag limits on request input: at most 50
+// tags, key length 1-128, value length 0-256, no duplicate keys.
+func validateTags(tags []*iam.Tag) error {
+	if len(tags) > maxTagsPerResource {
+		return errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		if tag == nil || tag.Key == nil {
+			return errors.New(awserrors.ErrorIAMInvalidInput)
+		}
+		key := *tag.Key
+		if len(key) < 1 || len(key) > maxTagKeyLength {
+			return errors.New(awserrors.ErrorIAMInvalidInput)
+		}
+		if tag.Value != nil && len(*tag.Value) > maxTagValueLength {
+			return errors.New(awserrors.ErrorIAMInvalidInput)
+		}
+		if _, dup := seen[key]; dup {
+			return errors.New(awserrors.ErrorIAMInvalidInput)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+// mergeTags upserts add into existing by key, matching AWS semantics: a
+// repeated key overwrites in place, new keys append in input order.
+func mergeTags(existing []Tag, add []*iam.Tag) []Tag {
+	out := slices.Clone(existing)
+	for _, tag := range add {
+		if tag.Key == nil {
+			continue
+		}
+		next := Tag{Key: *tag.Key, Value: aws.StringValue(tag.Value)}
+		idx := slices.IndexFunc(out, func(t Tag) bool { return t.Key == next.Key })
+		if idx >= 0 {
+			out[idx] = next
+		} else {
+			out = append(out, next)
+		}
+	}
+	return out
+}
+
+// removeTagKeys drops the named keys from existing; unknown keys are
+// silently ignored, matching AWS.
+func removeTagKeys(existing []Tag, keys []*string) []Tag {
+	drop := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		if k != nil {
+			drop[*k] = struct{}{}
+		}
+	}
+	out := make([]Tag, 0, len(existing))
+	for _, t := range existing {
+		if _, gone := drop[t.Key]; !gone {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // User CRUD
 // ---------------------------------------------------------------------------
@@ -308,6 +386,7 @@ func (s *IAMServiceImpl) GetUser(accountID string, input *iam.GetUserInput) (*ia
 			Arn:        aws.String(user.ARN),
 			Path:       aws.String(user.Path),
 			CreateDate: aws.Time(createdAt),
+			Tags:       tagsToSDK(user.Tags),
 		},
 	}, nil
 }
@@ -1395,6 +1474,139 @@ func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserP
 	}, nil
 }
 
+// ---------------------------------------------------------------------------
+// User + policy tagging
+// ---------------------------------------------------------------------------
+
+// TagUser upserts tags on a user. Blind read-modify-write Put like the other
+// user writers (no CAS).
+func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
+	userName := *input.UserName
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := mergeTags(user.Tags, input.Tags)
+	if len(merged) > maxTagsPerResource {
+		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	user.Tags = merged
+
+	data, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+	if _, err := s.usersBucket.Put(accountID+"."+userName, data); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM user tagged", "accountID", accountID, "userName", userName)
+	return &iam.TagUserOutput{}, nil
+}
+
+// UntagUser removes the named tag keys from a user; unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	userName := *input.UserName
+	user, err := s.getUser(accountID, userName)
+	if err != nil {
+		return nil, err
+	}
+
+	user.Tags = removeTagKeys(user.Tags, input.TagKeys)
+
+	data, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshal user: %w", err)
+	}
+	if _, err := s.usersBucket.Put(accountID+"."+userName, data); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	slog.Info("IAM user untagged", "accountID", accountID, "userName", userName)
+	return &iam.UntagUserOutput{}, nil
+}
+
+// ListUserTags returns a user's tags. Pagination is not implemented:
+// IsTruncated is always false.
+func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	user, err := s.getUser(accountID, *input.UserName)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListUserTagsOutput{
+		Tags:        tagsToSDK(user.Tags),
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
+// TagPolicy upserts tags on a customer-managed policy, resolved by ARN.
+func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := mergeTags(policy.Tags, input.Tags)
+	if len(merged) > maxTagsPerResource {
+		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
+	}
+	policy.Tags = merged
+
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return nil, fmt.Errorf("marshal policy: %w", err)
+	}
+	if _, err := s.policiesBucket.Put(accountID+"."+policy.PolicyName, data); err != nil {
+		return nil, fmt.Errorf("update policy: %w", err)
+	}
+
+	slog.Info("IAM policy tagged", "accountID", accountID, "policyName", policy.PolicyName)
+	return &iam.TagPolicyOutput{}, nil
+}
+
+// UntagPolicy removes the named tag keys from a policy; unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+
+	policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)
+
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return nil, fmt.Errorf("marshal policy: %w", err)
+	}
+	if _, err := s.policiesBucket.Put(accountID+"."+policy.PolicyName, data); err != nil {
+		return nil, fmt.Errorf("update policy: %w", err)
+	}
+
+	slog.Info("IAM policy untagged", "accountID", accountID, "policyName", policy.PolicyName)
+	return &iam.UntagPolicyOutput{}, nil
+}
+
+// ListPolicyTags returns a policy's tags. Pagination is not implemented:
+// IsTruncated is always false.
+func (s *IAMServiceImpl) ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListPolicyTagsOutput{
+		Tags:        tagsToSDK(policy.Tags),
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
 // GetUserPolicies resolves all policy documents attached to a user.
 // Used internally by the gateway for policy evaluation.
 func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDocument, error) {
@@ -1659,4 +1871,96 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 	}
 
 	return &doc, nil
+}
+
+// summaryQuotaDefaults holds the static SummaryMap entries returned by
+// GetAccountSummary. Spinifex's quota system (handlers/quota) only enforces
+// infrastructure dimensions (vCPUs, VPCs, subnets, EIPs, EBS) and models no IAM
+// entity limits, so these IAM quota values are AWS-parity constants for
+// informational compatibility only, not enforced limits. Resource types
+// Spinifex does not model are reported as 0 rather than omitted so CIS/audit
+// tooling that reads these keys keeps working. Real per-account resource counts
+// are overlaid on top of this table at call time.
+var summaryQuotaDefaults = map[string]int64{
+	// Account-wide quotas (AWS defaults).
+	"UsersQuota":               5000,
+	"GroupsQuota":              300,
+	"RolesQuota":               1000,
+	"PoliciesQuota":            1500,
+	"InstanceProfilesQuota":    1000,
+	"ServerCertificatesQuota":  20,
+	"PolicyVersionsInUseQuota": 10000,
+
+	// Per-principal quotas (AWS defaults).
+	"AccessKeysPerUserQuota":          maxAccessKeysPerUser,
+	"GroupsPerUserQuota":              10,
+	"AttachedPoliciesPerUserQuota":    10,
+	"AttachedPoliciesPerGroupQuota":   10,
+	"AttachedPoliciesPerRoleQuota":    10,
+	"SigningCertificatesPerUserQuota": 2,
+	"UserPolicySizeQuota":             2048,
+	"GroupPolicySizeQuota":            5120,
+	"PolicySizeQuota":                 6144,
+	"VersionsPerPolicyQuota":          5,
+
+	// Resource types Spinifex does not model — reported as 0.
+	"MFADevices":                 0,
+	"MFADevicesInUse":            0,
+	"AccountMFAEnabled":          0,
+	"ServerCertificates":         0,
+	"SigningCertificatesPerUser": 0,
+	"PolicyVersionsInUse":        0,
+}
+
+// countBucket counts records in a KV bucket that belong to accountID. Records
+// are keyed "accountID.name"; counting is by key prefix only (no Get/unmarshal)
+// so it stays cheap with many resources. The version key is skipped and a
+// missing bucket counts as zero.
+func countBucket(bucket nats.KeyValue, accountID string) (int64, error) {
+	keys, err := bucket.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	prefix := accountID + "."
+	var count int64
+	for _, key := range keys {
+		if key == utils.VersionKey {
+			continue
+		}
+		if strings.HasPrefix(key, prefix) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// GetAccountSummary returns account-wide IAM usage counts plus AWS-parity quota
+// values as a SummaryMap. Counts are scoped to accountID by key prefix; quota
+// values are static informational constants (see summaryQuotaDefaults).
+func (s *IAMServiceImpl) GetAccountSummary(accountID string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	counted := map[string]nats.KeyValue{
+		"Users":            s.usersBucket,
+		"Groups":           s.groupsBucket,
+		"Roles":            s.rolesBucket,
+		"Policies":         s.policiesBucket,
+		"InstanceProfiles": s.instanceProfilesBucket,
+	}
+
+	summary := make(map[string]*int64, len(summaryQuotaDefaults)+len(counted))
+	for key, value := range summaryQuotaDefaults {
+		summary[key] = aws.Int64(value)
+	}
+	for key, bucket := range counted {
+		n, err := countBucket(bucket, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("count %s: %w", key, err)
+		}
+		summary[key] = aws.Int64(n)
+	}
+
+	return &iam.GetAccountSummaryOutput{SummaryMap: summary}, nil
 }

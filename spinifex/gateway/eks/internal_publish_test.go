@@ -1,6 +1,7 @@
 package gateway_eks
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -44,7 +45,7 @@ func TestPublishInternal_RelaysToSubjects(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-			out, err := PublishInternal(nc, "alpha", []byte(tc.body))
+			out, err := PublishInternal(context.Background(), nc, "alpha", []byte(tc.body))
 			require.NoError(t, err)
 			require.NotNil(t, out)
 
@@ -70,17 +71,17 @@ func TestPublishInternal_Rejects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := PublishInternal(nc, "alpha", []byte(tc.body))
+			_, err := PublishInternal(context.Background(), nc, "alpha", []byte(tc.body))
 			require.Error(t, err)
 		})
 	}
 }
 
 func TestPublishInternal_NilConnAndEmptyCluster(t *testing.T) {
-	_, err := PublishInternal(nil, "alpha", []byte(`{}`))
+	_, err := PublishInternal(context.Background(), nil, "alpha", []byte(`{}`))
 	require.Error(t, err)
 
 	_, nc := testutil.StartTestNATS(t)
-	_, err = PublishInternal(nc, "", []byte(`{"accountId":"1","channel":"state","payload":{"x":1}}`))
+	_, err = PublishInternal(context.Background(), nc, "", []byte(`{"accountId":"1","channel":"state","payload":{"x":1}}`))
 	require.Error(t, err)
 }

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -136,7 +137,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		// instance.Instance.VpcId (notably onInstanceUpHook's NAT republish)
 		// work uniformly across both paths.
 		if d.vpcService != nil {
-			if eniOut, descErr := d.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+			if eniOut, descErr := d.vpcService.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 				NetworkInterfaceIds: []*string{aws.String(input.ENIID)},
 			}, eniAccountID); descErr == nil && len(eniOut.NetworkInterfaces) > 0 && eniOut.NetworkInterfaces[0].VpcId != nil {
 				ec2Instance.SetVpcId(*eniOut.NetworkInterfaces[0].VpcId)
@@ -175,7 +176,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		}
 	} else if input.SubnetID != "" && d.vpcService != nil {
 		// Auto-create ENI in subnet
-		eniOut, eniErr := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		eniOut, eniErr := d.vpcService.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 			SubnetId:    aws.String(input.SubnetID),
 			Description: aws.String("System interface for " + instance.ID),
 		}, accountID)
@@ -205,7 +206,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	publicIP := ""
 	if input.Scheme == handlers_elbv2.SchemeInternetFacing && d.vpcService != nil && instance.ENIId != "" {
 		if d.eipService != nil {
-			allocOut, allocErr := d.eipService.AllocateAddress(&ec2.AllocateAddressInput{}, eniAccountID)
+			allocOut, allocErr := d.eipService.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, eniAccountID)
 			if allocErr != nil {
 				slog.Error("LaunchSystemInstance: EIP AllocateAddress failed", "instanceId", instance.ID, "err", allocErr)
 				d.cleanupFailedSystemInstance(instance, instanceType)
@@ -215,13 +216,13 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			poolName := aws.StringValue(allocOut.PublicIpv4Pool)
 			allocID := aws.StringValue(allocOut.AllocationId)
 
-			assocOut, assocErr := d.eipService.AssociateAddress(&ec2.AssociateAddressInput{
+			assocOut, assocErr := d.eipService.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
 				AllocationId:       allocOut.AllocationId,
 				NetworkInterfaceId: aws.String(instance.ENIId),
 			}, eniAccountID)
 			if assocErr != nil {
 				slog.Error("LaunchSystemInstance: EIP AssociateAddress failed", "instanceId", instance.ID, "allocationId", allocID, "err", assocErr)
-				if _, relErr := d.eipService.ReleaseAddress(&ec2.ReleaseAddressInput{
+				if _, relErr := d.eipService.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
 					AllocationId: allocOut.AllocationId,
 				}, eniAccountID); relErr != nil {
 					slog.Warn("LaunchSystemInstance: failed to release EIP after associate failure", "allocationId", allocID, "err", relErr)
@@ -251,7 +252,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				region = d.config.Region
 				az = d.config.AZ
 			}
-			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(region, az, handlers_ec2_vpc.PurposeENIPublic, "", instance.ENIId, instance.ID)
+			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(context.Background(), region, az, handlers_ec2_vpc.PurposeENIPublic, "", instance.ENIId, instance.ID)
 			if allocErr != nil {
 				slog.Error("LaunchSystemInstance: failed to allocate public IP for internet-facing ALB", "instanceId", instance.ID, "err", allocErr)
 				d.cleanupFailedSystemInstance(instance, instanceType)
@@ -262,7 +263,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				slog.Warn("LaunchSystemInstance: failed to update ENI with public IP", "eniId", instance.ENIId, "err", updateErr)
 			}
 			vpcID := ""
-			result, descErr := d.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+			result, descErr := d.vpcService.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 				NetworkInterfaceIds: []*string{aws.String(instance.ENIId)},
 			}, eniAccountID)
 			if descErr == nil && len(result.NetworkInterfaces) > 0 && result.NetworkInterfaces[0].VpcId != nil {
@@ -278,7 +279,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 					slog.Warn("LaunchSystemInstance: failed to clear ENI public IP during NAT-failure rollback",
 						"eniId", instance.ENIId, "publicIp", publicIP, "err", clearErr)
 				}
-				if relErr := d.externalIPAM.ReleaseIP(poolName, publicIP, instance.ENIId); relErr != nil {
+				if relErr := d.externalIPAM.ReleaseIP(context.Background(), poolName, publicIP, instance.ENIId); relErr != nil {
 					slog.Warn("LaunchSystemInstance: failed to release public IP during NAT-failure rollback",
 						"publicIp", publicIP, "pool", poolName, "err", relErr)
 				}
@@ -381,7 +382,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 
 	// Launch QEMU VM
 	t1 := time.Now()
-	if err := d.vmMgr.Run(instance); err != nil {
+	if err := d.vmMgr.Run(context.Background(), instance); err != nil {
 		d.cleanupFailedSystemInstance(instance, instanceType)
 		return nil, fmt.Errorf("launch instance: %w", err)
 	}
@@ -454,7 +455,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		}}
 	}
 
-	_, instances, instanceType, err := d.instanceService.PrepareRunInstances(runInput, input.AccountID, "")
+	_, instances, instanceType, err := d.instanceService.PrepareRunInstances(context.Background(), runInput, input.AccountID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -496,7 +497,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		})
 	}
 
-	d.instanceService.LaunchRunInstances(instances, runInput, instanceType)
+	d.instanceService.LaunchRunInstances(context.Background(), instances, runInput, instanceType)
 
 	privateIP := input.ENIIP
 	if privateIP == "" && inst.Instance != nil {
@@ -574,10 +575,11 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 // the authoritative EIP KV, independent of the cached fields on the VM record.
 // Idempotent and nil-safe; logs on failure.
 func (d *Daemon) reclaimSystemInstanceEIP(instanceID string) {
-	if d.eipService == nil {
+	releaser, ok := d.eipService.(interface{ ReleaseAddressByInstanceID(string) error })
+	if !ok {
 		return
 	}
-	if err := d.eipService.ReleaseAddressByInstanceID(instanceID); err != nil {
+	if err := releaser.ReleaseAddressByInstanceID(instanceID); err != nil {
 		slog.Warn("reclaimSystemInstanceEIP: backstop release failed", "instanceId", instanceID, "err", err)
 	}
 }
@@ -648,13 +650,13 @@ func (d *Daemon) releaseSystemInstanceEIP(instance *vm.VM) {
 	}
 	eniAccount := instance.AccountID
 	if instance.PublicIPAssocID != "" {
-		if _, err := d.eipService.DisassociateAddress(&ec2.DisassociateAddressInput{
+		if _, err := d.eipService.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{
 			AssociationId: aws.String(instance.PublicIPAssocID),
 		}, eniAccount); err != nil {
 			slog.Warn("releaseSystemInstanceEIP: DisassociateAddress failed", "instanceId", instance.ID, "associationId", instance.PublicIPAssocID, "err", err)
 		}
 	}
-	if _, err := d.eipService.ReleaseAddress(&ec2.ReleaseAddressInput{
+	if _, err := d.eipService.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
 		AllocationId: aws.String(instance.PublicIPAllocID),
 	}, eniAccount); err != nil {
 		slog.Warn("releaseSystemInstanceEIP: ReleaseAddress failed", "instanceId", instance.ID, "allocationId", instance.PublicIPAllocID, "err", err)
@@ -755,9 +757,17 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 	//   i8042.no{pnp,aux,kbd}   — microvm has no PS/2; skip i8042 probe timeouts
 	var sb strings.Builder
 	sb.WriteString("console=ttyS0 quiet loglevel=3 mitigations=off tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")
-	for i := range input.NICs {
+	// Slots must stay packed in the same order QEMU actually creates
+	// -device entries (buildNICNetdevs), so an unprovisioned mgmt NIC
+	// (skipped there) must not reserve a slot here either.
+	slot := 0
+	for i, nic := range input.NICs {
+		if !nicProvisioned(i, nic) {
+			continue
+		}
 		fmt.Fprintf(&sb, " virtio_mmio.device=0x200@0x%x:%d",
-			0xfeb00000+i*0x200, 5+i)
+			0xfeb00000+slot*0x200, 5+slot)
+		slot++
 	}
 	cmdline := sb.String()
 
@@ -803,11 +813,15 @@ func microvmMachineType() string {
 // buildNICNetdevs produces QEMU -netdev and -device entries for each NIC in
 // input. The NIC order determines the netdev IDs: net0 = primary ENI,
 // net1 = mgmt (if present), net2+ = extra ENIs. Extra ENIs beyond the primary
-// are only included when corresponding ExtraENIs entries exist.
+// are only included when corresponding ExtraENIs entries exist. A gap at
+// net1 (single-node hosts with no br-mgmt) is expected and fine for QEMU.
 func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInput, machineType string) nicNetdevResult {
 	var res nicNetdevResult
 
 	for i, nic := range input.NICs {
+		if !nicProvisioned(i, nic) {
+			continue
+		}
 		netID := fmt.Sprintf("net%d", i)
 		// Resolve the tap name from the corresponding ENI.
 		tapName := tapNameForNIC(i, nic, instanceID, input)
@@ -818,6 +832,15 @@ func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInpu
 	}
 
 	return res
+}
+
+// nicProvisioned reports whether NIC[i] has a real tap/device behind it.
+// The mgmt NIC (index 1) is only wired when br-mgmt allocated it a MAC at
+// launch (LaunchSystemInstance); single-node hosts without br-mgmt leave it
+// blank, so it must be excluded from netdevs, mmio slots, and guest config —
+// not just any empty-MAC NIC, only this specific, expected slot.
+func nicProvisioned(i int, nic handlers_elbv2.NICConfig) bool {
+	return i != 1 || nic.MAC != ""
 }
 
 // tapNameForNIC returns the Linux tap device name for a NIC at the given index.
@@ -848,7 +871,17 @@ func (d *Daemon) writeFwCfgBlobs(instanceID string, input *handlers_elbv2.System
 	lbenvPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-lbenv.tmp", instanceID))
 	cacertPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-cacert.tmp", instanceID))
 
-	netcfg, err := buildNetcfgBlob(input.NICs)
+	// Exclude any unprovisioned mgmt NIC so the guest is only ever told about
+	// interfaces that physically exist — mirrors the netdev/mmio-slot skip
+	// in buildNICNetdevs/buildDirectBootConfig.
+	provisionedNICs := make([]handlers_elbv2.NICConfig, 0, len(input.NICs))
+	for i, nic := range input.NICs {
+		if nicProvisioned(i, nic) {
+			provisionedNICs = append(provisionedNICs, nic)
+		}
+	}
+
+	netcfg, err := buildNetcfgBlob(provisionedNICs)
 	if err != nil {
 		return nil, err
 	}

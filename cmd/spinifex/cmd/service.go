@@ -1,22 +1,7 @@
-/*
-Copyright © 2026 Mulga Defense Corporation
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -25,11 +10,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/service"
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
 	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
+	"github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/vpcd"
@@ -40,6 +27,28 @@ import (
 var serviceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Manage Spinifex services",
+}
+
+// initTelemetry installs the JSON slog default (trace-stamping) and the OTel
+// providers for a service process. The returned func flushes exporters and
+// must be deferred; with no OTLP endpoint configured both are no-ops.
+func initTelemetry(serviceName string, debug bool) func() {
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+	otelsetup.SetDefaultJSONLogger(level)
+
+	shutdown, err := otelsetup.Init(context.Background(), serviceName)
+	if err != nil {
+		slog.Warn("otel init", "service", serviceName, "error", err)
+		return func() {}
+	}
+	return func() {
+		if err := shutdown(context.Background()); err != nil {
+			slog.Warn("otel shutdown", "service", serviceName, "error", err)
+		}
+	}
 }
 
 var predastoreCmd = &cobra.Command{
@@ -128,6 +137,8 @@ var predastoreStartCmd = &cobra.Command{
 		nodeID := viper.GetInt("node-id")
 		pprofEnabled := viper.GetBool("pprof")
 		pprofOutput := viper.GetString("pprof-output")
+
+		defer initTelemetry("predastore", debug)()
 
 		service, err := service.New("predastore", &predastore.Config{
 			Port:       port,
@@ -291,6 +302,8 @@ var viperblockStartCmd = &cobra.Command{
 			encryptionKeyFile = envKey
 		}
 
+		defer initTelemetry("viperblockd", false)()
+
 		service, err := service.New("viperblock", &viperblockd.Config{
 			NatsHost:          nodeConfig.NATS.Host,
 			NatsToken:         nodeConfig.NATS.ACL.Token,
@@ -368,6 +381,8 @@ var natsStartCmd = &cobra.Command{
 		jetStream := viper.GetBool("jetstream")
 
 		cfgFile := viper.GetString("config")
+
+		defer initTelemetry("nats", debug)()
 
 		service, err := service.New("nats", &nats.Config{
 			ConfigFile: cfgFile,
@@ -461,6 +476,8 @@ var spinifexStartCmd = &cobra.Command{
 
 		// Apply changes back to cluster config
 		clusterConfig.Nodes[clusterConfig.Node] = nodeConfig
+
+		defer initTelemetry("spinifex-daemon", false)()
 
 		svc, err := service.New("spinifex", clusterConfig)
 
@@ -567,6 +584,8 @@ var awsgwStartCmd = &cobra.Command{
 		// Apply changes back to cluster config
 		clusterConfig.Nodes[clusterConfig.Node] = nodeConfig
 
+		defer initTelemetry("awsgw", viper.GetBool("debug"))()
+
 		awsgw.SetBuildInfo(Version, Commit)
 		service, err := service.New("awsgw", clusterConfig)
 
@@ -623,6 +642,8 @@ var spinifexUIStartCmd = &cobra.Command{
 		host := viper.GetString("spinifex-ui-host")
 		tlsCert := viper.GetString("spinifex-ui-tls-cert")
 		tlsKey := viper.GetString("spinifex-ui-tls-key")
+
+		defer initTelemetry("spinifex-ui", false)()
 
 		svc, err := service.New("spinifex-ui", &spinifexui.Config{
 			Port:    port,
@@ -739,6 +760,7 @@ var vpcdStartCmd = &cobra.Command{
 				Name:            p.Name,
 				Source:          p.Source,
 				BindBridge:      p.BindBridge,
+				DHCPMAC:         p.DHCPMAC,
 				RangeStart:      p.RangeStart,
 				RangeEnd:        p.RangeEnd,
 				Gateway:         p.Gateway,
@@ -770,6 +792,8 @@ var vpcdStartCmd = &cobra.Command{
 			nodeConfig.BaseDir = baseDir
 		}
 
+		defer initTelemetry("vpcd", false)()
+
 		svc, err := service.New("vpcd", &vpcd.Config{
 			NatsHost:            nodeConfig.NATS.Host,
 			NatsToken:           nodeConfig.NATS.ACL.Token,
@@ -786,6 +810,7 @@ var vpcdStartCmd = &cobra.Command{
 			AZ:                  nodeConfig.AZ,
 			NorthstarBaseDomain: handlers_dns.ResolveBaseDomain(&nodeConfig),
 			ResolverNameservers: northstar.ResolverNameserverIPs(clusterConfig),
+			NATExemptCIDRs:      clusterConfig.Network.NATExemptCIDRs,
 		})
 		if err != nil {
 			fmt.Println("Error starting vpcd service:", err)
@@ -921,6 +946,77 @@ var northstarStatusCmd = &cobra.Command{
 	},
 }
 
+var qmpCollectorCmd = &cobra.Command{
+	Use:   "qmp-collector",
+	Short: "Manage the qmp-collector (guest metrics) service",
+}
+
+var qmpCollectorStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start the qmp-collector service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Starting qmp-collector service...")
+
+		cfgFile := viper.GetString("config")
+		if cfgFile == "" {
+			fmt.Println("Config file is not set")
+			return
+		}
+		clusterConfig, err := config.LoadConfig(cfgFile)
+		if err != nil {
+			fmt.Println("Error loading config file:", err)
+			return
+		}
+		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
+
+		defer initTelemetry("qmp-collector", false)()
+
+		svc, err := service.New("qmp-collector", &qmpcollector.Config{
+			NatsHost:   nodeConfig.NATS.Host,
+			NatsToken:  nodeConfig.NATS.ACL.Token,
+			NatsCACert: nodeConfig.NATS.CACert,
+			BaseDir:    nodeConfig.BaseDir,
+			NodeName:   clusterConfig.Node,
+		})
+		if err != nil {
+			fmt.Println("Error starting qmp-collector service:", err)
+			return
+		}
+		if _, err = svc.Start(); err != nil {
+			fmt.Println("Error starting qmp-collector service:", err)
+			os.Exit(1)
+		}
+		fmt.Println("qmp-collector service started")
+	},
+}
+
+var qmpCollectorStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the qmp-collector service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Stopping qmp-collector service...")
+
+		svc, err := service.New("qmp-collector", &qmpcollector.Config{})
+		if err != nil {
+			fmt.Println("Error stopping qmp-collector service:", err)
+			return
+		}
+		if err = svc.Stop(); err != nil {
+			fmt.Println("Error stopping qmp-collector service:", err)
+			os.Exit(1)
+		}
+		fmt.Println("qmp-collector service stopped")
+	},
+}
+
+var qmpCollectorStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Get status of the qmp-collector service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("qmp-collector service status: ...")
+	},
+}
+
 func init() {
 	viper.SetEnvPrefix("SPINIFEX") // Prefix for environment variables
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
@@ -970,11 +1066,6 @@ func init() {
 	predastoreCmd.PersistentFlags().String("encryption-key-file", "", "Path to this node's 32-byte AES-256 master key file (required)")
 	viper.BindEnv("encryption-key-file", "SPINIFEX_PREDASTORE_ENCRYPTION_KEY_FILE")
 	viper.BindPFlag("encryption-key-file", predastoreCmd.PersistentFlags().Lookup("encryption-key-file"))
-
-	// Predastore Backend
-	predastoreCmd.PersistentFlags().String("backend", "distributed", "Predastore (S3) backend")
-	viper.BindEnv("backend", "SPINIFEX_PREDASTORE_BACKEND")
-	viper.BindPFlag("backend", predastoreCmd.PersistentFlags().Lookup("backend"))
 
 	// Predastore Node ID. Default -1 is dev mode (launch every configured
 	// QUIC node in-process). Production deployments set this to the node's
@@ -1121,6 +1212,7 @@ func init() {
 	vpcdCmd.AddCommand(vpcdStopCmd)
 	vpcdCmd.AddCommand(vpcdStatusCmd)
 
+	// northstar
 	serviceCmd.AddCommand(northstarCmd)
 
 	northstarCmd.PersistentFlags().String("northstar-config", "", "Path to northstar.toml (overrides config file)")
@@ -1130,4 +1222,11 @@ func init() {
 	northstarCmd.AddCommand(northstarStartCmd)
 	northstarCmd.AddCommand(northstarStopCmd)
 	northstarCmd.AddCommand(northstarStatusCmd)
+
+	// qmp-collector
+	serviceCmd.AddCommand(qmpCollectorCmd)
+
+	qmpCollectorCmd.AddCommand(qmpCollectorStartCmd)
+	qmpCollectorCmd.AddCommand(qmpCollectorStopCmd)
+	qmpCollectorCmd.AddCommand(qmpCollectorStatusCmd)
 }

@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -53,7 +54,7 @@ func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 		})
 
 	assumer := NewNATSSTSAssumer(nc)
-	out, err := assumer.AssumeRoleForInstance(imdsTestAccountID, "arn:aws:iam::123456789012:role/app", "i-abc", 3600)
+	out, err := assumer.AssumeRoleForInstance(context.Background(), imdsTestAccountID, "arn:aws:iam::123456789012:role/app", "i-abc", 3600)
 	require.NoError(t, err)
 	require.NotNil(t, out.Credentials)
 
@@ -82,7 +83,7 @@ func TestNATSProfileLookup_CachesProfile(t *testing.T) {
 
 	lookup := NewNATSProfileLookup(nc)
 	for range 3 {
-		prof, err := lookup.ResolveInstanceProfile(imdsTestAccountID, "app")
+		prof, err := lookup.ResolveInstanceProfile(context.Background(), imdsTestAccountID, "app")
 		require.NoError(t, err)
 		assert.Equal(t, "app-role", prof.RoleName)
 	}
@@ -103,7 +104,7 @@ func TestNATSProfileLookup_CachesRole(t *testing.T) {
 
 	lookup := NewNATSProfileLookup(nc)
 	for range 3 {
-		out, err := lookup.GetRole(imdsTestAccountID, &iam.GetRoleInput{RoleName: aws.String("app-role")})
+		out, err := lookup.GetRole(context.Background(), imdsTestAccountID, &iam.GetRoleInput{RoleName: aws.String("app-role")})
 		require.NoError(t, err)
 		assert.Equal(t, "arn:aws:iam::123456789012:role/app-role", aws.StringValue(out.Role.Arn))
 	}
@@ -119,7 +120,7 @@ func TestNATSProfileLookup_PropagatesError(t *testing.T) {
 		})
 
 	lookup := NewNATSProfileLookup(nc)
-	_, err := lookup.ResolveInstanceProfile(imdsTestAccountID, "missing")
+	_, err := lookup.ResolveInstanceProfile(context.Background(), imdsTestAccountID, "missing")
 	require.Error(t, err)
 }
 
@@ -137,7 +138,7 @@ func TestNATSPublicKeyLookup_CachesMaterial(t *testing.T) {
 
 	lookup := NewNATSPublicKeyLookup(nc)
 	for range 3 {
-		got, err := lookup.GetPublicKey(imdsTestAccountID, "my-key")
+		got, err := lookup.GetPublicKey(context.Background(), imdsTestAccountID, "my-key")
 		require.NoError(t, err)
 		assert.Equal(t, "ssh-ed25519 AAAA my-key", got)
 	}
@@ -158,7 +159,7 @@ func TestNATSPublicKeyLookup_DoesNotCacheError(t *testing.T) {
 
 	lookup := NewNATSPublicKeyLookup(nc)
 	for range 2 {
-		_, err := lookup.GetPublicKey(imdsTestAccountID, "missing")
+		_, err := lookup.GetPublicKey(context.Background(), imdsTestAccountID, "missing")
 		require.Error(t, err)
 		// The NotFound code must survive the round-trip verbatim: the IMDS
 		// handler's 404-vs-500 split keys off this exact string, so a future

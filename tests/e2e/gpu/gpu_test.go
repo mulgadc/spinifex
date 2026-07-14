@@ -14,36 +14,23 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// TestGPUPassthrough_Launch verifies that RunInstances with a GPU instance
-// type succeeds and reaches running state, confirming the VFIO bind path.
-func TestGPUPassthrough_Launch(t *testing.T) {
+// TestGPUPassthrough launches a single GPU instance and runs Launch,
+// DeviceVisible, and DriverAccess as ordered subtests against it. Sharing one
+// instance keeps its floating/private IP allocated for the whole test so no
+// mid-suite terminate+relaunch recycles an IP into a stale OVN datapath.
+func TestGPUPassthrough(t *testing.T) {
 	fix := requireGPUFixture(t)
-	harness.Phase(t, "GPU — Launch: RunInstances with %s", fix.GPUInstanceType)
+	requireBaseGPUAMI(t, fix)
+	harness.Phase(t, "GPU — Passthrough: launch, device visibility, driver access with %s", fix.GPUInstanceType)
 
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
-	keyName, _ := harness.EnsureKeyPair(t, fix.Harness, fix.ArtifactDir(t))
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness, fix.ArtifactDir(t))
+	harness.AuthorizeSSHIngress(t, fix.AWS, vpc.SGID)
 
 	instanceID := launchGPUInstance(t, fix, vpc.SubnetID, []string{vpc.SGID}, keyName)
 	harness.Detail(t, "instance", instanceID, "type", fix.GPUInstanceType, "ami", fix.AMIID)
 
 	inst := harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
-	assert.Equal(t, "running", aws.StringValue(inst.State.Name))
-}
-
-// TestGPUPassthrough_DeviceVisible SSHes into the GPU VM and confirms the
-// NVIDIA PCI device is visible via sysfs, proving the vfio-pci passthrough
-// wired the device into the guest.
-func TestGPUPassthrough_DeviceVisible(t *testing.T) {
-	fix := requireGPUFixture(t)
-	harness.Phase(t, "GPU — DeviceVisible: NVIDIA PCI device present in VM sysfs")
-
-	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
-	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness, fix.ArtifactDir(t))
-	harness.AuthorizeSSHIngress(t, fix.AWS, vpc.SGID)
-
-	instanceID := launchGPUInstance(t, fix, vpc.SubnetID, []string{vpc.SGID}, keyName)
-	inst := harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
-	harness.Detail(t, "instance", instanceID)
 
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
@@ -51,35 +38,28 @@ func TestGPUPassthrough_DeviceVisible(t *testing.T) {
 	harness.Step(t, "waiting for SSH on %s:%d", host, port)
 	waitForSSH(t, tgt, 5*time.Minute)
 
-	harness.Step(t, "checking sysfs for NVIDIA vendor (0x10de)")
-	out := sshRun(t, tgt, "grep -l 0x10de /sys/bus/pci/devices/*/vendor 2>/dev/null | wc -l")
-	assert.NotEqual(t, "0", out, "no NVIDIA PCI device found in VM sysfs — GPU passthrough did not wire the device into the guest")
-}
+	t.Run("Launch", func(t *testing.T) {
+		// RunInstances with a GPU instance type succeeds and reaches running
+		// state, confirming the VFIO bind path.
+		assert.Equal(t, "running", aws.StringValue(inst.State.Name))
+	})
 
-// TestGPUPassthrough_DriverAccess confirms nvidia-smi succeeds inside the VM,
-// proving the guest OS can communicate with the passed-through GPU.
-func TestGPUPassthrough_DriverAccess(t *testing.T) {
-	fix := requireGPUFixture(t)
-	harness.Phase(t, "GPU — DriverAccess: nvidia-smi succeeds in VM")
+	t.Run("DeviceVisible", func(t *testing.T) {
+		// SSHes into the GPU VM and confirms the NVIDIA PCI device is visible
+		// via sysfs, proving vfio-pci passthrough wired the device into the guest.
+		harness.Step(t, "checking sysfs for NVIDIA vendor (0x10de)")
+		out := sshRun(t, tgt, "grep -l 0x10de /sys/bus/pci/devices/*/vendor 2>/dev/null | wc -l")
+		assert.NotEqual(t, "0", out, "no NVIDIA PCI device found in VM sysfs — GPU passthrough did not wire the device into the guest")
+	})
 
-	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
-	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness, fix.ArtifactDir(t))
-	harness.AuthorizeSSHIngress(t, fix.AWS, vpc.SGID)
-
-	instanceID := launchGPUInstance(t, fix, vpc.SubnetID, []string{vpc.SGID}, keyName)
-	inst := harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
-	harness.Detail(t, "instance", instanceID)
-
-	host, port := harness.InstancePublicSSHHost(t, inst)
-	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
-
-	harness.Step(t, "waiting for SSH on %s:%d", host, port)
-	waitForSSH(t, tgt, 5*time.Minute)
-
-	harness.Step(t, "running nvidia-smi")
-	out := sshRun(t, tgt, "nvidia-smi --query-gpu=name --format=csv,noheader")
-	assert.NotEmpty(t, out, "nvidia-smi returned no GPU name — driver not loaded or GPU not accessible")
-	harness.Detail(t, "gpu_name", out)
+	t.Run("DriverAccess", func(t *testing.T) {
+		// Confirms nvidia-smi succeeds inside the VM, proving the guest OS can
+		// communicate with the passed-through GPU.
+		harness.Step(t, "running nvidia-smi")
+		out := sshRun(t, tgt, "nvidia-smi --query-gpu=name --format=csv,noheader")
+		assert.NotEmpty(t, out, "nvidia-smi returned no GPU name — driver not loaded or GPU not accessible")
+		harness.Detail(t, "gpu_name", out)
+	})
 }
 
 // TestGPUPassthrough_Release terminates a GPU instance and proves the GPU
@@ -88,6 +68,7 @@ func TestGPUPassthrough_DriverAccess(t *testing.T) {
 // insufficient-capacity error.
 func TestGPUPassthrough_Release(t *testing.T) {
 	fix := requireGPUFixture(t)
+	requireBaseGPUAMI(t, fix)
 	harness.Phase(t, "GPU — Release: GPU returns to pool after termination")
 
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)

@@ -1,6 +1,7 @@
 package handlers_ec2_image
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -37,7 +38,7 @@ func TestNATSCreateImage_OwnerServerErrorNotMaskedByNotFound(t *testing.T) {
 	nc2.Flush()
 
 	svc := NewNATSImageService(nc, 2)
-	_, err = svc.CreateImage(&ec2.CreateImageInput{
+	_, err = svc.CreateImage(context.Background(), &ec2.CreateImageInput{
 		InstanceId: aws.String("i-abc123"),
 		Name:       aws.String("my-image"),
 	}, "123456789012")
@@ -56,7 +57,7 @@ func TestNATSCreateImage_AllNotFound(t *testing.T) {
 	nc.Flush()
 
 	svc := NewNATSImageService(nc, 1)
-	_, err = svc.CreateImage(&ec2.CreateImageInput{
+	_, err = svc.CreateImage(context.Background(), &ec2.CreateImageInput{
 		InstanceId: aws.String("i-missing"),
 		Name:       aws.String("my-image"),
 	}, "123456789012")

@@ -1,6 +1,7 @@
 package gateway_ec2_image
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -20,7 +21,7 @@ func ValidateDeregisterImageInput(input *ec2.DeregisterImageInput) error {
 	return nil
 }
 
-func DeregisterImage(input *ec2.DeregisterImageInput, natsConn *nats.Conn, accountID string) (ec2.DeregisterImageOutput, error) {
+func DeregisterImage(ctx context.Context, input *ec2.DeregisterImageInput, natsConn *nats.Conn, accountID string) (ec2.DeregisterImageOutput, error) {
 	var output ec2.DeregisterImageOutput
 
 	if err := ValidateDeregisterImageInput(input); err != nil {
@@ -28,7 +29,7 @@ func DeregisterImage(input *ec2.DeregisterImageInput, natsConn *nats.Conn, accou
 	}
 
 	svc := handlers_ec2_image.NewNATSImageService(natsConn, 0)
-	result, err := svc.DeregisterImage(input, accountID)
+	result, err := svc.DeregisterImage(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

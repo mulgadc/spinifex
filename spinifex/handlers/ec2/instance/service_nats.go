@@ -1,6 +1,7 @@
 package handlers_ec2_instance
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -24,56 +25,56 @@ func NewNATSInstanceService(conn *nats.Conn) InstanceService {
 	return &NATSInstanceService{natsConn: conn}
 }
 
-func (s *NATSInstanceService) RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
+func (s *NATSInstanceService) RunInstances(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
 	if input == nil || input.InstanceType == nil {
 		return nil, fmt.Errorf("instance type is required")
 	}
 	topic := fmt.Sprintf("ec2.RunInstances.%s", aws.StringValue(input.InstanceType))
-	return utils.NATSRequest[ec2.Reservation](s.natsConn, topic, input, 5*time.Minute, accountID)
+	return utils.NATSRequest[ec2.Reservation](ctx, s.natsConn, topic, input, 5*time.Minute, accountID)
 }
 
 // DescribeInstances is a fan-out operation; use the gateway's scatter-gather
 // helper instead of this single-node client.
-func (s *NATSInstanceService) DescribeInstances(_ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
+func (s *NATSInstanceService) DescribeInstances(_ context.Context, _ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
 	return nil, fmt.Errorf("DescribeInstances is fan-out; use gateway scatter-gather, not NATSInstanceService")
 }
 
 // DescribeInstanceTypes is a fan-out operation; use the gateway's scatter-gather
 // helper instead of this single-node client.
-func (s *NATSInstanceService) DescribeInstanceTypes(_ *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
+func (s *NATSInstanceService) DescribeInstanceTypes(_ context.Context, _ *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
 	return nil, fmt.Errorf("DescribeInstanceTypes is fan-out; use gateway scatter-gather, not NATSInstanceService")
 }
 
 // DescribeInstanceStatus is a fan-out operation; use the gateway's scatter-gather
 // helper instead of this single-node client.
-func (s *NATSInstanceService) DescribeInstanceStatus(_ *ec2.DescribeInstanceStatusInput, _ string) (*ec2.DescribeInstanceStatusOutput, error) {
+func (s *NATSInstanceService) DescribeInstanceStatus(_ context.Context, _ *ec2.DescribeInstanceStatusInput, _ string) (*ec2.DescribeInstanceStatusOutput, error) {
 	return nil, fmt.Errorf("DescribeInstanceStatus is fan-out; use gateway scatter-gather, not NATSInstanceService")
 }
 
-func (s *NATSInstanceService) DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error) {
-	return utils.NATSRequest[ec2.DescribeInstanceAttributeOutput](s.natsConn, "ec2.DescribeInstanceAttribute", input, 30*time.Second, accountID)
+func (s *NATSInstanceService) DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error) {
+	return utils.NATSRequest[ec2.DescribeInstanceAttributeOutput](ctx, s.natsConn, "ec2.DescribeInstanceAttribute", input, 30*time.Second, accountID)
 }
 
-func (s *NATSInstanceService) DescribeStoppedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
-	return utils.NATSRequest[ec2.DescribeInstancesOutput](s.natsConn, "ec2.DescribeStoppedInstances", input, 30*time.Second, accountID)
+func (s *NATSInstanceService) DescribeStoppedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	return utils.NATSRequest[ec2.DescribeInstancesOutput](ctx, s.natsConn, "ec2.DescribeStoppedInstances", input, 30*time.Second, accountID)
 }
 
-func (s *NATSInstanceService) DescribeTerminatedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
-	return utils.NATSRequest[ec2.DescribeInstancesOutput](s.natsConn, "ec2.DescribeTerminatedInstances", input, 30*time.Second, accountID)
+func (s *NATSInstanceService) DescribeTerminatedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	return utils.NATSRequest[ec2.DescribeInstancesOutput](ctx, s.natsConn, "ec2.DescribeTerminatedInstances", input, 30*time.Second, accountID)
 }
 
-func (s *NATSInstanceService) ModifyInstanceAttribute(input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error) {
-	return utils.NATSRequest[ec2.ModifyInstanceAttributeOutput](s.natsConn, "ec2.ModifyInstanceAttribute", input, 30*time.Second, accountID)
+func (s *NATSInstanceService) ModifyInstanceAttribute(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error) {
+	return utils.NATSRequest[ec2.ModifyInstanceAttributeOutput](ctx, s.natsConn, "ec2.ModifyInstanceAttribute", input, 30*time.Second, accountID)
 }
 
-func (s *NATSInstanceService) ModifyInstanceMetadataOptions(input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
-	return utils.NATSRequest[ec2.ModifyInstanceMetadataOptionsOutput](s.natsConn, "ec2.ModifyInstanceMetadataOptions", input, 30*time.Second, accountID)
+func (s *NATSInstanceService) ModifyInstanceMetadataOptions(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
+	return utils.NATSRequest[ec2.ModifyInstanceMetadataOptionsOutput](ctx, s.natsConn, "ec2.ModifyInstanceMetadataOptions", input, 30*time.Second, accountID)
 }
 
-func (s *NATSInstanceService) StartStoppedInstance(input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error) {
-	return utils.NATSRequest[StartStoppedInstanceOutput](s.natsConn, "ec2.StartStoppedInstance", input, 30*time.Second, accountID)
+func (s *NATSInstanceService) StartStoppedInstance(ctx context.Context, input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error) {
+	return utils.NATSRequest[StartStoppedInstanceOutput](ctx, s.natsConn, "ec2.StartStoppedInstance", input, 30*time.Second, accountID)
 }
 
-func (s *NATSInstanceService) TerminateStoppedInstance(input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error) {
-	return utils.NATSRequest[TerminateStoppedInstanceOutput](s.natsConn, "ec2.TerminateStoppedInstance", input, 30*time.Second, accountID)
+func (s *NATSInstanceService) TerminateStoppedInstance(ctx context.Context, input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error) {
+	return utils.NATSRequest[TerminateStoppedInstanceOutput](ctx, s.natsConn, "ec2.TerminateStoppedInstance", input, 30*time.Second, accountID)
 }

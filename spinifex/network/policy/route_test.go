@@ -103,6 +103,33 @@ func TestRouteManager_DeleteStaticRoute_RemovesRow(t *testing.T) {
 	assert.Nil(t, findRoute(m, "10.42.0.0/24"))
 }
 
+// Every VPC router carries 0.0.0.0/0 — a drift replace on one router must
+// never delete another router's default route (regression: unscoped prefix
+// match grabbed the first 0.0.0.0/0 row DB-wide and hit a referential
+// integrity violation, wedging IGW attach on multi-VPC nodes).
+func TestRouteManager_DriftReplace_ScopedToRouter(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedRouter(t, m, "vpc-2")
+	rm := NewRouteManager(m)
+
+	require.NoError(t, rm.AddDefaultRoute(ctx, "vpc-1", "192.168.1.1", "gw-vpc-1"))
+	require.NoError(t, rm.AddDefaultRoute(ctx, "vpc-2", "192.168.1.1", "gw-vpc-2"))
+
+	// Drift vpc-2's nexthop (the nat-mode transit migration path).
+	require.NoError(t, rm.AddDefaultRoute(ctx, "vpc-2", "100.127.0.1", "gw-vpc-2"))
+
+	assert.Equal(t, 2, countRoutes(m, "0.0.0.0/0"))
+	r1 := m.Routers[topology.VPCRouter("vpc-1")]
+	require.Len(t, r1.StaticRoutes, 1)
+	assert.Equal(t, "192.168.1.1", m.StaticRoutes[r1.StaticRoutes[0]].Nexthop,
+		"vpc-1 default route must survive vpc-2's drift replace")
+	r2 := m.Routers[topology.VPCRouter("vpc-2")]
+	require.Len(t, r2.StaticRoutes, 1)
+	assert.Equal(t, "100.127.0.1", m.StaticRoutes[r2.StaticRoutes[0]].Nexthop)
+}
+
 func TestRouteManager_AddSubnetEgress_InstallsScopedPolicy(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

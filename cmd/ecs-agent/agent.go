@@ -43,6 +43,11 @@ type Agent struct {
 	// cred serves task IAM role credentials at 169.254.170.2 (nil in unit tests).
 	cred *credEndpoint
 
+	// gpu is the local pinning ledger over the host's discovered GPU UUIDs.
+	// Always non-nil (newAgent seeds an empty one); New() reseeds it from
+	// nvidia-smi discovery.
+	gpu *gpuLedger
+
 	closers []func() error
 }
 
@@ -61,6 +66,7 @@ func newAgent(cfg config, id identity, cp controlPlane, puller ctrruntime.ImageP
 		reg:      newRegistrar(cp, id),
 		hb:       newHeartbeater(cp, id, cfg.Heartbeat),
 		netns:    newTaskNetns(execNetRunner{}),
+		gpu:      newGPULedger(id.Capacity.GPUIDs),
 	}
 }
 
@@ -84,7 +90,7 @@ func New(cfg config) (*Agent, error) {
 		InstanceID:   meta.InstanceID,
 		AZ:           meta.AZ,
 		Hostname:     host,
-		Capacity:     detectCapacity(),
+		Capacity:     detectCapacity(discoverNvidiaGPUs(execCommandRunner)),
 		AgentVersion: version,
 	}
 
@@ -153,11 +159,15 @@ func (a *Agent) Stop() error {
 	return firstErr
 }
 
-// detectCapacity reports the host's total CPU units (1 vCPU = 1024) and memory.
-func detectCapacity() bus.InstanceCapacity {
+// detectCapacity reports the host's total CPU units (1 vCPU = 1024), memory,
+// and GPU count/UUIDs from the caller's nvidia-smi discovery (nil on a
+// non-GPU host).
+func detectCapacity(gpuUUIDs []string) bus.InstanceCapacity {
 	return bus.InstanceCapacity{
 		CPU:       goruntime.NumCPU() * 1024,
 		MemoryMiB: memTotalMiB(),
+		GPU:       len(gpuUUIDs),
+		GPUIDs:    gpuUUIDs,
 	}
 }
 

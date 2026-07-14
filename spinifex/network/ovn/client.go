@@ -16,6 +16,9 @@ var ErrNATNotFound = errors.New("NAT not found")
 // ErrPortGroupNotFound is returned when a port group is absent (use errors.Is for idempotency).
 var ErrPortGroupNotFound = errors.New("port group not found")
 
+// ErrAddressSetNotFound is returned when an address set is absent (use errors.Is for idempotency).
+var ErrAddressSetNotFound = errors.New("address set not found")
+
 // ACLSpec describes an OVN ACL rule for attachment to a port group.
 type ACLSpec struct {
 	Direction string // "to-lport" or "from-lport"
@@ -38,8 +41,10 @@ type Client interface {
 	// Logical Switch (subnet)
 	CreateLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) error
 	// EnsureLogicalSwitch atomically creates a logical switch or returns the existing
-	// row. Uses an OVSDB wait-op (see EnsureLogicalRouter for rationale).
-	EnsureLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, error)
+	// row. Uses an OVSDB wait-op (see EnsureLogicalRouter for rationale). The returned
+	// row always carries the real persisted UUID; created reports whether this call
+	// inserted the row (false when an existing row was reused).
+	EnsureLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) (row *nbdb.LogicalSwitch, created bool, err error)
 	DeleteLogicalSwitch(ctx context.Context, name string) error
 	GetLogicalSwitch(ctx context.Context, name string) (*nbdb.LogicalSwitch, error)
 	ListLogicalSwitches(ctx context.Context) ([]nbdb.LogicalSwitch, error)
@@ -61,8 +66,10 @@ type Client interface {
 	CreateLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) error
 	// EnsureLogicalRouter atomically creates a logical router or returns the existing
 	// row. OVSDB wait-op serialises concurrent writers — NB has no unique-Name
-	// constraint, so without it concurrent vpc.create calls produce duplicates.
-	EnsureLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error)
+	// constraint, so without it concurrent vpc.create calls produce duplicates. The
+	// returned row always carries the real persisted UUID; created reports whether
+	// this call inserted the row.
+	EnsureLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) (row *nbdb.LogicalRouter, created bool, err error)
 	DeleteLogicalRouter(ctx context.Context, name string) error
 	GetLogicalRouter(ctx context.Context, name string) (*nbdb.LogicalRouter, error)
 	ListLogicalRouters(ctx context.Context) ([]nbdb.LogicalRouter, error)
@@ -91,6 +98,20 @@ type Client interface {
 	DeleteAllNATsByExternalIP(ctx context.Context, natType, externalIP string) (int, error)
 	FindNATByExternalIP(ctx context.Context, natType, externalIP string) (*nbdb.NAT, error)
 	FindNATByLogicalIP(ctx context.Context, routerName, natType, logicalIP string) (*nbdb.NAT, error)
+	// ListNATs returns every NAT row in OVN NB. The reconciler uses it to prune
+	// orphan dnat_and_snat rows whose stamped owning ENI is gone from intent.
+	ListNATs(ctx context.Context) ([]nbdb.NAT, error)
+	// SetNATExemptedExtIPs updates exempted_ext_ips in place on the NAT rule
+	// matching (natType, logicalIP) on routerName — no delete/re-add flow gap.
+	// nil clears the ref. Returns ErrNATNotFound when the rule is absent.
+	SetNATExemptedExtIPs(ctx context.Context, routerName, natType, logicalIP string, addressSetUUID *string) error
+
+	// Address Sets (referenced by NAT exempted_ext_ips and ACL match exprs)
+	// EnsureAddressSet atomically creates the named address set or converges the
+	// addresses on the existing row (see EnsureLogicalRouter for the wait-op
+	// rationale). Returns the persisted row UUID.
+	EnsureAddressSet(ctx context.Context, name string, addresses []string) (uuid string, err error)
+	GetAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error)
 
 	// Static routes
 	AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error
@@ -108,8 +129,9 @@ type Client interface {
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
 	// EnsurePortGroup atomically creates a port group or returns the existing row.
-	// See EnsureLogicalRouter for the wait-op rationale.
-	EnsurePortGroup(ctx context.Context, name string, ports []string) (*nbdb.PortGroup, error)
+	// See EnsureLogicalRouter for the wait-op rationale. The returned row always
+	// carries the real persisted UUID; created reports whether this call inserted it.
+	EnsurePortGroup(ctx context.Context, name string, ports []string) (row *nbdb.PortGroup, created bool, err error)
 	DeletePortGroup(ctx context.Context, name string) error
 	// UpdatePortGroupMemberships applies all port-group joins and leaves for an LSP
 	// in one transaction, preventing an intermediate state with fewer groups

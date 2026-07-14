@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -191,26 +192,18 @@ func TestParseRunInstances(t *testing.T) {
 			},
 			want: errors.New(awserrors.ErrorMissingParameter),
 		},
-
-		{
-			name: "MissingKeyName",
-			input: &ec2.RunInstancesInput{
-				ImageId:          defaults.ImageId,
-				InstanceType:     defaults.InstanceType,
-				MinCount:         aws.Int64(1),
-				MaxCount:         aws.Int64(1),
-				KeyName:          nil,
-				SecurityGroupIds: defaults.SecurityGroupIds,
-				SubnetId:         defaults.SubnetId,
-			},
-			want: errors.New(awserrors.ErrorMissingParameter),
-		},
 	}
+
+	t.Run("MissingKeyNameIsValid", func(t *testing.T) {
+		input := defaults
+		input.KeyName = nil
+		assert.NoError(t, ValidateRunInstancesInput(&input))
+	})
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			// For validation tests, we can pass nil conn since validation happens before NATS call
-			response, err := RunInstances(test.input, nil, nil, "123456789012", nil, nil, 1)
+			response, err := RunInstances(context.Background(), test.input, nil, nil, "123456789012", nil, nil, 1)
 
 			// Use assert to check if the error is as expected
 			assert.Equal(t, test.want, err)

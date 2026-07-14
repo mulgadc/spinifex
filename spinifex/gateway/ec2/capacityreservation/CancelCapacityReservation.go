@@ -1,6 +1,7 @@
 package gateway_ec2_capacityreservation
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,7 @@ import (
 // that owns the reservation releases its carve-out, but all daemons ack so the
 // gateway can tell "cancelled" from "no node owns this id". Any ack with Return
 // true means success; none means the id is unknown.
-func CancelCapacityReservation(input *ec2.CancelCapacityReservationInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.CancelCapacityReservationOutput, error) {
+func CancelCapacityReservation(ctx context.Context, input *ec2.CancelCapacityReservationInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.CancelCapacityReservationOutput, error) {
 	var output ec2.CancelCapacityReservationOutput
 	if input == nil {
 		return output, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -39,7 +40,7 @@ func CancelCapacityReservation(input *ec2.CancelCapacityReservationInput, natsCo
 		return output, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, _, err := utils.Gather(natsConn, "ec2.CancelCapacityReservation", payload,
+	frames, _, err := utils.Gather(ctx, natsConn, "ec2.CancelCapacityReservation", payload,
 		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return output, err

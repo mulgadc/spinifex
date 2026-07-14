@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -21,12 +22,18 @@ import (
 // exists. Signals an operator/config gap (image not built/imported).
 var ErrEKSServerAMINotFound = errors.New("eks: eks-server AMI not found")
 
+// ErrEKSGPUNodeAMINotFound is returned when no AMI carries both the EKS
+// managed-by tag and the requested gpu-vendor tag. A GPU nodegroup must never
+// silently fall back to the non-GPU AMI, so callers surface this as a hard
+// failure rather than substituting the driverless image.
+var ErrEKSGPUNodeAMINotFound = errors.New("eks: eks GPU node AMI not found")
+
 // k3sVPCProvisioner is the narrow VPC surface the K3s server VM launcher needs.
 type k3sVPCProvisioner interface {
-	CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
-	DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
-	DescribeNetworkInterfaces(input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error)
-	DetachENI(accountID, eniID string) error
+	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
+	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
+	DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error)
+	DetachENI(ctx context.Context, accountID, eniID string) error
 }
 
 // k3sInstanceLauncher is the system-instance launch surface for the K3s CP VM.
@@ -42,7 +49,7 @@ type k3sInstanceLauncher interface {
 
 // k3sAMIResolver is the narrow AMI surface for resolving the eks-server AMI ID.
 type k3sAMIResolver interface {
-	DescribeImages(input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error)
+	DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error)
 }
 
 const (
@@ -59,6 +66,10 @@ const (
 
 	// k3sFirstBootEnvPath is the env file k3s-first-boot.sh sources at boot.
 	k3sFirstBootEnvPath = "/etc/spinifex-eks/first-boot.env"
+
+	// k3sSnapshotEnvPath is the env file mulga-eks-etcd-snapshot.sh (cron) and
+	// mulga-eks-k3s-recovery.sh (boot-time restore) source for predastore creds.
+	k3sSnapshotEnvPath = "/etc/spinifex-eks/etcd-snapshot.env"
 
 	// agentEnvPath is the env file the k3s-agent OpenRC service sources for
 	// K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL.
@@ -100,68 +111,80 @@ const (
 // report, and add-on fetch reach the customer cluster, not the system account.
 // Region is carried for future region-aware AMI lookups but not consumed today.
 type K3sServerInput struct {
-	AccountID        string
-	ClusterAccountID string
-	ClusterName      string
-	Region           string
-	SubnetID         string
+	AccountID        string `json:"accountId,omitempty"`
+	ClusterAccountID string `json:"clusterAccountId,omitempty"`
+	ClusterName      string `json:"clusterName,omitempty"`
+	Region           string `json:"region,omitempty"`
+	SubnetID         string `json:"subnetId,omitempty"`
 	// VpcID is the cluster VPC; surfaced as EKS_VPC_ID so the in-cluster LB
 	// controller can pass --aws-vpc-id to the gateway elbv2/ec2 handlers.
-	VpcID string
+	VpcID string `json:"vpcId,omitempty"`
 	// ELBSubnetIDs is the cluster's ELB-eligible subnets, deduped to one per AZ.
 	// Surfaced as EKS_ELB_SUBNET_IDS and injected into the alb IngressClassParams
 	// so every Ingress takes LBC's explicit-subnet path (the only path that honors
 	// the ALBSingleSubnet gate); tag auto-discovery never threads that gate, so a
 	// single-AZ cluster would otherwise dedup to 1<2 subnets and fail reconcile.
-	ELBSubnetIDs     []string
-	ControlPlaneSGID string
-	NLBDNS           string
+	ELBSubnetIDs     []string `json:"elbSubnetIds,omitempty"`
+	ControlPlaneSGID string   `json:"controlPlaneSgId,omitempty"`
+	NLBDNS           string   `json:"nlbDns,omitempty"`
 	// EndpointIP is the NLB front-end IP added to the apiserver cert SANs for TLS.
 	// Empty for an internal endpoint with no front-end IP.
-	EndpointIP string
+	EndpointIP string `json:"endpointIp,omitempty"`
 	// EndpointDNS is the AWS-shaped apiserver DNS name ({cluster}.{region}.eks.
 	// {baseDomain}) added to the cert SANs so kubectl/SDK clients validate TLS when
 	// connecting via the published DNS endpoint. Empty when northstar is unconfigured.
-	EndpointDNS string
+	EndpointDNS string `json:"endpointDns,omitempty"`
 	// PrivateEndpointIP is the customer-VPC (Set A) private-endpoint IP added to the
 	// apiserver cert SANs so in-VPC clients validate TLS via https://<ip>:443.
 	// Empty when private access is off.
-	PrivateEndpointIP string
-	OIDCIssuer        string
-	OIDCPrivateKeyPEM string
-	OIDCPublicKeyPEM  string
+	PrivateEndpointIP string `json:"privateEndpointIp,omitempty"`
+	OIDCIssuer        string `json:"oidcIssuer,omitempty"`
+	OIDCPrivateKeyPEM string `json:"oidcPrivateKeyPem,omitempty"`
+	OIDCPublicKeyPEM  string `json:"oidcPublicKeyPem,omitempty"`
 	// Gateway broker config: CP VM publishes via SigV4-signed HTTPS POST to AWSGW.
 	// GatewayURL is the mgmt-reachable endpoint; AccessKey/SecretKey are system
 	// SigV4 creds; GatewayCACert signs the gateway TLS cert.
-	GatewayURL string
+	GatewayURL string `json:"gatewayUrl,omitempty"`
 	// AddonGatewayURL is the customer-facing gateway endpoint baked into managed
 	// addon pod specs (EKS_ADDON_GATEWAY_URL). Those pods run on workers, which
 	// cannot reach the mgmt GatewayURL, so they target this public address.
-	AddonGatewayURL string
+	AddonGatewayURL string `json:"addonGatewayUrl,omitempty"`
 	// AccessKey/SecretKey are the static system SigV4 creds baked into the VM's
 	// first-boot env. Empty selects IMDS instance-role creds instead, which
 	// requires IamInstanceProfileArn to be set so IMDS serves a role.
-	AccessKey string
-	SecretKey string
+	AccessKey string `json:"accessKey,omitempty"`
+	SecretKey string `json:"secretKey,omitempty"`
 	// IamInstanceProfileArn attaches a system instance profile to the CP VM so
 	// the in-VM IMDS endpoint serves rotating role credentials. When set, the
 	// static AccessKey/SecretKey are omitted from user-data.
-	IamInstanceProfileArn string
-	GatewayCACert         string
-	InstanceType          string
+	IamInstanceProfileArn string `json:"iamInstanceProfileArn,omitempty"`
+	GatewayCACert         string `json:"gatewayCaCert,omitempty"`
+	InstanceType          string `json:"instanceType,omitempty"`
 	// TargetNodeID pins the VM to a specific host for HA spread; empty = local node.
-	TargetNodeID string
+	TargetNodeID string `json:"targetNodeId,omitempty"`
 	// JoinToken is the shared k3s cluster token so HA servers join the etcd quorum.
 	// Empty = k3s auto-generated token (single-CP).
-	JoinToken string
+	JoinToken string `json:"joinToken,omitempty"`
 	// ServerURL boots this VM as a JOIN server joining the quorum at the given endpoint.
 	// Empty = first server (cluster-init). Non-empty requires JoinToken.
-	ServerURL string
+	ServerURL string `json:"serverUrl,omitempty"`
+	// PrunePeerIP is a terminated CP member's node IP the reconciler asks this
+	// replacement to evict once it has joined: deleting the dead Node triggers k3s
+	// embedded-etcd to drop the stale member, so the quorum width returns to N
+	// rather than N+1-with-a-dead-peer. Empty = nothing to prune (create path).
+	PrunePeerIP string `json:"prunePeerIp,omitempty"`
 	// KonnServerCount is the number of apiserver replicas in this cluster (1 for a
 	// single CP, len(nodes) for an HA spread). Surfaced as
 	// EKS_KONNECTIVITY_SERVER_COUNT so the konnectivity-server advertises
 	// --server-count=N and every agent holds a tunnel to every replica (HA-correct).
-	KonnServerCount int
+	KonnServerCount int `json:"konnServerCount,omitempty"`
+	// PredastoreEndpoint/PredastoreAccessKey/PredastoreSecretKey are the
+	// mgmt-bridge-reachable predastore SigV4 creds baked into etcd-snapshot.env.
+	// The guest snapshot cron and boot-time recovery script have no IMDS-role
+	// support, so these are always static (unlike AccessKey/SecretKey above).
+	PredastoreEndpoint  string `json:"predastoreEndpoint,omitempty"`
+	PredastoreAccessKey string `json:"predastoreAccessKey,omitempty"`
+	PredastoreSecretKey string `json:"predastoreSecretKey,omitempty"`
 }
 
 // K3sServerOutput carries identifiers to persist in ClusterMeta and register with the NLB.
@@ -175,7 +198,7 @@ type K3sServerOutput struct {
 // LaunchK3sServerVM provisions the K3s CP VM: resolves the AMI, pre-creates the
 // ENI, renders cloud-init user-data, then launches via RunInstances. On failure
 // the ENI is deleted best-effort to avoid leaking a customer-account resource.
-func LaunchK3sServerVM(
+func LaunchK3sServerVM(ctx context.Context,
 	vpcSvc k3sVPCProvisioner,
 	instSvc k3sInstanceLauncher,
 	amiSvc k3sAMIResolver,
@@ -189,12 +212,12 @@ func LaunchK3sServerVM(
 		instanceType = defaultK3sServerInstanceType
 	}
 
-	amiID, err := lookupEKSServerAMI(amiSvc, in.AccountID)
+	amiID, err := lookupEKSServerAMI(ctx, amiSvc, in.AccountID)
 	if err != nil {
 		return nil, err
 	}
 
-	eniOut, err := vpcSvc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	eniOut, err := vpcSvc.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(in.SubnetID),
 		Description: aws.String("EKS K3s server ENI for " + in.ClusterName),
 		Groups:      aws.StringSlice([]string{in.ControlPlaneSGID}),
@@ -235,16 +258,16 @@ func LaunchK3sServerVM(
 		IamInstanceProfileArn: in.IamInstanceProfileArn,
 	})
 	if err != nil {
-		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
+		rollbackK3sENI(ctx, vpcSvc, in.AccountID, eniID)
 		return nil, fmt.Errorf("run K3s server instance for cluster %s: %w", in.ClusterName, err)
 	}
 	if sysOut == nil || sysOut.InstanceID == "" {
-		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
+		rollbackK3sENI(ctx, vpcSvc, in.AccountID, eniID)
 		return nil, fmt.Errorf("eks: LaunchSystemInstance returned no instance for cluster %s", in.ClusterName)
 	}
 	instanceID := sysOut.InstanceID
 
-	slog.Info("LaunchK3sServerVM completed",
+	slog.InfoContext(ctx, "LaunchK3sServerVM completed",
 		"clusterName", in.ClusterName,
 		"accountID", in.AccountID,
 		"instanceId", instanceID,
@@ -262,7 +285,7 @@ func LaunchK3sServerVM(
 
 // TerminateK3sServerVM terminates the K3s server VM and deletes the ENI.
 // Missing instance/ENI is a no-op for idempotent retries.
-func TerminateK3sServerVM(
+func TerminateK3sServerVM(ctx context.Context,
 	vpcSvc k3sVPCProvisioner,
 	instSvc k3sInstanceLauncher,
 	accountID, instanceID, eniID string,
@@ -275,16 +298,16 @@ func TerminateK3sServerVM(
 		// "instance not found" on a retry is idempotent success; proceed to the ENI/SG/KV sweep.
 		if err := instSvc.TerminateSystemInstance(instanceID); err != nil {
 			if errors.Is(err, sysinstance.ErrSystemInstanceNotFound) {
-				slog.Debug("TerminateK3sServerVM: instance already gone", "instanceId", instanceID)
+				slog.DebugContext(ctx, "TerminateK3sServerVM: instance already gone", "instanceId", instanceID)
 			} else {
-				slog.Warn("TerminateK3sServerVM: terminate failed", "instanceId", instanceID, "err", err)
+				slog.WarnContext(ctx, "TerminateK3sServerVM: terminate failed", "instanceId", instanceID, "err", err)
 				firstErr = fmt.Errorf("terminate instance %s: %w", instanceID, err)
 			}
 		}
 	}
 	if eniID != "" {
-		if err := detachAndDeleteServerENI(vpcSvc, accountID, eniID); err != nil {
-			slog.Warn("TerminateK3sServerVM: ENI delete failed", "eniId", eniID, "err", err)
+		if err := detachAndDeleteServerENI(ctx, vpcSvc, accountID, eniID); err != nil {
+			slog.WarnContext(ctx, "TerminateK3sServerVM: ENI delete failed", "eniId", eniID, "err", err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("delete ENI %s: %w", eniID, err)
 			}
@@ -302,12 +325,12 @@ func TerminateK3sServerVM(
 // tolerate an already-gone ENI (NotFound), so a race with the async
 // instance-terminate cascade that removes the same ENI resolves to idempotent
 // success either way.
-func detachAndDeleteServerENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) error {
-	if err := vpcSvc.DetachENI(accountID, eniID); err != nil && !isENINotFound(err) {
+func detachAndDeleteServerENI(ctx context.Context, vpcSvc k3sVPCProvisioner, accountID, eniID string) error {
+	if err := vpcSvc.DetachENI(ctx, accountID, eniID); err != nil && !isENINotFound(err) {
 		// Non-fatal: the delete below still runs and surfaces any real failure.
-		slog.Debug("TerminateK3sServerVM: ENI detach failed; deleting anyway", "eniId", eniID, "err", err)
+		slog.DebugContext(ctx, "TerminateK3sServerVM: ENI detach failed; deleting anyway", "eniId", eniID, "err", err)
 	}
-	_, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+	_, err := vpcSvc.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniID),
 	}, accountID)
 	if err == nil || isENINotFound(err) {
@@ -325,14 +348,49 @@ func isENINotFound(err error) bool {
 
 // lookupEKSServerAMI resolves the EKS CP AMI by the spinifex:managed-by=eks tag
 // rather than a brittle exact name. If multiple AMIs match, the newest wins.
-func lookupEKSServerAMI(amiSvc k3sAMIResolver, accountID string) (string, error) {
-	out, err := amiSvc.DescribeImages(&ec2.DescribeImagesInput{
-		Filters: []*ec2.Filter{
-			{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByEKS})},
-		},
-	}, accountID)
+func lookupEKSServerAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID string) (string, error) {
+	filters := []*ec2.Filter{
+		{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByEKS})},
+	}
+	desc := fmt.Sprintf("tag:%s=%s", tags.ManagedByKey, tags.ManagedByEKS)
+	return resolveNewestAMI(ctx, amiSvc, accountID, filters, true,
+		"describe eks AMI ("+desc+")", ErrEKSServerAMINotFound, desc,
+		"eks: multiple AMIs match managed-by=eks; using newest")
+}
+
+// lookupEKSGPUNodeAMI resolves the GPU-tagged EKS node AMI for vendor (e.g.
+// "nvidia") by the spinifex:managed-by=eks + gpu-vendor tags. There is no
+// fallback to the non-GPU AMI: a missing GPU image is a hard failure, since
+// running a GPU workload on a driverless image is worse than a clear error.
+func lookupEKSGPUNodeAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID, vendor string) (string, error) {
+	filters := []*ec2.Filter{
+		{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByEKS})},
+		{Name: aws.String("tag:" + tags.GPUVendorKey), Values: aws.StringSlice([]string{vendor})},
+	}
+	desc := fmt.Sprintf("tag:%s=%s, tag:%s=%s", tags.ManagedByKey, tags.ManagedByEKS, tags.GPUVendorKey, vendor)
+	return resolveNewestAMI(ctx, amiSvc, accountID, filters, false,
+		"describe eks GPU node AMI ("+desc+")", ErrEKSGPUNodeAMINotFound, desc,
+		"eks: multiple GPU AMIs match managed-by=eks+gpu-vendor; using newest")
+}
+
+// hasTagKey reports whether img carries a tag with the given key.
+func hasTagKey(img *ec2.Image, key string) bool {
+	for _, t := range img.Tags {
+		if aws.StringValue(t.Key) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveNewestAMI runs DescribeImages with filters and returns the newest
+// (by CreationDate) matching image ID. describeErrCtx prefixes a DescribeImages
+// failure; notFoundDesc/warnMsg describe the filter for the not-found error and
+// the multi-match log line respectively.
+func resolveNewestAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID string, filters []*ec2.Filter, excludeGPUTagged bool, describeErrCtx string, notFound error, notFoundDesc, warnMsg string) (string, error) {
+	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{Filters: filters}, accountID)
 	if err != nil {
-		return "", fmt.Errorf("describe eks AMI (tag:%s=%s): %w", tags.ManagedByKey, tags.ManagedByEKS, err)
+		return "", fmt.Errorf("%s: %w", describeErrCtx, err)
 	}
 
 	var (
@@ -344,6 +402,12 @@ func lookupEKSServerAMI(amiSvc k3sAMIResolver, accountID string) (string, error)
 		if img == nil || img.ImageId == nil || *img.ImageId == "" {
 			continue
 		}
+		// The GPU node AMI also carries managed-by=eks; DescribeImages filters
+		// have no negation, so exclude gpu-vendor-tagged images client-side from
+		// the non-GPU lookup or a newer GPU AMI would hijack ordinary nodes.
+		if excludeGPUTagged && hasTagKey(img, tags.GPUVendorKey) {
+			continue
+		}
 		matches++
 		// CreationDate is a fixed-width RFC3339 timestamp, so lexicographic
 		// comparison orders it correctly without parsing.
@@ -352,20 +416,19 @@ func lookupEKSServerAMI(amiSvc k3sAMIResolver, accountID string) (string, error)
 		}
 	}
 	if newestID == "" {
-		return "", fmt.Errorf("%w (tag:%s=%s, account %s)", ErrEKSServerAMINotFound, tags.ManagedByKey, tags.ManagedByEKS, accountID)
+		return "", fmt.Errorf("%w (%s, account %s)", notFound, notFoundDesc, accountID)
 	}
 	if matches > 1 {
-		slog.Warn("eks: multiple AMIs match managed-by=eks; using newest",
-			"count", matches, "imageId", newestID, "created", newestCreated)
+		slog.WarnContext(ctx, warnMsg, "count", matches, "imageId", newestID, "created", newestCreated)
 	}
 	return newestID, nil
 }
 
-func rollbackK3sENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) {
-	if _, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+func rollbackK3sENI(ctx context.Context, vpcSvc k3sVPCProvisioner, accountID, eniID string) {
+	if _, err := vpcSvc.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniID),
 	}, accountID); err != nil && !awserrors.IsNotFound(err) {
-		slog.Warn("LaunchK3sServerVM: rollback ENI delete failed", "eniId", eniID, "err", err)
+		slog.WarnContext(ctx, "LaunchK3sServerVM: rollback ENI delete failed", "eniId", eniID, "err", err)
 	}
 }
 
@@ -399,6 +462,12 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput AccessKey and SecretKey must both be set or both empty")
 	case strings.TrimSpace(in.GatewayCACert) == "":
 		return errors.New("eks: K3sServerInput empty GatewayCACert")
+	case in.PredastoreEndpoint == "":
+		return errors.New("eks: K3sServerInput empty PredastoreEndpoint")
+	case in.PredastoreAccessKey == "":
+		return errors.New("eks: K3sServerInput empty PredastoreAccessKey")
+	case in.PredastoreSecretKey == "":
+		return errors.New("eks: K3sServerInput empty PredastoreSecretKey")
 	case in.ServerURL != "" && in.JoinToken == "":
 		return errors.New("eks: K3sServerInput join server (ServerURL set) requires JoinToken")
 	}
@@ -511,6 +580,12 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_KONNECTIVITY_SANS="+strings.Join(konnSANs, ","),
 		"EKS_KONNECTIVITY_SERVER_COUNT="+strconv.Itoa(konnCount),
 	)
+	// A replacement CP prunes the terminated member it supersedes from etcd once
+	// it has joined (k3s-first-boot deletes the dead Node → embedded-etcd drops
+	// the member). Only set on a member-count-reconcile replacement launch.
+	if in.PrunePeerIP != "" {
+		envLines = append(envLines, "EKS_ETCD_PRUNE_PEER_IP="+in.PrunePeerIP)
+	}
 	envBody := strings.Join(envLines, "\n")
 
 	// First server uses cluster-init (embedded etcd); join servers set `server: <first>` + token.
@@ -589,9 +664,22 @@ func buildK3sUserData(in K3sServerInput) string {
 	)
 	k3sConfig := strings.Join(configLines, "\n")
 
+	snapshotEnvBody := strings.Join([]string{
+		"EKS_ACCOUNT_ID=" + in.ClusterAccountID,
+		"EKS_CLUSTER_NAME=" + in.ClusterName,
+		"SPINIFEX_PREDASTORE_ENDPOINT=" + in.PredastoreEndpoint,
+		"SPINIFEX_PREDASTORE_AKID=" + in.PredastoreAccessKey,
+		"SPINIFEX_PREDASTORE_SECRET=" + in.PredastoreSecretKey,
+		// Without AWS_REGION the snapshot SigV4 PUT signs with the fallback
+		// region and predastore rejects it with 403.
+		"AWS_REGION=" + in.Region,
+	}, "\n")
+
 	files := []userDataFile{
 		// 0600: may contain a system SigV4 secret key (static-cred mode).
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
+		// 0600: carries predastore SigV4 static creds for the snapshot cron + boot-time recovery.
+		{Path: k3sSnapshotEnvPath, Perms: "0600", Body: snapshotEnvBody},
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
 		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},

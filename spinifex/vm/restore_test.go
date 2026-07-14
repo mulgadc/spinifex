@@ -114,17 +114,76 @@ func TestClassifyRestoredInstances_TerminatedMigrates(t *testing.T) {
 	assert.False(t, stillLocal, "terminated must be removed from the local map")
 }
 
+// TestClassifyRestoredInstances_StoppedMigrates covers the operator-stopped
+// case: Attributes.StopInstance=true is the signal stamped only by the
+// operator StopInstances path, so classify must honour it and never relaunch.
 func TestClassifyRestoredInstances_StoppedMigrates(t *testing.T) {
 	m, store, _ := classifyTestManager(t)
-	v := &VM{ID: "i-stopped", Status: StateStopped, InstanceType: "t3.micro"}
+	v := &VM{
+		ID:           "i-stopped",
+		Status:       StateStopped,
+		InstanceType: "t3.micro",
+		Attributes:   types.EC2CommandAttributes{StopInstance: true},
+	}
 	m.Replace(map[string]*VM{v.ID: v})
 
 	toLaunch := m.classifyRestoredInstances()
 
-	assert.Empty(t, toLaunch, "stopped must not be queued for relaunch")
+	assert.Empty(t, toLaunch, "operator-stopped must not be queued for relaunch")
 	assert.NotNil(t, store.stopped[v.ID], "stopped must be migrated to the shared bucket")
 	_, stillLocal := m.Get(v.ID)
 	assert.False(t, stillLocal, "stopped must be removed from the local map after migration")
+}
+
+// TestClassifyRestoredInstances_DrainStoppedRelaunches covers the
+// coordinated-shutdown DRAIN case: a VM left StateStopped with no operator
+// StopInstance intent (Attributes zero value) must be queued for relaunch,
+// not migrated to the stopped bucket, exactly like a running instance whose
+// QEMU exited.
+func TestClassifyRestoredInstances_DrainStoppedRelaunches(t *testing.T) {
+	m, store, rc := classifyTestManager(t)
+	v := &VM{
+		ID:           "i-drain-stopped",
+		Status:       StateStopped,
+		InstanceType: "t3.micro",
+		Attributes:   types.EC2CommandAttributes{},
+		Instance:     &ec2.Instance{},
+	}
+	m.Replace(map[string]*VM{v.ID: v})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	require.Len(t, toLaunch, 1)
+	assert.Same(t, v, toLaunch[0])
+	assert.Equal(t, StatePending, v.Status,
+		"drain-stopped (no operator StopInstance) must reset to Pending so the relaunch path accepts it")
+	require.NotNil(t, v.Instance.LaunchTime, "LaunchTime must be reset for the pending watchdog")
+	assert.Nil(t, store.stopped[v.ID], "drain-stopped instance must not be migrated to the stopped bucket")
+	assert.Equal(t, 1, rc.allocateCount("t3.micro"),
+		"resources must be re-allocated before queuing for relaunch")
+}
+
+// TestClassifyRestoredInstances_UnschedulableInstanceNotRelaunched covers the
+// markUnschedulable guard: an instance demoted for insufficient
+// capacity/unknown type has StopInstance stamped true so the new
+// drain-relaunch branch does not mistake it for a drained instance and
+// wrongly resume it on a later restore.
+func TestClassifyRestoredInstances_UnschedulableInstanceNotRelaunched(t *testing.T) {
+	m, store, _ := classifyTestManager(t)
+	v := &VM{
+		ID:           "i-unschedulable",
+		InstanceType: "t3.micro",
+		Instance:     &ec2.Instance{},
+	}
+	markUnschedulable(v, "insufficient resources")
+	require.True(t, v.Attributes.StopInstance,
+		"markUnschedulable must stamp StopInstance so a later restore does not resume it")
+	m.Replace(map[string]*VM{v.ID: v})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	assert.Empty(t, toLaunch, "an unschedulable instance must not be relaunched by the drain-stopped path")
+	assert.NotNil(t, store.stopped[v.ID], "must stay migrated to the stopped bucket, not relaunch")
 }
 
 func TestClassifyRestoredInstances_UnknownTypeMarkedUnschedulable(t *testing.T) {
@@ -310,8 +369,11 @@ func TestRestore_HappyPath(t *testing.T) {
 	store := &markerStateStore{
 		fakeStateStore: newFakeStateStore(),
 		snapshot: map[string]*VM{
-			"i-term":    {ID: "i-term", Status: StateTerminated, InstanceType: "t3.micro"},
-			"i-stopped": {ID: "i-stopped", Status: StateStopped, InstanceType: "t3.micro"},
+			"i-term": {ID: "i-term", Status: StateTerminated, InstanceType: "t3.micro"},
+			"i-stopped": {
+				ID: "i-stopped", Status: StateStopped, InstanceType: "t3.micro",
+				Attributes: types.EC2CommandAttributes{StopInstance: true},
+			},
 		},
 	}
 
@@ -885,7 +947,7 @@ func TestReconnectInstance(t *testing.T) {
 		assert.NotNil(t, saved["i-no-hook"], "the reconnected instance must appear in the persisted snapshot")
 	})
 
-	t.Run("reconnect re-asserts boot-volume in-use, skips non-boot", func(t *testing.T) {
+	t.Run("reconnect re-asserts in-use for boot and non-boot volumes", func(t *testing.T) {
 		stateUpdater := &fakeVolumeStateUpdater{}
 		m := NewManager()
 		m.SetDeps(Deps{
@@ -901,17 +963,19 @@ func TestReconnectInstance(t *testing.T) {
 		instance := &VM{ID: "i-reconnect-vol", Status: StatePending}
 		instance.EBSRequests.Requests = []types.EBSRequest{
 			{Name: "vol-root", Boot: true},
-			{Name: "vol-data", Boot: false},
+			{Name: "vol-data", Boot: false, DeviceName: "/dev/sdf"},
 		}
 		m.Insert(instance)
 
 		require.NoError(t, m.reconnectInstance(instance))
 
 		calls := stateUpdater.snapshot()
-		require.Len(t, calls, 1,
-			"reconnect must re-assert exactly the boot volume — a daemon restart otherwise leaves the root volume 'available' while the VM runs (siv-464)")
+		require.Len(t, calls, 2,
+			"reconnect must re-assert every attached volume — a daemon restart otherwise leaves attached volumes 'available' while the VM runs, wedging stateful workloads that check volume availability")
 		assert.Equal(t, volumeStateUpdate{VolumeID: "vol-root", State: "in-use", InstanceID: "i-reconnect-vol"}, calls[0],
-			"the boot volume must be marked in-use under the running instance; non-boot volumes are owned by their own attach flow")
+			"the boot volume must be marked in-use under the running instance with no API device (boot volumes carry none)")
+		assert.Equal(t, volumeStateUpdate{VolumeID: "vol-data", State: "in-use", InstanceID: "i-reconnect-vol", AttachmentDevice: "/dev/sdf"}, calls[1],
+			"non-boot volumes must also be marked in-use, carrying the persisted API-form device name (not a guest/nbd path)")
 	})
 
 	t.Run("AttachQMP succeeds, OnInstanceUp errors: QMP closed and nil'd", func(t *testing.T) {

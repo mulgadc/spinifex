@@ -1,6 +1,7 @@
 package gateway_ec2_natgw
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -19,13 +20,13 @@ func ValidateDeleteNatGatewayInput(input *ec2.DeleteNatGatewayInput) error {
 	return nil
 }
 
-func DeleteNatGateway(input *ec2.DeleteNatGatewayInput, natsConn *nats.Conn, accountID string) (ec2.DeleteNatGatewayOutput, error) {
+func DeleteNatGateway(ctx context.Context, input *ec2.DeleteNatGatewayInput, natsConn *nats.Conn, accountID string) (ec2.DeleteNatGatewayOutput, error) {
 	var output ec2.DeleteNatGatewayOutput
 	if err := ValidateDeleteNatGatewayInput(input); err != nil {
 		return output, err
 	}
 	svc := handlers_ec2_natgw.NewNATSNatGatewayService(natsConn)
-	result, err := svc.DeleteNatGateway(input, accountID)
+	result, err := svc.DeleteNatGateway(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

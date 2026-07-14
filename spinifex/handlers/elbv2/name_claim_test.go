@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -23,7 +24,7 @@ func TestCreateLoadBalancer_ConcurrentSameNameSingleOwner(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+			_, errs[i] = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 				Name: aws.String("race-lb"),
 			}, testAccountID)
 		}(i)
@@ -63,7 +64,7 @@ func TestCreateLoadBalancer_ReclaimsCrashOrphanNameClaim(t *testing.T) {
 	require.False(t, dup)
 
 	// A fresh create for the same name reclaims the orphan and succeeds.
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("orphan-lb"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -75,19 +76,19 @@ func TestCreateLoadBalancer_ReclaimsCrashOrphanNameClaim(t *testing.T) {
 func TestDeleteLoadBalancer_ReleasesNameForReuse(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("reuse-lb"),
 	}, testAccountID)
 	require.NoError(t, err)
 	arn := out.LoadBalancers[0].LoadBalancerArn
 
-	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
 		LoadBalancerArn: arn,
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// The name is free: a second create with the same name succeeds.
-	_, err = svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("reuse-lb"),
 	}, testAccountID)
 	require.NoError(t, err)

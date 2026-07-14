@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,18 +24,18 @@ const (
 // also augments from the stopped-instance KV bucket. The aggregator propagates
 // the first deterministic 4xx only when no data was collected, matching
 // DescribeInstances.
-func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *nats.Conn, expectedNodes int, accountID, az string) (*ec2.DescribeInstanceStatusOutput, error) {
+func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, natsConn *nats.Conn, expectedNodes int, accountID, az string) (*ec2.DescribeInstanceStatusOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeInstanceStatusInput{}
 	}
 
 	jsonData, err := json.Marshal(input)
 	if err != nil {
-		slog.Error("DescribeInstanceStatus: Failed to marshal input", "err", err)
+		slog.ErrorContext(ctx, "DescribeInstanceStatus: Failed to marshal input", "err", err)
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, sum, err := utils.Gather(natsConn, "ec2.DescribeInstanceStatus", jsonData,
+	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstanceStatus", jsonData,
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -49,7 +50,7 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 	}
 
 	if aws.BoolValue(input.IncludeAllInstances) {
-		if stopped := queryStoppedInstancesForStatus(natsConn, input, accountID, az); len(stopped) > 0 {
+		if stopped := queryStoppedInstancesForStatus(ctx, natsConn, input, accountID, az); len(stopped) > 0 {
 			allStatuses = append(allStatuses, stopped...)
 		}
 	}
@@ -60,24 +61,24 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 		return nil, errors.New(sum.FirstClient4xx)
 	}
 
-	slog.Info("DescribeInstanceStatus: Aggregated response", "total_statuses", len(finalStatuses))
+	slog.InfoContext(ctx, "DescribeInstanceStatus: Aggregated response", "total_statuses", len(finalStatuses))
 	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: finalStatuses}, nil
 }
 
 // queryStoppedInstancesForStatus projects input to DescribeInstancesInput for the stopped-KV handler.
 // IncludeAllInstances and status-specific filters are stripped (the handler rejects them);
 // those filters are re-applied gateway-side on the returned statuses.
-func queryStoppedInstancesForStatus(natsConn *nats.Conn, input *ec2.DescribeInstanceStatusInput, accountID, az string) []*ec2.InstanceStatus {
+func queryStoppedInstancesForStatus(ctx context.Context, natsConn *nats.Conn, input *ec2.DescribeInstanceStatusInput, accountID, az string) []*ec2.InstanceStatus {
 	projected := &ec2.DescribeInstancesInput{
 		InstanceIds: input.InstanceIds,
 		Filters:     stoppedCompatibleFilters(input.Filters),
 	}
 	jsonData, err := json.Marshal(projected)
 	if err != nil {
-		slog.Error("DescribeInstanceStatus: failed to marshal stopped query", "err", err)
+		slog.ErrorContext(ctx, "DescribeInstanceStatus: failed to marshal stopped query", "err", err)
 		return nil
 	}
-	reservations, _ := queryInstanceBucket(natsConn, "ec2.DescribeStoppedInstances", jsonData, accountID)
+	reservations, _ := queryInstanceBucket(ctx, natsConn, "ec2.DescribeStoppedInstances", jsonData, accountID)
 	var statuses []*ec2.InstanceStatus
 	for _, res := range reservations {
 		if res == nil {

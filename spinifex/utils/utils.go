@@ -97,8 +97,19 @@ func GenerateIAMXMLPayload(action string, payload any) any {
 
 // GenerateErrorPayload serializes an ec2.ResponseError with the given code as JSON.
 func GenerateErrorPayload(code string) (jsonResponse []byte) {
+	return GenerateErrorPayloadWithMessage(code, "")
+}
+
+// GenerateErrorPayloadWithMessage serializes an ec2.ResponseError carrying both
+// the sanitized code and the original error message, so the client can surface
+// the actionable reason instead of a bare code. Message is omitted when empty
+// or identical to the code.
+func GenerateErrorPayloadWithMessage(code, message string) (jsonResponse []byte) {
 	var responseError ec2.ResponseError
 	responseError.Code = aws.String(code)
+	if message != "" && message != code {
+		responseError.Message = aws.String(message)
+	}
 	jsonResponse, err := json.Marshal(responseError)
 	if err != nil {
 		slog.Error("GenerateErrorPayload could not marshal JSON payload", "err", err)

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -14,7 +15,7 @@ type daemonEKSSubnetResolver struct {
 	d *Daemon
 }
 
-func (a *daemonEKSSubnetResolver) GetSubnetVPC(accountID, subnetID string) (string, error) {
+func (a *daemonEKSSubnetResolver) GetSubnetVPC(_ context.Context, accountID, subnetID string) (string, error) {
 	if a.d == nil || a.d.vpcService == nil {
 		return "", errors.New("eks: VPC service not initialized")
 	}
@@ -25,7 +26,7 @@ func (a *daemonEKSSubnetResolver) GetSubnetVPC(accountID, subnetID string) (stri
 	return rec.VpcId, nil
 }
 
-func (a *daemonEKSSubnetResolver) GetSubnetAZ(accountID, subnetID string) (string, error) {
+func (a *daemonEKSSubnetResolver) GetSubnetAZ(_ context.Context, accountID, subnetID string) (string, error) {
 	if a.d == nil || a.d.vpcService == nil {
 		return "", errors.New("eks: VPC service not initialized")
 	}
@@ -36,11 +37,11 @@ func (a *daemonEKSSubnetResolver) GetSubnetAZ(accountID, subnetID string) (strin
 	return rec.AvailabilityZone, nil
 }
 
-func (a *daemonEKSSubnetResolver) GetVPCCIDR(accountID, vpcID string) (string, error) {
+func (a *daemonEKSSubnetResolver) GetVPCCIDR(ctx context.Context, accountID, vpcID string) (string, error) {
 	if a.d == nil || a.d.vpcService == nil {
 		return "", errors.New("eks: VPC service not initialized")
 	}
-	out, err := a.d.vpcService.DescribeVpcs(&ec2.DescribeVpcsInput{
+	out, err := a.d.vpcService.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
 		VpcIds: aws.StringSlice([]string{vpcID}),
 	}, accountID)
 	if err != nil {

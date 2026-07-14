@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
+	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -33,6 +34,13 @@ var (
 	guestPortDatapathInterval = 5 * time.Second
 )
 
+// After this many recompute misses with a binding still down, the readiness loops
+// check SB connectivity and, if the local ovn-controller is not "connected",
+// escalate once to sb-cluster-state-reset. A recompute re-evaluates flows from the
+// controller's current SB view, so it is a no-op against a stale-SB wedge — the
+// reset re-syncs that view. Package var so tests can shrink it.
+var sbResetEscalateAfter = 3
+
 // applyVPCs ensures every intent VPC has a LogicalRouter. Stray OVN-only
 // routers are left alone.
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState) {
@@ -46,7 +54,7 @@ func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual A
 					"spinifex:cidr":   spec.CIDR.String(),
 				},
 			}
-			if _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
+			if _, _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
 				slog.Error("reconcile/apply: ensure VPC router failed", "vpc_id", vpcID, "err", err)
 				continue
 			}
@@ -81,7 +89,7 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 					"spinifex:vpc_id":    spec.VPCID,
 				},
 			}
-			if _, err := r.ovn.EnsureLogicalSwitch(ctx, ls); err != nil {
+			if _, _, err := r.ovn.EnsureLogicalSwitch(ctx, ls); err != nil {
 				slog.Error("reconcile/apply: ensure subnet switch failed", "subnet_id", subnetID, "err", err)
 				continue
 			}
@@ -270,16 +278,16 @@ func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState) {
 }
 
 // applyIGWs ensures every intent IGW has OVN topology and rebinds chassis on
-// existing IGWs. AttachIGW is idempotent.
+// existing IGWs. AttachIGW is idempotent and must run even when the gateway
+// switch port already exists: its already-attached path re-ensures host state
+// (routed-NAT ingress routes) that survives in OVN but not across reboots.
 func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual ActualState) {
 	for vpcID, spec := range intent.IGWs {
-		if _, ok := actual.ExternalSwch[vpcID]; !ok {
-			if err := r.igw.AttachIGW(ctx, spec); err != nil {
-				slog.Error("reconcile/apply: AttachIGW failed", "vpc_id", vpcID, "err", err)
-				continue
-			}
-			actual.ExternalSwch[vpcID] = struct{}{}
+		if err := r.igw.AttachIGW(ctx, spec); err != nil {
+			slog.Error("reconcile/apply: AttachIGW failed", "vpc_id", vpcID, "err", err)
+			continue
 		}
+		actual.ExternalSwch[vpcID] = struct{}{}
 		r.rebindGatewayChassis(ctx, vpcID, eipProbeIP(intent, vpcID))
 	}
 }
@@ -390,6 +398,29 @@ func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP, eip
 	}
 }
 
+// escalateSBReset issues a one-shot sb-cluster-state-reset when the local
+// ovn-controller's SB client is wedged (status not "connected"). A recompute nudge
+// cannot clear a stale-SB wedge — it re-evaluates flows from the same stale SB view
+// — so a readiness loop that keeps missing checks connectivity and resets once.
+// Returns true when a reset was issued (caller stops escalating); false when the SB
+// is connected (recompute is the right tool) or the probe failed (retry next miss).
+func (r *reconciler) escalateSBReset(ctx context.Context, logKV ...any) bool {
+	status, err := r.gwClaim.SBConnectionState(ctx)
+	if err != nil {
+		slog.Warn("reconcile/apply: SB connection-status probe failed during escalation", append(logKV, "err", err)...)
+		return false
+	}
+	if status == "connected" {
+		return false
+	}
+	slog.Warn("reconcile/apply: recompute not converging and SB not connected; escalating to sb-cluster-state-reset",
+		append(logKV, "sb_status", status)...)
+	if err := r.gwClaim.ResetSBClusterState(ctx); err != nil {
+		slog.Warn("reconcile/apply: sb-cluster-state-reset failed", append(logKV, "err", err)...)
+	}
+	return true
+}
+
 // ensureGatewayClaimed polls the SB chassisredirect binding after SetGatewayChassis.
 // An unclaimed binding after reboot makes floating IPs unreachable. Recompute on
 // every miss, not once: after a fresh-VPC bring-up or a chassis flap a single early
@@ -402,6 +433,8 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 	}
 	deadline := time.Now().Add(gatewayClaimTimeout)
 	nudged := false
+	misses := 0
+	resetEscalated := false
 	for {
 		claimed, err := r.gwClaim.GatewayPortClaimed(ctx, crPortName)
 		if err != nil {
@@ -419,6 +452,10 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 			slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "port", crPortName, "err", err)
 		}
 		nudged = true
+		misses++
+		if !resetEscalated && misses >= sbResetEscalateAfter {
+			resetEscalated = r.escalateSBReset(ctx, "port", crPortName)
+		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: gateway SB chassis claim did not converge; floating IPs may be unreachable",
 				"port", crPortName, "timeout", gatewayClaimTimeout)
@@ -432,17 +469,74 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 	}
 }
 
-// applyEIPs runs every intent EIP through NATManager.AddEIP; idempotent. After the
+// applyEIPs runs every floating IP through NATManager.AddEIP; idempotent. After the
 // DNAT row is in place it gates on the guest ENI's SB Port_Binding: AddEIP only
 // proves the gateway-chassis flow exists, not the gatewayLRP->guest hop, so a guest
 // whose port has not converged (e.g. just after a host reboot) stays dark while
 // every other signal is green.
 func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ ActualState) {
-	for _, spec := range intent.EIPs {
+	for _, spec := range r.floatingIPSpecs(intent) {
 		if err := r.nat.AddEIP(ctx, spec); err != nil {
 			slog.Error("reconcile/apply: AddEIP failed", "external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP, "err", err)
 		}
 		r.ensureGuestPortDatapath(ctx, spec.VPCID, spec.PortName)
+	}
+}
+
+// floatingIPSpecs is every dnat_and_snat the datapath must carry: user EIPs
+// (intent.EIPs) plus auto-assigned/ELB public IPs recorded on ENIs (intent.Ports).
+// Both need the same DNAT row and gatewayLRP->guest convergence, but only user EIPs
+// were reconciled before — an auto-assigned IP's rule was created once at launch and
+// never re-asserted, so a vpcd/OVN rebuild dropped it and its guest-port hop never
+// converged (inbound DNATs at the gateway but never reaches the guest; ICMP is
+// answered by the gateway LR, so ping works while TCP hangs). A user EIP on the same
+// private IP wins; the auto-assigned entry is skipped to avoid a duplicate rule.
+func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
+	specs := make([]policy.EIPSpec, 0, len(intent.EIPs)+len(intent.Ports))
+	for _, spec := range intent.EIPs {
+		specs = append(specs, spec)
+	}
+	for _, p := range intent.Ports {
+		if !p.PublicIP.IsValid() {
+			continue
+		}
+		logicalIP := p.PrivateIP.String()
+		if _, hasEIP := intent.EIPs[logicalIP]; hasEIP {
+			continue
+		}
+		specs = append(specs, policy.EIPSpec{
+			VPCID:      p.VPCID,
+			ExternalIP: p.PublicIP.String(),
+			LogicalIP:  logicalIP,
+			PortName:   topology.Port(p.PortID),
+			MAC:        p.MAC.String(),
+		})
+	}
+	return specs
+}
+
+// pruneOrphanEIPs sweeps dnat_and_snat rows whose stamped owning ENI is gone from
+// intent. vpc.delete-nat is fire-and-forget and can be lost, leaking rows across
+// dead VPCs; NATManager.PruneOrphanEIPs deletes any row whose spinifex:logical_port
+// is absent from the live-port set. The live set is keyed the same way
+// floatingIPSpecs derives PortName (topology.Port(p.PortID) for auto-assigned ports,
+// e.PortName for user EIPs), so a currently-live auto-assigned EIP is never pruned.
+// Runs only on the prune pass (drift), so an in-flight association whose port event
+// has not converged is never swept.
+func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState) {
+	live := make(map[string]struct{}, len(intent.Ports)+len(intent.EIPs))
+	for portID := range intent.Ports {
+		live[topology.Port(portID)] = struct{}{}
+	}
+	for _, e := range intent.EIPs {
+		if e.PortName != "" {
+			live[e.PortName] = struct{}{}
+		}
+	}
+	if pruned, err := r.nat.PruneOrphanEIPs(ctx, live); err != nil {
+		slog.Warn("reconcile/apply: orphan EIP prune failed", "err", err)
+	} else if pruned > 0 {
+		slog.Info("reconcile/apply: pruned orphan dnat_and_snat rows", "count", pruned)
 	}
 }
 
@@ -512,6 +606,8 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, vpcID, lspName
 	}
 	deadline := time.Now().Add(guestPortDatapathTimeout)
 	nudged := false
+	misses := 0
+	resetEscalated := false
 	for {
 		up, err := r.gwClaim.GuestPortUp(ctx, lspName)
 		if err != nil {
@@ -530,6 +626,10 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, vpcID, lspName
 			slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "vpc_id", vpcID, "lsp", lspName, "err", err)
 		}
 		nudged = true
+		misses++
+		if !resetEscalated && misses >= sbResetEscalateAfter {
+			resetEscalated = r.escalateSBReset(ctx, "vpc_id", vpcID, "lsp", lspName)
+		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: guest port datapath did not converge; EIP ingress may be unreachable",
 				"vpc_id", vpcID, "lsp", lspName, "timeout", guestPortDatapathTimeout)

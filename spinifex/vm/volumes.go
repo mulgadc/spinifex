@@ -1,9 +1,12 @@
 package vm
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -14,18 +17,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// blockdevDelMaxAttempts caps the bounded retry on "node is in use" while
-// QEMU drains pending I/O after device_del. 20 × DetachDelay (default 1s)
-// gives a 20s budget.
+// blockdevDelMaxAttempts caps the bounded retry on "node is in use" as a
+// safety net after the DEVICE_DELETED wait (see DeviceDeletedTimeout): a miss
+// on the event (timeout, or a client not opted in) falls back to polling at
+// DetachDelay. 20 × DetachDelay (default 1s) gives a 20s budget.
 const blockdevDelMaxAttempts = 20
-
-// AttachVolumeResult carries the AWS-API device name (/dev/sd[f-p]) and the
-// in-guest path (/dev/vd*) discovered via QMP. DeviceName is echoed in the
-// API response and volume metadata; GuestDevice is used for diagnostics.
-type AttachVolumeResult struct {
-	DeviceName  string
-	GuestDevice string
-}
 
 // rollbackUnmount best-effort unmounts a volume while unwinding a failed
 // AttachVolume. The volume never took guest writes, so the unmount seal is a
@@ -42,26 +38,27 @@ func (m *Manager) rollbackUnmount(req types.EBSRequest) {
 // delIothreadBestEffort removes the per-volume iothread object on a failed
 // attach. Without it the orphaned iothread makes object-add fail on every
 // retry ("duplicate property"), so the attach can never recover.
-func (m *Manager) delIothreadBestEffort(instance *VM, iothreadID, volumeID string) {
-	if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
+func (m *Manager) delIothreadBestEffort(ctx context.Context, instance *VM, iothreadID, volumeID string) {
+	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute:   "object-del",
 		Arguments: map[string]any{"id": iothreadID},
 	}, instance.ID); err != nil {
-		slog.Warn("AttachVolume: rollback object-del iothread failed", "volumeId", volumeID, "err", err)
+		slog.WarnContext(ctx, "AttachVolume: rollback object-del iothread failed", "volumeId", volumeID, "err", err)
 	}
 }
 
 // AttachVolume hot-plugs a volume via the QMP pipeline (mount → blockdev-add →
 // device_add). Partial state is rolled back on failure. If device is empty, the
 // next free /dev/sd[f-p] slot is allocated. Instance must be in StateRunning.
-func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult, error) {
+// Returns the AWS-API device name (/dev/sd[f-p]) echoed in the API response.
+func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string) (string, error) {
 	instance, ok := m.Get(id)
 	if !ok {
-		return AttachVolumeResult{}, ErrInstanceNotFound
+		return "", ErrInstanceNotFound
 	}
 
 	if status := m.Status(instance); status != StateRunning {
-		return AttachVolumeResult{}, fmt.Errorf("%w: cannot attach to instance %s in state %s",
+		return "", fmt.Errorf("%w: cannot attach to instance %s in state %s",
 			ErrInvalidTransition, id, status)
 	}
 
@@ -75,7 +72,7 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	if device == "" {
 		m.UpdateState(id, func(v *VM) { device = nextAvailableDevice(v) })
 		if device == "" {
-			return AttachVolumeResult{}, ErrAttachmentLimitExceeded
+			return "", ErrAttachmentLimitExceeded
 		}
 	}
 
@@ -85,23 +82,23 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	}
 
 	if m.deps.VolumeMounter == nil {
-		return AttachVolumeResult{}, fmt.Errorf("VolumeMounter not wired")
+		return "", fmt.Errorf("VolumeMounter not wired")
 	}
 	if err := m.deps.VolumeMounter.MountOne(&ebsRequest); err != nil {
-		slog.Error("AttachVolume: ebs.mount failed", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "AttachVolume: ebs.mount failed", "volumeId", volumeID, "err", err)
 		// Empty-URI response leaves backend NBD state ambiguous; unmount
 		// defensively to avoid orphaning a half-started mount.
 		if errors.Is(err, ErrMountAmbiguous) {
 			m.rollbackUnmount(ebsRequest)
 		}
-		return AttachVolumeResult{}, fmt.Errorf("mount volume %s: %w", volumeID, err)
+		return "", fmt.Errorf("mount volume %s: %w", volumeID, err)
 	}
 
 	serverType, socketPath, nbdHost, nbdPort, err := utils.ParseNBDURI(ebsRequest.NBDURI)
 	if err != nil {
-		slog.Error("AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
+		slog.ErrorContext(ctx, "AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
 		m.rollbackUnmount(ebsRequest)
-		return AttachVolumeResult{}, fmt.Errorf("parse NBDURI: %w", err)
+		return "", fmt.Errorf("parse NBDURI: %w", err)
 	}
 
 	var serverArg map[string]any
@@ -126,25 +123,25 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	hotplugPort := freeHotplugEBSPort(instance.EBSRequests.Requests)
 	instance.EBSRequests.Mu.Unlock()
 	if hotplugPort == 0 {
-		slog.Error("AttachVolume: EBS hot-plug port pool exhausted", "volumeId", volumeID)
+		slog.ErrorContext(ctx, "AttachVolume: EBS hot-plug port pool exhausted", "volumeId", volumeID)
 		m.rollbackUnmount(ebsRequest)
-		return AttachVolumeResult{}, ErrAttachmentLimitExceeded
+		return "", ErrAttachmentLimitExceeded
 	}
 	ebsRequest.HotplugPort = hotplugPort
 
-	if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
+	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute: "object-add",
 		Arguments: map[string]any{
 			"qom-type": "iothread",
 			"id":       iothreadID,
 		},
 	}, instance.ID); err != nil {
-		slog.Error("AttachVolume: QMP object-add iothread failed", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "AttachVolume: QMP object-add iothread failed", "volumeId", volumeID, "err", err)
 		m.rollbackUnmount(ebsRequest)
-		return AttachVolumeResult{}, fmt.Errorf("QMP object-add iothread: %w", err)
+		return "", fmt.Errorf("QMP object-add iothread: %w", err)
 	}
 
-	if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
+	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute: "blockdev-add",
 		Arguments: map[string]any{
 			"node-name": nodeName,
@@ -154,10 +151,10 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 			"read-only": false,
 		},
 	}, instance.ID); err != nil {
-		slog.Error("AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)
-		m.delIothreadBestEffort(instance, iothreadID, volumeID)
+		slog.ErrorContext(ctx, "AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)
+		m.delIothreadBestEffort(ctx, instance, iothreadID, volumeID)
 		m.rollbackUnmount(ebsRequest)
-		return AttachVolumeResult{}, fmt.Errorf("QMP blockdev-add: %w", err)
+		return "", fmt.Errorf("QMP blockdev-add: %w", err)
 	}
 
 	// The virtio-blk-pci device must land on a free hot-plug PCIe root port
@@ -178,38 +175,38 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		"bus":      hotplugBus,
 	}
 
-	if _, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
+	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute:   "device_add",
 		Arguments: deviceAddArgs,
 	}, instance.ID); err != nil {
-		slog.Error("AttachVolume: QMP device_add failed, rolling back blockdev",
+		slog.ErrorContext(ctx, "AttachVolume: QMP device_add failed, rolling back blockdev",
 			"volumeId", volumeID, "err", err)
-		if _, delErr := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
+		if _, delErr := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 			Execute:   "blockdev-del",
 			Arguments: map[string]any{"node-name": nodeName},
 		}, instance.ID); delErr != nil {
-			slog.Error("AttachVolume: rollback blockdev-del failed, skipping EBS unmount",
+			slog.ErrorContext(ctx, "AttachVolume: rollback blockdev-del failed, skipping EBS unmount",
 				"volumeId", volumeID, "err", delErr)
 		} else {
-			m.delIothreadBestEffort(instance, iothreadID, volumeID)
+			m.delIothreadBestEffort(ctx, instance, iothreadID, volumeID)
 			m.rollbackUnmount(ebsRequest)
 		}
-		return AttachVolumeResult{}, fmt.Errorf("QMP device_add: %w", err)
+		return "", fmt.Errorf("QMP device_add: %w", err)
 	}
 
 	// Discover guest device. query-block may not include the device
 	// immediately after device_add; queryGuestDeviceMapWait retries.
 	guestDevice := device // fallback to AWS API name
-	deviceMap, qmpErr := queryGuestDeviceMapWait(instance.QMPClient, instance.ID, deviceID)
+	deviceMap, qmpErr := queryGuestDeviceMapWait(ctx, instance.QMPClient, instance.ID, deviceID)
 	if qmpErr != nil {
-		slog.Warn("AttachVolume: failed to query guest device map, using API device name",
+		slog.WarnContext(ctx, "AttachVolume: failed to query guest device map, using API device name",
 			"volumeId", volumeID, "err", qmpErr)
 	} else if gd, ok := deviceMap[deviceID]; ok {
 		guestDevice = gd
-		slog.Info("AttachVolume: discovered guest device",
+		slog.InfoContext(ctx, "AttachVolume: discovered guest device",
 			"volumeId", volumeID, "qemuDevice", deviceID, "guestDevice", guestDevice)
 	} else {
-		slog.Error("AttachVolume: device not found in QMP device map after retries, using API device name",
+		slog.ErrorContext(ctx, "AttachVolume: device not found in QMP device map after retries, using API device name",
 			"volumeId", volumeID, "qemuDevice", deviceID, "deviceMap", deviceMap)
 	}
 
@@ -260,26 +257,26 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	// nothing in mulga-599 rewrites this field after attach.
 	if m.deps.VolumeStateUpdater != nil {
 		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "in-use", instance.ID, device); err != nil {
-			slog.Error("AttachVolume: failed to update volume metadata",
+			slog.ErrorContext(ctx, "AttachVolume: failed to update volume metadata",
 				"volumeId", volumeID, "err", err)
 		}
 	}
 
 	if err := m.writeRunningState(); err != nil {
-		slog.Error("AttachVolume: failed to write state", "err", err)
+		slog.ErrorContext(ctx, "AttachVolume: failed to write state", "err", err)
 	}
 
-	slog.Info("Volume attached successfully",
+	slog.InfoContext(ctx, "Volume attached successfully",
 		"volumeId", volumeID, "instanceId", instance.ID,
 		"apiDevice", device, "guestDevice", guestDevice)
 
-	return AttachVolumeResult{DeviceName: device, GuestDevice: guestDevice}, nil
+	return device, nil
 }
 
 // DetachVolume hot-unplugs a volume via the QMP pipeline (device_del →
 // blockdev-del → object-del → ebs.unmount). Returns the recorded AWS-API device
 // name. force=true tolerates device_del failure; blockdev-del is always required.
-func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string, error) {
+func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string, force bool) (string, error) {
 	instance, ok := m.Get(id)
 	if !ok {
 		return "", ErrInstanceNotFound
@@ -326,40 +323,53 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 	// device_del is idempotent on DeviceNotFound so a second AWS-CLI
 	// retry can drive blockdev-del to completion when a prior detach left
 	// the guest device gone but the block node intact.
-	_, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
+	deviceDelIssued := false
+	_, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute:   "device_del",
 		Arguments: map[string]any{"id": deviceID},
 	}, instance.ID)
 	switch {
 	case err == nil:
+		deviceDelIssued = true
 	case isQMPDeviceNotFound(err):
-		slog.Info("DetachVolume: guest device already removed (resuming detach)",
+		slog.InfoContext(ctx, "DetachVolume: guest device already removed (resuming detach)",
 			"volumeId", volumeID, "err", err)
 	case force:
-		slog.Warn("DetachVolume: QMP device_del failed (force=true, continuing)",
+		slog.WarnContext(ctx, "DetachVolume: QMP device_del failed (force=true, continuing)",
 			"volumeId", volumeID, "err", err)
 	default:
-		slog.Error("DetachVolume: QMP device_del failed", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "DetachVolume: QMP device_del failed", "volumeId", volumeID, "err", err)
 		return "", fmt.Errorf("QMP device_del: %w", err)
 	}
 
-	if m.deps.DetachDelay > 0 {
+	// device_del only requests the unplug; QEMU frees the block node once the
+	// guest ACKs it (DEVICE_DELETED). Wait for that real completion signal
+	// instead of blindly sleeping, so blockdev-del isn't attempted while the
+	// node still has a user. A miss (timeout, event drained by a racing read,
+	// or a resumed/forced detach with no fresh unplug in flight) falls
+	// through to the bounded retry below unchanged.
+	if deviceDelIssued && m.deps.DeviceDeletedTimeout > 0 {
+		if waitErr := waitForDeviceDeletedEvent(ctx, instance.QMPClient, deviceID, m.deps.DeviceDeletedTimeout, instance.ID); waitErr != nil {
+			slog.DebugContext(ctx, "DetachVolume: DEVICE_DELETED not observed, falling back to blockdev-del retry",
+				"volumeId", volumeID, "err", waitErr)
+		}
+	} else if m.deps.DetachDelay > 0 {
 		time.Sleep(m.deps.DetachDelay)
 	}
 
 	// blockdev-del with bounded retry on "node is in use".
-	if blockdevErr := m.tryBlockdevDel(instance, nodeName); blockdevErr != nil {
-		slog.Error("DetachVolume: QMP blockdev-del failed, leaving volume state intact",
+	if blockdevErr := m.tryBlockdevDel(ctx, instance, nodeName); blockdevErr != nil {
+		slog.ErrorContext(ctx, "DetachVolume: QMP blockdev-del failed, leaving volume state intact",
 			"volumeId", volumeID, "err", blockdevErr)
 		return "", fmt.Errorf("QMP blockdev-del: %w", blockdevErr)
 	}
 
 	// object-del (best-effort).
-	if _, iothreadErr := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
+	if _, iothreadErr := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute:   "object-del",
 		Arguments: map[string]any{"id": iothreadID},
 	}, instance.ID); iothreadErr != nil {
-		slog.Warn("DetachVolume: QMP object-del iothread failed (non-fatal)",
+		slog.WarnContext(ctx, "DetachVolume: QMP object-del iothread failed (non-fatal)",
 			"volumeId", volumeID, "err", iothreadErr)
 	}
 
@@ -369,7 +379,7 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 	// reattach still works meanwhile.
 	if m.deps.VolumeMounter != nil {
 		if err := m.deps.VolumeMounter.UnmountOne(ebsReq); err != nil {
-			slog.Error("DetachVolume: ebs.unmount seal failed, leaving volume attached",
+			slog.ErrorContext(ctx, "DetachVolume: ebs.unmount seal failed, leaving volume attached",
 				"volumeId", volumeID, "err", err)
 			return "", fmt.Errorf("ebs.unmount seal: %w", err)
 		}
@@ -401,31 +411,95 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 
 	if m.deps.VolumeStateUpdater != nil {
 		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
-			slog.Error("DetachVolume: failed to update volume metadata",
+			slog.ErrorContext(ctx, "DetachVolume: failed to update volume metadata",
 				"volumeId", volumeID, "err", err)
 		}
 	}
 
 	if err := m.writeRunningState(); err != nil {
-		slog.Error("DetachVolume: failed to write state", "err", err)
+		slog.ErrorContext(ctx, "DetachVolume: failed to write state", "err", err)
 	}
 
-	slog.Info("Volume detached successfully", "volumeId", volumeID, "instanceId", instance.ID)
+	slog.InfoContext(ctx, "Volume detached successfully", "volumeId", volumeID, "instanceId", instance.ID)
 	return ebsReq.DeviceName, nil
+}
+
+// waitForDeviceDeletedEvent blocks until QEMU emits a DEVICE_DELETED event
+// matching deviceID or timeout elapses, returning nil only on a match. It
+// takes over the QMP connection directly (no in-flight command is expected
+// while it runs) rather than going through sendQMPCommand, since the signal
+// we need is an async event, not a command reply.
+//
+// A read-deadline timeout is benign (message boundary, connection stays
+// healthy once the deferred deadline reset below runs), so it must not force
+// the costly full QMP reconnect that q.Dead triggers. encoding/json.Decoder
+// caches read errors on itself permanently, though, so the *json.Decoder is
+// swapped in place instead — cheap, and safe since nothing was read off the
+// wire for the pending value. Any other decode error (EOF, malformed
+// message) leaves the stream position genuinely unknown, so q.Dead is set
+// exactly as sendQMPCommand does. Either way DetachVolume tolerates a miss
+// via the bounded blockdev-del retry, so this never blocks the caller.
+func waitForDeviceDeletedEvent(ctx context.Context, q *qmp.QMPClient, deviceID string, timeout time.Duration, instanceID string) error {
+	if q == nil || q.Conn == nil || q.Decoder == nil {
+		return fmt.Errorf("QMP client is not initialized")
+	}
+
+	q.Mu.Lock()
+	defer q.Mu.Unlock()
+
+	if q.Dead {
+		return fmt.Errorf("QMP client is disconnected")
+	}
+
+	if err := q.Conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	defer func() { _ = q.Conn.SetReadDeadline(time.Time{}) }()
+
+	for {
+		var msg struct {
+			Event string `json:"event"`
+			Data  struct {
+				Device string `json:"device"`
+				Path   string `json:"path"`
+			} `json:"data"`
+		}
+		if err := q.Decoder.Decode(&msg); err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				// Replace the poisoned Decoder but keep the healthy conn.
+				q.Decoder = json.NewDecoder(q.Conn)
+			} else {
+				q.Dead = true
+			}
+			return fmt.Errorf("decode error waiting for DEVICE_DELETED: %w", err)
+		}
+		if msg.Event != "DEVICE_DELETED" {
+			// Nothing else should be in flight on this connection while we
+			// hold q.Mu, but tolerate and skip any stray message rather than
+			// treating it as our signal.
+			continue
+		}
+		if msg.Data.Device == deviceID || strings.Contains(msg.Data.Path, deviceID) {
+			return nil
+		}
+		slog.DebugContext(ctx, "waitForDeviceDeletedEvent: DEVICE_DELETED for a different device, still waiting",
+			"wantDevice", deviceID, "gotDevice", msg.Data.Device, "instanceId", instanceID)
+	}
 }
 
 // tryBlockdevDel issues blockdev-del with bounded retry on "is in use" errors.
 // QEMU surfaces this as GenericError while NBD teardown and in-flight I/O drain.
-func (m *Manager) tryBlockdevDel(instance *VM, nodeName string) error {
+func (m *Manager) tryBlockdevDel(ctx context.Context, instance *VM, nodeName string) error {
 	var lastErr error
 	for attempt := 1; attempt <= blockdevDelMaxAttempts; attempt++ {
-		_, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
+		_, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 			Execute:   "blockdev-del",
 			Arguments: map[string]any{"node-name": nodeName},
 		}, instance.ID)
 		if err == nil {
 			if attempt > 1 {
-				slog.Info("DetachVolume: blockdev-del succeeded after retry",
+				slog.InfoContext(ctx, "DetachVolume: blockdev-del succeeded after retry",
 					"nodeName", nodeName, "attempts", attempt)
 			}
 			return nil
@@ -435,7 +509,7 @@ func (m *Manager) tryBlockdevDel(instance *VM, nodeName string) error {
 		// resumes through object-del to the seal instead of wedging on a
 		// now-absent node.
 		if isQMPNodeNotFound(err) {
-			slog.Info("DetachVolume: block node already removed (resuming detach)",
+			slog.InfoContext(ctx, "DetachVolume: block node already removed (resuming detach)",
 				"nodeName", nodeName, "err", err)
 			return nil
 		}
@@ -446,7 +520,7 @@ func (m *Manager) tryBlockdevDel(instance *VM, nodeName string) error {
 		if attempt == blockdevDelMaxAttempts {
 			break
 		}
-		slog.Debug("DetachVolume: blockdev-del busy, retrying",
+		slog.DebugContext(ctx, "DetachVolume: blockdev-del busy, retrying",
 			"nodeName", nodeName, "attempt", attempt, "err", err)
 		if m.deps.DetachDelay > 0 {
 			time.Sleep(m.deps.DetachDelay)

@@ -1,6 +1,7 @@
 package gateway_ec2_natgw
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -24,7 +25,10 @@ func TestValidateCreateNatGatewayInput(t *testing.T) {
 		{"empty SubnetId", &ec2.CreateNatGatewayInput{SubnetId: aws.String(""), AllocationId: aws.String("eipalloc-1")}, awserrors.ErrorMissingParameter},
 		{"missing AllocationId", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1")}, awserrors.ErrorMissingParameter},
 		{"empty AllocationId", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), AllocationId: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"private connectivity unsupported", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), ConnectivityType: aws.String("private")}, awserrors.ErrorUnsupported},
+		{"private connectivity unsupported with AllocationId", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), AllocationId: aws.String("eipalloc-1"), ConnectivityType: aws.String("private")}, awserrors.ErrorUnsupported},
 		{"valid input", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), AllocationId: aws.String("eipalloc-1")}, ""},
+		{"valid public connectivity", &ec2.CreateNatGatewayInput{SubnetId: aws.String("subnet-1"), AllocationId: aws.String("eipalloc-1"), ConnectivityType: aws.String("public")}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -39,12 +43,12 @@ func TestValidateCreateNatGatewayInput(t *testing.T) {
 }
 
 func TestCreateNatGateway_NilInput(t *testing.T) {
-	_, err := CreateNatGateway(nil, nil, testAccountID)
+	_, err := CreateNatGateway(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestCreateNatGateway_NilNATS(t *testing.T) {
-	_, err := CreateNatGateway(&ec2.CreateNatGatewayInput{
+	_, err := CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-1"),
 		AllocationId: aws.String("eipalloc-1"),
 	}, nil, testAccountID)
@@ -77,12 +81,12 @@ func TestValidateDeleteNatGatewayInput(t *testing.T) {
 }
 
 func TestDeleteNatGateway_NilInput(t *testing.T) {
-	_, err := DeleteNatGateway(nil, nil, testAccountID)
+	_, err := DeleteNatGateway(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDeleteNatGateway_NilNATS(t *testing.T) {
-	_, err := DeleteNatGateway(&ec2.DeleteNatGatewayInput{
+	_, err := DeleteNatGateway(context.Background(), &ec2.DeleteNatGatewayInput{
 		NatGatewayId: aws.String("nat-1"),
 	}, nil, testAccountID)
 	assert.Error(t, err)
@@ -91,11 +95,11 @@ func TestDeleteNatGateway_NilNATS(t *testing.T) {
 // DescribeNatGateways tests
 
 func TestDescribeNatGateways_NilInput(t *testing.T) {
-	_, err := DescribeNatGateways(nil, nil, testAccountID)
+	_, err := DescribeNatGateways(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDescribeNatGateways_NilNATS(t *testing.T) {
-	_, err := DescribeNatGateways(&ec2.DescribeNatGatewaysInput{}, nil, testAccountID)
+	_, err := DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{}, nil, testAccountID)
 	assert.Error(t, err)
 }

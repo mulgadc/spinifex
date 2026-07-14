@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,12 +27,12 @@ func ValidateStopInstancesInput(input *ec2.StopInstancesInput) error {
 
 // StopInstances sends stop commands via NATS using system_powerdown with stop_instance
 // set to prevent auto-restart on daemon boot.
-func StopInstances(input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.StopInstancesOutput, error) {
+func StopInstances(ctx context.Context, input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.StopInstancesOutput, error) {
 	if err := ValidateStopInstancesInput(input); err != nil {
 		return nil, err
 	}
 
-	slog.Info("StopInstances: Processing request", "instance_count", len(input.InstanceIds))
+	slog.InfoContext(ctx, "StopInstances: Processing request", "instance_count", len(input.InstanceIds))
 
 	var stateChanges []*ec2.InstanceStateChange
 
@@ -51,7 +52,7 @@ func StopInstances(input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID
 
 		jsonData, err := json.Marshal(command)
 		if err != nil {
-			slog.Error("StopInstances: Failed to marshal command", "instance_id", instanceID, "err", err)
+			slog.ErrorContext(ctx, "StopInstances: Failed to marshal command", "instance_id", instanceID, "err", err)
 			continue
 		}
 
@@ -59,19 +60,20 @@ func StopInstances(input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID
 		reqMsg := nats.NewMsg(subject)
 		reqMsg.Data = jsonData
 		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+		utils.InjectTraceContext(ctx, reqMsg.Header)
 		msg, err := natsConn.RequestMsg(reqMsg, 5*time.Second)
 		if err != nil {
-			slog.Error("StopInstances: Failed to send command", "instance_id", instanceID, "err", err)
+			slog.ErrorContext(ctx, "StopInstances: Failed to send command", "instance_id", instanceID, "err", err)
 			stateChanges = append(stateChanges, newStateChange(instanceID, 16, "running", 16, "running"))
 			continue
 		}
 
 		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
-			slog.Error("StopInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
+			slog.ErrorContext(ctx, "StopInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 			return nil, errors.New(*responseError.Code)
 		}
 
-		slog.Info("StopInstances: Command sent successfully", "instance_id", instanceID, "response", string(msg.Data))
+		slog.InfoContext(ctx, "StopInstances: Command sent successfully", "instance_id", instanceID, "response", string(msg.Data))
 
 		stateChanges = append(stateChanges, newStateChange(instanceID, 64, "stopping", 16, "running"))
 	}
@@ -80,6 +82,6 @@ func StopInstances(input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID
 		StoppingInstances: stateChanges,
 	}
 
-	slog.Info("StopInstances: Completed", "total_instances", len(stateChanges))
+	slog.InfoContext(ctx, "StopInstances: Completed", "total_instances", len(stateChanges))
 	return output, nil
 }

@@ -11,6 +11,7 @@ interface SignedFetchOptions {
   action: string
   credentials: SessionCredentials
   service?: string
+  params?: Record<string, string>
 }
 
 // SignedFetchError carries the AWS error code on `name` and the HTTP status, so
@@ -45,9 +46,11 @@ export async function signedFetch<T>({
   action,
   credentials,
   service = "spinifex",
+  params,
 }: SignedFetchOptions): Promise<T> {
   const protocol = window.location.protocol.replace(":", "")
-  const body = `Action=${action}`
+  const extraParams = params ? `&${new URLSearchParams(params).toString()}` : ""
+  const body = `Action=${action}${extraParams}`
 
   // Sign the request against the real backend (localhost:9999) so the
   // gateway's SigV4 verification sees the host value it expects.

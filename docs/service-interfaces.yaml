@@ -300,6 +300,14 @@ suites:
     # spinifex_daemon. docker/crane/skopeo data-plane subtests skip when the
     # client binary or registry-host resolution is absent.
 
+  e2e-bedrock:
+    path: tests/e2e/bedrock
+    covers: [awsgw]
+    # Ochre (AWS-Bedrock) control plane: static catalog list/get served
+    # straight from awsgw (gateway/bedrock.go, gateway/bedrock/) — no NATS
+    # hop to spinifex_daemon. Converse (Anthropic-direct / self-host vLLM)
+    # subtests are gated on backend availability and skip by default.
+
   e2e-ecs:
     path: tests/e2e/ecs
     covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
@@ -331,6 +339,12 @@ suites:
   #   covers: [awsgw, spinifex_daemon, vpcd]
   # e2e-bm:
   #   path: spinifex/tests/e2e/baremetal
+  #   covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+  #
+  # e2e-natuplink activates once CI can provision an external_mode=nat
+  # node (setup-ovn.sh --nat-uplink + spx admin init --external-mode=nat).
+  # e2e-natuplink:
+  #   path: spinifex/tests/e2e/natuplink
   #   covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
 
 

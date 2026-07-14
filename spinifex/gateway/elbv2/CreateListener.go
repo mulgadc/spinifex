@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -23,7 +24,7 @@ func ValidateCreateListenerInput(input *elbv2.CreateListenerInput) error {
 }
 
 // CreateListener handles the ELBv2 CreateListener API call.
-func CreateListener(input *elbv2.CreateListenerInput, natsConn *nats.Conn, accountID string) (elbv2.CreateListenerOutput, error) {
+func CreateListener(ctx context.Context, input *elbv2.CreateListenerInput, natsConn *nats.Conn, accountID string) (elbv2.CreateListenerOutput, error) {
 	var output elbv2.CreateListenerOutput
 
 	if err := ValidateCreateListenerInput(input); err != nil {
@@ -31,7 +32,7 @@ func CreateListener(input *elbv2.CreateListenerInput, natsConn *nats.Conn, accou
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.CreateListener(input, accountID)
+	result, err := svc.CreateListener(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

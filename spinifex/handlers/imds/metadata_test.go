@@ -33,12 +33,15 @@ type fakeResolver struct {
 	vpcErr     error
 }
 
-func (f *fakeResolver) resolveENIByID(_ string) (*eniFacts, error) { return f.eni, f.eniErr }
-func (f *fakeResolver) resolveInstance(_ *eniFacts) (*instanceFacts, error) {
+func (f *fakeResolver) resolveENIByID(_ context.Context, _ string) (*eniFacts, error) {
+	return f.eni, f.eniErr
+}
+
+func (f *fakeResolver) resolveInstance(_ context.Context, _ *eniFacts) (*instanceFacts, error) {
 	return f.inst, f.instErr
 }
 
-func (f *fakeResolver) resolveSGNames(_ string, sgIDs []string) []string {
+func (f *fakeResolver) resolveSGNames(_ context.Context, _ string, sgIDs []string) []string {
 	out := make([]string, len(sgIDs))
 	for i, id := range sgIDs {
 		if name, ok := f.sgNames[id]; ok {
@@ -50,10 +53,13 @@ func (f *fakeResolver) resolveSGNames(_ string, sgIDs []string) []string {
 	return out
 }
 
-func (f *fakeResolver) resolveSubnetCIDR(_, _ string) (string, error) {
+func (f *fakeResolver) resolveSubnetCIDR(_ context.Context, _, _ string) (string, error) {
 	return f.subnetCIDR, f.subnetErr
 }
-func (f *fakeResolver) resolveVPCCIDR(_, _ string) (string, error) { return f.vpcCIDR, f.vpcErr }
+
+func (f *fakeResolver) resolveVPCCIDR(_ context.Context, _, _ string) (string, error) {
+	return f.vpcCIDR, f.vpcErr
+}
 
 type fakeIAM struct {
 	profile    *handlers_iam.InstanceProfile
@@ -62,11 +68,11 @@ type fakeIAM struct {
 	roleErr    error
 }
 
-func (f *fakeIAM) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
+func (f *fakeIAM) ResolveInstanceProfile(_ context.Context, _, _ string) (*handlers_iam.InstanceProfile, error) {
 	return f.profile, f.profileErr
 }
 
-func (f *fakeIAM) GetRole(_ string, _ *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+func (f *fakeIAM) GetRole(_ context.Context, _ string, _ *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
 	if f.roleErr != nil {
 		return nil, f.roleErr
 	}
@@ -82,7 +88,7 @@ type fakePublicKeys struct {
 	calls    int
 }
 
-func (f *fakePublicKeys) GetPublicKey(_, _ string) (string, error) {
+func (f *fakePublicKeys) GetPublicKey(_ context.Context, _, _ string) (string, error) {
 	f.calls++
 	return f.material, f.err
 }

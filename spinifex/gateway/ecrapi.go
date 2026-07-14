@@ -105,7 +105,7 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	output, err := handler(gw.NATSConn, accountID, body)
+	output, err := handler(r.Context(), gw.NATSConn, accountID, body)
 	if err != nil {
 		return err
 	}

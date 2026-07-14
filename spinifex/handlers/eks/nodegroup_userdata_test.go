@@ -82,3 +82,56 @@ func TestBuildAgentUserData_NoGatewayIPUsesHostnameEndpoint(t *testing.T) {
 		t.Errorf("expected hostname:port tls config key when GatewayIP is empty\n%s", got)
 	}
 }
+
+func baseTestInput() agentUserDataInput {
+	return agentUserDataInput{
+		ClusterName:   "alpha",
+		NodegroupName: "ng-1",
+		ServerURL:     "https://10.0.0.1:443",
+		JoinToken:     "jointoken",
+		NodeName:      "alpha-ng-1-abcd1234",
+		Region:        "ap-southeast-2",
+		AccountID:     "123456789012",
+		RegistryHost:  "123456789012.dkr.ecr.ap-southeast-2.spinifex.internal",
+	}
+}
+
+func TestBuildAgentUserData_GPUEnabledAddsLabelAndTaint(t *testing.T) {
+	in := baseTestInput()
+	in.GPUEnabled = true
+	in.GPUVendor = "nvidia"
+
+	got := buildAgentUserData(in)
+
+	// The label must ride a node-label config drop-in, not K3S_NODE_LABEL (k3s
+	// has no such env var — it would be a no-op and the device-plugin
+	// nodeSelector would never match).
+	if !strings.Contains(got, "/etc/rancher/k3s/config.yaml.d/20-gpu.yaml") {
+		t.Errorf("expected GPU drop-in path, got:\n%s", got)
+	}
+	if !strings.Contains(got, "node-label:") || !strings.Contains(got, "nvidia.com/gpu.present=true") {
+		t.Errorf("expected GPU node-label drop-in value, got:\n%s", got)
+	}
+	if !strings.Contains(got, "nvidia.com/gpu=present:NoSchedule") {
+		t.Errorf("expected GPU taint value, got:\n%s", got)
+	}
+	if strings.Contains(got, "K3S_NODE_LABEL=eks.amazonaws.com/nodegroup=ng-1,nvidia.com/gpu.present=true") {
+		t.Errorf("GPU label must not ride the no-op K3S_NODE_LABEL env, got:\n%s", got)
+	}
+}
+
+func TestBuildAgentUserData_NonGPUHasNoLabelOrTaint(t *testing.T) {
+	in := baseTestInput()
+
+	got := buildAgentUserData(in)
+
+	if strings.Contains(got, "nvidia.com/gpu") {
+		t.Errorf("non-GPU nodegroup user-data must not reference nvidia.com/gpu, got:\n%s", got)
+	}
+	if strings.Contains(got, "20-gpu.yaml") {
+		t.Errorf("non-GPU nodegroup user-data must not carry the GPU drop-in, got:\n%s", got)
+	}
+	if !strings.Contains(got, "K3S_NODE_LABEL=eks.amazonaws.com/nodegroup=ng-1") {
+		t.Errorf("expected plain nodegroup label, got:\n%s", got)
+	}
+}

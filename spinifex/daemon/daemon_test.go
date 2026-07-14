@@ -119,7 +119,8 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	require.NoError(t, err, "Failed to connect to NATS")
 
 	daemon.natsConn = nc
-	daemon.detachDelay = 0 // Skip sleep in tests
+	daemon.detachDelay = 0          // Skip sleep in tests
+	daemon.deviceDeletedTimeout = 0 // Skip DEVICE_DELETED wait in tests
 
 	// Initialize services (needed for handler tests).
 	// jsManager is nil here; pass a nil literal to keep the StoppedInstanceStore
@@ -133,10 +134,11 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	// AttachVolume / DetachVolume manager methods enough plumbing to drive
 	// ebs.mount/unmount over NATS using the test's connection.
 	daemon.vmMgr.SetDeps(vm.Deps{
-		NodeID:             daemon.node,
-		VolumeMounter:      newVolumeMounterAdapter(daemon.natsConn, daemon.node, daemon.volumeService),
-		VolumeStateUpdater: daemon.volumeService,
-		DetachDelay:        daemon.detachDelay,
+		NodeID:               daemon.node,
+		VolumeMounter:        newVolumeMounterAdapter(daemon.natsConn, daemon.node, daemon.volumeService),
+		VolumeStateUpdater:   daemon.volumeService,
+		DetachDelay:          daemon.detachDelay,
+		DeviceDeletedTimeout: daemon.deviceDeletedTimeout,
 	})
 
 	t.Cleanup(func() {
@@ -171,7 +173,7 @@ func getTestInstanceType(t *testing.T) string {
 func seedTestAMI(t *testing.T, store *objectstore.MemoryObjectStore, bucket, imageID string) {
 	t.Helper()
 	amiConfig := `{"VolumeConfig":{"AMIMetadata":{"ImageID":"` + imageID + `","Name":"test"}}}`
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(imageID + "/config.json"),
 		Body:        strings.NewReader(amiConfig),
@@ -745,7 +747,7 @@ func TestDaemon_BootAllocation(t *testing.T) {
 
 	// Pre-populate the local state file with test state. Post-1a, LoadState
 	// reads from the local file (KV is best-effort cache only).
-	err = WriteLocalState(daemon.localStatePath(), vms)
+	err = writeLocalState(daemon.localStatePath(), vms)
 	require.NoError(t, err)
 
 	// Manually trigger the LoadState and allocation logic normally found in Start()
@@ -2797,7 +2799,7 @@ func TestDaemon_WriteState_NilJSManager(t *testing.T) {
 
 func TestDaemon_LoadState_NilJSManager(t *testing.T) {
 	tmpDir := t.TempDir()
-	require.NoError(t, WriteLocalState(LocalStatePath(tmpDir), map[string]*vm.VM{
+	require.NoError(t, writeLocalState(LocalStatePath(tmpDir), map[string]*vm.VM{
 		"i-seed": {ID: "i-seed"},
 	}))
 
@@ -2984,16 +2986,47 @@ func TestGetAvailableInstanceTypeInfos_GPUType_ShowCapacity(t *testing.T) {
 	assert.Equal(t, 2, count12xl, "4 GPUs → 2 slots for g7e.12xlarge")
 }
 
-// canAllocate for GPU types returns count without CPU/memory gating.
-func TestCanAllocate_GPUType_BypassesCPUMemory(t *testing.T) {
+// canAllocate for GPU types is gated by CPU/memory like any other instance
+// type. Regression for mulga-jeo02: the whole-GPU early return used to
+// bypass this check entirely, letting a launch proceed on a host with no
+// memory headroom.
+func TestCanAllocate_GPUType_GatedByCPUMemory(t *testing.T) {
 	rm := &ResourceManager{
 		hostVCPU:      4,   // deliberately tiny
 		hostMemGB:     8.0, // deliberately tiny
 		instanceTypes: map[string]*ec2.InstanceTypeInfo{},
+		gpuManager:    gpu.NewManager([]gpu.GPUDevice{makeGPUDevice()}),
 	}
 	gpuType := makeGPUInstanceType("g7e.4xlarge", 16, 128*1024)
-	assert.Equal(t, 1, rm.canAllocate(gpuType, 1),
-		"GPU type must be allocatable even when CPU/memory would normally block it")
+	assert.Equal(t, 0, rm.canAllocate(gpuType, 1),
+		"GPU type must be blocked by cpu/mem exhaustion like any other instance type")
+}
+
+// canAllocate for GPU types succeeds once both cpu/mem headroom and a free
+// GPU slot exist.
+func TestCanAllocate_GPUType_SucceedsWithRoomAndSlot(t *testing.T) {
+	rm := &ResourceManager{
+		hostVCPU:      32,
+		hostMemGB:     256.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{},
+		gpuManager:    gpu.NewManager([]gpu.GPUDevice{makeGPUDevice()}),
+	}
+	gpuType := makeGPUInstanceType("g7e.4xlarge", 16, 128*1024)
+	assert.Equal(t, 1, rm.canAllocate(gpuType, 1))
+}
+
+// canAllocate for GPU types is refused up front when the GPU pool has no
+// free slot, even with abundant cpu/mem headroom.
+func TestCanAllocate_GPUType_RefusedWhenGPUPoolExhausted(t *testing.T) {
+	rm := &ResourceManager{
+		hostVCPU:      32,
+		hostMemGB:     256.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{},
+		gpuManager:    gpu.NewManager(nil),
+	}
+	gpuType := makeGPUInstanceType("g7e.4xlarge", 16, 128*1024)
+	assert.Equal(t, 0, rm.canAllocate(gpuType, 1),
+		"no GPU in the pool must refuse admission regardless of cpu/mem headroom")
 }
 
 // --- GetSupportedInstanceTypeInfos ---
@@ -3275,6 +3308,48 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 		"a successful seal must still transition the volume to available")
 }
 
+// TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable verifies the
+// timeout-then-completed-seal retry path: an ebs.unmount response reporting
+// NotFound (the seal already completed on a prior, client-timed-out request)
+// must still flip a non-boot data volume to available, while the boot/EFI
+// gate stays intact.
+func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+	volState := &recordingVolState{}
+	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
+
+	sub, err := daemon.natsConn.Subscribe(adapter.topic("unmount"), func(msg *nats.Msg) {
+		var req types.EBSRequest
+		json.Unmarshal(msg.Data, &req)
+		resp := types.EBSUnMountResponse{
+			Volume:   req.Name,
+			NotFound: true,
+			Error:    fmt.Sprintf("Volume %s not found", req.Name),
+		}
+		data, _ := json.Marshal(resp)
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	inst := &vm.VM{
+		ID: "i-unmount-retry",
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: "vol-boot-retry", Boot: true, EFI: false},
+				{Name: "vol-data-retry", Boot: false, EFI: false},
+			},
+		},
+	}
+	require.NoError(t, adapter.Unmount(inst))
+
+	calls := volState.snapshot()
+	assert.Contains(t, calls, "vol-data-retry:available",
+		"a NotFound response (already-completed seal) must still flip a non-boot data volume to available")
+	assert.NotContains(t, calls, "vol-boot-retry:available",
+		"a boot volume must stay attached even when the seal retry reports NotFound")
+}
+
 // TestUnmountResponseError covers the shared seal-result parser used by both the
 // gated DetachVolume path (unmountOne) and the tolerated teardown path (Unmount).
 func TestUnmountResponseError(t *testing.T) {
@@ -3292,6 +3367,11 @@ func TestUnmountResponseError(t *testing.T) {
 	})
 	t.Run("malformed payload propagates", func(t *testing.T) {
 		require.Error(t, unmountResponseError([]byte("not json")))
+	})
+	t.Run("not found treated as idempotent success", func(t *testing.T) {
+		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", NotFound: true, Error: "Volume v not found"})
+		require.NoError(t, unmountResponseError(data),
+			"a NotFound response means the seal already completed on a prior request; a timeout-then-retry must not be treated as a failure")
 	})
 }
 

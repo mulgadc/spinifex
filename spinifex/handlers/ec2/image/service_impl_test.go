@@ -1,8 +1,11 @@
 package handlers_ec2_image
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -40,7 +44,7 @@ func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, 
 	data, err := json.Marshal(volumeState)
 	require.NoError(t, err)
 
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket:      aws.String(testBucket),
 		Key:         aws.String(volumeID + "/config.json"),
 		Body:        strings.NewReader(string(data)),
@@ -67,7 +71,7 @@ func createTestAMIConfig(t *testing.T, store *objectstore.MemoryObjectStore, ima
 	data, err := json.Marshal(amiState)
 	require.NoError(t, err)
 
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket:      aws.String(testBucket),
 		Key:         aws.String(imageID + "/config.json"),
 		Body:        strings.NewReader(string(data)),
@@ -97,7 +101,7 @@ func createTestAMIConfigWithName(t *testing.T, store *objectstore.MemoryObjectSt
 	data, err := json.Marshal(amiState)
 	require.NoError(t, err)
 
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket:      aws.String(testBucket),
 		Key:         aws.String(imageID + "/config.json"),
 		Body:        strings.NewReader(string(data)),
@@ -125,7 +129,7 @@ func createTestAMIConfigWithOwner(t *testing.T, store *objectstore.MemoryObjectS
 	data, err := json.Marshal(amiState)
 	require.NoError(t, err)
 
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket:      aws.String(testBucket),
 		Key:         aws.String(imageID + "/config.json"),
 		Body:        strings.NewReader(string(data)),
@@ -188,7 +192,7 @@ func TestDescribeImages_AfterCreate(t *testing.T) {
 	createTestAMIConfigWithOwner(t, store, amiID, "test-ami", testAccountID)
 
 	// Describe images should find it
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String(amiID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -227,7 +231,7 @@ func TestDescribeImages_BootModeProjection(t *testing.T) {
 		ImageOwnerAlias: testAccountID,
 	})
 
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String("ami-uefi001"), aws.String("ami-legacy001")},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -249,7 +253,7 @@ func TestGetVolumeConfig(t *testing.T) {
 
 	createTestVolumeConfig(t, store, "vol-abc123", 20)
 
-	cfg, err := svc.getVolumeConfig("vol-abc123")
+	cfg, err := svc.getVolumeConfig(context.Background(), "vol-abc123")
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	assert.Equal(t, uint64(20), cfg.VolumeMetadata.SizeGiB)
@@ -258,7 +262,7 @@ func TestGetVolumeConfig(t *testing.T) {
 func TestGetVolumeConfig_NotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.getVolumeConfig("vol-nonexistent")
+	_, err := svc.getVolumeConfig(context.Background(), "vol-nonexistent")
 	require.Error(t, err)
 }
 
@@ -267,7 +271,7 @@ func TestGetAMIConfig(t *testing.T) {
 
 	createTestAMIConfig(t, store, "ami-abc123")
 
-	meta, err := svc.GetAMIConfig("ami-abc123")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-abc123")
 	require.NoError(t, err)
 	assert.Equal(t, "ami-abc123", meta.ImageID)
 	assert.Equal(t, "test-ami", meta.Name)
@@ -279,18 +283,18 @@ func TestGetAMIConfig(t *testing.T) {
 func TestGetAMIConfig_NotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.GetAMIConfig("ami-nonexistent")
+	_, err := svc.GetAMIConfig(context.Background(), "ami-nonexistent")
 	require.Error(t, err)
 }
 
 func TestPutSnapshotMetadata(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	err := svc.putSnapshotMetadata("snap-abc123", "vol-xyz789", 10, testAccountID)
+	err := svc.putSnapshotMetadata(context.Background(), "snap-abc123", "vol-xyz789", 10, testAccountID)
 	require.NoError(t, err)
 
 	// Verify the metadata was written correctly
-	result, err := store.GetObject(&awss3.GetObjectInput{
+	result, err := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String("snap-abc123/metadata.json"),
 	})
@@ -335,7 +339,7 @@ func TestDescribeImages_NotFound(t *testing.T) {
 	createTestAMIConfig(t, store, "ami-exists123")
 
 	// Request a non-existent AMI ID — should return InvalidAMIID.NotFound
-	_, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	_, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String("ami-nonexistent")},
 	}, testAccountID)
 	require.Error(t, err)
@@ -349,7 +353,7 @@ func TestDescribeImages_MixedExistingAndMissing(t *testing.T) {
 	createTestAMIConfig(t, store, "ami-exists123")
 
 	// Request one existing + one non-existent — should return NotFound
-	_, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	_, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{
 			aws.String("ami-exists123"),
 			aws.String("ami-missing456"),
@@ -421,9 +425,9 @@ func TestPutAMIConfig_RoundTrip(t *testing.T) {
 		ImageOwnerAlias: testAccountID,
 	}
 
-	require.NoError(t, svc.putAMIConfig(meta.ImageID, meta))
+	require.NoError(t, svc.putAMIConfig(context.Background(), meta.ImageID, meta))
 
-	got, err := svc.GetAMIConfig(meta.ImageID)
+	got, err := svc.GetAMIConfig(context.Background(), meta.ImageID)
 	require.NoError(t, err)
 	assert.Equal(t, meta.Name, got.Name)
 	assert.Equal(t, meta.Description, got.Description)
@@ -469,12 +473,12 @@ func TestDeregisterImage_HappyPath(t *testing.T) {
 	amiID := "ami-dereg001"
 	createTestAMIConfigWithOwner(t, store, amiID, "ami-to-delete", testAccountID)
 
-	out, err := svc.DeregisterImage(&ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
+	out, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
 	require.NoError(t, err)
 	assert.NotNil(t, out)
 
 	// AMI config gone from S3
-	_, getErr := store.GetObject(&awss3.GetObjectInput{
+	_, getErr := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String(amiID + "/config.json"),
 	})
@@ -482,7 +486,7 @@ func TestDeregisterImage_HappyPath(t *testing.T) {
 	assert.True(t, objectstore.IsNoSuchKeyError(getErr))
 
 	// DescribeImages no longer returns it
-	_, descErr := svc.DescribeImages(&ec2.DescribeImagesInput{
+	_, descErr := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String(amiID)},
 	}, testAccountID)
 	require.Error(t, descErr)
@@ -492,7 +496,7 @@ func TestDeregisterImage_HappyPath(t *testing.T) {
 func TestDeregisterImage_NotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.DeregisterImage(&ec2.DeregisterImageInput{
+	_, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{
 		ImageId: aws.String("ami-doesnotexist"),
 	}, testAccountID)
 	require.Error(t, err)
@@ -505,10 +509,10 @@ func TestDeregisterImage_Idempotent(t *testing.T) {
 	amiID := "ami-idem001"
 	createTestAMIConfigWithOwner(t, store, amiID, "idempotent", testAccountID)
 
-	_, err := svc.DeregisterImage(&ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
+	_, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeregisterImage(&ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
+	_, err = svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
@@ -519,12 +523,12 @@ func TestDeregisterImage_CrossAccount(t *testing.T) {
 	amiID := "ami-other001"
 	createTestAMIConfigWithOwner(t, store, amiID, "other-acct", "000000000002")
 
-	_, err := svc.DeregisterImage(&ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
+	_, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
 
 	// Confirm AMI still present after rejected mutation.
-	_, getErr := store.GetObject(&awss3.GetObjectInput{
+	_, getErr := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String(amiID + "/config.json"),
 	})
@@ -535,7 +539,7 @@ func TestDeregisterImage_SystemAMI(t *testing.T) {
 	svc, store := setupTestImageService(t)
 	createTestAMIConfigWithOwner(t, store, "ami-sys001", "system-ami", "spinifex")
 
-	_, err := svc.DeregisterImage(&ec2.DeregisterImageInput{ImageId: aws.String("ami-sys001")}, testAccountID)
+	_, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String("ami-sys001")}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
 }
@@ -563,7 +567,7 @@ func TestDeregisterImage_DoesNotTouchSnapshot(t *testing.T) {
 	}
 	data, err := json.Marshal(amiState)
 	require.NoError(t, err)
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String(amiID + "/config.json"),
 		Body:   strings.NewReader(string(data)),
@@ -571,13 +575,13 @@ func TestDeregisterImage_DoesNotTouchSnapshot(t *testing.T) {
 	require.NoError(t, err)
 
 	// Backing snapshot metadata
-	require.NoError(t, svc.putSnapshotMetadata(snapID, "vol-keep", 8, testAccountID))
+	require.NoError(t, svc.putSnapshotMetadata(context.Background(), snapID, "vol-keep", 8, testAccountID))
 
-	_, err = svc.DeregisterImage(&ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
+	_, err = svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
 	require.NoError(t, err)
 
 	// Snapshot metadata still present
-	_, snapErr := store.GetObject(&awss3.GetObjectInput{
+	_, snapErr := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String(snapID + "/metadata.json"),
 	})
@@ -591,7 +595,7 @@ func TestDescribeImages_AccountScoping(t *testing.T) {
 	createTestAMIConfigWithOwner(t, store, "ami-scoped123", "test-ami", "000000000001")
 
 	// DescribeImages from the owning account should return the image with correct OwnerId
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String("ami-scoped123")},
 	}, "000000000001")
 	require.NoError(t, err)
@@ -599,7 +603,7 @@ func TestDescribeImages_AccountScoping(t *testing.T) {
 	assert.Equal(t, "000000000001", *result.Images[0].OwnerId)
 
 	// DescribeImages from a DIFFERENT account should NOT see the image
-	_, err = svc.DescribeImages(&ec2.DescribeImagesInput{
+	_, err = svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String("ami-scoped123")},
 	}, "000000000002")
 	require.Error(t, err)
@@ -613,14 +617,14 @@ func TestDescribeImages_SystemAMIVisibleToAll(t *testing.T) {
 	createTestAMIConfigWithOwner(t, store, "ami-system123", "system-ami", "spinifex")
 
 	// Any account should be able to see system AMIs
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String("ami-system123")},
 	}, "000000000001")
 	require.NoError(t, err)
 	require.Len(t, result.Images, 1)
 	assert.Equal(t, "000000000000", *result.Images[0].OwnerId) // System AMIs report global account
 
-	result2, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	result2, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String("ami-system123")},
 	}, "000000000002")
 	require.NoError(t, err)
@@ -635,7 +639,7 @@ func TestDescribeImages_FilterSystemAMIByGlobalAccountID(t *testing.T) {
 
 	// Filtering by GlobalAccountID ("000000000000") should match system AMIs
 	// because that's the OwnerId returned in the response
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		Owners: []*string{aws.String("000000000000")},
 	}, "000000000001")
 	require.NoError(t, err)
@@ -647,7 +651,7 @@ func TestDescribeImages_FilterSystemAMIByGlobalAccountID(t *testing.T) {
 func TestDescribeImages_NilInput(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	result, err := svc.DescribeImages(nil, testAccountID)
+	result, err := svc.DescribeImages(context.Background(), nil, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Empty(t, result.Images)
@@ -656,7 +660,7 @@ func TestDescribeImages_NilInput(t *testing.T) {
 func TestDescribeImages_EmptyBucket(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{}, testAccountID)
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Empty(t, result.Images)
@@ -668,7 +672,7 @@ func TestDescribeImages_NonAMIPrefixIgnored(t *testing.T) {
 	// Create a non-AMI object (e.g. a volume config)
 	createTestVolumeConfig(t, store, "vol-abc123", 10)
 
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{}, testAccountID)
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, result.Images)
 }
@@ -677,7 +681,7 @@ func TestDescribeImages_InvalidConfigJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
 	// Store invalid JSON as an AMI config
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String("ami-bad123/config.json"),
 		Body:   strings.NewReader("not valid json"),
@@ -685,7 +689,7 @@ func TestDescribeImages_InvalidConfigJSON(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should skip the invalid AMI without error
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{}, testAccountID)
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, result.Images)
 }
@@ -705,14 +709,14 @@ func TestDescribeImages_EmptyImageIDSkipped(t *testing.T) {
 	data, err := json.Marshal(amiState)
 	require.NoError(t, err)
 
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String("ami-emptyid/config.json"),
 		Body:   strings.NewReader(string(data)),
 	})
 	require.NoError(t, err)
 
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{}, testAccountID)
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, result.Images)
 }
@@ -738,14 +742,14 @@ func TestDescribeImages_WithTags(t *testing.T) {
 	data, err := json.Marshal(amiState)
 	require.NoError(t, err)
 
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String("ami-tagged123/config.json"),
 		Body:   strings.NewReader(string(data)),
 	})
 	require.NoError(t, err)
 
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String("ami-tagged123")},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -763,7 +767,7 @@ func TestDescribeImages_OwnerFilterNilEntry(t *testing.T) {
 
 	createTestAMIConfigWithOwner(t, store, "ami-test1", "test-ami", testAccountID)
 
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		Owners: []*string{nil, aws.String(testAccountID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -773,35 +777,35 @@ func TestDescribeImages_OwnerFilterNilEntry(t *testing.T) {
 func TestGetAMIConfig_InvalidJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String("ami-badjson/config.json"),
 		Body:   strings.NewReader("not json"),
 	})
 	require.NoError(t, err)
 
-	_, err = svc.GetAMIConfig("ami-badjson")
+	_, err = svc.GetAMIConfig(context.Background(), "ami-badjson")
 	assert.Error(t, err)
 }
 
 func TestGetVolumeConfig_InvalidJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String("vol-badjson/config.json"),
 		Body:   strings.NewReader("{invalid"),
 	})
 	require.NoError(t, err)
 
-	_, err = svc.getVolumeConfig("vol-badjson")
+	_, err = svc.getVolumeConfig(context.Background(), "vol-badjson")
 	assert.Error(t, err)
 }
 
 func TestAmiNameExists_NoAMIs(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	exists, err := svc.amiNameExists("nonexistent")
+	exists, err := svc.amiNameExists(context.Background(), "nonexistent")
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
@@ -811,7 +815,7 @@ func TestAmiNameExists_Found(t *testing.T) {
 
 	createTestAMIConfigWithName(t, store, "ami-found123", "target-name")
 
-	exists, err := svc.amiNameExists("target-name")
+	exists, err := svc.amiNameExists(context.Background(), "target-name")
 	require.NoError(t, err)
 	assert.True(t, exists)
 }
@@ -821,7 +825,7 @@ func TestAmiNameExists_NotFound(t *testing.T) {
 
 	createTestAMIConfigWithName(t, store, "ami-other123", "other-name")
 
-	exists, err := svc.amiNameExists("different-name")
+	exists, err := svc.amiNameExists(context.Background(), "different-name")
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
@@ -829,7 +833,7 @@ func TestAmiNameExists_NotFound(t *testing.T) {
 func TestAmiNameExists_InvalidJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String("ami-bad/config.json"),
 		Body:   strings.NewReader("not json"),
@@ -839,7 +843,7 @@ func TestAmiNameExists_InvalidJSON(t *testing.T) {
 	// A corrupt AMI config is a real store-side problem. Surface it rather
 	// than silently under-counting names (which would let a caller write a
 	// duplicate and mask the corruption).
-	_, err = svc.amiNameExists("any-name")
+	_, err = svc.amiNameExists(context.Background(), "any-name")
 	require.Error(t, err)
 }
 
@@ -860,7 +864,7 @@ func createTestAMIConfigFull(t *testing.T, store *objectstore.MemoryObjectStore,
 	}
 	data, err := json.Marshal(amiState)
 	require.NoError(t, err)
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket:      aws.String(testBucket),
 		Key:         aws.String(meta.ImageID + "/config.json"),
 		Body:        strings.NewReader(string(data)),
@@ -1011,7 +1015,7 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 			svc, store := setupTestImageService(t)
 			tt.setup(t, store)
 
-			out, err := svc.DescribeImages(tt.input, testAccountID)
+			out, err := svc.DescribeImages(context.Background(), tt.input, testAccountID)
 			require.NoError(t, err)
 			if tt.wantNone {
 				assert.Empty(t, out.Images)
@@ -1032,7 +1036,7 @@ func TestDescribeImages_FilterMultipleValues_OR(t *testing.T) {
 	createTestAMIConfigWithName(t, store, "ami-bbb", "ubuntu-22")
 	createTestAMIConfigWithName(t, store, "ami-ccc", "centos-9")
 
-	out, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("name"), Values: []*string{aws.String("debian-13"), aws.String("centos-9")}},
 		},
@@ -1052,7 +1056,7 @@ func TestDescribeImages_FilterMultipleNames_AND(t *testing.T) {
 		RootDeviceType: "ebs", VolumeSizeGiB: 8,
 	})
 
-	out, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("name"), Values: []*string{aws.String("debian-13")}},
 			{Name: aws.String("architecture"), Values: []*string{aws.String("x86_64")}},
@@ -1065,7 +1069,7 @@ func TestDescribeImages_FilterMultipleNames_AND(t *testing.T) {
 
 func TestDescribeImages_FilterUnknownName_Error(t *testing.T) {
 	svc, _ := setupTestImageService(t)
-	_, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	_, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("bogus-filter"), Values: []*string{aws.String("val")}},
 		},
@@ -1080,7 +1084,7 @@ func TestDescribeImages_FilterWildcard(t *testing.T) {
 	createTestAMIConfigWithName(t, store, "ami-bbb", "prod-api-server")
 	createTestAMIConfigWithName(t, store, "ami-ccc", "dev-web-server")
 
-	out, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("name"), Values: []*string{aws.String("prod-*")}},
 		},
@@ -1093,7 +1097,7 @@ func TestDescribeImages_FilterNoResults(t *testing.T) {
 	svc, store := setupTestImageService(t)
 	createTestAMIConfigWithName(t, store, "ami-aaa", "debian-13")
 
-	out, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("name"), Values: []*string{aws.String("nonexistent")}},
 		},
@@ -1107,7 +1111,7 @@ func TestDescribeImages_FilterNoFilters(t *testing.T) {
 	createTestAMIConfigWithName(t, store, "ami-aaa", "debian-13")
 	createTestAMIConfigWithName(t, store, "ami-bbb", "ubuntu-22")
 
-	out, err := svc.DescribeImages(&ec2.DescribeImagesInput{}, testAccountID)
+	out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.Images, 2)
 }
@@ -1129,7 +1133,7 @@ func putTestSnapshotConfig(t *testing.T, store *objectstore.MemoryObjectStore, s
 	data, err := json.Marshal(cfg)
 	require.NoError(t, err)
 
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket:      aws.String(testBucket),
 		Key:         aws.String(snapshotID + "/metadata.json"),
 		Body:        strings.NewReader(string(data)),
@@ -1159,14 +1163,14 @@ func TestRegisterImage_HappyPath(t *testing.T) {
 	snapID := "snap-happy001"
 	putTestSnapshotConfig(t, store, snapID, 8, testAccountID)
 
-	out, err := svc.RegisterImage(validRegisterImageServiceInput(snapID), testAccountID)
+	out, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput(snapID), testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	require.NotNil(t, out.ImageId)
 	assert.True(t, strings.HasPrefix(*out.ImageId, "ami-"))
 
 	// AMI should be visible via DescribeImages with correct defaults.
-	desc, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	desc, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{out.ImageId},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1185,7 +1189,7 @@ func TestRegisterImage_DuplicateName(t *testing.T) {
 	createTestAMIConfigWithOwner(t, store, "ami-existing01", "registered-ami", testAccountID)
 	putTestSnapshotConfig(t, store, "snap-dup01", 8, testAccountID)
 
-	_, err := svc.RegisterImage(validRegisterImageServiceInput("snap-dup01"), testAccountID)
+	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-dup01"), testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, err.Error())
 }
@@ -1193,7 +1197,7 @@ func TestRegisterImage_DuplicateName(t *testing.T) {
 func TestRegisterImage_SnapshotNotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.RegisterImage(validRegisterImageServiceInput("snap-missing"), testAccountID)
+	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-missing"), testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
 }
@@ -1203,7 +1207,7 @@ func TestRegisterImage_CrossAccountSnapshot(t *testing.T) {
 
 	putTestSnapshotConfig(t, store, "snap-other01", 8, "000000000002")
 
-	_, err := svc.RegisterImage(validRegisterImageServiceInput("snap-other01"), testAccountID)
+	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-other01"), testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
 }
@@ -1215,11 +1219,11 @@ func TestRegisterImage_SystemSnapshotAllowed(t *testing.T) {
 	// matching how system AMIs work.
 	putTestSnapshotConfig(t, store, "snap-sys01", 8, "spinifex")
 
-	out, err := svc.RegisterImage(validRegisterImageServiceInput("snap-sys01"), testAccountID)
+	out, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-sys01"), testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out.ImageId)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, testAccountID, meta.ImageOwnerAlias)
 }
@@ -1230,10 +1234,10 @@ func TestRegisterImage_ArchitectureAndVirtualizationDefaults(t *testing.T) {
 	putTestSnapshotConfig(t, store, "snap-defaults", 8, testAccountID)
 
 	input := validRegisterImageServiceInput("snap-defaults")
-	out, err := svc.RegisterImage(input, testAccountID)
+	out, err := svc.RegisterImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "x86_64", meta.Architecture)
 	assert.Equal(t, "hvm", meta.Virtualization)
@@ -1248,10 +1252,10 @@ func TestRegisterImage_ExplicitArchitecture(t *testing.T) {
 
 	input := validRegisterImageServiceInput("snap-arm64")
 	input.Architecture = aws.String("arm64")
-	out, err := svc.RegisterImage(input, testAccountID)
+	out, err := svc.RegisterImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "arm64", meta.Architecture)
 }
@@ -1264,7 +1268,7 @@ func TestRegisterImage_VolumeSizeSmallerThanSnapshotRejected(t *testing.T) {
 	input := validRegisterImageServiceInput("snap-big")
 	input.BlockDeviceMappings[0].Ebs.VolumeSize = aws.Int64(8)
 
-	_, err := svc.RegisterImage(input, testAccountID)
+	_, err := svc.RegisterImage(context.Background(), input, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
@@ -1277,10 +1281,10 @@ func TestRegisterImage_VolumeSizeLargerThanSnapshotHonoured(t *testing.T) {
 	input := validRegisterImageServiceInput("snap-grow")
 	input.BlockDeviceMappings[0].Ebs.VolumeSize = aws.Int64(20)
 
-	out, err := svc.RegisterImage(input, testAccountID)
+	out, err := svc.RegisterImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(20), meta.VolumeSizeGiB)
 }
@@ -1290,10 +1294,10 @@ func TestRegisterImage_VolumeSizeFromSnapshot(t *testing.T) {
 
 	putTestSnapshotConfig(t, store, "snap-size", 16, testAccountID)
 
-	out, err := svc.RegisterImage(validRegisterImageServiceInput("snap-size"), testAccountID)
+	out, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-size"), testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(16), meta.VolumeSizeGiB)
 }
@@ -1321,10 +1325,10 @@ func TestRegisterImage_TagsPersisted(t *testing.T) {
 		},
 	}
 
-	out, err := svc.RegisterImage(input, testAccountID)
+	out, err := svc.RegisterImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "prod", meta.Tags["Env"])
 	assert.Equal(t, "team-a", meta.Tags["Owner"])
@@ -1340,10 +1344,10 @@ func TestRegisterImage_DescriptionPersisted(t *testing.T) {
 	input := validRegisterImageServiceInput("snap-desc01")
 	input.Description = aws.String("hand-built golden image")
 
-	out, err := svc.RegisterImage(input, testAccountID)
+	out, err := svc.RegisterImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "hand-built golden image", meta.Description)
 }
@@ -1369,10 +1373,10 @@ func TestRegisterImage_RootDeviceNameSelectsBDM(t *testing.T) {
 		},
 	}
 
-	out, err := svc.RegisterImage(input, testAccountID)
+	out, err := svc.RegisterImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "snap-root", meta.SnapshotID)
 	assert.Equal(t, uint64(8), meta.VolumeSizeGiB)
@@ -1381,7 +1385,7 @@ func TestRegisterImage_RootDeviceNameSelectsBDM(t *testing.T) {
 func TestRegisterImage_NilInput(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.RegisterImage(nil, testAccountID)
+	_, err := svc.RegisterImage(context.Background(), nil, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -1389,7 +1393,7 @@ func TestRegisterImage_NilInput(t *testing.T) {
 func TestRegisterImage_NoBlockDeviceMappings(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.RegisterImage(&ec2.RegisterImageInput{
+	_, err := svc.RegisterImage(context.Background(), &ec2.RegisterImageInput{
 		Name: aws.String("no-bdms"),
 	}, testAccountID)
 	require.Error(t, err)
@@ -1402,7 +1406,7 @@ func TestRegisterImage_BDMWithoutMatchingRootDevice(t *testing.T) {
 	putTestSnapshotConfig(t, store, "snap-mismatch", 8, testAccountID)
 
 	// Root device name doesn't match any BDM device name.
-	_, err := svc.RegisterImage(&ec2.RegisterImageInput{
+	_, err := svc.RegisterImage(context.Background(), &ec2.RegisterImageInput{
 		Name:           aws.String("mismatched-root"),
 		RootDeviceName: aws.String("/dev/xvda"),
 		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
@@ -1426,10 +1430,10 @@ func TestRegisterImage_ExplicitVirtualizationType(t *testing.T) {
 	input := validRegisterImageServiceInput("snap-virt")
 	input.VirtualizationType = aws.String("hvm")
 
-	out, err := svc.RegisterImage(input, testAccountID)
+	out, err := svc.RegisterImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "hvm", meta.Virtualization)
 }
@@ -1439,7 +1443,7 @@ func TestRegisterImage_NoRootDeviceNameUsesFirstSnapshotBDM(t *testing.T) {
 
 	putTestSnapshotConfig(t, store, "snap-first", 8, testAccountID)
 
-	out, err := svc.RegisterImage(&ec2.RegisterImageInput{
+	out, err := svc.RegisterImage(context.Background(), &ec2.RegisterImageInput{
 		Name: aws.String("no-rootdevname"),
 		// No RootDeviceName set; first BDM with a snapshot wins.
 		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
@@ -1449,7 +1453,7 @@ func TestRegisterImage_NoRootDeviceNameUsesFirstSnapshotBDM(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "snap-first", meta.SnapshotID)
 }
@@ -1460,10 +1464,10 @@ func TestRegisterImage_OwnerSetToCaller(t *testing.T) {
 	// Snapshot owned by caller; resulting AMI must record caller as owner.
 	putTestSnapshotConfig(t, store, "snap-own", 8, testAccountID)
 
-	out, err := svc.RegisterImage(validRegisterImageServiceInput("snap-own"), testAccountID)
+	out, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-own"), testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig(*out.ImageId)
+	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, testAccountID, meta.ImageOwnerAlias)
 	assert.False(t, meta.CreationDate.IsZero())
@@ -1475,7 +1479,7 @@ func TestRegisterImage_OwnerSetToCaller(t *testing.T) {
 // store so tests can prove the source was not mutated by a copy/modify/etc.
 func readAMIConfigBytes(t *testing.T, store *objectstore.MemoryObjectStore, imageID string) []byte {
 	t.Helper()
-	result, err := store.GetObject(&awss3.GetObjectInput{
+	result, err := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String(imageID + "/config.json"),
 	})
@@ -1489,7 +1493,7 @@ func readAMIConfigBytes(t *testing.T, store *objectstore.MemoryObjectStore, imag
 // readSnapshotConfigBytes returns the raw bytes of {snapshotID}/metadata.json.
 func readSnapshotConfigBytes(t *testing.T, store *objectstore.MemoryObjectStore, snapshotID string) []byte {
 	t.Helper()
-	result, err := store.GetObject(&awss3.GetObjectInput{
+	result, err := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String(snapshotID + "/metadata.json"),
 	})
@@ -1529,7 +1533,7 @@ func putTestAMIConfigWithSnapshot(t *testing.T, store *objectstore.MemoryObjectS
 	}
 	data, err := json.Marshal(amiState)
 	require.NoError(t, err)
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket:      aws.String(testBucket),
 		Key:         aws.String(imageID + "/config.json"),
 		Body:        strings.NewReader(string(data)),
@@ -1552,7 +1556,7 @@ func seedCopyableAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID
 	}
 	data, err := json.Marshal(cfg)
 	require.NoError(t, err)
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket:      aws.String(testBucket),
 		Key:         aws.String(snapshotID + "/metadata.json"),
 		Body:        strings.NewReader(string(data)),
@@ -1584,7 +1588,7 @@ func TestCopyImage_HappyPath(t *testing.T) {
 	srcBefore := readAMIConfigBytes(t, store, "ami-src001")
 	srcSnapBefore := readSnapshotConfigBytes(t, store, "snap-src001")
 
-	out, err := svc.CopyImage(validCopyImageServiceInput("ami-src001", "copy-of-source"), testAccountID)
+	out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-src001", "copy-of-source"), testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	require.NotNil(t, out.ImageId)
@@ -1592,7 +1596,7 @@ func TestCopyImage_HappyPath(t *testing.T) {
 	assert.NotEqual(t, "ami-src001", *out.ImageId)
 
 	// New AMI visible via DescribeImages, owned by caller.
-	desc, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+	desc, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{out.ImageId},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1612,7 +1616,7 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
 	// Seed snapshot for the source AMI.
-	_, err := store.PutObject(&awss3.PutObjectInput{
+	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
 		Key:    aws.String("snap-arm001/metadata.json"),
 		Body: strings.NewReader(func() string {
@@ -1638,10 +1642,10 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	})
 
 	before := time.Now()
-	out, err := svc.CopyImage(validCopyImageServiceInput("ami-arm001", "arm-copy"), testAccountID)
+	out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-arm001", "arm-copy"), testAccountID)
 	require.NoError(t, err)
 
-	newMeta, err := svc.GetAMIConfig(*out.ImageId)
+	newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "arm64", newMeta.Architecture)
 	assert.Equal(t, "Linux/UNIX (arm64)", newMeta.PlatformDetails)
@@ -1660,10 +1664,10 @@ func TestCopyImage_NewSnapshotSharesSourceVolumeID(t *testing.T) {
 	srcSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, testBucket, "snap-orig")
 	require.NoError(t, err)
 
-	out, err := svc.CopyImage(validCopyImageServiceInput("ami-shareblocks", "shared-copy"), testAccountID)
+	out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-shareblocks", "shared-copy"), testAccountID)
 	require.NoError(t, err)
 
-	newMeta, err := svc.GetAMIConfig(*out.ImageId)
+	newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	require.NotEqual(t, "snap-orig", newMeta.SnapshotID)
 
@@ -1684,15 +1688,15 @@ func TestCopyImage_SystemAMICopiedIntoCallerAccount(t *testing.T) {
 	// System AMI (non-account-ID owner) with a snapshot also owned by system.
 	seedCopyableAMI(t, store, "ami-system001", "debian-system", "spinifex", "snap-system001", "vol-sys", 8)
 
-	out, err := svc.CopyImage(validCopyImageServiceInput("ami-system001", "my-debian"), testAccountID)
+	out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-system001", "my-debian"), testAccountID)
 	require.NoError(t, err)
 
-	newMeta, err := svc.GetAMIConfig(*out.ImageId)
+	newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, testAccountID, newMeta.ImageOwnerAlias)
 
 	// Source unchanged — still owned by "spinifex".
-	srcMeta, err := svc.GetAMIConfig("ami-system001")
+	srcMeta, err := svc.GetAMIConfig(context.Background(), "ami-system001")
 	require.NoError(t, err)
 	assert.Equal(t, "spinifex", srcMeta.ImageOwnerAlias)
 }
@@ -1710,11 +1714,11 @@ func TestCopyImage_BundledSystemAMINoStandaloneSnap(t *testing.T) {
 			Description:   "bundled source",
 		})
 
-	out, err := svc.CopyImage(validCopyImageServiceInput("ami-bundled01", "my-alpine"), testAccountID)
+	out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-bundled01", "my-alpine"), testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out.ImageId)
 
-	newMeta, err := svc.GetAMIConfig(*out.ImageId)
+	newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, testAccountID, newMeta.ImageOwnerAlias)
 	assert.Equal(t, uint64(8), newMeta.VolumeSizeGiB)
@@ -1740,7 +1744,7 @@ func TestCopyImage_CrossAccountHidesExistence(t *testing.T) {
 	srcBefore := readAMIConfigBytes(t, store, "ami-other001")
 	srcSnapBefore := readSnapshotConfigBytes(t, store, "snap-other001")
 
-	_, err := svc.CopyImage(validCopyImageServiceInput("ami-other001", "stolen-copy"), testAccountID)
+	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-other001", "stolen-copy"), testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 
@@ -1754,7 +1758,7 @@ func TestCopyImage_CrossAccountHidesExistence(t *testing.T) {
 func TestCopyImage_SourceNotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.CopyImage(validCopyImageServiceInput("ami-missing", "copy"), testAccountID)
+	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-missing", "copy"), testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
@@ -1765,7 +1769,7 @@ func TestCopyImage_OrphanedSource_MissingSnapshot(t *testing.T) {
 	// AMI config points at a snapshot that doesn't exist on S3.
 	putTestAMIConfigWithSnapshot(t, store, "ami-orphan", "orphan", testAccountID, "snap-ghost", viperblock.AMIMetadata{})
 
-	_, err := svc.CopyImage(validCopyImageServiceInput("ami-orphan", "orphan-copy"), testAccountID)
+	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-orphan", "orphan-copy"), testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
@@ -1776,7 +1780,7 @@ func TestCopyImage_OrphanedSource_NoSnapshotID(t *testing.T) {
 	// Admin-imported bundled-storage AMI: no SnapshotID. Not copyable by this API.
 	createTestAMIConfigWithOwner(t, store, "ami-bundled", "bundled", testAccountID)
 
-	_, err := svc.CopyImage(validCopyImageServiceInput("ami-bundled", "bundled-copy"), testAccountID)
+	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-bundled", "bundled-copy"), testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
@@ -1787,7 +1791,7 @@ func TestCopyImage_DuplicateName(t *testing.T) {
 	seedCopyableAMI(t, store, "ami-dup-src", "source", testAccountID, "snap-dup-src", "vol-dup", 8)
 	createTestAMIConfigWithOwner(t, store, "ami-collide", "already-taken", testAccountID)
 
-	_, err := svc.CopyImage(validCopyImageServiceInput("ami-dup-src", "already-taken"), testAccountID)
+	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-dup-src", "already-taken"), testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, err.Error())
 }
@@ -1798,18 +1802,18 @@ func TestCopyImage_CopyImageTagsInheritsSourceTags(t *testing.T) {
 	seedCopyableAMI(t, store, "ami-tagged-src", "tagged", testAccountID, "snap-tagged", "vol-tagged", 8)
 
 	// Overlay source tags on the seeded AMI.
-	srcMeta, err := svc.GetAMIConfig("ami-tagged-src")
+	srcMeta, err := svc.GetAMIConfig(context.Background(), "ami-tagged-src")
 	require.NoError(t, err)
 	srcMeta.Tags = map[string]string{"Env": "prod", "Owner": "team-a"}
-	require.NoError(t, svc.putAMIConfig("ami-tagged-src", srcMeta))
+	require.NoError(t, svc.putAMIConfig(context.Background(), "ami-tagged-src", srcMeta))
 
 	input := validCopyImageServiceInput("ami-tagged-src", "copy-inherit-tags")
 	input.CopyImageTags = aws.Bool(true)
 
-	out, err := svc.CopyImage(input, testAccountID)
+	out, err := svc.CopyImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	newMeta, err := svc.GetAMIConfig(*out.ImageId)
+	newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "prod", newMeta.Tags["Env"])
 	assert.Equal(t, "team-a", newMeta.Tags["Owner"])
@@ -1820,10 +1824,10 @@ func TestCopyImage_ExplicitTagsOverrideSourceTags(t *testing.T) {
 
 	seedCopyableAMI(t, store, "ami-merge-src", "merge-src", testAccountID, "snap-merge", "vol-merge", 8)
 
-	srcMeta, err := svc.GetAMIConfig("ami-merge-src")
+	srcMeta, err := svc.GetAMIConfig(context.Background(), "ami-merge-src")
 	require.NoError(t, err)
 	srcMeta.Tags = map[string]string{"Env": "prod", "Owner": "team-a"}
-	require.NoError(t, svc.putAMIConfig("ami-merge-src", srcMeta))
+	require.NoError(t, svc.putAMIConfig(context.Background(), "ami-merge-src", srcMeta))
 
 	input := validCopyImageServiceInput("ami-merge-src", "merge-copy")
 	input.CopyImageTags = aws.Bool(true)
@@ -1845,10 +1849,10 @@ func TestCopyImage_ExplicitTagsOverrideSourceTags(t *testing.T) {
 		},
 	}
 
-	out, err := svc.CopyImage(input, testAccountID)
+	out, err := svc.CopyImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	newMeta, err := svc.GetAMIConfig(*out.ImageId)
+	newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "staging", newMeta.Tags["Env"])  // overridden
 	assert.Equal(t, "team-a", newMeta.Tags["Owner"]) // inherited
@@ -1862,10 +1866,10 @@ func TestCopyImage_CopyImageTagsFalseDropsSourceTags(t *testing.T) {
 
 	seedCopyableAMI(t, store, "ami-drop-src", "drop-src", testAccountID, "snap-drop", "vol-drop", 8)
 
-	srcMeta, err := svc.GetAMIConfig("ami-drop-src")
+	srcMeta, err := svc.GetAMIConfig(context.Background(), "ami-drop-src")
 	require.NoError(t, err)
 	srcMeta.Tags = map[string]string{"Env": "prod"}
-	require.NoError(t, svc.putAMIConfig("ami-drop-src", srcMeta))
+	require.NoError(t, svc.putAMIConfig(context.Background(), "ami-drop-src", srcMeta))
 
 	input := validCopyImageServiceInput("ami-drop-src", "drop-copy")
 	// CopyImageTags unset — default behaviour drops source tags.
@@ -1878,10 +1882,10 @@ func TestCopyImage_CopyImageTagsFalseDropsSourceTags(t *testing.T) {
 		},
 	}
 
-	out, err := svc.CopyImage(input, testAccountID)
+	out, err := svc.CopyImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	newMeta, err := svc.GetAMIConfig(*out.ImageId)
+	newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "yes", newMeta.Tags["New"])
 	_, hasEnv := newMeta.Tags["Env"]
@@ -1893,10 +1897,10 @@ func TestCopyImage_DescriptionInheritedWhenUnset(t *testing.T) {
 
 	seedCopyableAMI(t, store, "ami-desc-src", "desc-src", testAccountID, "snap-desc", "vol-desc", 8)
 
-	out, err := svc.CopyImage(validCopyImageServiceInput("ami-desc-src", "desc-inherit"), testAccountID)
+	out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-desc-src", "desc-inherit"), testAccountID)
 	require.NoError(t, err)
 
-	newMeta, err := svc.GetAMIConfig(*out.ImageId)
+	newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "source desc", newMeta.Description)
 }
@@ -1909,10 +1913,10 @@ func TestCopyImage_DescriptionOverriddenWhenSet(t *testing.T) {
 	input := validCopyImageServiceInput("ami-desc-ov", "desc-override")
 	input.Description = aws.String("explicit override")
 
-	out, err := svc.CopyImage(input, testAccountID)
+	out, err := svc.CopyImage(context.Background(), input, testAccountID)
 	require.NoError(t, err)
 
-	newMeta, err := svc.GetAMIConfig(*out.ImageId)
+	newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
 	assert.Equal(t, "explicit override", newMeta.Description)
 }
@@ -1920,17 +1924,17 @@ func TestCopyImage_DescriptionOverriddenWhenSet(t *testing.T) {
 func TestCopyImage_MissingRequiredFields(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.CopyImage(nil, testAccountID)
+	_, err := svc.CopyImage(context.Background(), nil, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 
-	_, err = svc.CopyImage(&ec2.CopyImageInput{
+	_, err = svc.CopyImage(context.Background(), &ec2.CopyImageInput{
 		SourceImageId: aws.String("ami-123"),
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 
-	_, err = svc.CopyImage(&ec2.CopyImageInput{
+	_, err = svc.CopyImage(context.Background(), &ec2.CopyImageInput{
 		Name: aws.String("only-name"),
 	}, testAccountID)
 	require.Error(t, err)
@@ -1947,7 +1951,7 @@ func createTestAMIConfigRich(t *testing.T, store *objectstore.MemoryObjectStore,
 	data, err := json.Marshal(state)
 	require.NoError(t, err)
 
-	_, err = store.PutObject(&awss3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket:      aws.String(testBucket),
 		Key:         aws.String(meta.ImageID + "/config.json"),
 		Body:        strings.NewReader(string(data)),
@@ -1971,7 +1975,7 @@ func TestDescribeImageAttribute_Description(t *testing.T) {
 		ImageOwnerAlias: testAccountID,
 	})
 
-	out, err := svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId:   aws.String("ami-desc01"),
 		Attribute: aws.String("description"),
 	}, testAccountID)
@@ -2000,7 +2004,7 @@ func TestDescribeImageAttribute_BlockDeviceMapping(t *testing.T) {
 		ImageOwnerAlias: testAccountID,
 	})
 
-	out, err := svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId:   aws.String("ami-bdm01"),
 		Attribute: aws.String("blockDeviceMapping"),
 	}, testAccountID)
@@ -2021,17 +2025,17 @@ func TestDescribeImageAttribute_BlockDeviceMapping(t *testing.T) {
 func TestDescribeImageAttribute_MissingParameters(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.DescribeImageAttribute(nil, testAccountID)
+	_, err := svc.DescribeImageAttribute(context.Background(), nil, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 
-	_, err = svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+	_, err = svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId: aws.String("ami-xx"),
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 
-	_, err = svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+	_, err = svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		Attribute: aws.String("description"),
 	}, testAccountID)
 	require.Error(t, err)
@@ -2041,7 +2045,7 @@ func TestDescribeImageAttribute_MissingParameters(t *testing.T) {
 func TestDescribeImageAttribute_NotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+	_, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId:   aws.String("ami-missing"),
 		Attribute: aws.String("description"),
 	}, testAccountID)
@@ -2060,7 +2064,7 @@ func TestDescribeImageAttribute_CrossAccountHidesExistence(t *testing.T) {
 		ImageOwnerAlias: "000000000002",
 	})
 
-	_, err := svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+	_, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId:   aws.String("ami-cross01"),
 		Attribute: aws.String("description"),
 	}, testAccountID)
@@ -2079,7 +2083,7 @@ func TestDescribeImageAttribute_SystemAMIReadable(t *testing.T) {
 		ImageOwnerAlias: "system",
 	})
 
-	out, err := svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId:   aws.String("ami-sys01"),
 		Attribute: aws.String("description"),
 	}, testAccountID)
@@ -2096,7 +2100,7 @@ func TestDescribeImageAttribute_UnsupportedAttribute(t *testing.T) {
 
 	for _, attr := range []string{"launchPermission", "bootMode", "kernel", "ramdisk"} {
 		t.Run(attr, func(t *testing.T) {
-			_, err := svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+			_, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 				ImageId:   aws.String("ami-unsup01"),
 				Attribute: aws.String(attr),
 			}, testAccountID)
@@ -2117,19 +2121,19 @@ func TestModifyImageAttribute_Description(t *testing.T) {
 		ImageOwnerAlias: testAccountID,
 	})
 
-	_, err := svc.ModifyImageAttribute(&ec2.ModifyImageAttributeInput{
+	_, err := svc.ModifyImageAttribute(context.Background(), &ec2.ModifyImageAttributeInput{
 		ImageId:   aws.String("ami-mod01"),
 		Attribute: aws.String("description"),
 		Value:     aws.String("new description"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig("ami-mod01")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-mod01")
 	require.NoError(t, err)
 	assert.Equal(t, "new description", meta.Description)
 
 	// Round-trips via DescribeImageAttribute.
-	out, err := svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId:   aws.String("ami-mod01"),
 		Attribute: aws.String("description"),
 	}, testAccountID)
@@ -2150,14 +2154,14 @@ func TestModifyImageAttribute_DescriptionEmptyValueClears(t *testing.T) {
 		ImageOwnerAlias: testAccountID,
 	})
 
-	_, err := svc.ModifyImageAttribute(&ec2.ModifyImageAttributeInput{
+	_, err := svc.ModifyImageAttribute(context.Background(), &ec2.ModifyImageAttributeInput{
 		ImageId:   aws.String("ami-modclr01"),
 		Attribute: aws.String("description"),
 		Value:     aws.String(""),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig("ami-modclr01")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-modclr01")
 	require.NoError(t, err)
 	assert.Equal(t, "", meta.Description)
 }
@@ -2173,7 +2177,7 @@ func TestModifyImageAttribute_CrossAccount(t *testing.T) {
 		ImageOwnerAlias: "000000000002",
 	})
 
-	_, err := svc.ModifyImageAttribute(&ec2.ModifyImageAttributeInput{
+	_, err := svc.ModifyImageAttribute(context.Background(), &ec2.ModifyImageAttributeInput{
 		ImageId:   aws.String("ami-modx01"),
 		Attribute: aws.String("description"),
 		Value:     aws.String("evil"),
@@ -2182,7 +2186,7 @@ func TestModifyImageAttribute_CrossAccount(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
 
 	// Value untouched on S3.
-	meta, err := svc.GetAMIConfig("ami-modx01")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-modx01")
 	require.NoError(t, err)
 	assert.Equal(t, "dont-touch", meta.Description)
 }
@@ -2198,7 +2202,7 @@ func TestModifyImageAttribute_SystemAMIImmutable(t *testing.T) {
 		ImageOwnerAlias: "system",
 	})
 
-	_, err := svc.ModifyImageAttribute(&ec2.ModifyImageAttributeInput{
+	_, err := svc.ModifyImageAttribute(context.Background(), &ec2.ModifyImageAttributeInput{
 		ImageId:   aws.String("ami-modsys01"),
 		Attribute: aws.String("description"),
 		Value:     aws.String("tampered"),
@@ -2210,7 +2214,7 @@ func TestModifyImageAttribute_SystemAMIImmutable(t *testing.T) {
 func TestModifyImageAttribute_NotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.ModifyImageAttribute(&ec2.ModifyImageAttributeInput{
+	_, err := svc.ModifyImageAttribute(context.Background(), &ec2.ModifyImageAttributeInput{
 		ImageId:   aws.String("ami-missing"),
 		Attribute: aws.String("description"),
 		Value:     aws.String("x"),
@@ -2226,7 +2230,7 @@ func TestModifyImageAttribute_UnsupportedAttribute(t *testing.T) {
 
 	for _, attr := range []string{"bootMode", "launchPermission", "blockDeviceMapping"} {
 		t.Run(attr, func(t *testing.T) {
-			_, err := svc.ModifyImageAttribute(&ec2.ModifyImageAttributeInput{
+			_, err := svc.ModifyImageAttribute(context.Background(), &ec2.ModifyImageAttributeInput{
 				ImageId:   aws.String("ami-modunsup01"),
 				Attribute: aws.String(attr),
 				Value:     aws.String("x"),
@@ -2240,11 +2244,11 @@ func TestModifyImageAttribute_UnsupportedAttribute(t *testing.T) {
 func TestModifyImageAttribute_MissingParameters(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.ModifyImageAttribute(nil, testAccountID)
+	_, err := svc.ModifyImageAttribute(context.Background(), nil, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 
-	_, err = svc.ModifyImageAttribute(&ec2.ModifyImageAttributeInput{
+	_, err = svc.ModifyImageAttribute(context.Background(), &ec2.ModifyImageAttributeInput{
 		ImageId: aws.String("ami-x"),
 	}, testAccountID)
 	require.Error(t, err)
@@ -2262,17 +2266,17 @@ func TestResetImageAttribute_Description(t *testing.T) {
 		ImageOwnerAlias: testAccountID,
 	})
 
-	_, err := svc.ResetImageAttribute(&ec2.ResetImageAttributeInput{
+	_, err := svc.ResetImageAttribute(context.Background(), &ec2.ResetImageAttributeInput{
 		ImageId:   aws.String("ami-reset01"),
 		Attribute: aws.String("description"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.GetAMIConfig("ami-reset01")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-reset01")
 	require.NoError(t, err)
 	assert.Equal(t, "", meta.Description)
 
-	out, err := svc.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId:   aws.String("ami-reset01"),
 		Attribute: aws.String("description"),
 	}, testAccountID)
@@ -2293,14 +2297,14 @@ func TestResetImageAttribute_CrossAccount(t *testing.T) {
 		ImageOwnerAlias: "000000000002",
 	})
 
-	_, err := svc.ResetImageAttribute(&ec2.ResetImageAttributeInput{
+	_, err := svc.ResetImageAttribute(context.Background(), &ec2.ResetImageAttributeInput{
 		ImageId:   aws.String("ami-rstx01"),
 		Attribute: aws.String("description"),
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
 
-	meta, err := svc.GetAMIConfig("ami-rstx01")
+	meta, err := svc.GetAMIConfig(context.Background(), "ami-rstx01")
 	require.NoError(t, err)
 	assert.Equal(t, "dont-touch", meta.Description)
 }
@@ -2308,7 +2312,7 @@ func TestResetImageAttribute_CrossAccount(t *testing.T) {
 func TestResetImageAttribute_NotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.ResetImageAttribute(&ec2.ResetImageAttributeInput{
+	_, err := svc.ResetImageAttribute(context.Background(), &ec2.ResetImageAttributeInput{
 		ImageId:   aws.String("ami-missing"),
 		Attribute: aws.String("description"),
 	}, testAccountID)
@@ -2323,7 +2327,7 @@ func TestResetImageAttribute_UnsupportedAttribute(t *testing.T) {
 
 	for _, attr := range []string{"launchPermission", "bootMode", "blockDeviceMapping"} {
 		t.Run(attr, func(t *testing.T) {
-			_, err := svc.ResetImageAttribute(&ec2.ResetImageAttributeInput{
+			_, err := svc.ResetImageAttribute(context.Background(), &ec2.ResetImageAttributeInput{
 				ImageId:   aws.String("ami-rstunsup01"),
 				Attribute: aws.String(attr),
 			}, testAccountID)
@@ -2336,13 +2340,214 @@ func TestResetImageAttribute_UnsupportedAttribute(t *testing.T) {
 func TestResetImageAttribute_MissingParameters(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.ResetImageAttribute(nil, testAccountID)
+	_, err := svc.ResetImageAttribute(context.Background(), nil, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 
-	_, err = svc.ResetImageAttribute(&ec2.ResetImageAttributeInput{
+	_, err = svc.ResetImageAttribute(context.Background(), &ec2.ResetImageAttributeInput{
 		ImageId: aws.String("ami-x"),
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestSnapshotRunningVolume_VolumeConfigMissing(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config:     &config.Config{},
+		store:      store,
+		bucketName: testBucket,
+	}
+	err := svc.snapshotRunningVolume("vol-missing", "snap-r1")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotRunningVolume_BackendInitFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:   srv.URL,
+				Region: "us-east-1",
+				Bucket: testBucket,
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-running1", 10)
+
+	err := svc.snapshotRunningVolume("vol-running1", "snap-r2")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotStoppedVolume_VolumeConfigMissing(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config:     &config.Config{},
+		store:      store,
+		bucketName: testBucket,
+	}
+	err := svc.snapshotStoppedVolume("vol-missing", "snap-s1")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotStoppedVolume_BackendInitFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:   srv.URL,
+				Region: "us-east-1",
+				Bucket: testBucket,
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-stopped1", 10)
+
+	err := svc.snapshotStoppedVolume("vol-stopped1", "snap-s2")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+// imageS3MockServer passes ListObjectsV2 (Backend.Init) but returns 404 for everything else.
+func imageS3MockServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.RawQuery, "list-type=2") {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
+				`<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`+
+				`<Name>test-bucket</Name><KeyCount>0</KeyCount>`+
+				`<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated></ListBucketResult>`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
+			`<Error><Code>NoSuchKey</Code>`+
+			`<Message>The specified key does not exist.</Message></Error>`)
+	}))
+}
+
+func TestSnapshotRunningVolume_EncryptionKeyLoadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:   srv.URL,
+				Region: "us-east-1",
+				Bucket: testBucket,
+			},
+			Viperblock: config.ViperblockConfig{
+				EncryptionKeyFile: "/nonexistent-image-run-key.bin",
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-running-enckey", 10)
+
+	err := svc.snapshotRunningVolume("vol-running-enckey", "snap-run-enckey")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotRunningVolume_LoadStateFails(t *testing.T) {
+	srv := imageS3MockServer(t)
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:      srv.URL,
+				Region:    "us-east-1",
+				Bucket:    testBucket,
+				AccessKey: "test-key",
+				SecretKey: "test-secret",
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-running-lsf", 10)
+
+	err := svc.snapshotRunningVolume("vol-running-lsf", "snap-run-lsf")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotStoppedVolume_EncryptionKeyLoadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:   srv.URL,
+				Region: "us-east-1",
+				Bucket: testBucket,
+			},
+			Viperblock: config.ViperblockConfig{
+				EncryptionKeyFile: "/nonexistent-image-stop-key.bin",
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-stopped-enckey", 10)
+
+	err := svc.snapshotStoppedVolume("vol-stopped-enckey", "snap-stop-enckey")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestSnapshotStoppedVolume_LoadStateFails(t *testing.T) {
+	srv := imageS3MockServer(t)
+	defer srv.Close()
+
+	store := objectstore.NewMemoryObjectStore()
+	svc := &ImageServiceImpl{
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:      srv.URL,
+				Region:    "us-east-1",
+				Bucket:    testBucket,
+				AccessKey: "test-key",
+				SecretKey: "test-secret",
+			},
+		},
+		store:      store,
+		bucketName: testBucket,
+	}
+	createTestVolumeConfig(t, store, "vol-stopped-lsf", 10)
+
+	err := svc.snapshotStoppedVolume("vol-stopped-lsf", "snap-stop-lsf")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

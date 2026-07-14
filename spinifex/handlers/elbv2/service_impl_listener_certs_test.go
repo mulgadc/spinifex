@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -26,7 +27,7 @@ func fixedResponseAction() []*elbv2.Action {
 func createHTTPSListener(t *testing.T, svc *ELBv2ServiceImpl) string {
 	t.Helper()
 	lbArn := createLBArn(t, svc, "https-lb")
-	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	out, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String(ProtocolHTTPS),
 		Port:            aws.Int64(443),
@@ -41,7 +42,7 @@ func TestCreateListener_HTTPSRequiresCert(t *testing.T) {
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "https-nocert")
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String(ProtocolHTTPS),
 		Port:            aws.Int64(443),
@@ -55,7 +56,7 @@ func TestCreateListener_HTTPSDefaultsSslPolicy(t *testing.T) {
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "https-default-policy")
 
-	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	out, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String(ProtocolHTTPS),
 		Port:            aws.Int64(443),
@@ -71,7 +72,7 @@ func TestCreateListener_HTTPSDefaultsSslPolicy(t *testing.T) {
 	assert.True(t, aws.BoolValue(l.Certificates[0].IsDefault), "the sole cert must be marked default")
 
 	// DescribeListeners round-trips certificates and SslPolicy.
-	desc, err := svc.DescribeListeners(&elbv2.DescribeListenersInput{
+	desc, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{
 		ListenerArns: []*string{l.ListenerArn},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -84,7 +85,7 @@ func TestCreateListener_HTTPRejectsCert(t *testing.T) {
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "http-withcert")
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String(ProtocolHTTP),
 		Port:            aws.Int64(80),
@@ -99,7 +100,7 @@ func TestCreateListener_UnknownSslPolicy(t *testing.T) {
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "https-badpolicy")
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String(ProtocolHTTPS),
 		Port:            aws.Int64(443),
@@ -114,7 +115,7 @@ func TestCreateListener_UnknownSslPolicy(t *testing.T) {
 func TestModifyListener_SwitchToHTTPSRequiresCert(t *testing.T) {
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "switch-lb")
-	lst, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lst, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String(ProtocolHTTP),
 		Port:            aws.Int64(80),
@@ -124,7 +125,7 @@ func TestModifyListener_SwitchToHTTPSRequiresCert(t *testing.T) {
 	arn := lst.Listeners[0].ListenerArn
 
 	// HTTP -> HTTPS without a cert is rejected.
-	_, err = svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err = svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: arn,
 		Protocol:    aws.String(ProtocolHTTPS),
 	}, testAccountID)
@@ -132,7 +133,7 @@ func TestModifyListener_SwitchToHTTPSRequiresCert(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorELBv2CertificateNotFound)
 
 	// HTTP -> HTTPS with a cert succeeds and defaults the policy.
-	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn:  arn,
 		Protocol:     aws.String(ProtocolHTTPS),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
@@ -146,7 +147,7 @@ func TestModifyListener_SwitchAwayClearsCerts(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createHTTPSListener(t, svc)
 
-	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: aws.String(arn),
 		Protocol:    aws.String(ProtocolHTTP),
 	}, testAccountID)
@@ -160,7 +161,7 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 	arn := createHTTPSListener(t, svc)
 
 	// Add an SNI cert.
-	addOut, err := svc.AddListenerCertificates(&elbv2.AddListenerCertificatesInput{
+	addOut, err := svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
 		ListenerArn:  aws.String(arn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
 	}, testAccountID)
@@ -168,7 +169,7 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 	require.Len(t, addOut.Certificates, 2)
 
 	// Re-adding is idempotent.
-	addOut, err = svc.AddListenerCertificates(&elbv2.AddListenerCertificatesInput{
+	addOut, err = svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
 		ListenerArn:  aws.String(arn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
 	}, testAccountID)
@@ -176,14 +177,14 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 	require.Len(t, addOut.Certificates, 2)
 
 	// Describe shows both.
-	desc, err := svc.DescribeListenerCertificates(&elbv2.DescribeListenerCertificatesInput{
+	desc, err := svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{
 		ListenerArn: aws.String(arn),
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, desc.Certificates, 2)
 
 	// Removing the default cert is rejected.
-	_, err = svc.RemoveListenerCertificates(&elbv2.RemoveListenerCertificatesInput{
+	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
 		ListenerArn:  aws.String(arn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, testAccountID)
@@ -191,13 +192,13 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
 
 	// Removing the SNI cert succeeds.
-	_, err = svc.RemoveListenerCertificates(&elbv2.RemoveListenerCertificatesInput{
+	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
 		ListenerArn:  aws.String(arn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err = svc.DescribeListenerCertificates(&elbv2.DescribeListenerCertificatesInput{
+	desc, err = svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{
 		ListenerArn: aws.String(arn),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -208,7 +209,7 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 func TestAddListenerCertificates_HTTPRejected(t *testing.T) {
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "http-addcert")
-	lst, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lst, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String(ProtocolHTTP),
 		Port:            aws.Int64(80),
@@ -216,7 +217,7 @@ func TestAddListenerCertificates_HTTPRejected(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.AddListenerCertificates(&elbv2.AddListenerCertificatesInput{
+	_, err = svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
 		ListenerArn:  lst.Listeners[0].ListenerArn,
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, testAccountID)
@@ -231,52 +232,52 @@ func TestListenerCertificates_ValidationAndNotFound(t *testing.T) {
 	badArn := "arn:aws:elasticloadbalancing:us-east-1:000000000001:listener/app/x/y/z"
 
 	// Add: missing arn, empty certs, nil cert entry, cross-account not-found.
-	_, err := svc.AddListenerCertificates(&elbv2.AddListenerCertificatesInput{}, testAccountID)
+	_, err := svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = svc.AddListenerCertificates(&elbv2.AddListenerCertificatesInput{
+	_, err = svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
 		ListenerArn: aws.String(arn),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = svc.AddListenerCertificates(&elbv2.AddListenerCertificatesInput{
+	_, err = svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
 		ListenerArn:  aws.String(arn),
 		Certificates: []*elbv2.Certificate{{}},
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 
-	_, err = svc.AddListenerCertificates(&elbv2.AddListenerCertificatesInput{
+	_, err = svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
 		ListenerArn:  aws.String(arn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
 	}, otherAccount)
 	assert.EqualError(t, err, awserrors.ErrorELBv2ListenerNotFound)
 
 	// Remove: missing arn, empty certs, nil cert entry, cross-account not-found.
-	_, err = svc.RemoveListenerCertificates(&elbv2.RemoveListenerCertificatesInput{}, testAccountID)
+	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = svc.RemoveListenerCertificates(&elbv2.RemoveListenerCertificatesInput{
+	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
 		ListenerArn: aws.String(arn),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = svc.RemoveListenerCertificates(&elbv2.RemoveListenerCertificatesInput{
+	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
 		ListenerArn:  aws.String(arn),
 		Certificates: []*elbv2.Certificate{{}},
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 
-	_, err = svc.RemoveListenerCertificates(&elbv2.RemoveListenerCertificatesInput{
+	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
 		ListenerArn:  aws.String(badArn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorELBv2ListenerNotFound)
 
 	// Describe: missing arn, cross-account not-found.
-	_, err = svc.DescribeListenerCertificates(&elbv2.DescribeListenerCertificatesInput{}, testAccountID)
+	_, err = svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = svc.DescribeListenerCertificates(&elbv2.DescribeListenerCertificatesInput{
+	_, err = svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{
 		ListenerArn: aws.String(arn),
 	}, otherAccount)
 	assert.EqualError(t, err, awserrors.ErrorELBv2ListenerNotFound)
@@ -284,7 +285,7 @@ func TestListenerCertificates_ValidationAndNotFound(t *testing.T) {
 
 func TestDescribeSSLPolicies_EmptyName(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.DescribeSSLPolicies(&elbv2.DescribeSSLPoliciesInput{
+	_, err := svc.DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{
 		Names: []*string{aws.String("")},
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
@@ -294,7 +295,7 @@ func TestDescribeSSLPolicies(t *testing.T) {
 	svc := setupTestService(t)
 
 	// No filter → full catalog.
-	all, err := svc.DescribeSSLPolicies(&elbv2.DescribeSSLPoliciesInput{}, testAccountID)
+	all, err := svc.DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, all.SslPolicies, len(sslPolicyOrder))
 	assert.Equal(t, DefaultSslPolicy, aws.StringValue(all.SslPolicies[0].Name))
@@ -302,14 +303,14 @@ func TestDescribeSSLPolicies(t *testing.T) {
 	require.NotEmpty(t, all.SslPolicies[0].SslProtocols)
 
 	// Name filter → subset.
-	one, err := svc.DescribeSSLPolicies(&elbv2.DescribeSSLPoliciesInput{
+	one, err := svc.DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{
 		Names: []*string{aws.String(DefaultSslPolicy)},
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, one.SslPolicies, 1)
 
 	// Unknown name → error.
-	_, err = svc.DescribeSSLPolicies(&elbv2.DescribeSSLPoliciesInput{
+	_, err = svc.DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{
 		Names: []*string{aws.String("nope")},
 	}, testAccountID)
 	require.Error(t, err)

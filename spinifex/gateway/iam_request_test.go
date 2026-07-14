@@ -16,8 +16,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// flexMockIAMService is a configurable mock with per-method overrides.
+// flexMockIAMService is a configurable mock with per-method overrides. It
+// embeds the interface so it satisfies the full contract; only the fn-field
+// methods below are wired, and any other method nil-panics if a test reaches
+// an unmocked path.
 type flexMockIAMService struct {
+	handlers_iam.IAMService
+
 	createUserFn      func(string, *iam.CreateUserInput) (*iam.CreateUserOutput, error)
 	getUserFn         func(string, *iam.GetUserInput) (*iam.GetUserOutput, error)
 	listUsersFn       func(string, *iam.ListUsersInput) (*iam.ListUsersOutput, error)
@@ -26,6 +31,8 @@ type flexMockIAMService struct {
 	listAccessKeysFn  func(string, *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error)
 	deleteAccessKeyFn func(string, *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error)
 	updateAccessKeyFn func(string, *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error)
+
+	getAccountSummaryFn func(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
 }
 
 func (m *flexMockIAMService) CreateUser(accountID string, input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
@@ -84,126 +91,11 @@ func (m *flexMockIAMService) UpdateAccessKey(accountID string, input *iam.Update
 	return &iam.UpdateAccessKeyOutput{}, nil
 }
 
-func (m *flexMockIAMService) CreatePolicy(_ string, _ *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
-	return &iam.CreatePolicyOutput{}, nil
-}
-
-func (m *flexMockIAMService) GetPolicy(_ string, _ *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
-	return &iam.GetPolicyOutput{}, nil
-}
-
-func (m *flexMockIAMService) GetPolicyVersion(_ string, _ *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
-	return &iam.GetPolicyVersionOutput{}, nil
-}
-
-func (m *flexMockIAMService) ListPolicyVersions(_ string, _ *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
-	return &iam.ListPolicyVersionsOutput{}, nil
-}
-
-func (m *flexMockIAMService) ListPolicies(_ string, _ *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
-	return &iam.ListPoliciesOutput{}, nil
-}
-
-func (m *flexMockIAMService) DeletePolicy(_ string, _ *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
-	return &iam.DeletePolicyOutput{}, nil
-}
-
-func (m *flexMockIAMService) AttachUserPolicy(_ string, _ *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
-	return &iam.AttachUserPolicyOutput{}, nil
-}
-
-func (m *flexMockIAMService) DetachUserPolicy(_ string, _ *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error) {
-	return &iam.DetachUserPolicyOutput{}, nil
-}
-
-func (m *flexMockIAMService) ListAttachedUserPolicies(_ string, _ *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
-	return &iam.ListAttachedUserPoliciesOutput{}, nil
-}
-
-func (m *flexMockIAMService) GetUserPolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-
-func (m *flexMockIAMService) GetRolePolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-
-func (m *flexMockIAMService) LookupAccessKey(_ string) (*handlers_iam.AccessKey, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (m *flexMockIAMService) DecryptSecret(_ string) (string, error)            { return "", nil }
-func (m *flexMockIAMService) SeedBootstrap(_ *handlers_iam.BootstrapData) error { return nil }
-func (m *flexMockIAMService) IsEmpty() (bool, error)                            { return true, nil }
-
-func (m *flexMockIAMService) CreateAccount(_ string) (*handlers_iam.Account, error) {
-	return nil, nil
-}
-func (m *flexMockIAMService) GetAccount(_ string) (*handlers_iam.Account, error) { return nil, nil }
-func (m *flexMockIAMService) ListAccounts() ([]*handlers_iam.Account, error)     { return nil, nil }
-
-func (m *flexMockIAMService) CreateRole(_ string, _ *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
-	return &iam.CreateRoleOutput{}, nil
-}
-func (m *flexMockIAMService) GetRole(_ string, _ *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-	return &iam.GetRoleOutput{}, nil
-}
-func (m *flexMockIAMService) ListRoles(_ string, _ *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
-	return &iam.ListRolesOutput{}, nil
-}
-func (m *flexMockIAMService) DeleteRole(_ string, _ *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
-	return &iam.DeleteRoleOutput{}, nil
-}
-func (m *flexMockIAMService) UpdateRole(_ string, _ *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
-	return &iam.UpdateRoleOutput{}, nil
-}
-func (m *flexMockIAMService) UpdateAssumeRolePolicy(_ string, _ *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
-	return &iam.UpdateAssumeRolePolicyOutput{}, nil
-}
-func (m *flexMockIAMService) AttachRolePolicy(_ string, _ *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
-	return &iam.AttachRolePolicyOutput{}, nil
-}
-func (m *flexMockIAMService) DetachRolePolicy(_ string, _ *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
-	return &iam.DetachRolePolicyOutput{}, nil
-}
-func (m *flexMockIAMService) ListAttachedRolePolicies(_ string, _ *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
-	return &iam.ListAttachedRolePoliciesOutput{}, nil
-}
-func (m *flexMockIAMService) PutRolePolicy(_ string, _ *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
-	return &iam.PutRolePolicyOutput{}, nil
-}
-func (m *flexMockIAMService) GetRolePolicy(_ string, _ *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
-	return &iam.GetRolePolicyOutput{}, nil
-}
-func (m *flexMockIAMService) DeleteRolePolicy(_ string, _ *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
-	return &iam.DeleteRolePolicyOutput{}, nil
-}
-func (m *flexMockIAMService) ListRolePolicies(_ string, _ *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
-	return &iam.ListRolePoliciesOutput{}, nil
-}
-func (m *flexMockIAMService) CreateInstanceProfile(_ string, _ *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
-	return &iam.CreateInstanceProfileOutput{}, nil
-}
-func (m *flexMockIAMService) GetInstanceProfile(_ string, _ *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
-	return &iam.GetInstanceProfileOutput{}, nil
-}
-func (m *flexMockIAMService) ListInstanceProfiles(_ string, _ *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
-	return &iam.ListInstanceProfilesOutput{}, nil
-}
-func (m *flexMockIAMService) DeleteInstanceProfile(_ string, _ *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
-	return &iam.DeleteInstanceProfileOutput{}, nil
-}
-func (m *flexMockIAMService) ListInstanceProfilesForRole(_ string, _ *iam.ListInstanceProfilesForRoleInput) (*iam.ListInstanceProfilesForRoleOutput, error) {
-	return &iam.ListInstanceProfilesForRoleOutput{}, nil
-}
-func (m *flexMockIAMService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
-	return &iam.AddRoleToInstanceProfileOutput{}, nil
-}
-func (m *flexMockIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
-	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
-}
-func (m *flexMockIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
-	return nil, nil
+func (m *flexMockIAMService) GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	if m.getAccountSummaryFn != nil {
+		return m.getAccountSummaryFn(accountID, input)
+	}
+	return &iam.GetAccountSummaryOutput{}, nil
 }
 func (m *flexMockIAMService) CreateGroup(_ string, _ *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
 	return &iam.CreateGroupOutput{}, nil
@@ -329,6 +221,35 @@ func TestIAMRequest_ListUsers_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "ListUsersResult")
 	assert.Contains(t, xmlStr, "alice")
 	assert.Contains(t, xmlStr, "bob")
+}
+
+// Locks in the xmlutil map behaviour: SummaryMap (map[string]*int64) must
+// marshal to <SummaryMap><entry><key>..</key><value>..</value></entry>. The Go
+// stdlib encoding/xml path cannot marshal a map, so this guards the xmlutil
+// builder wiring end to end.
+func TestIAMRequest_GetAccountSummary_Success(t *testing.T) {
+	svc := &flexMockIAMService{
+		getAccountSummaryFn: func(_ string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+			return &iam.GetAccountSummaryOutput{
+				SummaryMap: map[string]*int64{"Users": aws.Int64(2)},
+			}, nil
+		},
+	}
+	handler := setupIAMRequestHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=GetAccountSummary"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp := doRequest(handler, req)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	xmlStr := string(body)
+	assert.Contains(t, xmlStr, "GetAccountSummaryResult")
+	assert.Contains(t, xmlStr, "SummaryMap")
+	assert.Contains(t, xmlStr, "<entry>")
+	assert.Contains(t, xmlStr, "<key>Users</key>")
+	assert.Contains(t, xmlStr, "<value>2</value>")
 }
 
 func TestIAMRequest_UnknownAction(t *testing.T) {

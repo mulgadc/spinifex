@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -166,7 +167,8 @@ var iamActions = map[string]IAMHandler{
 	}),
 	"DeleteInstanceProfile": iamHandler(func(accountID string, input *iam.DeleteInstanceProfileInput, gw *GatewayConfig) (any, error) {
 		countLive := func(profileARN string) (int, error) {
-			return gateway_ec2_instance.CountInstanceProfileAssociations(gw.NATSConn, gw.DiscoverActiveNodes(), accountID, profileARN)
+			ctx := context.Background()
+			return gateway_ec2_instance.CountInstanceProfileAssociations(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
 		}
 		return gateway_iam.DeleteInstanceProfile(accountID, input, gw.IAMService, countLive)
 	}),
@@ -194,6 +196,53 @@ var iamActions = map[string]IAMHandler{
 	}),
 	"DeleteOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.DeleteOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.DeleteOpenIDConnectProvider(accountID, input, gw.IAMService)
+	}),
+
+	// Resource tagging
+	"TagUser": iamHandler(func(accountID string, input *iam.TagUserInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.TagUser(accountID, input, gw.IAMService)
+	}),
+	"UntagUser": iamHandler(func(accountID string, input *iam.UntagUserInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.UntagUser(accountID, input, gw.IAMService)
+	}),
+	"ListUserTags": iamHandler(func(accountID string, input *iam.ListUserTagsInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListUserTags(accountID, input, gw.IAMService)
+	}),
+	"TagRole": iamHandler(func(accountID string, input *iam.TagRoleInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.TagRole(accountID, input, gw.IAMService)
+	}),
+	"UntagRole": iamHandler(func(accountID string, input *iam.UntagRoleInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.UntagRole(accountID, input, gw.IAMService)
+	}),
+	"ListRoleTags": iamHandler(func(accountID string, input *iam.ListRoleTagsInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListRoleTags(accountID, input, gw.IAMService)
+	}),
+	"TagPolicy": iamHandler(func(accountID string, input *iam.TagPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.TagPolicy(accountID, input, gw.IAMService)
+	}),
+	"UntagPolicy": iamHandler(func(accountID string, input *iam.UntagPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.UntagPolicy(accountID, input, gw.IAMService)
+	}),
+	"ListPolicyTags": iamHandler(func(accountID string, input *iam.ListPolicyTagsInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListPolicyTags(accountID, input, gw.IAMService)
+	}),
+	"TagInstanceProfile": iamHandler(func(accountID string, input *iam.TagInstanceProfileInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.TagInstanceProfile(accountID, input, gw.IAMService)
+	}),
+	"UntagInstanceProfile": iamHandler(func(accountID string, input *iam.UntagInstanceProfileInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.UntagInstanceProfile(accountID, input, gw.IAMService)
+	}),
+	"ListInstanceProfileTags": iamHandler(func(accountID string, input *iam.ListInstanceProfileTagsInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListInstanceProfileTags(accountID, input, gw.IAMService)
+	}),
+	"TagOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.TagOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.TagOpenIDConnectProvider(accountID, input, gw.IAMService)
+	}),
+	"UntagOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.UntagOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.UntagOpenIDConnectProvider(accountID, input, gw.IAMService)
+	}),
+	"ListOpenIDConnectProviderTags": iamHandler(func(accountID string, input *iam.ListOpenIDConnectProviderTagsInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListOpenIDConnectProviderTags(accountID, input, gw.IAMService)
 	}),
 
 	// Group CRUD
@@ -244,6 +293,11 @@ var iamActions = map[string]IAMHandler{
 	}),
 	"ListGroupPolicies": iamHandler(func(accountID string, input *iam.ListGroupPoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListGroupPolicies(accountID, input, gw.IAMService)
+	}),
+
+	// Account
+	"GetAccountSummary": iamHandler(func(accountID string, input *iam.GetAccountSummaryInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetAccountSummary(accountID, input, gw.IAMService)
 	}),
 }
 

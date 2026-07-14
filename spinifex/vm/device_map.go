@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -25,8 +26,8 @@ var hotplugPortRegexp = regexp.MustCompile(`hotplug-ebs(\d+)`)
 
 // queryGuestDeviceMap builds a map from QEMU device ID to guest device path via
 // QMP query-block. Ordering follows PCI bus order (QDev device index).
-func queryGuestDeviceMap(qmpClient *qmp.QMPClient, instanceID string) (map[string]string, error) {
-	resp, err := sendQMPCommand(qmpClient, qmp.QMPCommand{Execute: "query-block"}, instanceID)
+func queryGuestDeviceMap(ctx context.Context, qmpClient *qmp.QMPClient, instanceID string) (map[string]string, error) {
+	resp, err := sendQMPCommand(ctx, qmpClient, qmp.QMPCommand{Execute: "query-block"}, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("query-block failed: %w", err)
 	}
@@ -44,12 +45,12 @@ var deviceMapRetrySleep = time.Sleep
 
 // queryGuestDeviceMapWait retries queryGuestDeviceMap until expectedDevice
 // appears, handling the race between device_add and QEMU registration.
-func queryGuestDeviceMapWait(qmpClient *qmp.QMPClient, instanceID, expectedDevice string) (map[string]string, error) {
+func queryGuestDeviceMapWait(ctx context.Context, qmpClient *qmp.QMPClient, instanceID, expectedDevice string) (map[string]string, error) {
 	const maxAttempts = 5
 	const retryDelay = 200 * time.Millisecond
 
 	for attempt := range maxAttempts {
-		deviceMap, err := queryGuestDeviceMap(qmpClient, instanceID)
+		deviceMap, err := queryGuestDeviceMap(ctx, qmpClient, instanceID)
 		if err != nil {
 			return nil, err
 		}
@@ -57,14 +58,14 @@ func queryGuestDeviceMapWait(qmpClient *qmp.QMPClient, instanceID, expectedDevic
 			return deviceMap, nil
 		}
 		if attempt < maxAttempts-1 {
-			slog.Debug("queryGuestDeviceMapWait: device not yet visible, retrying",
+			slog.DebugContext(ctx, "queryGuestDeviceMapWait: device not yet visible, retrying",
 				"expectedDevice", expectedDevice, "attempt", attempt+1, "maxAttempts", maxAttempts)
 			deviceMapRetrySleep(retryDelay)
 		}
 	}
 
 	// Return the last result even though the device wasn't found — caller decides fallback.
-	return queryGuestDeviceMap(qmpClient, instanceID)
+	return queryGuestDeviceMap(ctx, qmpClient, instanceID)
 }
 
 // buildDeviceMap maps QEMU device ID → /dev/vdX sorted by PCI address.
@@ -139,7 +140,8 @@ func (m *Manager) UpdateGuestDeviceNames(instance *VM) {
 		return
 	}
 
-	deviceMap, err := queryGuestDeviceMap(instance.QMPClient, instance.ID)
+	// Reconnect/restore path runs outside any request; not request-scoped.
+	deviceMap, err := queryGuestDeviceMap(context.Background(), instance.QMPClient, instance.ID)
 	if err != nil {
 		slog.Warn("Failed to query guest device map, BlockDeviceMappings will use API names",
 			"instanceId", instance.ID, "err", err)

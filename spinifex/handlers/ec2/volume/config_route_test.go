@@ -1,6 +1,7 @@
 package handlers_ec2_volume
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"strings"
@@ -56,7 +57,7 @@ func seedEncryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, vol
 	}
 	data, err := json.Marshal(state)
 	require.NoError(t, err)
-	_, err = store.PutObject(&s3.PutObjectInput{
+	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 		Body:   strings.NewReader(string(data)),
@@ -67,7 +68,7 @@ func seedEncryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, vol
 // getStoredConfig reads the raw config.json bytes from the memory store.
 func getStoredConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) []byte {
 	t.Helper()
-	res, err := store.GetObject(&s3.GetObjectInput{
+	res, err := store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 	})
@@ -108,7 +109,7 @@ func TestPutVolumeConfig_EncryptedRoutesToQueueGroup(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	require.NoError(t, svc.putVolumeConfig(volumeID, encConfig(volumeID)))
+	require.NoError(t, svc.putVolumeConfig(context.Background(), volumeID, encConfig(volumeID)))
 	assert.Equal(t, int32(1), hits.Load(), "encrypted config write must hit the ebs.config keyholder queue group")
 
 	// The sealed object must NOT have been rewritten out-of-band by the handler.
@@ -135,7 +136,7 @@ func TestPutVolumeConfig_EncryptedKeyholderError(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	err = svc.putVolumeConfig(volumeID, encConfig(volumeID))
+	err = svc.putVolumeConfig(context.Background(), volumeID, encConfig(volumeID))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reseal failed")
 }

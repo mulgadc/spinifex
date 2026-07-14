@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,7 +26,7 @@ func ValidateGetConsoleOutputInput(input *ec2.GetConsoleOutputInput) error {
 
 // GetConsoleOutput retrieves console output for a specific instance via NATS.
 // Routes directly to the node running the instance via ec2.{instanceID}.GetConsoleOutput.
-func GetConsoleOutput(input *ec2.GetConsoleOutputInput, natsConn *nats.Conn, accountID string) (*ec2.GetConsoleOutputOutput, error) {
+func GetConsoleOutput(ctx context.Context, input *ec2.GetConsoleOutputInput, natsConn *nats.Conn, accountID string) (*ec2.GetConsoleOutputOutput, error) {
 	if err := ValidateGetConsoleOutputInput(input); err != nil {
 		return nil, err
 	}
@@ -39,6 +40,7 @@ func GetConsoleOutput(input *ec2.GetConsoleOutputInput, natsConn *nats.Conn, acc
 	reqMsg := nats.NewMsg(topic)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 5*time.Second)
 	if err != nil {
 		// No daemon subscription or timeout: stopped/terminated/non-existent instances all surface as NotFound.
@@ -50,13 +52,13 @@ func GetConsoleOutput(input *ec2.GetConsoleOutputInput, natsConn *nats.Conn, acc
 
 	responseError, parseErr := utils.ValidateErrorPayload(msg.Data)
 	if parseErr != nil {
-		slog.Error("GetConsoleOutput: Daemon returned error", "instance_id", *input.InstanceId, "code", *responseError.Code)
+		slog.ErrorContext(ctx, "GetConsoleOutput: Daemon returned error", "instance_id", *input.InstanceId, "code", *responseError.Code)
 		return nil, errors.New(*responseError.Code)
 	}
 
 	var output ec2.GetConsoleOutputOutput
 	if err := json.Unmarshal(msg.Data, &output); err != nil {
-		slog.Error("GetConsoleOutput: Failed to unmarshal response", "err", err)
+		slog.ErrorContext(ctx, "GetConsoleOutput: Failed to unmarshal response", "err", err)
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 

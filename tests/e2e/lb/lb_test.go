@@ -110,26 +110,22 @@ func TestLoadBalancer(t *testing.T) {
 			t.Skip("Internal_ALB failed (LB never reached active) — skipping remaining internal subtests to fail fast")
 		}
 	}
+	// No fixed inter-subtest sleeps: createActiveLB retries with backoff when
+	// the previous LB's sys.micro slot is still being reclaimed.
 	t.Run("Internal_NLB", func(t *testing.T) {
 		skipIfInternalBroken(t)
-		// Allow time for the ALB sys.micro VM's resources to be reclaimed before
-		// NLB races the deallocate on capacity-tight hosts.
-		time.Sleep(15 * time.Second)
 		runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
 	})
 	t.Run("Internal_NLB_UDP", func(t *testing.T) {
 		skipIfInternalBroken(t)
-		time.Sleep(15 * time.Second)
 		runUDPNLBSuite(t, client, fixture)
 	})
 	t.Run("Internal_ALB_ModifyListener", func(t *testing.T) {
 		skipIfInternalBroken(t)
-		time.Sleep(15 * time.Second)
 		runModifyListenerSuite(t, client, fixture)
 	})
 	t.Run("Internal_ALB_ListenerRules", func(t *testing.T) {
 		skipIfInternalBroken(t)
-		time.Sleep(15 * time.Second)
 		runListenerRulesSuite(t, client, fixture)
 	})
 }
@@ -501,11 +497,7 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	registerTargets(t, c, tgArn, f.AppInstanceIDs)
 	t.Cleanup(func() { deregisterTargets(t, c, tgArn, f.AppInstanceIDs) })
 
-	lb := createLB(t, c, f, fmt.Sprintf("lb-e2e-%s-%s", lbName, suffix), lbType, scheme)
-	t.Cleanup(func() { deleteLB(t, c, lb) })
-
-	listener := createListener(t, c, lb.ARN, proto, port, tgArn)
-	t.Cleanup(func() { deleteListener(t, c, listener) })
+	lb, _ := createActiveLB(t, c, f, fmt.Sprintf("lb-e2e-%s-%s", lbName, suffix), lbType, scheme, proto, port, tgArn, label)
 
 	assert.Equal(t, scheme, lb.Scheme, label+" scheme")
 	assert.Equal(t, lbType, lb.Type, label+" type")
@@ -513,7 +505,6 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 		assert.Contains(t, lb.ARN, "/net/", label+" ARN must contain /net/")
 	}
 
-	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
 	if kind == kindNLB {
 		captureLBConsoleOnFailure(t, c, eniDescPrefix, lb)
 	}
@@ -560,10 +551,7 @@ func runHTTPSCertSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	registerTargets(t, c, tgArn, f.AppInstanceIDs)
 	t.Cleanup(func() { deregisterTargets(t, c, tgArn, f.AppInstanceIDs) })
 
-	lb := createLB(t, c, f, "lb-e2e-https", "application", "internet-facing")
-	t.Cleanup(func() { deleteLB(t, c, lb) })
-
-	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	lb, _ := createActiveLB(t, c, f, "lb-e2e-https", "application", "internet-facing", "", 0, "", label)
 	eni := lbENI(t, c, "app", lb)
 	pubIP := publicIP(eni)
 	require.NotEmpty(t, pubIP, label+" needs a public IP for the TLS handshake")
@@ -690,16 +678,11 @@ func runUDPNLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	registerTargets(t, c, tgArn, f.AppInstanceIDs)
 	t.Cleanup(func() { deregisterTargets(t, c, tgArn, f.AppInstanceIDs) })
 
-	lb := createLB(t, c, f, "lb-e2e-nlb-udp", "network", "internal")
-	t.Cleanup(func() { deleteLB(t, c, lb) })
-
-	listener := createListener(t, c, lb.ARN, "UDP", udpPort, tgArn)
-	t.Cleanup(func() { deleteListener(t, c, listener) })
+	lb, _ := createActiveLB(t, c, f, "lb-e2e-nlb-udp", "network", "internal", "UDP", udpPort, tgArn, label)
 
 	assert.Equal(t, "network", lb.Type, label+" type")
 	assert.Contains(t, lb.ARN, "/net/", label+" ARN must contain /net/")
 
-	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
 	captureLBConsoleOnFailure(t, c, "net", lb)
 	// The key assertion: NLB targets reach healthy via the agent's active
 	// prober. Pre-feature this timed out (nginx reported empty server lists).
@@ -863,6 +846,49 @@ func createLB(t *testing.T, c *harness.AWSClient, f *sharedFixture, name, lbType
 	return info
 }
 
+// lbCreateAttempts bounds retries when an LB lands in terminal state failed
+// because the previous suite's sys.micro VM has not been deallocated yet.
+const lbCreateAttempts = 3
+
+// createActiveLB creates an LB (plus a listener when proto is non-empty) and
+// waits for state=active. Terminal state failed on capacity-tight single nodes
+// means the previous LB's sys.micro slot is still being reclaimed — tear down
+// and retry with backoff instead of failing the suite outright. Cleanups for
+// the surviving LB/listener are registered on success.
+func createActiveLB(t *testing.T, c *harness.AWSClient, f *sharedFixture, name, lbType, scheme, proto string, port int64, tgArn, label string) (lbInfo, string) {
+	t.Helper()
+	var lastErr error
+	for attempt := 1; attempt <= lbCreateAttempts; attempt++ {
+		if attempt > 1 {
+			wait := time.Duration(attempt-1) * 15 * time.Second
+			t.Logf("%s: waiting %s for sys.micro capacity reclaim before retry", label, wait)
+			time.Sleep(wait)
+		}
+		lb := createLB(t, c, f, name, lbType, scheme)
+		// Register idempotent teardown up-front so no exit path (fatal, timeout,
+		// or success) can leak the LB/listener into the shared VPC. Deletes are
+		// idempotent server-side, so a retry's explicit teardown below is safe.
+		t.Cleanup(func() { deleteLB(t, c, lb) })
+		listener := ""
+		if proto != "" {
+			listener = createListener(t, c, lb.ARN, proto, port, tgArn)
+			t.Cleanup(func() { deleteListener(t, c, listener) })
+		}
+		lastErr = harness.WaitForLBActiveErr(t, c, lb.ARN, label, 5*time.Minute)
+		if lastErr == nil {
+			return lb, listener
+		}
+		if !errors.Is(lastErr, harness.ErrLBTerminalFailed) && !errors.Is(lastErr, harness.ErrLBProvisioningTimeout) {
+			t.Fatalf("%s: %v", label, lastErr)
+		}
+		t.Logf("%s: attempt %d/%d: %v — tearing down and retrying", label, attempt, lbCreateAttempts, lastErr)
+		deleteListener(t, c, listener)
+		deleteLB(t, c, lb)
+	}
+	t.Fatalf("%s: LB never reached active after %d attempts: %v", label, lbCreateAttempts, lastErr)
+	return lbInfo{}, ""
+}
+
 func deleteLB(t *testing.T, c *harness.AWSClient, lb lbInfo) {
 	if lb.ARN == "" {
 		return
@@ -1019,13 +1045,7 @@ func runModifyListenerSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture
 	registerTargets(t, c, tgB, f.AppInstanceIDs)
 	t.Cleanup(func() { deregisterTargets(t, c, tgB, f.AppInstanceIDs) })
 
-	lb := createLB(t, c, f, "lb-e2e-mod", "application", "internal")
-	t.Cleanup(func() { deleteLB(t, c, lb) })
-
-	listener := createListener(t, c, lb.ARN, "HTTP", httpPort, tgA)
-	t.Cleanup(func() { deleteListener(t, c, listener) })
-
-	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	lb, listener := createActiveLB(t, c, f, "lb-e2e-mod", "application", "internal", "HTTP", httpPort, tgA, label)
 	harness.WaitForTargetsHealthy(t, c, tgA, 2, label+" tgA", 2*time.Minute)
 
 	eni := lbENI(t, c, "app", lb)
@@ -1070,12 +1090,7 @@ func runListenerRulesSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture)
 	registerTargets(t, c, tgB, []string{appB})
 	t.Cleanup(func() { deregisterTargets(t, c, tgB, []string{appB}) })
 
-	lb := createLB(t, c, f, "lb-e2e-rul", "application", "internal")
-	t.Cleanup(func() { deleteLB(t, c, lb) })
-	listener := createListener(t, c, lb.ARN, "HTTP", httpPort, tgA)
-	t.Cleanup(func() { deleteListener(t, c, listener) })
-
-	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	lb, listener := createActiveLB(t, c, f, "lb-e2e-rul", "application", "internal", "HTTP", httpPort, tgA, label)
 	harness.WaitForTargetsHealthy(t, c, tgA, 1, label+" tgA", 2*time.Minute)
 
 	eni := lbENI(t, c, "app", lb)

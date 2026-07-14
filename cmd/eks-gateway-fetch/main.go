@@ -17,10 +17,14 @@
 // Usage:
 //
 //	eks-gateway-fetch -resource addons   # GET /clusters/{cluster}/internal-addons/{accountId}
+//	eks-gateway-fetch -resource recovery -instance-id i-… # GET /clusters/{cluster}/internal-recovery/{accountId}/{instanceId}
+//
+// The recovery resource returns a single epoch\taction\tsnapshot line the on-VM
+// k3s-recovery agent applies before k3s starts (etcd cluster-reset / wipe-rejoin).
 //
 // Flags default to environment variables seeded by cloud-init:
 // EKS_GATEWAY_URL, EKS_GATEWAY_CA, EKS_ACCESS_KEY, EKS_SECRET_KEY, EKS_REGION,
-// EKS_ACCOUNT_ID, EKS_CLUSTER_NAME.
+// EKS_ACCOUNT_ID, EKS_CLUSTER_NAME, EKS_INSTANCE_ID.
 package main
 
 import (
@@ -68,6 +72,7 @@ func main() {
 		accountID   string
 		clusterName string
 		resource    string
+		instanceID  string
 	)
 
 	flag.StringVar(&gatewayURL, "gateway", os.Getenv("EKS_GATEWAY_URL"), "Gateway URL (e.g. https://10.15.8.1:9999)")
@@ -77,7 +82,8 @@ func main() {
 	flag.StringVar(&region, "region", os.Getenv("EKS_REGION"), "AWS region for SigV4 signing")
 	flag.StringVar(&accountID, "account-id", os.Getenv("EKS_ACCOUNT_ID"), "Cluster account ID")
 	flag.StringVar(&clusterName, "cluster", os.Getenv("EKS_CLUSTER_NAME"), "Cluster name")
-	flag.StringVar(&resource, "resource", "addons", "Resource to fetch: addons")
+	flag.StringVar(&instanceID, "instance-id", os.Getenv("EKS_INSTANCE_ID"), "This member's EC2 instance ID (recovery resource)")
+	flag.StringVar(&resource, "resource", "addons", "Resource to fetch: addons | recovery")
 	flag.Parse()
 
 	switch {
@@ -85,15 +91,29 @@ func main() {
 		fatal("--account-id is required (or set EKS_ACCOUNT_ID)")
 	case clusterName == "":
 		fatal("--cluster is required (or set EKS_CLUSTER_NAME)")
-	case resource != "addons":
-		fatal("--resource must be addons")
+	case resource != "addons" && resource != "recovery":
+		fatal("--resource must be addons or recovery")
+	case resource == "recovery" && instanceID == "":
+		fatal("--instance-id is required for --resource recovery (or set EKS_INSTANCE_ID)")
 	}
 
 	client, err := eksgw.New(gatewayURL, gatewayCA, accessKey, secretKey, region)
 	if err != nil {
 		fatal(fmt.Sprintf("build gateway client: %v", err))
 	}
-	path := "/clusters/" + clusterName + "/internal-addons/" + accountID
+
+	var (
+		path string
+		emit func(io.Writer, []byte) error
+	)
+	switch resource {
+	case "recovery":
+		path = "/clusters/" + clusterName + "/internal-recovery/" + accountID + "/" + instanceID
+		emit = emitRecoveryTSV
+	default:
+		path = "/clusters/" + clusterName + "/internal-addons/" + accountID
+		emit = emitAddonsTSV
+	}
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -106,7 +126,7 @@ func main() {
 			}
 			continue
 		}
-		if werr := emitAddonsTSV(os.Stdout, body); werr != nil {
+		if werr := emit(os.Stdout, body); werr != nil {
 			fatal(fmt.Sprintf("render response: %v", werr))
 		}
 		return
@@ -131,6 +151,43 @@ func emitAddonsTSV(out io.Writer, body []byte) error {
 		}
 	}
 	return w.Flush()
+}
+
+// recoveryDirective mirrors the gateway's RecoveryDirective wire shape; duplicated
+// here to keep this tiny VM binary free of the handler package's dependency graph.
+type recoveryDirective struct {
+	Epoch            int64  `json:"epoch"`
+	Action           string `json:"action"`
+	Snapshot         string `json:"snapshot"`
+	SnapshotRequired bool   `json:"snapshotRequired"`
+}
+
+type internalRecoveryResponse struct {
+	Directive recoveryDirective `json:"directive"`
+}
+
+// emitRecoveryTSV decodes the recovery directive and writes a single
+// epoch\taction\tsnapshot\tsnapshotRequired line the on-VM k3s-recovery agent
+// consumes without a JSON parser. An unset action defaults to "none" (steady
+// state); snapshotRequired is 1 when the snapshot MUST restore (fresh DR seed
+// aborts boot on fetch failure) else 0.
+func emitRecoveryTSV(out io.Writer, body []byte) error {
+	var resp internalRecoveryResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("unmarshal internal-recovery response: %w", err)
+	}
+	d := resp.Directive
+	if d.Action == "" {
+		d.Action = "none"
+	}
+	required := "0"
+	if d.SnapshotRequired {
+		required = "1"
+	}
+	if _, err := fmt.Fprintf(out, "%d\t%s\t%s\t%s\n", d.Epoch, d.Action, d.Snapshot, required); err != nil {
+		return err
+	}
+	return nil
 }
 
 func fatal(msg string) {

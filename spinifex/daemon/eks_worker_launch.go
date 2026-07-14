@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,9 +22,12 @@ import (
 // Compile-time check that Daemon satisfies the EKS worker-launch surface.
 var _ handlers_eks.WorkerLauncher = (*Daemon)(nil)
 
+// terminateRetrySleep is the backoff seam between NoResponders retries; tests override it.
+var terminateRetrySleep = time.Sleep
+
 // RunWorkerInstance launches a nodegroup worker on the local node.
-func (d *Daemon) RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
-	return d.RunWorkerInstanceOnNode("", input, accountID)
+func (d *Daemon) RunWorkerInstance(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
+	return d.RunWorkerInstanceOnNode(ctx, "", input, accountID)
 }
 
 // RunWorkerInstanceOnNode launches a nodegroup worker via the normal RunInstances
@@ -32,7 +36,7 @@ func (d *Daemon) RunWorkerInstance(input *ec2.RunInstancesInput, accountID strin
 // spread by publishing the node-targeted ec2.RunInstances.<type>.<node> request
 // (the node stays subscribed even at capacity); an empty nodeID launches on the
 // local node in process, preserving the original behaviour.
-func (d *Daemon) RunWorkerInstanceOnNode(nodeID string, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
+func (d *Daemon) RunWorkerInstanceOnNode(ctx context.Context, nodeID string, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
 	if input == nil {
 		return nil, errors.New("eks worker: nil RunInstancesInput")
 	}
@@ -43,13 +47,13 @@ func (d *Daemon) RunWorkerInstanceOnNode(nodeID string, input *ec2.RunInstancesI
 		if d.instanceService == nil {
 			return nil, errors.New("eks worker: instance service not initialized")
 		}
-		return d.instanceService.RunInstances(input, accountID)
+		return d.instanceService.RunInstances(ctx, input, accountID)
 	}
 	if d.natsConn == nil {
 		return nil, errors.New("eks worker: NATS connection not initialized")
 	}
 	subject := fmt.Sprintf("ec2.RunInstances.%s.%s", aws.StringValue(input.InstanceType), nodeID)
-	return utils.NATSRequest[ec2.Reservation](d.natsConn, subject, input, 5*time.Minute, accountID)
+	return utils.NATSRequest[ec2.Reservation](ctx, d.natsConn, subject, input, 5*time.Minute, accountID)
 }
 
 // TerminateWorkerInstances terminates nodegroup workers by routing a terminate
@@ -61,7 +65,7 @@ func (d *Daemon) RunWorkerInstanceOnNode(nodeID string, input *ec2.RunInstancesI
 // worker placed on another node, stranding both the VM and its ENI. An instance
 // with no owner (no responder, not found) is already gone, so a retried
 // DeleteNodegroup stays idempotent.
-func (d *Daemon) TerminateWorkerInstances(instanceIDs []string, accountID string) error {
+func (d *Daemon) TerminateWorkerInstances(ctx context.Context, instanceIDs []string, accountID string) error {
 	if d.natsConn == nil {
 		return errors.New("eks worker: NATS connection not initialized")
 	}
@@ -70,7 +74,7 @@ func (d *Daemon) TerminateWorkerInstances(instanceIDs []string, accountID string
 		if id == "" {
 			continue
 		}
-		if err := d.terminateWorkerInstance(id, accountID); err != nil {
+		if err := d.terminateWorkerInstance(ctx, id, accountID); err != nil {
 			errs = append(errs, fmt.Errorf("terminate worker %s: %w", id, err))
 		}
 	}
@@ -85,7 +89,7 @@ func (d *Daemon) TerminateWorkerInstances(instanceIDs []string, accountID string
 // it. A NoResponders reply means no daemon owns the instance: it is already
 // gone, which a retried teardown treats as success. A NotFound error payload
 // from the owner is likewise idempotent.
-func (d *Daemon) terminateWorkerInstance(instanceID, accountID string) error {
+func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accountID string) error {
 	cmd := spxtypes.EC2InstanceCommand{
 		ID: instanceID,
 		Attributes: spxtypes.EC2CommandAttributes{
@@ -104,12 +108,13 @@ func (d *Daemon) terminateWorkerInstance(instanceID, accountID string) error {
 		reqMsg := nats.NewMsg(subject)
 		reqMsg.Data = data
 		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+		utils.InjectTraceContext(ctx, reqMsg.Header)
 		msg, err = d.natsConn.RequestMsg(reqMsg, 5*time.Second)
 		if err == nil || !errors.Is(err, nats.ErrNoResponders) {
 			break
 		}
 		if attempt < 2 {
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			terminateRetrySleep(time.Duration(attempt+1) * time.Second)
 		}
 	}
 	if errors.Is(err, nats.ErrNoResponders) {
@@ -120,14 +125,14 @@ func (d *Daemon) terminateWorkerInstance(instanceID, accountID string) error {
 		// volumes, IP, and ENI) so the ENI cannot pin the customer subnet/VPC
 		// undeletable. Without this a DeleteCluster wedges in DELETING on
 		// DependencyViolation until the operator manually terminates the node.
-		return d.terminateStoppedWorker(instanceID, accountID)
+		return d.terminateStoppedWorker(ctx, instanceID, accountID)
 	}
 	if err != nil {
 		return err
 	}
 	if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
 		if *errPayload.Code == awserrors.ErrorInvalidInstanceIDNotFound {
-			slog.Debug("TerminateWorkerInstances: owner reports instance gone, idempotent", "instanceId", instanceID)
+			slog.DebugContext(ctx, "TerminateWorkerInstances: owner reports instance gone, idempotent", "instanceId", instanceID)
 			return nil
 		}
 		return errors.New(*errPayload.Code)
@@ -141,7 +146,7 @@ func (d *Daemon) terminateWorkerInstance(instanceID, accountID string) error {
 // stopped+wedged) worker is reaped regardless of which node ran the teardown. A
 // NotFound payload — or no responder at all — means the instance is already
 // gone, which a retried teardown treats as idempotent success.
-func (d *Daemon) terminateStoppedWorker(instanceID, accountID string) error {
+func (d *Daemon) terminateStoppedWorker(ctx context.Context, instanceID, accountID string) error {
 	req, err := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: instanceID})
 	if err != nil {
 		return fmt.Errorf("marshal stopped-terminate request: %w", err)
@@ -149,9 +154,10 @@ func (d *Daemon) terminateStoppedWorker(instanceID, accountID string) error {
 	reqMsg := nats.NewMsg("ec2.terminate")
 	reqMsg.Data = req
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	utils.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := d.natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if errors.Is(err, nats.ErrNoResponders) {
-		slog.Debug("TerminateWorkerInstances: no ec2.terminate responder, instance already gone", "instanceId", instanceID)
+		slog.DebugContext(ctx, "TerminateWorkerInstances: no ec2.terminate responder, instance already gone", "instanceId", instanceID)
 		return nil
 	}
 	if err != nil {
@@ -159,11 +165,11 @@ func (d *Daemon) terminateStoppedWorker(instanceID, accountID string) error {
 	}
 	if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
 		if *errPayload.Code == awserrors.ErrorInvalidInstanceIDNotFound {
-			slog.Debug("TerminateWorkerInstances: stopped worker already gone, idempotent", "instanceId", instanceID)
+			slog.DebugContext(ctx, "TerminateWorkerInstances: stopped worker already gone, idempotent", "instanceId", instanceID)
 			return nil
 		}
 		return errors.New(*errPayload.Code)
 	}
-	slog.Info("TerminateWorkerInstances: terminated stopped worker via ec2.terminate", "instanceId", instanceID)
+	slog.InfoContext(ctx, "TerminateWorkerInstances: terminated stopped worker via ec2.terminate", "instanceId", instanceID)
 	return nil
 }

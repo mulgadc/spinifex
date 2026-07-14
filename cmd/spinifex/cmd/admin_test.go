@@ -421,20 +421,19 @@ func TestSpinifexTomlTemplate_ExternalPoolDHCPSource(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "spinifex.toml")
 	settings := admin.ConfigSettings{
-		Node:           "node1",
-		Az:             "ap-southeast-2a",
-		Port:           "4432",
-		Region:         "ap-southeast-2",
-		BindIP:         "10.11.12.1",
-		ConfigDir:      dir,
-		OVNNBAddr:      "tcp:127.0.0.1:6641",
-		OVNSBAddr:      "tcp:127.0.0.1:6642",
-		ExternalMode:   "pool",
-		ExternalIface:  "eth0",
-		PoolName:       "wan",
-		PoolSource:     "dhcp",
-		PoolBindBridge: "br-wan",
-		PoolPrefixLen:  24,
+		Node:          "node1",
+		Az:            "ap-southeast-2a",
+		Port:          "4432",
+		Region:        "ap-southeast-2",
+		BindIP:        "10.11.12.1",
+		ConfigDir:     dir,
+		OVNNBAddr:     "tcp:127.0.0.1:6641",
+		OVNSBAddr:     "tcp:127.0.0.1:6642",
+		ExternalMode:  "pool",
+		ExternalIface: "eth0",
+		Pools: []admin.PoolData{{
+			Name: "wan", Source: "dhcp", BindBridge: "br-wan", PrefixLen: 24,
+		}},
 	}
 	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
 
@@ -463,12 +462,11 @@ func TestSpinifexTomlTemplate_ExternalPoolStaticSource(t *testing.T) {
 		OVNSBAddr:     "tcp:127.0.0.1:6642",
 		ExternalMode:  "pool",
 		ExternalIface: "eth0",
-		PoolName:      "wan",
-		PoolSource:    "static",
-		PoolStart:     "192.168.1.150",
-		PoolEnd:       "192.168.1.250",
-		PoolGateway:   "192.168.1.1",
-		PoolPrefixLen: 24,
+		Pools: []admin.PoolData{{
+			Name: "wan", Source: "static",
+			Start: "192.168.1.150", End: "192.168.1.250",
+			Gateway: "192.168.1.1", PrefixLen: 24,
+		}},
 	}
 	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
 
@@ -493,8 +491,9 @@ func TestApplyNetworkConfig_PropagatesPoolBindBridge(t *testing.T) {
 		PoolPrefixLen:  24,
 	}
 	applyNetworkConfig(settings, nc)
-	assert.Equal(t, "dhcp", settings.PoolSource)
-	assert.Equal(t, "br-wan", settings.PoolBindBridge)
+	require.Len(t, settings.Pools, 1)
+	assert.Equal(t, "dhcp", settings.Pools[0].Source)
+	assert.Equal(t, "br-wan", settings.Pools[0].BindBridge)
 }
 
 func renderSingleNodePredastore(t *testing.T, settings admin.ConfigSettings) string {

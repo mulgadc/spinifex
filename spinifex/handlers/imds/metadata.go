@@ -1,6 +1,7 @@
 package handlers_imds
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -95,14 +96,14 @@ func (s *IMDSServiceImpl) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.tokens.issue(eni.eniID, ttl, s.now())
 	if err != nil {
-		slog.Error("IMDS: token issuance failed", "eni_id", eni.eniID, "err", err)
+		slog.ErrorContext(r.Context(), "IMDS: token issuance failed", "eni_id", eni.eniID, "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	// First-contact log: a guest reaching this proves its packets traverse the
 	// per-tap datapath; its absence (with the responder bound) points at the datapath.
-	slog.Info("IMDS: issued IMDSv2 token", "instance_id", eni.instanceID, "private_ip", eni.privateIP, "public_ip", eni.publicIP)
+	slog.InfoContext(r.Context(), "IMDS: issued IMDSv2 token", "instance_id", eni.instanceID, "private_ip", eni.privateIP, "public_ip", eni.publicIP)
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set(hdrTokenTTL, strconv.Itoa(int(ttl.Seconds())))
@@ -142,25 +143,26 @@ func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
 
 // dispatch routes a token-validated GET to the right metadata producer.
 func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *eniFacts) {
+	ctx := r.Context()
 	path := r.URL.Path
 
 	// Boot-crawl access log: traces every metadata GET per ENI so a guest's
 	// cloud-init crawl is observable end-to-end (e.g. private vs public subnet).
-	slog.Info("IMDS: serving metadata request", "path", path,
+	slog.InfoContext(ctx, "IMDS: serving metadata request", "path", path,
 		"instance_id", eni.instanceID, "private_ip", eni.privateIP, "public_ip", eni.publicIP)
 
 	if strings.HasPrefix(path, prefixSecurityCreds) && len(path) > len(prefixSecurityCreds) {
-		s.serveRoleCredentials(w, eni, strings.TrimPrefix(path, prefixSecurityCreds))
+		s.serveRoleCredentials(ctx, w, eni, strings.TrimPrefix(path, prefixSecurityCreds))
 		return
 	}
 
 	if sub, ok := strings.CutPrefix(path, prefixPublicKeys); ok {
-		s.servePublicKeys(w, eni, sub)
+		s.servePublicKeys(ctx, w, eni, sub)
 		return
 	}
 
 	if sub, ok := strings.CutPrefix(path, prefixNetworkMacs); ok {
-		s.serveNetworkInterface(w, eni, sub) // sub: "", "<mac>", "<mac>/", "<mac>/<key>"
+		s.serveNetworkInterface(ctx, w, eni, sub) // sub: "", "<mac>", "<mac>/", "<mac>/<key>"
 		return
 	}
 
@@ -174,13 +176,13 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case pathIdentityDir, pathIdentityDir + "/":
 		writeText(w, "document") // signed forms (pkcs7/rsa2048/signature) listed when the signing key lands
 	case pathIdentityDocument:
-		s.serveInstanceIdentityDocument(w, eni)
+		s.serveInstanceIdentityDocument(ctx, w, eni)
 	case pathMetaDataRoot, prefixMetaData:
-		s.serveMetaDataRoot(w, eni)
+		s.serveMetaDataRoot(ctx, w, eni)
 	case prefixMetaData + "instance-id":
 		writeText(w, eni.instanceID)
 	case prefixMetaData + "instance-life-cycle":
-		s.serveInstanceLifecycle(w, eni)
+		s.serveInstanceLifecycle(ctx, w, eni)
 	case prefixMetaData + "local-ipv4":
 		writeText(w, eni.privateIP)
 	case prefixMetaData + "public-ipv4":
@@ -208,7 +210,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "network/interfaces/macs":
 		writeText(w, eni.mac+"/")
 	case prefixMetaData + "security-groups":
-		writeText(w, strings.Join(s.resolver.resolveSGNames(eni.accountID, eni.securityGroupIDs), "\n"))
+		writeText(w, strings.Join(s.resolver.resolveSGNames(ctx, eni.accountID, eni.securityGroupIDs), "\n"))
 	case prefixMetaData + "hostname", prefixMetaData + "local-hostname":
 		writeText(w, synthHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
 	case prefixMetaData + "placement", prefixMetaData + "placement/":
@@ -218,15 +220,15 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "placement/region":
 		writeText(w, regionFromAZ(eni.availabilityZone))
 	case prefixMetaData + "instance-type":
-		s.serveInstanceField(w, eni, func(i *instanceFacts) string { return i.instanceType })
+		s.serveInstanceField(ctx, w, eni, func(i *instanceFacts) string { return i.instanceType })
 	case prefixMetaData + "ami-id":
-		s.serveInstanceField(w, eni, func(i *instanceFacts) string { return i.imageID })
+		s.serveInstanceField(ctx, w, eni, func(i *instanceFacts) string { return i.imageID })
 	case prefixMetaData + "ami-launch-index":
-		s.serveInstanceField(w, eni, func(i *instanceFacts) string {
+		s.serveInstanceField(ctx, w, eni, func(i *instanceFacts) string {
 			return strconv.FormatInt(i.amiLaunchIndex, 10)
 		})
 	case prefixMetaData + "reservation-id":
-		s.serveInstanceField(w, eni, func(i *instanceFacts) string { return i.reservationID })
+		s.serveInstanceField(ctx, w, eni, func(i *instanceFacts) string { return i.reservationID })
 	case prefixMetaData + "services", prefixMetaData + "services/":
 		writeText(w, "domain\npartition")
 	case prefixMetaData + "services/domain":
@@ -237,19 +239,19 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		// A backend error counts as "no profile" so the iam/ subtree stays
 		// self-consistent — 404 here rather than advertised with 404ing leaves,
 		// which fails cloud-init's metadata crawl.
-		if profile, err := s.profileFor(eni); err != nil || profile == nil {
+		if profile, err := s.profileFor(ctx, eni); err != nil || profile == nil {
 			w.WriteHeader(http.StatusNotFound) // no profile → no iam/ subtree, as on real EC2
 			return
 		}
 		writeText(w, "info\nsecurity-credentials/")
 	case prefixMetaData + "iam/info":
-		s.serveIAMInfo(w, eni)
+		s.serveIAMInfo(ctx, w, eni)
 	case pathSecurityCredsDir, prefixSecurityCreds:
-		s.serveSecurityCredentialsList(w, eni)
+		s.serveSecurityCredentialsList(ctx, w, eni)
 	case pathPublicKeysDir:
-		s.servePublicKeys(w, eni, "")
+		s.servePublicKeys(ctx, w, eni, "")
 	case pathUserData:
-		s.serveUserData(w, eni)
+		s.serveUserData(ctx, w, eni)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -260,7 +262,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 // mid-listing and falls back to DataSourceNone: public-hostname/public-ipv4 only
 // with a public IP, public-keys/ only with a key pair, iam/ only with an instance
 // profile — each omission matching real EC2, like the macs/ subtree in macKeys.
-func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts) {
+func (s *IMDSServiceImpl) serveMetaDataRoot(ctx context.Context, w http.ResponseWriter, eni *eniFacts) {
 	keys := []string{
 		"ami-id", "ami-launch-index", "hostname", "instance-id",
 		"instance-life-cycle", "instance-type", "local-hostname", "local-ipv4",
@@ -273,12 +275,12 @@ func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts
 	// Resolve the instance once: public-keys/ is listed only with a key pair, iam/
 	// only with a resolvable instance profile. A backend error counts as absent so
 	// the listing never advertises a child whose leaf would 404 and break the crawl.
-	if inst, err := s.resolver.resolveInstance(eni); err == nil && inst != nil {
+	if inst, err := s.resolver.resolveInstance(ctx, eni); err == nil && inst != nil {
 		if inst.keyName != "" {
 			keys = append(keys, "public-keys/")
 		}
 		if inst.iamInstanceProfileArn != "" {
-			if p, err := s.iam.ResolveInstanceProfile(eni.iamAccountID(), inst.iamInstanceProfileArn); err == nil && p != nil {
+			if p, err := s.iam.ResolveInstanceProfile(ctx, eni.iamAccountID(), inst.iamInstanceProfileArn); err == nil && p != nil {
 				keys = append(keys, "iam/")
 			}
 		}
@@ -291,10 +293,10 @@ func (s *IMDSServiceImpl) serveMetaDataRoot(w http.ResponseWriter, eni *eniFacts
 // "on-demand" otherwise. Unlike serveInstanceField it never 404s: the leaf is
 // advertised unconditionally in serveMetaDataRoot, so a resolution miss or error
 // defaults to "on-demand" rather than breaking cloud-init's crawl mid-listing.
-func (s *IMDSServiceImpl) serveInstanceLifecycle(w http.ResponseWriter, eni *eniFacts) {
-	inst, err := s.resolver.resolveInstance(eni)
+func (s *IMDSServiceImpl) serveInstanceLifecycle(ctx context.Context, w http.ResponseWriter, eni *eniFacts) {
+	inst, err := s.resolver.resolveInstance(ctx, eni)
 	if err != nil {
-		slog.Error("IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
+		slog.ErrorContext(ctx, "IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
 	}
 	if err == nil && inst != nil && inst.lifecycleType == "spot" {
 		writeText(w, "spot")
@@ -305,8 +307,8 @@ func (s *IMDSServiceImpl) serveInstanceLifecycle(w http.ResponseWriter, eni *eni
 
 // serveInstanceField resolves the instance record and writes one of its
 // string fields, 404ing when the instance is no longer visible.
-func (s *IMDSServiceImpl) serveInstanceField(w http.ResponseWriter, eni *eniFacts, field func(*instanceFacts) string) {
-	inst := s.instanceFor(w, eni)
+func (s *IMDSServiceImpl) serveInstanceField(ctx context.Context, w http.ResponseWriter, eni *eniFacts, field func(*instanceFacts) string) {
+	inst := s.instanceFor(ctx, w, eni)
 	if inst == nil {
 		return
 	}
@@ -337,8 +339,8 @@ type instanceIdentityDocument struct {
 // serveInstanceIdentityDocument writes the unsigned instance-identity document.
 // The signed forms (pkcs7/rsa2048/signature) need a per-cluster signing key and
 // are deferred. 404s when the instance is no longer visible.
-func (s *IMDSServiceImpl) serveInstanceIdentityDocument(w http.ResponseWriter, eni *eniFacts) {
-	inst := s.instanceFor(w, eni)
+func (s *IMDSServiceImpl) serveInstanceIdentityDocument(ctx context.Context, w http.ResponseWriter, eni *eniFacts) {
+	inst := s.instanceFor(ctx, w, eni)
 	if inst == nil {
 		return
 	}
@@ -358,8 +360,8 @@ func (s *IMDSServiceImpl) serveInstanceIdentityDocument(w http.ResponseWriter, e
 }
 
 // serveUserData writes the instance's user-data, or 404 if absent.
-func (s *IMDSServiceImpl) serveUserData(w http.ResponseWriter, eni *eniFacts) {
-	inst := s.instanceFor(w, eni)
+func (s *IMDSServiceImpl) serveUserData(ctx context.Context, w http.ResponseWriter, eni *eniFacts) {
+	inst := s.instanceFor(ctx, w, eni)
 	if inst == nil {
 		return
 	}
@@ -372,8 +374,8 @@ func (s *IMDSServiceImpl) serveUserData(w http.ResponseWriter, eni *eniFacts) {
 }
 
 // serveIAMInfo writes the instance profile ARN and ID, or 404 if none is attached.
-func (s *IMDSServiceImpl) serveIAMInfo(w http.ResponseWriter, eni *eniFacts) {
-	profile, err := s.profileFor(eni)
+func (s *IMDSServiceImpl) serveIAMInfo(ctx context.Context, w http.ResponseWriter, eni *eniFacts) {
+	profile, err := s.profileFor(ctx, eni)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -390,8 +392,8 @@ func (s *IMDSServiceImpl) serveIAMInfo(w http.ResponseWriter, eni *eniFacts) {
 
 // serveSecurityCredentialsList writes the role name(s) under the profile.
 // No profile/role returns an empty 200; a backend failure returns 500.
-func (s *IMDSServiceImpl) serveSecurityCredentialsList(w http.ResponseWriter, eni *eniFacts) {
-	profile, err := s.profileFor(eni)
+func (s *IMDSServiceImpl) serveSecurityCredentialsList(ctx context.Context, w http.ResponseWriter, eni *eniFacts) {
+	profile, err := s.profileFor(ctx, eni)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -405,8 +407,8 @@ func (s *IMDSServiceImpl) serveSecurityCredentialsList(w http.ResponseWriter, en
 
 // serveRoleCredentials mints or returns cached credentials for the named role.
 // A name mismatch is 404; a backend failure resolving the profile is 500.
-func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFacts, roleParam string) {
-	profile, err := s.profileFor(eni)
+func (s *IMDSServiceImpl) serveRoleCredentials(ctx context.Context, w http.ResponseWriter, eni *eniFacts, roleParam string) {
+	profile, err := s.profileFor(ctx, eni)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -416,17 +418,17 @@ func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFa
 		return
 	}
 
-	role, err := s.iam.GetRole(eni.iamAccountID(), &iam.GetRoleInput{RoleName: aws.String(profile.RoleName)})
+	role, err := s.iam.GetRole(ctx, eni.iamAccountID(), &iam.GetRoleInput{RoleName: aws.String(profile.RoleName)})
 	if err != nil || role == nil || role.Role == nil || role.Role.Arn == nil {
-		slog.Error("IMDS: resolve role ARN failed", "account_id", eni.iamAccountID(), "role", profile.RoleName, "err", err)
+		slog.ErrorContext(ctx, "IMDS: resolve role ARN failed", "account_id", eni.iamAccountID(), "role", profile.RoleName, "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	body, err := s.creds.get(eni, profile.RoleName, *role.Role.Arn, s.now())
+	body, err := s.creds.get(ctx, eni, profile.RoleName, *role.Role.Arn, s.now())
 	if err != nil {
 		// Mirror the AWS Code:"Failed" JSON body so SDKs report a recognisable error.
-		slog.Warn("IMDS: AssumeRoleForInstance failed", "account_id", eni.iamAccountID(), "role", profile.RoleName, "instance_id", eni.instanceID, "err", err)
+		slog.WarnContext(ctx, "IMDS: AssumeRoleForInstance failed", "account_id", eni.iamAccountID(), "role", profile.RoleName, "instance_id", eni.instanceID, "err", err)
 		writeJSON(w, map[string]string{
 			"Code":        "Failed",
 			"LastUpdated": s.now().UTC().Format(time.RFC3339),
@@ -441,8 +443,8 @@ func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFa
 
 // servePublicKeys serves the /public-keys subtree (index always 0).
 // A deleted key is 404; any other backend fault is 500 to avoid cloud-init booting keyless.
-func (s *IMDSServiceImpl) servePublicKeys(w http.ResponseWriter, eni *eniFacts, sub string) {
-	inst := s.instanceFor(w, eni)
+func (s *IMDSServiceImpl) servePublicKeys(ctx context.Context, w http.ResponseWriter, eni *eniFacts, sub string) {
+	inst := s.instanceFor(ctx, w, eni)
 	if inst == nil {
 		return
 	}
@@ -457,17 +459,17 @@ func (s *IMDSServiceImpl) servePublicKeys(w http.ResponseWriter, eni *eniFacts, 
 	case "0", "0/":
 		writeText(w, "openssh-key")
 	case "0/openssh-key":
-		material, err := s.pubKeys.GetPublicKey(eni.iamAccountID(), inst.keyName)
+		material, err := s.pubKeys.GetPublicKey(ctx, eni.iamAccountID(), inst.keyName)
 		if err != nil {
 			if err.Error() == awserrors.ErrorInvalidKeyPairNotFound {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			slog.Error("IMDS: public key material fetch failed", "account_id", eni.iamAccountID(), "key_name", inst.keyName, "instance_id", eni.instanceID, "err", err)
+			slog.ErrorContext(ctx, "IMDS: public key material fetch failed", "account_id", eni.iamAccountID(), "key_name", inst.keyName, "instance_id", eni.instanceID, "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		slog.Info("IMDS: served SSH public key", "key_name", inst.keyName, "instance_id", eni.instanceID, "private_ip", eni.privateIP)
+		slog.InfoContext(ctx, "IMDS: served SSH public key", "key_name", inst.keyName, "instance_id", eni.instanceID, "private_ip", eni.privateIP)
 		writeText(w, material+"\n")
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -478,7 +480,7 @@ func (s *IMDSServiceImpl) servePublicKeys(w http.ResponseWriter, eni *eniFacts, 
 // /network/interfaces/macs/. sub is the path after the macs/ prefix. An empty sub
 // is the macs/ directory listing; a MAC that is not the caller's is 404, since the
 // per-tap responder only ever resolves its own ENI (single-NIC; multi-ENI deferred).
-func (s *IMDSServiceImpl) serveNetworkInterface(w http.ResponseWriter, eni *eniFacts, sub string) {
+func (s *IMDSServiceImpl) serveNetworkInterface(ctx context.Context, w http.ResponseWriter, eni *eniFacts, sub string) {
 	if sub == "" {
 		writeText(w, eni.mac+"/")
 		return
@@ -490,9 +492,9 @@ func (s *IMDSServiceImpl) serveNetworkInterface(w http.ResponseWriter, eni *eniF
 	}
 	switch key {
 	case "": // "<mac>" or "<mac>/" — the per-interface key listing
-		keys, err := s.macKeys(eni)
+		keys, err := s.macKeys(ctx, eni)
 		if err != nil {
-			slog.Error("IMDS: network-interface listing failed", "account_id", eni.accountID, "err", err)
+			slog.ErrorContext(ctx, "IMDS: network-interface listing failed", "account_id", eni.accountID, "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -516,11 +518,11 @@ func (s *IMDSServiceImpl) serveNetworkInterface(w http.ResponseWriter, eni *eniF
 	case "security-group-ids":
 		writeText(w, strings.Join(eni.securityGroupIDs, "\n"))
 	case "security-groups":
-		writeText(w, strings.Join(s.resolver.resolveSGNames(eni.accountID, eni.securityGroupIDs), "\n"))
+		writeText(w, strings.Join(s.resolver.resolveSGNames(ctx, eni.accountID, eni.securityGroupIDs), "\n"))
 	case "subnet-ipv4-cidr-block":
-		s.serveCIDR(w, eni.accountID, eni.subnetID, s.resolver.resolveSubnetCIDR)
+		s.serveCIDR(ctx, w, eni.accountID, eni.subnetID, s.resolver.resolveSubnetCIDR)
 	case "vpc-ipv4-cidr-block", "vpc-ipv4-cidr-blocks":
-		s.serveCIDR(w, eni.accountID, eni.vpcID, s.resolver.resolveVPCCIDR)
+		s.serveCIDR(ctx, w, eni.accountID, eni.vpcID, s.resolver.resolveVPCCIDR)
 	case "public-ipv4s", "public-hostname":
 		if eni.publicIP == "" {
 			w.WriteHeader(http.StatusNotFound)
@@ -536,20 +538,20 @@ func (s *IMDSServiceImpl) serveNetworkInterface(w http.ResponseWriter, eni *eniF
 // recursive crawl never lists a key that 404s: CIDR keys appear only when the CIDR
 // resolves, public keys only with a public IP. A resolver fault is propagated so the
 // listing 500s like the leaf, never silently dropping a key on a transient KV blip.
-func (s *IMDSServiceImpl) macKeys(eni *eniFacts) ([]string, error) {
+func (s *IMDSServiceImpl) macKeys(ctx context.Context, eni *eniFacts) ([]string, error) {
 	keys := []string{
 		"device-number", "interface-id", "local-hostname", "local-ipv4s",
 		"mac", "owner-id", "security-group-ids", "security-groups",
 		"subnet-id", "vpc-id",
 	}
-	subnetCIDR, err := s.resolver.resolveSubnetCIDR(eni.accountID, eni.subnetID)
+	subnetCIDR, err := s.resolver.resolveSubnetCIDR(ctx, eni.accountID, eni.subnetID)
 	if err != nil {
 		return nil, err
 	}
 	if subnetCIDR != "" {
 		keys = append(keys, "subnet-ipv4-cidr-block")
 	}
-	vpcCIDR, err := s.resolver.resolveVPCCIDR(eni.accountID, eni.vpcID)
+	vpcCIDR, err := s.resolver.resolveVPCCIDR(ctx, eni.accountID, eni.vpcID)
 	if err != nil {
 		return nil, err
 	}
@@ -565,10 +567,10 @@ func (s *IMDSServiceImpl) macKeys(eni *eniFacts) ([]string, error) {
 
 // serveCIDR resolves and writes a subnet/VPC CIDR: 404 on miss, 500 on a backend
 // fault, so a guest never renders network config from an empty CIDR.
-func (s *IMDSServiceImpl) serveCIDR(w http.ResponseWriter, accountID, id string, resolve func(string, string) (string, error)) {
-	cidr, err := resolve(accountID, id)
+func (s *IMDSServiceImpl) serveCIDR(ctx context.Context, w http.ResponseWriter, accountID, id string, resolve func(context.Context, string, string) (string, error)) {
+	cidr, err := resolve(ctx, accountID, id)
 	if err != nil {
-		slog.Error("IMDS: network-interface CIDR resolution failed", "account_id", accountID, "id", id, "err", err)
+		slog.ErrorContext(ctx, "IMDS: network-interface CIDR resolution failed", "account_id", accountID, "id", id, "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -581,10 +583,10 @@ func (s *IMDSServiceImpl) serveCIDR(w http.ResponseWriter, accountID, id string,
 
 // instanceFor resolves the instance record for an ENI, writing the appropriate
 // HTTP error and returning nil on miss/failure so callers can early-return.
-func (s *IMDSServiceImpl) instanceFor(w http.ResponseWriter, eni *eniFacts) *instanceFacts {
-	inst, err := s.resolver.resolveInstance(eni)
+func (s *IMDSServiceImpl) instanceFor(ctx context.Context, w http.ResponseWriter, eni *eniFacts) *instanceFacts {
+	inst, err := s.resolver.resolveInstance(ctx, eni)
 	if err != nil {
-		slog.Error("IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
+		slog.ErrorContext(ctx, "IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return nil
 	}
@@ -597,21 +599,21 @@ func (s *IMDSServiceImpl) instanceFor(w http.ResponseWriter, eni *eniFacts) *ins
 
 // profileFor resolves the IAM instance profile for an ENI.
 // Returns (nil, nil) when absent, (nil, err) on backend failure — never collapses errors to absent.
-func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
-	inst, err := s.resolver.resolveInstance(eni)
+func (s *IMDSServiceImpl) profileFor(ctx context.Context, eni *eniFacts) (*resolvedProfile, error) {
+	inst, err := s.resolver.resolveInstance(ctx, eni)
 	if err != nil {
-		slog.Error("IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
+		slog.ErrorContext(ctx, "IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
 		return nil, err
 	}
 	if inst == nil || inst.iamInstanceProfileArn == "" {
 		return nil, nil
 	}
-	profile, err := s.iam.ResolveInstanceProfile(eni.iamAccountID(), inst.iamInstanceProfileArn)
+	profile, err := s.iam.ResolveInstanceProfile(ctx, eni.iamAccountID(), inst.iamInstanceProfileArn)
 	if err != nil {
 		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
 			return nil, nil // profile deleted; treat as no role
 		}
-		slog.Error("IMDS: resolve instance profile failed", "account_id", eni.iamAccountID(), "arn", inst.iamInstanceProfileArn, "err", err)
+		slog.ErrorContext(ctx, "IMDS: resolve instance profile failed", "account_id", eni.iamAccountID(), "arn", inst.iamInstanceProfileArn, "err", err)
 		return nil, err
 	}
 	if profile == nil {

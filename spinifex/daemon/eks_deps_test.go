@@ -84,3 +84,74 @@ func TestResolveGatewayHost(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveSystemPredastoreURL covers the mgmt-bridge-present,
+// mgmt-bridge-absent, and no-config branches: a guest system VM (the K3s
+// server) can only reach predastore via the mgmt bridge, so the local
+// loopback-rewritten Predastore.Host must never leak into the URL handed to
+// a guest.
+func TestResolveSystemPredastoreURL(t *testing.T) {
+	tests := []struct {
+		name           string
+		predastoreHost string
+		mgmtBridge     string
+		want           string
+	}{
+		{
+			name:           "mgmt_bridge_present_uses_bridge_ip_and_configured_port",
+			predastoreHost: "127.0.0.1:9443",
+			mgmtBridge:     "10.15.8.1",
+			want:           "https://10.15.8.1:9443",
+		},
+		{
+			name:           "mgmt_bridge_present_defaults_port_when_host_has_none",
+			predastoreHost: "predastore-host-no-port",
+			mgmtBridge:     "10.15.8.1",
+			want:           "https://10.15.8.1:8443",
+		},
+		{
+			name:           "no_mgmt_bridge_falls_back_to_configured_host",
+			predastoreHost: "predastore.internal:8443",
+			want:           "https://predastore.internal:8443",
+		},
+		{
+			name: "no_mgmt_bridge_no_host_returns_empty",
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Daemon{
+				mgmtBridgeIP: tc.mgmtBridge,
+				config: &config.Config{
+					Predastore: config.PredastoreConfig{Host: tc.predastoreHost},
+				},
+			}
+			assert.Equal(t, tc.want, d.resolveSystemPredastoreURL())
+		})
+	}
+}
+
+// TestBuildEKSServiceDeps pins that the mgmt-bridge-derived predastore URL and
+// a non-nil snapshot object store actually reach EKSServiceDeps — RestoreSnapshot
+// silently can't resolve "latest snapshot" without SnapshotStore, and CP launch
+// silently can't write etcd-snapshot.env without SystemPredastoreURL.
+func TestBuildEKSServiceDeps(t *testing.T) {
+	d := &Daemon{
+		mgmtBridgeIP: "10.15.8.1",
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{
+				Host:      "127.0.0.1:8443",
+				AccessKey: "AKIAPREDASTORE",
+				SecretKey: "pred-s3cr3t",
+				Region:    "us-east-1",
+			},
+		},
+	}
+
+	deps := d.buildEKSServiceDeps()
+
+	assert.Equal(t, "https://10.15.8.1:8443", deps.SystemPredastoreURL)
+	assert.NotNil(t, deps.SnapshotStore)
+}

@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"encoding/xml"
 	"sort"
 	"strings"
@@ -35,7 +36,7 @@ func setupTestService(t *testing.T) *ELBv2ServiceImpl {
 func TestCreateLoadBalancer(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("my-alb"),
 		Subnets:        []*string{aws.String("subnet-aaa")},
 		SecurityGroups: []*string{aws.String("sg-111")},
@@ -55,7 +56,7 @@ func TestCreateLoadBalancer(t *testing.T) {
 func TestCreateLoadBalancer_InternalScheme(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:   aws.String("internal-alb"),
 		Scheme: aws.String("internal"),
 	}, testAccountID)
@@ -67,7 +68,7 @@ func TestCreateLoadBalancer_InternalScheme(t *testing.T) {
 func TestCreateLoadBalancer_InvalidScheme(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:   aws.String("bad-scheme"),
 		Scheme: aws.String("banana"),
 	}, testAccountID)
@@ -79,12 +80,12 @@ func TestCreateLoadBalancer_InvalidScheme(t *testing.T) {
 func TestCreateLoadBalancer_DuplicateName(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("dup-alb"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("dup-alb"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -94,14 +95,14 @@ func TestCreateLoadBalancer_DuplicateName(t *testing.T) {
 func TestCreateLoadBalancer_MissingName(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{}, testAccountID)
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{}, testAccountID)
 	assert.Error(t, err)
 }
 
 func TestCreateLoadBalancer_WithTags(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("tagged-alb"),
 		Tags: []*elbv2.Tag{
 			{Key: aws.String("Env"), Value: aws.String("test")},
@@ -110,7 +111,7 @@ func TestCreateLoadBalancer_WithTags(t *testing.T) {
 
 	require.NoError(t, err)
 	// Tags are stored internally, verify via describe
-	desc, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+	desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
 		Names: []*string{aws.String("tagged-alb")},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -121,7 +122,7 @@ func TestCreateLoadBalancer_WithTags(t *testing.T) {
 func TestCreateLoadBalancer_NetworkType(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("my-nlb"),
 		Type: aws.String("network"),
 	}, testAccountID)
@@ -137,7 +138,7 @@ func TestCreateLoadBalancer_NetworkType(t *testing.T) {
 func TestCreateLoadBalancer_NetworkType_AcceptsSecurityGroups(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("nlb-with-sg"),
 		Type:           aws.String("network"),
 		SecurityGroups: []*string{aws.String("sg-111"), aws.String("sg-222")},
@@ -153,7 +154,7 @@ func TestCreateLoadBalancer_NetworkType_AcceptsSecurityGroups(t *testing.T) {
 func TestCreateLoadBalancer_NetworkType_RejectsTooManySecurityGroups(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-too-many-sg"),
 		Type: aws.String("network"),
 		SecurityGroups: []*string{
@@ -170,7 +171,7 @@ func TestCreateLoadBalancer_NLBCrossZoneAttribute(t *testing.T) {
 	svc := setupTestService(t)
 
 	// NLB: no stored attributes, Describe should return default cross-zone=false.
-	nlbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	nlbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-cz"),
 		Type: aws.String("network"),
 	}, testAccountID)
@@ -179,7 +180,7 @@ func TestCreateLoadBalancer_NLBCrossZoneAttribute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, nlbRec.Attributes, "NLB should store nil attributes — defaults come from the handler")
 
-	nlbDesc, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
+	nlbDesc, err := svc.DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{
 		LoadBalancerArn: nlbOut.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -194,7 +195,7 @@ func TestCreateLoadBalancer_ALBCrossZoneAttribute(t *testing.T) {
 	svc := setupTestService(t)
 
 	// ALB: no stored attributes either, Describe should return default cross-zone=true.
-	albOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	albOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("alb-cz"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -202,7 +203,7 @@ func TestCreateLoadBalancer_ALBCrossZoneAttribute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, albRec.Attributes, "ALB should no longer seed attributes at create time")
 
-	albDesc, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
+	albDesc, err := svc.DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{
 		LoadBalancerArn: albOut.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -216,7 +217,7 @@ func TestCreateLoadBalancer_ALBCrossZoneAttribute(t *testing.T) {
 func TestCreateLoadBalancer_InvalidType(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("bad-type"),
 		Type: aws.String("gateway"),
 	}, testAccountID)
@@ -228,7 +229,7 @@ func TestCreateLoadBalancer_InvalidType(t *testing.T) {
 func TestCreateLoadBalancer_ALB_AllowsSecurityGroups(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("alb-with-sg"),
 		SecurityGroups: []*string{aws.String("sg-111")},
 	}, testAccountID)
@@ -241,18 +242,18 @@ func TestCreateLoadBalancer_ALB_AllowsSecurityGroups(t *testing.T) {
 func TestDeleteLoadBalancer(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("delete-me"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
 		LoadBalancerArn: out.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify it's gone
-	desc, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{}, testAccountID)
+	desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, desc.LoadBalancers)
 }
@@ -260,7 +261,7 @@ func TestDeleteLoadBalancer(t *testing.T) {
 func TestDeleteLoadBalancer_IdempotentOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+	out, err := svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
 		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/nope/xyz"),
 	}, testAccountID)
 
@@ -273,25 +274,25 @@ func TestDeleteLoadBalancer_CleansUpListeners(t *testing.T) {
 	svc := setupTestService(t)
 
 	// Create LB, TG, and listener
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-cleanup")}, testAccountID)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("lb-cleanup")}, testAccountID)
 	require.NoError(t, err)
 	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-cleanup")}, testAccountID)
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-cleanup")}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err = svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Delete LB should clean up listener
-	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
 	require.NoError(t, err)
 
 	// Listener should be gone
-	lstDesc, err := svc.DescribeListeners(&elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
+	lstDesc, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, lstDesc.Listeners)
 }
@@ -299,12 +300,12 @@ func TestDeleteLoadBalancer_CleansUpListeners(t *testing.T) {
 func TestDescribeLoadBalancers_FilterByName(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("alb-one")}, testAccountID)
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("alb-one")}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("alb-two")}, testAccountID)
+	_, err = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("alb-two")}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+	desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
 		Names: []*string{aws.String("alb-one")},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -315,10 +316,10 @@ func TestDescribeLoadBalancers_FilterByName(t *testing.T) {
 func TestDescribeLoadBalancers_AccountIsolation(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("acct-alb")}, testAccountID)
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("acct-alb")}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{}, "999999999999")
+	desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, "999999999999")
 	require.NoError(t, err)
 	assert.Empty(t, desc.LoadBalancers)
 }
@@ -328,7 +329,7 @@ func TestDescribeLoadBalancers_AccountIsolation(t *testing.T) {
 func TestCreateTargetGroup(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("my-tg"),
 		Protocol: aws.String("HTTP"),
 		Port:     aws.Int64(8080),
@@ -349,7 +350,7 @@ func TestCreateTargetGroup(t *testing.T) {
 func TestCreateTargetGroup_CustomHealthCheck(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:                       aws.String("custom-hc"),
 		HealthCheckEnabled:         aws.Bool(false),
 		HealthCheckPath:            aws.String("/healthz"),
@@ -370,7 +371,7 @@ func TestCreateTargetGroup_CustomHealthCheck(t *testing.T) {
 func TestCreateTargetGroup_TCPProtocol(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tcp-tg"),
 		Protocol: aws.String("TCP"),
 		Port:     aws.Int64(5432),
@@ -397,7 +398,7 @@ func TestCreateTargetGroup_NLBProtocols(t *testing.T) {
 		t.Run(proto, func(t *testing.T) {
 			svc := setupTestService(t)
 
-			out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+			out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 				Name:     aws.String("tg-" + proto),
 				Protocol: aws.String(proto),
 				Port:     aws.Int64(8080),
@@ -415,7 +416,7 @@ func TestCreateTargetGroup_NLBProtocols(t *testing.T) {
 func TestCreateTargetGroup_InvalidProtocol(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("bad-proto-tg"),
 		Protocol: aws.String("SCTP"),
 	}, testAccountID)
@@ -427,7 +428,7 @@ func TestCreateTargetGroup_InvalidProtocol(t *testing.T) {
 func TestCreateTargetGroup_TCPWithCustomHealthCheck(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:                       aws.String("tcp-custom-hc"),
 		Protocol:                   aws.String("TCP"),
 		Port:                       aws.Int64(3306),
@@ -470,7 +471,7 @@ func TestCreateTargetGroup_RejectsHealthCheckPathInjection(t *testing.T) {
 
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+			_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 				Name:            aws.String("inj-" + name),
 				HealthCheckPath: aws.String(payload),
 			}, testAccountID)
@@ -497,7 +498,7 @@ func TestCreateTargetGroup_RejectsMatcherInjection(t *testing.T) {
 
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+			_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 				Name:    aws.String("matcher-" + name),
 				Matcher: &elbv2.Matcher{HttpCode: aws.String(payload)},
 			}, testAccountID)
@@ -510,7 +511,7 @@ func TestCreateTargetGroup_RejectsMatcherInjection(t *testing.T) {
 func TestCreateTargetGroup_AcceptsValidHealthCheckInputs(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:            aws.String("ok-tg"),
 		HealthCheckPath: aws.String("/healthz?probe=lb#frag"),
 		Matcher:         &elbv2.Matcher{HttpCode: aws.String("200-299,301")},
@@ -526,7 +527,7 @@ func TestCreateTargetGroup_AcceptsHealthCheckBoundaryLengths(t *testing.T) {
 	maxPath := "/" + strings.Repeat("a", maxHealthCheckPathLen-1)
 	maxMatcher := "2" + strings.Repeat("0", maxHealthCheckMatcherLen-1)
 
-	out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:            aws.String("boundary-tg"),
 		HealthCheckPath: aws.String(maxPath),
 		Matcher:         &elbv2.Matcher{HttpCode: aws.String(maxMatcher)},
@@ -539,13 +540,13 @@ func TestCreateTargetGroup_AcceptsHealthCheckBoundaryLengths(t *testing.T) {
 func TestCreateTargetGroup_DuplicateName(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:  aws.String("dup-tg"),
 		VpcId: aws.String("vpc-1"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	_, err = svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:  aws.String("dup-tg"),
 		VpcId: aws.String("vpc-1"),
 	}, testAccountID)
@@ -556,7 +557,7 @@ func TestCreateTargetGroup_DuplicateName(t *testing.T) {
 func TestModifyTargetGroup(t *testing.T) {
 	svc := setupTestService(t)
 
-	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("modify-tg"),
 		Protocol: aws.String("HTTP"),
 		Port:     aws.Int64(8080),
@@ -565,7 +566,7 @@ func TestModifyTargetGroup(t *testing.T) {
 	require.NoError(t, err)
 	arn := created.TargetGroups[0].TargetGroupArn
 
-	out, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+	out, err := svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{
 		TargetGroupArn:             arn,
 		HealthCheckEnabled:         aws.Bool(true),
 		HealthCheckPath:            aws.String("/healthz"),
@@ -582,7 +583,7 @@ func TestModifyTargetGroup(t *testing.T) {
 	assert.Equal(t, int64(2), *tg.HealthyThresholdCount)
 	assert.Equal(t, "200-299", *tg.Matcher.HttpCode)
 
-	described, err := svc.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{
+	described, err := svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{
 		TargetGroupArns: []*string{arn},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -593,7 +594,7 @@ func TestModifyTargetGroup(t *testing.T) {
 func TestModifyTargetGroup_NotFound(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+	_, err := svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{
 		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:ap-southeast-2:000000000001:targetgroup/missing/tg-doesnotexist"),
 	}, testAccountID)
 	require.Error(t, err)
@@ -603,7 +604,7 @@ func TestModifyTargetGroup_NotFound(t *testing.T) {
 func TestModifyTargetGroup_MissingArn(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{}, testAccountID)
+	_, err := svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -611,7 +612,7 @@ func TestModifyTargetGroup_MissingArn(t *testing.T) {
 func TestModifyTargetGroup_AllHealthCheckFields(t *testing.T) {
 	svc := setupTestService(t)
 
-	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("modify-all-tg"),
 		Protocol: aws.String("HTTP"),
 		Port:     aws.Int64(8080),
@@ -620,7 +621,7 @@ func TestModifyTargetGroup_AllHealthCheckFields(t *testing.T) {
 	require.NoError(t, err)
 	arn := created.TargetGroups[0].TargetGroupArn
 
-	out, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+	out, err := svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{
 		TargetGroupArn:             arn,
 		HealthCheckEnabled:         aws.Bool(false),
 		HealthCheckProtocol:        aws.String("HTTPS"),
@@ -648,12 +649,12 @@ func TestModifyTargetGroup_AllHealthCheckFields(t *testing.T) {
 func TestModifyTargetGroup_InvalidPath(t *testing.T) {
 	svc := setupTestService(t)
 
-	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("modify-bad-path"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+	_, err = svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{
 		TargetGroupArn:  created.TargetGroups[0].TargetGroupArn,
 		HealthCheckPath: aws.String(""),
 	}, testAccountID)
@@ -663,12 +664,12 @@ func TestModifyTargetGroup_InvalidPath(t *testing.T) {
 func TestModifyTargetGroup_InvalidMatcher(t *testing.T) {
 	svc := setupTestService(t)
 
-	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("modify-bad-matcher"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+	_, err = svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{
 		TargetGroupArn: created.TargetGroups[0].TargetGroupArn,
 		Matcher:        &elbv2.Matcher{HttpCode: aws.String("")},
 	}, testAccountID)
@@ -678,12 +679,12 @@ func TestModifyTargetGroup_InvalidMatcher(t *testing.T) {
 func TestModifyTargetGroup_WrongAccount(t *testing.T) {
 	svc := setupTestService(t)
 
-	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("modify-wrong-acct"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+	_, err = svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{
 		TargetGroupArn:     created.TargetGroups[0].TargetGroupArn,
 		HealthCheckEnabled: aws.Bool(false),
 	}, "999999999999")
@@ -694,10 +695,10 @@ func TestModifyTargetGroup_WrongAccount(t *testing.T) {
 func TestDeleteTargetGroup(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("del-tg")}, testAccountID)
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("del-tg")}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{
 		TargetGroupArn: out.TargetGroups[0].TargetGroupArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -706,19 +707,19 @@ func TestDeleteTargetGroup(t *testing.T) {
 func TestDeleteTargetGroup_InUse(t *testing.T) {
 	svc := setupTestService(t)
 
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("inuse-tg")}, testAccountID)
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("inuse-tg")}, testAccountID)
 	require.NoError(t, err)
 
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("inuse-lb")}, testAccountID)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("inuse-lb")}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err = svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{
 		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
 	}, testAccountID)
 	assert.Error(t, err)
@@ -728,7 +729,7 @@ func TestDeleteTargetGroup_InUse(t *testing.T) {
 func TestDeleteTargetGroup_IdempotentOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+	out, err := svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{
 		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/nope/xyz"),
 	}, testAccountID)
 	// AWS ELBv2 delete is idempotent: absent TG -> success, not NotFound.
@@ -739,16 +740,16 @@ func TestDeleteTargetGroup_IdempotentOnAbsent(t *testing.T) {
 func TestDescribeTargetGroups_FilterByLBArn(t *testing.T) {
 	svc := setupTestService(t)
 
-	tg1, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-linked")}, testAccountID)
-	_, _ = svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-unlinked")}, testAccountID)
+	tg1, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-linked")}, testAccountID)
+	_, _ = svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-unlinked")}, testAccountID)
 
-	lb, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-filter")}, testAccountID)
-	_, _ = svc.CreateListener(&elbv2.CreateListenerInput{
+	lb, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("lb-filter")}, testAccountID)
+	_, _ = svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lb.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tg1.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
-	desc, err := svc.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{
+	desc, err := svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{
 		LoadBalancerArn: lb.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -761,13 +762,13 @@ func TestDescribeTargetGroups_FilterByLBArn(t *testing.T) {
 func TestRegisterTargets(t *testing.T) {
 	svc := setupTestService(t)
 
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("reg-tg"),
 		Port: aws.Int64(80),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+	_, err = svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
 		Targets: []*elbv2.TargetDescription{
 			{Id: aws.String("i-aaa111")},
@@ -777,7 +778,7 @@ func TestRegisterTargets(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify via DescribeTargetHealth
-	health, err := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+	health, err := svc.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{
 		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -797,7 +798,7 @@ func TestRegisterTargets(t *testing.T) {
 func TestRegisterTargets_IPType(t *testing.T) {
 	svc := setupTestService(t)
 
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:       aws.String("ip-tg"),
 		Port:       aws.Int64(80),
 		TargetType: aws.String("ip"),
@@ -806,7 +807,7 @@ func TestRegisterTargets_IPType(t *testing.T) {
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 	assert.Equal(t, "ip", *tgOut.TargetGroups[0].TargetType)
 
-	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+	_, err = svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: tgArn,
 		Targets: []*elbv2.TargetDescription{
 			{Id: aws.String("10.0.1.20")},
@@ -827,7 +828,7 @@ func TestRegisterTargets_IPType(t *testing.T) {
 	assert.Equal(t, "10.0.1.20", ipByID["10.0.1.20"])
 	assert.Equal(t, "10.0.1.21", ipByID["10.0.1.21"])
 
-	health, err := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+	health, err := svc.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{
 		TargetGroupArn: tgArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -836,13 +837,13 @@ func TestRegisterTargets_IPType(t *testing.T) {
 
 func TestRegisterTargets_IPType_RejectsNonIP(t *testing.T) {
 	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:       aws.String("ip-tg-bad"),
 		TargetType: aws.String("ip"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+	_, err = svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-notanip")}},
 	}, testAccountID)
@@ -851,12 +852,12 @@ func TestRegisterTargets_IPType_RejectsNonIP(t *testing.T) {
 
 func TestRegisterTargets_InstanceType_RejectsIP(t *testing.T) {
 	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("inst-tg-badid"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+	_, err = svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String("10.0.0.5")}},
 	}, testAccountID)
@@ -865,7 +866,7 @@ func TestRegisterTargets_InstanceType_RejectsIP(t *testing.T) {
 
 func TestCreateTargetGroup_RejectsUnsupportedTargetType(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:       aws.String("lambda-tg"),
 		TargetType: aws.String("lambda"),
 	}, testAccountID)
@@ -874,7 +875,7 @@ func TestCreateTargetGroup_RejectsUnsupportedTargetType(t *testing.T) {
 
 func TestCreateTargetGroup_DefaultsToInstanceType(t *testing.T) {
 	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("default-tt"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -884,27 +885,27 @@ func TestCreateTargetGroup_DefaultsToInstanceType(t *testing.T) {
 func TestRegisterTargets_Idempotent(t *testing.T) {
 	svc := setupTestService(t)
 
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("idem-tg")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("idem-tg")}, testAccountID)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
 	targets := []*elbv2.TargetDescription{{Id: aws.String("i-same")}}
 
-	_, err := svc.RegisterTargets(&elbv2.RegisterTargetsInput{TargetGroupArn: tgArn, Targets: targets}, testAccountID)
+	_, err := svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{TargetGroupArn: tgArn, Targets: targets}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{TargetGroupArn: tgArn, Targets: targets}, testAccountID)
+	_, err = svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{TargetGroupArn: tgArn, Targets: targets}, testAccountID)
 	require.NoError(t, err)
 
-	health, _ := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
+	health, _ := svc.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
 	assert.Len(t, health.TargetHealthDescriptions, 1)
 }
 
 func TestDeregisterTargets(t *testing.T) {
 	svc := setupTestService(t)
 
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("dereg-tg"), Port: aws.Int64(80)}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("dereg-tg"), Port: aws.Int64(80)}, testAccountID)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
-	svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+	svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: tgArn,
 		Targets: []*elbv2.TargetDescription{
 			{Id: aws.String("i-keep")},
@@ -912,13 +913,13 @@ func TestDeregisterTargets(t *testing.T) {
 		},
 	}, testAccountID)
 
-	_, err := svc.DeregisterTargets(&elbv2.DeregisterTargetsInput{
+	_, err := svc.DeregisterTargets(context.Background(), &elbv2.DeregisterTargetsInput{
 		TargetGroupArn: tgArn,
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-remove")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	health, _ := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
+	health, _ := svc.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
 	require.Len(t, health.TargetHealthDescriptions, 1)
 	assert.Equal(t, "i-keep", *health.TargetHealthDescriptions[0].Target.Id)
 }
@@ -926,10 +927,10 @@ func TestDeregisterTargets(t *testing.T) {
 func TestDescribeTargetHealth_FilterByTarget(t *testing.T) {
 	svc := setupTestService(t)
 
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("filter-tg"), Port: aws.Int64(80)}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("filter-tg"), Port: aws.Int64(80)}, testAccountID)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
-	svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+	svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: tgArn,
 		Targets: []*elbv2.TargetDescription{
 			{Id: aws.String("i-one")},
@@ -937,7 +938,7 @@ func TestDescribeTargetHealth_FilterByTarget(t *testing.T) {
 		},
 	}, testAccountID)
 
-	health, err := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+	health, err := svc.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{
 		TargetGroupArn: tgArn,
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-one")}},
 	}, testAccountID)
@@ -949,7 +950,7 @@ func TestDescribeTargetHealth_FilterByTarget(t *testing.T) {
 func TestDescribeTargetHealth_TGNotFound(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+	_, err := svc.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{
 		TargetGroupArn: aws.String("arn:nonexistent"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -961,10 +962,10 @@ func TestDescribeTargetHealth_TGNotFound(t *testing.T) {
 func TestCreateListener(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lst-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("lst-tg")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("lst-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("lst-tg")}, testAccountID)
 
-	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	out, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(8080),
@@ -986,9 +987,9 @@ func TestCreateListener(t *testing.T) {
 func TestCreateListener_RedirectDefault(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("redir-lb")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("redir-lb")}, testAccountID)
 
-	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	out, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -1014,9 +1015,9 @@ func TestCreateListener_RedirectDefault(t *testing.T) {
 func TestCreateListener_RedirectFullFields(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("redirfull-lb")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("redirfull-lb")}, testAccountID)
 
-	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	out, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -1043,7 +1044,7 @@ func TestCreateListener_RedirectFullFields(t *testing.T) {
 	assert.Equal(t, "HTTP_302", *rc.StatusCode)
 
 	// Read back through Describe to exercise the stored→SDK path.
-	desc, err := svc.DescribeListeners(&elbv2.DescribeListenersInput{
+	desc, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1054,10 +1055,10 @@ func TestCreateListener_RedirectFullFields(t *testing.T) {
 func TestModifyListener_ToRedirect(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-redir-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-redir-tg")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-redir-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-redir-tg")}, testAccountID)
 
-	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -1065,7 +1066,7 @@ func TestModifyListener_ToRedirect(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		DefaultActions: []*elbv2.Action{{
 			Type:           aws.String("redirect"),
@@ -1076,7 +1077,7 @@ func TestModifyListener_ToRedirect(t *testing.T) {
 	assert.Equal(t, "redirect", *out.Listeners[0].DefaultActions[0].Type)
 
 	// A bad redirect on modify is rejected.
-	_, err = svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err = svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		DefaultActions: []*elbv2.Action{{
 			Type:           aws.String("redirect"),
@@ -1089,9 +1090,9 @@ func TestModifyListener_ToRedirect(t *testing.T) {
 func TestCreateListener_RejectsBadRedirect(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("badredir-lb")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("badredir-lb")}, testAccountID)
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -1107,19 +1108,19 @@ func TestCreateListener_RejectsBadRedirect(t *testing.T) {
 func TestCreateListener_DuplicatePort(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("dup-port-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("dup-port-tg")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("dup-port-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("dup-port-tg")}, testAccountID)
 
 	actions := []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}}
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Port:            aws.Int64(80),
 		DefaultActions:  actions,
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err = svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Port:            aws.Int64(80),
 		DefaultActions:  actions,
@@ -1131,7 +1132,7 @@ func TestCreateListener_DuplicatePort(t *testing.T) {
 func TestCreateListener_LBNotFound(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String("arn:nonexistent"),
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String("arn:tg")}},
 	}, testAccountID)
@@ -1142,22 +1143,22 @@ func TestCreateListener_LBNotFound(t *testing.T) {
 func TestDeleteListener(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("dellst-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("dellst-tg")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("dellst-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("dellst-tg")}, testAccountID)
 
-	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteListener(&elbv2.DeleteListenerInput{
+	_, err = svc.DeleteListener(context.Background(), &elbv2.DeleteListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Verify deleted
-	desc, _ := svc.DescribeListeners(&elbv2.DescribeListenersInput{
+	desc, _ := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	assert.Empty(t, desc.Listeners)
@@ -1166,7 +1167,7 @@ func TestDeleteListener(t *testing.T) {
 func TestDeleteListener_IdempotentOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.DeleteListener(&elbv2.DeleteListenerInput{
+	out, err := svc.DeleteListener(context.Background(), &elbv2.DeleteListenerInput{
 		ListenerArn: aws.String("arn:nonexistent"),
 	}, testAccountID)
 	// AWS ELBv2 delete is idempotent: absent listener -> success, not NotFound.
@@ -1177,17 +1178,17 @@ func TestDeleteListener_IdempotentOnAbsent(t *testing.T) {
 func TestModifyListener_Port(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-tg")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-tg")}, testAccountID)
 
-	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Port:            aws.Int64(80),
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		Port:        aws.Int64(8080),
 	}, testAccountID)
@@ -1198,7 +1199,7 @@ func TestModifyListener_Port(t *testing.T) {
 	require.Len(t, out.Listeners[0].DefaultActions, 1)
 	assert.Equal(t, *tgOut.TargetGroups[0].TargetGroupArn, *out.Listeners[0].DefaultActions[0].TargetGroupArn)
 
-	desc, _ := svc.DescribeListeners(&elbv2.DescribeListenersInput{
+	desc, _ := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.Len(t, desc.Listeners, 1)
@@ -1208,10 +1209,10 @@ func TestModifyListener_Port(t *testing.T) {
 func TestModifyListener_Protocol(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-proto-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-proto-tg")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-proto-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-proto-tg")}, testAccountID)
 
-	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -1219,7 +1220,7 @@ func TestModifyListener_Protocol(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn:  lstOut.Listeners[0].ListenerArn,
 		Protocol:     aws.String("HTTPS"),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
@@ -1231,17 +1232,17 @@ func TestModifyListener_Protocol(t *testing.T) {
 func TestModifyListener_DefaultActions(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-act-lb")}, testAccountID)
-	tg1, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-act-tg1")}, testAccountID)
-	tg2, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-act-tg2")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-act-lb")}, testAccountID)
+	tg1, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-act-tg1")}, testAccountID)
+	tg2, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-act-tg2")}, testAccountID)
 
-	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tg1.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		DefaultActions: []*elbv2.Action{
 			{Type: aws.String("forward"), TargetGroupArn: tg2.TargetGroups[0].TargetGroupArn},
@@ -1255,25 +1256,25 @@ func TestModifyListener_DefaultActions(t *testing.T) {
 func TestModifyListener_DuplicatePort(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-dup-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-dup-tg")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-dup-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-dup-tg")}, testAccountID)
 	actions := []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}}
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Port:            aws.Int64(80),
 		DefaultActions:  actions,
 	}, testAccountID)
 	require.NoError(t, err)
 
-	lst443, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lst443, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Port:            aws.Int64(443),
 		DefaultActions:  actions,
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err = svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lst443.Listeners[0].ListenerArn,
 		Port:        aws.Int64(80),
 	}, testAccountID)
@@ -1284,10 +1285,10 @@ func TestModifyListener_DuplicatePort(t *testing.T) {
 func TestModifyListener_SamePortNoConflict(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-same-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-same-tg")}, testAccountID)
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-same-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-same-tg")}, testAccountID)
 
-	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Port:            aws.Int64(80),
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
@@ -1295,7 +1296,7 @@ func TestModifyListener_SamePortNoConflict(t *testing.T) {
 	require.NoError(t, err)
 
 	// Setting same port should not trigger dup check against self.
-	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		Port:        aws.Int64(80),
 	}, testAccountID)
@@ -1306,7 +1307,7 @@ func TestModifyListener_SamePortNoConflict(t *testing.T) {
 func TestModifyListener_NotFound(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: aws.String("arn:nonexistent"),
 		Port:        aws.Int64(80),
 	}, testAccountID)
@@ -1317,14 +1318,14 @@ func TestModifyListener_NotFound(t *testing.T) {
 func TestModifyListener_WrongAccount(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-acct-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-acct-tg")}, testAccountID)
-	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-acct-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-acct-tg")}, testAccountID)
+	lstOut, _ := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
-	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		Port:        aws.Int64(8080),
 	}, "999999999999")
@@ -1335,14 +1336,14 @@ func TestModifyListener_WrongAccount(t *testing.T) {
 func TestModifyListener_TargetGroupNotFound(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-tgnf-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-tgnf-tg")}, testAccountID)
-	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-tgnf-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-tgnf-tg")}, testAccountID)
+	lstOut, _ := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
-	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		DefaultActions: []*elbv2.Action{
 			{Type: aws.String("forward"), TargetGroupArn: aws.String("arn:nonexistent")},
@@ -1355,16 +1356,16 @@ func TestModifyListener_TargetGroupNotFound(t *testing.T) {
 func TestModifyListener_NoOp(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-noop-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-noop-tg")}, testAccountID)
-	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-noop-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-noop-tg")}, testAccountID)
+	lstOut, _ := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Port:            aws.Int64(8080),
 		Protocol:        aws.String("HTTP"),
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
-	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1376,14 +1377,14 @@ func TestModifyListener_NoOp(t *testing.T) {
 func TestModifyListener_InvalidProtocolForLBType(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-bad-proto-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-bad-proto-tg")}, testAccountID)
-	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-bad-proto-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("mod-bad-proto-tg")}, testAccountID)
+	lstOut, _ := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
-	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		Protocol:    aws.String("TCP"),
 	}, testAccountID)
@@ -1394,7 +1395,7 @@ func TestModifyListener_InvalidProtocolForLBType(t *testing.T) {
 func TestModifyListener_NilInput(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.ModifyListener(nil, testAccountID)
+	_, err := svc.ModifyListener(context.Background(), nil, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MissingParameter")
 }
@@ -1402,13 +1403,13 @@ func TestModifyListener_NilInput(t *testing.T) {
 func TestModifyListener_EmptyArn(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: aws.String(""),
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MissingParameter")
 
-	_, err = svc.ModifyListener(&elbv2.ModifyListenerInput{}, testAccountID)
+	_, err = svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MissingParameter")
 }
@@ -1427,17 +1428,17 @@ func TestModifyListener_NLB_AcceptsAllProtocols(t *testing.T) {
 		t.Run(tc.listenerProto, func(t *testing.T) {
 			svc := setupTestService(t)
 
-			lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+			lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 				Name: aws.String("nlb-mod-" + tc.listenerProto),
 				Type: aws.String("network"),
 			}, testAccountID)
-			tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+			tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 				Name:     aws.String("tg-nlb-mod-" + tc.listenerProto),
 				Protocol: aws.String(tc.tgProto),
 				Port:     aws.Int64(8080),
 			}, testAccountID)
 
-			lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+			lstOut, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 				LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 				Protocol:        aws.String(tc.tgProto),
 				Port:            aws.Int64(8080),
@@ -1452,7 +1453,7 @@ func TestModifyListener_NLB_AcceptsAllProtocols(t *testing.T) {
 			if protocolRequiresCert(tc.listenerProto) {
 				modIn.Certificates = []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}}
 			}
-			out, err := svc.ModifyListener(modIn, testAccountID)
+			out, err := svc.ModifyListener(context.Background(), modIn, testAccountID)
 			require.NoError(t, err)
 			assert.Equal(t, tc.listenerProto, *out.Listeners[0].Protocol)
 		})
@@ -1462,23 +1463,23 @@ func TestModifyListener_NLB_AcceptsAllProtocols(t *testing.T) {
 func TestModifyListener_NLB_RejectsHTTP(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-mod-rej-http"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-nlb-rej"),
 		Protocol: aws.String("TCP"),
 		Port:     aws.Int64(8080),
 	}, testAccountID)
-	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, _ := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("TCP"),
 		Port:            aws.Int64(8080),
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
-	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		Protocol:    aws.String("HTTP"),
 	}, testAccountID)
@@ -1489,23 +1490,23 @@ func TestModifyListener_NLB_RejectsHTTP(t *testing.T) {
 func TestModifyListener_ProtocolOnlyChange_TGIncompatible(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-mod-incompat"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-udp-incompat"),
 		Protocol: aws.String("UDP"),
 		Port:     aws.Int64(8080),
 	}, testAccountID)
-	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, _ := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("UDP"),
 		Port:            aws.Int64(8080),
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
-	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		Protocol:    aws.String("TCP"),
 	}, testAccountID)
@@ -1516,29 +1517,29 @@ func TestModifyListener_ProtocolOnlyChange_TGIncompatible(t *testing.T) {
 func TestModifyListener_DefaultActions_IncompatibleProtocol(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-da-incompat"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tcpTG, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tcpTG, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-tcp-da"),
 		Protocol: aws.String("TCP"),
 		Port:     aws.Int64(8080),
 	}, testAccountID)
-	udpTG, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	udpTG, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-udp-da"),
 		Protocol: aws.String("UDP"),
 		Port:     aws.Int64(8080),
 	}, testAccountID)
 
-	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, _ := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("TCP"),
 		Port:            aws.Int64(8080),
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tcpTG.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
-	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		DefaultActions: []*elbv2.Action{
 			{Type: aws.String("forward"), TargetGroupArn: udpTG.TargetGroups[0].TargetGroupArn},
@@ -1551,16 +1552,16 @@ func TestModifyListener_DefaultActions_IncompatibleProtocol(t *testing.T) {
 func TestDescribeListeners_FilterByLBArn(t *testing.T) {
 	svc := setupTestService(t)
 
-	lb1, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("dl-lb1")}, testAccountID)
-	lb2, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("dl-lb2")}, testAccountID)
-	tg, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("dl-tg")}, testAccountID)
+	lb1, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("dl-lb1")}, testAccountID)
+	lb2, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("dl-lb2")}, testAccountID)
+	tg, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("dl-tg")}, testAccountID)
 	actions := []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tg.TargetGroups[0].TargetGroupArn}}
 
-	svc.CreateListener(&elbv2.CreateListenerInput{LoadBalancerArn: lb1.LoadBalancers[0].LoadBalancerArn, Port: aws.Int64(80), DefaultActions: actions}, testAccountID)
-	svc.CreateListener(&elbv2.CreateListenerInput{LoadBalancerArn: lb1.LoadBalancers[0].LoadBalancerArn, Port: aws.Int64(443), DefaultActions: actions}, testAccountID)
-	svc.CreateListener(&elbv2.CreateListenerInput{LoadBalancerArn: lb2.LoadBalancers[0].LoadBalancerArn, Port: aws.Int64(80), DefaultActions: actions}, testAccountID)
+	svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{LoadBalancerArn: lb1.LoadBalancers[0].LoadBalancerArn, Port: aws.Int64(80), DefaultActions: actions}, testAccountID)
+	svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{LoadBalancerArn: lb1.LoadBalancers[0].LoadBalancerArn, Port: aws.Int64(443), DefaultActions: actions}, testAccountID)
+	svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{LoadBalancerArn: lb2.LoadBalancers[0].LoadBalancerArn, Port: aws.Int64(80), DefaultActions: actions}, testAccountID)
 
-	desc, err := svc.DescribeListeners(&elbv2.DescribeListenersInput{
+	desc, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{
 		LoadBalancerArn: lb1.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1573,14 +1574,14 @@ func TestDescribeListeners_FilterByLBArn(t *testing.T) {
 func TestDescribeListeners_AccountIsolation(t *testing.T) {
 	svc := setupTestService(t)
 
-	lb, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("iso-lb")}, testAccountID)
-	tg, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("iso-tg")}, testAccountID)
-	svc.CreateListener(&elbv2.CreateListenerInput{
+	lb, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("iso-lb")}, testAccountID)
+	tg, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("iso-tg")}, testAccountID)
+	svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lb.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tg.TargetGroups[0].TargetGroupArn}},
 	}, testAccountID)
 
-	desc, err := svc.DescribeListeners(&elbv2.DescribeListenersInput{}, "999999999999")
+	desc, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{}, "999999999999")
 	require.NoError(t, err)
 	assert.Empty(t, desc.Listeners)
 }
@@ -1590,17 +1591,17 @@ func TestDescribeListeners_AccountIsolation(t *testing.T) {
 func TestCreateListener_NLB_TCPProtocol(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-tcp-lst"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tcp-tg-lst"),
 		Protocol: aws.String("TCP"),
 		Port:     aws.Int64(5432),
 	}, testAccountID)
 
-	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	out, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("TCP"),
 		Port:            aws.Int64(5432),
@@ -1622,11 +1623,11 @@ func TestCreateListener_NLB_AllProtocols(t *testing.T) {
 		t.Run(proto, func(t *testing.T) {
 			svc := setupTestService(t)
 
-			lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+			lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 				Name: aws.String("nlb-" + proto),
 				Type: aws.String("network"),
 			}, testAccountID)
-			tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+			tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 				Name:     aws.String("tg-" + proto),
 				Protocol: aws.String(proto),
 				Port:     aws.Int64(8080),
@@ -1643,7 +1644,7 @@ func TestCreateListener_NLB_AllProtocols(t *testing.T) {
 			if protocolRequiresCert(proto) {
 				createIn.Certificates = []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}}
 			}
-			out, err := svc.CreateListener(createIn, testAccountID)
+			out, err := svc.CreateListener(context.Background(), createIn, testAccountID)
 
 			require.NoError(t, err)
 			assert.Equal(t, proto, *out.Listeners[0].Protocol)
@@ -1654,15 +1655,15 @@ func TestCreateListener_NLB_AllProtocols(t *testing.T) {
 func TestCreateListener_NLB_RejectsHTTPProtocol(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-no-http"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("tg-http-nlb"),
 	}, testAccountID)
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		DefaultActions: []*elbv2.Action{
@@ -1677,15 +1678,15 @@ func TestCreateListener_NLB_RejectsHTTPProtocol(t *testing.T) {
 func TestCreateListener_NLB_RejectsHTTPSProtocol(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-no-https"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("tg-https-nlb"),
 	}, testAccountID)
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTPS"),
 		DefaultActions: []*elbv2.Action{
@@ -1700,16 +1701,16 @@ func TestCreateListener_NLB_RejectsHTTPSProtocol(t *testing.T) {
 func TestCreateListener_ALB_RejectsTCPProtocol(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("alb-no-tcp"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-tcp-alb"),
 		Protocol: aws.String("TCP"),
 		Port:     aws.Int64(8080),
 	}, testAccountID)
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("TCP"),
 		DefaultActions: []*elbv2.Action{
@@ -1724,18 +1725,18 @@ func TestCreateListener_ALB_RejectsTCPProtocol(t *testing.T) {
 func TestCreateListener_NLB_ProtocolCompatibility_TLSToTCP(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-tls-tcp"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-tcp-compat"),
 		Protocol: aws.String("TCP"),
 		Port:     aws.Int64(443),
 	}, testAccountID)
 
 	// TLS listener -> TCP target group is valid
-	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	out, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("TLS"),
 		Port:            aws.Int64(443),
@@ -1752,18 +1753,18 @@ func TestCreateListener_NLB_ProtocolCompatibility_TLSToTCP(t *testing.T) {
 func TestCreateListener_NLB_ProtocolIncompatible_TCPToUDP(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-tcp-udp"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-udp-incompat"),
 		Protocol: aws.String("UDP"),
 		Port:     aws.Int64(53),
 	}, testAccountID)
 
 	// TCP listener -> UDP target group is invalid
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("TCP"),
 		Port:            aws.Int64(53),
@@ -1779,18 +1780,18 @@ func TestCreateListener_NLB_ProtocolIncompatible_TCPToUDP(t *testing.T) {
 func TestCreateListener_NLB_ProtocolIncompatible_UDPToTCP(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-udp-tcp"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:     aws.String("tg-tcp-incompat"),
 		Protocol: aws.String("TCP"),
 		Port:     aws.Int64(8080),
 	}, testAccountID)
 
 	// UDP listener -> TCP target group is invalid
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("UDP"),
 		Port:            aws.Int64(8080),
@@ -1807,15 +1808,15 @@ func TestCreateListener_NLB_DefaultProtocol_Rejected(t *testing.T) {
 	// When no protocol is specified, it defaults to HTTP which is invalid for NLB
 	svc := setupTestService(t)
 
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-default-proto"),
 		Type: aws.String("network"),
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("tg-default-proto"),
 	}, testAccountID)
 
-	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		DefaultActions: []*elbv2.Action{
 			{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn},
@@ -1833,17 +1834,17 @@ func TestCreateListener_PushConfig_NoNATS(t *testing.T) {
 	// (updateStoredConfig is a no-op when InstanceID is empty)
 	svc := setupTestService(t)
 
-	lb, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lb, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("sync-lb"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	tg, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tg, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("sync-tg"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err = svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lb.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -1863,12 +1864,12 @@ func TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID(t *testing.T) {
 	mock := &mockTerminateLauncher{}
 	svc.InstanceLauncher = mock
 
-	lb, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lb, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("del-lb"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
 		LoadBalancerArn: lb.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1895,7 +1896,7 @@ func (m *mockTerminateLauncher) TerminateSystemInstance(instanceID string) error
 func TestCreateLoadBalancer_InternetFacingScheme_DNSName(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("web-alb"),
 	}, testAccountID)
 
@@ -1911,7 +1912,7 @@ func TestCreateLoadBalancer_InternetFacingScheme_DNSName(t *testing.T) {
 func TestCreateLoadBalancer_InternalScheme_DNSPrefix(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:   aws.String("backend-alb"),
 		Scheme: aws.String("internal"),
 	}, testAccountID)
@@ -1940,7 +1941,7 @@ func TestLBAgentHeartbeat_TransitionsProvisioningToActive(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	out, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+	out, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-hb1"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1966,7 +1967,7 @@ func TestLBAgentHeartbeat_ReturnsConfigHash(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	out, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+	out, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-hash1"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -2010,7 +2011,7 @@ func TestLBAgentHeartbeat_ProcessesHealthReport(t *testing.T) {
 	}))
 
 	srvName := sanitizeName("srv", "i-target1")
-	_, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-hr1"),
 		Servers: []*LBAgentServerStatus{
 			{Backend: aws.String("bk_tg-hr1"), Server: aws.String(srvName), Status: aws.String("UP")},
@@ -2070,7 +2071,7 @@ func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, pre.ConfigHash, "config must be empty before activation")
 
-	out, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+	out, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-act1"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -2088,14 +2089,14 @@ func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
 func TestLBAgentHeartbeat_MissingLBID(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{}, testAccountID)
+	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{}, testAccountID)
 	assert.Error(t, err)
 }
 
 func TestLBAgentHeartbeat_LBNotFound(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-nonexistent"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -2118,7 +2119,7 @@ func TestGetLBConfig_ReturnsStoredConfig(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	out, err := svc.GetLBConfig(&GetLBConfigInput{
+	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{
 		LBID: aws.String("lb-cfg1"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -2144,7 +2145,7 @@ func TestGetLBConfig_DeliversHealthTargetsForNLB(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-nlbhc")}, testAccountID)
+	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{LBID: aws.String("lb-nlbhc")}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, EngineNginx, *out.Engine)
 	require.Len(t, out.HealthTargets, 1)
@@ -2166,7 +2167,7 @@ func TestGetLBConfig_HealthTargetsWireShape(t *testing.T) {
 		},
 	}))
 
-	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-wire")}, testAccountID)
+	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{LBID: aws.String("lb-wire")}, testAccountID)
 	require.NoError(t, err)
 
 	// Confirm the marshalled member shape matches what the lb-agent parses
@@ -2205,7 +2206,7 @@ func TestGetLBConfig_NoHealthTargetsForALB(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-albhc")}, testAccountID)
+	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{LBID: aws.String("lb-albhc")}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, EngineHAProxy, *out.Engine)
 	assert.Empty(t, out.HealthTargets) // ALBs report health via HAProxy stats
@@ -2214,14 +2215,14 @@ func TestGetLBConfig_NoHealthTargetsForALB(t *testing.T) {
 func TestGetLBConfig_MissingLBID(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.GetLBConfig(&GetLBConfigInput{}, testAccountID)
+	_, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{}, testAccountID)
 	assert.Error(t, err)
 }
 
 func TestGetLBConfig_LBNotFound(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.GetLBConfig(&GetLBConfigInput{
+	_, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{
 		LBID: aws.String("lb-missing"),
 	}, testAccountID)
 	assert.Error(t, err)
@@ -2239,7 +2240,7 @@ func TestLBAgentHeartbeat_WrongAccount(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	_, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-auth1"),
 	}, "999999999999")
 	assert.Error(t, err)
@@ -2258,7 +2259,7 @@ func TestLBAgentHeartbeat_SystemAccountAllowed(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	out, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+	out, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-sys1"),
 	}, utils.GlobalAccountID)
 	require.NoError(t, err)
@@ -2279,7 +2280,7 @@ func TestLBAgentHeartbeat_SkipsWriteWhenHeartbeatFresh(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	_, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-fresh1"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -2304,7 +2305,7 @@ func TestLBAgentHeartbeat_PersistsWhenHeartbeatStale(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	_, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-stale1"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -2329,7 +2330,7 @@ func TestGetLBConfig_WrongAccount(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	_, err := svc.GetLBConfig(&GetLBConfigInput{
+	_, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{
 		LBID: aws.String("lb-authcfg1"),
 	}, "999999999999")
 	assert.Error(t, err)
@@ -2350,7 +2351,7 @@ func TestGetLBConfig_SystemAccountAllowed(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	out, err := svc.GetLBConfig(&GetLBConfigInput{
+	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{
 		LBID: aws.String("lb-syscfg1"),
 	}, utils.GlobalAccountID)
 	require.NoError(t, err)
@@ -2395,7 +2396,7 @@ func TestUpdateStoredConfig_StoresConfigAndHash(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutListener(listener))
 
-	require.NoError(t, svc.updateStoredConfig(lb))
+	require.NoError(t, svc.updateStoredConfig(context.Background(), lb))
 
 	stored, err := svc.store.GetLoadBalancer("lb-upd1")
 	require.NoError(t, err)
@@ -2416,7 +2417,7 @@ func TestUpdateStoredConfig_SkipsWhenNoInstance(t *testing.T) {
 	}
 	require.NoError(t, svc.store.PutLoadBalancer(lb))
 
-	require.NoError(t, svc.updateStoredConfig(lb))
+	require.NoError(t, svc.updateStoredConfig(context.Background(), lb))
 
 	stored, err := svc.store.GetLoadBalancer("lb-noinst")
 	require.NoError(t, err)
@@ -2482,12 +2483,12 @@ func TestIsCompatibleProtocol_UnknownListenerProtocol(t *testing.T) {
 func TestCreateListener_TargetGroupNotFound(t *testing.T) {
 	svc := setupTestService(t)
 
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("tg-missing-lb"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+	_, err = svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String(ProtocolHTTP),
 		Port:            aws.Int64(80),
@@ -2527,7 +2528,7 @@ func TestUpdateStoredConfig_MissingTargetGroup(t *testing.T) {
 	require.NoError(t, svc.store.PutListener(listener))
 
 	// Should not error — skips missing TG and generates config with no backends
-	require.NoError(t, svc.updateStoredConfig(lb))
+	require.NoError(t, svc.updateStoredConfig(context.Background(), lb))
 
 	stored, err := svc.store.GetLoadBalancer("lb-misstg")
 	require.NoError(t, err)
@@ -2538,10 +2539,10 @@ func TestUpdateStoredConfig_MissingTargetGroup(t *testing.T) {
 
 func TestDescribeTargetGroupAttributes_Defaults(t *testing.T) {
 	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-attr-defaults")}, testAccountID)
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-attr-defaults")}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
+	out, err := svc.DescribeTargetGroupAttributes(context.Background(), &elbv2.DescribeTargetGroupAttributesInput{
 		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -2559,10 +2560,10 @@ func TestDescribeTargetGroupAttributes_Defaults(t *testing.T) {
 
 func TestDescribeLoadBalancerAttributes_ALBDefaults(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("alb-attr-defaults")}, testAccountID)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("alb-attr-defaults")}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
+	out, err := svc.DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -2583,13 +2584,13 @@ func TestDescribeLoadBalancerAttributes_ALBDefaults(t *testing.T) {
 
 func TestDescribeLoadBalancerAttributes_NLBDefaults(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-attr-defaults"),
 		Type: aws.String("network"),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
+	out, err := svc.DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -2671,13 +2672,13 @@ func TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys(t *testing.T) {
 // the handler must accept it.
 func TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("alb-conn-logs"),
 	}, testAccountID)
 	require.NoError(t, err)
 	arn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+	_, err = svc.ModifyLoadBalancerAttributes(context.Background(), &elbv2.ModifyLoadBalancerAttributesInput{
 		LoadBalancerArn: arn,
 		Attributes: []*elbv2.LoadBalancerAttribute{
 			{Key: aws.String("connection_logs.s3.enabled"), Value: aws.String("false")},
@@ -2694,12 +2695,12 @@ func TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey(t *testing.T) {
 // uses "" to clear access_logs.s3.bucket, so the handler must persist it.
 func TestModifyLoadBalancerAttributes_EmptyStringClears(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("alb-clear")}, testAccountID)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("alb-clear")}, testAccountID)
 	require.NoError(t, err)
 	arn := lbOut.LoadBalancers[0].LoadBalancerArn
 
 	// Set a bucket, then clear it with an empty string.
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+	_, err = svc.ModifyLoadBalancerAttributes(context.Background(), &elbv2.ModifyLoadBalancerAttributesInput{
 		LoadBalancerArn: arn,
 		Attributes: []*elbv2.LoadBalancerAttribute{
 			{Key: aws.String("access_logs.s3.bucket"), Value: aws.String("my-logs")},
@@ -2707,7 +2708,7 @@ func TestModifyLoadBalancerAttributes_EmptyStringClears(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	modOut, err := svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+	modOut, err := svc.ModifyLoadBalancerAttributes(context.Background(), &elbv2.ModifyLoadBalancerAttributesInput{
 		LoadBalancerArn: arn,
 		Attributes: []*elbv2.LoadBalancerAttribute{
 			{Key: aws.String("access_logs.s3.bucket"), Value: aws.String("")},
@@ -2717,7 +2718,7 @@ func TestModifyLoadBalancerAttributes_EmptyStringClears(t *testing.T) {
 	require.Len(t, modOut.Attributes, 1, "empty-string Value must be echoed, not skipped")
 	assert.Equal(t, "", *modOut.Attributes[0].Value)
 
-	descOut, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
+	descOut, err := svc.DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{
 		LoadBalancerArn: arn,
 	}, testAccountID)
 	require.NoError(t, err)
@@ -2799,7 +2800,7 @@ func attrKinds() []attrKind {
 			defaultKey: "stickiness.type", defaultVal: "lb_cookie",
 			unknownKey: "stickness.enabled", // typo of "stickiness"
 			create: func(t *testing.T, svc *ELBv2ServiceImpl, name string) string {
-				out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String(name)}, testAccountID)
+				out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String(name)}, testAccountID)
 				require.NoError(t, err)
 				return *out.TargetGroups[0].TargetGroupArn
 			},
@@ -2811,7 +2812,7 @@ func attrKinds() []attrKind {
 					}
 					sdk[i] = &elbv2.TargetGroupAttribute{Key: a.key, Value: a.val}
 				}
-				out, err := svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
+				out, err := svc.ModifyTargetGroupAttributes(context.Background(), &elbv2.ModifyTargetGroupAttributesInput{
 					TargetGroupArn: attrArnPtr(arn), Attributes: sdk,
 				}, accountID)
 				if err != nil {
@@ -2824,7 +2825,7 @@ func attrKinds() []attrKind {
 				return pairs, nil
 			},
 			describe: func(svc *ELBv2ServiceImpl, arn, accountID string) ([]echoPair, error) {
-				out, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
+				out, err := svc.DescribeTargetGroupAttributes(context.Background(), &elbv2.DescribeTargetGroupAttributesInput{
 					TargetGroupArn: attrArnPtr(arn),
 				}, accountID)
 				if err != nil {
@@ -2853,7 +2854,7 @@ func attrKinds() []attrKind {
 			defaultKey: "routing.http2.enabled", defaultVal: "true",
 			unknownKey: "stickiness.enabled", // valid TG key — cross-product mistake
 			create: func(t *testing.T, svc *ELBv2ServiceImpl, name string) string {
-				out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String(name)}, testAccountID)
+				out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String(name)}, testAccountID)
 				require.NoError(t, err)
 				return *out.LoadBalancers[0].LoadBalancerArn
 			},
@@ -2865,7 +2866,7 @@ func attrKinds() []attrKind {
 					}
 					sdk[i] = &elbv2.LoadBalancerAttribute{Key: a.key, Value: a.val}
 				}
-				out, err := svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+				out, err := svc.ModifyLoadBalancerAttributes(context.Background(), &elbv2.ModifyLoadBalancerAttributesInput{
 					LoadBalancerArn: attrArnPtr(arn), Attributes: sdk,
 				}, accountID)
 				if err != nil {
@@ -2878,7 +2879,7 @@ func attrKinds() []attrKind {
 				return pairs, nil
 			},
 			describe: func(svc *ELBv2ServiceImpl, arn, accountID string) ([]echoPair, error) {
-				out, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
+				out, err := svc.DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{
 					LoadBalancerArn: attrArnPtr(arn),
 				}, accountID)
 				if err != nil {
@@ -3173,7 +3174,7 @@ func TestAttributeSortedOrder(t *testing.T) {
 
 func TestDescribeTags_LoadBalancer(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("tags-lb"),
 		Tags: []*elbv2.Tag{
 			{Key: aws.String("Env"), Value: aws.String("prod")},
@@ -3182,7 +3183,7 @@ func TestDescribeTags_LoadBalancer(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+	out, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{lbOut.LoadBalancers[0].LoadBalancerArn},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -3200,9 +3201,9 @@ func TestDescribeTags_LoadBalancer(t *testing.T) {
 
 func TestDescribeTags_Listener_NoTags(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("tags-lst-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tags-lst-tg")}, testAccountID)
-	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("tags-lst-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tags-lst-tg")}, testAccountID)
+	lstOut, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -3215,7 +3216,7 @@ func TestDescribeTags_Listener_NoTags(t *testing.T) {
 	// Listener created without tags must still return a TagDescription (with an
 	// empty Tags slice), not an error. This is the case the Terraform AWS
 	// provider hits during post-create refresh.
-	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+	out, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{lstOut.Listeners[0].ListenerArn},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -3226,9 +3227,9 @@ func TestDescribeTags_Listener_NoTags(t *testing.T) {
 
 func TestDescribeTags_ListenerRule_NoTags(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("tags-rule-lb")}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tags-rule-tg")}, testAccountID)
-	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("tags-rule-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tags-rule-tg")}, testAccountID)
+	lstOut, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -3238,7 +3239,7 @@ func TestDescribeTags_ListenerRule_NoTags(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	ruleOut, err := svc.CreateRule(&elbv2.CreateRuleInput{
+	ruleOut, err := svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
 		ListenerArn: lstOut.Listeners[0].ListenerArn,
 		Priority:    aws.Int64(10),
 		Conditions: []*elbv2.RuleCondition{
@@ -3253,7 +3254,7 @@ func TestDescribeTags_ListenerRule_NoTags(t *testing.T) {
 	// Rule created without tags must still return a TagDescription (with an
 	// empty Tags slice), not an error. This is the case the Terraform AWS
 	// provider hits during post-create refresh of aws_lb_listener_rule.
-	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+	out, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{ruleOut.Rules[0].RuleArn},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -3264,7 +3265,7 @@ func TestDescribeTags_ListenerRule_NoTags(t *testing.T) {
 
 func TestDescribeTags_RuleNotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+	_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{
 			aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:listener-rule/app/missing/lb-x/lst-y/rule-deadbeef"),
 		},
@@ -3275,15 +3276,15 @@ func TestDescribeTags_RuleNotFound(t *testing.T) {
 
 func TestDescribeTags_MultipleArns(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("multi-lb"),
 		Tags: []*elbv2.Tag{{Key: aws.String("Name"), Value: aws.String("lb")}},
 	}, testAccountID)
-	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("multi-tg"),
 		Tags: []*elbv2.Tag{{Key: aws.String("Name"), Value: aws.String("tg")}},
 	}, testAccountID)
-	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+	lstOut, _ := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("HTTP"),
 		Port:            aws.Int64(80),
@@ -3292,7 +3293,7 @@ func TestDescribeTags_MultipleArns(t *testing.T) {
 		},
 	}, testAccountID)
 
-	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+	out, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{
 			lbOut.LoadBalancers[0].LoadBalancerArn,
 			tgOut.TargetGroups[0].TargetGroupArn,
@@ -3314,7 +3315,7 @@ func TestDescribeTags_MultipleArns(t *testing.T) {
 
 func TestDescribeTags_LoadBalancerNotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+	_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{
 			aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/missing/lb-deadbeef"),
 		},
@@ -3325,7 +3326,7 @@ func TestDescribeTags_LoadBalancerNotFound(t *testing.T) {
 
 func TestDescribeTags_TargetGroupNotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+	_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{
 			aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/missing/tg-deadbeef"),
 		},
@@ -3336,7 +3337,7 @@ func TestDescribeTags_TargetGroupNotFound(t *testing.T) {
 
 func TestDescribeTags_ListenerNotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+	_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{
 			aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/missing/lb-x/lst-deadbeef"),
 		},
@@ -3347,13 +3348,13 @@ func TestDescribeTags_ListenerNotFound(t *testing.T) {
 
 func TestDescribeTags_CrossAccount(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("xa-lb"),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	// Same ARN, different account => not-found (no existence leak)
-	_, err = svc.DescribeTags(&elbv2.DescribeTagsInput{
+	_, err = svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{lbOut.LoadBalancers[0].LoadBalancerArn},
 	}, "999999999999")
 	require.Error(t, err)
@@ -3369,7 +3370,7 @@ func TestDescribeTags_InvalidArn(t *testing.T) {
 		"arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer",            // missing slash
 	}
 	for _, arn := range cases {
-		_, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+		_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 			ResourceArns: []*string{aws.String(arn)},
 		}, testAccountID)
 		require.Error(t, err, "arn=%q should be rejected", arn)
@@ -3381,12 +3382,12 @@ func TestDescribeTags_MissingParameter(t *testing.T) {
 	svc := setupTestService(t)
 
 	// Empty ResourceArns
-	_, err := svc.DescribeTags(&elbv2.DescribeTagsInput{}, testAccountID)
+	_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 
 	// Nil entry inside a non-empty list
-	_, err = svc.DescribeTags(&elbv2.DescribeTagsInput{
+	_, err = svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{nil},
 	}, testAccountID)
 	require.Error(t, err)
@@ -3395,7 +3396,7 @@ func TestDescribeTags_MissingParameter(t *testing.T) {
 
 func TestDescribeTags_UntaggedLoadBalancer(t *testing.T) {
 	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("untagged-lb"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -3403,7 +3404,7 @@ func TestDescribeTags_UntaggedLoadBalancer(t *testing.T) {
 	// Bare LB with no Tags input must still return a TagDescription with
 	// the ARN and an empty/nil Tags slice — exercises the exact path the
 	// failing nginx-alb terraform demo hits.
-	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+	out, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{lbOut.LoadBalancers[0].LoadBalancerArn},
 	}, testAccountID)
 	require.NoError(t, err)

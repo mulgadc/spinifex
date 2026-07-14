@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -15,7 +16,7 @@ import (
 
 func createLBArn(t *testing.T, svc *ELBv2ServiceImpl, name string) string {
 	t.Helper()
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String(name),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -25,7 +26,7 @@ func createLBArn(t *testing.T, svc *ELBv2ServiceImpl, name string) string {
 
 func describeLB(t *testing.T, svc *ELBv2ServiceImpl, arn string) *elbv2.LoadBalancer {
 	t.Helper()
-	out, err := svc.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+	out, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
 		LoadBalancerArns: []*string{aws.String(arn)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -37,7 +38,7 @@ func TestSetIpAddressType_IPv4Idempotent(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "ipt-lb")
 
-	out, err := svc.SetIpAddressType(&elbv2.SetIpAddressTypeInput{
+	out, err := svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
 		LoadBalancerArn: aws.String(arn),
 		IpAddressType:   aws.String("ipv4"),
 	}, testAccountID)
@@ -50,7 +51,7 @@ func TestSetIpAddressType_DualstackRejected(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "ipt-ds")
 
-	_, err := svc.SetIpAddressType(&elbv2.SetIpAddressTypeInput{
+	_, err := svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
 		LoadBalancerArn: aws.String(arn),
 		IpAddressType:   aws.String("dualstack"),
 	}, testAccountID)
@@ -62,13 +63,13 @@ func TestSetIpAddressType_MissingParams(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "ipt-mp")
 
-	_, err := svc.SetIpAddressType(&elbv2.SetIpAddressTypeInput{
+	_, err := svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
 		LoadBalancerArn: aws.String(arn),
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 
-	_, err = svc.SetIpAddressType(&elbv2.SetIpAddressTypeInput{
+	_, err = svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
 		IpAddressType: aws.String("ipv4"),
 	}, testAccountID)
 	require.Error(t, err)
@@ -77,7 +78,7 @@ func TestSetIpAddressType_MissingParams(t *testing.T) {
 
 func TestSetIpAddressType_NotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.SetIpAddressType(&elbv2.SetIpAddressTypeInput{
+	_, err := svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
 		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/missing/lb-deadbeef"),
 		IpAddressType:   aws.String("ipv4"),
 	}, testAccountID)
@@ -89,7 +90,7 @@ func TestSetSecurityGroups_UpdatesRecord(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "sg-lb")
 
-	out, err := svc.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+	out, err := svc.SetSecurityGroups(context.Background(), &elbv2.SetSecurityGroupsInput{
 		LoadBalancerArn: aws.String(arn),
 		SecurityGroups:  aws.StringSlice([]string{"sg-aaa", "sg-bbb"}),
 	}, testAccountID)
@@ -102,7 +103,7 @@ func TestSetSecurityGroups_EmptyRejected(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "sg-empty")
 
-	_, err := svc.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+	_, err := svc.SetSecurityGroups(context.Background(), &elbv2.SetSecurityGroupsInput{
 		LoadBalancerArn: aws.String(arn),
 	}, testAccountID)
 	require.Error(t, err)
@@ -111,14 +112,14 @@ func TestSetSecurityGroups_EmptyRejected(t *testing.T) {
 
 func TestSetSecurityGroups_NLBRejected(t *testing.T) {
 	svc := setupTestService(t)
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("sg-nlb"),
 		Type: aws.String("network"),
 	}, testAccountID)
 	require.NoError(t, err)
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 
-	_, err = svc.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+	_, err = svc.SetSecurityGroups(context.Background(), &elbv2.SetSecurityGroupsInput{
 		LoadBalancerArn: aws.String(arn),
 		SecurityGroups:  aws.StringSlice([]string{"sg-aaa"}),
 	}, testAccountID)
@@ -128,7 +129,7 @@ func TestSetSecurityGroups_NLBRejected(t *testing.T) {
 
 func TestSetSecurityGroups_NLBWithSGs_Replaces(t *testing.T) {
 	svc := setupTestService(t)
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("sg-nlb-repl"),
 		Type:           aws.String("network"),
 		SecurityGroups: aws.StringSlice([]string{"sg-orig"}),
@@ -136,7 +137,7 @@ func TestSetSecurityGroups_NLBWithSGs_Replaces(t *testing.T) {
 	require.NoError(t, err)
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 
-	res, err := svc.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+	res, err := svc.SetSecurityGroups(context.Background(), &elbv2.SetSecurityGroupsInput{
 		LoadBalancerArn: aws.String(arn),
 		SecurityGroups:  aws.StringSlice([]string{"sg-new1", "sg-new2"}),
 	}, testAccountID)
@@ -152,7 +153,7 @@ func TestSetSecurityGroups_TooManyRejected(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "sg-too-many")
 
-	_, err := svc.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+	_, err := svc.SetSecurityGroups(context.Background(), &elbv2.SetSecurityGroupsInput{
 		LoadBalancerArn: aws.String(arn),
 		SecurityGroups:  aws.StringSlice([]string{"sg-1", "sg-2", "sg-3", "sg-4", "sg-5", "sg-6"}),
 	}, testAccountID)
@@ -164,7 +165,7 @@ func TestSetSecurityGroups_CrossAccount(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "sg-xacct")
 
-	_, err := svc.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+	_, err := svc.SetSecurityGroups(context.Background(), &elbv2.SetSecurityGroupsInput{
 		LoadBalancerArn: aws.String(arn),
 		SecurityGroups:  aws.StringSlice([]string{"sg-aaa"}),
 	}, "999999999999")
@@ -211,7 +212,7 @@ func TestCreateLoadBalancer_AsyncDefersFrontendIP(t *testing.T) {
 	vid := vpcID(t, vpcSvc)
 	sub := getTestSubnetID(t, vpcSvc, vid, "10.0.31.0/24", "us-east-1a")
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("async-lb"),
 		Type:    aws.String("network"),
 		Scheme:  aws.String(elbv2.LoadBalancerSchemeEnumInternetFacing),
@@ -244,7 +245,7 @@ func setupSubnetTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc.
 
 func countManagedENIs(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) int {
 	t.Helper()
-	out, err := vpcSvc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	out, err := vpcSvc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	require.NoError(t, err)
 	n := 0
 	for _, eni := range out.NetworkInterfaces {
@@ -257,7 +258,7 @@ func countManagedENIs(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) int
 
 func vpcID(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) string {
 	t.Helper()
-	vpcs, err := vpcSvc.DescribeVpcs(&ec2.DescribeVpcsInput{}, testAccountID)
+	vpcs, err := vpcSvc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{}, testAccountID)
 	require.NoError(t, err)
 	require.NotEmpty(t, vpcs.Vpcs)
 	return *vpcs.Vpcs[0].VpcId
@@ -269,7 +270,7 @@ func TestSetSubnets_AddSubnet(t *testing.T) {
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.20.0/24", "us-east-1a")
 	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.21.0/24", "us-east-1b")
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("add-lb"),
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
@@ -279,7 +280,7 @@ func TestSetSubnets_AddSubnet(t *testing.T) {
 	require.Equal(t, 1, countManagedENIs(t, vpcSvc))
 	require.Len(t, mock.launchCalls, 1)
 
-	res, err := svc.SetSubnets(&elbv2.SetSubnetsInput{
+	res, err := svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String(arn),
 		Subnets:         []*string{aws.String(sub1), aws.String(sub2)},
 	}, testAccountID)
@@ -302,7 +303,7 @@ func TestSetSubnets_RemoveSubnet(t *testing.T) {
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.22.0/24", "us-east-1a")
 	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.23.0/24", "us-east-1b")
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("rm-lb"),
 		Subnets: []*string{aws.String(sub1), aws.String(sub2)},
 	}, testAccountID)
@@ -311,7 +312,7 @@ func TestSetSubnets_RemoveSubnet(t *testing.T) {
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 	require.Equal(t, 2, countManagedENIs(t, vpcSvc))
 
-	res, err := svc.SetSubnets(&elbv2.SetSubnetsInput{
+	res, err := svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String(arn),
 		Subnets:         []*string{aws.String(sub1)},
 	}, testAccountID)
@@ -331,7 +332,7 @@ func TestSetSubnets_Replace(t *testing.T) {
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.24.0/24", "us-east-1a")
 	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.25.0/24", "us-east-1b")
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("swap-lb"),
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
@@ -339,7 +340,7 @@ func TestSetSubnets_Replace(t *testing.T) {
 	svc.WaitLaunches()
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 
-	_, err = svc.SetSubnets(&elbv2.SetSubnetsInput{
+	_, err = svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String(arn),
 		Subnets:         []*string{aws.String(sub2)},
 	}, testAccountID)
@@ -357,7 +358,7 @@ func TestSetSubnets_TerminateFailureRollsBackNewENIs(t *testing.T) {
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.26.0/24", "us-east-1a")
 	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.27.0/24", "us-east-1b")
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("rollback-lb"),
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
@@ -370,7 +371,7 @@ func TestSetSubnets_TerminateFailureRollsBackNewENIs(t *testing.T) {
 	// created for the added subnet must be rolled back, not leaked.
 	mock.terminateErr = errors.New("no responders available")
 
-	_, err = svc.SetSubnets(&elbv2.SetSubnetsInput{
+	_, err = svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String(arn),
 		Subnets:         []*string{aws.String(sub1), aws.String(sub2)},
 	}, testAccountID)
@@ -388,7 +389,7 @@ func TestSetSubnets_Idempotent(t *testing.T) {
 	vid := vpcID(t, vpcSvc)
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.26.0/24", "us-east-1a")
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("idem-lb"),
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
@@ -396,7 +397,7 @@ func TestSetSubnets_Idempotent(t *testing.T) {
 	svc.WaitLaunches()
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 
-	_, err = svc.SetSubnets(&elbv2.SetSubnetsInput{
+	_, err = svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String(arn),
 		Subnets:         []*string{aws.String(sub1)},
 	}, testAccountID)
@@ -414,7 +415,7 @@ func TestSetSubnets_SubnetMappings(t *testing.T) {
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.27.0/24", "us-east-1a")
 	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.28.0/24", "us-east-1b")
 
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String("mapping-lb"),
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
@@ -422,7 +423,7 @@ func TestSetSubnets_SubnetMappings(t *testing.T) {
 	svc.WaitLaunches()
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 
-	_, err = svc.SetSubnets(&elbv2.SetSubnetsInput{
+	_, err = svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String(arn),
 		SubnetMappings: []*elbv2.SubnetMapping{
 			{SubnetId: aws.String(sub1)},
@@ -437,7 +438,7 @@ func TestSetSubnets_WithoutVPCService(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "novpc-subnets")
 
-	res, err := svc.SetSubnets(&elbv2.SetSubnetsInput{
+	res, err := svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String(arn),
 		Subnets:         []*string{aws.String("subnet-aaa"), aws.String("subnet-bbb")},
 	}, testAccountID)
@@ -450,13 +451,13 @@ func TestSetSubnets_MissingParams(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "subnets-mp")
 
-	_, err := svc.SetSubnets(&elbv2.SetSubnetsInput{
+	_, err := svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String(arn),
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 
-	_, err = svc.SetSubnets(&elbv2.SetSubnetsInput{
+	_, err = svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		Subnets: []*string{aws.String("subnet-aaa")},
 	}, testAccountID)
 	require.Error(t, err)
@@ -465,7 +466,7 @@ func TestSetSubnets_MissingParams(t *testing.T) {
 
 func TestSetSubnets_NotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.SetSubnets(&elbv2.SetSubnetsInput{
+	_, err := svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/missing/lb-deadbeef"),
 		Subnets:         []*string{aws.String("subnet-aaa")},
 	}, testAccountID)
@@ -477,7 +478,7 @@ func TestSetSubnets_CrossAccount(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "subnets-xacct")
 
-	_, err := svc.SetSubnets(&elbv2.SetSubnetsInput{
+	_, err := svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String(arn),
 		Subnets:         []*string{aws.String("subnet-aaa")},
 	}, "999999999999")

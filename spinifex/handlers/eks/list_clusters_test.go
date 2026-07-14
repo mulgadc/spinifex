@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -22,19 +23,19 @@ func TestEKSServiceImpl_ListClustersPagination(t *testing.T) {
 		require.NoError(t, PutClusterMeta(f.kv, sampleClusterMeta(n)))
 	}
 
-	p1, err := f.svc.ListClusters(&eks.ListClustersInput{MaxResults: aws.Int64(2)}, testAccountID)
+	p1, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{MaxResults: aws.Int64(2)}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"c01", "c02"}, aws.StringValueSlice(p1.Clusters))
 	require.NotNil(t, p1.NextToken)
 	assert.Equal(t, "c03", aws.StringValue(p1.NextToken))
 
-	p2, err := f.svc.ListClusters(&eks.ListClustersInput{MaxResults: aws.Int64(2), NextToken: p1.NextToken}, testAccountID)
+	p2, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{MaxResults: aws.Int64(2), NextToken: p1.NextToken}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"c03", "c04"}, aws.StringValueSlice(p2.Clusters))
 	require.NotNil(t, p2.NextToken)
 	assert.Equal(t, "c05", aws.StringValue(p2.NextToken))
 
-	p3, err := f.svc.ListClusters(&eks.ListClustersInput{MaxResults: aws.Int64(2), NextToken: p2.NextToken}, testAccountID)
+	p3, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{MaxResults: aws.Int64(2), NextToken: p2.NextToken}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"c05"}, aws.StringValueSlice(p3.Clusters))
 	assert.Nil(t, p3.NextToken, "final page must not advertise a NextToken")
@@ -51,7 +52,7 @@ func TestEKSServiceImpl_ListClustersMaxResultsClamped(t *testing.T) {
 	}
 
 	for _, mr := range []int64{0, -5, 250} {
-		out, err := f.svc.ListClusters(&eks.ListClustersInput{MaxResults: aws.Int64(mr)}, testAccountID)
+		out, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{MaxResults: aws.Int64(mr)}, testAccountID)
 		require.NoError(t, err)
 		assert.Equal(t, want, aws.StringValueSlice(out.Clusters), "MaxResults=%d must clamp to one full page", mr)
 		assert.Nil(t, out.NextToken, "MaxResults=%d single page must not advertise a NextToken", mr)

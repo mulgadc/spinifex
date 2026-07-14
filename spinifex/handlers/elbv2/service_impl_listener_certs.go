@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 
@@ -23,7 +24,7 @@ func listenerCertsToSDK(certs []ListenerCertificate) []*elbv2.Certificate {
 
 // AddListenerCertificates attaches additional (SNI) certificates to a secure listener.
 // Added certificates are non-default; re-adding an existing certificate is a no-op.
-func (s *ELBv2ServiceImpl) AddListenerCertificates(input *elbv2.AddListenerCertificatesInput, accountID string) (*elbv2.AddListenerCertificatesOutput, error) {
+func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *elbv2.AddListenerCertificatesInput, accountID string) (*elbv2.AddListenerCertificatesOutput, error) {
 	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -33,7 +34,7 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(input *elbv2.AddListenerCerti
 
 	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
 	if err != nil {
-		slog.Error("AddListenerCertificates: failed to get listener", "arn", *input.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "AddListenerCertificates: failed to get listener", "arn", *input.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if listener == nil || listener.AccountID != accountID {
@@ -66,7 +67,7 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(input *elbv2.AddListenerCerti
 	}
 
 	if err := s.store.PutListener(&updated); err != nil {
-		slog.Error("AddListenerCertificates: failed to persist record", "listenerId", updated.ListenerID, "err", err)
+		slog.ErrorContext(ctx, "AddListenerCertificates: failed to persist record", "listenerId", updated.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -78,7 +79,7 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(input *elbv2.AddListenerCerti
 // RemoveListenerCertificates detaches certificates from a listener by ARN. The
 // default certificate cannot be removed. Removing an absent certificate is a
 // no-op (idempotent).
-func (s *ELBv2ServiceImpl) RemoveListenerCertificates(input *elbv2.RemoveListenerCertificatesInput, accountID string) (*elbv2.RemoveListenerCertificatesOutput, error) {
+func (s *ELBv2ServiceImpl) RemoveListenerCertificates(ctx context.Context, input *elbv2.RemoveListenerCertificatesInput, accountID string) (*elbv2.RemoveListenerCertificatesOutput, error) {
 	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -88,7 +89,7 @@ func (s *ELBv2ServiceImpl) RemoveListenerCertificates(input *elbv2.RemoveListene
 
 	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
 	if err != nil {
-		slog.Error("RemoveListenerCertificates: failed to get listener", "arn", *input.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "RemoveListenerCertificates: failed to get listener", "arn", *input.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if listener == nil || listener.AccountID != accountID {
@@ -118,7 +119,7 @@ func (s *ELBv2ServiceImpl) RemoveListenerCertificates(input *elbv2.RemoveListene
 	updated.Certificates = kept
 
 	if err := s.store.PutListener(&updated); err != nil {
-		slog.Error("RemoveListenerCertificates: failed to persist record", "listenerId", updated.ListenerID, "err", err)
+		slog.ErrorContext(ctx, "RemoveListenerCertificates: failed to persist record", "listenerId", updated.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -126,14 +127,14 @@ func (s *ELBv2ServiceImpl) RemoveListenerCertificates(input *elbv2.RemoveListene
 }
 
 // DescribeListenerCertificates returns the certificates attached to a listener.
-func (s *ELBv2ServiceImpl) DescribeListenerCertificates(input *elbv2.DescribeListenerCertificatesInput, accountID string) (*elbv2.DescribeListenerCertificatesOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeListenerCertificates(ctx context.Context, input *elbv2.DescribeListenerCertificatesInput, accountID string) (*elbv2.DescribeListenerCertificatesOutput, error) {
 	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
 	if err != nil {
-		slog.Error("DescribeListenerCertificates: failed to get listener", "arn", *input.ListenerArn, "err", err)
+		slog.ErrorContext(ctx, "DescribeListenerCertificates: failed to get listener", "arn", *input.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if listener == nil || listener.AccountID != accountID {
@@ -147,7 +148,7 @@ func (s *ELBv2ServiceImpl) DescribeListenerCertificates(input *elbv2.DescribeLis
 
 // DescribeSSLPolicies returns the fixed catalog of supported security policies.
 // An explicit Names filter selects a subset; an unknown name is rejected.
-func (s *ELBv2ServiceImpl) DescribeSSLPolicies(input *elbv2.DescribeSSLPoliciesInput, _ string) (*elbv2.DescribeSSLPoliciesOutput, error) {
+func (s *ELBv2ServiceImpl) DescribeSSLPolicies(ctx context.Context, input *elbv2.DescribeSSLPoliciesInput, _ string) (*elbv2.DescribeSSLPoliciesOutput, error) {
 	var names []string
 	if input != nil && len(input.Names) > 0 {
 		for _, n := range input.Names {

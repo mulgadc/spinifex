@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -152,7 +153,7 @@ func TestHandleNATSRequest_ValidRequest(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	serviceFn := func(in *testInput, accountID string) (*testOutput, error) {
+	serviceFn := func(_ context.Context, in *testInput, accountID string) (*testOutput, error) {
 		return &testOutput{Greeting: "hello " + in.Name}, nil
 	}
 
@@ -179,7 +180,7 @@ func TestHandleNATSRequest_MalformedJSON(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	serviceFn := func(in *testInput, accountID string) (*testOutput, error) {
+	serviceFn := func(_ context.Context, in *testInput, accountID string) (*testOutput, error) {
 		return &testOutput{Greeting: "hello"}, nil
 	}
 
@@ -205,7 +206,7 @@ func TestHandleNATSRequest_ServiceError(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	serviceFn := func(in *testInput, accountID string) (*testOutput, error) {
+	serviceFn := func(_ context.Context, in *testInput, accountID string) (*testOutput, error) {
 		return nil, fmt.Errorf("something went wrong")
 	}
 
@@ -432,7 +433,7 @@ func TestHandleEC2RunInstances_ValidKeyPairPassesValidation(t *testing.T) {
 
 	// Seed a valid key pair (public key + metadata)
 	bucket := daemon.config.Predastore.Bucket
-	_, err := memStore.PutObject(&awss3.PutObjectInput{
+	_, err := memStore.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String("keys/" + testAccountID + "/my-key"),
 		Body:   strings.NewReader("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest"),
@@ -440,7 +441,7 @@ func TestHandleEC2RunInstances_ValidKeyPairPassesValidation(t *testing.T) {
 	require.NoError(t, err)
 
 	metadataJSON := `{"KeyPairId":"key-abc123","KeyName":"my-key","KeyFingerprint":"SHA256:test"}`
-	_, err = memStore.PutObject(&awss3.PutObjectInput{
+	_, err = memStore.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String("keys/" + testAccountID + "/key-abc123.json"),
 		Body:   strings.NewReader(metadataJSON),
@@ -548,20 +549,20 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	seedTestAMI(t, memStore, bucket, "ami-sgprop")
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, &daemonENICreator{d: daemon}, nil)
 
-	vpcOut, err := daemon.vpcService.CreateVpc(&ec2.CreateVpcInput{
+	vpcOut, err := daemon.vpcService.CreateVpc(t.Context(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.99.0.0/16"),
 	}, testAccountID)
 	require.NoError(t, err)
 	vpcID := *vpcOut.Vpc.VpcId
 
-	subnetOut, err := daemon.vpcService.CreateSubnet(&ec2.CreateSubnetInput{
+	subnetOut, err := daemon.vpcService.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("10.99.1.0/24"),
 	}, testAccountID)
 	require.NoError(t, err)
 	subnetID := *subnetOut.Subnet.SubnetId
 
-	sg1Out, err := daemon.vpcService.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	sg1Out, err := daemon.vpcService.CreateSecurityGroup(t.Context(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("sg-prop-1"),
 		Description: aws.String("test"),
 		VpcId:       aws.String(vpcID),
@@ -569,7 +570,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	require.NoError(t, err)
 	sg1 = *sg1Out.GroupId
 
-	sg2Out, err := daemon.vpcService.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	sg2Out, err := daemon.vpcService.CreateSecurityGroup(t.Context(), &ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("sg-prop-2"),
 		Description: aws.String("test"),
 		VpcId:       aws.String(vpcID),
@@ -595,7 +596,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	// The ENI is durable in KV by the time the handler responds. Inspect it
 	// via the canonical Describe path so we exercise the same record shape
 	// callers see, not internal state.
-	enis, err := daemon.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+	enis, err := daemon.vpcService.DescribeNetworkInterfaces(t.Context(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{{
 			Name:   aws.String("subnet-id"),
 			Values: []*string{aws.String(subnetID)},
@@ -1463,7 +1464,7 @@ func TestAttachVolume_ZoneMismatch(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(wrapper)
-	store.PutObject(&awss3.PutObjectInput{
+	store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 		Body:   strings.NewReader(string(data)),
@@ -1921,6 +1922,14 @@ func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
 func TestDelegateHandlers_RoundTrip(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
+	// DeleteTags' no-owner path falls back to the shared stopped store; give
+	// the service an empty one so an absent instance resolves to NotFound.
+	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+		daemon.config, daemon.resourceMgr.instanceTypes, daemon.natsConn,
+		objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr,
+		&memStoppedStore{})
+	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
+
 	tests := []struct {
 		name         string
 		topic        string
@@ -1994,9 +2003,10 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 			name:    "DeleteTags",
 			topic:   "ec2.test.DeleteTags",
 			handler: daemon.handleEC2DeleteTags,
-			input:   &ec2.DeleteTagsInput{Resources: []*string{aws.String("i-12345678")}},
-			// DeleteTags returns `{}` on success.
-			allowEmpty: true,
+			// Instance IDs route to the owning daemon; with no owner
+			// subscribed the mutation is rejected rather than written blind.
+			input:        &ec2.DeleteTagsInput{Resources: []*string{aws.String("i-12345678")}},
+			expectedCode: awserrors.ErrorInvalidInstanceIDNotFound,
 		},
 		{
 			name:    "DescribeTags",
@@ -2654,7 +2664,7 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(wrapper)
-	store.PutObject(&awss3.PutObjectInput{
+	store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 		Body:   strings.NewReader(string(data)),
@@ -2792,7 +2802,7 @@ func TestHandleEC2CreateImage_RunningInstanceReachesService(t *testing.T) {
 		},
 	}
 	volData, _ := json.Marshal(wrapper)
-	store.PutObject(&awss3.PutObjectInput{
+	store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(rootVolumeID + "/config.json"),
 		Body:   strings.NewReader(string(volData)),
@@ -2994,7 +3004,7 @@ func TestAttachVolume_VolumeInUse(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(wrapper)
-	store.PutObject(&awss3.PutObjectInput{
+	store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
 		Body:   strings.NewReader(string(data)),
@@ -4154,4 +4164,75 @@ func TestVMHealthLabel(t *testing.T) {
 			assert.Equal(t, tc.want, vmHealthLabel(v))
 		})
 	}
+}
+
+// --- handleEC2CreateImage stopped-instance KV fallback tests ---
+
+func TestHandleEC2CreateImage_StoppedInstanceFoundInKV(t *testing.T) {
+	natsURL := sharedJSNATSURL
+
+	daemon := createFullTestDaemonWithJetStream(t, natsURL)
+
+	stoppedVM := &vm.VM{
+		ID:        "i-stopped-kv001",
+		Status:    vm.StateStopped,
+		AccountID: testAccountID,
+		Instance: &ec2.Instance{
+			InstanceId: aws.String("i-stopped-kv001"),
+			ImageId:    aws.String("ami-source-stopped"),
+			BlockDeviceMappings: []*ec2.InstanceBlockDeviceMapping{
+				{
+					Ebs: &ec2.EbsInstanceBlockDevice{
+						VolumeId: aws.String("vol-stopped001"),
+					},
+				},
+			},
+		},
+	}
+	err := daemon.jsManager.WriteStoppedInstance(stoppedVM.ID, stoppedVM)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = daemon.jsManager.DeleteStoppedInstance(stoppedVM.ID) })
+
+	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", daemon.handleEC2CreateImage)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	input := &ec2.CreateImageInput{
+		InstanceId: aws.String("i-stopped-kv001"),
+		Name:       aws.String("test-stopped-image"),
+	}
+	reqData, _ := json.Marshal(input)
+	reply, err := natsRequest(daemon.natsConn, "ec2.CreateImage", reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	var errResp map[string]any
+	err = json.Unmarshal(reply.Data, &errResp)
+	require.NoError(t, err)
+	// Handler found the stopped instance in KV and proceeded past the lookup —
+	// any error code other than InvalidInstanceIDNotFound is acceptable.
+	assert.NotEqual(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"],
+		"stopped instance found in KV must not return InvalidInstanceIDNotFound")
+}
+
+func TestHandleEC2CreateImage_StoppedInstanceNotInKV(t *testing.T) {
+	natsURL := sharedJSNATSURL
+
+	daemon := createFullTestDaemonWithJetStream(t, natsURL)
+
+	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", daemon.handleEC2CreateImage)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	input := &ec2.CreateImageInput{
+		InstanceId: aws.String("i-nowhere-to-be-found"),
+		Name:       aws.String("test-missing-image"),
+	}
+	reqData, _ := json.Marshal(input)
+	reply, err := natsRequest(daemon.natsConn, "ec2.CreateImage", reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	var errResp map[string]any
+	err = json.Unmarshal(reply.Data, &errResp)
+	require.NoError(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
 }

@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,7 +26,7 @@ type PrivateEndpointENI struct {
 // cluster NLB's LB VM as a cross-account extra NIC, so in-VPC workers + kubectl
 // reach the control plane without the public hairpin / NAT GW egress. Created
 // before the NLB + CP VMs so its IP is a known cert SAN.
-func EnsurePrivateEndpointENI(
+func EnsurePrivateEndpointENI(ctx context.Context,
 	vpcSvc k3sVPCProvisioner,
 	sgp sgProvisioner,
 	resolver SubnetVPCResolver,
@@ -41,17 +42,17 @@ func EnsurePrivateEndpointENI(
 		return nil, errors.New("eks: EnsurePrivateEndpointENI empty vpc id")
 	}
 
-	vpcCIDR, err := resolver.GetVPCCIDR(accountID, vpcID)
+	vpcCIDR, err := resolver.GetVPCCIDR(ctx, accountID, vpcID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve customer VPC %s CIDR: %w", vpcID, err)
 	}
 
-	sgID, err := EnsurePrivateEndpointSG(sgp, accountID, clusterName, vpcID, vpcCIDR)
+	sgID, err := EnsurePrivateEndpointSG(ctx, sgp, accountID, clusterName, vpcID, vpcCIDR)
 	if err != nil {
 		return nil, err
 	}
 
-	eniOut, err := vpcSvc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	eniOut, err := vpcSvc.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetID),
 		Description: aws.String("EKS private-endpoint ENI for " + clusterName),
 		Groups:      aws.StringSlice([]string{sgID}),
@@ -80,7 +81,7 @@ func EnsurePrivateEndpointENI(
 		ENIMac: aws.StringValue(eniOut.NetworkInterface.MacAddress),
 		SGID:   sgID,
 	}
-	slog.Info("EnsurePrivateEndpointENI provisioned",
+	slog.InfoContext(ctx, "EnsurePrivateEndpointENI provisioned",
 		"clusterName", clusterName, "accountID", accountID,
 		"eniId", pe.ENIID, "eniIp", pe.ENIIP, "sgId", sgID)
 	return pe, nil

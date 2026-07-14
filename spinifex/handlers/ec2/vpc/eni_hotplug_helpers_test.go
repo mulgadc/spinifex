@@ -1,6 +1,7 @@
 package handlers_ec2_vpc
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -144,7 +145,7 @@ func TestUpdateENI_PreservesUnrelatedFields(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
-	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetId),
 		Description: aws.String("preserved-desc"),
 	}, testAccountID)

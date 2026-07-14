@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,12 +52,24 @@ func (a *stateStoreAdapter) DeleteStoppedInstance(id string) error {
 	return a.js.DeleteStoppedInstance(id)
 }
 
+func (a *stateStoreAdapter) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	return a.js.UpdateStoppedInstance(id, mutate)
+}
+
+func (a *stateStoreAdapter) ClaimStoppedInstance(id string) (*vm.VM, error) {
+	return a.js.ClaimStoppedInstance(id)
+}
+
 func (a *stateStoreAdapter) ListStoppedInstances() ([]*vm.VM, error) {
 	return a.js.ListStoppedInstances()
 }
 
 func (a *stateStoreAdapter) WriteTerminatedInstance(id string, v *vm.VM) error {
 	return a.js.WriteTerminatedInstance(id, v)
+}
+
+func (a *stateStoreAdapter) UpdateTerminatedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	return a.js.UpdateTerminatedInstance(id, mutate)
 }
 
 func (a *stateStoreAdapter) ListTerminatedInstances() ([]*vm.VM, error) {
@@ -247,11 +260,17 @@ func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
 
 // unmountResponseError reports a seal/unmount failure from an ebs.unmount
 // response payload: a non-empty Error, or a volume still reported mounted.
-// Returns nil when the unmount and its block-map seal succeeded.
+// Returns nil when the unmount and its block-map seal succeeded, or when the
+// volume was already unmounted and sealed (NotFound) — viperblockd only
+// reports NotFound once the seal itself has completed, so a retry landing
+// here is an idempotent success, not a failure.
 func unmountResponseError(data []byte) error {
 	var resp types.EBSUnMountResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return fmt.Errorf("unmarshal unmount response: %w", err)
+	}
+	if resp.NotFound {
+		return nil
 	}
 	if resp.Error != "" {
 		return fmt.Errorf("ebs.unmount returned error: %s", resp.Error)
@@ -464,8 +483,10 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		// never re-announces the EIP's NAT and the VM loses connectivity.
 		if d.natsConn != nil && instance.ENIId != "" && instance.Instance != nil {
 			publicIP := instance.PublicIP
-			if publicIP == "" && d.eipService != nil {
-				if eipIP, ok := d.eipService.AssociatedPublicIPForInstance(instance.AccountID, instance.ID); ok {
+			if resolver, ok := d.eipService.(interface {
+				AssociatedPublicIPForInstance(context.Context, string, string) (string, bool)
+			}); ok && publicIP == "" {
+				if eipIP, ok := resolver.AssociatedPublicIPForInstance(context.Background(), instance.AccountID, instance.ID); ok {
 					publicIP = eipIP
 				}
 			}
@@ -547,6 +568,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		DevNetworking:              d.config.Daemon.DevNetworking,
 		BindHost:                   d.config.Host,
 		DetachDelay:                d.detachDelay,
+		DeviceDeletedTimeout:       d.deviceDeletedTimeout,
 		ConsumeCleanShutdownMarker: d.consumeCleanShutdownMarker(),
 	}
 }
@@ -611,7 +633,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 				"name", ebsRequest.Name, "id", instance.ID)
 			continue
 		}
-		if _, err := a.d.volumeService.DeleteVolume(&ec2.DeleteVolumeInput{
+		if _, err := a.d.volumeService.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 			VolumeId: &ebsRequest.Name,
 		}, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
 			slog.Error("Failed to delete volume on termination",
@@ -660,7 +682,7 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 	}
 	utils.PublishNATEvent(a.d.natsConn, "vpc.delete-nat", vpcId, instance.PublicIP, logicalIP, portName, "")
 
-	if err := a.d.externalIPAM.ReleaseIP(instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
+	if err := a.d.externalIPAM.ReleaseIP(context.Background(), instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
 		slog.Warn("Failed to release public IP on termination",
 			"ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
 		return err
@@ -681,11 +703,11 @@ func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
 	// Best-effort detach; a failure here must not block deletion — the force
 	// delete below bypasses the in-use guard for the owning instance, breaking
 	// the un-terminable-ENI deadlock (ADR-0003 §2).
-	if detachErr := a.d.vpcService.DetachENI(instance.AccountID, instance.ENIId); detachErr != nil {
+	if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, instance.ENIId); detachErr != nil {
 		slog.Warn("Failed to detach ENI on termination",
 			"eni", instance.ENIId, "instanceId", instance.ID, "err", detachErr)
 	}
-	if err := a.d.vpcService.ForceDeleteInstanceENI(instance.AccountID, instance.ENIId); err != nil {
+	if err := a.d.vpcService.ForceDeleteInstanceENI(context.Background(), instance.AccountID, instance.ENIId); err != nil {
 		slog.Error("Failed to delete ENI on termination",
 			"eni", instance.ENIId, "instanceId", instance.ID, "err", err)
 		return err
@@ -702,7 +724,7 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) error
 	if instance.PlacementGroupName == "" || a.d.placementGroupService == nil {
 		return nil
 	}
-	if _, err := a.d.placementGroupService.RemoveInstance(&handlers_ec2_placementgroup.RemoveInstanceInput{
+	if _, err := a.d.placementGroupService.RemoveInstance(context.Background(), &handlers_ec2_placementgroup.RemoveInstanceInput{
 		GroupName:  instance.PlacementGroupName,
 		NodeName:   instance.PlacementGroupNode,
 		InstanceID: instance.ID,
@@ -722,7 +744,7 @@ func (a *instanceCleanerAdapter) RemoveFromSpotRequest(instance *vm.VM) error {
 	if a.d.spotInstanceService == nil {
 		return nil
 	}
-	if err := a.d.spotInstanceService.CloseForInstance(instance.ID, instance.AccountID); err != nil {
+	if err := a.d.spotInstanceService.CloseForInstance(context.Background(), instance.ID, instance.AccountID); err != nil {
 		slog.Error("Failed to close spot request for instance",
 			"instanceId", instance.ID, "err", err)
 		return err

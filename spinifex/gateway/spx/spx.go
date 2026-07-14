@@ -3,6 +3,7 @@
 package spx
 
 import (
+	"context"
 	"encoding/json"
 	"runtime"
 	"strings"
@@ -44,8 +45,8 @@ type GetNodesOutput struct {
 }
 
 // GetNodes queries all daemon nodes via NATS fan-out and returns their status.
-func GetNodes(nc *nats.Conn, expectedNodes int) (*GetNodesOutput, error) {
-	frames, _, err := utils.Gather(nc, "spinifex.node.status", []byte("{}"),
+func GetNodes(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetNodesOutput, error) {
+	frames, _, err := utils.Gather(ctx, nc, "spinifex.node.status", []byte("{}"),
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
@@ -83,8 +84,8 @@ type GetVMsOutput struct {
 }
 
 // GetVMs queries all daemon nodes via NATS fan-out and returns their VMs.
-func GetVMs(nc *nats.Conn, expectedNodes int) (*GetVMsOutput, error) {
-	frames, _, err := utils.Gather(nc, "spinifex.node.vms", []byte("{}"),
+func GetVMs(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetVMsOutput, error) {
+	frames, _, err := utils.Gather(ctx, nc, "spinifex.node.vms", []byte("{}"),
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err

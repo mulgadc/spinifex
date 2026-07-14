@@ -12,9 +12,14 @@ import (
 
 const testAccountID = "000000000000"
 
-// stubIAMService returns empty non-nil outputs for all methods. Individual
-// tests can override a method by setting the matching function field.
+// stubIAMService embeds the IAMService interface and returns empty non-nil
+// outputs for the handler methods every happy-path test drives; those methods
+// are load-bearing and stay explicit. Methods no gateway/iam path reaches are
+// promoted from the embedded interface and nil-panic if unexpectedly called.
+// Individual tests can override a method by setting the matching function field.
 type stubIAMService struct {
+	handlers_iam.IAMService
+
 	getInstanceProfile func(string, *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
 }
 
@@ -86,28 +91,6 @@ func (s *stubIAMService) ListAttachedUserPolicies(_ string, _ *iam.ListAttachedU
 	return &iam.ListAttachedUserPoliciesOutput{}, nil
 }
 
-func (s *stubIAMService) GetUserPolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-
-func (s *stubIAMService) GetRolePolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-	return nil, nil
-}
-
-func (s *stubIAMService) LookupAccessKey(_ string) (*handlers_iam.AccessKey, error) {
-	return nil, nil
-}
-
-func (s *stubIAMService) DecryptSecret(_ string) (string, error)            { return "", nil }
-func (s *stubIAMService) SeedBootstrap(_ *handlers_iam.BootstrapData) error { return nil }
-func (s *stubIAMService) IsEmpty() (bool, error)                            { return true, nil }
-
-func (s *stubIAMService) CreateAccount(_ string) (*handlers_iam.Account, error) {
-	return nil, nil
-}
-func (s *stubIAMService) GetAccount(_ string) (*handlers_iam.Account, error) { return nil, nil }
-func (s *stubIAMService) ListAccounts() ([]*handlers_iam.Account, error)     { return nil, nil }
-
 func (s *stubIAMService) CreateRole(_ string, _ *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
 	return &iam.CreateRoleOutput{}, nil
 }
@@ -171,8 +154,51 @@ func (s *stubIAMService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInst
 func (s *stubIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
 	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
 }
-func (s *stubIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
-	return nil, nil
+
+func (s *stubIAMService) TagUser(_ string, _ *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	return &iam.TagUserOutput{}, nil
+}
+func (s *stubIAMService) UntagUser(_ string, _ *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	return &iam.UntagUserOutput{}, nil
+}
+func (s *stubIAMService) ListUserTags(_ string, _ *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	return &iam.ListUserTagsOutput{}, nil
+}
+func (s *stubIAMService) TagRole(_ string, _ *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
+	return &iam.TagRoleOutput{}, nil
+}
+func (s *stubIAMService) UntagRole(_ string, _ *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	return &iam.UntagRoleOutput{}, nil
+}
+func (s *stubIAMService) ListRoleTags(_ string, _ *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
+	return &iam.ListRoleTagsOutput{}, nil
+}
+func (s *stubIAMService) TagPolicy(_ string, _ *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
+	return &iam.TagPolicyOutput{}, nil
+}
+func (s *stubIAMService) UntagPolicy(_ string, _ *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
+	return &iam.UntagPolicyOutput{}, nil
+}
+func (s *stubIAMService) ListPolicyTags(_ string, _ *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
+	return &iam.ListPolicyTagsOutput{}, nil
+}
+func (s *stubIAMService) TagInstanceProfile(_ string, _ *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
+	return &iam.TagInstanceProfileOutput{}, nil
+}
+func (s *stubIAMService) UntagInstanceProfile(_ string, _ *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
+	return &iam.UntagInstanceProfileOutput{}, nil
+}
+func (s *stubIAMService) ListInstanceProfileTags(_ string, _ *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
+	return &iam.ListInstanceProfileTagsOutput{}, nil
+}
+func (s *stubIAMService) TagOpenIDConnectProvider(_ string, _ *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
+	return &iam.TagOpenIDConnectProviderOutput{}, nil
+}
+func (s *stubIAMService) UntagOpenIDConnectProvider(_ string, _ *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	return &iam.UntagOpenIDConnectProviderOutput{}, nil
+}
+func (s *stubIAMService) ListOpenIDConnectProviderTags(_ string, _ *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
+	return &iam.ListOpenIDConnectProviderTagsOutput{}, nil
 }
 
 func (s *stubIAMService) CreateGroup(_ string, _ *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {

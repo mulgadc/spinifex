@@ -1,12 +1,14 @@
 package gateway_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -42,7 +44,7 @@ var validBootstrapKinds = map[string]struct{}{
 // PublishInternal — POST /clusters/{name}/internal-publish. Relays a VM
 // publication onto the bootstrap/state NATS subjects via the AWSGW, keeping
 // NATS cluster-internal.
-func PublishInternal(natsConn *nats.Conn, clusterName string, body []byte) (*publishInternalOutput, error) {
+func PublishInternal(ctx context.Context, natsConn *nats.Conn, clusterName string, body []byte) (*publishInternalOutput, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -52,7 +54,7 @@ func PublishInternal(natsConn *nats.Conn, clusterName string, body []byte) (*pub
 
 	var req internalPublishRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		slog.Debug("PublishInternal: bad body", "cluster", clusterName, "err", err)
+		slog.DebugContext(ctx, "PublishInternal: bad body", "cluster", clusterName, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	if req.AccountID == "" || len(req.Payload) == 0 {
@@ -63,7 +65,7 @@ func PublishInternal(natsConn *nats.Conn, clusterName string, body []byte) (*pub
 	switch req.Channel {
 	case internalChannelBootstrap:
 		if _, ok := validBootstrapKinds[req.Kind]; !ok {
-			slog.Debug("PublishInternal: unknown bootstrap kind", "cluster", clusterName, "kind", req.Kind)
+			slog.DebugContext(ctx, "PublishInternal: unknown bootstrap kind", "cluster", clusterName, "kind", req.Kind)
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 		subject = handlers_eks.BootstrapSubject(req.AccountID, clusterName, req.Kind)
@@ -72,15 +74,18 @@ func PublishInternal(natsConn *nats.Conn, clusterName string, body []byte) (*pub
 	case internalChannelAddon:
 		subject = handlers_eks.AddonStatusSubject(req.AccountID, clusterName)
 	default:
-		slog.Debug("PublishInternal: unknown channel", "cluster", clusterName, "channel", req.Channel)
+		slog.DebugContext(ctx, "PublishInternal: unknown channel", "cluster", clusterName, "channel", req.Channel)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	if err := natsConn.Publish(subject, req.Payload); err != nil {
-		slog.Error("PublishInternal: NATS publish failed", "subject", subject, "err", err)
+	msg := nats.NewMsg(subject)
+	msg.Data = req.Payload
+	utils.InjectTraceContext(ctx, msg.Header)
+	if err := natsConn.PublishMsg(msg); err != nil {
+		slog.ErrorContext(ctx, "PublishInternal: NATS publish failed", "subject", subject, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	slog.Debug("PublishInternal: relayed", "subject", subject, "bytes", len(req.Payload))
+	slog.DebugContext(ctx, "PublishInternal: relayed", "subject", subject, "bytes", len(req.Payload))
 
 	return &publishInternalOutput{}, nil
 }

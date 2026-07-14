@@ -5,6 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -373,6 +374,115 @@ func TestAllocateForLaunch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCanAllocateLocked_MIGvsWholeGPU(t *testing.T) {
+	gpuInfo := &ec2.GpuInfo{
+		Gpus: []*ec2.GpuDeviceInfo{{
+			Count:        aws.Int64(1),
+			Manufacturer: aws.String("NVIDIA"),
+			Name:         aws.String("MIG 1g.10gb"),
+			MemoryInfo:   &ec2.GpuDeviceMemoryInfo{SizeInMiB: aws.Int64(10240)},
+		}},
+		TotalGpuMemoryInMiB: aws.Int64(10240),
+	}
+
+	// Host with 8 schedulable vCPUs and 32 GiB schedulable memory (after
+	// reserve), and a GPU pool with 5 free slots — plenty for the GPU-slot
+	// gate so these assertions exercise the cpu/mem gate in isolation.
+	rm := &ResourceManager{
+		hostVCPU:     10,
+		hostMemGB:    34.0,
+		reservedVCPU: 2,
+		reservedMem:  2.0,
+		gpuManager:   gpu.NewManager(make([]gpu.GPUDevice, 5)),
+	}
+
+	migType := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("mig.1g.10gb"),
+		VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(4)},
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(32 * 1024)},
+		GpuInfo:      gpuInfo,
+	}
+	wholeGPUType := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("g7e.4xlarge"),
+		VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(4)},
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(16 * 1024)},
+		GpuInfo:      gpuInfo,
+	}
+
+	// MIG: exactly one slice fits (4 vCPUs, 32 GiB on an 8 vCPU / 32 GiB host).
+	assert.Equal(t, 1, rm.canAllocateLocked(migType, 10), "MIG: one slice fits")
+
+	// MIG: a second slice would exceed host resources — must be gated.
+	rm.allocatedVCPU = 4
+	rm.allocatedMem = 32.0
+	assert.Equal(t, 0, rm.canAllocateLocked(migType, 10), "MIG: second slice rejected when resources exhausted")
+
+	// Whole-GPU: regression for mulga-jeo02. With cpu/mem already exhausted by
+	// the MIG slice above, a whole-GPU instance must also be refused instead
+	// of bypassing the check.
+	assert.Equal(t, 0, rm.canAllocateLocked(wholeGPUType, 10), "whole-GPU: no longer bypasses the cpu/mem gate")
+}
+
+// TestCanAllocateLocked_WholeGPU_MemoryAndSlotGates is the regression test
+// for mulga-jeo02: a whole-GPU launch must be refused (allocateForLaunch maps
+// this to InsufficientInstanceCapacity) when the node lacks the instance's
+// memory, must succeed when memory is available, and must be refused up
+// front — not just late at gpuManager.Claim — when the GPU pool is exhausted.
+func TestCanAllocateLocked_WholeGPU_MemoryAndSlotGates(t *testing.T) {
+	gpuInfo := &ec2.GpuInfo{
+		Gpus: []*ec2.GpuDeviceInfo{{
+			Count:        aws.Int64(1),
+			Manufacturer: aws.String("NVIDIA"),
+			Name:         aws.String("A10G"),
+			MemoryInfo:   &ec2.GpuDeviceMemoryInfo{SizeInMiB: aws.Int64(24576)},
+		}},
+		TotalGpuMemoryInMiB: aws.Int64(24576),
+	}
+	wholeGPUType := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("g5.xlarge"),
+		VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(4)},
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(16 * 1024)},
+		GpuInfo:      gpuInfo,
+	}
+
+	// 8 schedulable vCPUs → 6 remaining after reserve; 32 GiB → 30 GiB remaining.
+	newRM := func(freeGPUSlots int) *ResourceManager {
+		return &ResourceManager{
+			hostVCPU:     8,
+			hostMemGB:    32.0,
+			reservedVCPU: 2,
+			reservedMem:  2.0,
+			gpuManager:   gpu.NewManager(make([]gpu.GPUDevice, freeGPUSlots)),
+		}
+	}
+
+	t.Run("refused when host memory insufficient", func(t *testing.T) {
+		rm := newRM(1)
+		rm.allocatedMem = 25.0 // 30 GiB schedulable - 25 allocated = 5 GiB left, short of the 16 GiB guest
+		got := rm.canAllocateLocked(wholeGPUType, 1)
+		assert.Equal(t, 0, got, "whole-GPU must be refused on memory exhaustion, not bypass the cpu/mem gate")
+		_, err := allocateForLaunch(got, 1, 1)
+		assert.ErrorIs(t, err, errInsufficientCapacity, "RunInstances maps this to InsufficientInstanceCapacity")
+	})
+
+	t.Run("succeeds when memory and a GPU slot are both available", func(t *testing.T) {
+		rm := newRM(1)
+		got := rm.canAllocateLocked(wholeGPUType, 1)
+		assert.Equal(t, 1, got)
+		n, err := allocateForLaunch(got, 1, 1)
+		require.NoError(t, err)
+		assert.Equal(t, 1, n)
+	})
+
+	t.Run("refused up front when the GPU pool is exhausted despite cpu/mem headroom", func(t *testing.T) {
+		rm := newRM(0)
+		got := rm.canAllocateLocked(wholeGPUType, 1)
+		assert.Equal(t, 0, got, "GPU-slot exhaustion must refuse up front, not defer to a late Claim failure")
+		_, err := allocateForLaunch(got, 1, 1)
+		assert.ErrorIs(t, err, errInsufficientCapacity)
+	})
 }
 
 func TestResolveHostReserve(t *testing.T) {

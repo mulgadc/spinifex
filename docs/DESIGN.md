@@ -49,7 +49,7 @@ Request routing (`spinifex/gateway/gateway.go`):
 
 1. **Authentication**: SigV4 middleware validates AWS credentials and resolves the account ID
 2. **Throttling**: Per-account+action token bucket rejects bursts post-auth
-3. **Service Detection**: Extracts service name (ec2, iam, account, elasticloadbalancing, spinifex) from the Authorization header
+3. **Service Detection**: Extracts service name from the Authorization header
 4. **Action Dispatch**: Routes to service-specific handler
 
 ```go
@@ -60,8 +60,20 @@ case "account":
     err = gw.Account_Request(w, r)
 case "iam":
     err = gw.IAM_Request(w, r)
+case "sts":
+    err = gw.STS_Request(w, r)
 case "elasticloadbalancing":
     err = gw.ELBv2_Request(w, r)
+case "eks":
+    err = gw.EKS_Request(w, r)
+case "ecs":
+    err = gw.ECS_Request(w, r)
+case "ecr":
+    err = gw.ECR_Request(w, r)
+case "acm":
+    err = gw.ACM_Request(w, r)
+case "tagging":
+    err = gw.Tagging_Request(w, r)
 case "spinifex":
     err = gw.Spinifex_Request(w, r)
 }
@@ -79,17 +91,11 @@ The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and de
     return gateway_ec2_instance.DescribeInstances(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
 }),
 // ... + volumes, snapshots, VPCs, subnets, route tables, IGWs, NAT gateways,
-// security groups, network interfaces, placement groups, key pairs, images, tags
+// security groups, network interfaces, elastic IPs, placement groups, key pairs,
+// images, tags, capacity reservations, spot instances
 ```
 
 ### 4. NATS Messaging
-
-The full service-to-subject map — which service subscribes to what, what
-each one publishes downstream, what each depends on — is captured in
-[`service-interfaces.yaml`](./service-interfaces.yaml). It is the source
-of truth for targeted e2e suite selection (see
-`docs/development/improvements/e2e-targeted-suite-selection.md`) and is
-validated by `make manifest-check`.
 
 The gateway communicates with daemons via NATS request/response. Most calls go through `utils.NATSRequest`, which marshals the input, attaches the account ID as a NATS header, and unmarshals the typed response:
 
@@ -114,7 +120,7 @@ Daemons (`spinifex/daemon/daemon.go`) subscribe to NATS topics and handle reques
 {"ec2.DescribeInstanceTypes", d.handleEC2DescribeInstanceTypes, ""},
 ```
 
-`ec2.RunInstances` is dynamic: `ResourceManager` subscribes to `ec2.RunInstances.{type}` (and `ec2.RunInstances.{type}.{nodeId}` for targeted dispatch) only while the node has capacity for that type, and unsubscribes when full. Per-instance commands flow over `ec2.cmd.{instanceID}`, subscribed only by the owning node.
+`ec2.RunInstances` is dynamic: `ResourceManager` subscribes to `ec2.RunInstances.{type}` only while the node has capacity for that type, and unsubscribes when full. The node-targeted subject `ec2.RunInstances.{type}.{nodeId}` stays subscribed even at full capacity — the launch-time `allocate()` enforces limits there. Per-instance commands flow over `ec2.cmd.{instanceID}`, subscribed only by the owning node.
 
 **Queue Groups**: topics with the `spinifex-workers` queue group are load-balanced — only one daemon handles each request. Topics without a queue group fan out to all daemons.
 
@@ -151,7 +157,7 @@ type Daemon struct {
     config        *config.Config          // Node-specific configuration
     natsConn      *nats.Conn              // NATS connection
     resourceMgr   *ResourceManager        // CPU/Memory tracking + dynamic RunInstances subscriptions
-    Instances     vm.Instances            // Local VMs
+    vmMgr         *vm.Manager             // Local VMs
     // ... + one service struct per EC2/ELBv2 resource
     //       (instance, key, image, volume, snapshot, tags, vpc, subnet,
     //        igw, eigw, natgw, routetable, eip, placementgroup, elbv2, ...)
@@ -172,6 +178,8 @@ type ResourceManager struct {
     allocatedVCPU int
     allocatedMem  float64
     instanceTypes map[string]*ec2.InstanceTypeInfo   // t3.micro, t3.small, etc.
+    // ... + capacity-reservation accounting, GPU manager, nbdkit memory
+    //       overhead tracking, and the dynamic-subscription state
 }
 ```
 
@@ -236,22 +244,26 @@ Cluster configuration (`spinifex/config/config.go`):
 
 ```go
 type ClusterConfig struct {
-    Epoch   uint64            // Incremented on config changes
-    Node    string            // This node's identifier
-    Version string            // Spinifex version
-    Nodes   map[string]Config // Configuration for all nodes
+    Epoch     uint64            // Incremented on config changes
+    Node      string            // This node's identifier
+    Version   string            // Spinifex version
+    Network   NetworkConfig     // Cluster-wide external network settings (IP pools, IPsec)
+    Bootstrap BootstrapConfig   // Default VPC IDs written by admin init
+    AWS       AWSConfig         // Cluster-wide AWS-parity settings (region, endpoint suffix)
+    Nodes     map[string]Config // Configuration for all nodes
 }
 
 type Config struct {
-    Node, Host, Region, AZ string
-    BaseDir, DataDir       string
+    Node, Host, AdvertiseIP  string
+    Region, AZ               string
+    BaseDir, DataDir, WalDir string
+    Services   []string         // Which services this node runs locally
     Daemon     DaemonConfig
     NATS       NATSConfig       // Broker address, JetStream, ACL token, CA cert
     AWSGW      AWSGWConfig      // Gateway host, TLS certs, throttle config
     Predastore PredastoreConfig // S3 endpoint + service credentials
     Viperblock ViperblockConfig
     VPCD       VPCDConfig       // OVN/OVS endpoints
-    Network    NetworkConfig
 }
 ```
 
@@ -263,14 +275,14 @@ Configs are generated by `spx admin init` (leader) or `spx admin join` (follower
 spinifex/
 ├── spinifex/
 │   ├── services/                # Long-running services (awsgw, spinifex, viperblockd,
-│   │                            #   predastore, nats, vpcd, spinifexui)
+│   │                            #   predastore, nats, spinifexui)
 │   ├── gateway/                 # AWS API surface
 │   │   ├── gateway.go           # chi router, SigV4 auth, throttling
 │   │   ├── auth.go              # SigV4 verification + IAM lookup
 │   │   ├── ec2.go               # EC2 action dispatcher
 │   │   ├── ec2/                 # Per-resource handlers (instance, volume, vpc, ...)
 │   │   ├── elbv2/, iam/, policy/
-│   ├── handlers/                # NATS-side service implementations (ec2, elbv2, iam)
+│   ├── handlers/                # NATS-side service implementations (ec2, elbv2, iam, ...)
 │   ├── daemon/
 │   │   ├── daemon.go            # Daemon entry, NATS subscription table
 │   │   └── daemon_handlers_*.go # One file per resource family
@@ -279,11 +291,13 @@ spinifex/
 │   ├── instancetypes/           # t3.*, m5.*, sys.* definitions
 │   ├── lbagent/                 # In-VM agent for ELB target health
 │   ├── vm/                      # VM instance representation
+│   ├── vpcd/                    # VPC daemon (OVN/OVS network programming)
 │   └── qmp/                     # QEMU Machine Protocol client
 └── cmd/
     ├── spinifex/                # spx CLI
     ├── lb-agent/                # ELB target agent binary
-    └── installer/               # Platform installer
+    ├── installer/               # Platform installer
+    └── ...                      # ECS agent, ECR credential provider, EKS helper binaries
 ```
 
 ## Development

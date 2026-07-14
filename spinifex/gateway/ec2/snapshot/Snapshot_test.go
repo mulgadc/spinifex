@@ -1,6 +1,7 @@
 package gateway_ec2_snapshot
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -228,58 +229,58 @@ func TestValidateCopySnapshotInput(t *testing.T) {
 // Handler tests — call handlers directly to cover validation + NATS error paths
 
 func TestCreateSnapshot_ValidationErrors(t *testing.T) {
-	_, err := CreateSnapshot(nil, nil, "")
+	_, err := CreateSnapshot(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 
-	_, err = CreateSnapshot(&ec2.CreateSnapshotInput{}, nil, "")
+	_, err = CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{}, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 
-	_, err = CreateSnapshot(&ec2.CreateSnapshotInput{VolumeId: aws.String("bad")}, nil, "")
+	_, err = CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{VolumeId: aws.String("bad")}, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidVolumeIDMalformed)
 }
 
 func TestCreateSnapshot_NilNATS(t *testing.T) {
-	_, err := CreateSnapshot(&ec2.CreateSnapshotInput{
+	_, err := CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String("vol-1234567890abcdef0"),
 	}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestDescribeSnapshots_ValidationErrors(t *testing.T) {
-	_, err := DescribeSnapshots(&ec2.DescribeSnapshotsInput{
+	_, err := DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
 		SnapshotIds: []*string{aws.String("invalid-id")},
 	}, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotIDMalformed)
 }
 
 func TestDescribeSnapshots_NilNATS(t *testing.T) {
-	_, err := DescribeSnapshots(nil, nil, "acct-123")
+	_, err := DescribeSnapshots(context.Background(), nil, nil, "acct-123")
 	assert.Error(t, err)
 
-	_, err = DescribeSnapshots(&ec2.DescribeSnapshotsInput{}, nil, "acct-123")
+	_, err = DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestDeleteSnapshot_ValidationErrors(t *testing.T) {
-	_, err := DeleteSnapshot(nil, nil, "")
+	_, err := DeleteSnapshot(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 
-	_, err = DeleteSnapshot(&ec2.DeleteSnapshotInput{SnapshotId: aws.String("bad")}, nil, "")
+	_, err = DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{SnapshotId: aws.String("bad")}, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotIDMalformed)
 }
 
 func TestDeleteSnapshot_NilNATS(t *testing.T) {
-	_, err := DeleteSnapshot(&ec2.DeleteSnapshotInput{
+	_, err := DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
 		SnapshotId: aws.String("snap-1234567890abcdef0"),
 	}, nil, "acct-123")
 	assert.Error(t, err)
 }
 
 func TestCopySnapshot_ValidationErrors(t *testing.T) {
-	_, err := CopySnapshot(nil, nil, "")
+	_, err := CopySnapshot(context.Background(), nil, nil, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 
-	_, err = CopySnapshot(&ec2.CopySnapshotInput{
+	_, err = CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
 		SourceSnapshotId: aws.String("bad"),
 		SourceRegion:     aws.String("us-east-1"),
 	}, nil, "")
@@ -287,7 +288,7 @@ func TestCopySnapshot_ValidationErrors(t *testing.T) {
 }
 
 func TestCopySnapshot_NilNATS(t *testing.T) {
-	_, err := CopySnapshot(&ec2.CopySnapshotInput{
+	_, err := CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
 		SourceSnapshotId: aws.String("snap-1234567890abcdef0"),
 		SourceRegion:     aws.String("ap-southeast-2"),
 	}, nil, "acct-123")

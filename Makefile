@@ -218,9 +218,9 @@ install-system:
 		ovn-central ovn-host openvswitch-switch dhcpcd-base
 
 install-go:
-	@echo -e "\n....Installing Go 1.26.4 for $(ARCH) ($(GO_ARCH))...."
+	@echo -e "\n....Installing Go 1.26.5 for $(ARCH) ($(GO_ARCH))...."
 	@if [ ! -d "/usr/local/go" ]; then \
-		curl -L https://go.dev/dl/go1.26.4.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
+		curl -L https://go.dev/dl/go1.26.5.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
 	else \
 		echo "Go already installed in /usr/local/go"; \
 	fi

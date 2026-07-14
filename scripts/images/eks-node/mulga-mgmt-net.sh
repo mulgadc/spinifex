@@ -4,9 +4,10 @@
 # launch. The EKS control plane is the case: cloud-init on a stock Alpine guest
 # cannot reliably pick the right NIC out of two, so the host enumerates them and
 # this oneshot configures each by MAC, before cloud-init's network stage:
-#   - NIC<n>_DHCP=1: the primary data ENI. OVN serves DHCP; we lease it (one-shot)
-#     so the Ec2 IMDS datasource can reach 169.254.169.254, and pin a /32 to it so
-#     a link-local 169.254.0.0/16 route on another NIC cannot hijack IMDS.
+#   - NIC<n>_DHCP=1: the primary data ENI. OVN serves DHCP; we lease it (retrying
+#     one-shots on a budget until the cross-host datapath is up) so the Ec2 IMDS
+#     datasource can reach 169.254.169.254, and pin a /32 to it so a link-local
+#     169.254.0.0/16 route on another NIC cannot hijack IMDS.
 #   - NIC<n>_CIDR: a static NIC (mgmt0 on br-mgmt, which has no DHCP). Applied
 #     address-only; NIC<n>_DEFAULT is 0, so mgmt0 is never the default route.
 #
@@ -46,6 +47,26 @@ dhcp_oneshot() {
     fi
 }
 
+# The OVN DHCP datapath for a cross-host CP data NIC lags guest boot by minutes
+# (logical-port binding + per-tap reconcile on the remote placement host). A
+# single ~16s one-shot loses that race and strands the NIC IP-less, so the Ec2
+# datasource never reaches IMDS and the member wedges. Retry the one-shot on a
+# budget aligned with cloud-init's Ec2 max_wait (600s); each attempt still exits
+# leaving no lingering daemon, so cloud-init's later ENI management is unaffected.
+DHCP_BUDGET="${MULGA_DHCP_BUDGET:-600}"
+
+dhcp_acquire() {
+    iface="$1"
+    deadline=$(( $(date +%s) + DHCP_BUDGET ))
+    while :; do
+        if dhcp_oneshot "$iface" && ip -4 addr show dev "$iface" | grep -q 'inet '; then
+            return 0
+        fi
+        [ "$(date +%s)" -ge "$deadline" ] && return 1
+        sleep 3
+    done
+}
+
 for n in 0 1 2 3 4 5; do
     # ${VAR:-} keeps the unset NIC<n>_* slots safe under `set -u`.
     eval "mac=\${NIC${n}_MAC:-}"
@@ -62,10 +83,10 @@ for n in 0 1 2 3 4 5; do
     ip link set "$iface" up
 
     if [ "$dhcp" = "1" ]; then
-        if dhcp_oneshot "$iface"; then
+        if dhcp_acquire "$iface"; then
             echo "[mulga-mgmt-net] data NIC $iface ($mac) up via DHCP"
         else
-            echo "[mulga-mgmt-net] ERROR: no DHCP lease on data NIC $iface ($mac)" >&2
+            echo "[mulga-mgmt-net] ERROR: no DHCP lease on data NIC $iface ($mac) after ${DHCP_BUDGET}s" >&2
         fi
         # Pin IMDS to the data NIC so a link-local 169.254.0.0/16 route on another
         # interface cannot steal the metadata path. Route via the gateway, not

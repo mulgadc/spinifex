@@ -1,6 +1,7 @@
 package handlers_quota
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -168,7 +169,7 @@ type InstanceTypeResolver func(accountID, instanceID string) (instanceType strin
 func NATSInstanceTypeResolver(natsConn *nats.Conn, expectedNodes func() int) InstanceTypeResolver {
 	return func(accountID, instanceID string) (string, bool, error) {
 		reservations, complete, err := gateway_ec2_instance.DescribeInstancesForReconcile(
-			&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
+			context.Background(), &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
 			natsConn, expectedNodes(), accountID)
 		if err != nil {
 			return "", false, err

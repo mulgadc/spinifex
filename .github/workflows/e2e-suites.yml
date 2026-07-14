@@ -44,6 +44,10 @@ permissions:
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   TEST_RUN: ${{ inputs.test_run || '' }}
+  # OTLP export to the central Elastic sink (wattle). Repo variable overrides;
+  # empty string disables telemetry entirely.
+  SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
+  SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -263,6 +267,15 @@ jobs:
             "$VM":/tmp/start-net-capture.sh
           ssh "${SSH_OPTS[@]}" "$VM" "bash /tmp/start-net-capture.sh" || true
 
+      - name: Upload tofu log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tofu-log-single-${{ github.run_id }}
+          path: ${{ env.TOFU_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14
+
   single_suite:
     name: Single env · suite
     needs: single_provision
@@ -458,9 +471,19 @@ jobs:
           reap TERM; sleep 2; reap KILL
           find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
           quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "telemetry flush"       "$TOFU_LOG" timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" || true
           quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
           ok "teardown complete"
+
+      - name: Upload tofu log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tofu-log-single-td-${{ github.run_id }}
+          path: ${{ env.TOFU_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14
 
   # ---------------------------------------------------------------------------
   # Multinode env
@@ -611,6 +634,15 @@ jobs:
               tf-user@"$ip":/tmp/start-net-capture.sh
             ssh "${SSH_OPTS[@]}" tf-user@"$ip" "bash /tmp/start-net-capture.sh" || true
           done
+
+      - name: Upload tofu log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tofu-log-multi-${{ github.run_id }}
+          path: ${{ env.TOFU_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14
 
   multi_suite:
     name: Multi env · suite
@@ -779,9 +811,19 @@ jobs:
           reap TERM; sleep 2; reap KILL
           find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
           quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "telemetry flush"       "$TOFU_LOG" timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" || true
           quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
           ok "teardown complete"
+
+      - name: Upload tofu log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tofu-log-multi-td-${{ github.run_id }}
+          path: ${{ env.TOFU_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14
 
   e2e_suites_status:
     name: E2E suite blocks · summary

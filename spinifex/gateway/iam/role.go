@@ -119,3 +119,30 @@ func ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput, svc ha
 	}
 	return svc.ListRolePolicies(accountID, input)
 }
+
+func TagRole(accountID string, input *iam.TagRoleInput, svc handlers_iam.IAMService) (*iam.TagRoleOutput, error) {
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Tags) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.TagRole(accountID, input)
+}
+
+func UntagRole(accountID string, input *iam.UntagRoleInput, svc handlers_iam.IAMService) (*iam.UntagRoleOutput, error) {
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.TagKeys) == 0 {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.UntagRole(accountID, input)
+}
+
+func ListRoleTags(accountID string, input *iam.ListRoleTagsInput, svc handlers_iam.IAMService) (*iam.ListRoleTagsOutput, error) {
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.ListRoleTags(accountID, input)
+}

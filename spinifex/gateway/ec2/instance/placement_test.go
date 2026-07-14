@@ -178,7 +178,7 @@ func TestQueryNodeCapacity_FiltersEligibleNodes(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Query for t3.micro — should get node-1 (cap 4) and node-3 (cap 2), not node-2 (cap 0)
-	nodes, err := queryNodeCapacity(nc, "t3.micro", 3, "test-account")
+	nodes, err := queryNodeCapacity(context.Background(), nc, "t3.micro", 3, "test-account")
 	require.NoError(t, err)
 
 	assert.Len(t, nodes, 2)
@@ -193,7 +193,7 @@ func TestQueryNodeCapacity_NoNodes(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	// No subscribers → timeout, empty result
-	nodes, err := queryNodeCapacity(nc, "t3.micro", 2, "test-account")
+	nodes, err := queryNodeCapacity(context.Background(), nc, "t3.micro", 2, "test-account")
 	require.NoError(t, err)
 	assert.Len(t, nodes, 0)
 }
@@ -224,7 +224,7 @@ func TestAggregateResults_AllSucceed(t *testing.T) {
 	}
 
 	// No NATS needed — all succeed, no rollback
-	reservation, err := aggregateResults(results, 2, nil, "")
+	reservation, err := aggregateResults(context.Background(), results, 2, nil, "")
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 3)
 	assert.Equal(t, "r-abc", aws.StringValue(reservation.ReservationId))
@@ -249,13 +249,14 @@ func TestAggregateResults_PartialSuccessMeetsMinCount(t *testing.T) {
 	}
 
 	// MinCount=2, got 2 from node-1 → success
-	reservation, err := aggregateResults(results, 2, nil, "")
+	reservation, err := aggregateResults(context.Background(), results, 2, nil, "")
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2)
 }
 
 func TestAggregateResults_PartialFailureBelowMinCount(t *testing.T) {
 	_, nc := startTestNATSServer(t)
+	noopTerminateRetrySleep(t)
 
 	results := []nodeLaunchResult{
 		{
@@ -276,7 +277,7 @@ func TestAggregateResults_PartialFailureBelowMinCount(t *testing.T) {
 	// a fake capacity shortage (capacity is caught pre-launch).
 	// Note: rollback will attempt to terminate i-001 but we don't have a
 	// daemon responding, so it will fail silently — that's OK for this test
-	_, err := aggregateResults(results, 3, nc, "test-account")
+	_, err := aggregateResults(context.Background(), results, 3, nc, "test-account")
 	require.Error(t, err)
 	assert.Equal(t, assert.AnError, err)
 	assert.NotEqual(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
@@ -289,7 +290,7 @@ func TestAggregateResults_AllFail(t *testing.T) {
 	}
 
 	// All nodes errored → surface the real error, not InsufficientInstanceCapacity.
-	_, err := aggregateResults(results, 1, nil, "")
+	_, err := aggregateResults(context.Background(), results, 1, nil, "")
 	require.Error(t, err)
 	assert.Equal(t, assert.AnError, err)
 }
@@ -303,7 +304,7 @@ func TestAggregateResults_NodeCapacityRacePropagates(t *testing.T) {
 		{NodeID: "node-1", Err: wrapped},
 	}
 
-	_, err := aggregateResults(results, 1, nil, "")
+	_, err := aggregateResults(context.Background(), results, 1, nil, "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -315,7 +316,7 @@ func TestAggregateResults_TimeoutSurfacedNotMasked(t *testing.T) {
 		{NodeID: "node-1", Err: timeoutErr},
 	}
 
-	_, err := aggregateResults(results, 1, nil, "")
+	_, err := aggregateResults(context.Background(), results, 1, nil, "")
 	require.Error(t, err)
 	assert.NotEqual(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
@@ -325,6 +326,7 @@ func TestAggregateResults_TimeoutSurfacedNotMasked(t *testing.T) {
 // without erroring) keeps the generic capacity code.
 func TestAggregateResults_ShortWithoutNodeErrors(t *testing.T) {
 	_, nc := startTestNATSServer(t)
+	noopTerminateRetrySleep(t)
 	results := []nodeLaunchResult{
 		{
 			NodeID: "node-1",
@@ -336,7 +338,7 @@ func TestAggregateResults_ShortWithoutNodeErrors(t *testing.T) {
 
 	// totalLaunched=1 > 0 triggers rollback; the daemon isn't responding so it
 	// fails silently — fine for this test.
-	_, err := aggregateResults(results, 3, nc, "test-account")
+	_, err := aggregateResults(context.Background(), results, 3, nc, "test-account")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -388,7 +390,7 @@ func TestAggregateResults_PropagatesClientError(t *testing.T) {
 		{NodeID: "node-2", Err: wrapped},
 	}
 
-	_, err := aggregateResults(results, 1, nil, "")
+	_, err := aggregateResults(context.Background(), results, 1, nil, "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
@@ -444,7 +446,7 @@ func TestDistributeInstances_SuccessfulSpread(t *testing.T) {
 		MaxCount:     aws.Int64(2),
 	}
 
-	reservation, err := distributeInstances(input, nc, "test-account", 2)
+	reservation, err := distributeInstances(context.Background(), input, nc, "test-account", 2)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2)
 
@@ -481,7 +483,7 @@ func TestDistributeInstances_InsufficientCapacity(t *testing.T) {
 		MaxCount:     aws.Int64(3),
 	}
 
-	_, err = distributeInstances(input, nc, "test-account", 1)
+	_, err = distributeInstances(context.Background(), input, nc, "test-account", 1)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -517,7 +519,7 @@ func TestDistributeInstances_PropagatesAMINotFound(t *testing.T) {
 		MaxCount:     aws.Int64(1),
 	}
 
-	_, err = distributeInstances(input, nc, "test-account", 1)
+	_, err = distributeInstances(context.Background(), input, nc, "test-account", 1)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error(),
 		"should propagate InvalidAMIID.NotFound, not InsufficientInstanceCapacity")
@@ -569,7 +571,7 @@ func TestDistributeInstances_PropagatesSGValidationErrors(t *testing.T) {
 				MaxCount:     aws.Int64(1),
 			}
 
-			_, err = distributeInstances(input, nc, "test-account", 1)
+			_, err = distributeInstances(context.Background(), input, nc, "test-account", 1)
 			require.Error(t, err)
 			assert.Equal(t, tc.daemonErrCode, err.Error(),
 				"daemon SG validation error must be surfaced, not InsufficientInstanceCapacity")
@@ -617,7 +619,7 @@ func TestDistributeInstances_LaunchCountCappedToMaxCount(t *testing.T) {
 		MaxCount:     aws.Int64(2),
 	}
 
-	reservation, err := distributeInstances(input, nc, "test-account", 3)
+	reservation, err := distributeInstances(context.Background(), input, nc, "test-account", 3)
 	require.NoError(t, err)
 	// Should launch exactly 2 (MaxCount), not 3 (total capacity)
 	assert.Len(t, reservation.Instances, 2)
@@ -636,7 +638,7 @@ func TestDistributeInstances_NoNodesAvailable(t *testing.T) {
 		MaxCount:     aws.Int64(2),
 	}
 
-	_, err := distributeInstances(input, nc, "test-account", 2)
+	_, err := distributeInstances(context.Background(), input, nc, "test-account", 2)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -682,7 +684,7 @@ func TestRunInstances_SingleInstanceDistributes(t *testing.T) {
 		MaxCount:     aws.Int64(1),
 	}
 
-	reservation, err := RunInstances(input, nc, nil, "test-account", nil, nil, 1)
+	reservation, err := RunInstances(context.Background(), input, nc, nil, "test-account", nil, nil, 1)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 1)
 	assert.Equal(t, "i-single", aws.StringValue(reservation.Instances[0].InstanceId))
@@ -744,7 +746,7 @@ func TestLookupPlacementGroupStrategy_Success(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	strategy, err := lookupPlacementGroupStrategy(nc, "test-account", "my-group")
+	strategy, err := lookupPlacementGroupStrategy(context.Background(), nc, "test-account", "my-group")
 	require.NoError(t, err)
 	assert.Equal(t, "spread", strategy)
 }
@@ -762,7 +764,7 @@ func TestLookupPlacementGroupStrategy_NotFound(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	_, err = lookupPlacementGroupStrategy(nc, "test-account", "ghost-group")
+	_, err = lookupPlacementGroupStrategy(context.Background(), nc, "test-account", "ghost-group")
 	require.Error(t, err)
 }
 
@@ -787,7 +789,7 @@ func TestLookupPlacementGroupStrategy_NotAvailable(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	_, err = lookupPlacementGroupStrategy(nc, "test-account", "my-group")
+	_, err = lookupPlacementGroupStrategy(context.Background(), nc, "test-account", "my-group")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidPlacementGroupUnknown, err.Error())
 }
@@ -807,7 +809,7 @@ func TestLookupPlacementGroupStrategy_EmptyResult(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	_, err = lookupPlacementGroupStrategy(nc, "test-account", "my-group")
+	_, err = lookupPlacementGroupStrategy(context.Background(), nc, "test-account", "my-group")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidPlacementGroupUnknown, err.Error())
 }
@@ -875,7 +877,7 @@ func TestDistributeInstancesCluster_FirstLaunchPicksBestNode(t *testing.T) {
 		MaxCount:     aws.Int64(3),
 	}
 
-	reservation, err := distributeInstancesCluster(input, nc, "test-account", "my-cluster-group", 2)
+	reservation, err := distributeInstancesCluster(context.Background(), input, nc, "test-account", "my-cluster-group", 2)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 3)
 
@@ -952,7 +954,7 @@ func TestDistributeInstancesCluster_SubsequentLaunchPinsToExistingNode(t *testin
 		MaxCount:     aws.Int64(2),
 	}
 
-	reservation, err := distributeInstancesCluster(input, nc, "test-account", "my-cluster-group", 2)
+	reservation, err := distributeInstancesCluster(context.Background(), input, nc, "test-account", "my-cluster-group", 2)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2)
 	assert.False(t, node1Contacted, "cluster should only contact the pinned node")
@@ -995,7 +997,7 @@ func TestDistributeInstancesCluster_InsufficientCapacityOnPinnedNode(t *testing.
 		MaxCount:     aws.Int64(3),
 	}
 
-	_, err = distributeInstancesCluster(input, nc, "test-account", "my-cluster-group", 2)
+	_, err = distributeInstancesCluster(context.Background(), input, nc, "test-account", "my-cluster-group", 2)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -1036,7 +1038,7 @@ func TestDistributeInstancesCluster_PinnedNodeNotInCapacityResults(t *testing.T)
 		MaxCount:     aws.Int64(1),
 	}
 
-	_, err = distributeInstancesCluster(input, nc, "test-account", "my-cluster-group", 1)
+	_, err = distributeInstancesCluster(context.Background(), input, nc, "test-account", "my-cluster-group", 1)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -1101,7 +1103,7 @@ func TestDistributeInstancesCluster_LaunchCountCappedByCapacityAndMaxCount(t *te
 		MaxCount:     aws.Int64(2),
 	}
 
-	reservation, err := distributeInstancesCluster(input, nc, "test-account", "my-cluster-group", 1)
+	reservation, err := distributeInstancesCluster(context.Background(), input, nc, "test-account", "my-cluster-group", 1)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2, "should launch min(MaxCount=2, capacity=3) = 2")
 }
@@ -1187,7 +1189,7 @@ func TestRunInstances_ClusterPlacementGroupRouting(t *testing.T) {
 		},
 	}
 
-	reservation, err := RunInstances(input, nc, nil, "test-account", nil, nil, 1)
+	reservation, err := RunInstances(context.Background(), input, nc, nil, "test-account", nil, nil, 1)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2)
 }
@@ -1235,7 +1237,7 @@ func TestRunInstances_MultiInstanceUsesDistribution(t *testing.T) {
 		MaxCount:     aws.Int64(2),
 	}
 
-	reservation, err := RunInstances(input, nc, nil, "test-account", nil, nil, 1)
+	reservation, err := RunInstances(context.Background(), input, nc, nil, "test-account", nil, nil, 1)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2)
 	assert.True(t, statusQueried, "multi-instance launch should query node status")

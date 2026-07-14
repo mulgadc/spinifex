@@ -28,6 +28,16 @@ depend() {
 }
 
 start_pre() {
+    # mulga-eks-k3s-recovery drops this marker when a required-snapshot restore
+    # could not fetch its etcd snapshot. Refuse to start: a fresh DR seed with no
+    # snapshot would cluster-init an EMPTY datastore (silent total data loss). The
+    # marker is in /run tmpfs, cleared on reboot, so recovery retries the fetch
+    # next boot and k3s starts once the snapshot restores.
+    if [ -f /run/spinifex-eks/k3s-restore-block ]; then
+        eerror "restore-snapshot could not fetch the required etcd snapshot; refusing to start k3s on an empty datastore (see mulga-eks-k3s-recovery log)"
+        return 1
+    fi
+
     # config.yaml is written by k3s-first-boot from the skeleton + cloud-init
     # data. Refuse to start if neither exists.
     if [ ! -f /etc/rancher/k3s/config.yaml ]; then

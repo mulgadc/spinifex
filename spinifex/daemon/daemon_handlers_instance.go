@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,18 +14,76 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // startStoppedForwardTimeout bounds the wait for ec2.start.{nodeId} to respond.
 // StartStoppedInstance does volume rehydrate + QEMU launch + QMP handshake,
-// which can take 10-20s on a cold start. Match the awsgw upstream 30s budget
-// so a slow-but-alive target node never trips the fallback path — falling back
-// while the target is still launching causes a duplicate Run that collides on
-// the deterministic tap name (TUNSETIFF: Device or resource busy).
-const startStoppedForwardTimeout = 30 * time.Second
+// which can take 10-20s on a cold start. Match the awsgw upstream 30s budget.
+// A var (not const) so tests can shrink it instead of sleeping real seconds.
+var startStoppedForwardTimeout = 30 * time.Second
+
+// handleSetInstanceTags applies a create-tags/delete-tags mutation to a running
+// instance: central store first, then the record under the manager lock, so a
+// failed S3 write leaves both stores untouched, matching the stopped path.
+// Ownership is checked by checkInstanceOwnership before dispatch.
+func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+	remove := command.Attributes.RemoveInstanceTags
+	data := command.InstanceTagsData
+	if data == nil || (!remove && len(data.Tags) == 0) {
+		respondWithError(msg, awserrors.ErrorMissingParameter)
+		return
+	}
+
+	var newTags []*ec2.Tag
+	missingRecord := false
+	d.vmMgr.Inspect(instance, func(v *vm.VM) {
+		if v.Instance == nil {
+			missingRecord = true
+			return
+		}
+		newTags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
+	})
+	if missingRecord {
+		respondWithError(msg, awserrors.ErrorServerInternal)
+		return
+	}
+
+	accountID := utils.AccountIDFromMsg(msg)
+	if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID, handlers_ec2_instance.TagsToMap(newTags)); err != nil {
+		slog.ErrorContext(ctx, "SetInstanceTags: central tag store write failed",
+			"instanceId", instance.ID, "err", err)
+		respondWithError(msg, awserrors.ErrorServerInternal)
+		return
+	}
+
+	found, err := d.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
+		if v.Instance == nil {
+			return false
+		}
+		v.Instance.Tags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
+		return true
+	})
+	if err != nil {
+		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+		return
+	}
+	if !found {
+		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+		return
+	}
+
+	if err := msg.Respond([]byte(`{}`)); err != nil {
+		slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
+	}
+}
 
 // handleEC2RunInstances orchestrates the RunInstances flow across
 // InstanceService.PrepareRunInstances (validation + ENI creation),
@@ -33,7 +92,9 @@ const startStoppedForwardTimeout = 30 * time.Second
 // preserves the original respond-then-launch timing — AWS gets a reservation
 // before the launch loop starts.
 func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
-	slog.Debug("Received message on subject", "subject", msg.Subject)
+	ctx, span := utils.StartConsumerSpan(msg)
+	defer span.End()
+	slog.DebugContext(ctx, "Received message on subject", "subject", msg.Subject)
 
 	accountID := utils.AccountIDFromMsg(msg)
 	if accountID == "" {
@@ -65,7 +126,9 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 		}
 	}
 
-	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(input, accountID, reservationID)
+	_, prepSpan := otel.Tracer(daemonTracerName).Start(ctx, "ec2.PrepareRunInstances")
+	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(ctx, input, accountID, reservationID)
+	endOpSpan(prepSpan, err)
 	if err != nil {
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return
@@ -103,6 +166,20 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 	}
 	slog.Info("Instances added to state with pending status", "count", len(instances))
 
+	// Project launch tags into the central tag store so describe-tags agrees
+	// with the record from birth. Best-effort: the reservation is already
+	// returned, so a failed write is logged rather than failing the launch.
+	for _, instance := range instances {
+		if instance.Instance == nil || len(instance.Instance.Tags) == 0 {
+			continue
+		}
+		if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID,
+			handlers_ec2_instance.TagsToMap(instance.Instance.Tags)); err != nil {
+			slog.Error("handleEC2RunInstances: launch tag central store write failed",
+				"instanceId", instance.ID, "err", err)
+		}
+	}
+
 	// Subscribe per-instance NATS topics so terminate/stop reach this daemon
 	// while volumes prepare. LaunchInstance replaces these on success.
 	d.mu.Lock()
@@ -116,7 +193,10 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 	}
 	d.mu.Unlock()
 
-	d.instanceService.LaunchRunInstances(instances, input, instanceType)
+	_, launchSpan := otel.Tracer(daemonTracerName).Start(ctx, "ec2.LaunchRunInstances",
+		trace.WithAttributes(attribute.Int("instance.count", len(instances))))
+	d.instanceService.LaunchRunInstances(ctx, instances, input, instanceType)
+	launchSpan.End()
 }
 
 // capacityReservationTargetID returns the explicit targeted-launch reservation id
@@ -410,14 +490,11 @@ func (d *Daemon) handleEC2DescribeInstanceStatus(msg *nats.Msg) {
 
 // handleEC2StartStoppedInstance handles the generic ec2.start queue-group topic.
 // It reads the stopped instance's LastNode from shared KV and forwards the
-// request to ec2.start.{lastNode} when the instance last ran on a different
-// node. This keeps instances on their original node so the per-node resource
-// manager sees the correct allocation. Local fallback fires only when the
-// targeted node has no active subscriber (ErrNoResponders — node down or not
-// yet recovered) or returns InsufficientInstanceCapacity. A timeout from a
-// reachable-but-slow target is surfaced as ServerInternal so the caller can
-// retry; falling back in that case races the still-running launch on the
-// target and collides on the deterministic tap name.
+// request to ec2.start.{lastNode} to keep instances on their original node.
+// Local fallback fires on any forward failure — no responders, capacity, or
+// timeout — because StartStoppedInstance's ClaimStoppedInstance call is the
+// single cluster-wide serialization point, so a losing racer bails out
+// cleanly instead of double-starting.
 func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 	// Peek at the instance ID without full unmarshal — we only need it for the
 	// LastNode lookup. The full unmarshal happens inside StartStoppedInstance.
@@ -465,13 +542,11 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 			slog.Warn("ec2.start: original node has no subscriber, starting locally",
 				"instanceId", peek.InstanceID, "lastNode", lastNode, "err", err)
 		} else {
-			// Timeout or other transport error from a node whose subscription
-			// did exist. Do NOT fall back — the target may still be launching
-			// the VM, and a duplicate Run here would collide on tap setup.
-			slog.Error("ec2.start: forward to original node failed, not falling back",
+			// Timeout or other transport error — e.g. lastNode crashed without
+			// a clean NATS disconnect, so no ErrNoResponders fires. The atomic
+			// claim in StartStoppedInstance makes a local retry safe either way.
+			slog.Warn("ec2.start: forward to original node failed, attempting local start",
 				"instanceId", peek.InstanceID, "lastNode", lastNode, "err", err)
-			respondWithError(msg, awserrors.ErrorServerInternal)
-			return
 		}
 	}
 

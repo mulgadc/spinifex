@@ -1,6 +1,7 @@
 package handlers_acm
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/tls"
@@ -57,14 +58,14 @@ func (s *ACMServiceImpl) mintCertificateArn(accountID string) string {
 
 // ImportCertificate validates the PEM material, parses the leaf for metadata,
 // and stores it under a new (or, on re-import, the supplied) ACM ARN.
-func (s *ACMServiceImpl) ImportCertificate(input *acm.ImportCertificateInput, accountID string) (*acm.ImportCertificateOutput, error) {
+func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.ImportCertificateInput, accountID string) (*acm.ImportCertificateOutput, error) {
 	if input == nil || len(input.Certificate) == 0 || len(input.PrivateKey) == 0 {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 
 	// The leaf cert and private key must form a valid keypair.
 	if _, err := tls.X509KeyPair(input.Certificate, input.PrivateKey); err != nil {
-		slog.Debug("ImportCertificate: keypair validation failed", "err", err)
+		slog.DebugContext(ctx, "ImportCertificate: keypair validation failed", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 
@@ -105,16 +106,16 @@ func (s *ACMServiceImpl) ImportCertificate(input *acm.ImportCertificateInput, ac
 		Tags:             tagsToMap(input.Tags),
 	}
 	if err := s.store.PutCert(rec); err != nil {
-		slog.Error("ImportCertificate: store failed", "err", err)
+		slog.ErrorContext(ctx, "ImportCertificate: store failed", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	slog.Info("ImportCertificate: stored", "arn", certArn, "domain", rec.DomainName, "account", accountID)
+	slog.InfoContext(ctx, "ImportCertificate: stored", "arn", certArn, "domain", rec.DomainName, "account", accountID)
 	return &acm.ImportCertificateOutput{CertificateArn: aws.String(certArn)}, nil
 }
 
 // DescribeCertificate returns the CertificateDetail for an owned ARN.
-func (s *ACMServiceImpl) DescribeCertificate(input *acm.DescribeCertificateInput, accountID string) (*acm.DescribeCertificateOutput, error) {
+func (s *ACMServiceImpl) DescribeCertificate(ctx context.Context, input *acm.DescribeCertificateInput, accountID string) (*acm.DescribeCertificateOutput, error) {
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
@@ -126,7 +127,7 @@ func (s *ACMServiceImpl) DescribeCertificate(input *acm.DescribeCertificateInput
 }
 
 // ListCertificates returns summaries for every cert owned by accountID.
-func (s *ACMServiceImpl) ListCertificates(input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
+func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
 	recs, err := s.store.ListCerts(accountID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
@@ -149,7 +150,7 @@ func (s *ACMServiceImpl) ListCertificates(input *acm.ListCertificatesInput, acco
 }
 
 // DeleteCertificate removes an owned cert; unknown ARN → ResourceNotFound.
-func (s *ACMServiceImpl) DeleteCertificate(input *acm.DeleteCertificateInput, accountID string) (*acm.DeleteCertificateOutput, error) {
+func (s *ACMServiceImpl) DeleteCertificate(ctx context.Context, input *acm.DeleteCertificateInput, accountID string) (*acm.DeleteCertificateOutput, error) {
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
@@ -204,7 +205,7 @@ func timePtr(t time.Time) *time.Time {
 }
 
 // ListTagsForCertificate returns the tags stored on an owned certificate.
-func (s *ACMServiceImpl) ListTagsForCertificate(input *acm.ListTagsForCertificateInput, accountID string) (*acm.ListTagsForCertificateOutput, error) {
+func (s *ACMServiceImpl) ListTagsForCertificate(ctx context.Context, input *acm.ListTagsForCertificateInput, accountID string) (*acm.ListTagsForCertificateOutput, error) {
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
@@ -216,7 +217,7 @@ func (s *ACMServiceImpl) ListTagsForCertificate(input *acm.ListTagsForCertificat
 }
 
 // AddTagsToCertificate merges the supplied tags onto an owned certificate.
-func (s *ACMServiceImpl) AddTagsToCertificate(input *acm.AddTagsToCertificateInput, accountID string) (*acm.AddTagsToCertificateOutput, error) {
+func (s *ACMServiceImpl) AddTagsToCertificate(ctx context.Context, input *acm.AddTagsToCertificateInput, accountID string) (*acm.AddTagsToCertificateOutput, error) {
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
@@ -237,7 +238,7 @@ func (s *ACMServiceImpl) AddTagsToCertificate(input *acm.AddTagsToCertificateInp
 // RemoveTagsFromCertificate deletes the named tags from an owned certificate. A
 // tag with a nil value matches by key; a non-nil value removes only on an exact
 // value match, mirroring ACM semantics.
-func (s *ACMServiceImpl) RemoveTagsFromCertificate(input *acm.RemoveTagsFromCertificateInput, accountID string) (*acm.RemoveTagsFromCertificateOutput, error) {
+func (s *ACMServiceImpl) RemoveTagsFromCertificate(ctx context.Context, input *acm.RemoveTagsFromCertificateInput, accountID string) (*acm.RemoveTagsFromCertificateOutput, error) {
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}

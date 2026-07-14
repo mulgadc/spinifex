@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -129,6 +130,7 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	if instance.Config.QMPSocket != "" {
 		_ = os.Remove(instance.Config.QMPSocket)
 	}
+	removeTelemetryArtifacts(instance)
 
 	if m.deps.VolumeMounter != nil {
 		if err := m.deps.VolumeMounter.Unmount(instance); err != nil {
@@ -181,6 +183,7 @@ func (m *Manager) MaybeRestart(instance *VM) {
 			"crashes", crashCount,
 			"window", RestartWindow,
 			"max", MaxRestartsInWindow)
+		m.releaseGPUOnTerminalCrash(instance)
 		return
 	}
 
@@ -188,6 +191,7 @@ func (m *Manager) MaybeRestart(instance *VM) {
 		if _, ok := m.deps.InstanceTypes.Resolve(instance.InstanceType); !ok {
 			slog.Error("Unknown instance type, cannot restart",
 				"instance", instance.ID, "type", instance.InstanceType)
+			m.releaseGPUOnTerminalCrash(instance)
 			return
 		}
 	}
@@ -196,6 +200,7 @@ func (m *Manager) MaybeRestart(instance *VM) {
 		if m.deps.Resources.CanAllocate(instance.InstanceType, 1) < 1 {
 			slog.Error("Insufficient resources to restart instance",
 				"instance", instance.ID, "type", instance.InstanceType)
+			m.releaseGPUOnTerminalCrash(instance)
 			return
 		}
 	}
@@ -229,6 +234,13 @@ func (m *Manager) RestartCrashedInstance(instance *VM) {
 		}
 		v.Health.RestartCount++
 		restartCount = v.Health.RestartCount
+		// Refresh LaunchTime so the pending watchdog gives the relaunch a fresh
+		// window; the stale original time otherwise trips launch_timeout on the
+		// next tick and terminates the crash-restart mid-flight (cf. restore.go).
+		if v.Instance != nil {
+			now := time.Now()
+			v.Instance.LaunchTime = &now
+		}
 	})
 	if skipReason != "" {
 		slog.Info("Skipping restart of crashed instance",
@@ -260,7 +272,8 @@ func (m *Manager) RestartCrashedInstance(instance *VM) {
 		}
 	}
 
-	if err := m.Run(instance); err != nil {
+	// Crash recovery is a background path with no request context.
+	if err := m.Run(context.Background(), instance); err != nil {
 		slog.Error("Failed to restart crashed instance",
 			"instance", instance.ID, "err", err)
 		m.deps.Resources.Deallocate(instance.InstanceType)
@@ -270,5 +283,30 @@ func (m *Manager) RestartCrashedInstance(instance *VM) {
 					"instance", instance.ID, "err", err)
 			}
 		}
+		// The relaunch attempt failed, so the instance settles in StateError
+		// for good — release the GPU slot it still holds from before the
+		// crash rather than leaving it stuck until the daemon restarts.
+		m.releaseGPUOnTerminalCrash(instance)
+	}
+}
+
+// releaseGPUOnTerminalCrash frees a crashed instance's GPU pool slot once it
+// is known no restart will follow (restarts exhausted, unknown instance
+// type, insufficient resources to restart, or a failed relaunch attempt).
+// HandleCrash's own deallocateResources call only returns vCPU/memory to the
+// ResourceManager; it never touches the GPU pool, since a successful restart
+// reuses the instance's still-set GPUAttachments without reclaiming them.
+// Called only from paths that leave the instance permanently in StateError,
+// so releasing here cannot race a restart that still needs the slot.
+func (m *Manager) releaseGPUOnTerminalCrash(instance *VM) {
+	if m.deps.InstanceCleaner == nil {
+		return
+	}
+	if err := m.deps.InstanceCleaner.ReleaseGPU(instance); err != nil {
+		slog.Warn("Failed to release GPU for crashed instance settling in error state",
+			"instance", instance.ID, "err", err)
+	}
+	if len(instance.GPUAttachments) > 0 {
+		m.UpdateState(instance.ID, func(v *VM) { v.GPUAttachments = nil })
 	}
 }

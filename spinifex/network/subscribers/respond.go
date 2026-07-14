@@ -26,7 +26,7 @@ func respond(msg *nats.Msg, err error) {
 	data, marshalErr := json.Marshal(resp)
 	if marshalErr != nil {
 		slog.Error("subscribers: failed to marshal NATS response", "err", marshalErr)
-		data = []byte(`{"success":false,"error":"internal marshal failure"}`)
+		return
 	}
 	if err := msg.Respond(data); err != nil {
 		slog.Error("subscribers: failed to respond to NATS request", "err", err)

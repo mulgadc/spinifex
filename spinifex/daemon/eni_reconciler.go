@@ -119,7 +119,7 @@ func (r *eniReconciler) reconcileENI(instance *vm.VM, rec *handlers_ec2_vpc.ENIR
 		}
 		if present {
 			slog.Info("eni-reconciler: replaying interrupted detach", "instanceId", instance.ID, "eniId", eniID, "slot", slot)
-			if err := r.vmMgr.HotUnplugENI(instance, eniID, rec.DetachForce); err != nil {
+			if err := r.vmMgr.HotUnplugENI(context.Background(), instance, eniID, rec.DetachForce); err != nil {
 				slog.Warn("eni-reconciler: detach replay failed", "instanceId", instance.ID, "eniId", eniID, "err", err)
 			}
 		}
@@ -194,7 +194,7 @@ func (r *eniReconciler) sweepOrphanSlots(instance *vm.VM, knownENIs map[string]b
 // finalizeDetached drives KV + slot + tap to the detached terminal state. Each
 // step is idempotent so a re-run after a partial failure converges.
 func (r *eniReconciler) finalizeDetached(instance *vm.VM, accountID, eniID string) {
-	if err := r.vpc.DetachENI(accountID, eniID); err != nil {
+	if err := r.vpc.DetachENI(context.Background(), accountID, eniID); err != nil {
 		slog.Warn("eni-reconciler: KV detach failed", "eniId", eniID, "err", err)
 	}
 	_ = r.vpc.UpdateENI(accountID, eniID, func(rec *handlers_ec2_vpc.ENIRecord) {

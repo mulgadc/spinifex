@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -12,11 +13,31 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 )
 
+// ErrLBTerminalFailed marks a load balancer that entered a terminal failure
+// state during provisioning — e.g. the host had no free sys.micro slot for
+// the LB VM. Callers can errors.Is on it to retry after capacity reclaim.
+var ErrLBTerminalFailed = errors.New("LB entered terminal failure state")
+
+// ErrLBProvisioningTimeout marks a load balancer that never left provisioning
+// within the wait window (no terminal failure, just stuck). Callers can
+// errors.Is on it to tear down and retry, same as a terminal failure.
+var ErrLBProvisioningTimeout = errors.New("LB stuck in provisioning past timeout")
+
 // WaitForLBActive polls describe-load-balancers until state=active. Bails
 // immediately if the LB enters a terminal failure state — no point waiting
 // the full timeout when provisioning has already given up. Progress emits
 // via Step so long polls don't go silent in CI between subtest boundaries.
 func WaitForLBActive(t *testing.T, c *AWSClient, lbArn, label string, timeout time.Duration) {
+	t.Helper()
+	if err := WaitForLBActiveErr(t, c, lbArn, label, timeout); err != nil {
+		t.Fatal(err.Error())
+	}
+}
+
+// WaitForLBActiveErr is WaitForLBActive returning an error instead of failing
+// the test, so capacity-race-aware callers can tear down and retry. A terminal
+// failure state wraps ErrLBTerminalFailed.
+func WaitForLBActiveErr(t *testing.T, c *AWSClient, lbArn, label string, timeout time.Duration) error {
 	t.Helper()
 	Step(t, "%s: waiting for state=active (timeout %s)", label, timeout)
 	var lastState, lastReason string
@@ -31,14 +52,14 @@ func WaitForLBActive(t *testing.T, c *AWSClient, lbArn, label string, timeout ti
 			lastReason = aws.StringValue(out.LoadBalancers[0].State.Reason)
 			if lastState == "active" {
 				Step(t, "%s active", label)
-				return
+				return nil
 			}
 			if lastState == "failed" || lastState == "provisioning_failed" {
-				t.Fatalf("%s entered terminal state %s: %s", label, lastState, lastReason)
+				return fmt.Errorf("%s entered terminal state %s: %s: %w", label, lastState, lastReason, ErrLBTerminalFailed)
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s did not become active within %s (last state=%s reason=%s)", label, timeout, lastState, lastReason)
+			return fmt.Errorf("%s did not become active within %s (last state=%s reason=%s): %w", label, timeout, lastState, lastReason, ErrLBProvisioningTimeout)
 		}
 		if time.Now().After(nextLog) {
 			Step(t, "%s: state=%s, still waiting...", label, lastState)

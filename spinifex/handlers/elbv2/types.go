@@ -110,15 +110,18 @@ const (
 
 // LoadBalancerRecord represents a stored load balancer (ALB or NLB).
 type LoadBalancerRecord struct {
-	LoadBalancerArn string   `json:"load_balancer_arn"`
-	LoadBalancerID  string   `json:"load_balancer_id"` // Short ID (hex suffix)
-	DNSName         string   `json:"dns_name"`
-	Name            string   `json:"name"`
-	Scheme          string   `json:"scheme"` // "internet-facing" or "internal"
-	Type            string   `json:"type"`   // Always "application"
-	State           string   `json:"state"`  // "provisioning", "active", "failed"
-	VpcId           string   `json:"vpc_id"`
-	SecurityGroups  []string `json:"security_groups"`
+	LoadBalancerArn string `json:"load_balancer_arn"`
+	LoadBalancerID  string `json:"load_balancer_id"` // Short ID (hex suffix)
+	DNSName         string `json:"dns_name"`
+	Name            string `json:"name"`
+	Scheme          string `json:"scheme"` // "internet-facing" or "internal"
+	Type            string `json:"type"`   // Always "application"
+	State           string `json:"state"`  // "provisioning", "active", "failed"
+	// StateReason explains a failed state; surfaced as State.Reason so API
+	// consumers see why provisioning gave up (e.g. sys.micro capacity exhausted).
+	StateReason    string   `json:"state_reason,omitempty"`
+	VpcId          string   `json:"vpc_id"`
+	SecurityGroups []string `json:"security_groups"`
 	// NLBManagedSGID is the managed SG minted for an NLB created without customer
 	// SGs; attached to every LB ENI with listener-port ingress authorized on it.
 	// Empty when the NLB was created with customer SGs (which replace it). Not

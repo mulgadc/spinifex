@@ -363,6 +363,20 @@ type externalCIDRResponse struct {
 	err    error
 }
 
+// stubExternalCIDRTiming shortens the resolve retry delay and startup timeout to
+// a few milliseconds so retry/timeout paths do not burn real wall-clock seconds.
+func stubExternalCIDRTiming(t *testing.T) {
+	t.Helper()
+	origDelay := externalCIDRRetryDelay
+	origTimeout := externalCIDRResolveTimeout
+	t.Cleanup(func() {
+		externalCIDRRetryDelay = origDelay
+		externalCIDRResolveTimeout = origTimeout
+	})
+	externalCIDRRetryDelay = time.Millisecond
+	externalCIDRResolveTimeout = 20 * time.Millisecond
+}
+
 func TestResolveExternalCIDR_ImmediateSuccess(t *testing.T) {
 	want := netip.MustParsePrefix("192.168.1.10/24")
 	stubExternalCIDR(t, []externalCIDRResponse{{prefix: want}})
@@ -376,6 +390,7 @@ func TestResolveExternalCIDR_ImmediateSuccess(t *testing.T) {
 }
 
 func TestResolveExternalCIDR_RetriesThenSucceeds(t *testing.T) {
+	stubExternalCIDRTiming(t)
 	want := netip.MustParsePrefix("10.0.0.5/16")
 	stubExternalCIDR(t, []externalCIDRResponse{
 		{err: fmt.Errorf("no IPv4")},
@@ -392,8 +407,9 @@ func TestResolveExternalCIDR_RetriesThenSucceeds(t *testing.T) {
 }
 
 func TestResolveExternalCIDR_TimeoutFailsStart(t *testing.T) {
+	stubExternalCIDRTiming(t)
 	stubExternalCIDR(t, []externalCIDRResponse{{err: fmt.Errorf("no IPv4")}})
-	_, err := resolveExternalCIDR(context.Background(), "br-wan", 100*time.Millisecond)
+	_, err := resolveExternalCIDR(context.Background(), "br-wan", 10*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -455,6 +471,7 @@ func TestEnsureExternalCIDRReady_ResolvesSuccessfully(t *testing.T) {
 }
 
 func TestEnsureExternalCIDRReady_PropagatesError(t *testing.T) {
+	stubExternalCIDRTiming(t)
 	stubExternalCIDR(t, []externalCIDRResponse{{err: fmt.Errorf("no IPv4")}})
 	err := ensureExternalCIDRReady(context.Background(), "direct", "br-wan")
 	if err == nil {

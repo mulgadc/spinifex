@@ -20,8 +20,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// flexMockSTSService is a configurable STSService mock with per-method overrides.
+// flexMockSTSService is a configurable STSService mock with per-method
+// overrides. It embeds the interface so it satisfies the full contract; only
+// the fn-field methods below are wired, and any other method nil-panics if a
+// test reaches an unmocked path.
 type flexMockSTSService struct {
+	handlers_sts.STSService
+
 	assumeRoleFn        func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 	getCallerIdentityFn func(string, string, string, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
 	getSessionTokenFn   func(string, string, string, string, *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
@@ -35,11 +40,6 @@ func (m *flexMockSTSService) AssumeRole(callerAccountID, callerARN, callerIdenti
 	if m.assumeRoleFn != nil {
 		return m.assumeRoleFn(callerAccountID, callerARN, callerIdentity, input)
 	}
-	return &sts.AssumeRoleOutput{}, nil
-}
-
-// AssumeRoleForInstance is an in-process IMDS entry point; the mock satisfies the interface.
-func (m *flexMockSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
 	return &sts.AssumeRoleOutput{}, nil
 }
 
@@ -68,18 +68,10 @@ func (m *flexMockSTSService) LookupSessionCredential(akid string) (*handlers_sts
 	return nil, nil
 }
 
-func (m *flexMockSTSService) VerifySessionToken(*handlers_sts.SessionCredential, string) bool {
-	return true
-}
-
 func (m *flexMockSTSService) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
 	if m.assumeWebIdentityFn != nil {
 		return m.assumeWebIdentityFn(input)
 	}
-	return nil, errors.New(awserrors.ErrorNotImplemented)
-}
-
-func (m *flexMockSTSService) VerifyPresignedGetCallerIdentity(string, string) (*handlers_sts.PresignedCallerIdentity, error) {
 	return nil, errors.New(awserrors.ErrorNotImplemented)
 }
 
@@ -261,7 +253,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "GetSessionTokenResult")
 	assert.Contains(t, xmlStr, "ASIAEXAMPLE123")
 
-	// Verify forwarded identity fields and that checkPolicy did not block (GetSessionToken is in stsSkipPolicyCheck).
+	// Verify forwarded identity fields and that checkPolicy did not block (STS_Request runs no checkPolicy pass).
 	assert.Equal(t, utils.GlobalAccountID, got.accountID)
 	assert.Equal(t, "alice", got.userName)
 	assert.Equal(t, principalTypeUser, got.principalType)

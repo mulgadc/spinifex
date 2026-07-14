@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -9,25 +10,29 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/predastore/pkg/iampolicy"
 	"github.com/mulgadc/predastore/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // contextKey is a typed key for request context values.
@@ -106,13 +111,20 @@ type GatewayConfig struct {
 	// in unit tests of unrelated routes).
 	ECRTokenIssuer   *gateway_ecrauth.Issuer
 	ECRTokenVerifier *gateway_ecrauth.Verifier
+	// BedrockCredentials resolves per-account provider API keys for bedrock
+	// routes. Nil falls back to no external providers (self-host models only).
+	BedrockCredentials *gateway_bedrock.CredentialStore
+	// BedrockEndpoints maps a self-hosted modelId to its OpenAI-compatible base
+	// URL. Phase 1 endpoints are pinned/always-resident, so this is static
+	// config; a later phase backs it with the daemon's dynamic endpoint
+	// registry. Nil/empty means no self-hosted models are reachable.
+	BedrockEndpoints map[string]string
 }
 
 var supportedServices = map[string]bool{
 	"ec2":                  true,
 	"iam":                  true,
 	"sts":                  true,
-	"account":              true,
 	"elasticloadbalancing": true,
 	"eks":                  true,
 	"ecs":                  true,
@@ -120,6 +132,8 @@ var supportedServices = map[string]bool{
 	"acm":                  true,
 	"tagging":              true,
 	"spinifex":             true,
+	"bedrock":              true,
+	"bedrock-runtime":      true,
 }
 
 // EC2ErrorResponse is the EC2 query-API error envelope.
@@ -151,18 +165,15 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 		logLevel = slog.LevelInfo
 	}
 
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
-	})
-
-	slogger := slog.New(handler)
-	slog.SetDefault(slogger)
+	otelsetup.SetDefaultJSONLogger(logLevel)
 
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = NewAuthRateLimiter()
 	}
 
 	r := chi.NewRouter()
+
+	r.Use(otelsetup.HTTPMiddleware("awsgw"))
 
 	if !gw.DisableLogging {
 		r.Use(slogRequestLogger)
@@ -185,6 +196,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {
 		auth.Use(gw.SigV4AuthMiddleware())
+		auth.Use(traceActionEnricher)
 
 		// Post-auth, per-account+action token bucket throttle.
 		if gw.Throttler != nil {
@@ -322,8 +334,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fail fast when NATS is down; every NATS-bound handler would otherwise hang
-	// until per-call timeout. Account is a local stub exempt from NATS.
-	if svc != "account" && (gw.NATSConn == nil || !gw.NATSConn.IsConnected()) {
+	// until per-call timeout.
+	if gw.NATSConn == nil || !gw.NATSConn.IsConnected() {
 		gw.writeClusterUnavailable(w, r, svc)
 		return
 	}
@@ -331,8 +343,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	switch svc {
 	case "ec2":
 		err = gw.EC2_Request(w, r)
-	case "account":
-		err = gw.Account_Request(w, r)
 	case "iam":
 		err = gw.IAM_Request(w, r)
 	case "sts":
@@ -341,6 +351,10 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ELBv2_Request(w, r)
 	case "eks":
 		err = gw.EKS_Request(w, r)
+	case "bedrock":
+		err = gw.Bedrock_Request(w, r)
+	case "bedrock-runtime":
+		err = gw.BedrockRuntime_Request(w, r)
 	case "ecs":
 		err = gw.ECS_Request(w, r)
 	case "ecr":
@@ -502,8 +516,9 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	// EKS, ECR, ACM, ECS, and tagging use AWS JSON 1.1; query/XML services fall through.
-	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" {
+	// EKS, ECR, ACM, ECS, tagging, and bedrock/bedrock-runtime use AWS JSON 1.1;
+	// query/XML services fall through.
+	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" || svc == "bedrock" || svc == "bedrock-runtime" {
 		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err.Error(), "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)
@@ -624,19 +639,20 @@ func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
 	return output
 }
 
-// DiscoverActiveNodes discovers the number of active spinifex daemon nodes in the cluster
-// by publishing a discovery request and counting unique responses.
+// DiscoverActiveNodes discovers the number of active spinifex daemon nodes in the
+// cluster by publishing a discovery request and counting unique responses. It
+// carries the request context so the discovery fan-out joins the caller's trace.
 // Returns the number of active nodes (minimum 1 if fallback is needed).
-func (gw *GatewayConfig) DiscoverActiveNodes() int {
+func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 	if gw.NATSConn == nil {
-		slog.Warn("DiscoverActiveNodes: NATS connection not available, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
+		slog.WarnContext(ctx, "DiscoverActiveNodes: NATS connection not available, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
 	}
 
-	frames, _, err := utils.Gather(gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
 		utils.GatherOpts{Timeout: 500 * time.Millisecond})
 	if err != nil {
-		slog.Error("DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
+		slog.ErrorContext(ctx, "DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
 	}
 
@@ -644,7 +660,7 @@ func (gw *GatewayConfig) DiscoverActiveNodes() int {
 	for _, frame := range frames {
 		var response types.NodeDiscoverResponse
 		if err := json.Unmarshal(frame, &response); err != nil {
-			slog.Debug("DiscoverActiveNodes: Failed to unmarshal response", "err", err)
+			slog.DebugContext(ctx, "DiscoverActiveNodes: Failed to unmarshal response", "err", err)
 			continue
 		}
 		nodesSeen[response.Node] = true
@@ -652,32 +668,46 @@ func (gw *GatewayConfig) DiscoverActiveNodes() int {
 
 	activeNodes := len(nodesSeen)
 	if activeNodes == 0 {
-		slog.Warn("DiscoverActiveNodes: No nodes responded, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
+		slog.WarnContext(ctx, "DiscoverActiveNodes: No nodes responded, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
 	}
 
-	slog.Debug("DiscoverActiveNodes: Discovered active nodes", "count", activeNodes)
+	slog.DebugContext(ctx, "DiscoverActiveNodes: Discovered active nodes", "count", activeNodes)
 	return activeNodes
 }
 
-// statusWriter wraps http.ResponseWriter to capture the written status code.
-type statusWriter struct {
-	http.ResponseWriter
-
-	status int
-}
-
-func (w *statusWriter) WriteHeader(code int) {
-	w.status = code
-	w.ResponseWriter.WriteHeader(code)
+// traceActionEnricher renames the server span to the resolved SigV4
+// service.Action and tags account/region once auth populated the context.
+func traceActionEnricher(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		span := trace.SpanFromContext(ctx)
+		if action, _ := ctx.Value(ctxAction).(string); action != "" {
+			name := action
+			if svc, _ := ctx.Value(ctxService).(string); svc != "" {
+				name = svc + "." + action
+				span.SetAttributes(attribute.String("aws.service", svc))
+			}
+			span.SetName(name)
+			span.SetAttributes(attribute.String("aws.action", action))
+			otelsetup.SetRequestAction(ctx, name)
+		}
+		if acct, _ := ctx.Value(ctxAccountID).(string); acct != "" {
+			span.SetAttributes(attribute.String("aws.account_id", acct))
+		}
+		if region, _ := ctx.Value(ctxRegion).(string); region != "" {
+			span.SetAttributes(attribute.String("aws.region", region))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // slogRequestLogger is a middleware that logs each request via slog.
 func slogRequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		ww := &statusWriter{ResponseWriter: w, status: 200}
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-		slog.Info("request", "method", r.Method, "path", r.URL.Path, "status", ww.status, "duration", time.Since(start))
+		slog.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "status", ww.Status(), "duration", time.Since(start))
 	})
 }

@@ -1,0 +1,13 @@
+[Unit]
+Description=Set K3s provider-id + topology labels from IMDS for EBS CSI
+After=network-online.target
+Wants=network-online.target
+Before=k3s-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mulga-eks-provider-id
+
+[Install]
+WantedBy=multi-user.target

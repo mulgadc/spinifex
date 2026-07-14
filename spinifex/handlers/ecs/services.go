@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -21,8 +22,8 @@ import (
 // ELBv2 target group. The scheduler is the single writer (ecs-v1.md Q8): it
 // registers on the RUNNING transition and deregisters on STOPPED.
 type targetRegistrar interface {
-	Register(accountID, tgARN, ip string, port int) error
-	Deregister(accountID, tgARN, ip string, port int) error
+	Register(ctx context.Context, accountID, tgARN, ip string, port int) error
+	Deregister(ctx context.Context, accountID, tgARN, ip string, port int) error
 }
 
 // natsTargetRegistrar drives the existing elbv2.RegisterTargets/DeregisterTargets
@@ -37,16 +38,16 @@ func newNATSTargetRegistrar(nc *nats.Conn) *natsTargetRegistrar {
 	return &natsTargetRegistrar{nc: nc}
 }
 
-func (r *natsTargetRegistrar) Register(accountID, tgARN, ip string, port int) error {
-	_, err := handlers_elbv2.NewNATSELBv2Service(r.nc).RegisterTargets(&elbv2.RegisterTargetsInput{
+func (r *natsTargetRegistrar) Register(ctx context.Context, accountID, tgARN, ip string, port int) error {
+	_, err := handlers_elbv2.NewNATSELBv2Service(r.nc).RegisterTargets(ctx, &elbv2.RegisterTargetsInput{
 		TargetGroupArn: aws.String(tgARN),
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String(ip), Port: aws.Int64(int64(port))}},
 	}, accountID)
 	return err
 }
 
-func (r *natsTargetRegistrar) Deregister(accountID, tgARN, ip string, port int) error {
-	_, err := handlers_elbv2.NewNATSELBv2Service(r.nc).DeregisterTargets(&elbv2.DeregisterTargetsInput{
+func (r *natsTargetRegistrar) Deregister(ctx context.Context, accountID, tgARN, ip string, port int) error {
+	_, err := handlers_elbv2.NewNATSELBv2Service(r.nc).DeregisterTargets(ctx, &elbv2.DeregisterTargetsInput{
 		TargetGroupArn: aws.String(tgARN),
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String(ip), Port: aws.Int64(int64(port))}},
 	}, accountID)
@@ -57,8 +58,8 @@ func (r *natsTargetRegistrar) Deregister(accountID, tgARN, ip string, port int) 
 // and associating it with the task ENI, and releases it on STOPPED. The
 // scheduler is the single writer, mirroring targetRegistrar.
 type eipManager interface {
-	AllocateAndAssociate(accountID, eniID string) (publicIP, allocationID string, err error)
-	Release(accountID, allocationID string) error
+	AllocateAndAssociate(ctx context.Context, accountID, eniID string) (publicIP, allocationID string, err error)
+	Release(ctx context.Context, accountID, allocationID string) error
 }
 
 // natsEIPManager drives the existing ec2 EIP NATS handlers; no new surface is
@@ -73,45 +74,45 @@ func newNATSEIPManager(nc *nats.Conn) *natsEIPManager {
 	return &natsEIPManager{nc: nc}
 }
 
-func (m *natsEIPManager) AllocateAndAssociate(accountID, eniID string) (string, string, error) {
+func (m *natsEIPManager) AllocateAndAssociate(ctx context.Context, accountID, eniID string) (string, string, error) {
 	svc := handlers_ec2_eip.NewNATSEIPService(m.nc)
-	alloc, err := svc.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")}, accountID)
+	alloc, err := svc.AllocateAddress(ctx, &ec2.AllocateAddressInput{Domain: aws.String("vpc")}, accountID)
 	if err != nil {
 		return "", "", err
 	}
 	publicIP, allocationID := aws.StringValue(alloc.PublicIp), aws.StringValue(alloc.AllocationId)
-	if _, err = svc.AssociateAddress(&ec2.AssociateAddressInput{
+	if _, err = svc.AssociateAddress(ctx, &ec2.AssociateAddressInput{
 		AllocationId:       alloc.AllocationId,
 		NetworkInterfaceId: aws.String(eniID),
 	}, accountID); err != nil {
 		// Release the orphaned allocation so a failed associate leaks nothing.
-		if _, rerr := svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: alloc.AllocationId}, accountID); rerr != nil {
-			slog.Error("ECS auto-EIP: release after failed associate", "alloc", allocationID, "err", rerr)
+		if _, rerr := svc.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{AllocationId: alloc.AllocationId}, accountID); rerr != nil {
+			slog.ErrorContext(ctx, "ECS auto-EIP: release after failed associate", "alloc", allocationID, "err", rerr)
 		}
 		return "", "", err
 	}
 	return publicIP, allocationID, nil
 }
 
-func (m *natsEIPManager) Release(accountID, allocationID string) error {
+func (m *natsEIPManager) Release(ctx context.Context, accountID, allocationID string) error {
 	svc := handlers_ec2_eip.NewNATSEIPService(m.nc)
 	// Disassociate first (VPC EIPs cannot be released while associated); the
 	// association ID is resolved from the allocation.
-	desc, err := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
+	desc, err := svc.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{
 		AllocationIds: []*string{aws.String(allocationID)},
 	}, accountID)
 	if err == nil {
 		for _, addr := range desc.Addresses {
 			if addr.AssociationId != nil && *addr.AssociationId != "" {
-				if _, derr := svc.DisassociateAddress(&ec2.DisassociateAddressInput{
+				if _, derr := svc.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{
 					AssociationId: addr.AssociationId,
 				}, accountID); derr != nil {
-					slog.Error("ECS auto-EIP: disassociate failed", "alloc", allocationID, "err", derr)
+					slog.ErrorContext(ctx, "ECS auto-EIP: disassociate failed", "alloc", allocationID, "err", derr)
 				}
 			}
 		}
 	}
-	_, err = svc.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(allocationID)}, accountID)
+	_, err = svc.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{AllocationId: aws.String(allocationID)}, accountID)
 	return err
 }
 
@@ -120,7 +121,7 @@ func (m *natsEIPManager) Release(accountID, allocationID string) error {
 // CreateService persists a REPLICA service and reconciles up to desiredCount.
 // DAEMON scheduling and serviceRegistries are rejected in v1 (Q15). Re-creating
 // an existing ACTIVE service returns the existing record (idempotent).
-func (s *Service) CreateService(input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error) {
+func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error) {
 	name := aws.StringValue(input.ServiceName)
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
@@ -174,6 +175,7 @@ func (s *Service) CreateService(input *ecs.CreateServiceInput, accountID string)
 		PlacementStrategy:  placementStrategyFromAWS(input.PlacementStrategy),
 		LoadBalancers:      loadBalancersFromAWS(input.LoadBalancers),
 		DeploymentID:       uuid.NewString(),
+		Tags:               tagsToMap(input.Tags),
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -183,18 +185,21 @@ func (s *Service) CreateService(input *ecs.CreateServiceInput, accountID string)
 		rec.SecurityGroups = awsStringSlice(v.SecurityGroups)
 		rec.AssignPublicIP = aws.StringValue(v.AssignPublicIp)
 	}
+	applyDeploymentConfig(&rec, input.DeploymentConfiguration)
+	rec.LastGoodTaskDefARN = taskDef.ARN
+	rec.Deployments = []Deployment{newPrimaryDeployment(rec.DeploymentID, taskDef, rec.DesiredCount)}
 	if err := putJSON(kv, ServiceKey(cluster, name), &rec); err != nil {
 		return nil, err
 	}
 
-	if err := s.reconcileService(kv, accountID, &rec); err != nil {
-		slog.Error("ECS CreateService: initial reconcile failed", "service", name, "err", err)
+	if err := s.reconcileService(ctx, kv, accountID, &rec); err != nil {
+		slog.ErrorContext(ctx, "ECS CreateService: initial reconcile failed", "service", name, "err", err)
 	}
 	return &ecs.CreateServiceOutput{Service: s.serviceToAWS(accountID, &rec)}, nil
 }
 
 // UpdateService mutates desiredCount and/or the task definition, then reconciles.
-func (s *Service) UpdateService(input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error) {
+func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	name := serviceShortName(aws.StringValue(input.Service))
 	kv, err := s.bucket(accountID)
@@ -210,6 +215,10 @@ func (s *Service) UpdateService(input *ecs.UpdateServiceInput, accountID string)
 		return nil, errors.New(awserrors.ErrorECSServiceNotFound)
 	}
 
+	rec.ensurePrimaryDeployment()
+	if input.DeploymentConfiguration != nil {
+		applyDeploymentConfig(&rec, input.DeploymentConfiguration)
+	}
 	if input.DesiredCount != nil {
 		rec.DesiredCount = int(aws.Int64Value(input.DesiredCount))
 	}
@@ -218,25 +227,25 @@ func (s *Service) UpdateService(input *ecs.UpdateServiceInput, accountID string)
 		if terr != nil {
 			return nil, terr
 		}
-		rec.TaskDefFamily = taskDef.Family
-		rec.TaskDefRevision = taskDef.Revision
-		rec.TaskDefARN = taskDef.ARN
-		rec.NetworkMode = resolveNetworkMode(taskDef)
-		rec.DeploymentID = uuid.NewString()
+		// A new task definition starts a rolling deployment only when it differs
+		// from the current PRIMARY; a no-op re-apply keeps the deployment steady.
+		if primary := rec.primaryDeployment(); primary == nil || primary.TaskDefARN != taskDef.ARN {
+			rec.startDeployment(taskDef)
+		}
 	}
 	rec.UpdatedAt = time.Now().UTC()
 	if err := putJSON(kv, ServiceKey(cluster, name), &rec); err != nil {
 		return nil, err
 	}
-	if err := s.reconcileService(kv, accountID, &rec); err != nil {
-		slog.Error("ECS UpdateService: reconcile failed", "service", name, "err", err)
+	if err := s.reconcileService(ctx, kv, accountID, &rec); err != nil {
+		slog.ErrorContext(ctx, "ECS UpdateService: reconcile failed", "service", name, "err", err)
 	}
 	return &ecs.UpdateServiceOutput{Service: s.serviceToAWS(accountID, &rec)}, nil
 }
 
 // DeleteService drains the service to zero, force-stops its tasks, and marks it
 // INACTIVE (kept describable, AWS parity).
-func (s *Service) DeleteService(input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error) {
+func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	name := serviceShortName(aws.StringValue(input.Service))
 	kv, err := s.bucket(accountID)
@@ -258,7 +267,7 @@ func (s *Service) DeleteService(input *ecs.DeleteServiceInput, accountID string)
 		return nil, err
 	}
 	for i := range tasks {
-		s.forceStopTask(kv, accountID, &tasks[i], "Service deleted")
+		s.requestStopTask(ctx, kv, accountID, &tasks[i], "Service deleted")
 	}
 	rec.Status = ServiceStatusInactive
 	rec.RunningCount = 0
@@ -271,7 +280,7 @@ func (s *Service) DeleteService(input *ecs.DeleteServiceInput, accountID string)
 }
 
 // DescribeServices returns the named services; unknown names surface as failures.
-func (s *Service) DescribeServices(input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error) {
+func (s *Service) DescribeServices(_ context.Context, input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -295,7 +304,7 @@ func (s *Service) DescribeServices(input *ecs.DescribeServicesInput, accountID s
 }
 
 // ListServices returns the ARNs of every service in a cluster.
-func (s *Service) ListServices(input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error) {
+func (s *Service) ListServices(_ context.Context, input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(accountID)
 	if err != nil {
@@ -314,62 +323,60 @@ func (s *Service) ListServices(input *ecs.ListServicesInput, accountID string) (
 
 // --- Reconciliation ---
 
-// reconcileService converges a service's running task count on its desired count:
-// it launches the shortfall via RunTask (tagged with the service group so the
-// task counts toward the service) and force-stops any surplus. Counts on the
-// record are refreshed as a side effect.
-func (s *Service) reconcileService(kv nats.KeyValue, accountID string, svc *ServiceRecord) error {
+// reconcileService drives a service's rolling deployment toward its desired
+// count: it launches PRIMARY-deployment tasks within the maximumPercent ceiling
+// and drains superseded (old) tasks while healthy running stays at/above
+// minimumHealthyPercent, then advances the rollout / circuit-breaker state. Per-
+// deployment and overall counts are refreshed as a side effect.
+func (s *Service) reconcileService(ctx context.Context, kv nats.KeyValue, accountID string, svc *ServiceRecord) error {
 	if svc.Status != ServiceStatusActive {
 		return nil
 	}
+	svc.normalizeDeploymentConfig()
+	svc.ensurePrimaryDeployment()
+
 	tasks, err := s.listServiceTasks(kv, svc.Cluster, svc.Name)
 	if err != nil {
 		return err
 	}
+	running, pending := tallyDeployments(svc, tasks)
 
-	running, pending := 0, 0
-	for i := range tasks {
-		switch tasks[i].LastStatus {
-		case TaskStatusRunning:
-			running++
-		case TaskStatusPending:
-			pending++
+	primary := svc.primaryDeployment()
+	if primary != nil {
+		// A failing deployment trips the breaker (and may roll back); persist and
+		// let the next tick roll the replacement in.
+		if tripCircuitBreaker(svc, primary) {
+			svc.RunningCount, svc.PendingCount = running, pending
+			return putJSON(kv, ServiceKey(svc.Cluster, svc.Name), svc)
 		}
+		desired := svc.DesiredCount
+		maxCount := desired * svc.MaximumPercent / 100
+		minCount := ceilPercent(desired, svc.MinimumHealthyPercent)
+
+		primaryActive := primary.RunningCount + primary.PendingCount
+		if primaryActive < desired && primary.RolloutState != RolloutStateFailed {
+			n := min(desired-primaryActive, max(maxCount-(running+pending), 0))
+			if n > 0 {
+				s.launchDeploymentTasks(ctx, accountID, svc, primary, n)
+			}
+		}
+		s.stopSurplusTasks(ctx, kv, accountID, tasks, primary.ID, desired, running, minCount)
+
+		// Re-tally after launch/stop so rollout state + persisted counts are current.
+		if fresh, ferr := s.listServiceTasks(kv, svc.Cluster, svc.Name); ferr == nil {
+			running, pending = tallyDeployments(svc, fresh)
+		}
+		updateRolloutState(svc, primary, desired)
 	}
 
-	active := running + pending
-	switch {
-	case active < svc.DesiredCount:
-		s.launchServiceTasks(accountID, svc, svc.DesiredCount-active)
-	case active > svc.DesiredCount:
-		s.stopServiceSurplus(kv, accountID, tasks, active-svc.DesiredCount)
-	}
-
-	// Recount after launch/stop so the persisted counts reflect current state.
-	svc.RunningCount, svc.PendingCount = s.countServiceTasks(kv, svc.Cluster, svc.Name)
+	svc.RunningCount, svc.PendingCount = running, pending
 	return putJSON(kv, ServiceKey(svc.Cluster, svc.Name), svc)
-}
-
-// countServiceTasks returns a service's current RUNNING and PENDING task counts.
-func (s *Service) countServiceTasks(kv nats.KeyValue, cluster, name string) (running, pending int) {
-	tasks, err := s.listServiceTasks(kv, cluster, name)
-	if err != nil {
-		return 0, 0
-	}
-	for i := range tasks {
-		switch tasks[i].LastStatus {
-		case TaskStatusRunning:
-			running++
-		case TaskStatusPending:
-			pending++
-		}
-	}
-	return running, pending
 }
 
 // reconcileAllServices is the scheduler-tick fan-out: every ACTIVE service in
 // every ECS account bucket is reconciled. Runs only on the scheduler leader.
 func (s *Service) reconcileAllServices() {
+	ctx := context.Background()
 	js, err := s.js()
 	if err != nil {
 		return
@@ -388,22 +395,23 @@ func (s *Service) reconcileAllServices() {
 			continue
 		}
 		for i := range recs {
-			if err := s.reconcileService(kv, accountID, &recs[i]); err != nil {
+			if err := s.reconcileService(ctx, kv, accountID, &recs[i]); err != nil {
 				slog.Error("ECS reconcile: service failed", "service", recs[i].Name, "err", err)
 			}
 		}
 	}
 }
 
-// launchServiceTasks places n replacement tasks via the standard RunTask flow,
-// tagged with the service group + deployment so they count toward the service.
-func (s *Service) launchServiceTasks(accountID string, svc *ServiceRecord, n int) {
+// launchDeploymentTasks places n tasks for a specific deployment via the standard
+// RunTask flow, tagged with the service group + the deployment ID (StartedBy) so
+// the reconciler maps them back to the deployment they belong to.
+func (s *Service) launchDeploymentTasks(ctx context.Context, accountID string, svc *ServiceRecord, dep *Deployment, n int) {
 	in := &ecs.RunTaskInput{
 		Cluster:        aws.String(svc.Cluster),
-		TaskDefinition: aws.String(svc.TaskDefARN),
+		TaskDefinition: aws.String(dep.TaskDefARN),
 		Count:          aws.Int64(int64(n)),
 		Group:          aws.String(serviceTaskGroup(svc.Name)),
-		StartedBy:      aws.String("ecs-svc/" + svc.DeploymentID),
+		StartedBy:      aws.String(deploymentStartedBy(dep.ID)),
 	}
 	if svc.PlacementStrategy != "" {
 		in.PlacementStrategy = []*ecs.PlacementStrategy{{Type: aws.String(svc.PlacementStrategy)}}
@@ -419,42 +427,78 @@ func (s *Service) launchServiceTasks(accountID string, svc *ServiceRecord, n int
 			in.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp = aws.String(svc.AssignPublicIP)
 		}
 	}
-	out, err := s.RunTask(in, accountID)
+	out, err := s.RunTask(ctx, in, accountID)
 	if err != nil {
-		slog.Error("ECS reconcile: launch failed", "service", svc.Name, "err", err)
+		slog.ErrorContext(ctx, "ECS reconcile: launch failed", "service", svc.Name, "err", err)
 		return
 	}
 	if len(out.Failures) > 0 {
-		slog.Warn("ECS reconcile: launch had placement failures", "service", svc.Name, "failures", len(out.Failures))
+		slog.WarnContext(ctx, "ECS reconcile: launch had placement failures", "service", svc.Name, "failures", len(out.Failures))
 	}
 }
 
-// stopServiceSurplus force-stops n of a service's tasks, preferring PENDING tasks
-// (least disruptive) before RUNNING ones.
-func (s *Service) stopServiceSurplus(kv nats.KeyValue, accountID string, tasks []TaskRecord, n int) {
-	order := make([]int, 0, len(tasks))
+// stopSurplusTasks drains a service's excess tasks: superseded (non-primary)
+// deployment tasks toward zero, and the primary's own surplus on a scale-in.
+// PENDING surplus is stopped freely; RUNNING surplus is gated so healthy running
+// never drops below minimumHealthyPercent (minCount).
+func (s *Service) stopSurplusTasks(ctx context.Context, kv nats.KeyValue, accountID string, tasks []TaskRecord, primaryID string, desired, runningTotal, minCount int) {
+	var oldPending, oldRunning, primaryPending, primaryRunning []int
 	for i := range tasks {
-		if tasks[i].LastStatus == TaskStatusPending {
-			order = append(order, i)
+		isPrimary := deploymentIDFromStartedBy(tasks[i].StartedBy) == primaryID
+		switch tasks[i].LastStatus {
+		case TaskStatusPending:
+			if isPrimary {
+				primaryPending = append(primaryPending, i)
+			} else {
+				oldPending = append(oldPending, i)
+			}
+		case TaskStatusRunning:
+			if isPrimary {
+				primaryRunning = append(primaryRunning, i)
+			} else {
+				oldRunning = append(oldRunning, i)
+			}
 		}
 	}
-	for i := range tasks {
-		if tasks[i].LastStatus == TaskStatusRunning {
-			order = append(order, i)
-		}
+	primarySurplus := max(len(primaryPending)+len(primaryRunning)-desired, 0)
+	runBudget := max(runningTotal-minCount, 0)
+	// Cooperative stop: the agent reaps the container, then recordTaskState performs
+	// the single capacity release. A never-placed task force-stops internally.
+	stop := func(i int, reason string) { s.requestStopTask(ctx, kv, accountID, &tasks[i], reason) }
+
+	for _, i := range oldPending {
+		stop(i, deploymentSupersededReason)
 	}
-	for _, idx := range order {
-		if n <= 0 {
+	for _, i := range primaryPending {
+		if primarySurplus <= 0 {
 			break
 		}
-		s.forceStopTask(kv, accountID, &tasks[idx], "Service scaled in")
-		n--
+		stop(i, "Service scaled in")
+		primarySurplus--
+	}
+	for _, i := range oldRunning {
+		if runBudget <= 0 {
+			break
+		}
+		stop(i, deploymentSupersededReason)
+		runBudget--
+	}
+	for _, i := range primaryRunning {
+		if primarySurplus <= 0 || runBudget <= 0 {
+			break
+		}
+		stop(i, "Service scaled in")
+		primarySurplus--
+		runBudget--
 	}
 }
 
 // --- Helpers ---
 
-// listServiceTasks returns a cluster's non-STOPPED tasks owned by the service.
+// listServiceTasks returns a cluster's live tasks owned by the service: neither
+// STOPPED nor already requested to stop (DesiredStatus=STOPPED). A cooperatively
+// stopped task lingers RUNNING until the agent reaps it, but it is on its way out,
+// so it must not count toward the service's running total for scaling decisions.
 func (s *Service) listServiceTasks(kv nats.KeyValue, cluster, name string) ([]TaskRecord, error) {
 	group := serviceTaskGroup(name)
 	all, err := s.listTaskRecords(kv, cluster)
@@ -463,7 +507,7 @@ func (s *Service) listServiceTasks(kv nats.KeyValue, cluster, name string) ([]Ta
 	}
 	out := make([]TaskRecord, 0, len(all))
 	for _, t := range all {
-		if t.Group == group && t.LastStatus != TaskStatusStopped {
+		if t.Group == group && t.LastStatus != TaskStatusStopped && t.DesiredStatus != TaskStatusStopped {
 			out = append(out, t)
 		}
 	}
@@ -569,6 +613,7 @@ func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service 
 		PendingCount:       aws.Int64(int64(r.PendingCount)),
 		SchedulingStrategy: aws.String(r.SchedulingStrategy),
 		TaskDefinition:     aws.String(r.TaskDefARN),
+		Tags:               tagsToAWS(r.Tags),
 	}
 	if r.LaunchType != "" {
 		svc.LaunchType = aws.String(r.LaunchType)
@@ -578,6 +623,35 @@ func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service 
 			TargetGroupArn: aws.String(lb.TargetGroupARN),
 			ContainerName:  aws.String(lb.ContainerName),
 			ContainerPort:  aws.Int64(int64(lb.ContainerPort)),
+		})
+	}
+	if r.MinimumHealthyPercent > 0 || r.MaximumPercent > 0 {
+		svc.DeploymentConfiguration = &ecs.DeploymentConfiguration{
+			MinimumHealthyPercent: aws.Int64(int64(r.MinimumHealthyPercent)),
+			MaximumPercent:        aws.Int64(int64(r.MaximumPercent)),
+			DeploymentCircuitBreaker: &ecs.DeploymentCircuitBreaker{
+				Enable:   aws.Bool(r.CircuitBreakerEnable),
+				Rollback: aws.Bool(r.CircuitBreakerRollback),
+			},
+		}
+	}
+	for i := range r.Deployments {
+		d := &r.Deployments[i]
+		svc.Deployments = append(svc.Deployments, &ecs.Deployment{
+			Id:             aws.String(d.ID),
+			Status:         aws.String(d.Status),
+			TaskDefinition: aws.String(d.TaskDefARN),
+			DesiredCount:   aws.Int64(int64(d.DesiredCount)),
+			RunningCount:   aws.Int64(int64(d.RunningCount)),
+			PendingCount:   aws.Int64(int64(d.PendingCount)),
+			FailedTasks:    aws.Int64(int64(d.FailedTasks)),
+			RolloutState:   aws.String(d.RolloutState),
+			RolloutStateReason: func() *string {
+				if d.RolloutReason == "" {
+					return nil
+				}
+				return aws.String(d.RolloutReason)
+			}(),
 		})
 	}
 	return svc

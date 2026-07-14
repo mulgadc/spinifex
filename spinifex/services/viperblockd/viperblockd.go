@@ -24,7 +24,22 @@ import (
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
 
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+const viperblockdTracerName = "github.com/mulgadc/spinifex/spinifex/services/viperblockd"
+
+// endSpanWithResponseError marks span failed when respErr is non-empty, then ends it.
+func endSpanWithResponseError(span trace.Span, respErr string) {
+	if respErr != "" {
+		span.RecordError(errors.New(respErr))
+		span.SetStatus(codes.Error, respErr)
+	}
+	span.End()
+}
 
 // loadStateRetryAttempts / loadStateRetryBaseDelay tune the mount-time retry
 // loop (5 attempts at 200ms * 1.5^n ≈ 3.7s; well under the 30s NATS timeout).
@@ -70,16 +85,14 @@ func loadStateWithRetry(vb *viperblock.VB, volume string) error {
 var serviceName = "viperblock"
 
 type MountedVolume struct {
-	Name        string
-	Port        int    // TCP port (when using TCP transport)
-	Socket      string // Unix socket path (when using socket transport)
-	NBDURI      string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
-	PID         int
-	VB          *viperblock.VB     // Reference to viperblock instance for state sync/flush
-	SnapshotSub *nats.Subscription // Per-volume snapshot subscription (ebs.snapshot.{volumeID})
-	ConfigSub   *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})
+	Name      string
+	Port      int    // TCP port (when using TCP transport)
+	Socket    string // Unix socket path (when using socket transport)
+	NBDURI    string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
+	PID       int
+	VB        *viperblock.VB     // Reference to viperblock instance for state sync/flush
+	ConfigSub *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})
 }
-
 type Config struct {
 	ConfigPath     string
 	PluginPath     string
@@ -132,32 +145,6 @@ func New(config any) (svc *Service, err error) {
 	}
 
 	return svc, nil
-}
-
-// makeSnapshotHandler returns a NATS handler for volume-specific snapshot requests (ebs.snapshot.{volumeID}).
-func makeSnapshotHandler(vb *viperblock.VB, volumeName string) nats.MsgHandler {
-	return func(msg *nats.Msg) {
-		var snapRequest types.EBSSnapshotRequest
-		if err := json.Unmarshal(msg.Data, &snapRequest); err != nil {
-			slog.Error("Failed to unmarshal ebs.snapshot message", "volume", volumeName, "err", err)
-			respondJSON(msg, types.EBSSnapshotResponse{Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-
-		slog.Info("ebs.snapshot: processing snapshot request", "volume", volumeName, "snapshotId", snapRequest.SnapshotID)
-
-		snapResponse := types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID}
-
-		if _, err := vb.CreateSnapshot(snapRequest.SnapshotID); err != nil {
-			snapResponse.Error = fmt.Sprintf("snapshot failed: %v", err)
-			slog.Error("ebs.snapshot: CreateSnapshot failed", "volume", volumeName, "snapshotId", snapRequest.SnapshotID, "err", err)
-		} else {
-			snapResponse.Success = true
-			slog.Info("ebs.snapshot: snapshot created", "volume", volumeName, "snapshotId", snapRequest.SnapshotID)
-		}
-
-		respondJSON(msg, snapResponse)
-	}
 }
 
 // applyConfigUpdate writes a control-plane VolumeConfig onto a viperblock
@@ -387,11 +374,14 @@ func launchService(cfg *Config) (err error) {
 	}
 
 	if _, err := nc.QueueSubscribe("ebs.delete", "spinifex-workers", func(msg *nats.Msg) {
-		slog.Info("Received ebs.delete message", "data", string(msg.Data))
+		ctx, span := utils.StartConsumerSpan(msg)
+		defer span.End()
+		slog.InfoContext(ctx, "Received ebs.delete message", "data", string(msg.Data))
 
 		var ebsRequest types.EBSDeleteRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
-			slog.Error("Failed to unmarshal ebs.delete message", "err", err)
+			slog.ErrorContext(ctx, "Failed to unmarshal ebs.delete message", "err", err)
+			utils.MarkSpanError(span, err)
 			respondJSON(msg, types.EBSDeleteResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
@@ -413,38 +403,33 @@ func launchService(cfg *Config) (err error) {
 		cfg.mu.Unlock()
 
 		if matchIdx >= 0 {
-			// Unsubscribe from volume-specific snapshot topic
-			if matched.SnapshotSub != nil {
-				if err := matched.SnapshotSub.Unsubscribe(); err != nil {
-					slog.Error("Failed to unsubscribe snapshot topic", "volume", ebsRequest.Volume, "err", err)
-				}
-			}
 			// Unsubscribe from volume-specific config-update topic
 			if matched.ConfigSub != nil {
 				if err := matched.ConfigSub.Unsubscribe(); err != nil {
-					slog.Error("Failed to unsubscribe config topic", "volume", ebsRequest.Volume, "err", err)
+					slog.ErrorContext(ctx, "Failed to unsubscribe config topic", "volume", ebsRequest.Volume, "err", err)
 				}
 			}
-			// Stop WAL syncer and kill nbdkit process
+			// Stop background goroutines and kill nbdkit process
 			if matched.VB != nil {
+				matched.VB.StopChunkUploader()
 				matched.VB.StopWALSyncer()
 			}
 			if err := utils.KillProcess(matched.PID); err != nil {
-				slog.Error("Failed to kill nbdkit process", "pid", matched.PID, "err", err)
+				slog.ErrorContext(ctx, "Failed to kill nbdkit process", "pid", matched.PID, "err", err)
 			}
 
 			// Remove the socket file if using socket transport
 			if matched.Socket != "" {
-				slog.Info("Removing socket file", "socket", matched.Socket)
+				slog.InfoContext(ctx, "Removing socket file", "socket", matched.Socket)
 				if err := os.Remove(matched.Socket); err != nil && !os.IsNotExist(err) {
-					slog.Error("Failed to delete nbd socket", "err", err, "socket", matched.Socket)
+					slog.ErrorContext(ctx, "Failed to delete nbd socket", "err", err, "socket", matched.Socket)
 				}
 			}
 
-			slog.Info("ebs.delete: cleaned up mounted volume", "volume", ebsRequest.Volume, "pid", matched.PID)
+			slog.InfoContext(ctx, "ebs.delete: cleaned up mounted volume", "volume", ebsRequest.Volume, "pid", matched.PID)
 		} else {
 			// Volume not mounted is expected for "available" volumes
-			slog.Info("ebs.delete: volume not mounted (expected for available volumes)", "volume", ebsRequest.Volume)
+			slog.InfoContext(ctx, "ebs.delete: volume not mounted (expected for available volumes)", "volume", ebsRequest.Volume)
 		}
 
 		respondJSON(msg, response)
@@ -464,18 +449,25 @@ func launchService(cfg *Config) (err error) {
 		return nc.QueueSubscribe(topic, "spinifex-workers", handler)
 	}
 	if _, err := unmountSubscribe(unmountTopic, func(msg *nats.Msg) {
-		slog.Info("Received message", "data", string(msg.Data))
+		ctx, span := utils.StartConsumerSpan(msg)
+		defer span.End()
+		slog.InfoContext(ctx, "Received message", "data", string(msg.Data))
 
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
-			slog.Error("Failed to unmarshal ebs.unmount message", "err", err)
+			slog.ErrorContext(ctx, "Failed to unmarshal ebs.unmount message", "err", err)
+			utils.MarkSpanError(span, err)
 			respondJSON(msg, types.EBSUnMountResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
 
+		_, unmountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.unmount",
+			trace.WithAttributes(attribute.String("volume.id", ebsRequest.Name)))
+
 		// Find the volume and extract references while holding the lock,
 		// then release before calling VB.Close() (which does heavy S3 I/O).
 		var ebsResponse types.EBSUnMountResponse
+		defer func() { endSpanWithResponseError(unmountSpan, ebsResponse.Error) }()
 		var matched MountedVolume
 		var matchIdx = -1
 		cfg.mu.Lock()
@@ -483,8 +475,6 @@ func launchService(cfg *Config) (err error) {
 			if volume.Name == ebsRequest.Name {
 				matched = volume
 				matchIdx = i
-				// Remove from slice while we hold the lock
-				cfg.MountedVolumes = append(cfg.MountedVolumes[:i], cfg.MountedVolumes[i+1:]...)
 				break
 			}
 		}
@@ -496,28 +486,23 @@ func launchService(cfg *Config) (err error) {
 				Mounted: false,
 			}
 
-			// Unsubscribe from volume-specific snapshot topic
-			if matched.SnapshotSub != nil {
-				if err := matched.SnapshotSub.Unsubscribe(); err != nil {
-					slog.Error("Failed to unsubscribe snapshot topic", "volume", ebsRequest.Name, "err", err)
-				}
-			}
-
 			// Unsubscribe from volume-specific config-update topic
 			if matched.ConfigSub != nil {
 				if err := matched.ConfigSub.Unsubscribe(); err != nil {
-					slog.Error("Failed to unsubscribe config topic", "volume", ebsRequest.Name, "err", err)
+					slog.ErrorContext(ctx, "Failed to unsubscribe config topic", "volume", ebsRequest.Name, "err", err)
 				}
 			}
 
-			// Clean up the VB instance's background goroutine.
-			// This VB is state-only (LoadState/sync) — actual I/O is in the nbdkit plugin process.
+			// Stop background goroutines on the state-tracking VB.
+			// Actual I/O is in the nbdkit plugin process; sealVolumeVB below
+			// opens a fresh VB and calls Close() for the proper seal.
 			if matched.VB != nil {
+				matched.VB.StopChunkUploader()
 				matched.VB.StopWALSyncer()
 			}
 
 			if err := utils.KillProcess(matched.PID); err != nil {
-				slog.Error("Failed to kill nbdkit process", "pid", matched.PID, "err", err)
+				slog.ErrorContext(ctx, "Failed to kill nbdkit process", "pid", matched.PID, "err", err)
 			}
 
 			// nbdkit is now dead, so no process writes the shared BaseDir: seal
@@ -525,32 +510,49 @@ func launchService(cfg *Config) (err error) {
 			// flush (see volumeNeedsSeal).
 			if volumeNeedsSeal(matched.Name, cfg.BaseDir) {
 				if err := sealVolumeVB(cfg, matched.Name); err != nil {
-					slog.Error("ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
+					slog.ErrorContext(ctx, "ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
 					ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
 				} else {
-					slog.Info("ebs.unmount: volume sealed to predastore", "volume", matched.Name)
+					slog.InfoContext(ctx, "ebs.unmount: volume sealed to predastore", "volume", matched.Name)
 				}
 			} else if !isAuxVolume(matched.Name) {
 				// A durable volume reached unmount with no local WAL under
 				// BaseDir: this node never held its state, so there is nothing to
 				// seal. WARN since a missing local WAL for a volume we expected to
 				// seal can mask the durability gap the seal closes.
-				slog.Warn("ebs.unmount: no local viperblock state for volume, skipping seal", "volume", matched.Name, "baseDir", cfg.BaseDir)
+				slog.WarnContext(ctx, "ebs.unmount: no local viperblock state for volume, skipping seal", "volume", matched.Name, "baseDir", cfg.BaseDir)
 			}
 
 			// Remove the socket file if using socket transport
 			if matched.Socket != "" {
-				slog.Info("Removing socket file", "socket", matched.Socket)
+				slog.InfoContext(ctx, "Removing socket file", "socket", matched.Socket)
 				if err := os.Remove(matched.Socket); err != nil && !os.IsNotExist(err) {
-					slog.Error("Failed to delete nbd socket", "err", err, "socket", matched.Socket)
+					slog.ErrorContext(ctx, "Failed to delete nbd socket", "err", err, "socket", matched.Socket)
 				}
+			}
+
+			// Only drop the volume from MountedVolumes once the seal actually
+			// succeeded (or none was needed): a failed seal must leave it
+			// mounted so a retry re-attempts sealVolumeVB, rather than a
+			// caller seeing "not found" and mistaking a failed seal for a
+			// completed one.
+			if ebsResponse.Error == "" {
+				cfg.mu.Lock()
+				for i, volume := range cfg.MountedVolumes {
+					if volume.Name == matched.Name {
+						cfg.MountedVolumes = append(cfg.MountedVolumes[:i], cfg.MountedVolumes[i+1:]...)
+						break
+					}
+				}
+				cfg.mu.Unlock()
 			}
 		}
 
 		if matchIdx < 0 {
 			ebsResponse = types.EBSUnMountResponse{
-				Volume: ebsRequest.Name,
-				Error:  fmt.Sprintf("Volume %s not found", ebsRequest.Name),
+				Volume:   ebsRequest.Name,
+				Error:    fmt.Sprintf("Volume %s not found", ebsRequest.Name),
+				NotFound: true,
 			}
 		}
 
@@ -560,16 +562,24 @@ func launchService(cfg *Config) (err error) {
 	}
 
 	if _, err := nc.QueueSubscribe("ebs.sync", "spinifex-workers", func(msg *nats.Msg) {
-		slog.Info("Received ebs.sync message", "data", string(msg.Data))
+		ctx, span := utils.StartConsumerSpan(msg)
+		defer span.End()
+		slog.InfoContext(ctx, "Received ebs.sync message", "data", string(msg.Data))
 
 		var syncRequest types.EBSSyncRequest
 		if err := json.Unmarshal(msg.Data, &syncRequest); err != nil {
-			slog.Error("Failed to unmarshal ebs.sync message", "err", err)
+			slog.ErrorContext(ctx, "Failed to unmarshal ebs.sync message", "err", err)
+			utils.MarkSpanError(span, err)
 			respondJSON(msg, types.EBSSyncResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
 
 		syncResponse := types.EBSSyncResponse{Volume: syncRequest.Volume}
+		defer func() {
+			if syncResponse.Error != "" {
+				utils.MarkSpanError(span, errors.New(syncResponse.Error))
+			}
+		}()
 
 		// Find the mounted volume and reload its state from the backend
 		cfg.mu.Lock()
@@ -584,13 +594,13 @@ func launchService(cfg *Config) (err error) {
 
 		if foundVB == nil {
 			syncResponse.Error = fmt.Sprintf("volume %s not mounted or has no VB instance", syncRequest.Volume)
-			slog.Warn("ebs.sync: volume not found", "volume", syncRequest.Volume)
+			slog.WarnContext(ctx, "ebs.sync: volume not found", "volume", syncRequest.Volume)
 		} else if err := foundVB.LoadState(); err != nil {
 			syncResponse.Error = fmt.Sprintf("failed to reload state: %v", err)
-			slog.Error("ebs.sync: LoadState failed", "volume", syncRequest.Volume, "err", err)
+			slog.ErrorContext(ctx, "ebs.sync: LoadState failed", "volume", syncRequest.Volume, "err", err)
 		} else {
 			syncResponse.Synced = true
-			slog.Info("ebs.sync: state reloaded", "volume", syncRequest.Volume,
+			slog.InfoContext(ctx, "ebs.sync: state reloaded", "volume", syncRequest.Volume,
 				"volumeSize", foundVB.GetVolumeSize())
 		}
 
@@ -605,9 +615,13 @@ func launchService(cfg *Config) (err error) {
 	// open it exclusively and reseal. A mount that raced in is still handled by
 	// preferring the live VB when this node happens to own it.
 	if _, err := nc.QueueSubscribe("ebs.config", "spinifex-workers", func(msg *nats.Msg) {
+		ctx, span := utils.StartConsumerSpan(msg)
+		defer span.End()
+
 		var req types.EBSConfigUpdateRequest
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
-			slog.Error("Failed to unmarshal ebs.config message", "err", err)
+			slog.ErrorContext(ctx, "Failed to unmarshal ebs.config message", "err", err)
+			utils.MarkSpanError(span, err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
@@ -624,31 +638,34 @@ func launchService(cfg *Config) (err error) {
 
 		if live != nil {
 			if err := applyConfigUpdate(live, req); err != nil {
-				slog.Error("ebs.config: live VB update failed", "volume", req.Volume, "err", err)
+				slog.ErrorContext(ctx, "ebs.config: live VB update failed", "volume", req.Volume, "err", err)
+				utils.MarkSpanError(span, err)
 				respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
 				return
 			}
-			slog.Info("ebs.config: live VB state updated (fallback path)", "volume", req.Volume)
+			slog.InfoContext(ctx, "ebs.config: live VB state updated (fallback path)", "volume", req.Volume)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
 			return
 		}
 
 		vb, err := openLoadedVolumeVB(cfg, req.Volume)
 		if err != nil {
-			slog.Error("ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
+			slog.ErrorContext(ctx, "ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
+			utils.MarkSpanError(span, err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
 			return
 		}
 		applyErr := applyConfigUpdate(vb, req)
 		if closeErr := vb.Close(); closeErr != nil {
-			slog.Error("ebs.config: VB close failed", "volume", req.Volume, "err", closeErr)
+			slog.ErrorContext(ctx, "ebs.config: VB close failed", "volume", req.Volume, "err", closeErr)
 		}
 		if applyErr != nil {
-			slog.Error("ebs.config: detached volume update failed", "volume", req.Volume, "err", applyErr)
+			slog.ErrorContext(ctx, "ebs.config: detached volume update failed", "volume", req.Volume, "err", applyErr)
+			utils.MarkSpanError(span, applyErr)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: applyErr.Error()})
 			return
 		}
-		slog.Info("ebs.config: detached volume state updated", "volume", req.Volume)
+		slog.InfoContext(ctx, "ebs.config: detached volume state updated", "volume", req.Volume)
 		respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
 	}); err != nil {
 		return fmt.Errorf("failed to subscribe to ebs.config: %w", err)
@@ -670,19 +687,26 @@ func launchService(cfg *Config) (err error) {
 		return nc.QueueSubscribe(topic, "spinifex-workers", handler)
 	}
 	if _, err := mountSubscribe(mountTopic, func(msg *nats.Msg) {
-		slog.Info("Received message:", "data", string(msg.Data))
+		ctx, span := utils.StartConsumerSpan(msg)
+		defer span.End()
+		slog.InfoContext(ctx, "Received message:", "data", string(msg.Data))
 
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
-			slog.Error("Failed to unmarshal ebs.mount message", "err", err)
+			slog.ErrorContext(ctx, "Failed to unmarshal ebs.mount message", "err", err)
+			utils.MarkSpanError(span, err)
 			respondJSON(msg, types.EBSMountResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
 
-		slog.Info("ebs.mount", "request", ebsRequest)
+		slog.InfoContext(ctx, "ebs.mount", "request", ebsRequest)
+
+		_, mountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount",
+			trace.WithAttributes(attribute.String("volume.id", ebsRequest.Name)))
 
 		var ebsResponse types.EBSMountResponse
 		ebsResponse.Mounted = false
+		defer func() { endSpanWithResponseError(mountSpan, ebsResponse.Error) }()
 
 		s3cfg := s3.S3Config{
 			VolumeName: ebsRequest.Name,
@@ -717,15 +741,15 @@ func launchService(cfg *Config) (err error) {
 		// This cacheSize is passed to nbdkit plugin (separate viperblock instance)
 		var nbdCacheSize int
 		if strings.HasSuffix(ebsRequest.Name, "-efi") {
-			slog.Info("Disabling cache for auxiliary volume", "volume", ebsRequest.Name)
+			slog.InfoContext(ctx, "Disabling cache for auxiliary volume", "volume", ebsRequest.Name)
 			if err := vb.SetCacheSize(0, 0); err != nil {
-				slog.Error("Failed to set cache size", "err", err)
+				slog.ErrorContext(ctx, "Failed to set cache size", "err", err)
 			}
 			nbdCacheSize = 0
 		} else {
-			slog.Info("Enabling 128MB cache for main volume", "volume", ebsRequest.Name, "blocks", defaultCache)
+			slog.InfoContext(ctx, "Enabling 128MB cache for main volume", "volume", ebsRequest.Name, "blocks", defaultCache)
 			if err := vb.SetCacheSize(defaultCache, 0); err != nil {
-				slog.Error("Failed to set cache size", "err", err)
+				slog.ErrorContext(ctx, "Failed to set cache size", "err", err)
 			}
 			nbdCacheSize = defaultCache
 		}
@@ -735,6 +759,11 @@ func launchService(cfg *Config) (err error) {
 			respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
 			return
 		}
+
+		// This daemon-side VB tracks state only; the nbdkit plugin process owns
+		// the data path and its own uploader. Stop this VB's background uploader
+		// so it cannot overwrite the live checkpoint every 30s (AEAD corruption).
+		vb.StopChunkUploader()
 
 		if cfg.Debug {
 			vb.SetDebug(true)
@@ -757,6 +786,7 @@ func launchService(cfg *Config) (err error) {
 			respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
 			return
 		}
+		mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", utils.SafeUint64ToInt64(vb.GetVolumeSize())))
 
 		useTCP := cfg.NBDTransport == types.NBDTransportTCP
 
@@ -777,14 +807,14 @@ func launchService(cfg *Config) (err error) {
 			parts := strings.Split(portStr, ":")
 			nbdPort, err = strconv.Atoi(parts[len(parts)-1])
 			if err != nil {
-				slog.Error("Failed to convert port to int", "err", err)
+				slog.ErrorContext(ctx, "Failed to convert port to int", "err", err)
 				ebsResponse.Error = fmt.Sprintf("failed to parse port: %v", err)
 				respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
 				return
 			}
 
 			nbdURI = utils.FormatNBDTCPURI("127.0.0.1", nbdPort)
-			slog.Info("Mounting volume (TCP)", "name", ebsRequest.Name, "port", nbdPort, "uri", nbdURI)
+			slog.InfoContext(ctx, "Mounting volume (TCP)", "name", ebsRequest.Name, "port", nbdPort, "uri", nbdURI)
 		} else {
 			// Unix socket transport (default) - generate unique socket path
 			nbdSocket, err = utils.GenerateUniqueSocketFile(ebsRequest.Name)
@@ -795,36 +825,35 @@ func launchService(cfg *Config) (err error) {
 			}
 
 			nbdURI = utils.FormatNBDSocketURI(nbdSocket)
-			slog.Info("Mounting volume (socket)", "name", ebsRequest.Name, "socket", nbdSocket, "uri", nbdURI)
+			slog.InfoContext(ctx, "Mounting volume (socket)", "name", ebsRequest.Name, "socket", nbdSocket, "uri", nbdURI)
 		}
 
 		// Generate PID file for nbdkit process
 		nbdPidFile, err := utils.GeneratePidFile(fmt.Sprintf("nbdkit-vol-%s", ebsRequest.Name))
 		if err != nil {
-			slog.Error("Failed to generate nbdkit pid file", "err", err)
+			slog.ErrorContext(ctx, "Failed to generate nbdkit pid file", "err", err)
 			ebsResponse.Error = fmt.Sprintf("failed to generate pid file: %v", err)
 			respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
 			return
 		}
 
 		nbdConfig := nbd.NBDKitConfig{
-			Port:       nbdPort,
-			Socket:     nbdSocket,
-			UseTCP:     useTCP,
-			PidFile:    nbdPidFile,
-			PluginPath: cfg.PluginPath,
-			BaseDir:    cfg.BaseDir,
-			Host:       admin.DialTarget(cfg.S3Host),
-			Verbose:    false,
-			Size:       utils.SafeUint64ToInt64(vb.GetVolumeSize()),
-			Volume:     ebsRequest.Name,
-			Bucket:     cfg.Bucket,
-			Region:     cfg.Region,
-			AccessKey:  cfg.AccessKey,
-			SecretKey:  cfg.SecretKey,
-			CacheSize:  nbdCacheSize,
-			ShardWAL:   cfg.ShardWAL,
-
+			Port:              nbdPort,
+			Socket:            nbdSocket,
+			UseTCP:            useTCP,
+			PidFile:           nbdPidFile,
+			PluginPath:        cfg.PluginPath,
+			BaseDir:           cfg.BaseDir,
+			Host:              admin.DialTarget(cfg.S3Host),
+			Verbose:           false,
+			Size:              utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+			Volume:            ebsRequest.Name,
+			Bucket:            cfg.Bucket,
+			Region:            cfg.Region,
+			AccessKey:         cfg.AccessKey,
+			SecretKey:         cfg.SecretKey,
+			CacheSize:         nbdCacheSize,
+			ShardWAL:          cfg.ShardWAL,
 			EncryptionKeyFile: cfg.EncryptionKeyFile,
 		}
 
@@ -871,54 +900,59 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		// Wait for 1 second to confirm nbdkit is running
-		time.Sleep(1 * time.Second)
+		// Poll for up to 1 second to confirm nbdkit is running, checking every
+		// 50ms so a fast failure is detected quickly instead of always
+		// costing the full second. Any exit within that window means NBDKit
+		// failed to stay up.
+		const nbdkitConfirmPollInterval = 50 * time.Millisecond
+		const nbdkitConfirmDeadline = 1 * time.Second
+		confirmDeadline := time.Now().Add(nbdkitConfirmDeadline)
+		for {
+			select {
+			case exitErr := <-exitChan:
+				ebsResponse.Error = fmt.Sprintf("nbdkit exited unexpectedly (code=%d)", exitErr)
+				respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
+				return
+			default:
+			}
 
-		// Any exit within the first second means NBDKit failed to stay up.
-		select {
-		case exitErr := <-exitChan:
-			ebsResponse.Error = fmt.Sprintf("nbdkit exited unexpectedly (code=%d)", exitErr)
-			respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
-			return
-		default:
-			// nbdkit is still running after 1 second, which means it started successfully
-			slog.Info("NBDKit started successfully and is running")
+			if time.Now().After(confirmDeadline) {
+				break
+			}
+
+			time.Sleep(nbdkitConfirmPollInterval)
 		}
+
+		// nbdkit is still running after the poll window, which means it started successfully
+		slog.InfoContext(ctx, "NBDKit started successfully and is running")
 
 		// NBDKit creates the socket with its own umask (typically 0755).
 		// The daemon (different user, same group) needs write access to connect.
 		if nbdSocket != "" {
 			if err := os.Chmod(nbdSocket, 0770); err != nil { //nolint:gosec // socket needs group-write for cross-service access
-				slog.Warn("Failed to chmod NBD socket", "socket", nbdSocket, "err", err)
+				slog.WarnContext(ctx, "Failed to chmod NBD socket", "socket", nbdSocket, "err", err)
 			}
 		}
 
 		ebsResponse.Mounted = true
 		ebsResponse.URI = nbdURI
 
-		// Subscribe to volume-specific snapshot topic so requests route to this node
-		snapSub, err := nc.Subscribe(fmt.Sprintf("ebs.snapshot.%s", ebsRequest.Name), makeSnapshotHandler(vb, ebsRequest.Name))
-		if err != nil {
-			slog.Error("Failed to subscribe to volume snapshot topic", "volume", ebsRequest.Name, "err", err)
-		}
-
 		// Subscribe to volume-specific config-update topic so encrypted-volume
 		// metadata writes route to this node's live VB (the StateSeqNum owner).
 		configSub, err := nc.Subscribe(fmt.Sprintf("ebs.config.%s", ebsRequest.Name), makeConfigUpdateHandler(vb, ebsRequest.Name))
 		if err != nil {
-			slog.Error("Failed to subscribe to volume config topic", "volume", ebsRequest.Name, "err", err)
+			slog.ErrorContext(ctx, "Failed to subscribe to volume config topic", "volume", ebsRequest.Name, "err", err)
 		}
 
 		cfg.mu.Lock()
 		cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
-			Name:        ebsRequest.Name,
-			Port:        nbdPort,
-			Socket:      nbdSocket,
-			NBDURI:      nbdURI,
-			PID:         pid,
-			VB:          vb,
-			SnapshotSub: snapSub,
-			ConfigSub:   configSub,
+			Name:      ebsRequest.Name,
+			Port:      nbdPort,
+			Socket:    nbdSocket,
+			NBDURI:    nbdURI,
+			PID:       pid,
+			VB:        vb,
+			ConfigSub: configSub,
 		})
 		cfg.mu.Unlock()
 
@@ -958,6 +992,7 @@ func launchService(cfg *Config) (err error) {
 func shutdownVolumes(volumes []MountedVolume, inUse func(MountedVolume) bool) {
 	for _, volume := range volumes {
 		if volume.VB != nil {
+			volume.VB.StopChunkUploader()
 			volume.VB.StopWALSyncer()
 		}
 		if inUse(volume) {

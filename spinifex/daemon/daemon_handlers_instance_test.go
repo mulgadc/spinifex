@@ -36,6 +36,7 @@ type fakeStateStore struct {
 	stopped          map[string]*vm.VM
 	loadStoppedErr   error
 	writeStoppedErr  error
+	updateStoppedErr error
 	listStoppedErr   error
 	deleteStoppedErr error
 
@@ -43,6 +44,8 @@ type fakeStateStore struct {
 	// and the second succeed — exercises the handler's single retry.
 	deleteStoppedFailFirst bool
 	deleteStoppedAttempts  int
+
+	claimStoppedErr error
 
 	terminated         map[string]*vm.VM
 	writeTerminatedErr error
@@ -104,6 +107,41 @@ func (f *fakeStateStore) DeleteStoppedInstance(id string) error {
 	return nil
 }
 
+// ClaimStoppedInstance mimics the real atomic-delete claim for tests: under
+// the store lock, remove and return the entry, or claimStoppedErr /
+// vm.ErrStoppedInstanceClaimed if it is already gone or a test forced an error.
+func (f *fakeStateStore) ClaimStoppedInstance(id string) (*vm.VM, error) {
+	if f.claimStoppedErr != nil {
+		return nil, f.claimStoppedErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.stopped[id]
+	if !ok {
+		return nil, vm.ErrStoppedInstanceClaimed
+	}
+	delete(f.stopped, id)
+	return v, nil
+}
+
+// UpdateStoppedInstance mimics the real CAS semantics for tests: mutate runs
+// under the store lock against the stored value, and a missing record
+// returns nats.ErrKeyNotFound (matching JetStreamManager's createIfAbsent=false
+// behavior) rather than resurrecting it.
+func (f *fakeStateStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updateStoppedErr != nil {
+		return nil, f.updateStoppedErr
+	}
+	v, ok := f.stopped[id]
+	if !ok {
+		return nil, nats.ErrKeyNotFound
+	}
+	mutate(v)
+	return v, nil
+}
+
 func (f *fakeStateStore) ListStoppedInstances() ([]*vm.VM, error) {
 	if f.listStoppedErr != nil {
 		return nil, f.listStoppedErr
@@ -145,6 +183,19 @@ func (f *fakeStateStore) DeleteTerminatedInstance(id string) error {
 	defer f.mu.Unlock()
 	delete(f.terminated, id)
 	return nil
+}
+
+// UpdateTerminatedInstance mimics the real CAS semantics for tests: mutate
+// runs under the store lock against the stored value.
+func (f *fakeStateStore) UpdateTerminatedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.terminated[id]
+	if !ok {
+		return nil, errors.New("terminated instance not found")
+	}
+	mutate(v)
+	return v, nil
 }
 
 var _ vm.StateStore = (*fakeStateStore)(nil)
@@ -255,6 +306,81 @@ func TestHandleEC2StartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test4", d.handleEC2StartStoppedInstance, testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"])
+}
+
+// withShortForwardTimeout shrinks startStoppedForwardTimeout for the duration
+// of a test so a forced forward timeout doesn't cost real wall-clock seconds.
+func withShortForwardTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := startStoppedForwardTimeout
+	startStoppedForwardTimeout = d
+	t.Cleanup(func() { startStoppedForwardTimeout = orig })
+}
+
+// TestHandleEC2StartStoppedInstance_ForwardTimeoutFallsBackLocally pins
+// siv-481: a forward to LastNode that times out (as opposed to an immediate
+// ErrNoResponders) must still fall back to a local start attempt instead of
+// surfacing a bare ServerInternal. The target subscriber below is alive but
+// silent, so nats: timeout is the only error the forward can produce — proof
+// that the fallback path, not ErrNoResponders handling, is what fires here.
+// An unresolvable instance type turns "local start was attempted" into a
+// distinct, assertable response code (InsufficientInstanceCapacity) instead
+// of colliding with the old no-fallback ServerInternal response.
+func TestHandleEC2StartStoppedInstance_ForwardTimeoutFallsBackLocally(t *testing.T) {
+	withShortForwardTimeout(t, 50*time.Millisecond)
+
+	store := newFakeStateStore()
+	v := stoppedVMFixture("i-timeout-fallback", testAccountID)
+	v.InstanceType = "definitely.not.a.real.type"
+	v.LastNode = "node-other"
+	store.stopped[v.ID] = v
+	d := daemonWithFakeStateStore(t, store)
+
+	// Simulate a live-but-unresponsive original node: subscribed, so no
+	// ErrNoResponders, but it never replies, so the forward times out.
+	silentSub, err := d.natsConn.Subscribe("ec2.start.node-other", func(*nats.Msg) {})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = silentSub.Unsubscribe() })
+
+	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+	reply := requestHandler(t, d.natsConn, "ec2.start.test5", d.handleEC2StartStoppedInstance, testAccountID, body)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"],
+		"a forward timeout must fall back to a local start attempt, not a bare ServerInternal")
+}
+
+// TestHandleEC2StartStoppedInstance_ForwardTimeoutAfterRemoteClaim_NoDoubleStart
+// pins the other half of siv-481: if the forward times out on the caller's
+// side AFTER the original node already won the atomic claim (removed the
+// record from shared KV) and kept working, the caller's local fallback must
+// not double-start the instance. It should observe the record already gone
+// and fail cleanly, and must never insert a second copy into its own vmMgr.
+func TestHandleEC2StartStoppedInstance_ForwardTimeoutAfterRemoteClaim_NoDoubleStart(t *testing.T) {
+	withShortForwardTimeout(t, 50*time.Millisecond)
+
+	store := newFakeStateStore()
+	v := stoppedVMFixture("i-race-claim", testAccountID)
+	v.LastNode = "node-other"
+	store.stopped[v.ID] = v
+	d := daemonWithFakeStateStore(t, store)
+
+	// Simulate the original node winning the claim (atomically removing the
+	// shared-KV record, as StartStoppedInstance's ClaimStoppedInstance does)
+	// but never replying — e.g. still mid-launch when the caller's forward
+	// budget expires.
+	claimingSub, err := d.natsConn.Subscribe("ec2.start.node-other", func(*nats.Msg) {
+		_, claimErr := store.ClaimStoppedInstance(v.ID)
+		assert.NoError(t, claimErr)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = claimingSub.Unsubscribe() })
+
+	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+	reply := requestHandler(t, d.natsConn, "ec2.start.test6", d.handleEC2StartStoppedInstance, testAccountID, body)
+
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"],
+		"local fallback must see the record already claimed and fail without double-starting")
+	_, found := d.vmMgr.Get(v.ID)
+	assert.False(t, found, "local fallback must not insert a second running copy of an already-claimed instance")
 }
 
 // --- handleEC2TerminateStoppedInstance ---
@@ -370,7 +496,7 @@ func TestHandleEC2TerminateStoppedInstance_CrossTenantRejected(t *testing.T) {
 
 func TestHandleEC2ModifyInstanceAttribute_WriteFailureReturnsServerInternal(t *testing.T) {
 	store := newFakeStateStore()
-	store.writeStoppedErr = errors.New("kv write failed")
+	store.updateStoppedErr = errors.New("kv write failed")
 	v := stoppedVMFixture("i-mod-write-fail", testAccountID)
 	store.stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)

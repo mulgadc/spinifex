@@ -13,11 +13,11 @@ const testAccountID = "111122223333"
 func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
-	kv1, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv1, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 	require.NotNil(t, kv1)
 
-	kv2, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv2, err := GetOrCreateAccountBucket(js, testAccountID, 1)
 	require.NoError(t, err)
 	require.NotNil(t, kv2)
 
@@ -25,18 +25,50 @@ func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
 	assert.Equal(t, kv1.Bucket(), kv2.Bucket())
 }
 
+// TestGetOrCreateAccountBucket_ReplicasClamped confirms the per-account
+// bucket is created with the requested replica count, clamped to a minimum
+// of 1. The embedded single-node test server rejects Replicas > 1
+// ("replicas > 1 not supported in non-clustered mode"), so only the clamping
+// path (replicas <= 0 -> 1) is exercisable end-to-end here; multi-node
+// replica counts are exercised live (see the associated bug doc).
+func TestGetOrCreateAccountBucket_ReplicasClamped(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+
+	kv, err := GetOrCreateAccountBucket(js, testAccountID, 0)
+	require.NoError(t, err)
+	require.NotNil(t, kv)
+
+	si, err := js.StreamInfo("KV_" + AccountBucketName(testAccountID))
+	require.NoError(t, err)
+	assert.Equal(t, 1, si.Config.Replicas)
+}
+
 func TestInitLeaderBucket_Idempotent(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
-	kv1, err := InitLeaderBucket(js)
+	kv1, err := InitLeaderBucket(js, 1)
 	require.NoError(t, err)
 	require.NotNil(t, kv1)
 	assert.Equal(t, KVBucketEKSLeader, kv1.Bucket())
 
-	kv2, err := InitLeaderBucket(js)
+	kv2, err := InitLeaderBucket(js, 1)
 	require.NoError(t, err)
 	require.NotNil(t, kv2)
 	assert.Equal(t, KVBucketEKSLeader, kv2.Bucket())
+}
+
+// TestInitLeaderBucket_ReplicasClamped confirms the leader bucket is created
+// with the requested replica count, clamped to a minimum of 1.
+func TestInitLeaderBucket_ReplicasClamped(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+
+	kv, err := InitLeaderBucket(js, -1)
+	require.NoError(t, err)
+	require.NotNil(t, kv)
+
+	si, err := js.StreamInfo("KV_" + KVBucketEKSLeader)
+	require.NoError(t, err)
+	assert.Equal(t, 1, si.Config.Replicas)
 }
 
 func TestKeyPaths_MatchQ2Spec(t *testing.T) {

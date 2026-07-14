@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,7 @@ import (
 )
 
 // ListAddons returns the names of every managed add-on installed on a cluster.
-func (s *EKSServiceImpl) ListAddons(input *eks.ListAddonsInput, accountID string) (*eks.ListAddonsOutput, error) {
+func (s *EKSServiceImpl) ListAddons(ctx context.Context, input *eks.ListAddonsInput, accountID string) (*eks.ListAddonsOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -36,7 +37,7 @@ func (s *EKSServiceImpl) ListAddons(input *eks.ListAddonsInput, accountID string
 }
 
 // DescribeAddonVersions returns the static add-on catalog, optionally filtered by name.
-func (s *EKSServiceImpl) DescribeAddonVersions(input *eks.DescribeAddonVersionsInput, _ string) (*eks.DescribeAddonVersionsOutput, error) {
+func (s *EKSServiceImpl) DescribeAddonVersions(ctx context.Context, input *eks.DescribeAddonVersionsInput, _ string) (*eks.DescribeAddonVersionsOutput, error) {
 	filter := ""
 	if input != nil {
 		filter = aws.StringValue(input.AddonName)
@@ -59,7 +60,7 @@ func (s *EKSServiceImpl) DescribeAddonVersions(input *eks.DescribeAddonVersionsI
 
 // CreateAddon validates, persists a CREATING record, and stages it for delivery.
 // Transitions to ACTIVE once the cluster state report confirms delivery.
-func (s *EKSServiceImpl) CreateAddon(input *eks.CreateAddonInput, accountID string) (*eks.CreateAddonOutput, error) {
+func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddonInput, accountID string) (*eks.CreateAddonOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -129,7 +130,7 @@ type ListStagedAddonManifestsOutput struct {
 // route) to render the baked bundles into the K3s auto-deploy dir; an add-on
 // whose record was deleted has its staged manifest removed, so the agent treats
 // absence here as "remove the locally-rendered manifest".
-func (s *EKSServiceImpl) ListStagedAddonManifests(input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error) {
+func (s *EKSServiceImpl) ListStagedAddonManifests(ctx context.Context, input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error) {
 	if input == nil || input.ClusterName == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -176,7 +177,7 @@ func sortStagedManifests(m []StagedAddonManifest) {
 }
 
 // DescribeAddon returns one installed add-on's record.
-func (s *EKSServiceImpl) DescribeAddon(input *eks.DescribeAddonInput, accountID string) (*eks.DescribeAddonOutput, error) {
+func (s *EKSServiceImpl) DescribeAddon(ctx context.Context, input *eks.DescribeAddonInput, accountID string) (*eks.DescribeAddonOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -197,7 +198,7 @@ func (s *EKSServiceImpl) DescribeAddon(input *eks.DescribeAddonInput, accountID 
 }
 
 // UpdateAddon CASes new version/config/role onto the record, marks it UPDATING, and re-stages it.
-func (s *EKSServiceImpl) UpdateAddon(input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error) {
+func (s *EKSServiceImpl) UpdateAddon(ctx context.Context, input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -248,7 +249,7 @@ func (s *EKSServiceImpl) UpdateAddon(input *eks.UpdateAddonInput, accountID stri
 }
 
 // DeleteAddon marks the record DELETING, removes the staged manifest, then deletes the record.
-func (s *EKSServiceImpl) DeleteAddon(input *eks.DeleteAddonInput, accountID string) (*eks.DeleteAddonOutput, error) {
+func (s *EKSServiceImpl) DeleteAddon(ctx context.Context, input *eks.DeleteAddonInput, accountID string) (*eks.DeleteAddonOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -328,7 +329,7 @@ func (s *EKSServiceImpl) addonInstaller() AddonInstaller {
 	if s.deps.AddonInstaller != nil {
 		return s.deps.AddonInstaller
 	}
-	return newStagingInstaller(s.deps.NATSConn)
+	return newStagingInstaller(s.deps.NATSConn, s.deps.ClusterSize)
 }
 
 // markAddonFailed best-effort flips a record to CREATE_FAILED with the error reason.

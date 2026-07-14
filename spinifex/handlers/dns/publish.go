@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -15,7 +16,9 @@ func PublishChanges(nc *nats.Conn, accountID string, changes []Change) (*ChangeR
 	if nc == nil || len(changes) == 0 {
 		return &ChangeResult{}, nil
 	}
-	return utils.NATSRequest[ChangeResult](nc, SubjectRecordsetChange, ChangeBatch{Changes: changes}, requestTimeout, accountID)
+	// Detached from any request context: the publish is best-effort and its own
+	// timeout bounds it, so a cancelled caller ctx must not abort the write.
+	return utils.NATSRequest[ChangeResult](context.Background(), nc, SubjectRecordsetChange, ChangeBatch{Changes: changes}, requestTimeout, accountID)
 }
 
 // PublishChangesBestEffort publishes a batch and logs the outcome without

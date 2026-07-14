@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"maps"
@@ -91,7 +92,7 @@ func (s *ELBv2ServiceImpl) resolveTaggable(arn string) (h taggable, notFoundErro
 // AddTags adds or overwrites tags on ELBv2 resources. Tags are validated up-front
 // so a malformed key can't leave a partial apply; cross-account or unknown ARNs
 // yield the per-resource not-found error.
-func (s *ELBv2ServiceImpl) AddTags(input *elbv2.AddTagsInput, accountID string) (*elbv2.AddTagsOutput, error) {
+func (s *ELBv2ServiceImpl) AddTags(ctx context.Context, input *elbv2.AddTagsInput, accountID string) (*elbv2.AddTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 || len(input.Tags) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -128,7 +129,7 @@ func (s *ELBv2ServiceImpl) AddTags(input *elbv2.AddTagsInput, accountID string) 
 		}
 		maps.Copy(merged, newTags)
 		if err := h.save(merged); err != nil {
-			slog.Error("AddTags: failed to persist", "arn", arn, "err", err)
+			slog.ErrorContext(ctx, "AddTags: failed to persist", "arn", arn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -139,7 +140,7 @@ func (s *ELBv2ServiceImpl) AddTags(input *elbv2.AddTagsInput, accountID string) 
 // RemoveTags removes tag keys from ELBv2 resources; absent keys are silently ignored
 // (idempotent, matching AWS). Cross-account or unknown ARNs yield the per-resource
 // not-found error.
-func (s *ELBv2ServiceImpl) RemoveTags(input *elbv2.RemoveTagsInput, accountID string) (*elbv2.RemoveTagsOutput, error) {
+func (s *ELBv2ServiceImpl) RemoveTags(ctx context.Context, input *elbv2.RemoveTagsInput, accountID string) (*elbv2.RemoveTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 || len(input.TagKeys) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -173,7 +174,7 @@ func (s *ELBv2ServiceImpl) RemoveTags(input *elbv2.RemoveTagsInput, accountID st
 			delete(h.tags, k)
 		}
 		if err := h.save(h.tags); err != nil {
-			slog.Error("RemoveTags: failed to persist", "arn", arn, "err", err)
+			slog.ErrorContext(ctx, "RemoveTags: failed to persist", "arn", arn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}

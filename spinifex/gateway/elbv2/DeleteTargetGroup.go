@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"context"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -20,7 +21,7 @@ func ValidateDeleteTargetGroupInput(input *elbv2.DeleteTargetGroupInput) error {
 }
 
 // DeleteTargetGroup handles the ELBv2 DeleteTargetGroup API call.
-func DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput, natsConn *nats.Conn, accountID string) (elbv2.DeleteTargetGroupOutput, error) {
+func DeleteTargetGroup(ctx context.Context, input *elbv2.DeleteTargetGroupInput, natsConn *nats.Conn, accountID string) (elbv2.DeleteTargetGroupOutput, error) {
 	var output elbv2.DeleteTargetGroupOutput
 
 	if err := ValidateDeleteTargetGroupInput(input); err != nil {
@@ -28,7 +29,7 @@ func DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput, natsConn *nats.Conn,
 	}
 
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
-	result, err := svc.DeleteTargetGroup(input, accountID)
+	result, err := svc.DeleteTargetGroup(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

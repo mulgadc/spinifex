@@ -1,19 +1,3 @@
-/*
-Copyright © 2026 Mulga Defense Corporation
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
 package cmd
 
 import (
@@ -50,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -197,6 +182,18 @@ unless --force is passed. Prompts for confirmation unless --yes is passed.`,
 	Run: runimagesRemoveCmd,
 }
 
+var imagesPromoteCmd = &cobra.Command{
+	Use:   "promote",
+	Short: "Promote an account-owned AMI to a system image",
+	Long: `Rewrite an account-owned AMI's owner to the system alias so it becomes
+visible to all accounts via DescribeImages, matching the behaviour of AMIs
+imported via 'spx admin images import'.
+
+No data is copied — only the config.json owner field is updated. The change
+takes effect immediately. Prompts for confirmation unless --yes is passed.`,
+	Run: runimagesPromoteCmd,
+}
+
 var accountCmd = &cobra.Command{
 	Use:   "account",
 	Short: "Manage Spinifex accounts",
@@ -288,6 +285,7 @@ func init() {
 	imagesCmd.AddCommand(imagesImportCmd)
 	imagesCmd.AddCommand(imagesListCmd)
 	imagesCmd.AddCommand(imagesRemoveCmd)
+	imagesCmd.AddCommand(imagesPromoteCmd)
 
 	adminCmd.AddCommand(accountCmd)
 	accountCmd.AddCommand(accountCreateCmd)
@@ -331,7 +329,7 @@ func init() {
 	adminInitCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). Valid: nats,predastore,viperblock,daemon,awsgw,ui")
 
 	// External networking flags
-	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected) or '' (disabled)")
+	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected), 'nat' (routed; non-bridgeable uplinks; add --external-pool or --external-source=dhcp for public IPs), or '' (disabled)")
 	adminInitCmd.Flags().String("external-iface", "", "WAN NIC for br-external (auto-detected from default route)")
 	adminInitCmd.Flags().String("external-source", "", "Pool IP source: 'dhcp' (default when no --external-pool) or 'static' (uses --external-pool range)")
 	adminInitCmd.Flags().String("external-bind-bridge", "", "Linux bridge for upstream DHCP DORA (default 'br-wan' when --external-source=dhcp)")
@@ -381,6 +379,12 @@ func init() {
 	imagesRemoveCmd.Flags().Bool("force", false, "Bypass dependency, ownership and config-corrupt checks (salvage mode)")
 	imagesRemoveCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
 	if err := imagesRemoveCmd.MarkFlagRequired("image-id"); err != nil {
+		panic(err)
+	}
+
+	imagesPromoteCmd.Flags().String("image-id", "", "AMI ID to promote to system image (required)")
+	imagesPromoteCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
+	if err := imagesPromoteCmd.MarkFlagRequired("image-id"); err != nil {
 		panic(err)
 	}
 }
@@ -876,6 +880,67 @@ func printDependents(w io.Writer, d admin.Dependents) {
 	}
 }
 
+func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
+	imageID, _ := cmd.Flags().GetString("image-id")
+	yes, _ := cmd.Flags().GetBool("yes")
+
+	cfgFile, _ := cmd.Flags().GetString("config")
+	if cfgFile == "" {
+		cfgFile = DefaultConfigFile()
+	}
+
+	appConfig, err := config.LoadConfig(cfgFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error loading config file:", err)
+		os.Exit(1)
+	}
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+	bucket := node.Predastore.Bucket
+
+	// Read current metadata for the confirmation prompt.
+	meta, err := admin.GetAMIMetadata(store, bucket, imageID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to inspect AMI:", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("About to promote AMI to system image:")
+	fmt.Println()
+	fmt.Printf("  Image ID:       %s\n", imageID)
+	fmt.Printf("  Name:           %s\n", meta.Name)
+	fmt.Printf("  Current owner:  %s\n", meta.ImageOwnerAlias)
+	fmt.Printf("  New owner:      %s\n", admin.SystemOwnerAlias)
+	if !meta.CreationDate.IsZero() {
+		fmt.Printf("  Created:        %s\n", meta.CreationDate.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	fmt.Println()
+	fmt.Println("After promotion this AMI will be visible to all accounts.")
+
+	if !yes {
+		fmt.Print("Type 'yes' to proceed: ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		if strings.TrimSpace(answer) != "yes" {
+			fmt.Println("Aborted.")
+			return
+		}
+	}
+
+	if _, err := admin.PromoteSystemImage(store, bucket, admin.PromoteImageOpts{ImageID: imageID}); err != nil {
+		fmt.Fprintln(os.Stderr, "Promote failed:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, admin.SystemOwnerAlias)
+}
+
 // List remote images available
 func runimagesListCmd(cmd *cobra.Command, args []string) {
 	//fmt.Println(availableImages)
@@ -1029,6 +1094,13 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 				// --external-pool is omitted the validator below will error with
 				// a SuggestPoolRange hint.
 				if externalMode == "" && !cmd.Flags().Changed("external-mode") {
+					if isNonBridgeableUplink(detected.WAN.Name) {
+						fmt.Fprintf(os.Stderr, "\n❌ Detected WAN interface %s cannot be bridged (WiFi/cellular/PPP).\n", detected.WAN.Name)
+						fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead (outbound-only VM networking):\n")
+						fmt.Fprintf(os.Stderr, "     ./scripts/setup-ovn.sh --management --nat-uplink\n")
+						fmt.Fprintf(os.Stderr, "     spx admin init --external-mode=nat\n")
+						os.Exit(1)
+					}
 					externalMode = "pool"
 				}
 			}
@@ -1036,58 +1108,58 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Validate external networking flags
-	if externalMode != "" && externalMode != "pool" {
-		fmt.Fprintf(os.Stderr, "❌ Error: --external-mode must be 'pool' or empty, got: %s\n", externalMode)
+	if externalMode != "" && externalMode != "pool" && externalMode != "nat" {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-mode must be 'pool', 'nat', or empty, got: %s\n", externalMode)
 		os.Exit(1)
 	}
-	if externalMode == "pool" {
-		// Default source: dhcp when no --external-pool, else static.
-		if externalSource == "" {
-			if externalPool == "" {
-				externalSource = "dhcp"
-			} else {
-				externalSource = "static"
-			}
-		}
-		switch externalSource {
-		case "dhcp":
-			if externalPool != "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool not allowed with --external-source=dhcp (addresses come from upstream DHCP server)\n")
-				os.Exit(1)
-			}
-			if externalBindBridge == "" {
-				externalBindBridge = "br-wan"
-			}
-		case "static":
-			if externalBindBridge != "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge only valid with --external-source=dhcp\n")
-				os.Exit(1)
-			}
-			if externalPool == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool is required with --external-source=static (e.g., 192.168.1.150-192.168.1.250)\n")
-				if detectedNet != nil && detectedNet.WAN != nil {
-					sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
-					fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
-				}
-				os.Exit(1)
-			}
-			if externalGateway == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required with --external-source=static\n")
-				os.Exit(1)
-			}
-			parts := strings.SplitN(externalPool, "-", 2)
-			if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s\n", externalPool)
-				os.Exit(1)
-			}
-			poolStart, poolEnd = parts[0], parts[1]
-		default:
-			fmt.Fprintf(os.Stderr, "❌ Error: --external-source must be 'static' or 'dhcp', got: %s\n", externalSource)
+	// A public pool alongside nat's transit pool restores EIP / public-subnet
+	// parity where the operator has spare LAN IPs; without these flags nat
+	// stays Tier-1-only (host-jumpbox access, no public IPs).
+	natPublicPool := externalMode == "nat" && (externalPool != "" || externalSource != "")
+	// natPublicGateway keeps the upstream gateway for the public pool before
+	// the transit segment claims externalGateway below.
+	natPublicGateway := externalGateway
+	if externalMode == "nat" {
+		if nodes >= 2 {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-mode=nat is single-node only (v1); use --nodes=1\n")
 			os.Exit(1)
 		}
+		if !natPublicPool && (externalBindBridge != "" || gatewayIP != "") {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge/--gateway-ip require --external-pool or --external-source in --external-mode=nat\n")
+			os.Exit(1)
+		}
+		if natPublicPool {
+			// DHCP DORA in nat mode binds the uplink interface itself — there
+			// is no br-wan (nothing is bridged in routed mode).
+			src, start, end, bb, err := resolvePublicPoolFlags(externalSource, externalPool, externalBindBridge, natPublicGateway, externalIface)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+				os.Exit(1)
+			}
+			externalSource, poolStart, poolEnd, externalBindBridge = src, start, end, bb
+		}
+		// The transit segment is fixed: the host veth owns the gateway IP and
+		// masquerades the /24.
+		externalGateway = host.NATTransitGatewayIP
+	}
+	if externalMode == "pool" {
+		src, start, end, bb, err := resolvePublicPoolFlags(externalSource, externalPool, externalBindBridge, externalGateway, "br-wan")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+			if strings.Contains(err.Error(), "--external-pool is required") && detectedNet != nil && detectedNet.WAN != nil {
+				sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
+				fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
+			}
+			os.Exit(1)
+		}
+		externalSource, poolStart, poolEnd, externalBindBridge = src, start, end, bb
 	}
 	if externalGateway != "" && net.ParseIP(externalGateway) == nil {
 		fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is not a valid IP: %s\n", externalGateway)
+		os.Exit(1)
+	}
+	if natPublicGateway != "" && net.ParseIP(natPublicGateway) == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is not a valid IP: %s\n", natPublicGateway)
 		os.Exit(1)
 	}
 	if gatewayIP != "" && net.ParseIP(gatewayIP) == nil {
@@ -1102,6 +1174,36 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		if len(dnsServers) > 0 {
 			fmt.Printf("  DNS servers: %s\n", strings.Join(dnsServers, ", "))
 		}
+	}
+
+	// Assemble the external pool blocks rendered into spinifex.toml.
+	var externalPools []admin.PoolData
+	switch externalMode {
+	case "nat":
+		externalPools = append(externalPools, admin.PoolData{
+			Name: host.NATTransitPoolName, Gateway: host.NATTransitGatewayIP,
+			PrefixLen: 24, DNSServers: dnsServers,
+			GwLrpRangeStart: host.NATTransitGwLrpStart, GwLrpRangeEnd: host.NATTransitGwLrpEnd,
+		})
+		if natPublicPool {
+			// WiFi/WWAN uplinks drop frames with foreign source MACs, so DHCP
+			// leases must go out with the interface's own MAC.
+			dhcpMAC := ""
+			if externalSource == "dhcp" && isNonBridgeableUplink(externalBindBridge) {
+				dhcpMAC = "interface"
+			}
+			externalPools = append(externalPools, admin.PoolData{
+				Name: "wan", Source: externalSource, BindBridge: externalBindBridge,
+				DHCPMAC: dhcpMAC, Start: poolStart, End: poolEnd, Gateway: natPublicGateway,
+				GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
+			})
+		}
+	case "pool":
+		externalPools = append(externalPools, admin.PoolData{
+			Name: "wan", Source: externalSource, BindBridge: externalBindBridge,
+			Start: poolStart, End: poolEnd, Gateway: externalGateway,
+			GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
+		})
 	}
 
 	// Validate IP address format
@@ -1411,17 +1513,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		OVNNBAddr: "tcp:127.0.0.1:6641",
 		OVNSBAddr: "tcp:127.0.0.1:6642",
 
-		ExternalMode:   externalMode,
-		ExternalIface:  externalIface,
-		PoolName:       "wan",
-		PoolSource:     externalSource,
-		PoolBindBridge: externalBindBridge,
-		PoolStart:      poolStart,
-		PoolEnd:        poolEnd,
-		PoolGateway:    externalGateway,
-		PoolGatewayIP:  gatewayIP,
-		PoolPrefixLen:  externalPrefixLen,
-		PoolDNSServers: dnsServers,
+		ExternalMode:  externalMode,
+		ExternalIface: externalIface,
+		BridgeMode:    bridgeModeFor(externalMode),
+		Pools:         externalPools,
 
 		OperatorEmail:       email,
 		BootstrapAccountId:  admin.DefaultAccountID(),
@@ -1442,10 +1537,24 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
 		NorthstarInternalDomain: admin.NorthstarInternalDomain,
 		NorthstarConfigPath:     northstarConfigPath,
+		PoolDNSServers:          dnsServers,
 	}
 
 	// Print external networking summary
-	if externalMode != "" {
+	if externalMode == "nat" {
+		if natPublicPool {
+			fmt.Printf("\n📡 External networking: nat (routed) with public pool — EIPs enabled\n")
+			if externalSource == "static" {
+				fmt.Printf("  Public pool:   %s - %s (source: static)\n", poolStart, poolEnd)
+			} else {
+				fmt.Printf("  Public pool:   dhcp via %s\n", externalBindBridge)
+			}
+		} else {
+			fmt.Printf("\n📡 External networking: nat (routed, outbound-only — no public IPs/EIPs)\n")
+		}
+		fmt.Printf("  Transit:       %s via %s (host masquerades out any uplink)\n", host.NATTransitCIDR, host.NATTransitHostEnd)
+		fmt.Printf("  Host setup:    ./scripts/setup-ovn.sh --nat-uplink (run before starting services)\n")
+	} else if externalMode != "" {
 		fmt.Printf("\n📡 External networking: %s\n", externalMode)
 		fmt.Printf("  WAN interface: %s\n", externalIface)
 		switch externalSource {
@@ -1468,7 +1577,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP, advertiseIP)
+	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP)
 
 	// Write node.conf so spx admin banner works on source installs (not just ISO).
 	nodeHostname, _ := os.Hostname()
@@ -1725,7 +1834,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP, advertiseIP)
+	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP)
 
 	// Keep formation server running briefly so joining nodes can fetch complete status
 	fmt.Println("\n⏳ Waiting for joining nodes to fetch cluster data...")
@@ -2182,7 +2291,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(dataDir, caCertPath, creds.AdminAccessKey, creds.AdminSecretKey, creds.Region, bindIP, advertiseIP)
+	finalizeNodeSetup(dataDir, caCertPath, creds.AdminAccessKey, creds.AdminSecretKey, creds.Region, bindIP)
 
 	// Print cluster summary
 	fmt.Println("\n🎉 Node successfully joined cluster!")
@@ -2501,12 +2610,10 @@ func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings 
 }
 
 // finalizeNodeSetup configures AWS credentials, creates service directories,
-// and sets ownership when running as root. advertiseIP is the off-host dial
-// target for this node; it is threaded through SetupAWSCredentials's wanIP
-// param for a future --operator-endpoint flag (see SetupAWSCredentials doc).
-func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region, bindIP, advertiseIP string) {
+// and sets ownership when running as root.
+func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region, bindIP string) {
 	fmt.Println("\n🔧 Configuring AWS credentials...")
-	if err := admin.SetupAWSCredentials(adminAccessKey, adminSecretKey, region, certPath, bindIP, advertiseIP); err != nil {
+	if err := admin.SetupAWSCredentials(adminAccessKey, adminSecretKey, region, certPath, bindIP); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Could not update AWS credentials: %v\n", err)
 	} else {
 		fmt.Println("✅ AWS credentials configured")
@@ -2524,15 +2631,20 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
-	settings.PoolName = nc.PoolName
-	settings.PoolSource = nc.PoolSource
-	settings.PoolBindBridge = nc.PoolBindBridge
-	settings.PoolStart = nc.PoolStart
-	settings.PoolEnd = nc.PoolEnd
-	settings.PoolGateway = nc.PoolGateway
-	settings.PoolGatewayIP = nc.PoolGatewayIP
-	settings.PoolPrefixLen = nc.PoolPrefixLen
 	settings.PoolDNSServers = nc.PoolDNSServers
+	if nc.ExternalMode != "" {
+		settings.Pools = []admin.PoolData{{
+			Name:       nc.PoolName,
+			Source:     nc.PoolSource,
+			BindBridge: nc.PoolBindBridge,
+			Start:      nc.PoolStart,
+			End:        nc.PoolEnd,
+			Gateway:    nc.PoolGateway,
+			GatewayIP:  nc.PoolGatewayIP,
+			PrefixLen:  nc.PoolPrefixLen,
+			DNSServers: nc.PoolDNSServers,
+		}}
+	}
 
 	settings.BootstrapAccountId = nc.BootstrapAccountId
 	settings.BootstrapVpcId = nc.BootstrapVpcId
@@ -2688,6 +2800,66 @@ func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []by
 	}
 
 	return handlers_iam.SaveBootstrapData(filepath.Join(bootstrapDir, "bootstrap.json"), bd)
+}
+
+// isNonBridgeableUplink reports whether the interface name indicates an uplink
+// that cannot be enslaved to an L2 bridge: WiFi (wl*), cellular (ww*), PPP.
+func isNonBridgeableUplink(name string) bool {
+	return strings.HasPrefix(name, "wl") || strings.HasPrefix(name, "ww") || strings.HasPrefix(name, "ppp")
+}
+
+// resolvePublicPoolFlags validates the public-pool flag set shared by pool
+// mode and nat-with-public-pool. Returns the resolved source, static range
+// start/end, and bind bridge. Source defaults to dhcp when no range is given;
+// defaultBindBridge fills --external-bind-bridge for dhcp (br-wan in pool
+// mode, the uplink interface in nat mode).
+func resolvePublicPoolFlags(source, poolRange, bindBridge, gateway, defaultBindBridge string) (resolvedSource, start, end, resolvedBindBridge string, err error) {
+	if source == "" {
+		if poolRange == "" {
+			source = "dhcp"
+		} else {
+			source = "static"
+		}
+	}
+	switch source {
+	case "dhcp":
+		if poolRange != "" {
+			return "", "", "", "", fmt.Errorf("--external-pool not allowed with --external-source=dhcp (addresses come from upstream DHCP server)")
+		}
+		if bindBridge == "" {
+			if defaultBindBridge == "" {
+				return "", "", "", "", fmt.Errorf("--external-bind-bridge is required with --external-source=dhcp (no uplink interface detected)")
+			}
+			bindBridge = defaultBindBridge
+		}
+	case "static":
+		if bindBridge != "" {
+			return "", "", "", "", fmt.Errorf("--external-bind-bridge only valid with --external-source=dhcp")
+		}
+		if poolRange == "" {
+			return "", "", "", "", fmt.Errorf("--external-pool is required with --external-source=static (e.g., 192.168.1.150-192.168.1.250)")
+		}
+		if gateway == "" {
+			return "", "", "", "", fmt.Errorf("--external-gateway is required with --external-source=static")
+		}
+		parts := strings.SplitN(poolRange, "-", 2)
+		if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
+			return "", "", "", "", fmt.Errorf("--external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s", poolRange)
+		}
+		start, end = parts[0], parts[1]
+	default:
+		return "", "", "", "", fmt.Errorf("--external-source must be 'static' or 'dhcp', got: %s", source)
+	}
+	return source, start, end, bindBridge, nil
+}
+
+// bridgeModeFor returns the vpcd bridge_mode admin init persists for the
+// external mode: only nat mode is pinned; bridged modes stay auto-detected.
+func bridgeModeFor(externalMode string) string {
+	if externalMode == "nat" {
+		return "nat"
+	}
+	return ""
 }
 
 // detectDNSServers auto-detects DNS servers from the host for the specified

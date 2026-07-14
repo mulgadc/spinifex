@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestCreateCluster_ConcurrentSameNameSingleOwner(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = f.svc.CreateCluster(createInput("race"), testAccountID, "")
+			_, errs[i] = f.svc.CreateCluster(context.Background(), createInput("race"), testAccountID, "")
 		}(i)
 	}
 	wg.Wait()
@@ -73,7 +74,7 @@ func TestCreateCluster_ConcurrentReclaimSingleOwner(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = f.svc.CreateCluster(createInput("race"), testAccountID, "")
+			_, errs[i] = f.svc.CreateCluster(context.Background(), createInput("race"), testAccountID, "")
 		}(i)
 	}
 	wg.Wait()
@@ -103,12 +104,12 @@ func TestCreateNodegroup_ConcurrentSameNameSingleOwner(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
+			_, errs[i] = f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
 		}(i)
 	}
 	wg.Wait()
 	// The single winning owner launches one worker; let its Ready-gate resolve.
-	markWorkersReady(t, f, "c1", 1)
+	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 
 	ok, inUse := classifyCreateErrs(t, errs)

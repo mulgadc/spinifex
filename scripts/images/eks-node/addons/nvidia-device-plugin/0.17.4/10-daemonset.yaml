@@ -1,6 +1,7 @@
 # nvidia-device-plugin 0.17.4 — CDI-mode DaemonSet exposing nvidia.com/gpu
 # allocatable on GPU-tainted nodes. Gated to GPU nodes via nodeSelector on the
-# K3S_NODE_LABEL nvidia.com/gpu.present=true (nodegroup_userdata.go); inert
+# node-label nvidia.com/gpu.present=true (written by mulga-eks-provider-id from
+# the SPINIFEX_GPU_NODE agent.env signal); inert
 # elsewhere. --device-list-strategy=cdi-cri makes the plugin generate a CDI spec
 # for GPU workloads (containerd 2.x resolves the CRI-passed CDI devices; no
 # enable_cdi drop-in needed on k3s v1.32.5). The plugin's OWN container needs

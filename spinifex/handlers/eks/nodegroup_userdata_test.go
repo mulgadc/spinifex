@@ -96,31 +96,36 @@ func baseTestInput() agentUserDataInput {
 	}
 }
 
-func TestBuildAgentUserData_GPUEnabledAddsLabelAndTaint(t *testing.T) {
+func TestBuildAgentUserData_GPUEnabledSignalsNodegroupAndGPU(t *testing.T) {
 	in := baseTestInput()
 	in.GPUEnabled = true
 	in.GPUVendor = "nvidia"
 
 	got := buildAgentUserData(in)
 
-	// The label must ride a node-label config drop-in, not K3S_NODE_LABEL (k3s
-	// has no such env var — it would be a no-op and the device-plugin
-	// nodeSelector would never match).
-	if !strings.Contains(got, "/etc/rancher/k3s/config.yaml.d/20-gpu.yaml") {
-		t.Errorf("expected GPU drop-in path, got:\n%s", got)
+	// buildAgentUserData writes NO node-label/node-taint config drop-in:
+	// mulga-eks-provider-id.sh is the single node-label writer (k3s replaces,
+	// not merges, node-label across config.yaml.d files). The worker signals its
+	// nodegroup + GPU role via agent.env; the AMI script folds the labels + taint
+	// into the one node-label list it already writes for the topology labels.
+	if strings.Contains(got, "config.yaml.d/10-nodegroup.yaml") {
+		t.Errorf("must not write a nodegroup node-label drop-in, got:\n%s", got)
 	}
-	if !strings.Contains(got, "node-label:") || !strings.Contains(got, "nvidia.com/gpu.present=true") {
-		t.Errorf("expected GPU node-label drop-in value, got:\n%s", got)
+	if strings.Contains(got, "node-label:") || strings.Contains(got, "node-taint:") {
+		t.Errorf("user-data must not carry any node-label/node-taint drop-in, got:\n%s", got)
 	}
-	if !strings.Contains(got, "nvidia.com/gpu=present:NoSchedule") {
-		t.Errorf("expected GPU taint value, got:\n%s", got)
+	if !strings.Contains(got, "SPINIFEX_NODEGROUP=ng-1") {
+		t.Errorf("expected SPINIFEX_NODEGROUP in agent.env, got:\n%s", got)
 	}
-	if strings.Contains(got, "K3S_NODE_LABEL=eks.amazonaws.com/nodegroup=ng-1,nvidia.com/gpu.present=true") {
-		t.Errorf("GPU label must not ride the no-op K3S_NODE_LABEL env, got:\n%s", got)
+	if !strings.Contains(got, "SPINIFEX_GPU_NODE=true") {
+		t.Errorf("expected SPINIFEX_GPU_NODE=true in agent.env for a GPU nodegroup, got:\n%s", got)
+	}
+	if strings.Contains(got, "K3S_NODE_LABEL") {
+		t.Errorf("label must not ride the no-op K3S_NODE_LABEL env, got:\n%s", got)
 	}
 }
 
-func TestBuildAgentUserData_NonGPUHasNoLabelOrTaint(t *testing.T) {
+func TestBuildAgentUserData_NonGPUSignalsNodegroupOnly(t *testing.T) {
 	in := baseTestInput()
 
 	got := buildAgentUserData(in)
@@ -128,17 +133,17 @@ func TestBuildAgentUserData_NonGPUHasNoLabelOrTaint(t *testing.T) {
 	if strings.Contains(got, "nvidia.com/gpu") {
 		t.Errorf("non-GPU nodegroup user-data must not reference nvidia.com/gpu, got:\n%s", got)
 	}
-	if strings.Contains(got, "20-gpu.yaml") {
-		t.Errorf("non-GPU nodegroup user-data must not carry the GPU drop-in, got:\n%s", got)
+	if strings.Contains(got, "SPINIFEX_GPU_NODE") {
+		t.Errorf("non-GPU nodegroup must not set SPINIFEX_GPU_NODE, got:\n%s", got)
 	}
-	// The nodegroup label must ride a node-label config drop-in, not the no-op
-	// K3S_NODE_LABEL env — waitWorkersReady buckets Ready nodes by this label,
-	// so a worker missing it never counts toward its nodegroup's ACTIVE gate.
-	if !strings.Contains(got, "/etc/rancher/k3s/config.yaml.d/15-nodegroup-label.yaml") {
-		t.Errorf("expected nodegroup-label drop-in path, got:\n%s", got)
+	if strings.Contains(got, "node-label:") || strings.Contains(got, "node-taint:") {
+		t.Errorf("user-data must not carry any node-label/node-taint drop-in, got:\n%s", got)
 	}
-	if !strings.Contains(got, `"eks.amazonaws.com/nodegroup=ng-1"`) {
-		t.Errorf("expected nodegroup label in the node-label drop-in, got:\n%s", got)
+	// The worker signals its nodegroup via agent.env; mulga-eks-provider-id.sh
+	// turns it into the eks.amazonaws.com/nodegroup label that gates the
+	// nodegroup reaching ACTIVE (waitWorkersReady buckets Ready nodes by it).
+	if !strings.Contains(got, "SPINIFEX_NODEGROUP=ng-1") {
+		t.Errorf("expected SPINIFEX_NODEGROUP in agent.env, got:\n%s", got)
 	}
 	if strings.Contains(got, "K3S_NODE_LABEL") {
 		t.Errorf("nodegroup label must not ride the no-op K3S_NODE_LABEL env, got:\n%s", got)

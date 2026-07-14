@@ -286,7 +286,7 @@ func TestBuildAgentUserData_Shape(t *testing.T) {
 	assert.Contains(t, ud, "K3S_URL=https://10.254.0.9:443")
 	assert.Contains(t, ud, "K3S_TOKEN=K10secret::server:xyz")
 	assert.Contains(t, ud, "K3S_NODE_NAME=c1-ng1-abc123de")
-	assert.Contains(t, ud, "eks.amazonaws.com/nodegroup=ng1")
+	assert.Contains(t, ud, "SPINIFEX_NODEGROUP=ng1")
 	assert.Contains(t, ud, agentEnvPath)
 	// IMDS is served at the host tap, so no in-guest on-link route is emitted.
 	assert.NotContains(t, ud, "169.254.169.254")

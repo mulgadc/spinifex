@@ -2,14 +2,16 @@
 # mulga-eks-provider-id — boot oneshot that writes a K3s drop-in from IMDS
 # before K3s starts: the kubelet provider-id plus region/zone topology labels,
 # the node metadata the aws-ebs-csi-driver needs for NodeGetInfo + provisioning.
-# Ordered after local (which installs the IMDS on-link route) and before both
-# K3s roles. Role-agnostic: enabled on every node (server + agent).
+# Also folds the worker's nodegroup + GPU node-labels (from agent.env) into the
+# same node-label list, so it must run after cloud-init has written agent.env
+# (cloud-config/cloud-final stages, same as eks-node-role) and before the role
+# selector starts K3s. Role-agnostic: enabled on every node (server + agent).
 
 description="Set K3s provider-id + topology labels from IMDS for EBS CSI"
 
 depend() {
-    after net local
-    before k3s k3s-agent
+    after net local cloud-config cloud-final
+    before k3s k3s-agent eks-node-role
 }
 
 start() {

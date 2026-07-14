@@ -72,7 +72,7 @@ const (
 	k3sSnapshotEnvPath = "/etc/spinifex-eks/etcd-snapshot.env"
 
 	// agentEnvPath is the env file the k3s-agent OpenRC service sources for
-	// K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL.
+	// K3S_URL/K3S_TOKEN/K3S_NODE_NAME.
 	agentEnvPath = "/etc/spinifex-eks/agent.env"
 
 	// k3sGatewayCAPath is the on-VM gateway TLS CA cert PEM path.

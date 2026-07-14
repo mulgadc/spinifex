@@ -20,8 +20,9 @@ TasksMax=infinity
 LimitNOFILE=1048576
 LimitNPROC=infinity
 LimitCORE=infinity
-# Cloud-init drops K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL here at
-# RunInstances time per the Nodegroup bootstrap flow.
+# Cloud-init drops K3S_URL/K3S_TOKEN/K3S_NODE_NAME (plus SPINIFEX_NODEGROUP and,
+# for GPU workers, SPINIFEX_GPU_NODE) here at RunInstances time per the Nodegroup
+# bootstrap flow; mulga-eks-provider-id reads the SPINIFEX_* vars for node-labels.
 EnvironmentFile=-/etc/spinifex-eks/agent.env
 # Tee k3s (and its embedded kubelet's klog) stderr to the serial console as well
 # as journald: Ubuntu logs to journald only, which is off-box-invisible on a

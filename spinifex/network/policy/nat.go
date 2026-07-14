@@ -579,6 +579,12 @@ func (m *natManager) AddSNAT(ctx context.Context, vpcID, vpcCIDR, externalIP str
 	if err := m.ovn.AddNAT(ctx, router, snatRule); err != nil {
 		return fmt.Errorf("add IGW snat %s -> %s on %s: %w", vpcCIDR, externalIP, router, err)
 	}
+
+	// Log the first install so RCA can pin the commit timestamp; without this
+	// only later reconcile passes emit "idempotent skip", masking whether a
+	// missing snat was programmed late or never programmed at all.
+	slog.Info("policy: AddSNAT installed",
+		"router", router, "vpc_cidr", vpcCIDR, "external_ip", externalIP)
 	return nil
 }
 

@@ -487,9 +487,17 @@ func phaseUniqueTransitIP(t *testing.T, fix *fixture, defaultGwIP string) {
 	assert.NotEqualf(t, defaultGwIP, gwIP,
 		"each VPC gateway LRP must get a unique transit IP (both got %s)", gwIP)
 
-	natList := harness.OvnNbctl(t, "lr-nat-list", "vpc-"+vpcID)
-	assert.Containsf(t, natList, secondVPCCIDR,
-		"second VPC router missing snat for %s\n%s", secondVPCCIDR, natList)
+	// The IGW default snat commits a beat after the gateway LRP appears, so
+	// poll lr-nat-list instead of reading it once — a single-shot check races
+	// the OVN commit and intermittently sees an empty list.
+	harness.Step(t, "second VPC transit snat programmed")
+	harness.EventuallyErr(t, func() error {
+		natList := harness.OvnNbctl(t, "lr-nat-list", "vpc-"+vpcID)
+		if !strings.Contains(natList, secondVPCCIDR) {
+			return fmt.Errorf("second VPC router missing snat for %s\n%s", secondVPCCIDR, natList)
+		}
+		return nil
+	}, 2*time.Minute, 3*time.Second)
 
 	harness.Step(t, "host ingress route for second VPC installed on attach")
 	harness.EventuallyErr(t, func() error {

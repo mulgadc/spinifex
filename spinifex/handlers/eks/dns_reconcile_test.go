@@ -31,6 +31,34 @@ func TestCreateCluster_EndpointDNSNameUsesOwnerAccount(t *testing.T) {
 	assert.Contains(t, meta.Endpoint, meta.EndpointDNSName)
 }
 
+func TestDesiredDNSChanges_IncludesEndpointReadyCreatingClusters(t *testing.T) {
+	fixture := newEKSServiceFixture(t)
+	fixture.svc.baseDomain = "spx3.net"
+
+	creating := sampleClusterMeta("creating")
+	creating.Status = ClusterStatusCreating
+	creating.EndpointDNSName = "creating.111122223333.us-east-1.eks.spx3.net"
+	creating.EndpointIP = "203.0.113.10"
+	require.NoError(t, PutClusterMeta(fixture.kv, creating))
+
+	active := sampleClusterMeta("active")
+	active.Status = ClusterStatusActive
+	active.EndpointDNSName = "active.111122223333.us-east-1.eks.spx3.net"
+	active.EndpointIP = "203.0.113.11"
+	require.NoError(t, PutClusterMeta(fixture.kv, active))
+
+	failed := sampleClusterMeta("failed")
+	failed.Status = ClusterStatusFailed
+	failed.EndpointDNSName = "failed.111122223333.us-east-1.eks.spx3.net"
+	failed.EndpointIP = "203.0.113.12"
+	require.NoError(t, PutClusterMeta(fixture.kv, failed))
+
+	changes, authoritative := fixture.svc.DesiredDNSChanges()
+	require.True(t, authoritative)
+	require.Len(t, changes, 2)
+	assert.ElementsMatch(t, []string{creating.EndpointDNSName, active.EndpointDNSName}, []string{changes[0].Name, changes[1].Name})
+}
+
 func TestDesiredDNSChanges_MetadataReadFailureIsNotAuthoritative(t *testing.T) {
 	fixture := newEKSServiceFixture(t)
 	fixture.svc.baseDomain = "spx3.net"

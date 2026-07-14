@@ -733,17 +733,18 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		endpointHost = meta.EndpointDNSName
 	}
 	meta.Endpoint = "https://" + net.JoinHostPort(endpointHost, strconv.FormatInt(clusterNLBListenPort, 10))
-	// Register the endpoint A record (best-effort; reconcile repairs a miss).
-	s.publishEKSDNS(accountID, meta, handlers_dns.ActionUpsert)
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
 	meta.KonnTargetGroupArn = nlb.KonnTargetGroupArn
 
-	// Persist NLB ARNs early so DeleteCluster can reclaim them on any later failure.
+	// Persist the endpoint before publishing it so reconcile never observes a DNS
+	// record whose creating cluster lacks its desired endpoint metadata.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist NLB arns", err)
+		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist endpoint metadata", err)
 		return
 	}
+	// Register the endpoint A record (best-effort; reconcile repairs a miss).
+	s.publishEKSDNS(accountID, meta, handlers_dns.ActionUpsert)
 
 	oidcIssuer, err := ClusterOIDCIssuer(s.deps.GatewayBaseURL, region, accountID, name)
 	if err != nil {
@@ -2008,8 +2009,8 @@ func (s *EKSServiceImpl) publishEKSDNS(accountID string, meta *ClusterMeta, acti
 	handlers_dns.PublishChangesBestEffort(s.deps.NATSConn, accountID, changes)
 }
 
-// DesiredDNSChanges returns the UPSERT records for every ACTIVE cluster across
-// all account buckets, plus whether the enumeration was authoritative. Clusters
+// DesiredDNSChanges returns the UPSERT records for every endpoint-ready cluster
+// across all account buckets, plus whether the enumeration was authoritative. Clusters
 // live in per-account KV buckets, so a complete cross-tenant view requires
 // reading every one: any bucket-read failure yields ok=false so the reconcile
 // suppresses EKS pruning rather than delete a tenant's endpoint on a partial view.
@@ -2039,7 +2040,8 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 				slog.Warn("DesiredDNSChanges: read cluster metadata", "bucket", name, "cluster", cluster, "err", err)
 				return nil, false
 			}
-			if meta.Status != ClusterStatusActive {
+			if (meta.Status != ClusterStatusCreating && meta.Status != ClusterStatusActive) ||
+				meta.EndpointDNSName == "" || meta.EndpointIP == "" {
 				continue
 			}
 			changes = append(changes, handlers_dns.EKSChanges(

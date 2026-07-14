@@ -774,8 +774,6 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		}
 	}
 
-	s.publishDNS(accountID, handlers_dns.ActionUpsert, instances)
-
 	return reservation, instances, instanceType, nil
 }
 
@@ -855,6 +853,7 @@ func (s *InstanceServiceImpl) attachPreCreatedENI(ctx context.Context, accountID
 // into vmMgr: volume prep, GPU claim, vmMgr.Run. Partial failures are tolerated.
 func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances []*vm.VM, input *ec2.RunInstancesInput, instanceType *ec2.InstanceTypeInfo) {
 	var successCount int
+	launchedByAccount := make(map[string][]*vm.VM)
 	for _, instance := range instances {
 		// Skip if a concurrent terminate raced with prepare.
 		status := s.vmMgr.Status(instance)
@@ -913,13 +912,34 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 			continue
 		}
 
+		if s.vmMgr.Status(instance) != vm.StateRunning {
+			slog.InfoContext(ctx, "LaunchRunInstances: launch did not reach running state", "instanceId", instance.ID)
+			continue
+		}
 		s.vmMgr.UpdateGuestDeviceNames(instance)
 
 		successCount++
+		launchedByAccount[instance.AccountID] = append(launchedByAccount[instance.AccountID], instance)
 		slog.InfoContext(ctx, "LaunchRunInstances: launched instance", "instanceId", instance.ID)
 	}
 
+	withdrawByAccount := make(map[string][]*vm.VM)
+	for accountID, launched := range launchedByAccount {
+		s.publishDNS(accountID, handlers_dns.ActionUpsert, launched)
+		for _, instance := range launched {
+			if needsDNSWithdrawal(s.vmMgr.Status(instance)) {
+				withdrawByAccount[accountID] = append(withdrawByAccount[accountID], instance)
+			}
+		}
+	}
+	for accountID, instances := range withdrawByAccount {
+		s.publishDNS(accountID, handlers_dns.ActionDelete, instances)
+	}
 	slog.InfoContext(ctx, "LaunchRunInstances: completed", "requested", len(instances), "launched", successCount)
+}
+
+func needsDNSWithdrawal(status vm.InstanceState) bool {
+	return status != vm.StateRunning && status != vm.StateStopping && status != vm.StateStopped
 }
 
 // RunInstances is for non-daemon callers (tests). The daemon calls

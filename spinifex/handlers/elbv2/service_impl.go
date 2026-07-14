@@ -1422,8 +1422,8 @@ func (s *ELBv2ServiceImpl) publishLBDNS(record *LoadBalancerRecord, action handl
 	handlers_dns.PublishChangesBestEffort(s.nc, record.AccountID, changes)
 }
 
-// DesiredDNSChanges returns the UPSERT records for every active load balancer
-// across all accounts, plus whether the enumeration was authoritative. The KV
+// DesiredDNSChanges returns the UPSERT records for every endpoint-ready load
+// balancer across all accounts, plus whether the enumeration was authoritative. The KV
 // store spans every tenant, so a successful list is a complete cross-account
 // view; a store error yields ok=false so the reconcile suppresses ELB pruning
 // rather than delete another tenant's live record on a partial view.
@@ -1436,7 +1436,8 @@ func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, o
 		return nil, false
 	}
 	for _, lb := range lbs {
-		if lb.State != StateActive {
+		if (lb.State != StateProvisioning && lb.State != StateActive) ||
+			lb.DNSName == "" || lbFrontendIP(lb) == "" {
 			continue
 		}
 		changes = append(changes, handlers_dns.ELBChanges(

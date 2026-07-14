@@ -38,7 +38,6 @@ export default defineConfig({
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
     "eslint/no-use-before-define": "off",
     "eslint/prefer-destructuring": "off",
-    "eslint/prefer-named-capture-group": "off",
     "eslint/require-unicode-regexp": "off",
     "eslint/sort-keys": "off",
     "import/consistent-type-specifier-style": "off",

@@ -80,3 +80,23 @@ func TestDesiredDNSChanges_MetadataReadFailureIsNotAuthoritative(t *testing.T) {
 	assert.False(t, authoritative, "a metadata read failure must suppress EKS pruning")
 	assert.Nil(t, changes)
 }
+
+func TestDesiredDNSChanges_EnumerationFailureIsNotAuthoritative(t *testing.T) {
+	fixture := newEKSServiceFixture(t)
+	fixture.svc.baseDomain = "spx3.net"
+
+	active := sampleClusterMeta("healthy")
+	active.Status = ClusterStatusActive
+	active.EndpointDNSName = "healthy.111122223333.us-east-1.eks.spx3.net"
+	active.EndpointIP = "203.0.113.10"
+	require.NoError(t, PutClusterMeta(fixture.kv, active))
+
+	// A failed bucket enumeration must never be mistaken for "no buckets": closing the
+	// connection makes the stream-names request error, and the reconcile must suppress
+	// EKS pruning rather than delete every tenant's endpoint on a partial view.
+	fixture.svc.deps.NATSConn.Close()
+
+	changes, authoritative := fixture.svc.DesiredDNSChanges()
+	assert.False(t, authoritative, "a bucket enumeration failure must suppress EKS pruning")
+	assert.Nil(t, changes)
+}

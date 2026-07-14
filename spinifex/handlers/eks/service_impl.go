@@ -2022,7 +2022,12 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 	if err != nil {
 		return nil, false
 	}
-	for name := range js.KeyValueStoreNames() {
+	names, err := kvBucketNames(s.deps.NATSConn)
+	if err != nil {
+		slog.Warn("DesiredDNSChanges: enumerate account buckets", "err", err)
+		return nil, false
+	}
+	for _, name := range names {
 		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
 			continue
 		}
@@ -2050,6 +2055,46 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 		}
 	}
 	return changes, true
+}
+
+// kvBucketNames enumerates KV bucket names via a paginated $JS.API.STREAM.NAMES
+// request that surfaces the terminal error, unlike js.KeyValueStoreNames() whose
+// channel closes on any API/transport error and cannot signal a truncated listing.
+func kvBucketNames(nc *nats.Conn) ([]string, error) {
+	type namesReq struct {
+		Offset  int    `json:"offset"`
+		Subject string `json:"subject"`
+	}
+	type namesResp struct {
+		Total   int            `json:"total"`
+		Streams []string       `json:"streams"`
+		Error   *nats.APIError `json:"error"`
+	}
+	var names []string
+	for offset := 0; ; {
+		body, err := json.Marshal(namesReq{Offset: offset, Subject: "$KV.*.>"})
+		if err != nil {
+			return nil, fmt.Errorf("marshal stream-names request: %w", err)
+		}
+		msg, err := nc.Request("$JS.API.STREAM.NAMES", body, 5*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("stream-names request: %w", err)
+		}
+		var resp namesResp
+		if err := json.Unmarshal(msg.Data, &resp); err != nil {
+			return nil, fmt.Errorf("decode stream-names response: %w", err)
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("stream-names api: %w", resp.Error)
+		}
+		for _, stream := range resp.Streams {
+			names = append(names, strings.TrimPrefix(stream, "KV_"))
+		}
+		offset += len(resp.Streams)
+		if offset >= resp.Total || len(resp.Streams) == 0 {
+			return names, nil
+		}
+	}
 }
 
 func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {

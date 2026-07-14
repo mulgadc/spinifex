@@ -289,6 +289,19 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		slog.Info("policy: cleaned stale dnat_and_snat rules before AddEIP", "external_ip", eip.ExternalIP, "removed", removed)
 	}
 
+	// Scrub any predecessor row sharing this private IP under a different external
+	// IP. A recycled private IP that lands on a new EIP leaves the terminated
+	// owner's dnat_and_snat (old EIP -> this private IP) intact; its SNAT half is
+	// keyed on logical_ip and wins the guest's return path, rewriting replies to
+	// the old EIP and blackholing the new one. dnat_and_snat is 1:1 per private IP,
+	// so any row on this router for this logical IP is stale here. Router-scoped:
+	// private IPs repeat across VPCs.
+	if err := m.ovn.DeleteNAT(ctx, router, "dnat_and_snat", eip.LogicalIP); err != nil &&
+		!errors.Is(err, ovn.ErrNATNotFound) {
+		slog.Warn("policy: stale logical-IP NAT cleanup failed before AddEIP",
+			"logical_ip", eip.LogicalIP, "err", err)
+	}
+
 	if err := m.ovn.AddNAT(ctx, router, natRule); err != nil {
 		return fmt.Errorf("add dnat_and_snat %s -> %s on %s: %w", eip.LogicalIP, eip.ExternalIP, router, err)
 	}

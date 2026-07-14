@@ -380,6 +380,85 @@ func TestNATManager_AddEIP_IdempotentSkip_SameOwner_Centralized(t *testing.T) {
 	assert.Equal(t, 1, barrierCalls, "same-ENI re-add must not fire the barrier")
 }
 
+// A successor reusing a recycled private IP with a NEW external IP must leave
+// exactly one dnat_and_snat for that private IP, pointing at the new EIP. The
+// predecessor's old-EIP row survives its (lost) DeleteEIP and shares the private
+// IP; its SNAT half (keyed on logical_ip) would blackhole the successor's new EIP.
+// Sibling of the same-external-IP re-point (RePointsOnOwnerChange) and the
+// same-external/different-private scrub (RemovesStaleRuleOnOtherRouter).
+func TestNATManager_AddEIP_ScrubsPredecessorSharingPrivateIP(t *testing.T) {
+	const privateIP = "172.31.0.5"
+	for _, tc := range []struct {
+		name string
+		mode NATMode
+		mac  string
+	}{
+		{"centralized", NATModeCentralized, ""},
+		{"distributed", NATModeDistributed, "bb:bb:bb:bb:bb:bb"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			m := mock.New()
+			seedRouter(t, m, "vpc-1")
+			seedGatewayPort(t, m, "vpc-1", "aa:bb:cc:00:00:01")
+			nm, err := NewNATManager(m, tc.mode)
+			require.NoError(t, err)
+
+			// Predecessor terminated but its dnat_and_snat (old EIP -> private IP) survives.
+			require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+				VPCID: "vpc-1", ExternalIP: "192.168.0.213", LogicalIP: privateIP,
+				PortName: "port-eni-old", MAC: tc.mac,
+			}))
+			// Successor recycles the private IP but binds a NEW EIP.
+			require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+				VPCID: "vpc-1", ExternalIP: "192.168.0.214", LogicalIP: privateIP,
+				PortName: "port-eni-new", MAC: tc.mac,
+			}))
+
+			require.Equal(t, 1, countNAT(m, "dnat_and_snat", privateIP),
+				"exactly one dnat_and_snat may exist for a recycled private IP")
+			got := findNAT(m, "dnat_and_snat", privateIP)
+			require.NotNil(t, got)
+			assert.Equal(t, "192.168.0.214", got.ExternalIP,
+				"row must point at the successor's new EIP, not the predecessor's stale one")
+			assert.Equal(t, "port-eni-new", got.ExternalIDs["spinifex:logical_port"])
+		})
+	}
+}
+
+// The logical-IP scrub is router-scoped: private IPs repeat across VPCs, so a
+// same-private-IP row on another VPC's router is a legitimate separate EIP and
+// must not be touched.
+func TestNATManager_AddEIP_LeavesSamePrivateIPOnOtherRouterIntact(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-a")
+	seedRouter(t, m, "vpc-b")
+	nm, err := NewNATManager(m, NATModeDistributed)
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-a", ExternalIP: "192.168.0.10", LogicalIP: "172.31.0.5",
+		PortName: "port-a", MAC: "aa:aa:aa:aa:aa:aa",
+	}))
+	// A different instance in vpc-b that happens to reuse the same private IP.
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-b", ExternalIP: "192.168.0.11", LogicalIP: "172.31.0.5",
+		PortName: "port-b", MAC: "bb:bb:bb:bb:bb:bb",
+	}))
+
+	byExt := map[string]*nbdb.NAT{}
+	for _, n := range m.NATs {
+		if n.Type == "dnat_and_snat" && n.LogicalIP == "172.31.0.5" {
+			byExt[n.ExternalIP] = n
+		}
+	}
+	assert.Len(t, byExt, 2,
+		"same private IP on a different VPC router is a separate EIP and must survive")
+	assert.Contains(t, byExt, "192.168.0.10", "vpc-a's row must survive")
+	assert.Contains(t, byExt, "192.168.0.11", "vpc-b's row must survive")
+}
+
 func TestNATManager_PruneOrphanEIPs(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

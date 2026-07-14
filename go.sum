@@ -1315,10 +1315,10 @@ github.com/muesli/cancelreader v0.2.2 h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELU
 github.com/muesli/cancelreader v0.2.2/go.mod h1:3XuTXfFS2VjM+HTLZY9Ak0l6eUKfijIfMUZ4EgX0QYo=
 github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc=
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
-github.com/mulgadc/predastore v1.12.0 h1:JmoF//cIr3DgJhGypNVVLtaBZGCVUDzOo6z63407x54=
-github.com/mulgadc/predastore v1.12.0/go.mod h1:kgTncuCaB11e3eCQeZF0ydEFG0biuOlrZ4DlHNzwvZY=
-github.com/mulgadc/viperblock v1.12.0 h1:1PYG7GQ1cBbHbLI7QB7IzVu6EeKhrtcAJ+VAvNczjs8=
-github.com/mulgadc/viperblock v1.12.0/go.mod h1:5MGciKEvqpwLv2pdjk9j7PR8NHtXPs4pJzJi4UJojeU=
+github.com/mulgadc/predastore v1.12.1 h1:mkJqmUbxfI3kBRmtBecjvBsRLFpnKARGWtmx4b9XKKg=
+github.com/mulgadc/predastore v1.12.1/go.mod h1:kgTncuCaB11e3eCQeZF0ydEFG0biuOlrZ4DlHNzwvZY=
+github.com/mulgadc/viperblock v1.12.1 h1:DWMbzPhIkYzdhOy4sn/D0/BJWJ5uhBoKWbVMfS7DMl4=
+github.com/mulgadc/viperblock v1.12.1/go.mod h1:5MGciKEvqpwLv2pdjk9j7PR8NHtXPs4pJzJi4UJojeU=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/mwitkow/go-conntrack v0.0.0-20161129095857-cc309e4a2223/go.mod h1:qRWi+5nqEBWmkhHvq77mSJWrCKwh8bxhgT7d/eI7P4U=

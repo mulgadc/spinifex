@@ -617,12 +617,34 @@ func TestGenerateCertificatesIfNeeded(t *testing.T) {
 		assert.Equal(t, origModTime, caInfo2.ModTime())
 	})
 
-	t.Run("ForceRegenerates", func(t *testing.T) {
+	// --force must preserve the CA (trust anchor for joined nodes / baked AMIs)
+	// and only re-sign the server cert, which stays verifiable against that CA.
+	t.Run("ForcePreservesCARegeneratesServerCert", func(t *testing.T) {
 		origCA, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
+		origCAKey, _ := os.ReadFile(filepath.Join(dir, "ca.key"))
+		origServer, _ := os.ReadFile(filepath.Join(dir, "server.pem"))
 
-		GenerateCertificatesIfNeeded(dir, true, "", "us-east-1", "spinifex.internal")
+		GenerateCertificatesIfNeeded(dir, true, "10.9.8.7", "us-east-1", "spinifex.internal")
+
 		newCA, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
-		assert.NotEqual(t, origCA, newCA)
+		newCAKey, _ := os.ReadFile(filepath.Join(dir, "ca.key"))
+		newServer, _ := os.ReadFile(filepath.Join(dir, "server.pem"))
+		assert.Equal(t, origCA, newCA, "CA cert must be preserved on --force")
+		assert.Equal(t, origCAKey, newCAKey, "CA key must be preserved on --force")
+		assert.NotEqual(t, origServer, newServer, "server cert must be re-signed on --force")
+
+		// The re-signed server cert must verify against the preserved CA.
+		caBlock, _ := pem.Decode(newCA)
+		caCert, err := x509.ParseCertificate(caBlock.Bytes)
+		require.NoError(t, err)
+		pool := x509.NewCertPool()
+		pool.AddCert(caCert)
+
+		srvBlock, _ := pem.Decode(newServer)
+		srvCert, err := x509.ParseCertificate(srvBlock.Bytes)
+		require.NoError(t, err)
+		_, err = srvCert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+		assert.NoError(t, err, "re-signed server cert must verify against preserved CA")
 	})
 }
 

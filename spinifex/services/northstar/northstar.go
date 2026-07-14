@@ -12,6 +12,7 @@ import (
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	nsserver "github.com/mulgadc/northstar/pkg/server"
+	"github.com/mulgadc/spinifex/spinifex/admin"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -24,8 +25,11 @@ type Config struct {
 	// ConfigPath is the path to northstar.toml (written by `spx admin init`).
 	ConfigPath string
 	// BasePath is the node base dir where the PID file is written.
-	BasePath string
-	NodeID   int
+	BasePath   string
+	NodeID     int
+	NatsHost   string
+	NatsToken  string
+	NatsCACert string
 }
 
 // Service wraps the northstar DNS server library.
@@ -74,7 +78,7 @@ func (svc *Service) Start() (int, error) {
 		return 0, err
 	}
 
-	svc.subscribeReload(serverCfg.NatsURL)
+	svc.subscribeReload()
 
 	<-ctx.Done()
 
@@ -91,18 +95,18 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-// subscribeReload connects to NATS (when nats_url is set) and reloads a single
-// zone on each fan-out event, so a control-plane record change is served almost
-// immediately instead of after the next S3 sync poll. Best-effort: a connect
-// failure is logged and the poll remains the backstop.
-func (svc *Service) subscribeReload(natsURL string) {
-	if natsURL == "" {
-		slog.Info("northstar: nats_url not set, relying on S3 poll for zone updates")
+// subscribeReload connects to the configured TLS NATS server and reloads a
+// single zone on each fan-out event. A connection failure is logged and the S3
+// poll remains the backstop.
+func (svc *Service) subscribeReload() {
+	if svc.Config.NatsHost == "" {
+		slog.Info("northstar: NATS host not set, relying on S3 poll for zone updates")
 		return
 	}
-	nc, err := nats.Connect(natsURL, nats.Name("northstar-reload"))
+	endpoint := admin.DialTarget(svc.Config.NatsHost)
+	nc, err := utils.ConnectNATS(endpoint, svc.Config.NatsToken, svc.Config.NatsCACert)
 	if err != nil {
-		slog.Warn("northstar: connect NATS for zone reload", "url", natsURL, "error", err)
+		slog.Warn("northstar: connect TLS NATS for zone reload", "endpoint", endpoint, "error", err)
 		return
 	}
 	svc.nc = nc

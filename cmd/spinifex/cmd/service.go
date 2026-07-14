@@ -905,6 +905,9 @@ var northstarStartCmd = &cobra.Command{
 			ConfigPath: configPath,
 			BasePath:   baseDir,
 			NodeID:     nodeConfig.Predastore.NodeID,
+			NatsHost:   nodeConfig.NATS.Host,
+			NatsToken:  nodeConfig.NATS.ACL.Token,
+			NatsCACert: nodeConfig.NATS.CACert,
 		})
 		if err != nil {
 			fmt.Println("Error starting northstar service:", err)

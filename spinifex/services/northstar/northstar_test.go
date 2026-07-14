@@ -13,10 +13,16 @@ func TestNewRejectsWrongConfigType(t *testing.T) {
 }
 
 func TestNewAcceptsConfig(t *testing.T) {
-	svc, err := New(&Config{ConfigPath: "/etc/spinifex/northstar/northstar.toml"})
+	cfg := &Config{
+		ConfigPath: "/etc/spinifex/northstar/northstar.toml",
+		NatsHost:   "127.0.0.1:4222",
+		NatsToken:  "token",
+		NatsCACert: "/etc/spinifex/ca.pem",
+	}
+	svc, err := New(cfg)
 	require.NoError(t, err)
 	require.NotNil(t, svc)
-	assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", svc.Config.ConfigPath)
+	assert.Equal(t, cfg, svc.Config)
 }
 
 func TestStartRequiresConfigPath(t *testing.T) {

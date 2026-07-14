@@ -27,10 +27,19 @@ interface TargetGroupFormProps {
   allowedProtocols?: readonly string[]
 }
 
+const DEFAULT_ALLOWED_PROTOCOLS = [
+  "HTTP",
+  "HTTPS",
+  "TCP",
+  "UDP",
+  "TLS",
+  "TCP_UDP",
+] as const
+
 export function TargetGroupForm({
   form,
   vpcs,
-  allowedProtocols = ["HTTP", "HTTPS", "TCP", "UDP", "TLS", "TCP_UDP"],
+  allowedProtocols = DEFAULT_ALLOWED_PROTOCOLS,
 }: TargetGroupFormProps) {
   const {
     control,

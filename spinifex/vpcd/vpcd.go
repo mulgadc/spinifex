@@ -126,6 +126,10 @@ type Config struct {
 	// default_domain, e.g. "spx3.net"). IMDS uses it to serve public-hostname.
 	// Empty disables the public-hostname metadata key.
 	NorthstarBaseDomain string
+	// NorthstarInternalDomain is the cluster's private AWS-parity domain (northstar
+	// internal_domain, default "compute.internal"). IMDS serves it as local-hostname
+	// so the guest's own name matches the record the DNS writer publishes.
+	NorthstarInternalDomain string
 	// ResolverNameservers are the WAN IPs of cluster nodes running northstar,
 	// used as the per-tap DNS shim's forward targets. When set, DHCP advertises
 	// the link-local VPC DNS address (169.254.169.253) instead of the upstream
@@ -512,6 +516,7 @@ func launchService(cfg *Config) error {
 		max(len(chassisNames), 1),
 		listTaps,
 		cfg.NorthstarBaseDomain,
+		cfg.NorthstarInternalDomain,
 		cfg.ResolverNameservers,
 	)
 	if err != nil {

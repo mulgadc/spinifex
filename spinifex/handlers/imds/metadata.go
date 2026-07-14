@@ -3,7 +3,6 @@ package handlers_imds
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 )
 
 const (
@@ -196,7 +196,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 			w.WriteHeader(http.StatusNotFound) // no public IP → no public hostname
 			return
 		}
-		if h := publicHostname(eni.publicIP, regionFromAZ(eni.availabilityZone), s.baseDomain); h != "" {
+		if h := s.publicHostname(eni.publicIP, regionFromAZ(eni.availabilityZone)); h != "" {
 			writeText(w, h)
 			return
 		}
@@ -212,7 +212,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "security-groups":
 		writeText(w, strings.Join(s.resolver.resolveSGNames(ctx, eni.accountID, eni.securityGroupIDs), "\n"))
 	case prefixMetaData + "hostname", prefixMetaData + "local-hostname":
-		writeText(w, synthHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
+		writeText(w, s.privateHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
 	case prefixMetaData + "placement", prefixMetaData + "placement/":
 		writeText(w, "availability-zone\nregion")
 	case prefixMetaData + "placement/availability-zone":
@@ -514,7 +514,7 @@ func (s *IMDSServiceImpl) serveNetworkInterface(ctx context.Context, w http.Resp
 	case "local-ipv4s":
 		writeText(w, eni.privateIP)
 	case "local-hostname":
-		writeText(w, synthHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
+		writeText(w, s.privateHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
 	case "security-group-ids":
 		writeText(w, strings.Join(eni.securityGroupIDs, "\n"))
 	case "security-groups":
@@ -653,22 +653,23 @@ func regionFromAZ(az string) string {
 	return az
 }
 
-// synthHostname builds "ip-10-0-1-5.<region>.compute.internal" from a private IP and region.
-func synthHostname(ip, region string) string {
+// privateHostname is the AWS-parity local hostname (ip-<dashed>.<region>.<internal
+// domain>) honoring the configured internal_domain, so it matches the record the
+// DNS writer publishes. Empty when the IP or region is missing.
+func (s *IMDSServiceImpl) privateHostname(ip, region string) string {
 	if ip == "" || region == "" {
 		return ""
 	}
-	return fmt.Sprintf("ip-%s.%s.compute.internal", strings.ReplaceAll(ip, ".", "-"), region)
+	return handlers_dns.EC2PrivateName(ip, region, s.internalDomain)
 }
 
-// publicHostname builds "ec2-1-2-3-4.<region>.compute.<baseDomain>" from a
-// public IP, region and the cluster base domain. Empty when any input is
-// missing (no public IP, or DNS not configured).
-func publicHostname(ip, region, baseDomain string) string {
-	if ip == "" || region == "" || baseDomain == "" {
+// publicHostname is the AWS-shaped public name (ec2-<dashed>.<region>.compute.<base
+// domain>). Empty when any input is missing (no public IP, or DNS not configured).
+func (s *IMDSServiceImpl) publicHostname(ip, region string) string {
+	if ip == "" || region == "" || s.baseDomain == "" {
 		return ""
 	}
-	return fmt.Sprintf("ec2-%s.%s.compute.%s", strings.ReplaceAll(ip, ".", "-"), region, baseDomain)
+	return handlers_dns.EC2PublicName(ip, region, s.baseDomain)
 }
 
 func writeText(w http.ResponseWriter, body string) {

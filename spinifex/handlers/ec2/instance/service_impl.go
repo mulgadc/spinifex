@@ -927,7 +927,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 	for accountID, launched := range launchedByAccount {
 		s.publishDNS(accountID, handlers_dns.ActionUpsert, launched)
 		for _, instance := range launched {
-			if needsDNSWithdrawal(s.vmMgr.Status(instance)) {
+			if s.terminateRacedLaunch(instance) {
 				withdrawByAccount[accountID] = append(withdrawByAccount[accountID], instance)
 			}
 		}
@@ -940,6 +940,17 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 
 func needsDNSWithdrawal(status vm.InstanceState) bool {
 	return status != vm.StateRunning && status != vm.StateStopping && status != vm.StateStopped
+}
+
+// terminateRacedLaunch reports whether a terminate raced the deferred launch
+// UPSERT: it reads the terminate flag stamped under the lock (plus status) since
+// the async state transition may not have landed, which a status-only check misses.
+func (s *InstanceServiceImpl) terminateRacedLaunch(instance *vm.VM) bool {
+	withdraw := false
+	s.vmMgr.Inspect(instance, func(v *vm.VM) {
+		withdraw = v.Attributes.TerminateInstance || needsDNSWithdrawal(v.Status)
+	})
+	return withdraw
 }
 
 // RunInstances is for non-daemon callers (tests). The daemon calls
@@ -1098,7 +1109,7 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, insta
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
 	}
 
-	// Withdraw the instance's DNS records on terminate (V1.6); stop/start retains
+	// Withdraw the instance's DNS records on terminate; stop/start retains
 	// the IP and the name, so they are a no-op here.
 	if isTerminate {
 		s.publishDNS(instance.AccountID, handlers_dns.ActionDelete, []*vm.VM{instance})

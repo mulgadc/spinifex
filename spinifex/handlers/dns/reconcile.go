@@ -13,7 +13,7 @@ import (
 )
 
 // DefaultReconcileInterval is how often the drift backstop rebuilds managed
-// records from the live resource inventory (V1.4). It is deliberately close to
+// records from the live resource inventory. It is deliberately close to
 // the northstar S3 poll so a missed lifecycle event self-heals within one cycle.
 const DefaultReconcileInterval = 60 * time.Second
 
@@ -42,7 +42,7 @@ type PruneScope struct {
 	EKS bool
 }
 
-// Reconciler is the V1.4 drift backstop. On a ticker it rebuilds the desired
+// Reconciler is the drift backstop. On a ticker it rebuilds the desired
 // managed record set from the live inventory and converges the zone toward it:
 // every desired record is re-UPSERTed (idempotent — the writer skips unchanged
 // zones) and stale *prunable* records are DELETEd. It applies changes through the

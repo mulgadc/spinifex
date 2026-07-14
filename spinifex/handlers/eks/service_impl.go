@@ -670,7 +670,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		return
 	}
 
-	// Private endpoint (301): when private access is on, give the cluster NLB a
+	// Private endpoint: when private access is on, give the cluster NLB a
 	// customer-VPC (Set A) front-end so in-VPC workers + kubectl reach the control
 	// plane without the public hairpin / NAT GW egress. Provision the customer-
 	// account ENI (admitted by a customer-VPC SG on :443) before the NLB + CP VMs so
@@ -709,7 +709,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure cluster NLB", err)
 		return
 	}
-	// Endpoint resolution (301): resolve the reachable front-end IP. With public
+	// Endpoint resolution: resolve the reachable front-end IP. With public
 	// access on (public-only or public+private) that is the NLB's public front-end
 	// IP. A private-only cluster uses its Set A private endpoint instead — the
 	// internal NLB's Set B IP is unreachable from the customer VPC.
@@ -1167,7 +1167,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		}
 	}
 
-	// Private endpoint (301): the Set A ENI lives in the customer VPC under the
+	// Private endpoint: the Set A ENI lives in the customer VPC under the
 	// customer account and was attached to the cluster NLB's LB VM (terminated by
 	// DeleteClusterNLB above). It is an extra NIC, not the LB VM's primary ENI, so
 	// the instance-terminate cascade never reclaims it — detach (store-clear) the
@@ -1223,7 +1223,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		}
 	}
 
-	// Private endpoint (301): reclaim the customer-VPC SG now its ENI is gone.
+	// Private endpoint: reclaim the customer-VPC SG now its ENI is gone.
 	// Best-effort — its only billable dependant (the ENI) is already deleted.
 	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 		if err := DeletePrivateEndpointSG(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {

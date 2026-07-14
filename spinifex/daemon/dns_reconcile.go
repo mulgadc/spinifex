@@ -7,7 +7,7 @@ import (
 )
 
 // dnsDesiredSet builds the full desired managed-record set for the reconcile
-// backstop (route53 V1.4). It spans all tenants: every running instance on this
+// backstop. It spans all tenants: every running instance on this
 // node plus every active load balancer and EKS cluster across all accounts.
 // Prune authority is granted per record class only when that class enumerated
 // completely, so a transient store error can never delete another tenant's live

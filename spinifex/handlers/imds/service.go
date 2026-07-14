@@ -58,23 +58,26 @@ type eniResolver interface {
 // responder per local primary-ENI tap, each serving the shared mux with the
 // tap's ENI identity.
 type IMDSServiceImpl struct {
-	resolver   eniResolver
-	tokens     *tokenStore
-	creds      *credCache
-	iam        profileLookup
-	pubKeys    publicKeyLookup
-	tapResp    *tapResponderManager
-	listTaps   listTapsFunc
-	now        func() time.Time
-	baseDomain string
+	resolver       eniResolver
+	tokens         *tokenStore
+	creds          *credCache
+	iam            profileLookup
+	pubKeys        publicKeyLookup
+	tapResp        *tapResponderManager
+	listTaps       listTapsFunc
+	now            func() time.Time
+	baseDomain     string
+	internalDomain string
 }
 
 // NewIMDSServiceImpl wires the IMDS service. listTaps is injected to avoid a
-// network/host import cycle. baseDomain is the cluster's authoritative DNS
-// domain used for public-hostname. resolverIPs are the WAN IPs of nodes running
-// northstar: when non-empty, each per-tap responder also serves the VPC DNS shim
-// on 169.254.169.253:53, relaying to northstar's unprivileged wildcard listener.
-func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc, baseDomain string, resolverIPs []string) (*IMDSServiceImpl, error) {
+// network/host import cycle. baseDomain and internalDomain are the cluster's
+// authoritative public and private (AWS-parity) DNS domains, used for
+// public-hostname and local-hostname so IMDS matches the records the DNS writer
+// publishes. resolverIPs are the WAN IPs of nodes running northstar: when
+// non-empty, each per-tap responder also serves the VPC DNS shim on
+// 169.254.169.253:53, relaying to northstar's unprivileged wildcard listener.
+func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc, baseDomain, internalDomain string, resolverIPs []string) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -129,13 +132,14 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 			vpcKV:    vpcKV,
 			lookup:   &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
 		},
-		tokens:     newTokenStore(),
-		creds:      newCredCache(sts),
-		iam:        iamSvc,
-		pubKeys:    pubKeys,
-		listTaps:   listTaps,
-		now:        time.Now,
-		baseDomain: baseDomain,
+		tokens:         newTokenStore(),
+		creds:          newCredCache(sts),
+		iam:            iamSvc,
+		pubKeys:        pubKeys,
+		listTaps:       listTaps,
+		now:            time.Now,
+		baseDomain:     baseDomain,
+		internalDomain: internalDomain,
 	}
 	// Each per-tap responder serves the shared mux, threading its tap's ENI
 	// identity into every request via BaseContext.

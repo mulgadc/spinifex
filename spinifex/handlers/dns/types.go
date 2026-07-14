@@ -1,4 +1,4 @@
-// Package dns is the control-plane DNS record writer (route53 Phase B, V1). It
+// Package dns is the control-plane DNS record writer. It
 // is the single queue-group consumer of dns.recordset.change events and owns the
 // read-modify-write of zone TOML files in s3://northstar/, using the system
 // predastore credentials. Northstar itself stays read-only (N4 intact).

@@ -1431,7 +1431,7 @@ func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, o
 	if s == nil || s.store == nil || s.dnsBaseDomain == "" {
 		return nil, false
 	}
-	lbs, err := s.store.ListLoadBalancers()
+	lbs, err := s.store.ListLoadBalancersStrict()
 	if err != nil {
 		return nil, false
 	}

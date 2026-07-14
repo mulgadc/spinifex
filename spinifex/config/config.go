@@ -27,6 +27,13 @@ const (
 	DefaultAWSInternalSuffix = "spinifex.internal"
 )
 
+// DefaultMgmtBridgeIP is the canonical br-mgmt host address the control plane
+// advertises: the EKS gateway URL, predastore endpoint, and node-group userdata
+// all target it. Kept in sync with setup-ovn.sh MGMT_CIDR. Server certs must
+// always carry this as a SAN so publish succeeds even when br-mgmt happens to be
+// down at cert-generation time (interface enumeration would otherwise miss it).
+const DefaultMgmtBridgeIP = "10.15.8.1"
+
 // AWSConfig holds cluster-wide AWS-parity settings shared across services.
 // Region scopes the default AWS region; InternalSuffix is the internal DNS
 // suffix used to build service endpoints (e.g. ecr.{region}.{suffix}).

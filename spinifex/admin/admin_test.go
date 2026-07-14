@@ -277,6 +277,32 @@ func TestSetupAWSCredentials_FallsBackToLocalhostForWildcard(t *testing.T) {
 	assert.Contains(t, string(configData), "https://localhost:9999")
 }
 
+// On a --force re-init the preserve path passes empty admin credentials: the
+// existing ~/.aws/credentials must be left intact while ~/.aws/config is still
+// refreshed (endpoint/CA for a changed bind IP).
+func TestSetupAWSCredentials_EmptyCredsRefreshesConfigOnly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	awsDir := filepath.Join(dir, ".aws")
+	require.NoError(t, os.MkdirAll(awsDir, 0700))
+	require.NoError(t, UpdateAWSINIFile(filepath.Join(awsDir, "credentials"), "spinifex", map[string]string{
+		"aws_access_key_id":     "PRESERVED_KEY",
+		"aws_secret_access_key": "PRESERVED_SECRET",
+	}))
+
+	err := SetupAWSCredentials("", "", "ap-southeast-2", "/new/ca.pem", "10.11.12.5")
+	require.NoError(t, err)
+
+	credData, _ := os.ReadFile(filepath.Join(awsDir, "credentials"))
+	assert.Contains(t, string(credData), "PRESERVED_KEY", "existing admin credentials must be preserved on re-init")
+	assert.Contains(t, string(credData), "PRESERVED_SECRET")
+
+	configData, _ := os.ReadFile(filepath.Join(awsDir, "config"))
+	assert.Contains(t, string(configData), "https://10.11.12.5:9999", "config endpoint must be refreshed")
+	assert.Contains(t, string(configData), "/new/ca.pem")
+}
+
 // --- Certificate generation ---
 
 func TestGenerateCACert_CreatesValidCA(t *testing.T) {

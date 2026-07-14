@@ -381,9 +381,10 @@ func TestEnsureMasterKey(t *testing.T) {
 	})
 }
 
-// The identity bundle (master.key + bootstrap.json + system-credentials.json) is
-// preserved holistically on re-init: the load helpers recover the exact system
-// and admin credentials and never rewrite bootstrap.json.
+// The identity bundle is preserved holistically on re-init: the load helpers
+// recover the exact system credentials and never rewrite bootstrap.json. Admin
+// credentials are not recovered from disk — awsgw consumes and deletes
+// bootstrap.json after first boot, so the preserve path must not read it back.
 func TestPreservedIdentityBundle(t *testing.T) {
 	configDir := t.TempDir()
 	bootstrapDir := filepath.Join(configDir, "awsgw")
@@ -417,13 +418,7 @@ func TestPreservedIdentityBundle(t *testing.T) {
 	assert.Equal(t, sysAccess, gotSysAccess)
 	assert.Equal(t, sysSecret, gotSysSecret)
 
-	// Admin credentials are recovered by decrypting bootstrap.json with the key.
-	gotAdminAccess, gotAdminSecret, err := loadAdminCredentials(bootstrapDir, masterKey)
-	require.NoError(t, err)
-	assert.Equal(t, adminAccess, gotAdminAccess)
-	assert.Equal(t, adminSecret, gotAdminSecret)
-
-	// The load path must not rewrite the seed file.
+	// The preserve helpers must not rewrite the seed file.
 	bootstrapAfter, err := os.ReadFile(bootstrapPath)
 	require.NoError(t, err)
 	assert.Equal(t, bootstrapBefore, bootstrapAfter, "bootstrap.json must not be rewritten on re-init")
@@ -453,49 +448,6 @@ func TestLoadSystemCredentials_Invalid(t *testing.T) {
 			[]byte("not json"), 0600))
 		_, _, err := loadSystemCredentials(configDir)
 		require.Error(t, err)
-	})
-}
-
-// loadAdminCredentials must fail loud on a broken or incomplete bootstrap.json
-// rather than return blank credentials that silently write an unusable AWS
-// profile.
-func TestLoadAdminCredentials_Errors(t *testing.T) {
-	masterKey, err := handlers_iam.GenerateMasterKey()
-	require.NoError(t, err)
-
-	t.Run("NoAdmin", func(t *testing.T) {
-		bootstrapDir := t.TempDir()
-		require.NoError(t, handlers_iam.SaveBootstrapData(
-			filepath.Join(bootstrapDir, "bootstrap.json"),
-			&handlers_iam.BootstrapData{AccessKeyID: "AKIASYSTEM0000000000"}))
-
-		_, _, err := loadAdminCredentials(bootstrapDir, masterKey)
-		require.Error(t, err, "bootstrap without an admin block must error")
-	})
-
-	t.Run("MissingAccessKey", func(t *testing.T) {
-		bootstrapDir := t.TempDir()
-		enc, err := handlers_iam.EncryptSecret("admin-secret", masterKey)
-		require.NoError(t, err)
-		require.NoError(t, handlers_iam.SaveBootstrapData(
-			filepath.Join(bootstrapDir, "bootstrap.json"),
-			&handlers_iam.BootstrapData{Admin: &handlers_iam.AdminBootstrapData{EncryptedSecret: enc}}))
-
-		_, _, err = loadAdminCredentials(bootstrapDir, masterKey)
-		require.Error(t, err, "admin block without an access key must error, not return blank")
-	})
-
-	t.Run("WrongMasterKey", func(t *testing.T) {
-		configDir := t.TempDir()
-		bootstrapDir := filepath.Join(configDir, "awsgw")
-		require.NoError(t, writeBootstrapFilesWithAdmin(configDir, bootstrapDir, masterKey,
-			"AKIASYSTEM0000000000", "system-secret", "123456789012",
-			"AKIAADMIN00000000000", "admin-secret"))
-
-		wrongKey, err := handlers_iam.GenerateMasterKey()
-		require.NoError(t, err)
-		_, _, err = loadAdminCredentials(bootstrapDir, wrongKey)
-		require.Error(t, err, "a master key that can't decrypt the admin secret must error")
 	})
 }
 

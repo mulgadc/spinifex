@@ -1283,16 +1283,14 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	if masterKeyExisted {
 		// Preserve path: reuse the existing identity. The system credentials must
 		// match what seeded the NATS KV `system` secret, so load them rather than
-		// mint new ones; recover the admin credentials from bootstrap.json for the
-		// AWS profile without rewriting the seed file.
+		// mint new ones. The admin credentials are not recovered: bootstrap.json is
+		// consumed and deleted by awsgw after first boot, and the operator's copy
+		// already lives in ~/.aws/credentials. Leaving them empty makes
+		// finalizeNodeSetup refresh only ~/.aws/config (endpoint/CA for a changed
+		// bind IP), not the credentials.
 		accessKey, secretKey, err = loadSystemCredentials(configDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading preserved system credentials: %v\n", err)
-			os.Exit(1)
-		}
-		adminAccessKey, adminSecretKey, err = loadAdminCredentials(bootstrapDir, masterKey)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading preserved admin credentials: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Println("\n🔐 Preserved existing identity (master key, credentials and CA unchanged)")
@@ -2658,27 +2656,6 @@ func loadSystemCredentials(configDir string) (accessKey, secretKey string, err e
 		return "", "", fmt.Errorf("system credentials missing access/secret key")
 	}
 	return creds.AccessKeyID, creds.SecretAccessKey, nil
-}
-
-// loadAdminCredentials recovers the admin access/secret key from the preserved
-// bootstrap.json, decrypting the secret with the master key. Used on a re-init
-// to refresh the AWS profile without minting or reprinting new admin credentials.
-func loadAdminCredentials(bootstrapDir string, masterKey []byte) (accessKey, secretKey string, err error) {
-	bd, err := handlers_iam.LoadBootstrapData(filepath.Join(bootstrapDir, "bootstrap.json"))
-	if err != nil {
-		return "", "", fmt.Errorf("load bootstrap data: %w", err)
-	}
-	if bd.Admin == nil {
-		return "", "", fmt.Errorf("bootstrap data has no admin credentials")
-	}
-	if bd.Admin.AccessKeyID == "" {
-		return "", "", fmt.Errorf("bootstrap admin credentials missing access key")
-	}
-	secretKey, err = handlers_iam.DecryptSecret(bd.Admin.EncryptedSecret, masterKey)
-	if err != nil {
-		return "", "", fmt.Errorf("decrypt admin secret: %w", err)
-	}
-	return bd.Admin.AccessKeyID, secretKey, nil
 }
 
 // writeBootstrapFiles generates new admin credentials and writes the bootstrap

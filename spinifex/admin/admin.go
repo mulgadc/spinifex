@@ -789,11 +789,16 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 
 	profileName := "spinifex"
 
-	if err := UpdateAWSINIFile(credPath, profileName, map[string]string{
-		"aws_access_key_id":     accessKey,
-		"aws_secret_access_key": secretKey,
-	}); err != nil {
-		return err
+	// Empty credentials mean a --force re-init preserving the existing identity:
+	// the admin secret is not recoverable from disk and is unchanged, so leave the
+	// credentials file as-is and refresh only the config (endpoint/CA/region).
+	if accessKey != "" && secretKey != "" {
+		if err := UpdateAWSINIFile(credPath, profileName, map[string]string{
+			"aws_access_key_id":     accessKey,
+			"aws_secret_access_key": secretKey,
+		}); err != nil {
+			return err
+		}
 	}
 
 	configSection := profileName

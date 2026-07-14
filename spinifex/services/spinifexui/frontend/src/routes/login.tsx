@@ -63,7 +63,7 @@ function LoginPage() {
       setSessionCredentials(session)
       // Drop cached clients so they rebuild with the new session creds.
       clearClients()
-      window.location.href = "/"
+      window.location.assign("/")
     } catch {
       setAuthError(
         "Invalid credentials. Please check your Access Key ID and Secret Access Key.",

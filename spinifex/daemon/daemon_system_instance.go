@@ -472,7 +472,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 	// Management NIC must be set before LaunchRunInstances so the fw_cfg netcfg
 	// blob (built during launch) carries the static mgmt0 address.
 	if err := d.attachSystemMgmtNIC(inst); err != nil {
-		d.vmMgr.MarkFailed(inst, "mgmt_nic_setup_failed")
+		d.vmMgr.MarkFailed(context.Background(), inst, "mgmt_nic_setup_failed")
 		return nil, err
 	}
 
@@ -485,7 +485,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 			extraAccount := resolveENIAccount(extra.AccountID, input.AccountID)
 			if _, attachErr := d.vpcService.AttachENI(extraAccount, extra.ENIID, inst.ID, int64(idx+1)); attachErr != nil {
 				slog.Error("launchAMISystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", inst.ID, "err", attachErr)
-				d.vmMgr.MarkFailed(inst, "extra_eni_attach_failed")
+				d.vmMgr.MarkFailed(context.Background(), inst, "extra_eni_attach_failed")
 				return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
 			}
 		}
@@ -684,7 +684,7 @@ func (d *Daemon) releaseSystemInstanceEIP(instance *vm.VM) {
 // state migration to terminated KV).
 func (d *Daemon) cleanupFailedSystemInstance(instance *vm.VM, _ *ec2.InstanceTypeInfo) {
 	d.releaseSystemInstanceEIP(instance)
-	d.vmMgr.MarkFailed(instance, "system_instance_launch_failed")
+	d.vmMgr.MarkFailed(context.Background(), instance, "system_instance_launch_failed")
 }
 
 // WaitForSystemInstance polls until the instance reaches running state or times out.

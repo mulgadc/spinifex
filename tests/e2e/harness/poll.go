@@ -47,6 +47,13 @@ func applyOpts(def pollCfg, opts ...PollOpt) pollCfg {
 	return def
 }
 
+// reapedInstanceStates are terminal states a live target (e.g. "running")
+// can never reach; observing one means the launch was reaped.
+var reapedInstanceStates = map[string]struct{}{
+	ec2.InstanceStateNameShuttingDown: {},
+	ec2.InstanceStateNameTerminated:   {},
+}
+
 // WaitForInstanceState polls DescribeInstances until State.Name == target.
 // Returns the latest instance on success; t.Fatal on timeout.
 func WaitForInstanceState(t *testing.T, c *AWSClient, id, target string, opts ...PollOpt) *ec2.Instance {
@@ -66,6 +73,17 @@ func WaitForInstanceState(t *testing.T, c *AWSClient, id, target string, opts ..
 		}
 		last = out.Reservations[0].Instances[0]
 		lastState = aws.StringValue(last.State.Name)
+		// A reaped instance can never reach a live target: fail fast with the
+		// recorded reason instead of burning the full timeout.
+		if _, reaped := reapedInstanceStates[lastState]; reaped {
+			if _, targetReaped := reapedInstanceStates[target]; !targetReaped {
+				reason := "no state reason recorded"
+				if last.StateReason != nil {
+					reason = aws.StringValue(last.StateReason.Message)
+				}
+				t.Fatalf("instance %s reaped to %s (want %s): %s", id, lastState, target, reason)
+			}
+		}
 		if lastState == target {
 			return nil
 		}

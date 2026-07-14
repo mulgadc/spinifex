@@ -4,7 +4,7 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { Plus, Trash2, X } from "lucide-react"
 import { useState } from "react"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
@@ -115,7 +115,6 @@ function AddRuleDialog({
     handleSubmit,
     register,
     reset,
-    watch,
     formState: { errors },
   } = useForm<SecurityGroupRuleFormData>({
     resolver: zodResolver(securityGroupRuleSchema),
@@ -127,7 +126,7 @@ function AddRuleDialog({
     },
   })
 
-  const selectedProtocol = watch("ipProtocol")
+  const selectedProtocol = useWatch({ control, name: "ipProtocol" })
   const portsDisabled = selectedProtocol === "-1" || selectedProtocol === "icmp"
 
   const onSubmit = async (data: SecurityGroupRuleFormData) => {

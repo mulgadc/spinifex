@@ -7,6 +7,8 @@ import {
   DescribeInstanceTypesCommand,
   DescribeInternetGatewaysCommand,
   DescribeKeyPairsCommand,
+  DescribeLaunchTemplatesCommand,
+  DescribeLaunchTemplateVersionsCommand,
   DescribeNatGatewaysCommand,
   DescribePlacementGroupsCommand,
   DescribeRegionsCommand,
@@ -306,6 +308,29 @@ export const ec2NatGatewayQueryOptions = (natGatewayId: string) =>
     queryFn: async () => {
       const command = new DescribeNatGatewaysCommand({
         NatGatewayIds: [natGatewayId],
+      })
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2LaunchTemplatesQueryOptions = queryOptions({
+  queryKey: ["ec2", "launchTemplates"],
+  queryFn: async () => {
+    const command = new DescribeLaunchTemplatesCommand({})
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2LaunchTemplateVersionsQueryOptions = (
+  launchTemplateId: string,
+) =>
+  queryOptions({
+    queryKey: ["ec2", "launchTemplates", launchTemplateId, "versions"],
+    queryFn: async () => {
+      const command = new DescribeLaunchTemplateVersionsCommand({
+        LaunchTemplateId: launchTemplateId,
       })
       return await getEc2Client().send(command)
     },

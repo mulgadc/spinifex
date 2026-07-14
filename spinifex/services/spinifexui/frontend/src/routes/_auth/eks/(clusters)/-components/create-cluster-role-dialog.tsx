@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 
 import {
   AlertDialog,
@@ -42,12 +42,15 @@ export function CreateClusterRoleDialog({
   const [roleName, setRoleName] = useState(defaultRoleName(clusterName))
   const [formError, setFormError] = useState<string | null>(null)
 
-  useEffect(() => {
+  // Seed the role name from the cluster name each time the dialog opens.
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
     if (open) {
       setRoleName(defaultRoleName(clusterName))
       setFormError(null)
     }
-  }, [open, clusterName])
+  }
 
   const isPending = createRole.isPending || attachPolicy.isPending
 

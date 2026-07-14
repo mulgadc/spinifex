@@ -1,6 +1,6 @@
 import type { LifecyclePolicyPreviewResult } from "@aws-sdk/client-ecr"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useEffect, useState } from "react"
+import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { JsonEditor } from "@/components/ui/json-editor"
@@ -46,9 +46,11 @@ export function LifecyclePolicyEditor({
 
   // Re-seed the editor when the stored policy changes (save/delete invalidates
   // the query), so the textarea tracks the server document.
-  useEffect(() => {
+  const [seededPolicy, setSeededPolicy] = useState(policyText)
+  if (policyText !== seededPolicy) {
+    setSeededPolicy(policyText)
     setDraft(policyText ?? "")
-  }, [policyText])
+  }
 
   async function handleSave() {
     try {

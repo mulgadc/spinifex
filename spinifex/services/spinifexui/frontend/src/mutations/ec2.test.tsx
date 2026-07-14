@@ -12,6 +12,7 @@ vi.mock("@/lib/awsClient", () => ({
 import type { CreateVpcWizardFormData } from "@/types/ec2"
 
 import {
+  buildLaunchTemplateData,
   useAssociateIamInstanceProfile,
   useAttachVolume,
   useAuthorizeSecurityGroupEgress,
@@ -20,6 +21,8 @@ import {
   useCreateImage,
   useCreateInstance,
   useCreateKeyPair,
+  useCreateLaunchTemplate,
+  useCreateLaunchTemplateVersion,
   useCreatePlacementGroup,
   useCreateSecurityGroup,
   useCreateSnapshot,
@@ -28,6 +31,8 @@ import {
   useCreateVpc,
   useCreateVpcWizard,
   useDeleteKeyPair,
+  useDeleteLaunchTemplate,
+  useDeleteLaunchTemplateVersions,
   useDisassociateIamInstanceProfile,
   useDeletePlacementGroup,
   useDeleteSecurityGroup,
@@ -39,6 +44,7 @@ import {
   useGetConsoleOutput,
   useImportKeyPair,
   useModifyInstanceAttribute,
+  useModifyLaunchTemplate,
   useModifyVolume,
   useRebootInstance,
   useRevokeSecurityGroupEgress,
@@ -266,6 +272,247 @@ describe("useCreateInstance", () => {
         },
       ],
     )
+  })
+
+  it("launches from a template with LaunchTemplate and count", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate({
+      launchTemplateId: "lt-123",
+      launchTemplateVersion: "3",
+      count: 2,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    const input = mockSend.mock.calls[0]?.[0].input
+    expect(input.LaunchTemplate).toStrictEqual({
+      LaunchTemplateId: "lt-123",
+      Version: "3",
+    })
+    expect(input.MinCount).toBe(2)
+    expect(input.MaxCount).toBe(2)
+    expect(input.ImageId).toBeUndefined()
+    expect(input.InstanceType).toBeUndefined()
+  })
+
+  it("defaults the template version to $Default", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate({ launchTemplateId: "lt-123", count: 1 })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input.LaunchTemplate).toStrictEqual({
+      LaunchTemplateId: "lt-123",
+      Version: "$Default",
+    })
+  })
+
+  it("omits LaunchTemplate for a direct launch", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate({
+      imageId: "ami-123",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+      count: 1,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input.LaunchTemplate).toBeUndefined()
+  })
+})
+
+describe("buildLaunchTemplateData", () => {
+  it("maps the core launch fields", () => {
+    const data = buildLaunchTemplateData({
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+    })
+    expect(data).toStrictEqual({
+      ImageId: "ami-1",
+      InstanceType: "t2.micro",
+      KeyName: "my-key",
+    })
+  })
+
+  it("expresses a subnet as the primary network interface", () => {
+    const data = buildLaunchTemplateData({
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+      subnetId: "subnet-1",
+      securityGroupIds: ["sg-1", "sg-2"],
+    })
+    expect(data.NetworkInterfaces).toStrictEqual([
+      { DeviceIndex: 0, SubnetId: "subnet-1", Groups: ["sg-1", "sg-2"] },
+    ])
+    expect(data.SecurityGroupIds).toBeUndefined()
+  })
+
+  it("uses top-level SecurityGroupIds when there is no subnet", () => {
+    const data = buildLaunchTemplateData({
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+      securityGroupIds: ["sg-1"],
+    })
+    expect(data.SecurityGroupIds).toStrictEqual(["sg-1"])
+    expect(data.NetworkInterfaces).toBeUndefined()
+  })
+
+  it("maps the root volume to BlockDeviceMappings", () => {
+    const data = buildLaunchTemplateData({
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+      rootVolumeSize: 30,
+      rootVolumeType: "gp3",
+    })
+    expect(data.BlockDeviceMappings).toStrictEqual([
+      { DeviceName: "/dev/sda1", Ebs: { VolumeSize: 30, VolumeType: "gp3" } },
+    ])
+  })
+
+  it("base64-encodes user data", () => {
+    const data = buildLaunchTemplateData({
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+      userData: "#!/bin/bash\necho hi",
+    })
+    expect(data.UserData).toBe(btoa("#!/bin/bash\necho hi"))
+  })
+})
+
+describe("useCreateLaunchTemplate", () => {
+  it("sends CreateLaunchTemplateCommand with name and data", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateLaunchTemplate(), { wrapper })
+
+    result.current.mutate({
+      launchTemplateName: "web",
+      versionDescription: "initial",
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    const input = mockSend.mock.calls[0]?.[0].input
+    expect(input.LaunchTemplateName).toBe("web")
+    expect(input.VersionDescription).toBe("initial")
+    expect(input.LaunchTemplateData).toStrictEqual({
+      ImageId: "ami-1",
+      InstanceType: "t2.micro",
+    })
+  })
+
+  it("invalidates the launch templates query on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useCreateLaunchTemplate(), { wrapper })
+
+    result.current.mutate({
+      launchTemplateName: "web",
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["ec2", "launchTemplates"],
+    })
+  })
+})
+
+describe("useCreateLaunchTemplateVersion", () => {
+  it("sends the command with source version and id", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateLaunchTemplateVersion(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      launchTemplateId: "lt-1",
+      sourceVersion: "2",
+      versionDescription: "bump",
+      imageId: "ami-2",
+      instanceType: "t2.small",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    const input = mockSend.mock.calls[0]?.[0].input
+    expect(input.LaunchTemplateId).toBe("lt-1")
+    expect(input.SourceVersion).toBe("2")
+    expect(input.VersionDescription).toBe("bump")
+    expect(input.LaunchTemplateData.ImageId).toBe("ami-2")
+  })
+
+  it("invalidates the list and the versions query", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useCreateLaunchTemplateVersion(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      launchTemplateId: "lt-1",
+      imageId: "ami-2",
+      instanceType: "t2.small",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["ec2", "launchTemplates"],
+    })
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["ec2", "launchTemplates", "lt-1", "versions"],
+    })
+  })
+})
+
+describe("useModifyLaunchTemplate", () => {
+  it("sends ModifyLaunchTemplateCommand with the default version", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useModifyLaunchTemplate(), { wrapper })
+
+    result.current.mutate({ launchTemplateId: "lt-1", defaultVersion: "4" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      LaunchTemplateId: "lt-1",
+      DefaultVersion: "4",
+    })
+  })
+})
+
+describe("useDeleteLaunchTemplateVersions", () => {
+  it("sends DeleteLaunchTemplateVersionsCommand with the versions", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDeleteLaunchTemplateVersions(), {
+      wrapper,
+    })
+
+    result.current.mutate({ launchTemplateId: "lt-1", versions: ["2", "3"] })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      LaunchTemplateId: "lt-1",
+      Versions: ["2", "3"],
+    })
+  })
+})
+
+describe("useDeleteLaunchTemplate", () => {
+  it("sends DeleteLaunchTemplateCommand with the id", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDeleteLaunchTemplate(), { wrapper })
+
+    result.current.mutate("lt-1")
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      LaunchTemplateId: "lt-1",
+    })
   })
 })
 

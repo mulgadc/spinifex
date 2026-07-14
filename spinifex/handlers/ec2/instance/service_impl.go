@@ -872,7 +872,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 		volumeInfos, err := s.GenerateVolumes(ctx, input, instance)
 		if err != nil {
 			slog.ErrorContext(ctx, "LaunchRunInstances: GenerateVolumes failed", "instanceId", instance.ID, "err", err)
-			s.vmMgr.MarkFailed(instance, "volume_preparation_failed")
+			s.vmMgr.MarkFailed(ctx, instance, "volume_preparation_failed")
 			continue
 		}
 
@@ -893,7 +893,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 			att, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName)
 			if gpuErr != nil {
 				slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim failed", "instanceId", instance.ID, "err", gpuErr)
-				s.vmMgr.MarkFailed(instance, "gpu_claim_failed")
+				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
 				continue
 			}
 			instance.GPUAttachments = []gpu.GPUAttachment{*att}
@@ -909,7 +909,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 						"instanceId", instance.ID, "err", releaseErr)
 				}
 			}
-			s.vmMgr.MarkFailed(instance, "launch_failed")
+			s.vmMgr.MarkFailed(ctx, instance, "launch_failed")
 			continue
 		}
 

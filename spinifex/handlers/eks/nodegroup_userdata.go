@@ -55,19 +55,18 @@ func buildAgentUserData(in agentUserDataInput) string {
 	// K3S_URL is the published NLB endpoint (:443→:6443); the in-VPC CP ENI IP
 	// lives in the unpeered managed CP VPC and is unreachable from the worker VPC.
 	k3sURL := in.ServerURL
-	nodeLabel := "eks.amazonaws.com/nodegroup=" + in.NodegroupName
 
 	envBody := strings.Join([]string{
 		"SPINIFEX_K3S_ROLE=agent",
 	}, "\n")
 
 	// The ECR credential provider reads /etc/spinifex-eks/agent.env, so the EKS_*
-	// settings live alongside the K3s join vars here.
+	// settings live alongside the K3s join vars here. The nodegroup label rides a
+	// node-label config drop-in below, not K3S_NODE_LABEL (k3s has no such env).
 	agentBody := strings.Join([]string{
 		"K3S_URL=" + k3sURL,
 		"K3S_TOKEN=" + in.JoinToken,
 		"K3S_NODE_NAME=" + in.NodeName,
-		"K3S_NODE_LABEL=" + nodeLabel,
 		"EKS_GATEWAY_URL=" + in.GatewayURL,
 		"EKS_GATEWAY_CA=" + k3sGatewayCAPath,
 		"EKS_REGION=" + in.Region,
@@ -125,21 +124,30 @@ func buildAgentUserData(in agentUserDataInput) string {
 	)
 	credProviderConfig := strings.Join(credLines, "\n")
 
+	// The eks.amazonaws.com/nodegroup label must ride a k3s node-label config
+	// drop-in: k3s has no K3S_NODE_LABEL env, so agent.env cannot set it. The
+	// nodegroup readiness gate (waitWorkersReady) buckets Ready nodes by this
+	// label, so a worker without it never counts toward its nodegroup's ACTIVE
+	// transition. k3s concatenates node-label lists across config.yaml.d drop-ins.
+	nodegroupLabelDropin := strings.Join([]string{
+		"node-label:",
+		"  - \"eks.amazonaws.com/nodegroup=" + in.NodegroupName + "\"",
+	}, "\n")
+
 	files := []userDataFile{
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: agentEnvPath, Perms: "0600", Body: agentBody},
 		{Path: k3sGatewayCAPath, Perms: "0644", Body: strings.TrimRight(in.GatewayCACert, "\n")},
 		{Path: "/etc/rancher/k3s/registries.yaml", Perms: "0644", Body: registriesYAML},
 		{Path: "/etc/rancher/k3s/config.yaml.d/20-ecr-credential-provider.yaml", Perms: "0644", Body: credProviderDropin},
+		{Path: "/etc/rancher/k3s/config.yaml.d/15-nodegroup-label.yaml", Perms: "0644", Body: nodegroupLabelDropin},
 		{Path: "/etc/spinifex-eks/credential-provider-config.yaml", Perms: "0644", Body: credProviderConfig},
 	}
 
 	// GPU nodes advertise nvidia.com/gpu.present=true (so the device-plugin
 	// DaemonSet nodeSelector matches) and default to NoSchedule so ordinary
-	// workloads don't consume scarce GPU capacity. Both must come from k3s
-	// config keys — k3s has no K3S_NODE_LABEL env, so the label rides a
-	// node-label drop-in, not agent.env. Non-GPU nodegroups get no drop-in,
-	// keeping their user-data byte-identical.
+	// workloads don't consume scarce GPU capacity. Both ride a separate
+	// node-label/node-taint drop-in; k3s merges it over the nodegroup-label one.
 	if in.GPUEnabled {
 		gpuDropin := strings.Join([]string{
 			"node-label:",

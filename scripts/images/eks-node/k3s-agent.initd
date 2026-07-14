@@ -29,7 +29,7 @@ start_pre() {
     if [ -f /etc/spinifex-eks/agent.env ]; then
         # shellcheck disable=SC1091
         . /etc/spinifex-eks/agent.env
-        export K3S_URL K3S_TOKEN K3S_NODE_NAME K3S_NODE_LABEL
+        export K3S_URL K3S_TOKEN K3S_NODE_NAME
     fi
     if [ -z "${K3S_URL:-}" ] || [ -z "${K3S_TOKEN:-}" ]; then
         eerror "K3S_URL and K3S_TOKEN must be set in /etc/spinifex-eks/agent.env"

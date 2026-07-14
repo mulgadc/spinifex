@@ -131,7 +131,16 @@ func TestBuildAgentUserData_NonGPUHasNoLabelOrTaint(t *testing.T) {
 	if strings.Contains(got, "20-gpu.yaml") {
 		t.Errorf("non-GPU nodegroup user-data must not carry the GPU drop-in, got:\n%s", got)
 	}
-	if !strings.Contains(got, "K3S_NODE_LABEL=eks.amazonaws.com/nodegroup=ng-1") {
-		t.Errorf("expected plain nodegroup label, got:\n%s", got)
+	// The nodegroup label must ride a node-label config drop-in, not the no-op
+	// K3S_NODE_LABEL env — waitWorkersReady buckets Ready nodes by this label,
+	// so a worker missing it never counts toward its nodegroup's ACTIVE gate.
+	if !strings.Contains(got, "/etc/rancher/k3s/config.yaml.d/15-nodegroup-label.yaml") {
+		t.Errorf("expected nodegroup-label drop-in path, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"eks.amazonaws.com/nodegroup=ng-1"`) {
+		t.Errorf("expected nodegroup label in the node-label drop-in, got:\n%s", got)
+	}
+	if strings.Contains(got, "K3S_NODE_LABEL") {
+		t.Errorf("nodegroup label must not ride the no-op K3S_NODE_LABEL env, got:\n%s", got)
 	}
 }

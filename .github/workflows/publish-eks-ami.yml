@@ -1,18 +1,34 @@
 name: Publish EKS + ECS node AMIs
 
-# Builds the eks-node and ecs-agent system AMIs (libguestfs, on the runner) and
-# publishes each compressed qcow2 + .sha256 sidecar to the Cloudflare R2 bucket
-# that backs iso.mulgadc.com/system-ami/. Operators then install them on any
-# cluster with:
+# Builds the system AMIs (libguestfs, on the runner) and publishes each
+# compressed qcow2 + .sha256 sidecar to the Cloudflare R2 bucket that backs
+# iso.mulgadc.com/system-ami/. Four images ship:
+#   spinifex-eks-node       Alpine EKS K3s node (server|agent, role at boot)
+#   spinifex-ecs-node       Alpine ECS container instance
+#   spinifex-eks-node-gpu   Ubuntu EKS K3s GPU worker (NVIDIA driver + toolkit)
+#   spinifex-ecs-node-gpu   Ubuntu ECS GPU container instance
+# Operators then install them on any cluster with:
 #   spx admin images import --name spinifex-eks-node
 #   spx admin images import --name spinifex-ecs-node
+#   spx admin images import --name spinifex-eks-node-gpu
+#   spx admin images import --name spinifex-ecs-node-gpu
 #
 # Manual-only: publishing overwrites the mirror artifact, so it is a deliberate
-# action, not something every push should trigger.
+# action, not something every push should trigger. The `variant` input scopes
+# which images build — the Ubuntu GPU legs are 16G and much slower (NVIDIA
+# driver download + DKMS build), so publishing only the CPU AMIs stays cheap.
 
 on:
   workflow_dispatch:
     inputs:
+      variant:
+        description: "Which images to build"
+        type: choice
+        default: all
+        options:
+          - all
+          - cpu
+          - gpu
       dry_run:
         description: "Build + convert only; skip the R2 upload"
         type: boolean
@@ -26,9 +42,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Build + publish eks-node + ecs-agent AMIs
+  matrix:
+    name: Resolve image matrix
     runs-on: [ self-hosted, ci-single ]
+    outputs:
+      images: ${{ steps.gen.outputs.images }}
+    steps:
+      - name: Select images for variant
+        id: gen
+        env:
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          cpu='{"name":"spinifex-eks-node","manifest":"scripts/images/eks-node/manifest.conf"},{"name":"spinifex-ecs-node","manifest":"scripts/images/ecs-agent/manifest.conf"}'
+          gpu='{"name":"spinifex-eks-node-gpu","manifest":"scripts/images/eks-node-gpu/manifest.conf"},{"name":"spinifex-ecs-node-gpu","manifest":"scripts/images/ecs-agent-gpu/manifest.conf"}'
+          case "${VARIANT}" in
+            cpu) items="${cpu}" ;;
+            gpu) items="${gpu}" ;;
+            *)   items="${cpu},${gpu}" ;;
+          esac
+          echo "images={\"include\":[${items}]}" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build + publish ${{ matrix.name }}
+    needs: matrix
+    runs-on: [ self-hosted, ci-single ]
+    strategy:
+      fail-fast: false
+      # ci-single is one runner and each GPU build needs ~16G of scratch disk;
+      # serialise the legs so they never contend for /_temp or the mirror.
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.matrix.outputs.images) }}
 
     steps:
       - name: Checkout Spinifex
@@ -75,7 +119,7 @@ jobs:
             rm -rf /tmp/awscliv2.zip /tmp/aws-install
           fi
 
-      - name: Build + publish eks-node to R2
+      - name: Build + publish ${{ matrix.name }} to R2
         working-directory: spinifex
         env:
           # Map the repo's R2 secrets onto the names publish-system-image.sh reads.
@@ -84,34 +128,20 @@ jobs:
           R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT_URL }}
           R2_BUCKET: spinifex-iso
           DRY_RUN: ${{ inputs.dry_run }}
+          MANIFEST: ${{ matrix.manifest }}
+          # Ubuntu GPU images are 16G — a RAM-backed /tmp cannot hold the qcow2 +
+          # expanded raw, so point the build scratch at the runner's on-disk
+          # _temp. Harmless for the small Alpine legs too.
+          SYSTEM_IMAGE_BUILD_DIR: ${{ runner.temp }}/system-image-build
         run: |
           set -euo pipefail
           # libguestfs needs to read a host kernel; Ubuntu ships it mode 0600.
           # direct backend = no libvirt on the runner.
           export LIBGUESTFS_BACKEND=direct
           sudo chmod 0644 /boot/vmlinuz-* || true
+          mkdir -p "${SYSTEM_IMAGE_BUILD_DIR}"
           FLAGS=(--build)
           if [[ "${DRY_RUN}" == "true" ]]; then
             FLAGS+=(--dry-run)
           fi
-          ./scripts/publish-system-image.sh \
-            scripts/images/eks-node/manifest.conf "${FLAGS[@]}"
-
-      - name: Build + publish ecs-agent to R2
-        working-directory: spinifex
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT_URL }}
-          R2_BUCKET: spinifex-iso
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          set -euo pipefail
-          export LIBGUESTFS_BACKEND=direct
-          sudo chmod 0644 /boot/vmlinuz-* || true
-          FLAGS=(--build)
-          if [[ "${DRY_RUN}" == "true" ]]; then
-            FLAGS+=(--dry-run)
-          fi
-          ./scripts/publish-system-image.sh \
-            scripts/images/ecs-agent/manifest.conf "${FLAGS[@]}"
+          ./scripts/publish-system-image.sh "${MANIFEST}" "${FLAGS[@]}"

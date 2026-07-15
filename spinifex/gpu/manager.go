@@ -167,6 +167,7 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 		m.mu.Unlock()
 		return nil, nil, fmt.Errorf("enumerate IOMMU group %d: %w", entry.Device.IOMMUGroup, err)
 	}
+	members = filterBridgeMembers(members)
 
 	drivers := make(map[string]string, len(members))
 	var bound []string
@@ -471,6 +472,7 @@ func (m *Manager) ReclaimByAddress(addr, instanceID string) error {
 				"gpu", addr, "group", entry.Device.IOMMUGroup, "err", err)
 			members = []IOMMUGroupMember{{PCIAddress: addr}}
 		}
+		members = filterBridgeMembers(members)
 
 		// Use the stored pre-passthrough driver for the primary GPU so Release
 		// can rebind correctly. Companion devices are left unbound on release

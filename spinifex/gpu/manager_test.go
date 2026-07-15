@@ -66,6 +66,39 @@ func TestManagerClaim_Success(t *testing.T) {
 	}
 }
 
+// TestManagerClaim_SkipsBridgeGroupMember reproduces a host topology where a
+// GPU shares its IOMMU group with an upstream PCIe bridge (no ACS isolation
+// between them). vfio-pci refuses to bind bridge-class devices, so Claim must
+// skip the bridge entirely rather than fail the whole claim, and Release must
+// leave the bridge on its original driver afterward.
+func TestManagerClaim_SkipsBridgeGroupMember(t *testing.T) {
+	root, gpu := buildManagerSysfs(t)
+	// Upstream PCIe bridge in the same IOMMU group as the GPU (0x0604 = PCI-to-PCI bridge).
+	buildSysfsDevice(t, root, "0000:00:1c.0", "0x060400", "0x8086", "0x0db0", "pcieport", 7)
+	makeSysfsDriverDir(t, root, "pcieport")
+
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+
+	if _, _, err := m.Claim("i-001", ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	bridgeDriver, err := os.Readlink(filepath.Join(root, "bus/pci/devices/0000:00:1c.0/driver"))
+	if err != nil {
+		t.Fatalf("read bridge driver link: %v", err)
+	}
+	if filepath.Base(bridgeDriver) != "pcieport" {
+		t.Errorf("bridge driver = %q, want pcieport (must not be rebound to vfio-pci)", filepath.Base(bridgeDriver))
+	}
+
+	if err := m.Release("i-001"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if m.Available() != 1 {
+		t.Errorf("want Available=1 after release, got %d", m.Available())
+	}
+}
+
 func TestManagerClaim_NoGPUAvailable(t *testing.T) {
 	root, gpu := buildManagerSysfs(t)
 	m := newManagerForTest([]GPUDevice{gpu}, root)

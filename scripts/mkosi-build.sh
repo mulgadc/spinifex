@@ -71,11 +71,22 @@ DOCKER_ARGS=(
 )
 [[ -t 0 ]] && DOCKER_ARGS+=(--interactive --tty)
 
-# Persist mkosi's package cache across runs so a rebuild does not re-download
-# the whole target distribution every time.
+# Persist the package cache across runs so a rebuild does not re-download the
+# whole target distribution every time. Only the downloaded packages live here:
+# see the workspace note below for why the build area deliberately does not.
 CACHE_VOL="${BUILDER_TAG}-cache"
 docker volume create "${CACHE_VOL}" >/dev/null
 DOCKER_ARGS+=(--volume "${CACHE_VOL}:/home/builder/.cache")
+
+# The workspace must sit on the same mount as the output directory. mkosi
+# assembles the image in the workspace and moves the result to the output, and
+# a rename across mounts fails EXDEV — Docker's named volume and the output
+# bind mount are separate mounts even on one filesystem. mkosi then falls back
+# to copying, which needs the finished image to exist twice at once. That is
+# invisible on a small image and fatal on a real one: a ~4G GPU image needs ~8G
+# to land. Keeping both on one mount makes the move a rename again.
+WORKSPACE_DIR="${OUTPUT_DIR}/.mkosi-workspace"
+mkdir -p "${WORKSPACE_DIR}"
 
 if [[ "${WANT_SHELL}" -eq 1 ]]; then
     exec docker run "${DOCKER_ARGS[@]}" "${BUILDER_TAG}" bash
@@ -97,7 +108,7 @@ for arg in "${MKOSI_ARGS[@]+"${MKOSI_ARGS[@]}"}"; do
     esac
 done
 
-CMD=(mkosi --output-dir /work/output)
+CMD=(mkosi --output-dir /work/output --workspace-dir /work/output/.mkosi-workspace)
 [[ -n "${PROFILE}" ]] && CMD+=(--profile "${PROFILE}")
 CMD+=("${MKOSI_ARGS[@]+"${MKOSI_ARGS[@]}"}" "${VERB}")
 

@@ -157,7 +157,7 @@ type ConfigFile struct {
 func GenerateConfigFiles(configs []ConfigFile, configSettings ConfigSettings) error {
 	for _, cfg := range configs {
 		if err := GenerateConfigFile(cfg.Path, cfg.Template, configSettings); err != nil {
-			return fmt.Errorf("error creating %s: %v", cfg.Name, err)
+			return fmt.Errorf("error creating %s: %w", cfg.Name, err)
 		}
 		fmt.Printf("✅ Created: %s\n", cfg.Name)
 	}
@@ -530,7 +530,7 @@ func DefaultAccountName() string {
 	return "spinifex"
 }
 
-// GenerateNATSToken generates a secure random token for NATS
+// GenerateNATSToken generates a secure random token for NATS.
 func GenerateNATSToken() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {

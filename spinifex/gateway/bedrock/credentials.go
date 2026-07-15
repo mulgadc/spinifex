@@ -2,6 +2,7 @@ package gateway_bedrock
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -88,7 +89,7 @@ func (s *CredentialStore) Resolve(_ context.Context, accountID, vendor string) (
 				return "", false, fmt.Errorf("decrypt credential for %s/%s: %w", accountID, vendor, err)
 			}
 			return plaintext, true, nil
-		case err != nats.ErrKeyNotFound:
+		case !errors.Is(err, nats.ErrKeyNotFound):
 			return "", false, fmt.Errorf("kv get credential for %s/%s: %w", accountID, vendor, err)
 		}
 	}

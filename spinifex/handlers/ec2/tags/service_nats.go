@@ -11,12 +11,12 @@ import (
 
 var _ TagsService = (*NATSTagsService)(nil)
 
-// NATSTagsService handles tag operations via NATS messaging
+// NATSTagsService handles tag operations via NATS messaging.
 type NATSTagsService struct {
 	natsConn *nats.Conn
 }
 
-// NewNATSTagsService creates a new NATS-based tags service
+// NewNATSTagsService creates a new NATS-based tags service.
 func NewNATSTagsService(conn *nats.Conn) TagsService {
 	return &NATSTagsService{natsConn: conn}
 }

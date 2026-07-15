@@ -6,7 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
 
-// VPCService defines the interface for VPC, Subnet, ENI, and Security Group operations
+// VPCService defines the interface for VPC, Subnet, ENI, and Security Group operations.
 type VPCService interface {
 	CreateVpc(ctx context.Context, input *ec2.CreateVpcInput, accountID string) (*ec2.CreateVpcOutput, error)
 	DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInput, accountID string) (*ec2.DeleteVpcOutput, error)

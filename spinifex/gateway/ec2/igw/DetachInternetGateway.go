@@ -23,7 +23,7 @@ func ValidateDetachInternetGatewayInput(input *ec2.DetachInternetGatewayInput) e
 	return nil
 }
 
-// DetachInternetGateway handles the EC2 DetachInternetGateway API call
+// DetachInternetGateway handles the EC2 DetachInternetGateway API call.
 func DetachInternetGateway(ctx context.Context, input *ec2.DetachInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.DetachInternetGatewayOutput, error) {
 	var output ec2.DetachInternetGatewayOutput
 

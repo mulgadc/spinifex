@@ -182,12 +182,12 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("request error: %v", err)
+		return fmt.Errorf("request error: %w", err)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("http error: %v", err)
+		return fmt.Errorf("http error: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -196,7 +196,7 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 
 	f, err := os.Create(filename)
 	if err != nil {
-		return fmt.Errorf("file create error: %v", err)
+		return fmt.Errorf("file create error: %w", err)
 	}
 	defer f.Close()
 
@@ -215,7 +215,7 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 		_, err = io.Copy(f, reader)
 		_, _ = bar.Stop()
 		if err != nil {
-			return fmt.Errorf("copy error: %v", err)
+			return fmt.Errorf("copy error: %w", err)
 		}
 		return err
 	} else {
@@ -231,7 +231,7 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 		_ = spin.Stop()
 
 		if err != nil {
-			return fmt.Errorf("copy error: %v", err)
+			return fmt.Errorf("copy error: %w", err)
 		}
 	}
 

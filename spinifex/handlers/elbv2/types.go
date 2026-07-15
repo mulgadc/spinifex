@@ -6,38 +6,38 @@ import (
 )
 
 const (
-	// LoadBalancer types
+	// LoadBalancer types.
 	LoadBalancerTypeApplication = "application"
 	LoadBalancerTypeNetwork     = "network"
 
 	// maxLBSecurityGroups is the AWS cap on security groups per load balancer.
 	maxLBSecurityGroups = 5
 
-	// LoadBalancer schemes
+	// LoadBalancer schemes.
 	SchemeInternetFacing = "internet-facing"
 	SchemeInternal       = "internal"
 
-	// LoadBalancer states
+	// LoadBalancer states.
 	StateProvisioning = "provisioning"
 	StateActive       = "active"
 	StateFailed       = "failed"
 
-	// Target group target types (v1 supports instance and ip)
+	// Target group target types (v1 supports instance and ip).
 	TargetTypeInstance = "instance"
 	TargetTypeIP       = "ip"
 
-	// Target health states
+	// Target health states.
 	TargetHealthInitial   = "initial"
 	TargetHealthHealthy   = "healthy"
 	TargetHealthUnhealthy = "unhealthy"
 	TargetHealthDraining  = "draining"
 	TargetHealthUnused    = "unused"
 
-	// Listener protocols (ALB)
+	// Listener protocols (ALB).
 	ProtocolHTTP  = "HTTP"
 	ProtocolHTTPS = "HTTPS"
 
-	// Listener protocols (NLB)
+	// Listener protocols (NLB).
 	ProtocolTCP    = "TCP"
 	ProtocolUDP    = "UDP"
 	ProtocolTLS    = "TLS"
@@ -60,12 +60,12 @@ const (
 	// not specify an SslPolicy.
 	DefaultSslPolicy = "ELBSecurityPolicy-2016-08"
 
-	// Listener action types
+	// Listener action types.
 	ActionTypeForward       = "forward"
 	ActionTypeFixedResponse = "fixed-response"
 	ActionTypeRedirect      = "redirect"
 
-	// Rule condition fields
+	// Rule condition fields.
 	RuleFieldHostHeader        = "host-header"
 	RuleFieldPathPattern       = "path-pattern"
 	RuleFieldHTTPHeader        = "http-header"
@@ -85,7 +85,7 @@ const (
 	MaxConditionValueLen  = 128
 	MaxHTTPHeaderNameLen  = 40
 
-	// Default health check values (ALB)
+	// Default health check values (ALB).
 	DefaultHealthCheckInterval           = 30
 	DefaultHealthCheckTimeout            = 5
 	DefaultHealthyThreshold              = 5
@@ -96,7 +96,7 @@ const (
 	DefaultHealthCheckMatcher            = "200"
 	DefaultTargetDeregistrationDelaySecs = 300
 
-	// Default health check values (NLB)
+	// Default health check values (NLB).
 	DefaultNLBHealthCheckInterval = 30
 	DefaultNLBHealthCheckTimeout  = 10
 	DefaultNLBHealthyThreshold    = 3
@@ -104,7 +104,7 @@ const (
 	DefaultNLBHealthCheckProtocol = ProtocolTCP
 	DefaultNLBHealthCheckPort     = "traffic-port"
 
-	// IP address type
+	// IP address type.
 	IPAddressTypeIPv4 = "ipv4"
 )
 

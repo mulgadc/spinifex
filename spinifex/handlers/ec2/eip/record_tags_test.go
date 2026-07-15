@@ -55,7 +55,7 @@ func TestEIPRecordTagsMirror(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.Addresses, 1)
 	assert.Equal(t, "yes", eipTagVal(out.Addresses[0].Tags, "keep"))
-	assert.Equal(t, "", eipTagVal(out.Addresses[0].Tags, "drop"))
+	assert.Empty(t, eipTagVal(out.Addresses[0].Tags, "drop"))
 }
 
 func TestEIPRecordTagsMirror_UnownedNoError(t *testing.T) {

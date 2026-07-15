@@ -9,15 +9,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Ensure NATSEgressOnlyIGWService implements EgressOnlyIGWService
+// Ensure NATSEgressOnlyIGWService implements EgressOnlyIGWService.
 var _ EgressOnlyIGWService = (*NATSEgressOnlyIGWService)(nil)
 
-// NATSEgressOnlyIGWService handles Egress-only Internet Gateway operations via NATS messaging
+// NATSEgressOnlyIGWService handles Egress-only Internet Gateway operations via NATS messaging.
 type NATSEgressOnlyIGWService struct {
 	natsConn *nats.Conn
 }
 
-// NewNATSEgressOnlyIGWService creates a new NATS-based Egress-only Internet Gateway service
+// NewNATSEgressOnlyIGWService creates a new NATS-based Egress-only Internet Gateway service.
 func NewNATSEgressOnlyIGWService(conn *nats.Conn) EgressOnlyIGWService {
 	return &NATSEgressOnlyIGWService{natsConn: conn}
 }

@@ -20,7 +20,7 @@ func ValidateCreateNetworkInterfaceInput(input *ec2.CreateNetworkInterfaceInput)
 	return nil
 }
 
-// CreateNetworkInterface handles the EC2 CreateNetworkInterface API call
+// CreateNetworkInterface handles the EC2 CreateNetworkInterface API call.
 func CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.CreateNetworkInterfaceOutput, error) {
 	var output ec2.CreateNetworkInterfaceOutput
 

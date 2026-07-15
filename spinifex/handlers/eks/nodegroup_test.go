@@ -881,10 +881,10 @@ func TestUpdateNodegroupVersion_NotImplemented(t *testing.T) {
 // to a local launch when no scheduler is wired or no host has free capacity.
 func TestSelectWorkerHost_NoSchedulerOrCapacity(t *testing.T) {
 	s := &EKSServiceImpl{deps: EKSServiceDeps{}}
-	require.Equal(t, "", s.selectWorkerHost(context.Background(), "t3.medium", nil))
+	require.Empty(t, s.selectWorkerHost(context.Background(), "t3.medium", nil))
 
 	s = &EKSServiceImpl{deps: EKSServiceDeps{Scheduler: &fakeHostScheduler{}}}
-	require.Equal(t, "", s.selectWorkerHost(context.Background(), "t3.medium", nil))
+	require.Empty(t, s.selectWorkerHost(context.Background(), "t3.medium", nil))
 }
 
 // mapHostScheduler is a HostScheduler stub with an explicit instance->host map,

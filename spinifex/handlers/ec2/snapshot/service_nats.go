@@ -11,12 +11,12 @@ import (
 
 var _ SnapshotService = (*NATSSnapshotService)(nil)
 
-// NATSSnapshotService handles snapshot operations via NATS messaging
+// NATSSnapshotService handles snapshot operations via NATS messaging.
 type NATSSnapshotService struct {
 	natsConn *nats.Conn
 }
 
-// NewNATSSnapshotService creates a new NATS-based snapshot service
+// NewNATSSnapshotService creates a new NATS-based snapshot service.
 func NewNATSSnapshotService(conn *nats.Conn) SnapshotService {
 	return &NATSSnapshotService{natsConn: conn}
 }

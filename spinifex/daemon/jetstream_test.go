@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestJetStreamManager_WriteAndLoadState tests round-trip write and load of instance state
+// TestJetStreamManager_WriteAndLoadState tests round-trip write and load of instance state.
 func TestJetStreamManager_WriteAndLoadState(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -65,7 +65,7 @@ func TestJetStreamManager_WriteAndLoadState(t *testing.T) {
 	assert.Equal(t, "t3.small", loadedInstances["i-test-002"].InstanceType)
 }
 
-// TestJetStreamManager_LoadState_KeyNotFound tests that LoadState returns empty state when key doesn't exist
+// TestJetStreamManager_LoadState_KeyNotFound tests that LoadState returns empty state when key doesn't exist.
 func TestJetStreamManager_LoadState_KeyNotFound(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -86,7 +86,7 @@ func TestJetStreamManager_LoadState_KeyNotFound(t *testing.T) {
 	assert.Empty(t, instances, "Should return empty VMS map")
 }
 
-// TestJetStreamManager_BucketCreation tests that InitKVBucket creates the bucket when it doesn't exist
+// TestJetStreamManager_BucketCreation tests that InitKVBucket creates the bucket when it doesn't exist.
 func TestJetStreamManager_BucketCreation(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -105,7 +105,7 @@ func TestJetStreamManager_BucketCreation(t *testing.T) {
 	assert.NotNil(t, jsm.kv, "KV bucket should be initialized")
 }
 
-// TestJetStreamManager_BucketReconnection tests that InitKVBucket connects to existing bucket
+// TestJetStreamManager_BucketReconnection tests that InitKVBucket connects to existing bucket.
 func TestJetStreamManager_BucketReconnection(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -150,7 +150,7 @@ func TestJetStreamManager_BucketReconnection(t *testing.T) {
 	assert.Equal(t, vm.StateRunning, loadedInstances["i-persist"].Status)
 }
 
-// TestJetStreamManager_DeleteState tests deleting state from the KV store
+// TestJetStreamManager_DeleteState tests deleting state from the KV store.
 func TestJetStreamManager_DeleteState(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -190,7 +190,7 @@ func TestJetStreamManager_DeleteState(t *testing.T) {
 	assert.Empty(t, loadedInstances, "Should return empty state after deletion")
 }
 
-// TestJetStreamManager_DeleteState_NonExistent tests deleting state that doesn't exist
+// TestJetStreamManager_DeleteState_NonExistent tests deleting state that doesn't exist.
 func TestJetStreamManager_DeleteState_NonExistent(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -209,7 +209,7 @@ func TestJetStreamManager_DeleteState_NonExistent(t *testing.T) {
 	require.NoError(t, err, "Deleting non-existent state should not error")
 }
 
-// TestJetStreamManager_WriteState_UpdateExisting tests that writing state updates existing entry
+// TestJetStreamManager_WriteState_UpdateExisting tests that writing state updates existing entry.
 func TestJetStreamManager_WriteState_UpdateExisting(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -257,7 +257,7 @@ func TestJetStreamManager_WriteState_UpdateExisting(t *testing.T) {
 	assert.NotNil(t, loadedInstances["i-new"], "Should have new instance")
 }
 
-// TestJetStreamManager_MultipleNodes tests storing state for multiple nodes
+// TestJetStreamManager_MultipleNodes tests storing state for multiple nodes.
 func TestJetStreamManager_MultipleNodes(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -304,7 +304,7 @@ func TestJetStreamManager_MultipleNodes(t *testing.T) {
 	assert.False(t, exists, "Node-1 should not have node-2's instances")
 }
 
-// TestJetStreamManager_KVNotInitialized tests error handling when KV is not initialized
+// TestJetStreamManager_KVNotInitialized tests error handling when KV is not initialized.
 func TestJetStreamManager_KVNotInitialized(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -327,7 +327,7 @@ func TestJetStreamManager_KVNotInitialized(t *testing.T) {
 	assert.Error(t, err, "DeleteState should error when KV not initialized")
 }
 
-// TestJetStreamManager_UpdateReplicas tests updating replica count for the KV bucket
+// TestJetStreamManager_UpdateReplicas tests updating replica count for the KV bucket.
 func TestJetStreamManager_UpdateReplicas(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -358,7 +358,7 @@ func TestJetStreamManager_UpdateReplicas(t *testing.T) {
 	// This test verifies the basic functionality works.
 }
 
-// TestJetStreamManager_UpdateReplicas_NoInit tests UpdateReplicas when JS not initialized
+// TestJetStreamManager_UpdateReplicas_NoInit tests UpdateReplicas when JS not initialized.
 func TestJetStreamManager_UpdateReplicas_NoInit(t *testing.T) {
 	// Test with nil JetStream context
 	jsm := &JetStreamManager{
@@ -372,7 +372,7 @@ func TestJetStreamManager_UpdateReplicas_NoInit(t *testing.T) {
 
 // --- Stopped instance KV tests ---
 
-// TestJetStreamManager_WriteAndLoadStoppedInstance tests round-trip write and load of a stopped instance
+// TestJetStreamManager_WriteAndLoadStoppedInstance tests round-trip write and load of a stopped instance.
 func TestJetStreamManager_WriteAndLoadStoppedInstance(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
@@ -407,7 +407,7 @@ func TestJetStreamManager_WriteAndLoadStoppedInstance(t *testing.T) {
 	_ = jsm.DeleteStoppedInstance(testVM.ID)
 }
 
-// TestJetStreamManager_LoadStoppedInstance_NotFound tests that LoadStoppedInstance returns nil for missing key
+// TestJetStreamManager_LoadStoppedInstance_NotFound tests that LoadStoppedInstance returns nil for missing key.
 func TestJetStreamManager_LoadStoppedInstance_NotFound(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
@@ -423,7 +423,7 @@ func TestJetStreamManager_LoadStoppedInstance_NotFound(t *testing.T) {
 	assert.Nil(t, loaded)
 }
 
-// TestJetStreamManager_DeleteStoppedInstance tests deleting a stopped instance (including non-existent)
+// TestJetStreamManager_DeleteStoppedInstance tests deleting a stopped instance (including non-existent).
 func TestJetStreamManager_DeleteStoppedInstance(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
@@ -653,7 +653,7 @@ func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing
 	assert.Nil(t, stillGone, "the stopped record must stay deleted after the losing update")
 }
 
-// TestJetStreamManager_ListStoppedInstances tests listing multiple stopped instances
+// TestJetStreamManager_ListStoppedInstances tests listing multiple stopped instances.
 func TestJetStreamManager_ListStoppedInstances(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
@@ -695,7 +695,7 @@ func TestJetStreamManager_ListStoppedInstances(t *testing.T) {
 	}
 }
 
-// TestJetStreamManager_StoppedInstances_NoInterference tests that stopped instances don't interfere with per-node state
+// TestJetStreamManager_StoppedInstances_NoInterference tests that stopped instances don't interfere with per-node state.
 func TestJetStreamManager_StoppedInstances_NoInterference(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
@@ -735,7 +735,7 @@ func TestJetStreamManager_StoppedInstances_NoInterference(t *testing.T) {
 	_ = jsm.DeleteState("interference-test-node")
 }
 
-// TestJetStreamManager_StoppedInstance_KVNotInitialized tests error handling when KV is not initialized
+// TestJetStreamManager_StoppedInstance_KVNotInitialized tests error handling when KV is not initialized.
 func TestJetStreamManager_StoppedInstance_KVNotInitialized(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)

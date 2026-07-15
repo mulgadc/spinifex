@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DescribeInternetGateways handles the EC2 DescribeInternetGateways API call
+// DescribeInternetGateways handles the EC2 DescribeInternetGateways API call.
 func DescribeInternetGateways(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, natsConn *nats.Conn, accountID string) (ec2.DescribeInternetGatewaysOutput, error) {
 	var output ec2.DescribeInternetGatewaysOutput
 

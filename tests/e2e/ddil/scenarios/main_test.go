@@ -7,7 +7,7 @@ package scenarios
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -64,12 +64,12 @@ func setupCluster() (*harness.Cluster, harness.SSH, error) {
 // DDIL_DRY_RUN=1 skips cluster init and leaves only TestCoverageDrift active.
 func TestMain(m *testing.M) {
 	if dryRun() {
-		log.Printf("ddil: DDIL_DRY_RUN=1 — planned scenarios: %v (TestCoverageDrift will still execute)", scenarioLetters)
+		slog.Info("ddil: DDIL_DRY_RUN=1, TestCoverageDrift will still execute", "planned_scenarios", scenarioLetters)
 	}
 
 	c, s, err := setupCluster()
 	if err != nil {
-		log.Printf("ddil: cluster setup failed (continuing, scenarios will skip): %v", err)
+		slog.Warn("ddil: cluster setup failed, continuing and scenarios will skip", "error", err)
 	}
 
 	stop := installSignalHandler(c, s)
@@ -92,12 +92,12 @@ func installSignalHandler(c *harness.Cluster, s harness.SSH) func() {
 	go func() {
 		select {
 		case sig := <-ch:
-			log.Printf("ddil: received %s, cleaning up before exit", sig)
+			slog.Info("ddil: received signal, cleaning up before exit", "signal", sig)
 			if c != nil && s != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
 				if err := harness.ResetAllNodes(ctx, c, s); err != nil {
-					log.Printf("ddil: ResetAllNodes on signal: %v", err)
+					slog.Error("ddil: ResetAllNodes on signal failed", "error", err)
 				}
 				_ = s.Close()
 			}

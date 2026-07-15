@@ -28,7 +28,7 @@ var serviceName = "spinifex-ui"
 //go:embed all:frontend/dist
 var distFS embed.FS
 
-// Config holds the configuration for the spinifex-ui service
+// Config holds the configuration for the spinifex-ui service.
 type Config struct {
 	Port    int    `json:"port"`
 	Host    string `json:"host"`
@@ -36,14 +36,14 @@ type Config struct {
 	TLSKey  string `json:"tls_key"`
 }
 
-// Service represents the spinifex-ui service
+// Service represents the spinifex-ui service.
 type Service struct {
 	Config *Config
 	server *http.Server
 	mu     sync.Mutex
 }
 
-// New creates a new spinifex-ui service
+// New creates a new spinifex-ui service.
 func New(config any) (*Service, error) {
 	cfg, ok := config.(*Config)
 	if !ok {
@@ -83,7 +83,7 @@ func New(config any) (*Service, error) {
 	}, nil
 }
 
-// Start starts the spinifex-ui service
+// Start starts the spinifex-ui service.
 func (svc *Service) Start() (int, error) {
 	if err := utils.WritePidFile(serviceName, os.Getpid()); err != nil {
 		slog.Error("Failed to write pid file", "err", err)
@@ -97,17 +97,17 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-// Stop stops the spinifex-ui service
+// Stop stops the spinifex-ui service.
 func (svc *Service) Stop() error {
 	return utils.StopProcess(serviceName)
 }
 
-// Status returns the status of the spinifex-ui service
+// Status returns the status of the spinifex-ui service.
 func (svc *Service) Status() (string, error) {
 	return utils.ServiceStatus("", serviceName)
 }
 
-// Shutdown gracefully shuts down the spinifex-ui service
+// Shutdown gracefully shuts down the spinifex-ui service.
 func (svc *Service) Shutdown() error {
 	svc.mu.Lock()
 	server := svc.server
@@ -121,12 +121,12 @@ func (svc *Service) Shutdown() error {
 	return svc.Stop()
 }
 
-// Reload reloads the spinifex-ui service configuration
+// Reload reloads the spinifex-ui service configuration.
 func (svc *Service) Reload() error {
 	return nil
 }
 
-// launchService starts the HTTP server
+// launchService starts the HTTP server.
 func (svc *Service) launchService() error {
 	// Strip the "frontend/dist" prefix from embedded filesystem
 	contentFS, err := fs.Sub(distFS, "frontend/dist")

@@ -36,7 +36,7 @@ func ValidateCreateVolumeInput(input *ec2.CreateVolumeInput) error {
 	return nil
 }
 
-// CreateVolume handles the CreateVolume API call
+// CreateVolume handles the CreateVolume API call.
 func CreateVolume(ctx context.Context, input *ec2.CreateVolumeInput, natsConn *nats.Conn, accountID string) (ec2.Volume, error) {
 	var output ec2.Volume
 

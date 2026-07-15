@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestNew tests the service constructor
+// TestNew tests the service constructor.
 func TestNew(t *testing.T) {
 	cfg := &Config{
 		ConfigPath:        "/tmp/test-config.toml",
@@ -34,7 +34,7 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, "/tmp/encryption.key", svc.Config.EncryptionKeyFile)
 }
 
-// TestNewWithNilConfig tests that New handles nil config correctly
+// TestNewWithNilConfig tests that New handles nil config correctly.
 func TestNewWithNilConfig(t *testing.T) {
 	cfg := &Config{}
 	svc, err := New(cfg)
@@ -44,7 +44,7 @@ func TestNewWithNilConfig(t *testing.T) {
 	assert.NotNil(t, svc.Config)
 }
 
-// TestConfigDefaults tests Config struct default values
+// TestConfigDefaults tests Config struct default values.
 func TestConfigDefaults(t *testing.T) {
 	cfg := &Config{}
 
@@ -58,7 +58,7 @@ func TestConfigDefaults(t *testing.T) {
 	assert.Empty(t, cfg.EncryptionKeyFile)
 }
 
-// TestConfigWithDebug tests Config with debug enabled
+// TestConfigWithDebug tests Config with debug enabled.
 func TestConfigWithDebug(t *testing.T) {
 	cfg := &Config{
 		Debug:      true,
@@ -71,7 +71,7 @@ func TestConfigWithDebug(t *testing.T) {
 	assert.Equal(t, 8443, cfg.Port)
 }
 
-// TestConfigFullyPopulated tests a fully populated config
+// TestConfigFullyPopulated tests a fully populated config.
 func TestConfigFullyPopulated(t *testing.T) {
 	cfg := &Config{
 		ConfigPath:        "/etc/predastore/config.toml",
@@ -94,7 +94,7 @@ func TestConfigFullyPopulated(t *testing.T) {
 	assert.Equal(t, "/etc/spinifex/predastore/encryption.key", cfg.EncryptionKeyFile)
 }
 
-// TestServiceMethods tests the service interface methods
+// TestServiceMethods tests the service interface methods.
 func TestServiceMethods(t *testing.T) {
 	cfg := &Config{
 		ConfigPath: "/tmp/test-config.toml",
@@ -115,12 +115,12 @@ func TestServiceMethods(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestServiceNameConstant tests the serviceName constant
+// TestServiceNameConstant tests the serviceName constant.
 func TestServiceNameConstant(t *testing.T) {
 	assert.Equal(t, "predastore", serviceName)
 }
 
-// TestConfigPortRange tests port validation
+// TestConfigPortRange tests port validation.
 func TestConfigPortRange(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -143,14 +143,14 @@ func TestConfigPortRange(t *testing.T) {
 
 			assert.Equal(t, tc.expected, cfg.Port)
 			if tc.valid {
-				assert.True(t, cfg.Port > 0)
-				assert.True(t, cfg.Port <= 65535)
+				assert.Positive(t, cfg.Port)
+				assert.LessOrEqual(t, cfg.Port, 65535)
 			}
 		})
 	}
 }
 
-// TestConfigHostnames tests host configuration
+// TestConfigHostnames tests host configuration.
 func TestConfigHostnames(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -175,7 +175,7 @@ func TestConfigHostnames(t *testing.T) {
 	}
 }
 
-// TestConfigBasePath tests base path configuration
+// TestConfigBasePath tests base path configuration.
 func TestConfigBasePath(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -198,7 +198,7 @@ func TestConfigBasePath(t *testing.T) {
 	}
 }
 
-// TestConfigTLSPaths tests TLS certificate and key paths
+// TestConfigTLSPaths tests TLS certificate and key paths.
 func TestConfigTLSPaths(t *testing.T) {
 	cfg := &Config{
 		TlsCert: "/etc/ssl/certs/server.crt",
@@ -211,7 +211,7 @@ func TestConfigTLSPaths(t *testing.T) {
 	assert.Contains(t, cfg.TlsKey, ".key")
 }
 
-// TestConfigMinimal tests minimal required config
+// TestConfigMinimal tests minimal required config.
 func TestConfigMinimal(t *testing.T) {
 	cfg := &Config{
 		ConfigPath: "/tmp/config.toml",
@@ -225,12 +225,12 @@ func TestConfigMinimal(t *testing.T) {
 
 	// Minimal config should work
 	assert.NotEmpty(t, cfg.ConfigPath)
-	assert.True(t, cfg.Port > 0)
+	assert.Positive(t, cfg.Port)
 	assert.NotEmpty(t, cfg.Host)
 }
 
 // TestServiceStartWithoutConfig tests Start method behavior
-// Note: This will fail without proper config file, which is expected
+// Note: This will fail without proper config file, which is expected.
 func TestServiceStartWithoutConfig(t *testing.T) {
 	// Skip this test - it requires actual config file and will block/exit
 	// This is covered by integration tests instead
@@ -257,7 +257,7 @@ func TestServiceStartRejectsMissingEncryptionKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "encryption key file is required")
 }
 
-// TestConfigDebugFlag tests debug flag behavior
+// TestConfigDebugFlag tests debug flag behavior.
 func TestConfigDebugFlag(t *testing.T) {
 	// Debug enabled
 	cfg1 := &Config{
@@ -276,7 +276,7 @@ func TestConfigDebugFlag(t *testing.T) {
 	assert.False(t, cfg3.Debug)
 }
 
-// TestConfigValidation tests validation of required fields
+// TestConfigValidation tests validation of required fields.
 func TestConfigValidation(t *testing.T) {
 	// Empty config - fields should be empty/zero
 	cfg := &Config{}
@@ -291,11 +291,11 @@ func TestConfigValidation(t *testing.T) {
 		Host:       "0.0.0.0",
 	}
 	assert.NotEmpty(t, cfg2.ConfigPath)
-	assert.True(t, cfg2.Port > 0)
+	assert.Positive(t, cfg2.Port)
 	assert.NotEmpty(t, cfg2.Host)
 }
 
-// TestMultipleServiceInstances tests creating multiple service instances
+// TestMultipleServiceInstances tests creating multiple service instances.
 func TestMultipleServiceInstances(t *testing.T) {
 	cfg1 := &Config{
 		ConfigPath: "/tmp/config1.toml",
@@ -322,7 +322,7 @@ func TestMultipleServiceInstances(t *testing.T) {
 	assert.NotEqual(t, svc1.Config.ConfigPath, svc2.Config.ConfigPath)
 }
 
-// TestConfigPointerPreservation tests that config pointer is preserved
+// TestConfigPointerPreservation tests that config pointer is preserved.
 func TestConfigPointerPreservation(t *testing.T) {
 	cfg := &Config{
 		Port: 8443,

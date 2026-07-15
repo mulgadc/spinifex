@@ -61,7 +61,7 @@ func ConnectNATS(host, token, caCertPath string, opts ...RetryOption) (*nats.Con
 	if caCertPath != "" {
 		caCert, err := os.ReadFile(caCertPath)
 		if err != nil {
-			return nil, fmt.Errorf("%w %s: %v", ErrCACertRead, caCertPath, err)
+			return nil, fmt.Errorf("%w %s: %w", ErrCACertRead, caCertPath, err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caCert) {

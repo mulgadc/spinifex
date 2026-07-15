@@ -21,7 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// NoSuchKeyError represents a missing object error, compatible with AWS S3 errors
+// NoSuchKeyError represents a missing object error, compatible with AWS S3 errors.
 type NoSuchKeyError struct {
 	Key string
 }
@@ -77,14 +77,14 @@ func NewS3ObjectStoreFromConfig(host, region, accessKey, secretKey string) *S3Ob
 	return NewS3ObjectStore(s3.New(sess))
 }
 
-// S3ObjectStore wraps the AWS S3 client to implement ObjectStore
+// S3ObjectStore wraps the AWS S3 client to implement ObjectStore.
 type S3ObjectStore struct {
 	client *s3.S3
 }
 
 var _ ObjectStore = (*S3ObjectStore)(nil)
 
-// NewS3ObjectStore creates an ObjectStore backed by AWS S3 or S3-compatible storage
+// NewS3ObjectStore creates an ObjectStore backed by AWS S3 or S3-compatible storage.
 func NewS3ObjectStore(client *s3.S3) *S3ObjectStore {
 	return &S3ObjectStore{client: client}
 }
@@ -92,7 +92,8 @@ func NewS3ObjectStore(client *s3.S3) *S3ObjectStore {
 func (s *S3ObjectStore) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
 	out, err := s.client.GetObjectWithContext(ctx, input)
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok &&
+		var aerr awserr.Error
+		if errors.As(err, &aerr) &&
 			(aerr.Code() == s3.ErrCodeNoSuchKey || aerr.Code() == "NotFound") {
 			return nil, &NoSuchKeyError{Key: aws.StringValue(input.Key)}
 		}
@@ -104,7 +105,8 @@ func (s *S3ObjectStore) GetObject(ctx context.Context, input *s3.GetObjectInput)
 func (s *S3ObjectStore) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
 	out, err := s.client.HeadObjectWithContext(ctx, input)
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok &&
+		var aerr awserr.Error
+		if errors.As(err, &aerr) &&
 			(aerr.Code() == s3.ErrCodeNoSuchKey || aerr.Code() == "NotFound") {
 			return nil, &NoSuchKeyError{Key: aws.StringValue(input.Key)}
 		}
@@ -134,7 +136,8 @@ func (s *S3ObjectStore) EnsureBucket(ctx context.Context, bucket string) error {
 	}
 	_, err := s.client.CreateBucketWithContext(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
+		var aerr awserr.Error
+		if errors.As(err, &aerr) {
 			switch aerr.Code() {
 			case s3.ErrCodeBucketAlreadyOwnedByYou, s3.ErrCodeBucketAlreadyExists:
 				return nil
@@ -153,14 +156,14 @@ type MemoryObjectStore struct {
 
 var _ ObjectStore = (*MemoryObjectStore)(nil)
 
-// NewMemoryObjectStore creates an in-memory ObjectStore for testing
+// NewMemoryObjectStore creates an in-memory ObjectStore for testing.
 func NewMemoryObjectStore() *MemoryObjectStore {
 	return &MemoryObjectStore{
 		objects: make(map[string][]byte),
 	}
 }
 
-// makeKey creates a storage key from bucket and key
+// makeKey creates a storage key from bucket and key.
 func makeKey(bucket, key string) string {
 	return bucket + "/" + key
 }
@@ -281,14 +284,14 @@ func (m *MemoryObjectStore) ListObjectsV2(_ context.Context, input *s3.ListObjec
 // prefixed with the bucket name on write.
 func (m *MemoryObjectStore) EnsureBucket(_ context.Context, bucket string) error { return nil }
 
-// Clear removes all objects from the memory store (useful for test cleanup)
+// Clear removes all objects from the memory store (useful for test cleanup).
 func (m *MemoryObjectStore) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.objects = make(map[string][]byte)
 }
 
-// Count returns the number of objects in the memory store
+// Count returns the number of objects in the memory store.
 func (m *MemoryObjectStore) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -86,9 +86,6 @@ importers:
       tailwind-merge:
         specifier: ^3.6.0
         version: 3.6.0
-      tailwindcss:
-        specifier: ^4.3.2
-        version: 4.3.2
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -150,6 +147,9 @@ importers:
       oxlint-tsgolint:
         specifier: ^0.24.0
         version: 0.24.0
+      tailwindcss:
+        specifier: ^4.3.2
+        version: 4.3.2
       typescript:
         specifier: 7.0.2
         version: 7.0.2

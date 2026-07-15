@@ -27,17 +27,17 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// Ensure KeyServiceImpl implements KeyService
+// Ensure KeyServiceImpl implements KeyService.
 var _ KeyService = (*KeyServiceImpl)(nil)
 
-// KeyServiceImpl handles key pair operations with ssh-keygen and S3 storage
+// KeyServiceImpl handles key pair operations with ssh-keygen and S3 storage.
 type KeyServiceImpl struct {
 	config     *config.Config
 	store      objectstore.ObjectStore
 	bucketName string
 }
 
-// NewKeyServiceImpl creates a new daemon-side key service
+// NewKeyServiceImpl creates a new daemon-side key service.
 func NewKeyServiceImpl(cfg *config.Config) *KeyServiceImpl {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
@@ -53,7 +53,7 @@ func NewKeyServiceImpl(cfg *config.Config) *KeyServiceImpl {
 	}
 }
 
-// NewKeyServiceImplWithStore creates a key service with a custom object store (for testing)
+// NewKeyServiceImplWithStore creates a key service with a custom object store (for testing).
 func NewKeyServiceImplWithStore(store objectstore.ObjectStore, bucketName string) *KeyServiceImpl {
 	return &KeyServiceImpl{
 		store:      store,
@@ -61,7 +61,7 @@ func NewKeyServiceImplWithStore(store objectstore.ObjectStore, bucketName string
 	}
 }
 
-// CreateKeyPair generates a new SSH key pair using ssh-keygen
+// CreateKeyPair generates a new SSH key pair using ssh-keygen.
 func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKeyPairInput, accountID string) (*ec2.CreateKeyPairOutput, error) {
 	if input == nil || input.KeyName == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -200,7 +200,7 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 
 // calculateFingerprint computes the SSH key fingerprint
 // - For RSA: SHA-1 hash of public key (MD5 for older format)
-// - For ED25519: SHA-256 hash of public key
+// - For ED25519: SHA-256 hash of public key.
 func (s *KeyServiceImpl) calculateFingerprint(publicKeyData []byte, keyType string) (string, error) {
 	// Parse the public key to extract the key data
 	// Format: "ssh-ed25519 AAAAC3Nza... comment"
@@ -227,7 +227,7 @@ func (s *KeyServiceImpl) calculateFingerprint(publicKeyData []byte, keyType stri
 	}
 }
 
-// formatFingerprint formats the hash as a colon-separated hex string
+// formatFingerprint formats the hash as a colon-separated hex string.
 func formatFingerprint(hash []byte, algorithm string) string {
 	if algorithm == "MD5" {
 		// MD5 format: aa:bb:cc:dd:...
@@ -238,7 +238,7 @@ func formatFingerprint(hash []byte, algorithm string) string {
 	}
 }
 
-// storeKeyPairMetadata stores key pair metadata (without private key) to S3 for keyPairId lookups
+// storeKeyPairMetadata stores key pair metadata (without private key) to S3 for keyPairId lookups.
 func (s *KeyServiceImpl) storeKeyPairMetadata(ctx context.Context, accountID, keyPairID string, metadata *ec2.CreateKeyPairOutput) error {
 	// Store metadata with keyPairId as filename for efficient lookup when keyPairId is provided
 	metadataPath := fmt.Sprintf("keys/%s/%s.json", accountID, keyPairID)
@@ -262,7 +262,7 @@ func (s *KeyServiceImpl) storeKeyPairMetadata(ctx context.Context, accountID, ke
 	return nil
 }
 
-// getKeyNameFromKeyPairId retrieves the key name by directly reading the metadata file for a given keyPairId
+// getKeyNameFromKeyPairId retrieves the key name by directly reading the metadata file for a given keyPairId.
 func (s *KeyServiceImpl) getKeyNameFromKeyPairId(ctx context.Context, accountID, keyPairID string) (string, error) {
 	metadataPath := fmt.Sprintf("keys/%s/%s.json", accountID, keyPairID)
 
@@ -301,7 +301,7 @@ func (s *KeyServiceImpl) getKeyNameFromKeyPairId(ctx context.Context, accountID,
 	return *metadata.KeyName, nil
 }
 
-// findKeyPairIdFromKeyName finds the keyPairId by searching metadata files for a given keyName
+// findKeyPairIdFromKeyName finds the keyPairId by searching metadata files for a given keyName.
 func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID, keyName string) (string, error) {
 	prefix := fmt.Sprintf("keys/%s/", accountID)
 
@@ -404,7 +404,7 @@ func (s *KeyServiceImpl) GetPublicKeyMaterial(accountID, keyName string) (string
 	return material, nil
 }
 
-// DeleteKeyPair removes a key pair (both public key and metadata from S3)
+// DeleteKeyPair removes a key pair (both public key and metadata from S3).
 func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKeyPairInput, accountID string) (*ec2.DeleteKeyPairOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -678,7 +678,7 @@ func keyPairMatchesFilters(kp *ec2.KeyPairInfo, filters map[string][]string) boo
 	return filterutil.MatchesTags(filters, tags)
 }
 
-// ImportKeyPair imports an existing public key
+// ImportKeyPair imports an existing public key.
 func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKeyPairInput, accountID string) (*ec2.ImportKeyPairOutput, error) {
 	if input == nil || input.KeyName == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

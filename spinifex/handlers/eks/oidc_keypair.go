@@ -169,8 +169,20 @@ func marshalJWKS(pub *ecdsa.PublicKey) ([]byte, error) {
 	kidHash := sha256.Sum256(pubDER)
 	kid := base64.RawURLEncoding.EncodeToString(kidHash[:])
 
-	xb := padCoord(pub.X.Bytes())
-	yb := padCoord(pub.Y.Bytes())
+	// The document below hardcodes P-256, and the point is sliced at P-256 widths.
+	if pub.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("eks: unexpected curve %s (want P-256)", pub.Curve.Params().Name)
+	}
+
+	// SEC1 uncompressed point: 0x04 || X || Y, both coordinates fixed-width.
+	// That is exactly the left-padding RFC 7518 requires of the JWK x/y members,
+	// which big.Int.Bytes() would strip from a coordinate with a leading zero.
+	point, err := pub.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("encode public key point: %w", err)
+	}
+	xb := point[1 : 1+p256CoordLen]
+	yb := point[1+p256CoordLen:]
 
 	doc := oidcJWKS{Keys: []oidcJWK{{
 		Kty: "EC",
@@ -186,13 +198,4 @@ func marshalJWKS(pub *ecdsa.PublicKey) ([]byte, error) {
 		return nil, fmt.Errorf("marshal JWKS: %w", err)
 	}
 	return out, nil
-}
-
-func padCoord(b []byte) []byte {
-	if len(b) >= p256CoordLen {
-		return b
-	}
-	out := make([]byte, p256CoordLen)
-	copy(out[p256CoordLen-len(b):], b)
-	return out
 }

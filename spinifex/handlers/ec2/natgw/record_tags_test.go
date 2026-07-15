@@ -53,7 +53,7 @@ func TestNatGatewayRecordTagsMirror(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.NatGateways, 1)
 	assert.Equal(t, "yes", natgwTagVal(out.NatGateways[0].Tags, "keep"))
-	assert.Equal(t, "", natgwTagVal(out.NatGateways[0].Tags, "drop"))
+	assert.Empty(t, natgwTagVal(out.NatGateways[0].Tags, "drop"))
 }
 
 func TestNatGatewayRecordTagsMirror_UnownedNoError(t *testing.T) {

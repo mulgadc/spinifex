@@ -84,7 +84,7 @@ type BootstrapConfig struct {
 	SubnetCidr string `mapstructure:"subnet_cidr"`
 }
 
-// Config holds all configuration for the application
+// Config holds all configuration for the application.
 type Config struct {
 	// Node config
 	Node string `json:"Node" mapstructure:"node"`
@@ -186,7 +186,7 @@ type GPUModelOverride struct {
 	MIGProfile string `json:"MIGProfile" mapstructure:"mig_profile"`
 }
 
-// DaemonConfig holds the daemon configuration
+// DaemonConfig holds the daemon configuration.
 type DaemonConfig struct {
 	Host              string             `json:"Host" mapstructure:"host"`
 	TLSKey            string             `json:"TLSKey" mapstructure:"tlskey"`
@@ -199,7 +199,7 @@ type DaemonConfig struct {
 	MIGProfile string `json:"MIGProfile" mapstructure:"mig_profile"`
 }
 
-// NATSConfig holds the NATS configuration
+// NATSConfig holds the NATS configuration.
 type NATSConfig struct {
 	Host   string  `json:"Host" mapstructure:"host"`
 	CACert string  `json:"CACert" mapstructure:"cacert"`
@@ -207,12 +207,12 @@ type NATSConfig struct {
 	Sub    NATSSub `json:"Sub" mapstructure:"sub"`
 }
 
-// NATSACL holds the NATS ACL configuration
+// NATSACL holds the NATS ACL configuration.
 type NATSACL struct {
 	Token string `json:"Token" mapstructure:"token"`
 }
 
-// NATSSub holds the NATS subscription configuration
+// NATSSub holds the NATS subscription configuration.
 type NATSSub struct {
 	Subject string `json:"Subject" mapstructure:"subject"`
 }
@@ -254,7 +254,7 @@ func (c Config) GetServices() []string {
 	return c.Services
 }
 
-// LoadConfig loads the configuration from file and environment variables
+// LoadConfig loads the configuration from file and environment variables.
 func LoadConfig(configPath string) (*ClusterConfig, error) {
 	// Set environment variable prefix
 	viper.SetEnvPrefix("SPINIFEX")

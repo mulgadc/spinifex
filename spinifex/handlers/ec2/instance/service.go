@@ -9,7 +9,7 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 )
 
-// InstanceService defines the interface for EC2 instance operations business logic
+// InstanceService defines the interface for EC2 instance operations business logic.
 type InstanceService interface {
 	RunInstances(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
 	DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)

@@ -16,7 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateAttachVolumeInput validates the input parameters for AttachVolume
+// ValidateAttachVolumeInput validates the input parameters for AttachVolume.
 func ValidateAttachVolumeInput(input *ec2.AttachVolumeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -33,7 +33,7 @@ func ValidateAttachVolumeInput(input *ec2.AttachVolumeInput) error {
 	return nil
 }
 
-// AttachVolume sends an attach-volume command to the daemon owning the instance
+// AttachVolume sends an attach-volume command to the daemon owning the instance.
 func AttachVolume(ctx context.Context, input *ec2.AttachVolumeInput, natsConn *nats.Conn, accountID string) (ec2.VolumeAttachment, error) {
 	var output ec2.VolumeAttachment
 

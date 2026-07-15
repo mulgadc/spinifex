@@ -49,7 +49,6 @@ func TestEIP_Allocate(t *testing.T) {
 	require.NotNil(t, out)
 
 	assert.NotEmpty(t, *out.AllocationId)
-	assert.True(t, len(*out.AllocationId) > 0)
 	assert.NotEmpty(t, *out.PublicIp)
 	assert.Equal(t, "vpc", *out.Domain)
 	// Gateway takes .10, so first allocable is .11

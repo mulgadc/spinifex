@@ -203,7 +203,7 @@ var predastoreStatusCmd = &cobra.Command{
 	},
 }
 
-// Repeat for viperblock
+// Repeat for viperblock.
 var viperblockStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the viperblock service",
@@ -367,7 +367,7 @@ var viperblockStatusCmd = &cobra.Command{
 	},
 }
 
-// Repeat for nats
+// Repeat for nats.
 var natsStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the nats service",
@@ -436,7 +436,7 @@ var natsStatusCmd = &cobra.Command{
 	},
 }
 
-// Repeat for spinifex
+// Repeat for spinifex.
 var spinifexStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the spinifex service",

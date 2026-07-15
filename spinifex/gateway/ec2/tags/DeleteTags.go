@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDeleteTagsInput validates the input parameters for DeleteTags
+// ValidateDeleteTagsInput validates the input parameters for DeleteTags.
 func ValidateDeleteTagsInput(input *ec2.DeleteTagsInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -23,7 +23,7 @@ func ValidateDeleteTagsInput(input *ec2.DeleteTagsInput) error {
 	return nil
 }
 
-// DeleteTags handles the EC2 DeleteTags API call
+// DeleteTags handles the EC2 DeleteTags API call.
 func DeleteTags(ctx context.Context, input *ec2.DeleteTagsInput, natsConn *nats.Conn, accountID string) (ec2.DeleteTagsOutput, error) {
 	var output ec2.DeleteTagsOutput
 

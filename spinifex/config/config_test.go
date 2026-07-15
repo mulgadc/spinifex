@@ -313,7 +313,7 @@ func TestNodeBaseDir_HappyPath(t *testing.T) {
 
 func TestNodeBaseDir_NilConfig(t *testing.T) {
 	var cc *ClusterConfig
-	assert.Equal(t, "", cc.NodeBaseDir())
+	assert.Empty(t, cc.NodeBaseDir())
 }
 
 func TestNodeBaseDir_EmptyNode(t *testing.T) {
@@ -323,7 +323,7 @@ func TestNodeBaseDir_EmptyNode(t *testing.T) {
 			"node1": {BaseDir: "/data/node1"},
 		},
 	}
-	assert.Equal(t, "", cc.NodeBaseDir())
+	assert.Empty(t, cc.NodeBaseDir())
 }
 
 func TestNodeBaseDir_NodeNotInMap(t *testing.T) {
@@ -333,7 +333,7 @@ func TestNodeBaseDir_NodeNotInMap(t *testing.T) {
 			"node1": {BaseDir: "/data/node1"},
 		},
 	}
-	assert.Equal(t, "", cc.NodeBaseDir())
+	assert.Empty(t, cc.NodeBaseDir())
 }
 
 func TestNodeBaseDir_EmptyBaseDir(t *testing.T) {
@@ -343,7 +343,7 @@ func TestNodeBaseDir_EmptyBaseDir(t *testing.T) {
 			"node1": {BaseDir: ""},
 		},
 	}
-	assert.Equal(t, "", cc.NodeBaseDir())
+	assert.Empty(t, cc.NodeBaseDir())
 }
 
 // Tests for NetworkConfig (external pools)

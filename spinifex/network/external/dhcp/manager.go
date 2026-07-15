@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"sync"
 	"time"
@@ -704,5 +704,5 @@ func jitter(span time.Duration) time.Duration {
 	if span <= 0 {
 		return 0
 	}
-	return time.Duration(rand.Int63n(int64(span*2))) - span //nolint:gosec // jitter, not cryptographic
+	return time.Duration(rand.Int64N(int64(span*2))) - span //nolint:gosec // jitter, not cryptographic
 }

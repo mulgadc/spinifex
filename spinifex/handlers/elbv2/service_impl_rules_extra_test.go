@@ -2,7 +2,6 @@ package handlers_elbv2
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -267,7 +266,7 @@ func TestValidateConditions_QueryString(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out[0].QueryStringKVs, 2)
 	assert.Equal(t, "k", out[0].QueryStringKVs[0].Key)
-	assert.Equal(t, "", out[0].QueryStringKVs[1].Key)
+	assert.Empty(t, out[0].QueryStringKVs[1].Key)
 }
 
 func TestValidateConditions_SourceIP(t *testing.T) {
@@ -370,7 +369,7 @@ func TestHAProxyRender_AllConditionFields(t *testing.T) {
 		"use_backend bk_q if",
 		"use_backend bk_ip if",
 	} {
-		assert.Truef(t, strings.Contains(cfg, want), "expected %q in config; got:\n%s", want, cfg)
+		assert.Containsf(t, cfg, want, "expected %q in config; got:\n%s", want, cfg)
 	}
 }
 

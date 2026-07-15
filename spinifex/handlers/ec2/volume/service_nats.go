@@ -11,12 +11,12 @@ import (
 
 var _ VolumeService = (*NATSVolumeService)(nil)
 
-// NATSVolumeService handles volume operations via NATS messaging
+// NATSVolumeService handles volume operations via NATS messaging.
 type NATSVolumeService struct {
 	natsConn *nats.Conn
 }
 
-// NewNATSVolumeService creates a new NATS-based volume service
+// NewNATSVolumeService creates a new NATS-based volume service.
 func NewNATSVolumeService(conn *nats.Conn) VolumeService {
 	return &NATSVolumeService{natsConn: conn}
 }

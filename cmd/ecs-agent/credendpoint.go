@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -143,7 +144,7 @@ func (c *credEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	creds, roleARN, err := c.fetch(r.Context(), credID)
 	if err != nil {
-		if err == errUnknownCredID {
+		if errors.Is(err, errUnknownCredID) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}

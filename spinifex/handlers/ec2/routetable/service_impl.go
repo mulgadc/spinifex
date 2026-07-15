@@ -22,10 +22,10 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Ensure RouteTableServiceImpl implements RouteTableService
+// Ensure RouteTableServiceImpl implements RouteTableService.
 var _ RouteTableService = (*RouteTableServiceImpl)(nil)
 
-// RouteTableServiceImpl implements Route Table operations with NATS JetStream persistence
+// RouteTableServiceImpl implements Route Table operations with NATS JetStream persistence.
 type RouteTableServiceImpl struct {
 	config   *config.Config
 	rtbKV    nats.KeyValue
@@ -36,7 +36,7 @@ type RouteTableServiceImpl struct {
 	natsConn *nats.Conn
 }
 
-// NewRouteTableServiceImplWithNATS creates a Route Table service with NATS JetStream for persistence
+// NewRouteTableServiceImplWithNATS creates a Route Table service with NATS JetStream for persistence.
 func NewRouteTableServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*RouteTableServiceImpl, error) {
 	js, err := natsConn.JetStream()
 	if err != nil {
@@ -84,7 +84,7 @@ func NewRouteTableServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (
 	}, nil
 }
 
-// getRouteTable retrieves a route table record from KV
+// getRouteTable retrieves a route table record from KV.
 func (s *RouteTableServiceImpl) getRouteTable(ctx context.Context, accountID, rtbID string) (*RouteTableRecord, error) {
 	entry, err := s.rtbKV.Get(utils.AccountKey(accountID, rtbID))
 	if err != nil {
@@ -102,7 +102,7 @@ func (s *RouteTableServiceImpl) getRouteTable(ctx context.Context, accountID, rt
 	return &record, nil
 }
 
-// putRouteTable stores a route table record to KV
+// putRouteTable stores a route table record to KV.
 func (s *RouteTableServiceImpl) putRouteTable(ctx context.Context, accountID string, record *RouteTableRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -170,7 +170,7 @@ func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, account
 	return errors.New(awserrors.ErrorServerInternal)
 }
 
-// getVPCCidr looks up a VPC's CIDR block from the VPC KV bucket
+// getVPCCidr looks up a VPC's CIDR block from the VPC KV bucket.
 func (s *RouteTableServiceImpl) getVPCCidr(ctx context.Context, accountID, vpcID string) (string, error) {
 	entry, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcID))
 	if err != nil {
@@ -447,7 +447,7 @@ func (s *RouteTableServiceImpl) publishSubnetEgressGateDecisionForRT(ctx context
 	}
 }
 
-// allRouteTablesForVPC returns all route tables belonging to a VPC
+// allRouteTablesForVPC returns all route tables belonging to a VPC.
 func (s *RouteTableServiceImpl) allRouteTablesForVPC(ctx context.Context, accountID, vpcID string) ([]RouteTableRecord, error) {
 	prefix := accountID + "."
 	keys, err := s.rtbKV.Keys()
@@ -524,7 +524,7 @@ func (s *RouteTableServiceImpl) CreateRouteTableForVPC(vpcID, vpcCidr, accountID
 	return &record, nil
 }
 
-// CreateRouteTable creates a new custom (non-main) route table for a VPC
+// CreateRouteTable creates a new custom (non-main) route table for a VPC.
 func (s *RouteTableServiceImpl) CreateRouteTable(ctx context.Context, input *ec2.CreateRouteTableInput, accountID string) (*ec2.CreateRouteTableOutput, error) {
 	if input.VpcId == nil || *input.VpcId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -556,7 +556,7 @@ func (s *RouteTableServiceImpl) CreateRouteTable(ctx context.Context, input *ec2
 	}, nil
 }
 
-// DeleteRouteTable deletes a route table (must not be main, must have no subnet associations)
+// DeleteRouteTable deletes a route table (must not be main, must have no subnet associations).
 func (s *RouteTableServiceImpl) DeleteRouteTable(ctx context.Context, input *ec2.DeleteRouteTableInput, accountID string) (*ec2.DeleteRouteTableOutput, error) {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -603,7 +603,7 @@ var describeRouteTablesValidFilters = map[string]bool{
 	"owner-id":                               true,
 }
 
-// DescribeRouteTables lists route tables, optionally filtered
+// DescribeRouteTables lists route tables, optionally filtered.
 func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *ec2.DescribeRouteTablesInput, accountID string) (*ec2.DescribeRouteTablesOutput, error) {
 	rtbIDs := make(map[string]bool)
 	for _, id := range input.RouteTableIds {
@@ -671,7 +671,7 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 	}, nil
 }
 
-// CreateRoute adds a route to a route table
+// CreateRoute adds a route to a route table.
 func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.CreateRouteInput, accountID string) (*ec2.CreateRouteOutput, error) {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -777,7 +777,7 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 	}, nil
 }
 
-// DeleteRoute removes a route from a route table (cannot delete local route)
+// DeleteRoute removes a route from a route table (cannot delete local route).
 func (s *RouteTableServiceImpl) DeleteRoute(ctx context.Context, input *ec2.DeleteRouteInput, accountID string) (*ec2.DeleteRouteOutput, error) {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -838,7 +838,7 @@ func (s *RouteTableServiceImpl) DeleteRoute(ctx context.Context, input *ec2.Dele
 	return &ec2.DeleteRouteOutput{}, nil
 }
 
-// ReplaceRoute atomically replaces the target of an existing route
+// ReplaceRoute atomically replaces the target of an existing route.
 func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.ReplaceRouteInput, accountID string) (*ec2.ReplaceRouteOutput, error) {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -903,7 +903,7 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 	return &ec2.ReplaceRouteOutput{}, nil
 }
 
-// AssociateRouteTable associates a subnet with a route table
+// AssociateRouteTable associates a subnet with a route table.
 func (s *RouteTableServiceImpl) AssociateRouteTable(ctx context.Context, input *ec2.AssociateRouteTableInput, accountID string) (*ec2.AssociateRouteTableOutput, error) {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -995,7 +995,7 @@ func (s *RouteTableServiceImpl) AssociateRouteTable(ctx context.Context, input *
 	}, nil
 }
 
-// DisassociateRouteTable removes a subnet association (cannot disassociate main)
+// DisassociateRouteTable removes a subnet association (cannot disassociate main).
 func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, input *ec2.DisassociateRouteTableInput, accountID string) (*ec2.DisassociateRouteTableOutput, error) {
 	if input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1076,7 +1076,7 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, inpu
 	return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
 }
 
-// ReplaceRouteTableAssociation atomically moves a subnet from one route table to another
+// ReplaceRouteTableAssociation atomically moves a subnet from one route table to another.
 func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context, input *ec2.ReplaceRouteTableAssociationInput, accountID string) (*ec2.ReplaceRouteTableAssociationOutput, error) {
 	if input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1525,7 +1525,7 @@ func (s *RouteTableServiceImpl) publishIGWRouteEventForSubnet(ctx context.Contex
 	slog.InfoContext(ctx, "IGW route event published", "topic", topic, "subnetId", subnetID, "destinationCidr", destCidr, "igwId", igwID)
 }
 
-// recordToEC2 converts an internal record to an AWS SDK RouteTable struct
+// recordToEC2 converts an internal record to an AWS SDK RouteTable struct.
 func recordToEC2(record *RouteTableRecord) *ec2.RouteTable {
 	rtb := &ec2.RouteTable{
 		RouteTableId: aws.String(record.RouteTableId),

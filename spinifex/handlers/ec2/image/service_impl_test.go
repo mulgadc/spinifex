@@ -25,14 +25,14 @@ import (
 const testBucket = "test-bucket"
 const testAccountID = "000000000001"
 
-// setupTestImageService creates an image service with in-memory storage for testing
+// setupTestImageService creates an image service with in-memory storage for testing.
 func setupTestImageService(t *testing.T) (*ImageServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := NewImageServiceImplWithStore(store, testBucket)
 	return svc, store
 }
 
-// createTestVolumeConfig creates a test volume config in the mock store
+// createTestVolumeConfig creates a test volume config in the mock store.
 func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
 	volumeState := viperblock.VBState{
 		VolumeConfig: viperblock.VolumeConfig{
@@ -53,7 +53,7 @@ func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, 
 	require.NoError(t, err)
 }
 
-// createTestAMIConfig creates a test AMI config in the mock store
+// createTestAMIConfig creates a test AMI config in the mock store.
 func createTestAMIConfig(t *testing.T, store *objectstore.MemoryObjectStore, imageID string) {
 	amiState := viperblock.VBState{
 		VolumeConfig: viperblock.VolumeConfig{
@@ -110,7 +110,7 @@ func createTestAMIConfigWithName(t *testing.T, store *objectstore.MemoryObjectSt
 	require.NoError(t, err)
 }
 
-// createTestAMIConfigWithOwner creates a test AMI config with a specified name and owner
+// createTestAMIConfigWithOwner creates a test AMI config with a specified name and owner.
 func createTestAMIConfigWithOwner(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner string) {
 	amiState := viperblock.VBState{
 		VolumeConfig: viperblock.VolumeConfig{
@@ -244,7 +244,7 @@ func TestDescribeImages_BootModeProjection(t *testing.T) {
 	require.Contains(t, byID, "ami-uefi001")
 	require.Contains(t, byID, "ami-legacy001")
 	assert.Equal(t, "uefi", aws.StringValue(byID["ami-uefi001"].BootMode))
-	assert.Equal(t, "", aws.StringValue(byID["ami-legacy001"].BootMode),
+	assert.Empty(t, aws.StringValue(byID["ami-legacy001"].BootMode),
 		"legacy AMIs (empty BootMode) must pass through as empty, not be backfilled")
 }
 
@@ -2163,7 +2163,7 @@ func TestModifyImageAttribute_DescriptionEmptyValueClears(t *testing.T) {
 
 	meta, err := svc.GetAMIConfig(context.Background(), "ami-modclr01")
 	require.NoError(t, err)
-	assert.Equal(t, "", meta.Description)
+	assert.Empty(t, meta.Description)
 }
 
 func TestModifyImageAttribute_CrossAccount(t *testing.T) {
@@ -2274,7 +2274,7 @@ func TestResetImageAttribute_Description(t *testing.T) {
 
 	meta, err := svc.GetAMIConfig(context.Background(), "ami-reset01")
 	require.NoError(t, err)
-	assert.Equal(t, "", meta.Description)
+	assert.Empty(t, meta.Description)
 
 	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId:   aws.String("ami-reset01"),
@@ -2283,7 +2283,7 @@ func TestResetImageAttribute_Description(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, out.Description)
 	require.NotNil(t, out.Description.Value)
-	assert.Equal(t, "", *out.Description.Value)
+	assert.Empty(t, *out.Description.Value)
 }
 
 func TestResetImageAttribute_CrossAccount(t *testing.T) {

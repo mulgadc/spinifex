@@ -6,7 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
 
-// ImageService defines the interface for EC2 image operations business logic
+// ImageService defines the interface for EC2 image operations business logic.
 type ImageService interface {
 	CreateImage(ctx context.Context, input *ec2.CreateImageInput, accountID string) (*ec2.CreateImageOutput, error)
 	CopyImage(ctx context.Context, input *ec2.CopyImageInput, accountID string) (*ec2.CopyImageOutput, error)

@@ -16,20 +16,20 @@ import (
 )
 
 const (
-	// InstanceStateBucket is the name of the KV bucket for storing instance state
+	// InstanceStateBucket is the name of the KV bucket for storing instance state.
 	InstanceStateBucket = "spinifex-instance-state"
-	// ClusterStateBucket is the name of the KV bucket for cluster state (heartbeats, shutdown markers, service maps)
+	// ClusterStateBucket is the name of the KV bucket for cluster state (heartbeats, shutdown markers, service maps).
 	ClusterStateBucket = "spinifex-cluster-state"
-	// InstanceStatePrefix is the key prefix for per-node instance state entries
+	// InstanceStatePrefix is the key prefix for per-node instance state entries.
 	InstanceStatePrefix = "node."
-	// StoppedInstancePrefix is the key prefix for stopped instances in shared KV
+	// StoppedInstancePrefix is the key prefix for stopped instances in shared KV.
 	StoppedInstancePrefix = "instance."
-	// TerminatedInstanceBucket is the name of the KV bucket for terminated instances (auto-expiry via TTL)
+	// TerminatedInstanceBucket is the name of the KV bucket for terminated instances (auto-expiry via TTL).
 	TerminatedInstanceBucket = "spinifex-terminated-instances"
-	// TerminatedInstancePrefix is the key prefix for terminated instances
+	// TerminatedInstancePrefix is the key prefix for terminated instances.
 	TerminatedInstancePrefix = "terminated."
 
-	// Schema versions for daemon KV buckets
+	// Schema versions for daemon KV buckets.
 	InstanceStateBucketVersion      = 1
 	ClusterStateBucketVersion       = 1
 	TerminatedInstanceBucketVersion = 1
@@ -44,7 +44,7 @@ type KVSyncObserver interface {
 	RecordKVSyncFailure(bucket string, err error)
 }
 
-// JetStreamManager manages JetStream KV store operations for instance state
+// JetStreamManager manages JetStream KV store operations for instance state.
 type JetStreamManager struct {
 	js           nats.JetStreamContext
 	kv           nats.KeyValue // spinifex-instance-state
@@ -86,7 +86,7 @@ func NewJetStreamManager(nc *nats.Conn, replicas int) (*JetStreamManager, error)
 	}, nil
 }
 
-// InitKVBucket initializes the KV bucket, creating it if it doesn't exist
+// InitKVBucket initializes the KV bucket, creating it if it doesn't exist.
 func (m *JetStreamManager) InitKVBucket() error {
 	// Try to get the existing bucket first
 	kv, err := m.js.KeyValue(InstanceStateBucket)
@@ -705,7 +705,7 @@ func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, error) {
 	return state.VMS, nil
 }
 
-// DeleteState removes the instance state from the KV store for the given node
+// DeleteState removes the instance state from the KV store for the given node.
 func (m *JetStreamManager) DeleteState(nodeID string) error {
 	if m.kv == nil {
 		return errors.New("KV bucket not initialized")

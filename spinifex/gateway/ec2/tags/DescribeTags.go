@@ -7,7 +7,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DescribeTags handles the EC2 DescribeTags API call
+// DescribeTags handles the EC2 DescribeTags API call.
 func DescribeTags(ctx context.Context, input *ec2.DescribeTagsInput, natsConn *nats.Conn, accountID string) (ec2.DescribeTagsOutput, error) {
 	var output ec2.DescribeTagsOutput
 

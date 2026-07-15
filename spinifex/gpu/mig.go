@@ -343,7 +343,7 @@ func parseMIGMemory(name string) int64 {
 }
 
 // parseCreatedGIID extracts the newly created GPU instance ID from nvidia-smi output.
-// Example: "Successfully created GPU instance ID  2 on GPU  0 ..."
+// Example: "Successfully created GPU instance ID  2 on GPU  0 ...".
 func parseCreatedGIID(output string) (int, error) {
 	for line := range strings.SplitSeq(output, "\n") {
 		if strings.Contains(line, "Successfully created GPU instance") {
@@ -359,7 +359,7 @@ func parseCreatedGIID(output string) (int, error) {
 }
 
 // parseCreatedCIID extracts the newly created compute instance ID from nvidia-smi output.
-// Example: "Successfully created compute instance ID  0 on GPU  0 GPU instance ID  2 ..."
+// Example: "Successfully created compute instance ID  0 on GPU  0 GPU instance ID  2 ...".
 func parseCreatedCIID(output string) (int, error) {
 	for line := range strings.SplitSeq(output, "\n") {
 		if strings.Contains(line, "Successfully created compute instance") {

@@ -225,7 +225,8 @@ var localSystemID = func() (string, error) {
 	out, err := sudoCommand("ovs-vsctl", "get", "open_vswitch", ".", "external-ids:system-id").Output()
 	if err != nil {
 		var stderr string
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			stderr = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		return "", fmt.Errorf("ovs-vsctl get system-id: %s: %w", stderr, err)
@@ -252,7 +253,8 @@ var discoverChassis = func(sbAddr string) ([]string, error) {
 	out, err := sudoCommand("ovn-sbctl", args...).Output()
 	if err != nil {
 		var stderr string
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			stderr = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		return nil, fmt.Errorf("ovn-sbctl list Chassis: %s: %w", stderr, err)
@@ -870,7 +872,8 @@ var portToBr = func(port string) (string, error) {
 	out, err := sudoCommand("ovs-vsctl", "port-to-br", port).Output()
 	if err != nil {
 		var stderr string
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			stderr = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		return "", fmt.Errorf("ovs-vsctl port-to-br %s: %s: %w", port, stderr, err)

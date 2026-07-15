@@ -27,7 +27,7 @@ func ValidateModifyNetworkInterfaceAttributeInput(input *ec2.ModifyNetworkInterf
 	return nil
 }
 
-// ModifyNetworkInterfaceAttribute handles the EC2 ModifyNetworkInterfaceAttribute API call
+// ModifyNetworkInterfaceAttribute handles the EC2 ModifyNetworkInterfaceAttribute API call.
 func ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyNetworkInterfaceAttributeOutput, error) {
 	var output ec2.ModifyNetworkInterfaceAttributeOutput
 

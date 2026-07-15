@@ -124,13 +124,13 @@ func TestPaginate(t *testing.T) {
 	page, next, err = paginate(all, aws.String("4"), aws.Int64(2))
 	require.NoError(t, err)
 	assert.Len(t, page, 1)
-	assert.Equal(t, "", next)
+	assert.Empty(t, next)
 
 	// Default page size returns everything in one page.
 	page, next, err = paginate(all, nil, nil)
 	require.NoError(t, err)
 	assert.Len(t, page, 5)
-	assert.Equal(t, "", next)
+	assert.Empty(t, next)
 
 	// Bad token is rejected.
 	_, _, err = paginate(all, aws.String("not-a-number"), nil)
@@ -174,7 +174,7 @@ func TestGetResources_MergesFiltersSortsPaginates(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, res.ResourceTagMappingList, 1)
 	assert.Equal(t, "arn:elb:c", aws.StringValue(res.ResourceTagMappingList[0].ResourceARN))
-	assert.Equal(t, "", aws.StringValue(res.PaginationToken))
+	assert.Empty(t, aws.StringValue(res.PaginationToken))
 }
 
 func TestGetResources_ResourceTypeFiltersLowercasedAndPassed(t *testing.T) {

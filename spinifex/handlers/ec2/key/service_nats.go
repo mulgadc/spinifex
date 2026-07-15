@@ -11,12 +11,12 @@ import (
 
 var _ KeyService = (*NATSKeyService)(nil)
 
-// NATSKeyService handles key operations via NATS messaging
+// NATSKeyService handles key operations via NATS messaging.
 type NATSKeyService struct {
 	natsConn *nats.Conn
 }
 
-// NewNATSKeyService creates a new NATS-based key service
+// NewNATSKeyService creates a new NATS-based key service.
 func NewNATSKeyService(conn *nats.Conn) KeyService {
 	return &NATSKeyService{natsConn: conn}
 }

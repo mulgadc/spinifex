@@ -19,7 +19,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Ensure PlacementGroupServiceImpl implements PlacementGroupService
+// Ensure PlacementGroupServiceImpl implements PlacementGroupService.
 var _ PlacementGroupService = (*PlacementGroupServiceImpl)(nil)
 
 const (

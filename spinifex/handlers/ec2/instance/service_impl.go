@@ -35,7 +35,7 @@ import (
 )
 
 // VolumeInfo holds volume information returned from GenerateVolumes
-// for populating BlockDeviceMappings in the EC2 API response
+// for populating BlockDeviceMappings in the EC2 API response.
 type VolumeInfo struct {
 	VolumeId            string
 	DeviceName          string
@@ -119,7 +119,7 @@ func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
 
 var _ InstanceService = (*InstanceServiceImpl)(nil)
 
-// InstanceServiceImpl handles daemon-side EC2 instance operations
+// InstanceServiceImpl handles daemon-side EC2 instance operations.
 type InstanceServiceImpl struct {
 	config            *config.Config
 	instanceTypes     map[string]*ec2.InstanceTypeInfo
@@ -141,7 +141,7 @@ type InstanceServiceImpl struct {
 	dnsInternalDomain string
 }
 
-// NewInstanceServiceImpl creates a new instance service implementation for daemon use
+// NewInstanceServiceImpl creates a new instance service implementation for daemon use.
 func NewInstanceServiceImpl(
 	cfg *config.Config,
 	instanceTypes map[string]*ec2.InstanceTypeInfo,
@@ -191,7 +191,7 @@ func (s *InstanceServiceImpl) SetRunInstancesDeps(ami AMIMetaLoader, key KeyPair
 }
 
 // RunInstance creates a single EC2 instance (called per-instance by daemon)
-// Returns the VM struct and EC2 instance metadata
+// Returns the VM struct and EC2 instance metadata.
 func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM, *ec2.Instance, error) {
 	// Validate instance type exists
 	_, exists := s.instanceTypes[*input.InstanceType]
@@ -1451,7 +1451,7 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 	return vb, err
 }
 
-// prepareRootVolume handles creation/cloning of the root volume
+// prepareRootVolume handles creation/cloning of the root volume.
 func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.RunInstancesInput, imageId string, size int, volumeConfig viperblock.VolumeConfig, instance *vm.VM, deleteOnTermination bool) error {
 	vb, err := s.newViperblock(imageId, size, volumeConfig)
 	if err != nil {

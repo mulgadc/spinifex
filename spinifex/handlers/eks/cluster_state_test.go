@@ -2,7 +2,6 @@ package handlers_eks
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -235,7 +234,7 @@ func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
 		EventKey("alpha", "1700000000"),
 	} {
 		_, err := kv.Get(k)
-		assert.True(t, errors.Is(err, nats.ErrKeyNotFound), "key %s should be gone, got err=%v", k, err)
+		assert.ErrorIs(t, err, nats.ErrKeyNotFound, "key %s should be gone, got err=%v", k, err)
 	}
 
 	got, err := GetClusterMeta(kv, "beta")

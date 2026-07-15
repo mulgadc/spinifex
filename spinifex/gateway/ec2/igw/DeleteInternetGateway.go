@@ -20,7 +20,7 @@ func ValidateDeleteInternetGatewayInput(input *ec2.DeleteInternetGatewayInput) e
 	return nil
 }
 
-// DeleteInternetGateway handles the EC2 DeleteInternetGateway API call
+// DeleteInternetGateway handles the EC2 DeleteInternetGateway API call.
 func DeleteInternetGateway(ctx context.Context, input *ec2.DeleteInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.DeleteInternetGatewayOutput, error) {
 	var output ec2.DeleteInternetGatewayOutput
 

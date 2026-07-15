@@ -22,7 +22,7 @@ func ValidateDeleteEgressOnlyInternetGatewayInput(input *ec2.DeleteEgressOnlyInt
 	return nil
 }
 
-// DeleteEgressOnlyInternetGateway handles the EC2 DeleteEgressOnlyInternetGateway API call
+// DeleteEgressOnlyInternetGateway handles the EC2 DeleteEgressOnlyInternetGateway API call.
 func DeleteEgressOnlyInternetGateway(ctx context.Context, input *ec2.DeleteEgressOnlyInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.DeleteEgressOnlyInternetGatewayOutput, error) {
 	var output ec2.DeleteEgressOnlyInternetGatewayOutput
 

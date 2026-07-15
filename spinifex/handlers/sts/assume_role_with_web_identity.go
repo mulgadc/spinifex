@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/big"
 	"slices"
 	"strings"
 
@@ -209,6 +208,9 @@ func (s *STSServiceImpl) verifyOIDCProviderRegistered(roleAccountID, issuer stri
 	return nil
 }
 
+// p256CoordLen is the P-256 coordinate width; JWK requires fixed-length base64url.
+const p256CoordLen = 32
+
 // jwkToECDSAPublicKey decodes a JWK EC entry (RFC 7517) into an *ecdsa.PublicKey.
 // Only ES256 / P-256 is supported; any other shape fails closed.
 func jwkToECDSAPublicKey(jwk *JWK) (*ecdsa.PublicKey, error) {
@@ -229,14 +231,24 @@ func jwkToECDSAPublicKey(jwk *JWK) (*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode JWK y: %w", err)
 	}
-	curve := elliptic.P256()
-	pub := &ecdsa.PublicKey{
-		Curve: curve,
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
+	// RFC 7518 6.2.1.2 requires x and y to be the fixed coordinate width,
+	// left-padded. Enforcing it keeps the concatenation below unambiguous and
+	// rejects odd-width JWKs that would otherwise pass the on-curve check.
+	if len(xBytes) != p256CoordLen || len(yBytes) != p256CoordLen {
+		return nil, fmt.Errorf("JWK x,y must be %d-byte coordinates (got %d,%d)",
+			p256CoordLen, len(xBytes), len(yBytes))
 	}
-	if !curve.IsOnCurve(pub.X, pub.Y) {
-		return nil, errors.New("JWK x,y not on P-256 curve")
+
+	// SEC1 uncompressed point: 0x04 || X || Y. ParseUncompressedPublicKey
+	// validates the point is on the curve and is not the point at infinity.
+	point := make([]byte, 0, 1+2*p256CoordLen)
+	point = append(point, 0x04)
+	point = append(point, xBytes...)
+	point = append(point, yBytes...)
+
+	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), point)
+	if err != nil {
+		return nil, fmt.Errorf("JWK x,y not a valid P-256 public key: %w", err)
 	}
 	return pub, nil
 }

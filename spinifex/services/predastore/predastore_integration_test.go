@@ -34,7 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Test credentials from config
+// Test credentials from config.
 const (
 	validAccessKey   = "AKIAIOSFODNN7EXAMPLE"
 	validSecretKey   = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -47,7 +47,7 @@ const (
 	testHost         = "127.0.0.1"
 )
 
-// Global server instance for integration tests
+// Global server instance for integration tests.
 var (
 	serverStarted    bool
 	serverStartMutex sync.Mutex
@@ -124,7 +124,7 @@ func generateTestCertificate(certPath, keyPath string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// startPredastoreServer starts the predastore server once for all tests
+// startPredastoreServer starts the predastore server once for all tests.
 func startPredastoreServer(t *testing.T) *Config {
 	serverStartMutex.Lock()
 	defer serverStartMutex.Unlock()
@@ -274,7 +274,7 @@ account_id = "123456789012"
 	return cfg
 }
 
-// waitForServer waits for the predastore server to be ready
+// waitForServer waits for the predastore server to be ready.
 func waitForServer(timeout time.Duration) bool {
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -297,7 +297,7 @@ func waitForServer(timeout time.Duration) bool {
 	return false
 }
 
-// createS3Client creates an AWS S3 client for testing
+// createS3Client creates an AWS S3 client for testing.
 func createS3Client(accessKey, secretKey string) *s3.S3 {
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -316,7 +316,7 @@ func createS3Client(accessKey, secretKey string) *s3.S3 {
 	return s3.New(sess)
 }
 
-// TestIntegration_BucketListing tests that both buckets from config exist
+// TestIntegration_BucketListing tests that both buckets from config exist.
 func TestIntegration_BucketListing(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -345,7 +345,7 @@ func TestIntegration_BucketListing(t *testing.T) {
 	assert.Len(t, buckets, 2, "Should have exactly 2 buckets")
 }
 
-// TestIntegration_Authentication_Valid tests authentication with valid credentials
+// TestIntegration_Authentication_Valid tests authentication with valid credentials.
 func TestIntegration_Authentication_Valid(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -365,7 +365,7 @@ func TestIntegration_Authentication_Valid(t *testing.T) {
 	}
 }
 
-// TestIntegration_Authentication_Invalid tests authentication with invalid credentials
+// TestIntegration_Authentication_Invalid tests authentication with invalid credentials.
 func TestIntegration_Authentication_Invalid(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -390,7 +390,7 @@ func TestIntegration_Authentication_Invalid(t *testing.T) {
 		"Error should indicate authentication failure, got: %s", errStr)
 }
 
-// TestIntegration_FileUpload_TestBucket tests file upload to test-bucket
+// TestIntegration_FileUpload_TestBucket tests file upload to test-bucket.
 func TestIntegration_FileUpload_TestBucket(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -432,7 +432,7 @@ func TestIntegration_FileUpload_TestBucket(t *testing.T) {
 	t.Logf("Successfully uploaded and verified file: s3://%s/%s", testBucket, key)
 }
 
-// TestIntegration_FileUpload_PublicBucket tests file upload to public-bucket
+// TestIntegration_FileUpload_PublicBucket tests file upload to public-bucket.
 func TestIntegration_FileUpload_PublicBucket(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -519,7 +519,7 @@ func TestIntegration_FileUpload_PublicBucket2(t *testing.T) {
 	t.Logf("Successfully uploaded and verified file: s3://%s/%s", publicBucket, key)
 }
 
-// TestIntegration_FileOperations_Complete tests full file lifecycle
+// TestIntegration_FileOperations_Complete tests full file lifecycle.
 func TestIntegration_FileOperations_Complete(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -611,7 +611,7 @@ func TestIntegration_FileOperations_Complete(t *testing.T) {
 	}
 }
 
-// TestIntegration_MultipleFiles tests uploading multiple files
+// TestIntegration_MultipleFiles tests uploading multiple files.
 func TestIntegration_MultipleFiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -660,7 +660,7 @@ func TestIntegration_MultipleFiles(t *testing.T) {
 	}
 }
 
-// TestIntegration_LargeFile tests uploading a larger file (1MB)
+// TestIntegration_LargeFile tests uploading a larger file (1MB).
 func TestIntegration_LargeFile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")

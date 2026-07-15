@@ -209,7 +209,7 @@ func TestParseRunInstances(t *testing.T) {
 			assert.Equal(t, test.want, err)
 
 			if err != nil {
-				assert.Len(t, response.Instances, 0)
+				assert.Empty(t, response.Instances)
 			}
 		})
 	}

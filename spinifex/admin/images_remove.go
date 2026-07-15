@@ -320,7 +320,7 @@ func readAMIConfig(store objectstore.ObjectStore, bucket, imageID string) (viper
 
 	var state viperblock.VBState
 	if err := json.Unmarshal(viperblock.StateBody(body), &state); err != nil {
-		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %v", handlers_ec2_image.ErrCorruptAMIConfig, key, err)
+		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %w", handlers_ec2_image.ErrCorruptAMIConfig, key, err)
 	}
 	return state.VolumeConfig.AMIMetadata, nil
 }
@@ -352,7 +352,7 @@ func readVolumeConfig(store objectstore.ObjectStore, bucket, volumeID string) (*
 
 	var w volumeConfigWrapper
 	if err := json.Unmarshal(viperblock.StateBody(body), &w); err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", errCorruptVolumeConfig, key, err)
+		return nil, fmt.Errorf("%w: %s: %w", errCorruptVolumeConfig, key, err)
 	}
 	return &w.VolumeConfig, nil
 }

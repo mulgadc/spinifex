@@ -21,7 +21,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Ensure VPCServiceImpl implements VPCService
+// Ensure VPCServiceImpl implements VPCService.
 var _ VPCService = (*VPCServiceImpl)(nil)
 
 const (
@@ -57,7 +57,7 @@ type VPCRecord struct {
 	CreatedAt                        time.Time         `json:"created_at"`
 }
 
-// SubnetRecord represents a stored Subnet
+// SubnetRecord represents a stored Subnet.
 type SubnetRecord struct {
 	SubnetId            string            `json:"subnet_id"`
 	VpcId               string            `json:"vpc_id"`
@@ -70,7 +70,7 @@ type SubnetRecord struct {
 	CreatedAt           time.Time         `json:"created_at"`
 }
 
-// VPCServiceImpl implements VPC, Subnet, and ENI operations with NATS JetStream persistence
+// VPCServiceImpl implements VPC, Subnet, and ENI operations with NATS JetStream persistence.
 type VPCServiceImpl struct {
 	config   *config.Config
 	natsConn *nats.Conn
@@ -115,7 +115,7 @@ func (s *VPCServiceImpl) localAZ() string {
 	return s.config.AZ
 }
 
-// NewVPCServiceImplWithNATS creates a VPC service with NATS JetStream for persistence
+// NewVPCServiceImplWithNATS creates a VPC service with NATS JetStream for persistence.
 func NewVPCServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*VPCServiceImpl, error) {
 	js, err := natsConn.JetStream()
 	if err != nil {
@@ -192,7 +192,7 @@ func NewVPCServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*VPCSer
 	}, nil
 }
 
-// nextVNI allocates the next VNI using atomic increment on the NATS KV counter
+// nextVNI allocates the next VNI using atomic increment on the NATS KV counter.
 func (s *VPCServiceImpl) nextVNI() (int64, error) {
 	entry, err := s.vniKV.Get(vniCounterKey)
 	if err != nil {
@@ -228,7 +228,7 @@ func (s *VPCServiceImpl) nextVNI() (int64, error) {
 	return current, nil
 }
 
-// CreateVpc creates a new VPC
+// CreateVpc creates a new VPC.
 func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInput, accountID string) (*ec2.CreateVpcOutput, error) {
 	if input.CidrBlock == nil || *input.CidrBlock == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -308,7 +308,7 @@ func (s *VPCServiceImpl) requireVPCExists(accountID, vpcId string) error {
 	return nil
 }
 
-// DeleteVpc deletes a VPC
+// DeleteVpc deletes a VPC.
 func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInput, accountID string) (*ec2.DeleteVpcOutput, error) {
 	if input.VpcId == nil || *input.VpcId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -445,7 +445,7 @@ var describeVpcsValidFilters = map[string]bool{
 	"owner-id":   true,
 }
 
-// DescribeVpcs describes VPCs
+// DescribeVpcs describes VPCs.
 func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error) {
 	var vpcs []*ec2.Vpc
 
@@ -521,7 +521,7 @@ func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVp
 	}, nil
 }
 
-// CreateSubnet creates a new subnet within a VPC
+// CreateSubnet creates a new subnet within a VPC.
 func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubnetInput, accountID string) (*ec2.CreateSubnetOutput, error) {
 	if input.VpcId == nil || *input.VpcId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -641,7 +641,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	}, nil
 }
 
-// DeleteSubnet deletes a subnet
+// DeleteSubnet deletes a subnet.
 func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubnetInput, accountID string) (*ec2.DeleteSubnetOutput, error) {
 	if input.SubnetId == nil || *input.SubnetId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -718,7 +718,7 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 	return nil
 }
 
-// DescribeSubnets describes subnets
+// DescribeSubnets describes subnets.
 func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error) {
 	var subnets []*ec2.Subnet
 

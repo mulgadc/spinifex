@@ -21,7 +21,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Ensure IGWServiceImpl implements IGWService
+// Ensure IGWServiceImpl implements IGWService.
 var _ IGWService = (*IGWServiceImpl)(nil)
 
 const (
@@ -29,7 +29,7 @@ const (
 	KVBucketIGWVersion = 1
 )
 
-// IGWRecord represents a stored Internet Gateway
+// IGWRecord represents a stored Internet Gateway.
 type IGWRecord struct {
 	InternetGatewayId string            `json:"internet_gateway_id"`
 	VpcId             string            `json:"vpc_id,omitempty"` // empty when detached
@@ -45,7 +45,7 @@ type GatePublisher interface {
 	PublishGateDecisionsForVPC(accountID, vpcID, destCidr string)
 }
 
-// IGWServiceImpl implements Internet Gateway operations with NATS JetStream persistence
+// IGWServiceImpl implements Internet Gateway operations with NATS JetStream persistence.
 type IGWServiceImpl struct {
 	config        *config.Config
 	igwKV         nats.KeyValue
@@ -60,7 +60,7 @@ func (s *IGWServiceImpl) SetGatePublisher(p GatePublisher) {
 	s.gatePublisher = p
 }
 
-// NewIGWServiceImplWithNATS creates an Internet Gateway service with NATS JetStream for persistence
+// NewIGWServiceImplWithNATS creates an Internet Gateway service with NATS JetStream for persistence.
 func NewIGWServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*IGWServiceImpl, error) {
 	js, err := natsConn.JetStream()
 	if err != nil {
@@ -126,7 +126,7 @@ func (s *IGWServiceImpl) createIGW(ctx context.Context, input *ec2.CreateInterne
 	}, nil
 }
 
-// DeleteInternetGateway deletes an Internet Gateway (must be detached first)
+// DeleteInternetGateway deletes an Internet Gateway (must be detached first).
 func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.DeleteInternetGatewayInput, accountID string) (*ec2.DeleteInternetGatewayOutput, error) {
 	if input.InternetGatewayId == nil || *input.InternetGatewayId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -172,7 +172,7 @@ var describeIGWValidFilters = map[string]bool{
 	"attachment.state":    true,
 }
 
-// DescribeInternetGateways lists Internet Gateways, optionally filtered by ID
+// DescribeInternetGateways lists Internet Gateways, optionally filtered by ID.
 func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, accountID string) (*ec2.DescribeInternetGatewaysOutput, error) {
 	var igws []*ec2.InternetGateway
 

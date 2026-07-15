@@ -108,13 +108,13 @@ func TestBuildLBAgentEnv_UsesMgmtGateway(t *testing.T) {
 func TestSubnetCIDRForIP(t *testing.T) {
 	assert.Equal(t, "10.0.1.5/24", subnetCIDRForIP("10.0.1.5", "10.0.1.0/24"))
 	assert.Equal(t, "172.16.2.10/20", subnetCIDRForIP("172.16.2.10", "172.16.0.0/20"))
-	assert.Equal(t, "", subnetCIDRForIP("10.0.1.5", "bad-cidr"))
+	assert.Empty(t, subnetCIDRForIP("10.0.1.5", "bad-cidr"))
 }
 
 func TestSubnetGatewayIP(t *testing.T) {
 	assert.Equal(t, "10.0.1.1", subnetGatewayIP("10.0.1.0/24"))
 	assert.Equal(t, "172.16.0.1", subnetGatewayIP("172.16.0.0/20"))
-	assert.Equal(t, "", subnetGatewayIP("not-a-cidr"))
+	assert.Empty(t, subnetGatewayIP("not-a-cidr"))
 }
 
 // setupMicrovmTestService creates an ELBv2 service wired to a real VPC

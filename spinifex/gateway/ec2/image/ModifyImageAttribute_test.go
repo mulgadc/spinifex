@@ -168,7 +168,7 @@ func TestValidateModifyImageAttributeInput_NormalizesEmptyDescriptionToEmptyStri
 	}
 	require.NoError(t, ValidateModifyImageAttributeInput(input))
 	require.NotNil(t, input.Value)
-	assert.Equal(t, "", *input.Value)
+	assert.Empty(t, *input.Value)
 }
 
 func TestModifyImageAttribute_GatewayValidationFailureReturnsEarly(t *testing.T) {

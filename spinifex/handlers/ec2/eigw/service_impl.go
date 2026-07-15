@@ -20,7 +20,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Ensure EgressOnlyIGWServiceImpl implements EgressOnlyIGWService
+// Ensure EgressOnlyIGWServiceImpl implements EgressOnlyIGWService.
 var _ EgressOnlyIGWService = (*EgressOnlyIGWServiceImpl)(nil)
 
 const (
@@ -28,7 +28,7 @@ const (
 	KVBucketEgressOnlyIGWVersion = 1
 )
 
-// EgressOnlyIGWRecord represents a stored Egress-only Internet Gateway
+// EgressOnlyIGWRecord represents a stored Egress-only Internet Gateway.
 type EgressOnlyIGWRecord struct {
 	EgressOnlyInternetGatewayId string            `json:"egress_only_internet_gateway_id"`
 	VpcId                       string            `json:"vpc_id"`
@@ -37,14 +37,14 @@ type EgressOnlyIGWRecord struct {
 	CreatedAt                   time.Time         `json:"created_at"`
 }
 
-// EgressOnlyIGWServiceImpl implements Egress-only Internet Gateway operations with NATS JetStream persistence
+// EgressOnlyIGWServiceImpl implements Egress-only Internet Gateway operations with NATS JetStream persistence.
 type EgressOnlyIGWServiceImpl struct {
 	config *config.Config
 	eigwKV nats.KeyValue
 	vpcKV  nats.KeyValue
 }
 
-// NewEgressOnlyIGWServiceImplWithNATS creates an Egress-only Internet Gateway service with NATS JetStream for persistence
+// NewEgressOnlyIGWServiceImplWithNATS creates an Egress-only Internet Gateway service with NATS JetStream for persistence.
 func NewEgressOnlyIGWServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*EgressOnlyIGWServiceImpl, error) {
 	js, err := natsConn.JetStream()
 	if err != nil {
@@ -74,7 +74,7 @@ func NewEgressOnlyIGWServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn
 	}, nil
 }
 
-// CreateEgressOnlyInternetGateway creates a new Egress-only Internet Gateway
+// CreateEgressOnlyInternetGateway creates a new Egress-only Internet Gateway.
 func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(ctx context.Context, input *ec2.CreateEgressOnlyInternetGatewayInput, accountID string) (*ec2.CreateEgressOnlyInternetGatewayOutput, error) {
 	if input.VpcId == nil || *input.VpcId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -115,7 +115,7 @@ func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(ctx context.C
 	}, nil
 }
 
-// DeleteEgressOnlyInternetGateway deletes an Egress-only Internet Gateway
+// DeleteEgressOnlyInternetGateway deletes an Egress-only Internet Gateway.
 func (s *EgressOnlyIGWServiceImpl) DeleteEgressOnlyInternetGateway(ctx context.Context, input *ec2.DeleteEgressOnlyInternetGatewayInput, accountID string) (*ec2.DeleteEgressOnlyInternetGatewayOutput, error) {
 	if input.EgressOnlyInternetGatewayId == nil || *input.EgressOnlyInternetGatewayId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -147,7 +147,7 @@ var describeEIGWValidFilters = map[string]bool{
 	"egress-only-internet-gateway-id": true,
 }
 
-// DescribeEgressOnlyInternetGateways describes Egress-only Internet Gateways
+// DescribeEgressOnlyInternetGateways describes Egress-only Internet Gateways.
 func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx context.Context, input *ec2.DescribeEgressOnlyInternetGatewaysInput, accountID string) (*ec2.DescribeEgressOnlyInternetGatewaysOutput, error) {
 	var egressOnlyIGWs []*ec2.EgressOnlyInternetGateway
 

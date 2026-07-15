@@ -26,7 +26,7 @@ import (
 	vbs3 "github.com/mulgadc/viperblock/viperblock/backends/s3"
 )
 
-// Ensure ImageServiceImpl implements ImageService
+// Ensure ImageServiceImpl implements ImageService.
 var _ ImageService = (*ImageServiceImpl)(nil)
 
 // CreateImageParams holds parameters for creating an AMI from an instance.
@@ -38,14 +38,14 @@ type CreateImageParams struct {
 	IsRunning     bool // true = use live checkpoint (instance still running), false = use numbered checkpoint from Close
 }
 
-// ImageServiceImpl handles AMI image operations with S3 storage
+// ImageServiceImpl handles AMI image operations with S3 storage.
 type ImageServiceImpl struct {
 	config     *config.Config
 	store      objectstore.ObjectStore
 	bucketName string
 }
 
-// NewImageServiceImpl creates a new daemon-side image service
+// NewImageServiceImpl creates a new daemon-side image service.
 func NewImageServiceImpl(cfg *config.Config) *ImageServiceImpl {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
@@ -61,7 +61,7 @@ func NewImageServiceImpl(cfg *config.Config) *ImageServiceImpl {
 	}
 }
 
-// NewImageServiceImplWithStore creates an image service with a custom object store (for testing)
+// NewImageServiceImplWithStore creates an image service with a custom object store (for testing).
 func NewImageServiceImplWithStore(store objectstore.ObjectStore, bucketName string) *ImageServiceImpl {
 	return &ImageServiceImpl{
 		store:      store,
@@ -83,7 +83,7 @@ var describeImagesValidFilters = map[string]bool{
 	"root-device-type":    true,
 }
 
-// DescribeImages lists available AMI images by reading config.json files from S3
+// DescribeImages lists available AMI images by reading config.json files from S3.
 func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeImagesInput{}
@@ -539,7 +539,7 @@ func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID string) er
 	return nil
 }
 
-// snapshotStoppedVolume creates a snapshot offline by loading viperblock state from S3
+// snapshotStoppedVolume creates a snapshot offline by loading viperblock state from S3.
 func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) error {
 	if s.config == nil {
 		return errors.New(awserrors.ErrorServerInternal)
@@ -619,7 +619,7 @@ func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) er
 	return nil
 }
 
-// getVolumeConfig reads a volume's VBState config from S3
+// getVolumeConfig reads a volume's VBState config from S3.
 func (s *ImageServiceImpl) getVolumeConfig(ctx context.Context, volumeID string) (*viperblock.VolumeConfig, error) {
 	configKey := fmt.Sprintf("%s/config.json", volumeID)
 	result, err := s.store.GetObject(ctx, &s3.GetObjectInput{
@@ -709,11 +709,11 @@ func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (vi
 
 	body, err := io.ReadAll(result.Body)
 	if err != nil {
-		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %v", ErrCorruptAMIConfig, configKey, err)
+		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %w", ErrCorruptAMIConfig, configKey, err)
 	}
 	var vbState viperblock.VBState
 	if err := json.Unmarshal(viperblock.StateBody(body), &vbState); err != nil {
-		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %v", ErrCorruptAMIConfig, configKey, err)
+		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %w", ErrCorruptAMIConfig, configKey, err)
 	}
 	return vbState.VolumeConfig.AMIMetadata, nil
 }
@@ -856,7 +856,7 @@ func (s *ImageServiceImpl) loadAMIForMutation(ctx context.Context, imageID, acco
 	return meta, nil
 }
 
-// putSnapshotMetadata stores snapshot metadata in S3 using the canonical SnapshotConfig type
+// putSnapshotMetadata stores snapshot metadata in S3 using the canonical SnapshotConfig type.
 func (s *ImageServiceImpl) putSnapshotMetadata(ctx context.Context, snapshotID, volumeID string, volumeSizeGiB uint64, accountID string) error {
 	cfg := handlers_ec2_snapshot.SnapshotConfig{
 		SnapshotID: snapshotID,

@@ -11,12 +11,12 @@ import (
 
 var _ NatGatewayService = (*NATSNatGatewayService)(nil)
 
-// NATSNatGatewayService handles NAT Gateway operations via NATS messaging
+// NATSNatGatewayService handles NAT Gateway operations via NATS messaging.
 type NATSNatGatewayService struct {
 	natsConn *nats.Conn
 }
 
-// NewNATSNatGatewayService creates a new NATS-based NAT Gateway service
+// NewNATSNatGatewayService creates a new NATS-based NAT Gateway service.
 func NewNATSNatGatewayService(conn *nats.Conn) NatGatewayService {
 	return &NATSNatGatewayService{natsConn: conn}
 }

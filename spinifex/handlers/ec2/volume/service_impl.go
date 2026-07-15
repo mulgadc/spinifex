@@ -37,14 +37,14 @@ const (
 	gp3IOPSPerGiB  = 500
 )
 
-// Ensure VolumeServiceImpl implements VolumeService
+// Ensure VolumeServiceImpl implements VolumeService.
 var _ VolumeService = (*VolumeServiceImpl)(nil)
 
 // Ensure VolumeServiceImpl satisfies vm.VolumeStateUpdater so the manager
 // can call UpdateVolumeState directly without a daemon-side adapter.
 var _ vm.VolumeStateUpdater = (*VolumeServiceImpl)(nil)
 
-// VolumeServiceImpl handles EBS volume operations with S3 storage
+// VolumeServiceImpl handles EBS volume operations with S3 storage.
 type VolumeServiceImpl struct {
 	config     *config.Config
 	store      objectstore.ObjectStore
@@ -73,7 +73,7 @@ func NewVolumeServiceImpl(cfg *config.Config, natsConn *nats.Conn, snapshotKV na
 	}
 }
 
-// NewVolumeServiceImplWithStore creates a volume service with a custom ObjectStore (for testing)
+// NewVolumeServiceImplWithStore creates a volume service with a custom ObjectStore (for testing).
 func NewVolumeServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, snapshotKV ...nats.KeyValue) *VolumeServiceImpl {
 	bucketName := ""
 	if cfg != nil {
@@ -91,7 +91,7 @@ func NewVolumeServiceImplWithStore(cfg *config.Config, store objectstore.ObjectS
 	return svc
 }
 
-// CreateVolume creates a new EBS volume via viperblock and persists its config to S3
+// CreateVolume creates a new EBS volume via viperblock and persists its config to S3.
 func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateVolumeInput, accountID string) (*ec2.Volume, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -276,7 +276,7 @@ var describeVolumesValidFilters = map[string]bool{
 	"availability-zone":      true,
 }
 
-// DescribeVolumes lists EBS volumes by reading config.json files from S3
+// DescribeVolumes lists EBS volumes by reading config.json files from S3.
 func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.DescribeVolumesInput, accountID string) (*ec2.DescribeVolumesOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeVolumesInput{}
@@ -1002,7 +1002,7 @@ func (s *VolumeServiceImpl) getVolumeByID(ctx context.Context, volumeID string) 
 	return &volumeResult{volume: volume, tenantID: volMeta.TenantID}, nil
 }
 
-// volumeConfigWrapper matches the JSON structure stored in S3 config.json files
+// volumeConfigWrapper matches the JSON structure stored in S3 config.json files.
 type volumeConfigWrapper struct {
 	VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
 }
@@ -1310,7 +1310,7 @@ func (s *VolumeServiceImpl) UpdateVolumeState(volumeID, state, attachedInstance,
 	return nil
 }
 
-// ModifyVolume modifies an EBS volume (grow-only, requires stopped instance)
+// ModifyVolume modifies an EBS volume (grow-only, requires stopped instance).
 func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, accountID string) (*ec2.ModifyVolumeOutput, error) {
 	if input.VolumeId == nil || *input.VolumeId == "" {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeIDMalformed)
@@ -1402,7 +1402,7 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 	}, nil
 }
 
-// DeleteVolume deletes an EBS volume: validates state, notifies viperblockd, and removes S3 data
+// DeleteVolume deletes an EBS volume: validates state, notifies viperblockd, and removes S3 data.
 func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error) {
 	if input == nil || input.VolumeId == nil || *input.VolumeId == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -1477,7 +1477,7 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 	return &ec2.DeleteVolumeOutput{}, nil
 }
 
-// deleteS3Prefix deletes all S3 objects under the given prefix
+// deleteS3Prefix deletes all S3 objects under the given prefix.
 func (s *VolumeServiceImpl) deleteS3Prefix(ctx context.Context, prefix string) error {
 	bucket := s.bucketName
 

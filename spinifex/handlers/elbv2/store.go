@@ -17,7 +17,7 @@ const (
 	KVBucketELBv2        = "spinifex-elbv2"
 	KVBucketELBv2Version = 1
 
-	// Key prefixes for different resource types within the single bucket
+	// Key prefixes for different resource types within the single bucket.
 	KeyPrefixLB       = "lb."
 	KeyPrefixTG       = "tg."
 	KeyPrefixListener = "listener."

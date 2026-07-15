@@ -23,7 +23,7 @@ func ValidateDescribeVpcAttributeInput(input *ec2.DescribeVpcAttributeInput) err
 	return nil
 }
 
-// DescribeVpcAttribute handles the EC2 DescribeVpcAttribute API call
+// DescribeVpcAttribute handles the EC2 DescribeVpcAttribute API call.
 func DescribeVpcAttribute(ctx context.Context, input *ec2.DescribeVpcAttributeInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVpcAttributeOutput, error) {
 	var output ec2.DescribeVpcAttributeOutput
 

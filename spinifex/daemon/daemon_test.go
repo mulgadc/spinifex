@@ -78,7 +78,7 @@ func drainAndClose(t *testing.T, nc *nats.Conn) {
 	}
 }
 
-// createTestDaemon creates a test daemon instance with minimal configuration
+// createTestDaemon creates a test daemon instance with minimal configuration.
 func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	// Create a temporary directory for test data
 	tmpDir := t.TempDir()
@@ -150,7 +150,7 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	return daemon
 }
 
-// getTestInstanceType returns a valid instance type for testing based on the system's CPU
+// getTestInstanceType returns a valid instance type for testing based on the system's CPU.
 func getTestInstanceType(t *testing.T) string {
 	t.Helper()
 	rm, err := NewResourceManager(nil, nil, nil)
@@ -182,7 +182,7 @@ func seedTestAMI(t *testing.T, store *objectstore.MemoryObjectStore, bucket, ima
 	require.NoError(t, err)
 }
 
-// TestResourceManager tests resource manager functionality
+// TestResourceManager tests resource manager functionality.
 func TestResourceManager(t *testing.T) {
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
@@ -267,7 +267,7 @@ func TestResourceManager(t *testing.T) {
 	})
 }
 
-// TestGetInstanceTypeInfos tests the GetInstanceTypeInfos method
+// TestGetInstanceTypeInfos tests the GetInstanceTypeInfos method.
 func TestGetInstanceTypeInfos(t *testing.T) {
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
@@ -295,7 +295,7 @@ func TestGetInstanceTypeInfos(t *testing.T) {
 	}
 }
 
-// TestGetAvailableInstanceTypeInfos_ResourceFiltering tests that instance types are filtered by available resources
+// TestGetAvailableInstanceTypeInfos_ResourceFiltering tests that instance types are filtered by available resources.
 func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
@@ -377,7 +377,7 @@ func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
 		"Should have same available types after deallocation")
 }
 
-// TestHandleEC2DescribeInstanceTypes tests the DescribeInstanceTypes handler
+// TestHandleEC2DescribeInstanceTypes tests the DescribeInstanceTypes handler.
 func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -694,7 +694,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 	})
 }
 
-// TestDaemon_BootAllocation verifies that resources are correctly reconstructed on startup
+// TestDaemon_BootAllocation verifies that resources are correctly reconstructed on startup.
 func TestDaemon_BootAllocation(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -774,7 +774,7 @@ func TestDaemon_BootAllocation(t *testing.T) {
 	assert.Equal(t, expectedMem, daemon.resourceMgr.allocatedMem)
 }
 
-// TestCanAllocate_CountEdgeCases tests edge cases for canAllocate with count parameter
+// TestCanAllocate_CountEdgeCases tests edge cases for canAllocate with count parameter.
 func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	t.Run("MinCount_equals_MaxCount", func(t *testing.T) {
 		rm, err := NewResourceManager(nil, nil, nil)
@@ -1018,7 +1018,7 @@ func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
 	assert.InDelta(t, memGB*float64(capacityFor), finalMem, 0.001, "allocated memory must not exceed schedulable pool")
 }
 
-// TestDescribeInstances_ReservationGrouping tests that instances are grouped by reservation ID
+// TestDescribeInstances_ReservationGrouping tests that instances are grouped by reservation ID.
 func TestDescribeInstances_ReservationGrouping(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -1209,7 +1209,7 @@ func TestDescribeInstances_ReservationGrouping(t *testing.T) {
 	})
 }
 
-// TestRunInstances_CountValidation tests MinCount/MaxCount validation scenarios
+// TestRunInstances_CountValidation tests MinCount/MaxCount validation scenarios.
 func TestRunInstances_CountValidation(t *testing.T) {
 	natsURL := sharedNATSURL
 	instanceType := getTestInstanceType(t)
@@ -1557,7 +1557,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 }
 
-// TestResourceManager_ConcurrentAccess tests thread safety of resource manager
+// TestResourceManager_ConcurrentAccess tests thread safety of resource manager.
 func TestResourceManager_ConcurrentAccess(t *testing.T) {
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
@@ -1738,7 +1738,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 	assert.False(t, ebsDeletedVolumes["vol-keep"], "Root volume with DeleteOnTermination=false should NOT be deleted")
 }
 
-// TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events
+// TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events.
 func TestHandleEC2Events_AttachVolume(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -1840,7 +1840,7 @@ func TestHandleEC2Events_AttachVolume(t *testing.T) {
 	})
 }
 
-// TestHandleEC2Events_DetachVolume tests the detach-volume handler in handleEC2Events
+// TestHandleEC2Events_DetachVolume tests the detach-volume handler in handleEC2Events.
 func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -2267,7 +2267,7 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 	assert.Equal(t, "vol-root", *instance.Instance.BlockDeviceMappings[0].Ebs.VolumeId)
 }
 
-// TestDetachVolume_ForceFlag tests that force=true continues past device_del failure
+// TestDetachVolume_ForceFlag tests that force=true continues past device_del failure.
 func TestDetachVolume_ForceFlag(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -2493,7 +2493,7 @@ func TestDetachVolume_BlockdevDelFailure(t *testing.T) {
 	assert.True(t, bdmFound, "Volume must remain in BlockDeviceMappings when blockdev-del fails")
 }
 
-// TestDetachVolume_SuccessWithDeviceMatch tests detach with correct --device cross-check
+// TestDetachVolume_SuccessWithDeviceMatch tests detach with correct --device cross-check.
 func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 	natsURL := sharedNATSURL
 

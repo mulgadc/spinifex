@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setupEmbeddedNATS starts an embedded NATS server for testing
+// setupEmbeddedNATS starts an embedded NATS server for testing.
 func setupEmbeddedNATS(t *testing.T) (*server.Server, string) {
 	opts := &server.Options{
 		Host: "127.0.0.1",
@@ -34,7 +34,7 @@ func setupEmbeddedNATS(t *testing.T) (*server.Server, string) {
 	return ns, ns.ClientURL()
 }
 
-// setupTestConfig creates a test configuration with proper paths
+// setupTestConfig creates a test configuration with proper paths.
 func setupTestConfig(t *testing.T, natsURL string) *Config {
 	testDir := t.TempDir()
 
@@ -55,7 +55,7 @@ func setupTestConfig(t *testing.T, natsURL string) *Config {
 	return cfg
 }
 
-// createMockVolumeState creates mock volume state files for testing
+// createMockVolumeState creates mock volume state files for testing.
 func createMockVolumeState(t *testing.T, baseDir, volumeName string) {
 	volumeDir := filepath.Join(baseDir, volumeName)
 	err := os.MkdirAll(volumeDir, 0755)
@@ -76,7 +76,7 @@ func createMockVolumeState(t *testing.T, baseDir, volumeName string) {
 	assert.NoError(t, err)
 }
 
-// TestIntegration_ServiceStartWithEmbeddedNATS tests service startup with embedded NATS
+// TestIntegration_ServiceStartWithEmbeddedNATS tests service startup with embedded NATS.
 func TestIntegration_ServiceStartWithEmbeddedNATS(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -110,7 +110,7 @@ func TestIntegration_ServiceStartWithEmbeddedNATS(t *testing.T) {
 	// Test completes, launchService will be cleaned up when test ends
 }
 
-// TestIntegration_EBSMountRequest tests EBS mount request handling
+// TestIntegration_EBSMountRequest tests EBS mount request handling.
 func TestIntegration_EBSMountRequest(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -173,7 +173,7 @@ func TestIntegration_EBSMountRequest(t *testing.T) {
 	t.Logf("Received expected error response: %s", response.Error)
 }
 
-// TestIntegration_EBSUnmountRequest tests EBS unmount request handling
+// TestIntegration_EBSUnmountRequest tests EBS unmount request handling.
 func TestIntegration_EBSUnmountRequest(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -243,7 +243,7 @@ func TestIntegration_EBSUnmountRequest(t *testing.T) {
 	t.Logf("Unmount successful for volume: %s", response.Volume)
 }
 
-// TestIntegration_EBSUnmountNonExistentVolume tests unmounting a volume that doesn't exist
+// TestIntegration_EBSUnmountNonExistentVolume tests unmounting a volume that doesn't exist.
 func TestIntegration_EBSUnmountNonExistentVolume(t *testing.T) {
 	t.Parallel()
 
@@ -392,7 +392,7 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 	assert.Equal(t, "vol-seal-fail", cfg.MountedVolumes[0].Name)
 }
 
-// TestIntegration_ConcurrentMountRequests tests multiple concurrent mount requests
+// TestIntegration_ConcurrentMountRequests tests multiple concurrent mount requests.
 func TestIntegration_ConcurrentMountRequests(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -459,7 +459,7 @@ func TestIntegration_ConcurrentMountRequests(t *testing.T) {
 	assert.True(t, successCount > 0 || errorCount > 0, "Should have received some responses or timeouts")
 }
 
-// TestIntegration_MessageSubscriptions tests that all expected subscriptions are active
+// TestIntegration_MessageSubscriptions tests that all expected subscriptions are active.
 func TestIntegration_MessageSubscriptions(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -513,7 +513,7 @@ func TestIntegration_MessageSubscriptions(t *testing.T) {
 	t.Log("Successfully published to ebs.delete subscription")
 }
 
-// TestIntegration_ServiceGracefulShutdown tests graceful shutdown behavior
+// TestIntegration_ServiceGracefulShutdown tests graceful shutdown behavior.
 func TestIntegration_ServiceGracefulShutdown(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -564,7 +564,7 @@ func TestIntegration_ServiceGracefulShutdown(t *testing.T) {
 	t.Log("Service is running and responsive")
 }
 
-// TestIntegration_GenericTopicRouting tests that NodeName="" uses generic ebs.unmount with queue group
+// TestIntegration_GenericTopicRouting tests that NodeName="" uses generic ebs.unmount with queue group.
 func TestIntegration_GenericTopicRouting(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -602,7 +602,7 @@ func TestIntegration_GenericTopicRouting(t *testing.T) {
 }
 
 // TestIntegration_MountAuxiliaryVolumeSuffix tests that volumes with -cloudinit suffix
-// reach the mount handler and trigger the auxiliary volume code path
+// reach the mount handler and trigger the auxiliary volume code path.
 func TestIntegration_MountAuxiliaryVolumeSuffix(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {

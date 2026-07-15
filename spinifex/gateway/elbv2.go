@@ -19,7 +19,7 @@ type ELBv2Handler func(ctx context.Context, action string, q map[string]string, 
 
 // elbv2Handler creates a type-safe ELBv2Handler that allocates the typed input struct,
 // parses query params into it, calls the handler, and marshals the output to XML.
-// ELBv2 uses the IAM-style XML envelope: <ActionResponse><ActionResult>...</ActionResult></ActionResponse>
+// ELBv2 uses the IAM-style XML envelope: <ActionResponse><ActionResult>...</ActionResult></ActionResponse>.
 func elbv2Handler[In any](handler func(context.Context, *In, *GatewayConfig, string) (any, error)) ELBv2Handler {
 	return func(ctx context.Context, action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error) {
 		input := new(In)

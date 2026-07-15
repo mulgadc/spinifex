@@ -23,7 +23,7 @@ const (
 	KVBucketENIsVersion = 1
 )
 
-// ENIRecord represents a stored Elastic Network Interface
+// ENIRecord represents a stored Elastic Network Interface.
 type ENIRecord struct {
 	NetworkInterfaceId string `json:"network_interface_id"`
 	SubnetId           string `json:"subnet_id"`
@@ -82,7 +82,7 @@ func eniIsLiveAttachment(r *ENIRecord) bool {
 	return r.Status == "in-use" || r.InstanceId != "" || r.AttachmentId != ""
 }
 
-// CreateNetworkInterface creates a new ENI in the specified subnet
+// CreateNetworkInterface creates a new ENI in the specified subnet.
 func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	if input.SubnetId == nil || *input.SubnetId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -353,7 +353,7 @@ var describeNetworkInterfacesValidFilters = map[string]bool{
 	"attachment.status":        true,
 }
 
-// DescribeNetworkInterfaces lists ENIs with optional filters
+// DescribeNetworkInterfaces lists ENIs with optional filters.
 func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error) {
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeNetworkInterfacesValidFilters)
 	if err != nil {
@@ -695,7 +695,7 @@ func (s *VPCServiceImpl) UpdateENIPublicIP(accountID, eniId, publicIP, poolName 
 	return nil
 }
 
-// eniRecordToEC2 converts an ENI record to an EC2 NetworkInterface
+// eniRecordToEC2 converts an ENI record to an EC2 NetworkInterface.
 func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string) *ec2.NetworkInterface {
 	// ENIs with spinifex:managed-by tag are system-managed (e.g. by ELBv2)
 	requesterManaged := record.Tags["spinifex:managed-by"] != ""

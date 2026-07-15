@@ -7,7 +7,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DescribeVpcs handles the EC2 DescribeVpcs API call
+// DescribeVpcs handles the EC2 DescribeVpcs API call.
 func DescribeVpcs(ctx context.Context, input *ec2.DescribeVpcsInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVpcsOutput, error) {
 	var output ec2.DescribeVpcsOutput
 

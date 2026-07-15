@@ -22,7 +22,7 @@ import (
 
 var _ NatGatewayService = (*NatGatewayServiceImpl)(nil)
 
-// NatGatewayServiceImpl implements NAT Gateway operations with NATS JetStream persistence
+// NatGatewayServiceImpl implements NAT Gateway operations with NATS JetStream persistence.
 type NatGatewayServiceImpl struct {
 	natgwKV        nats.KeyValue
 	deletedNatgwKV nats.KeyValue
@@ -32,7 +32,7 @@ type NatGatewayServiceImpl struct {
 	natsConn       *nats.Conn
 }
 
-// NewNatGatewayServiceImplWithNATS creates a NAT Gateway service
+// NewNatGatewayServiceImplWithNATS creates a NAT Gateway service.
 func NewNatGatewayServiceImplWithNATS(natsConn *nats.Conn) (*NatGatewayServiceImpl, error) {
 	js, err := natsConn.JetStream()
 	if err != nil {
@@ -100,7 +100,7 @@ type natGatewayEvent struct {
 	SubnetCidr   string `json:"subnet_cidr"` // private subnet CIDR for SNAT rule
 }
 
-// CreateNatGateway creates a NAT Gateway in a public subnet with an EIP
+// CreateNatGateway creates a NAT Gateway in a public subnet with an EIP.
 func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2.CreateNatGatewayInput, accountID string) (*ec2.CreateNatGatewayOutput, error) {
 	if input.SubnetId == nil || *input.SubnetId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -178,7 +178,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	}, nil
 }
 
-// DeleteNatGateway deletes a NAT Gateway and removes OVN SNAT rules
+// DeleteNatGateway deletes a NAT Gateway and removes OVN SNAT rules.
 func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2.DeleteNatGatewayInput, accountID string) (*ec2.DeleteNatGatewayOutput, error) {
 	if input.NatGatewayId == nil || *input.NatGatewayId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -360,7 +360,7 @@ var describeNatGatewaysValidFilters = map[string]bool{
 	"state":          true,
 }
 
-// DescribeNatGateways lists NAT Gateways, optionally filtered
+// DescribeNatGateways lists NAT Gateways, optionally filtered.
 func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *ec2.DescribeNatGatewaysInput, accountID string) (*ec2.DescribeNatGatewaysOutput, error) {
 	parsedFilters, err := filterutil.ParseFilters(input.Filter, describeNatGatewaysValidFilters)
 	if err != nil {
@@ -491,7 +491,7 @@ func (s *NatGatewayServiceImpl) PublishDeleteEvent(vpcId, natGatewayId, publicIp
 	})
 }
 
-// GetNatGateway retrieves a NAT Gateway record by ID
+// GetNatGateway retrieves a NAT Gateway record by ID.
 func (s *NatGatewayServiceImpl) GetNatGateway(accountID, natgwID string) (*NatGatewayRecord, error) {
 	entry, err := s.natgwKV.Get(utils.AccountKey(accountID, natgwID))
 	if err != nil {

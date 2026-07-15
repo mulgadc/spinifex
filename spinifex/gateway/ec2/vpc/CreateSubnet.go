@@ -23,7 +23,7 @@ func ValidateCreateSubnetInput(input *ec2.CreateSubnetInput) error {
 	return nil
 }
 
-// CreateSubnet handles the EC2 CreateSubnet API call
+// CreateSubnet handles the EC2 CreateSubnet API call.
 func CreateSubnet(ctx context.Context, input *ec2.CreateSubnetInput, natsConn *nats.Conn, accountID string) (ec2.CreateSubnetOutput, error) {
 	var output ec2.CreateSubnetOutput
 

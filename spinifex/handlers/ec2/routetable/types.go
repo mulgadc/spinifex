@@ -7,7 +7,7 @@ const (
 	KVBucketRouteTablesVersion = 1
 )
 
-// RouteTableRecord represents a stored Route Table
+// RouteTableRecord represents a stored Route Table.
 type RouteTableRecord struct {
 	RouteTableId string              `json:"route_table_id"`
 	VpcId        string              `json:"vpc_id"`
@@ -19,7 +19,7 @@ type RouteTableRecord struct {
 	CreatedAt    time.Time           `json:"created_at"`
 }
 
-// RouteRecord represents a single route in a route table
+// RouteRecord represents a single route in a route table.
 type RouteRecord struct {
 	DestinationCidrBlock string `json:"destination_cidr_block"`
 	GatewayId            string `json:"gateway_id,omitempty"`     // "local" or "igw-xxx"
@@ -28,7 +28,7 @@ type RouteRecord struct {
 	Origin               string `json:"origin"`                   // "CreateRouteTable", "CreateRoute"
 }
 
-// AssociationRecord represents a route table ↔ subnet association
+// AssociationRecord represents a route table ↔ subnet association.
 type AssociationRecord struct {
 	AssociationId string `json:"association_id"`
 	SubnetId      string `json:"subnet_id,omitempty"` // empty for main table VPC association

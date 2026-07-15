@@ -26,7 +26,7 @@ import (
 const testAccountID = "111122223333"
 const otherAccountID = "444455556666"
 
-// setupTestSnapshotService creates a snapshot service with in-memory storage for testing
+// setupTestSnapshotService creates a snapshot service with in-memory storage for testing.
 func setupTestSnapshotService(t *testing.T) (*SnapshotServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{
@@ -63,7 +63,7 @@ func createTestVolume(t *testing.T, store *objectstore.MemoryObjectStore, volume
 	require.NoError(t, err)
 }
 
-// TestCreateSnapshot tests creating a snapshot from a volume
+// TestCreateSnapshot tests creating a snapshot from a volume.
 func TestCreateSnapshot(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -101,7 +101,7 @@ func TestCreateSnapshot(t *testing.T) {
 	assert.Equal(t, "test-snap", *result.Tags[0].Value)
 }
 
-// TestCreateSnapshot_MissingVolumeId tests creating a snapshot without volume ID
+// TestCreateSnapshot_MissingVolumeId tests creating a snapshot without volume ID.
 func TestCreateSnapshot_MissingVolumeId(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)
 
@@ -110,7 +110,7 @@ func TestCreateSnapshot_MissingVolumeId(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 }
 
-// TestCreateSnapshot_VolumeZeroSize tests that creating a snapshot from a volume with zero SizeGiB fails
+// TestCreateSnapshot_VolumeZeroSize tests that creating a snapshot from a volume with zero SizeGiB fails.
 func TestCreateSnapshot_VolumeZeroSize(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -218,7 +218,7 @@ func TestSnapshotInUseByVolumes_EncryptedVolume(t *testing.T) {
 	assert.True(t, inUse, "encrypted volume's SnapshotID must be visible through the envelope")
 }
 
-// TestCreateSnapshot_VolumeNotFound tests creating a snapshot from non-existent volume
+// TestCreateSnapshot_VolumeNotFound tests creating a snapshot from non-existent volume.
 func TestCreateSnapshot_VolumeNotFound(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)
 
@@ -229,7 +229,7 @@ func TestCreateSnapshot_VolumeNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 }
 
-// TestDescribeSnapshots tests listing all snapshots
+// TestDescribeSnapshots tests listing all snapshots.
 func TestDescribeSnapshots(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -265,7 +265,7 @@ func TestDescribeSnapshots(t *testing.T) {
 	assert.True(t, snapshotIDs[*snap2.SnapshotId])
 }
 
-// TestDescribeSnapshots_ByID tests listing specific snapshots by ID
+// TestDescribeSnapshots_ByID tests listing specific snapshots by ID.
 func TestDescribeSnapshots_ByID(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -293,7 +293,7 @@ func TestDescribeSnapshots_ByID(t *testing.T) {
 	assert.Equal(t, *snap1.SnapshotId, *result.Snapshots[0].SnapshotId)
 }
 
-// TestDescribeSnapshots_Empty tests listing snapshots when none exist
+// TestDescribeSnapshots_Empty tests listing snapshots when none exist.
 func TestDescribeSnapshots_Empty(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)
 
@@ -303,7 +303,7 @@ func TestDescribeSnapshots_Empty(t *testing.T) {
 	assert.Empty(t, result.Snapshots)
 }
 
-// TestDescribeSnapshots_AccountScoping tests that account A cannot see account B's snapshots
+// TestDescribeSnapshots_AccountScoping tests that account A cannot see account B's snapshots.
 func TestDescribeSnapshots_AccountScoping(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -334,7 +334,7 @@ func TestDescribeSnapshots_AccountScoping(t *testing.T) {
 	assert.Equal(t, *snapB.SnapshotId, *resultB.Snapshots[0].SnapshotId)
 }
 
-// TestDeleteSnapshot tests deleting a snapshot
+// TestDeleteSnapshot tests deleting a snapshot.
 func TestDeleteSnapshot(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -366,7 +366,7 @@ func TestDeleteSnapshot(t *testing.T) {
 	assert.Empty(t, result.Snapshots)
 }
 
-// TestDeleteSnapshot_WrongAccount tests that account B cannot delete account A's snapshot
+// TestDeleteSnapshot_WrongAccount tests that account B cannot delete account A's snapshot.
 func TestDeleteSnapshot_WrongAccount(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -391,7 +391,7 @@ func TestDeleteSnapshot_WrongAccount(t *testing.T) {
 	assert.Len(t, result.Snapshots, 1)
 }
 
-// TestDeleteSnapshot_InUseByVolume tests that deleting a snapshot fails when a volume was created from it
+// TestDeleteSnapshot_InUseByVolume tests that deleting a snapshot fails when a volume was created from it.
 func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -435,7 +435,7 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	assert.Len(t, result.Snapshots, 1)
 }
 
-// TestDeleteSnapshot_NotFound tests deleting a non-existent snapshot
+// TestDeleteSnapshot_NotFound tests deleting a non-existent snapshot.
 func TestDeleteSnapshot_NotFound(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)
 
@@ -446,7 +446,7 @@ func TestDeleteSnapshot_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
 }
 
-// TestDeleteSnapshot_MissingID tests deleting without snapshot ID
+// TestDeleteSnapshot_MissingID tests deleting without snapshot ID.
 func TestDeleteSnapshot_MissingID(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)
 
@@ -455,7 +455,7 @@ func TestDeleteSnapshot_MissingID(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 }
 
-// TestCopySnapshot tests copying a snapshot
+// TestCopySnapshot tests copying a snapshot.
 func TestCopySnapshot(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -483,7 +483,7 @@ func TestCopySnapshot(t *testing.T) {
 	assert.Len(t, result.Snapshots, 2)
 }
 
-// TestCopySnapshot_SetsCallerAsOwner tests that copied snapshot is owned by the caller
+// TestCopySnapshot_SetsCallerAsOwner tests that copied snapshot is owned by the caller.
 func TestCopySnapshot_SetsCallerAsOwner(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -508,7 +508,7 @@ func TestCopySnapshot_SetsCallerAsOwner(t *testing.T) {
 	assert.Equal(t, testAccountID, *result.Snapshots[0].OwnerId)
 }
 
-// TestCopySnapshot_WrongAccount tests that account B cannot copy account A's snapshot
+// TestCopySnapshot_WrongAccount tests that account B cannot copy account A's snapshot.
 func TestCopySnapshot_WrongAccount(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -531,7 +531,7 @@ func TestCopySnapshot_WrongAccount(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorUnauthorizedOperation)
 }
 
-// TestCopySnapshot_NotFound tests copying a non-existent snapshot
+// TestCopySnapshot_NotFound tests copying a non-existent snapshot.
 func TestCopySnapshot_NotFound(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)
 
@@ -542,7 +542,7 @@ func TestCopySnapshot_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
 }
 
-// TestCopySnapshot_MissingSourceID tests copying without source snapshot ID
+// TestCopySnapshot_MissingSourceID tests copying without source snapshot ID.
 func TestCopySnapshot_MissingSourceID(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)
 
@@ -551,7 +551,7 @@ func TestCopySnapshot_MissingSourceID(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 }
 
-// TestCopySnapshot_PreservesTags tests that tags are copied
+// TestCopySnapshot_PreservesTags tests that tags are copied.
 func TestCopySnapshot_PreservesTags(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 

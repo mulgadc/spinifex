@@ -176,7 +176,7 @@ func (d *Daemon) handleEC2DescribeVolumesModifications(msg *nats.Msg) {
 	handleNATSRequest(msg, d.volumeService.DescribeVolumesModifications)
 }
 
-// handleEC2ModifyVolume processes incoming EC2 ModifyVolume requests
+// handleEC2ModifyVolume processes incoming EC2 ModifyVolume requests.
 func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
 	ctx, span := utils.StartConsumerSpan(msg)
 	defer span.End()

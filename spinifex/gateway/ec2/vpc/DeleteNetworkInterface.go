@@ -20,7 +20,7 @@ func ValidateDeleteNetworkInterfaceInput(input *ec2.DeleteNetworkInterfaceInput)
 	return nil
 }
 
-// DeleteNetworkInterface handles the EC2 DeleteNetworkInterface API call
+// DeleteNetworkInterface handles the EC2 DeleteNetworkInterface API call.
 func DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.DeleteNetworkInterfaceOutput, error) {
 	var output ec2.DeleteNetworkInterfaceOutput
 

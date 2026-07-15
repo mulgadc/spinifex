@@ -8,7 +8,7 @@ import (
 
 // DefaultConfigDir returns the default configuration directory.
 // Production: /etc/spinifex (when /etc/spinifex exists)
-// Development: ~/spinifex/config
+// Development: ~/spinifex/config.
 func DefaultConfigDir() string {
 	if isProductionLayout() {
 		return "/etc/spinifex"
@@ -18,7 +18,7 @@ func DefaultConfigDir() string {
 
 // DefaultDataDir returns the default data directory.
 // Production: /var/lib/spinifex
-// Development: ~/spinifex
+// Development: ~/spinifex.
 func DefaultDataDir() string {
 	if isProductionLayout() {
 		return "/var/lib/spinifex"
@@ -28,7 +28,7 @@ func DefaultDataDir() string {
 
 // LogDirFor returns the log directory for a given data directory.
 // Production: /var/log/spinifex (matches systemd ReadWritePaths)
-// Development: <dataDir>/logs (supports custom per-node data dirs)
+// Development: <dataDir>/logs (supports custom per-node data dirs).
 func LogDirFor(dataDir string) string {
 	if isProductionLayout() {
 		return "/var/log/spinifex"

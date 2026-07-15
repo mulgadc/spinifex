@@ -16,7 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDetachVolumeInput validates the input parameters for DetachVolume
+// ValidateDetachVolumeInput validates the input parameters for DetachVolume.
 func ValidateDetachVolumeInput(input *ec2.DetachVolumeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -29,7 +29,7 @@ func ValidateDetachVolumeInput(input *ec2.DetachVolumeInput) error {
 	return nil
 }
 
-// DetachVolume sends a detach-volume command to the daemon owning the instance
+// DetachVolume sends a detach-volume command to the daemon owning the instance.
 func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *nats.Conn, accountID string) (ec2.VolumeAttachment, error) {
 	var output ec2.VolumeAttachment
 

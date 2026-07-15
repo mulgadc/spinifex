@@ -8,7 +8,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// CreateAccessEntry — POST /clusters/{name}/access-entries
+// CreateAccessEntry — POST /clusters/{name}/access-entries.
 func CreateAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, cluster string, body []byte) (*eks.CreateAccessEntryOutput, error) {
 	input := new(eks.CreateAccessEntryInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -18,7 +18,7 @@ func CreateAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, clus
 	return handlers_eks.NewNATSEKSService(natsConn).CreateAccessEntry(ctx, input, accountID)
 }
 
-// DescribeAccessEntry — GET /clusters/{name}/access-entries/{arn}
+// DescribeAccessEntry — GET /clusters/{name}/access-entries/{arn}.
 func DescribeAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN string) (*eks.DescribeAccessEntryOutput, error) {
 	input := &eks.DescribeAccessEntryInput{
 		ClusterName:  aws.String(cluster),
@@ -27,13 +27,13 @@ func DescribeAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, cl
 	return handlers_eks.NewNATSEKSService(natsConn).DescribeAccessEntry(ctx, input, accountID)
 }
 
-// ListAccessEntries — GET /clusters/{name}/access-entries
+// ListAccessEntries — GET /clusters/{name}/access-entries.
 func ListAccessEntries(ctx context.Context, natsConn *nats.Conn, accountID, cluster string) (*eks.ListAccessEntriesOutput, error) {
 	input := &eks.ListAccessEntriesInput{ClusterName: aws.String(cluster)}
 	return handlers_eks.NewNATSEKSService(natsConn).ListAccessEntries(ctx, input, accountID)
 }
 
-// UpdateAccessEntry — POST /clusters/{name}/access-entries/{arn}
+// UpdateAccessEntry — POST /clusters/{name}/access-entries/{arn}.
 func UpdateAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN string, body []byte) (*eks.UpdateAccessEntryOutput, error) {
 	input := new(eks.UpdateAccessEntryInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -44,7 +44,7 @@ func UpdateAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, clus
 	return handlers_eks.NewNATSEKSService(natsConn).UpdateAccessEntry(ctx, input, accountID)
 }
 
-// DeleteAccessEntry — DELETE /clusters/{name}/access-entries/{arn}
+// DeleteAccessEntry — DELETE /clusters/{name}/access-entries/{arn}.
 func DeleteAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN string) (*eks.DeleteAccessEntryOutput, error) {
 	input := &eks.DeleteAccessEntryInput{
 		ClusterName:  aws.String(cluster),
@@ -53,7 +53,7 @@ func DeleteAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, clus
 	return handlers_eks.NewNATSEKSService(natsConn).DeleteAccessEntry(ctx, input, accountID)
 }
 
-// AssociateAccessPolicy — POST /clusters/{name}/access-entries/{arn}/access-policies
+// AssociateAccessPolicy — POST /clusters/{name}/access-entries/{arn}/access-policies.
 func AssociateAccessPolicy(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN string, body []byte) (*eks.AssociateAccessPolicyOutput, error) {
 	input := new(eks.AssociateAccessPolicyInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -64,7 +64,7 @@ func AssociateAccessPolicy(ctx context.Context, natsConn *nats.Conn, accountID, 
 	return handlers_eks.NewNATSEKSService(natsConn).AssociateAccessPolicy(ctx, input, accountID)
 }
 
-// DisassociateAccessPolicy — DELETE /clusters/{name}/access-entries/{arn}/access-policies/{policyArn}
+// DisassociateAccessPolicy — DELETE /clusters/{name}/access-entries/{arn}/access-policies/{policyArn}.
 func DisassociateAccessPolicy(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN, policyARN string) (*eks.DisassociateAccessPolicyOutput, error) {
 	input := &eks.DisassociateAccessPolicyInput{
 		ClusterName:  aws.String(cluster),
@@ -74,7 +74,7 @@ func DisassociateAccessPolicy(ctx context.Context, natsConn *nats.Conn, accountI
 	return handlers_eks.NewNATSEKSService(natsConn).DisassociateAccessPolicy(ctx, input, accountID)
 }
 
-// ListAssociatedAccessPolicies — GET /clusters/{name}/access-entries/{arn}/access-policies
+// ListAssociatedAccessPolicies — GET /clusters/{name}/access-entries/{arn}/access-policies.
 func ListAssociatedAccessPolicies(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN string) (*eks.ListAssociatedAccessPoliciesOutput, error) {
 	input := &eks.ListAssociatedAccessPoliciesInput{
 		ClusterName:  aws.String(cluster),
@@ -83,7 +83,7 @@ func ListAssociatedAccessPolicies(ctx context.Context, natsConn *nats.Conn, acco
 	return handlers_eks.NewNATSEKSService(natsConn).ListAssociatedAccessPolicies(ctx, input, accountID)
 }
 
-// ListAccessPolicies — GET /access-policies
+// ListAccessPolicies — GET /access-policies.
 func ListAccessPolicies(ctx context.Context, natsConn *nats.Conn, accountID string) (*eks.ListAccessPoliciesOutput, error) {
 	return handlers_eks.NewNATSEKSService(natsConn).ListAccessPolicies(ctx, &eks.ListAccessPoliciesInput{}, accountID)
 }

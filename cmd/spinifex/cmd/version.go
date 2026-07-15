@@ -8,7 +8,7 @@ import (
 )
 
 // Version variables set via ldflags at build time.
-// Example: go build -ldflags "-X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Version=v1.0.0"
+// Example: go build -ldflags "-X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Version=v1.0.0".
 var (
 	Version = "dev"
 	Commit  = "unknown"

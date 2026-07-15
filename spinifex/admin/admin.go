@@ -504,7 +504,7 @@ func DefaultAccountName() string {
 	return "spinifex"
 }
 
-// GenerateNATSToken generates a secure random token for NATS
+// GenerateNATSToken generates a secure random token for NATS.
 func GenerateNATSToken() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {

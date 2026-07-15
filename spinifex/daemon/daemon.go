@@ -116,7 +116,7 @@ type ResourceManager struct {
 // handler's GatePublisher hook — the two services are wired together below.
 var _ handlers_ec2_igw.GatePublisher = (*handlers_ec2_routetable.RouteTableServiceImpl)(nil)
 
-// Daemon represents the main daemon service
+// Daemon represents the main daemon service.
 type Daemon struct {
 	node                  string
 	clusterConfig         *config.ClusterConfig
@@ -343,7 +343,7 @@ func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
 // execCommand wraps exec.Command so tests can substitute a fake implementation.
 var execCommand = exec.Command
 
-// getSystemMemory returns the total system memory in GB
+// getSystemMemory returns the total system memory in GB.
 func getSystemMemory() (float64, error) {
 	switch runtime.GOOS {
 	case "darwin":
@@ -523,7 +523,7 @@ func (rm *ResourceManager) instanceMemChargeMiB(it *ec2.InstanceTypeInfo) int64 
 		nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
 }
 
-// GetInstanceTypeInfos returns all instance types as ec2.InstanceTypeInfo for AWS API compatibility
+// GetInstanceTypeInfos returns all instance types as ec2.InstanceTypeInfo for AWS API compatibility.
 func (rm *ResourceManager) GetInstanceTypeInfos() []*ec2.InstanceTypeInfo {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -666,12 +666,12 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 	return totalVCPU, totalMemGB, reservedVCPU, reservedMemGB, allocVCPU, allocMemGB, caps
 }
 
-// SetConfigPath sets the configuration file path for cluster management
+// SetConfigPath sets the configuration file path for cluster management.
 func (d *Daemon) SetConfigPath(path string) {
 	d.configPath = path
 }
 
-// NewDaemon creates a new daemon instance
+// NewDaemon creates a new daemon instance.
 func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -2340,7 +2340,7 @@ func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
 	return nil
 }
 
-// deallocate releases resources for an instance and updates NATS subscriptions
+// deallocate releases resources for an instance and updates NATS subscriptions.
 func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	rm.mu.Lock()
 	vCPUs := instanceTypeVCPUs(instanceType)

@@ -9,14 +9,14 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// NATSVPCService handles VPC and Subnet operations via NATS messaging
+// NATSVPCService handles VPC and Subnet operations via NATS messaging.
 type NATSVPCService struct {
 	natsConn *nats.Conn
 }
 
 var _ VPCService = (*NATSVPCService)(nil)
 
-// NewNATSVPCService creates a new NATS-based VPC service
+// NewNATSVPCService creates a new NATS-based VPC service.
 func NewNATSVPCService(conn *nats.Conn) VPCService {
 	return &NATSVPCService{natsConn: conn}
 }

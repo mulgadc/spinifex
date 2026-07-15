@@ -11,7 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDescribeSnapshotsInput validates the input parameters for DescribeSnapshots
+// ValidateDescribeSnapshotsInput validates the input parameters for DescribeSnapshots.
 func ValidateDescribeSnapshotsInput(input *ec2.DescribeSnapshotsInput) error {
 	if input == nil {
 		return nil
@@ -26,7 +26,7 @@ func ValidateDescribeSnapshotsInput(input *ec2.DescribeSnapshotsInput) error {
 	return nil
 }
 
-// DescribeSnapshots handles the EC2 DescribeSnapshots API call
+// DescribeSnapshots handles the EC2 DescribeSnapshots API call.
 func DescribeSnapshots(ctx context.Context, input *ec2.DescribeSnapshotsInput, natsConn *nats.Conn, accountID string) (ec2.DescribeSnapshotsOutput, error) {
 	var output ec2.DescribeSnapshotsOutput
 

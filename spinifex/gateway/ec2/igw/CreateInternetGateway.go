@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// CreateInternetGateway handles the EC2 CreateInternetGateway API call
+// CreateInternetGateway handles the EC2 CreateInternetGateway API call.
 func CreateInternetGateway(ctx context.Context, input *ec2.CreateInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateInternetGatewayOutput, error) {
 	var output ec2.CreateInternetGatewayOutput
 

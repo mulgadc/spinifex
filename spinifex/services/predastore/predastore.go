@@ -15,7 +15,7 @@ import (
 
 var serviceName = "predastore"
 
-// Config holds the configuration for the predastore service
+// Config holds the configuration for the predastore service.
 type Config struct {
 	ConfigPath string
 	Port       int
@@ -37,13 +37,13 @@ type Config struct {
 	PprofOutputPath string
 }
 
-// Service wraps the predastore S3 server
+// Service wraps the predastore S3 server.
 type Service struct {
 	Config *Config
 	server *s3.Server
 }
 
-// New creates a new predastore service
+// New creates a new predastore service.
 func New(config any) (svc *Service, err error) {
 	cfg, ok := config.(*Config)
 	if !ok {
@@ -55,7 +55,7 @@ func New(config any) (svc *Service, err error) {
 	return svc, nil
 }
 
-// Start starts the predastore service
+// Start starts the predastore service.
 func (svc *Service) Start() (int, error) {
 	if svc.Config.EncryptionKeyFile == "" {
 		return 0, fmt.Errorf("predastore encryption key file is required (set EncryptionKeyFile)")
@@ -103,17 +103,17 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-// Stop stops the predastore service
+// Stop stops the predastore service.
 func (svc *Service) Stop() error {
 	return utils.StopProcessAt(svc.Config.BasePath, serviceName)
 }
 
-// Status returns the status of the predastore service
+// Status returns the status of the predastore service.
 func (svc *Service) Status() (string, error) {
 	return utils.ServiceStatus(svc.Config.BasePath, serviceName)
 }
 
-// Shutdown gracefully shuts down the predastore service
+// Shutdown gracefully shuts down the predastore service.
 func (svc *Service) Shutdown() error {
 	if svc.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -123,7 +123,7 @@ func (svc *Service) Shutdown() error {
 	return svc.Stop()
 }
 
-// Reload reloads the predastore service configuration
+// Reload reloads the predastore service configuration.
 func (svc *Service) Reload() error {
 	return nil
 }

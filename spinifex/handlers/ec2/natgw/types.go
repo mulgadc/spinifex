@@ -10,7 +10,7 @@ const (
 	KVBucketDeletedNatGatewaysVersion = 1
 )
 
-// NatGatewayRecord represents a stored NAT Gateway
+// NatGatewayRecord represents a stored NAT Gateway.
 type NatGatewayRecord struct {
 	NatGatewayId string            `json:"nat_gateway_id"`
 	VpcId        string            `json:"vpc_id"`

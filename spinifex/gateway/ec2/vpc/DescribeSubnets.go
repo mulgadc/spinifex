@@ -7,7 +7,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DescribeSubnets handles the EC2 DescribeSubnets API call
+// DescribeSubnets handles the EC2 DescribeSubnets API call.
 func DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, natsConn *nats.Conn, accountID string) (ec2.DescribeSubnetsOutput, error) {
 	var output ec2.DescribeSubnetsOutput
 

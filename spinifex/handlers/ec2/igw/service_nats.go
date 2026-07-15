@@ -9,15 +9,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Ensure NATSIGWService implements IGWService
+// Ensure NATSIGWService implements IGWService.
 var _ IGWService = (*NATSIGWService)(nil)
 
-// NATSIGWService handles Internet Gateway operations via NATS messaging
+// NATSIGWService handles Internet Gateway operations via NATS messaging.
 type NATSIGWService struct {
 	natsConn *nats.Conn
 }
 
-// NewNATSIGWService creates a new NATS-based Internet Gateway service
+// NewNATSIGWService creates a new NATS-based Internet Gateway service.
 func NewNATSIGWService(conn *nats.Conn) IGWService {
 	return &NATSIGWService{natsConn: conn}
 }

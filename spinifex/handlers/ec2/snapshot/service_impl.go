@@ -30,7 +30,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Ensure SnapshotServiceImpl implements SnapshotService
+// Ensure SnapshotServiceImpl implements SnapshotService.
 var _ SnapshotService = (*SnapshotServiceImpl)(nil)
 
 const (
@@ -38,7 +38,7 @@ const (
 	KVBucketVolumeSnapshotsVersion = 1
 )
 
-// SnapshotServiceImpl implements SnapshotService with S3-backed storage
+// SnapshotServiceImpl implements SnapshotService with S3-backed storage.
 type SnapshotServiceImpl struct {
 	config   *config.Config
 	store    objectstore.ObjectStore
@@ -47,7 +47,7 @@ type SnapshotServiceImpl struct {
 	mutex    sync.RWMutex
 }
 
-// SnapshotConfig represents snapshot metadata stored in S3
+// SnapshotConfig represents snapshot metadata stored in S3.
 type SnapshotConfig struct {
 	SnapshotID       string            `json:"snapshot_id"`
 	VolumeID         string            `json:"volume_id"`
@@ -62,7 +62,7 @@ type SnapshotConfig struct {
 	Tags             map[string]string `json:"tags"`
 }
 
-// NewSnapshotServiceImplWithNATS creates a snapshot service with JetStream KV for volume-snapshot tracking
+// NewSnapshotServiceImplWithNATS creates a snapshot service with JetStream KV for volume-snapshot tracking.
 func NewSnapshotServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*SnapshotServiceImpl, nats.KeyValue, error) {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
@@ -166,12 +166,12 @@ func (s *SnapshotServiceImpl) getSnapshotConfig(snapshotID string) (*SnapshotCon
 	return cfg, nil
 }
 
-// putSnapshotConfig stores snapshot config to S3
+// putSnapshotConfig stores snapshot config to S3.
 func (s *SnapshotServiceImpl) putSnapshotConfig(snapshotID string, cfg *SnapshotConfig) error {
 	return WriteSnapshotConfig(s.store, s.config.Predastore.Bucket, snapshotID, cfg)
 }
 
-// snapshotConfigToEC2 converts a SnapshotConfig to an EC2 Snapshot response object
+// snapshotConfigToEC2 converts a SnapshotConfig to an EC2 Snapshot response object.
 func snapshotConfigToEC2(cfg *SnapshotConfig) *ec2.Snapshot {
 	snapshot := &ec2.Snapshot{
 		SnapshotId:  aws.String(cfg.SnapshotID),
@@ -190,7 +190,7 @@ func snapshotConfigToEC2(cfg *SnapshotConfig) *ec2.Snapshot {
 	return snapshot
 }
 
-// CreateSnapshot creates a new snapshot from a volume
+// CreateSnapshot creates a new snapshot from a volume.
 func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, accountID string) (*ec2.Snapshot, error) {
 	if input == nil || input.VolumeId == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)

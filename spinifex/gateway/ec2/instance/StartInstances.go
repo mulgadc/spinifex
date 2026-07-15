@@ -15,7 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// startStoppedInstanceRequest is the payload sent to the ec2.start topic
+// startStoppedInstanceRequest is the payload sent to the ec2.start topic.
 type startStoppedInstanceRequest struct {
 	InstanceID string `json:"instance_id"`
 }

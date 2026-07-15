@@ -9,15 +9,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Ensure NATSRouteTableService implements RouteTableService
+// Ensure NATSRouteTableService implements RouteTableService.
 var _ RouteTableService = (*NATSRouteTableService)(nil)
 
-// NATSRouteTableService handles Route Table operations via NATS messaging
+// NATSRouteTableService handles Route Table operations via NATS messaging.
 type NATSRouteTableService struct {
 	natsConn *nats.Conn
 }
 
-// NewNATSRouteTableService creates a new NATS-based Route Table service
+// NewNATSRouteTableService creates a new NATS-based Route Table service.
 func NewNATSRouteTableService(conn *nats.Conn) RouteTableService {
 	return &NATSRouteTableService{natsConn: conn}
 }

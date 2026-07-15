@@ -25,14 +25,14 @@ import (
 const testBucket = "test-bucket"
 const testAccountID = "000000000001"
 
-// setupTestImageService creates an image service with in-memory storage for testing
+// setupTestImageService creates an image service with in-memory storage for testing.
 func setupTestImageService(t *testing.T) (*ImageServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := NewImageServiceImplWithStore(store, testBucket)
 	return svc, store
 }
 
-// createTestVolumeConfig creates a test volume config in the mock store
+// createTestVolumeConfig creates a test volume config in the mock store.
 func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
 	volumeState := viperblock.VBState{
 		VolumeConfig: viperblock.VolumeConfig{
@@ -53,7 +53,7 @@ func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, 
 	require.NoError(t, err)
 }
 
-// createTestAMIConfig creates a test AMI config in the mock store
+// createTestAMIConfig creates a test AMI config in the mock store.
 func createTestAMIConfig(t *testing.T, store *objectstore.MemoryObjectStore, imageID string) {
 	amiState := viperblock.VBState{
 		VolumeConfig: viperblock.VolumeConfig{
@@ -110,7 +110,7 @@ func createTestAMIConfigWithName(t *testing.T, store *objectstore.MemoryObjectSt
 	require.NoError(t, err)
 }
 
-// createTestAMIConfigWithOwner creates a test AMI config with a specified name and owner
+// createTestAMIConfigWithOwner creates a test AMI config with a specified name and owner.
 func createTestAMIConfigWithOwner(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner string) {
 	amiState := viperblock.VBState{
 		VolumeConfig: viperblock.VolumeConfig{

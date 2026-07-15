@@ -8,19 +8,19 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ListAddons — GET /clusters/{name}/addons
+// ListAddons — GET /clusters/{name}/addons.
 func ListAddons(ctx context.Context, natsConn *nats.Conn, accountID, cluster string) (*eks.ListAddonsOutput, error) {
 	return handlers_eks.NewNATSEKSService(natsConn).ListAddons(ctx, &eks.ListAddonsInput{
 		ClusterName: aws.String(cluster),
 	}, accountID)
 }
 
-// DescribeAddonVersions — GET /addons/supported-versions
+// DescribeAddonVersions — GET /addons/supported-versions.
 func DescribeAddonVersions(ctx context.Context, natsConn *nats.Conn, accountID string) (*eks.DescribeAddonVersionsOutput, error) {
 	return handlers_eks.NewNATSEKSService(natsConn).DescribeAddonVersions(ctx, &eks.DescribeAddonVersionsInput{}, accountID)
 }
 
-// CreateAddon — POST /clusters/{name}/addons
+// CreateAddon — POST /clusters/{name}/addons.
 func CreateAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster string, body []byte) (*eks.CreateAddonOutput, error) {
 	input := new(eks.CreateAddonInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -30,7 +30,7 @@ func CreateAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster st
 	return handlers_eks.NewNATSEKSService(natsConn).CreateAddon(ctx, input, accountID)
 }
 
-// DeleteAddon — DELETE /clusters/{name}/addons/{addon}
+// DeleteAddon — DELETE /clusters/{name}/addons/{addon}.
 func DeleteAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster, addon string) (*eks.DeleteAddonOutput, error) {
 	input := &eks.DeleteAddonInput{
 		ClusterName: aws.String(cluster),
@@ -39,7 +39,7 @@ func DeleteAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster, a
 	return handlers_eks.NewNATSEKSService(natsConn).DeleteAddon(ctx, input, accountID)
 }
 
-// DescribeAddon — GET /clusters/{name}/addons/{addon}
+// DescribeAddon — GET /clusters/{name}/addons/{addon}.
 func DescribeAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster, addon string) (*eks.DescribeAddonOutput, error) {
 	input := &eks.DescribeAddonInput{
 		ClusterName: aws.String(cluster),
@@ -48,7 +48,7 @@ func DescribeAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster,
 	return handlers_eks.NewNATSEKSService(natsConn).DescribeAddon(ctx, input, accountID)
 }
 
-// UpdateAddon — POST /clusters/{name}/addons/{addon}/update
+// UpdateAddon — POST /clusters/{name}/addons/{addon}/update.
 func UpdateAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster, addon string, body []byte) (*eks.UpdateAddonOutput, error) {
 	input := new(eks.UpdateAddonInput)
 	if err := unmarshalIfBody(body, input); err != nil {

@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
 
-// DescribeAccountAttributes returns static account attributes for the Spinifex platform
+// DescribeAccountAttributes returns static account attributes for the Spinifex platform.
 func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.DescribeAccountAttributesOutput, error) {
 	requestedAttrs := make(map[string]bool)
 	for _, name := range input.AttributeNames {

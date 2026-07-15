@@ -11,7 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCopySnapshotInput validates the input parameters for CopySnapshot
+// ValidateCopySnapshotInput validates the input parameters for CopySnapshot.
 func ValidateCopySnapshotInput(input *ec2.CopySnapshotInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -32,7 +32,7 @@ func ValidateCopySnapshotInput(input *ec2.CopySnapshotInput) error {
 	return nil
 }
 
-// CopySnapshot handles the EC2 CopySnapshot API call
+// CopySnapshot handles the EC2 CopySnapshot API call.
 func CopySnapshot(ctx context.Context, input *ec2.CopySnapshotInput, natsConn *nats.Conn, accountID string) (ec2.CopySnapshotOutput, error) {
 	var output ec2.CopySnapshotOutput
 

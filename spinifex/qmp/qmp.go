@@ -112,7 +112,7 @@ type QMPError struct {
 	Desc  string `json:"desc"`
 }
 
-// QMP greeting on connect
+// QMP greeting on connect.
 type QMPGreeting struct {
 	QMP struct {
 		Version struct {

@@ -66,7 +66,7 @@ var supportedArchs = map[string]bool{
 	"arm64":   true,
 }
 
-// TODO: Confirm suppported platform types
+// TODO: Confirm suppported platform types.
 var supportedPlatforms = map[string]bool{
 	"Linux/UNIX": true,
 	"Windows":    true,
@@ -937,7 +937,7 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, admin.SystemOwnerAlias)
 }
 
-// List remote images available
+// List remote images available.
 func runimagesListCmd(cmd *cobra.Command, args []string) {
 	//fmt.Println(availableImages)
 
@@ -964,7 +964,7 @@ func runimagesListCmd(cmd *cobra.Command, args []string) {
 	pterm.Println("spx admin images import --name <image-name>")
 }
 
-// TODO: Move all logic to a module, use minimal application logic in viper commands
+// TODO: Move all logic to a module, use minimal application logic in viper commands.
 func runAdminInit(cmd *cobra.Command, args []string) {
 	if os.Getuid() != 0 {
 		fmt.Fprintln(os.Stderr, "⚠️  Warning: 'spx admin init' is not running as root.")
@@ -2908,7 +2908,7 @@ func detectDNSServers(iface string) []string {
 }
 
 // parseDNSFromResolvectl extracts IP addresses from resolvectl dns output.
-// Format: "Link 2 (enp0s3): 192.168.1.1 8.8.8.8 1.1.1.1"
+// Format: "Link 2 (enp0s3): 192.168.1.1 8.8.8.8 1.1.1.1".
 func parseDNSFromResolvectl(output string) []string {
 	var servers []string
 	for line := range strings.SplitSeq(output, "\n") {

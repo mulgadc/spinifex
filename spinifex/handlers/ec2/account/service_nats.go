@@ -11,12 +11,12 @@ import (
 
 var _ AccountSettingsService = (*NATSAccountSettingsService)(nil)
 
-// NATSAccountSettingsService implements AccountSettingsService via NATS messaging
+// NATSAccountSettingsService implements AccountSettingsService via NATS messaging.
 type NATSAccountSettingsService struct {
 	natsConn *nats.Conn
 }
 
-// NewNATSAccountSettingsService creates a new NATS-based account settings service
+// NewNATSAccountSettingsService creates a new NATS-based account settings service.
 func NewNATSAccountSettingsService(natsConn *nats.Conn) AccountSettingsService {
 	return &NATSAccountSettingsService{natsConn: natsConn}
 }

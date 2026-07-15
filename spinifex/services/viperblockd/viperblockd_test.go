@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNew tests the service constructor
+// TestNew tests the service constructor.
 func TestNew(t *testing.T) {
 	cfg := &Config{
 		NatsHost:  "nats://localhost:4222",
@@ -37,7 +37,7 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, "/tmp/viperblock", svc.Config.BaseDir)
 }
 
-// TestNewWithNilConfig tests that New handles nil config correctly
+// TestNewWithNilConfig tests that New handles nil config correctly.
 func TestNewWithNilConfig(t *testing.T) {
 	// This will panic if not handled, but based on the code it type asserts
 	// For now we test that it accepts a Config pointer
@@ -49,7 +49,7 @@ func TestNewWithNilConfig(t *testing.T) {
 	assert.NotNil(t, svc.Config)
 }
 
-// TestConfigDefaults tests Config struct default values
+// TestConfigDefaults tests Config struct default values.
 func TestConfigDefaults(t *testing.T) {
 	cfg := &Config{}
 
@@ -61,7 +61,7 @@ func TestConfigDefaults(t *testing.T) {
 	assert.Empty(t, cfg.MountedVolumes)
 }
 
-// TestConfigWithDebug tests Config with debug enabled
+// TestConfigWithDebug tests Config with debug enabled.
 func TestConfigWithDebug(t *testing.T) {
 	cfg := &Config{
 		Debug:    true,
@@ -74,7 +74,7 @@ func TestConfigWithDebug(t *testing.T) {
 	assert.Equal(t, "/tmp/test", cfg.BaseDir)
 }
 
-// TestMountedVolumeStruct tests the MountedVolume struct
+// TestMountedVolumeStruct tests the MountedVolume struct.
 func TestMountedVolumeStruct(t *testing.T) {
 	vol := MountedVolume{
 		Name:   "vol-123",
@@ -89,7 +89,7 @@ func TestMountedVolumeStruct(t *testing.T) {
 	assert.Equal(t, 12345, vol.PID)
 }
 
-// TestConfigMountedVolumesAppend tests adding volumes to the config
+// TestConfigMountedVolumesAppend tests adding volumes to the config.
 func TestConfigMountedVolumesAppend(t *testing.T) {
 	cfg := &Config{
 		MountedVolumes: []MountedVolume{},
@@ -118,7 +118,7 @@ func TestConfigMountedVolumesAppend(t *testing.T) {
 	assert.Equal(t, "vol-2", cfg.MountedVolumes[1].Name)
 }
 
-// TestConfigMutexThreadSafety tests that the mutex protects MountedVolumes
+// TestConfigMutexThreadSafety tests that the mutex protects MountedVolumes.
 func TestConfigMutexThreadSafety(t *testing.T) {
 	cfg := &Config{
 		MountedVolumes: []MountedVolume{},
@@ -149,7 +149,7 @@ func TestConfigMutexThreadSafety(t *testing.T) {
 	cfg.mu.Unlock()
 }
 
-// TestServiceMethods tests the service interface methods
+// TestServiceMethods tests the service interface methods.
 func TestServiceMethods(t *testing.T) {
 	cfg := &Config{
 		NatsHost: "nats://localhost:4222",
@@ -169,7 +169,7 @@ func TestServiceMethods(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestServiceShutdown tests that Shutdown calls Stop
+// TestServiceShutdown tests that Shutdown calls Stop.
 func TestServiceShutdown(t *testing.T) {
 	cfg := &Config{
 		NatsHost: "nats://localhost:4222",
@@ -187,7 +187,7 @@ func TestServiceShutdown(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestServiceStop tests the Stop method
+// TestServiceStop tests the Stop method.
 func TestServiceStop(t *testing.T) {
 	cfg := &Config{
 		NatsHost: "nats://localhost:4222",
@@ -203,7 +203,7 @@ func TestServiceStop(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestConfigPluginPath tests PluginPath configuration
+// TestConfigPluginPath tests PluginPath configuration.
 func TestConfigPluginPath(t *testing.T) {
 	cfg := &Config{
 		PluginPath: "/usr/lib/nbdkit/plugins",
@@ -214,7 +214,7 @@ func TestConfigPluginPath(t *testing.T) {
 	assert.Equal(t, "/var/lib/viperblock", cfg.BaseDir)
 }
 
-// TestConfigFullyPopulated tests a fully populated config
+// TestConfigFullyPopulated tests a fully populated config.
 func TestConfigFullyPopulated(t *testing.T) {
 	cfg := &Config{
 		ConfigPath: "/etc/viperblock/config.yml",
@@ -251,7 +251,7 @@ func TestConfigFullyPopulated(t *testing.T) {
 	assert.Equal(t, "vol-001", cfg.MountedVolumes[0].Name)
 }
 
-// TestMountedVolumeFindByName tests finding a mounted volume by name
+// TestMountedVolumeFindByName tests finding a mounted volume by name.
 func TestMountedVolumeFindByName(t *testing.T) {
 	cfg := &Config{
 		MountedVolumes: []MountedVolume{
@@ -287,7 +287,7 @@ func TestMountedVolumeFindByName(t *testing.T) {
 	assert.Nil(t, found)
 }
 
-// TestMountedVolumeRemoval tests removing a mounted volume
+// TestMountedVolumeRemoval tests removing a mounted volume.
 func TestMountedVolumeRemoval(t *testing.T) {
 	cfg := &Config{
 		MountedVolumes: []MountedVolume{
@@ -314,12 +314,12 @@ func TestMountedVolumeRemoval(t *testing.T) {
 	assert.Equal(t, "vol-3", cfg.MountedVolumes[1].Name)
 }
 
-// TestServiceNameConstant tests the serviceName constant
+// TestServiceNameConstant tests the serviceName constant.
 func TestServiceNameConstant(t *testing.T) {
 	assert.Equal(t, "viperblock", serviceName)
 }
 
-// TestConfigS3Credentials tests S3 credential fields
+// TestConfigS3Credentials tests S3 credential fields.
 func TestConfigS3Credentials(t *testing.T) {
 	cfg := &Config{
 		AccessKey: "test-key",
@@ -332,7 +332,7 @@ func TestConfigS3Credentials(t *testing.T) {
 	assert.Equal(t, "test-secret", cfg.SecretKey)
 }
 
-// TestMountedVolumeWithSocket tests MountedVolume with socket path
+// TestMountedVolumeWithSocket tests MountedVolume with socket path.
 func TestMountedVolumeWithSocket(t *testing.T) {
 	vol := MountedVolume{
 		Name:   "vol-ebs-123",
@@ -345,7 +345,7 @@ func TestMountedVolumeWithSocket(t *testing.T) {
 	assert.True(t, len(vol.Socket) > 0)
 }
 
-// TestConfigConcurrentRead tests concurrent reads are safe
+// TestConfigConcurrentRead tests concurrent reads are safe.
 func TestConfigConcurrentRead(t *testing.T) {
 	cfg := &Config{
 		MountedVolumes: []MountedVolume{
@@ -377,7 +377,7 @@ func TestConfigConcurrentRead(t *testing.T) {
 }
 
 // TestServiceStartWithoutNATS tests Start method behavior
-// Note: This will fail without a running NATS server, which is expected
+// Note: This will fail without a running NATS server, which is expected.
 func TestServiceStartWithoutNATS(t *testing.T) {
 	// Skip this test in CI environments or when NATS is not available
 	if os.Getenv("SKIP_INTEGRATION_TESTS") == "true" {
@@ -410,7 +410,7 @@ func TestServiceStartWithoutNATS(t *testing.T) {
 	}
 }
 
-// TestConfigValidation tests validation of required fields
+// TestConfigValidation tests validation of required fields.
 func TestConfigValidation(t *testing.T) {
 	// Test empty config - fields should be empty
 	cfg := &Config{}
@@ -429,7 +429,7 @@ func TestConfigValidation(t *testing.T) {
 	assert.NotEmpty(t, cfg2.Region)
 }
 
-// TestMountedVolumePortRange tests port assignment
+// TestMountedVolumePortRange tests port assignment.
 func TestMountedVolumePortRange(t *testing.T) {
 	volumes := []MountedVolume{
 		{Name: "vol-1", Port: 10809},

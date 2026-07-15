@@ -122,7 +122,7 @@ func handleNATSRequestWithPrincipal[I any, O any](msg *nats.Msg, serviceFn func(
 	respondWithJSON(msg, output)
 }
 
-// handleEC2Events processes incoming EC2 instance events (start, stop, terminate, attach-volume)
+// handleEC2Events processes incoming EC2 instance events (start, stop, terminate, attach-volume).
 func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 	ctx, span := utils.StartConsumerSpan(msg)
 	defer span.End()
@@ -213,7 +213,7 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 
 // --- Admin / node management handlers ---
 
-// handleHealthCheck processes NATS health check requests
+// handleHealthCheck processes NATS health check requests.
 func (d *Daemon) handleHealthCheck(msg *nats.Msg) {
 	configHash, err := d.computeConfigHash()
 	if err != nil {
@@ -239,7 +239,7 @@ func (d *Daemon) handleHealthCheck(msg *nats.Msg) {
 }
 
 // handleNodeDiscover responds to node discovery requests with this node's ID
-// Used by the gateway to dynamically discover active spinifex nodes in the cluster
+// Used by the gateway to dynamically discover active spinifex nodes in the cluster.
 func (d *Daemon) handleNodeDiscover(msg *nats.Msg) {
 	response := types.NodeDiscoverResponse{
 		Node: d.node,

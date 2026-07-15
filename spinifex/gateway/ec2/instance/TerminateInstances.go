@@ -15,7 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// terminateStoppedInstanceRequest is the payload sent to the ec2.terminate topic
+// terminateStoppedInstanceRequest is the payload sent to the ec2.terminate topic.
 type terminateStoppedInstanceRequest struct {
 	InstanceID string `json:"instance_id"`
 }

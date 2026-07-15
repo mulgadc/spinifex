@@ -20,10 +20,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// Ensure TagsServiceImpl implements TagsService
+// Ensure TagsServiceImpl implements TagsService.
 var _ TagsService = (*TagsServiceImpl)(nil)
 
-// Ensure TagsServiceImpl can project instance record tags into the store
+// Ensure TagsServiceImpl can project instance record tags into the store.
 var _ handlers_ec2_instance.InstanceTagWriter = (*TagsServiceImpl)(nil)
 
 // TagsServiceImpl implements TagsService with S3-backed storage.
@@ -35,7 +35,7 @@ type TagsServiceImpl struct {
 	mutex  sync.RWMutex
 }
 
-// NewTagsServiceImpl creates a new tags service implementation
+// NewTagsServiceImpl creates a new tags service implementation.
 func NewTagsServiceImpl(cfg *config.Config) *TagsServiceImpl {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
@@ -50,7 +50,7 @@ func NewTagsServiceImpl(cfg *config.Config) *TagsServiceImpl {
 	}
 }
 
-// NewTagsServiceImplWithStore creates a tags service with a custom ObjectStore (for testing)
+// NewTagsServiceImplWithStore creates a tags service with a custom ObjectStore (for testing).
 func NewTagsServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore) *TagsServiceImpl {
 	return &TagsServiceImpl{
 		config: cfg,
@@ -58,7 +58,7 @@ func NewTagsServiceImplWithStore(cfg *config.Config, store objectstore.ObjectSto
 	}
 }
 
-// getResourceType extracts resource type from resource ID prefix
+// getResourceType extracts resource type from resource ID prefix.
 func getResourceType(resourceID string) string {
 	if strings.HasPrefix(resourceID, "i-") {
 		return "instance"
@@ -108,17 +108,17 @@ func getResourceType(resourceID string) string {
 	return "unknown"
 }
 
-// getTagsKey returns the S3 key for storing tags for a resource, scoped by account
+// getTagsKey returns the S3 key for storing tags for a resource, scoped by account.
 func getTagsKey(accountID, resourceID string) string {
 	return "tags/" + accountID + "/" + resourceID + ".json"
 }
 
-// getTagsPrefix returns the S3 prefix for listing all tags for an account
+// getTagsPrefix returns the S3 prefix for listing all tags for an account.
 func getTagsPrefix(accountID string) string {
 	return "tags/" + accountID + "/"
 }
 
-// getResourceTags retrieves tags for a specific resource from S3
+// getResourceTags retrieves tags for a specific resource from S3.
 func (s *TagsServiceImpl) getResourceTags(ctx context.Context, accountID, resourceID string) (map[string]string, error) {
 	key := getTagsKey(accountID, resourceID)
 
@@ -142,7 +142,7 @@ func (s *TagsServiceImpl) getResourceTags(ctx context.Context, accountID, resour
 	return tags, nil
 }
 
-// putResourceTags stores tags for a specific resource in S3
+// putResourceTags stores tags for a specific resource in S3.
 func (s *TagsServiceImpl) putResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error {
 	key := getTagsKey(accountID, resourceID)
 
@@ -188,7 +188,7 @@ func (s *TagsServiceImpl) DeleteAllTags(ctx context.Context, accountID, resource
 	return nil
 }
 
-// CreateTags adds or overwrites tags for the specified resources
+// CreateTags adds or overwrites tags for the specified resources.
 func (s *TagsServiceImpl) CreateTags(ctx context.Context, input *ec2.CreateTagsInput, accountID string) (*ec2.CreateTagsOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -245,7 +245,7 @@ var describeTagsValidFilters = map[string]bool{
 	"value":         true,
 }
 
-// DescribeTags returns tags matching the specified filters
+// DescribeTags returns tags matching the specified filters.
 func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeTagsInput, accountID string) (*ec2.DescribeTagsOutput, error) {
 	var filters map[string][]string
 	if input != nil {
@@ -323,7 +323,7 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 	}, nil
 }
 
-// DeleteTags removes tags from the specified resources
+// DeleteTags removes tags from the specified resources.
 func (s *TagsServiceImpl) DeleteTags(ctx context.Context, input *ec2.DeleteTagsInput, accountID string) (*ec2.DeleteTagsOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)

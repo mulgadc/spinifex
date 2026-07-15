@@ -449,7 +449,7 @@ var (
 	ErrorVpnGatewayLimitExceeded                        = "VpnGatewayLimitExceeded"
 	ErrorZonesMismatched                                = "ZonesMismatched"
 
-	// IAM-specific error codes
+	// IAM-specific error codes.
 	ErrorIAMNoSuchEntity            = "NoSuchEntity"
 	ErrorIAMEntityAlreadyExists     = "EntityAlreadyExists"
 	ErrorIAMDeleteConflict          = "DeleteConflict"
@@ -458,7 +458,7 @@ var (
 	ErrorIAMMalformedPolicyDocument = "MalformedPolicyDocument"
 	ErrorAccessDenied               = "AccessDenied"
 
-	// ECR-specific error codes
+	// ECR-specific error codes.
 	ErrorRepositoryNotFound       = "RepositoryNotFoundException"
 	ErrorRepositoryPolicyNotFound = "RepositoryPolicyNotFoundException"
 	ErrorLifecyclePolicyNotFound  = "LifecyclePolicyNotFoundException"
@@ -473,7 +473,7 @@ var (
 	ErrorTooManyTags              = "TooManyTagsException"
 	ErrorOperationNotSupported    = "OperationNotSupportedException"
 
-	// ELBv2-specific error codes
+	// ELBv2-specific error codes.
 	ErrorELBv2LoadBalancerNotFound         = "LoadBalancerNotFound"
 	ErrorELBv2TargetGroupNotFound          = "TargetGroupNotFound"
 	ErrorELBv2ListenerNotFound             = "ListenerNotFound"
@@ -500,7 +500,7 @@ var (
 	ErrorELBv2CertificateNotFound          = "CertificateNotFound"
 	ErrorELBv2SSLPolicyNotFound            = "SSLPolicyNotFound"
 
-	// Bedrock/bedrock-runtime error codes
+	// Bedrock/bedrock-runtime error codes.
 	ErrorValidationException = "ValidationException"
 	// ErrorResourceNotFoundException aliases ErrorEKSResourceNotFound: both
 	// services use the same wire code, so it is not a second ErrorLookup entry.

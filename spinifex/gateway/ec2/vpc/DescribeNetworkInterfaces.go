@@ -7,7 +7,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DescribeNetworkInterfaces handles the EC2 DescribeNetworkInterfaces API call
+// DescribeNetworkInterfaces handles the EC2 DescribeNetworkInterfaces API call.
 func DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeNetworkInterfacesOutput, error) {
 	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
 	result, err := svc.DescribeNetworkInterfaces(ctx, input, accountID)

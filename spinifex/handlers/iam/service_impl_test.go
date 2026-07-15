@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Interface compliance check
+// Interface compliance check.
 var _ IAMService = (*IAMServiceImpl)(nil)
 
 const testAccountID = utils.GlobalAccountID

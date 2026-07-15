@@ -18,7 +18,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
 	github.com/klauspost/cpuid/v2 v2.4.0
-	github.com/mulgadc/northstar v1.12.0
+	github.com/mulgadc/northstar v1.12.1-0.20260715003053-a1a4e630f944
 	github.com/mulgadc/predastore v1.11.1-0.20260711123238-92a0009c2769
 	github.com/mulgadc/viperblock v1.11.1-0.20260713024608-eb4a376becc8
 	github.com/nats-io/nats-server/v2 v2.14.3

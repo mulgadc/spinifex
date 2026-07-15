@@ -1319,6 +1319,8 @@ github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
 github.com/mulgadc/northstar v1.12.0 h1:PCOEMdiFe5xqR9mK2k7NXFKgZhP8MAB2PKSKKW34hqs=
 github.com/mulgadc/northstar v1.12.0/go.mod h1:91Y0Wh/CWrTljCNR0dVF/9wZcM6PV38WY+SCiK8XW5Y=
+github.com/mulgadc/northstar v1.12.1-0.20260715003053-a1a4e630f944 h1:4+EUzpUVfnomU9LLCOYFzRa8RvGlgbyKKgP23+UC5g8=
+github.com/mulgadc/northstar v1.12.1-0.20260715003053-a1a4e630f944/go.mod h1:OaVnpIlLiqbMBAC2F1jrvmgwCblP5/2/eyMrLLW94eA=
 github.com/mulgadc/predastore v1.11.1-0.20260711123238-92a0009c2769 h1:JzOa3FMZnQg2WjkSsSgmQkS0v1wxJ2Zxbwz0EWFfmdA=
 github.com/mulgadc/predastore v1.11.1-0.20260711123238-92a0009c2769/go.mod h1:ZCuQ8zFVUxaR32UoQzIr3xCCi8I8uYDTyD2wqWvV/IY=
 github.com/mulgadc/viperblock v1.11.1-0.20260713024608-eb4a376becc8 h1:QlSs/heYbRdX+D5JS1KWykL5fgM/jRDwcZMmxGOH+ZM=

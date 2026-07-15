@@ -3,10 +3,10 @@ package dns
 // Route 53 and Route 53 Resolver service quotas, mirrored from AWS defaults:
 // https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/DNSLimitations.html
 //
-// The consts are the AWS default values. Soft entity quotas (increasable on
-// request at AWS) are also surfaced on Quotas so a future [quotas] config block
-// can override them per deployment; the API-request maxima are fixed by the
-// wire contract and stay consts.
+// The consts are the AWS default values. northstar.toml exposes only the
+// records-per-hosted-zone limit. Hosted-zone, VPC-association, and resolver-QPS
+// values remain internal AWS-parity constants: the first two have no creation
+// path to guard, while imds enforces resolver QPS in the DNS datapath.
 const (
 	// DefaultHostedZonesPerAccount is AWS's initial per-account hosted-zone cap.
 	DefaultHostedZonesPerAccount = 500
@@ -52,10 +52,9 @@ const (
 	Route53APIRequestsPerSecond = 5
 )
 
-// Quotas holds the soft, per-deployment-overridable service quotas. A future
-// config file ([quotas] in northstar.toml or the spinifex node config) can
-// populate this; DefaultQuotas mirrors the AWS defaults above. The fixed
-// API-request maxima are not included — they are wire-contract consts.
+// Quotas holds AWS-parity service-quota values used internally by Spinifex.
+// The [quotas] block in northstar.toml overrides RecordsPerHostedZone only;
+// the other values intentionally have no configuration surface.
 type Quotas struct {
 	HostedZonesPerAccount int
 	RecordsPerHostedZone  int

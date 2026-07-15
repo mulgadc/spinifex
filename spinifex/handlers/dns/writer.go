@@ -17,13 +17,14 @@ import (
 // Writer is the control-plane DNS record writer. It owns the read-modify-write
 // of zone TOML files in s3://northstar/ using the system predastore credentials.
 type Writer struct {
-	enabled    bool
-	s3cfg      *nsconfig.S3Config
-	baseDomain string
-	localNS    nsconfig.NameserverSeed
-	ttl        uint32
-	nc         *nats.Conn
-	quotas     Quotas
+	enabled      bool
+	s3cfg        *nsconfig.S3Config
+	baseDomain   string
+	localNS      nsconfig.NameserverSeed
+	ttl          uint32
+	nc           *nats.Conn
+	quotaEnabled bool
+	quotas       Quotas
 }
 
 // NewWriter resolves the northstar S3 endpoint/bucket from the node's
@@ -32,15 +33,19 @@ type Writer struct {
 // NATS connection, when non-nil, is used to fan out per-zone reload events.
 func NewWriter(cfg *config.Config, nc *nats.Conn) *Writer {
 	w := &Writer{ttl: DefaultTTL, nc: nc, quotas: DefaultQuotas()}
-	s3cfg, baseDomain, ok := zoneS3Config(cfg)
+	zoneCfg, ok := zoneS3Config(cfg)
 	if !ok {
 		slog.Info("dns writer: northstar S3 not configured, record registration disabled")
 		return w
 	}
 	w.enabled = true
-	w.s3cfg = s3cfg
-	w.baseDomain = baseDomain
+	w.s3cfg = zoneCfg.s3
+	w.baseDomain = strings.TrimSpace(zoneCfg.server.DefaultDomain)
 	w.localNS = nsconfig.NameserverSeed{Host: "ns1", IP: localNameserverIP(cfg)}
+	w.quotaEnabled = zoneCfg.server.Quotas.Enabled
+	if zoneCfg.server.Quotas.RecordsPerHostedZone > 0 {
+		w.quotas.RecordsPerHostedZone = zoneCfg.server.Quotas.RecordsPerHostedZone
+	}
 	return w
 }
 
@@ -133,10 +138,9 @@ func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
 		}
 		switch c.Action {
 		case ActionUpsert:
-			// AWS caps a hosted zone at DefaultRecordsPerHostedZone record sets;
-			// reject a change that would add a new one past the quota. Replacing
-			// an existing record set (same label+type) is always allowed.
-			if !recordSetExists(cfg, label, rtype) && !w.quotas.withinRecordQuota(len(cfg.Records)) {
+			// When configured, reject a change that would add a new record set past
+			// the zone quota. Replacing an existing set is always allowed.
+			if w.quotaEnabled && !recordSetExists(cfg, label, rtype) && !w.quotas.withinRecordQuota(len(cfg.Records)) {
 				return false, fmt.Errorf("zone %q at record quota (%d): cannot add %s", zone, w.quotas.RecordsPerHostedZone, c.Name)
 			}
 			if cfg.UpsertRecord(label, rtype, nsconfig.ClassIN, c.Value, ttl) {
@@ -199,29 +203,39 @@ func hasUpsert(changes []Change) bool {
 	return false
 }
 
+// northstarZoneConfig bundles the parsed service config with the writer's
+// read-write S3 credentials so callers do not need to load northstar.toml twice.
+type northstarZoneConfig struct {
+	s3     *nsconfig.S3Config
+	server nsconfig.ServerConfig
+}
+
 // zoneS3Config builds an S3Config for the northstar bucket using the node's
 // northstar.toml endpoint/bucket but the system predastore (read-write)
 // credentials. ok is false when northstar S3 or credentials are not configured.
-func zoneS3Config(cfg *config.Config) (s3cfg *nsconfig.S3Config, baseDomain string, ok bool) {
+func zoneS3Config(cfg *config.Config) (northstarZoneConfig, bool) {
 	if cfg == nil {
-		return nil, "", false
+		return northstarZoneConfig{}, false
 	}
 	serverCfg, ok := loadNorthstar(cfg)
 	if !ok || serverCfg.S3.Bucket == "" || strings.TrimSpace(serverCfg.DefaultDomain) == "" {
-		return nil, "", false
+		return northstarZoneConfig{}, false
 	}
 	creds := cfg.Predastore
 	if creds.AccessKey == "" || creds.SecretKey == "" {
-		return nil, "", false
+		return northstarZoneConfig{}, false
 	}
-	return &nsconfig.S3Config{
-		Endpoint:  serverCfg.S3.Endpoint,
-		Region:    serverCfg.S3.Region,
-		Bucket:    serverCfg.S3.Bucket,
-		AccessKey: creds.AccessKey,
-		SecretKey: creds.SecretKey,
-		Insecure:  serverCfg.S3.Insecure,
-	}, strings.TrimSpace(serverCfg.DefaultDomain), true
+	return northstarZoneConfig{
+		s3: &nsconfig.S3Config{
+			Endpoint:  serverCfg.S3.Endpoint,
+			Region:    serverCfg.S3.Region,
+			Bucket:    serverCfg.S3.Bucket,
+			AccessKey: creds.AccessKey,
+			SecretKey: creds.SecretKey,
+			Insecure:  serverCfg.S3.Insecure,
+		},
+		server: serverCfg,
+	}, true
 }
 
 // ResolveBaseDomain returns the northstar default_domain for producers building

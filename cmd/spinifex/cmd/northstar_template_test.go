@@ -53,6 +53,15 @@ func TestNorthstarTomlTemplate(t *testing.T) {
 	assert.Contains(t, content, `endpoint   = "https://127.0.0.1:8443"`)
 	assert.Contains(t, content, `nameservers = ["1.1.1.1:53", "8.8.8.8:53"]`)
 	assert.Contains(t, content, `internal_domain = "compute.internal"`)
+	var parsed struct {
+		Quotas struct {
+			Enabled              bool `toml:"enabled"`
+			RecordsPerHostedZone int  `toml:"records_per_hosted_zone"`
+		} `toml:"quotas"`
+	}
+	require.NoError(t, toml.Unmarshal([]byte(content), &parsed))
+	assert.False(t, parsed.Quotas.Enabled)
+	assert.Equal(t, 10_000, parsed.Quotas.RecordsPerHostedZone)
 	assert.NotContains(t, content, "nats_url")
 	assert.NotContains(t, content, "NATSTOKEN")
 }

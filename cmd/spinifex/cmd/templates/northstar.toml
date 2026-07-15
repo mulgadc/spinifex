@@ -22,6 +22,12 @@ internal_domain = "{{.NorthstarInternalDomain}}"
 # Seconds between S3 zone re-scans (anti-entropy; live changes arrive via NATS).
 sync_interval = 30
 
+# DNS (Route 53) service quotas (default off, mirrors [quota] in awsgw.toml).
+# Applied at daemon start; restart to change.
+[quotas]
+enabled = false
+records_per_hosted_zone = 10000   # AWS default; enforced only when enabled
+
 [s3]
 endpoint   = "https://{{if eq .BindIP "0.0.0.0"}}127.0.0.1{{else}}{{.BindIP}}{{end}}:8443"
 bucket     = "{{.NorthstarBucket}}"

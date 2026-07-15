@@ -73,13 +73,13 @@ func NewReconciler(cfg *config.Config, nc *nats.Conn, desired DesiredFunc) *Reco
 		interval:  DefaultReconcileInterval,
 		accountID: utils.GlobalAccountID,
 	}
-	s3cfg, baseDomain, ok := zoneS3Config(cfg)
+	zoneCfg, ok := zoneS3Config(cfg)
 	if !ok || desired == nil {
 		return r
 	}
 	r.enabled = true
-	r.s3cfg = s3cfg
-	r.baseDomain = baseDomain
+	r.s3cfg = zoneCfg.s3
+	r.baseDomain = strings.TrimSpace(zoneCfg.server.DefaultDomain)
 	return r
 }
 

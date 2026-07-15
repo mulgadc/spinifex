@@ -705,12 +705,37 @@ func TestHTTP_NetworkInterfaceLeaves(t *testing.T) {
 		{"vpc-ipv4-cidr-block", testVPCCIDR},
 		{"vpc-ipv4-cidr-blocks", testVPCCIDR},
 		{"public-ipv4s", "203.0.113.7"},
-		{"public-hostname", "203.0.113.7"},
+		{"public-hostname", "ec2-203-0-113-7.ap-southeast-2.compute.spx3.net"},
 	}
 	for _, c := range cases {
 		rec := get(t, h, macPath(mac, c.key), token)
 		assert.Equal(t, http.StatusOK, rec.Code, "key=%s", c.key)
 		assert.Equal(t, c.want, rec.Body.String(), "key=%s", c.key)
+	}
+}
+
+// Real EC2 serves the same public DNS name at the top-level and per-ENI leaves, so the
+// two must agree on both the AWS-shaped name and the fallback to the raw IP when no
+// base domain is configured.
+func TestHTTP_PublicHostnameLeavesAgree(t *testing.T) {
+	cases := []struct{ name, baseDomain, want string }{
+		{"base domain configured", "spx3.net", "ec2-203-0-113-7.ap-southeast-2.compute.spx3.net"},
+		{"public DNS unconfigured", "", "203.0.113.7"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			eni := testENI()
+			svc, _ := newTestService(&fakeResolver{eni: eni}, &fakeIAM{}, &fakeAssumer{})
+			svc.baseDomain = c.baseDomain
+			h := withTapENI(svc.httpHandler(), eni)
+			token := issueToken(t, h)
+
+			for _, path := range []string{prefixMetaData + "public-hostname", macPath(eni.mac, "public-hostname")} {
+				rec := get(t, h, path, token)
+				assert.Equal(t, http.StatusOK, rec.Code, "path=%s", path)
+				assert.Equal(t, c.want, rec.Body.String(), "path=%s", path)
+			}
+		})
 	}
 }
 

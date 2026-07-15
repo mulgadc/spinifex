@@ -192,15 +192,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		}
 		writeText(w, eni.publicIP)
 	case prefixMetaData + "public-hostname":
-		if eni.publicIP == "" {
-			w.WriteHeader(http.StatusNotFound) // no public IP → no public hostname
-			return
-		}
-		if h := s.publicHostname(eni.publicIP, regionFromAZ(eni.availabilityZone)); h != "" {
-			writeText(w, h)
-			return
-		}
-		writeText(w, eni.publicIP) // mirror public-ipv4 until public DNS is configured
+		s.servePublicHostname(w, eni)
 	case prefixMetaData + "mac":
 		writeText(w, eni.mac)
 	case prefixMetaData + "network", prefixMetaData + "network/":
@@ -523,12 +515,14 @@ func (s *IMDSServiceImpl) serveNetworkInterface(ctx context.Context, w http.Resp
 		s.serveCIDR(ctx, w, eni.accountID, eni.subnetID, s.resolver.resolveSubnetCIDR)
 	case "vpc-ipv4-cidr-block", "vpc-ipv4-cidr-blocks":
 		s.serveCIDR(ctx, w, eni.accountID, eni.vpcID, s.resolver.resolveVPCCIDR)
-	case "public-ipv4s", "public-hostname":
+	case "public-ipv4s":
 		if eni.publicIP == "" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		writeText(w, eni.publicIP)
+	case "public-hostname":
+		s.servePublicHostname(w, eni)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -579,6 +573,21 @@ func (s *IMDSServiceImpl) serveCIDR(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	writeText(w, cidr)
+}
+
+// servePublicHostname writes the AWS-shaped public DNS name for an ENI. Shared by the
+// top-level and per-ENI leaves, which real EC2 keeps identical, so the two can never
+// disagree on the name or on the 404/fallback rules.
+func (s *IMDSServiceImpl) servePublicHostname(w http.ResponseWriter, eni *eniFacts) {
+	if eni.publicIP == "" {
+		w.WriteHeader(http.StatusNotFound) // no public IP → no public hostname
+		return
+	}
+	if h := s.publicHostname(eni.publicIP, regionFromAZ(eni.availabilityZone)); h != "" {
+		writeText(w, h)
+		return
+	}
+	writeText(w, eni.publicIP) // mirror public-ipv4 until public DNS is configured
 }
 
 // instanceFor resolves the instance record for an ENI, writing the appropriate

@@ -90,16 +90,14 @@ EOF
 
     apt-get install -y --no-install-recommends "linux-headers-${KVER}"
 
-    # Ubuntu 26.04+ no longer ships unversioned meta-packages; detect the
-    # latest available versioned NVIDIA server driver.
-    NVIDIA_VER=$(apt-cache search '^nvidia-dkms-[0-9]+-server$' 2>/dev/null \
-        | grep -oP '(?<=nvidia-dkms-)\d+(?=-server)' | sort -rn | head -1)
-    if [ -z "${NVIDIA_VER}" ]; then
-        echo "ERROR: No versioned nvidia-dkms-*-server package found in apt cache"
-        apt-cache search nvidia-dkms || true
-        exit 1
-    fi
-    echo "[nvidia-gpu-stack] installing NVIDIA server driver version: ${NVIDIA_VER}"
+    # Ubuntu 26.04+ no longer ships unversioned meta-packages, so the branch is
+    # named explicitly. Pinned rather than resolved at build time: the number in
+    # the package name is a branch alias, not a driver version (nvidia-dkms-535-server
+    # installs 580.126.20), so picking the highest number sorts on a value that
+    # need not match what gets installed. Resolving also let identical source
+    # produce different drivers on different days. Bumping is a deliberate edit.
+    NVIDIA_VER=595
+    echo "[nvidia-gpu-stack] installing NVIDIA server driver branch: ${NVIDIA_VER}"
     # The -open (GSP/open-kernel-module) DKMS variant, not the closed/proprietary
     # one: Blackwell-generation GPUs (e.g. RTX Pro 6000 Blackwell) refuse to
     # initialize under the closed kernel module — RmInitAdapter fails with

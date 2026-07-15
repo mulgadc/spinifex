@@ -100,8 +100,13 @@ EOF
         exit 1
     fi
     echo "[nvidia-gpu-stack] installing NVIDIA server driver version: ${NVIDIA_VER}"
+    # The -open (GSP/open-kernel-module) DKMS variant, not the closed/proprietary
+    # one: Blackwell-generation GPUs (e.g. RTX Pro 6000 Blackwell) refuse to
+    # initialize under the closed kernel module — RmInitAdapter fails with
+    # "requires use of the NVIDIA open kernel modules" (dmesg NVRM error 0x22).
+    # nvidia-utils has no separate open variant (userspace tools only).
     apt-get install -y --no-install-recommends \
-        "nvidia-dkms-${NVIDIA_VER}-server" \
+        "nvidia-dkms-${NVIDIA_VER}-server-open" \
         "nvidia-utils-${NVIDIA_VER}-server"
 
     NVIDIA_DKMS_NAME=$(dkms status 2>/dev/null | awk -F'[,/ ]+' '/nvidia/{print $1; exit}')

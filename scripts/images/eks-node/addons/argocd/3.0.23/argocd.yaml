@@ -24939,6 +24939,17 @@ spec:
       labels:
         app.kubernetes.io/name: argocd-applicationset-controller
     spec:
+      # Local delta over the vendored upstream manifest: a cluster with a
+      # GPU-only nodegroup has no untainted node — the CP carries
+      # CriticalAddonsOnly and every worker carries nvidia.com/gpu, so without
+      # these the pod stays Pending forever. Upstream never needs it because
+      # real EKS control planes are not schedulable nodes.
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
       containers:
       - args:
         - /usr/local/bin/argocd-applicationset-controller
@@ -25180,6 +25191,17 @@ spec:
       labels:
         app.kubernetes.io/name: argocd-dex-server
     spec:
+      # Local delta over the vendored upstream manifest: a cluster with a
+      # GPU-only nodegroup has no untainted node — the CP carries
+      # CriticalAddonsOnly and every worker carries nvidia.com/gpu, so without
+      # these the pod stays Pending forever. Upstream never needs it because
+      # real EKS control planes are not schedulable nodes.
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -25304,6 +25326,17 @@ spec:
       labels:
         app.kubernetes.io/name: argocd-notifications-controller
     spec:
+      # Local delta over the vendored upstream manifest: a cluster with a
+      # GPU-only nodegroup has no untainted node — the CP carries
+      # CriticalAddonsOnly and every worker carries nvidia.com/gpu, so without
+      # these the pod stays Pending forever. Upstream never needs it because
+      # real EKS control planes are not schedulable nodes.
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
       containers:
       - args:
         - /usr/local/bin/argocd-notifications
@@ -25403,6 +25436,17 @@ spec:
       labels:
         app.kubernetes.io/name: argocd-redis
     spec:
+      # Local delta over the vendored upstream manifest: a cluster with a
+      # GPU-only nodegroup has no untainted node — the CP carries
+      # CriticalAddonsOnly and every worker carries nvidia.com/gpu, so without
+      # these the pod stays Pending forever. Upstream never needs it because
+      # real EKS control planes are not schedulable nodes.
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -25486,6 +25530,17 @@ spec:
       labels:
         app.kubernetes.io/name: argocd-repo-server
     spec:
+      # Local delta over the vendored upstream manifest: a cluster with a
+      # GPU-only nodegroup has no untainted node — the CP carries
+      # CriticalAddonsOnly and every worker carries nvidia.com/gpu, so without
+      # these the pod stays Pending forever. Upstream never needs it because
+      # real EKS control planes are not schedulable nodes.
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -25840,6 +25895,17 @@ spec:
       labels:
         app.kubernetes.io/name: argocd-server
     spec:
+      # Local delta over the vendored upstream manifest: a cluster with a
+      # GPU-only nodegroup has no untainted node — the CP carries
+      # CriticalAddonsOnly and every worker carries nvidia.com/gpu, so without
+      # these the pod stays Pending forever. Upstream never needs it because
+      # real EKS control planes are not schedulable nodes.
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -26251,6 +26317,17 @@ spec:
       labels:
         app.kubernetes.io/name: argocd-application-controller
     spec:
+      # Local delta over the vendored upstream manifest: a cluster with a
+      # GPU-only nodegroup has no untainted node — the CP carries
+      # CriticalAddonsOnly and every worker carries nvidia.com/gpu, so without
+      # these the pod stays Pending forever. Upstream never needs it because
+      # real EKS control planes are not schedulable nodes.
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:

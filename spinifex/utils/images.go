@@ -491,8 +491,11 @@ var AvailableImages = map[string]Images{
 		URL:          "https://iso.mulgadc.com/system-ami/spinifex-ecs-node-gpu-x86_64.qcow2",
 		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-ecs-node-gpu-x86_64.qcow2.sha256",
 		ChecksumType: "sha256",
-		BootMode:     "bios",
-		Tags:         map[string]string{"spinifex:managed-by": "ecs", "gpu-vendor": "nvidia"},
+		// Ubuntu 26.04 is built GPT/EFI-only; legacy BIOS finds no bootable MBR
+		// bootloader and hangs at firmware with zero serial output (no OVMF/pflash
+		// is attached unless BootMode is uefi/uefi-preferred, see vm/lifecycle.go).
+		BootMode: "uefi",
+		Tags:     map[string]string{"spinifex:managed-by": "ecs", "gpu-vendor": "nvidia"},
 	},
 }
 

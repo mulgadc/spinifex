@@ -15,6 +15,7 @@ linters:
     - bodyclose # checks whether HTTP response body is closed successfully
     - canonicalheader # checks whether net/http.Header uses canonical header keys
     - decorder # checks declaration order of types, consts, vars, and funcs
+    - depguard # blocks imports of packages with a preferred replacement
     - durationcheck # checks for two durations multiplied together
     - embeddedstructfieldcheck # checks embedded sync.Mutex/RWMutex in structs
     - errcheck # checks for unchecked errors in type assertions and I/O
@@ -23,7 +24,6 @@ linters:
     - errorlint # catches ==/!= on errors, type assertions on errors, and %v instead of %w — all break on wrapped errors
     - exptostd # detects golang.org/x/exp/ functions replaceable by stdlib
     - fatcontext # detects nested contexts in loops
-    - forcetypeassert # flags unchecked type assertions that can panic
     - gocheckcompilerdirectives # validates go compiler directive comments (//go:)
     - godot # checks that declaration comments end in a period
     - goprintffuncname # checks that printf-like functions are named with f at the end
@@ -57,8 +57,17 @@ linters:
     embeddedstructfieldcheck:
       forbid-mutex: true
 
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: log$
+              desc: Use log/slog instead, see https://go.dev/blog/slog
+            - pkg: math/rand$
+              desc: Use math/rand/v2 instead, see https://go.dev/blog/randv2
+
     errcheck:
-      check-type-assertions: true
+      check-type-assertions: true # replaces forcetypeassert
       exclude-functions:
         - (*github.com/nats-io/nats.go.Subscription).Unsubscribe # cleanup-only, errors not actionable
 

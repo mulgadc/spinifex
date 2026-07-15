@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# mkosi-build.sh — run an mkosi system-image build inside the pinned builder
+# container.
+#
+# The runner needs only Docker: the toolchain is baked into the image (see
+# scripts/mkosi-builder.Dockerfile), so nothing is installed on the host and
+# the build cannot drift between runners. The same command runs identically on
+# a developer's box.
+#
+# Usage:
+#   scripts/mkosi-build.sh [--profile <name>] [--shell] [-- <mkosi options>]
+#
+#   scripts/mkosi-build.sh --profile eks-node -- --force
+#   MKOSI_VERB=clean scripts/mkosi-build.sh
+#
+# Args after `--` are mkosi OPTIONS only; the verb comes from MKOSI_VERB.
+#
+# Env:
+#   MKOSI_IMAGE_DIR   directory holding mkosi.conf (default: images/)
+#   MKOSI_OUTPUT_DIR  where artefacts land (default: <image dir>/output)
+#   MKOSI_VERB        mkosi verb to run (default: build)
+#   BUILDER_TAG       builder image tag (default: spinifex-mkosi-builder)
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMAGE_DIR="${MKOSI_IMAGE_DIR:-${REPO_ROOT}/images}"
+OUTPUT_DIR="${MKOSI_OUTPUT_DIR:-${IMAGE_DIR}/output}"
+BUILDER_TAG="${BUILDER_TAG:-spinifex-mkosi-builder}"
+DOCKERFILE="${REPO_ROOT}/scripts/mkosi-builder.Dockerfile"
+
+PROFILE=""
+WANT_SHELL=0
+MKOSI_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --profile) PROFILE="$2"; shift 2 ;;
+        --shell)   WANT_SHELL=1; shift ;;
+        --)        shift; MKOSI_ARGS=("$@"); break ;;
+        *)         echo "mkosi-build: unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+command -v docker >/dev/null || { echo "mkosi-build: docker not found" >&2; exit 1; }
+
+if [[ ! -d "${IMAGE_DIR}" ]]; then
+    echo "mkosi-build: no image dir at ${IMAGE_DIR} (set MKOSI_IMAGE_DIR)" >&2
+    exit 1
+fi
+
+# Match the container's builder account to the invoking user so bind-mounted
+# output is not written back as some other uid.
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+
+echo "[mkosi-build] building toolchain image ${BUILDER_TAG} (cached after first run)"
+docker build \
+    --quiet \
+    --file "${DOCKERFILE}" \
+    --build-arg "BUILDER_UID=${HOST_UID}" \
+    --build-arg "BUILDER_GID=${HOST_GID}" \
+    --tag "${BUILDER_TAG}" \
+    "${REPO_ROOT}/scripts" >/dev/null
+
+mkdir -p "${OUTPUT_DIR}"
+
+# mkosi builds in a user namespace, and two of Docker's default confinements
+# block that. Neither is a privilege grant: capabilities stay dropped and no
+# devices are exposed, unlike --privileged.
+#
+#   seccomp=unconfined   the default profile masks CLONE_NEWUSER out of clone,
+#                        so the namespace cannot be created at all.
+#   apparmor=unconfined  the docker-default profile separately blocks unsharing
+#                        the MOUNT namespace. This one is easy to miss: with
+#                        seccomp alone `unshare -U` succeeds and only
+#                        `unshare -U -m` fails.
+DOCKER_ARGS=(
+    --rm
+    --security-opt seccomp=unconfined
+    --security-opt apparmor=unconfined
+    --volume "${IMAGE_DIR}:/work/images"
+    --volume "${OUTPUT_DIR}:/work/output"
+    --workdir /work/images
+)
+[[ -t 0 ]] && DOCKER_ARGS+=(--interactive --tty)
+
+# Persist mkosi's package cache across runs so a rebuild does not re-download
+# the whole target distribution every time.
+CACHE_VOL="${BUILDER_TAG}-cache"
+docker volume create "${CACHE_VOL}" >/dev/null
+DOCKER_ARGS+=(--volume "${CACHE_VOL}:/home/builder/.cache")
+
+if [[ "${WANT_SHELL}" -eq 1 ]]; then
+    exec docker run "${DOCKER_ARGS[@]}" "${BUILDER_TAG}" bash
+fi
+
+# mkosi takes its options BEFORE the verb and silently discards any that follow
+# it — `mkosi build --force` skips the rebuild, prints "Use --force to rebuild"
+# and still exits 0. So the verb is always appended last, and a verb passed in
+# via `--` is rejected rather than positioned wrong: passing one would push the
+# real options after it and no-op them exactly the same silent way.
+VERB="${MKOSI_VERB:-build}"
+for arg in "${MKOSI_ARGS[@]+"${MKOSI_ARGS[@]}"}"; do
+    case "${arg}" in
+        build|clean|shell|boot|vm|qemu|sandbox|serve|burn|dependencies)
+            echo "mkosi-build: pass the verb as MKOSI_VERB=${arg}, not after --" >&2
+            echo "mkosi-build: (mkosi ignores options that follow a verb, silently)" >&2
+            exit 2
+            ;;
+    esac
+done
+
+CMD=(mkosi --output-dir /work/output)
+[[ -n "${PROFILE}" ]] && CMD+=(--profile "${PROFILE}")
+CMD+=("${MKOSI_ARGS[@]+"${MKOSI_ARGS[@]}"}" "${VERB}")
+
+echo "[mkosi-build] ${CMD[*]}"
+docker run "${DOCKER_ARGS[@]}" "${BUILDER_TAG}" "${CMD[@]}"
+
+echo "[mkosi-build] artefacts in ${OUTPUT_DIR}:"
+ls -la "${OUTPUT_DIR}"

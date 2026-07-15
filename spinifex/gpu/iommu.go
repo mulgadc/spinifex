@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // groupMembers returns all PCI devices in the given IOMMU group.
@@ -39,4 +40,27 @@ func groupMembers(sysfsRoot string, groupNum int) ([]IOMMUGroupMember, error) {
 	}
 
 	return members, nil
+}
+
+// isBridgeClass reports whether a PCI class string identifies a bridge device
+// (base class 0x06 — host, ISA, PCI-to-PCI, etc). A passthrough endpoint's
+// IOMMU group can include an upstream bridge when the platform lacks ACS
+// isolation between them; the bridge itself never performs DMA and vfio-pci
+// refuses to bind non-endpoint devices, so it must stay off the VFIO
+// bind/unbind lifecycle while the endpoint is claimed.
+func isBridgeClass(class string) bool {
+	s := strings.ToLower(strings.TrimSpace(class))
+	s = strings.TrimPrefix(s, "0x")
+	return len(s) >= 2 && s[:2] == "06"
+}
+
+// filterBridgeMembers returns members with bridge-class devices removed.
+func filterBridgeMembers(members []IOMMUGroupMember) []IOMMUGroupMember {
+	out := make([]IOMMUGroupMember, 0, len(members))
+	for _, m := range members {
+		if !isBridgeClass(m.Class) {
+			out = append(out, m)
+		}
+	}
+	return out
 }

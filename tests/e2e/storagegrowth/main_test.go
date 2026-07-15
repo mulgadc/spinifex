@@ -117,11 +117,20 @@ func requireStorageGrowthFixture(t *testing.T) *Fixture {
 		}
 		// Guard against harness.NewAWSClient calling t.Fatal (which exits via
 		// runtime.Goexit and corrupts the Once state for subsequent tests) when
-		// no Spinifex node is running. ResolveCACert uses the same candidate
-		// paths, so a failure here gives a clean skip with an actionable message.
-		if _, err := harness.ResolveCACert(env); err != nil {
-			pkgSkipReason = "no Spinifex node running — provision first: ansible-playbook ansible/playbooks/dev-reset.yml"
-			return
+		// no CA cert is resolvable. ResolveCACert uses the same candidate
+		// paths NewAWSClient falls back to, so a failure here gives a clean
+		// skip with an actionable message — but only when NewAWSClient would
+		// actually take that path: SPINIFEX_AWS_INSECURE=1 makes it skip CA
+		// resolution entirely (see harness/aws.go), which is how a
+		// runner-resident scenario reaches a remote cluster that doesn't
+		// have the spinifex cert on disk.
+		if os.Getenv("SPINIFEX_AWS_INSECURE") != "1" {
+			if _, err := harness.ResolveCACert(env); err != nil {
+				pkgSkipReason = "no Spinifex CA cert found: " + err.Error() +
+					" — provision a local node first (ansible-playbook ansible/playbooks/dev-reset.yml), " +
+					"or target a remote cluster with SPINIFEX_AWS_INSECURE=1 (skips CA verification; see harness/aws.go)"
+				return
+			}
 		}
 		awsCli := harness.NewAWSClient(t, env)
 

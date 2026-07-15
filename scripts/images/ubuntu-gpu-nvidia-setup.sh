@@ -60,19 +60,22 @@ EOF
 apt-get install -y --no-install-recommends \
     "linux-headers-${KVER}"
 
-# Detect the latest available versioned NVIDIA server driver. Ubuntu 26.04+
-# no longer ships unversioned meta-packages (nvidia-dkms-server); the packages
-# are now versioned (e.g. nvidia-dkms-570-server).
-NVIDIA_VER=$(apt-cache search '^nvidia-dkms-[0-9]+-server$' 2>/dev/null \
-    | grep -oP '(?<=nvidia-dkms-)\d+(?=-server)' | sort -rn | head -1)
-if [[ -z "${NVIDIA_VER}" ]]; then
-    echo "ERROR: No versioned nvidia-dkms-*-server package found in apt cache"
-    apt-cache search nvidia-dkms || true
-    exit 1
-fi
-echo "Installing NVIDIA server driver version: ${NVIDIA_VER}"
+# Ubuntu 26.04+ no longer ships unversioned meta-packages (nvidia-dkms-server);
+# the packages are versioned (e.g. nvidia-dkms-570-server), so the branch is
+# named explicitly. Pinned rather than resolved at build time: the number in the
+# package name is a branch alias, not a driver version (nvidia-dkms-535-server
+# installs 580.126.20), so picking the highest number sorts on a value that need
+# not match what gets installed. Resolving also let identical source produce
+# different drivers on different days. Bumping is a deliberate edit.
+NVIDIA_VER=595
+echo "Installing NVIDIA server driver branch: ${NVIDIA_VER}"
+# The -open (GSP/open-kernel-module) DKMS variant, not the closed/proprietary
+# one: Blackwell-generation GPUs (e.g. RTX Pro 6000 Blackwell) refuse to
+# initialize under the closed kernel module — RmInitAdapter fails with
+# "requires use of the NVIDIA open kernel modules" (dmesg NVRM error 0x22).
+# nvidia-utils has no separate open variant (userspace tools only).
 apt-get install -y --no-install-recommends \
-    "nvidia-dkms-${NVIDIA_VER}-server" \
+    "nvidia-dkms-${NVIDIA_VER}-server-open" \
     "nvidia-utils-${NVIDIA_VER}-server"
 
 # Detect the installed NVIDIA DKMS module name + version for explicit build.

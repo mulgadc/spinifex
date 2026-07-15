@@ -22,11 +22,11 @@
 #   BUILDER_TAG       builder image tag (default: spinifex-mkosi-builder)
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_DIR="${MKOSI_IMAGE_DIR:-${REPO_ROOT}/images}"
+# shellcheck source=scripts/mkosi-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mkosi-common.sh"
+
+IMAGE_DIR="${MKOSI_IMAGE_DIR:-${MKOSI_REPO_ROOT}/images}"
 OUTPUT_DIR="${MKOSI_OUTPUT_DIR:-${IMAGE_DIR}/output}"
-BUILDER_TAG="${BUILDER_TAG:-spinifex-mkosi-builder}"
-DOCKERFILE="${REPO_ROOT}/scripts/mkosi-builder.Dockerfile"
 
 PROFILE=""
 WANT_SHELL=0
@@ -40,26 +40,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-command -v docker >/dev/null || { echo "mkosi-build: docker not found" >&2; exit 1; }
+require_docker
 
 if [[ ! -d "${IMAGE_DIR}" ]]; then
     echo "mkosi-build: no image dir at ${IMAGE_DIR} (set MKOSI_IMAGE_DIR)" >&2
     exit 1
 fi
 
-# Match the container's builder account to the invoking user so bind-mounted
-# output is not written back as some other uid.
-HOST_UID="$(id -u)"
-HOST_GID="$(id -g)"
-
-echo "[mkosi-build] building toolchain image ${BUILDER_TAG} (cached after first run)"
-docker build \
-    --quiet \
-    --file "${DOCKERFILE}" \
-    --build-arg "BUILDER_UID=${HOST_UID}" \
-    --build-arg "BUILDER_GID=${HOST_GID}" \
-    --tag "${BUILDER_TAG}" \
-    "${REPO_ROOT}/scripts" >/dev/null
+build_builder_image
 
 mkdir -p "${OUTPUT_DIR}"
 

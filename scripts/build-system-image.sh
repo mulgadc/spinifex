@@ -265,6 +265,15 @@ else
     CUST+=(--memsize 2048)
 fi
 
+# The guest's /etc/resolv.conf symlinks to systemd-resolved's stub
+# (127.0.0.53), which isn't running inside the appliance chroot, so DNS is
+# dead until package installs need it. Point it at a real resolver first, then
+# restore the stub symlink after package installs so the shipped AMI still
+# gets its DNS from systemd-resolved at boot like a stock cloud image.
+if [[ -n "${APK_PACKAGES:-}${APT_PACKAGES:-}" ]]; then
+    CUST+=(--run-command 'rm -f /etc/resolv.conf; printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf')
+fi
+
 # Packages
 if [[ "$DISTRO" == "alpine" ]] && [[ -n "${APK_PACKAGES:-}" ]]; then
     echo "Will install packages: ${APK_PACKAGES}"
@@ -336,6 +345,12 @@ if [[ "$DISTRO" == "alpine" ]]; then
     CUST+=(--run-command 'apk cache clean 2>/dev/null || true; rm -rf /var/cache/apk/* /tmp/* 2>/dev/null || true')
 else
     CUST+=(--run-command 'export DEBIAN_FRONTEND=noninteractive; apt-get clean; rm -rf /var/lib/apt/lists/* /tmp/* 2>/dev/null || true')
+fi
+
+# Restore the stock systemd-resolved stub symlink so the shipped AMI gets its
+# DNS from the instance's own resolver at boot, not the static appliance one.
+if [[ "$DISTRO" == "ubuntu" ]] && [[ -n "${APK_PACKAGES:-}${APT_PACKAGES:-}${SETUP_SCRIPT:-}" ]]; then
+    CUST+=(--run-command 'rm -f /etc/resolv.conf; ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf')
 fi
 
 echo "Customizing image (libguestfs appliance)..."

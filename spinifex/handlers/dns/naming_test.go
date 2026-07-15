@@ -76,8 +76,8 @@ func TestEKSNameAndChanges(t *testing.T) {
 }
 
 func TestRelativeLabel(t *testing.T) {
-	assert.Equal(t, "", relativeLabel("spx3.net", "spx3.net"))
-	assert.Equal(t, "", relativeLabel("spx3.net.", "spx3.net"))
+	assert.Empty(t, relativeLabel("spx3.net", "spx3.net"))
+	assert.Empty(t, relativeLabel("spx3.net.", "spx3.net"))
 	assert.Equal(t, "ec2-1-2-3-4.ap-southeast-2.compute.",
 		relativeLabel("ec2-1-2-3-4.ap-southeast-2.compute.spx3.net", "spx3.net"))
 	assert.Equal(t, "ip-10-0-0-1.ap-southeast-2.",

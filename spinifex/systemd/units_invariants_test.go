@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,21 @@ func unitFiles(t *testing.T, dir string) []string {
 func hasDirective(unit, line string) bool {
 	for l := range strings.SplitSeq(unit, "\n") {
 		if strings.TrimSpace(l) == line {
+			return true
+		}
+	}
+	return false
+}
+
+// directiveContains reports whether an active list directive contains a value.
+func directiveContains(unit, key, value string) bool {
+	prefix := key + "="
+	for line := range strings.SplitSeq(unit, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		if slices.Contains(strings.Fields(strings.TrimPrefix(line, prefix)), value) {
 			return true
 		}
 	}
@@ -150,6 +166,28 @@ func TestRG9_TierConfinement(t *testing.T) {
 	}
 	if !hasDirective(vpcd, "SystemCallArchitectures=native") {
 		t.Error("RG-9: vpcd must keep SystemCallArchitectures=native")
+	}
+}
+
+// TestOptionalNorthstarActivation keeps the static target and restart wiring
+// that surrounds the command's configuration-aware activation behavior.
+func TestOptionalNorthstarActivation(t *testing.T) {
+	dir := unitsDir(t)
+	target := readUnit(t, dir, "spinifex.target")
+	if !directiveContains(target, "Wants", "spinifex-northstar.service") {
+		t.Error("spinifex.target must start Northstar when node configuration enables it")
+	}
+
+	northstar := readUnit(t, dir, "spinifex-northstar.service")
+	for _, want := range []string{
+		"ExecStart=/usr/local/bin/spx service northstar start",
+		"Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml",
+		"Restart=on-failure",
+		"RestartSec=5",
+	} {
+		if !hasDirective(northstar, want) {
+			t.Errorf("configured Northstar activation must retain %q", want)
+		}
 	}
 }
 

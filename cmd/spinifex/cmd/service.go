@@ -859,67 +859,119 @@ var northstarCmd = &cobra.Command{
 	Short: "Manage the northstar (DNS) service",
 }
 
+// northstarStartOptions contains the command inputs that select Northstar configuration.
+type northstarStartOptions struct {
+	configFile      string
+	configOverride  string
+	baseDirOverride string
+}
+
+// northstarStarter is the service operation required by Northstar activation.
+type northstarStarter interface {
+	Start() (int, error)
+}
+
+// northstarStartDependencies isolates startup side effects for behavioral tests.
+type northstarStartDependencies struct {
+	loadConfig        func(string) (*config.ClusterConfig, error)
+	bootstrapBaseZone func(string, *config.ClusterConfig) error
+	newService        func(*northstar.Config) (northstarStarter, error)
+}
+
 var northstarStartCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the northstar service",
-	Run: func(cmd *cobra.Command, args []string) {
+	Use:           "start",
+	Short:         "Start the northstar service",
+	SilenceErrors: true,
+	SilenceUsage:  true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println("Starting northstar service...")
-
-		cfgFile := viper.GetString("config")
-		if cfgFile == "" {
-			fmt.Println("Config file is not set")
-			return
-		}
-
-		clusterConfig, err := config.LoadConfig(cfgFile)
-		if err != nil {
-			fmt.Println("Error loading config file:", err)
-			return
-		}
-
-		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
-
-		configPath := nodeConfig.Northstar.ConfigPath
-		if override := viper.GetString("northstar-config"); override != "" {
-			fmt.Println("Overwriting northstar config path to:", override)
-			configPath = override
-		}
-		if configPath == "" {
-			slog.Error("northstar config path is not set (nodes.<node>.northstar.config_path or --northstar-config)")
-			os.Exit(1)
-		}
-
-		baseDir := nodeConfig.BaseDir
-		if override := viper.GetString("base-dir"); override != "" {
-			baseDir = override
-		}
-
-		// Seed the default_domain base zone (control-plane action with system
-		// predastore credentials) before the read-only daemon starts. Best
-		// effort: a failure here must not block DNS from serving.
-		if err := northstar.BootstrapBaseZone(configPath, clusterConfig); err != nil {
-			slog.Warn("northstar base zone bootstrap failed (continuing)", "error", err)
-		}
-
-		svc, err := service.New("northstar", &northstar.Config{
-			ConfigPath: configPath,
-			BasePath:   baseDir,
-			NodeID:     nodeConfig.Predastore.NodeID,
-			NatsHost:   nodeConfig.NATS.Host,
-			NatsToken:  nodeConfig.NATS.ACL.Token,
-			NatsCACert: nodeConfig.NATS.CACert,
+		return runNorthstarStart(northstarStartOptions{
+			configFile:      viper.GetString("config"),
+			configOverride:  viper.GetString("northstar-config"),
+			baseDirOverride: viper.GetString("base-dir"),
+		}, northstarStartDependencies{
+			loadConfig:        loadRequiredClusterConfig,
+			bootstrapBaseZone: northstar.BootstrapBaseZone,
+			newService: func(cfg *northstar.Config) (northstarStarter, error) {
+				return service.New("northstar", cfg)
+			},
 		})
-		if err != nil {
-			fmt.Println("Error starting northstar service:", err)
-			return
-		}
-
-		if _, err = svc.Start(); err != nil {
-			fmt.Println("Error starting northstar service:", err)
-			os.Exit(1)
-		}
-		fmt.Println("northstar service started")
 	},
+}
+
+// loadRequiredClusterConfig loads the service's explicit cluster configuration.
+func loadRequiredClusterConfig(path string) (*config.ClusterConfig, error) {
+	if path == "" {
+		return nil, fmt.Errorf("config file is not set")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("stat cluster config %s: %w", path, err)
+	}
+	clusterConfig, err := config.LoadConfig(path)
+	if err != nil {
+		return nil, fmt.Errorf("load cluster config %s: %w", path, err)
+	}
+	return clusterConfig, nil
+}
+
+// runNorthstarStart starts configured Northstar nodes and cleanly skips nodes where it is optional.
+func runNorthstarStart(options northstarStartOptions, deps northstarStartDependencies) error {
+	clusterConfig, err := deps.loadConfig(options.configFile)
+	if err != nil {
+		return err
+	}
+
+	nodeConfig, ok := clusterConfig.Nodes[clusterConfig.Node]
+	if !ok {
+		return fmt.Errorf("node %q not found in cluster config", clusterConfig.Node)
+	}
+
+	configPath := resolveNorthstarConfigPath(nodeConfig.Northstar.ConfigPath, options.configOverride)
+	if options.configOverride != "" {
+		fmt.Println("Overwriting northstar config path to:", options.configOverride)
+	}
+	if configPath == "" {
+		// An absent path disables this optional service and must not trigger systemd restarts.
+		slog.Info("northstar is not configured on this node; skipping service start")
+		return nil
+	}
+
+	baseDir := nodeConfig.BaseDir
+	if options.baseDirOverride != "" {
+		baseDir = options.baseDirOverride
+	}
+
+	// Seed the default_domain base zone before the read-only daemon starts.
+	// The S3 polling path remains the backstop when this best-effort seed fails.
+	if err := deps.bootstrapBaseZone(configPath, clusterConfig); err != nil {
+		slog.Warn("northstar base zone bootstrap failed (continuing)", "error", err)
+	}
+
+	svc, err := deps.newService(&northstar.Config{
+		ConfigPath: configPath,
+		BasePath:   baseDir,
+		NodeID:     nodeConfig.Predastore.NodeID,
+		NatsHost:   nodeConfig.NATS.Host,
+		NatsToken:  nodeConfig.NATS.ACL.Token,
+		NatsCACert: nodeConfig.NATS.CACert,
+	})
+	if err != nil {
+		return fmt.Errorf("create northstar service: %w", err)
+	}
+
+	if _, err := svc.Start(); err != nil {
+		return fmt.Errorf("start northstar service: %w", err)
+	}
+	fmt.Println("northstar service started")
+	return nil
+}
+
+// resolveNorthstarConfigPath applies the explicit override before the node config.
+func resolveNorthstarConfigPath(nodePath, override string) string {
+	if override != "" {
+		return override
+	}
+	return nodePath
 }
 
 var northstarStopCmd = &cobra.Command{

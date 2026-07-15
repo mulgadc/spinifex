@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -160,8 +161,10 @@ func TestLoadClusterOIDCPrivateKey_RoundTripMatchesJWKSPublic(t *testing.T) {
 	yExpected, err := base64.RawURLEncoding.DecodeString(doc.Keys[0].Y)
 	require.NoError(t, err)
 
-	assert.Equal(t, padCoord(priv.X.Bytes()), xExpected)
-	assert.Equal(t, padCoord(priv.Y.Bytes()), yExpected)
+	point, err := priv.PublicKey.Bytes()
+	require.NoError(t, err)
+	assert.Equal(t, point[1:1+p256CoordLen], xExpected)
+	assert.Equal(t, point[1+p256CoordLen:], yExpected)
 }
 
 func TestLoadClusterOIDCPrivateKey_WrongMasterKeyFails(t *testing.T) {
@@ -217,12 +220,34 @@ func TestMarshalJWKS_DeterministicForSameKey(t *testing.T) {
 	assert.Equal(t, a, b)
 }
 
-func TestPadCoord_LeftPadsShortBigIntBytes(t *testing.T) {
-	got := padCoord([]byte{0x01, 0x02})
-	require.Len(t, got, p256CoordLen)
-	assert.Equal(t, byte(0x01), got[p256CoordLen-2])
-	assert.Equal(t, byte(0x02), got[p256CoordLen-1])
-	for _, b := range got[:p256CoordLen-2] {
-		assert.Zero(t, b)
-	}
+// Roughly 1 in 256 P-256 keys has a coordinate with a leading zero byte, which
+// big.Int.Bytes() strips. Emitting that as a 31-byte x yields a JWKS that OIDC
+// verifiers reject, so the fixture below pins a key with a short X coordinate to
+// keep the intermittent case deterministic.
+func TestMarshalJWKS_LeftPadsCoordinateWithLeadingZeroByte(t *testing.T) {
+	d, err := hex.DecodeString("aa5dcdd192d84607aaf45a4ba2fcc794c8bddb0cff0908c2cb204b3553c4d60f")
+	require.NoError(t, err)
+	priv, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), d)
+	require.NoError(t, err)
+	require.Len(t, priv.X.Bytes(), p256CoordLen-1, "fixture key must have a short X coordinate")
+
+	jwksBytes, err := marshalJWKS(&priv.PublicKey)
+	require.NoError(t, err)
+
+	var doc oidcJWKS
+	require.NoError(t, json.Unmarshal(jwksBytes, &doc))
+	require.Len(t, doc.Keys, 1)
+
+	xBytes, err := base64.RawURLEncoding.DecodeString(doc.Keys[0].X)
+	require.NoError(t, err)
+	require.Len(t, xBytes, p256CoordLen, "JWK x must be a fixed-width coordinate")
+	assert.Zero(t, xBytes[0], "short coordinate must be left-padded, not truncated")
+	assert.Equal(t, priv.X.Bytes(), xBytes[1:])
+}
+
+func TestMarshalJWKS_RejectsNonP256Curve(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	require.NoError(t, err)
+	_, err = marshalJWKS(&priv.PublicKey)
+	require.Error(t, err, "a non-P-256 key must not be emitted as a P-256 JWK")
 }

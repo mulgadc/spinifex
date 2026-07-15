@@ -288,6 +288,7 @@ func TestDescribeTags_InvalidFilterName(t *testing.T) {
 
 	_, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
+			//nolint:misspell // the typo is the point: "resouce-id" must not match the valid "resource-id" filter
 			{Name: aws.String("resouce-id"), Values: []*string{aws.String("i-test1")}},
 		},
 	}, testAccountID)

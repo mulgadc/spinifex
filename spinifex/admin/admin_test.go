@@ -640,6 +640,8 @@ func TestGenerateSignedCert_IncludesHostname(t *testing.T) {
 // --- Certificate orchestrator ---
 
 // TestGenerateCertificatesIfNeeded uses subtests to share the initial generation.
+//
+//nolint:tparallel // subtests mutate the shared dir in order: SkipsWhenAllExist pins the CA modtime that ForcePreservesCARegeneratesServerCert then regenerates against
 func TestGenerateCertificatesIfNeeded(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -710,6 +712,7 @@ func TestGenerateServerCertOnly(t *testing.T) {
 	require.NoError(t, GenerateCACert(filepath.Join(caDir, "ca.pem"), filepath.Join(caDir, "ca.key")))
 
 	t.Run("Success", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		// Copy CA files into test dir
 		caCert, _ := os.ReadFile(filepath.Join(caDir, "ca.pem"))
@@ -744,6 +747,7 @@ func TestGenerateServerCertOnly(t *testing.T) {
 	})
 
 	t.Run("MissingCA", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		err := GenerateServerCertOnly(dir, "10.0.0.5", "us-east-1", "spinifex.internal")
 		assert.Error(t, err)

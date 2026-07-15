@@ -14,6 +14,8 @@ import (
 
 // TestGenerateIPSecPeerCert shares a CA across subtests so the 4096-bit
 // CA-key generation runs once (~0.7s).
+//
+//nolint:tparallel // the parent cannot be parallel: it overrides the charonCATrustDir/charonRereadCAs package vars for the duration of the test
 func TestGenerateIPSecPeerCert(t *testing.T) {
 	// Redirect the charon trust-store symlink at a temp dir so the test
 	// doesn't try to write to /etc/ipsec.d/cacerts on the host. Restored

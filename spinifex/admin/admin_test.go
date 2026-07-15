@@ -11,9 +11,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// certHasIP reports whether a PEM-encoded cert carries ip as an IP SAN.
+func certHasIP(t *testing.T, certPath, ip string) bool {
+	t.Helper()
+	certPEM, err := os.ReadFile(certPath)
+	require.NoError(t, err)
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	for _, got := range cert.IPAddresses {
+		if got.Equal(net.ParseIP(ip)) {
+			return true
+		}
+	}
+	return false
+}
 
 // --- Key / Token generation ---
 
@@ -275,6 +293,32 @@ func TestSetupAWSCredentials_FallsBackToLocalhostForWildcard(t *testing.T) {
 
 	configData, _ := os.ReadFile(filepath.Join(dir, ".aws", "config"))
 	assert.Contains(t, string(configData), "https://localhost:9999")
+}
+
+// On a --force re-init the preserve path passes empty admin credentials: the
+// existing ~/.aws/credentials must be left intact while ~/.aws/config is still
+// refreshed (endpoint/CA for a changed bind IP).
+func TestSetupAWSCredentials_EmptyCredsRefreshesConfigOnly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	awsDir := filepath.Join(dir, ".aws")
+	require.NoError(t, os.MkdirAll(awsDir, 0700))
+	require.NoError(t, UpdateAWSINIFile(filepath.Join(awsDir, "credentials"), "spinifex", map[string]string{
+		"aws_access_key_id":     "PRESERVED_KEY",
+		"aws_secret_access_key": "PRESERVED_SECRET",
+	}))
+
+	err := SetupAWSCredentials("", "", "ap-southeast-2", "/new/ca.pem", "10.11.12.5")
+	require.NoError(t, err)
+
+	credData, _ := os.ReadFile(filepath.Join(awsDir, "credentials"))
+	assert.Contains(t, string(credData), "PRESERVED_KEY", "existing admin credentials must be preserved on re-init")
+	assert.Contains(t, string(credData), "PRESERVED_SECRET")
+
+	configData, _ := os.ReadFile(filepath.Join(awsDir, "config"))
+	assert.Contains(t, string(configData), "https://10.11.12.5:9999", "config endpoint must be refreshed")
+	assert.Contains(t, string(configData), "/new/ca.pem")
 }
 
 // --- Certificate generation ---
@@ -617,12 +661,45 @@ func TestGenerateCertificatesIfNeeded(t *testing.T) {
 		assert.Equal(t, origModTime, caInfo2.ModTime())
 	})
 
-	t.Run("ForceRegenerates", func(t *testing.T) {
+	// --force must preserve the CA (trust anchor for joined nodes / baked AMIs)
+	// and only re-sign the server cert, which stays verifiable against that CA.
+	t.Run("ForcePreservesCARegeneratesServerCert", func(t *testing.T) {
 		origCA, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
+		origCAKey, _ := os.ReadFile(filepath.Join(dir, "ca.key"))
+		origServer, _ := os.ReadFile(filepath.Join(dir, "server.pem"))
 
-		GenerateCertificatesIfNeeded(dir, true, "", "us-east-1", "spinifex.internal")
+		GenerateCertificatesIfNeeded(dir, true, "10.9.8.7", "us-east-1", "spinifex.internal")
+
 		newCA, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
-		assert.NotEqual(t, origCA, newCA)
+		newCAKey, _ := os.ReadFile(filepath.Join(dir, "ca.key"))
+		newServer, _ := os.ReadFile(filepath.Join(dir, "server.pem"))
+		assert.Equal(t, origCA, newCA, "CA cert must be preserved on --force")
+		assert.Equal(t, origCAKey, newCAKey, "CA key must be preserved on --force")
+		assert.NotEqual(t, origServer, newServer, "server cert must be re-signed on --force")
+
+		// The re-signed server cert must verify against the preserved CA.
+		caBlock, _ := pem.Decode(newCA)
+		caCert, err := x509.ParseCertificate(caBlock.Bytes)
+		require.NoError(t, err)
+		pool := x509.NewCertPool()
+		pool.AddCert(caCert)
+
+		srvBlock, _ := pem.Decode(newServer)
+		srvCert, err := x509.ParseCertificate(srvBlock.Bytes)
+		require.NoError(t, err)
+		_, err = srvCert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+		assert.NoError(t, err, "re-signed server cert must verify against preserved CA")
+	})
+
+	// The mgmt-bridge IP must be a SAN even though br-mgmt is not a live
+	// interface here (interface enumeration cannot discover it), mirroring a
+	// host where br-mgmt is down when the cert is minted. Without the explicit
+	// pin the control-plane publish to https://<mgmt-ip> would fail cert verify.
+	t.Run("MgmtBridgeIPAlwaysInSAN", func(t *testing.T) {
+		certDir := t.TempDir()
+		GenerateCertificatesIfNeeded(certDir, false, "10.0.0.5", "us-east-1", "spinifex.internal")
+		assert.True(t, certHasIP(t, filepath.Join(certDir, "server.pem"), config.DefaultMgmtBridgeIP),
+			"server cert must carry the canonical mgmt-bridge IP SAN regardless of br-mgmt state")
 	})
 }
 
@@ -660,6 +737,10 @@ func TestGenerateServerCertOnly(t *testing.T) {
 		// AWS-parity ECR SANs must be present.
 		assert.Contains(t, cert.DNSNames, "ecr.us-east-1.spinifex.internal")
 		assert.Contains(t, cert.DNSNames, "*.dkr.ecr.us-east-1.spinifex.internal")
+
+		// Joining nodes must also pin the mgmt-bridge IP regardless of br-mgmt state.
+		assert.True(t, certHasIP(t, filepath.Join(dir, "server.pem"), config.DefaultMgmtBridgeIP),
+			"server cert must carry the canonical mgmt-bridge IP SAN")
 	})
 
 	t.Run("MissingCA", func(t *testing.T) {

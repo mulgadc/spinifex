@@ -12,7 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/predastore/pkg/sigv4"
 )
 
 // failingProvider models a cold IMDS datapath: Retrieve always errors, as the
@@ -40,13 +40,14 @@ func TestSign_StaticVerifies(t *testing.T) {
 
 	var verifyErr error
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		req, err := auth.ParseReq(r)
+		// sigv4.Parse reads and hashes the body itself, so no explicit body hash.
+		sr, err := sigv4.Parse(r)
 		if err != nil {
 			verifyErr = err
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		verifyErr = req.Verify(testSecretKey, testService, testRegion, auth.WithBodyHash(payloadHash))
+		_, verifyErr = sr.Verify(testSecretKey, testRegion, testService)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()

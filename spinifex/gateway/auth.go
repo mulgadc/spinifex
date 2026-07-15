@@ -3,8 +3,6 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,14 +11,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/predastore/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
-
-// Maximum request body size for signature validation (10 MB).
-const maxBodySize = 10 * 1024 * 1024
 
 // AKID prefixes. Prefix-first dispatch prevents a misfiled record from being
 // resolved by the wrong lookup path.
@@ -42,15 +37,36 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			sig, err := auth.ParseReq(r)
+			// sigv4.Parse reads, hashes, and rewinds the request body to build the
+			// canonical request; Verify below only recomputes the HMAC.
+			sig, err := sigv4.Parse(r)
 			if err != nil {
-				gw.writeSigV4Error(w, r, parseSigV4ErrorCode(err))
+				// sigv4 validates the envelope, credential scope, and timestamp at
+				// parse time. Distinguish a request that never presented credentials
+				// (or is simply too large) from a failed authentication attempt: the
+				// latter is rate-limited so a brute-forcer is locked out regardless of
+				// which validation stage rejects it.
+				switch {
+				case errors.Is(err, sigv4.ErrMissingAuthentication):
+					gw.writeSigV4Error(w, r, awserrors.ErrorMissingAuthenticationToken)
+				case errors.Is(err, sigv4.ErrPayloadTooLarge):
+					gw.writeSigV4Error(w, r, awserrors.ErrorRequestEntityTooLarge)
+				case errors.Is(err, sigv4.ErrRequestTimeTooSkewed):
+					// Skew/replay: AWS returns this as SignatureDoesNotMatch.
+					gw.RateLimiter.RecordFailure(clientIP)
+					gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
+				default:
+					// Malformed Authorization, bad credential scope, unsupported
+					// algorithm, missing content hash: a failed auth attempt.
+					gw.RateLimiter.RecordFailure(clientIP)
+					gw.writeSigV4Error(w, r, awserrors.ErrorIncompleteSignature)
+				}
 				return
 			}
 
 			// Reject unknown services before crypto; otherwise Verify re-signs with
 			// the client-claimed service name and rubber-stamps the scope.
-			if !supportedServices[sig.Service] {
+			if !supportedServices[sig.Credential.Service] {
 				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				return
 			}
@@ -58,7 +74,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// Fail fast when NATS is down; LookupAccessKey would hang 5 s otherwise.
 			// Nil NATSConn (test helpers) skips this check.
 			if gw.NATSConn != nil && !gw.NATSConn.IsConnected() {
-				gw.writeClusterUnavailable(w, r, sig.Service)
+				gw.writeClusterUnavailable(w, r, sig.Credential.Service)
 				return
 			}
 
@@ -74,12 +90,12 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				lookupCode string
 			)
 			switch {
-			case strings.HasPrefix(sig.AccessKeyID, longLivedAKIDPrefix):
-				secret, principal, lookupCode = gw.resolveLongLivedAKID(sig.AccessKeyID, clientIP)
-			case strings.HasPrefix(sig.AccessKeyID, sessionAKIDPrefix):
-				secret, principal, lookupCode = gw.resolveSessionAKID(r, sig.AccessKeyID, clientIP)
+			case strings.HasPrefix(sig.Credential.AccessKeyID, longLivedAKIDPrefix):
+				secret, principal, lookupCode = gw.resolveLongLivedAKID(sig.Credential.AccessKeyID, clientIP)
+			case strings.HasPrefix(sig.Credential.AccessKeyID, sessionAKIDPrefix):
+				secret, principal, lookupCode = gw.resolveSessionAKID(r, sig.Credential.AccessKeyID, clientIP)
 			default:
-				slog.Warn("Auth failure: unknown AKID prefix", "accessKeyID", sig.AccessKeyID, "sourceIP", clientIP)
+				slog.Warn("Auth failure: unknown AKID prefix", "accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP)
 				gw.RateLimiter.RecordFailure(clientIP)
 				gw.writeSigV4Error(w, r, awserrors.ErrorInvalidClientTokenId)
 				return
@@ -89,47 +105,32 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+			// Region is pinned to the gateway; service is the client-claimed scope,
+			// already gated against supportedServices above.
+			if _, err := sig.Verify(secret, gw.Region, sig.Credential.Service); err != nil {
+				slog.Warn("Auth failure: verification failed",
+					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP, "err", err)
+				gw.RateLimiter.RecordFailure(clientIP)
+				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
+				return
+			}
+
+			// Parse rewound the body; re-read it for query-arg parsing, then rewind
+			// again for the downstream handler.
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				var maxBytesErr *http.MaxBytesError
-				if errors.As(err, &maxBytesErr) {
-					slog.Warn("Request body too large", "limit", maxBodySize)
-					gw.writeSigV4Error(w, r, awserrors.ErrorRequestEntityTooLarge)
-					return
-				}
 				slog.Error("Failed to read request body", "err", err)
 				gw.writeSigV4Error(w, r, awserrors.ErrorInternalError)
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 
-			sum := sha256.Sum256(body)
-			bodyHash := hex.EncodeToString(sum[:])
-
-			if err := sig.Verify(secret, sig.Service, gw.Region,
-				auth.WithBodyHash(bodyHash)); err != nil {
-				attrs := []any{
-					"accessKeyID", sig.AccessKeyID,
-					"sourceIP", clientIP,
-					"err", err,
-				}
-				var sme *auth.SigMismatchError
-				if errors.As(err, &sme) {
-					attrs = append(attrs, "expectedAuthHdr", sme.ExpectedAuthHdr, "providedAuthHdr", sme.ProvidedAuthHdr)
-				}
-				slog.Warn("Auth failure: verification failed", attrs...)
-				gw.RateLimiter.RecordFailure(clientIP)
-				gw.writeSigV4Error(w, r, verifySigV4ErrorCode(err))
-				return
-			}
-
 			ctx := r.Context()
 			ctx = context.WithValue(ctx, ctxIdentity, principal.identity)
 			ctx = context.WithValue(ctx, ctxAccountID, principal.accountID)
-			ctx = context.WithValue(ctx, ctxService, sig.Service)
-			ctx = context.WithValue(ctx, ctxRegion, sig.Region)
-			ctx = context.WithValue(ctx, ctxAccessKey, sig.AccessKeyID)
+			ctx = context.WithValue(ctx, ctxService, sig.Credential.Service)
+			ctx = context.WithValue(ctx, ctxRegion, sig.Credential.Region)
+			ctx = context.WithValue(ctx, ctxAccessKey, sig.Credential.AccessKeyID)
 			ctx = context.WithValue(ctx, ctxPrincipalType, principal.principalType)
 			if principal.assumedRoleARN != "" {
 				ctx = context.WithValue(ctx, ctxAssumedRoleARN, principal.assumedRoleARN)
@@ -151,7 +152,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			}
 
 			slog.Debug("SigV4 authentication successful",
-				"accessKey", sig.AccessKeyID,
+				"accessKey", sig.Credential.AccessKeyID,
 				"identity", principal.identity,
 				"principalType", principal.principalType)
 			gw.RateLimiter.RecordSuccess(clientIP)
@@ -267,24 +268,6 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 		assumedRoleID:     cred.AssumedRoleID,
 		underlyingRoleARN: cred.UnderlyingRoleARN,
 	}, ""
-}
-
-func parseSigV4ErrorCode(err error) string {
-	switch {
-	case errors.Is(err, auth.ErrMissingAuth):
-		return awserrors.ErrorMissingAuthenticationToken
-	default:
-		return awserrors.ErrorIncompleteSignature
-	}
-}
-
-func verifySigV4ErrorCode(err error) string {
-	switch {
-	case errors.Is(err, auth.ErrMissingContentSHA):
-		return awserrors.ErrorIncompleteSignature
-	default:
-		return awserrors.ErrorSignatureDoesNotMatch
-	}
 }
 
 // writeSigV4Error writes an EC2-compatible XML error response for auth failures.

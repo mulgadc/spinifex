@@ -19,8 +19,8 @@ require (
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/mulgadc/northstar v1.12.1-0.20260715003053-a1a4e630f944
-	github.com/mulgadc/predastore v1.11.1-0.20260711123238-92a0009c2769
-	github.com/mulgadc/viperblock v1.11.1-0.20260713024608-eb4a376becc8
+	github.com/mulgadc/predastore v1.12.1
+	github.com/mulgadc/viperblock v1.12.1
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/runtime-spec v1.3.0
@@ -99,7 +99,7 @@ require (
 	github.com/containerd/ttrpc v1.2.8 // indirect
 	github.com/containerd/typeurl/v2 v2.2.3 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/dgraph-io/badger/v4 v4.9.2 // indirect
+	github.com/dgraph-io/badger/v4 v4.9.4 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.4.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect

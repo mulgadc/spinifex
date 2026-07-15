@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/formation"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
@@ -294,23 +295,6 @@ func TestWritePredastoreEncryptionKey(t *testing.T) {
 	assert.NotEqual(t, key1, key2, "per-node keys must differ")
 }
 
-// The viperblock key gates at-rest encryption for every volume on a fresh
-// install. masterkey.LoadShared rejects anything that isn't exactly 32 bytes at
-// 0640-or-stricter, so a regression in size/mode would silently fall back to
-// cleartext (empty path) or fail service startup.
-func TestWriteViperblockEncryptionKey(t *testing.T) {
-	configDir := t.TempDir()
-
-	keyPath, err := writeViperblockEncryptionKey(configDir)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(configDir, "viperblock", "encryption.key"), keyPath)
-
-	info, err := os.Stat(keyPath)
-	require.NoError(t, err)
-	assert.Equal(t, int64(32), info.Size(), "viperblock master key must be exactly 32 bytes")
-	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "viperblock master key must be mode 0600")
-}
-
 // Joiners persist the leader's shared key via saveViperblockEncryptionKey
 // against a configDir with no viperblock/ subdir yet. The bytes round-trip
 // verbatim — the whole cluster shares one key, so any mutation would orphan
@@ -329,6 +313,181 @@ func TestSaveViperblockEncryptionKey_RoundTrip(t *testing.T) {
 	got, err := os.ReadFile(keyPath)
 	require.NoError(t, err)
 	assert.Equal(t, key, got, "shared key must be written verbatim")
+}
+
+// A re-init must not rotate the per-node predastore key: rotating it would orphan
+// every fragment already sealed under the old key. The helper preserves an
+// existing key byte-for-byte.
+func TestWritePredastoreEncryptionKey_PreservesExisting(t *testing.T) {
+	configDir := t.TempDir()
+
+	keyPath, err := writePredastoreEncryptionKey(configDir)
+	require.NoError(t, err)
+	orig, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+
+	keyPath2, err := writePredastoreEncryptionKey(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, keyPath, keyPath2)
+	after, err := os.ReadFile(keyPath2)
+	require.NoError(t, err)
+	assert.Equal(t, orig, after, "existing predastore key must be preserved on re-init")
+}
+
+// ensureViperblockEncryptionKey generates a shared 32-byte 0600 key on a fresh
+// dir and returns bytes that match the on-disk file; a second call preserves it
+// so a re-init keeps every encrypted volume readable.
+func TestEnsureViperblockEncryptionKey(t *testing.T) {
+	configDir := t.TempDir()
+
+	key, keyPath, err := ensureViperblockEncryptionKey(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(configDir, "viperblock", "encryption.key"), keyPath)
+	assert.Len(t, key, 32, "viperblock key must be 32 bytes")
+
+	info, err := os.Stat(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(32), info.Size(), "viperblock master key must be exactly 32 bytes")
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "viperblock master key must be mode 0600")
+
+	onDisk, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, key, onDisk, "returned bytes must match the file")
+
+	key2, _, err := ensureViperblockEncryptionKey(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, key, key2, "existing viperblock key must be preserved on re-init")
+}
+
+// A present-but-corrupt viperblock key must fail loud rather than regenerate,
+// which would orphan every already-encrypted volume in the cluster.
+func TestEnsureViperblockEncryptionKey_CorruptFailsLoud(t *testing.T) {
+	configDir := t.TempDir()
+	keyDir := filepath.Join(configDir, "viperblock")
+	require.NoError(t, os.MkdirAll(keyDir, 0750))
+	keyPath := filepath.Join(keyDir, "encryption.key")
+	require.NoError(t, os.WriteFile(keyPath, []byte("bad"), 0600))
+
+	_, _, err := ensureViperblockEncryptionKey(configDir)
+	require.Error(t, err, "a truncated viperblock key must error, not regenerate")
+
+	after, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("bad"), after, "corrupt viperblock key must not be overwritten")
+}
+
+// ensureMasterKey generates a fresh in-memory key without touching disk (the
+// bootstrap writer persists it), and preserves an existing on-disk key so a
+// re-init never rotates the key that encrypts IAM secrets in NATS KV.
+func TestEnsureMasterKey(t *testing.T) {
+	t.Run("FreshGeneratesWithoutWriting", func(t *testing.T) {
+		configDir := t.TempDir()
+		key, existed, err := ensureMasterKey(configDir)
+		require.NoError(t, err)
+		assert.False(t, existed, "no master.key present yet")
+		assert.Len(t, key, 32)
+		assert.NoFileExists(t, filepath.Join(configDir, "master.key"),
+			"ensureMasterKey must not persist on the fresh path")
+	})
+
+	t.Run("PreservesExisting", func(t *testing.T) {
+		configDir := t.TempDir()
+		seed := make([]byte, 32)
+		for i := range seed {
+			seed[i] = byte(200 - i)
+		}
+		require.NoError(t, handlers_iam.SaveMasterKey(filepath.Join(configDir, "master.key"), seed))
+
+		key, existed, err := ensureMasterKey(configDir)
+		require.NoError(t, err)
+		assert.True(t, existed, "existing master.key must be detected")
+		assert.Equal(t, seed, key, "existing master key must be loaded verbatim")
+	})
+
+	// A present-but-corrupt master.key must fail loud, never be silently
+	// regenerated: rotating it would orphan every IAM secret in NATS KV.
+	t.Run("CorruptFailsLoud", func(t *testing.T) {
+		configDir := t.TempDir()
+		keyPath := filepath.Join(configDir, "master.key")
+		require.NoError(t, os.WriteFile(keyPath, []byte("too-short"), 0600))
+
+		_, _, err := ensureMasterKey(configDir)
+		require.Error(t, err, "a truncated master.key must error, not regenerate")
+
+		after, err := os.ReadFile(keyPath)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("too-short"), after, "corrupt master key must not be overwritten")
+	})
+}
+
+// The identity bundle is preserved holistically on re-init: the load helpers
+// recover the exact system credentials and never rewrite bootstrap.json. Admin
+// credentials are not recovered from disk — awsgw consumes and deletes
+// bootstrap.json after first boot, so the preserve path must not read it back.
+func TestPreservedIdentityBundle(t *testing.T) {
+	configDir := t.TempDir()
+	bootstrapDir := filepath.Join(configDir, "awsgw")
+
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	const (
+		sysAccess   = "AKIASYSTEM0000000000"
+		sysSecret   = "system-secret-value"
+		adminAccess = "AKIAADMIN00000000000"
+		adminSecret = "admin-secret-value"
+		accountID   = "123456789012"
+	)
+	require.NoError(t, writeBootstrapFilesWithAdmin(configDir, bootstrapDir, masterKey,
+		sysAccess, sysSecret, accountID, adminAccess, adminSecret))
+	require.NoError(t, writeSystemCredentials(configDir, sysAccess, sysSecret))
+
+	bootstrapPath := filepath.Join(bootstrapDir, "bootstrap.json")
+	bootstrapBefore, err := os.ReadFile(bootstrapPath)
+	require.NoError(t, err)
+
+	// master.key round-trips and is flagged as pre-existing.
+	loadedKey, existed, err := ensureMasterKey(configDir)
+	require.NoError(t, err)
+	assert.True(t, existed)
+	assert.Equal(t, masterKey, loadedKey)
+
+	// System credentials come back verbatim (they must match the NATS KV seed).
+	gotSysAccess, gotSysSecret, err := loadSystemCredentials(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, sysAccess, gotSysAccess)
+	assert.Equal(t, sysSecret, gotSysSecret)
+
+	// The preserve helpers must not rewrite the seed file.
+	bootstrapAfter, err := os.ReadFile(bootstrapPath)
+	require.NoError(t, err)
+	assert.Equal(t, bootstrapBefore, bootstrapAfter, "bootstrap.json must not be rewritten on re-init")
+}
+
+// loadSystemCredentials surfaces a clear error when the file is absent rather
+// than returning empty credentials that would silently break SigV4 auth.
+func TestLoadSystemCredentials_Missing(t *testing.T) {
+	_, _, err := loadSystemCredentials(t.TempDir())
+	require.Error(t, err)
+}
+
+// A present-but-empty or malformed system-credentials.json must error rather
+// than yield blank credentials that would silently break SigV4 between services.
+func TestLoadSystemCredentials_Invalid(t *testing.T) {
+	t.Run("EmptyValues", func(t *testing.T) {
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "system-credentials.json"),
+			[]byte(`{"access_key_id":"","secret_access_key":""}`), 0600))
+		_, _, err := loadSystemCredentials(configDir)
+		require.Error(t, err)
+	})
+
+	t.Run("MalformedJSON", func(t *testing.T) {
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "system-credentials.json"),
+			[]byte("not json"), 0600))
+		_, _, err := loadSystemCredentials(configDir)
+		require.Error(t, err)
+	})
 }
 
 // A fresh install must render encryption_key_file so viperblockd enables

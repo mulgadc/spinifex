@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
@@ -197,8 +198,8 @@ func runIMDS(t *testing.T, fix *Fixture) {
 		"instance-type must be populated")
 	require.NotEmpty(t, imdsGet(t, tgtX, tokenX, "/latest/meta-data/mac"),
 		"mac must be populated")
-	require.NotEmpty(t, imdsGet(t, tgtX, tokenX, "/latest/meta-data/placement/availability-zone"),
-		"placement/availability-zone must be populated")
+	azX := imdsGet(t, tgtX, tokenX, "/latest/meta-data/placement/availability-zone")
+	require.NotEmpty(t, azX, "placement/availability-zone must be populated")
 
 	// Cheap one-field/static leaves: a real reservation id, the static
 	// instance-life-cycle, and the services subtree.
@@ -211,14 +212,26 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	require.Equal(t, "amazonaws.com", imdsGet(t, tgtX, tokenX, "/latest/meta-data/services/domain"),
 		"services/domain must be amazonaws.com")
 
-	// public-hostname mirrors public-ipv4 when the instance has one, else 404. In
-	// pool mode the probe subnet maps a public IP on launch; in dev_networking it
-	// has none, so the two modes exercise the two branches.
+	// public-hostname needs a public IP, else 404. In pool mode the probe subnet
+	// maps one on launch; in dev_networking it has none, so the two modes
+	// exercise the two branches.
 	if fix.PoolMode {
 		pubIP := imdsGet(t, tgtX, tokenX, "/latest/meta-data/public-ipv4")
 		require.NotEmpty(t, pubIP, "pool-mode VM must have a public IP")
-		require.Equal(t, pubIP, imdsGet(t, tgtX, tokenX, "/latest/meta-data/public-hostname"),
-			"public-hostname must mirror public-ipv4")
+		gotHost := imdsGet(t, tgtX, tokenX, "/latest/meta-data/public-hostname")
+
+		// With a base domain configured the responder serves the AWS-shaped EC2
+		// name built from the ENI's public IP and its AZ's region; with none it
+		// falls back to mirroring public-ipv4. The domain is fixture-specific, so
+		// resolve it from config the same way the live responder does.
+		if base := harness.NorthstarBaseDomain(fix.Env); base != "" {
+			want := handlers_dns.EC2PublicName(pubIP, imdsRegionFromAZ(azX), base)
+			require.Equal(t, want, gotHost,
+				"public-hostname must be the AWS-shaped EC2 name for public-ipv4")
+		} else {
+			require.Equal(t, pubIP, gotHost,
+				"no base domain configured → public-hostname mirrors public-ipv4")
+		}
 	} else {
 		require.Equal(t, "404",
 			imdsCode(tgtX, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, tokenX),
@@ -584,6 +597,20 @@ func imdsTapName(eniID string) string {
 		name = name[:15]
 	}
 	return name
+}
+
+// imdsRegionFromAZ mirrors the responder's own AZ→region derivation: strip the
+// trailing AZ letter ("ap-southeast-2a" → "ap-southeast-2"). Deriving the region
+// from the AZ the responder reports — rather than the client's configured region
+// — keeps the expected hostname self-consistent with the instance under test.
+func imdsRegionFromAZ(az string) string {
+	if az == "" {
+		return ""
+	}
+	if last := az[len(az)-1]; last >= 'a' && last <= 'z' {
+		return az[:len(az)-1]
+	}
+	return az
 }
 
 // imdsRunVM launches a single instance per spec and returns its ID. AMI / type /

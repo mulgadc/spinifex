@@ -524,15 +524,15 @@ const cobraRequiredAnnotation = "cobra_annotation_bash_completion_one_required_f
 func TestAdminInitCmd_ExternalDHCPFlagSchema(t *testing.T) {
 	sourceFlag := adminInitCmd.Flags().Lookup("external-source")
 	require.NotNil(t, sourceFlag, "--external-source must be defined")
-	assert.Equal(t, "", sourceFlag.DefValue)
+	assert.Empty(t, sourceFlag.DefValue)
 
 	bindFlag := adminInitCmd.Flags().Lookup("external-bind-bridge")
 	require.NotNil(t, bindFlag, "--external-bind-bridge must be defined")
-	assert.Equal(t, "", bindFlag.DefValue)
+	assert.Empty(t, bindFlag.DefValue)
 
 	poolFlag := adminInitCmd.Flags().Lookup("external-pool")
 	require.NotNil(t, poolFlag)
-	assert.Equal(t, "", poolFlag.DefValue)
+	assert.Empty(t, poolFlag.DefValue)
 }
 
 // DHCP-sourced pool must emit source + bind_bridge into spinifex.toml so the

@@ -95,7 +95,7 @@ func TestConfigMountedVolumesAppend(t *testing.T) {
 		MountedVolumes: []MountedVolume{},
 	}
 
-	assert.Len(t, cfg.MountedVolumes, 0)
+	assert.Empty(t, cfg.MountedVolumes)
 
 	// Add first volume
 	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
@@ -342,7 +342,6 @@ func TestMountedVolumeWithSocket(t *testing.T) {
 	}
 
 	assert.Contains(t, vol.Socket, "vol-ebs-123")
-	assert.True(t, len(vol.Socket) > 0)
 }
 
 // TestConfigConcurrentRead tests concurrent reads are safe.
@@ -439,8 +438,8 @@ func TestMountedVolumePortRange(t *testing.T) {
 
 	for i, vol := range volumes {
 		assert.Equal(t, 10809+i, vol.Port)
-		assert.True(t, vol.Port >= 10809)
-		assert.True(t, vol.Port <= 65535)
+		assert.GreaterOrEqual(t, vol.Port, 10809)
+		assert.LessOrEqual(t, vol.Port, 65535)
 	}
 }
 

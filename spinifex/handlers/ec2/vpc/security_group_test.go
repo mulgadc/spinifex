@@ -1602,7 +1602,7 @@ func TestFindDefaultSGForVPC_NoMatch(t *testing.T) {
 
 	got, err := svc.FindDefaultSGForVPC(testAccountID, "vpc-other")
 	require.NoError(t, err)
-	assert.Equal(t, "", got, "no default SG → empty string, not error")
+	assert.Empty(t, got, "no default SG → empty string, not error")
 }
 
 // TestFindDefaultSGForVPC_SkipsMalformedRecord asserts that a corrupt SG entry

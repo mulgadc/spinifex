@@ -443,9 +443,9 @@ func TestEnsureClusterNLB_IdempotentReusesExisting(t *testing.T) {
 	assert.Equal(t, first.ListenerArn, second.ListenerArn)
 	assert.Equal(t, first.DNSName, second.DNSName)
 
-	assert.Equal(t, createLBCount, len(nlbp.createLBCalls), "no new LB create on idempotent call")
-	assert.Equal(t, createTGCount, len(nlbp.createTGCalls), "no new TG create on idempotent call")
-	assert.Equal(t, createListenerCount, len(nlbp.createListenerCalls), "no new listener create on idempotent call")
+	assert.Len(t, nlbp.createLBCalls, createLBCount, "no new LB create on idempotent call")
+	assert.Len(t, nlbp.createTGCalls, createTGCount, "no new TG create on idempotent call")
+	assert.Len(t, nlbp.createListenerCalls, createListenerCount, "no new listener create on idempotent call")
 }
 
 func TestEnsureClusterNLB_LBCreateErrorSurfaced(t *testing.T) {

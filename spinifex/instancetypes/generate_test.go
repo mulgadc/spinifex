@@ -539,8 +539,8 @@ func TestIsMIGType(t *testing.T) {
 func TestMIGProfileFromType(t *testing.T) {
 	assert.Equal(t, "1g.10gb", MIGProfileFromType("mig.1g.10gb"))
 	assert.Equal(t, "7g.80gb", MIGProfileFromType("mig.7g.80gb"))
-	assert.Equal(t, "", MIGProfileFromType("t3.micro"))
-	assert.Equal(t, "", MIGProfileFromType(""))
+	assert.Empty(t, MIGProfileFromType("t3.micro"))
+	assert.Empty(t, MIGProfileFromType(""))
 }
 
 func TestGenerateMIGTypes(t *testing.T) {

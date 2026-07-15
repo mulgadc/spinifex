@@ -2,7 +2,6 @@ package handlers_iam
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -107,7 +106,7 @@ func TestEnsureSystemInstanceProfile_CreatesAll(t *testing.T) {
 	assert.Equal(t, 1, f.createRoleCalls)
 	assert.Equal(t, 1, f.createProfCalls)
 	assert.Equal(t, 1, f.addRoleCalls)
-	assert.True(t, strings.Contains(f.lastTrustDoc, "ec2.amazonaws.com"))
+	assert.Contains(t, f.lastTrustDoc, "ec2.amazonaws.com")
 	assert.Equal(t, testPolicyDoc, f.policies[testRoleName])
 	require.NotNil(t, f.profiles[testRoleName])
 	assert.Len(t, f.profiles[testRoleName].Roles, 1)

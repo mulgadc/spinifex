@@ -74,7 +74,7 @@ func TestIssuerVerifier_RoundTrip(t *testing.T) {
 	iss := NewIssuer(key, testAudience)
 	tok, exp, err := iss.Mint(samplePrincipal())
 	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now().Add(DefaultTokenTTL), exp, time.Minute)
+	assert.WithinDuration(t, exp, time.Now().Add(DefaultTokenTTL), time.Minute)
 
 	claims, err := NewVerifier(verify, testAudience).Verify(tok)
 	require.NoError(t, err)

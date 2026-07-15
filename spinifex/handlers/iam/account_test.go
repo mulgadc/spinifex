@@ -95,7 +95,7 @@ func TestListAccounts_Empty(t *testing.T) {
 
 	accounts, err := svc.ListAccounts()
 	require.NoError(t, err)
-	assert.Len(t, accounts, 0)
+	assert.Empty(t, accounts)
 }
 
 // ============================================================================

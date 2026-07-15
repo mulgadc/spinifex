@@ -20,7 +20,10 @@ func TestAnthropicProvider_Converse_MapsResponse(t *testing.T) {
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAPIKey = r.Header.Get("X-Api-Key")
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody)) {
+			http.Error(w, "decode request body", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{

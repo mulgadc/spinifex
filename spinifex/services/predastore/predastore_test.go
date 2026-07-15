@@ -143,8 +143,8 @@ func TestConfigPortRange(t *testing.T) {
 
 			assert.Equal(t, tc.expected, cfg.Port)
 			if tc.valid {
-				assert.True(t, cfg.Port > 0)
-				assert.True(t, cfg.Port <= 65535)
+				assert.Positive(t, cfg.Port)
+				assert.LessOrEqual(t, cfg.Port, 65535)
 			}
 		})
 	}
@@ -225,7 +225,7 @@ func TestConfigMinimal(t *testing.T) {
 
 	// Minimal config should work
 	assert.NotEmpty(t, cfg.ConfigPath)
-	assert.True(t, cfg.Port > 0)
+	assert.Positive(t, cfg.Port)
 	assert.NotEmpty(t, cfg.Host)
 }
 
@@ -291,7 +291,7 @@ func TestConfigValidation(t *testing.T) {
 		Host:       "0.0.0.0",
 	}
 	assert.NotEmpty(t, cfg2.ConfigPath)
-	assert.True(t, cfg2.Port > 0)
+	assert.Positive(t, cfg2.Port)
 	assert.NotEmpty(t, cfg2.Host)
 }
 

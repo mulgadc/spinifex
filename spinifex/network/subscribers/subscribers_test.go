@@ -665,7 +665,7 @@ func TestHandlePort_FlushesStaleMACBinding(t *testing.T) {
 	assert.Contains(t, fake.calls(), "172.31.0.4", "create-port must flush the private IP's mac_binding")
 
 	sub.handleDeletePort(&nats.Msg{Data: mustJSON(t, evt)})
-	assert.Equal(t, 2, len(fake.calls()), "delete-port must also flush the freed private IP's mac_binding")
+	assert.Len(t, fake.calls(), 2, "delete-port must also flush the freed private IP's mac_binding")
 }
 
 // A nil flusher must be a no-op (the dependency is optional).

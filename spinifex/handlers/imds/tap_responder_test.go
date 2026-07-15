@@ -46,7 +46,10 @@ func TestTapResponder_ThreadsENIIdentity(t *testing.T) {
 	// path's (vpcID, srcIP) keys must never be consulted on the per-tap path.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		eni, _ := r.Context().Value(ctxKeyENI).(*eniFacts)
-		require.NotNil(t, eni)
+		if !assert.NotNil(t, eni) {
+			http.Error(w, "missing ENI context", http.StatusInternalServerError)
+			return
+		}
 		_, _ = io.WriteString(w, eni.eniID+"|"+eni.instanceID)
 	})
 

@@ -412,16 +412,16 @@ func TestAccountIDFromMsg(t *testing.T) {
 
 func TestAccountIDFromMsg_Missing(t *testing.T) {
 	msg := nats.NewMsg("test")
-	assert.Equal(t, "", AccountIDFromMsg(msg))
+	assert.Empty(t, AccountIDFromMsg(msg))
 }
 
 func TestAccountIDFromMsg_NilMsg(t *testing.T) {
-	assert.Equal(t, "", AccountIDFromMsg(nil))
+	assert.Empty(t, AccountIDFromMsg(nil))
 }
 
 func TestAccountIDFromMsg_NilHeader(t *testing.T) {
 	msg := &nats.Msg{Subject: "test"}
-	assert.Equal(t, "", AccountIDFromMsg(msg))
+	assert.Empty(t, AccountIDFromMsg(msg))
 }
 
 // --- ConnectNATSWithRetry tests ---
@@ -912,7 +912,7 @@ func TestGather_AccountIDHeaderAbsentWhenEmpty(t *testing.T) {
 	var echo gatherAcctEcho
 	require.NoError(t, json.Unmarshal(frames[0], &echo))
 	assert.False(t, echo.Present)
-	assert.Equal(t, "", echo.ID)
+	assert.Empty(t, echo.ID)
 }
 
 func TestGather_NilConn_ReturnsClusterUnavailable(t *testing.T) {

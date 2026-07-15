@@ -326,7 +326,7 @@ func TestMemoryObjectStore_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	// Should complete without race conditions
-	assert.True(t, store.Count() > 0)
+	assert.Positive(t, store.Count())
 }
 
 func TestNoSuchKeyError(t *testing.T) {

@@ -131,12 +131,12 @@ func TestSpreadAllocate_ZeroCount(t *testing.T) {
 		{NodeID: "A", Available: 4},
 	}
 	result := spreadAllocate(nodes, 0)
-	assert.Len(t, result, 0)
+	assert.Empty(t, result)
 }
 
 func TestSpreadAllocate_EmptyNodes(t *testing.T) {
 	result := spreadAllocate(nil, 3)
-	assert.Len(t, result, 0)
+	assert.Empty(t, result)
 }
 
 // --- queryNodeCapacity tests (NATS-based) ---
@@ -195,7 +195,7 @@ func TestQueryNodeCapacity_NoNodes(t *testing.T) {
 	// No subscribers → timeout, empty result
 	nodes, err := queryNodeCapacity(context.Background(), nc, "t3.micro", 2, "test-account")
 	require.NoError(t, err)
-	assert.Len(t, nodes, 0)
+	assert.Empty(t, nodes)
 }
 
 // --- aggregateResults tests ---
@@ -349,14 +349,14 @@ func TestExtractClientError_NoErrors(t *testing.T) {
 	results := []nodeLaunchResult{
 		{NodeID: "node-1", Reservation: &ec2.Reservation{}},
 	}
-	assert.Nil(t, extractClientError(results))
+	assert.NoError(t, extractClientError(results))
 }
 
 func TestExtractClientError_GenericError(t *testing.T) {
 	results := []nodeLaunchResult{
 		{NodeID: "node-1", Err: assert.AnError},
 	}
-	assert.Nil(t, extractClientError(results))
+	assert.NoError(t, extractClientError(results))
 }
 
 func TestExtractClientError_AMINotFound(t *testing.T) {
@@ -367,7 +367,7 @@ func TestExtractClientError_AMINotFound(t *testing.T) {
 		{NodeID: "node-1", Err: wrapped},
 	}
 	err := extractClientError(results)
-	require.NotNil(t, err)
+	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
 
@@ -378,7 +378,7 @@ func TestExtractClientError_KeyPairNotFound(t *testing.T) {
 		{NodeID: "node-1", Err: wrapped},
 	}
 	err := extractClientError(results)
-	require.NotNil(t, err)
+	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
 }
 
@@ -703,14 +703,14 @@ func TestPlacementGroupName_WithGroupName(t *testing.T) {
 
 func TestPlacementGroupName_NilPlacement(t *testing.T) {
 	input := &ec2.RunInstancesInput{}
-	assert.Equal(t, "", placementGroupName(input))
+	assert.Empty(t, placementGroupName(input))
 }
 
 func TestPlacementGroupName_NilGroupName(t *testing.T) {
 	input := &ec2.RunInstancesInput{
 		Placement: &ec2.Placement{},
 	}
-	assert.Equal(t, "", placementGroupName(input))
+	assert.Empty(t, placementGroupName(input))
 }
 
 func TestPlacementGroupName_EmptyGroupName(t *testing.T) {
@@ -719,7 +719,7 @@ func TestPlacementGroupName_EmptyGroupName(t *testing.T) {
 			GroupName: aws.String(""),
 		},
 	}
-	assert.Equal(t, "", placementGroupName(input))
+	assert.Empty(t, placementGroupName(input))
 }
 
 // --- lookupPlacementGroupStrategy tests ---

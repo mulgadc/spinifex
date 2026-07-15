@@ -1,7 +1,6 @@
 package dhcp_test
 
 import (
-	"errors"
 	"net"
 	"testing"
 	"time"
@@ -79,7 +78,7 @@ func TestStorePutGetRoundtrip(t *testing.T) {
 func TestStoreGetMissing(t *testing.T) {
 	s := newTestStore(t, "az1")
 	_, err := s.Get("absent")
-	assert.True(t, errors.Is(err, nats.ErrKeyNotFound), "got %v", err)
+	assert.ErrorIs(t, err, nats.ErrKeyNotFound, "got %v", err)
 }
 
 func TestStoreDeleteIdempotent(t *testing.T) {
@@ -89,7 +88,7 @@ func TestStoreDeleteIdempotent(t *testing.T) {
 	require.NoError(t, s.Put(dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: sampleLease("x")}))
 	require.NoError(t, s.Delete("x"))
 	_, err := s.Get("x")
-	assert.True(t, errors.Is(err, nats.ErrKeyNotFound))
+	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
 }
 
 func TestStoreListSkipsVersionKey(t *testing.T) {

@@ -838,7 +838,7 @@ func TestRelaunchAll(t *testing.T) {
 		assert.False(t, mountedSet[skipped.ID],
 			"instance flipped out of {Pending,Provisioning} between semaphore acquire and Run "+
 				"must be skipped by the status guard; otherwise a concurrent terminate races with relaunch")
-		assert.Equal(t, total-1, len(mounter.mounted),
+		assert.Len(t, mounter.mounted, total-1,
 			"every eligible instance must reach Mount: only the flipped one is skipped")
 	})
 }

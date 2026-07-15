@@ -78,7 +78,7 @@ func TestDescribeAccountAttributes_FilterNonExistent(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, output)
 
-	assert.Len(t, output.AccountAttributes, 0)
+	assert.Empty(t, output.AccountAttributes)
 }
 
 func TestDescribeAccountAttributes_EmptyAttributeNames(t *testing.T) {

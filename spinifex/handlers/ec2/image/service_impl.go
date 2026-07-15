@@ -709,11 +709,11 @@ func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (vi
 
 	body, err := io.ReadAll(result.Body)
 	if err != nil {
-		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %v", ErrCorruptAMIConfig, configKey, err)
+		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %w", ErrCorruptAMIConfig, configKey, err)
 	}
 	var vbState viperblock.VBState
 	if err := json.Unmarshal(viperblock.StateBody(body), &vbState); err != nil {
-		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %v", ErrCorruptAMIConfig, configKey, err)
+		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %w", ErrCorruptAMIConfig, configKey, err)
 	}
 	return vbState.VolumeConfig.AMIMetadata, nil
 }

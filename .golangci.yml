@@ -20,6 +20,7 @@ linters:
     - errcheck # checks for unchecked errors in type assertions and I/O
     - errchkjson # checks types passed to json encoding functions, flags omittable error checks
     - errname # checks that sentinel errors are prefixed with Err, error types suffixed with Error
+    - errorlint # catches ==/!= on errors, type assertions on errors, and %v instead of %w — all break on wrapped errors
     - exptostd # detects golang.org/x/exp/ functions replaceable by stdlib
     - fatcontext # detects nested contexts in loops
     - forcetypeassert # flags unchecked type assertions that can panic

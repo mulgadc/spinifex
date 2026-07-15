@@ -92,7 +92,8 @@ func NewS3ObjectStore(client *s3.S3) *S3ObjectStore {
 func (s *S3ObjectStore) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
 	out, err := s.client.GetObjectWithContext(ctx, input)
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok &&
+		var aerr awserr.Error
+		if errors.As(err, &aerr) &&
 			(aerr.Code() == s3.ErrCodeNoSuchKey || aerr.Code() == "NotFound") {
 			return nil, &NoSuchKeyError{Key: aws.StringValue(input.Key)}
 		}
@@ -104,7 +105,8 @@ func (s *S3ObjectStore) GetObject(ctx context.Context, input *s3.GetObjectInput)
 func (s *S3ObjectStore) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
 	out, err := s.client.HeadObjectWithContext(ctx, input)
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok &&
+		var aerr awserr.Error
+		if errors.As(err, &aerr) &&
 			(aerr.Code() == s3.ErrCodeNoSuchKey || aerr.Code() == "NotFound") {
 			return nil, &NoSuchKeyError{Key: aws.StringValue(input.Key)}
 		}
@@ -134,7 +136,8 @@ func (s *S3ObjectStore) EnsureBucket(ctx context.Context, bucket string) error {
 	}
 	_, err := s.client.CreateBucketWithContext(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
+		var aerr awserr.Error
+		if errors.As(err, &aerr) {
 			switch aerr.Code() {
 			case s3.ErrCodeBucketAlreadyOwnedByYou, s3.ErrCodeBucketAlreadyExists:
 				return nil

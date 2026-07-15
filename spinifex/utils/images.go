@@ -99,7 +99,7 @@ func newHasher(checksumType string) (hash.Hash, error) {
 func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 	parsed, err := url.Parse(checksumURL)
 	if err != nil {
-		return "", fmt.Errorf("%w: parse url: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: parse url: %w", ErrChecksumFetchFailed, err)
 	}
 	if parsed.Scheme != "https" {
 		return "", fmt.Errorf("%w: non-https checksum url scheme %q", ErrChecksumFetchFailed, parsed.Scheme)
@@ -138,12 +138,12 @@ func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checksumURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("%w: build request: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: build request: %w", ErrChecksumFetchFailed, err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: %w", ErrChecksumFetchFailed, err)
 	}
 	defer resp.Body.Close()
 
@@ -153,7 +153,7 @@ func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, sumsFileMaxSize+1))
 	if err != nil {
-		return "", fmt.Errorf("%w: read body: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: read body: %w", ErrChecksumFetchFailed, err)
 	}
 	if len(body) > sumsFileMaxSize {
 		return "", fmt.Errorf("%w: sums file exceeds %d byte limit", ErrChecksumFetchFailed, sumsFileMaxSize)
@@ -203,7 +203,7 @@ func parseSumsFile(body []byte, filename string) (string, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("%w: scan sums file: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: scan sums file: %w", ErrChecksumFetchFailed, err)
 	}
 
 	// Alpine single-file fallback: accept only if exactly one bare-digest line in the file.

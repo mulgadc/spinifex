@@ -134,7 +134,7 @@ func ReadSnapshotConfig(store objectstore.ObjectStore, bucket, snapshotID string
 
 	var cfg SnapshotConfig
 	if err := json.NewDecoder(result.Body).Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCorruptSnapshotMetadata, err)
+		return nil, fmt.Errorf("%w: %w", ErrCorruptSnapshotMetadata, err)
 	}
 	return &cfg, nil
 }

@@ -1,2 +1,5 @@
 # Build artefacts: mkosi writes disk images here (hundreds of MB).
+# The glob covers ad-hoc output dirs (MKOSI_OUTPUT_DIR) as well as the default,
+# so a scratch build cannot leave multi-GB images stageable.
 output/
+output-*/

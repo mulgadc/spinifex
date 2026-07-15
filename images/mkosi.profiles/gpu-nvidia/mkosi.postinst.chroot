@@ -1,0 +1,101 @@
+#!/bin/bash
+set -euo pipefail
+
+# gpu-nvidia postinst — force-builds the NVIDIA DKMS module against the
+# kernel this image ships, then wires up Docker + nvidia-container-toolkit.
+#
+# The .chroot suffix means mkosi has already chrooted into the image root
+# and bind-mounted /proc /sys /dev (APIVFS) before running this script —
+# DKMS needs all three during its build. nvidia-dkms-595-server-open's own
+# postinst hook may already have attempted a build during package
+# installation, but that attempt runs against whatever kernel dpkg's hook
+# happened to see first; it is not trusted here. The explicit --force
+# rebuild below, and the check that follows it, are what is actually
+# verified.
+#
+# Static, content-free configuration (nouveau blacklist, the
+# unattended-upgrades package blacklist, the cloud-init docker-group
+# drop-in) lives in mkosi.extra/ instead of here — this script is only for
+# the parts that depend on values not known until the image is built.
+
+# Exactly one kernel is expected: this is a from-scratch image, not a
+# system that has accumulated old kernels across upgrades. Under mkosi the
+# kernel is chosen explicitly via Packages= (linux-image-generic, in the
+# base config), so there is one version to find rather than one to detect
+# via a /boot-vs-/lib/modules hunt.
+mapfile -t kernels < <(ls -1 /usr/lib/modules)
+if [[ "${#kernels[@]}" -ne 1 ]]; then
+    echo "ERROR: expected exactly one kernel under /usr/lib/modules, found: ${kernels[*]:-<none>}" >&2
+    exit 1
+fi
+KVER="${kernels[0]}"
+echo "Target kernel: ${KVER}"
+
+# Identify the installed NVIDIA DKMS module + version for an explicit build.
+NVIDIA_DKMS_NAME=$(dkms status 2>/dev/null | awk -F'[,/ ]+' '/nvidia/{print $1; exit}')
+NVIDIA_DKMS_VER=$(dkms status 2>/dev/null  | awk -F'[,/ ]+' '/nvidia/{print $2; exit}')
+if [[ -z "${NVIDIA_DKMS_NAME}" || -z "${NVIDIA_DKMS_VER}" ]]; then
+    echo "ERROR: nvidia DKMS module not registered — nvidia-dkms package install may have failed" >&2
+    exit 1
+fi
+
+echo "Building NVIDIA DKMS module ${NVIDIA_DKMS_NAME}/${NVIDIA_DKMS_VER} for kernel ${KVER}..."
+dkms install -m "${NVIDIA_DKMS_NAME}" -v "${NVIDIA_DKMS_VER}" --kernelver "${KVER}" --force
+
+# The one thing this script must not do silently: ship an image where the
+# module didn't actually build.
+NVIDIA_KO=$(find "/usr/lib/modules/${KVER}/updates" -name "nvidia.ko*" 2>/dev/null | head -1)
+if [[ -z "${NVIDIA_KO}" ]]; then
+    echo "ERROR: nvidia.ko not found under /usr/lib/modules/${KVER}/updates after DKMS build" >&2
+    exit 1
+fi
+echo "NVIDIA kernel module: ${NVIDIA_KO}"
+
+# Pin the exact kernel + headers so unattended-upgrades and plain `apt
+# upgrade` cannot replace the kernel the DKMS module was built for. The
+# unattended-upgrades package blacklist (mkosi.extra/etc/apt/apt.conf.d/
+# 99-gpu-ami) covers the same guarantee for anything apt-mark hold does not
+# — the two are complementary, not redundant.
+apt-mark hold "linux-image-${KVER}" "linux-headers-${KVER}"
+
+NVIDIA_PKGS=$(dpkg --get-selections 'nvidia-*' 2>/dev/null | awk '/install$/{print $1}' || true)
+LIBNVIDIA_PKGS=$(dpkg --get-selections 'libnvidia-*' 2>/dev/null | awk '/install$/{print $1}' || true)
+# shellcheck disable=SC2086
+[[ -n "${NVIDIA_PKGS}" ]]    && apt-mark hold ${NVIDIA_PKGS}
+# shellcheck disable=SC2086
+[[ -n "${LIBNVIDIA_PKGS}" ]] && apt-mark hold ${LIBNVIDIA_PKGS}
+
+# ── Docker CE + nvidia-container-toolkit ──────────────────────────────────
+# Neither ships in the Ubuntu archive, so both repos are added here rather
+# than via Packages=. $RELEASE is the mkosi release codename (resolute) —
+# the same value the pre-mkosi script sourced from /etc/os-release.
+mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu ${RELEASE} stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's|deb https://|deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://|g' \
+    > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+# APT::Sandbox::User=root: apt's default (_apt) has it drop privileges
+# before fetching, which needs a setgroups()/setegid()/seteuid() transition
+# apt's unprivileged download sandbox cannot make from inside mkosi's user
+# namespace ("setgroups: Operation not permitted"). Scoped to these two
+# build-time invocations only — the flag is not baked into the shipped
+# image's own apt config, so a real Ubuntu install at runtime keeps apt's
+# normal privilege-drop sandboxing.
+apt-get -o APT::Sandbox::User=root update -qq
+apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+    nvidia-container-toolkit
+
+# Wire the nvidia runtime into Docker so --gpus all works on first boot.
+nvidia-ctk runtime configure --runtime=docker
+systemctl enable docker
+
+echo "gpu-nvidia postinst complete: kernel=${KVER}, NVIDIA DKMS module built and verified, Docker + nvidia-container-toolkit installed"

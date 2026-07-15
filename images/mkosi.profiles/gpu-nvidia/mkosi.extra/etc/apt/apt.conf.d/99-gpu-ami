@@ -1,0 +1,10 @@
+// Keep unattended-upgrades from replacing the kernel the NVIDIA DKMS module
+// was built for, or the driver/container stack built against it.
+Unattended-Upgrade::Package-Blacklist {
+    "linux-";
+    "nvidia-";
+    "libnvidia-";
+    "docker-";
+    "containerd";
+    "nvidia-container-toolkit";
+};

@@ -3,10 +3,12 @@
 package single
 
 import (
+	"strings"
+	"testing"
 	"time"
 
-	"testing"
-
+	"github.com/aws/aws-sdk-go/aws"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -15,9 +17,11 @@ import (
 // inside a running instance. It launches one instance, SSHes in over its public
 // IP, and over that session:
 //
-//  1. pings the instance's own private IP (from DescribeInstances) to prove the
-//     local ICMP datapath before DNS is exercised, and
-//  2. resolves public hostnames (google.com, cloudflare.com) through the guest
+//  1. asserts DHCP installed the VPC resolver in /etc/resolv.conf,
+//  2. pings the instance's own private IP (from DescribeInstances) to prove the
+//     local ICMP datapath before DNS is exercised,
+//  3. resolves the instance's internal EC2 name to its private IP, and
+//  4. resolves public hostnames (google.com, cloudflare.com) through the guest
 //     resolver, then pings them.
 //
 // Resolution is asserted separately from the ping via `getent ahostsv4` (AF_INET
@@ -34,6 +38,11 @@ import (
 // behaves the same), so no own-public-IP ping is attempted.
 func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Guest DNS end-to-end: resolver + ICMP egress")
+	harness.RequireDNSEnabled(t, fix.Env)
+	internalDomain := harness.NorthstarInternalDomain(fix.Env)
+	require.NotEmpty(t, internalDomain, "fixture requires Northstar's internal DNS domain")
+	region := aws.StringValue(fix.AWS.EC2Conf.Config.Region)
+	require.NotEmpty(t, region, "AWS region is required to build the internal EC2 name")
 
 	vpcID, _, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
 	instType, _ := needInstanceTypeArch(t, fix)
@@ -57,6 +66,12 @@ func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 
 	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 
+	harness.Step(t, "assert guest uses the VPC resolver 169.254.169.253")
+	resolvConf, err := sshCapture(tgt, "cat /etc/resolv.conf")
+	require.NoErrorf(t, err, "read guest /etc/resolv.conf\n%s", resolvConf)
+	require.Regexp(t, `(?m)^nameserver[[:space:]]+169\.254\.169\.253[[:space:]]*$`, resolvConf,
+		"guest /etc/resolv.conf must advertise the VPC resolver")
+
 	// Step 1: ping the instance's own private IP — local datapath sanity, no DNS
 	// involved. (Own public IP is unreachable from inside via gateway NAT, and the
 	// public inbound path is already proven by the SSH above.)
@@ -65,6 +80,13 @@ func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 	require.Truef(t, ok,
 		"guest ping to own private IP %s never reached 0%% loss within 30s\n%s",
 		privIP, out)
+
+	privateName := handlers_dns.EC2PrivateName(privIP, region, internalDomain)
+	harness.Step(t, "resolve internal EC2 name %s via guest resolver", privateName)
+	internalResult, err := sshCapture(tgt, "getent ahostsv4 "+privateName)
+	require.NoErrorf(t, err, "guest failed to resolve internal name %s\n%s", privateName, internalResult)
+	require.Containsf(t, strings.Fields(internalResult), privIP,
+		"internal name %s did not resolve to private IP %s\n%s", privateName, privIP, internalResult)
 
 	// Step 2: resolve each public hostname through the guest resolver (the
 	// northstar path), then ping it. getent hosts is the DNS assertion; the ping

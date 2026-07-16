@@ -72,14 +72,49 @@ host = "192.168.1.20"
 	}
 }
 
-func TestNorthstarBaseDomainMissing(t *testing.T) {
-	if got := NorthstarBaseDomain(nil); got != "" {
-		t.Fatalf("NorthstarBaseDomain(nil) = %q, want empty", got)
+func TestNorthstarInternalDomain(t *testing.T) {
+	dir := t.TempDir()
+	config := `node = "dev1"
+[nodes.dev1.northstar]
+internal_domain = "compute.internal"
+`
+	if err := os.WriteFile(filepath.Join(dir, "spinifex.toml"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write toml: %v", err)
 	}
-	if got := NorthstarBaseDomain(&Env{}); got != "" {
-		t.Fatalf("NorthstarBaseDomain(no ConfigDir) = %q, want empty", got)
+	if got := NorthstarInternalDomain(&Env{ConfigDir: dir}); got != "compute.internal" {
+		t.Fatalf("NorthstarInternalDomain = %q, want %q", got, "compute.internal")
 	}
-	if got := NorthstarBaseDomain(&Env{ConfigDir: t.TempDir()}); got != "" {
-		t.Fatalf("NorthstarBaseDomain(missing file) = %q, want empty", got)
+}
+
+func TestRequireDNSEnabled(t *testing.T) {
+	dir := t.TempDir()
+	config := `[nodes.dev1.northstar]
+default_domain = "spx3.net"
+`
+	if err := os.WriteFile(filepath.Join(dir, "spinifex.toml"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write toml: %v", err)
+	}
+	if got := RequireDNSEnabled(t, &Env{ConfigDir: dir}); got != "spx3.net" {
+		t.Fatalf("RequireDNSEnabled = %q, want %q", got, "spx3.net")
+	}
+}
+
+func TestNorthstarDomainsMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  *Env
+	}{
+		{name: "nil environment"},
+		{name: "no config directory", env: &Env{}},
+		{name: "missing config file", env: &Env{ConfigDir: t.TempDir()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NorthstarBaseDomain(tc.env); got != "" {
+				t.Fatalf("NorthstarBaseDomain = %q, want empty", got)
+			}
+			if got := NorthstarInternalDomain(tc.env); got != "" {
+				t.Fatalf("NorthstarInternalDomain = %q, want empty", got)
+			}
+		})
 	}
 }

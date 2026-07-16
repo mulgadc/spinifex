@@ -56,6 +56,7 @@ const (
 func TestLoadBalancer(t *testing.T) {
 	env := harness.LoadEnv(t)
 	skipIfDevNetworking(t, env)
+	harness.RequireDNSEnabled(t, env)
 
 	// Resolve peer availability before building the shared fixture so the "skip" message
 	// appears immediately rather than after minutes of VPC/VM setup.
@@ -1488,15 +1489,14 @@ func assertInternalDNS(t *testing.T, c *harness.AWSClient, lbArn, label string) 
 
 // assertLBDNSResolves confirms the SDK-returned DNSName resolves to the LB's
 // frontend IP through the host resolver (the same path an AWS SDK/CLI client
-// uses). Skipped when northstar is not configured (legacy .spinifex.local
-// naming, which northstar does not serve). Retries because the control-plane
-// writer publishes the record asynchronously (best-effort + reconcile).
+// uses). The suite requires Northstar, so an empty or legacy name is a failure.
+// Retries because the control-plane writer publishes the record asynchronously
+// (best-effort + reconcile).
 func assertLBDNSResolves(t *testing.T, dnsName, wantIP, label string) {
 	t.Helper()
-	if dnsName == "" || strings.HasSuffix(dnsName, ".spinifex.local") {
-		t.Logf("%s: DNS registration off (dns=%q) — skipping resolution check", label, dnsName)
-		return
-	}
+	require.NotEmptyf(t, dnsName, "%s: load balancer returned no DNS name despite required Northstar DNS", label)
+	require.Falsef(t, strings.HasSuffix(dnsName, ".spinifex.local"),
+		"%s: load balancer returned legacy DNS name %q despite required Northstar DNS", label, dnsName)
 	harness.Step(t, "resolve LB DNS %s → %s (northstar path)", dnsName, wantIP)
 	deadline := time.Now().Add(90 * time.Second)
 	var last []string

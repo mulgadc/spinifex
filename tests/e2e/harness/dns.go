@@ -44,6 +44,40 @@ func NorthstarBaseDomain(env *Env) string {
 	return ""
 }
 
+// NorthstarInternalDomain returns the cluster's authoritative internal DNS
+// domain, or "" when DNS registration is not configured.
+func NorthstarInternalDomain(env *Env) string {
+	if env == nil || env.ConfigDir == "" {
+		return ""
+	}
+	cc, err := loadClusterConfig(filepath.Join(env.ConfigDir, "spinifex.toml"))
+	if err != nil {
+		return ""
+	}
+	if n, ok := cc.Nodes[cc.Node]; ok {
+		if d := handlers_dns.ResolveInternalDomain(&n); d != "" {
+			return d
+		}
+	}
+	for _, n := range cc.Nodes {
+		if d := handlers_dns.ResolveInternalDomain(&n); d != "" {
+			return d
+		}
+	}
+	return ""
+}
+
+// RequireDNSEnabled fails when a fixture expected to provide Northstar DNS has
+// no authoritative base domain configured. It returns the configured domain.
+func RequireDNSEnabled(t *testing.T, env *Env) string {
+	t.Helper()
+	domain := NorthstarBaseDomain(env)
+	if domain == "" {
+		t.Fatalf("fixture requires Northstar DNS, but no authoritative base domain is configured")
+	}
+	return domain
+}
+
 // PeerClusterConfig reads and decodes a node's cluster configuration without
 // allowing the harness's SPINIFEX_* environment variables to shadow it.
 func PeerClusterConfig(t *testing.T, node Node) *config.ClusterConfig {

@@ -1306,11 +1306,22 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		if syncLaunch {
 			// Drive the data-plane launch inline so the returned record carries the
 			// allocated front-end IP. The caller is off the gateway responder, so
-			// 267.4 does not apply. provisionLBDataPlane leaves the record marked
-			// failed on launch failure for diagnosis.
+			// 267.4 does not apply.
 			if err := s.provisionLBDataPlane(ctx, lc); err != nil {
 				slog.ErrorContext(ctx, "CreateLoadBalancerSync: data-plane launch failed", "lbArn", lbArn, "err", err)
-				return nil, errors.New(awserrors.ErrorServerInternal)
+				// Unwind completely rather than leaving the failed record behind.
+				// A synchronous caller gets an error and no ARN, and this path's
+				// LBs live in the system account (the EKS managed CP VPC), so the
+				// record is unreachable to the cluster owner — it cannot be
+				// diagnosed, only leaked. The managed SG is the costly part: it
+				// pins its VPC against DeleteVpc with DependencyViolation, which
+				// no retry can clear. The async path keeps its failed record on
+				// purpose; the caller holds the ARN there and can reclaim it.
+				s.rollbackLBInfra(ctx, eniIDs, nlbManagedSGID, name, accountID)
+				if delErr := s.store.DeleteLoadBalancer(lbID); delErr != nil {
+					slog.ErrorContext(ctx, "CreateLoadBalancerSync: rollback failed to delete record", "lbId", lbID, "err", delErr)
+				}
+				return nil, lbLaunchError(err)
 			}
 			launched, lerr := s.store.GetLoadBalancerByArn(lbArn)
 			if lerr != nil || launched == nil {
@@ -1397,6 +1408,31 @@ func (s *ELBv2ServiceImpl) launchLBVMAsync(ctx context.Context, lc lbLaunchCtx) 
 	if err := s.provisionLBDataPlane(ctx, lc); err != nil {
 		slog.ErrorContext(ctx, "CreateLoadBalancer: async launch failed", "lbArn", lc.lbArn, "err", err)
 	}
+}
+
+// lbLaunchPassthroughCodes are the AWS error codes a data-plane launch failure may
+// carry that name a real, actionable cause. Capacity shortfalls are the ones a caller
+// can do something about (retry, free an address, pick another type); anything else is
+// a defect on our side and stays ServerInternal rather than inventing a client error.
+var lbLaunchPassthroughCodes = []string{
+	awserrors.ErrorInsufficientAddressCapacity,
+	awserrors.ErrorInsufficientInstanceCapacity,
+	awserrors.ErrorInsufficientCapacity,
+	awserrors.ErrorInsufficientCapacityOnHost,
+}
+
+// lbLaunchError maps a data-plane launch failure onto the error code that caused it,
+// so the caller sees why the create failed. Flattening every launch failure to
+// ServerInternal discards the one fact that makes the failure diagnosable: an address
+// exhaustion reported as an internal error looks like a bug in the gateway rather than
+// a capacity problem in the VPC.
+func lbLaunchError(err error) error {
+	for _, code := range lbLaunchPassthroughCodes {
+		if awserrors.IsErrorCode(err, code) {
+			return errors.New(code)
+		}
+	}
+	return errors.New(awserrors.ErrorServerInternal)
 }
 
 // rollbackLBInfra tears down ENIs, the NLB managed SG, and the name claim created

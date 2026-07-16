@@ -1,0 +1,8 @@
+// Keep unattended-upgrades from replacing the container runtime underneath a
+// running daemon. The nvidia/kernel half of this guarantee lives in the
+// gpu-nvidia profile's own blacklist — each profile pins what it installs, so
+// neither has to know whether the other is in the image.
+Unattended-Upgrade::Package-Blacklist {
+    "docker-";
+    "containerd";
+};

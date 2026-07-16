@@ -2,7 +2,11 @@
 set -euo pipefail
 
 # gpu-nvidia postinst — force-builds the NVIDIA DKMS module against the
-# kernel this image ships, then wires up Docker + nvidia-container-toolkit.
+# kernel this image ships, then installs nvidia-container-toolkit.
+#
+# Docker is deliberately NOT here: it belongs to the docker profile. Only the
+# standalone GPU AMI wants a Docker daemon; the EKS and ECS node images reach
+# the GPU through CDI over k3s/containerd.
 #
 # The .chroot suffix means mkosi has already chrooted into the image root
 # and bind-mounted /proc /sys /dev (APIVFS) before running this script —
@@ -65,16 +69,15 @@ LIBNVIDIA_PKGS=$(dpkg --get-selections 'libnvidia-*' 2>/dev/null | awk '/install
 # shellcheck disable=SC2086
 [[ -n "${LIBNVIDIA_PKGS}" ]] && apt-mark hold ${LIBNVIDIA_PKGS}
 
-# ── Docker CE + nvidia-container-toolkit ──────────────────────────────────
-# Neither ships in the Ubuntu archive, so both repos are added here rather
-# than via Packages=. $RELEASE is the mkosi release codename (resolute) —
-# the same value the pre-mkosi script sourced from /etc/os-release.
+# ── nvidia-container-toolkit ──────────────────────────────────────────────
+# Not in the Ubuntu archive, so the repo is added here rather than via
+# Packages=. $RELEASE is the mkosi release codename (resolute) — the same
+# value the pre-mkosi script sourced from /etc/os-release.
+#
+# The toolkit is a GPU concern, not a Docker one, so it stays here after the
+# docker split: nvidia-ctk is what generates the CDI spec, which is how every
+# node image (k3s or containerd, no Docker daemon) reaches the GPU.
 mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
-
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu ${RELEASE} stable" \
-    > /etc/apt/sources.list.d/docker.list
 
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
     | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
@@ -91,11 +94,17 @@ curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-contai
 # normal privilege-drop sandboxing.
 apt-get -o APT::Sandbox::User=root update -qq
 apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
-    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
     nvidia-container-toolkit
 
-# Wire the nvidia runtime into Docker so --gpus all works on first boot.
-nvidia-ctk runtime configure --runtime=docker
-systemctl enable docker
+# Hold the toolkit too. The unattended-upgrades blacklist covers the
+# unattended path, but a plain `apt upgrade` ignores it, and the toolkit is
+# built against the libnvidia-container ABI held above.
+apt-mark hold nvidia-container-toolkit nvidia-container-toolkit-base \
+    libnvidia-container1 libnvidia-container-tools
 
-echo "gpu-nvidia postinst complete: kernel=${KVER}, NVIDIA DKMS module built and verified, Docker + nvidia-container-toolkit installed"
+# CDI is how every GPU image reaches the device: the unit is shipped in
+# mkosi.extra/ and enabled here. Its ExecCondition gates on a real GPU, so
+# enabling it unconditionally costs a non-GPU boot nothing.
+systemctl enable mulga-cdi-generate
+
+echo "gpu-nvidia postinst complete: kernel=${KVER}, NVIDIA DKMS module built and verified, nvidia-container-toolkit installed"

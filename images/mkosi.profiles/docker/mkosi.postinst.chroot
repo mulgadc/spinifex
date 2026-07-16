@@ -1,0 +1,47 @@
+#!/bin/bash
+set -euo pipefail
+
+# docker postinst — installs Docker CE and, when the image also carries the
+# NVIDIA stack, wires the nvidia runtime into it.
+
+# APT::Sandbox::User=root: apt's default (_apt) has it drop privileges before
+# fetching, which needs a setgroups()/setegid()/seteuid() transition apt's
+# unprivileged download sandbox cannot make from inside mkosi's user namespace
+# ("setgroups: Operation not permitted"). Scoped to these build-time
+# invocations only — the flag is not baked into the shipped image's apt config,
+# so a real install at runtime keeps apt's normal privilege-drop sandboxing.
+APT_OPTS=(-o APT::Sandbox::User=root)
+
+# Docker CE is not in the Ubuntu archive, so the repo is added here rather
+# than via Packages=. $RELEASE is mkosi's release codename (resolute).
+mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu ${RELEASE} stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+apt-get "${APT_OPTS[@]}" update -qq
+apt-get "${APT_OPTS[@]}" install -y --no-install-recommends \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Wire the nvidia runtime into Docker so `--gpus all` works on first boot.
+#
+# nvidia-ctk comes from the gpu-nvidia profile, so this is conditional on the
+# composition. The two cases must not be confused: gpu-nvidia absent is a
+# legitimate Docker-only image, whereas gpu-nvidia present but nvidia-ctk
+# missing means the profiles ran in the wrong order — mkosi runs each
+# profile's postinst in the order the profiles are passed, so gpu-nvidia must
+# precede docker. Failing loudly here is the point: a silent skip ships an
+# image whose only symptom is `--gpus all` not working on a GPU host.
+if [[ " ${PROFILES:-} " == *" gpu-nvidia "* ]]; then
+    if ! command -v nvidia-ctk >/dev/null; then
+        echo "ERROR: gpu-nvidia is selected but nvidia-ctk is absent — pass gpu-nvidia before docker" >&2
+        exit 1
+    fi
+    nvidia-ctk runtime configure --runtime=docker
+    echo "docker postinst: nvidia runtime wired into Docker"
+fi
+
+systemctl enable docker
+
+echo "docker postinst complete: Docker CE installed"

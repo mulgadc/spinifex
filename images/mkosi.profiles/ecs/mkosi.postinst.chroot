@@ -1,0 +1,26 @@
+#!/bin/bash
+set -euo pipefail
+
+# ecs postinst — wires the CNI bin path and enables the runtime + agent.
+
+# Built on the host and delivered via staging/. Without this check an empty
+# staging tree ships an image whose agent simply never starts.
+if [[ ! -x /usr/local/bin/ecs-agent ]]; then
+    echo "ERROR: ecs-agent missing or not executable — staging tree was not populated" >&2
+    exit 1
+fi
+
+# Ubuntu's containernetworking-plugins installs its binaries directly under
+# /usr/lib/cni (no /bin subdir, unlike Alpine's /usr/libexec/cni), while
+# containerd's CRI plugin defaults its bin dir to /opt/cni/bin. Symlink so the
+# baked bridge conflist resolves its plugins when task networking is wired up.
+mkdir -p /opt/cni
+ln -sf /usr/lib/cni /opt/cni/bin
+
+# Content-store + agent config dirs. agent.env and the gateway CA land in the
+# latter from cloud-init at launch.
+mkdir -p /var/lib/containerd /etc/spinifex-ecs
+
+systemctl enable containerd ecs-ca-install ecs-agent
+
+echo "[ecs] postinst complete: containerd + ecs-agent enabled"

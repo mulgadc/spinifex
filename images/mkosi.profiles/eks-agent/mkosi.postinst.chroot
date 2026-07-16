@@ -1,0 +1,23 @@
+#!/bin/bash
+set -euo pipefail
+
+# eks-agent postinst — sets the exec bit ExtraTrees= could not, and enables the
+# agent.
+
+# 0644 in git, and ExtraTrees= preserves source mode: without this the unit's
+# ExecStartPre dies with EACCES on a booted guest and nowhere earlier.
+chmod 0755 /usr/local/sbin/k3s-agent-prestart
+
+# Built on the host and delivered via staging/, so a build that silently
+# produced nothing would otherwise ship an image whose kubelet cannot pull from
+# ECR — a failure that only appears when a pod is scheduled.
+if [[ ! -x /usr/local/bin/ecr-credential-provider ]]; then
+    echo "ERROR: ecr-credential-provider missing or not executable — staging tree was not populated" >&2
+    exit 1
+fi
+
+# k3s-agent only. Ordering against mulga-cdi-generate is already expressed in
+# the unit's own After=, so no drop-in is needed on the EKS side.
+systemctl enable k3s-agent
+
+echo "[eks-agent] postinst complete: k3s-agent enabled"

@@ -3,3 +3,7 @@
 # so a scratch build cannot leave multi-GB images stageable.
 output/
 output-*/
+
+# Go binaries compiled on the host by mkosi-build.sh and picked up by the
+# profiles via ExtraTrees=. Build outputs, never sources.
+staging/

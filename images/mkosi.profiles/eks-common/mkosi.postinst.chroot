@@ -1,0 +1,53 @@
+#!/bin/bash
+set -euo pipefail
+
+# eks-common postinst — fetches the pinned k3s release and enables the
+# role-agnostic node services.
+
+# Pinned deliberately: the node's kubelet version is part of the cluster
+# contract, so this moves by edit, never by resolving "latest" at build time.
+K3S_VERSION="v1.32.5+k3s1"
+K3S_URL_BASE="https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION}"
+
+echo "[eks-common] fetching k3s checksums ${K3S_VERSION}"
+curl -fsSL -o /tmp/k3s-checksums.txt "${K3S_URL_BASE}/sha256sum-amd64.txt"
+K3S_SHA256=$(awk '/[ \t]k3s$/{print $1; exit}' /tmp/k3s-checksums.txt)
+if [[ -z "${K3S_SHA256}" ]]; then
+    echo "[eks-common] could not parse k3s sha256 from upstream checksums" >&2
+    cat /tmp/k3s-checksums.txt >&2
+    exit 1
+fi
+
+echo "[eks-common] downloading k3s ${K3S_VERSION} (sha256=${K3S_SHA256})"
+curl -fsSL -o /usr/local/bin/k3s "${K3S_URL_BASE}/k3s"
+echo "${K3S_SHA256}  /usr/local/bin/k3s" > /tmp/k3s.sha256
+if ! sha256sum -c /tmp/k3s.sha256; then
+    echo "[eks-common] k3s SHA256 mismatch — refusing to bake image" >&2
+    exit 1
+fi
+rm -f /tmp/k3s-checksums.txt /tmp/k3s.sha256
+
+chmod 0755 /usr/local/bin/k3s
+# k3s dispatches on argv[0], so these are the supported way to get the
+# matching client tools rather than separate downloads to keep in step.
+ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
+ln -sf /usr/local/bin/k3s /usr/local/bin/crictl
+ln -sf /usr/local/bin/k3s /usr/local/bin/ctr
+
+# ExtraTrees= preserves the source file's mode, and most of these helpers are
+# 0644 in git — an artefact of the old driver, which uploaded them 0644 and set
+# the exec bit at this point instead. Without the chmod they land
+# non-executable and every unit that runs one dies with EACCES on a booted
+# guest and nowhere earlier.
+chmod 0755 /usr/local/sbin/mulga-ebs-byid /usr/local/sbin/mulga-eks-provider-id \
+    /usr/local/sbin/mulga-vpc-mtu
+
+# k3s config dir (mulga-eks-provider-id's drop-in, plus first-boot agent
+# config) and the shared state dir cloud-init drops agent.env into at launch.
+mkdir -p /etc/rancher/k3s/config.yaml.d /etc/spinifex-eks
+
+# Role-agnostic services only. Anything role-specific is enabled by the
+# first-boot selector, not baked.
+systemctl enable mulga-ebs-byid mulga-eks-provider-id mulga-vpc-mtu
+
+echo "[eks-common] postinst complete: k3s ${K3S_VERSION} installed, node services enabled"

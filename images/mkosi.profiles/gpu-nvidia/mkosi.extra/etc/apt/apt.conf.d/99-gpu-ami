@@ -1,10 +1,11 @@
 // Keep unattended-upgrades from replacing the kernel the NVIDIA DKMS module
-// was built for, or the driver/container stack built against it.
+// was built for, or the driver/container stack built against it. The Docker
+// entries that used to live here moved to the docker profile, alongside the
+// packages they pin — each profile blacklists only what it installs, so
+// neither has to know whether the other is in the image.
 Unattended-Upgrade::Package-Blacklist {
     "linux-";
     "nvidia-";
     "libnvidia-";
-    "docker-";
-    "containerd";
     "nvidia-container-toolkit";
 };

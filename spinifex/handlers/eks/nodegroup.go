@@ -30,6 +30,13 @@ import (
 // when the caller omits instanceTypes.
 const defaultNodegroupInstanceType = "t3.medium"
 
+// defaultNodegroupDiskSizeGiB mirrors the AWS EKS managed-nodegroup default when
+// the caller omits diskSize. Without it the record stores 0, the launch skips
+// its block device mapping entirely, and the node silently inherits the AMI's
+// own volume size — which is sized to hold the image and nothing more, leaving
+// a worker no room for the container images it exists to run.
+const defaultNodegroupDiskSizeGiB = 20
+
 // defaultNodegroupReadyTimeout / defaultNodegroupReadyPoll bound how long
 // launchNodegroupInfra waits for its workers to register Ready (observed via the
 // CP state report's Ready-node count, refreshed at the reconcile cadence) before
@@ -262,6 +269,13 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 		version = meta.Version
 	}
 
+	// Resolved once here rather than at launch so DescribeNodegroup reports the
+	// size the node actually gets, as AWS does.
+	diskSize := aws.Int64Value(input.DiskSize)
+	if diskSize <= 0 {
+		diskSize = defaultNodegroupDiskSizeGiB
+	}
+
 	now := time.Now().UTC()
 	rec := &NodegroupRecord{
 		ClusterName:    cluster,
@@ -271,7 +285,7 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 		Subnets:        subnets,
 		InstanceTypes:  instanceTypes,
 		AMIType:        amiType,
-		DiskSize:       aws.Int64Value(input.DiskSize),
+		DiskSize:       diskSize,
 		ScalingMin:     minSize,
 		ScalingMax:     maxSize,
 		ScalingDesired: desired,

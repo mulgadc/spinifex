@@ -373,6 +373,31 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
 }
 
+// Omitting diskSize must fall back to the AWS default rather than 0. A 0 skips
+// the block device mapping entirely, which drops the worker onto the AMI's own
+// volume — sized to hold the image and nothing else.
+func TestCreateNodegroup_OmittedDiskSizeUsesAWSDefault(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	// createNGInput leaves DiskSize nil, which is the case being covered.
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+
+	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(defaultNodegroupDiskSizeGiB), rec.DiskSize)
+
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	f.svc.WaitLaunches()
+
+	// The default has to reach the launch, not just the record.
+	require.Len(t, f.worker.runCalls, 1)
+	bdms := f.worker.runCalls[0].BlockDeviceMappings
+	require.Len(t, bdms, 1, "a defaulted diskSize must still produce a block device mapping")
+	assert.Equal(t, int64(defaultNodegroupDiskSizeGiB), aws.Int64Value(bdms[0].Ebs.VolumeSize))
+}
+
 // A GPU instance type must mark the record GPUEnabled with the matching
 // vendor, so the worker-launch path resolves the GPU node AMI instead of the
 // default eks-node AMI.
@@ -666,21 +691,6 @@ func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
 	require.Len(t, bdm, 1)
 	require.NotNil(t, bdm[0].Ebs)
 	assert.Equal(t, int64(30), aws.Int64Value(bdm[0].Ebs.VolumeSize))
-}
-
-func TestCreateNodegroup_NoDiskSizeOmitsBlockDeviceMapping(t *testing.T) {
-	f := newEKSServiceFixture(t)
-	seedActiveClusterWithToken(t, f, "c1")
-
-	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
-	require.NoError(t, err)
-
-	markWorkersReady(t, f, "c1", "ng1", 1)
-	f.svc.WaitLaunches()
-
-	require.Len(t, f.worker.runCalls, 1)
-	// No DiskSize requested → leave the launch path on its default sizing.
-	assert.Empty(t, f.worker.runCalls[0].BlockDeviceMappings)
 }
 
 func TestCreateNodegroup_ClusterNotActive(t *testing.T) {

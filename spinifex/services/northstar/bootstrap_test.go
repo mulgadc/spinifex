@@ -123,7 +123,6 @@ bucket = "northstar"
 region = "us-east-1"
 access_key = "READONLY"
 secret_key = "READONLY"
-insecure = true
 `, endpoint)
 	configPath := filepath.Join(t.TempDir(), "northstar.toml")
 	require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
@@ -211,7 +210,6 @@ bucket = "northstar"
 region = "us-east-1"
 access_key = "READONLY"
 secret_key = "READONLY"
-insecure = true
 `, endpoint)
 	configPath := filepath.Join(t.TempDir(), "northstar.toml")
 	require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
@@ -244,7 +242,6 @@ endpoint = %q
 bucket = "northstar"
 access_key = "READONLY"
 secret_key = "READONLY"
-insecure = true
 `, endpoint)
 	configPath := filepath.Join(t.TempDir(), "northstar.toml")
 	require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))

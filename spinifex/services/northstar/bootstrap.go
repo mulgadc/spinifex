@@ -74,7 +74,6 @@ func BootstrapBaseZone(configPath string, cluster *config.ClusterConfig) error {
 		Bucket:    serverCfg.S3.Bucket,
 		AccessKey: sysCreds.AccessKey,
 		SecretKey: sysCreds.SecretKey,
-		Insecure:  serverCfg.S3.Insecure,
 	}
 
 	nameservers := buildNameserverSeeds(cluster)

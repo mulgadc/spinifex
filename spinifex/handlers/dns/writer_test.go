@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
@@ -89,7 +90,6 @@ bucket = "northstar"
 region = "us-east-1"
 access_key = "READONLY"
 secret_key = "READONLY"
-insecure = true
 
 [quotas]
 enabled = %t
@@ -106,6 +106,39 @@ records_per_hosted_zone = %d
 	w := NewWriter(cfg, nil)
 	require.True(t, w.Enabled(), "writer should be enabled")
 	return w, objects
+}
+
+func TestZoneS3ConfigRejectsTOMLInsecure(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	tomlBody := fmt.Sprintf(`default_domain = "spx3.net"
+[s3]
+endpoint = %q
+bucket = "northstar"
+region = "us-east-1"
+access_key = "READONLY"
+secret_key = "READONLY"
+insecure = true
+`, server.URL)
+	configPath := filepath.Join(t.TempDir(), "northstar.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
+
+	cfg := &config.Config{
+		Predastore: config.PredastoreConfig{AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET"},
+		Northstar:  config.NorthstarConfig{ConfigPath: configPath},
+	}
+	zoneCfg, ok := zoneS3Config(cfg)
+	require.True(t, ok)
+	require.False(t, zoneCfg.s3.Insecure)
+
+	err := nsconfig.WriteZoneFile(zoneCfg.s3, "spx3.net", []byte("zone"))
+	require.Error(t, err)
+
+	var unknownAuthority x509.UnknownAuthorityError
+	require.ErrorAs(t, err, &unknownAuthority)
 }
 
 func TestWriterUpsertPublicAndPrivate(t *testing.T) {

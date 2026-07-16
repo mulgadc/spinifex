@@ -232,7 +232,6 @@ func zoneS3Config(cfg *config.Config) (northstarZoneConfig, bool) {
 			Bucket:    serverCfg.S3.Bucket,
 			AccessKey: creds.AccessKey,
 			SecretKey: creds.SecretKey,
-			Insecure:  serverCfg.S3.Insecure,
 		},
 		server: serverCfg,
 	}, true

@@ -34,7 +34,6 @@ bucket     = "{{.NorthstarBucket}}"
 region     = "{{.Region}}"
 access_key = "{{.NorthstarAccessKey}}"
 secret_key = "{{.NorthstarSecretKey}}"
-insecure   = true
 
 # Forwarders for non-authoritative (recursive) queries. Empty => REFUSED.
 [upstream]

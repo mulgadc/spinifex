@@ -21,7 +21,7 @@
 
 # Spinifex: An Open Source AWS-Compatible Stack for Bare-Metal, Edge, and On-Prem Deployments
 
-Spinifex developed by [Mulga Defense Corporation](https://mulgadc.com) is an open source infrastructure platform that brings the core services of AWS—like EC2, VPC, EBS, and S3—to environments where running in the cloud isn't an option. Whether you're deploying to edge sites, private data-centers, or need to operate in low-connectivity or highly contested environments, Spinifex gives you AWS-style workflows on your own hardware.
+Spinifex developed by [Mulga](https://mulgadc.com) is an open source infrastructure platform that brings the core services of AWS—like EC2, VPC, EBS, and S3—to environments where running in the cloud isn't an option. Whether you're deploying to edge sites, private data-centers, or need to operate in low-connectivity or highly contested environments, Spinifex gives you AWS-style workflows on your own hardware.
 
 ## What is Spinifex?
 
@@ -39,7 +39,7 @@ You can run Spinifex on a few servers in a rack, a field site, or anywhere centr
 ## The Platform
 
 <p align="center">
-  <img src=".github/assets/platform.svg" alt="The Mulga Platform — Hardware to Applications" width="900">
+  <img src=".github/assets/platform.svg" alt="The Spinifex stack: your apps and AWS tooling on top, the Spinifex AWS-compatible service layer, running on standard Linux on CPU and GPU hardware, deployable to Neocloud, on-premise, or the edge." width="900">
 </p>
 
 From commodity hardware up to unmodified AWS tooling, every layer is replaceable and yours to own.

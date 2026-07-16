@@ -177,6 +177,37 @@ func TestProvisionCapacity_DefaultsAndCount(t *testing.T) {
 	assert.Equal(t, defaultCapacityInstanceType, aws.StringValue(captured.InstanceType))
 	assert.Equal(t, int64(1), aws.Int64Value(captured.MinCount))
 	assert.Nil(t, captured.KeyName)
+
+	// An omitted DiskSize must still size the root volume: falling through to the
+	// AMI's own size leaves the agent no room for container images.
+	require.Len(t, captured.BlockDeviceMappings, 1)
+	require.NotNil(t, captured.BlockDeviceMappings[0].Ebs)
+	assert.Equal(t, int64(defaultCapacityDiskSizeGiB),
+		aws.Int64Value(captured.BlockDeviceMappings[0].Ebs.VolumeSize))
+}
+
+// An explicit DiskSize must win over the default.
+func TestProvisionCapacity_ExplicitDiskSize(t *testing.T) {
+	var captured *ec2.RunInstancesInput
+	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
+		IAM:    stubIAM{},
+		Images: &stubImages{images: ecsNodeImage()},
+		RunInstances: func(_ context.Context, in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
+			captured = in
+			return &ec2.Reservation{Instances: []*ec2.Instance{{InstanceId: aws.String("i-1")}}}, nil
+		},
+	})
+
+	_, err := svc.ProvisionCapacity(context.Background(), &ProvisionCapacityInput{
+		Cluster:         "web",
+		SubnetID:        "subnet-1",
+		SecurityGroupID: "sg-1",
+		DiskSize:        75,
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, captured)
+	require.Len(t, captured.BlockDeviceMappings, 1)
+	assert.Equal(t, int64(75), aws.Int64Value(captured.BlockDeviceMappings[0].Ebs.VolumeSize))
 }
 
 func TestProvisionCapacity_MissingRequired(t *testing.T) {

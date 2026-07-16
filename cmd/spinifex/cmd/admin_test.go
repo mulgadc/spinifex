@@ -249,7 +249,7 @@ func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
 		{ID: 3, Host: "10.0.0.3"},
 	}
 	content, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "0.0.0.0", 0,
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "0.0.0.0", 0, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	assert.Contains(t, content, `nats_url = "nats://localhost:4222"`)
@@ -257,7 +257,7 @@ func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
 
 	// Specific bind IP → stays as-is.
 	content2, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "10.11.12.1", 0,
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "10.11.12.1", 0, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	assert.Contains(t, content2, `nats_url = "nats://10.11.12.1:4222"`)
@@ -670,6 +670,107 @@ func predastoreMultinodeNodes() []admin.PredastoreNodeConfig {
 	}
 }
 
+// predastoreBucketAuth parses the buckets and auth entries a northstar-enabled
+// multi-node predastore must render.
+type predastoreBucketAuth struct {
+	Buckets []struct {
+		Name string `toml:"name"`
+		Type string `toml:"type"`
+	} `toml:"buckets"`
+	Auth []struct {
+		AccessKeyID string `toml:"access_key_id"`
+		Policy      []struct {
+			Bucket  string   `toml:"bucket"`
+			Actions []string `toml:"actions"`
+		} `toml:"policy"`
+	} `toml:"auth"`
+}
+
+// policyFor returns the actions the given key is granted on the given bucket,
+// and whether the key holds any policy for it at all.
+func (c predastoreBucketAuth) policyFor(accessKey, bucket string) ([]string, bool) {
+	for _, auth := range c.Auth {
+		if auth.AccessKeyID != accessKey {
+			continue
+		}
+		for _, p := range auth.Policy {
+			if p.Bucket == bucket {
+				return p.Actions, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func (c predastoreBucketAuth) hasBucket(name string) bool {
+	for _, b := range c.Buckets {
+		if b.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// Northstar on a multi-node cluster needs three things from predastore, all
+// gated on the same credential: the zone bucket, write access for the system
+// key (which is what BootstrapBaseZone seeds zones with), and the resolver's
+// own read-only key. The template rendered all three correctly, but the caller
+// never populated the credential, so multi-node clusters silently got none of
+// them.
+func TestPredastoreMultinodeTemplate_NorthstarProvisioned(t *testing.T) {
+	content, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0,
+		admin.NorthstarCredentials{AccessKey: "NSAK", SecretKey: "NSSK", Bucket: admin.NorthstarBucketName},
+	)
+	require.NoError(t, err)
+
+	var cfg predastoreBucketAuth
+	require.NoError(t, toml.Unmarshal([]byte(content), &cfg))
+
+	assert.True(t, cfg.hasBucket(admin.NorthstarBucketName), "northstar zone bucket not rendered")
+
+	// The zone bucket must be readable from every node's local predastore, so
+	// a resolver on any node can serve it.
+	for _, b := range cfg.Buckets {
+		if b.Name == admin.NorthstarBucketName {
+			assert.Equal(t, "distributed", b.Type)
+		}
+	}
+
+	// BootstrapBaseZone writes zone files with the system key, not the
+	// resolver's. Without this grant, seeding fails on every node.
+	systemActions, ok := cfg.policyFor("AK", admin.NorthstarBucketName)
+	require.True(t, ok, "system key has no policy for the northstar bucket")
+	assert.Contains(t, systemActions, "s3:PutObject")
+
+	// The resolver's key stays read-only and scoped to the zone bucket alone.
+	nsActions, ok := cfg.policyFor("NSAK", admin.NorthstarBucketName)
+	require.True(t, ok, "northstar key has no policy for the northstar bucket")
+	assert.ElementsMatch(t, []string{"s3:ListBucket", "s3:GetObject"}, nsActions)
+
+	_, ok = cfg.policyFor("NSAK", "predastore")
+	assert.False(t, ok, "northstar key must not reach the predastore bucket")
+}
+
+// Without a credential the northstar stanzas must be omitted wholesale rather
+// than half-rendered: an empty-keyed [[auth]] entry would let anyone read the
+// zone bucket.
+func TestPredastoreMultinodeTemplate_NorthstarOmittedWithoutCredentials(t *testing.T) {
+	content, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0,
+		admin.NorthstarCredentials{},
+	)
+	require.NoError(t, err)
+
+	var cfg predastoreBucketAuth
+	require.NoError(t, toml.Unmarshal([]byte(content), &cfg))
+
+	assert.False(t, cfg.hasBucket(admin.NorthstarBucketName))
+	_, ok := cfg.policyFor("AK", admin.NorthstarBucketName)
+	assert.False(t, ok, "system key granted northstar access without a northstar credential")
+	assert.Len(t, cfg.Auth, 1, "only the system key should be rendered")
+}
+
 // Unset knob must leave production config byte-identical: no [compaction] block
 // and the original trailing bytes unchanged (single-node has no trailing
 // newline, multinode keeps one).
@@ -683,7 +784,7 @@ func TestPredastoreTemplates_UnsetCompactionEmitsNoBlock(t *testing.T) {
 		"unset single-node tail changed: %q", single[len(single)-40:])
 
 	multi, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0,
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	assert.NotContains(t, multi, "[compaction]")
@@ -704,7 +805,7 @@ func TestPredastoreTemplates_SetCompactionEmitsParseableBlock(t *testing.T) {
 	assert.Equal(t, interval, singleCfg.Compaction.IntervalSeconds)
 
 	multi, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", interval,
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", interval, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	var multiCfg compactionConfig

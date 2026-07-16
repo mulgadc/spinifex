@@ -1486,7 +1486,12 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		}
 
 		// Generate multi-node predastore.toml
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval,
+			admin.NorthstarCredentials{
+				AccessKey: northstarAccessKey,
+				SecretKey: northstarSecretKey,
+				Bucket:    admin.NorthstarBucketName,
+			})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1759,7 +1764,8 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	var predastoreNodeID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval,
+			admin.NorthstarCredentials{})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -2212,7 +2218,8 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP, compactionInterval)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP, compactionInterval,
+			admin.NorthstarCredentials{})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)

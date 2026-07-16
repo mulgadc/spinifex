@@ -513,6 +513,20 @@ const (
 	NorthstarInternalDomain = "compute.internal"
 )
 
+// NorthstarCredentials is the bucket-scoped credential pair the northstar DNS
+// service reads zone files with, together with the bucket that scopes it.
+//
+// Every node in a cluster must be provisioned with the same pair: the zone
+// bucket is distributed, and each node's predastore only honours the keys
+// rendered into its own config, so a per-node pair would have node A's
+// predastore reject node B's resolver. A zero value provisions no northstar
+// credentials at all, which renders a config without any northstar stanza.
+type NorthstarCredentials struct {
+	AccessKey string
+	SecretKey string
+	Bucket    string
+}
+
 // SystemAccountID returns the system/root account ID (000000000000).
 // Used for service-to-service auth credentials baked into config files.
 func SystemAccountID() string {
@@ -868,7 +882,12 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 // GenerateMultiNodePredastoreConfig produces a complete predastore.toml for a
 // multi-node Predastore cluster. Each node gets its own DB entry (port 6660)
 // and shard entry (port 9991) on a distinct IP. Node ID 1 is the bootstrap leader.
-func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string, compactionIntervalSeconds int) (string, error) {
+//
+// A populated northstar credential provisions the zone bucket, grants the
+// system key write access to it, and adds the read-only entry the resolver
+// authenticates with. A zero value omits all three, yielding a config no
+// northstar service can use.
+func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string, compactionIntervalSeconds int, northstar NorthstarCredentials) (string, error) {
 	if len(nodes) < 2 {
 		return "", fmt.Errorf("multi-node predastore requires at least 2 nodes, got %d", len(nodes))
 	}
@@ -882,12 +901,17 @@ func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNod
 		ConfigDir                 string
 		BindIP                    string
 		CompactionIntervalSeconds int
-		// Northstar provisioning is single-node only for V1; these stay empty
-		// in the multi-node path so the template omits the northstar stanzas.
-		NorthstarAccessKey string
-		NorthstarSecretKey string
-		NorthstarBucket    string
-	}{Nodes: nodes, AccessKey: accessKey, SecretKey: secretKey, Region: region, NatsToken: natsToken, ConfigDir: configDir, BindIP: bindIP, CompactionIntervalSeconds: compactionIntervalSeconds}
+		NorthstarAccessKey        string
+		NorthstarSecretKey        string
+		NorthstarBucket           string
+	}{
+		Nodes: nodes, AccessKey: accessKey, SecretKey: secretKey, Region: region,
+		NatsToken: natsToken, ConfigDir: configDir, BindIP: bindIP,
+		CompactionIntervalSeconds: compactionIntervalSeconds,
+		NorthstarAccessKey:        northstar.AccessKey,
+		NorthstarSecretKey:        northstar.SecretKey,
+		NorthstarBucket:           northstar.Bucket,
+	}
 
 	tmpl, err := template.New("predastore-multinode").Parse(templateStr)
 	if err != nil {

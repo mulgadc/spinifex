@@ -1004,3 +1004,40 @@ func TestAdminInitFlag_CompactionIntervalReachesRenderedConfig(t *testing.T) {
 	})
 	assert.Contains(t, out, "interval_seconds = 45")
 }
+
+// The image is written into a root volume of exactly the size this returns, so
+// anything less than the image size truncates the image and the guest never
+// finds its root. The old flooring conversion undersized every non-round image.
+func TestAMIVolumeSizeGiB(t *testing.T) {
+	const giB int64 = 1024 * 1024 * 1024
+
+	tests := []struct {
+		name  string
+		bytes int64
+		want  uint64
+	}{
+		// The regression: a real 4.94 GiB mkosi image floored to 4 GiB and the
+		// guest hung with no root partition.
+		{name: "non-round image rounds up", bytes: 5306470400, want: 5},
+		// Exact multiples must not gain a spare GiB — the round sizes are the
+		// common case and were the only ones the old code got right.
+		{name: "exact multiple is unchanged", bytes: 16 * giB, want: 16},
+		{name: "one byte over a multiple rounds up", bytes: 16*giB + 1, want: 17},
+		{name: "one byte under a multiple rounds up", bytes: 16*giB - 1, want: 16},
+		// Sub-GiB images still need a whole GiB to live in.
+		{name: "sub-GiB image gets a full GiB", bytes: 1, want: 1},
+		{name: "empty image", bytes: 0, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := amiVolumeSizeGiB(tt.bytes)
+			assert.Equal(t, tt.want, got)
+			// The invariant the guest depends on, stated directly.
+			if tt.bytes > 0 {
+				assert.GreaterOrEqual(t, int64(got)*giB, tt.bytes,
+					"volume must be large enough to hold the image")
+			}
+		})
+	}
+}

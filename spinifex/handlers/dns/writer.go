@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"strings"
 	"time"
 
@@ -20,7 +19,7 @@ type Writer struct {
 	enabled      bool
 	s3cfg        *nsconfig.S3Config
 	baseDomain   string
-	localNS      nsconfig.NameserverSeed
+	nameservers  []nsconfig.NameserverSeed
 	ttl          uint32
 	nc           *nats.Conn
 	quotaEnabled bool
@@ -30,8 +29,10 @@ type Writer struct {
 // NewWriter resolves the northstar S3 endpoint/bucket from the node's
 // northstar.toml and pairs it with the system predastore credentials. The
 // writer is disabled (a no-op) when northstar is not configured for S3. The
-// NATS connection, when non-nil, is used to fan out per-zone reload events.
-func NewWriter(cfg *config.Config, nc *nats.Conn) *Writer {
+// cluster config supplies the nameserver topology for zones materialised on
+// demand. The NATS connection, when non-nil, is used to fan out per-zone reload
+// events.
+func NewWriter(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn) *Writer {
 	w := &Writer{ttl: DefaultTTL, nc: nc, quotas: DefaultQuotas()}
 	zoneCfg, ok := zoneS3Config(cfg)
 	if !ok {
@@ -41,7 +42,10 @@ func NewWriter(cfg *config.Config, nc *nats.Conn) *Writer {
 	w.enabled = true
 	w.s3cfg = zoneCfg.s3
 	w.baseDomain = strings.TrimSpace(zoneCfg.server.DefaultDomain)
-	w.localNS = nsconfig.NameserverSeed{Host: "ns1", IP: localNameserverIP(cfg)}
+	// Share the bootstrap's derivation so a zone this writer materialises carries
+	// the same NS topology as one the bootstrap seeds; whichever wins the race,
+	// the zone is correct.
+	w.nameservers = NameserverSeeds(localCluster(cluster, cfg))
 	w.quotaEnabled = zoneCfg.server.Quotas.Enabled
 	if zoneCfg.server.Quotas.RecordsPerHostedZone > 0 {
 		w.quotas.RecordsPerHostedZone = zoneCfg.server.Quotas.RecordsPerHostedZone
@@ -127,7 +131,7 @@ func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
 		}
 		cfg = nsconfig.NewZoneConfig(nsconfig.BaseZoneSeed{
 			Domain:      zone,
-			Nameservers: []nsconfig.NameserverSeed{w.localNS},
+			Nameservers: w.nameservers,
 		})
 	}
 
@@ -295,18 +299,11 @@ func loadNorthstar(cfg *config.Config) (nsconfig.ServerConfig, bool) {
 	return serverCfg, true
 }
 
-// localNameserverIP returns a reachable address for the local node, used only as
-// a fallback nameserver when materialising a missing zone.
-func localNameserverIP(cfg *config.Config) string {
-	ip := strings.TrimSpace(cfg.AdvertiseIP)
-	if ip == "" {
-		ip = strings.TrimSpace(cfg.Host)
+// localCluster views the local node as a single-node cluster when no cluster
+// config is available, so nameserver derivation still names this node ns1.
+func localCluster(cluster *config.ClusterConfig, cfg *config.Config) *config.ClusterConfig {
+	if cluster != nil {
+		return cluster
 	}
-	if host, _, err := net.SplitHostPort(ip); err == nil {
-		ip = host
-	}
-	if ip == "" || ip == "0.0.0.0" {
-		ip = "127.0.0.1"
-	}
-	return ip
+	return &config.ClusterConfig{Node: cfg.Node, Nodes: map[string]config.Config{cfg.Node: *cfg}}
 }

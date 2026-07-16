@@ -810,7 +810,7 @@ var vpcdStartCmd = &cobra.Command{
 			AZ:                      nodeConfig.AZ,
 			NorthstarBaseDomain:     handlers_dns.ResolveBaseDomain(&nodeConfig),
 			NorthstarInternalDomain: handlers_dns.ResolveInternalDomain(&nodeConfig),
-			ResolverNameservers:     northstar.ResolverNameserverIPs(clusterConfig),
+			ResolverNameservers:     handlers_dns.ResolverNameserverIPs(clusterConfig),
 			NATExemptCIDRs:          clusterConfig.Network.NATExemptCIDRs,
 		})
 		if err != nil {

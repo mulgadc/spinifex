@@ -17,6 +17,14 @@ const (
 	// defaultCapacityInstanceType is the EC2 type used when the caller omits one.
 	defaultCapacityInstanceType = "t3.small"
 
+	// defaultCapacityDiskSizeGiB is the container instance's root volume when the
+	// caller omits one, mirroring the 30 GiB the AWS ECS-optimized AMI declares.
+	// The size has to be decided here because EC2 itself has no default: omitting
+	// the block device mapping leaves the node on whatever volume the AMI declares,
+	// which is sized to hold the image and leaves the agent no room for the
+	// container images it exists to pull.
+	defaultCapacityDiskSizeGiB = 30
+
 	// maxCapacityCount caps the instances a single ProvisionCapacity launches.
 	maxCapacityCount = 10
 
@@ -36,6 +44,8 @@ var ErrECSNodeAMINotFound = errors.New("ecs: spinifex-ecs-node AMI not found")
 var ErrECSGPUNodeAMINotFound = errors.New("ecs: ecs GPU node AMI not found")
 
 // ProvisionCapacityInput requests N container instances into a cluster.
+// DiskSize is the root volume in GiB; omitted or non-positive takes
+// defaultCapacityDiskSizeGiB.
 type ProvisionCapacityInput struct {
 	Cluster         string
 	InstanceType    string
@@ -43,6 +53,7 @@ type ProvisionCapacityInput struct {
 	SubnetID        string
 	SecurityGroupID string
 	KeyName         string
+	DiskSize        int64
 }
 
 // ProvisionCapacityOutput returns the launched instance IDs.
@@ -68,6 +79,10 @@ func (s *Service) ProvisionCapacity(ctx context.Context, input *ProvisionCapacit
 	count := input.Count
 	if count <= 0 {
 		count = 1
+	}
+	diskSize := input.DiskSize
+	if diskSize <= 0 {
+		diskSize = defaultCapacityDiskSizeGiB
 	}
 	if count > maxCapacityCount {
 		count = maxCapacityCount
@@ -115,6 +130,10 @@ func (s *Service) ProvisionCapacity(ctx context.Context, input *ProvisionCapacit
 		SecurityGroupIds:   aws.StringSlice([]string{input.SecurityGroupID}),
 		UserData:           aws.String(userData),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(profileARN)},
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{{
+			DeviceName: aws.String("/dev/vda"),
+			Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(diskSize)},
+		}},
 		TagSpecifications: []*ec2.TagSpecification{{
 			ResourceType: aws.String("instance"),
 			Tags: []*ec2.Tag{

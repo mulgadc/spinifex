@@ -220,18 +220,17 @@ func runIMDS(t *testing.T, fix *Fixture) {
 		require.NotEmpty(t, pubIP, "pool-mode VM must have a public IP")
 		gotHost := imdsGet(t, tgtX, tokenX, "/latest/meta-data/public-hostname")
 
-		// With a base domain configured the responder serves the AWS-shaped EC2
-		// name built from the ENI's public IP and its AZ's region; with none it
-		// falls back to mirroring public-ipv4. The domain is fixture-specific, so
-		// resolve it from config the same way the live responder does.
-		if base := harness.NorthstarBaseDomain(fix.Env); base != "" {
-			want := handlers_dns.EC2PublicName(pubIP, imdsRegionFromAZ(azX), base)
-			require.Equal(t, want, gotHost,
-				"public-hostname must be the AWS-shaped EC2 name for public-ipv4")
-		} else {
-			require.Equal(t, pubIP, gotHost,
-				"no base domain configured → public-hostname mirrors public-ipv4")
-		}
+		// A pool-mode fixture provides Northstar, so the responder must serve the
+		// AWS-shaped EC2 name built from the ENI's public IP and its AZ's region.
+		base := harness.RequireDNSEnabled(t, fix.Env)
+		want := handlers_dns.EC2PublicName(pubIP, imdsRegionFromAZ(azX), base)
+		require.Equal(t, want, gotHost,
+			"public-hostname must be the AWS-shaped EC2 name for public-ipv4")
+
+		harness.Step(t, "resolve IMDS public-hostname %s from the guest", gotHost)
+		resolved := runSSH(t, tgtX, "getent ahostsv4 "+gotHost)
+		require.Containsf(t, strings.Fields(resolved), pubIP,
+			"public-hostname %s did not resolve to public-ipv4 %s: %s", gotHost, pubIP, resolved)
 	} else {
 		require.Equal(t, "404",
 			imdsCode(tgtX, fmt.Sprintf(`-H "X-aws-ec2-metadata-token: %s"`, tokenX),

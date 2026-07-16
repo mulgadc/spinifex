@@ -702,8 +702,9 @@ type predastoreBucketAuth struct {
 		Type string `toml:"type"`
 	} `toml:"buckets"`
 	Auth []struct {
-		AccessKeyID string `toml:"access_key_id"`
-		Policy      []struct {
+		AccessKeyID     string `toml:"access_key_id"`
+		SecretAccessKey string `toml:"secret_access_key"`
+		Policy          []struct {
 			Bucket  string   `toml:"bucket"`
 			Actions []string `toml:"actions"`
 		} `toml:"policy"`
@@ -765,12 +766,18 @@ func TestPredastoreMultinodeTemplate_NorthstarProvisioned(t *testing.T) {
 	// resolver's. Without this grant, seeding fails on every node.
 	systemActions, ok := cfg.policyFor("AK", admin.NorthstarBucketName)
 	require.True(t, ok, "system key has no policy for the northstar bucket")
-	assert.Contains(t, systemActions, "s3:PutObject")
+	assert.Contains(t, systemActions, "s3:GetObject", "bootstrap must check whether the zone already exists")
+	assert.Contains(t, systemActions, "s3:PutObject", "bootstrap must create a missing zone")
 
 	// The resolver's key stays read-only and scoped to the zone bucket alone.
 	nsActions, ok := cfg.policyFor("NSAK", admin.NorthstarBucketName)
 	require.True(t, ok, "northstar key has no policy for the northstar bucket")
 	assert.ElementsMatch(t, []string{"s3:ListBucket", "s3:GetObject"}, nsActions)
+	for _, auth := range cfg.Auth {
+		if auth.AccessKeyID == "NSAK" {
+			assert.Equal(t, "NSSK", auth.SecretAccessKey)
+		}
+	}
 
 	_, ok = cfg.policyFor("NSAK", "predastore")
 	assert.False(t, ok, "northstar key must not reach the predastore bucket")
@@ -810,14 +817,31 @@ func TestNorthstarFromFormation_UsesDistributedPair(t *testing.T) {
 	assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", path)
 }
 
-// A leader predating credential distribution sends no keys. The joiner must
-// then render no northstar config at all: a config path without honoured keys
-// would advertise 169.254.169.253 to guests while the resolver serves nothing.
-func TestNorthstarFromFormation_LegacyLeaderYieldsNoConfig(t *testing.T) {
-	got, path := northstarFromFormation(&formation.SharedCredentials{}, configDirs{Northstar: "/etc/spinifex/northstar"})
+// A leader predating credential distribution, or returning only half a pair,
+// must yield no Northstar config. Advertising a resolver without usable keys
+// would send guests to a service that cannot read its zones.
+func TestNorthstarFromFormation_IncompletePairYieldsNoConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		access string
+		secret string
+	}{
+		{name: "legacy leader"},
+		{name: "access key only", access: "NSAK"},
+		{name: "secret key only", secret: "NSSK"},
+	}
 
-	assert.Equal(t, admin.NorthstarCredentials{}, got)
-	assert.Empty(t, path, "config path without credentials advertises a resolver that cannot read its zones")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, path := northstarFromFormation(&formation.SharedCredentials{
+				NorthstarAccessKey: tt.access,
+				NorthstarSecretKey: tt.secret,
+			}, configDirs{Northstar: "/etc/spinifex/northstar"})
+
+			assert.Equal(t, admin.NorthstarCredentials{}, got)
+			assert.Empty(t, path, "config path without credentials advertises a resolver that cannot read its zones")
+		})
+	}
 }
 
 // multinodeNorthstarSettings mirrors what both formation paths hand
@@ -857,25 +881,45 @@ func TestGenerateAndWriteConfigs_MultinodeRendersNorthstar(t *testing.T) {
 	assert.Equal(t, nsPath, cfg.Nodes["node1"].Northstar.ConfigPath)
 }
 
-// The inverse: no credentials must yield neither file nor stanza. A stanza
-// without a rendered northstar.toml would point guests at a resolver that never
-// starts.
-func TestGenerateAndWriteConfigs_NoNorthstarWithoutCredentials(t *testing.T) {
-	dirs, err := createConfigSubdirs(t.TempDir())
-	require.NoError(t, err)
-	spinifexTomlPath := filepath.Join(t.TempDir(), "spinifex.toml")
+// Incomplete credentials must yield neither file nor stanza. A stanza without
+// a usable northstar.toml would point guests at a resolver that never starts.
+func TestGenerateAndWriteConfigs_NoNorthstarWithoutCompleteCredentials(t *testing.T) {
+	tests := []struct {
+		name   string
+		access string
+		secret string
+	}{
+		{name: "no credentials"},
+		{name: "access key only", access: "AKIANORTHSTAR"},
+		{name: "secret key only", secret: "northstar-secret"},
+	}
 
-	settings := multinodeNorthstarSettings("")
-	settings.NorthstarAccessKey = ""
-	settings.NorthstarSecretKey = ""
-	require.NoError(t, generateAndWriteConfigs(dirs, spinifexTomlPath, settings, true))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dirs, err := createConfigSubdirs(t.TempDir())
+			require.NoError(t, err)
+			spinifexTomlPath := filepath.Join(t.TempDir(), "spinifex.toml")
 
-	_, err = os.Stat(filepath.Join(dirs.Northstar, "northstar.toml"))
-	assert.True(t, os.IsNotExist(err), "northstar.toml rendered without credentials")
+			settings := multinodeNorthstarSettings(filepath.Join(dirs.Northstar, "northstar.toml"))
+			settings.NorthstarAccessKey = tt.access
+			settings.NorthstarSecretKey = tt.secret
+			require.NoError(t, generateAndWriteConfigs(dirs, spinifexTomlPath, settings, false))
 
-	cfg, err := config.LoadConfig(spinifexTomlPath)
-	require.NoError(t, err)
-	assert.Empty(t, cfg.Nodes["node1"].Northstar.ConfigPath)
+			_, err = os.Stat(filepath.Join(dirs.Northstar, "northstar.toml"))
+			assert.True(t, os.IsNotExist(err), "northstar.toml rendered without complete credentials")
+
+			cfg, err := config.LoadConfig(spinifexTomlPath)
+			require.NoError(t, err)
+			assert.Empty(t, cfg.Nodes["node1"].Northstar.ConfigPath)
+
+			predastoreContent, err := os.ReadFile(filepath.Join(dirs.Predastore, "predastore.toml"))
+			require.NoError(t, err)
+			var predastoreCfg predastoreBucketAuth
+			require.NoError(t, toml.Unmarshal(predastoreContent, &predastoreCfg))
+			assert.False(t, predastoreCfg.hasBucket(admin.NorthstarBucketName))
+			assert.Len(t, predastoreCfg.Auth, 1, "incomplete pair rendered a Northstar auth entry")
+		})
+	}
 }
 
 // renderClusterNode renders one node's spinifex.toml as its own formation path
@@ -886,6 +930,7 @@ func renderClusterNode(t *testing.T, node string, allNodes map[string]formation.
 
 	settings := multinodeNorthstarSettings(nsPath)
 	settings.Node = node
+	settings.BindIP = allNodes[node].BindIP
 	settings.AdvertiseIP = allNodes[node].AdvertiseIP
 	settings.RemoteNodes = buildRemoteNodes(allNodes, node, nsPath)
 
@@ -909,10 +954,17 @@ func TestSpinifexTomlTemplate_PeerNorthstarSeedsAreUniform(t *testing.T) {
 		"node3": {Name: "node3", BindIP: "10.0.0.3", AdvertiseIP: "192.168.1.33"},
 	}
 
-	want := []string{"192.168.1.31", "192.168.1.32", "192.168.1.33"}
+	wantIPs := []string{"192.168.1.31", "192.168.1.32", "192.168.1.33"}
+	wantHosts := []string{"ns1", "ns2", "ns3"}
 	for _, node := range []string{"node1", "node2", "node3"} {
 		cfg := renderClusterNode(t, node, allNodes)
-		assert.Equal(t, want, handlers_dns.ResolverNameserverIPs(cfg),
+		seeds := handlers_dns.NameserverSeeds(cfg)
+		require.Len(t, seeds, 3)
+		for i, seed := range seeds {
+			assert.Equal(t, wantHosts[i], seed.Host)
+			assert.Equal(t, wantIPs[i], seed.IP)
+		}
+		assert.Equal(t, wantIPs, handlers_dns.ResolverNameserverIPs(cfg),
 			"%s derived a different nameserver set from its own config", node)
 	}
 }
@@ -1003,4 +1055,41 @@ func TestAdminInitFlag_CompactionIntervalReachesRenderedConfig(t *testing.T) {
 		Region: "ap-southeast-2", BindIP: "0.0.0.0", CompactionIntervalSeconds: v,
 	})
 	assert.Contains(t, out, "interval_seconds = 45")
+}
+
+// The image is written into a root volume of exactly the size this returns, so
+// anything less than the image size truncates the image and the guest never
+// finds its root. The old flooring conversion undersized every non-round image.
+func TestAMIVolumeSizeGiB(t *testing.T) {
+	const giB int64 = 1024 * 1024 * 1024
+
+	tests := []struct {
+		name  string
+		bytes int64
+		want  uint64
+	}{
+		// The regression: a real 4.94 GiB mkosi image floored to 4 GiB and the
+		// guest hung with no root partition.
+		{name: "non-round image rounds up", bytes: 5306470400, want: 5},
+		// Exact multiples must not gain a spare GiB — the round sizes are the
+		// common case and were the only ones the old code got right.
+		{name: "exact multiple is unchanged", bytes: 16 * giB, want: 16},
+		{name: "one byte over a multiple rounds up", bytes: 16*giB + 1, want: 17},
+		{name: "one byte under a multiple rounds up", bytes: 16*giB - 1, want: 16},
+		// Sub-GiB images still need a whole GiB to live in.
+		{name: "sub-GiB image gets a full GiB", bytes: 1, want: 1},
+		{name: "empty image", bytes: 0, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := amiVolumeSizeGiB(tt.bytes)
+			assert.Equal(t, tt.want, got)
+			// The invariant the guest depends on, stated directly.
+			if tt.bytes > 0 {
+				assert.GreaterOrEqual(t, int64(got)*giB, tt.bytes,
+					"volume must be large enough to hold the image")
+			}
+		})
+	}
 }

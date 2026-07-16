@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	toml "github.com/pelletier/go-toml/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -138,6 +140,79 @@ func flakyS3(t *testing.T, bucket string, failUntil int) (endpoint string, objec
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL, objects
+}
+
+// assertZoneNameservers verifies the exact apex NS and glue topology rendered
+// into a bootstrapped zone.
+func assertZoneNameservers(t *testing.T, body, domain string, wantIPs []string) {
+	t.Helper()
+	var zone nsconfig.ConfigArr
+	require.NoError(t, toml.Unmarshal([]byte(body), &zone))
+	assert.Equal(t, domain, zone.Domain.Domain)
+	assert.Equal(t, "ns1."+domain+".", zone.Domain.SOA)
+
+	var nameservers, glue []string
+	for _, record := range zone.Records {
+		switch record.Type {
+		case nsconfig.TypeNS:
+			nameservers = append(nameservers, record.Address)
+		case nsconfig.TypeA:
+			glue = append(glue, record.Domain+"="+record.Address)
+		}
+	}
+
+	wantNameservers := make([]string, len(wantIPs))
+	wantGlue := make([]string, len(wantIPs))
+	for i, ip := range wantIPs {
+		host := fmt.Sprintf("ns%d", i+1)
+		wantNameservers[i] = host + "." + domain + "."
+		wantGlue[i] = host + ".=" + ip
+	}
+	assert.Equal(t, wantNameservers, nameservers)
+	assert.Equal(t, wantGlue, glue)
+}
+
+// TestBootstrapBaseZoneMultiNode ensures the bootstrap path passes the complete
+// cluster topology into both zones rather than seeding only the writing node.
+func TestBootstrapBaseZoneMultiNode(t *testing.T) {
+	endpoint, objects := fakeS3(t, "northstar")
+	tomlBody := fmt.Sprintf(`listen = "0.0.0.0:5300"
+default_domain = "spx3.net"
+[s3]
+endpoint = %q
+bucket = "northstar"
+region = "us-east-1"
+access_key = "READONLY"
+secret_key = "READONLY"
+`, endpoint)
+	configPath := filepath.Join(t.TempDir(), "northstar.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
+
+	cluster := &config.ClusterConfig{
+		Node: "node1",
+		Nodes: map[string]config.Config{
+			"node3": {
+				Host: "10.0.0.3", AdvertiseIP: "192.168.1.33",
+				Northstar: config.NorthstarConfig{ConfigPath: configPath},
+			},
+			"node1": {
+				Host: "10.0.0.1", AdvertiseIP: "192.168.1.31",
+				Predastore: config.PredastoreConfig{AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET"},
+				Northstar:  config.NorthstarConfig{ConfigPath: configPath},
+			},
+			"node2": {
+				Host: "10.0.0.2", AdvertiseIP: "192.168.1.32",
+				Northstar: config.NorthstarConfig{ConfigPath: configPath},
+			},
+		},
+	}
+
+	require.NoError(t, BootstrapBaseZone(configPath, cluster))
+	require.Contains(t, objects, "spx3.net.toml")
+	require.Contains(t, objects, "compute.internal.toml")
+	wantIPs := []string{"192.168.1.31", "192.168.1.32", "192.168.1.33"}
+	assertZoneNameservers(t, objects["spx3.net.toml"], "spx3.net", wantIPs)
+	assertZoneNameservers(t, objects["compute.internal.toml"], "compute.internal", wantIPs)
 }
 
 func TestBootstrapBaseZoneRetries(t *testing.T) {

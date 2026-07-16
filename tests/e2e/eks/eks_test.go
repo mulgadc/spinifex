@@ -46,6 +46,7 @@ const (
 // would blow the suite timeout on dev nodes.
 func TestEKS(t *testing.T) {
 	env := harness.LoadEnv(t)
+	harness.RequireDNSEnabled(t, env)
 	artifacts := harness.ArtifactDir(t, env)
 	c := harness.NewAWSClient(t, env)
 
@@ -970,19 +971,16 @@ func deleteClusterBestEffort(t *testing.T, c *harness.AWSClient, fx *clusterFixt
 
 // assertEKSEndpointResolves confirms the DescribeCluster endpoint is an
 // AWS-shaped DNS name that resolves through the host resolver (the path a
-// kubectl/AWS SDK client uses), matching real EKS. Skipped when northstar is not
-// configured and the endpoint is still a bare IP. Retries because the endpoint A
-// record is published asynchronously by the control-plane writer.
+// kubectl/AWS SDK client uses), matching real EKS. The suite requires Northstar,
+// so a bare-IP endpoint is a failure. Retries because the endpoint A record is
+// published asynchronously by the control-plane writer.
 func assertEKSEndpointResolves(t *testing.T, endpoint string) {
 	t.Helper()
 	require.NotEmpty(t, endpoint, "cluster endpoint must be set")
 	u, err := url.Parse(endpoint)
 	require.NoErrorf(t, err, "parse cluster endpoint %q", endpoint)
 	host := u.Hostname()
-	if net.ParseIP(host) != nil {
-		t.Logf("endpoint %q is a bare IP — DNS registration off, skipping resolution check", endpoint)
-		return
-	}
+	require.Nilf(t, net.ParseIP(host), "EKS endpoint %q is a bare IP despite required Northstar DNS", endpoint)
 	deadline := time.Now().Add(90 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {

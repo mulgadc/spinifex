@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,19 @@ func loadClusterConfig(path string) (*config.ClusterConfig, error) {
 	if err := v.ReadInConfig(); err != nil {
 		return nil, err
 	}
+	return unmarshalClusterConfig(v)
+}
+
+func loadClusterConfigBytes(data []byte) (*config.ClusterConfig, error) {
+	v := viper.New()
+	v.SetConfigType("toml")
+	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
+	return unmarshalClusterConfig(v)
+}
+
+func unmarshalClusterConfig(v *viper.Viper) (*config.ClusterConfig, error) {
 	var cc config.ClusterConfig
 	if err := v.Unmarshal(&cc); err != nil {
 		return nil, err

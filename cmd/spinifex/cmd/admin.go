@@ -1700,6 +1700,12 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		Region:         region,
 		AdminAccessKey: adminAccessKey,
 		AdminSecretKey: adminSecretKey,
+
+		// Joiners provision their own predastore with this pair, so every
+		// node's resolver can read the distributed zone bucket via its local
+		// endpoint. The bucket is a constant, so it is derived node-side.
+		NorthstarAccessKey: northstarCreds.AccessKey,
+		NorthstarSecretKey: northstarCreds.SecretKey,
 	}
 
 	fs := formation.NewFormationServer(expectedNodes, creds, string(caCertData), string(caKeyData), networkConfig, joinToken, tokenTTL)

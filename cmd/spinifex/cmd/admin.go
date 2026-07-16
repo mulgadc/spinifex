@@ -2652,7 +2652,7 @@ func createConfigSubdirs(configDir string) (configDirs, error) {
 // zero pair and an empty path, so the node renders no northstar config at all
 // rather than a resolver holding a key its own predastore would reject.
 func northstarFromFormation(creds *formation.SharedCredentials, dirs configDirs) (admin.NorthstarCredentials, string) {
-	if creds.NorthstarAccessKey == "" {
+	if creds.NorthstarAccessKey == "" || creds.NorthstarSecretKey == "" {
 		return admin.NorthstarCredentials{}, ""
 	}
 	return admin.NorthstarCredentials{
@@ -2665,6 +2665,16 @@ func northstarFromFormation(creds *formation.SharedCredentials, dirs configDirs)
 // generateAndWriteConfigs renders the standard config files (spinifex.toml,
 // awsgw.toml, nats.conf, and optionally predastore.toml) from templates.
 func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings admin.ConfigSettings, skipPredastore bool) error {
+	// A one-sided pair must disable Northstar wholesale. Rendering only the
+	// public stanza or only the secret file advertises a resolver that cannot run.
+	northstarEnabled := settings.NorthstarAccessKey != "" && settings.NorthstarSecretKey != ""
+	if !northstarEnabled {
+		settings.NorthstarAccessKey = ""
+		settings.NorthstarSecretKey = ""
+		settings.NorthstarBucket = ""
+		settings.NorthstarConfigPath = ""
+	}
+
 	configs := []admin.ConfigFile{
 		{Name: "spinifex.toml", Path: spinifexTomlPath, Template: spinifexTomlTemplate},
 		{Name: filepath.Join(dirs.AWSGW, "awsgw.toml"), Path: filepath.Join(dirs.AWSGW, "awsgw.toml"), Template: awsgwTomlTemplate},
@@ -2674,7 +2684,7 @@ func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings 
 	// provisioned. A cluster formed by a leader that predates their distribution
 	// leaves the keys empty, yielding no northstar config rather than a partial
 	// one pointing at a bucket the local predastore does not serve.
-	if settings.NorthstarAccessKey != "" {
+	if northstarEnabled {
 		configs = append(configs, admin.ConfigFile{
 			Name: filepath.Join(dirs.Northstar, "northstar.toml"), Path: filepath.Join(dirs.Northstar, "northstar.toml"), Template: northstarTomlTemplate,
 		})

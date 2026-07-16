@@ -1825,7 +1825,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		PredastoreNodeID:          predastoreNodeID,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
-		RemoteNodes:               buildRemoteNodes(allNodes, node),
+		RemoteNodes:               buildRemoteNodes(allNodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
 
@@ -2292,7 +2292,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		PredastoreNodeID:          predastoreNodeID,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
-		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node),
+		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
 
@@ -2361,7 +2361,16 @@ func resolveAdvertiseIP(bindIP, advertiseFlag string, detected *admin.DetectedNe
 // buildRemoteNodes converts formation NodeInfo into RemoteNode entries,
 // excluding the local node. This puts all cluster members into spinifex.toml
 // so config is the source of truth for expected cluster membership.
-func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode string) []admin.RemoteNode {
+//
+// northstarConfigPath is the local node's own path, republished for every peer:
+// every node in a formed cluster runs northstar, and the seed set must be
+// identical on all of them or the base zone's NS records get pinned to whichever
+// node wins the create-if-absent race. --config-dir is per-node and does not
+// cross the wire, so the value is accurate whenever nodes share a config dir and
+// inert when they do not — only its emptiness is ever read back. Passing it
+// empty (no credentials distributed) leaves peers with no stanza, so no node is
+// advertised as a resolver it cannot be.
+func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode, northstarConfigPath string) []admin.RemoteNode {
 	var remote []admin.RemoteNode
 	for name, n := range allNodes {
 		if name == localNode {
@@ -2374,11 +2383,12 @@ func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode string) 
 			host = n.BindIP
 		}
 		remote = append(remote, admin.RemoteNode{
-			Name:     name,
-			Host:     host,
-			Region:   n.Region,
-			AZ:       n.AZ,
-			Services: n.Services,
+			Name:                name,
+			Host:                host,
+			Region:              n.Region,
+			AZ:                  n.AZ,
+			Services:            n.Services,
+			NorthstarConfigPath: northstarConfigPath,
 		})
 	}
 	sort.Slice(remote, func(i, j int) bool {

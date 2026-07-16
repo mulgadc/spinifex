@@ -147,4 +147,9 @@ az = "{{.AZ}}"
 {{- if .Services}}
 services = [{{range $i, $s := .Services}}{{if $i}}, {{end}}"{{$s}}"{{end}}]
 {{- end}}
+{{- if .NorthstarConfigPath}}
+
+[nodes.{{.Name}}.northstar]
+config_path = "{{.NorthstarConfigPath}}"
+{{- end}}
 {{- end}}

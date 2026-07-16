@@ -33,6 +33,12 @@ type RemoteNode struct {
 	Region   string
 	AZ       string
 	Services []string
+
+	// NorthstarConfigPath marks the peer as running northstar. Its emptiness is
+	// the only thing read from a peer's stanza — no code opens a peer's path —
+	// and it must be rendered for every northstar peer so each node derives the
+	// same nameserver set for the base zone seed.
+	NorthstarConfigPath string
 }
 
 type ConfigSettings struct {

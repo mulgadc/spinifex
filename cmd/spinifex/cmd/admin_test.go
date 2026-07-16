@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
@@ -52,12 +53,35 @@ func TestBuildRemoteNodes_AdvertiseFallback(t *testing.T) {
 		"node2": {Name: "node2", BindIP: "10.0.0.2"}, // legacy joiner
 		"node3": {Name: "node3", BindIP: "10.0.0.3", AdvertiseIP: "203.0.113.3"},
 	}
-	got := buildRemoteNodes(nodes, "node3")
+	got := buildRemoteNodes(nodes, "node3", "")
 	if assert.Len(t, got, 2) {
 		assert.Equal(t, "node1", got[0].Name)
 		assert.Equal(t, "203.0.113.1", got[0].Host, "advertise wins when set")
 		assert.Equal(t, "node2", got[1].Name)
 		assert.Equal(t, "10.0.0.2", got[1].Host, "bind fallback when advertise empty")
+	}
+}
+
+// Every peer must carry the northstar stanza, since a node that describes only
+// its own northstar computes a single-entry seed set and pins the base zone's NS
+// records to whichever node won the create-if-absent race.
+func TestBuildRemoteNodes_NorthstarConfigPath(t *testing.T) {
+	nodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2"},
+	}
+
+	got := buildRemoteNodes(nodes, "node2", "/etc/spinifex/northstar/northstar.toml")
+	if assert.Len(t, got, 1) {
+		assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", got[0].NorthstarConfigPath)
+	}
+
+	// No distributed credentials means no node runs northstar. Publishing peers
+	// as resolvers anyway would point guests at 169.254.169.253 for a service
+	// that never starts.
+	got = buildRemoteNodes(nodes, "node2", "")
+	if assert.Len(t, got, 1) {
+		assert.Empty(t, got[0].NorthstarConfigPath)
 	}
 }
 
@@ -852,6 +876,61 @@ func TestGenerateAndWriteConfigs_NoNorthstarWithoutCredentials(t *testing.T) {
 	cfg, err := config.LoadConfig(spinifexTomlPath)
 	require.NoError(t, err)
 	assert.Empty(t, cfg.Nodes["node1"].Northstar.ConfigPath)
+}
+
+// renderClusterNode renders one node's spinifex.toml as its own formation path
+// would: its local northstar stanza plus a stanza for every peer.
+func renderClusterNode(t *testing.T, node string, allNodes map[string]formation.NodeInfo) *config.ClusterConfig {
+	t.Helper()
+	const nsPath = "/etc/spinifex/northstar/northstar.toml"
+
+	settings := multinodeNorthstarSettings(nsPath)
+	settings.Node = node
+	settings.AdvertiseIP = allNodes[node].AdvertiseIP
+	settings.RemoteNodes = buildRemoteNodes(allNodes, node, nsPath)
+
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	cfg, err := config.LoadConfig(path)
+	require.NoError(t, err)
+	return cfg
+}
+
+// Every node must derive the same nameserver set from its own rendered config.
+// EnsureBaseZone is create-if-absent and never overwrites, so if each node saw
+// only itself the zone's NS records would be pinned to whichever node won the
+// startup race — permanently, for the life of the zone object. Identical sets
+// make that race benign: whoever writes, writes the same bytes.
+func TestSpinifexTomlTemplate_PeerNorthstarSeedsAreUniform(t *testing.T) {
+	allNodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1", AdvertiseIP: "192.168.1.31"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2", AdvertiseIP: "192.168.1.32"},
+		"node3": {Name: "node3", BindIP: "10.0.0.3", AdvertiseIP: "192.168.1.33"},
+	}
+
+	want := []string{"192.168.1.31", "192.168.1.32", "192.168.1.33"}
+	for _, node := range []string{"node1", "node2", "node3"} {
+		cfg := renderClusterNode(t, node, allNodes)
+		assert.Equal(t, want, northstar.ResolverNameserverIPs(cfg),
+			"%s derived a different nameserver set from its own config", node)
+	}
+}
+
+// A peer's stanza carries config_path alone: it is the only field ever read back
+// from a peer, and the domains would be fiction — the local node cannot know
+// what a peer configured.
+func TestSpinifexTomlTemplate_PeerNorthstarStanzaIsPathOnly(t *testing.T) {
+	allNodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1", AdvertiseIP: "192.168.1.31"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2", AdvertiseIP: "192.168.1.32"},
+	}
+
+	cfg := renderClusterNode(t, "node1", allNodes)
+	peer := cfg.Nodes["node2"].Northstar
+	assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", peer.ConfigPath)
+	assert.Empty(t, peer.DefaultDomain, "peer domains are unknowable from here")
+	assert.Empty(t, peer.InternalDomain)
 }
 
 // Unset knob must leave production config byte-identical: no [compaction] block

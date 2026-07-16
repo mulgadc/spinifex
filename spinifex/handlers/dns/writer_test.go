@@ -103,7 +103,42 @@ records_per_hosted_zone = %d
 		Predastore: config.PredastoreConfig{AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET"},
 		Northstar:  config.NorthstarConfig{ConfigPath: configPath},
 	}
-	w := NewWriter(cfg, nil)
+	w := NewWriter(cfg, nil, nil)
+	require.True(t, w.Enabled(), "writer should be enabled")
+	return w, objects
+}
+
+// newMultiNodeTestWriter builds an enabled Writer for a two-node cluster against
+// an empty bucket, so zone materialisation runs instead of read-modify-write.
+func newMultiNodeTestWriter(t *testing.T) (*Writer, map[string]string) {
+	t.Helper()
+	endpoint, objects := fakeS3(t, "northstar")
+	tomlBody := fmt.Sprintf(`listen = "0.0.0.0:5300"
+default_domain = "spx3.net"
+[s3]
+endpoint = %q
+bucket = "northstar"
+region = "us-east-1"
+access_key = "READONLY"
+secret_key = "READONLY"
+`, endpoint)
+	configPath := filepath.Join(t.TempDir(), "northstar.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
+
+	local := config.Config{
+		Node:        "node1",
+		AdvertiseIP: "10.0.0.1",
+		Predastore:  config.PredastoreConfig{AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET"},
+		Northstar:   config.NorthstarConfig{ConfigPath: configPath},
+	}
+	cluster := &config.ClusterConfig{
+		Node: "node1",
+		Nodes: map[string]config.Config{
+			"node1": local,
+			"node2": {Node: "node2", AdvertiseIP: "10.0.0.2", Northstar: config.NorthstarConfig{ConfigPath: configPath}},
+		},
+	}
+	w := NewWriter(&local, cluster, nil)
 	require.True(t, w.Enabled(), "writer should be enabled")
 	return w, objects
 }
@@ -309,8 +344,32 @@ func TestWriterReplacingRecordSetNotQuotaLimited(t *testing.T) {
 	assert.Contains(t, objects["spx3.net.toml"], `address = "5.6.7.8"`)
 }
 
+// A zone materialised on demand must carry every northstar node, not just the
+// node that happened to consume the change. Both this path and BootstrapBaseZone
+// create-if-absent and never overwrite, so a single degenerate ns1 written here
+// first would pin the zone's NS topology to one node for the life of the object.
+// Asserted on a multi-node cluster: on single-node the two derivations coincide.
+func TestWriterMaterialisesZoneWithClusterNameservers(t *testing.T) {
+	w, objects := newMultiNodeTestWriter(t)
+
+	_, err := w.ApplyBatch(&ChangeBatch{Changes: []Change{
+		{Action: ActionUpsert, Zone: "compute.internal", Name: "i-123.compute.internal", Type: "A", Value: "10.20.0.5"},
+	}})
+	require.NoError(t, err)
+
+	body := objects["compute.internal.toml"]
+	require.NotEmpty(t, body, "a missing zone with an upsert should be materialised")
+
+	// Both nodes' NS records and glue, exactly as BootstrapBaseZone would seed them.
+	assert.Contains(t, body, `address = "ns1.compute.internal."`)
+	assert.Contains(t, body, `address = "ns2.compute.internal."`)
+	assert.Contains(t, body, `address = "10.0.0.1"`)
+	assert.Contains(t, body, `address = "10.0.0.2"`)
+	assert.Contains(t, body, `soa = "ns1.compute.internal."`)
+}
+
 func TestWriterDisabledWithoutNorthstar(t *testing.T) {
-	w := NewWriter(&config.Config{}, nil)
+	w := NewWriter(&config.Config{}, nil, nil)
 	assert.False(t, w.Enabled())
 	_, err := w.ApplyBatch(&ChangeBatch{Changes: []Change{{Action: ActionUpsert}}})
 	require.Error(t, err)

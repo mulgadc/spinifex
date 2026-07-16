@@ -12,8 +12,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/formation"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
@@ -912,7 +912,7 @@ func TestSpinifexTomlTemplate_PeerNorthstarSeedsAreUniform(t *testing.T) {
 	want := []string{"192.168.1.31", "192.168.1.32", "192.168.1.33"}
 	for _, node := range []string{"node1", "node2", "node3"} {
 		cfg := renderClusterNode(t, node, allNodes)
-		assert.Equal(t, want, northstar.ResolverNameserverIPs(cfg),
+		assert.Equal(t, want, handlers_dns.ResolverNameserverIPs(cfg),
 			"%s derived a different nameserver set from its own config", node)
 	}
 }

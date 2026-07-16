@@ -244,7 +244,7 @@ func TestDescribeImages_BootModeProjection(t *testing.T) {
 	require.Contains(t, byID, "ami-uefi001")
 	require.Contains(t, byID, "ami-legacy001")
 	assert.Equal(t, "uefi", aws.StringValue(byID["ami-uefi001"].BootMode))
-	assert.Equal(t, "", aws.StringValue(byID["ami-legacy001"].BootMode),
+	assert.Empty(t, aws.StringValue(byID["ami-legacy001"].BootMode),
 		"legacy AMIs (empty BootMode) must pass through as empty, not be backfilled")
 }
 
@@ -2163,7 +2163,7 @@ func TestModifyImageAttribute_DescriptionEmptyValueClears(t *testing.T) {
 
 	meta, err := svc.GetAMIConfig(context.Background(), "ami-modclr01")
 	require.NoError(t, err)
-	assert.Equal(t, "", meta.Description)
+	assert.Empty(t, meta.Description)
 }
 
 func TestModifyImageAttribute_CrossAccount(t *testing.T) {
@@ -2274,7 +2274,7 @@ func TestResetImageAttribute_Description(t *testing.T) {
 
 	meta, err := svc.GetAMIConfig(context.Background(), "ami-reset01")
 	require.NoError(t, err)
-	assert.Equal(t, "", meta.Description)
+	assert.Empty(t, meta.Description)
 
 	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 		ImageId:   aws.String("ami-reset01"),
@@ -2283,7 +2283,7 @@ func TestResetImageAttribute_Description(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, out.Description)
 	require.NotNil(t, out.Description.Value)
-	assert.Equal(t, "", *out.Description.Value)
+	assert.Empty(t, *out.Description.Value)
 }
 
 func TestResetImageAttribute_CrossAccount(t *testing.T) {

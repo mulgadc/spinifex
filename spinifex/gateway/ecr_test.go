@@ -29,7 +29,7 @@ func TestECRActionFromTarget(t *testing.T) {
 	assert.Equal(t, "CreateRepository",
 		ecrActionFromTarget("AmazonEC2ContainerRegistry_V20150921.CreateRepository"))
 	assert.Equal(t, "GetAuthorizationToken", ecrActionFromTarget("GetAuthorizationToken"))
-	assert.Equal(t, "", ecrActionFromTarget(""))
+	assert.Empty(t, ecrActionFromTarget(""))
 }
 
 func TestECRActionsMap_CoreActionsRegistered(t *testing.T) {

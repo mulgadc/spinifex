@@ -306,6 +306,11 @@ var AvailableImages = map[string]Images{
 		BootMode:     "uefi",
 	},
 
+	// Ubuntu is pulled from releases/, not the codename dailies tree: Canonical
+	// prunes old daily builds, so a pinned daily URL 404s once it ages out and
+	// takes the catalog entry with it. Release builds are kept, so the pin stays
+	// resolvable. Note the filename carries the version rather than the codename
+	// under releases/ — the sums entry is matched on that basename.
 	"ubuntu-26.04-x86_64": {
 		Name:         "ubuntu-26.04-x86_64",
 		Description:  "Ubuntu 26.04 LTS (Resolute Reindeer) x86_64 cloud image",
@@ -313,9 +318,9 @@ var AvailableImages = map[string]Images{
 		Version:      "26.04",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-amd64.img",
-		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
+		CreatedAt:    time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud-images.ubuntu.com/releases/resolute/release-20260713/ubuntu-26.04-server-cloudimg-amd64.img",
+		Checksum:     "https://cloud-images.ubuntu.com/releases/resolute/release-20260713/SHA256SUMS",
 		ChecksumType: "sha256",
 		BootMode:     "uefi",
 	},
@@ -327,9 +332,9 @@ var AvailableImages = map[string]Images{
 		Version:      "26.04",
 		Arch:         "arm64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-arm64.img",
-		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
+		CreatedAt:    time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud-images.ubuntu.com/releases/resolute/release-20260713/ubuntu-26.04-server-cloudimg-arm64.img",
+		Checksum:     "https://cloud-images.ubuntu.com/releases/resolute/release-20260713/SHA256SUMS",
 		ChecksumType: "sha256",
 		BootMode:     "uefi",
 	},

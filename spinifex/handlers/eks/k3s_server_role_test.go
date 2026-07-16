@@ -1,7 +1,6 @@
 package handlers_eks
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -64,7 +63,7 @@ func TestEnsureK3sServerInstanceProfile_ExistingRoleConverges(t *testing.T) {
 // yields "" so the caller falls back to baked static creds rather than failing.
 func TestEnsureCPInstanceProfile_NilIAMFallsBack(t *testing.T) {
 	s := &EKSServiceImpl{deps: EKSServiceDeps{}}
-	assert.Equal(t, "", s.ensureCPInstanceProfile(testSysAcct))
+	assert.Empty(t, s.ensureCPInstanceProfile(testSysAcct))
 }
 
 // TestEnsureCPInstanceProfile_UsesLazyProvider asserts the CP profile is created
@@ -87,13 +86,13 @@ func TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack(t *testing.T) {
 	s := &EKSServiceImpl{deps: EKSServiceDeps{
 		IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return nil },
 	}}
-	assert.Equal(t, "", s.ensureCPInstanceProfile(testSysAcct))
+	assert.Empty(t, s.ensureCPInstanceProfile(testSysAcct))
 }
 
 // TestEKSServerTrustPolicyIsAssumable guards that the trust doc the CP role
 // ships with is exactly the EC2 service-principal shape AssumeRoleForInstance
 // matches; a drift here silently breaks IMDS credential minting.
 func TestEKSServerTrustPolicyIsAssumable(t *testing.T) {
-	assert.True(t, strings.Contains(handlers_iam.EC2InstanceTrustPolicy, `"Service":"ec2.amazonaws.com"`))
-	assert.True(t, strings.Contains(handlers_iam.EC2InstanceTrustPolicy, `"Action":"sts:AssumeRole"`))
+	assert.Contains(t, handlers_iam.EC2InstanceTrustPolicy, `"Service":"ec2.amazonaws.com"`)
+	assert.Contains(t, handlers_iam.EC2InstanceTrustPolicy, `"Action":"sts:AssumeRole"`)
 }

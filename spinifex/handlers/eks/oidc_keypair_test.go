@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"testing"
 
 	"github.com/nats-io/nats.go"
@@ -163,8 +162,8 @@ func TestLoadClusterOIDCPrivateKey_RoundTripMatchesJWKSPublic(t *testing.T) {
 
 	point, err := priv.PublicKey.Bytes()
 	require.NoError(t, err)
-	assert.Equal(t, point[1:1+p256CoordLen], xExpected)
-	assert.Equal(t, point[1+p256CoordLen:], yExpected)
+	assert.Equal(t, xExpected, point[1:1+p256CoordLen])
+	assert.Equal(t, yExpected, point[1+p256CoordLen:])
 }
 
 func TestLoadClusterOIDCPrivateKey_WrongMasterKeyFails(t *testing.T) {
@@ -192,7 +191,7 @@ func TestZeroizeClusterOIDCKey_DeletesKeyAndLeavesSiblingsIntact(t *testing.T) {
 	require.NoError(t, ZeroizeClusterOIDCKey(kv, "alpha"))
 
 	_, err = kv.Get(OIDCSigningKeyKey("alpha"))
-	assert.True(t, errors.Is(err, nats.ErrKeyNotFound))
+	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
 
 	jwks, err := kv.Get(OIDCJWKSKey("alpha"))
 	require.NoError(t, err, "JWKS must survive zeroize (it carries no secret material)")

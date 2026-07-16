@@ -450,7 +450,7 @@ func TestGenerateSignedCert(t *testing.T) {
 		baseBlock, _ := pem.Decode(basePEM)
 		baseParsed, _ := x509.ParseCertificate(baseBlock.Bytes)
 
-		assert.Equal(t, len(baseParsed.IPAddresses), len(cert.IPAddresses),
+		assert.Len(t, cert.IPAddresses, len(baseParsed.IPAddresses),
 			"passing duplicate/special IPs should not add extra entries")
 	})
 

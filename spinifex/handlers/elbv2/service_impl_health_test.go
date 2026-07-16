@@ -105,7 +105,7 @@ func TestRegisterTargets_UnresolvableIP(t *testing.T) {
 
 	tg, _ := svc.store.GetTargetGroupByArn(*tgArn)
 	require.Len(t, tg.Targets, 1)
-	assert.Equal(t, "", tg.Targets[0].PrivateIP)
+	assert.Empty(t, tg.Targets[0].PrivateIP)
 }
 
 func TestRegisterTargets_WithoutVPCService(t *testing.T) {
@@ -125,7 +125,7 @@ func TestRegisterTargets_WithoutVPCService(t *testing.T) {
 	require.NoError(t, err)
 
 	tg, _ := svc.store.GetTargetGroupByArn(*tgArn)
-	assert.Equal(t, "", tg.Targets[0].PrivateIP)
+	assert.Empty(t, tg.Targets[0].PrivateIP)
 }
 
 func TestRegisterTargets_MultipleInstances(t *testing.T) {

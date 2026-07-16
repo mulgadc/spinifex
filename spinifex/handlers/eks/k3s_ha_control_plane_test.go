@@ -355,7 +355,7 @@ func TestPlaceControlPlane_FirstServerFailureRollsBackNoJoins(t *testing.T) {
 	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.Error(t, err)
 	assert.Nil(t, nodes)
-	assert.Equal(t, "", group)
+	assert.Empty(t, group)
 
 	// The first server never came up, so no join servers were launched and there
 	// is nothing to terminate; the reservation + group are still cleaned up.
@@ -375,9 +375,9 @@ func TestPlaceControlPlane_FallbackUnderThreeHosts(t *testing.T) {
 
 	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.NoError(t, err)
-	assert.Equal(t, "", group)
+	assert.Empty(t, group)
 	require.Len(t, nodes, 1)
-	assert.Equal(t, "", nodes[0].NodeID)
+	assert.Empty(t, nodes[0].NodeID)
 	assert.Equal(t, "i-local", nodes[0].InstanceID)
 
 	assert.Empty(t, placer.createGroups)
@@ -408,7 +408,7 @@ func TestPlaceControlPlane_PartialLaunchRollsBack(t *testing.T) {
 	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.Error(t, err)
 	assert.Nil(t, nodes)
-	assert.Equal(t, "", group)
+	assert.Empty(t, group)
 
 	assert.Len(t, inst.terminated, 2, "the two VMs that launched are terminated")
 	require.Len(t, placer.releaseInputs, 1)
@@ -425,9 +425,9 @@ func TestPlaceControlPlane_ReserveFailureFallsBackToSingle(t *testing.T) {
 
 	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.NoError(t, err)
-	assert.Equal(t, "", group)
+	assert.Empty(t, group)
 	require.Len(t, nodes, 1)
-	assert.Equal(t, "", nodes[0].NodeID)
+	assert.Empty(t, nodes[0].NodeID)
 
 	assert.Len(t, placer.createGroups, 1)
 	require.Len(t, placer.reserveInputs, 1)
@@ -447,7 +447,7 @@ func TestPlaceControlPlane_VerifyMismatchRollsBack(t *testing.T) {
 	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.Error(t, err)
 	assert.Nil(t, nodes)
-	assert.Equal(t, "", group)
+	assert.Empty(t, group)
 
 	assert.Len(t, inst.terminated, 3)
 	require.Len(t, placer.releaseInputs, 1)
@@ -485,7 +485,7 @@ func TestPlaceControlPlane_FinalizeFailureRollsBack(t *testing.T) {
 	nodes, group, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
 	require.Error(t, err)
 	assert.Nil(t, nodes)
-	assert.Equal(t, "", group)
+	assert.Empty(t, group)
 
 	assert.Len(t, inst.terminated, 3)
 	require.Len(t, placer.finalizeInputs, 1)

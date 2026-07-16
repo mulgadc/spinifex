@@ -386,8 +386,8 @@ func TestCreateTargetGroup_TCPProtocol(t *testing.T) {
 	assert.Equal(t, int64(5432), *tg.Port)
 	// NLB health check defaults: TCP protocol, no path, no matcher.
 	assert.Equal(t, "TCP", *tg.HealthCheckProtocol)
-	assert.Equal(t, "", *tg.HealthCheckPath)
-	assert.Equal(t, "", *tg.Matcher.HttpCode)
+	assert.Empty(t, *tg.HealthCheckPath)
+	assert.Empty(t, *tg.Matcher.HttpCode)
 	assert.Equal(t, int64(10), *tg.HealthCheckTimeoutSeconds)
 	assert.Equal(t, int64(3), *tg.HealthyThresholdCount)
 	assert.Equal(t, int64(3), *tg.UnhealthyThresholdCount)
@@ -1874,7 +1874,7 @@ func TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	assert.Equal(t, 0, len(mock.terminateCalls), "terminate must not be called when InstanceID is empty")
+	assert.Empty(t, mock.terminateCalls, "terminate must not be called when InstanceID is empty")
 }
 
 // mockTerminateLauncher records TerminateSystemInstance calls for testing.
@@ -2716,7 +2716,7 @@ func TestModifyLoadBalancerAttributes_EmptyStringClears(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, modOut.Attributes, 1, "empty-string Value must be echoed, not skipped")
-	assert.Equal(t, "", *modOut.Attributes[0].Value)
+	assert.Empty(t, *modOut.Attributes[0].Value)
 
 	descOut, err := svc.DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{
 		LoadBalancerArn: arn,
@@ -2726,7 +2726,7 @@ func TestModifyLoadBalancerAttributes_EmptyStringClears(t *testing.T) {
 	for _, a := range descOut.Attributes {
 		attrMap[*a.Key] = *a.Value
 	}
-	assert.Equal(t, "", attrMap["access_logs.s3.bucket"], "empty-string clear must persist")
+	assert.Empty(t, attrMap["access_logs.s3.bucket"], "empty-string clear must persist")
 }
 
 // --- Attribute mirror-pair tests (table-driven over TG/LB) ---

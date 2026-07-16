@@ -938,7 +938,7 @@ func TestRespondWithVolumeAttachment(t *testing.T) {
 	assert.Equal(t, "/dev/sdf", *attachment.Device)
 	assert.Equal(t, "attached", *attachment.State)
 	assert.NotNil(t, attachment.AttachTime)
-	assert.Equal(t, false, *attachment.DeleteOnTermination)
+	assert.False(t, *attachment.DeleteOnTermination)
 }
 
 // --- handleEC2ModifyVolume tests ---
@@ -1712,7 +1712,7 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_DisableApiTerminati
 	err = json.Unmarshal(reply.Data, &output)
 	require.NoError(t, err)
 	require.NotNil(t, output.DisableApiTermination)
-	assert.Equal(t, true, *output.DisableApiTermination.Value)
+	assert.True(t, *output.DisableApiTermination.Value)
 }
 
 func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_ShutdownBehavior(t *testing.T) {
@@ -2119,11 +2119,11 @@ func TestHandleNodeStatus(t *testing.T) {
 	assert.Equal(t, "us-west-2a", resp.AZ)
 	assert.GreaterOrEqual(t, resp.Uptime, int64(0))
 	assert.Equal(t, 2, resp.VMCount)
-	assert.Greater(t, resp.TotalVCPU, 0)
+	assert.Positive(t, resp.TotalVCPU)
 	assert.Greater(t, resp.TotalMemGB, 0.0)
 	assert.Equal(t, daemon.resourceMgr.reservedVCPU, resp.ReservedVCPU, "ReservedVCPU must be populated on wire")
 	assert.InDelta(t, daemon.resourceMgr.reservedMem, resp.ReservedMemGB, 0.001, "ReservedMemGB must be populated on wire")
-	assert.Greater(t, resp.ReservedVCPU, 0, "default reserve is non-zero")
+	assert.Positive(t, resp.ReservedVCPU, "default reserve is non-zero")
 	assert.Greater(t, resp.ReservedMemGB, 0.0, "default reserve is non-zero")
 }
 
@@ -2144,7 +2144,7 @@ func TestHandleNodeStatus_NoVMs(t *testing.T) {
 
 	assert.Equal(t, 0, resp.VMCount)
 	assert.Equal(t, "Ready", resp.Status)
-	assert.Greater(t, resp.ReservedVCPU, 0, "default reserve is exposed even when no VMs")
+	assert.Positive(t, resp.ReservedVCPU, "default reserve is exposed even when no VMs")
 	assert.Greater(t, resp.ReservedMemGB, 0.0, "default reserve is exposed even when no VMs")
 }
 
@@ -2195,7 +2195,7 @@ func TestHandleNodeVMs(t *testing.T) {
 	vm1 := vmsByID["i-vm-1"]
 	assert.Equal(t, "running", vm1.Status)
 	assert.Equal(t, instanceType, vm1.InstanceType)
-	assert.Greater(t, vm1.VCPU, 0)
+	assert.Positive(t, vm1.VCPU)
 	assert.Greater(t, vm1.MemoryGB, 0.0)
 	assert.Equal(t, launchTime.Unix(), vm1.LaunchTime)
 
@@ -2528,7 +2528,7 @@ func TestHandleEC2CreateInternetGateway_SuccessPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, output.InternetGateway)
 	assert.NotEmpty(t, *output.InternetGateway.InternetGatewayId)
-	assert.True(t, len(*output.InternetGateway.InternetGatewayId) > 4)
+	assert.Greater(t, len(*output.InternetGateway.InternetGatewayId), 4)
 }
 
 func TestHandleEC2CreateSubnet_SuccessPath(t *testing.T) {
@@ -2744,7 +2744,7 @@ func TestHandleEC2DescribeInstanceTypes_NoFilter(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &output)
 	require.NoError(t, err)
 	assert.NotNil(t, output.InstanceTypes)
-	assert.Greater(t, len(output.InstanceTypes), 0)
+	assert.NotEmpty(t, output.InstanceTypes)
 }
 
 // --- handleEC2StartStoppedInstance: instance type not available ---

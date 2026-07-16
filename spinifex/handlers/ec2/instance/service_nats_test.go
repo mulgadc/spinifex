@@ -358,7 +358,7 @@ func TestNATSInstanceService_RunInstances_QueueGroup(t *testing.T) {
 	t.Logf("Worker 1 handled: %d requests", worker1Count)
 	t.Logf("Worker 2 handled: %d requests", worker2Count)
 
-	assert.Greater(t, worker1Count, 0, "Worker 1 should handle some requests")
-	assert.Greater(t, worker2Count, 0, "Worker 2 should handle some requests")
+	assert.Positive(t, worker1Count, "Worker 1 should handle some requests")
+	assert.Positive(t, worker2Count, "Worker 2 should handle some requests")
 	assert.Equal(t, requestCount, worker1Count+worker2Count, "All requests should be handled")
 }

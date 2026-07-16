@@ -167,6 +167,6 @@ func TestEnsureNodeInstanceProfile_BadARN(t *testing.T) {
 
 func TestRoleNameFromARN(t *testing.T) {
 	assert.Equal(t, "eks-quickstart-node-role", roleNameFromARN(testNodeRoleARN))
-	assert.Equal(t, "", roleNameFromARN("arn:aws:iam::000000000001:user/bob"))
-	assert.Equal(t, "", roleNameFromARN(""))
+	assert.Empty(t, roleNameFromARN("arn:aws:iam::000000000001:user/bob"))
+	assert.Empty(t, roleNameFromARN(""))
 }

@@ -36,11 +36,11 @@ func TestBuildHeartbeat(t *testing.T) {
 	assert.Equal(t, []string{"daemon", "nats", "viperblock"}, h.Services)
 	assert.Equal(t, 0, h.VMCount)
 	assert.Equal(t, 0, h.AllocatedVCPU)
-	assert.Greater(t, h.AvailableVCPU, 0)
+	assert.Positive(t, h.AvailableVCPU)
 	assert.Greater(t, h.AvailableMem, 0.0)
 	assert.Equal(t, rm.reservedVCPU, h.ReservedVCPU, "ReservedVCPU must be populated from ResourceManager")
 	assert.InDelta(t, rm.reservedMem, h.ReservedMem, 0.001, "ReservedMem must be populated from ResourceManager")
-	assert.Greater(t, h.ReservedVCPU, 0, "default reserve is non-zero")
+	assert.Positive(t, h.ReservedVCPU, "default reserve is non-zero")
 	assert.Greater(t, h.ReservedMem, 0.0, "default reserve is non-zero")
 }
 

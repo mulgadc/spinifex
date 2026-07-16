@@ -3,7 +3,6 @@ package gateway_ecr
 import (
 	"context"
 
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -242,7 +241,7 @@ func TestStoreManifest_ImmutableTag(t *testing.T) {
 	// Re-pushing the tag onto a different digest is rejected.
 	_, err = reg.StoreManifest(context.Background(), testAccount, repo, "v1", mediaTypeDockerManifest, manB)
 	var mErr *ManifestStoreError
-	require.True(t, errors.As(err, &mErr))
+	require.ErrorAs(t, err, &mErr)
 	assert.Equal(t, "TAG_IMMUTABLE", mErr.Code)
 	assert.Equal(t, http.StatusConflict, mErr.Status)
 
@@ -263,6 +262,6 @@ func TestStoreManifest_BadDigestReference(t *testing.T) {
 
 	_, err := reg.StoreManifest(context.Background(), testAccount, repo, digestOf([]byte("wrong")), mediaTypeDockerManifest, manifest)
 	var mErr *ManifestStoreError
-	require.True(t, errors.As(err, &mErr))
+	require.ErrorAs(t, err, &mErr)
 	assert.Equal(t, "DIGEST_INVALID", mErr.Code)
 }

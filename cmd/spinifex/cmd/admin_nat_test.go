@@ -138,8 +138,8 @@ func TestIsNonBridgeableUplink(t *testing.T) {
 
 func TestBridgeModeFor(t *testing.T) {
 	assert.Equal(t, "nat", bridgeModeFor("nat"))
-	assert.Equal(t, "", bridgeModeFor("pool"))
-	assert.Equal(t, "", bridgeModeFor(""))
+	assert.Empty(t, bridgeModeFor("pool"))
+	assert.Empty(t, bridgeModeFor(""))
 }
 
 func TestSpinifexTomlTemplate_NATModeWithPublicPool(t *testing.T) {

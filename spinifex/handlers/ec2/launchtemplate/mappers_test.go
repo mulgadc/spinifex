@@ -250,7 +250,7 @@ func TestMergeResponseData_PresenceReplace(t *testing.T) {
 	assert.Equal(t, "t3.large", aws.StringValue(got.InstanceType), "non-nil override replaces")
 	assert.Equal(t, "key-new", aws.StringValue(got.KeyName))
 	require.NotNil(t, got.SecurityGroupIds, "explicit empty slice is non-nil")
-	assert.Len(t, got.SecurityGroupIds, 0, "explicit empty slice clears base")
+	assert.Empty(t, got.SecurityGroupIds, "explicit empty slice clears base")
 }
 
 func TestMergeRunInstancesInput_Precedence(t *testing.T) {

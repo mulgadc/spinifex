@@ -53,7 +53,7 @@ func TestEIGWRecordTagsMirror(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.EgressOnlyInternetGateways, 1)
 	assert.Equal(t, "yes", eigwTagVal(out.EgressOnlyInternetGateways[0].Tags, "keep"))
-	assert.Equal(t, "", eigwTagVal(out.EgressOnlyInternetGateways[0].Tags, "drop"))
+	assert.Empty(t, eigwTagVal(out.EgressOnlyInternetGateways[0].Tags, "drop"))
 }
 
 func TestEIGWRecordTagsMirror_UnownedNoError(t *testing.T) {

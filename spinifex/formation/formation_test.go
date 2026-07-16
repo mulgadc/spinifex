@@ -71,7 +71,7 @@ func TestGenerateJoinToken(t *testing.T) {
 	token1, err := GenerateJoinToken()
 	require.NoError(t, err)
 
-	assert.True(t, len(token1) > len("spx_join_"))
+	assert.Greater(t, len(token1), len("spx_join_"))
 	assert.Equal(t, "spx_join_", token1[:9])
 	assert.Len(t, token1[9:], 16)
 

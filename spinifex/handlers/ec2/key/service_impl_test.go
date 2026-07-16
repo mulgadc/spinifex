@@ -646,7 +646,7 @@ func TestFormatFingerprint_MD5(t *testing.T) {
 	result := formatFingerprint(hash, "MD5")
 	assert.Equal(t, "aabbccddeeff00112233445566778899", result)
 	// Should be lowercase hex, no colons
-	assert.False(t, strings.Contains(result, ":"))
+	assert.NotContains(t, result, ":")
 	assert.Equal(t, strings.ToLower(result), result)
 }
 
@@ -660,7 +660,7 @@ func TestFormatFingerprint_SHA256(t *testing.T) {
 
 func TestFormatFingerprint_EmptyHash(t *testing.T) {
 	result := formatFingerprint([]byte{}, "MD5")
-	assert.Equal(t, "", result)
+	assert.Empty(t, result)
 
 	result = formatFingerprint([]byte{}, "SHA256")
 	assert.Equal(t, "SHA256:", result)

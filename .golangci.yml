@@ -46,6 +46,7 @@ linters:
     - recvcheck # checks for receiver type consistency (pointer vs value)
     - sloglint # enforces consistent log/slog usage (key-value pairs, no globals)
     - staticcheck # extensive static analysis checks
+    - testifylint # checks common testify mistakes (assert.Len over assert.Equal on len, etc.)
     - tparallel # detects inappropriate usage of t.Parallel()
     - unconvert # removes unnecessary type conversions
     - usestdlibvars # detects hardcoded values that should use stdlib constants
@@ -123,6 +124,12 @@ linters:
     reassign:
       patterns:
         - ".*"
+
+    testifylint:
+      disable:
+        - encoded-compare # misidentifies non-JSON strings when identifiers contain "JSON"
+        - float-compare # false positives
+        - require-error # assert-on-error is deliberate where a test continues to collect further failures
 
   exclusions:
     presets:

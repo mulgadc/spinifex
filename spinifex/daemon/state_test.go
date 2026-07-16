@@ -742,7 +742,7 @@ func TestRestoreInstances_RunningResetsLaunchTime(t *testing.T) {
 	// LaunchTime should be reset to approximately now, not the stale 30min-ago time
 	assert.True(t, instance.Instance.LaunchTime.After(before) || instance.Instance.LaunchTime.Equal(before),
 		"LaunchTime should be reset to now, got %v (stale was %v)", *instance.Instance.LaunchTime, staleTime)
-	assert.True(t, time.Since(*instance.Instance.LaunchTime) < vm.PendingWatchdogTimeout,
+	assert.Less(t, time.Since(*instance.Instance.LaunchTime), vm.PendingWatchdogTimeout,
 		"LaunchTime should be within watchdog timeout window")
 }
 

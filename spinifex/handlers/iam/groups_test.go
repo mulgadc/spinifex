@@ -37,7 +37,7 @@ func TestCreateGroup(t *testing.T) {
 	assert.Equal(t, "developers", *out.Group.GroupName)
 	assert.Equal(t, "/eng/", *out.Group.Path)
 	assert.Equal(t, "arn:aws:iam::"+testAccountID+":group/eng/developers", *out.Group.Arn)
-	require.True(t, len(*out.Group.GroupId) > 4)
+	require.Greater(t, len(*out.Group.GroupId), 4)
 	assert.Equal(t, "AGPA", (*out.Group.GroupId)[:4])
 }
 
@@ -124,7 +124,7 @@ func TestGetGroup_UsersNeverNil(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, out.Users, "GetGroupOutput.Users must be an empty slice, never nil")
-	assert.Len(t, out.Users, 0)
+	assert.Empty(t, out.Users)
 }
 
 func TestListGroups(t *testing.T) {
@@ -151,7 +151,7 @@ func TestListGroups_Empty(t *testing.T) {
 
 	out, err := svc.ListGroups(testAccountID, &iam.ListGroupsInput{})
 	require.NoError(t, err)
-	assert.Len(t, out.Groups, 0)
+	assert.Empty(t, out.Groups)
 }
 
 func TestListGroups_PathPrefix(t *testing.T) {
@@ -351,7 +351,7 @@ func TestRemoveUserFromGroup(t *testing.T) {
 		UserName: aws.String("dave"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.Groups, 0)
+	assert.Empty(t, out.Groups)
 }
 
 func TestRemoveUserFromGroup_NotMember(t *testing.T) {
@@ -406,7 +406,7 @@ func TestRemoveUserFromGroup_DanglingPointer(t *testing.T) {
 		UserName: aws.String("frank"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.Groups, 0)
+	assert.Empty(t, out.Groups)
 }
 
 func TestListGroupsForUser(t *testing.T) {
@@ -442,7 +442,7 @@ func TestListGroupsForUser_Empty(t *testing.T) {
 		UserName: aws.String("loner"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.Groups, 0)
+	assert.Empty(t, out.Groups)
 }
 
 func TestListGroupsForUser_UserNotFound(t *testing.T) {
@@ -592,7 +592,7 @@ func TestDetachGroupPolicy(t *testing.T) {
 		GroupName: aws.String("detach-group"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.AttachedPolicies, 0)
+	assert.Empty(t, out.AttachedPolicies)
 }
 
 func TestDetachGroupPolicy_NotAttached(t *testing.T) {
@@ -628,7 +628,7 @@ func TestListAttachedGroupPolicies_Empty(t *testing.T) {
 		GroupName: aws.String("empty-attach"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.AttachedPolicies, 0)
+	assert.Empty(t, out.AttachedPolicies)
 }
 
 func TestListAttachedGroupPolicies_GroupNotFound(t *testing.T) {
@@ -807,7 +807,7 @@ func TestListGroupPolicies_Empty(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotNil(t, out.PolicyNames)
-	assert.Len(t, out.PolicyNames, 0)
+	assert.Empty(t, out.PolicyNames)
 	assert.False(t, *out.IsTruncated)
 }
 
@@ -849,7 +849,7 @@ func TestDeleteGroupPolicy(t *testing.T) {
 		GroupName: aws.String("del-inline-group"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, list.PolicyNames, 0)
+	assert.Empty(t, list.PolicyNames)
 }
 
 func TestDeleteGroupPolicy_DoubleDelete(t *testing.T) {

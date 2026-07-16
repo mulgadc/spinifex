@@ -27,7 +27,7 @@ func TestECSActionFromTarget(t *testing.T) {
 	assert.Equal(t, "RunTask",
 		ecsActionFromTarget("AmazonEC2ContainerServiceV20141113.RunTask"))
 	assert.Equal(t, "CreateCluster", ecsActionFromTarget("CreateCluster"))
-	assert.Equal(t, "", ecsActionFromTarget(""))
+	assert.Empty(t, ecsActionFromTarget(""))
 }
 
 // The Actions map is the v1 API contract (ecs-v1.md §1): every action across the

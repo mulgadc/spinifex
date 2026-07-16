@@ -1465,12 +1465,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// Parse multi-node predastore configuration (legacy flag-based approach for single-node)
 	var predastoreNodeID int
 	if predastoreNodesStr != "" {
-		// V1 provisions the northstar bucket/auth only into the single-node
-		// predastore.toml. The multi-node template does not yet carry them, so
-		// skip northstar.toml here rather than write creds predastore can't honor.
-		northstarCreds = admin.NorthstarCredentials{}
-		northstarConfigPath = ""
-
 		ips := strings.Split(predastoreNodesStr, ",")
 		if len(ips) < 2 {
 			fmt.Fprintf(os.Stderr, "❌ Error: --predastore-nodes requires at least 2 IPs, got %d\n", len(ips))

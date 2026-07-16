@@ -150,20 +150,20 @@ func nodeNames(cluster *config.ClusterConfig) []string {
 // Loopback is skipped: a dev/misconfig node with no reachable IP yields an empty
 // list, letting the caller fall back to the upstream pool DNS.
 func ResolverNameserverIPs(cluster *config.ClusterConfig) []string {
-	seeds := buildNameserverSeeds(cluster)
-	ips := make([]string, 0, len(seeds))
-	for _, s := range seeds {
-		if s.IP != "" && s.IP != "127.0.0.1" {
-			ips = append(ips, s.IP)
+	names := configuredNorthstarNodeNames(cluster)
+	ips := make([]string, 0, len(names))
+	for _, name := range names {
+		ip := nameserverIP(cluster.Nodes[name])
+		if ip != "" && ip != "127.0.0.1" {
+			ips = append(ips, ip)
 		}
 	}
 	return ips
 }
 
-// buildNameserverSeeds derives one nameserver (nsN → node IP) per cluster node
-// that runs northstar, ordered deterministically. Falls back to the local node
-// when no node advertises a northstar config (single-node / dev).
-func buildNameserverSeeds(cluster *config.ClusterConfig) []nsconfig.NameserverSeed {
+// configuredNorthstarNodeNames returns the deterministically ordered nodes that
+// explicitly advertise a northstar configuration.
+func configuredNorthstarNodeNames(cluster *config.ClusterConfig) []string {
 	var names []string
 	for name, node := range cluster.Nodes {
 		if node.Northstar.ConfigPath != "" {
@@ -171,6 +171,14 @@ func buildNameserverSeeds(cluster *config.ClusterConfig) []nsconfig.NameserverSe
 		}
 	}
 	sort.Strings(names)
+	return names
+}
+
+// buildNameserverSeeds derives one nameserver (nsN → node IP) per cluster node
+// that runs northstar, ordered deterministically. Falls back to the local node
+// when no node advertises a northstar config (single-node / dev).
+func buildNameserverSeeds(cluster *config.ClusterConfig) []nsconfig.NameserverSeed {
+	names := configuredNorthstarNodeNames(cluster)
 	if len(names) == 0 {
 		names = []string{cluster.Node}
 	}

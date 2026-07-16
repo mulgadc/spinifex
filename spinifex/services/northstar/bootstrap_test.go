@@ -67,9 +67,22 @@ func TestResolverNameserverIPs(t *testing.T) {
 	}
 	assert.Equal(t, []string{"192.168.1.31", "192.168.1.32"}, ResolverNameserverIPs(multi))
 
-	// Loopback-only (single-node dev fallback) yields an empty list so the caller
-	// falls back to the upstream pool DNS.
-	dev := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{"node1": {Host: "0.0.0.0"}}}
+	// Resolver discovery must not reuse the bootstrap fallback: a reachable node
+	// without northstar configured is not a valid DNS backend.
+	disabled := &config.ClusterConfig{
+		Node: "node1",
+		Nodes: map[string]config.Config{
+			"node1": {AdvertiseIP: "192.168.1.31"},
+			"node2": {AdvertiseIP: "192.168.1.32"},
+		},
+	}
+	assert.Empty(t, ResolverNameserverIPs(disabled))
+
+	// Loopback-only nodes are also excluded so the caller falls back to the
+	// upstream pool DNS.
+	dev := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{
+		"node1": {Host: "0.0.0.0", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
+	}}
 	assert.Empty(t, ResolverNameserverIPs(dev))
 }
 

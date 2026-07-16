@@ -18,6 +18,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
 	github.com/klauspost/cpuid/v2 v2.4.0
+	github.com/miekg/dns v1.1.72
 	github.com/mulgadc/northstar v1.12.1-0.20260716014846-f85933fe2910
 	github.com/mulgadc/predastore v1.12.1
 	github.com/mulgadc/viperblock v1.12.1
@@ -145,7 +146,6 @@ require (
 	github.com/mattn/go-runewidth v0.0.21 // indirect
 	github.com/mdlayher/packet v1.1.2 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
-	github.com/miekg/dns v1.1.72 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/highwayhash v1.0.4 // indirect
 	github.com/moby/locker v1.0.1 // indirect

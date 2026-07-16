@@ -11,7 +11,7 @@ SUITE_TAG   ?= $(notdir $(patsubst %/...,%,$(firstword $(PKG))))
 # named suite into BIN_DIR/<suite>.test so CI can ship binaries (not source +
 # go toolchain) to the remote VM.
 BIN_DIR      ?= $(CURDIR)/_bin
-SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink
+SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode
 
 .PHONY: e2e e2e-cert e2e-lb e2e-eks e2e-ecs e2e-single e2e-iam e2e-ecr e2e-bedrock e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-gpu e2e-natuplink e2e-all clean e2e-build
 

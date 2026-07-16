@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -112,18 +111,7 @@ func pingConverged(tgt harness.SSHTarget, dst string, timeout time.Duration) (st
 func sshCapture(tgt harness.SSHTarget, cmd string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	args := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=5",
-		"-o", "BatchMode=yes",
-		"-p", strconv.Itoa(tgt.Port),
-		"-i", tgt.KeyPath,
-		tgt.User + "@" + tgt.Host,
-		cmd,
-	}
-	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	out, err := harness.RunGuestSSH(ctx, tgt, cmd)
 	return string(out), err
 }
 

@@ -23,6 +23,44 @@ var nodeServiceUnits = []string{
 	"spinifex-nats.service",
 }
 
+// NodeUnitState returns systemd's current state for unit on node.
+func NodeUnitState(node Node, unit string) (string, error) {
+	ssh := NewPeerSSH()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := ssh.Run(ctx, node.Addr, "systemctl is-active -- "+shellQuote(unit))
+	return strings.TrimSpace(string(out)), err
+}
+
+// AssertUnitActive fails the test unless unit is active on node.
+func AssertUnitActive(t *testing.T, node Node, unit string) {
+	t.Helper()
+	state, err := NodeUnitState(node, unit)
+	if err != nil {
+		t.Fatalf("unit %s on %s: %v", unit, node.Name, err)
+	}
+	if state != "active" {
+		t.Fatalf("unit %s on %s: state %q, want active", unit, node.Name, state)
+	}
+}
+
+// PeerFileContents reads a root-owned file from node over peer SSH.
+func PeerFileContents(t *testing.T, node Node, path string) []byte {
+	t.Helper()
+	ssh := NewPeerSSH()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := ssh.Run(ctx, node.Addr, "sudo cat -- "+shellQuote(path))
+	if err != nil {
+		t.Fatalf("read %s on %s: %v", path, node.Name, err)
+	}
+	return out
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
 // StopNode simulates a hard node outage by stopping the spinifex service units
 // directly (not spinifex.target), so guests keep running (daemon
 // KillMode=process) and the target's drain ExecStop never fires. Non-fatal:

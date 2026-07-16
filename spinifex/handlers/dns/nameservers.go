@@ -11,16 +11,19 @@ import (
 )
 
 // NameserverSeeds derives one nameserver (nsN → node IP) per cluster node that
-// runs northstar, ordered deterministically so every node computes the same set.
-// Falls back to the local node when no node advertises a northstar config
-// (single-node / dev).
+// runs northstar and is reachable by its peers, ordered deterministically so
+// every node computes the same set. Falls back to the local node when none
+// qualifies (single-node / dev).
 //
 // Both zone creators build from this: the northstar bootstrap seed and the
 // writer's on-demand materialisation. Both are create-if-absent and neither
 // overwrites, so they must agree — a set derived independently would be baked
 // into the zone permanently by whichever creator ran first.
 func NameserverSeeds(cluster *config.ClusterConfig) []nsconfig.NameserverSeed {
-	names := configuredNorthstarNodeNames(cluster)
+	names := usableNorthstarNodeNames(cluster)
+	// A zone needs an SOA and at least one NS whatever the topology, so unlike the
+	// resolver list this falls back to the local node. On single-node dev that node
+	// is loopback, which is correct there: it is the zone's only reader.
 	if len(names) == 0 {
 		names = []string{cluster.Node}
 	}
@@ -39,21 +42,36 @@ func NameserverSeeds(cluster *config.ClusterConfig) []nsconfig.NameserverSeed {
 // in the same deterministic order as the seeded nameservers. vpcd's per-tap DNS
 // shim uses these as forward targets (northstar's :5300 listener), so internal
 // names resolve authoritatively and external names via upstream forwarders.
-// Loopback is skipped: a dev/misconfig node with no reachable IP yields an empty
-// list, letting the caller fall back to the upstream pool DNS.
 //
-// Unlike NameserverSeeds this has no local-node fallback: a node that does not
-// run northstar is not a valid DNS backend, however reachable it is.
+// Unlike NameserverSeeds this has no local-node fallback: an empty list is the
+// meaningful signal that the cluster has no usable DNS backend, and the caller
+// falls back to the upstream pool DNS rather than advertising northstar.
 func ResolverNameserverIPs(cluster *config.ClusterConfig) []string {
-	names := configuredNorthstarNodeNames(cluster)
+	names := usableNorthstarNodeNames(cluster)
 	ips := make([]string, 0, len(names))
 	for _, name := range names {
-		ip := nameserverIP(cluster.Nodes[name])
-		if ip != "" && ip != "127.0.0.1" {
-			ips = append(ips, ip)
-		}
+		ips = append(ips, nameserverIP(cluster.Nodes[name]))
 	}
 	return ips
+}
+
+// usableNorthstarNodeNames returns the deterministically ordered nodes that run
+// northstar and can be reached by their peers.
+//
+// Loopback is excluded: a node that could not detect a WAN IP advertises
+// 127.0.0.1, which means "this node" to whoever reads it. Published as zone glue
+// it would send every peer's resolver to its own loopback, so such a node must
+// drop out of the seed set and the resolver list together.
+func usableNorthstarNodeNames(cluster *config.ClusterConfig) []string {
+	names := configuredNorthstarNodeNames(cluster)
+	usable := make([]string, 0, len(names))
+	for _, name := range names {
+		if isLoopbackAddr(nameserverIP(cluster.Nodes[name])) {
+			continue
+		}
+		usable = append(usable, name)
+	}
+	return usable
 }
 
 // configuredNorthstarNodeNames returns the deterministically ordered nodes that
@@ -84,4 +102,11 @@ func nameserverIP(node config.Config) string {
 		ip = "127.0.0.1"
 	}
 	return ip
+}
+
+// isLoopbackAddr reports whether an address is a loopback literal. Hostnames are
+// not resolved, so they count as usable.
+func isLoopbackAddr(addr string) bool {
+	ip := net.ParseIP(addr)
+	return ip != nil && ip.IsLoopback()
 }

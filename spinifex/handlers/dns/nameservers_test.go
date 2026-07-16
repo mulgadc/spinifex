@@ -61,6 +61,47 @@ func TestNameserverSeedsIdenticalFromEveryNode(t *testing.T) {
 	}
 }
 
+// A node whose WAN detection failed advertises loopback. It must drop out of the
+// cluster-wide zone, not publish nsN A 127.0.0.1 glue that every peer would
+// follow to its own loopback, and the surviving nodes must still seed a zone.
+func TestNameserverSeedsExcludeLoopbackNodes(t *testing.T) {
+	nodes := map[string]config.Config{
+		"node1": {AdvertiseIP: "10.0.0.1", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
+		"node2": {AdvertiseIP: "127.0.0.1", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
+		"node3": {AdvertiseIP: "10.0.0.3", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
+		"node4": {AdvertiseIP: "::1", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
+	}
+	seeds := NameserverSeeds(&config.ClusterConfig{Node: "node1", Nodes: nodes})
+	require.Len(t, seeds, 2)
+	assert.Equal(t, "ns1", seeds[0].Host)
+	assert.Equal(t, "10.0.0.1", seeds[0].IP)
+	assert.Equal(t, "ns2", seeds[1].Host)
+	assert.Equal(t, "10.0.0.3", seeds[1].IP)
+
+	// Excluding a node must not fork the seed set: the loopback node derives the
+	// same records as its peers, including from its own point of view.
+	assert.Equal(t, seeds, NameserverSeeds(&config.ClusterConfig{Node: "node2", Nodes: nodes}))
+
+	assert.Equal(t, []string{"10.0.0.1", "10.0.0.3"},
+		ResolverNameserverIPs(&config.ClusterConfig{Node: "node1", Nodes: nodes}))
+}
+
+// The case the local-node fallback exists for: on single-node dev the only node
+// is loopback, so the filter empties the set. Without the fallback the zone would
+// be created with no SOA, no NS and no glue — and never overwritten.
+func TestNameserverSeedsSingleNodeLoopbackFallback(t *testing.T) {
+	dev := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{
+		"node1": {Host: "0.0.0.0", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
+	}}
+	seeds := NameserverSeeds(dev)
+	require.Len(t, seeds, 1)
+	assert.Equal(t, "ns1", seeds[0].Host)
+	assert.Equal(t, "127.0.0.1", seeds[0].IP)
+
+	// The zone is seeded, but no guest is pointed at that loopback.
+	assert.Empty(t, ResolverNameserverIPs(dev))
+}
+
 func TestResolverNameserverIPs(t *testing.T) {
 	// Multi-node: WAN IPs of the northstar nodes, ordered, non-northstar excluded.
 	multi := &config.ClusterConfig{

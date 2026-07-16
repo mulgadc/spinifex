@@ -1777,6 +1777,10 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 	portStr := strconv.Itoa(port)
 
+	// The keys are cluster-wide and generated above the dispatch; the config path
+	// is node-local, so it is derived here from this node's own config dirs.
+	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
+
 	// Generate multi-node predastore config
 	var predastoreNodeID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
@@ -1826,6 +1830,13 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		OperatorEmail: email,
 
 		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
 
 		// Multi-endpoint OVN NB/SB list across the RAFT quorum; the init node's
 		// own address leads, the rest provide failover.
@@ -2229,13 +2240,15 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 
 	portStr := strconv.Itoa(port)
 
+	northstarCreds, northstarConfigPath := northstarFromFormation(creds, dirs)
+
 	// Generate multi-node predastore config
 	var predastoreNodeID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 
 	if hasPredastoreConfig {
 		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP, compactionInterval,
-			admin.NorthstarCredentials{})
+			northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -2284,6 +2297,13 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		OperatorEmail: email,
 
 		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
 
 		// Multi-endpoint OVN NB/SB list across the RAFT quorum so the client
 		// fails over instead of pinning to a single init node.
@@ -2595,6 +2615,28 @@ func createConfigSubdirs(configDir string) (configDirs, error) {
 	return dirs, nil
 }
 
+// northstarFromFormation derives a joining node's northstar credentials and
+// node-local config path from the cluster-wide pair distributed at formation.
+//
+// The keys cross the wire because a node's predastore only honours the keys in
+// its own config, so every node must present the same pair to read the
+// distributed zone bucket. The bucket name and config path are node-local
+// constants, so they are derived here rather than carried.
+//
+// A leader that predates credential distribution sends no keys. That yields a
+// zero pair and an empty path, so the node renders no northstar config at all
+// rather than a resolver holding a key its own predastore would reject.
+func northstarFromFormation(creds *formation.SharedCredentials, dirs configDirs) (admin.NorthstarCredentials, string) {
+	if creds.NorthstarAccessKey == "" {
+		return admin.NorthstarCredentials{}, ""
+	}
+	return admin.NorthstarCredentials{
+		AccessKey: creds.NorthstarAccessKey,
+		SecretKey: creds.NorthstarSecretKey,
+		Bucket:    admin.NorthstarBucketName,
+	}, filepath.Join(dirs.Northstar, "northstar.toml")
+}
+
 // generateAndWriteConfigs renders the standard config files (spinifex.toml,
 // awsgw.toml, nats.conf, and optionally predastore.toml) from templates.
 func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings admin.ConfigSettings, skipPredastore bool) error {
@@ -2604,7 +2646,9 @@ func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings 
 		{Name: filepath.Join(dirs.NATS, "nats.conf"), Path: filepath.Join(dirs.NATS, "nats.conf"), Template: natsConfTemplate},
 	}
 	// northstar.toml is only rendered when scoped DNS credentials were
-	// provisioned (single-node init); cluster-wide distribution is future work.
+	// provisioned. A cluster formed by a leader that predates their distribution
+	// leaves the keys empty, yielding no northstar config rather than a partial
+	// one pointing at a bucket the local predastore does not serve.
 	if settings.NorthstarAccessKey != "" {
 		configs = append(configs, admin.ConfigFile{
 			Name: filepath.Join(dirs.Northstar, "northstar.toml"), Path: filepath.Join(dirs.Northstar, "northstar.toml"), Template: northstarTomlTemplate,

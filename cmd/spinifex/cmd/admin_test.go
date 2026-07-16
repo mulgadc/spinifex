@@ -771,6 +771,89 @@ func TestPredastoreMultinodeTemplate_NorthstarOmittedWithoutCredentials(t *testi
 	assert.Len(t, cfg.Auth, 1, "only the system key should be rendered")
 }
 
+// A joiner must provision its predastore with the leader's pair verbatim, since
+// each node's predastore only honours the keys in its own config. Per-node
+// generation would have node A's predastore reject node B's resolver.
+func TestNorthstarFromFormation_UsesDistributedPair(t *testing.T) {
+	dirs := configDirs{Northstar: "/etc/spinifex/northstar"}
+	creds := &formation.SharedCredentials{NorthstarAccessKey: "NSAK", NorthstarSecretKey: "NSSK"}
+
+	got, path := northstarFromFormation(creds, dirs)
+
+	assert.Equal(t, "NSAK", got.AccessKey)
+	assert.Equal(t, "NSSK", got.SecretKey)
+	assert.Equal(t, admin.NorthstarBucketName, got.Bucket, "bucket is a constant, derived node-side")
+	assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", path)
+}
+
+// A leader predating credential distribution sends no keys. The joiner must
+// then render no northstar config at all: a config path without honoured keys
+// would advertise 169.254.169.253 to guests while the resolver serves nothing.
+func TestNorthstarFromFormation_LegacyLeaderYieldsNoConfig(t *testing.T) {
+	got, path := northstarFromFormation(&formation.SharedCredentials{}, configDirs{Northstar: "/etc/spinifex/northstar"})
+
+	assert.Equal(t, admin.NorthstarCredentials{}, got)
+	assert.Empty(t, path, "config path without credentials advertises a resolver that cannot read its zones")
+}
+
+// multinodeNorthstarSettings mirrors what both formation paths hand
+// generateAndWriteConfigs once the distributed pair is wired through.
+func multinodeNorthstarSettings(configPath string) admin.ConfigSettings {
+	s := northstarSettings()
+	s.Node = "node1"
+	s.Az = "ap-southeast-2a"
+	s.Port = "4432"
+	s.AccountID = "123456789012"
+	s.OVNNBAddr = "tcp:127.0.0.1:6641"
+	s.OVNSBAddr = "tcp:127.0.0.1:6642"
+	s.NorthstarConfigPath = configPath
+	return s
+}
+
+// The multi-node formation paths must produce both halves of a working
+// resolver: the northstar.toml the service reads, and the spinifex.toml stanza
+// that makes configuredNorthstarNodeNames count this node. Rendering was
+// previously reachable only from the single-node path.
+func TestGenerateAndWriteConfigs_MultinodeRendersNorthstar(t *testing.T) {
+	dirs, err := createConfigSubdirs(t.TempDir())
+	require.NoError(t, err)
+	nsPath := filepath.Join(dirs.Northstar, "northstar.toml")
+	spinifexTomlPath := filepath.Join(t.TempDir(), "spinifex.toml")
+
+	require.NoError(t, generateAndWriteConfigs(dirs, spinifexTomlPath, multinodeNorthstarSettings(nsPath), true))
+
+	nsContent, err := os.ReadFile(nsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(nsContent), `access_key = "AKIANORTHSTAR"`)
+
+	// config_path is the sole predicate for "this node runs northstar", so its
+	// presence is what puts the node in the nameserver set and the resolver list.
+	cfg, err := config.LoadConfig(spinifexTomlPath)
+	require.NoError(t, err)
+	assert.Equal(t, nsPath, cfg.Nodes["node1"].Northstar.ConfigPath)
+}
+
+// The inverse: no credentials must yield neither file nor stanza. A stanza
+// without a rendered northstar.toml would point guests at a resolver that never
+// starts.
+func TestGenerateAndWriteConfigs_NoNorthstarWithoutCredentials(t *testing.T) {
+	dirs, err := createConfigSubdirs(t.TempDir())
+	require.NoError(t, err)
+	spinifexTomlPath := filepath.Join(t.TempDir(), "spinifex.toml")
+
+	settings := multinodeNorthstarSettings("")
+	settings.NorthstarAccessKey = ""
+	settings.NorthstarSecretKey = ""
+	require.NoError(t, generateAndWriteConfigs(dirs, spinifexTomlPath, settings, true))
+
+	_, err = os.Stat(filepath.Join(dirs.Northstar, "northstar.toml"))
+	assert.True(t, os.IsNotExist(err), "northstar.toml rendered without credentials")
+
+	cfg, err := config.LoadConfig(spinifexTomlPath)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Nodes["node1"].Northstar.ConfigPath)
+}
+
 // Unset knob must leave production config byte-identical: no [compaction] block
 // and the original trailing bytes unchanged (single-node has no trailing
 // newline, multinode keeps one).

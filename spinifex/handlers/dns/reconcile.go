@@ -2,6 +2,7 @@ package dns
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -134,7 +135,7 @@ func (r *Reconciler) computeBatch() ([]Change, error) {
 	if ok {
 		existing[r.baseDomain] = recs
 	}
-	return computeConverge(ds.Changes, existing, r.prunable(ds.Prunable)), nil
+	return computeConverge(ds.Changes, existing, r.prunable(ds.Prunable))
 }
 
 // prunable returns the predicate deciding whether a (zone, label) record may be
@@ -184,13 +185,17 @@ func (r *Reconciler) readZone(zone string) ([]zoneRecord, bool, error) {
 // computeConverge returns the change batch that makes each zone's existing
 // records match `desired`: every desired change (all UPSERTs) passes through,
 // and each prunable existing RRset absent from the desired set is DELETEd.
-func computeConverge(desired []Change, existing map[string][]zoneRecord, prunable func(zone, label string) bool) []Change {
+func computeConverge(desired []Change, existing map[string][]zoneRecord, prunable func(zone, label string) bool) ([]Change, error) {
 	out := make([]Change, 0, len(desired))
 	out = append(out, desired...)
 
 	want := map[string]bool{}
 	for _, c := range desired {
-		want[rrKey(c.Zone, relativeLabel(c.Name, c.Zone), recordType(c.Type))] = true
+		rtype, err := recordType(c.Type)
+		if err != nil {
+			return nil, fmt.Errorf("validate desired record %s: %w", c.Name, err)
+		}
+		want[rrKey(c.Zone, relativeLabel(c.Name, c.Zone), rtype)] = true
 	}
 
 	for zone, recs := range existing {
@@ -210,7 +215,7 @@ func computeConverge(desired []Change, existing map[string][]zoneRecord, prunabl
 			})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // rrKey identifies an RRset by zone, relative label, and record type.

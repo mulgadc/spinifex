@@ -72,6 +72,9 @@ func (w *Writer) ApplyBatch(batch *ChangeBatch) (*ChangeResult, error) {
 	byZone := map[string][]Change{}
 	order := []string{}
 	for _, c := range batch.Changes {
+		if _, err := recordType(c.Type); err != nil {
+			return nil, fmt.Errorf("validate change for %s: %w", c.Name, err)
+		}
 		if _, seen := byZone[c.Zone]; !seen {
 			order = append(order, c.Zone)
 		}
@@ -131,7 +134,10 @@ func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
 	changed := false
 	for _, c := range changes {
 		label := relativeLabel(c.Name, zone)
-		rtype := recordType(c.Type)
+		rtype, err := recordType(c.Type)
+		if err != nil {
+			return false, err
+		}
 		ttl := c.TTL
 		if ttl == 0 {
 			ttl = w.ttl
@@ -170,16 +176,17 @@ func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
 	return true, nil
 }
 
-// recordType maps a textual record type to its DNS numeric type. V1 handles A;
-// unknown types default to A.
-func recordType(t string) uint16 {
-	switch strings.ToUpper(t) {
+// recordType maps a supported textual record type to its DNS numeric type.
+func recordType(t string) (uint16, error) {
+	switch strings.ToUpper(strings.TrimSpace(t)) {
+	case "A":
+		return nsconfig.TypeA, nil
 	case "NS":
-		return nsconfig.TypeNS
+		return nsconfig.TypeNS, nil
 	case "TXT":
-		return nsconfig.TypeTXT
+		return nsconfig.TypeTXT, nil
 	default:
-		return nsconfig.TypeA
+		return 0, fmt.Errorf("unsupported DNS record type %q", t)
 	}
 }
 

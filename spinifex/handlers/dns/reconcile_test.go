@@ -42,7 +42,8 @@ func TestComputeConvergeUpsertsPassThroughAndPruneStale(t *testing.T) {
 		{label: "", rtype: nsconfig.TypeNS, value: "ns1.spx3.net."},
 	}}
 
-	batch := computeConverge(desired, existing, prunableFor(PruneScope{ELB: true, EKS: true}))
+	batch, err := computeConverge(desired, existing, prunableFor(PruneScope{ELB: true, EKS: true}))
+	require.NoError(t, err)
 
 	// All three desired upserts pass through unchanged.
 	assert.Equal(t, desired, batch[:3])
@@ -69,7 +70,8 @@ func TestComputeConvergeSuppressesPruneWhenClassNotEnumerated(t *testing.T) {
 		existingA("prod.ap-southeast-2.eks.", "2.2.2.2"),
 	}}
 
-	batch := computeConverge(desired, existing, prunableFor(PruneScope{ELB: true, EKS: false}))
+	batch, err := computeConverge(desired, existing, prunableFor(PruneScope{ELB: true, EKS: false}))
+	require.NoError(t, err)
 	deletes := deletesOf(batch)
 
 	require.Len(t, deletes, 1, "ELB is authoritative so its stale record prunes")
@@ -86,8 +88,23 @@ func TestComputeConvergeNoPruneWhenNoAuthority(t *testing.T) {
 		existingA("app-a.ap-southeast-2.elb.", "1.1.1.1"),
 		existingA("prod.ap-southeast-2.eks.", "2.2.2.2"),
 	}}
-	batch := computeConverge(nil, existing, prunableFor(PruneScope{}))
+	batch, err := computeConverge(nil, existing, prunableFor(PruneScope{}))
+	require.NoError(t, err)
 	assert.Empty(t, deletesOf(batch), "no authority means no deletions")
+}
+
+func TestComputeConvergeRejectsUnsupportedRecordType(t *testing.T) {
+	desired := []Change{{
+		Action: ActionUpsert,
+		Zone:   testBase,
+		Name:   "host.spx3.net",
+		Type:   "AAAA",
+		Value:  "2001:db8::1",
+	}}
+
+	_, err := computeConverge(desired, nil, prunableFor(PruneScope{}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported DNS record type")
 }
 
 func TestReconcilerDisabledIsNoop(t *testing.T) {

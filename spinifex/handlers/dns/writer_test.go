@@ -193,6 +193,55 @@ func TestWriterDeleteMissingZoneNoop(t *testing.T) {
 	assert.False(t, ok, "no zone materialised for a delete-only batch")
 }
 
+func TestRecordType(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want uint16
+	}{
+		{name: "A", in: "A", want: nsconfig.TypeA},
+		{name: "lowercase A", in: "a", want: nsconfig.TypeA},
+		{name: "NS", in: "NS", want: nsconfig.TypeNS},
+		{name: "TXT", in: "TXT", want: nsconfig.TypeTXT},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := recordType(tt.in)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestWriterRejectsUnsupportedRecordType(t *testing.T) {
+	tests := []struct {
+		name  string
+		rtype string
+	}{
+		{name: "empty", rtype: ""},
+		{name: "AAAA", rtype: "AAAA"},
+		{name: "misspelled", rtype: "AA"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, objects := newTestWriter(t)
+			before := objects["spx3.net.toml"]
+			change := Change{
+				Action: ActionUpsert,
+				Zone:   "spx3.net",
+				Name:   "host.spx3.net",
+				Type:   tt.rtype,
+				Value:  "2001:db8::1",
+			}
+
+			_, err := w.ApplyBatch(&ChangeBatch{Changes: []Change{change}})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unsupported DNS record type")
+			assert.Equal(t, before, objects["spx3.net.toml"], "invalid input must not mutate the zone")
+		})
+	}
+}
+
 func TestWriterQuotaDisabledAllowsGrowth(t *testing.T) {
 	w, objects := newTestWriterWithQuota(t, false, 1)
 

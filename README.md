@@ -75,7 +75,7 @@ Spinifex is a minimal VM orchestration layer built on top of QEMU, exposing APIs
 ## Architecture at a Glance
 
 <p align="center">
-  <img src=".github/assets/architecture.svg" alt="Spinifex message-driven architecture — AWS Gateway, NATS bus, service daemons" width="900">
+  <img src=".github/assets/architecture.svg" alt="Spinifex message-driven architecture: standard AWS clients call the AWS Gateway over HTTPS with SigV4, which publishes to a NATS bus answered by stateless ec2/ebs/s3/vpc/iam daemons over local backends." width="900">
 </p>
 
 Every AWS API call is authenticated at the gateway, published to a NATS subject, and answered by whichever daemon claims it. Daemons are stateless — scale horizontally by starting more. No etcd, no Kubernetes, no external control plane. Deep dive: **[`docs/DESIGN.md`](docs/DESIGN.md)**.

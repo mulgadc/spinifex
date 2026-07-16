@@ -1382,6 +1382,29 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 	spxRoot = filepath.Clean(spxRoot)
 
+	// Generate dedicated, bucket-scoped credentials for the northstar DNS
+	// service. Rendered into predastore.toml ([[auth]]) and northstar.toml so
+	// the resolver reads zone files read-only from its own S3 bucket.
+	//
+	// Generated above the multi-node dispatch because the pair is cluster-wide:
+	// a node's predastore only honours the keys rendered into its own config, so
+	// every node must present this same pair to read the distributed zone bucket.
+	northstarAccessKey, err := admin.GenerateAWSAccessKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar access key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarSecretKey, err := admin.GenerateAWSSecretKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar secret key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarCreds := admin.NorthstarCredentials{
+		AccessKey: northstarAccessKey,
+		SecretKey: northstarSecretKey,
+		Bucket:    admin.NorthstarBucketName,
+	}
+
 	// Determine if this is a multi-node formation. Operator intent comes from
 	// --nodes, not from whether --bind was left at the 0.0.0.0 default.
 	isMultiNode := nodes >= 2
@@ -1418,7 +1441,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey,
 			masterKey, viperblockKey, natsToken, clusterName,
 			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email,
-			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig)
+			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig, northstarCreds)
 		return
 	}
 
@@ -1435,19 +1458,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 	portStr := strconv.Itoa(port)
 
-	// Generate dedicated, bucket-scoped credentials for the northstar DNS
-	// service. Rendered into predastore.toml ([[auth]]) and northstar.toml so
-	// the resolver reads zone files read-only from its own S3 bucket.
-	northstarAccessKey, err := admin.GenerateAWSAccessKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating northstar access key: %v\n", err)
-		os.Exit(1)
-	}
-	northstarSecretKey, err := admin.GenerateAWSSecretKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating northstar secret key: %v\n", err)
-		os.Exit(1)
-	}
+	// The keys are cluster-wide and generated above the dispatch; the config path
+	// is node-local, so it is derived here from this node's own config dirs.
 	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
 
 	// Parse multi-node predastore configuration (legacy flag-based approach for single-node)
@@ -1456,8 +1468,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		// V1 provisions the northstar bucket/auth only into the single-node
 		// predastore.toml. The multi-node template does not yet carry them, so
 		// skip northstar.toml here rather than write creds predastore can't honor.
-		northstarAccessKey = ""
-		northstarSecretKey = ""
+		northstarCreds = admin.NorthstarCredentials{}
 		northstarConfigPath = ""
 
 		ips := strings.Split(predastoreNodesStr, ",")
@@ -1486,12 +1497,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		}
 
 		// Generate multi-node predastore.toml
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval,
-			admin.NorthstarCredentials{
-				AccessKey: northstarAccessKey,
-				SecretKey: northstarSecretKey,
-				Bucket:    admin.NorthstarBucketName,
-			})
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval, northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1557,9 +1563,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 		EncryptionKeyFile: viperblockKeyPath,
 
-		NorthstarAccessKey:      northstarAccessKey,
-		NorthstarSecretKey:      northstarSecretKey,
-		NorthstarBucket:         admin.NorthstarBucketName,
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
 		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
 		NorthstarInternalDomain: admin.NorthstarInternalDomain,
 		NorthstarConfigPath:     northstarConfigPath,
@@ -1634,10 +1640,15 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 // runAdminInitMultiNode handles the multi-node formation path for admin init.
 // It starts a formation server, registers this node, waits for all nodes to join,
 // then generates configs with complete cluster topology.
+//
+// The northstar credentials are generated by the caller and provision this
+// node's predastore with the zone bucket. The same pair is distributed to
+// joiners, since each node's predastore only honours the keys in its own config.
 func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey string,
 	masterKey, viperblockKey []byte, natsToken, clusterName,
 	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email string,
-	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig) {
+	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig,
+	northstarCreds admin.NorthstarCredentials) {
 	formationTimeout, err := time.ParseDuration(formationTimeoutStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Error: Invalid --formation-timeout: %v\n", err)
@@ -1764,8 +1775,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	var predastoreNodeID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval,
-			admin.NorthstarCredentials{})
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval, northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)

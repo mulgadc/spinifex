@@ -130,9 +130,12 @@ type K3sServerInput struct {
 	// EndpointIP is the NLB front-end IP added to the apiserver cert SANs for TLS.
 	// Empty for an internal endpoint with no front-end IP.
 	EndpointIP string `json:"endpointIp,omitempty"`
-	// EndpointDNS is the AWS-shaped apiserver DNS name ({cluster}.{region}.eks.
-	// {baseDomain}) added to the cert SANs so kubectl/SDK clients validate TLS when
-	// connecting via the published DNS endpoint. Empty when northstar is unconfigured.
+	// EndpointDNS is the AWS-shaped apiserver DNS name
+	// ({cluster}.{accountID}.{region}.eks.{baseDomain}) added to the cert SANs so
+	// kubectl/SDK clients validate TLS when connecting via the published DNS
+	// endpoint. The account label keeps cluster names, which are unique only within
+	// an account, from colliding in the shared zone. Empty when northstar is
+	// unconfigured.
 	EndpointDNS string `json:"endpointDns,omitempty"`
 	// PrivateEndpointIP is the customer-VPC (Set A) private-endpoint IP added to the
 	// apiserver cert SANs so in-VPC clients validate TLS via https://<ip>:443.

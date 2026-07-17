@@ -679,6 +679,12 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// Import is an interactive command whose output is a progress bar, so the
+	// volume's routine mount chatter is noise here: a fresh import has no prior
+	// state, making the "no state found" / 404 lines expected rather than
+	// notable. Scoping the logger to this VB (New copies it onto the backend
+	// too) keeps it off the process-wide default. Errors still surface, both
+	// through this logger and as the returned error the caller prints.
 	vbConfig := viperblock.VB{
 		VolumeName: volumeId,
 		VolumeSize: utils.SafeInt64ToUint64(imageStat.Size()),
@@ -691,6 +697,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		VolumeConfig:      manifest,
 		MasterKey:         mkey,
 		EncryptionEnabled: mkey != nil,
+		Logger:            slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 
 	// Bake the deployment CA into the image trust store so a stock cloud image

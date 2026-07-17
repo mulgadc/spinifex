@@ -52,7 +52,12 @@ func seedEncryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, vol
 		BlockSize:         4096,
 		EncryptionEnabled: true,
 		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{VolumeID: volumeID, SizeGiB: 10, State: "available"},
+			VolumeMetadata: viperblock.VolumeMetadata{
+				VolumeID: volumeID,
+				TenantID: testVolAccountID,
+				SizeGiB:  10,
+				State:    "available",
+			},
 		},
 	}
 	data, err := json.Marshal(state)

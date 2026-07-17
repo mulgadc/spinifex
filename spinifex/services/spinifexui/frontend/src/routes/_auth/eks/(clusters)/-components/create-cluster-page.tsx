@@ -9,6 +9,7 @@ import { BackLink } from "@/components/back-link"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
+import { SystemImageRequired } from "@/components/system-image-required"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -35,7 +36,6 @@ import {
 } from "@/types/eks"
 
 import { CreateClusterRoleDialog } from "./create-cluster-role-dialog"
-import { EksSystemImageRequired } from "./eks-system-image-required"
 
 function vpcLabel(vpc: Vpc): string {
   const name = getNameTag(vpc.Tags)
@@ -156,9 +156,12 @@ export function CreateClusterPage() {
       <>
         <BackLink to="/eks/list-clusters">Clusters</BackLink>
         <PageHeading subtitle="EKS" title="Create Cluster" />
-        <EksSystemImageRequired
+        <SystemImageRequired
+          description="EKS clusters boot a Spinifex-managed node image (K3s) that is not shipped with the platform. Import it before creating a cluster."
+          importCommand="spx admin images import --name spinifex-eks-node"
           isRechecking={isRechecking}
           onRecheck={handleRecheck}
+          title="EKS system image not found"
         />
       </>
     )

@@ -6,8 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,9 +59,12 @@ func baselineLaunch(t *testing.T, fix *Fixture, amiID, instType, keyName, subnet
 	}
 	require.NotEmpty(t, id, "RunInstances never succeeded")
 	t.Cleanup(func() {
-		_, _ = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
+		if _, err := fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
 			InstanceIds: []*string{aws.String(id)},
-		})
+		}); err != nil {
+			t.Errorf("terminate instance %s: %v", id, err)
+			return
+		}
 		harness.WaitForInstanceState(t, fix.AWS, id, "terminated")
 	})
 	harness.WaitForInstanceState(t, fix.AWS, id, "running")
@@ -88,18 +89,9 @@ func instancePrivateIP(t *testing.T, fix *Fixture, id string) string {
 func sshCapture(pem, user, host string, port int, cmd string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	args := []string{
-		"-i", pem,
-		"-p", strconv.Itoa(port),
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ConnectTimeout=5",
-		"-o", "BatchMode=yes",
-		"-o", "LogLevel=ERROR",
-		fmt.Sprintf("%s@%s", user, host),
-		cmd,
-	}
-	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	out, err := harness.RunGuestSSH(ctx, harness.SSHTarget{
+		User: user, Host: host, Port: port, KeyPath: pem,
+	}, cmd)
 	return string(out), err
 }
 

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 )
 
 func TestPreflightOVN_AllPass(t *testing.T) {
@@ -473,5 +476,23 @@ func TestEnsureExternalCIDRReady_PropagatesError(t *testing.T) {
 	err := ensureExternalCIDRReady(context.Background(), "direct", "br-wan")
 	if err == nil {
 		t.Fatal("expected error when resolveExternalCIDR fails")
+	}
+}
+
+func TestResolverDNSServer(t *testing.T) {
+	// With northstar configured, guests get the link-local VPC DNS address
+	// served by the per-tap shim; the nameservers are its forward targets.
+	cfg := &Config{
+		ResolverNameservers: []string{"192.168.1.31", "192.168.1.32"},
+		ExternalPools:       []external.ExternalPoolConfig{{DNSServers: []string{"8.8.8.8"}}},
+	}
+	if got := resolverDNSServer(cfg); got != handlers_imds.VPCDNSServerIP {
+		t.Errorf("resolverDNSServer = %q, want %q", got, handlers_imds.VPCDNSServerIP)
+	}
+
+	// Without resolvers, fall back to the upstream pool DNS.
+	cfg = &Config{ExternalPools: []external.ExternalPoolConfig{{DNSServers: []string{"8.8.8.8", "1.1.1.1"}}}}
+	if got := resolverDNSServer(cfg); got != "{8.8.8.8, 1.1.1.1}" {
+		t.Errorf("resolverDNSServer fallback = %q, want pool DNS", got)
 	}
 }

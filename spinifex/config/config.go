@@ -102,6 +102,7 @@ type Config struct {
 	Viperblock ViperblockConfig `json:"Viperblock" mapstructure:"viperblock"`
 	AWSGW      AWSGWConfig      `json:"AWSGW" mapstructure:"awsgw"`
 	VPCD       VPCDConfig       `json:"VPCD" mapstructure:"vpcd"`
+	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -131,6 +132,17 @@ type VPCDConfig struct {
 	OVNSBAddr         string `json:"OVNSBAddr" mapstructure:"ovn_sb_addr"`                // OVN Southbound DB address; comma-separated list for a RAFT cluster (e.g., "tcp:127.0.0.1:6642" or "tcp:ip1:6642,tcp:ip2:6642,tcp:ip3:6642")
 	ExternalInterface string `json:"ExternalInterface" mapstructure:"external_interface"` // WAN NIC name (e.g., "eth1", "enp0s3") — the physical NIC on the WAN bridge
 	BridgeMode        string `json:"BridgeMode" mapstructure:"bridge_mode"`               // "direct" or "veth" (auto-detected if empty)
+}
+
+// NorthstarConfig holds the per-node northstar DNS service configuration.
+type NorthstarConfig struct {
+	// ConfigPath is the path to northstar.toml written by `spx admin init`.
+	ConfigPath string `json:"ConfigPath" mapstructure:"config_path"`
+	// DefaultDomain and InternalDomain mirror the northstar zone domains as
+	// non-secret values so producers (daemon, vpcd) can resolve DNS names
+	// without reading the credential-bearing northstar.toml.
+	DefaultDomain  string `json:"DefaultDomain" mapstructure:"default_domain"`
+	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
 }
 
 // ParseEndpoints splits a comma-separated OVSDB endpoint list (NB/SB RAFT

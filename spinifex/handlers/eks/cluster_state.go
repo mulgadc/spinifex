@@ -45,6 +45,10 @@ type ClusterMeta struct {
 	// EndpointIP is the NLB front-end IP (external-pool for public, VPC IP for private).
 	// The apiserver serving cert SANs this IP for TLS verification.
 	EndpointIP string `json:"endpointIp,omitempty"`
+	// EndpointDNSName is the account-qualified apiserver DNS name
+	// ({cluster}.{accountID}.{region}.eks.{baseDomain}) registered with northstar → EndpointIP.
+	// It is published as Endpoint and SANed on the apiserver cert. Empty otherwise.
+	EndpointDNSName string `json:"endpointDnsName,omitempty"`
 	// PrivateEndpointIP is the customer-VPC (Set A) IP of the ENI threaded onto the
 	// cluster NLB's LB VM when EndpointPrivateAccess is on. In-VPC workers + kubectl
 	// reach the control plane here on :443 (no public hairpin / NAT GW). SANed on

@@ -96,6 +96,10 @@ func TestSameSGComms(t *testing.T) {
 	runSameSGComms(t, requireSingleNodeFixture(t))
 }
 
+func TestGuestDNSResolution(t *testing.T) {
+	runGuestDNSResolution(t, requireSingleNodeFixture(t))
+}
+
 func TestInstanceLaunch(t *testing.T) {
 	runInstanceLaunch(t, requireSingleNodeFixture(t))
 }

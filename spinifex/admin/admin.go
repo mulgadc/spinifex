@@ -33,6 +33,12 @@ type RemoteNode struct {
 	Region   string
 	AZ       string
 	Services []string
+
+	// NorthstarConfigPath marks the peer as running northstar. Its emptiness is
+	// the only thing read from a peer's stanza — no code opens a peer's path —
+	// and it must be rendered for every northstar peer so each node derives the
+	// same nameserver set for the base zone seed.
+	NorthstarConfigPath string
 }
 
 type ConfigSettings struct {
@@ -108,6 +114,20 @@ type ConfigSettings struct {
 	// Empty means no key was provisioned and volumes are written cleartext
 	// (legacy mode); the template omits the field entirely in that case.
 	EncryptionKeyFile string
+
+	// Northstar (DNS) settings. The northstar service reads zones from a
+	// dedicated, read-only S3 bucket using bucket-scoped credentials rendered
+	// into predastore.toml ([[auth]]) and northstar.toml ([s3]).
+	NorthstarAccessKey      string
+	NorthstarSecretKey      string
+	NorthstarBucket         string // S3 bucket holding zone files (default "northstar")
+	NorthstarDefaultDomain  string // authoritative base domain (default "spx3.net")
+	NorthstarInternalDomain string // AWS-parity private zone (default "compute.internal")
+	NorthstarConfigPath     string // path to northstar.toml, rendered into spinifex.toml
+
+	// PoolDNSServers are the host-detected upstream DNS servers northstar forwards
+	// recursive queries to, rendered into northstar.toml's [recursion] nameservers.
+	PoolDNSServers []string
 }
 
 // PoolData is one [[network.external_pools]] block rendered into spinifex.toml.
@@ -356,6 +376,8 @@ func SetServiceOwnership() {
 		"/var/lib/spinifex/nats":       "spinifex-nats",
 		"/etc/spinifex/predastore":     "spinifex-storage",
 		"/var/lib/spinifex/predastore": "spinifex-storage",
+		"/etc/spinifex/northstar":      "spinifex-northstar",
+		"/var/lib/spinifex/northstar":  "spinifex-northstar",
 		"/etc/spinifex/viperblock":     "spinifex-viperblock",
 		"/var/lib/spinifex/spinifex":   "spinifex-daemon",
 		"/var/lib/spinifex/viperblock": "spinifex-viperblock",
@@ -485,6 +507,30 @@ func GenerateAWSSecretKey() (string, error) {
 		return "", fmt.Errorf("crypto/rand failure: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(bytes), nil
+}
+
+// Northstar DNS defaults baked into config files at init time.
+const (
+	// NorthstarBucketName is the S3 bucket holding DNS zone files.
+	NorthstarBucketName = "northstar"
+	// NorthstarDefaultDomain is the authoritative base domain for internal names.
+	NorthstarDefaultDomain = "spx3.net"
+	// NorthstarInternalDomain is the AWS-parity private zone for ip-<addr> names.
+	NorthstarInternalDomain = "compute.internal"
+)
+
+// NorthstarCredentials is the bucket-scoped credential pair the northstar DNS
+// service reads zone files with, together with the bucket that scopes it.
+//
+// Every node in a cluster must be provisioned with the same pair: the zone
+// bucket is distributed, and each node's predastore only honours the keys
+// rendered into its own config, so a per-node pair would have node A's
+// predastore reject node B's resolver. A zero value provisions no northstar
+// credentials at all, which renders a config without any northstar stanza.
+type NorthstarCredentials struct {
+	AccessKey string
+	SecretKey string
+	Bucket    string
 }
 
 // SystemAccountID returns the system/root account ID (000000000000).
@@ -842,7 +888,12 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 // GenerateMultiNodePredastoreConfig produces a complete predastore.toml for a
 // multi-node Predastore cluster. Each node gets its own DB entry (port 6660)
 // and shard entry (port 9991) on a distinct IP. Node ID 1 is the bootstrap leader.
-func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string, compactionIntervalSeconds int) (string, error) {
+//
+// A populated northstar credential provisions the zone bucket, grants the
+// system key write access to it, and adds the read-only entry the resolver
+// authenticates with. A zero value omits all three, yielding a config no
+// northstar service can use.
+func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string, compactionIntervalSeconds int, northstar NorthstarCredentials) (string, error) {
 	if len(nodes) < 2 {
 		return "", fmt.Errorf("multi-node predastore requires at least 2 nodes, got %d", len(nodes))
 	}
@@ -856,7 +907,17 @@ func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNod
 		ConfigDir                 string
 		BindIP                    string
 		CompactionIntervalSeconds int
-	}{nodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionIntervalSeconds}
+		NorthstarAccessKey        string
+		NorthstarSecretKey        string
+		NorthstarBucket           string
+	}{
+		Nodes: nodes, AccessKey: accessKey, SecretKey: secretKey, Region: region,
+		NatsToken: natsToken, ConfigDir: configDir, BindIP: bindIP,
+		CompactionIntervalSeconds: compactionIntervalSeconds,
+		NorthstarAccessKey:        northstar.AccessKey,
+		NorthstarSecretKey:        northstar.SecretKey,
+		NorthstarBucket:           northstar.Bucket,
+	}
 
 	tmpl, err := template.New("predastore-multinode").Parse(templateStr)
 	if err != nil {

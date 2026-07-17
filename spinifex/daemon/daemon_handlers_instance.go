@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -379,6 +380,20 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 				// Populate PublicIpAddress from VM if stored
 				if instance.PublicIP != "" && instanceCopy.PublicIpAddress == nil {
 					instanceCopy.PublicIpAddress = aws.String(instance.PublicIP)
+				}
+
+				// Project the AWS-shaped DNS names from the current IPs, the same
+				// way PublicIpAddress/State are derived here. Mirrors the records
+				// the control-plane writer publishes to northstar.
+				publicDNS, privateDNS := handlers_dns.EC2DNSNames(
+					d.config.Region, d.dnsBaseDomain, d.dnsInternalDomain,
+					aws.StringValue(instanceCopy.PublicIpAddress), aws.StringValue(instanceCopy.PrivateIpAddress),
+				)
+				if publicDNS != "" {
+					instanceCopy.PublicDnsName = aws.String(publicDNS)
+				}
+				if privateDNS != "" {
+					instanceCopy.PrivateDnsName = aws.String(privateDNS)
 				}
 
 				// Map internal status to AWS state, projecting Spinifex-only states

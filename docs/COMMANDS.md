@@ -31,6 +31,9 @@ Service lifecycle commands for starting, stopping, and checking status of all Sp
 | `spx service vpcd start` | — | Loads cluster config → starts VPC daemon (subscribes to `vpc.*` NATS events, translates to OVN logical switches/ports/routers) |
 | `spx service vpcd stop` | — | Stops the vpcd service |
 | `spx service vpcd status` | — | Reports vpcd service status |
+| `spx service northstar start` | `--northstar-config` (overrides `nodes.<node>.northstar.config_path`) | Loads cluster config → reads `northstar.toml` → starts the northstar DNS server (authoritative for internal `*.spx3.net`, recursive via upstream forwarders), syncing zones from its S3 bucket. Guests resolve via `169.254.169.253`, served by vpcd's per-tap DNS shim which forwards to northstar |
+| `spx service northstar stop` | — | Stops the northstar service |
+| `spx service northstar status` | — | Reports northstar service status |
 | `spx service qmp-collector start` | — | Starts the guest-metrics collector (polls per-VM telemetry QMP sockets + tap counters, publishes CloudWatch-shaped series to NATS `metrics.ec2.*`) |
 | `spx service qmp-collector stop` | — | Stops the qmp-collector service |
 | `spx service qmp-collector status` | — | Reports qmp-collector service status |

@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/formation"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	toml "github.com/pelletier/go-toml/v2"
@@ -51,12 +53,35 @@ func TestBuildRemoteNodes_AdvertiseFallback(t *testing.T) {
 		"node2": {Name: "node2", BindIP: "10.0.0.2"}, // legacy joiner
 		"node3": {Name: "node3", BindIP: "10.0.0.3", AdvertiseIP: "203.0.113.3"},
 	}
-	got := buildRemoteNodes(nodes, "node3")
+	got := buildRemoteNodes(nodes, "node3", "")
 	if assert.Len(t, got, 2) {
 		assert.Equal(t, "node1", got[0].Name)
 		assert.Equal(t, "203.0.113.1", got[0].Host, "advertise wins when set")
 		assert.Equal(t, "node2", got[1].Name)
 		assert.Equal(t, "10.0.0.2", got[1].Host, "bind fallback when advertise empty")
+	}
+}
+
+// Every peer must carry the northstar stanza, since a node that describes only
+// its own northstar computes a single-entry seed set and pins the base zone's NS
+// records to whichever node won the create-if-absent race.
+func TestBuildRemoteNodes_NorthstarConfigPath(t *testing.T) {
+	nodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2"},
+	}
+
+	got := buildRemoteNodes(nodes, "node2", "/etc/spinifex/northstar/northstar.toml")
+	if assert.Len(t, got, 1) {
+		assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", got[0].NorthstarConfigPath)
+	}
+
+	// No distributed credentials means no node runs northstar. Publishing peers
+	// as resolvers anyway would point guests at 169.254.169.253 for a service
+	// that never starts.
+	got = buildRemoteNodes(nodes, "node2", "")
+	if assert.Len(t, got, 1) {
+		assert.Empty(t, got[0].NorthstarConfigPath)
 	}
 }
 
@@ -146,6 +171,44 @@ func TestSpinifexTomlTemplate_AdvertiseOmittedWhenEmpty(t *testing.T) {
 	assert.NotContains(t, string(data), "advertise =")
 }
 
+// The northstar stanza carries the non-secret domains so confined services
+// (vpcd) resolve DNS names without reading the 0600 northstar.toml.
+func TestSpinifexTomlTemplate_NorthstarDomains(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:                    "node1",
+		Az:                      "ap-southeast-2a",
+		Port:                    "4432",
+		Region:                  "ap-southeast-2",
+		BindIP:                  "10.11.12.1",
+		AccessKey:               "AKIATEST",
+		SecretKey:               "SECRET",
+		AccountID:               "123456789012",
+		NatsToken:               "token",
+		ConfigDir:               dir,
+		OVNNBAddr:               "tcp:127.0.0.1:6641",
+		OVNSBAddr:               "tcp:127.0.0.1:6642",
+		NorthstarConfigPath:     "/etc/spinifex/northstar/northstar.toml",
+		NorthstarDefaultDomain:  "spx3.net",
+		NorthstarInternalDomain: "compute.internal",
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `config_path = "/etc/spinifex/northstar/northstar.toml"`)
+	assert.Contains(t, content, `default_domain = "spx3.net"`)
+	assert.Contains(t, content, `internal_domain = "compute.internal"`)
+
+	// The stanza must round-trip into NorthstarConfig so the resolvers read it.
+	cfg, err := config.LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, "spx3.net", cfg.Nodes["node1"].Northstar.DefaultDomain)
+	assert.Equal(t, "compute.internal", cfg.Nodes["node1"].Northstar.InternalDomain)
+}
+
 // Legacy `wan_bridge` TOML key must fail-start vpcd with guidance, not silently
 // alias (per mulga-998 D3). Prevents the footgun where operators inherited the
 // old key pointing at 'br-ext' and got broken DHCP on veth-mode hosts.
@@ -210,7 +273,7 @@ func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
 		{ID: 3, Host: "10.0.0.3"},
 	}
 	content, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "0.0.0.0", 0,
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "0.0.0.0", 0, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	assert.Contains(t, content, `nats_url = "nats://localhost:4222"`)
@@ -218,7 +281,7 @@ func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
 
 	// Specific bind IP → stays as-is.
 	content2, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "10.11.12.1", 0,
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "10.11.12.1", 0, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	assert.Contains(t, content2, `nats_url = "nats://10.11.12.1:4222"`)
@@ -631,6 +694,297 @@ func predastoreMultinodeNodes() []admin.PredastoreNodeConfig {
 	}
 }
 
+// predastoreBucketAuth parses the buckets and auth entries a northstar-enabled
+// multi-node predastore must render.
+type predastoreBucketAuth struct {
+	Buckets []struct {
+		Name string `toml:"name"`
+		Type string `toml:"type"`
+	} `toml:"buckets"`
+	Auth []struct {
+		AccessKeyID     string `toml:"access_key_id"`
+		SecretAccessKey string `toml:"secret_access_key"`
+		Policy          []struct {
+			Bucket  string   `toml:"bucket"`
+			Actions []string `toml:"actions"`
+		} `toml:"policy"`
+	} `toml:"auth"`
+}
+
+// policyFor returns the actions the given key is granted on the given bucket,
+// and whether the key holds any policy for it at all.
+func (c predastoreBucketAuth) policyFor(accessKey, bucket string) ([]string, bool) {
+	for _, auth := range c.Auth {
+		if auth.AccessKeyID != accessKey {
+			continue
+		}
+		for _, p := range auth.Policy {
+			if p.Bucket == bucket {
+				return p.Actions, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func (c predastoreBucketAuth) hasBucket(name string) bool {
+	for _, b := range c.Buckets {
+		if b.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// Northstar on a multi-node cluster needs three things from predastore, all
+// gated on the same credential: the zone bucket, write access for the system
+// key (which is what BootstrapBaseZone seeds zones with), and the resolver's
+// own read-only key. The template rendered all three correctly, but the caller
+// never populated the credential, so multi-node clusters silently got none of
+// them.
+func TestPredastoreMultinodeTemplate_NorthstarProvisioned(t *testing.T) {
+	content, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0,
+		admin.NorthstarCredentials{AccessKey: "NSAK", SecretKey: "NSSK", Bucket: admin.NorthstarBucketName},
+	)
+	require.NoError(t, err)
+
+	var cfg predastoreBucketAuth
+	require.NoError(t, toml.Unmarshal([]byte(content), &cfg))
+
+	assert.True(t, cfg.hasBucket(admin.NorthstarBucketName), "northstar zone bucket not rendered")
+
+	// The zone bucket must be readable from every node's local predastore, so
+	// a resolver on any node can serve it.
+	for _, b := range cfg.Buckets {
+		if b.Name == admin.NorthstarBucketName {
+			assert.Equal(t, "distributed", b.Type)
+		}
+	}
+
+	// BootstrapBaseZone writes zone files with the system key, not the
+	// resolver's. Without this grant, seeding fails on every node.
+	systemActions, ok := cfg.policyFor("AK", admin.NorthstarBucketName)
+	require.True(t, ok, "system key has no policy for the northstar bucket")
+	assert.Contains(t, systemActions, "s3:GetObject", "bootstrap must check whether the zone already exists")
+	assert.Contains(t, systemActions, "s3:PutObject", "bootstrap must create a missing zone")
+
+	// The resolver's key stays read-only and scoped to the zone bucket alone.
+	nsActions, ok := cfg.policyFor("NSAK", admin.NorthstarBucketName)
+	require.True(t, ok, "northstar key has no policy for the northstar bucket")
+	assert.ElementsMatch(t, []string{"s3:ListBucket", "s3:GetObject"}, nsActions)
+	for _, auth := range cfg.Auth {
+		if auth.AccessKeyID == "NSAK" {
+			assert.Equal(t, "NSSK", auth.SecretAccessKey)
+		}
+	}
+
+	_, ok = cfg.policyFor("NSAK", "predastore")
+	assert.False(t, ok, "northstar key must not reach the predastore bucket")
+}
+
+// Without a credential the northstar stanzas must be omitted wholesale rather
+// than half-rendered: an empty-keyed [[auth]] entry would let anyone read the
+// zone bucket.
+func TestPredastoreMultinodeTemplate_NorthstarOmittedWithoutCredentials(t *testing.T) {
+	content, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0,
+		admin.NorthstarCredentials{},
+	)
+	require.NoError(t, err)
+
+	var cfg predastoreBucketAuth
+	require.NoError(t, toml.Unmarshal([]byte(content), &cfg))
+
+	assert.False(t, cfg.hasBucket(admin.NorthstarBucketName))
+	_, ok := cfg.policyFor("AK", admin.NorthstarBucketName)
+	assert.False(t, ok, "system key granted northstar access without a northstar credential")
+	assert.Len(t, cfg.Auth, 1, "only the system key should be rendered")
+}
+
+// A joiner must provision its predastore with the leader's pair verbatim, since
+// each node's predastore only honours the keys in its own config. Per-node
+// generation would have node A's predastore reject node B's resolver.
+func TestNorthstarFromFormation_UsesDistributedPair(t *testing.T) {
+	dirs := configDirs{Northstar: "/etc/spinifex/northstar"}
+	creds := &formation.SharedCredentials{NorthstarAccessKey: "NSAK", NorthstarSecretKey: "NSSK"}
+
+	got, path := northstarFromFormation(creds, dirs)
+
+	assert.Equal(t, "NSAK", got.AccessKey)
+	assert.Equal(t, "NSSK", got.SecretKey)
+	assert.Equal(t, admin.NorthstarBucketName, got.Bucket, "bucket is a constant, derived node-side")
+	assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", path)
+}
+
+// A leader predating credential distribution, or returning only half a pair,
+// must yield no Northstar config. Advertising a resolver without usable keys
+// would send guests to a service that cannot read its zones.
+func TestNorthstarFromFormation_IncompletePairYieldsNoConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		access string
+		secret string
+	}{
+		{name: "legacy leader"},
+		{name: "access key only", access: "NSAK"},
+		{name: "secret key only", secret: "NSSK"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, path := northstarFromFormation(&formation.SharedCredentials{
+				NorthstarAccessKey: tt.access,
+				NorthstarSecretKey: tt.secret,
+			}, configDirs{Northstar: "/etc/spinifex/northstar"})
+
+			assert.Equal(t, admin.NorthstarCredentials{}, got)
+			assert.Empty(t, path, "config path without credentials advertises a resolver that cannot read its zones")
+		})
+	}
+}
+
+// multinodeNorthstarSettings mirrors what both formation paths hand
+// generateAndWriteConfigs once the distributed pair is wired through.
+func multinodeNorthstarSettings(configPath string) admin.ConfigSettings {
+	s := northstarSettings()
+	s.Node = "node1"
+	s.Az = "ap-southeast-2a"
+	s.Port = "4432"
+	s.AccountID = "123456789012"
+	s.OVNNBAddr = "tcp:127.0.0.1:6641"
+	s.OVNSBAddr = "tcp:127.0.0.1:6642"
+	s.NorthstarConfigPath = configPath
+	return s
+}
+
+// The multi-node formation paths must produce both halves of a working
+// resolver: the northstar.toml the service reads, and the spinifex.toml stanza
+// that makes configuredNorthstarNodeNames count this node. Rendering was
+// previously reachable only from the single-node path.
+func TestGenerateAndWriteConfigs_MultinodeRendersNorthstar(t *testing.T) {
+	dirs, err := createConfigSubdirs(t.TempDir())
+	require.NoError(t, err)
+	nsPath := filepath.Join(dirs.Northstar, "northstar.toml")
+	spinifexTomlPath := filepath.Join(t.TempDir(), "spinifex.toml")
+
+	require.NoError(t, generateAndWriteConfigs(dirs, spinifexTomlPath, multinodeNorthstarSettings(nsPath), true))
+
+	nsContent, err := os.ReadFile(nsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(nsContent), `access_key = "AKIANORTHSTAR"`)
+
+	// config_path is the sole predicate for "this node runs northstar", so its
+	// presence is what puts the node in the nameserver set and the resolver list.
+	cfg, err := config.LoadConfig(spinifexTomlPath)
+	require.NoError(t, err)
+	assert.Equal(t, nsPath, cfg.Nodes["node1"].Northstar.ConfigPath)
+}
+
+// Incomplete credentials must yield neither file nor stanza. A stanza without
+// a usable northstar.toml would point guests at a resolver that never starts.
+func TestGenerateAndWriteConfigs_NoNorthstarWithoutCompleteCredentials(t *testing.T) {
+	tests := []struct {
+		name   string
+		access string
+		secret string
+	}{
+		{name: "no credentials"},
+		{name: "access key only", access: "AKIANORTHSTAR"},
+		{name: "secret key only", secret: "northstar-secret"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dirs, err := createConfigSubdirs(t.TempDir())
+			require.NoError(t, err)
+			spinifexTomlPath := filepath.Join(t.TempDir(), "spinifex.toml")
+
+			settings := multinodeNorthstarSettings(filepath.Join(dirs.Northstar, "northstar.toml"))
+			settings.NorthstarAccessKey = tt.access
+			settings.NorthstarSecretKey = tt.secret
+			require.NoError(t, generateAndWriteConfigs(dirs, spinifexTomlPath, settings, false))
+
+			_, err = os.Stat(filepath.Join(dirs.Northstar, "northstar.toml"))
+			assert.True(t, os.IsNotExist(err), "northstar.toml rendered without complete credentials")
+
+			cfg, err := config.LoadConfig(spinifexTomlPath)
+			require.NoError(t, err)
+			assert.Empty(t, cfg.Nodes["node1"].Northstar.ConfigPath)
+
+			predastoreContent, err := os.ReadFile(filepath.Join(dirs.Predastore, "predastore.toml"))
+			require.NoError(t, err)
+			var predastoreCfg predastoreBucketAuth
+			require.NoError(t, toml.Unmarshal(predastoreContent, &predastoreCfg))
+			assert.False(t, predastoreCfg.hasBucket(admin.NorthstarBucketName))
+			assert.Len(t, predastoreCfg.Auth, 1, "incomplete pair rendered a Northstar auth entry")
+		})
+	}
+}
+
+// renderClusterNode renders one node's spinifex.toml as its own formation path
+// would: its local northstar stanza plus a stanza for every peer.
+func renderClusterNode(t *testing.T, node string, allNodes map[string]formation.NodeInfo) *config.ClusterConfig {
+	t.Helper()
+	const nsPath = "/etc/spinifex/northstar/northstar.toml"
+
+	settings := multinodeNorthstarSettings(nsPath)
+	settings.Node = node
+	settings.BindIP = allNodes[node].BindIP
+	settings.AdvertiseIP = allNodes[node].AdvertiseIP
+	settings.RemoteNodes = buildRemoteNodes(allNodes, node, nsPath)
+
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	cfg, err := config.LoadConfig(path)
+	require.NoError(t, err)
+	return cfg
+}
+
+// Every node must derive the same nameserver set from its own rendered config.
+// EnsureBaseZone is create-if-absent and never overwrites, so if each node saw
+// only itself the zone's NS records would be pinned to whichever node won the
+// startup race — permanently, for the life of the zone object. Identical sets
+// make that race benign: whoever writes, writes the same bytes.
+func TestSpinifexTomlTemplate_PeerNorthstarSeedsAreUniform(t *testing.T) {
+	allNodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1", AdvertiseIP: "192.168.1.31"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2", AdvertiseIP: "192.168.1.32"},
+		"node3": {Name: "node3", BindIP: "10.0.0.3", AdvertiseIP: "192.168.1.33"},
+	}
+
+	wantIPs := []string{"192.168.1.31", "192.168.1.32", "192.168.1.33"}
+	wantHosts := []string{"ns1", "ns2", "ns3"}
+	for _, node := range []string{"node1", "node2", "node3"} {
+		cfg := renderClusterNode(t, node, allNodes)
+		seeds := handlers_dns.NameserverSeeds(cfg)
+		require.Len(t, seeds, 3)
+		for i, seed := range seeds {
+			assert.Equal(t, wantHosts[i], seed.Host)
+			assert.Equal(t, wantIPs[i], seed.IP)
+		}
+		assert.Equal(t, wantIPs, handlers_dns.ResolverNameserverIPs(cfg),
+			"%s derived a different nameserver set from its own config", node)
+	}
+}
+
+// A peer's stanza carries config_path alone: it is the only field ever read back
+// from a peer, and the domains would be fiction — the local node cannot know
+// what a peer configured.
+func TestSpinifexTomlTemplate_PeerNorthstarStanzaIsPathOnly(t *testing.T) {
+	allNodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1", AdvertiseIP: "192.168.1.31"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2", AdvertiseIP: "192.168.1.32"},
+	}
+
+	cfg := renderClusterNode(t, "node1", allNodes)
+	peer := cfg.Nodes["node2"].Northstar
+	assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", peer.ConfigPath)
+	assert.Empty(t, peer.DefaultDomain, "peer domains are unknowable from here")
+	assert.Empty(t, peer.InternalDomain)
+}
+
 // Unset knob must leave production config byte-identical: no [compaction] block
 // and the original trailing bytes unchanged (single-node has no trailing
 // newline, multinode keeps one).
@@ -644,7 +998,7 @@ func TestPredastoreTemplates_UnsetCompactionEmitsNoBlock(t *testing.T) {
 		"unset single-node tail changed: %q", single[len(single)-40:])
 
 	multi, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0,
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	assert.NotContains(t, multi, "[compaction]")
@@ -665,7 +1019,7 @@ func TestPredastoreTemplates_SetCompactionEmitsParseableBlock(t *testing.T) {
 	assert.Equal(t, interval, singleCfg.Compaction.IntervalSeconds)
 
 	multi, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", interval,
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", interval, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	var multiCfg compactionConfig

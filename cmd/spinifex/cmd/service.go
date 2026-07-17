@@ -8,11 +8,13 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/service"
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
+	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
@@ -793,20 +795,23 @@ var vpcdStartCmd = &cobra.Command{
 		defer initTelemetry("vpcd", false)()
 
 		svc, err := service.New("vpcd", &vpcd.Config{
-			NatsHost:          nodeConfig.NATS.Host,
-			NatsToken:         nodeConfig.NATS.ACL.Token,
-			NatsCACert:        nodeConfig.NATS.CACert,
-			OVNNBAddr:         nodeConfig.VPCD.OVNNBAddr,
-			OVNSBAddr:         nodeConfig.VPCD.OVNSBAddr,
-			BaseDir:           nodeConfig.BaseDir,
-			Debug:             false,
-			ExternalMode:      clusterConfig.Network.ExternalMode,
-			ExternalPools:     extPools,
-			Bootstrap:         bootstrap,
-			ExternalInterface: nodeConfig.VPCD.ExternalInterface,
-			BridgeMode:        nodeConfig.VPCD.BridgeMode,
-			AZ:                nodeConfig.AZ,
-			NATExemptCIDRs:    clusterConfig.Network.NATExemptCIDRs,
+			NatsHost:                nodeConfig.NATS.Host,
+			NatsToken:               nodeConfig.NATS.ACL.Token,
+			NatsCACert:              nodeConfig.NATS.CACert,
+			OVNNBAddr:               nodeConfig.VPCD.OVNNBAddr,
+			OVNSBAddr:               nodeConfig.VPCD.OVNSBAddr,
+			BaseDir:                 nodeConfig.BaseDir,
+			Debug:                   false,
+			ExternalMode:            clusterConfig.Network.ExternalMode,
+			ExternalPools:           extPools,
+			Bootstrap:               bootstrap,
+			ExternalInterface:       nodeConfig.VPCD.ExternalInterface,
+			BridgeMode:              nodeConfig.VPCD.BridgeMode,
+			AZ:                      nodeConfig.AZ,
+			NorthstarBaseDomain:     handlers_dns.ResolveBaseDomain(&nodeConfig),
+			NorthstarInternalDomain: handlers_dns.ResolveInternalDomain(&nodeConfig),
+			ResolverNameservers:     handlers_dns.ResolverNameserverIPs(clusterConfig),
+			NATExemptCIDRs:          clusterConfig.Network.NATExemptCIDRs,
 		})
 		if err != nil {
 			fmt.Println("Error starting vpcd service:", err)
@@ -846,6 +851,154 @@ var vpcdStatusCmd = &cobra.Command{
 	Short: "Get status of the vpcd service",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("vpcd service status: ...")
+	},
+}
+
+var northstarCmd = &cobra.Command{
+	Use:   "northstar",
+	Short: "Manage the northstar (DNS) service",
+}
+
+// northstarStartOptions contains the command inputs that select Northstar configuration.
+type northstarStartOptions struct {
+	configFile      string
+	configOverride  string
+	baseDirOverride string
+}
+
+// northstarStarter is the service operation required by Northstar activation.
+type northstarStarter interface {
+	Start() (int, error)
+}
+
+// northstarStartDependencies isolates startup side effects for behavioral tests.
+type northstarStartDependencies struct {
+	loadConfig        func(string) (*config.ClusterConfig, error)
+	bootstrapBaseZone func(string, *config.ClusterConfig) error
+	newService        func(*northstar.Config) (northstarStarter, error)
+}
+
+var northstarStartCmd = &cobra.Command{
+	Use:           "start",
+	Short:         "Start the northstar service",
+	SilenceErrors: true,
+	SilenceUsage:  true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println("Starting northstar service...")
+		return runNorthstarStart(northstarStartOptions{
+			configFile:      viper.GetString("config"),
+			configOverride:  viper.GetString("northstar-config"),
+			baseDirOverride: viper.GetString("base-dir"),
+		}, northstarStartDependencies{
+			loadConfig:        loadRequiredClusterConfig,
+			bootstrapBaseZone: northstar.BootstrapBaseZone,
+			newService: func(cfg *northstar.Config) (northstarStarter, error) {
+				return service.New("northstar", cfg)
+			},
+		})
+	},
+}
+
+// loadRequiredClusterConfig loads the service's explicit cluster configuration.
+func loadRequiredClusterConfig(path string) (*config.ClusterConfig, error) {
+	if path == "" {
+		return nil, fmt.Errorf("config file is not set")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("stat cluster config %s: %w", path, err)
+	}
+	clusterConfig, err := config.LoadConfig(path)
+	if err != nil {
+		return nil, fmt.Errorf("load cluster config %s: %w", path, err)
+	}
+	return clusterConfig, nil
+}
+
+// runNorthstarStart starts configured Northstar nodes and cleanly skips nodes where it is optional.
+func runNorthstarStart(options northstarStartOptions, deps northstarStartDependencies) error {
+	clusterConfig, err := deps.loadConfig(options.configFile)
+	if err != nil {
+		return err
+	}
+
+	nodeConfig, ok := clusterConfig.Nodes[clusterConfig.Node]
+	if !ok {
+		return fmt.Errorf("node %q not found in cluster config", clusterConfig.Node)
+	}
+
+	configPath := resolveNorthstarConfigPath(nodeConfig.Northstar.ConfigPath, options.configOverride)
+	if options.configOverride != "" {
+		fmt.Println("Overwriting northstar config path to:", options.configOverride)
+	}
+	if configPath == "" {
+		// An absent path disables this optional service and must not trigger systemd restarts.
+		slog.Info("northstar is not configured on this node; skipping service start")
+		return nil
+	}
+
+	baseDir := nodeConfig.BaseDir
+	if options.baseDirOverride != "" {
+		baseDir = options.baseDirOverride
+	}
+
+	// Seed the default_domain base zone before the read-only daemon starts.
+	// The S3 polling path remains the backstop when this best-effort seed fails.
+	if err := deps.bootstrapBaseZone(configPath, clusterConfig); err != nil {
+		slog.Warn("northstar base zone bootstrap failed (continuing)", "error", err)
+	}
+
+	svc, err := deps.newService(&northstar.Config{
+		ConfigPath: configPath,
+		BasePath:   baseDir,
+		NodeID:     nodeConfig.Predastore.NodeID,
+		NatsHost:   nodeConfig.NATS.Host,
+		NatsToken:  nodeConfig.NATS.ACL.Token,
+		NatsCACert: nodeConfig.NATS.CACert,
+	})
+	if err != nil {
+		return fmt.Errorf("create northstar service: %w", err)
+	}
+
+	if _, err := svc.Start(); err != nil {
+		return fmt.Errorf("start northstar service: %w", err)
+	}
+	fmt.Println("northstar service started")
+	return nil
+}
+
+// resolveNorthstarConfigPath applies the explicit override before the node config.
+func resolveNorthstarConfigPath(nodePath, override string) string {
+	if override != "" {
+		return override
+	}
+	return nodePath
+}
+
+var northstarStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the northstar service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Stopping northstar service...")
+
+		svc, err := service.New("northstar", &northstar.Config{})
+		if err != nil {
+			fmt.Println("Error stopping northstar service:", err)
+			return
+		}
+
+		if err = svc.Stop(); err != nil {
+			fmt.Println("Error stopping northstar service:", err)
+			os.Exit(1)
+		}
+		fmt.Println("northstar service stopped")
+	},
+}
+
+var northstarStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Get status of the northstar service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("northstar service status: ...")
 	},
 }
 
@@ -1114,6 +1267,17 @@ func init() {
 	vpcdCmd.AddCommand(vpcdStartCmd)
 	vpcdCmd.AddCommand(vpcdStopCmd)
 	vpcdCmd.AddCommand(vpcdStatusCmd)
+
+	// northstar
+	serviceCmd.AddCommand(northstarCmd)
+
+	northstarCmd.PersistentFlags().String("northstar-config", "", "Path to northstar.toml (overrides config file)")
+	viper.BindEnv("northstar-config", "SPINIFEX_NORTHSTAR_CONFIG")
+	viper.BindPFlag("northstar-config", northstarCmd.PersistentFlags().Lookup("northstar-config"))
+
+	northstarCmd.AddCommand(northstarStartCmd)
+	northstarCmd.AddCommand(northstarStopCmd)
+	northstarCmd.AddCommand(northstarStatusCmd)
 
 	// qmp-collector
 	serviceCmd.AddCommand(qmpCollectorCmd)

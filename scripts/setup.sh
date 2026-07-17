@@ -15,7 +15,8 @@
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
 #                                deps, aws, users, sudoers, files, directories,
-#                                env, systemd, logrotate, udev, fixown, migrations
+#                                env, systemd, logrotate, udev, fixown, resolved,
+#                                migrations
 #                              Unset = run every stage appropriate for the current mode.
 
 set -e
@@ -139,11 +140,12 @@ create_service_users() {
         [gw]="/var/lib/spinifex/awsgw"
         [daemon]="/var/lib/spinifex/spinifex"
         [storage]="/var/lib/spinifex/predastore"
+        [northstar]="/var/lib/spinifex/northstar"
         [viperblock]="/var/lib/spinifex/viperblock"
         [vpcd]="/var/lib/spinifex"
         [ui]="/var/lib/spinifex"
     )
-    for svc in nats gw daemon storage viperblock vpcd ui; do
+    for svc in nats gw daemon storage northstar viperblock vpcd ui; do
         local user="spinifex-${svc}"
         if ! id "$user" > /dev/null 2>&1; then
             $SUDO useradd --system --no-create-home \
@@ -175,7 +177,7 @@ create_service_users() {
     # Daemon consumes viperblock's NBD socket — join the producer-typed group.
     $SUDO usermod -aG spinifex-viperblock spinifex-daemon
 
-    info "Service users created (spinifex-{nats,gw,daemon,storage,viperblock,vpcd,ui})"
+    info "Service users created (spinifex-{nats,gw,daemon,storage,northstar,viperblock,vpcd,ui})"
 }
 
 # --- Install scoped sudoers rules ---
@@ -421,6 +423,12 @@ TMPEOF
     $SUDO chown "spinifex-storage:$SPINIFEX_GROUP" /etc/spinifex/predastore
     $SUDO chmod 0750 /etc/spinifex/predastore
 
+    # Northstar holds northstar.toml (bucket-scoped S3 creds, written 0600 by
+    # `spx admin init`); fix_file_ownership reassigns it to spinifex-northstar.
+    $SUDO mkdir -p /etc/spinifex/northstar
+    $SUDO chown "spinifex-northstar:$SPINIFEX_GROUP" /etc/spinifex/northstar
+    $SUDO chmod 0750 /etc/spinifex/northstar
+
     $SUDO mkdir -p /etc/spinifex/awsgw
     $SUDO chown "spinifex-gw:$SPINIFEX_GROUP" /etc/spinifex/awsgw
     $SUDO chmod 0750 /etc/spinifex/awsgw
@@ -445,6 +453,10 @@ TMPEOF
     $SUDO mkdir -p /var/lib/spinifex/predastore
     $SUDO chown "spinifex-storage:$SPINIFEX_GROUP" /var/lib/spinifex/predastore
     $SUDO chmod 0700 /var/lib/spinifex/predastore
+
+    $SUDO mkdir -p /var/lib/spinifex/northstar
+    $SUDO chown "spinifex-northstar:$SPINIFEX_GROUP" /var/lib/spinifex/northstar
+    $SUDO chmod 0700 /var/lib/spinifex/northstar
 
     $SUDO mkdir -p /var/lib/spinifex/viperblock
     $SUDO chown "spinifex-viperblock:$SPINIFEX_GROUP" /var/lib/spinifex/viperblock
@@ -517,6 +529,7 @@ fix_file_ownership() {
     for entry in \
         nats:spinifex-nats \
         predastore:spinifex-storage \
+        northstar:spinifex-northstar \
         spinifex:spinifex-daemon \
         viperblock:spinifex-viperblock \
         vpcd:spinifex-vpcd \
@@ -536,6 +549,10 @@ fix_file_ownership() {
     if [ -d /etc/spinifex/predastore ]; then
         $SUDO chown -R "spinifex-storage:$SPINIFEX_GROUP" /etc/spinifex/predastore \
             || fatal "Failed to set ownership on /etc/spinifex/predastore"
+    fi
+    if [ -d /etc/spinifex/northstar ]; then
+        $SUDO chown -R "spinifex-northstar:$SPINIFEX_GROUP" /etc/spinifex/northstar \
+            || fatal "Failed to set ownership on /etc/spinifex/northstar"
     fi
     if [ -d /etc/spinifex/awsgw ]; then
         $SUDO chown -R "spinifex-gw:$SPINIFEX_GROUP" /etc/spinifex/awsgw \
@@ -777,6 +794,79 @@ EOF
     info "Swap enabled: $swapfile (${size_mb}MiB), vm.swappiness=10"
 }
 
+# --- Configure host split DNS for Spinifex zones (systemd-resolved) ---
+# When systemd-resolved manages the host resolver, route the Spinifex
+# authoritative zones (default_domain + compute.internal) to the local northstar
+# resolver on the node WAN IP, while every other name keeps using the existing
+# link/DHCP DNS. The "~" routing-domain prefix restricts the DNS= server to
+# exactly those zones (resolved.conf(5)). northstar binds <wan>:53 (not
+# 127.0.0.1), so DNS= must be the WAN IP. Idempotent; no-op without resolved.
+setup_resolved_dns() {
+    stage "configuring systemd-resolved split DNS for Spinifex zones"
+
+    # ISO chroot has no live resolver to reconfigure; firstboot handles it.
+    if [ "${ISO_BUILD:-0}" = "1" ]; then
+        info "Resolved split DNS skipped (ISO_BUILD=1; firstboot configures it)"
+        return
+    fi
+
+    # Only act when systemd-resolved is the active resolver; otherwise the
+    # operator must point their resolver at the node :53 manually.
+    if ! $SUDO systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        info "systemd-resolved not active — skipping host split DNS"
+        info "  To resolve the Spinifex zones, forward them to the node WAN IP on :53"
+        return
+    fi
+
+    # northstar binds :53 on the node WAN IP. Detect the default-route source.
+    local wan_ip
+    wan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}')
+    [ -z "$wan_ip" ] && wan_ip=$(ip -4 route show default 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}')
+    if [ -z "$wan_ip" ]; then
+        warn "Could not detect a WAN IP — skipping resolved split DNS"
+        warn "  Re-run once the WAN is up: sudo SETUP_STAGES=resolved $0"
+        return
+    fi
+
+    # Default zones match `spx admin init` defaults; honour a custom
+    # default_domain if northstar.toml already exists (post-init re-run).
+    local base_domain="spx3.net" internal_domain="compute.internal"
+    local ns_toml=/etc/spinifex/northstar/northstar.toml
+    if $SUDO test -f "$ns_toml"; then
+        local cfg_domain
+        cfg_domain=$($SUDO grep -E '^[[:space:]]*default_domain[[:space:]]*=' "$ns_toml" 2>/dev/null \
+            | head -1 | sed -E 's/.*=[[:space:]]*"?([^"#]*[^"# ])"?.*/\1/')
+        [ -n "$cfg_domain" ] && base_domain="$cfg_domain"
+    fi
+
+    local dropin_dir=/etc/systemd/resolved.conf.d
+    local dropin="$dropin_dir/spinifex-dns.conf"
+    local tmp
+    tmp=$(mktemp)
+    cat > "$tmp" << EOF
+# Generated by setup.sh — route the Spinifex authoritative zones to the local
+# northstar resolver on the node WAN IP. The "~" routing-domain prefix restricts
+# this DNS= server to exactly these zones; all other names use the link DNS.
+# northstar binds <wan>:53 (not 127.0.0.1), so DNS= is the WAN IP.
+[Resolve]
+DNS=${wan_ip}
+Domains=~${base_domain} ~${internal_domain}
+EOF
+
+    # Skip the resolved restart when nothing changed (idempotent re-runs).
+    if $SUDO test -f "$dropin" && $SUDO cmp -s "$tmp" "$dropin"; then
+        rm -f "$tmp"
+        info "Host split DNS already current: ${base_domain} + ${internal_domain} -> ${wan_ip}:53"
+        return
+    fi
+
+    $SUDO mkdir -p "$dropin_dir"
+    $SUDO install -m 0644 "$tmp" "$dropin"
+    rm -f "$tmp"
+    $SUDO systemctl restart systemd-resolved 2>/dev/null || true
+    info "Host split DNS: ${base_domain} + ${internal_domain} -> ${wan_ip}:53 (northstar)"
+}
+
 # --- Main ---
 main() {
     info "Spinifex installer"
@@ -813,6 +903,7 @@ main() {
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
     stage_enabled swap       && setup_swap
+    stage_enabled resolved   && setup_resolved_dns
 
     # Migrations are only safe on a live system (need a running NATS and a
     # persisted config file). Skip under ISO_BUILD and under any explicit

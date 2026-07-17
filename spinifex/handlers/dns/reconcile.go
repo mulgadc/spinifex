@@ -2,10 +2,12 @@ package dns
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -17,6 +19,15 @@ import (
 // records from the live resource inventory. It is deliberately close to
 // the northstar S3 poll so a missed lifecycle event self-heals within one cycle.
 const DefaultReconcileInterval = 60 * time.Second
+
+const (
+	// maxReconcileNATSPayloadBytes stays below nats.conf's 1 MB max_payload.
+	maxReconcileNATSPayloadBytes = 900 * 1024
+	// reconcileNATSHeaderHeadroom reserves space for account and trace headers
+	// when a deployment negotiates a lower server payload limit.
+	reconcileNATSHeaderHeadroom = 4 * 1024
+	changeBatchJSONOverhead     = len(`{"changes":[]}`)
+)
 
 // DesiredFunc returns the full desired managed record set built from the live
 // resource inventory across all tenants. The daemon supplies it by enumerating
@@ -120,7 +131,121 @@ func (r *Reconciler) reconcileOnce() {
 		return
 	}
 	slog.Debug("dns reconcile: converging", "changes", len(batch))
-	PublishChangesBestEffort(r.nc, r.accountID, batch)
+	payloadLimit := reconcilePayloadLimit(r.nc)
+	if err := publishReconcileBatches(batch, payloadLimit, func(changes []Change) error {
+		return publishReconcileBatch(r.nc, r.accountID, changes)
+	}); err != nil {
+		slog.Warn("dns reconcile: batching or publish failed, retrying next cycle", "changes", len(batch), "error", err)
+		return
+	}
+	slog.Debug("dns reconcile: converged", "changes", len(batch))
+}
+
+// publishReconcileBatch requires the writer to acknowledge every submitted
+// change, so a missing transport or partial success cannot report convergence.
+func publishReconcileBatch(nc *nats.Conn, accountID string, changes []Change) error {
+	res, err := PublishChanges(nc, accountID, changes)
+	if err != nil {
+		return err
+	}
+	applied := 0
+	if res != nil {
+		applied = res.Applied
+	}
+	if applied != len(changes) {
+		return fmt.Errorf("writer acknowledged %d of %d changes", applied, len(changes))
+	}
+	return nil
+}
+
+// publishReconcileBatches sends bounded batches sequentially so each is
+// acknowledged before the next begins. On failure it stops: the next cycle
+// safely rebuilds and retries the complete idempotent desired state.
+func publishReconcileBatches(changes []Change, payloadLimit int, publish func([]Change) error) error {
+	batches, err := splitReconcileChanges(changes, payloadLimit)
+	if err != nil {
+		return err
+	}
+	for i, batch := range batches {
+		if err := publish(batch); err != nil {
+			return fmt.Errorf("publish batch %d of %d: %w", i+1, len(batches), err)
+		}
+	}
+	return nil
+}
+
+// reconcilePayloadLimit respects a lower limit advertised by the connected
+// server while retaining the repository policy ceiling.
+func reconcilePayloadLimit(nc *nats.Conn) int {
+	limit := maxReconcileNATSPayloadBytes
+	if nc == nil || nc.MaxPayload() <= 0 {
+		return limit
+	}
+	serverLimit := max(0, int(nc.MaxPayload())-reconcileNATSHeaderHeadroom)
+	return min(limit, serverLimit)
+}
+
+// splitReconcileChanges preserves change order while enforcing the Route 53
+// per-zone record/value request limits and the effective NATS payload ceiling.
+// UPSERT costs count twice, matching Route 53 semantics.
+func splitReconcileChanges(changes []Change, payloadLimit int) ([][]Change, error) {
+	var batches [][]Change
+	start := 0
+	zoneRecords := map[string]int{}
+	zoneValueChars := map[string]int{}
+	currentPayloadBytes := changeBatchJSONOverhead
+
+	flush := func(end int) {
+		if start == end {
+			return
+		}
+		batches = append(batches, changes[start:end])
+		start = end
+		clear(zoneRecords)
+		clear(zoneValueChars)
+		currentPayloadBytes = changeBatchJSONOverhead
+	}
+
+	for i, change := range changes {
+		encoded, err := json.Marshal(change)
+		if err != nil {
+			return nil, fmt.Errorf("marshal change %d for %s: %w", i+1, change.Name, err)
+		}
+		multiplier := 1
+		if change.Action == ActionUpsert {
+			multiplier = 2
+		}
+		records := multiplier
+		valueChars := multiplier * utf8.RuneCountInString(change.Value)
+		singlePayloadBytes := changeBatchJSONOverhead + len(encoded)
+
+		if records > MaxRecordsPerChangeRequest {
+			return nil, fmt.Errorf("change %d for %s has %d record elements; maximum is %d", i+1, change.Name, records, MaxRecordsPerChangeRequest)
+		}
+		if valueChars > MaxValueCharsPerChangeRequest {
+			return nil, fmt.Errorf("change %d for %s has %d value characters; maximum is %d", i+1, change.Name, valueChars, MaxValueCharsPerChangeRequest)
+		}
+		if singlePayloadBytes > payloadLimit {
+			return nil, fmt.Errorf("change %d for %s serializes to %d bytes; payload maximum is %d", i+1, change.Name, singlePayloadBytes, payloadLimit)
+		}
+
+		payloadBytes := len(encoded)
+		if i > start {
+			payloadBytes++ // JSON comma between adjacent changes.
+		}
+		if i > start && (zoneRecords[change.Zone]+records > MaxRecordsPerChangeRequest ||
+			zoneValueChars[change.Zone]+valueChars > MaxValueCharsPerChangeRequest ||
+			currentPayloadBytes+payloadBytes > payloadLimit) {
+			flush(i)
+			payloadBytes = len(encoded)
+		}
+
+		zoneRecords[change.Zone] += records
+		zoneValueChars[change.Zone] += valueChars
+		currentPayloadBytes += payloadBytes
+	}
+	flush(len(changes))
+	return batches, nil
 }
 
 // computeBatch reads the base zone (the only zone holding prunable ELB/EKS

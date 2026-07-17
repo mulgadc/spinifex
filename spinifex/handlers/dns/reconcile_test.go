@@ -1,7 +1,12 @@
 package dns
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/stretchr/testify/assert"
@@ -105,6 +110,235 @@ func TestComputeConvergeRejectsUnsupportedRecordType(t *testing.T) {
 	_, err := computeConverge(desired, nil, prunableFor(PruneScope{}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported DNS record type")
+}
+
+func TestSplitReconcileChanges(t *testing.T) {
+	tests := []struct {
+		name    string
+		changes func() []Change
+	}{
+		{
+			name: "record element limit",
+			changes: func() []Change {
+				changes := make([]Change, 501)
+				for i := range changes {
+					changes[i] = upsert(fmt.Sprintf("record-%03d.spx3.net", len(changes)-i), "192.0.2.1")
+				}
+				return changes
+			},
+		},
+		{
+			name: "value character limit",
+			changes: func() []Change {
+				return []Change{
+					upsert("first.spx3.net", strings.Repeat("a", 9_000)),
+					upsert("second.spx3.net", strings.Repeat("b", 9_000)),
+				}
+			},
+		},
+		{
+			name: "serialized payload limit",
+			changes: func() []Change {
+				changes := make([]Change, 100)
+				for i := range changes {
+					changes[i] = upsert(fmt.Sprintf("%s-%03d.spx3.net", strings.Repeat("n", 10_000), len(changes)-i), "192.0.2.1")
+				}
+				return changes
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changes := tt.changes()
+			batches, err := splitReconcileChanges(changes, maxReconcileNATSPayloadBytes)
+			require.NoError(t, err)
+			require.Greater(t, len(batches), 1)
+
+			var flattened []Change
+			for _, batch := range batches {
+				flattened = append(flattened, batch...)
+				payload, err := json.Marshal(ChangeBatch{Changes: batch})
+				require.NoError(t, err)
+				assert.LessOrEqual(t, len(payload), maxReconcileNATSPayloadBytes)
+
+				records, valueChars := 0, 0
+				for _, change := range batch {
+					multiplier := 1
+					if change.Action == ActionUpsert {
+						multiplier = 2
+					}
+					records += multiplier
+					valueChars += multiplier * len([]rune(change.Value))
+				}
+				assert.LessOrEqual(t, records, MaxRecordsPerChangeRequest)
+				assert.LessOrEqual(t, valueChars, MaxValueCharsPerChangeRequest)
+			}
+			assert.Equal(t, changes, flattened, "batching must preserve change order")
+		})
+	}
+}
+
+func TestSplitReconcileChangesExactBoundaries(t *testing.T) {
+	t.Run("record elements", func(t *testing.T) {
+		changes := make([]Change, MaxRecordsPerChangeRequest/2)
+		for i := range changes {
+			changes[i] = upsert(fmt.Sprintf("record-%d.spx3.net", i), "192.0.2.1")
+		}
+		batches, err := splitReconcileChanges(changes, maxReconcileNATSPayloadBytes)
+		require.NoError(t, err)
+		require.Len(t, batches, 1)
+
+		overLimit := make([]Change, len(changes)+1)
+		copy(overLimit, changes)
+		overLimit[len(changes)] = upsert("one-over.spx3.net", "192.0.2.2")
+		batches, err = splitReconcileChanges(overLimit, maxReconcileNATSPayloadBytes)
+		require.NoError(t, err)
+		assert.Len(t, batches, 2)
+	})
+
+	t.Run("value characters", func(t *testing.T) {
+		change := upsert("exact.spx3.net", strings.Repeat("界", MaxValueCharsPerChangeRequest/2))
+		batches, err := splitReconcileChanges([]Change{change}, maxReconcileNATSPayloadBytes)
+		require.NoError(t, err)
+		require.Len(t, batches, 1)
+		assert.Equal(t, change, batches[0][0])
+	})
+
+	t.Run("serialized payload", func(t *testing.T) {
+		change := upsert("", "192.0.2.1")
+		encoded, err := json.Marshal(change)
+		require.NoError(t, err)
+		nameBytes := maxReconcileNATSPayloadBytes - changeBatchJSONOverhead - len(encoded)
+		require.Positive(t, nameBytes)
+		change.Name = strings.Repeat("n", nameBytes)
+
+		payload, err := json.Marshal(ChangeBatch{Changes: []Change{change}})
+		require.NoError(t, err)
+		require.Len(t, payload, maxReconcileNATSPayloadBytes)
+		batches, err := splitReconcileChanges([]Change{change}, maxReconcileNATSPayloadBytes)
+		require.NoError(t, err)
+		require.Len(t, batches, 1)
+
+		change.Name += "n"
+		_, err = splitReconcileChanges([]Change{change}, maxReconcileNATSPayloadBytes)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "payload maximum")
+	})
+}
+
+func TestSplitReconcileChangesTracksRequestLimitsPerZone(t *testing.T) {
+	changes := make([]Change, MaxRecordsPerChangeRequest)
+	for i := range changes {
+		zone := "spx3.net"
+		if i%2 == 1 {
+			zone = "compute.internal"
+		}
+		changes[i] = Change{Action: ActionUpsert, Zone: zone, Name: fmt.Sprintf("record-%d.%s", i, zone), Type: "A", Value: "192.0.2.1"}
+	}
+
+	batches, err := splitReconcileChanges(changes, maxReconcileNATSPayloadBytes)
+	require.NoError(t, err)
+	require.Len(t, batches, 1, "each zone independently stays at 1,000 record elements")
+}
+
+func TestSplitAndPublishReconcileChangesHandlesEmptyAndSingleton(t *testing.T) {
+	batches, err := splitReconcileChanges(nil, maxReconcileNATSPayloadBytes)
+	require.NoError(t, err)
+	assert.Empty(t, batches)
+
+	calls := 0
+	err = publishReconcileBatches(nil, maxReconcileNATSPayloadBytes, func([]Change) error {
+		calls++
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Zero(t, calls)
+
+	change := upsert("one.spx3.net", "192.0.2.1")
+	err = publishReconcileBatches([]Change{change}, maxReconcileNATSPayloadBytes, func(batch []Change) error {
+		calls++
+		assert.Equal(t, []Change{change}, batch)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+}
+
+func TestPublishReconcileBatchRejectsMissingAcknowledgement(t *testing.T) {
+	err := publishReconcileBatch(nil, "000000000000", []Change{upsert("one.spx3.net", "192.0.2.1")})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "writer acknowledged 0 of 1 changes")
+}
+
+func TestSplitReconcileChangesRejectsOversizedChange(t *testing.T) {
+	changes := []Change{upsert("oversized.spx3.net", strings.Repeat("x", MaxValueCharsPerChangeRequest/2+1))}
+
+	_, err := splitReconcileChanges(changes, maxReconcileNATSPayloadBytes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "value characters")
+}
+
+func TestPublishReconcileBatchesWaitsForEachAcknowledgement(t *testing.T) {
+	changes := make([]Change, 501)
+	for i := range changes {
+		changes[i] = upsert(fmt.Sprintf("record-%d.spx3.net", i), "192.0.2.1")
+	}
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	done := make(chan error, 1)
+	calls := 0
+
+	go func() {
+		done <- publishReconcileBatches(changes, maxReconcileNATSPayloadBytes, func([]Change) error {
+			calls++
+			switch calls {
+			case 1:
+				close(firstStarted)
+				<-releaseFirst
+			case 2:
+				close(secondStarted)
+			}
+			return nil
+		})
+	}()
+
+	<-firstStarted
+	select {
+	case <-secondStarted:
+		t.Fatal("second batch started before the first was acknowledged")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseFirst)
+	require.NoError(t, <-done)
+	assert.Equal(t, 2, calls)
+	select {
+	case <-secondStarted:
+	default:
+		t.Fatal("second batch was not published after the first acknowledgement")
+	}
+}
+
+func TestPublishReconcileBatchesStopsAfterFailedAcknowledgement(t *testing.T) {
+	changes := make([]Change, 1_001)
+	for i := range changes {
+		changes[i] = upsert("record.spx3.net", "192.0.2.1")
+	}
+	publishErr := errors.New("writer unavailable")
+	calls := 0
+
+	err := publishReconcileBatches(changes, maxReconcileNATSPayloadBytes, func([]Change) error {
+		calls++
+		if calls == 2 {
+			return publishErr
+		}
+		return nil
+	})
+
+	require.ErrorIs(t, err, publishErr)
+	assert.ErrorContains(t, err, "publish batch 2 of 3")
+	assert.Equal(t, 2, calls, "later batches must wait for and stop after a failed acknowledgement")
 }
 
 func TestReconcilerDisabledIsNoop(t *testing.T) {

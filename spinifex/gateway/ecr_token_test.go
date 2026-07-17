@@ -22,7 +22,10 @@ func decodeTokenResp(t *testing.T, w *httptest.ResponseRecorder) ociTokenRespons
 
 func TestECRToken_ExchangesBasicForBearer(t *testing.T) {
 	iss, verify := newECRAuth(t)
-	gw := &GatewayConfig{Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenIssuer: iss, ECRTokenVerifier: verify}
+	gw := &GatewayConfig{
+		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenIssuer: iss, ECRTokenVerifier: verify,
+		IAMService: ecrBridgeTestIAM(ecrTestAccount),
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/token", nil)
 	req.Header.Set("Authorization", mintBasic(t, iss, ecrTestAccount))
@@ -44,9 +47,17 @@ func TestECRToken_ExchangesBasicForBearer(t *testing.T) {
 
 func TestECRToken_BearerCredentialAccepted(t *testing.T) {
 	iss, verify := newECRAuth(t)
-	gw := &GatewayConfig{Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenIssuer: iss, ECRTokenVerifier: verify}
+	gw := &GatewayConfig{
+		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenIssuer: iss, ECRTokenVerifier: verify,
+		IAMService: ecrBridgeTestIAM(ecrTestAccount),
+	}
 
-	tok, _, err := iss.Mint(gateway_ecrauth.Principal{AccountID: ecrTestAccount, ARN: "arn:aws:iam::" + ecrTestAccount + ":user/dev"})
+	tok, _, err := iss.Mint(gateway_ecrauth.Principal{
+		AccountID:   ecrTestAccount,
+		ARN:         "arn:aws:iam::" + ecrTestAccount + ":user/dev",
+		Type:        principalTypeUser,
+		AccessKeyID: ecrBridgeTestAKID,
+	})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/token", nil)
@@ -113,7 +124,10 @@ func TestECRToken_MultipleAuthHeadersRejected(t *testing.T) {
 // endpoint (200) rather than the bridge-guarded /* catch-all.
 func TestOCIRegistry_TokenRouted(t *testing.T) {
 	iss, verify := newECRAuth(t)
-	gw := &GatewayConfig{DisableLogging: true, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenIssuer: iss, ECRTokenVerifier: verify}
+	gw := &GatewayConfig{
+		DisableLogging: true, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenIssuer: iss, ECRTokenVerifier: verify,
+		IAMService: ecrBridgeTestIAM(ecrTestAccount),
+	}
 	r := chi.NewRouter()
 	gw.mountOCIRegistry(r)
 

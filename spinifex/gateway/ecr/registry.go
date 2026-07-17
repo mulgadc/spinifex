@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,6 +101,17 @@ func (reg *Registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // trailing "/blobs", "/manifests" or "/tags" marker.
 func (reg *Registry) serve(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// ClassifyOperation is the same route table the authorization middleware
+	// consumes to decide required IAM actions. Re-checking it here means a
+	// request that reaches Registry without having been classified (e.g. the
+	// authorization middleware disabled, or a future caller of serve that
+	// forgets to wire it) is refused rather than silently dispatched.
+	if _, ok := ClassifyOperation(r.Method, r.URL.Path, r.URL.Query()); !ok {
+		WriteError(w, http.StatusNotFound, "NAME_UNKNOWN", "unrecognized registry operation")
+		return
+	}
+
 	if err := reg.ensureBucket(ctx); err != nil {
 		reg.internal(ctx, w, "ensure bucket", err)
 		return
@@ -251,13 +263,21 @@ func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 
+	// A mount is only recognised when both mount and from are present, matching
+	// the authorization middleware's classification: with only one of the two,
+	// this falls through to a normal upload start. A valid mount additionally
+	// requires digest to be provably reachable from a manifest stored in the
+	// source repository — checking only that the blob exists in the
+	// account-wide pool would let a caller name an unrelated permitted source
+	// repository to fish out a blob it has no read access to. A miss on any of
+	// these checks falls through silently: a denied or invalid source must not
+	// reveal whether an account-level blob exists.
 	q := r.URL.Query()
-	if mountDigest := q.Get("mount"); mountDigest != "" {
-		if ecr.ValidateDigest(mountDigest) && reg.blobExists(ctx, mountDigest) {
+	if mountDigest, source := q.Get("mount"), q.Get("from"); mountDigest != "" && source != "" {
+		if ecr.ValidateDigest(mountDigest) && reg.blobExists(ctx, mountDigest) && reg.mountedFromValidSource(ctx, source, mountDigest) {
 			reg.writeBlobCreated(w, name, mountDigest)
 			return
 		}
-		// Mount miss: fall through to a normal upload start per the spec.
 	}
 
 	uploadID := uuid.NewString()
@@ -768,6 +788,33 @@ func (reg *Registry) blobExists(ctx context.Context, digest string) bool {
 		Key:    aws.String(ecr.BlobKey(digest)),
 	})
 	return err == nil
+}
+
+// mountedFromValidSource reports whether digest is provably reachable from
+// source: source must exist, and some manifest stored under source must
+// reference digest as a config or layer blob. Blob storage is shared across
+// every repository in the account, so checking only that the blob exists in
+// the pool would let a caller mount an unrelated account-level blob by
+// naming any source repository it happens to have read access to; requiring
+// provenance through an actual manifest closes that gap.
+func (reg *Registry) mountedFromValidSource(ctx context.Context, source, digest string) bool {
+	if _, err := reg.Meta.GetRepo(ctx, reg.AccountID, source); err != nil {
+		return false
+	}
+	digests, err := reg.Meta.ListManifests(ctx, reg.AccountID, source)
+	if err != nil {
+		return false
+	}
+	for _, d := range digests {
+		meta, err := reg.Meta.GetManifestMeta(ctx, reg.AccountID, source, d)
+		if err != nil {
+			continue
+		}
+		if slices.Contains(meta.ChildDigests, digest) {
+			return true
+		}
+	}
+	return false
 }
 
 // readUploadBytesAt returns the bytes at key, or nil for an empty key or a miss

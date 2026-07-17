@@ -23,7 +23,6 @@ import (
 const (
 	northstarUnit       = "spinifex-northstar.service"
 	northstarConfigPath = "/etc/spinifex/northstar/northstar.toml"
-	vpcResolverIP       = "169.254.169.253"
 )
 
 type dnsGuest struct {
@@ -111,7 +110,7 @@ func runMultinodeDNS(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, region, "cluster AWS region is required to build internal DNS names")
 
 	harness.Step(t, "D4: resolve internal and recursive names from a non-init-node guest")
-	assertGuestResolver(t, source.SSH)
+	harness.AssertGuestResolver(t, source.SSH)
 	sourceName := handlers_dns.EC2PrivateName(source.PrivateIP, region, internalDomain)
 	assertGuestIPv4(t, source.SSH, sourceName, source.PrivateIP)
 	assertGuestIPv4(t, source.SSH, "google.com", "")
@@ -254,23 +253,6 @@ func launchDNSGuests(t *testing.T, fix *Fixture) map[string]dnsGuest {
 	source.SSH = harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 	guests[source.Node.Name] = source
 	return guests
-}
-
-func assertGuestResolver(t *testing.T, target harness.SSHTarget) {
-	t.Helper()
-	harness.EventuallyErr(t, func() error {
-		out, err := runGuestCommand(target, "cat /etc/resolv.conf")
-		if err != nil {
-			return err
-		}
-		for _, line := range strings.Split(string(out), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && fields[0] == "nameserver" && fields[1] == vpcResolverIP {
-				return nil
-			}
-		}
-		return fmt.Errorf("/etc/resolv.conf does not advertise %s: %s", vpcResolverIP, out)
-	}, time.Minute, 3*time.Second)
 }
 
 func assertGuestIPv4(t *testing.T, target harness.SSHTarget, name, expectedIP string) {

@@ -5,8 +5,71 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
+
+// stubResolvConf is the /etc/resolv.conf an Ubuntu cloud-image guest serves
+// verbatim: a symlink to systemd-resolved's stub, advertising the loopback
+// forwarder rather than the nameserver DHCP leased.
+const stubResolvConf = `# This is /run/systemd/resolve/stub-resolv.conf managed by man:systemd-resolved(8).
+# Do not edit.
+#
+# This file might be symlinked as /etc/resolv.conf. If you're looking at
+# /etc/resolv.conf and seeing this text, you have followed the symlink.
+#
+# Run "resolvectl status" to see details about the uplink DNS servers
+# currently in use.
+
+nameserver 127.0.0.53
+options edns0 trust-ad
+search .
+`
+
+func TestResolvConfNameservers(t *testing.T) {
+	cases := []struct {
+		name string
+		conf string
+		want []string
+	}{
+		{
+			// The stub hides the leased nameserver behind 127.0.0.53, which is why
+			// GuestResolvers has to follow it to the uplink file.
+			name: "systemd-resolved stub yields only the loopback forwarder",
+			conf: stubResolvConf,
+			want: []string{"127.0.0.53"},
+		},
+		{
+			name: "uplink view yields the leased VPC resolver",
+			conf: "# This is /run/systemd/resolve/resolv.conf managed by man:systemd-resolved(8).\nnameserver 169.254.169.253\nsearch ap-southeast-2.compute.internal\n",
+			want: []string{"169.254.169.253"},
+		},
+		{
+			name: "image whose DHCP client writes resolv.conf directly",
+			conf: "search compute.internal\nnameserver 169.254.169.253\n",
+			want: []string{"169.254.169.253"},
+		},
+		{
+			name: "multiple nameservers retain lease order",
+			conf: "nameserver 10.0.0.2\nnameserver 169.254.169.253\n",
+			want: []string{"10.0.0.2", "169.254.169.253"},
+		},
+		{
+			// A commented-out nameserver is not in effect and must not be reported.
+			name: "comments and malformed lines are ignored",
+			conf: "#nameserver 169.254.169.253\n# nameserver 169.254.169.253\nnameserver\noptions edns0\n\n",
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolvConfNameservers(tc.conf)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("resolvConfNameservers = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestNorthstarBaseDomain(t *testing.T) {
 	cases := []struct {

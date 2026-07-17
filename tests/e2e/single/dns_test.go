@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +18,7 @@ import (
 // inside a running instance. It launches one instance, SSHes in over its public
 // IP, and over that session:
 //
-//  1. asserts DHCP installed the VPC resolver in /etc/resolv.conf,
+//  1. asserts DHCP pointed the guest at the VPC resolver,
 //  2. pings the instance's own private IP (from DescribeInstances) to prove the
 //     local ICMP datapath before DNS is exercised,
 //  3. resolves the instance's internal EC2 name to its private IP, and
@@ -26,14 +27,12 @@ import (
 //
 // Resolution is asserted separately from the ping via `getent ahostsv4` (AF_INET
 // so it forces an A-record answer, not the AAAA the resolver may otherwise
-// prefer), which drives the same NSS -> /etc/resolv.conf (169.254.169.253,
-// served by the per-tap shim once P7 is deployed) -> northstar recursion path
-// guest apps use and is always present (nslookup/dig are not on the minimal
-// cloud image). The
-// getent step is the northstar signal; the follow-on ping only adds ICMP-egress
-// coverage — so a resolver/northstar failure is isolated from a WAN-egress
-// failure. The own private IP ping isolates both from a plain local-datapath
-// failure. The public inbound path is already proven by the SSH over the public
+// prefer), which drives the same NSS -> guest resolver (169.254.169.253, served
+// by the per-tap shim) -> northstar recursion path guest apps use and is always
+// present (nslookup/dig are not on the minimal cloud image). The getent step is
+// the northstar signal; the follow-on ping only adds ICMP-egress coverage — so a
+// resolver/northstar failure is isolated from a WAN-egress failure. The own
+// private IP ping isolates both from a plain local-datapath failure. The public inbound path is already proven by the SSH over the public
 // IP, and a guest cannot ping its own public IP (gateway NAT, no hairpin — AWS
 // behaves the same), so no own-public-IP ping is attempted.
 func runGuestDNSResolution(t *testing.T, fix *Fixture) {
@@ -66,11 +65,8 @@ func runGuestDNSResolution(t *testing.T, fix *Fixture) {
 
 	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 
-	harness.Step(t, "assert guest uses the VPC resolver 169.254.169.253")
-	resolvConf, err := sshCapture(tgt, "cat /etc/resolv.conf")
-	require.NoErrorf(t, err, "read guest /etc/resolv.conf\n%s", resolvConf)
-	require.Regexp(t, `(?m)^nameserver[[:space:]]+169\.254\.169\.253[[:space:]]*$`, resolvConf,
-		"guest /etc/resolv.conf must advertise the VPC resolver")
+	harness.Step(t, "assert guest uses the VPC resolver %s", handlers_imds.VPCDNSServerIP)
+	harness.AssertGuestResolver(t, tgt)
 
 	// Step 1: ping the instance's own private IP — local datapath sanity, no DNS
 	// involved. (Own public IP is unreachable from inside via gateway NAT, and the

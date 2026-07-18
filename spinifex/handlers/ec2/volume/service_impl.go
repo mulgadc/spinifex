@@ -202,6 +202,10 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// GCEnabled: default false unless explicitly set to true, matching the
+	// nbdkit plugin and viperblockd resolution of the same config field.
+	gcEnabled := s.config.Viperblock.GCEnabled != nil && *s.config.Viperblock.GCEnabled
+
 	vbconfig := viperblock.VB{
 		VolumeName:        volumeID,
 		VolumeSize:        volumeSizeBytes,
@@ -210,6 +214,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		VolumeConfig:      volumeConfig,
 		MasterKey:         mkey,
 		EncryptionEnabled: mkey != nil,
+		GCEnabled:         gcEnabled,
 	}
 
 	// If created from a snapshot, set the snapshot fields so viperblock's

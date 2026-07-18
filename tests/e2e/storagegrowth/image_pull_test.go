@@ -568,7 +568,7 @@ func TestImagePullGrowth(t *testing.T) {
 // fix.AWS.EC2.RunInstances directly instead (launchImagePullRootInstance).
 func ensureImagePullInstance(t *testing.T, fix *Fixture, launch func(ami, instType, keyName, subnetID, sgID string) string) (instanceID string, tgt harness.SSHTarget, inst *ec2.Instance) {
 	t.Helper()
-	instType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	instType, arch := imagePullInstanceType(t, fix)
 	ami := harness.DiscoverUbuntuAMI(t, fix.Harness, arch)
 	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness, fix.ArtifactDir(t))
 
@@ -633,6 +633,68 @@ func imagePullDefaultSG(t *testing.T, c *harness.AWSClient, vpcID string) string
 	require.NoErrorf(t, err, "describe default SG for %s", vpcID)
 	require.Lenf(t, out.SecurityGroups, 1, "vpc %s default SG", vpcID)
 	return aws.StringValue(out.SecurityGroups[0].GroupId)
+}
+
+// imagePullInstanceType selects the guest for the image-pull repro. The
+// synthetic npass suite uses a nano (512MB) to pack many suites onto one node,
+// but a real multi-GB image pull onto 512MB OOM-thrashes containerd long before
+// any disk-driven ENOSPC, and 512MB against a concurrent-write pull is exactly
+// the guest-memory-pressure regime that produces the separate siv-482 lost-write
+// corruption — conflating two faults in one measurement. This mode instead picks
+// an instance with headroom well above the pull's working set, so the run
+// measures the storage leak and not memory pressure.
+//
+// SPINIFEX_STORAGEGROWTH_INSTANCE_TYPE overrides the choice outright.
+// Otherwise the smallest advertised type at or above SPINIFEX_STORAGEGROWTH_MIN_MEM_MIB
+// (default 16384, matching the ~16GB EKS GPU worker the incident was reported on)
+// is used — smallest-above-floor so it gets headroom without grabbing a type the
+// node cannot seat.
+func imagePullInstanceType(t *testing.T, fix *Fixture) (instanceType, arch string) {
+	t.Helper()
+	out, err := fix.AWS.EC2.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{})
+	require.NoError(t, err, "DescribeInstanceTypes")
+
+	archOf := func(it *ec2.InstanceTypeInfo) string {
+		if it.ProcessorInfo == nil || len(it.ProcessorInfo.SupportedArchitectures) == 0 {
+			return ""
+		}
+		return aws.StringValue(it.ProcessorInfo.SupportedArchitectures[0])
+	}
+
+	if override := os.Getenv("SPINIFEX_STORAGEGROWTH_INSTANCE_TYPE"); override != "" {
+		for _, it := range out.InstanceTypes {
+			if aws.StringValue(it.InstanceType) == override {
+				a := archOf(it)
+				require.NotEmptyf(t, a, "instance type %s advertises no architecture", override)
+				return override, a
+			}
+		}
+		t.Fatalf("SPINIFEX_STORAGEGROWTH_INSTANCE_TYPE=%s not advertised by this cluster", override)
+	}
+
+	minMemMiB := int64(16384)
+	if v := os.Getenv("SPINIFEX_STORAGEGROWTH_MIN_MEM_MIB"); v != "" {
+		parsed, perr := strconv.ParseInt(v, 10, 64)
+		require.NoErrorf(t, perr, "parse SPINIFEX_STORAGEGROWTH_MIN_MEM_MIB=%q", v)
+		minMemMiB = parsed
+	}
+
+	var best *ec2.InstanceTypeInfo
+	var bestMem int64
+	for _, it := range out.InstanceTypes {
+		if it.MemoryInfo == nil || it.MemoryInfo.SizeInMiB == nil || archOf(it) == "" {
+			continue
+		}
+		mem := aws.Int64Value(it.MemoryInfo.SizeInMiB)
+		if mem < minMemMiB {
+			continue
+		}
+		if best == nil || mem < bestMem {
+			best, bestMem = it, mem
+		}
+	}
+	require.NotNilf(t, best, "no advertised instance type has >= %d MiB memory", minMemMiB)
+	return aws.StringValue(best.InstanceType), archOf(best)
 }
 
 // createImagePullVolume creates the volume the pull runs against, sized by

@@ -204,6 +204,15 @@ type Drive struct {
 	Media  string `json:"media"`
 	ID     string `json:"id"`
 	Cache  string `json:"cache,omitempty"`
+	// Werror and Rerror set QEMU's block on-error policy. Left empty, QEMU
+	// applies its default werror=enospc, which pauses the whole VM on an
+	// out-of-space write rather than reporting it — so a guest never sees the
+	// backend's ENOSPC. Setting "report" delivers the error to the guest,
+	// letting its filesystem surface a clean out-of-space to userspace and stay
+	// alive. Set on the drive: with if=none the virtio-blk device inherits the
+	// BlockBackend's on-error policy.
+	Werror string `json:"werror,omitempty"`
+	Rerror string `json:"rerror,omitempty"`
 	// Unit selects the pflash slot when If=="pflash": 0 is the CODE blob,
 	// 1 is the per-VM VARS volume. Ignored for non-pflash drives.
 	Unit int `json:"unit,omitempty"`
@@ -395,6 +404,14 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 
 		if drive.Cache != "" {
 			opts = append(opts, fmt.Sprintf("cache=%s", drive.Cache))
+		}
+
+		if drive.Werror != "" {
+			opts = append(opts, fmt.Sprintf("werror=%s", drive.Werror))
+		}
+
+		if drive.Rerror != "" {
+			opts = append(opts, fmt.Sprintf("rerror=%s", drive.Rerror))
 		}
 
 		args = append(args, "-drive", strings.Join(opts, ","))

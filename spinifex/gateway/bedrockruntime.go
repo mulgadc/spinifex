@@ -44,6 +44,8 @@ var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 			return gateway_bedrock.Converse(ctx, acct, p[0], input, resolver, endpoints)
 		}},
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/invoke$`), "InvokeModel", nil},
+	{"POST", regexp.MustCompile(`^/model/([^/]+)/converse-stream$`), "ConverseStream", nil},
+	{"POST", regexp.MustCompile(`^/model/([^/]+)/invoke-with-response-stream$`), "InvokeModelWithResponseStream", nil},
 }
 
 // lookupBedrockRuntimeAction matches method+path against bedrockRuntimeRoutes,
@@ -115,6 +117,19 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 		}
 		gateway_bedrock.WriteRawResponse(w, respBody, contentType)
 		return nil
+	}
+
+	// ConverseStream and InvokeModelWithResponseStream own w directly and
+	// write framed event-stream bytes as they arrive, rather than one
+	// buffered struct/body WriteJSONResponse/WriteRawResponse could send in
+	// one shot. Each returns an error ONLY for a pre-first-frame failure
+	// (-> ErrorHandler); once streaming starts they always return nil,
+	// surfacing any further failure as an in-band exception event.
+	if action == "ConverseStream" {
+		return gateway_bedrock.ConverseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver())
+	}
+	if action == "InvokeModelWithResponseStream" {
+		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"))
 	}
 
 	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver())

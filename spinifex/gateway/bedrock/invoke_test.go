@@ -82,3 +82,43 @@ func TestInvokeModel_PackageEntryPoint_UnknownModel(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 }
+
+func TestInvokeStreamRouter_SelfHostSuccess(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(llamaCompletionsStreamFixture))
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-70b-instruct-v1:0"
+	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+
+	src, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`))
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	chunks := drainInvokeStream(t, src)
+	assert.Len(t, chunks, 3)
+}
+
+func TestInvokeStreamRouter_UnknownModelReturnsResourceNotFound(t *testing.T) {
+	rt := NewInvokeStreamRouter(nil, nil)
+	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "does.not-exist-v1:0", []byte(`{}`))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+}
+
+func TestInvokeStreamRouter_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
+	rt := NewInvokeStreamRouter(stubCredentialResolver{ok: false}, nil)
+	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0", []byte(`{}`))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDeniedException, err.Error())
+}
+
+func TestInvokeStreamRouter_SelfHostNoEndpointReturnsModelNotReady(t *testing.T) {
+	rt := NewInvokeStreamRouter(nil, nil)
+	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "meta.llama3-70b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}

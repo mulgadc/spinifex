@@ -94,8 +94,8 @@ data: {"type":"message_stop"}
 	var captured map[string]json.RawMessage
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "text/event-stream", r.Header.Get("Accept"))
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		assert.Equal(t, "text/event-stream", r.Header.Get("Accept"))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(raw))

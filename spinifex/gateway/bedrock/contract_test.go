@@ -49,11 +49,15 @@ func TestContract_ConverseStream_SelfHost_RealSDKConsumerDecodesFrames(t *testin
 
 	svc := contractSession(t, func(w http.ResponseWriter, r *http.Request) {
 		m := converseStreamPathPattern.FindStringSubmatch(r.URL.Path)
-		require.NotNil(t, m, "unexpected path %s", r.URL.Path)
+		if !assert.NotNil(t, m, "unexpected path %s", r.URL.Path) {
+			return
+		}
 		body, err := readAll(r)
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			return
+		}
 		err = ConverseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints)
-		require.NoError(t, err)
+		assert.NoError(t, err)
 	})
 
 	resp, err := svc.ConverseStream(&bedrockruntime.ConverseStreamInput{
@@ -124,11 +128,15 @@ func TestContract_ConverseStream_Anthropic_RealSDKConsumerDecodesFrames(t *testi
 				{Role: aws.String(bedrockruntime.ConversationRoleUser), Content: []*bedrockruntime.ContentBlock{{Text: aws.String("hi")}}},
 			},
 		}, "sk-test")
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			return
+		}
 		defer func() { _ = src.Close() }()
 
 		fw, err := newFrameWriter(w)
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			return
+		}
 		pumpConverseStream(r.Context(), fw, src, modelID)
 	})
 
@@ -185,11 +193,15 @@ func TestContract_InvokeModelWithResponseStream_SelfHost_RealSDKConsumerDecodesF
 
 	svc := contractSession(t, func(w http.ResponseWriter, r *http.Request) {
 		m := invokeStreamPathPattern.FindStringSubmatch(r.URL.Path)
-		require.NotNil(t, m, "unexpected path %s", r.URL.Path)
+		if !assert.NotNil(t, m, "unexpected path %s", r.URL.Path) {
+			return
+		}
 		body, err := readAll(r)
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			return
+		}
 		err = InvokeModelWithResponseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints, r.Header.Get("Content-Type"))
-		require.NoError(t, err)
+		assert.NoError(t, err)
 	})
 
 	resp, err := svc.InvokeModelWithResponseStream(&bedrockruntime.InvokeModelWithResponseStreamInput{

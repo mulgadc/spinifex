@@ -16,7 +16,7 @@ func TestSSEScanner_VLLMStyleBareDataLines(t *testing.T) {
 	ev1, ok, err := sc.Next()
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.Equal(t, "", ev1.Event)
+	assert.Empty(t, ev1.Event)
 	assert.Equal(t, `{"a":1}`, ev1.Data)
 
 	ev2, ok, err := sc.Next()

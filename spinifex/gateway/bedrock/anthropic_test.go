@@ -173,8 +173,8 @@ func TestAnthropicProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAPIKey = r.Header.Get("X-Api-Key")
-		require.Equal(t, "text/event-stream", r.Header.Get("Accept"))
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		assert.Equal(t, "text/event-stream", r.Header.Get("Accept"))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(anthropicStreamFixture))

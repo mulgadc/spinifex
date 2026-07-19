@@ -108,11 +108,13 @@ func drainConverseStream(t *testing.T, src converseStreamSource) []ConverseStrea
 
 func TestVLLMProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "text/event-stream", r.Header.Get("Accept"))
+		assert.Equal(t, "text/event-stream", r.Header.Get("Accept"))
 		var req vllmChatRequest
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		assert.True(t, req.Stream)
-		require.NotNil(t, req.StreamOptions)
+		if !assert.NotNil(t, req.StreamOptions) {
+			return
+		}
 		assert.True(t, req.StreamOptions.IncludeUsage)
 
 		w.Header().Set("Content-Type", "text/event-stream")

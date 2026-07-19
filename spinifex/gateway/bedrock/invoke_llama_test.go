@@ -134,9 +134,11 @@ func drainInvokeStream(t *testing.T, src invokeStreamSource) [][]byte {
 func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_TranslatesChunks(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req llamaCompletionsRequest
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		assert.True(t, req.Stream)
-		require.NotNil(t, req.StreamOptions)
+		if !assert.NotNil(t, req.StreamOptions) {
+			return
+		}
 		assert.True(t, req.StreamOptions.IncludeUsage)
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -164,7 +166,7 @@ func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_TranslatesChunks(t *te
 
 	var final llamaInvokeStreamFinalChunk
 	require.NoError(t, json.Unmarshal(chunks[2], &final))
-	assert.Equal(t, "", final.Generation)
+	assert.Empty(t, final.Generation)
 	assert.Equal(t, "stop", final.StopReason)
 	assert.Equal(t, 6, final.PromptTokenCount)
 	assert.Equal(t, 2, final.GenerationTokenCount)

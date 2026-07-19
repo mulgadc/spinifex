@@ -17,6 +17,12 @@ import (
 // version-check probe succeeds even before any repository exists. When no
 // Registry is wired (e.g. unit tests of unrelated routes), the surface falls
 // back to the 501 stub.
+//
+// Requests flow hostMatch -> ecrAuthBridge -> ecrOperationAuthorization ->
+// Registry: the bridge authenticates the token and rehydrates its principal
+// from current IAM/STS state, then authorization classifies the OCI
+// operation and evaluates it against that principal's policies before the
+// request ever reaches Registry's object/metadata stores.
 func (gw *GatewayConfig) mountOCIRegistry(r chi.Router) {
 	r.Route("/v2", func(v2 chi.Router) {
 		v2.Use(gw.hostMatch)
@@ -27,6 +33,7 @@ func (gw *GatewayConfig) mountOCIRegistry(r chi.Router) {
 
 		v2.Group(func(reg chi.Router) {
 			reg.Use(gw.ecrAuthBridge)
+			reg.Use(gw.ecrOperationAuthorization)
 			reg.Get("/", gateway_ecr.APIVersion)
 			if gw.ECRRegistry != nil {
 				reg.HandleFunc("/*", gw.ECRRegistry.ServeHTTP)

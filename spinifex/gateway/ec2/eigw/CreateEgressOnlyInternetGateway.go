@@ -22,7 +22,7 @@ func ValidateCreateEgressOnlyInternetGatewayInput(input *ec2.CreateEgressOnlyInt
 	return nil
 }
 
-// CreateEgressOnlyInternetGateway handles the EC2 CreateEgressOnlyInternetGateway API call
+// CreateEgressOnlyInternetGateway handles the EC2 CreateEgressOnlyInternetGateway API call.
 func CreateEgressOnlyInternetGateway(ctx context.Context, input *ec2.CreateEgressOnlyInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateEgressOnlyInternetGatewayOutput, error) {
 	var output ec2.CreateEgressOnlyInternetGatewayOutput
 

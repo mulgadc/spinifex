@@ -1826,7 +1826,7 @@ func TestRemoveRecordTags_Subnet(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.Subnets, 1)
 	assert.Equal(t, "yes", findTag(out.Subnets[0].Tags, "keep"))
-	assert.Equal(t, "", findTag(out.Subnets[0].Tags, "drop"))
+	assert.Empty(t, findTag(out.Subnets[0].Tags, "drop"))
 }
 
 func TestApplyRecordTags_SecurityGroupTagFilteredDescribe(t *testing.T) {
@@ -1878,7 +1878,7 @@ func TestRemoveRecordTags_SecurityGroup(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.SecurityGroups, 1)
 	assert.Equal(t, "yes", findTag(out.SecurityGroups[0].Tags, "keep"))
-	assert.Equal(t, "", findTag(out.SecurityGroups[0].Tags, "drop"))
+	assert.Empty(t, findTag(out.SecurityGroups[0].Tags, "drop"))
 }
 
 func TestApplyRecordTags_ENITagFilteredDescribe(t *testing.T) {

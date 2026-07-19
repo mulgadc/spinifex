@@ -5,6 +5,7 @@ import {
   copySnapshotSchema,
   createInstanceSchema,
   createKeyPairSchema,
+  createLaunchTemplateSchema,
   createPlacementGroupSchema,
   createSecurityGroupSchema,
   createSnapshotSchema,
@@ -14,6 +15,7 @@ import {
   createVpcWizardSchema,
   formTagSchema,
   importKeyPairSchema,
+  launchTemplateFormSchema,
   modifyVolumeSchema,
   securityGroupRuleSchema,
 } from "./ec2"
@@ -144,6 +146,103 @@ describe("createInstanceSchema", () => {
       keyName: "my-key",
       count: 1,
       rootVolumeType: "io2",
+    })
+    expect(result.success).toBeFalsy()
+  })
+
+  it("requires image, type and key for a direct launch", () => {
+    const result = createInstanceSchema.safeParse({ count: 1 })
+    if (result.success) {
+      throw new Error("expected validation to fail")
+    }
+    const paths = result.error.issues.map((issue) => issue.path[0])
+    expect(paths).toContain("imageId")
+    expect(paths).toContain("instanceType")
+    expect(paths).toContain("keyName")
+  })
+
+  it("allows image, type and key to be omitted with a launch template", () => {
+    const result = createInstanceSchema.safeParse({
+      launchTemplateId: "lt-123",
+      launchTemplateVersion: "$Default",
+      count: 1,
+    })
+    expect(result.success).toBeTruthy()
+  })
+})
+
+describe("launchTemplateFormSchema", () => {
+  it("accepts a minimal launch-data subset", () => {
+    const result = launchTemplateFormSchema.safeParse({
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+    })
+    expect(result.success).toBeTruthy()
+  })
+
+  it("requires an image", () => {
+    const result = launchTemplateFormSchema.safeParse({
+      imageId: "",
+      instanceType: "t2.micro",
+    })
+    expect(result.success).toBeFalsy()
+  })
+
+  it("requires an instance type", () => {
+    const result = launchTemplateFormSchema.safeParse({
+      imageId: "ami-1",
+      instanceType: "",
+    })
+    expect(result.success).toBeFalsy()
+  })
+})
+
+describe("createLaunchTemplateSchema", () => {
+  it("accepts a valid name and data", () => {
+    const result = createLaunchTemplateSchema.safeParse({
+      launchTemplateName: "web-server",
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+    })
+    expect(result.success).toBeTruthy()
+  })
+
+  it("rejects a name shorter than 3 characters", () => {
+    const result = createLaunchTemplateSchema.safeParse({
+      launchTemplateName: "ab",
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+    })
+    if (result.success) {
+      throw new Error("expected validation to fail")
+    }
+    expect(result.error.issues[0]?.path[0]).toBe("launchTemplateName")
+  })
+
+  it("rejects a name longer than 128 characters", () => {
+    const result = createLaunchTemplateSchema.safeParse({
+      launchTemplateName: "a".repeat(129),
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+    })
+    expect(result.success).toBeFalsy()
+  })
+
+  it("rejects a name with invalid characters", () => {
+    const result = createLaunchTemplateSchema.safeParse({
+      launchTemplateName: "bad name!",
+      imageId: "ami-1",
+      instanceType: "t2.micro",
+    })
+    if (result.success) {
+      throw new Error("expected validation to fail")
+    }
+    expect(result.error.issues[0]?.message).toContain("letters, digits")
+  })
+
+  it("still enforces the required image and type", () => {
+    const result = createLaunchTemplateSchema.safeParse({
+      launchTemplateName: "web-server",
     })
     expect(result.success).toBeFalsy()
   })

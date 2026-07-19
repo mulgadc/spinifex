@@ -147,13 +147,28 @@ func TestBlobUpload_Cancel(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
+// putManifestReferencing PUTs a minimal image manifest into repo that
+// references digest as its config blob, so digest is provably reachable
+// from repo for mountedFromValidSource.
+func putManifestReferencing(t *testing.T, reg *Registry, repo, digest string) {
+	t.Helper()
+	manifest := fmt.Appendf(nil,
+		`{"schemaVersion":2,"mediaType":"%s","config":{"digest":"%s"},"layers":[]}`,
+		mediaTypeDockerManifest, digest)
+	w := do(reg, http.MethodPut, "/v2/"+repo+"/manifests/v1", manifest,
+		map[string]string{"Content-Type": mediaTypeDockerManifest})
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+}
+
 func TestBlobMount_HitAndMiss(t *testing.T) {
 	reg := newTestRegistry()
 	data := []byte("shared-layer")
 	dg := pushBlob(t, reg, "team/source", data)
+	putManifestReferencing(t, reg, "team/source", dg)
 	seedRepo(t, reg, "team/dest")
 
-	// Mount hit: blob already in account pool -> 201 without upload.
+	// Mount hit: blob in the account pool and reachable via a manifest in the
+	// source repo -> 201 without upload.
 	w := do(reg, http.MethodPost,
 		"/v2/team/dest/blobs/uploads/?mount="+dg+"&from=team/source", nil, nil)
 	assert.Equal(t, http.StatusCreated, w.Code)
@@ -162,6 +177,49 @@ func TestBlobMount_HitAndMiss(t *testing.T) {
 	// Mount miss: unknown digest -> falls back to upload start (202).
 	w = do(reg, http.MethodPost,
 		"/v2/team/dest/blobs/uploads/?mount="+digestOf([]byte("nope"))+"&from=team/source", nil, nil)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+}
+
+// TestBlobMount_MissingFromFallsThroughToUpload verifies mount is only
+// recognised when both mount and from are present; mount alone is treated
+// as a plain upload start, matching the authorization middleware's
+// classification of the same request.
+func TestBlobMount_MissingFromFallsThroughToUpload(t *testing.T) {
+	reg := newTestRegistry()
+	data := []byte("shared-layer")
+	dg := pushBlob(t, reg, "team/source", data)
+	putManifestReferencing(t, reg, "team/source", dg)
+	seedRepo(t, reg, "team/dest")
+
+	w := do(reg, http.MethodPost, "/v2/team/dest/blobs/uploads/?mount="+dg, nil, nil)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+}
+
+// TestBlobMount_UnreferencedDigestFallsThrough verifies a digest that exists
+// in the account-wide blob pool but is not referenced by any manifest in the
+// named source repository is rejected as a mount — proving digest existence
+// alone is not enough to mount cross-repo.
+func TestBlobMount_UnreferencedDigestFallsThrough(t *testing.T) {
+	reg := newTestRegistry()
+	unreferenced := pushBlob(t, reg, "team/other", []byte("not-in-source"))
+	seedRepo(t, reg, "team/source")
+	seedRepo(t, reg, "team/dest")
+
+	w := do(reg, http.MethodPost,
+		"/v2/team/dest/blobs/uploads/?mount="+unreferenced+"&from=team/source", nil, nil)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+}
+
+// TestBlobMount_NonexistentSourceFallsThrough verifies naming a source
+// repository that does not exist never mounts, and never distinguishes
+// itself from an unreferenced-digest miss (both fall through identically).
+func TestBlobMount_NonexistentSourceFallsThrough(t *testing.T) {
+	reg := newTestRegistry()
+	dg := pushBlob(t, reg, "team/elsewhere", []byte("some-bytes"))
+	seedRepo(t, reg, "team/dest")
+
+	w := do(reg, http.MethodPost,
+		"/v2/team/dest/blobs/uploads/?mount="+dg+"&from=team/does-not-exist", nil, nil)
 	assert.Equal(t, http.StatusAccepted, w.Code)
 }
 

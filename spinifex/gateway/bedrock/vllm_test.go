@@ -18,7 +18,10 @@ func TestVLLMProvider_Converse_MapsResponse(t *testing.T) {
 	var captured vllmChatRequest
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured)) {
+			http.Error(w, "decode request body", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{

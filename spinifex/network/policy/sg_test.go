@@ -128,5 +128,5 @@ func TestSGManager_EnsureSG_Idempotent(t *testing.T) {
 	require.NoError(t, sg.EnsureSG(ctx, spec))
 	first := len(m.PortGroups[pg].ACLs)
 	require.NoError(t, sg.EnsureSG(ctx, spec))
-	assert.Equal(t, first, len(m.PortGroups[pg].ACLs))
+	assert.Len(t, m.PortGroups[pg].ACLs, first)
 }

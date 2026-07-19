@@ -182,7 +182,7 @@ func TestPeerDaemonPort_FallbackToSelf(t *testing.T) {
 
 	// Unparseable peer Daemon.Host + no self config — empty.
 	d2 := &Daemon{}
-	assert.Equal(t, "", d2.peerDaemonPort(config.Config{Daemon: config.DaemonConfig{Host: "garbage"}}))
+	assert.Empty(t, d2.peerDaemonPort(config.Config{Daemon: config.DaemonConfig{Host: "garbage"}}))
 }
 
 // TestMonitorPeerReachability_EndToEnd runs the real goroutine against the

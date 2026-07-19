@@ -21,7 +21,10 @@ func InstanceHostingNode(t *testing.T, c *Cluster, instanceID string) *Node {
 	for i := range c.Nodes {
 		n := c.Nodes[i]
 		out, err := runPSGrep(ctx, ssh, n, instanceID)
-		if err == nil && strings.Contains(out, instanceID) {
+		if err != nil {
+			t.Fatalf("discover instance %s on %s: %v", instanceID, n.Name, err)
+		}
+		if strings.Contains(out, instanceID) {
 			return &c.Nodes[i]
 		}
 	}

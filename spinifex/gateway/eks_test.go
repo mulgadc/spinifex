@@ -162,7 +162,7 @@ func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 	for action, seen := range expected {
 		assert.True(t, seen, "action %q is not registered in eksRoutes", action)
 	}
-	assert.Equal(t, len(expected), len(eksRoutes), "eksRoutes should have exactly one entry per AWS action")
+	assert.Len(t, eksRoutes, len(expected), "eksRoutes should have exactly one entry per AWS action")
 }
 
 func TestLookupEKSAction_UnknownReturnsFalse(t *testing.T) {

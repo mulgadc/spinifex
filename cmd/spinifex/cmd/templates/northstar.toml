@@ -1,0 +1,40 @@
+# Northstar DNS service configuration (TOML).
+# Written by `spx admin init`; read by the spinifex northstar service.
+# Contains bucket-scoped S3 credentials — keep mode 0600.
+
+# UDP+TCP bind addresses (comma separated). :5300 binds the wildcard for local
+# tooling; :53 binds the node WAN IP specifically (via CAP_NET_BIND_SERVICE) so
+# instances resolve against the node directly. Binding the WAN IP rather than
+# 0.0.0.0 avoids the systemd-resolved stub on 127.0.0.53:53. A future per-VPC
+# resolver VIP (OVN) will front :53.
+listen     = "0.0.0.0:5300,{{if .AdvertiseIP}}{{.AdvertiseIP}}{{else}}{{.BindIP}}{{end}}:53"
+dot_listen = ""
+doh_listen = ""
+tls_cert   = ""
+tls_key    = ""
+
+# Authoritative base domain for internal resource names.
+default_domain = "{{.NorthstarDefaultDomain}}"
+
+# AWS-parity private DNS zone for instance ip-<addr> records (IMDS hostname).
+internal_domain = "{{.NorthstarInternalDomain}}"
+
+# Seconds between S3 zone re-scans (anti-entropy; live changes arrive via NATS).
+sync_interval = 30
+
+# DNS (Route 53) service quotas (default off, mirrors [quota] in awsgw.toml).
+# Applied at daemon start; restart to change.
+[quotas]
+enabled = false
+records_per_hosted_zone = 10000   # AWS default; enforced only when enabled
+
+[s3]
+endpoint   = "https://{{if eq .BindIP "0.0.0.0"}}127.0.0.1{{else}}{{.BindIP}}{{end}}:8443"
+bucket     = "{{.NorthstarBucket}}"
+region     = "{{.Region}}"
+access_key = "{{.NorthstarAccessKey}}"
+secret_key = "{{.NorthstarSecretKey}}"
+
+# Forwarders for non-authoritative (recursive) queries. Empty => REFUSED.
+[upstream]
+nameservers = [{{range $i, $s := .PoolDNSServers}}{{if $i}}, {{end}}"{{$s}}:53"{{end}}]

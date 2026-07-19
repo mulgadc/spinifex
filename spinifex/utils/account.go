@@ -4,9 +4,28 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/nats-io/nats.go"
 )
+
+// defaultKVReplicas is the replica count applied to buckets created via
+// GetOrCreateKVBucket. The daemon sets it once at boot to the cluster size so
+// lazily-created buckets are born quorate on multi-node; 0 means unset and is
+// treated as 1 (single-node / tests).
+var defaultKVReplicas atomic.Int64
+
+// SetDefaultKVReplicas sets the replica count for buckets subsequently created
+// via GetOrCreateKVBucket. Clamped to a minimum of 1. Called once at daemon
+// boot with the cluster size, before any handler creates a bucket.
+func SetDefaultKVReplicas(n int) {
+	defaultKVReplicas.Store(int64(max(n, 1)))
+}
+
+// DefaultKVReplicas returns the current default replica count (minimum 1).
+func DefaultKVReplicas() int {
+	return max(int(defaultKVReplicas.Load()), 1)
+}
 
 // VersionKey is the well-known KV key used to store a bucket's schema version.
 const VersionKey = "_version"
@@ -69,9 +88,11 @@ func IsAccountID(s string) bool {
 	return true
 }
 
-// GetOrCreateKVBucket creates or retrieves a NATS KV bucket at Replicas=1.
+// GetOrCreateKVBucket creates or retrieves a NATS KV bucket at the cluster's
+// default replica count (see SetDefaultKVReplicas), so buckets created lazily
+// after boot are quorate on multi-node rather than stuck at R1.
 func GetOrCreateKVBucket(js nats.JetStreamContext, bucketName string, history int) (nats.KeyValue, error) {
-	return GetOrCreateKVBucketWithReplicas(js, bucketName, history, 1)
+	return GetOrCreateKVBucketWithReplicas(js, bucketName, history, DefaultKVReplicas())
 }
 
 // GetOrCreateKVBucketWithReplicas creates or retrieves a NATS KV bucket at the

@@ -27,6 +27,13 @@ const (
 	DefaultAWSInternalSuffix = "spinifex.internal"
 )
 
+// DefaultMgmtBridgeIP is the canonical br-mgmt host address the control plane
+// advertises: the EKS gateway URL, predastore endpoint, and node-group userdata
+// all target it. Kept in sync with setup-ovn.sh MGMT_CIDR. Server certs must
+// always carry this as a SAN so publish succeeds even when br-mgmt happens to be
+// down at cert-generation time (interface enumeration would otherwise miss it).
+const DefaultMgmtBridgeIP = "10.15.8.1"
+
 // AWSConfig holds cluster-wide AWS-parity settings shared across services.
 // Region scopes the default AWS region; InternalSuffix is the internal DNS
 // suffix used to build service endpoints (e.g. ecr.{region}.{suffix}).
@@ -77,7 +84,7 @@ type BootstrapConfig struct {
 	SubnetCidr string `mapstructure:"subnet_cidr"`
 }
 
-// Config holds all configuration for the application
+// Config holds all configuration for the application.
 type Config struct {
 	// Node config
 	Node string `json:"Node" mapstructure:"node"`
@@ -95,6 +102,7 @@ type Config struct {
 	Viperblock ViperblockConfig `json:"Viperblock" mapstructure:"viperblock"`
 	AWSGW      AWSGWConfig      `json:"AWSGW" mapstructure:"awsgw"`
 	VPCD       VPCDConfig       `json:"VPCD" mapstructure:"vpcd"`
+	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -124,6 +132,17 @@ type VPCDConfig struct {
 	OVNSBAddr         string `json:"OVNSBAddr" mapstructure:"ovn_sb_addr"`                // OVN Southbound DB address; comma-separated list for a RAFT cluster (e.g., "tcp:127.0.0.1:6642" or "tcp:ip1:6642,tcp:ip2:6642,tcp:ip3:6642")
 	ExternalInterface string `json:"ExternalInterface" mapstructure:"external_interface"` // WAN NIC name (e.g., "eth1", "enp0s3") — the physical NIC on the WAN bridge
 	BridgeMode        string `json:"BridgeMode" mapstructure:"bridge_mode"`               // "direct" or "veth" (auto-detected if empty)
+}
+
+// NorthstarConfig holds the per-node northstar DNS service configuration.
+type NorthstarConfig struct {
+	// ConfigPath is the path to northstar.toml written by `spx admin init`.
+	ConfigPath string `json:"ConfigPath" mapstructure:"config_path"`
+	// DefaultDomain and InternalDomain mirror the northstar zone domains as
+	// non-secret values so producers (daemon, vpcd) can resolve DNS names
+	// without reading the credential-bearing northstar.toml.
+	DefaultDomain  string `json:"DefaultDomain" mapstructure:"default_domain"`
+	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
 }
 
 // ParseEndpoints splits a comma-separated OVSDB endpoint list (NB/SB RAFT
@@ -167,7 +186,7 @@ type GPUModelOverride struct {
 	MIGProfile string `json:"MIGProfile" mapstructure:"mig_profile"`
 }
 
-// DaemonConfig holds the daemon configuration
+// DaemonConfig holds the daemon configuration.
 type DaemonConfig struct {
 	Host              string             `json:"Host" mapstructure:"host"`
 	TLSKey            string             `json:"TLSKey" mapstructure:"tlskey"`
@@ -180,7 +199,7 @@ type DaemonConfig struct {
 	MIGProfile string `json:"MIGProfile" mapstructure:"mig_profile"`
 }
 
-// NATSConfig holds the NATS configuration
+// NATSConfig holds the NATS configuration.
 type NATSConfig struct {
 	Host   string  `json:"Host" mapstructure:"host"`
 	CACert string  `json:"CACert" mapstructure:"cacert"`
@@ -188,12 +207,12 @@ type NATSConfig struct {
 	Sub    NATSSub `json:"Sub" mapstructure:"sub"`
 }
 
-// NATSACL holds the NATS ACL configuration
+// NATSACL holds the NATS ACL configuration.
 type NATSACL struct {
 	Token string `json:"Token" mapstructure:"token"`
 }
 
-// NATSSub holds the NATS subscription configuration
+// NATSSub holds the NATS subscription configuration.
 type NATSSub struct {
 	Subject string `json:"Subject" mapstructure:"subject"`
 }
@@ -235,7 +254,7 @@ func (c Config) GetServices() []string {
 	return c.Services
 }
 
-// LoadConfig loads the configuration from file and environment variables
+// LoadConfig loads the configuration from file and environment variables.
 func LoadConfig(configPath string) (*ClusterConfig, error) {
 	// Set environment variable prefix
 	viper.SetEnvPrefix("SPINIFEX")

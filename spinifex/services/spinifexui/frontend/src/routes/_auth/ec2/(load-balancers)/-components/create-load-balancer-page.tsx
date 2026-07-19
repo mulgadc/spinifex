@@ -4,7 +4,7 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -180,13 +180,13 @@ export function CreateLoadBalancerPage() {
     formState: { errors, isSubmitting },
   } = lbForm
 
-  const selectedVpc = watch("vpcId")
-  const selectedSubnets = watch("subnetIds")
-  const selectedSgs = watch("securityGroupIds")
-  const lbType = watch("type")
-  const listenerProtocol = watch("listener.protocol")
-  const tgMode = watch("listener.targetGroupMode")
-  const tags = watch("tags")
+  const selectedVpc = useWatch({ control, name: "vpcId" })
+  const selectedSubnets = useWatch({ control, name: "subnetIds" })
+  const selectedSgs = useWatch({ control, name: "securityGroupIds" })
+  const lbType = useWatch({ control, name: "type" })
+  const listenerProtocol = useWatch({ control, name: "listener.protocol" })
+  const tgMode = useWatch({ control, name: "listener.targetGroupMode" })
+  const tags = useWatch({ control, name: "tags" })
 
   const isNlb = lbType === "network"
   const isSecure = isSecureProtocol(listenerProtocol)

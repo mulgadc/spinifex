@@ -99,7 +99,7 @@ func newHasher(checksumType string) (hash.Hash, error) {
 func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 	parsed, err := url.Parse(checksumURL)
 	if err != nil {
-		return "", fmt.Errorf("%w: parse url: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: parse url: %w", ErrChecksumFetchFailed, err)
 	}
 	if parsed.Scheme != "https" {
 		return "", fmt.Errorf("%w: non-https checksum url scheme %q", ErrChecksumFetchFailed, parsed.Scheme)
@@ -138,12 +138,12 @@ func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checksumURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("%w: build request: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: build request: %w", ErrChecksumFetchFailed, err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: %w", ErrChecksumFetchFailed, err)
 	}
 	defer resp.Body.Close()
 
@@ -153,7 +153,7 @@ func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, sumsFileMaxSize+1))
 	if err != nil {
-		return "", fmt.Errorf("%w: read body: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: read body: %w", ErrChecksumFetchFailed, err)
 	}
 	if len(body) > sumsFileMaxSize {
 		return "", fmt.Errorf("%w: sums file exceeds %d byte limit", ErrChecksumFetchFailed, sumsFileMaxSize)
@@ -203,7 +203,7 @@ func parseSumsFile(body []byte, filename string) (string, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("%w: scan sums file: %v", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: scan sums file: %w", ErrChecksumFetchFailed, err)
 	}
 
 	// Alpine single-file fallback: accept only if exactly one bare-digest line in the file.
@@ -306,6 +306,11 @@ var AvailableImages = map[string]Images{
 		BootMode:     "uefi",
 	},
 
+	// Ubuntu is pulled from releases/, not the codename dailies tree: Canonical
+	// prunes old daily builds, so a pinned daily URL 404s once it ages out and
+	// takes the catalog entry with it. Release builds are kept, so the pin stays
+	// resolvable. Note the filename carries the version rather than the codename
+	// under releases/ — the sums entry is matched on that basename.
 	"ubuntu-26.04-x86_64": {
 		Name:         "ubuntu-26.04-x86_64",
 		Description:  "Ubuntu 26.04 LTS (Resolute Reindeer) x86_64 cloud image",
@@ -313,9 +318,9 @@ var AvailableImages = map[string]Images{
 		Version:      "26.04",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-amd64.img",
-		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
+		CreatedAt:    time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud-images.ubuntu.com/releases/resolute/release-20260713/ubuntu-26.04-server-cloudimg-amd64.img",
+		Checksum:     "https://cloud-images.ubuntu.com/releases/resolute/release-20260713/SHA256SUMS",
 		ChecksumType: "sha256",
 		BootMode:     "uefi",
 	},
@@ -327,9 +332,9 @@ var AvailableImages = map[string]Images{
 		Version:      "26.04",
 		Arch:         "arm64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-arm64.img",
-		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
+		CreatedAt:    time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud-images.ubuntu.com/releases/resolute/release-20260713/ubuntu-26.04-server-cloudimg-arm64.img",
+		Checksum:     "https://cloud-images.ubuntu.com/releases/resolute/release-20260713/SHA256SUMS",
 		ChecksumType: "sha256",
 		BootMode:     "uefi",
 	},

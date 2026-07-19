@@ -17,7 +17,7 @@ const (
 	KVBucketELBv2        = "spinifex-elbv2"
 	KVBucketELBv2Version = 1
 
-	// Key prefixes for different resource types within the single bucket
+	// Key prefixes for different resource types within the single bucket.
 	KeyPrefixLB       = "lb."
 	KeyPrefixTG       = "tg."
 	KeyPrefixListener = "listener."
@@ -151,6 +151,13 @@ func (s *Store) DeleteLoadBalancer(lbID string) error {
 // ListLoadBalancers returns all load balancer records.
 func (s *Store) ListLoadBalancers() ([]*LoadBalancerRecord, error) {
 	return listByPrefix[LoadBalancerRecord](s.kv, KeyPrefixLB)
+}
+
+// ListLoadBalancersStrict returns every load balancer record, failing if any
+// record cannot be unmarshalled so the caller never treats a partial list as a
+// complete inventory (the DNS reconcile prune authority requires the whole set).
+func (s *Store) ListLoadBalancersStrict() ([]*LoadBalancerRecord, error) {
+	return listByPrefixStrict[LoadBalancerRecord](s.kv, KeyPrefixLB)
 }
 
 // GetLoadBalancerByArn finds a load balancer by the short ID in the ARN's final
@@ -515,8 +522,21 @@ func (s *Store) GetRuleByArn(arn string) (*RuleRecord, error) {
 
 // --- Generic helpers ---
 
-// listByPrefix returns all records with keys matching the given prefix.
+// listByPrefix returns all records with keys matching the given prefix. A record
+// that cannot be unmarshalled is logged and skipped so one corrupt entry does not
+// fail read/describe paths.
 func listByPrefix[T any](kv nats.KeyValue, prefix string) ([]*T, error) {
+	return listByPrefixOpt[T](kv, prefix, false)
+}
+
+// listByPrefixStrict is listByPrefix but returns an error on the first record it
+// cannot unmarshal, so a caller that treats the result as a complete inventory
+// never mistakes a partial read for the whole set.
+func listByPrefixStrict[T any](kv nats.KeyValue, prefix string) ([]*T, error) {
+	return listByPrefixOpt[T](kv, prefix, true)
+}
+
+func listByPrefixOpt[T any](kv nats.KeyValue, prefix string, strict bool) ([]*T, error) {
 	keys, err := kv.Keys()
 	if err != nil {
 		if errors.Is(err, nats.ErrNoKeysFound) {
@@ -544,6 +564,9 @@ func listByPrefix[T any](kv nats.KeyValue, prefix string) ([]*T, error) {
 
 		var record T
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			if strict {
+				return nil, fmt.Errorf("unmarshal record %q: %w", key, err)
+			}
 			slog.Error("Failed to unmarshal ELBv2 record", "key", key, "err", err)
 			continue
 		}

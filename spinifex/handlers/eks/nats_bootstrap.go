@@ -302,7 +302,7 @@ func (b *NATSBootstrap) persistCA(data []byte) error {
 		return fmt.Errorf("%w: CA envelope empty", errBootstrapPermanent)
 	}
 	if _, err := base64.StdEncoding.DecodeString(env.CertificateAuthority); err != nil {
-		return fmt.Errorf("%w: CA not base64: %v", errBootstrapPermanent, err)
+		return fmt.Errorf("%w: CA not base64: %w", errBootstrapPermanent, err)
 	}
 	return SetClusterCertificateAuthority(b.kv, b.clusterName, env.CertificateAuthority)
 }
@@ -310,7 +310,7 @@ func (b *NATSBootstrap) persistCA(data []byte) error {
 func unmarshalBootstrapEnvelope(data []byte) (BootstrapEnvelope, error) {
 	var env BootstrapEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		return env, fmt.Errorf("%w: unmarshal envelope: %v", errBootstrapPermanent, err)
+		return env, fmt.Errorf("%w: unmarshal envelope: %w", errBootstrapPermanent, err)
 	}
 	return env, nil
 }
@@ -323,7 +323,7 @@ func assertJWKSMatch(existing, incoming []byte) error {
 		return fmt.Errorf("unmarshal existing JWKS: %w", err)
 	}
 	if err := json.Unmarshal(incoming, &in); err != nil {
-		return fmt.Errorf("%w: unmarshal incoming JWKS: %v", errBootstrapPermanent, err)
+		return fmt.Errorf("%w: unmarshal incoming JWKS: %w", errBootstrapPermanent, err)
 	}
 	if len(in.Keys) == 0 {
 		return fmt.Errorf("%w: incoming JWKS has no keys", errBootstrapPermanent)

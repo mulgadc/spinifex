@@ -87,7 +87,7 @@ func TestIntegration_EBSDeleteMountedVolume(t *testing.T) {
 
 	// Verify volume removed from config
 	cfg.mu.Lock()
-	assert.Len(t, cfg.MountedVolumes, 0)
+	assert.Empty(t, cfg.MountedVolumes)
 	cfg.mu.Unlock()
 
 	// Verify socket file deleted

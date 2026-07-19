@@ -17,13 +17,22 @@ set -eu
 # family"). This drop-in supplies all four; region is derived from the AZ
 # (trailing zone letters stripped).
 #
-# K3s merges /etc/rancher/k3s/config.yaml.d/*.yaml over config.yaml; list keys
-# such as kubelet-arg are concatenated, so this adds the flag without touching
-# the cloud-init-written main config. Role-agnostic: runs on server + agent.
+# This drop-in is also the SINGLE writer of the node-label list. K3s replaces
+# (not merges) node-label across config.yaml.d files, so the last-sorted file
+# wins outright and any other node-label drop-in would silently wipe the rest.
+# The worker's nodegroup label (and, on GPU workers, the nvidia.com/gpu.present
+# label + NoSchedule taint) therefore ride here too, read from agent.env, so
+# they share the one list with the topology labels. On the K3s server there is
+# no agent.env, so only the topology labels are written — behavior unchanged.
+#
+# kubelet-arg lists ARE concatenated by k3s across drop-ins, so the provider-id
+# flag coexists with other files' kubelet-arg without touching the main config.
+# Role-agnostic: runs on server + agent.
 
 IMDS="http://169.254.169.254/latest"
 DROPIN_DIR=/etc/rancher/k3s/config.yaml.d
 DROPIN="${DROPIN_DIR}/10-provider-id.yaml"
+AGENT_ENV=/etc/spinifex-eks/agent.env
 LOGTAG="mulga-eks-provider-id"
 
 log() { echo "[${LOGTAG}] $*"; }
@@ -79,13 +88,32 @@ case "${itype}" in
     *) itype="m5.large" ;;
 esac
 
+# Fold the worker's nodegroup + GPU node-labels into the same list. agent.env is
+# written by cloud-init and absent on the server; source it only if present.
+nodegroup=""
+gpu_node=""
+if [ -f "${AGENT_ENV}" ]; then
+    # shellcheck disable=SC1090
+    . "${AGENT_ENV}"
+    nodegroup="${SPINIFEX_NODEGROUP:-}"
+    gpu_node="${SPINIFEX_GPU_NODE:-}"
+fi
+
 mkdir -p "${DROPIN_DIR}"
-cat > "${DROPIN}" <<EOF
-kubelet-arg:
-  - "provider-id=aws:///${az}/${iid}"
-node-label:
-  - "topology.kubernetes.io/region=${region}"
-  - "topology.kubernetes.io/zone=${az}"
-  - "node.kubernetes.io/instance-type=${itype}"
-EOF
-log "wrote provider-id aws:///${az}/${iid}, region=${region} zone=${az} type=${itype}"
+{
+    echo "kubelet-arg:"
+    echo "  - \"provider-id=aws:///${az}/${iid}\""
+    echo "node-label:"
+    echo "  - \"topology.kubernetes.io/region=${region}\""
+    echo "  - \"topology.kubernetes.io/zone=${az}\""
+    echo "  - \"node.kubernetes.io/instance-type=${itype}\""
+    if [ -n "${nodegroup}" ]; then
+        echo "  - \"eks.amazonaws.com/nodegroup=${nodegroup}\""
+    fi
+    if [ "${gpu_node}" = "true" ]; then
+        echo "  - \"nvidia.com/gpu.present=true\""
+        echo "node-taint:"
+        echo "  - \"nvidia.com/gpu=present:NoSchedule\""
+    fi
+} > "${DROPIN}"
+log "wrote provider-id aws:///${az}/${iid}, region=${region} zone=${az} type=${itype} nodegroup=${nodegroup:-<none>} gpu=${gpu_node:-false}"

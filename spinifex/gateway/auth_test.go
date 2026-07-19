@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -14,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/go-chi/chi/v5"
-	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/predastore/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -67,13 +70,24 @@ func init() {
 	}
 }
 
-// signTestRequest signs req in place using SigV4. body must match what the
-// middleware will read from r.Body so the sha256 matches X-Amz-Content-Sha256.
-func signTestRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret string, optFns ...func(*auth.Options)) {
+// signTestRequest signs req in place with the aws-sdk-go-v2 v4 signer — the same
+// path production callers use via gwsign — so the gateway verifies a real SDK
+// signature. body must match what the middleware reads from r.Body so the payload
+// hash agrees. An optional signingTime pins the clock for skew tests.
+func signTestRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret string, signingTime ...time.Time) {
 	t.Helper()
 	sum := sha256.Sum256(body)
-	require.NoError(t, auth.SignReq(req, accessKey, secret,
-		hex.EncodeToString(sum[:]), testService, testRegion, optFns...))
+	payloadHash := hex.EncodeToString(sum[:])
+	when := time.Now().UTC()
+	if len(signingTime) > 0 {
+		when = signingTime[0]
+	}
+	// gwsign sets this header so the SDK signs it; sigv4 reproduces it when
+	// reconstructing the canonical request.
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	require.NoError(t, v4.NewSigner().SignHTTP(context.Background(),
+		aws.Credentials{AccessKeyID: accessKey, SecretAccessKey: secret},
+		req, payloadHash, testService, testRegion, when))
 }
 
 func setupTestApp(accessKey, secretKey string) http.Handler {
@@ -410,7 +424,7 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	oversizedBody := []byte(strings.Repeat("x", maxBodySize+1))
+	oversizedBody := []byte(strings.Repeat("x", sigv4.MaxPayloadLen+1))
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversizedBody))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -433,10 +447,10 @@ func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	past := time.Now().UTC().Add(-6 * time.Minute) // exceeds 5-minute maxClockSkew
+	past := time.Now().UTC().Add(-16 * time.Minute) // exceeds sigv4 15-minute MaxClockSkew
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(past))
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey, past)
 
 	resp := doRequest(handler, req)
 
@@ -453,10 +467,10 @@ func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
 func TestSigV4Auth_FutureTimestamp(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	future := time.Now().UTC().Add(6 * time.Minute) // exceeds 5-minute maxClockSkew
+	future := time.Now().UTC().Add(16 * time.Minute) // exceeds sigv4 15-minute MaxClockSkew
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(future))
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey, future)
 
 	resp := doRequest(handler, req)
 
@@ -473,10 +487,10 @@ func TestSigV4Auth_FutureTimestamp(t *testing.T) {
 func TestSigV4Auth_TimestampWithinSkew(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	recent := time.Now().UTC().Add(-4 * time.Minute) // within the 5-minute window
+	recent := time.Now().UTC().Add(-14 * time.Minute) // within the 15-minute window
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(recent))
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey, recent)
 
 	resp := doRequest(handler, req)
 
@@ -496,11 +510,11 @@ func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
 		offset     time.Duration
 		expectPass bool
 	}{
-		// 4m59s not 5m to absorb test execution time.
-		{"just within 5 min past", -(4*time.Minute + 59*time.Second), true},
-		{"just beyond 5 min past", -(5*time.Minute + 1*time.Second), false},
-		{"just within 5 min future", 4*time.Minute + 59*time.Second, true},
-		{"just beyond 5 min future", 5*time.Minute + 1*time.Second, false},
+		// 14m59s not 15m to absorb test execution time.
+		{"just within 15 min past", -(14*time.Minute + 59*time.Second), true},
+		{"just beyond 15 min past", -(15*time.Minute + 1*time.Second), false},
+		{"just within 15 min future", 14*time.Minute + 59*time.Second, true},
+		{"just beyond 15 min future", 15*time.Minute + 1*time.Second, false},
 	}
 
 	for _, tc := range testCases {
@@ -508,7 +522,7 @@ func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
 			at := time.Now().UTC().Add(tc.offset)
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = "localhost:9999"
-			signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(at))
+			signTestRequest(t, req, nil, testAccessKey, testSecretKey, at)
 
 			resp := doRequest(handler, req)
 

@@ -39,7 +39,7 @@ func TestCreateInstanceProfile(t *testing.T) {
 	assert.Equal(t, "app-profile", *out.InstanceProfile.InstanceProfileName)
 	assert.Equal(t, "/service-profiles/", *out.InstanceProfile.Path)
 	assert.Equal(t, "arn:aws:iam::"+testAccountID+":instance-profile/service-profiles/app-profile", *out.InstanceProfile.Arn)
-	require.True(t, len(*out.InstanceProfile.InstanceProfileId) > 4)
+	require.Greater(t, len(*out.InstanceProfile.InstanceProfileId), 4)
 	assert.Equal(t, "AIPA", (*out.InstanceProfile.InstanceProfileId)[:4])
 	assert.Empty(t, out.InstanceProfile.Roles, "freshly created profile has no role attached")
 	require.Len(t, out.InstanceProfile.Tags, 1)
@@ -156,7 +156,7 @@ func TestListInstanceProfiles_Empty(t *testing.T) {
 
 	out, err := svc.ListInstanceProfiles(testAccountID, &iam.ListInstanceProfilesInput{})
 	require.NoError(t, err)
-	assert.Len(t, out.InstanceProfiles, 0)
+	assert.Empty(t, out.InstanceProfiles)
 }
 
 func TestListInstanceProfiles_PathPrefix(t *testing.T) {
@@ -400,7 +400,7 @@ func TestListInstanceProfilesForRole_None(t *testing.T) {
 		RoleName: aws.String("unused-role"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.InstanceProfiles, 0)
+	assert.Empty(t, out.InstanceProfiles)
 }
 
 // ============================================================================

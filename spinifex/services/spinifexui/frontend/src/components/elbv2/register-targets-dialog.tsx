@@ -1,5 +1,5 @@
 import type { Instance } from "@aws-sdk/client-ec2"
-import { useEffect, useState } from "react"
+import { useState } from "react"
 
 import {
   AlertDialog,
@@ -54,12 +54,15 @@ export function RegisterTargetsDialog({
   )
   const [error, setError] = useState<string | undefined>()
 
-  useEffect(() => {
+  // Clear the selection each time the dialog closes so it reopens fresh.
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
     if (!open) {
       setSelections({})
       setError(undefined)
     }
-  }, [open])
+  }
 
   const toggle = (id: string) => {
     setSelections((prev) => {

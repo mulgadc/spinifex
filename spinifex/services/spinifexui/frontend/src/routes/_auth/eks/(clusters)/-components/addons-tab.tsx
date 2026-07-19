@@ -2,8 +2,8 @@ import type { AddonInfo } from "@aws-sdk/client-eks"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { ArrowUpCircle, Trash2 } from "lucide-react"
-import { useEffect, useState } from "react"
-import { Controller, useForm } from "react-hook-form"
+import { useState } from "react"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { DetailCard } from "@/components/detail-card"
@@ -66,7 +66,6 @@ function AddAddonDialog({
     register,
     reset,
     setValue,
-    watch,
   } = useForm<CreateAddonFormValues>({
     resolver: zodResolver(createAddonSchema),
     defaultValues: {
@@ -77,8 +76,8 @@ function AddAddonDialog({
     },
   })
 
-  const addonName = watch("addonName")
-  const addonVersion = watch("addonVersion")
+  const addonName = useWatch({ control, name: "addonName" })
+  const addonVersion = useWatch({ control, name: "addonVersion" })
   const selectedAddon = catalog.find((a) => a.addonName === addonName)
   const versions = selectedAddon?.addonVersions ?? []
   const selectedVersion = versions.find((v) => v.addonVersion === addonVersion)
@@ -241,19 +240,17 @@ function UpdateAddonDialog({
   const [config, setConfig] = useState(current.configurationValues ?? "")
   const [error, setError] = useState<string | undefined>()
 
-  useEffect(() => {
+  // Seed the fields from the current add-on config each time the dialog opens.
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
     if (open) {
       setVersion(current.addonVersion ?? "")
       setRole(current.serviceAccountRoleArn ?? "")
       setConfig(current.configurationValues ?? "")
       setError(undefined)
     }
-  }, [
-    open,
-    current.addonVersion,
-    current.serviceAccountRoleArn,
-    current.configurationValues,
-  ])
+  }
 
   const handleConfirm = () => {
     const result = addonConfigurationSchema.safeParse(config)

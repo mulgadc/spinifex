@@ -2,8 +2,8 @@ import type { InstanceTypeInfo } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { ArrowUpCircle, SlidersHorizontal, Trash2 } from "lucide-react"
-import { useEffect, useState } from "react"
-import { Controller, useForm } from "react-hook-form"
+import { useState } from "react"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { DetailCard } from "@/components/detail-card"
@@ -90,14 +90,17 @@ function ScaleNodegroupDialog({
   const [maxSize, setMaxSize] = useState(current.maxSize ?? 0)
   const [error, setError] = useState<string | undefined>()
 
-  useEffect(() => {
+  // Seed the sizes from the current nodegroup each time the dialog opens.
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
     if (open) {
       setMinSize(current.minSize ?? 0)
       setDesiredSize(current.desiredSize ?? 0)
       setMaxSize(current.maxSize ?? 0)
       setError(undefined)
     }
-  }, [open, current.minSize, current.desiredSize, current.maxSize])
+  }
 
   const handleConfirm = () => {
     if (!(minSize <= desiredSize && desiredSize <= maxSize)) {
@@ -312,7 +315,6 @@ function AddNodegroupDialog({
     register,
     reset,
     setValue,
-    watch,
   } = useForm<CreateNodegroupFormValues>({
     resolver: zodResolver(createNodegroupSchema),
     defaultValues: {
@@ -329,8 +331,8 @@ function AddNodegroupDialog({
     },
   })
 
-  const selectedSubnets = watch("subnetIds")
-  const selectedInstanceType = watch("instanceTypes")
+  const selectedSubnets = useWatch({ control, name: "subnetIds" })
+  const selectedInstanceType = useWatch({ control, name: "instanceTypes" })
   const selectedIsGpu = isGpuNodegroup(selectedInstanceType, instanceTypes)
 
   const toggleSubnet = (subnetId: string) => {

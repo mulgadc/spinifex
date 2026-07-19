@@ -3,7 +3,6 @@ package admin
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -157,7 +156,7 @@ func TestRemoveSystemImage_AccountOwned_ForceBypasses(t *testing.T) {
 
 	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
-	assert.Greater(t, res.ObjectsDeleted, 0)
+	assert.Positive(t, res.ObjectsDeleted)
 	assert.Equal(t, 0, store.Count())
 }
 
@@ -196,7 +195,7 @@ func TestRemoveSystemImage_DependentVolume_Direct_Refused(t *testing.T) {
 	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	var depErr *DependentError
-	require.True(t, errors.As(err, &depErr))
+	require.ErrorAs(t, err, &depErr)
 	assert.Contains(t, depErr.Dependents.Volumes, "vol-aaa")
 }
 
@@ -214,7 +213,7 @@ func TestRemoveSystemImage_DependentVolume_Transitive_Refused(t *testing.T) {
 	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	var depErr *DependentError
-	require.True(t, errors.As(err, &depErr))
+	require.ErrorAs(t, err, &depErr)
 	assert.Contains(t, depErr.Dependents.Volumes, "vol-bbb")
 	assert.Contains(t, depErr.Dependents.Snapshots, derivedSnap)
 }
@@ -232,7 +231,7 @@ func TestRemoveSystemImage_DependentAMI_Refused(t *testing.T) {
 	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	var depErr *DependentError
-	require.True(t, errors.As(err, &depErr))
+	require.ErrorAs(t, err, &depErr)
 	assert.Contains(t, depErr.Dependents.AMIs, "ami-acct-002")
 }
 
@@ -245,7 +244,7 @@ func TestRemoveSystemImage_Force_OverridesDependents(t *testing.T) {
 
 	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
-	assert.Greater(t, res.ObjectsDeleted, 0)
+	assert.Positive(t, res.ObjectsDeleted)
 	// vol-orphan/config.json remains; the AMI is gone.
 	_, err = store.GetObject(t.Context(), &awss3.GetObjectInput{
 		Bucket: aws.String(testRemoveBucket),

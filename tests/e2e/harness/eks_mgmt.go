@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,9 +15,9 @@ import (
 	"github.com/spf13/viper"
 )
 
-// ControlPlaneMgmtIP resolves the EKS control-plane VM's br-mgmt address —
-// the only address reachable from the runner. The NLB endpoint is not wired
-// for external access; the mgmt IP is read directly from the NATS KV record.
+// ControlPlaneMgmtIP resolves the EKS control-plane VM's br-mgmt address, read
+// directly from the NATS KV record. Tests reach the apiserver via the published
+// cluster endpoint; this is the out-of-band path to the VM itself.
 func ControlPlaneMgmtIP(t *testing.T, env *Env, accountID, clusterName string) string {
 	t.Helper()
 	host, token, ca := natsConn(t, env)
@@ -78,6 +79,19 @@ func loadClusterConfig(path string) (*config.ClusterConfig, error) {
 	if err := v.ReadInConfig(); err != nil {
 		return nil, err
 	}
+	return unmarshalClusterConfig(v)
+}
+
+func loadClusterConfigBytes(data []byte) (*config.ClusterConfig, error) {
+	v := viper.New()
+	v.SetConfigType("toml")
+	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
+	return unmarshalClusterConfig(v)
+}
+
+func unmarshalClusterConfig(v *viper.Viper) (*config.ClusterConfig, error) {
 	var cc config.ClusterConfig
 	if err := v.Unmarshal(&cc); err != nil {
 		return nil, err

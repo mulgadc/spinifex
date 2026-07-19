@@ -27,7 +27,7 @@ func ValidateModifyVolumeInput(input *ec2.ModifyVolumeInput) error {
 	return nil
 }
 
-// ModifyVolume handles the ModifyVolume API call
+// ModifyVolume handles the ModifyVolume API call.
 func ModifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyVolumeOutput, error) {
 	var output ec2.ModifyVolumeOutput
 

@@ -20,7 +20,7 @@ func ValidateModifySubnetAttributeInput(input *ec2.ModifySubnetAttributeInput) e
 	return nil
 }
 
-// ModifySubnetAttribute handles the EC2 ModifySubnetAttribute API call
+// ModifySubnetAttribute handles the EC2 ModifySubnetAttribute API call.
 func ModifySubnetAttribute(ctx context.Context, input *ec2.ModifySubnetAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifySubnetAttributeOutput, error) {
 	var output ec2.ModifySubnetAttributeOutput
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,21 @@ func unitFiles(t *testing.T, dir string) []string {
 func hasDirective(unit, line string) bool {
 	for l := range strings.SplitSeq(unit, "\n") {
 		if strings.TrimSpace(l) == line {
+			return true
+		}
+	}
+	return false
+}
+
+// directiveContains reports whether an active list directive contains a value.
+func directiveContains(unit, key, value string) bool {
+	prefix := key + "="
+	for line := range strings.SplitSeq(unit, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		if slices.Contains(strings.Fields(strings.TrimPrefix(line, prefix)), value) {
 			return true
 		}
 	}
@@ -116,6 +132,23 @@ func TestRG9_TierConfinement(t *testing.T) {
 		}
 	}
 
+	// Northstar: locked-down baseline plus exactly CAP_NET_BIND_SERVICE so the
+	// unprivileged user binds :53 without root. No broader; ambient caps stay
+	// compatible with NoNewPrivileges=yes.
+	northstar := readUnit(t, dir, "spinifex-northstar.service")
+	for _, want := range []string{
+		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
+		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+		"NoNewPrivileges=yes",
+		"ProtectSystem=strict",
+		"MemoryDenyWriteExecute=yes",
+		"SystemCallArchitectures=native",
+	} {
+		if !hasDirective(northstar, want) {
+			t.Errorf("RG-9: northstar must carry %q (exactly CAP_NET_BIND_SERVICE for :53)", want)
+		}
+	}
+
 	// Network tier (vpcd): per-tap IMDS dropped the in-process setns, so CAP_SYS_ADMIN
 	// is gone and the cap set is exactly the network minimum. NoNewPrivileges stays off
 	// (RG-10: vpcd shells out to sudo for ip/ovs-vsctl/dhcpcd, like the daemon).
@@ -133,6 +166,28 @@ func TestRG9_TierConfinement(t *testing.T) {
 	}
 	if !hasDirective(vpcd, "SystemCallArchitectures=native") {
 		t.Error("RG-9: vpcd must keep SystemCallArchitectures=native")
+	}
+}
+
+// TestOptionalNorthstarActivation keeps the static target and restart wiring
+// that surrounds the command's configuration-aware activation behavior.
+func TestOptionalNorthstarActivation(t *testing.T) {
+	dir := unitsDir(t)
+	target := readUnit(t, dir, "spinifex.target")
+	if !directiveContains(target, "Wants", "spinifex-northstar.service") {
+		t.Error("spinifex.target must start Northstar when node configuration enables it")
+	}
+
+	northstar := readUnit(t, dir, "spinifex-northstar.service")
+	for _, want := range []string{
+		"ExecStart=/usr/local/bin/spx service northstar start",
+		"Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml",
+		"Restart=on-failure",
+		"RestartSec=5",
+	} {
+		if !hasDirective(northstar, want) {
+			t.Errorf("configured Northstar activation must retain %q", want)
+		}
 	}
 }
 

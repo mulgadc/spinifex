@@ -15,21 +15,24 @@ linters:
     - bodyclose # checks whether HTTP response body is closed successfully
     - canonicalheader # checks whether net/http.Header uses canonical header keys
     - decorder # checks declaration order of types, consts, vars, and funcs
+    - depguard # blocks imports of packages with a preferred replacement
     - durationcheck # checks for two durations multiplied together
     - embeddedstructfieldcheck # checks embedded sync.Mutex/RWMutex in structs
     - errcheck # checks for unchecked errors in type assertions and I/O
     - errchkjson # checks types passed to json encoding functions, flags omittable error checks
     - errname # checks that sentinel errors are prefixed with Err, error types suffixed with Error
+    - errorlint # catches ==/!= on errors, type assertions on errors, and %v instead of %w — all break on wrapped errors
     - exptostd # detects golang.org/x/exp/ functions replaceable by stdlib
     - fatcontext # detects nested contexts in loops
-    - forcetypeassert # flags unchecked type assertions that can panic
     - gocheckcompilerdirectives # validates go compiler directive comments (//go:)
+    - godot # checks that declaration comments end in a period
     - goprintffuncname # checks that printf-like functions are named with f at the end
     - gosec # inspects source code for security problems
     - govet # reports suspicious constructs (Printf alignment, shadow, etc.)
     - ineffassign # detects assignments to existing variables that are not used
     - makezero # finds slice declarations with non-zero initial length followed by append
     - mirror # catches wrong mirror patterns in bytes/strings usage
+    - misspell # finds commonly misspelled English words
     - musttag # checks structs passed to marshal/unmarshal have proper tags
     - modernize # modernizes code to use newer Go idioms (go fix analyzers)
     - nakedret # finds naked returns in functions
@@ -43,6 +46,8 @@ linters:
     - recvcheck # checks for receiver type consistency (pointer vs value)
     - sloglint # enforces consistent log/slog usage (key-value pairs, no globals)
     - staticcheck # extensive static analysis checks
+    - testifylint # checks common testify mistakes (assert.Len over assert.Equal on len, etc.)
+    - tparallel # detects inappropriate usage of t.Parallel()
     - unconvert # removes unnecessary type conversions
     - usestdlibvars # detects hardcoded values that should use stdlib constants
     - usetesting # catches os.TempDir() etc. in tests — should use t.TempDir()
@@ -53,8 +58,17 @@ linters:
     embeddedstructfieldcheck:
       forbid-mutex: true
 
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: log$
+              desc: Use log/slog instead, see https://go.dev/blog/slog
+            - pkg: math/rand$
+              desc: Use math/rand/v2 instead, see https://go.dev/blog/randv2
+
     errcheck:
-      check-type-assertions: true
+      check-type-assertions: true # replaces forcetypeassert
       exclude-functions:
         - (*github.com/nats-io/nats.go.Subscription).Unsubscribe # cleanup-only, errors not actionable
 
@@ -110,6 +124,12 @@ linters:
     reassign:
       patterns:
         - ".*"
+
+    testifylint:
+      disable:
+        - encoded-compare # misidentifies non-JSON strings when identifiers contain "JSON"
+        - float-compare # false positives
+        - require-error # assert-on-error is deliberate where a test continues to collect further failures
 
   exclusions:
     presets:

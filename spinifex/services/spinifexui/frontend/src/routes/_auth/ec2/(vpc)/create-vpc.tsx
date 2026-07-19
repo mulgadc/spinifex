@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -80,10 +80,10 @@ function CreateVpc() {
     formState: { errors, isSubmitting },
   } = form
 
-  const mode = watch("mode")
-  const cidrBlock = watch("cidrBlock")
-  const publicSubnetCount = watch("publicSubnetCount")
-  const privateSubnetCount = watch("privateSubnetCount")
+  const mode = useWatch({ control, name: "mode" })
+  const cidrBlock = useWatch({ control, name: "cidrBlock" })
+  const publicSubnetCount = useWatch({ control, name: "publicSubnetCount" })
+  const privateSubnetCount = useWatch({ control, name: "privateSubnetCount" })
 
   // Compute preview subnet CIDRs
   const subnetCidrs = calculateSubnetCidrs(

@@ -49,7 +49,7 @@ export function CreateRepositoryDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Create Repository</AlertDialogTitle>
           <AlertDialogDescription>
-            Repository names may include namespaces, e.g. {"team/app"}.
+            Repository names may include namespaces, e.g. team/app.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <Field>

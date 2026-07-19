@@ -78,7 +78,7 @@ func drainAndClose(t *testing.T, nc *nats.Conn) {
 	}
 }
 
-// createTestDaemon creates a test daemon instance with minimal configuration
+// createTestDaemon creates a test daemon instance with minimal configuration.
 func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	// Create a temporary directory for test data
 	tmpDir := t.TempDir()
@@ -150,7 +150,7 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	return daemon
 }
 
-// getTestInstanceType returns a valid instance type for testing based on the system's CPU
+// getTestInstanceType returns a valid instance type for testing based on the system's CPU.
 func getTestInstanceType(t *testing.T) string {
 	t.Helper()
 	rm, err := NewResourceManager(nil, nil, nil)
@@ -182,13 +182,13 @@ func seedTestAMI(t *testing.T, store *objectstore.MemoryObjectStore, bucket, ima
 	require.NoError(t, err)
 }
 
-// TestResourceManager tests resource manager functionality
+// TestResourceManager tests resource manager functionality.
 func TestResourceManager(t *testing.T) {
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
 	require.NotNil(t, rm)
-	assert.Greater(t, rm.hostVCPU, 0)
+	assert.Positive(t, rm.hostVCPU)
 	assert.Greater(t, rm.hostMemGB, float64(0))
 
 	// Test allocation using the first available instance type (dynamic based on CPU)
@@ -247,7 +247,7 @@ func TestResourceManager(t *testing.T) {
 
 		// Test requesting more than available
 		maxPossible := rm.canAllocate(microType, 1000)
-		assert.Greater(t, maxPossible, 0, "Should be able to allocate at least 1")
+		assert.Positive(t, maxPossible, "Should be able to allocate at least 1")
 		assert.LessOrEqual(t, maxPossible, 1000, "Should not exceed requested count")
 
 		// Test requesting exactly 1
@@ -267,7 +267,7 @@ func TestResourceManager(t *testing.T) {
 	})
 }
 
-// TestGetInstanceTypeInfos tests the GetInstanceTypeInfos method
+// TestGetInstanceTypeInfos tests the GetInstanceTypeInfos method.
 func TestGetInstanceTypeInfos(t *testing.T) {
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
@@ -276,7 +276,7 @@ func TestGetInstanceTypeInfos(t *testing.T) {
 
 	require.NotEmpty(t, infos, "Should return at least one instance type")
 	// With generation-specific families, minimum is 7 (unknown/burstable-only) up to 31 (current-gen)
-	assert.True(t, len(infos) >= 7,
+	assert.GreaterOrEqual(t, len(infos), 7,
 		"Should have at least 7 instance types, got %d", len(infos))
 
 	// Verify structure of returned instance type info
@@ -295,7 +295,7 @@ func TestGetInstanceTypeInfos(t *testing.T) {
 	}
 }
 
-// TestGetAvailableInstanceTypeInfos_ResourceFiltering tests that instance types are filtered by available resources
+// TestGetAvailableInstanceTypeInfos_ResourceFiltering tests that instance types are filtered by available resources.
 func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
@@ -313,7 +313,7 @@ func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
 	// be filtered out.
 	assert.LessOrEqual(t, len(initialAvailable), len(allTypes),
 		"Available types should be <= total types")
-	assert.Greater(t, len(initialAvailable), 0, "Should have at least one available type")
+	assert.NotEmpty(t, initialAvailable, "Should have at least one available type")
 
 	// Verify all initially available types fit within schedulable resources.
 	schedulableVCPU := rm.hostVCPU - rm.reservedVCPU
@@ -373,11 +373,11 @@ func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
 	// Deallocate and verify we get the same available types as before
 	rm.deallocate(nanoType)
 	afterDeallocation := rm.GetAvailableInstanceTypeInfos(false)
-	assert.Equal(t, len(initialAvailable), len(afterDeallocation),
+	assert.Len(t, afterDeallocation, len(initialAvailable),
 		"Should have same available types after deallocation")
 }
 
-// TestHandleEC2DescribeInstanceTypes tests the DescribeInstanceTypes handler
+// TestHandleEC2DescribeInstanceTypes tests the DescribeInstanceTypes handler.
 func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -403,7 +403,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		require.NoError(t, err, "Should unmarshal response")
 
 		require.NotNil(t, output.InstanceTypes, "InstanceTypes should not be nil")
-		assert.Greater(t, len(output.InstanceTypes), 0, "Should return at least one instance type")
+		assert.NotEmpty(t, output.InstanceTypes, "Should return at least one instance type")
 
 		// Verify CPU architecture is correct
 		expectedArch := "x86_64"
@@ -461,7 +461,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		}
 
 		// Verify counts match (all available types should be returned)
-		assert.Equal(t, len(expectedTypes), len(output.InstanceTypes),
+		assert.Len(t, output.InstanceTypes, len(expectedTypes),
 			"Returned instance types count should match available types count")
 
 		t.Logf("Verified %d instance types match expected list", len(output.InstanceTypes))
@@ -527,7 +527,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		err = json.Unmarshal(reply.Data, &afterAllocationOutput)
 		require.NoError(t, err)
 
-		assert.Equal(t, initialCount, len(afterAllocationOutput.InstanceTypes),
+		assert.Len(t, afterAllocationOutput.InstanceTypes, initialCount,
 			"no-filter response must list the same supported types before and after allocation")
 
 		afterTypes := make(map[string]bool)
@@ -660,7 +660,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 				expectedSlots++
 			}
 		}
-		assert.Equal(t, expectedSlots, len(output.InstanceTypes),
+		assert.Len(t, output.InstanceTypes, expectedSlots,
 			"Should have %d slots for types fitting 2 vCPU / 16GB", expectedSlots)
 
 		// Now increase capacity to test duplicate slots
@@ -694,7 +694,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 	})
 }
 
-// TestDaemon_BootAllocation verifies that resources are correctly reconstructed on startup
+// TestDaemon_BootAllocation verifies that resources are correctly reconstructed on startup.
 func TestDaemon_BootAllocation(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
@@ -774,7 +774,7 @@ func TestDaemon_BootAllocation(t *testing.T) {
 	assert.Equal(t, expectedMem, daemon.resourceMgr.allocatedMem)
 }
 
-// TestCanAllocate_CountEdgeCases tests edge cases for canAllocate with count parameter
+// TestCanAllocate_CountEdgeCases tests edge cases for canAllocate with count parameter.
 func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	t.Run("MinCount_equals_MaxCount", func(t *testing.T) {
 		rm, err := NewResourceManager(nil, nil, nil)
@@ -961,7 +961,7 @@ func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
 	// Size the pool on the full per-instance charge (guest -m + nbdkit, RG-6),
 	// not bare guest -m, so capacityFor slots still fit exactly after RG-6.
 	memGB := float64(rm.instanceMemChargeMiB(microType)) / 1024.0
-	require.Greater(t, vCPUs, 0, "micro type must report vCPU count")
+	require.Positive(t, vCPUs, "micro type must report vCPU count")
 	require.Greater(t, memGB, float64(0), "micro type must report memory")
 
 	const capacityFor = 8 // slots
@@ -1018,7 +1018,7 @@ func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
 	assert.InDelta(t, memGB*float64(capacityFor), finalMem, 0.001, "allocated memory must not exceed schedulable pool")
 }
 
-// TestDescribeInstances_ReservationGrouping tests that instances are grouped by reservation ID
+// TestDescribeInstances_ReservationGrouping tests that instances are grouped by reservation ID.
 func TestDescribeInstances_ReservationGrouping(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -1209,7 +1209,7 @@ func TestDescribeInstances_ReservationGrouping(t *testing.T) {
 	})
 }
 
-// TestRunInstances_CountValidation tests MinCount/MaxCount validation scenarios
+// TestRunInstances_CountValidation tests MinCount/MaxCount validation scenarios.
 func TestRunInstances_CountValidation(t *testing.T) {
 	natsURL := sharedNATSURL
 	instanceType := getTestInstanceType(t)
@@ -1330,9 +1330,9 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		}
 
 		// Each fittable type gets 2 subscriptions: queue group + node-specific
-		assert.Equal(t, fittableTypes*2, len(rm.instanceSubs),
+		assert.Len(t, rm.instanceSubs, fittableTypes*2,
 			"should subscribe to all instance types that fit (queue + node-specific)")
-		assert.Greater(t, len(rm.instanceSubs), 0,
+		assert.NotEmpty(t, rm.instanceSubs,
 			"should subscribe to at least some instance types")
 
 		// Verify topics follow the expected pattern
@@ -1353,7 +1353,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		initialCount := len(rm.instanceSubs)
-		require.Greater(t, initialCount, 0)
+		require.Positive(t, initialCount)
 
 		// Allocate all resources so nothing fits
 		rm.mu.Lock()
@@ -1370,7 +1370,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		queueSubs, nodeSubs := countSubsBySuffix(rm.instanceSubs, ".test-node")
 		assert.Equal(t, 0, queueSubs,
 			"queue subscriptions should drop when the node is full")
-		assert.Greater(t, nodeSubs, 0,
+		assert.Positive(t, nodeSubs,
 			"node-targeted subscriptions persist regardless of capacity")
 	})
 
@@ -1394,7 +1394,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		rm.updateInstanceSubscriptions()
 		queueSubs, nodeSubs := countSubsBySuffix(rm.instanceSubs, ".test-node")
 		assert.Equal(t, 0, queueSubs, "queue subscriptions drop when the node is full")
-		assert.Greater(t, nodeSubs, 0, "node-targeted subscriptions persist when full")
+		assert.Positive(t, nodeSubs, "node-targeted subscriptions persist when full")
 
 		// Free all resources
 		rm.mu.Lock()
@@ -1403,7 +1403,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		rm.mu.Unlock()
 		rm.updateInstanceSubscriptions()
 
-		assert.Equal(t, expectedCount, len(rm.instanceSubs),
+		assert.Len(t, rm.instanceSubs, expectedCount,
 			"should resubscribe to all types when resources are freed")
 	})
 
@@ -1426,7 +1426,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		rm.updateInstanceSubscriptions()
 
 		// Count subscribed types — should be less than total but more than zero
-		assert.Greater(t, len(rm.instanceSubs), 0,
+		assert.NotEmpty(t, rm.instanceSubs,
 			"should still be subscribed to small instance types")
 		assert.Less(t, len(rm.instanceSubs), len(rm.instanceTypes)*2,
 			"should not be subscribed to large instance types")
@@ -1448,7 +1448,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		initialCount := len(rm.instanceSubs)
-		require.Greater(t, initialCount, 0)
+		require.Positive(t, initialCount)
 
 		// Find a .micro type that fits (2 vCPU, 1 GB — always fits)
 		var microType *ec2.InstanceTypeInfo
@@ -1467,7 +1467,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 			require.NoError(t, err)
 			allocated++
 		}
-		require.Greater(t, allocated, 0)
+		require.Positive(t, allocated)
 
 		// Should have fewer subscriptions now (or zero)
 		assert.Less(t, len(rm.instanceSubs), initialCount,
@@ -1477,7 +1477,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		for range allocated {
 			rm.deallocate(microType)
 		}
-		assert.Equal(t, initialCount, len(rm.instanceSubs),
+		assert.Len(t, rm.instanceSubs, initialCount,
 			"deallocating should restore all subscriptions")
 	})
 
@@ -1557,7 +1557,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 }
 
-// TestResourceManager_ConcurrentAccess tests thread safety of resource manager
+// TestResourceManager_ConcurrentAccess tests thread safety of resource manager.
 func TestResourceManager_ConcurrentAccess(t *testing.T) {
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
@@ -1738,7 +1738,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 	assert.False(t, ebsDeletedVolumes["vol-keep"], "Root volume with DeleteOnTermination=false should NOT be deleted")
 }
 
-// TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events
+// TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events.
 func TestHandleEC2Events_AttachVolume(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -1840,7 +1840,7 @@ func TestHandleEC2Events_AttachVolume(t *testing.T) {
 	})
 }
 
-// TestHandleEC2Events_DetachVolume tests the detach-volume handler in handleEC2Events
+// TestHandleEC2Events_DetachVolume tests the detach-volume handler in handleEC2Events.
 func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -2267,7 +2267,7 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 	assert.Equal(t, "vol-root", *instance.Instance.BlockDeviceMappings[0].Ebs.VolumeId)
 }
 
-// TestDetachVolume_ForceFlag tests that force=true continues past device_del failure
+// TestDetachVolume_ForceFlag tests that force=true continues past device_del failure.
 func TestDetachVolume_ForceFlag(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -2493,7 +2493,7 @@ func TestDetachVolume_BlockdevDelFailure(t *testing.T) {
 	assert.True(t, bdmFound, "Volume must remain in BlockDeviceMappings when blockdev-del fails")
 }
 
-// TestDetachVolume_SuccessWithDeviceMatch tests detach with correct --device cross-check
+// TestDetachVolume_SuccessWithDeviceMatch tests detach with correct --device cross-check.
 func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -4304,12 +4304,12 @@ func TestReloadGPUTypes_CallsUpdateInstanceSubscriptions(t *testing.T) {
 
 	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, nil, gpuMgr)
 	subsAfter := len(rm.instanceSubs)
-	require.Greater(t, subsAfter, 0, "subscriptions added after reload — updateInstanceSubscriptions ran")
+	require.Positive(t, subsAfter, "subscriptions added after reload — updateInstanceSubscriptions ran")
 
 	// Each g4dn size produces both queue and node-specific topics; record the
 	// count so we can prove a second call does not double-subscribe.
 	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, nil, gpuMgr)
-	assert.Equal(t, subsAfter, len(rm.instanceSubs),
+	assert.Len(t, rm.instanceSubs, subsAfter,
 		"second reload with identical models must not double-subscribe — proves idempotent invocation")
 }
 

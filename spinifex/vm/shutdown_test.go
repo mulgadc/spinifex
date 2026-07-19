@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"os"
 	"sync"
@@ -69,7 +70,7 @@ func TestMarkFailed_TransitionsToTerminated(t *testing.T) {
 	m.Insert(instance)
 
 	terminated := rt.waitFor(instance.ID, StateTerminated)
-	m.MarkFailed(instance, "volume_preparation_failed")
+	m.MarkFailed(context.Background(), instance, "volume_preparation_failed")
 
 	require.NotNil(t, instance.Instance.StateReason,
 		"MarkFailed must populate StateReason synchronously")
@@ -108,7 +109,7 @@ func TestMarkFailed_NilInstance(t *testing.T) {
 
 	terminated := rt.waitFor(instance.ID, StateTerminated)
 	require.NotPanics(t, func() {
-		m.MarkFailed(instance, "test_failure")
+		m.MarkFailed(context.Background(), instance, "test_failure")
 	})
 
 	select {
@@ -132,7 +133,7 @@ func TestMarkFailed_AlreadyShuttingDown_NoOp(t *testing.T) {
 	}
 	m.Insert(instance)
 
-	m.MarkFailed(instance, "duplicate_call")
+	m.MarkFailed(context.Background(), instance, "duplicate_call")
 
 	assert.Empty(t, rt.snapshot(),
 		"MarkFailed must not transition an already-shutting-down instance")
@@ -152,7 +153,7 @@ func TestMarkFailed_AlreadyTerminated_NoOp(t *testing.T) {
 	}
 	m.Insert(instance)
 
-	m.MarkFailed(instance, "duplicate_call")
+	m.MarkFailed(context.Background(), instance, "duplicate_call")
 
 	assert.Empty(t, rt.snapshot(),
 		"MarkFailed must not transition an already-terminated instance")

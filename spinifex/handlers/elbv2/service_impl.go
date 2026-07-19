@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
@@ -118,6 +119,7 @@ type ELBv2ServiceImpl struct {
 	CACert                     string // PEM-encoded CA certificate delivered to microvm guests via fw_cfg
 	nodeID                     string
 	region                     string
+	dnsBaseDomain              string        // northstar default_domain; "" disables DNS registration (falls back to spinifex.local naming)
 	systemInstanceType         string        // instance type for system VMs; resolved lazily via systemInstanceTypeFunc
 	systemInstanceTypeFunc     func() string // returns the smallest available instance type
 	systemInstanceTypeMu       sync.Mutex    // guards lazy resolution of systemInstanceType
@@ -173,6 +175,7 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 		nc:             nc,
 		nodeID:         nodeID,
 		region:         region,
+		dnsBaseDomain:  handlers_dns.ResolveBaseDomain(cfg),
 		ctx:            ctx,
 		cancel:         cancel,
 		hc:             hc,
@@ -1152,7 +1155,13 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 	if scheme == SchemeInternal {
 		dnsPrefix = "internal-"
 	}
-	dnsName := fmt.Sprintf("%s%s-%s.%s.elb.spinifex.local", dnsPrefix, name, lbID, s.region)
+	// Under the northstar base domain when configured so the DNSName actually
+	// resolves; otherwise the legacy spinifex.local suffix (not northstar-served).
+	elbZone := s.dnsBaseDomain
+	if elbZone == "" {
+		elbZone = "spinifex.local"
+	}
+	dnsName := handlers_dns.ELBName(dnsPrefix, name, lbID, s.region, elbZone)
 
 	// Atomically claim the name before ENI/VM work. SDK retries lose the claim;
 	// orphaned claims from crashed creates are reclaimed. Every failure releases it.
@@ -1306,11 +1315,22 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		if syncLaunch {
 			// Drive the data-plane launch inline so the returned record carries the
 			// allocated front-end IP. The caller is off the gateway responder, so
-			// 267.4 does not apply. provisionLBDataPlane leaves the record marked
-			// failed on launch failure for diagnosis.
+			// 267.4 does not apply.
 			if err := s.provisionLBDataPlane(ctx, lc); err != nil {
 				slog.ErrorContext(ctx, "CreateLoadBalancerSync: data-plane launch failed", "lbArn", lbArn, "err", err)
-				return nil, errors.New(awserrors.ErrorServerInternal)
+				// Unwind completely rather than leaving the failed record behind.
+				// A synchronous caller gets an error and no ARN, and this path's
+				// LBs live in the system account (the EKS managed CP VPC), so the
+				// record is unreachable to the cluster owner — it cannot be
+				// diagnosed, only leaked. The managed SG is the costly part: it
+				// pins its VPC against DeleteVpc with DependencyViolation, which
+				// no retry can clear. The async path keeps its failed record on
+				// purpose; the caller holds the ARN there and can reclaim it.
+				s.rollbackLBInfra(ctx, eniIDs, nlbManagedSGID, name, accountID)
+				if delErr := s.store.DeleteLoadBalancer(lbID); delErr != nil {
+					slog.ErrorContext(ctx, "CreateLoadBalancerSync: rollback failed to delete record", "lbId", lbID, "err", delErr)
+				}
+				return nil, lbLaunchError(err)
 			}
 			launched, lerr := s.store.GetLoadBalancerByArn(lbArn)
 			if lerr != nil || launched == nil {
@@ -1387,7 +1407,55 @@ func (s *ELBv2ServiceImpl) provisionLBDataPlane(ctx context.Context, lc lbLaunch
 	if putErr := s.store.PutLoadBalancer(record); putErr != nil {
 		return fmt.Errorf("persist launch result for %s: %w", lc.lbArn, putErr)
 	}
+	// Register the frontend A record now that the serving IP is allocated.
+	s.publishLBDNS(record, handlers_dns.ActionUpsert)
 	return nil
+}
+
+// lbFrontendIP is the address the load balancer's DNS name should resolve to:
+// the public IP for an internet-facing LB, the VPC IP for an internal one.
+func lbFrontendIP(r *LoadBalancerRecord) string {
+	if r.Scheme != SchemeInternal && len(r.AvailZones) > 0 && r.AvailZones[0].PublicIP != "" {
+		return r.AvailZones[0].PublicIP
+	}
+	return r.VPCIP
+}
+
+// publishLBDNS registers or withdraws the load balancer's frontend A record with
+// the control-plane DNS writer. Best-effort and a no-op when northstar is not
+// configured or no frontend IP has been allocated; the reconcile loop repairs
+// any miss and never blocks the LB operation.
+func (s *ELBv2ServiceImpl) publishLBDNS(record *LoadBalancerRecord, action handlers_dns.Action) {
+	if s.dnsBaseDomain == "" || record == nil {
+		return
+	}
+	changes := handlers_dns.ELBChanges(action, record.DNSName, s.dnsBaseDomain, lbFrontendIP(record))
+	handlers_dns.PublishChangesBestEffort(s.nc, record.AccountID, changes)
+}
+
+// DesiredDNSChanges returns the UPSERT records for every endpoint-ready load
+// balancer across all accounts, plus whether the enumeration was authoritative. The KV
+// store spans every tenant, so a successful list is a complete cross-account
+// view; a store error yields ok=false so the reconcile suppresses ELB pruning
+// rather than delete another tenant's live record on a partial view.
+func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
+	if s == nil || s.store == nil || s.dnsBaseDomain == "" {
+		return nil, false
+	}
+	lbs, err := s.store.ListLoadBalancersStrict()
+	if err != nil {
+		return nil, false
+	}
+	for _, lb := range lbs {
+		if (lb.State != StateProvisioning && lb.State != StateActive) ||
+			lb.DNSName == "" || lbFrontendIP(lb) == "" {
+			continue
+		}
+		changes = append(changes, handlers_dns.ELBChanges(
+			handlers_dns.ActionUpsert, lb.DNSName, s.dnsBaseDomain, lbFrontendIP(lb),
+		)...)
+	}
+	return changes, true
 }
 
 // launchLBVMAsync runs provisionLBDataPlane on the background goroutine spawned
@@ -1397,6 +1465,31 @@ func (s *ELBv2ServiceImpl) launchLBVMAsync(ctx context.Context, lc lbLaunchCtx) 
 	if err := s.provisionLBDataPlane(ctx, lc); err != nil {
 		slog.ErrorContext(ctx, "CreateLoadBalancer: async launch failed", "lbArn", lc.lbArn, "err", err)
 	}
+}
+
+// lbLaunchPassthroughCodes are the AWS error codes a data-plane launch failure may
+// carry that name a real, actionable cause. Capacity shortfalls are the ones a caller
+// can do something about (retry, free an address, pick another type); anything else is
+// a defect on our side and stays ServerInternal rather than inventing a client error.
+var lbLaunchPassthroughCodes = []string{
+	awserrors.ErrorInsufficientAddressCapacity,
+	awserrors.ErrorInsufficientInstanceCapacity,
+	awserrors.ErrorInsufficientCapacity,
+	awserrors.ErrorInsufficientCapacityOnHost,
+}
+
+// lbLaunchError maps a data-plane launch failure onto the error code that caused it,
+// so the caller sees why the create failed. Flattening every launch failure to
+// ServerInternal discards the one fact that makes the failure diagnosable: an address
+// exhaustion reported as an internal error looks like a bug in the gateway rather than
+// a capacity problem in the VPC.
+func lbLaunchError(err error) error {
+	for _, code := range lbLaunchPassthroughCodes {
+		if awserrors.IsErrorCode(err, code) {
+			return errors.New(code)
+		}
+	}
+	return errors.New(awserrors.ErrorServerInternal)
 }
 
 // rollbackLBInfra tears down ENIs, the NLB managed SG, and the name claim created
@@ -1545,6 +1638,9 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 	// Release the name claim so the name is reusable. Idempotent on a missing
 	// key, so a delete that races the record removal still converges.
 	s.releaseLBNameClaim(lb.Name, accountID)
+
+	// Withdraw the frontend A record (best-effort; reconcile repairs a miss).
+	s.publishLBDNS(lb, handlers_dns.ActionDelete)
 
 	slog.InfoContext(ctx, "DeleteLoadBalancer completed", "lbArn", *input.LoadBalancerArn, "enis", len(lb.ENIs), "accountID", accountID)
 

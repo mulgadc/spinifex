@@ -20,7 +20,7 @@ func ValidateDeleteSubnetInput(input *ec2.DeleteSubnetInput) error {
 	return nil
 }
 
-// DeleteSubnet handles the EC2 DeleteSubnet API call
+// DeleteSubnet handles the EC2 DeleteSubnet API call.
 func DeleteSubnet(ctx context.Context, input *ec2.DeleteSubnetInput, natsConn *nats.Conn, accountID string) (ec2.DeleteSubnetOutput, error) {
 	var output ec2.DeleteSubnetOutput
 

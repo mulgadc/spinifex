@@ -32,18 +32,25 @@ jobs:
           path: spinifex
           fetch-depth: 2
 
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: spinifex
+
       - name: Checkout Viperblock
         uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
-          ref: dev
+          ref: ${{ steps.siblings.outputs.viperblock }}
           path: viperblock
 
       - name: Checkout Predastore
         uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
-          ref: dev
+          ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
       - name: Setup Go
@@ -80,18 +87,25 @@ jobs:
         with:
           path: spinifex
 
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: spinifex
+
       - name: Checkout Viperblock
         uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
-          ref: dev
+          ref: ${{ steps.siblings.outputs.viperblock }}
           path: viperblock
 
       - name: Checkout Predastore
         uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
-          ref: dev
+          ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
       - name: Setup Go
@@ -116,18 +130,25 @@ jobs:
         with:
           path: spinifex
 
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: spinifex
+
       - name: Checkout Viperblock
         uses: actions/checkout@v7
         with:
           repository: mulgadc/viperblock
-          ref: dev
+          ref: ${{ steps.siblings.outputs.viperblock }}
           path: viperblock
 
       - name: Checkout Predastore
         uses: actions/checkout@v7
         with:
           repository: mulgadc/predastore
-          ref: dev
+          ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
       - name: Setup Go

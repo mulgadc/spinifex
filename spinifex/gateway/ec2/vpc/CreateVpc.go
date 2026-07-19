@@ -20,7 +20,7 @@ func ValidateCreateVpcInput(input *ec2.CreateVpcInput) error {
 	return nil
 }
 
-// CreateVpc handles the EC2 CreateVpc API call
+// CreateVpc handles the EC2 CreateVpc API call.
 func CreateVpc(ctx context.Context, input *ec2.CreateVpcInput, natsConn *nats.Conn, accountID string) (ec2.CreateVpcOutput, error) {
 	var output ec2.CreateVpcOutput
 

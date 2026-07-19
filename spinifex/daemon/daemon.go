@@ -34,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -116,7 +117,7 @@ type ResourceManager struct {
 // handler's GatePublisher hook — the two services are wired together below.
 var _ handlers_ec2_igw.GatePublisher = (*handlers_ec2_routetable.RouteTableServiceImpl)(nil)
 
-// Daemon represents the main daemon service
+// Daemon represents the main daemon service.
 type Daemon struct {
 	node                  string
 	clusterConfig         *config.ClusterConfig
@@ -124,6 +125,10 @@ type Daemon struct {
 	natsConn              *nats.Conn
 	resourceMgr           *ResourceManager
 	instanceService       *handlers_ec2_instance.InstanceServiceImpl
+	dnsWriter             *handlers_dns.Writer
+	dnsReconciler         *handlers_dns.Reconciler
+	dnsBaseDomain         string
+	dnsInternalDomain     string
 	keyService            *handlers_ec2_key.KeyServiceImpl
 	imageService          *handlers_ec2_image.ImageServiceImpl
 	volumeService         *handlers_ec2_volume.VolumeServiceImpl
@@ -343,7 +348,7 @@ func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
 // execCommand wraps exec.Command so tests can substitute a fake implementation.
 var execCommand = exec.Command
 
-// getSystemMemory returns the total system memory in GB
+// getSystemMemory returns the total system memory in GB.
 func getSystemMemory() (float64, error) {
 	switch runtime.GOOS {
 	case "darwin":
@@ -523,7 +528,7 @@ func (rm *ResourceManager) instanceMemChargeMiB(it *ec2.InstanceTypeInfo) int64 
 		nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
 }
 
-// GetInstanceTypeInfos returns all instance types as ec2.InstanceTypeInfo for AWS API compatibility
+// GetInstanceTypeInfos returns all instance types as ec2.InstanceTypeInfo for AWS API compatibility.
 func (rm *ResourceManager) GetInstanceTypeInfos() []*ec2.InstanceTypeInfo {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -666,12 +671,12 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 	return totalVCPU, totalMemGB, reservedVCPU, reservedMemGB, allocVCPU, allocMemGB, caps
 }
 
-// SetConfigPath sets the configuration file path for cluster management
+// SetConfigPath sets the configuration file path for cluster management.
 func (d *Daemon) SetConfigPath(path string) {
 	d.configPath = path
 }
 
-// NewDaemon creates a new daemon instance
+// NewDaemon creates a new daemon instance.
 func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1282,6 +1287,12 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
+	// Set the default KV replica count before any handler creates a bucket, so
+	// lazily-created buckets are born at cluster-size replication instead of R1.
+	if d.clusterConfig != nil {
+		utils.SetDefaultKVReplicas(len(d.clusterConfig.Nodes))
+	}
+
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
 	if js, jsErr := d.natsConn.JetStream(); jsErr == nil {
 		if err := utils.DeleteKVBucketIfExists(js, "spinifex-dhcp-leases"); err != nil {
@@ -1311,6 +1322,10 @@ func (d *Daemon) startCluster() error {
 	// Create services before loading/launching instances, since LaunchInstance depends on them
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
+	d.dnsWriter = handlers_dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
+	d.dnsReconciler = handlers_dns.NewReconciler(d.config, d.natsConn, d.dnsDesiredSet)
+	d.dnsBaseDomain = handlers_dns.ResolveBaseDomain(d.config)
+	d.dnsInternalDomain = handlers_dns.ResolveInternalDomain(d.config)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
 	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config)
 
@@ -1606,6 +1621,24 @@ func (d *Daemon) startCluster() error {
 
 	if err := d.subscribeAll(); err != nil {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
+	}
+
+	// DNS record writer: the single queue-group consumer of
+	// dns.recordset.change. No-op when northstar S3 is not configured.
+	if sub, err := d.dnsWriter.Subscribe(d.natsConn); err != nil {
+		return fmt.Errorf("failed to subscribe DNS record writer: %w", err)
+	} else if sub != nil {
+		d.natsSubscriptions[handlers_dns.SubjectRecordsetChange] = sub
+		slog.Info("Subscribed DNS record writer", "subject", handlers_dns.SubjectRecordsetChange, "queue", handlers_dns.QueueGroup)
+	}
+
+	// DNS drift backstop: periodically rebuild managed records
+	// from the live cross-tenant inventory and converge the zone. It publishes
+	// through the same queue-group writer, so every node running it serialises on
+	// one writer and never races the zone. No-op when northstar is not configured.
+	if d.dnsReconciler.Enabled() {
+		go d.dnsReconciler.Run(d.ctx)
+		slog.Info("Started DNS reconcile backstop", "interval", handlers_dns.DefaultReconcileInterval)
 	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
@@ -2334,7 +2367,7 @@ func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
 	return nil
 }
 
-// deallocate releases resources for an instance and updates NATS subscriptions
+// deallocate releases resources for an instance and updates NATS subscriptions.
 func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	rm.mu.Lock()
 	vCPUs := instanceTypeVCPUs(instanceType)

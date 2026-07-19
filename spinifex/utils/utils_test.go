@@ -302,7 +302,7 @@ func TestUnmarshalJsonPayload(t *testing.T) {
 			jsonData:    `{}`,
 			expectError: false,
 			validate: func(t *testing.T, result *TestStruct) {
-				assert.Equal(t, "", result.Name)
+				assert.Empty(t, result.Name)
 				assert.Equal(t, 0, result.Value)
 			},
 		},
@@ -359,7 +359,7 @@ func TestGenerateErrorPayload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			payload := GenerateErrorPayload(tt.code)
 			assert.NotNil(t, payload)
-			assert.Greater(t, len(payload), 0)
+			assert.NotEmpty(t, payload)
 			if tt.validate != nil {
 				tt.validate(t, payload)
 			}

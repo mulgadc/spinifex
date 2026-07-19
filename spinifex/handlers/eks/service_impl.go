@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -237,6 +238,10 @@ type EKSServiceImpl struct {
 	// launchWG tracks in-flight async create launches for test determinism (WaitLaunches).
 	launchWG sync.WaitGroup
 
+	// baseDomain is the northstar default_domain; "" disables endpoint DNS naming
+	// (the cluster then publishes its bare IP:port endpoint as before).
+	baseDomain string
+
 	// nodegroupReadyTimeout / nodegroupReadyPoll bound how long launchNodegroupInfra
 	// waits for its workers to register Ready before marking the nodegroup
 	// CREATE_FAILED. Tests inject small values.
@@ -249,6 +254,10 @@ type EKSServiceImpl struct {
 	// giving up and marking the nodegroup CREATE_FAILED. Tests inject small values.
 	workerLaunchRetryTimeout time.Duration
 	workerLaunchRetryBackoff time.Duration
+
+	// spawnScanRetryBackoff paces the boot-time reconciler re-scan when JetStream
+	// enumeration is still catching up. Tests inject a small value.
+	spawnScanRetryBackoff time.Duration
 }
 
 var _ EKSService = (*EKSServiceImpl)(nil)
@@ -278,10 +287,12 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 		registry:                 NewReconcilerRegistry(),
 		bgCtx:                    ctx,
 		bgCancel:                 cancel,
+		baseDomain:               handlers_dns.ResolveBaseDomain(deps.Config),
 		nodegroupReadyTimeout:    defaultNodegroupReadyTimeout,
 		nodegroupReadyPoll:       defaultNodegroupReadyPoll,
 		workerLaunchRetryTimeout: defaultWorkerLaunchRetryTimeout,
 		workerLaunchRetryBackoff: defaultWorkerLaunchRetryBackoff,
+		spawnScanRetryBackoff:    defaultSpawnScanRetryBackoff,
 	}, nil
 }
 
@@ -297,7 +308,12 @@ func (s *EKSServiceImpl) Shutdown() {
 	s.registry.StopAll()
 }
 
-// SpawnRegisteredReconcilers resumes reconciler goroutines for all CREATING/ACTIVE clusters on daemon boot.
+// SpawnRegisteredReconcilers resumes reconciler goroutines for all CREATING/ACTIVE
+// clusters on daemon boot. JetStream bucket/key enumeration is eventually
+// consistent, so the scan is retried until the observed cluster count stops
+// growing across two passes (Spawn is idempotent, so re-runs only pick up
+// stragglers a lagging enumeration first missed), capped to return promptly on a
+// genuinely empty daemon.
 func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 	if !s.depsReadyForOrchestration() {
 		slog.Debug("SpawnRegisteredReconcilers: deps not ready, skipping")
@@ -307,6 +323,25 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
+	prev := -1
+	for attempt := range spawnScanMaxAttempts {
+		observed := s.spawnRegisteredReconcilersScan(js)
+		if observed <= prev {
+			break
+		}
+		prev = observed
+		if attempt < spawnScanMaxAttempts-1 {
+			time.Sleep(s.spawnScanRetryBackoff)
+		}
+	}
+	return nil
+}
+
+// spawnRegisteredReconcilersScan runs one enumeration pass and resumes reconcilers
+// for every CREATING/ACTIVE cluster it can see, returning the count observed so the
+// caller can detect when a lagging JetStream enumeration has settled.
+func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(js nats.JetStreamContext) int {
+	observed := 0
 	buckets := js.KeyValueStoreNames()
 	for name := range buckets {
 		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
@@ -331,6 +366,7 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 			if meta.Status != ClusterStatusCreating && meta.Status != ClusterStatusActive {
 				continue
 			}
+			observed++
 			// Reclaim any nodegroup workers stranded by the restart: a launch that
 			// was in flight when the prior process died left a CREATING (or
 			// partially-launched CREATE_FAILED) record whose workers nothing else
@@ -347,7 +383,7 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 			s.spawnReconciler(accountID, cluster, meta)
 		}
 	}
-	return nil
+	return observed
 }
 
 func (s *EKSServiceImpl) depsReadyForOrchestration() bool {
@@ -634,7 +670,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		return
 	}
 
-	// Private endpoint (301): when private access is on, give the cluster NLB a
+	// Private endpoint: when private access is on, give the cluster NLB a
 	// customer-VPC (Set A) front-end so in-VPC workers + kubectl reach the control
 	// plane without the public hairpin / NAT GW egress. Provision the customer-
 	// account ENI (admitted by a customer-VPC SG on :443) before the NLB + CP VMs so
@@ -673,27 +709,42 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure cluster NLB", err)
 		return
 	}
-	// Endpoint resolution (301): publish the reachable front-end. With public access
-	// on (public-only or public+private) that is the NLB's public front-end IP. A
-	// private-only cluster publishes its Set A private endpoint instead — the
-	// internal NLB's Set B IP is unreachable from the customer VPC. Either way the
-	// host is a cert SAN, so TLS validates with verification on.
+	// Endpoint resolution: resolve the reachable front-end IP. With public
+	// access on (public-only or public+private) that is the NLB's public front-end
+	// IP. A private-only cluster uses its Set A private endpoint instead — the
+	// internal NLB's Set B IP is unreachable from the customer VPC.
 	if publicAccess {
-		meta.Endpoint = "https://" + net.JoinHostPort(nlb.FrontendIP, strconv.FormatInt(clusterNLBListenPort, 10))
 		meta.EndpointIP = nlb.FrontendIP
 	} else {
-		meta.Endpoint = "https://" + net.JoinHostPort(meta.PrivateEndpointIP, strconv.FormatInt(clusterNLBListenPort, 10))
 		meta.EndpointIP = meta.PrivateEndpointIP
 	}
+	// With northstar configured, publish an account-qualified DNS endpoint
+	// ({cluster}.{accountID}.{region}.eks.{baseDomain}) that resolves to EndpointIP
+	// and is SANed on the apiserver cert (below), so TLS validates. Without northstar
+	// the bare IP endpoint is published as before. Workers still join by IP
+	// (clusterJoinEndpoint), so cluster bring-up never waits on DNS propagation —
+	// only external SDK/kubectl clients use the name.
+	meta.EndpointDNSName = ""
+	if s.baseDomain != "" {
+		meta.EndpointDNSName = handlers_dns.EKSName(name, accountID, region, s.baseDomain)
+	}
+	endpointHost := meta.EndpointIP
+	if meta.EndpointDNSName != "" {
+		endpointHost = meta.EndpointDNSName
+	}
+	meta.Endpoint = "https://" + net.JoinHostPort(endpointHost, strconv.FormatInt(clusterNLBListenPort, 10))
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
 	meta.KonnTargetGroupArn = nlb.KonnTargetGroupArn
 
-	// Persist NLB ARNs early so DeleteCluster can reclaim them on any later failure.
+	// Persist the endpoint before publishing it so reconcile never observes a DNS
+	// record whose creating cluster lacks its desired endpoint metadata.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist NLB arns", err)
+		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist endpoint metadata", err)
 		return
 	}
+	// Register the endpoint A record (best-effort; reconcile repairs a miss).
+	s.publishEKSDNS(accountID, meta, handlers_dns.ActionUpsert)
 
 	oidcIssuer, err := ClusterOIDCIssuer(s.deps.GatewayBaseURL, region, accountID, name)
 	if err != nil {
@@ -737,6 +788,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		ControlPlaneSGID:    cpSG,
 		NLBDNS:              nlb.DNSName,
 		EndpointIP:          nlb.FrontendIP,
+		EndpointDNS:         meta.EndpointDNSName,
 		PrivateEndpointIP:   meta.PrivateEndpointIP,
 		OIDCIssuer:          oidcIssuer,
 		OIDCPrivateKeyPEM:   privPEM,
@@ -1099,6 +1151,9 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		teardownErrs = append(teardownErrs, fmt.Errorf("zeroize OIDC key: %w", err))
 	}
 
+	// Withdraw the endpoint A record alongside the NLB teardown (best-effort).
+	s.publishEKSDNS(accountID, meta, handlers_dns.ActionDelete)
+
 	if meta.NLBArn != "" {
 		// Deregister is best-effort: DeleteClusterNLB tears down the whole NLB
 		// + target group, so a stale target registration cannot leak past it.
@@ -1112,7 +1167,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		}
 	}
 
-	// Private endpoint (301): the Set A ENI lives in the customer VPC under the
+	// Private endpoint: the Set A ENI lives in the customer VPC under the
 	// customer account and was attached to the cluster NLB's LB VM (terminated by
 	// DeleteClusterNLB above). It is an extra NIC, not the LB VM's primary ENI, so
 	// the instance-terminate cascade never reclaims it — detach (store-clear) the
@@ -1168,7 +1223,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		}
 	}
 
-	// Private endpoint (301): reclaim the customer-VPC SG now its ENI is gone.
+	// Private endpoint: reclaim the customer-VPC SG now its ENI is gone.
 	// Best-effort — its only billable dependant (the ENI) is already deleted.
 	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 		if err := DeletePrivateEndpointSG(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
@@ -1934,7 +1989,112 @@ func clusterJoinEndpoint(meta *ClusterMeta) string {
 	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.EndpointPrivateAccess && meta.PrivateEndpointIP != "" {
 		return "https://" + net.JoinHostPort(meta.PrivateEndpointIP, strconv.FormatInt(clusterNLBListenPort, 10))
 	}
+	// Workers join by IP so cluster bring-up never waits on DNS resolution of the
+	// published endpoint name (EndpointIP is a cert SAN like the DNS name).
+	if meta.EndpointIP != "" {
+		return "https://" + net.JoinHostPort(meta.EndpointIP, strconv.FormatInt(clusterNLBListenPort, 10))
+	}
 	return meta.Endpoint
+}
+
+// publishEKSDNS registers or withdraws the cluster's account-qualified apiserver
+// endpoint A record ({cluster}.{accountID}.{region}.eks.{baseDomain} → EndpointIP)
+// with the control-plane DNS writer. Best-effort and a no-op when northstar is not configured; the reconcile
+// loop repairs any miss and it never blocks the cluster operation.
+func (s *EKSServiceImpl) publishEKSDNS(accountID string, meta *ClusterMeta, action handlers_dns.Action) {
+	if s.baseDomain == "" || meta == nil || meta.EndpointDNSName == "" {
+		return
+	}
+	changes := handlers_dns.EKSChanges(action, meta.EndpointDNSName, s.baseDomain, meta.EndpointIP)
+	handlers_dns.PublishChangesBestEffort(s.deps.NATSConn, accountID, changes)
+}
+
+// DesiredDNSChanges returns the UPSERT records for every endpoint-ready cluster
+// across all account buckets, plus whether the enumeration was authoritative. Clusters
+// live in per-account KV buckets, so a complete cross-tenant view requires
+// reading every one: any bucket-read failure yields ok=false so the reconcile
+// suppresses EKS pruning rather than delete a tenant's endpoint on a partial view.
+func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
+	if s == nil || s.baseDomain == "" {
+		return nil, false
+	}
+	js, err := s.deps.NATSConn.JetStream()
+	if err != nil {
+		return nil, false
+	}
+	names, err := kvBucketNames(s.deps.NATSConn)
+	if err != nil {
+		slog.Warn("DesiredDNSChanges: enumerate account buckets", "err", err)
+		return nil, false
+	}
+	for _, name := range names {
+		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
+			continue
+		}
+		acctKV, err := js.KeyValue(name)
+		if err != nil {
+			return nil, false
+		}
+		clusters, err := listClusterNames(acctKV)
+		if err != nil {
+			return nil, false
+		}
+		for _, cluster := range clusters {
+			meta, err := GetClusterMeta(acctKV, cluster)
+			if err != nil {
+				slog.Warn("DesiredDNSChanges: read cluster metadata", "bucket", name, "cluster", cluster, "err", err)
+				return nil, false
+			}
+			if (meta.Status != ClusterStatusCreating && meta.Status != ClusterStatusActive) ||
+				meta.EndpointDNSName == "" || meta.EndpointIP == "" {
+				continue
+			}
+			changes = append(changes, handlers_dns.EKSChanges(
+				handlers_dns.ActionUpsert, meta.EndpointDNSName, s.baseDomain, meta.EndpointIP,
+			)...)
+		}
+	}
+	return changes, true
+}
+
+// kvBucketNames enumerates KV bucket names via a paginated $JS.API.STREAM.NAMES
+// request that surfaces the terminal error, unlike js.KeyValueStoreNames() whose
+// channel closes on any API/transport error and cannot signal a truncated listing.
+func kvBucketNames(nc *nats.Conn) ([]string, error) {
+	type namesReq struct {
+		Offset  int    `json:"offset"`
+		Subject string `json:"subject"`
+	}
+	type namesResp struct {
+		Total   int            `json:"total"`
+		Streams []string       `json:"streams"`
+		Error   *nats.APIError `json:"error"`
+	}
+	var names []string
+	for offset := 0; ; {
+		body, err := json.Marshal(namesReq{Offset: offset, Subject: "$KV.*.>"})
+		if err != nil {
+			return nil, fmt.Errorf("marshal stream-names request: %w", err)
+		}
+		msg, err := nc.Request("$JS.API.STREAM.NAMES", body, 5*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("stream-names request: %w", err)
+		}
+		var resp namesResp
+		if err := json.Unmarshal(msg.Data, &resp); err != nil {
+			return nil, fmt.Errorf("decode stream-names response: %w", err)
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("stream-names api: %w", resp.Error)
+		}
+		for _, stream := range resp.Streams {
+			names = append(names, strings.TrimPrefix(stream, "KV_"))
+		}
+		offset += len(resp.Streams)
+		if offset >= resp.Total || len(resp.Streams) == 0 {
+			return names, nil
+		}
+	}
 }
 
 func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {

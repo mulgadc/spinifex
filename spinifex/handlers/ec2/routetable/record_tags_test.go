@@ -54,7 +54,7 @@ func TestRouteTableRecordTagsMirror(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.RouteTables, 1)
 	assert.Equal(t, "yes", rtbTagVal(out.RouteTables[0].Tags, "keep"))
-	assert.Equal(t, "", rtbTagVal(out.RouteTables[0].Tags, "drop"))
+	assert.Empty(t, rtbTagVal(out.RouteTables[0].Tags, "drop"))
 }
 
 func TestRouteTableRecordTagsMirror_UnownedNoError(t *testing.T) {

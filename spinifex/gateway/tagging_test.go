@@ -25,7 +25,7 @@ func setupTaggingRequest(target, body string) *http.Request {
 func TestTaggingActionFromTarget(t *testing.T) {
 	assert.Equal(t, "GetResources", taggingActionFromTarget("ResourceGroupsTaggingAPI_20170126.GetResources"))
 	assert.Equal(t, "GetResources", taggingActionFromTarget("GetResources"))
-	assert.Equal(t, "", taggingActionFromTarget(""))
+	assert.Empty(t, taggingActionFromTarget(""))
 }
 
 func TestTaggingActionsMap_AllActionsRegistered(t *testing.T) {

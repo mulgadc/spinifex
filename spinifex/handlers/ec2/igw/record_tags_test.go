@@ -53,7 +53,7 @@ func TestIGWRecordTagsMirror(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.InternetGateways, 1)
 	assert.Equal(t, "yes", igwTagVal(out.InternetGateways[0].Tags, "keep"))
-	assert.Equal(t, "", igwTagVal(out.InternetGateways[0].Tags, "drop"))
+	assert.Empty(t, igwTagVal(out.InternetGateways[0].Tags, "drop"))
 }
 
 func TestIGWRecordTagsMirror_UnownedNoError(t *testing.T) {

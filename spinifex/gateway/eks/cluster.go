@@ -20,18 +20,18 @@ func CreateCluster(ctx context.Context, natsConn *nats.Conn, accountID, callerPr
 	return handlers_eks.NewNATSEKSService(natsConn).CreateCluster(ctx, input, accountID, callerPrincipalARN)
 }
 
-// DescribeCluster — GET /clusters/{name}
+// DescribeCluster — GET /clusters/{name}.
 func DescribeCluster(ctx context.Context, natsConn *nats.Conn, accountID, name string) (*eks.DescribeClusterOutput, error) {
 	input := &eks.DescribeClusterInput{Name: aws.String(name)}
 	return handlers_eks.NewNATSEKSService(natsConn).DescribeCluster(ctx, input, accountID)
 }
 
-// ListClusters — GET /clusters
+// ListClusters — GET /clusters.
 func ListClusters(ctx context.Context, natsConn *nats.Conn, accountID string) (*eks.ListClustersOutput, error) {
 	return handlers_eks.NewNATSEKSService(natsConn).ListClusters(ctx, &eks.ListClustersInput{}, accountID)
 }
 
-// UpdateClusterConfig — POST /clusters/{name}/update-config
+// UpdateClusterConfig — POST /clusters/{name}/update-config.
 func UpdateClusterConfig(ctx context.Context, natsConn *nats.Conn, accountID, name string, body []byte) (*eks.UpdateClusterConfigOutput, error) {
 	input := new(eks.UpdateClusterConfigInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -41,7 +41,7 @@ func UpdateClusterConfig(ctx context.Context, natsConn *nats.Conn, accountID, na
 	return handlers_eks.NewNATSEKSService(natsConn).UpdateClusterConfig(ctx, input, accountID)
 }
 
-// UpdateClusterVersion — POST /clusters/{name}/update-version
+// UpdateClusterVersion — POST /clusters/{name}/update-version.
 func UpdateClusterVersion(ctx context.Context, natsConn *nats.Conn, accountID, name string, body []byte) (*eks.UpdateClusterVersionOutput, error) {
 	input := new(eks.UpdateClusterVersionInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -51,7 +51,7 @@ func UpdateClusterVersion(ctx context.Context, natsConn *nats.Conn, accountID, n
 	return handlers_eks.NewNATSEKSService(natsConn).UpdateClusterVersion(ctx, input, accountID)
 }
 
-// DeleteCluster — DELETE /clusters/{name}
+// DeleteCluster — DELETE /clusters/{name}.
 func DeleteCluster(ctx context.Context, natsConn *nats.Conn, accountID, name string) (*eks.DeleteClusterOutput, error) {
 	input := &eks.DeleteClusterInput{Name: aws.String(name)}
 	return handlers_eks.NewNATSEKSService(natsConn).DeleteCluster(ctx, input, accountID)

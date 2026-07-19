@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCreateTagsInput validates the input parameters for CreateTags
+// ValidateCreateTagsInput validates the input parameters for CreateTags.
 func ValidateCreateTagsInput(input *ec2.CreateTagsInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -33,7 +33,7 @@ func ValidateCreateTagsInput(input *ec2.CreateTagsInput) error {
 	return nil
 }
 
-// CreateTags handles the EC2 CreateTags API call
+// CreateTags handles the EC2 CreateTags API call.
 func CreateTags(ctx context.Context, input *ec2.CreateTagsInput, natsConn *nats.Conn, accountID string) (ec2.CreateTagsOutput, error) {
 	var output ec2.CreateTagsOutput
 

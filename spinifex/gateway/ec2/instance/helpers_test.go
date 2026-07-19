@@ -9,7 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// startTestNATSServer starts an embedded NATS server for testing
+// startTestNATSServer starts an embedded NATS server for testing.
 func startTestNATSServer(t *testing.T) (*server.Server, *nats.Conn) {
 	t.Helper()
 	return testutil.StartTestNATS(t)

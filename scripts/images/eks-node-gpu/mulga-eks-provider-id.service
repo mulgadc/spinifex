@@ -1,6 +1,13 @@
 [Unit]
 Description=Set K3s provider-id + topology labels from IMDS for EBS CSI
-After=network-online.target
+# After cloud-config.service so cloud-init has written /etc/spinifex-eks/agent.env
+# (write_files completes by the config stage): this script folds the nodegroup +
+# GPU node-labels (read from agent.env) into the same node-label list, so agent.env
+# must exist before it runs. NOT cloud-final.service: that unit is ordered after
+# multi-user.target and k3s-agent.service (ordered After this unit) is
+# WantedBy=multi-user.target, so chaining onto cloud-final forms an ordering cycle
+# that makes systemd skip both this unit and k3s-agent, so the worker never joins.
+After=network-online.target cloud-config.service
 Wants=network-online.target
 Before=k3s-agent.service
 

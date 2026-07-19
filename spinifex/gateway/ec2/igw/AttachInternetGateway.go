@@ -23,7 +23,7 @@ func ValidateAttachInternetGatewayInput(input *ec2.AttachInternetGatewayInput) e
 	return nil
 }
 
-// AttachInternetGateway handles the EC2 AttachInternetGateway API call
+// AttachInternetGateway handles the EC2 AttachInternetGateway API call.
 func AttachInternetGateway(ctx context.Context, input *ec2.AttachInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.AttachInternetGatewayOutput, error) {
 	var output ec2.AttachInternetGatewayOutput
 

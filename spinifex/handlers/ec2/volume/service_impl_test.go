@@ -299,7 +299,7 @@ func TestDescribeVolumeStatus_WithVolumeIDs(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
 
-// newTestVolumeServiceWithStore creates a volume service with a specific memory store
+// newTestVolumeServiceWithStore creates a volume service with a specific memory store.
 func newTestVolumeServiceWithStore(az string, store *objectstore.MemoryObjectStore) *VolumeServiceImpl {
 	cfg := &config.Config{
 		AZ: az,

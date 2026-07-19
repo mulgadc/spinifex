@@ -7,6 +7,7 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
+import { SystemImageRequired } from "@/components/system-image-required"
 import { Button } from "@/components/ui/button"
 import { isEcsSystemImage } from "@/lib/system-managed"
 import { useDeleteCluster } from "@/mutations/ecs"
@@ -15,7 +16,6 @@ import { ecsClustersQueryOptions } from "@/queries/ecs"
 
 import { CreateClusterDialog } from "./create-cluster-dialog"
 import { EcsSectionNav } from "./ecs-section-nav"
-import { EcsSystemImageRequired } from "./ecs-system-image-required"
 
 export function ClustersListPage() {
   const navigate = useNavigate()
@@ -66,9 +66,13 @@ export function ClustersListPage() {
       <EcsSectionNav />
 
       {!hasEcsSystemImage && (
-        <EcsSystemImageRequired
+        <SystemImageRequired
+          className="mb-6"
+          description="ECS clusters need a Spinifex-managed node image (containerd + ecs-agent) to launch container instances. Import it before creating a cluster."
+          importCommand="spx admin images import --name spinifex-ecs-node"
           isRechecking={isRechecking}
           onRecheck={handleRecheck}
+          title="ECS system image not found"
         />
       )}
 

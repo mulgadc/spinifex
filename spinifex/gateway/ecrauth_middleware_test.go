@@ -38,11 +38,35 @@ func newECRAuth(t *testing.T) (*gateway_ecrauth.Issuer, *gateway_ecrauth.Verifie
 	return gateway_ecrauth.NewIssuer(key, ecrTestAudience), gateway_ecrauth.NewVerifier(verify, ecrTestAudience)
 }
 
+// mintBasic mints a token for account/"dev" using ecrBridgeTestAKID as its
+// access key ID. Tests that expect the bridge to pass the request through
+// must wire a GatewayConfig whose IAMService resolves that key back to an
+// active "dev" user in account (see ecrBridgeTestIAM), since the bridge now
+// rehydrates every token against current IAM state rather than trusting the
+// claims outright.
 func mintBasic(t *testing.T, iss *gateway_ecrauth.Issuer, account string) string {
 	t.Helper()
-	tok, _, err := iss.Mint(gateway_ecrauth.Principal{AccountID: account, ARN: "arn:aws:iam::" + account + ":user/dev"})
+	tok, _, err := iss.Mint(gateway_ecrauth.Principal{
+		AccountID:   account,
+		ARN:         "arn:aws:iam::" + account + ":user/dev",
+		Type:        principalTypeUser,
+		AccessKeyID: ecrBridgeTestAKID,
+	})
 	require.NoError(t, err)
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte("AWS:"+tok))
+}
+
+// ecrBridgeTestAKID is the access key ID mintBasic bakes into every token it
+// mints.
+const ecrBridgeTestAKID = "AKIABRIDGETESTUSER001"
+
+// ecrBridgeTestIAM returns an ecrMockIAMService that resolves
+// ecrBridgeTestAKID to an active "dev" user in account, so a token minted by
+// mintBasic rehydrates successfully through ecrAuthBridge.
+func ecrBridgeTestIAM(account string) *ecrMockIAMService {
+	iamSvc := newECRMockIAMService()
+	seedECRTestUser(iamSvc, account, "dev", ecrBridgeTestAKID)
+	return iamSvc
 }
 
 func okHandler() (http.Handler, *bool) {
@@ -110,7 +134,10 @@ func TestECRAuthBridge_NoAuthChallenges401(t *testing.T) {
 
 func TestECRAuthBridge_ValidTokenPassesThrough(t *testing.T) {
 	iss, verify := newECRAuth(t)
-	gw := &GatewayConfig{Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenVerifier: verify}
+	gw := &GatewayConfig{
+		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenVerifier: verify,
+		IAMService: ecrBridgeTestIAM(ecrTestAccount),
+	}
 	next, called := okHandler()
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)

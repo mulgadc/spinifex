@@ -105,7 +105,7 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 		{"eks.UntagResource", d.handleEKSUntagResource, notImpl},
 		{"eks.ListTagsForResource", d.handleEKSListTagsForResource, notImpl},
 	}
-	require.Equal(t, 30, len(cases), "expected exactly one handler per non-lifecycle AWS EKS action")
+	require.Len(t, cases, 30, "expected exactly one handler per non-lifecycle AWS EKS action")
 
 	for _, c := range cases {
 		t.Run(c.subject, func(t *testing.T) {

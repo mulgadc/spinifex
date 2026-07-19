@@ -25,7 +25,7 @@ func ValidateDescribeVolumeStatusInput(input *ec2.DescribeVolumeStatusInput) err
 	return nil
 }
 
-// DescribeVolumeStatus handles the DescribeVolumeStatus API call
+// DescribeVolumeStatus handles the DescribeVolumeStatus API call.
 func DescribeVolumeStatus(ctx context.Context, input *ec2.DescribeVolumeStatusInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVolumeStatusOutput, error) {
 	var output ec2.DescribeVolumeStatusOutput
 

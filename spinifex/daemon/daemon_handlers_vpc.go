@@ -189,7 +189,7 @@ func (d *Daemon) ensureDefaultVPCInfrastructureFor(ctx context.Context, accountI
 	}
 }
 
-// ensureDefaultIGWRoute adds 0.0.0.0/0 → igw-xxx to the main route table if not present
+// ensureDefaultIGWRoute adds 0.0.0.0/0 → igw-xxx to the main route table if not present.
 func (d *Daemon) ensureDefaultIGWRoute(ctx context.Context, accountID, vpcID string) {
 	// Find the main route table for this VPC
 	vpcFilter := "vpc-id"

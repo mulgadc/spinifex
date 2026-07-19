@@ -14,8 +14,8 @@ export function parseCidr(cidr: string): { network: number; prefix: number } {
   const parts = cidr.split("/")
   const ip = parts[0] ?? ""
   const prefixStr = parts[1] ?? "0"
-  const prefix = Number.parseInt(prefixStr, 10)
-  const octets = ip.split(".").map((o) => Number.parseInt(o, 10))
+  const prefix = Math.trunc(Number(prefixStr))
+  const octets = ip.split(".").map((o) => Math.trunc(Number(o)))
   const o0 = octets[0] ?? 0
   const o1 = octets[1] ?? 0
   const o2 = octets[2] ?? 0
@@ -123,14 +123,14 @@ export function isValidCidr(
   }
   const { octet1, octet2, octet3, octet4, prefix } = match.groups
   const octets = [
-    Number.parseInt(octet1 ?? "0", 10),
-    Number.parseInt(octet2 ?? "0", 10),
-    Number.parseInt(octet3 ?? "0", 10),
-    Number.parseInt(octet4 ?? "0", 10),
+    Math.trunc(Number(octet1 ?? "0")),
+    Math.trunc(Number(octet2 ?? "0")),
+    Math.trunc(Number(octet3 ?? "0")),
+    Math.trunc(Number(octet4 ?? "0")),
   ]
   if (octets.some((o) => o > 255)) {
     return false
   }
-  const prefixBits = Number.parseInt(prefix ?? "0", 10)
+  const prefixBits = Math.trunc(Number(prefix ?? "0"))
   return prefixBits >= minPrefix && prefixBits <= maxPrefix
 }

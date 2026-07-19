@@ -36,6 +36,12 @@ func TestMultinodeInstanceDistribution(t *testing.T) {
 	runInstanceDistribution(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeDNS is sequential because it launches guests and briefly stops
+// one Northstar unit while exercising resolver failover.
+func TestMultinodeDNS(t *testing.T) {
+	runMultinodeDNS(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeJetStreamReplicas is read-only over NATS; parallel so it resumes
 // after the sequential node-failure/recovery tests have restabilised the cluster.
 func TestMultinodeJetStreamReplicas(t *testing.T) {

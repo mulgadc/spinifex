@@ -129,8 +129,10 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	if strategy := aws.StringValue(input.SchedulingStrategy); strategy != "" && strategy != SchedulingStrategyReplica {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter) // DAEMON unsupported (Q15)
 	}
+	// Service discovery needs SRV records, which the DNS writer does not yet emit,
+	// and a servicediscovery surface to resolve the registry ARN against (Q15).
 	if len(input.ServiceRegistries) > 0 {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter) // Route53 v0 not landed (Q15)
+		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 
 	cluster := clusterShortName(aws.StringValue(input.Cluster))

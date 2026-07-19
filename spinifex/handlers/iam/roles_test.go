@@ -54,7 +54,7 @@ func TestCreateRole(t *testing.T) {
 	assert.Equal(t, "Role for app servers", *out.Role.Description)
 	assert.Equal(t, int64(7200), *out.Role.MaxSessionDuration)
 	assert.Equal(t, "arn:aws:iam::"+testAccountID+":role/service-roles/app-role", *out.Role.Arn)
-	require.True(t, len(*out.Role.RoleId) > 4)
+	require.Greater(t, len(*out.Role.RoleId), 4)
 	assert.Equal(t, "AROA", (*out.Role.RoleId)[:4])
 	require.Len(t, out.Role.Tags, 1)
 	assert.Equal(t, "team", *out.Role.Tags[0].Key)
@@ -271,7 +271,7 @@ func TestListRoles_Empty(t *testing.T) {
 
 	out, err := svc.ListRoles(testAccountID, &iam.ListRolesInput{})
 	require.NoError(t, err)
-	assert.Len(t, out.Roles, 0)
+	assert.Empty(t, out.Roles)
 }
 
 func TestListRoles_PathPrefix(t *testing.T) {
@@ -575,7 +575,7 @@ func TestDetachRolePolicy(t *testing.T) {
 		RoleName: role.RoleName,
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.AttachedPolicies, 0)
+	assert.Empty(t, out.AttachedPolicies)
 }
 
 func TestDetachRolePolicy_NotAttached(t *testing.T) {
@@ -643,7 +643,7 @@ func TestListAttachedRolePolicies_Empty(t *testing.T) {
 		RoleName: role.RoleName,
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.AttachedPolicies, 0)
+	assert.Empty(t, out.AttachedPolicies)
 }
 
 // ============================================================================
@@ -684,7 +684,7 @@ func TestGetRolePolicies_NoPolicies(t *testing.T) {
 
 	docs, err := svc.GetRolePolicies(testAccountID, "bare-role")
 	require.NoError(t, err)
-	assert.Len(t, docs, 0)
+	assert.Empty(t, docs)
 }
 
 func TestGetRolePolicies_NonexistentRole(t *testing.T) {
@@ -945,7 +945,7 @@ func TestListRolePolicies_Empty(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotNil(t, out.PolicyNames)
-	assert.Len(t, out.PolicyNames, 0)
+	assert.Empty(t, out.PolicyNames)
 	assert.False(t, *out.IsTruncated)
 }
 
@@ -987,7 +987,7 @@ func TestDeleteRolePolicy(t *testing.T) {
 		RoleName: aws.String("del-inline"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, list.PolicyNames, 0)
+	assert.Empty(t, list.PolicyNames)
 }
 
 func TestDeleteRolePolicy_DoubleDelete(t *testing.T) {

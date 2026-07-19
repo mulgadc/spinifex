@@ -122,6 +122,19 @@ type Config struct {
 	// to scope its IntentState scan to local-AZ KV records; new VPC records
 	// are stamped with this value at create time.
 	AZ string
+	// NorthstarBaseDomain is the cluster's authoritative base domain (northstar
+	// default_domain, e.g. "spx3.net"). IMDS uses it to serve public-hostname.
+	// Empty disables the public-hostname metadata key.
+	NorthstarBaseDomain string
+	// NorthstarInternalDomain is the cluster's private AWS-parity domain (northstar
+	// internal_domain, default "compute.internal"). IMDS serves it as local-hostname
+	// so the guest's own name matches the record the DNS writer publishes.
+	NorthstarInternalDomain string
+	// ResolverNameservers are the WAN IPs of cluster nodes running northstar,
+	// used as the per-tap DNS shim's forward targets. When set, DHCP advertises
+	// the link-local VPC DNS address (169.254.169.253) instead of the upstream
+	// pool DNS.
+	ResolverNameservers []string
 	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT,
 	// appended to the transit /24 in the spinifex_nat_exempt set. nat mode only.
 	NATExemptCIDRs []string
@@ -212,7 +225,8 @@ var localSystemID = func() (string, error) {
 	out, err := sudoCommand("ovs-vsctl", "get", "open_vswitch", ".", "external-ids:system-id").Output()
 	if err != nil {
 		var stderr string
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			stderr = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		return "", fmt.Errorf("ovs-vsctl get system-id: %s: %w", stderr, err)
@@ -239,7 +253,8 @@ var discoverChassis = func(sbAddr string) ([]string, error) {
 	out, err := sudoCommand("ovn-sbctl", args...).Output()
 	if err != nil {
 		var stderr string
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			stderr = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		return nil, fmt.Errorf("ovn-sbctl list Chassis: %s: %w", stderr, err)
@@ -448,7 +463,7 @@ func launchService(cfg *Config) error {
 	natMode := policy.NATModeFromUplinkMode(uplinkMode)
 
 	var topoOpts []topology.Option
-	if dns := pickDNSServer(cfg.ExternalPools); dns != "" {
+	if dns := resolverDNSServer(cfg); dns != "" {
 		topoOpts = append(topoOpts, topology.WithDNSServer(func() string { return dns }))
 	}
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
@@ -502,6 +517,9 @@ func launchService(cfg *Config) error {
 		handlers_imds.NewNATSPublicKeyLookup(nc),
 		max(len(chassisNames), 1),
 		listTaps,
+		cfg.NorthstarBaseDomain,
+		cfg.NorthstarInternalDomain,
+		cfg.ResolverNameservers,
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)
@@ -575,6 +593,9 @@ func launchService(cfg *Config) error {
 		NATMode:       natMode,
 		FlowsBarrier:  waitForFlowsHV,
 		RoutedIngress: routedIngress,
+		NexthopSeed: func(ctx context.Context, lrpName, nexthopIP string) error {
+			return host.SeedNexthopMAC(ctx, host.NewExecRunner(), lrpName, nexthopIP)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("construct IGW manager: %w", err)
@@ -626,7 +647,7 @@ func launchService(cfg *Config) error {
 		NodeHostname: holder,
 		Chassis:      chassisNames,
 		GatewayClaim: host.NewGatewayClaimProber(cfg.OVNSBAddr),
-		DNSServer:    pickDNSServer(cfg.ExternalPools),
+		DNSServer:    resolverDNSServer(cfg),
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)
@@ -671,6 +692,17 @@ func launchService(cfg *Config) error {
 	loopCancel()
 	<-loopDone
 	return nil
+}
+
+// resolverDNSServer returns the OVN dhcp_options dns_server advertised to
+// instances. With northstar configured, guests get the link-local VPC DNS
+// address served by the per-tap shim (which forwards to ResolverNameservers);
+// absent northstar it falls back to the upstream pool DNS.
+func resolverDNSServer(cfg *Config) string {
+	if len(cfg.ResolverNameservers) > 0 {
+		return handlers_imds.VPCDNSServerIP
+	}
+	return pickDNSServer(cfg.ExternalPools)
 }
 
 // pickDNSServer returns the OVN dhcp_options dns_server from the first unscoped pool with DNS servers.
@@ -840,7 +872,8 @@ var portToBr = func(port string) (string, error) {
 	out, err := sudoCommand("ovs-vsctl", "port-to-br", port).Output()
 	if err != nil {
 		var stderr string
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			stderr = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		return "", fmt.Errorf("ovs-vsctl port-to-br %s: %s: %w", port, stderr, err)

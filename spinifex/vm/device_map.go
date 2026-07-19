@@ -16,7 +16,7 @@ import (
 )
 
 // pciAddrRegexp extracts the device index from a boot-time QDev path.
-// Example: "/machine/peripheral-anon/device[0]/virtio-backend" → 0
+// Example: "/machine/peripheral-anon/device[0]/virtio-backend" → 0.
 var pciAddrRegexp = regexp.MustCompile(`device\[(\d+)\]`)
 
 // hotplugPortRegexp extracts the EBS hot-plug port number from a QDev path.
@@ -189,7 +189,7 @@ func (m *Manager) UpdateGuestDeviceNames(instance *VM) {
 }
 
 // extractPCIIndex parses the device index from a QDev path.
-// For example: "/machine/peripheral-anon/device[3]/virtio-backend" → 3
+// For example: "/machine/peripheral-anon/device[3]/virtio-backend" → 3.
 func extractPCIIndex(qdev string) int {
 	matches := pciAddrRegexp.FindStringSubmatch(qdev)
 	if len(matches) < 2 {
@@ -203,7 +203,7 @@ func extractPCIIndex(qdev string) int {
 }
 
 // extractPeripheralName extracts the device ID from a hot-plugged QDev path.
-// For example: "/machine/peripheral/vdisk-vol-abc123/virtio-backend" → "vdisk-vol-abc123"
+// For example: "/machine/peripheral/vdisk-vol-abc123/virtio-backend" → "vdisk-vol-abc123".
 func extractPeripheralName(qdev string) string {
 	const prefix = "/machine/peripheral/"
 	if !strings.HasPrefix(qdev, prefix) {

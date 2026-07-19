@@ -64,7 +64,7 @@ func TestFetchNATSRole_ClusterFollower(t *testing.T) {
 
 func TestFetchNATSRole_Unreachable(t *testing.T) {
 	role := fetchNATSRole("http://127.0.0.1:1/varz", &http.Client{})
-	assert.Equal(t, "", role)
+	assert.Empty(t, role)
 }
 
 func TestFetchNATSRole_BadJSON(t *testing.T) {
@@ -74,7 +74,7 @@ func TestFetchNATSRole_BadJSON(t *testing.T) {
 	defer srv.Close()
 
 	role := fetchNATSRole(srv.URL, srv.Client())
-	assert.Equal(t, "", role)
+	assert.Empty(t, role)
 }
 
 func TestFetchPredastoreRole_Leader(t *testing.T) {
@@ -99,7 +99,7 @@ func TestFetchPredastoreRole_Follower(t *testing.T) {
 
 func TestFetchPredastoreRole_Unreachable(t *testing.T) {
 	role := fetchPredastoreRole("https://127.0.0.1:1/status", &http.Client{})
-	assert.Equal(t, "", role)
+	assert.Empty(t, role)
 }
 
 func TestFetchPredastoreRole_BadJSON(t *testing.T) {
@@ -109,5 +109,5 @@ func TestFetchPredastoreRole_BadJSON(t *testing.T) {
 	defer srv.Close()
 
 	role := fetchPredastoreRole(srv.URL, srv.Client())
-	assert.Equal(t, "", role)
+	assert.Empty(t, role)
 }

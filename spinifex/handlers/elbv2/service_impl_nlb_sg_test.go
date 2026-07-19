@@ -2,11 +2,14 @@ package handlers_elbv2
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,6 +64,31 @@ func managedENI(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) *ec2.Netw
 		}
 	}
 	return nil
+}
+
+// hasManagedNLBSG reports whether any NLB managed SG (named spinifex-nlb-<lbID>)
+// is still present, so a rollback can be asserted to have removed it.
+func hasManagedNLBSG(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) bool {
+	t.Helper()
+	out, err := vpcSvc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{}, testAccountID)
+	require.NoError(t, err)
+	for _, sg := range out.SecurityGroups {
+		if strings.HasPrefix(aws.StringValue(sg.GroupName), "spinifex-nlb-") {
+			return true
+		}
+	}
+	return false
+}
+
+// nlbSyncInput builds an internet-facing network LB create input for the
+// synchronous-launch failure tests.
+func nlbSyncInput(name, subnetID string) *elbv2.CreateLoadBalancerInput {
+	return &elbv2.CreateLoadBalancerInput{
+		Name:    aws.String(name),
+		Type:    aws.String("network"),
+		Scheme:  aws.String(elbv2.LoadBalancerSchemeEnumInternetFacing),
+		Subnets: []*string{aws.String(subnetID)},
+	}
 }
 
 func createNLB(t *testing.T, svc *ELBv2ServiceImpl, name, scheme, subnetID string) *elbv2.LoadBalancer {
@@ -345,4 +373,75 @@ func TestDeleteNLB_DeletesManagedSG(t *testing.T) {
 	if err == nil {
 		assert.Empty(t, out.SecurityGroups, "managed SG must be deleted with the NLB")
 	}
+}
+
+// TestCreateLoadBalancerSync_LaunchFailure_RollsBackEverything verifies a
+// synchronous create whose data-plane launch fails leaves nothing behind: no
+// record, no managed ENI, no managed SG, and the name claim released. The
+// leaked managed SG is what pinned the EKS control-plane VPC against DeleteVpc.
+func TestCreateLoadBalancerSync_LaunchFailure_RollsBackEverything(t *testing.T) {
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	subnetID, _ := firstSubnet(t, vpcSvc)
+
+	// Force the inline data-plane launch to fail.
+	mock.launchErr = errors.New("allocate public IP: " + awserrors.ErrorInsufficientAddressCapacity)
+
+	_, err := svc.CreateLoadBalancerSync(nlbSyncInput("nlb-sync-fail", subnetID), testAccountID)
+	require.Error(t, err)
+
+	lbs, err := svc.store.ListLoadBalancers()
+	require.NoError(t, err)
+	assert.Empty(t, lbs, "failed sync create must leave no LB record")
+	assert.Equal(t, 0, countManagedENIs(t, vpcSvc), "failed sync create must leave no managed ENI")
+	assert.False(t, hasManagedNLBSG(t, vpcSvc), "failed sync create must leave no managed NLB SG")
+
+	// Name claim released: reusing the name on a later (now succeeding) create works.
+	mock.launchErr = nil
+	out, err := svc.CreateLoadBalancerSync(nlbSyncInput("nlb-sync-fail", subnetID), testAccountID)
+	require.NoError(t, err, "name claim must be released so the name is reusable")
+	require.Len(t, out.LoadBalancers, 1)
+}
+
+// TestCreateLoadBalancerSync_LaunchFailure_SurfacesCause verifies the real
+// launch-failure cause reaches the caller: a capacity shortfall surfaces its own
+// code, while an unrecognised cause stays ServerInternal rather than inventing a
+// client error.
+func TestCreateLoadBalancerSync_LaunchFailure_SurfacesCause(t *testing.T) {
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	subnetID, _ := firstSubnet(t, vpcSvc)
+
+	mock.launchErr = errors.New("allocate public IP for internet-facing ALB: " + awserrors.ErrorInsufficientAddressCapacity)
+	_, err := svc.CreateLoadBalancerSync(nlbSyncInput("nlb-cap", subnetID), testAccountID)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInsufficientAddressCapacity),
+		"capacity failure must surface InsufficientAddressCapacity, got %v", err)
+
+	mock.launchErr = errors.New("qemu exited with code 1")
+	_, err = svc.CreateLoadBalancerSync(nlbSyncInput("nlb-opaque", subnetID), testAccountID)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorServerInternal),
+		"unrecognised failure must stay ServerInternal, got %v", err)
+}
+
+// TestCreateLoadBalancer_AsyncLaunchFailure_KeepsFailedRecord guards the
+// deliberate asymmetry: the async path returns the ARN to the caller before
+// launching, so its failed record and managed SG are kept — the caller can
+// reclaim them via DeleteLoadBalancer. Only the sync path rolls back fully.
+func TestCreateLoadBalancer_AsyncLaunchFailure_KeepsFailedRecord(t *testing.T) {
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	subnetID, _ := firstSubnet(t, vpcSvc)
+	mock.launchErr = errors.New("allocate public IP: " + awserrors.ErrorInsufficientAddressCapacity)
+
+	out, err := svc.CreateLoadBalancer(context.Background(), nlbSyncInput("nlb-async-fail", subnetID), testAccountID)
+	require.NoError(t, err, "async create returns before the launch goroutine runs")
+	require.Len(t, out.LoadBalancers, 1)
+	arn := *out.LoadBalancers[0].LoadBalancerArn
+	svc.WaitLaunches()
+
+	rec, err := svc.store.GetLoadBalancerByArn(arn)
+	require.NoError(t, err)
+	require.NotNil(t, rec, "async failed record must remain for the caller to reclaim")
+	assert.Equal(t, StateFailed, rec.State)
+	assert.NotEmpty(t, rec.NLBManagedSGID, "async failed record must retain its managed SG for reclamation")
+	assert.True(t, hasManagedNLBSG(t, vpcSvc), "async failure must leave the managed SG in place")
 }

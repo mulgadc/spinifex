@@ -27,7 +27,7 @@ func ValidateDescribeVolumesInput(input *ec2.DescribeVolumesInput) error {
 	return nil
 }
 
-// DescribeVolumes handles the DescribeVolumes API call
+// DescribeVolumes handles the DescribeVolumes API call.
 func DescribeVolumes(ctx context.Context, input *ec2.DescribeVolumesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVolumesOutput, error) {
 	var output ec2.DescribeVolumesOutput
 

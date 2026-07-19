@@ -7,7 +7,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DescribeKeyPairs lists key pairs via NATS
+// DescribeKeyPairs lists key pairs via NATS.
 func DescribeKeyPairs(ctx context.Context, input *ec2.DescribeKeyPairsInput, natsConn *nats.Conn, accountID string) (output ec2.DescribeKeyPairsOutput, err error) {
 	keyService := handlers_ec2_key.NewNATSKeyService(natsConn)
 	result, err := keyService.DescribeKeyPairs(ctx, input, accountID)

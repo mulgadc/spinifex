@@ -326,7 +326,7 @@ func TestMemoryObjectStore_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	// Should complete without race conditions
-	assert.True(t, store.Count() > 0)
+	assert.Positive(t, store.Count())
 }
 
 func TestNoSuchKeyError(t *testing.T) {
@@ -346,6 +346,6 @@ func TestIsNoSuchKeyError_WithWrappedError(t *testing.T) {
 	assert.True(t, IsNoSuchKeyError(originalErr))
 }
 
-// Test that the interface is properly defined
+// Test that the interface is properly defined.
 var _ ObjectStore = (*MemoryObjectStore)(nil)
 var _ ObjectStore = (*S3ObjectStore)(nil)

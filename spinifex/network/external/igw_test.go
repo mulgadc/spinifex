@@ -29,10 +29,25 @@ func seedVPCRouter(t *testing.T, m *mock.Client, vpcID, cidr string) {
 
 func newTestIGWManager(t *testing.T, m *mock.Client, mode policy.NATMode, pool *ExternalPoolConfig, allocator GatewayIPAllocator, chassis []string) (IGWManager, *int) {
 	t.Helper()
+	mgr, calls, err := newTestIGWManagerWithSeed(t, m, mode, pool, allocator, chassis, nil)
+	require.NoError(t, err)
+	return mgr, calls
+}
+
+// nexthopSeedCall records a single NexthopSeed invocation's arguments.
+type nexthopSeedCall struct {
+	lrpName   string
+	nexthopIP string
+}
+
+// newTestIGWManagerWithSeed is newTestIGWManager plus an optional capturing
+// NexthopSeed hook; pass nil to leave it unset (mirrors newTestIGWManager).
+func newTestIGWManagerWithSeed(t *testing.T, m *mock.Client, mode policy.NATMode, pool *ExternalPoolConfig, allocator GatewayIPAllocator, chassis []string, seedCalls *[]nexthopSeedCall) (IGWManager, *int, error) {
+	t.Helper()
 	nm, err := policy.NewNATManager(m, mode)
 	require.NoError(t, err)
 	barrierCalls := 0
-	mgr, err := NewIGWManager(IGWManagerConfig{
+	cfg := IGWManagerConfig{
 		OVN:       m,
 		Routes:    policy.NewRouteManager(m),
 		NAT:       nm,
@@ -44,9 +59,15 @@ func newTestIGWManager(t *testing.T, m *mock.Client, mode policy.NATMode, pool *
 			barrierCalls++
 			return nil
 		},
-	})
-	require.NoError(t, err)
-	return mgr, &barrierCalls
+	}
+	if seedCalls != nil {
+		cfg.NexthopSeed = func(_ context.Context, lrpName, nexthopIP string) error {
+			*seedCalls = append(*seedCalls, nexthopSeedCall{lrpName: lrpName, nexthopIP: nexthopIP})
+			return nil
+		}
+	}
+	mgr, err := NewIGWManager(cfg)
+	return mgr, &barrierCalls, err
 }
 
 func TestNewIGWManager_RejectsMissingDeps(t *testing.T) {
@@ -548,4 +569,64 @@ func TestRemoveSubnetEgress_PropagatesDeleteError(t *testing.T) {
 
 	err := mgr.RemoveSubnetEgress(ctx, "vpc-missing", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0"))
 	require.Error(t, err)
+}
+
+// TestAttachIGW_NexthopSeed_CalledWhenGatewayOwnsNAT covers centralized and
+// routed modes, both of which give the gateway LRP a real pool IP and a
+// non-empty wanNexthop — AttachIGW must invoke NexthopSeed with the gateway
+// port name and the resolved nexthop right after AddDefaultRoute.
+func TestAttachIGW_NexthopSeed_CalledWhenGatewayOwnsNAT(t *testing.T) {
+	for _, mode := range []policy.NATMode{policy.NATModeCentralized, policy.NATModeRouted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			ctx := context.Background()
+			m := mock.New()
+			seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+			pool := &ExternalPoolConfig{
+				Name: "p", Gateway: "192.168.1.1", PrefixLen: 24,
+				GwLrpRangeStart: "192.168.1.240", GwLrpRangeEnd: "192.168.1.243",
+			}
+			var seedCalls []nexthopSeedCall
+			mgr, _, err := newTestIGWManagerWithSeed(t, m, mode, pool, NewStaticRangeAllocator(m), []string{"chassis-a"}, &seedCalls)
+			require.NoError(t, err)
+
+			require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+			require.Len(t, seedCalls, 1, "NexthopSeed must be invoked exactly once on attach")
+			assert.Equal(t, topology.GatewayRouterPort("vpc-1"), seedCalls[0].lrpName)
+			assert.Equal(t, "192.168.1.1", seedCalls[0].nexthopIP)
+		})
+	}
+}
+
+// TestAttachIGW_NexthopSeed_NotCalledWhenModeIsDistributed guards the
+// gatewayOwnsNAT() gate: distributed mode never owns NAT on the gateway
+// chassis, so seeding a static binding there would be meaningless.
+func TestAttachIGW_NexthopSeed_NotCalledWhenModeIsDistributed(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	var seedCalls []nexthopSeedCall
+	mgr, _, err := newTestIGWManagerWithSeed(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, []string{"chassis-a"}, &seedCalls)
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	assert.Empty(t, seedCalls, "NexthopSeed must not be invoked outside gatewayOwnsNAT modes")
+}
+
+// TestAttachIGW_NexthopSeed_NilHookSkipped asserts a nil NexthopSeed (the
+// default in all existing tests/wiring paths) is simply never called, and
+// AttachIGW proceeds normally.
+func TestAttachIGW_NexthopSeed_NilHookSkipped(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{
+		Name: "p", Gateway: "192.168.1.1", PrefixLen: 24,
+		GwLrpRangeStart: "192.168.1.240", GwLrpRangeEnd: "192.168.1.243",
+	}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeCentralized, pool, NewStaticRangeAllocator(m), []string{"chassis-a"})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 }

@@ -1,5 +1,5 @@
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { useEffect, useState } from "react"
+import { useState } from "react"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { DetailCard } from "@/components/detail-card"
@@ -316,13 +316,15 @@ function EditInlinePolicyForm({
   onClose,
 }: EditInlinePolicyFormProps) {
   const { data: savedDocument, isLoading, error } = useQuery(queryOptions)
-  const [draft, setDraft] = useState("")
+  const [draft, setDraft] = useState(savedDocument ?? "")
 
   // Re-seed from the stored document (save invalidates the query) so the
   // textarea tracks the server copy, mirroring the ECR policy editor.
-  useEffect(() => {
+  const [seededDocument, setSeededDocument] = useState(savedDocument)
+  if (savedDocument !== seededDocument) {
+    setSeededDocument(savedDocument)
     setDraft(savedDocument ?? "")
-  }, [savedDocument])
+  }
 
   const trimmed = draft.trim()
   const invalidJson = trimmed.length > 0 && !isValidJson(draft)

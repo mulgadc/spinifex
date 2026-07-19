@@ -15,7 +15,7 @@ import (
 
 var _ ImageService = (*NATSImageService)(nil)
 
-// NATSImageService handles image operations via NATS messaging
+// NATSImageService handles image operations via NATS messaging.
 type NATSImageService struct {
 	natsConn      *nats.Conn
 	expectedNodes int

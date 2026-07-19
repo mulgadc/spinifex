@@ -110,7 +110,7 @@ func TestQueryParamsToStruct_StopInstances(t *testing.T) {
 	assert.Len(t, input.InstanceIds, 2)
 	assert.Equal(t, "i-1234567890abcdef0", aws.StringValue(input.InstanceIds[0]))
 	assert.Equal(t, "i-0987654321fedcba0", aws.StringValue(input.InstanceIds[1]))
-	assert.Equal(t, true, aws.BoolValue(input.Force))
+	assert.True(t, aws.BoolValue(input.Force))
 }
 
 func TestQueryParamsToStruct_StartInstances(t *testing.T) {
@@ -249,7 +249,7 @@ func TestQueryParamsToStruct_BlockDeviceMappingsWithEBS(t *testing.T) {
 	assert.NotNil(t, bdm.Ebs)
 	assert.Equal(t, int64(100), aws.Int64Value(bdm.Ebs.VolumeSize))
 	assert.Equal(t, "gp3", aws.StringValue(bdm.Ebs.VolumeType))
-	assert.Equal(t, true, aws.BoolValue(bdm.Ebs.DeleteOnTermination))
+	assert.True(t, aws.BoolValue(bdm.Ebs.DeleteOnTermination))
 }
 
 func TestQueryParamsToStruct_BlockDeviceMappingsWithEphemeral(t *testing.T) {
@@ -312,8 +312,8 @@ func TestQueryParamsToStruct_MultipleBlockDeviceMappings(t *testing.T) {
 	assert.Equal(t, "snap-1234567890abcdef0", aws.StringValue(bdm1.Ebs.SnapshotId))
 	assert.Equal(t, int64(30), aws.Int64Value(bdm1.Ebs.VolumeSize))
 	assert.Equal(t, "gp3", aws.StringValue(bdm1.Ebs.VolumeType))
-	assert.Equal(t, true, aws.BoolValue(bdm1.Ebs.Encrypted))
-	assert.Equal(t, true, aws.BoolValue(bdm1.Ebs.DeleteOnTermination))
+	assert.True(t, aws.BoolValue(bdm1.Ebs.Encrypted))
+	assert.True(t, aws.BoolValue(bdm1.Ebs.DeleteOnTermination))
 
 	// Second mapping - Empty EBS
 	bdm2 := input.BlockDeviceMappings[1]
@@ -472,7 +472,7 @@ func TestQueryParamsToStruct_LocationNameDryRun(t *testing.T) {
 	err := QueryParamsToStruct(args, input)
 
 	assert.NoError(t, err)
-	assert.Equal(t, true, aws.BoolValue(input.DryRun))
+	assert.True(t, aws.BoolValue(input.DryRun))
 }
 
 func TestQueryParamsToStruct_NonStructPointer(t *testing.T) {

@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Interface compliance check
+// Interface compliance check.
 var _ IAMService = (*IAMServiceImpl)(nil)
 
 const testAccountID = utils.GlobalAccountID
@@ -62,7 +62,7 @@ func TestCreateUser(t *testing.T) {
 	assert.Equal(t, "testuser", *out.User.UserName)
 	assert.Contains(t, *out.User.Arn, "testuser")
 	assert.Equal(t, "/developers/", *out.User.Path)
-	assert.True(t, len(*out.User.UserId) > 4)
+	assert.Greater(t, len(*out.User.UserId), 4)
 	assert.Equal(t, "AIDA", (*out.User.UserId)[:4])
 }
 
@@ -137,7 +137,7 @@ func TestListUsers_Empty(t *testing.T) {
 
 	out, err := svc.ListUsers(testAccountID, &iam.ListUsersInput{})
 	require.NoError(t, err)
-	assert.Len(t, out.Users, 0)
+	assert.Empty(t, out.Users)
 }
 
 func TestListUsers_PathFilter(t *testing.T) {
@@ -309,9 +309,9 @@ func TestCreateAccessKey(t *testing.T) {
 
 	assert.Equal(t, "keyuser", *out.AccessKey.UserName)
 	assert.Equal(t, "Active", *out.AccessKey.Status)
-	assert.True(t, len(*out.AccessKey.AccessKeyId) >= 20)
+	assert.GreaterOrEqual(t, len(*out.AccessKey.AccessKeyId), 20)
 	assert.Equal(t, "AKIA", (*out.AccessKey.AccessKeyId)[:4])
-	assert.True(t, len(*out.AccessKey.SecretAccessKey) >= 30)
+	assert.GreaterOrEqual(t, len(*out.AccessKey.SecretAccessKey), 30)
 }
 
 func TestCreateAccessKey_SecretIsDecryptable(t *testing.T) {
@@ -457,7 +457,7 @@ func TestDeleteAccessKey(t *testing.T) {
 		UserName: aws.String("delkeyuser"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, listOut.AccessKeyMetadata, 0)
+	assert.Empty(t, listOut.AccessKeyMetadata)
 
 	// User should now be deletable (no access keys)
 	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
@@ -837,7 +837,7 @@ func TestGenerateIAMID(t *testing.T) {
 	id, err := generateIAMID("AIDA")
 	assert.NoError(t, err)
 	assert.Equal(t, "AIDA", id[:4])
-	assert.True(t, len(id) == 21) // AIDA + 17 hex chars
+	assert.Len(t, id, 21) // AIDA + 17 hex chars
 
 	// Two IDs should differ
 	id2, err := generateIAMID("AIDA")
@@ -855,7 +855,7 @@ func TestGenerateAccessKeyID(t *testing.T) {
 	id, err := generateAccessKeyID()
 	assert.NoError(t, err)
 	assert.Equal(t, "AKIA", id[:4])
-	assert.True(t, len(id) == 24) // AKIA + 20 hex chars
+	assert.Len(t, id, 24) // AKIA + 20 hex chars
 
 	id2, err := generateAccessKeyID()
 	assert.NoError(t, err)
@@ -907,7 +907,7 @@ func TestCreatePolicy(t *testing.T) {
 	assert.Equal(t, "Allow EC2 describe", *out.Policy.Description)
 	assert.Equal(t, "v1", *out.Policy.DefaultVersionId)
 	assert.Contains(t, *out.Policy.Arn, "policy/devteam/AllowEC2")
-	assert.True(t, len(*out.Policy.PolicyId) > 4)
+	assert.Greater(t, len(*out.Policy.PolicyId), 4)
 	assert.Equal(t, "ANPA", (*out.Policy.PolicyId)[:4])
 	assert.Equal(t, int64(0), *out.Policy.AttachmentCount)
 	assert.True(t, *out.Policy.IsAttachable)
@@ -1200,7 +1200,7 @@ func TestListPolicies_Empty(t *testing.T) {
 
 	out, err := svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{})
 	require.NoError(t, err)
-	assert.Len(t, out.Policies, 0)
+	assert.Empty(t, out.Policies)
 }
 
 func TestDeletePolicy(t *testing.T) {
@@ -1356,7 +1356,7 @@ func TestDetachUserPolicy(t *testing.T) {
 		UserName: aws.String("detachme"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.AttachedPolicies, 0)
+	assert.Empty(t, out.AttachedPolicies)
 }
 
 func TestDetachUserPolicy_NotAttached(t *testing.T) {
@@ -1421,7 +1421,7 @@ func TestListAttachedUserPolicies_Empty(t *testing.T) {
 		UserName: aws.String("nopolicies"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, out.AttachedPolicies, 0)
+	assert.Empty(t, out.AttachedPolicies)
 }
 
 func TestListAttachedUserPolicies_NonexistentUser(t *testing.T) {
@@ -1479,7 +1479,7 @@ func TestGetUserPolicies_NoPolicies(t *testing.T) {
 
 	docs, err := svc.GetUserPolicies(testAccountID, "emptyuser")
 	require.NoError(t, err)
-	assert.Len(t, docs, 0)
+	assert.Empty(t, docs)
 }
 
 func TestGetUserPolicies_NonexistentUser(t *testing.T) {

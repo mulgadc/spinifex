@@ -539,7 +539,7 @@ func installBootloader(disk string) error {
 	); biosErr != nil {
 		if efiErr != nil {
 			// Both targets failed — the system will not boot.
-			return fmt.Errorf("both bootloader targets failed (EFI: %v; BIOS: %w)", efiErr, biosErr)
+			return fmt.Errorf("both bootloader targets failed (EFI: %w; BIOS: %w)", efiErr, biosErr)
 		}
 		return biosErr
 	}

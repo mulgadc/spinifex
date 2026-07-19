@@ -102,7 +102,7 @@ func TestCreatePlacementGroup_MissingName(t *testing.T) {
 func TestCreatePlacementGroup_MissingStrategyDefaultsToCluster(t *testing.T) {
 	svc := setupTestService(t)
 	out, err := svc.CreatePlacementGroup(context.Background(), &ec2.CreatePlacementGroupInput{
-		GroupName: aws.String("no-strat"),
+		GroupName: aws.String("no-strategy"),
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, "cluster", *out.PlacementGroup.Strategy)
@@ -111,7 +111,7 @@ func TestCreatePlacementGroup_MissingStrategyDefaultsToCluster(t *testing.T) {
 func TestCreatePlacementGroup_EmptyStrategyDefaultsToCluster(t *testing.T) {
 	svc := setupTestService(t)
 	out, err := svc.CreatePlacementGroup(context.Background(), &ec2.CreatePlacementGroupInput{
-		GroupName: aws.String("empty-strat"),
+		GroupName: aws.String("empty-strategy"),
 		Strategy:  aws.String(""),
 	}, testAccountID)
 	require.NoError(t, err)

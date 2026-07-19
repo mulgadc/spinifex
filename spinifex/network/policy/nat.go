@@ -289,6 +289,15 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		slog.Info("policy: cleaned stale dnat_and_snat rules before AddEIP", "external_ip", eip.ExternalIP, "removed", removed)
 	}
 
+	// Scrub any predecessor row sharing this private IP under a different external
+	// IP: dnat_and_snat is 1:1 per private IP, and a stale row's SNAT half (keyed on
+	// logical_ip) blackholes the new EIP. Router-scoped — private IPs repeat per VPC.
+	if err := m.ovn.DeleteNAT(ctx, router, "dnat_and_snat", eip.LogicalIP); err != nil &&
+		!errors.Is(err, ovn.ErrNATNotFound) {
+		slog.Warn("policy: stale logical-IP NAT cleanup failed before AddEIP",
+			"logical_ip", eip.LogicalIP, "err", err)
+	}
+
 	if err := m.ovn.AddNAT(ctx, router, natRule); err != nil {
 		return fmt.Errorf("add dnat_and_snat %s -> %s on %s: %w", eip.LogicalIP, eip.ExternalIP, router, err)
 	}
@@ -570,6 +579,12 @@ func (m *natManager) AddSNAT(ctx context.Context, vpcID, vpcCIDR, externalIP str
 	if err := m.ovn.AddNAT(ctx, router, snatRule); err != nil {
 		return fmt.Errorf("add IGW snat %s -> %s on %s: %w", vpcCIDR, externalIP, router, err)
 	}
+
+	// Log the first install so RCA can pin the commit timestamp; without this
+	// only later reconcile passes emit "idempotent skip", masking whether a
+	// missing snat was programmed late or never programmed at all.
+	slog.Info("policy: AddSNAT installed",
+		"router", router, "vpc_cidr", vpcCIDR, "external_ip", externalIP)
 	return nil
 }
 

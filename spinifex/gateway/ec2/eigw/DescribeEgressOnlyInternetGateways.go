@@ -18,7 +18,7 @@ func ValidateDescribeEgressOnlyInternetGatewaysInput(input *ec2.DescribeEgressOn
 	return nil
 }
 
-// DescribeEgressOnlyInternetGateways handles the EC2 DescribeEgressOnlyInternetGateways API call
+// DescribeEgressOnlyInternetGateways handles the EC2 DescribeEgressOnlyInternetGateways API call.
 func DescribeEgressOnlyInternetGateways(ctx context.Context, input *ec2.DescribeEgressOnlyInternetGatewaysInput, natsConn *nats.Conn, accountID string) (ec2.DescribeEgressOnlyInternetGatewaysOutput, error) {
 	var output ec2.DescribeEgressOnlyInternetGatewaysOutput
 

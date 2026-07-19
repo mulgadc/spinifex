@@ -129,6 +129,14 @@ secretkey = "{{.SecretKey}}"
 {{- if gt .PredastoreNodeID 0}}
 node_id = {{.PredastoreNodeID}}
 {{- end}}
+
+{{- if .NorthstarConfigPath}}
+
+[nodes.{{.Node}}.northstar]
+config_path = "{{.NorthstarConfigPath}}"
+default_domain = "{{.NorthstarDefaultDomain}}"
+internal_domain = "{{.NorthstarInternalDomain}}"
+{{- end}}
 {{- range .RemoteNodes}}
 
 [nodes.{{.Name}}]
@@ -138,5 +146,10 @@ region = "{{.Region}}"
 az = "{{.AZ}}"
 {{- if .Services}}
 services = [{{range $i, $s := .Services}}{{if $i}}, {{end}}"{{$s}}"{{end}}]
+{{- end}}
+{{- if .NorthstarConfigPath}}
+
+[nodes.{{.Name}}.northstar]
+config_path = "{{.NorthstarConfigPath}}"
 {{- end}}
 {{- end}}

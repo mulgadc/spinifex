@@ -20,7 +20,7 @@ func ValidateDeleteVpcInput(input *ec2.DeleteVpcInput) error {
 	return nil
 }
 
-// DeleteVpc handles the EC2 DeleteVpc API call
+// DeleteVpc handles the EC2 DeleteVpc API call.
 func DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInput, natsConn *nats.Conn, accountID string) (ec2.DeleteVpcOutput, error) {
 	var output ec2.DeleteVpcOutput
 

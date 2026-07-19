@@ -25,7 +25,7 @@ func setupACMRequest(target, body string) *http.Request {
 func TestACMActionFromTarget(t *testing.T) {
 	assert.Equal(t, "ImportCertificate", acmActionFromTarget("CertificateManager.ImportCertificate"))
 	assert.Equal(t, "ListCertificates", acmActionFromTarget("ListCertificates"))
-	assert.Equal(t, "", acmActionFromTarget(""))
+	assert.Empty(t, acmActionFromTarget(""))
 }
 
 func TestACMActionsMap_AllActionsRegistered(t *testing.T) {

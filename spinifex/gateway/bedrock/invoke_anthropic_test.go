@@ -22,7 +22,10 @@ func TestAnthropicInvokeAdapter_InvokeModel_RewritesRequestAndReturnsBodyVerbati
 		capturedAPIKey = r.Header.Get("X-Api-Key")
 		capturedAnthropicVersion = r.Header.Get("Anthropic-Version")
 		capturedContentType = r.Header.Get("Content-Type")
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured)) {
+			http.Error(w, "decode request body", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(canned))

@@ -1012,7 +1012,7 @@ func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {
 
 	assert.True(t, strings.HasSuffix(q["PublicKeyMaterial"], "=="),
 		"Expected PublicKeyMaterial to end with == but got: %s", q["PublicKeyMaterial"])
-	assert.False(t, strings.Contains(q["PublicKeyMaterial"], "%3D"),
+	assert.NotContains(t, q["PublicKeyMaterial"], "%3D",
 		"Expected no URL-encoded padding remaining")
 }
 
@@ -1297,7 +1297,7 @@ func TestGenerateEC2ErrorResponse_SDKRoundTrip(t *testing.T) {
 	require.Error(t, err)
 
 	var awsErr awserr.Error
-	require.True(t, errors.As(err, &awsErr), "expected awserr.Error, got %T: %v", err, err)
+	require.ErrorAs(t, err, &awsErr, "expected awserr.Error, got %T: %v", err, err)
 	assert.Equal(t, wantCode, awsErr.Code())
 	assert.NotEqual(t, "SerializationError", awsErr.Code(), "SDK could not parse the envelope")
 }

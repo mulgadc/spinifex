@@ -20,7 +20,7 @@ func ValidateModifyVpcAttributeInput(input *ec2.ModifyVpcAttributeInput) error {
 	return nil
 }
 
-// ModifyVpcAttribute handles the EC2 ModifyVpcAttribute API call
+// ModifyVpcAttribute handles the EC2 ModifyVpcAttribute API call.
 func ModifyVpcAttribute(ctx context.Context, input *ec2.ModifyVpcAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyVpcAttributeOutput, error) {
 	var output ec2.ModifyVpcAttributeOutput
 

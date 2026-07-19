@@ -64,6 +64,11 @@ const (
 	// The resolved account is stashed via gateway_ecr.WithAuthAccount so the
 	// registry package can read it without sharing this package's key type.
 	ctxAuthPrincipal contextKey = "ecr.authPrincipal"
+	// ctxECRPrincipal carries the principalContext resolveECRPrincipal rebuilt
+	// from current IAM/STS state for the request's ECR token. The operation-
+	// authorization middleware reads this to run the same policy evaluator
+	// SigV4 requests use; it is never populated for non-ECR routes.
+	ctxECRPrincipal contextKey = "ecr.principal"
 )
 
 // Values stored under ctxPrincipalType. Downstream handlers that interpret
@@ -413,8 +418,9 @@ func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) er
 }
 
 // checkPolicyResource evaluates IAM policies against a specific resource ARN.
-// Root users bypass evaluation. Nil IAMService allows (pre-IAM compatibility).
-// Used by EC2 paths that enforce iam:PassRole before attaching an instance profile.
+// Root users bypass evaluation. Nil IAMService, or a request with no SigV4
+// auth context, allows (pre-IAM compatibility). Used by EC2 paths that
+// enforce iam:PassRole before attaching an instance profile.
 func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, resource string) error {
 	if gw.IAMService == nil {
 		slog.Warn("checkPolicy: IAM service not available, skipping policy check",
@@ -432,13 +438,47 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 		slog.Error("checkPolicy: identity has unexpected type", "type", fmt.Sprintf("%T", identityVal))
 		return errors.New(awserrors.ErrorInternalError)
 	}
+	if identity == "" {
+		// Pre-IAM compatibility: an authenticated request with no identity name
+		// predates per-principal policy enforcement.
+		return nil
+	}
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("checkPolicy: no account ID in auth context", "user", identity)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	iamAction := policy.IAMAction(service, action)
+	principal := principalContext{
+		identity:          identity,
+		accountID:         accountID,
+		principalType:     mustCtxString(r, ctxPrincipalType),
+		assumedRoleARN:    mustCtxString(r, ctxAssumedRoleARN),
+		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
+		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
+	}
+	return gw.evaluatePrincipalPolicy(principal, policy.IAMAction(service, action), resource)
+}
+
+// mustCtxString reads a string context value, defaulting to "" for an absent
+// or wrong-typed key rather than panicking.
+func mustCtxString(r *http.Request, key contextKey) string {
+	v, _ := r.Context().Value(key).(string)
+	return v
+}
+
+// evaluatePrincipalPolicy is the request-shape-independent core of policy
+// enforcement: given an already-resolved principal (from SigV4 or, for /v2/*
+// ECR requests, a freshly rehydrated token identity), it resolves the
+// principal's current policies and evaluates iamAction against resource.
+// Unlike checkPolicyResource, a nil IAMService fails closed here — callers
+// that want pre-IAM-compatibility bypass behavior must check for that before
+// calling in, exactly as checkPolicyResource does.
+func (gw *GatewayConfig) evaluatePrincipalPolicy(principal principalContext, iamAction, resource string) error {
+	if gw.IAMService == nil {
+		slog.Error("evaluatePrincipalPolicy: IAM service not available", "action", iamAction)
+		return errors.New(awserrors.ErrorInternalError)
+	}
 
 	// Each branch resolves the policy resolver and log identity for its principal
 	// type. Identity-sensitive decisions (root bypass, resolver selection) are
@@ -447,36 +487,34 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 	var resolve func() ([]handlers_iam.PolicyDocument, error)
 	var logIdentity string
 
-	principalType, _ := r.Context().Value(ctxPrincipalType).(string)
-	switch principalType {
+	switch principal.principalType {
 	case principalTypeUser:
-		if identity == "" || (identity == "root" && accountID == utils.GlobalAccountID) {
-			// root / pre-IAM bypass — user branch only.
+		if principal.identity == "root" && principal.accountID == utils.GlobalAccountID {
+			// Global root bypass — user branch only.
 			return nil
 		}
 		resolve = func() ([]handlers_iam.PolicyDocument, error) {
-			return gw.IAMService.GetUserPolicies(accountID, identity)
+			return gw.IAMService.GetUserPolicies(principal.accountID, principal.identity)
 		}
-		logIdentity = identity
+		logIdentity = principal.identity
 	case principalTypeAssumedRole:
 		// Resolve by the session's underlying role, never by SessionName (attacker-influenced).
 		// A missing/legacy, cross-account, or malformed ARN fails closed with AccessDenied.
-		underlyingRoleARN, _ := r.Context().Value(ctxUnderlyingRoleARN).(string)
-		roleAcct, roleName, perr := auth.ParseRoleARN(underlyingRoleARN)
-		if perr != nil || roleAcct != accountID {
-			slog.Warn("checkPolicy: unresolvable or cross-account assumed-role principal denied",
-				"underlyingRoleARN", underlyingRoleARN,
-				"accountID", accountID,
+		roleAcct, roleName, perr := auth.ParseRoleARN(principal.underlyingRoleARN)
+		if perr != nil || roleAcct != principal.accountID {
+			slog.Warn("evaluatePrincipalPolicy: unresolvable or cross-account assumed-role principal denied",
+				"underlyingRoleARN", principal.underlyingRoleARN,
+				"accountID", principal.accountID,
 				"action", iamAction,
 				"err", perr)
 			return errors.New(awserrors.ErrorAccessDenied)
 		}
 		resolve = func() ([]handlers_iam.PolicyDocument, error) {
-			return gw.IAMService.GetRolePolicies(accountID, roleName)
+			return gw.IAMService.GetRolePolicies(principal.accountID, roleName)
 		}
-		logIdentity, _ = r.Context().Value(ctxAssumedRoleARN).(string)
+		logIdentity = principal.assumedRoleARN
 	default:
-		slog.Error("checkPolicy: unknown principal type", "principalType", principalType)
+		slog.Error("evaluatePrincipalPolicy: unknown principal type", "principalType", principal.principalType)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
@@ -489,18 +527,18 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 			break
 		}
 		if attempt < 2 {
-			slog.Debug("checkPolicy: transient NATS error, retrying",
+			slog.Debug("evaluatePrincipalPolicy: transient NATS error, retrying",
 				"identity", logIdentity, "attempt", attempt+1, "err", err)
 			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
 		}
 	}
 	if err != nil {
-		slog.Error("checkPolicy: failed to resolve policies", "identity", logIdentity, "err", err)
+		slog.Error("evaluatePrincipalPolicy: failed to resolve policies", "identity", logIdentity, "err", err)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
 	if iampolicy.Evaluate(iamAction, resource, policies) == iampolicy.Deny {
-		slog.Info("checkPolicy: access denied", "identity", logIdentity, "action", iamAction, "resource", resource)
+		slog.Info("evaluatePrincipalPolicy: access denied", "identity", logIdentity, "action", iamAction, "resource", resource)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
 

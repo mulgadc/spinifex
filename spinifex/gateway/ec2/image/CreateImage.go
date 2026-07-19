@@ -11,7 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCreateImageInput validates the input parameters for CreateImage
+// ValidateCreateImageInput validates the input parameters for CreateImage.
 func ValidateCreateImageInput(input *ec2.CreateImageInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -32,7 +32,7 @@ func ValidateCreateImageInput(input *ec2.CreateImageInput) error {
 	return nil
 }
 
-// CreateImage handles the EC2 CreateImage API call
+// CreateImage handles the EC2 CreateImage API call.
 func CreateImage(ctx context.Context, input *ec2.CreateImageInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.CreateImageOutput, error) {
 	var output ec2.CreateImageOutput
 

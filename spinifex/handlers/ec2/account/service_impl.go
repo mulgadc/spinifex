@@ -22,13 +22,13 @@ const (
 	KeySerialConsoleAccess         = "serial-console-access"
 )
 
-// AccountSettingsRecord represents stored account settings
+// AccountSettingsRecord represents stored account settings.
 type AccountSettingsRecord struct {
 	EbsEncryptionByDefault bool `json:"ebs_encryption_by_default"`
 	SerialConsoleAccess    bool `json:"serial_console_access"`
 }
 
-// AccountSettingsServiceImpl implements account settings operations with NATS JetStream persistence
+// AccountSettingsServiceImpl implements account settings operations with NATS JetStream persistence.
 type AccountSettingsServiceImpl struct {
 	config     *config.Config
 	js         nats.JetStreamContext
@@ -37,7 +37,7 @@ type AccountSettingsServiceImpl struct {
 
 var _ AccountSettingsService = (*AccountSettingsServiceImpl)(nil)
 
-// NewAccountSettingsServiceImplWithNATS creates an account settings service with NATS JetStream for persistence
+// NewAccountSettingsServiceImplWithNATS creates an account settings service with NATS JetStream for persistence.
 func NewAccountSettingsServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*AccountSettingsServiceImpl, error) {
 	js, err := natsConn.JetStream()
 	if err != nil {
@@ -70,7 +70,7 @@ func settingsKey(accountID string) string {
 	return accountID
 }
 
-// getSettings retrieves current account settings
+// getSettings retrieves current account settings.
 func (s *AccountSettingsServiceImpl) getSettings(accountID string) (*AccountSettingsRecord, error) {
 	entry, err := s.settingsKV.Get(settingsKey(accountID))
 	if err != nil {
@@ -91,7 +91,7 @@ func (s *AccountSettingsServiceImpl) getSettings(accountID string) (*AccountSett
 	return &settings, nil
 }
 
-// saveSettings saves current account settings
+// saveSettings saves current account settings.
 func (s *AccountSettingsServiceImpl) saveSettings(settings *AccountSettingsRecord, accountID string) error {
 	data, err := json.Marshal(settings)
 	if err != nil {
@@ -102,7 +102,7 @@ func (s *AccountSettingsServiceImpl) saveSettings(settings *AccountSettingsRecor
 	return err
 }
 
-// EnableEbsEncryptionByDefault enables EBS encryption by default for the account
+// EnableEbsEncryptionByDefault enables EBS encryption by default for the account.
 func (s *AccountSettingsServiceImpl) EnableEbsEncryptionByDefault(ctx context.Context, input *ec2.EnableEbsEncryptionByDefaultInput, accountID string) (*ec2.EnableEbsEncryptionByDefaultOutput, error) {
 	slog.InfoContext(ctx, "EnableEbsEncryptionByDefault called", "accountID", accountID)
 
@@ -122,7 +122,7 @@ func (s *AccountSettingsServiceImpl) EnableEbsEncryptionByDefault(ctx context.Co
 	}, nil
 }
 
-// DisableEbsEncryptionByDefault disables EBS encryption by default for the account
+// DisableEbsEncryptionByDefault disables EBS encryption by default for the account.
 func (s *AccountSettingsServiceImpl) DisableEbsEncryptionByDefault(ctx context.Context, input *ec2.DisableEbsEncryptionByDefaultInput, accountID string) (*ec2.DisableEbsEncryptionByDefaultOutput, error) {
 	slog.InfoContext(ctx, "DisableEbsEncryptionByDefault called", "accountID", accountID)
 
@@ -142,7 +142,7 @@ func (s *AccountSettingsServiceImpl) DisableEbsEncryptionByDefault(ctx context.C
 	}, nil
 }
 
-// GetEbsEncryptionByDefault gets the current EBS encryption by default setting
+// GetEbsEncryptionByDefault gets the current EBS encryption by default setting.
 func (s *AccountSettingsServiceImpl) GetEbsEncryptionByDefault(ctx context.Context, input *ec2.GetEbsEncryptionByDefaultInput, accountID string) (*ec2.GetEbsEncryptionByDefaultOutput, error) {
 	slog.InfoContext(ctx, "GetEbsEncryptionByDefault called", "accountID", accountID)
 
@@ -156,7 +156,7 @@ func (s *AccountSettingsServiceImpl) GetEbsEncryptionByDefault(ctx context.Conte
 	}, nil
 }
 
-// GetSerialConsoleAccessStatus gets the current serial console access status
+// GetSerialConsoleAccessStatus gets the current serial console access status.
 func (s *AccountSettingsServiceImpl) GetSerialConsoleAccessStatus(ctx context.Context, input *ec2.GetSerialConsoleAccessStatusInput, accountID string) (*ec2.GetSerialConsoleAccessStatusOutput, error) {
 	slog.InfoContext(ctx, "GetSerialConsoleAccessStatus called", "accountID", accountID)
 
@@ -170,7 +170,7 @@ func (s *AccountSettingsServiceImpl) GetSerialConsoleAccessStatus(ctx context.Co
 	}, nil
 }
 
-// EnableSerialConsoleAccess enables serial console access for the account
+// EnableSerialConsoleAccess enables serial console access for the account.
 func (s *AccountSettingsServiceImpl) EnableSerialConsoleAccess(ctx context.Context, input *ec2.EnableSerialConsoleAccessInput, accountID string) (*ec2.EnableSerialConsoleAccessOutput, error) {
 	slog.InfoContext(ctx, "EnableSerialConsoleAccess called", "accountID", accountID)
 
@@ -190,7 +190,7 @@ func (s *AccountSettingsServiceImpl) EnableSerialConsoleAccess(ctx context.Conte
 	}, nil
 }
 
-// DisableSerialConsoleAccess disables serial console access for the account
+// DisableSerialConsoleAccess disables serial console access for the account.
 func (s *AccountSettingsServiceImpl) DisableSerialConsoleAccess(ctx context.Context, input *ec2.DisableSerialConsoleAccessInput, accountID string) (*ec2.DisableSerialConsoleAccessOutput, error) {
 	slog.InfoContext(ctx, "DisableSerialConsoleAccess called", "accountID", accountID)
 

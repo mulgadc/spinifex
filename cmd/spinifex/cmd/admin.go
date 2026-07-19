@@ -60,13 +60,16 @@ var natsConfTemplate string
 //go:embed templates/predastore-multinode.toml
 var predastoreMultiNodeTemplate string
 
+//go:embed templates/northstar.toml
+var northstarTomlTemplate string
+
 var supportedArchs = map[string]bool{
 	"x86_64":  true,
 	"aarch64": true, // alias for arm64
 	"arm64":   true,
 }
 
-// TODO: Confirm suppported platform types
+// TODO: Confirm suppported platform types.
 var supportedPlatforms = map[string]bool{
 	"Linux/UNIX": true,
 	"Windows":    true,
@@ -334,7 +337,6 @@ func init() {
 	adminInitCmd.Flags().String("external-gateway", "", "WAN gateway IP (auto-detected from default route)")
 	adminInitCmd.Flags().String("gateway-ip", "", "OVN gateway router's external IP for SNAT (default: pool range_start for pool mode, required for nat mode without DHCP)")
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
-	adminInitCmd.Flags().Bool("no-external", false, "Disable external networking (overlay-only, no internet for VMs)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
 	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
 
@@ -384,6 +386,27 @@ func init() {
 	if err := imagesPromoteCmd.MarkFlagRequired("image-id"); err != nil {
 		panic(err)
 	}
+}
+
+// amiVolumeSizeGiB returns the smallest whole GiB that still holds sizeBytes.
+//
+// Rounding up is load-bearing. The image is copied into a root volume of
+// exactly this size, so a volume smaller than the image truncates it and the
+// guest comes up with no root partition — it stalls on the root device until
+// systemd drops it to an emergency shell, and nothing on the way there reports
+// an undersized volume. Flooring (plain integer division) undersizes every
+// image that is not an exact multiple of a GiB, which is why this went unseen
+// while every system image happened to be a round 16 GiB.
+//
+// The downstream guard cannot cover for a wrong answer here: floorVolumeSizeToAMI
+// raises a caller's requested size to this value, so it inherits the mistake
+// rather than catching it.
+func amiVolumeSizeGiB(sizeBytes int64) uint64 {
+	const bytesPerGiB = 1024 * 1024 * 1024
+	if sizeBytes <= 0 {
+		return 0
+	}
+	return utils.SafeInt64ToUint64((sizeBytes + bytesPerGiB - 1) / bytesPerGiB)
 }
 
 func runimagesImportCmd(cmd *cobra.Command, args []string) {
@@ -592,7 +615,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	manifest.AMIMetadata.RootDeviceType = "ebs"
 	manifest.AMIMetadata.Virtualization = "hvm"
 	manifest.AMIMetadata.ImageOwnerAlias = "system"
-	manifest.AMIMetadata.VolumeSizeGiB = utils.SafeInt64ToUint64(imageStat.Size() / 1024 / 1024 / 1024)
+	manifest.AMIMetadata.VolumeSizeGiB = amiVolumeSizeGiB(imageStat.Size())
 	manifest.AMIMetadata.BootMode = image.BootMode
 	manifest.AMIMetadata.Distro = image.Distro
 	manifest.AMIMetadata.DistroFamily = utils.DistroFamily(image.Distro)
@@ -656,6 +679,12 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// Import is an interactive command whose output is a progress bar, so the
+	// volume's routine mount chatter is noise here: a fresh import has no prior
+	// state, making the "no state found" / 404 lines expected rather than
+	// notable. Scoping the logger to this VB (New copies it onto the backend
+	// too) keeps it off the process-wide default. Errors still surface, both
+	// through this logger and as the returned error the caller prints.
 	vbConfig := viperblock.VB{
 		VolumeName: volumeId,
 		VolumeSize: utils.SafeInt64ToUint64(imageStat.Size()),
@@ -668,6 +697,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		VolumeConfig:      manifest,
 		MasterKey:         mkey,
 		EncryptionEnabled: mkey != nil,
+		Logger:            slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 
 	// Bake the deployment CA into the image trust store so a stock cloud image
@@ -938,7 +968,7 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, admin.SystemOwnerAlias)
 }
 
-// List remote images available
+// List remote images available.
 func runimagesListCmd(cmd *cobra.Command, args []string) {
 	//fmt.Println(availableImages)
 
@@ -965,7 +995,7 @@ func runimagesListCmd(cmd *cobra.Command, args []string) {
 	pterm.Println("spx admin images import --name <image-name>")
 }
 
-// TODO: Move all logic to a module, use minimal application logic in viper commands
+// TODO: Move all logic to a module, use minimal application logic in viper commands.
 func runAdminInit(cmd *cobra.Command, args []string) {
 	if os.Getuid() != 0 {
 		fmt.Fprintln(os.Stderr, "⚠️  Warning: 'spx admin init' is not running as root.")
@@ -1018,7 +1048,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	externalGateway, _ := cmd.Flags().GetString("external-gateway")
 	externalPrefixLen, _ := cmd.Flags().GetInt("external-prefix-len")
 	gatewayIP, _ := cmd.Flags().GetString("gateway-ip")
-	noExternal, _ := cmd.Flags().GetBool("no-external")
 	gpuPassthrough, _ := cmd.Flags().GetBool("gpu-passthrough")
 	ipsecEnabled, _ := cmd.Flags().GetBool("ipsec")
 
@@ -1051,59 +1080,56 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// Auto-detect network topology
 	var poolStart, poolEnd string
 	var detectedNet *admin.DetectedNetwork
-	if !noExternal {
-		detected, err := admin.DetectNetwork()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Network auto-detection failed: %v\n", err)
-			fmt.Fprintf(os.Stderr, "   Use --no-external to skip, or specify flags manually.\n")
+	detected, err := admin.DetectNetwork()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Network auto-detection failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "   Use --external-mode=nat for outbound-only VMs on a non-bridgeable uplink, or specify --external-* flags manually.\n")
+	} else {
+		detectedNet = detected
+
+		// Print detected topology
+		fmt.Println("\n🔍 Detected network topology:")
+		fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", "Interface", "IP", "Subnet", "Gateway", "Role")
+		for _, iface := range detected.Interfaces {
+			gw := "—"
+			if iface.Gateway != "" {
+				gw = iface.Gateway
+			}
+			fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", iface.Name, iface.IP, iface.Subnet, gw, strings.ToUpper(iface.Role))
+		}
+		if detected.LANCount == 0 {
+			fmt.Println("\n  Mode: single-NIC (veth-bridged external)")
 		} else {
-			detectedNet = detected
+			fmt.Printf("\n  Mode: %d LAN + 1 WAN (veth-bridged external)\n", detected.LANCount)
+		}
 
-			// Print detected topology
-			fmt.Println("\n🔍 Detected network topology:")
-			fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", "Interface", "IP", "Subnet", "Gateway", "Role")
-			for _, iface := range detected.Interfaces {
-				gw := "—"
-				if iface.Gateway != "" {
-					gw = iface.Gateway
-				}
-				fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", iface.Name, iface.IP, iface.Subnet, gw, strings.ToUpper(iface.Role))
+		// Apply auto-detected values when flags not explicitly set
+		if detected.WAN != nil {
+			if externalIface == "" {
+				externalIface = detected.WAN.Name
 			}
-			if detected.LANCount == 0 {
-				fmt.Println("\n  Mode: single-NIC (veth-bridged external)")
-			} else {
-				fmt.Printf("\n  Mode: %d LAN + 1 WAN (veth-bridged external)\n", detected.LANCount)
+			if externalGateway == "" {
+				externalGateway = detected.WAN.Gateway
+			}
+			if !cmd.Flags().Changed("external-prefix-len") {
+				externalPrefixLen = detected.WAN.PrefixLen
 			}
 
-			// Apply auto-detected values when flags not explicitly set
-			if detected.WAN != nil {
-				if externalIface == "" {
-					externalIface = detected.WAN.Name
+			// Default mode: always "pool". Source defaults to "static"; if
+			// --external-pool is omitted the validator below will error with
+			// a SuggestPoolRange hint.
+			if externalMode == "" && !cmd.Flags().Changed("external-mode") {
+				if isNonBridgeableUplink(detected.WAN.Name) {
+					fmt.Fprintf(os.Stderr, "\n❌ Detected WAN interface %s cannot be bridged (WiFi/cellular/PPP).\n", detected.WAN.Name)
+					fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead (outbound-only VM networking):\n")
+					fmt.Fprintf(os.Stderr, "     ./scripts/setup-ovn.sh --management --nat-uplink\n")
+					fmt.Fprintf(os.Stderr, "     spx admin init --external-mode=nat\n")
+					os.Exit(1)
 				}
-				if externalGateway == "" {
-					externalGateway = detected.WAN.Gateway
-				}
-				if !cmd.Flags().Changed("external-prefix-len") {
-					externalPrefixLen = detected.WAN.PrefixLen
-				}
-
-				// Default mode: always "pool". Source defaults to "static"; if
-				// --external-pool is omitted the validator below will error with
-				// a SuggestPoolRange hint.
-				if externalMode == "" && !cmd.Flags().Changed("external-mode") {
-					if isNonBridgeableUplink(detected.WAN.Name) {
-						fmt.Fprintf(os.Stderr, "\n❌ Detected WAN interface %s cannot be bridged (WiFi/cellular/PPP).\n", detected.WAN.Name)
-						fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead (outbound-only VM networking):\n")
-						fmt.Fprintf(os.Stderr, "     ./scripts/setup-ovn.sh --management --nat-uplink\n")
-						fmt.Fprintf(os.Stderr, "     spx admin init --external-mode=nat\n")
-						os.Exit(1)
-					}
-					externalMode = "pool"
-				}
+				externalMode = "pool"
 			}
 		}
 	}
-
 	// Validate external networking flags
 	if externalMode != "" && externalMode != "pool" && externalMode != "nat" {
 		fmt.Fprintf(os.Stderr, "❌ Error: --external-mode must be 'pool', 'nat', or empty, got: %s\n", externalMode)
@@ -1209,8 +1235,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Resolve the off-host advertise IP. DetectNetwork may have been skipped
-	// when --no-external is set; detect lazily if we need the WAN IP.
+	// Resolve the off-host advertise IP. DetectNetwork may have failed earlier;
+	// detect lazily if we still need the WAN IP.
 	if advertiseFlag == "" && (bindIP == "0.0.0.0" || bindIP == "127.0.0.1") && detectedNet == nil {
 		if d, derr := admin.DetectNetwork(); derr == nil {
 			detectedNet = d
@@ -1267,66 +1293,91 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 	fmt.Printf("✅ Created config directory: %s\n", configDir)
 
-	// Generate system credentials (for service-to-service auth in config files)
-	accessKey, err := admin.GenerateAWSAccessKey()
+	// Identity and crypto material is load-or-generate: a fresh install mints a
+	// new identity bundle, but a --force re-init preserves the existing one so
+	// data sealed under it (NATS KV secrets, sealed fragments, encrypted volumes)
+	// stays decryptable.
+	masterKey, masterKeyExisted, err := ensureMasterKey(configDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating access key: %v\n", err)
-		os.Exit(1)
-	}
-	secretKey, err := admin.GenerateAWSSecretKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating secret key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error preparing IAM master key: %v\n", err)
 		os.Exit(1)
 	}
 	accountID := admin.SystemAccountID()
-
-	// Generate IAM master key (AES-256, used to encrypt secrets in NATS KV)
-	masterKey, err := handlers_iam.GenerateMasterKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating IAM master key: %v\n", err)
-		os.Exit(1)
-	}
 	bootstrapDir := filepath.Join(spxRoot, "awsgw")
-	bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing bootstrap files: %v\n", err)
-		os.Exit(1)
-	}
-	if err := writeSystemCredentials(configDir, accessKey, secretKey); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing system credentials: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("\n🔐 Generated IAM master key")
-	fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
-	fmt.Printf("   Bootstrap: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
-	fmt.Printf("   System creds: %s\n", filepath.Join(configDir, "system-credentials.json"))
 
-	// Predastore encryption key is per-node and never transmitted; generate
-	// it locally now so the service has it on first start.
+	var accessKey, secretKey, adminAccessKey, adminSecretKey string
+	if masterKeyExisted {
+		// Preserve path: reuse the existing identity. The system credentials must
+		// match what seeded the NATS KV `system` secret, so load them rather than
+		// mint new ones. The admin credentials are not recovered: bootstrap.json is
+		// consumed and deleted by awsgw after first boot, and the operator's copy
+		// already lives in ~/.aws/credentials. Leaving them empty makes
+		// finalizeNodeSetup refresh only ~/.aws/config (endpoint/CA for a changed
+		// bind IP), not the credentials.
+		accessKey, secretKey, err = loadSystemCredentials(configDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading preserved system credentials: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("\n🔐 Preserved existing identity (master key, credentials and CA unchanged)")
+		fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
+	} else {
+		// Fresh install: mint system + admin credentials and seed the bootstrap files.
+		accessKey, err = admin.GenerateAWSAccessKey()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating access key: %v\n", err)
+			os.Exit(1)
+		}
+		secretKey, err = admin.GenerateAWSSecretKey()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating secret key: %v\n", err)
+			os.Exit(1)
+		}
+		bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing bootstrap files: %v\n", err)
+			os.Exit(1)
+		}
+		if err := writeSystemCredentials(configDir, accessKey, secretKey); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing system credentials: %v\n", err)
+			os.Exit(1)
+		}
+		adminAccessKey = bootstrapResult.AdminAccessKey
+		adminSecretKey = bootstrapResult.AdminSecretKey
+		fmt.Println("\n🔐 Generated IAM master key")
+		fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
+		fmt.Printf("   Bootstrap: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
+		fmt.Printf("   System creds: %s\n", filepath.Join(configDir, "system-credentials.json"))
+	}
+
+	// Predastore encryption key is per-node and never transmitted; load-or-generate
+	// so the service has it on first start and a re-init keeps sealed fragments.
 	predastoreKeyPath, err := writePredastoreEncryptionKey(configDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating predastore encryption key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error preparing predastore encryption key: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("\n🔐 Generated predastore encryption key (per-node, never transmitted)")
+	fmt.Println("\n🔐 Predastore encryption key ready (per-node, never transmitted)")
 	fmt.Printf("   Key: %s\n", predastoreKeyPath)
 
-	// Viperblock at-rest encryption key is cluster-wide; on a single-node init
-	// there are no joiners, so generate it locally and enable encryption by
-	// default for all volumes created on this install.
-	viperblockKeyPath, err := writeViperblockEncryptionKey(configDir)
+	// Viperblock at-rest encryption key is cluster-wide; load-or-generate so a
+	// re-init keeps the existing key (and its sealed volumes). The bytes feed the
+	// multi-node leader's key distribution below.
+	viperblockKey, viperblockKeyPath, err := ensureViperblockEncryptionKey(configDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating viperblock encryption key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error preparing viperblock encryption key: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("\n🔐 Generated viperblock at-rest encryption key")
+	fmt.Println("\n🔐 Viperblock at-rest encryption key ready")
 	fmt.Printf("   Key: %s\n", viperblockKeyPath)
 
-	fmt.Printf("\n🔑 Generated admin credentials (save these — they won't be shown again):\n")
-	fmt.Printf("   Access Key:  %s\n", bootstrapResult.AdminAccessKey)
-	fmt.Printf("   Secret Key:  %s\n", bootstrapResult.AdminSecretKey)
-	fmt.Printf("   Account:     %s (%s)\n", admin.DefaultAccountName(), admin.DefaultAccountID())
-	fmt.Printf("   AWS Profile: spinifex\n")
+	if !masterKeyExisted {
+		fmt.Printf("\n🔑 Generated admin credentials (save these — they won't be shown again):\n")
+		fmt.Printf("   Access Key:  %s\n", adminAccessKey)
+		fmt.Printf("   Secret Key:  %s\n", adminSecretKey)
+		fmt.Printf("   Account:     %s (%s)\n", admin.DefaultAccountName(), admin.DefaultAccountID())
+		fmt.Printf("   AWS Profile: spinifex\n")
+	}
 
 	// Generate SSL certificates (with bind IP in SANs for multi-node support)
 	certPath := admin.GenerateCertificatesIfNeeded(configDir, force, bindIP, region, config.DefaultAWSInternalSuffix)
@@ -1358,6 +1409,29 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		spxRoot = DefaultDataDir()
 	}
 	spxRoot = filepath.Clean(spxRoot)
+
+	// Generate dedicated, bucket-scoped credentials for the northstar DNS
+	// service. Rendered into predastore.toml ([[auth]]) and northstar.toml so
+	// the resolver reads zone files read-only from its own S3 bucket.
+	//
+	// Generated above the multi-node dispatch because the pair is cluster-wide:
+	// a node's predastore only honours the keys rendered into its own config, so
+	// every node must present this same pair to read the distributed zone bucket.
+	northstarAccessKey, err := admin.GenerateAWSAccessKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar access key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarSecretKey, err := admin.GenerateAWSSecretKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar secret key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarCreds := admin.NorthstarCredentials{
+		AccessKey: northstarAccessKey,
+		SecretKey: northstarSecretKey,
+		Bucket:    admin.NorthstarBucketName,
+	}
 
 	// Determine if this is a multi-node formation. Operator intent comes from
 	// --nodes, not from whether --bind was left at the 0.0.0.0 default.
@@ -1392,9 +1466,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			networkConfig.BootstrapSubnetCidr = handlers_ec2_vpc.DefaultSubnetCidr
 		}
 
-		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, natsToken, clusterName,
+		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey,
+			masterKey, viperblockKey, natsToken, clusterName,
 			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email,
-			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig)
+			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig, northstarCreds)
 		return
 	}
 
@@ -1410,6 +1485,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	portStr := strconv.Itoa(port)
+
+	// The keys are cluster-wide and generated above the dispatch; the config path
+	// is node-local, so it is derived here from this node's own config dirs.
+	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
 
 	// Parse multi-node predastore configuration (legacy flag-based approach for single-node)
 	var predastoreNodeID int
@@ -1440,7 +1519,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		}
 
 		// Generate multi-node predastore.toml
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval, northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1505,6 +1584,14 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		IPSecEnabled:   ipsecEnabled,
 
 		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
+		PoolDNSServers:          dnsServers,
 	}
 
 	// Print external networking summary
@@ -1544,7 +1631,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP)
+	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
 
 	// Write node.conf so spx admin banner works on source installs (not just ISO).
 	nodeHostname, _ := os.Hostname()
@@ -1575,9 +1662,15 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 // runAdminInitMultiNode handles the multi-node formation path for admin init.
 // It starts a formation server, registers this node, waits for all nodes to join,
 // then generates configs with complete cluster topology.
-func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, natsToken, clusterName,
+//
+// The northstar credentials are generated by the caller and provision this
+// node's predastore with the zone bucket. The same pair is distributed to
+// joiners, since each node's predastore only honours the keys in its own config.
+func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey string,
+	masterKey, viperblockKey []byte, natsToken, clusterName,
 	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email string,
-	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig) {
+	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig,
+	northstarCreds admin.NorthstarCredentials) {
 	formationTimeout, err := time.ParseDuration(formationTimeoutStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Error: Invalid --formation-timeout: %v\n", err)
@@ -1602,47 +1695,11 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		os.Exit(1)
 	}
 
-	// Generate IAM master key for the cluster
-	masterKey, err := handlers_iam.GenerateMasterKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error generating IAM master key: %v\n", err)
-		os.Exit(1)
-	}
-	bootstrapDir := filepath.Join(spxRoot, "awsgw")
-	bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error writing bootstrap files: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("\n🔐 Generated IAM master key")
-	fmt.Printf("   Bootstrap: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
-
-	// Predastore encryption key is per-node and never distributed via the
-	// formation server. Generate only the leader's own key here; each
-	// joiner generates its own during `spx admin join`.
-	predastoreKeyPath, err := writePredastoreEncryptionKey(configDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error generating predastore encryption key: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("\n🔐 Generated predastore encryption key (per-node, never transmitted)")
-	fmt.Printf("   Key: %s\n", predastoreKeyPath)
-
-	// Viperblock at-rest encryption key is cluster-wide and shared: the leader
-	// generates it once and distributes it to joiners via the formation server
-	// so a volume sealed on any node can be opened on any other.
-	viperblockKey, err := handlers_iam.GenerateMasterKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error generating viperblock encryption key: %v\n", err)
-		os.Exit(1)
-	}
-	viperblockKeyPath, err := saveViperblockEncryptionKey(configDir, viperblockKey)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error saving viperblock encryption key: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("\n🔐 Generated viperblock at-rest encryption key (cluster-wide, shared with joiners)")
-	fmt.Printf("   Key: %s\n", viperblockKeyPath)
+	// Identity, predastore and viperblock keys were prepared load-or-generate by
+	// the caller: reuse them here so a re-init never rotates cluster crypto and
+	// the leader distributes the same viperblock key to joiners. The path is
+	// deterministic and already written on disk.
+	viperblockKeyPath := filepath.Join(configDir, "viperblock", "encryption.key")
 
 	// Read CA cert/key for distribution to joining nodes
 	caCertData, err := os.ReadFile(filepath.Join(configDir, "ca.pem"))
@@ -1663,8 +1720,14 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		NatsToken:      natsToken,
 		ClusterName:    clusterName,
 		Region:         region,
-		AdminAccessKey: bootstrapResult.AdminAccessKey,
-		AdminSecretKey: bootstrapResult.AdminSecretKey,
+		AdminAccessKey: adminAccessKey,
+		AdminSecretKey: adminSecretKey,
+
+		// Joiners provision their own predastore with this pair, so every
+		// node's resolver can read the distributed zone bucket via its local
+		// endpoint. The bucket is a constant, so it is derived node-side.
+		NorthstarAccessKey: northstarCreds.AccessKey,
+		NorthstarSecretKey: northstarCreds.SecretKey,
 	}
 
 	fs := formation.NewFormationServer(expectedNodes, creds, string(caCertData), string(caKeyData), networkConfig, joinToken, tokenTTL)
@@ -1736,11 +1799,15 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 	portStr := strconv.Itoa(port)
 
+	// The keys are cluster-wide and generated above the dispatch; the config path
+	// is node-local, so it is derived here from this node's own config dirs.
+	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
+
 	// Generate multi-node predastore config
 	var predastoreNodeID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval, northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1780,11 +1847,18 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		PredastoreNodeID:          predastoreNodeID,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
-		RemoteNodes:               buildRemoteNodes(allNodes, node),
+		RemoteNodes:               buildRemoteNodes(allNodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
 
 		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
 
 		// Multi-endpoint OVN NB/SB list across the RAFT quorum; the init node's
 		// own address leads, the rest provide failover.
@@ -1801,7 +1875,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		os.Exit(1)
 	}
 
-	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP)
+	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
 
 	// Keep formation server running briefly so joining nodes can fetch complete status
 	fmt.Println("\n⏳ Waiting for joining nodes to fetch cluster data...")
@@ -2188,12 +2262,15 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 
 	portStr := strconv.Itoa(port)
 
+	northstarCreds, northstarConfigPath := northstarFromFormation(creds, dirs)
+
 	// Generate multi-node predastore config
 	var predastoreNodeID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP, compactionInterval)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP, compactionInterval,
+			northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -2237,11 +2314,18 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		PredastoreNodeID:          predastoreNodeID,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
-		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node),
+		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
 
 		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
 
 		// Multi-endpoint OVN NB/SB list across the RAFT quorum so the client
 		// fails over instead of pinning to a single init node.
@@ -2299,7 +2383,16 @@ func resolveAdvertiseIP(bindIP, advertiseFlag string, detected *admin.DetectedNe
 // buildRemoteNodes converts formation NodeInfo into RemoteNode entries,
 // excluding the local node. This puts all cluster members into spinifex.toml
 // so config is the source of truth for expected cluster membership.
-func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode string) []admin.RemoteNode {
+//
+// northstarConfigPath is the local node's own path, republished for every peer:
+// every node in a formed cluster runs northstar, and the seed set must be
+// identical on all of them or the base zone's NS records get pinned to whichever
+// node wins the create-if-absent race. --config-dir is per-node and does not
+// cross the wire, so the value is accurate whenever nodes share a config dir and
+// inert when they do not — only its emptiness is ever read back. Passing it
+// empty (no credentials distributed) leaves peers with no stanza, so no node is
+// advertised as a resolver it cannot be.
+func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode, northstarConfigPath string) []admin.RemoteNode {
 	var remote []admin.RemoteNode
 	for name, n := range allNodes {
 		if name == localNode {
@@ -2312,11 +2405,12 @@ func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode string) 
 			host = n.BindIP
 		}
 		remote = append(remote, admin.RemoteNode{
-			Name:     name,
-			Host:     host,
-			Region:   n.Region,
-			AZ:       n.AZ,
-			Services: n.Services,
+			Name:                name,
+			Host:                host,
+			Region:              n.Region,
+			AZ:                  n.AZ,
+			Services:            n.Services,
+			NorthstarConfigPath: northstarConfigPath,
 		})
 	}
 	sort.Slice(remote, func(i, j int) bool {
@@ -2532,6 +2626,7 @@ type configDirs struct {
 	Viperblock string
 	NATS       string
 	Spinifex   string
+	Northstar  string
 }
 
 // createConfigSubdirs creates the standard config subdirectories under configDir.
@@ -2542,8 +2637,9 @@ func createConfigSubdirs(configDir string) (configDirs, error) {
 		Viperblock: filepath.Join(configDir, "viperblock"),
 		NATS:       filepath.Join(configDir, "nats"),
 		Spinifex:   filepath.Join(configDir, "spinifex"),
+		Northstar:  filepath.Join(configDir, "northstar"),
 	}
-	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.Spinifex} {
+	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.Spinifex, dirs.Northstar} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return configDirs{}, fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -2551,13 +2647,54 @@ func createConfigSubdirs(configDir string) (configDirs, error) {
 	return dirs, nil
 }
 
+// northstarFromFormation derives a joining node's northstar credentials and
+// node-local config path from the cluster-wide pair distributed at formation.
+//
+// The keys cross the wire because a node's predastore only honours the keys in
+// its own config, so every node must present the same pair to read the
+// distributed zone bucket. The bucket name and config path are node-local
+// constants, so they are derived here rather than carried.
+//
+// A leader that predates credential distribution sends no keys. That yields a
+// zero pair and an empty path, so the node renders no northstar config at all
+// rather than a resolver holding a key its own predastore would reject.
+func northstarFromFormation(creds *formation.SharedCredentials, dirs configDirs) (admin.NorthstarCredentials, string) {
+	if creds.NorthstarAccessKey == "" || creds.NorthstarSecretKey == "" {
+		return admin.NorthstarCredentials{}, ""
+	}
+	return admin.NorthstarCredentials{
+		AccessKey: creds.NorthstarAccessKey,
+		SecretKey: creds.NorthstarSecretKey,
+		Bucket:    admin.NorthstarBucketName,
+	}, filepath.Join(dirs.Northstar, "northstar.toml")
+}
+
 // generateAndWriteConfigs renders the standard config files (spinifex.toml,
 // awsgw.toml, nats.conf, and optionally predastore.toml) from templates.
 func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings admin.ConfigSettings, skipPredastore bool) error {
+	// A one-sided pair must disable Northstar wholesale. Rendering only the
+	// public stanza or only the secret file advertises a resolver that cannot run.
+	northstarEnabled := settings.NorthstarAccessKey != "" && settings.NorthstarSecretKey != ""
+	if !northstarEnabled {
+		settings.NorthstarAccessKey = ""
+		settings.NorthstarSecretKey = ""
+		settings.NorthstarBucket = ""
+		settings.NorthstarConfigPath = ""
+	}
+
 	configs := []admin.ConfigFile{
 		{Name: "spinifex.toml", Path: spinifexTomlPath, Template: spinifexTomlTemplate},
 		{Name: filepath.Join(dirs.AWSGW, "awsgw.toml"), Path: filepath.Join(dirs.AWSGW, "awsgw.toml"), Template: awsgwTomlTemplate},
 		{Name: filepath.Join(dirs.NATS, "nats.conf"), Path: filepath.Join(dirs.NATS, "nats.conf"), Template: natsConfTemplate},
+	}
+	// northstar.toml is only rendered when scoped DNS credentials were
+	// provisioned. A cluster formed by a leader that predates their distribution
+	// leaves the keys empty, yielding no northstar config rather than a partial
+	// one pointing at a bucket the local predastore does not serve.
+	if northstarEnabled {
+		configs = append(configs, admin.ConfigFile{
+			Name: filepath.Join(dirs.Northstar, "northstar.toml"), Path: filepath.Join(dirs.Northstar, "northstar.toml"), Template: northstarTomlTemplate,
+		})
 	}
 	if !skipPredastore {
 		configs = append(configs, admin.ConfigFile{
@@ -2589,6 +2726,7 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
+	settings.PoolDNSServers = nc.PoolDNSServers
 	if nc.ExternalMode != "" {
 		settings.Pools = []admin.PoolData{{
 			Name:       nc.PoolName,
@@ -2625,6 +2763,48 @@ type writeBootstrapResult struct {
 	AdminSecretKey string
 }
 
+// ensureMasterKey load-or-generates the IAM master key at <configDir>/master.key.
+// It returns the key bytes and whether the key already existed on disk. On a
+// --force re-init the existing key is preserved: rotating it would orphan every
+// IAM secret in NATS KV (e.g. the ECR signing key) that was encrypted under it.
+func ensureMasterKey(configDir string) (key []byte, existed bool, err error) {
+	keyPath := filepath.Join(configDir, "master.key")
+	if admin.FileExists(keyPath) {
+		key, err = handlers_iam.LoadMasterKey(keyPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("load master key: %w", err)
+		}
+		return key, true, nil
+	}
+	key, err = handlers_iam.GenerateMasterKey()
+	if err != nil {
+		return nil, false, fmt.Errorf("generate master key: %w", err)
+	}
+	return key, false, nil
+}
+
+// loadSystemCredentials reads the preserved system access/secret key from
+// <configDir>/system-credentials.json. On a re-init the configs must render the
+// same system credentials that seeded the NATS KV `system` secret, else SigV4
+// auth between services fails.
+func loadSystemCredentials(configDir string) (accessKey, secretKey string, err error) {
+	data, err := os.ReadFile(filepath.Join(configDir, "system-credentials.json"))
+	if err != nil {
+		return "", "", fmt.Errorf("read system credentials: %w", err)
+	}
+	var creds struct {
+		AccessKeyID     string `json:"access_key_id"`
+		SecretAccessKey string `json:"secret_access_key"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return "", "", fmt.Errorf("parse system credentials: %w", err)
+	}
+	if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
+		return "", "", fmt.Errorf("system credentials missing access/secret key")
+	}
+	return creds.AccessKeyID, creds.SecretAccessKey, nil
+}
+
 // writeBootstrapFiles generates new admin credentials and writes the bootstrap
 // files (master.key to configDir, bootstrap.json to bootstrapDir).
 // Used by init flows (single and multi-node).
@@ -2646,47 +2826,57 @@ func writeBootstrapFiles(configDir, bootstrapDir string, masterKey []byte, acces
 	}, nil
 }
 
-// writePredastoreEncryptionKey generates a fresh 32-byte AES-256 master key
-// for this node's predastore data dir and writes it to
-// <configDir>/predastore/encryption.key with mode 0600. The key is per-node:
-// every node generates its own at init/join time and never transmits it,
-// because predastore only opens fragments on the node that sealed them.
+// writePredastoreEncryptionKey load-or-generates this node's per-node predastore
+// key at <configDir>/predastore/encryption.key (mode 0600). The key is per-node:
+// every node generates its own at init/join time and never transmits it, because
+// predastore only opens fragments on the node that sealed them. An existing key
+// is preserved so a --force re-init does not orphan already-sealed fragments.
 func writePredastoreEncryptionKey(configDir string) (string, error) {
 	predastoreDir := filepath.Join(configDir, "predastore")
 	if err := os.MkdirAll(predastoreDir, 0750); err != nil {
 		return "", fmt.Errorf("create predastore config dir: %w", err)
 	}
+	keyPath := filepath.Join(predastoreDir, "encryption.key")
+	if admin.FileExists(keyPath) {
+		return keyPath, nil
+	}
 	key, err := handlers_iam.GenerateMasterKey()
 	if err != nil {
 		return "", fmt.Errorf("generate predastore encryption key: %w", err)
 	}
-	keyPath := filepath.Join(predastoreDir, "encryption.key")
 	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
 		return "", fmt.Errorf("save predastore encryption key: %w", err)
 	}
 	return keyPath, nil
 }
 
-// writeViperblockEncryptionKey generates a fresh 32-byte AES-256 master key for
-// viperblock at-rest encryption and writes it to
-// <configDir>/viperblock/encryption.key with mode 0600. Unlike the predastore
-// key, this key is cluster-wide and shared: the leader generates it once at init
-// and distributes it to joiners via the formation server, so a volume sealed on
-// any node can be opened on any other. Loaded at startup via masterkey.LoadShared.
-func writeViperblockEncryptionKey(configDir string) (string, error) {
+// ensureViperblockEncryptionKey load-or-generates the cluster-wide viperblock
+// at-rest key at <configDir>/viperblock/encryption.key (mode 0600) and returns
+// its bytes and path. Unlike the predastore key it is shared: the leader loads
+// these bytes to distribute the same key to joiners via the formation server, so
+// a volume sealed on any node can be opened on any other. An existing key is
+// preserved so a --force re-init does not orphan already-encrypted volumes.
+func ensureViperblockEncryptionKey(configDir string) ([]byte, string, error) {
 	viperblockDir := filepath.Join(configDir, "viperblock")
 	if err := os.MkdirAll(viperblockDir, 0750); err != nil {
-		return "", fmt.Errorf("create viperblock config dir: %w", err)
+		return nil, "", fmt.Errorf("create viperblock config dir: %w", err)
+	}
+	keyPath := filepath.Join(viperblockDir, "encryption.key")
+	if admin.FileExists(keyPath) {
+		key, err := handlers_iam.LoadMasterKey(keyPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("load viperblock encryption key: %w", err)
+		}
+		return key, keyPath, nil
 	}
 	key, err := handlers_iam.GenerateMasterKey()
 	if err != nil {
-		return "", fmt.Errorf("generate viperblock encryption key: %w", err)
+		return nil, "", fmt.Errorf("generate viperblock encryption key: %w", err)
 	}
-	keyPath := filepath.Join(viperblockDir, "encryption.key")
 	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
-		return "", fmt.Errorf("save viperblock encryption key: %w", err)
+		return nil, "", fmt.Errorf("save viperblock encryption key: %w", err)
 	}
-	return keyPath, nil
+	return key, keyPath, nil
 }
 
 // saveViperblockEncryptionKey writes an already-generated 32-byte viperblock
@@ -2870,7 +3060,7 @@ func detectDNSServers(iface string) []string {
 }
 
 // parseDNSFromResolvectl extracts IP addresses from resolvectl dns output.
-// Format: "Link 2 (enp0s3): 192.168.1.1 8.8.8.8 1.1.1.1"
+// Format: "Link 2 (enp0s3): 192.168.1.1 8.8.8.8 1.1.1.1".
 func parseDNSFromResolvectl(output string) []string {
 	var servers []string
 	for line := range strings.SplitSeq(output, "\n") {

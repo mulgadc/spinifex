@@ -16,7 +16,7 @@ import (
 
 const testAccountID = "111111111111"
 
-// setupTestTagsService creates a tags service with in-memory storage for testing
+// setupTestTagsService creates a tags service with in-memory storage for testing.
 func setupTestTagsService(t *testing.T) (*TagsServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{
@@ -29,7 +29,7 @@ func setupTestTagsService(t *testing.T) (*TagsServiceImpl, *objectstore.MemoryOb
 	return svc, store
 }
 
-// TestCreateTags tests adding tags to resources
+// TestCreateTags tests adding tags to resources.
 func TestCreateTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -55,7 +55,7 @@ func TestCreateTags(t *testing.T) {
 	assert.Len(t, describeResult.Tags, 2)
 }
 
-// TestCreateTags_MultipleResources tests adding tags to multiple resources
+// TestCreateTags_MultipleResources tests adding tags to multiple resources.
 func TestCreateTags_MultipleResources(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -80,7 +80,7 @@ func TestCreateTags_MultipleResources(t *testing.T) {
 	assert.Len(t, describeResult.Tags, 3)
 }
 
-// TestCreateTags_UpdateExisting tests updating existing tags
+// TestCreateTags_UpdateExisting tests updating existing tags.
 func TestCreateTags_UpdateExisting(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -113,7 +113,7 @@ func TestCreateTags_UpdateExisting(t *testing.T) {
 	assert.Equal(t, "updated", *describeResult.Tags[0].Value)
 }
 
-// TestCreateTags_MissingResources tests creating tags without resources
+// TestCreateTags_MissingResources tests creating tags without resources.
 func TestCreateTags_MissingResources(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -126,7 +126,7 @@ func TestCreateTags_MissingResources(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 }
 
-// TestCreateTags_MissingTags tests creating tags without tags
+// TestCreateTags_MissingTags tests creating tags without tags.
 func TestCreateTags_MissingTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -137,7 +137,7 @@ func TestCreateTags_MissingTags(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 }
 
-// TestDescribeTags tests listing all tags
+// TestDescribeTags tests listing all tags.
 func TestDescribeTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -160,7 +160,7 @@ func TestDescribeTags(t *testing.T) {
 	assert.Len(t, result.Tags, 2)
 }
 
-// TestDescribeTags_FilterByResourceID tests filtering by resource ID
+// TestDescribeTags_FilterByResourceID tests filtering by resource ID.
 func TestDescribeTags_FilterByResourceID(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -188,7 +188,7 @@ func TestDescribeTags_FilterByResourceID(t *testing.T) {
 	assert.Equal(t, "i-test1", *result.Tags[0].ResourceId)
 }
 
-// TestDescribeTags_FilterByResourceType tests filtering by resource type
+// TestDescribeTags_FilterByResourceType tests filtering by resource type.
 func TestDescribeTags_FilterByResourceType(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -216,7 +216,7 @@ func TestDescribeTags_FilterByResourceType(t *testing.T) {
 	assert.Equal(t, "instance", *result.Tags[0].ResourceType)
 }
 
-// TestDescribeTags_FilterByKey tests filtering by tag key
+// TestDescribeTags_FilterByKey tests filtering by tag key.
 func TestDescribeTags_FilterByKey(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -241,7 +241,7 @@ func TestDescribeTags_FilterByKey(t *testing.T) {
 	assert.Equal(t, "Name", *result.Tags[0].Key)
 }
 
-// TestDescribeTags_FilterByValue tests filtering by tag value
+// TestDescribeTags_FilterByValue tests filtering by tag value.
 func TestDescribeTags_FilterByValue(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -273,7 +273,7 @@ func TestDescribeTags_FilterByValue(t *testing.T) {
 	assert.Equal(t, "production", *result.Tags[0].Value)
 }
 
-// TestDescribeTags_Empty tests listing tags when none exist
+// TestDescribeTags_Empty tests listing tags when none exist.
 func TestDescribeTags_Empty(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -282,12 +282,13 @@ func TestDescribeTags_Empty(t *testing.T) {
 	assert.Empty(t, result.Tags)
 }
 
-// TestDescribeTags_InvalidFilterName tests that unrecognized filter names return an error
+// TestDescribeTags_InvalidFilterName tests that unrecognized filter names return an error.
 func TestDescribeTags_InvalidFilterName(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	_, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{
+			//nolint:misspell // the typo is the point: "resouce-id" must not match the valid "resource-id" filter
 			{Name: aws.String("resouce-id"), Values: []*string{aws.String("i-test1")}},
 		},
 	}, testAccountID)
@@ -295,7 +296,7 @@ func TestDescribeTags_InvalidFilterName(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 }
 
-// TestDeleteTags tests deleting specific tags
+// TestDeleteTags tests deleting specific tags.
 func TestDeleteTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -329,7 +330,7 @@ func TestDeleteTags(t *testing.T) {
 	assert.Equal(t, "Environment", *result.Tags[0].Key)
 }
 
-// TestDeleteTags_AllTags tests deleting all tags from a resource
+// TestDeleteTags_AllTags tests deleting all tags from a resource.
 func TestDeleteTags_AllTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -359,7 +360,7 @@ func TestDeleteTags_AllTags(t *testing.T) {
 	assert.Empty(t, result.Tags)
 }
 
-// TestDeleteTags_ValueConditional tests that DeleteTags only deletes when value matches
+// TestDeleteTags_ValueConditional tests that DeleteTags only deletes when value matches.
 func TestDeleteTags_ValueConditional(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -411,7 +412,7 @@ func TestDeleteTags_ValueConditional(t *testing.T) {
 	assert.Equal(t, "Team", *result.Tags[0].Key)
 }
 
-// TestDeleteTags_MissingResources tests deleting tags without resources
+// TestDeleteTags_MissingResources tests deleting tags without resources.
 func TestDeleteTags_MissingResources(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
@@ -424,7 +425,7 @@ func TestDeleteTags_MissingResources(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 }
 
-// TestGetResourceType tests the resource type detection helper
+// TestGetResourceType tests the resource type detection helper.
 func TestGetResourceType(t *testing.T) {
 	tests := []struct {
 		resourceID   string
@@ -455,7 +456,7 @@ func TestGetResourceType(t *testing.T) {
 	}
 }
 
-// TestMemoryObjectStore tests the in-memory object store
+// TestMemoryObjectStore tests the in-memory object store.
 func TestMemoryObjectStore(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 
@@ -468,7 +469,7 @@ func TestMemoryObjectStore(t *testing.T) {
 	assert.True(t, objectstore.IsNoSuchKeyError(err))
 }
 
-// TestAccountIsolation_CreateAndDescribe tests that tags from one account are not visible to another
+// TestAccountIsolation_CreateAndDescribe tests that tags from one account are not visible to another.
 func TestAccountIsolation_CreateAndDescribe(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 	accountA := "111111111111"
@@ -503,7 +504,7 @@ func TestAccountIsolation_CreateAndDescribe(t *testing.T) {
 	assert.Equal(t, "account-b-instance", *resultB.Tags[0].Value)
 }
 
-// TestAccountIsolation_SameResourceID tests that two accounts can tag the same resource ID independently
+// TestAccountIsolation_SameResourceID tests that two accounts can tag the same resource ID independently.
 func TestAccountIsolation_SameResourceID(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 	accountA := "111111111111"
@@ -542,7 +543,7 @@ func TestAccountIsolation_SameResourceID(t *testing.T) {
 	assert.Equal(t, "from-account-b", *resultB.Tags[0].Value)
 }
 
-// TestAccountIsolation_DeleteDoesNotAffectOtherAccount tests that deleting tags in one account doesn't affect another
+// TestAccountIsolation_DeleteDoesNotAffectOtherAccount tests that deleting tags in one account doesn't affect another.
 func TestAccountIsolation_DeleteDoesNotAffectOtherAccount(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 	accountA := "111111111111"
@@ -581,7 +582,7 @@ func TestAccountIsolation_DeleteDoesNotAffectOtherAccount(t *testing.T) {
 }
 
 // TestDeleteAllTags tests that the resource's stored tag object is removed
-// entirely and other accounts' entries for the same resource ID survive
+// entirely and other accounts' entries for the same resource ID survive.
 func TestDeleteAllTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 	accountA := "111111111111"
@@ -607,7 +608,7 @@ func TestDeleteAllTags(t *testing.T) {
 }
 
 // TestDeleteAllTags_MissingResourceIsNoError tests idempotency for a resource
-// that never had tags
+// that never had tags.
 func TestDeleteAllTags_MissingResourceIsNoError(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 	require.NoError(t, svc.DeleteAllTags(context.Background(), "111111111111", "i-never-tagged"))

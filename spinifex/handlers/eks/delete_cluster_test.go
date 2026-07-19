@@ -109,6 +109,9 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	// quickly instead of against the production 5m/10s budget.
 	svc.workerLaunchRetryTimeout = 100 * time.Millisecond
 	svc.workerLaunchRetryBackoff = 20 * time.Millisecond
+	// Tight boot-scan re-scan backoff so the eventually-consistent JetStream
+	// enumeration settles fast in tests instead of the production 100ms.
+	svc.spawnScanRetryBackoff = 2 * time.Millisecond
 	t.Cleanup(svc.Shutdown)
 
 	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip, sg: sg, worker: worker, vpcMgr: vpcMgr, igw: igw, ngw: ngw, rt: rt}

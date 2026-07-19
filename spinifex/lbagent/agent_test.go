@@ -1,10 +1,7 @@
 package lbagent
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/predastore/pkg/sigv4"
 )
 
 func TestNew(t *testing.T) {
@@ -75,9 +72,9 @@ func TestNew_SocketPath(t *testing.T) {
 	}
 }
 
-// TestSignedPost_ProducesVerifiableSignature confirms the migrated signing path
-// (predastore/auth.SignReq over aws-sdk-go-v2) produces a request the gateway's
-// SigV4 verifier accepts, including a body-hash that matches X-Amz-Content-Sha256.
+// TestSignedPost_ProducesVerifiableSignature confirms the agent's signing path
+// (aws-sdk-go-v2 via gwsign) produces a request the gateway's sigv4 verifier
+// accepts, including a body-hash that matches X-Amz-Content-Sha256.
 func TestSignedPost_ProducesVerifiableSignature(t *testing.T) {
 	const (
 		accessKey = "AKIAIOSFODNN7EXAMPLE"
@@ -88,17 +85,15 @@ func TestSignedPost_ProducesVerifiableSignature(t *testing.T) {
 	var parsed bool
 	var verifyErr error
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		sum := sha256.Sum256(body)
-		req, err := auth.ParseReq(r)
+		// sigv4.Parse reads and hashes the body itself; don't drain r.Body first.
+		sr, err := sigv4.Parse(r)
 		if err != nil {
 			verifyErr = err
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		parsed = true
-		verifyErr = req.Verify(secretKey, "elasticloadbalancing", region,
-			auth.WithBodyHash(hex.EncodeToString(sum[:])))
+		_, verifyErr = sr.Verify(secretKey, region, "elasticloadbalancing")
 		fmt.Fprint(w, "ok")
 	}))
 	defer srv.Close()

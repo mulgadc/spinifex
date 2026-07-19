@@ -85,5 +85,5 @@ func TestEnsureLBInstanceProfile_CreatesInSystemAccount(t *testing.T) {
 // VM falls back to baked static creds and retries on the next launch.
 func TestEnsureLBInstanceProfile_NotReadyFallsBack(t *testing.T) {
 	s := &ELBv2ServiceImpl{IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return nil }}
-	assert.Equal(t, "", s.ensureLBInstanceProfile(utils.GlobalAccountID))
+	assert.Empty(t, s.ensureLBInstanceProfile(utils.GlobalAccountID))
 }

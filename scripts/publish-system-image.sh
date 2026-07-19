@@ -67,7 +67,10 @@ if [[ -z "${IMAGE_NAME:-}" ]]; then
 fi
 
 # Mirror build-system-image.sh's derived paths so we reuse its cached raw.
-BUILD_DIR="/tmp/${IMAGE_NAME}-image-build"
+# Honor SYSTEM_IMAGE_BUILD_DIR exactly as the build script does — the workflow
+# points it off tmpfs so the 16G Ubuntu GPU raw fits, and the publish step must
+# look where the build actually wrote, not a hardcoded /tmp.
+BUILD_DIR="${SYSTEM_IMAGE_BUILD_DIR:-/tmp}/${IMAGE_NAME}-image-build"
 RAW_IMAGE="${BUILD_DIR}/${IMAGE_NAME}-${DISTRO}.raw"
 
 OBJECT_BASE="${AMI_NAME:-$IMAGE_NAME}-${ARCH}"

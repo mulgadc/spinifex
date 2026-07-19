@@ -12,7 +12,9 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (orig) => ({
   ...(await orig<typeof import("@tanstack/react-router")>()),
-  Link: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Link: ({ children }: { children: React.ReactNode }) => (
+    <span>{children}</span>
+  ),
 }))
 
 import { TasksTab } from "./tasks-tab"

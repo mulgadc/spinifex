@@ -16,7 +16,7 @@ type GPUModel struct {
 }
 
 var (
-	// NVIDIA GPU models
+	// NVIDIA GPU models.
 	NVIDIAa10g                  = GPUModel{"10de", "2236", "g5", "NVIDIA", "A10G", 24576}
 	NVIDIAt4                    = GPUModel{"10de", "1eb8", "g4dn", "NVIDIA", "T4", 16384}
 	NVIDIAl4                    = GPUModel{"10de", "27b8", "g6", "NVIDIA", "L4", 24576} // gr6 uses identical hardware; requires operator config
@@ -31,7 +31,7 @@ var (
 	NVIDIAh200sxm               = GPUModel{"10de", "2335", "p5e", "NVIDIA", "H200", 144384}                                 // SXM5 141 GiB
 	NVIDIArtxPro6000BlackwellSE = GPUModel{"10de", "2bb5", "g7e", "NVIDIA", "RTX Pro 6000 Blackwell Server Edition", 98304} // 96 GiB GDDR7
 
-	// AMD GPU models
+	// AMD GPU models.
 	AMDradeonV520 = GPUModel{"1002", "7362", "g4ad", "AMD", "Radeon Pro V520", 8192}
 	AMDmi350x     = GPUModel{"1002", "75a0", "g7e", "AMD", "Instinct MI350X", 294896}
 )
@@ -110,25 +110,25 @@ var vendorSiblingFamily = map[string]string{
 }
 
 var (
-	// Intel generations
+	// Intel generations.
 	genIntelBroadwell      = cpuGeneration{"Intel Broadwell", []string{"t2", "c4", "m4", "r4"}}
 	genIntelSkylake        = cpuGeneration{"Intel Skylake/Cascade Lake", []string{"t3", "c5", "m5", "r5"}}
 	genIntelIceLake        = cpuGeneration{"Intel Ice Lake", []string{"t3", "c6i", "m6i", "r6i"}}
 	genIntelSapphireRapids = cpuGeneration{"Intel Sapphire Rapids", []string{"t3", "c7i", "m7i", "r7i"}}
 	genIntelGraniteRapids  = cpuGeneration{"Intel Granite Rapids", []string{"t3", "c8i", "m8i", "r8i"}}
 
-	// AMD generations
+	// AMD generations.
 	genAMDZen  = cpuGeneration{"AMD Zen/Zen2 (Naples/Rome)", []string{"t3a", "c5a", "m5a", "r5a"}}
 	genAMDZen3 = cpuGeneration{"AMD Zen 3 (Milan)", []string{"t3a", "c6a", "m6a", "r6a"}}
 	genAMDZen4 = cpuGeneration{"AMD Zen 4 (Genoa)", []string{"t3a", "c7a", "m7a", "r7a"}}
 	genAMDZen5 = cpuGeneration{"AMD Zen 5 (Turin)", []string{"t3a", "c8a", "m8a", "r8a"}}
 
-	// ARM generations
+	// ARM generations.
 	genARMNeoverseN1 = cpuGeneration{"ARM Neoverse N1 (Graviton2)", []string{"t4g", "c6g", "m6g", "r6g"}}
 	genARMNeoverseV1 = cpuGeneration{"ARM Neoverse V1 (Graviton3)", []string{"t4g", "c7g", "m7g", "r7g"}}
 	genARMNeoverseV2 = cpuGeneration{"ARM Neoverse V2 (Graviton4)", []string{"t4g", "c8g", "m8g", "r8g"}}
 
-	// Unknown/fallback — expose only burstable family
+	// Unknown/fallback — expose only burstable family.
 	genUnknownIntel = cpuGeneration{"Unknown Intel", []string{"t3"}}
 	genUnknownAMD   = cpuGeneration{"Unknown AMD", []string{"t3a"}}
 	genUnknownARM   = cpuGeneration{"Unknown ARM", []string{"t4g"}}

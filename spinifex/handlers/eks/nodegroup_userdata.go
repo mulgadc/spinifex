@@ -55,24 +55,31 @@ func buildAgentUserData(in agentUserDataInput) string {
 	// K3S_URL is the published NLB endpoint (:443→:6443); the in-VPC CP ENI IP
 	// lives in the unpeered managed CP VPC and is unreachable from the worker VPC.
 	k3sURL := in.ServerURL
-	nodeLabel := "eks.amazonaws.com/nodegroup=" + in.NodegroupName
 
 	envBody := strings.Join([]string{
 		"SPINIFEX_K3S_ROLE=agent",
 	}, "\n")
 
 	// The ECR credential provider reads /etc/spinifex-eks/agent.env, so the EKS_*
-	// settings live alongside the K3s join vars here.
-	agentBody := strings.Join([]string{
+	// settings live alongside the K3s join vars here. SPINIFEX_NODEGROUP (and
+	// SPINIFEX_GPU_NODE for GPU workers) are consumed by mulga-eks-provider-id.sh,
+	// the single writer of the k3s node-label list: k3s replaces (not merges) the
+	// node-label list across config.yaml.d files, so all node-labels must come
+	// from one drop-in or the last-sorted file silently wipes the rest.
+	agentLines := []string{
 		"K3S_URL=" + k3sURL,
 		"K3S_TOKEN=" + in.JoinToken,
 		"K3S_NODE_NAME=" + in.NodeName,
-		"K3S_NODE_LABEL=" + nodeLabel,
 		"EKS_GATEWAY_URL=" + in.GatewayURL,
 		"EKS_GATEWAY_CA=" + k3sGatewayCAPath,
 		"EKS_REGION=" + in.Region,
 		"EKS_ACCOUNT_ID=" + in.AccountID,
-	}, "\n")
+		"SPINIFEX_NODEGROUP=" + in.NodegroupName,
+	}
+	if in.GPUEnabled {
+		agentLines = append(agentLines, "SPINIFEX_GPU_NODE=true")
+	}
+	agentBody := strings.Join(agentLines, "\n")
 
 	// The mirror endpoint is dialed by IP when the gateway IP is known: the gateway
 	// cert carries an IP SAN, so TLS validates without DNS, and there is no internal
@@ -125,6 +132,11 @@ func buildAgentUserData(in agentUserDataInput) string {
 	)
 	credProviderConfig := strings.Join(credLines, "\n")
 
+	// buildAgentUserData writes NO config.yaml.d node-label/node-taint drop-in:
+	// mulga-eks-provider-id.sh (AMI-baked) is the sole node-label writer. It reads
+	// SPINIFEX_NODEGROUP/SPINIFEX_GPU_NODE from agent.env and folds the nodegroup
+	// label (plus nvidia.com/gpu.present + the GPU NoSchedule taint) into the same
+	// 10-provider-id.yaml node-label list it writes for the EBS CSI topology labels.
 	files := []userDataFile{
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: agentEnvPath, Perms: "0600", Body: agentBody},
@@ -132,24 +144,6 @@ func buildAgentUserData(in agentUserDataInput) string {
 		{Path: "/etc/rancher/k3s/registries.yaml", Perms: "0644", Body: registriesYAML},
 		{Path: "/etc/rancher/k3s/config.yaml.d/20-ecr-credential-provider.yaml", Perms: "0644", Body: credProviderDropin},
 		{Path: "/etc/spinifex-eks/credential-provider-config.yaml", Perms: "0644", Body: credProviderConfig},
-	}
-
-	// GPU nodes advertise nvidia.com/gpu.present=true (so the device-plugin
-	// DaemonSet nodeSelector matches) and default to NoSchedule so ordinary
-	// workloads don't consume scarce GPU capacity. Both must come from k3s
-	// config keys — k3s has no K3S_NODE_LABEL env, so the label rides a
-	// node-label drop-in, not agent.env. Non-GPU nodegroups get no drop-in,
-	// keeping their user-data byte-identical.
-	if in.GPUEnabled {
-		gpuDropin := strings.Join([]string{
-			"node-label:",
-			"  - \"nvidia.com/gpu.present=true\"",
-			"node-taint:",
-			"  - \"nvidia.com/gpu=present:NoSchedule\"",
-		}, "\n")
-		files = append(files, userDataFile{
-			Path: "/etc/rancher/k3s/config.yaml.d/20-gpu.yaml", Perms: "0644", Body: gpuDropin,
-		})
 	}
 
 	var buf strings.Builder

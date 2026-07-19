@@ -7,6 +7,7 @@ import {
   Camera,
   Container,
   Crosshair,
+  FileStack,
   Globe,
   HardDrive,
   Home,
@@ -119,6 +120,21 @@ export function SidebarLayout() {
                 >
                   <Server className="size-4" />
                   <span>Instances</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/ec2/describe-launch-templates">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/ec2/describe-launch-templates") ||
+                    pathname.startsWith("/ec2/create-launch-template")
+                  }
+                  tooltip="Launch Templates"
+                >
+                  <FileStack className="size-4" />
+                  <span>Launch Templates</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

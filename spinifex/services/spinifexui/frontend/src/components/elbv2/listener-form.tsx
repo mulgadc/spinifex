@@ -35,6 +35,8 @@ interface ListenerFormProps {
 
 const HTTP_PORT = 80
 const HTTPS_PORT = 443
+const EMPTY_CERTIFICATES: CertificateSummary[] = []
+const EMPTY_SSL_POLICIES: SslPolicy[] = []
 
 function certLabel(cert: CertificateSummary): string {
   const id = cert.CertificateArn?.split("/").pop() ?? cert.CertificateArn ?? ""
@@ -45,8 +47,8 @@ export function ListenerForm({
   form,
   protocols,
   targetGroups,
-  certificates = [],
-  sslPolicies = [],
+  certificates = EMPTY_CERTIFICATES,
+  sslPolicies = EMPTY_SSL_POLICIES,
 }: ListenerFormProps) {
   const {
     control,

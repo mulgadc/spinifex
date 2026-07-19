@@ -178,7 +178,7 @@ func TestListUserPolicies_Empty(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotNil(t, out.PolicyNames)
-	assert.Len(t, out.PolicyNames, 0)
+	assert.Empty(t, out.PolicyNames)
 	assert.False(t, *out.IsTruncated)
 }
 
@@ -220,7 +220,7 @@ func TestDeleteUserPolicy(t *testing.T) {
 		UserName: aws.String("del-inline-user"),
 	})
 	require.NoError(t, err)
-	assert.Len(t, list.PolicyNames, 0)
+	assert.Empty(t, list.PolicyNames)
 }
 
 func TestDeleteUserPolicy_DoubleDelete(t *testing.T) {

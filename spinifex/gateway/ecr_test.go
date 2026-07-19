@@ -15,6 +15,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// setupECRRequest builds an ECR control-plane request context. It carries a
+// full SigV4-shaped identity (not just accountID) so handlers reached through
+// it — including GetAuthorizationToken, which now builds a canonical caller
+// ARN from the context rather than a best-effort helper — behave exactly as
+// they would for a real authenticated user.
 func setupECRRequest(target, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	if target != "" {
@@ -22,6 +27,9 @@ func setupECRRequest(target, body string) *http.Request {
 	}
 	ctx := context.WithValue(req.Context(), ctxService, "ecr")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxIdentity, "dev")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = context.WithValue(ctx, ctxAccessKey, "AKIAECRTESTCONTROLPL1")
 	return req.WithContext(ctx)
 }
 
@@ -29,7 +37,7 @@ func TestECRActionFromTarget(t *testing.T) {
 	assert.Equal(t, "CreateRepository",
 		ecrActionFromTarget("AmazonEC2ContainerRegistry_V20150921.CreateRepository"))
 	assert.Equal(t, "GetAuthorizationToken", ecrActionFromTarget("GetAuthorizationToken"))
-	assert.Equal(t, "", ecrActionFromTarget(""))
+	assert.Empty(t, ecrActionFromTarget(""))
 }
 
 func TestECRActionsMap_CoreActionsRegistered(t *testing.T) {

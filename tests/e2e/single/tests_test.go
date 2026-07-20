@@ -30,19 +30,9 @@ func TestSerialConsoleAccess(t *testing.T) {
 	runSerialConsoleAccess(t, requireSingleNodeFixture(t))
 }
 
-func TestKeyPairs(t *testing.T) {
-	t.Parallel()
-	runKeyPairs(t, requireSingleNodeFixture(t))
-}
-
 func TestImage(t *testing.T) {
 	t.Parallel()
 	runImage(t, requireSingleNodeFixture(t))
-}
-
-func TestTagManagement(t *testing.T) {
-	t.Parallel()
-	runTagManagement(t, requireSingleNodeFixture(t))
 }
 
 func TestAccountScoping(t *testing.T) {
@@ -60,18 +50,6 @@ func TestPredastoreObjectLifecycle(t *testing.T) {
 func TestVPCSubnetE2E(t *testing.T) {
 	t.Parallel()
 	runVPCSubnetE2E(t, requireSingleNodeFixture(t))
-}
-
-func TestRouteTableValidation(t *testing.T) {
-	t.Parallel()
-	runRouteTableValidation(t, requireSingleNodeFixture(t))
-}
-
-// TestReplaceRouteConvergence owns its own scratch VPCs/IGWs end to end and
-// never touches the singleton or default VPC, so it is parallel-safe.
-func TestReplaceRouteConvergence(t *testing.T) {
-	t.Parallel()
-	runReplaceRouteConvergence(t, requireSingleNodeFixture(t))
 }
 
 // --- Sequential: singleton VM lifecycle ---

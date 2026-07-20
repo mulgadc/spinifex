@@ -3,12 +3,15 @@
 package single
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 )
 
 // Package-local bootstrappers wrapping harness.Discover*/Ensure* so each Test*
@@ -110,4 +113,16 @@ func needInstance(t *testing.T, fix *Fixture) (inst *ec2.Instance, rootVolumeID 
 	}
 	require.NotEmpty(t, rootVolumeID, "could not resolve root volume from BlockDeviceMappings")
 	return inst, rootVolumeID
+}
+
+// generateImportPubKey returns an OpenSSH-formatted public key (matching the
+// `ssh-keygen -t rsa` output the bash script feeds into import-key-pair).
+// 2048-bit to match the bash key length.
+func generateImportPubKey(t *testing.T) []byte {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err, "generate RSA key")
+	pub, err := ssh.NewPublicKey(&priv.PublicKey)
+	require.NoError(t, err, "ssh.NewPublicKey")
+	return ssh.MarshalAuthorizedKey(pub)
 }

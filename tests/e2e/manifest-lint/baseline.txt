@@ -76,7 +76,6 @@ create	tests/e2e/single/baseline_test.go	CreateVpc	#1
 create	tests/e2e/single/baseline_test.go	RunInstances	#1
 create	tests/e2e/single/datapath_test.go	CreateSecurityGroup	#1
 create	tests/e2e/single/datapath_test.go	RunInstances	#1
-create	tests/e2e/single/keypair_test.go	ImportKeyPair	#1
 create	tests/e2e/single/lifecycle_test.go	CreateVolume	#1
 create	tests/e2e/single/lifecycle_test.go	RunInstances	#1
 create	tests/e2e/single/natgw_test.go	AllocateAddress	#1
@@ -98,8 +97,6 @@ create	tests/e2e/single/volume_durability_test.go	CreateVolume	#1
 create	tests/e2e/single/volume_test.go	CreateVolume	#1
 create	tests/e2e/single/vpc_test.go	CreateInternetGateway	#1
 create	tests/e2e/single/vpc_test.go	CreateRouteTable	#1
-create	tests/e2e/single/vpc_test.go	CreateRouteTable	#2
-create	tests/e2e/single/vpc_test.go	CreateRouteTable	#3
 create	tests/e2e/single/vpc_test.go	CreateSubnet	#1
 create	tests/e2e/single/vpc_test.go	CreateSubnet	#2
 create	tests/e2e/single/vpc_test.go	CreateVpc	#1

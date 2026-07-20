@@ -1276,8 +1276,14 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 	policyARN := *input.PolicyArn
 	userKVKey := accountID + "." + userName
 
-	if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
-		return nil, err
+	// AWS-managed policy ARNs (arn:aws:iam::aws:policy/...) are never provisioned
+	// in Spinifex, so store them opaquely rather than failing NoSuchEntity — the
+	// grant document is modeled in builtinManagedPolicyDoc and resolved at
+	// evaluation time. Customer-managed ARNs must still exist.
+	if !isAWSManagedPolicyARN(policyARN) {
+		if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
+			return nil, err
+		}
 	}
 
 	user, err := s.getUser(accountID, userName)
@@ -1340,6 +1346,15 @@ func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.L
 
 	var attached []*iam.AttachedPolicy
 	for _, arn := range user.AttachedPolicies {
+		// AWS-managed ARNs have no KV entry; report them from the ARN itself so
+		// attach/list round-trips instead of silently dropping them.
+		if isAWSManagedPolicyARN(arn) {
+			attached = append(attached, &iam.AttachedPolicy{
+				PolicyArn:  aws.String(arn),
+				PolicyName: aws.String(managedPolicyNameFromARN(arn)),
+			})
+			continue
+		}
 		policy, err := s.getPolicyByARN(accountID, arn)
 		if err != nil {
 			slog.Warn("ListAttachedUserPolicies: policy not found for ARN", "arn", arn, "err", err)

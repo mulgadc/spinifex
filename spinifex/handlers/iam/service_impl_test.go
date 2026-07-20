@@ -1915,3 +1915,36 @@ func TestGenerateAccessKeyID_AllUpperHex(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachUserPolicy_AWSManagedOpaque(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "managed-user")
+	const managedARN = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
+
+	// AWS-managed ARNs have no KV entry, so attach must not require one.
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("managed-user"),
+		PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{
+		UserName: aws.String("managed-user"),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.AttachedPolicies, 1)
+	assert.Equal(t, managedARN, *out.AttachedPolicies[0].PolicyArn)
+	assert.Equal(t, "AmazonEC2ContainerRegistryPullOnly", *out.AttachedPolicies[0].PolicyName)
+}
+
+func TestAttachUserPolicy_CustomerManagedMustExist(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "strict-user")
+
+	// Customer-managed ARNs keep failing closed when unprovisioned.
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("strict-user"),
+		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/DoesNotExist"),
+	})
+	require.Error(t, err)
+}

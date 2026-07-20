@@ -57,15 +57,13 @@ func runSpread(t *testing.T, fix *Fixture) {
 
 	t.Run("SpreadPlacement", func(t *testing.T) {
 		unique := uniqueCount(p.HostingNodes)
-		harness.Detail(t, "unique_hosting_nodes", unique, "want_ge", 3)
-		switch {
-		case unique >= 3:
-			// nominal — full spread
-		case unique >= 2:
-			t.Logf("WARN: only %d unique hosting nodes (expected 3) — spread best-effort", unique)
-		default:
-			t.Fatalf("spread placement failed: %d unique hosting nodes (want >= 2), hosts=%v", unique, p.HostingNodes)
-		}
+		harness.Detail(t, "unique_hosting_nodes", unique, "want", 3)
+		// The NAT-egress scenario below only proves what it claims to (three
+		// distinct chassis routing through one NAT GW) if the trio actually
+		// landed on three distinct nodes. Two colocated instances is a spread
+		// placement group failure, not a "best-effort" outcome to log past.
+		require.Equalf(t, 3, unique,
+			"spread placement failed: %d unique hosting nodes (want 3), hosts=%v", unique, p.HostingNodes)
 	})
 
 	t.Run("PreNATIsolation", func(t *testing.T) {

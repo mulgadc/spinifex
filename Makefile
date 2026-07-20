@@ -133,6 +133,16 @@ test-harness:
 	@echo -e "\n....Running e2e harness unit tests...."
 	$(_Q)LOG_IGNORE=1 go test -tags=e2e -timeout 60s ./tests/e2e/harness/... $(_RACEQ)
 
+# In-process integration tier: the real gateway router against embedded NATS
+# JetStream, with only the daemon-side NATS subjects stubbed. Build-tagged
+# `integration` so it's skipped by the default `go test ./spinifex/...` and by
+# `test-cover`/`test-race`. Nothing provisioned — no tofu, no docker, no
+# Spinifex daemons — so it's safe to run as a fast CI front gate. Deliberately
+# NOT part of `preflight`, which stays unit-only.
+test-integration:
+	@echo -e "\n....Running in-process integration tests...."
+	$(_Q)LOG_IGNORE=1 go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
+
 # Validate docs/service-interfaces.yaml. Schema check + cross-reference
 # of services/suites/fixtures + on-disk path existence. Subject content
 # vs source is enforced separately in Bead 5 drift lint.
@@ -297,7 +307,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check manifest-lint manifest-lint-update \
+.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness test-integration manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

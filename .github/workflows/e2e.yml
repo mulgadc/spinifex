@@ -314,7 +314,9 @@ jobs:
         id: e2e
         run: |
           set +e
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(multinode)$' | tr '\n' ' ')
+          # lb is multinode-only: a load balancer spreading targets across one node is not a
+          # deployment mode we support, and ELBv2 proper requires two AZs.
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(multinode|lb)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no in-VM suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"

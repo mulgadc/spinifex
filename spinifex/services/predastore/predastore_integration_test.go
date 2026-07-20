@@ -1,28 +1,16 @@
-package predastore
-
-// Integration tests for predastore: start a real daemon and verify S3 bucket,
-// auth, and file operations using AWS SDK Go v1.
+// Package predastore_test contains integration tests for predastore: start a
+// real daemon (via testpredastore.Start) and verify S3 bucket, auth, and
+// file operations using AWS SDK Go v1.
+package predastore_test
 
 import (
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
 	"io"
-	"math/big"
-	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -30,272 +18,22 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/mulgadc/predastore/quic/quicclient"
+	testpredastore "github.com/mulgadc/spinifex/spinifex/testutil/predastore"
 	"github.com/stretchr/testify/assert"
 )
 
-// Test credentials from config.
+// Test credentials from config, mirrored from the shared fixture
+// (testpredastore.AccessKey etc.) so this file has a single source of truth
+// for the daemon's seeded auth and default buckets.
 const (
-	validAccessKey   = "AKIAIOSFODNN7EXAMPLE"
-	validSecretKey   = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	validAccessKey   = testpredastore.AccessKey
+	validSecretKey   = testpredastore.SecretKey
 	invalidAccessKey = "INVALIDACCESSKEY"
 	invalidSecretKey = "InvalidSecretKey123"
-	testBucket       = "test-bucket"
-	publicBucket     = "public-bucket"
-	testRegion       = "us-east-1"
-	testPort         = 18443
-	testHost         = "127.0.0.1"
+	testBucket       = testpredastore.DefaultBucket
+	publicBucket     = testpredastore.DefaultBucket2
+	testRegion       = testpredastore.Region
 )
-
-// Global server instance for integration tests.
-var (
-	serverStarted    bool
-	serverStartMutex sync.Mutex
-	sharedTestDir    string
-	sharedConfig     *Config
-)
-
-// generateTestCertificate generates a self-signed TLS certificate for testing.
-// The CA must be injected via quicclient.SetDefaultRootCAs before any dial.
-func generateTestCertificate(certPath, keyPath string) (*x509.CertPool, error) {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-
-	notBefore := time.Now()
-	notAfter := notBefore.Add(24 * time.Hour)
-
-	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, err
-	}
-
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			Organization: []string{"Predastore Test"},
-			CommonName:   "localhost",
-		},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
-		DNSNames:              []string{"localhost"},
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	if err != nil {
-		return nil, err
-	}
-
-	certOut, err := os.Create(certPath)
-	if err != nil {
-		return nil, err
-	}
-	defer certOut.Close()
-
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return nil, err
-	}
-
-	keyOut, err := os.Create(keyPath)
-	if err != nil {
-		return nil, err
-	}
-	defer keyOut.Close()
-
-	privBytes, err := x509.MarshalECPrivateKey(priv)
-	if err != nil {
-		return nil, err
-	}
-	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes}); err != nil {
-		return nil, err
-	}
-
-	parsed, err := x509.ParseCertificate(derBytes)
-	if err != nil {
-		return nil, err
-	}
-	pool := x509.NewCertPool()
-	pool.AddCert(parsed)
-	return pool, nil
-}
-
-// startPredastoreServer starts the predastore server once for all tests.
-func startPredastoreServer(t *testing.T) *Config {
-	serverStartMutex.Lock()
-	defer serverStartMutex.Unlock()
-
-	if serverStarted {
-		// Server already running, return shared config
-		return sharedConfig
-	}
-
-	// Create persistent test environment (not using t.TempDir() for shared server)
-	testDir, err := os.MkdirTemp("", "predastore-integration-*") //nolint:usetesting // shared server outlives individual test
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	sharedTestDir = testDir
-
-	// Create TLS cert directory
-	certDir := filepath.Join(testDir, "certs")
-	err = os.MkdirAll(certDir, 0755)
-	if err != nil {
-		t.Fatalf("Failed to create cert dir: %v", err)
-	}
-
-	certPath := filepath.Join(certDir, "test.crt")
-	keyPath := filepath.Join(certDir, "test.key")
-
-	caPool, err := generateTestCertificate(certPath, keyPath)
-	if err != nil {
-		t.Fatalf("Failed to generate certificate: %v", err)
-	}
-
-	// Inject the ephemeral cert for the QUIC client (s3d → shard nodes).
-	quicclient.SetDefaultRootCAs(caPool)
-
-	// SSL_CERT_FILE injects the cert for the s3db REST client's OS trust store
-	// (sync.Once-cached, must be set before the first dial).
-	t.Setenv("SSL_CERT_FILE", certPath)
-
-	// Predastore mandates a 32-byte master key at mode 0600 (rejected otherwise
-	// by internal/keyfile.Load).
-	encryptionKeyPath := filepath.Join(testDir, "encryption.key")
-	testEncryptionKey := make([]byte, 32)
-	if _, err := rand.Read(testEncryptionKey); err != nil {
-		t.Fatalf("Failed to generate test encryption key: %v", err)
-	}
-	if err := os.WriteFile(encryptionKeyPath, testEncryptionKey, 0600); err != nil {
-		t.Fatalf("Failed to write test encryption key: %v", err)
-	}
-
-	// Five nodes trigger dev-mode: all QUIC shards start as local goroutines.
-	configPath := filepath.Join(testDir, "predastore_test.toml")
-	configContent := `version = "1.0"
-region = "us-east-1"
-host = "127.0.0.1"
-port = 18443
-debug = false
-disable_logging = false
-base_path = "` + testDir + `/"
-
-[rs]
-data = 3
-parity = 2
-
-[[nodes]]
-id = 1
-host = "127.0.0.1"
-port = 19991
-path = "store/node-1/"
-
-[[nodes]]
-id = 2
-host = "127.0.0.1"
-port = 19992
-path = "store/node-2/"
-
-[[nodes]]
-id = 3
-host = "127.0.0.1"
-port = 19993
-path = "store/node-3/"
-
-[[nodes]]
-id = 4
-host = "127.0.0.1"
-port = 19994
-path = "store/node-4/"
-
-[[nodes]]
-id = 5
-host = "127.0.0.1"
-port = 19995
-path = "store/node-5/"
-
-[[auth]]
-access_key_id = "AKIAIOSFODNN7EXAMPLE"
-secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-account_id = "123456789012"
-`
-
-	err = os.WriteFile(configPath, []byte(configContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
-
-	cfg := &Config{
-		ConfigPath:        configPath,
-		Port:              18443,
-		Host:              "127.0.0.1",
-		Debug:             false,
-		BasePath:          testDir,
-		TlsCert:           certPath,
-		TlsKey:            keyPath,
-		EncryptionKeyFile: encryptionKeyPath,
-		// NodeID -1 triggers dev mode: all QUIC nodes run in-process.
-		NodeID: -1,
-	}
-	sharedConfig = cfg
-
-	// Start server in background
-	go func() {
-		svc, _ := New(cfg)
-		svc.Start()
-	}()
-
-	// Wait for server to be ready
-	if !waitForServer(10 * time.Second) {
-		t.Fatal("Failed to start predastore server")
-	}
-
-	// Create the test buckets via the S3 API so they're registered in
-	// distributed globalState (config buckets aren't visible to ListBuckets).
-	setupClient := createS3Client(validAccessKey, validSecretKey)
-	for _, bucket := range []string{testBucket, publicBucket} {
-		if _, err := setupClient.CreateBucket(&s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
-			t.Fatalf("Failed to create bucket %s: %v", bucket, err)
-		}
-	}
-
-	serverStarted = true
-	t.Logf("Predastore server started successfully")
-	t.Logf("Test directory: %s", testDir)
-	t.Logf("Created buckets: %s, %s", testBucket, publicBucket)
-
-	// NOTE: Cleanup will happen automatically when test process exits
-	// Don't use t.Cleanup() as it runs after each test, not at the end
-
-	return cfg
-}
-
-// waitForServer waits for the predastore server to be ready.
-func waitForServer(timeout time.Duration) bool {
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-		Timeout: 1 * time.Second,
-	}
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		resp, err := client.Get("https://" + net.JoinHostPort(testHost, strconv.Itoa(testPort)) + "/")
-		if err == nil {
-			resp.Body.Close()
-			// Give a bit more time for config to load
-			time.Sleep(500 * time.Millisecond)
-			return true
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return false
-}
 
 // createS3Client creates an AWS S3 client for testing.
 func createS3Client(accessKey, secretKey string) *s3.S3 {
@@ -306,7 +44,7 @@ func createS3Client(accessKey, secretKey string) *s3.S3 {
 
 	sess := session.Must(session.NewSession(&aws.Config{
 		Region:           aws.String(testRegion),
-		Endpoint:         aws.String("https://" + net.JoinHostPort(testHost, strconv.Itoa(testPort))),
+		Endpoint:         aws.String("https://" + testpredastore.Host),
 		Credentials:      credentials.NewStaticCredentials(accessKey, secretKey, ""),
 		S3ForcePathStyle: aws.Bool(true),
 		DisableSSL:       aws.Bool(false),
@@ -323,7 +61,7 @@ func TestIntegration_BucketListing(t *testing.T) {
 	}
 
 	// Start server (only starts once)
-	startPredastoreServer(t)
+	testpredastore.Start(t)
 
 	// Create S3 client
 	client := createS3Client(validAccessKey, validSecretKey)
@@ -351,7 +89,7 @@ func TestIntegration_Authentication_Valid(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	startPredastoreServer(t)
+	testpredastore.Start(t)
 
 	// Create client with valid credentials
 	client := createS3Client(validAccessKey, validSecretKey)
@@ -371,7 +109,7 @@ func TestIntegration_Authentication_Invalid(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	startPredastoreServer(t)
+	testpredastore.Start(t)
 
 	// Create client with invalid credentials
 	client := createS3Client(invalidAccessKey, invalidSecretKey)
@@ -396,7 +134,7 @@ func TestIntegration_FileUpload_TestBucket(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	startPredastoreServer(t)
+	testpredastore.Start(t)
 
 	client := createS3Client(validAccessKey, validSecretKey)
 
@@ -438,7 +176,7 @@ func TestIntegration_FileUpload_PublicBucket(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	startPredastoreServer(t)
+	testpredastore.Start(t)
 
 	client := createS3Client(validAccessKey, validSecretKey)
 
@@ -479,7 +217,7 @@ func TestIntegration_FileUpload_PublicBucket2(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	startPredastoreServer(t)
+	testpredastore.Start(t)
 
 	client := createS3Client(validAccessKey, validSecretKey)
 
@@ -525,7 +263,7 @@ func TestIntegration_FileOperations_Complete(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	startPredastoreServer(t)
+	testpredastore.Start(t)
 
 	client := createS3Client(validAccessKey, validSecretKey)
 
@@ -617,7 +355,7 @@ func TestIntegration_MultipleFiles(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	startPredastoreServer(t)
+	testpredastore.Start(t)
 
 	client := createS3Client(validAccessKey, validSecretKey)
 
@@ -666,7 +404,7 @@ func TestIntegration_LargeFile(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	startPredastoreServer(t)
+	testpredastore.Start(t)
 
 	client := createS3Client(validAccessKey, validSecretKey)
 

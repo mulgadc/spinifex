@@ -31,33 +31,6 @@ func InstanceHostingNode(t *testing.T, c *Cluster, instanceID string) *Node {
 	return nil
 }
 
-// CountInstancesPerNode fans out a ps grep per node and returns a count by
-// node name. Used by phase 3 distribution checks.
-func CountInstancesPerNode(t *testing.T, c *Cluster, instanceIDs []string) map[string]int {
-	t.Helper()
-	counts := map[string]int{}
-	for _, id := range instanceIDs {
-		if n := InstanceHostingNode(t, c, id); n != nil {
-			counts[n.Name]++
-		}
-	}
-	return counts
-}
-
-// AssertSpreadAcrossNodes fails the test if the given instances don't span
-// at least minNodes distinct cluster members. Bash phase 3 logs but doesn't
-// fail when distribution is sub-optimal — Go matches by accepting minNodes=1
-// (logging only) at the caller's discretion.
-func AssertSpreadAcrossNodes(t *testing.T, c *Cluster, instanceIDs []string, minNodes int) map[string]int {
-	t.Helper()
-	counts := CountInstancesPerNode(t, c, instanceIDs)
-	if len(counts) < minNodes {
-		t.Fatalf("AssertSpreadAcrossNodes: %d instances on %d node(s) (%v), want >= %d nodes",
-			len(instanceIDs), len(counts), counts, minNodes)
-	}
-	return counts
-}
-
 // runPSGrep runs the ps+grep pipeline on a node and returns combined output.
 func runPSGrep(ctx context.Context, ssh *PeerSSH, n Node, instanceID string) (string, error) {
 	cmd := fmt.Sprintf("ps auxw | grep %q | grep qemu-system | grep -v grep", instanceID)

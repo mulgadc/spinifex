@@ -261,3 +261,37 @@ func TestRG11_LeanUnits(t *testing.T) {
 		}
 	}
 }
+
+// TestApplicationUnitsExportTelemetry asserts every unit that runs an spx
+// application service sources the telemetry drop-in. That file carries
+// OTEL_EXPORTER_OTLP_ENDPOINT, MULGA_ENV and MULGA_SOURCE, so a unit missing it
+// starts a service whose instruments record into a no-op provider — the process
+// runs healthy and simply reports nothing, which is invisible until someone
+// notices an empty dashboard.
+//
+// Units that host an agent or a one-shot rather than an spx service are exempt:
+// they either export on their own (the collectors) or have nothing to export.
+func TestApplicationUnitsExportTelemetry(t *testing.T) {
+	dir := unitsDir(t)
+	const telemetry = "EnvironmentFile=-/etc/spinifex/telemetry.env"
+
+	exempt := []string{
+		"spinifex-nats-watchdog.service", // periodic health probe, no OTel SDK
+		"spinifex-shutdown.service",      // one-shot drain on halt
+		"regenerate-ssh-host-keys.service",
+	}
+
+	for _, name := range unitFiles(t, dir) {
+		if !strings.HasSuffix(name, ".service") || slices.Contains(exempt, name) {
+			continue
+		}
+		u := readUnit(t, dir, name)
+		// Only units that actually launch an spx service can emit telemetry.
+		if !strings.Contains(u, "/usr/local/bin/spx service ") {
+			continue
+		}
+		if !hasDirective(u, telemetry) {
+			t.Errorf("%s runs an spx service but does not source %s; its telemetry would be silently dropped", name, telemetry)
+		}
+	}
+}

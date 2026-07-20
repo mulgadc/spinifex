@@ -27,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	awssession "github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -220,6 +221,16 @@ func (gw *Gateway) STSClient(t *testing.T) *sts.STS {
 func (gw *Gateway) ECRClient(t *testing.T) *ecr.ECR {
 	t.Helper()
 	return ecr.New(gw.session(t))
+}
+
+// BedrockClient returns an aws-sdk-go v1 Bedrock (control-plane) client
+// pointed at the gateway's httptest server, signed with the seeded root
+// credentials. ListFoundationModels/GetFoundationModel are pure gateway-side
+// catalog logic (gateway/bedrock/catalog.go) with no NATS/daemon hop, so no
+// DaemonLite wiring is needed to exercise them.
+func (gw *Gateway) BedrockClient(t *testing.T) *bedrock.Bedrock {
+	t.Helper()
+	return bedrock.New(gw.session(t))
 }
 
 // PrincipalClients bundles the SDK service handles an authz test needs to act

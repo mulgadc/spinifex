@@ -160,40 +160,13 @@ func runLaunchTemplates(t *testing.T, fix *Fixture) {
 	require.Len(t, latestOut.LaunchTemplateVersions, 1)
 	assert.Equal(t, int64(2), aws.Int64Value(latestOut.LaunchTemplateVersions[0].VersionNumber))
 
-	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
-	require.NotEmpty(t, vpc.SubnetID)
-	require.NotEmpty(t, vpc.SGID)
-
-	harness.Step(t, "run-instances from default launch-template version")
-	// e2e:allow-create — the instance verifies launch-template expansion in the real launch path.
-	runOut, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
-		LaunchTemplate: &ec2.LaunchTemplateSpecification{LaunchTemplateId: aws.String(templateID)},
-		MinCount:       aws.Int64(1),
-		MaxCount:       aws.Int64(1),
-		SubnetId:       aws.String(vpc.SubnetID),
-		SecurityGroupIds: []*string{
-			aws.String(vpc.SGID),
-		},
-	})
-	require.NoError(t, err, "run-instances with launch template")
-	require.NotEmpty(t, runOut.Instances, "run-instances returned no instances")
-	instanceID := aws.StringValue(runOut.Instances[0].InstanceId)
-	require.NotEmpty(t, instanceID, "run-instances returned an empty instance id")
-	t.Cleanup(func() {
-		_, _ = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
-			InstanceIds: []*string{aws.String(instanceID)},
-		})
-	})
-
-	instance := harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
-	assert.Equal(t, amiID, aws.StringValue(instance.ImageId), "templated AMI")
-	assert.Equal(t, instanceType, aws.StringValue(instance.InstanceType), "templated instance type")
-
-	_, err = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
-		InstanceIds: []*string{aws.String(instanceID)},
-	})
-	require.NoError(t, err, "terminate launch-template instance")
-	harness.WaitForInstanceState(t, fix.AWS, instanceID, "terminated")
+	// RunInstances from the default launch-template version (resolving the
+	// template's ImageId/InstanceType onto the per-node launch dispatch, then
+	// waiting for a real boot to read them back off DescribeInstances) is
+	// covered by tests/integration's
+	// TestRunInstances_LaunchTemplateExpansion — that expansion is gateway-side
+	// logic, fully resolved before the daemon-facing NATS hop, so a live guest
+	// proves nothing beyond what the integration tier already asserts.
 
 	harness.Step(t, "delete-launch-template by name")
 	deleteOut, err := fix.AWS.EC2.DeleteLaunchTemplate(&ec2.DeleteLaunchTemplateInput{

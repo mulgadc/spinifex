@@ -40,7 +40,7 @@ jobs:
           package_json_file: spinifex/services/spinifexui/frontend/package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           cache: "pnpm"
           cache-dependency-path: spinifex/services/spinifexui/frontend/pnpm-lock.yaml

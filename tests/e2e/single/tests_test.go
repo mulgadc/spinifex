@@ -65,27 +65,8 @@ func TestInstanceMetadata(t *testing.T) {
 	runInstanceMetadata(t, requireSingleNodeFixture(t))
 }
 
-func TestSSHProbe(t *testing.T) {
-	runSSHProbe(t, requireSingleNodeFixture(t))
-}
-
 func TestConsoleOutput(t *testing.T) {
 	runConsoleOutput(t, requireSingleNodeFixture(t))
-}
-
-// TestENIHotplug hot-plugs a secondary ENI onto the freshly-booted singleton
-// and asserts the NIC reaches the guest, then restores it. Placed before the
-// stop/start churn so the singleton is known running + SSH-healthy.
-func TestENIHotplug(t *testing.T) {
-	runENIHotplug(t, requireSingleNodeFixture(t))
-}
-
-// TestENIHotplugReconcile attaches a secondary ENI, restarts spinifex-daemon,
-// and asserts the hot-plug reconciler keeps the ENI attached + manageable
-// (detach succeeds) across the restart. Runs after TestENIHotplug so the
-// singleton is known running + SSH-healthy.
-func TestENIHotplugReconcile(t *testing.T) {
-	runENIHotplugReconcile(t, requireSingleNodeFixture(t))
 }
 
 func TestVolumeLifecycle(t *testing.T) {
@@ -96,9 +77,14 @@ func TestVolumeStatus(t *testing.T) {
 	runVolumeStatus(t, requireSingleNodeFixture(t))
 }
 
-// TestVolumeDurability stops/starts the singleton; sequential, leaves it running.
-func TestVolumeDurability(t *testing.T) {
-	runVolumeDurability(t, requireSingleNodeFixture(t))
+// TestGuestChurnDurability merges the former TestSSHProbe, TestENIHotplug,
+// TestENIHotplugReconcile, TestVolumeDurability, TestModifyInstanceAttribute,
+// and TestRebootInstance around one shared guest and one shared
+// data-integrity sentinel (see runGuestChurnDurability for the stage
+// breakdown and gating rationale). Sequential: it stops/starts and reboots
+// the singleton, leaving it running.
+func TestGuestChurnDurability(t *testing.T) {
+	runGuestChurnDurability(t, requireSingleNodeFixture(t))
 }
 
 func TestSnapshotLifecycle(t *testing.T) {
@@ -119,14 +105,6 @@ func TestStopStart(t *testing.T) {
 
 func TestAttachToStoppedError(t *testing.T) {
 	runAttachToStoppedError(t, requireSingleNodeFixture(t))
-}
-
-func TestModifyInstanceAttribute(t *testing.T) {
-	runModifyInstanceAttribute(t, requireSingleNodeFixture(t))
-}
-
-func TestRebootInstance(t *testing.T) {
-	runRebootInstance(t, requireSingleNodeFixture(t))
 }
 
 // --- Sequential: shared-state / sub-test-parallel Tests ---

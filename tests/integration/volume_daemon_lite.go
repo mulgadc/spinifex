@@ -9,7 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	testpredastore "github.com/mulgadc/spinifex/spinifex/testutil/predastore"
+	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )

@@ -21,10 +21,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pullOnlyPolicyARN is the AWS-managed policy this suite attaches to an IAM
-// role to prove the gateway's ECR authorization matrix for a pull-only
-// grant.
-const pullOnlyPolicyARN = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
+// pullOnlyPolicyARN and readOnlyPolicyARN are the AWS-managed policies this
+// suite attaches to IAM users/roles to prove the gateway's ECR authorization
+// matrix for each grant level.
+const (
+	pullOnlyPolicyARN = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
+	readOnlyPolicyARN = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+)
 
 // ociManifestMediaType is the content type used for the minimal image
 // manifests this suite pushes to seed pull fixtures.
@@ -111,6 +114,27 @@ func seedOCIRepo(t *testing.T, gw *Gateway, repo string) string {
 	return hdr.Get("Docker-Content-Digest")
 }
 
+// newScopedECRUser creates a fresh IAM user with policyARN attached and one
+// active access key. Returns PrincipalClients bound to that key so callers
+// can mint ECR bearer tokens as this identity.
+func newScopedECRUser(t *testing.T, gw *Gateway, policyARN string) *PrincipalClients {
+	t.Helper()
+	userName := uniqueName("ecr-authz")
+
+	_, err := gw.IAMClient(t).CreateUser(&iam.CreateUserInput{UserName: aws.String(userName)})
+	require.NoError(t, err, "create-user")
+
+	_, err = gw.IAMClient(t).AttachUserPolicy(&iam.AttachUserPolicyInput{
+		UserName: aws.String(userName), PolicyArn: aws.String(policyARN),
+	})
+	require.NoError(t, err, "attach-user-policy")
+
+	keyOut, err := gw.IAMClient(t).CreateAccessKey(&iam.CreateAccessKeyInput{UserName: aws.String(userName)})
+	require.NoError(t, err, "create-access-key")
+
+	return gw.ClientsWithCreds(t, aws.StringValue(keyOut.AccessKey.AccessKeyId), aws.StringValue(keyOut.AccessKey.SecretAccessKey))
+}
+
 // assertPullAllowedPushDenied runs the read/write half of the release-gate
 // matrix common to every scoped-credential subtest below: pulling repo's
 // seeded "v1" tag must succeed, while every mutating operation must return
@@ -167,4 +191,115 @@ func TestECRIAMAuthorization_AssumedRolePullOnly(t *testing.T) {
 		aws.StringValue(creds.AccessKeyId), aws.StringValue(creds.SecretAccessKey), aws.StringValue(creds.SessionToken))
 
 	assertPullAllowedPushDenied(t, gw, cli, repo, manifestDigest)
+}
+
+// TestECRIAMAuthorization_PullOnly proves a PullOnly-scoped identity can pull
+// but not push, overwrite, or delete, and cannot list the account catalog
+// (DescribeRepositories is outside PullOnly's grant).
+func TestECRIAMAuthorization_PullOnly(t *testing.T) {
+	gw := StartGateway(t)
+	StartECRDaemonLite(t, gw)
+
+	repo := uniqueRepo("authz-pullonly")
+	manifestDigest := seedOCIRepo(t, gw, repo)
+
+	cli := newScopedECRUser(t, gw, pullOnlyPolicyARN)
+	assertPullAllowedPushDenied(t, gw, cli, repo, manifestDigest)
+
+	bearer := ecrGetLoginPassword(t, cli.ECR)
+	status, _, body := ecrOCIRequest(t, gw, http.MethodGet, "/v2/_catalog", bearer, nil)
+	assert.Equal(t, http.StatusForbidden, status, "catalog listing outside PullOnly's grant must be denied: %s", body)
+}
+
+// TestECRIAMAuthorization_ReadOnly proves a ReadOnly-scoped identity can pull,
+// list tags, and list the catalog, while push, overwrite, and delete remain
+// denied.
+func TestECRIAMAuthorization_ReadOnly(t *testing.T) {
+	gw := StartGateway(t)
+	StartECRDaemonLite(t, gw)
+
+	repo := uniqueRepo("authz-readonly")
+	manifestDigest := seedOCIRepo(t, gw, repo)
+
+	cli := newScopedECRUser(t, gw, readOnlyPolicyARN)
+	assertPullAllowedPushDenied(t, gw, cli, repo, manifestDigest)
+
+	bearer := ecrGetLoginPassword(t, cli.ECR)
+	status, _, body := ecrOCIRequest(t, gw, http.MethodGet, "/v2/_catalog", bearer, nil)
+	assert.Equal(t, http.StatusOK, status, "catalog listing must be allowed under ReadOnly: %s", body)
+
+	status, _, body = ecrOCIRequest(t, gw, http.MethodGet, "/v2/"+repo+"/tags/list", bearer, nil)
+	assert.Equal(t, http.StatusOK, status, "tag listing must be allowed under ReadOnly: %s", body)
+}
+
+// TestECRIAMAuthorization_DetachPolicyDeniesImmediately proves a JWT minted
+// while a policy was attached is denied on its very next request once that
+// policy is detached — the token is a pointer re-resolved against live IAM
+// state, not a capability baked in at mint time.
+func TestECRIAMAuthorization_DetachPolicyDeniesImmediately(t *testing.T) {
+	gw := StartGateway(t)
+	StartECRDaemonLite(t, gw)
+
+	repo := uniqueRepo("authz-detach")
+	_ = seedOCIRepo(t, gw, repo)
+
+	userName := uniqueName("ecr-authz-detach")
+	_, err := gw.IAMClient(t).CreateUser(&iam.CreateUserInput{UserName: aws.String(userName)})
+	require.NoError(t, err, "create-user")
+	_, err = gw.IAMClient(t).AttachUserPolicy(&iam.AttachUserPolicyInput{
+		UserName: aws.String(userName), PolicyArn: aws.String(pullOnlyPolicyARN),
+	})
+	require.NoError(t, err, "attach-user-policy")
+	keyOut, err := gw.IAMClient(t).CreateAccessKey(&iam.CreateAccessKeyInput{UserName: aws.String(userName)})
+	require.NoError(t, err, "create-access-key")
+	cli := gw.ClientsWithCreds(t, aws.StringValue(keyOut.AccessKey.AccessKeyId), aws.StringValue(keyOut.AccessKey.SecretAccessKey))
+
+	bearer := ecrGetLoginPassword(t, cli.ECR)
+	status, _, body := ecrOCIRequest(t, gw, http.MethodGet, "/v2/"+repo+"/manifests/v1", bearer, nil)
+	require.Equal(t, http.StatusOK, status, "pull must succeed while policy is attached: %s", body)
+
+	_, err = gw.IAMClient(t).DetachUserPolicy(&iam.DetachUserPolicyInput{
+		UserName: aws.String(userName), PolicyArn: aws.String(pullOnlyPolicyARN),
+	})
+	require.NoError(t, err, "detach-user-policy")
+
+	status, _, body = ecrOCIRequest(t, gw, http.MethodGet, "/v2/"+repo+"/manifests/v1", bearer, nil)
+	assert.Equal(t, http.StatusForbidden, status, "same JWT must be denied immediately once the policy is detached: %s", body)
+}
+
+// TestECRIAMAuthorization_DeactivatedKeyReturns401 proves a JWT minted from a
+// since-deactivated access key is refused with 401 (invalid principal), not
+// 403 — the key itself no longer authenticates, so the request never reaches
+// policy evaluation.
+func TestECRIAMAuthorization_DeactivatedKeyReturns401(t *testing.T) {
+	gw := StartGateway(t)
+	StartECRDaemonLite(t, gw)
+
+	repo := uniqueRepo("authz-deactivate")
+	_ = seedOCIRepo(t, gw, repo)
+
+	userName := uniqueName("ecr-authz-deactivate")
+	_, err := gw.IAMClient(t).CreateUser(&iam.CreateUserInput{UserName: aws.String(userName)})
+	require.NoError(t, err, "create-user")
+	_, err = gw.IAMClient(t).AttachUserPolicy(&iam.AttachUserPolicyInput{
+		UserName: aws.String(userName), PolicyArn: aws.String(pullOnlyPolicyARN),
+	})
+	require.NoError(t, err, "attach-user-policy")
+	keyOut, err := gw.IAMClient(t).CreateAccessKey(&iam.CreateAccessKeyInput{UserName: aws.String(userName)})
+	require.NoError(t, err, "create-access-key")
+	keyID := aws.StringValue(keyOut.AccessKey.AccessKeyId)
+	cli := gw.ClientsWithCreds(t, keyID, aws.StringValue(keyOut.AccessKey.SecretAccessKey))
+
+	bearer := ecrGetLoginPassword(t, cli.ECR)
+	status, _, body := ecrOCIRequest(t, gw, http.MethodGet, "/v2/"+repo+"/manifests/v1", bearer, nil)
+	require.Equal(t, http.StatusOK, status, "pull must succeed while the key is active: %s", body)
+
+	_, err = gw.IAMClient(t).UpdateAccessKey(&iam.UpdateAccessKeyInput{
+		UserName: aws.String(userName), AccessKeyId: aws.String(keyID), Status: aws.String(iam.StatusTypeInactive),
+	})
+	require.NoError(t, err, "update-access-key deactivate")
+
+	status, hdr, body := ecrOCIRequest(t, gw, http.MethodGet, "/v2/"+repo+"/manifests/v1", bearer, nil)
+	assert.Equal(t, http.StatusUnauthorized, status, "same JWT must be refused once its key is inactive: %s", body)
+	assert.NotEmpty(t, hdr.Get("Www-Authenticate"), "a revoked-but-well-formed token still gets the Bearer challenge")
 }

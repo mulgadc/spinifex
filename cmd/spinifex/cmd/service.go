@@ -885,6 +885,9 @@ var northstarStartCmd = &cobra.Command{
 	SilenceUsage:  true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println("Starting northstar service...")
+
+		defer initTelemetry("northstar", false)()
+
 		return runNorthstarStart(northstarStartOptions{
 			configFile:      viper.GetString("config"),
 			configOverride:  viper.GetString("northstar-config"),

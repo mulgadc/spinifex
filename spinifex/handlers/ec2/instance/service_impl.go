@@ -1575,6 +1575,13 @@ func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, imageId stri
 		slog.ErrorContext(ctx, "Could not create EFI viperblock", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
+	// newViperblock starts the chunk uploader and WAL syncer goroutines
+	// unconditionally, so every return path below must release them, not
+	// just the happy path Close() at the bottom of this function.
+	defer func() {
+		efiVb.StopChunkUploader()
+		efiVb.StopWALSyncer()
+	}()
 
 	slog.DebugContext(ctx, "Initializing EFI Viperblock store backend")
 	if err := efiVb.Backend.Init(); err != nil {

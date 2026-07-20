@@ -30,11 +30,6 @@ func TestAccountScoping(t *testing.T) {
 	runAccountScoping(t, requireSingleNodeFixture(t))
 }
 
-func TestVPCSubnetE2E(t *testing.T) {
-	t.Parallel()
-	runVPCSubnetE2E(t, requireSingleNodeFixture(t))
-}
-
 // --- Sequential: singleton VM lifecycle ---
 
 // TestClusterStatsCLI exercises the spx cluster CLI; its get-vms baseline is
@@ -43,8 +38,8 @@ func TestClusterStatsCLI(t *testing.T) {
 	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
 
-// TestSGReachabilityPolicy and TestNewVPCEgressBaseline own all mutable
-// resources and run before the singleton launch.
+// TestSGReachabilityPolicy and TestVPCEgressPaths own all mutable resources
+// and run before the singleton launch.
 //
 // TestSGReachabilityPolicy merges the former TestDefaultSGReachabilityBaseline,
 // TestGuestDNSResolution, and TestSecurityGroupEgress around one shared guest
@@ -53,8 +48,12 @@ func TestSGReachabilityPolicy(t *testing.T) {
 	runSGReachabilityPolicy(t, requireSingleNodeFixture(t))
 }
 
-func TestNewVPCEgressBaseline(t *testing.T) {
-	runNewVPCEgressBaseline(t, requireSingleNodeFixture(t))
+// TestVPCEgressPaths merges the former TestVPCSubnetE2E,
+// TestNewVPCEgressBaseline, TestNATGateway, and TestInstanceEIP around one
+// scenario-owned VPC and its two guests (see runVPCEgressPaths for the stage
+// breakdown and gating rationale).
+func TestVPCEgressPaths(t *testing.T) {
+	runVPCEgressPaths(t, requireSingleNodeFixture(t))
 }
 
 func TestInstanceClusterStats(t *testing.T) {
@@ -111,17 +110,6 @@ func TestAttachToStoppedError(t *testing.T) {
 
 func TestNegativeErrorPaths(t *testing.T) {
 	runNegativeErrorPaths(t, requireSingleNodeFixture(t))
-}
-
-func TestNATGateway(t *testing.T) {
-	runNATGateway(t, requireSingleNodeFixture(t))
-}
-
-// TestInstanceEIP allocates an Elastic IP, associates it to a throwaway VM,
-// and asserts the EIP datapath flips on/off with the association. Sequential:
-// it authorizes ingress on the shared default SG.
-func TestInstanceEIP(t *testing.T) {
-	runInstanceEIP(t, requireSingleNodeFixture(t))
 }
 
 // TestSGPolicyDatapath merges the former TestSameSGComms and

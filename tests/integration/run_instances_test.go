@@ -14,9 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRunInstances_MultiCountExpansion migrates the load-bearing assertion of
-// the live single-node E2E suite's runRunInstancesMultiCount
-// (spinifex/tests/e2e/single/lifecycle_test.go): a RunInstances call with
+// TestRunInstances_MultiCountExpansion asserts that a RunInstances call with
 // MinCount=MaxCount=2 returns 2 instances with non-empty InstanceIds. That
 // expansion is gateway-side logic — distributeInstances in
 // spinifex/gateway/ec2/instance/placement.go queries node capacity over NATS,

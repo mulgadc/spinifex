@@ -25,11 +25,6 @@ func TestDiscovery(t *testing.T) {
 	runDiscovery(t, requireSingleNodeFixture(t))
 }
 
-func TestSerialConsoleAccess(t *testing.T) {
-	t.Parallel()
-	runSerialConsoleAccess(t, requireSingleNodeFixture(t))
-}
-
 func TestImage(t *testing.T) {
 	t.Parallel()
 	runImage(t, requireSingleNodeFixture(t))

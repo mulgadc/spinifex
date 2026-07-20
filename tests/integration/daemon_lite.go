@@ -194,8 +194,9 @@ func sub(t *testing.T, nc *nats.Conn, subject string, handler nats.MsgHandler) {
 
 // subscribe wires every subject the in-scope ported tests (TestKeyPairs,
 // TestTagManagement, TestRouteTableValidation, TestReplaceRouteConvergence,
-// TestAccountScoping_*) exercise, plus their supporting VPC/subnet/SG/IGW/
-// EIGW/account-settings subjects, to the real service impls held on dl.
+// TestAccountScoping_*, TestSerialConsoleAccess) exercise, plus their
+// supporting VPC/subnet/SG/IGW/EIGW/account-settings subjects, to the real
+// service impls held on dl.
 func (dl *DaemonLite) subscribe(t *testing.T, nc *nats.Conn) {
 	t.Helper()
 
@@ -267,4 +268,7 @@ func (dl *DaemonLite) subscribe(t *testing.T, nc *nats.Conn) {
 	sub(t, nc, "ec2.EnableEbsEncryptionByDefault", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.EnableEbsEncryptionByDefault) })
 	sub(t, nc, "ec2.DisableEbsEncryptionByDefault", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.DisableEbsEncryptionByDefault) })
 	sub(t, nc, "ec2.GetEbsEncryptionByDefault", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.GetEbsEncryptionByDefault) })
+	sub(t, nc, "ec2.EnableSerialConsoleAccess", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.EnableSerialConsoleAccess) })
+	sub(t, nc, "ec2.DisableSerialConsoleAccess", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.DisableSerialConsoleAccess) })
+	sub(t, nc, "ec2.GetSerialConsoleAccessStatus", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.GetSerialConsoleAccessStatus) })
 }

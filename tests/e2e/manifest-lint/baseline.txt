@@ -5,7 +5,6 @@ create	tests/e2e/eks/eks_test.go	CreateCluster	#1
 create	tests/e2e/gpu/gpu_test.go	RunInstances	#1
 create	tests/e2e/gpu/gpu_test.go	RunInstances	#2
 create	tests/e2e/gpu/helpers_test.go	RunInstances	#1
-create	tests/e2e/iam/iam_test.go	CreateKeyPair	#1
 create	tests/e2e/iam/imds_test.go	CreateInternetGateway	#1
 create	tests/e2e/iam/imds_test.go	CreateRouteTable	#1
 create	tests/e2e/iam/imds_test.go	CreateSubnet	#1

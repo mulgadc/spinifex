@@ -431,7 +431,11 @@ func (m *igwManager) RemoveSubnetEgressDrop(ctx context.Context, vpcID, subnetID
 	if vpcID == "" || subnetID == "" {
 		return errors.New("RemoveSubnetEgressDrop: vpcID and subnetID required")
 	}
-	return m.routes.DeleteSubnetEgressDrop(ctx, vpcID, subnetID, prefix, m.dropExcludeCIDRs(ctx, vpcID))
+	// TEMPORARY mutation-check: no-op to reproduce a795c2b2's "drop gate never
+	// removed" regression via the shared primitive, since both callers
+	// (ensureSubnetEgressAtPriority and the ungate-subnet-egress NATS handler)
+	// route through here. Will be reverted immediately after live verification.
+	return nil
 }
 
 func (m *igwManager) ensureSubnetEgressAtPriority(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, priority int, opName string) error {
@@ -445,14 +449,26 @@ func (m *igwManager) ensureSubnetEgressAtPriority(ctx context.Context, vpcID, su
 	if nexthop == "" {
 		return fmt.Errorf("%s: no gateway nexthop available for %s (IGW not attached?)", opName, vpcID)
 	}
-	return m.routes.AddSubnetEgress(ctx, vpcID, policy.SubnetEgressSpec{
+	if err := m.routes.AddSubnetEgress(ctx, vpcID, policy.SubnetEgressSpec{
 		SubnetID:     subnetID,
 		Prefix:       prefix,
 		Nexthop:      nexthop,
 		OutputPort:   topology.GatewayRouterPort(vpcID),
 		Priority:     priority,
 		ExcludeCIDRs: m.rerouteExcludeCIDRs(ctx, vpcID),
-	})
+	}); err != nil {
+		return err
+	}
+	// The priority-1100 drop gate is installed while a subnet is routeless and
+	// outranks both reroutes (IGW 1000, NATGW 900), so a gate left in place once
+	// a route lands black-holes the subnet's egress before it reaches routing or
+	// SNAT. Clear it now that this prefix has a reroute. Idempotent and
+	// prefix-scoped: gates only exist for the default route, so a specific-prefix
+	// reroute is a no-op and leaves the default gate intact.
+	if err := m.RemoveSubnetEgressDrop(ctx, vpcID, subnetID, prefix); err != nil {
+		return fmt.Errorf("%s: clear drop gate for %s: %w", opName, subnetID, err)
+	}
+	return nil
 }
 
 // EnsureSystemInstanceEgress installs a /32 reroute above the drop gate plus a plain

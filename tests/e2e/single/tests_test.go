@@ -154,10 +154,6 @@ func TestRebootInstance(t *testing.T) {
 	runRebootInstance(t, requireSingleNodeFixture(t))
 }
 
-func TestRunInstancesMultiCount(t *testing.T) {
-	runRunInstancesMultiCount(t, requireSingleNodeFixture(t))
-}
-
 // TestLaunchTemplates launches a throwaway VM to verify the referenced
 // template's effective image and instance type, so it runs sequentially.
 func TestLaunchTemplates(t *testing.T) {

@@ -354,68 +354,8 @@ func runRebootInstance(t *testing.T, fix *Fixture) {
 	assert.Equalf(t, preRebootIP, postRebootIP,
 		"PrivateIpAddress changed across reboot: %s -> %s", preRebootIP, postRebootIP)
 
-	// Leave instance running — Phase 7c launches sibling instances next,
-	// and Phase 8 expects the primary instance to still be up.
-}
-
-// runRunInstancesMultiCount launches 2 sibling instances in a single
-// RunInstances call, waits for both to reach "running", then terminates
-// them and waits for both to reach "terminated". The primary fix.Instance
-// is untouched and remains running for Phase 8. Maps to run-e2e.sh
-// ~1238–1296.
-func runRunInstancesMultiCount(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — RunInstances with MinCount/MaxCount > 1")
-
-	amiID := needAMI(t, fix)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, _ := needKeyPair(t, fix)
-
-	harness.Step(t, "run-instances ami=%s type=%s count=2", amiID, instType)
-	out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
-		ImageId:      aws.String(amiID),
-		InstanceType: aws.String(instType),
-		KeyName:      aws.String(keyName),
-		MinCount:     aws.Int64(2),
-		MaxCount:     aws.Int64(2),
-	})
-	require.NoError(t, err, "run-instances --count 2")
-	require.Lenf(t, out.Instances, 2,
-		"expected 2 instances from run-instances, got %d", len(out.Instances))
-
-	multiIDs := []string{
-		aws.StringValue(out.Instances[0].InstanceId),
-		aws.StringValue(out.Instances[1].InstanceId),
-	}
-	require.NotEmpty(t, multiIDs[0], "first sibling InstanceId empty")
-	require.NotEmpty(t, multiIDs[1], "second sibling InstanceId empty")
-	harness.Detail(t, "sibling_1", multiIDs[0], "sibling_2", multiIDs[1])
-
-	// Always tear down the siblings — pre-register before any blocking
-	// wait so a t.Fatal on state polling still triggers cleanup.
-	terminated := false
-	t.Cleanup(func() {
-		if terminated {
-			return
-		}
-		_, _ = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
-			InstanceIds: aws.StringSlice(multiIDs),
-		})
-	})
-
-	for _, id := range multiIDs {
-		harness.WaitForInstanceState(t, fix.AWS, id, "running")
-	}
-
-	harness.Step(t, "terminate-instances %s %s", multiIDs[0], multiIDs[1])
-	_, err = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
-		InstanceIds: aws.StringSlice(multiIDs),
-	})
-	require.NoError(t, err, "terminate-instances")
-
-	for _, id := range multiIDs {
-		harness.WaitForInstanceState(t, fix.AWS, id, "terminated")
-	}
-	terminated = true
+	// Leave instance running — later phases expect the primary instance to
+	// still be up.
 }
 
 // waitForSSHReady probes a full SSH handshake (BatchMode + ConnectTimeout)

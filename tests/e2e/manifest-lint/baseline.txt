@@ -76,7 +76,6 @@ create	tests/e2e/single/baseline_test.go	RunInstances	#1
 create	tests/e2e/single/datapath_test.go	CreateSecurityGroup	#1
 create	tests/e2e/single/datapath_test.go	RunInstances	#1
 create	tests/e2e/single/lifecycle_test.go	CreateVolume	#1
-create	tests/e2e/single/lifecycle_test.go	RunInstances	#1
 create	tests/e2e/single/natgw_test.go	AllocateAddress	#1
 create	tests/e2e/single/natgw_test.go	CreateNatGateway	#1
 create	tests/e2e/single/natgw_test.go	CreateRouteTable	#1

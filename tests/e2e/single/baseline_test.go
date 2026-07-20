@@ -303,37 +303,3 @@ func runNewVPCEgressBaseline(t *testing.T, fix *Fixture) {
 	idOut := runSSH(t, tgt, "id")
 	assert.Containsf(t, idOut, "ubuntu", "ssh id in fresh-VPC subnet\n%s", idOut)
 }
-
-// runSameSGComms verifies that two instances in the default SG can ICMP-ping
-// each other (permitted by the default SG's self-reference rule) while a
-// separate runner SG handles tcp/22 from outside. No default resource mutated.
-func runSameSGComms(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — Baseline: same default-SG instances communicate")
-
-	vpcID, defSGID, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
-	ami := needAMI(t, fix)
-
-	runnerSG := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-runnersg")
-	harness.AuthorizeSSHIngress(t, fix.AWS, runnerSG)
-	harness.Detail(t, "vpc", vpcID, "default_sg", defSGID, "runner_sg", runnerSG)
-
-	srcID := launchBaselineInstance(t, fix, ami, instType, keyName, subnetID, []string{defSGID, runnerSG})
-	dstID := launchBaselineInstance(t, fix, ami, instType, keyName, subnetID, []string{defSGID, runnerSG})
-
-	dstPriv := instancePrivateIP(t, fix, dstID)
-
-	srcInst := harness.WaitForInstanceState(t, fix.AWS, srcID, "running")
-	host, port := harness.InstancePublicSSHHost(t, srcInst)
-	harness.Detail(t, "src", srcID, "dst", dstID, "dst_private_ip", dstPriv, "ssh_host", host)
-	waitForSSHHandshake(t, host, port, keyPath)
-
-	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
-	harness.Step(t, "ping %s (%s) from %s via default-SG self-ingress", dstID, dstPriv, srcID)
-	out, converged := pingConverged(tgt, dstPriv, 45*time.Second)
-	require.Truef(t, converged,
-		"intra-default-SG east-west %s -> %s never reached 0%% loss within 45s; "+
-			"ARP/L2 datapath unreachable across the default-SG self-ingress\n%s",
-		srcID, dstID, out)
-}

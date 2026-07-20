@@ -43,18 +43,15 @@ func TestClusterStatsCLI(t *testing.T) {
 	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
 
-// TestDefaultSGReachabilityBaseline, TestNewVPCEgressBaseline, and TestSameSGComms
-// own all mutable resources and run before the singleton launch.
+// TestDefaultSGReachabilityBaseline, TestNewVPCEgressBaseline, and
+// TestGuestDNSResolution own all mutable resources and run before the
+// singleton launch.
 func TestDefaultSGReachabilityBaseline(t *testing.T) {
 	runDefaultSGReachabilityBaseline(t, requireSingleNodeFixture(t))
 }
 
 func TestNewVPCEgressBaseline(t *testing.T) {
 	runNewVPCEgressBaseline(t, requireSingleNodeFixture(t))
-}
-
-func TestSameSGComms(t *testing.T) {
-	runSameSGComms(t, requireSingleNodeFixture(t))
 }
 
 func TestGuestDNSResolution(t *testing.T) {
@@ -154,6 +151,9 @@ func TestInstanceEIP(t *testing.T) {
 	runInstanceEIP(t, requireSingleNodeFixture(t))
 }
 
-func TestSGToSGDatapath(t *testing.T) {
-	runSGToSGDatapath(t, requireSingleNodeFixture(t))
+// TestSGPolicyDatapath merges the former TestSameSGComms and
+// TestSGToSGDatapath around one shared client/target pair (see
+// runSGPolicyDatapath for the stage breakdown and gating rationale).
+func TestSGPolicyDatapath(t *testing.T) {
+	runSGPolicyDatapath(t, requireSingleNodeFixture(t))
 }

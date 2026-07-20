@@ -5,6 +5,9 @@ package single
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
+	"os"
+	"strconv"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -113,6 +116,23 @@ func needInstance(t *testing.T, fix *Fixture) (inst *ec2.Instance, rootVolumeID 
 	}
 	require.NotEmpty(t, rootVolumeID, "could not resolve root volume from BlockDeviceMappings")
 	return inst, rootVolumeID
+}
+
+// envPositiveIntOr returns the named environment variable parsed as a
+// positive int, or def when unset. Mirrors storagegrowth's helper of the
+// same shape: a malformed or non-positive value is a configuration error and
+// panics rather than silently falling back, so a mistyped round count can't
+// quietly run the wrong number of rounds and get attributed to the default.
+func envPositiveIntOr(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		panic(fmt.Sprintf("%s=%q is not a positive integer", key, v))
+	}
+	return n
 }
 
 // generateImportPubKey returns an OpenSSH-formatted public key (matching the

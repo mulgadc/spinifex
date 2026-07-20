@@ -133,49 +133,6 @@ func instancePublicIP(t *testing.T, fix *Fixture, instanceID string) string {
 	return ip
 }
 
-// runDefaultSGReachabilityBaseline launches an instance into the default
-// subnet behind a dedicated default-deny SG, asserts it is unreachable from
-// the runner, then opens tcp/22 and asserts it becomes reachable. Confirms
-// the SG — not routing — gates a fresh default-config instance.
-func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — Baseline: default-SG blocks external reach until authorized")
-
-	vpcID, _, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
-	ami := needAMI(t, fix)
-
-	// No ingress rules; egress is allow-all by default so only inbound is gated.
-	sgID := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-denysg")
-	harness.Detail(t, "vpc", vpcID, "subnet", subnetID, "sg", sgID)
-
-	instanceID := launchBaselineInstance(t, fix, ami, instType, keyName, subnetID, []string{sgID})
-
-	pubIP := instancePublicIP(t, fix, instanceID)
-	harness.Detail(t, "instance", instanceID, "public_ip", pubIP)
-
-	// Probe a short window to confirm the default-deny ACL is applied and stable.
-	// This overlaps guest boot, and the positive phase below still pays the full
-	// boot wait via trySSHReady, so a longer window buys little extra coverage.
-	harness.Step(t, "asserting tcp/22 stays blocked under default-deny SG")
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		require.Falsef(t, tcpReachable(pubIP, 22, 3*time.Second),
-			"tcp/22 to %s connected with NO ingress rule — default SG must deny external traffic", pubIP)
-		time.Sleep(3 * time.Second)
-	}
-
-	harness.Step(t, "authorizing tcp/22 ingress, expecting reachability")
-	harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-	require.Truef(t, trySSHReady(pubIP, 22, keyPath, sshReadyBudget),
-		"tcp/22 to %s never became reachable after authorizing ingress — "+
-			"default subnet egress/IGW datapath is broken", pubIP)
-
-	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
-	idOut := runSSH(t, tgt, "id")
-	assert.Containsf(t, idOut, "ubuntu", "ssh id after authorize\n%s", idOut)
-}
-
 // mainRouteTableID returns the main (implicitly-associated) route table for
 // vpcID — the one a subnet joins when it has no explicit RT association.
 func mainRouteTableID(t *testing.T, c *harness.AWSClient, vpcID string) string {

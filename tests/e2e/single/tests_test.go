@@ -43,19 +43,18 @@ func TestClusterStatsCLI(t *testing.T) {
 	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
 
-// TestDefaultSGReachabilityBaseline, TestNewVPCEgressBaseline, and
-// TestGuestDNSResolution own all mutable resources and run before the
-// singleton launch.
-func TestDefaultSGReachabilityBaseline(t *testing.T) {
-	runDefaultSGReachabilityBaseline(t, requireSingleNodeFixture(t))
+// TestSGReachabilityPolicy and TestNewVPCEgressBaseline own all mutable
+// resources and run before the singleton launch.
+//
+// TestSGReachabilityPolicy merges the former TestDefaultSGReachabilityBaseline,
+// TestGuestDNSResolution, and TestSecurityGroupEgress around one shared guest
+// (see runSGReachabilityPolicy for the stage breakdown and gating rationale).
+func TestSGReachabilityPolicy(t *testing.T) {
+	runSGReachabilityPolicy(t, requireSingleNodeFixture(t))
 }
 
 func TestNewVPCEgressBaseline(t *testing.T) {
 	runNewVPCEgressBaseline(t, requireSingleNodeFixture(t))
-}
-
-func TestGuestDNSResolution(t *testing.T) {
-	runGuestDNSResolution(t, requireSingleNodeFixture(t))
 }
 
 func TestInstanceClusterStats(t *testing.T) {
@@ -112,10 +111,6 @@ func TestSnapshotBackedLaunch(t *testing.T) {
 
 func TestCreateImage(t *testing.T) {
 	runCreateImage(t, requireSingleNodeFixture(t))
-}
-
-func TestSecurityGroupEgress(t *testing.T) {
-	runSecurityGroupEgress(t, requireSingleNodeFixture(t))
 }
 
 func TestStopStart(t *testing.T) {

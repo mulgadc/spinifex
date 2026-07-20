@@ -169,37 +169,35 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 	})
 
 	// The egress round-trip below flips this scenario's own dedicated SG's
-	// allow-all egress rule and verifies vpcd programs OVN ACLs that
-	// actually drop traffic. Egress is tested because in dev_networking mode
-	// ingress SSH bypasses OVN via QEMU hostfwd — only egress hits the ACL.
-	harness.Step(t, "discover default gateway inside VM")
-	gwOut, gwErr := runSSHCombined(tgt, `ip route show default | awk '{print $3}' | head -1`)
-	gw := strings.TrimSpace(strings.Map(func(r rune) rune {
-		// Strip all whitespace, matching `tr -d '[:space:]'` from bash.
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			return -1
-		}
-		return r
-	}, gwOut))
-	if gwErr != nil || gw == "" {
-		t.Skipf("could not discover default gateway inside VM (err=%v, out=%q)", gwErr, gwOut)
-	}
-	harness.Detail(t, "probe_gateway", gw)
+	// allow-all egress rule and verifies vpcd programs OVN ACLs that actually
+	// drop traffic. Egress is tested because in dev_networking mode ingress SSH
+	// bypasses OVN via QEMU hostfwd — only egress hits the ACL.
+	//
+	// The probe pings a WAN address, not the default gateway. WANEgress just
+	// proved WAN ICMP egress works from this guest, whereas the gateway does not
+	// reliably answer ICMP in every environment and would skip these rounds on a
+	// false negative. Resolve the address once now, while egress is still
+	// allow-all, so the probe pings by IP and never depends on DNS once egress is
+	// revoked.
+	resolved, err := sshCapture(tgt, "getent ahostsv4 google.com")
+	require.NoErrorf(t, err, "resolve WAN probe target before revoking egress\n%s", resolved)
+	wanFields := strings.Fields(resolved)
+	require.NotEmptyf(t, wanFields, "getent returned no address for the WAN probe target\n%s", resolved)
+	wanIP := wanFields[0]
+	harness.Detail(t, "probe_wan", wanIP)
 
-	probeICMP := func() string {
-		out, _ := runSSHCombined(tgt, fmt.Sprintf("ping -c 3 -W 2 %s", gw))
+	probeWAN := func() string {
+		out, _ := runSSHCombined(tgt, fmt.Sprintf("ping -c 3 -W 2 %s", wanIP))
 		return out
 	}
 
-	// Baseline — allow-all egress should let ICMP through. If the environment
-	// blocks ICMP between the VM and gateway regardless of SG, skip the rest:
-	// we can't distinguish enforcement from a network that never carried the
-	// probe in the first place.
-	baseline := probeICMP()
-	if !pingReceivedRE.MatchString(baseline) {
-		t.Skipf("baseline ICMP did not succeed; env may block ICMP regardless of SG\nOutput:\n%s", baseline)
-	}
-	harness.Detail(t, "baseline", "icmp_ok")
+	// Baseline — allow-all egress must carry the WAN probe. WANEgress already
+	// proved this path, so a failure here is a real state change between stages,
+	// not an untestable environment: fail rather than skip.
+	baseline := probeWAN()
+	require.Truef(t, pingReceivedRE.MatchString(baseline),
+		"baseline WAN ICMP failed under allow-all egress though WANEgress passed\nOutput:\n%s", baseline)
+	harness.Detail(t, "baseline", "wan_icmp_ok")
 
 	rounds := sgReachabilityEgressRounds()
 	for round := 1; round <= rounds; round++ {
@@ -220,11 +218,11 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 				// don't waste the full budget.
 				var lastRevoke string
 				harness.EventuallyErr(t, func() error {
-					lastRevoke = probeICMP()
+					lastRevoke = probeWAN()
 					if pingDroppedRE.MatchString(lastRevoke) {
 						return nil
 					}
-					return fmt.Errorf("ICMP still succeeding after revoke; output:\n%s", lastRevoke)
+					return fmt.Errorf("WAN ICMP still succeeding after revoke; output:\n%s", lastRevoke)
 				}, 30*time.Second, 1*time.Second)
 			})
 			if !revokeMutationOK {
@@ -237,11 +235,11 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 
 				var lastRestore string
 				harness.EventuallyErr(t, func() error {
-					lastRestore = probeICMP()
+					lastRestore = probeWAN()
 					if pingReceivedRE.MatchString(lastRestore) {
 						return nil
 					}
-					return fmt.Errorf("ICMP still dropped after re-authorize; output:\n%s", lastRestore)
+					return fmt.Errorf("WAN ICMP still dropped after re-authorize; output:\n%s", lastRestore)
 				}, 30*time.Second, 1*time.Second)
 			})
 		})

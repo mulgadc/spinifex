@@ -324,7 +324,10 @@ jobs:
             exit 0
           fi
           if [ -n "${TEST_RUN}" ]; then
-            TEST_RUN_FLAG="-test.run=${TEST_RUN}"
+            # The value is expanded into a command that a remote shell re-parses over
+            # ssh, so single-quote it — otherwise regex metacharacters like ( | ) $ are
+            # taken as shell syntax on the VM and bash fails before the test binary runs.
+            TEST_RUN_FLAG="-test.run='${TEST_RUN}'"
           else
             TEST_RUN_FLAG=""
           fi
@@ -715,7 +718,9 @@ jobs:
             exit 0
           fi
           if [ -n "${TEST_RUN}" ]; then
-            TEST_RUN_FLAG="-test.run=${TEST_RUN}"
+            # Single-quote for the remote shell — see the single-node job for the
+            # metacharacter-injection reason.
+            TEST_RUN_FLAG="-test.run='${TEST_RUN}'"
           else
             TEST_RUN_FLAG=""
           fi

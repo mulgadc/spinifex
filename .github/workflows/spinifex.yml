@@ -68,6 +68,15 @@ jobs:
       - name: Manifest check + drift lint
         run: make -C spinifex manifest-check manifest-lint
 
+      # In-process integration tier (gateway.SetupRoutes over embedded NATS
+      # JetStream). Runs here, on every PR, rather than only relying on
+      # e2e.yml's "Integration (front gate)" job: that job is push-triggered
+      # against main/dev on a self-hosted runner, so it never blocks a PR
+      # before merge. This step provisions nothing and completes in seconds,
+      # so it belongs as an ordinary required PR check, not a separate job.
+      - name: Run Integration Tests
+        run: make -C spinifex test-integration
+
       - name: Run Tests with Coverage
         run: make -C spinifex test-cover
 

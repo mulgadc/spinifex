@@ -123,7 +123,7 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 # Preflight — runs the same checks as GitHub Actions (lint + vuln + tests).
 # Use this before committing to catch CI failures locally.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness test-integration
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
@@ -137,8 +137,10 @@ test-harness:
 # JetStream, with only the daemon-side NATS subjects stubbed. Build-tagged
 # `integration` so it's skipped by the default `go test ./spinifex/...` and by
 # `test-cover`/`test-race`. Nothing provisioned — no tofu, no docker, no
-# Spinifex daemons — so it's safe to run as a fast CI front gate. Deliberately
-# NOT part of `preflight`, which stays unit-only.
+# Spinifex daemons, so the whole package runs in well under a minute — part
+# of `preflight` (and its own PR-blocking CI step) rather than the
+# self-hosted, push-triggered live e2e tiers, so a regression here is caught
+# before it can be merged, not just after.
 test-integration:
 	@echo -e "\n....Running in-process integration tests...."
 	$(_Q)LOG_IGNORE=1 go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)

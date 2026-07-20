@@ -2,16 +2,17 @@
 
 // Package integration is the in-process integration test tier for spinifex's
 // AWS-compatible control plane. Tests here start the REAL gateway router
-// (gateway.SetupRoutes) against an embedded, ephemeral NATS JetStream
-// instance, with real IAM/STS services wired in for authentic SigV4 authz —
-// the only thing faked is the daemon side of the wire: the NATS subjects a
-// live spinifex daemon would answer (ec2.*, ebs.*, ...) are stubbed per-test
-// via StubSubject.
+// (gateway.SetupRoutes) against an embedded NATS JetStream instance shared
+// across the whole package (see TestMain in main_test.go), with real IAM/STS
+// services wired in for authentic SigV4 authz — the only thing faked is the
+// daemon side of the wire: the NATS subjects a live spinifex daemon would
+// answer (ec2.*, ebs.*, ...) are stubbed per-test via StubSubject.
 //
 // Nothing is provisioned: no tofu, no docker, no Spinifex daemons, no fixed
-// ports. Every dependency starts ephemeral and is torn down via t.Cleanup, so
-// this tier is safe to run as a fast CI front gate ahead of the live E2E
-// suites, and safe to run concurrently on a shared build host.
+// ports. Every test connects into its own isolated NATS account on the
+// shared server (see TestMain), so tests stay independent in state despite
+// sharing the underlying process, and are safe to run concurrently on a
+// shared build host.
 //
 // This package is gated behind the "integration" build tag (see the
 // `test-integration` Makefile target) so it is never swept by the default
@@ -37,7 +38,6 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -73,16 +73,19 @@ const (
 )
 
 // Gateway is a running in-process instance of the real AWS gateway router,
-// backed by embedded NATS JetStream and real IAM/STS services. Obtained via
-// StartGateway; every resource it owns is torn down automatically via
-// t.Cleanup, including the NATS server, the httptest server, and any
-// StubSubject responders registered on it.
+// backed by the package's shared embedded NATS JetStream server and real
+// IAM/STS services. Obtained via StartGateway; the httptest server and any
+// StubSubject responders registered on it are torn down automatically via
+// t.Cleanup. NATSConn is NOT closed at test end — see the TestMain doc
+// comment in main_test.go for why — TestMain closes every test's connection
+// together once the whole package's tests have finished.
 type Gateway struct {
 	// Server hosts gateway.SetupRoutes() on an ephemeral httptest port.
 	Server *httptest.Server
-	// NATSConn is the embedded JetStream connection the gateway, IAMService,
-	// and STSService all share. Tests use it directly with StubSubject to
-	// fake daemon-side responders.
+	// NATSConn is this test's isolated JetStream connection into the shared
+	// server (see TestMain), which the gateway, IAMService, and STSService
+	// all share. Tests use it directly with StubSubject to fake daemon-side
+	// responders.
 	NATSConn *nats.Conn
 	// AccountID is the account the seeded root credentials belong to
 	// (utils.GlobalAccountID).
@@ -98,9 +101,11 @@ type Gateway struct {
 // exercise the pre-IAM-compatibility bypass paths).
 type Option func(*gateway.GatewayConfig)
 
-// StartGateway boots the real gateway router over an embedded, ephemeral NATS
-// JetStream instance and serves it from an httptest.Server on an ephemeral
-// port. It wires real IAMService/STSService implementations (not a mock) and
+// StartGateway boots the real gateway router over the package's shared,
+// embedded NATS JetStream server — connected via a fresh, isolated NATS
+// account so this test's state cannot collide with any other's — and serves
+// it from an httptest.Server on an ephemeral port. It wires real
+// IAMService/STSService implementations (not a mock) and
 // seeds a root access key via SeedBootstrap, so SigV4 requests authenticate
 // and authorize exactly as they would against a live environment — root
 // bypasses IAM policy evaluation, matching gateway.evaluatePrincipalPolicy.
@@ -115,7 +120,13 @@ type Option func(*gateway.GatewayConfig)
 func StartGateway(t *testing.T, opts ...Option) *Gateway {
 	t.Helper()
 
-	_, nc, js := testutil.StartTestJetStream(t)
+	// Every test connects into its own dynamically provisioned NATS account
+	// on the one server this package's TestMain shares across the whole
+	// binary, rather than booting a private embedded server per test — see
+	// the TestMain doc comment in main_test.go for why, and how state stays
+	// isolated regardless.
+	nc, js, err := sharedNATSHarness.connectIsolated(accountNameFor(t))
+	require.NoError(t, err)
 
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)

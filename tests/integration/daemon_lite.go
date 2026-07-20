@@ -11,6 +11,8 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
+	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
@@ -37,15 +39,18 @@ const testPredastoreBucket = "integration-test-bucket"
 //
 // Scope is deliberately narrow: only resources whose service impl never
 // calls viperblock.New are wired here (key, tags, route table, VPC/subnet/SG,
-// IGW). Instance lifecycle (needs vm.Manager + QEMU), volume/snapshot/image
-// creation (construct viperblock inline), and anything OVN-backed are not
-// wired — those need real provisioning DaemonLite intentionally avoids.
+// IGW, EIGW, account settings). Instance lifecycle (needs vm.Manager + QEMU),
+// volume/snapshot/image creation (construct viperblock inline), and anything
+// OVN-backed are not wired — those need real provisioning DaemonLite
+// intentionally avoids.
 type DaemonLite struct {
-	Key        *handlers_ec2_key.KeyServiceImpl
-	Tags       *handlers_ec2_tags.TagsServiceImpl
-	VPC        *handlers_ec2_vpc.VPCServiceImpl
-	RouteTable *handlers_ec2_routetable.RouteTableServiceImpl
-	IGW        *handlers_ec2_igw.IGWServiceImpl
+	Key             *handlers_ec2_key.KeyServiceImpl
+	Tags            *handlers_ec2_tags.TagsServiceImpl
+	VPC             *handlers_ec2_vpc.VPCServiceImpl
+	RouteTable      *handlers_ec2_routetable.RouteTableServiceImpl
+	IGW             *handlers_ec2_igw.IGWServiceImpl
+	EIGW            *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
+	AccountSettings *handlers_ec2_account.AccountSettingsServiceImpl
 
 	// MemStore backs Key and Tags — exposed so a test can seed or inspect
 	// stored objects directly without going through NATS.
@@ -86,13 +91,21 @@ func StartDaemonLite(t *testing.T, gw *Gateway) *DaemonLite {
 	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(cfg, nc)
 	require.NoError(t, err, "construct IGW service")
 
+	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(cfg, nc)
+	require.NoError(t, err, "construct EIGW service")
+
+	acctSettingsSvc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(cfg, nc)
+	require.NoError(t, err, "construct account settings service")
+
 	dl := &DaemonLite{
-		Key:        keySvc,
-		Tags:       tagsSvc,
-		VPC:        vpcSvc,
-		RouteTable: rtbSvc,
-		IGW:        igwSvc,
-		MemStore:   memStore,
+		Key:             keySvc,
+		Tags:            tagsSvc,
+		VPC:             vpcSvc,
+		RouteTable:      rtbSvc,
+		IGW:             igwSvc,
+		EIGW:            eigwSvc,
+		AccountSettings: acctSettingsSvc,
+		MemStore:        memStore,
 	}
 
 	// CreateVpc/EnsureDefaultVPC/DeleteVpc synchronously round-trip through
@@ -179,10 +192,10 @@ func sub(t *testing.T, nc *nats.Conn, subject string, handler nats.MsgHandler) {
 	t.Cleanup(func() { _ = s.Unsubscribe() })
 }
 
-// subscribe wires every subject the four in-scope ported tests
-// (TestKeyPairs, TestTagManagement, TestRouteTableValidation,
-// TestReplaceRouteConvergence) exercise, plus their supporting VPC/subnet/SG/
-// IGW subjects, to the real service impls held on dl.
+// subscribe wires every subject the in-scope ported tests (TestKeyPairs,
+// TestTagManagement, TestRouteTableValidation, TestReplaceRouteConvergence,
+// TestAccountScoping_*) exercise, plus their supporting VPC/subnet/SG/IGW/
+// EIGW/account-settings subjects, to the real service impls held on dl.
 func (dl *DaemonLite) subscribe(t *testing.T, nc *nats.Conn) {
 	t.Helper()
 
@@ -244,4 +257,14 @@ func (dl *DaemonLite) subscribe(t *testing.T, nc *nats.Conn) {
 	sub(t, nc, "ec2.DescribeInternetGateways", func(m *nats.Msg) { dispatch(m, dl.IGW.DescribeInternetGateways) })
 	sub(t, nc, "ec2.AttachInternetGateway", func(m *nats.Msg) { dispatch(m, dl.IGW.AttachInternetGateway) })
 	sub(t, nc, "ec2.DetachInternetGateway", func(m *nats.Msg) { dispatch(m, dl.IGW.DetachInternetGateway) })
+
+	// Egress-only internet gateways.
+	sub(t, nc, "ec2.CreateEgressOnlyInternetGateway", func(m *nats.Msg) { dispatch(m, dl.EIGW.CreateEgressOnlyInternetGateway) })
+	sub(t, nc, "ec2.DeleteEgressOnlyInternetGateway", func(m *nats.Msg) { dispatch(m, dl.EIGW.DeleteEgressOnlyInternetGateway) })
+	sub(t, nc, "ec2.DescribeEgressOnlyInternetGateways", func(m *nats.Msg) { dispatch(m, dl.EIGW.DescribeEgressOnlyInternetGateways) })
+
+	// Account settings.
+	sub(t, nc, "ec2.EnableEbsEncryptionByDefault", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.EnableEbsEncryptionByDefault) })
+	sub(t, nc, "ec2.DisableEbsEncryptionByDefault", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.DisableEbsEncryptionByDefault) })
+	sub(t, nc, "ec2.GetEbsEncryptionByDefault", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.GetEbsEncryptionByDefault) })
 }

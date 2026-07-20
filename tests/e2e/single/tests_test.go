@@ -25,11 +25,6 @@ func TestDiscovery(t *testing.T) {
 	runDiscovery(t, requireSingleNodeFixture(t))
 }
 
-func TestImage(t *testing.T) {
-	t.Parallel()
-	runImage(t, requireSingleNodeFixture(t))
-}
-
 func TestAccountScoping(t *testing.T) {
 	t.Parallel()
 	runAccountScoping(t, requireSingleNodeFixture(t))

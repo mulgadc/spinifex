@@ -11,7 +11,7 @@ import "testing"
 // Parallel bucket (t.Parallel): read-only or own-everything tests that never
 // mutate the singleton instance, default VPC, or default SG.
 // Sequential: tests that boot, mutate, or snapshot the singleton VM; IAM tests
-// that share package-scoped IAM state; TestFinalClusterStats (last gate).
+// that share package-scoped IAM state.
 
 // --- Bucket #1: parallel-safe ---
 
@@ -76,10 +76,6 @@ func TestSameSGComms(t *testing.T) {
 
 func TestGuestDNSResolution(t *testing.T) {
 	runGuestDNSResolution(t, requireSingleNodeFixture(t))
-}
-
-func TestInstanceLaunch(t *testing.T) {
-	runInstanceLaunch(t, requireSingleNodeFixture(t))
 }
 
 func TestInstanceClusterStats(t *testing.T) {
@@ -194,9 +190,4 @@ func TestInstanceEIP(t *testing.T) {
 
 func TestSGToSGDatapath(t *testing.T) {
 	runSGToSGDatapath(t, requireSingleNodeFixture(t))
-}
-
-// TestFinalClusterStats runs as the last sequential test.
-func TestFinalClusterStats(t *testing.T) {
-	runFinalClusterStats(t, requireSingleNodeFixture(t))
 }

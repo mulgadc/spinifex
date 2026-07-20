@@ -9,9 +9,12 @@
 package multinode
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
@@ -55,6 +58,19 @@ func requireMultiNodeFixture(t *testing.T) *Fixture {
 			pkgFixErr = cerr
 			return
 		}
+
+		// Pre-flight: catch a misconfigured image or broken peer networking
+		// before any AWS API churn, with a clear message rather than letting
+		// every later Test* fail on it independently.
+		if err := checkKVMWritable(); err != nil {
+			pkgFixErr = err
+			return
+		}
+		if err := checkPeersReachable(cluster); err != nil {
+			pkgFixErr = err
+			return
+		}
+
 		awsCli := harness.NewAWSClient(t, env)
 		h, herr := harness.NewProcessFixture(awsCli)
 		if herr != nil {
@@ -82,6 +98,31 @@ func requireMultiNodeFixture(t *testing.T) *Fixture {
 		t.Skip("multinode singleton fixture unavailable (SPINIFEX_E2E unset or mode != multinode)")
 	}
 	return pkgFix
+}
+
+// checkKVMWritable fails fast if /dev/kvm is not writable on this node, which
+// would otherwise surface confusingly deep inside the first instance launch.
+func checkKVMWritable() error {
+	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("preflight: /dev/kvm not writable: %w", err)
+	}
+	return f.Close()
+}
+
+// checkPeersReachable SSHes `hostname` to every remote cluster node (skipping
+// node1, the runner itself — looping back over SSH tests nothing about peer
+// reachability) so a broken peer network fails here instead of mid-suite.
+func checkPeersReachable(cluster *harness.Cluster) error {
+	ssh := harness.NewPeerSSH()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for _, n := range cluster.Nodes[1:] {
+		if _, err := ssh.Run(ctx, n.Addr, "hostname"); err != nil {
+			return fmt.Errorf("preflight: peer_ssh %s (%s): %w", n.Name, n.Addr, err)
+		}
+	}
+	return nil
 }
 
 // Fixture carries the per-process state shared across every Test* in this package.

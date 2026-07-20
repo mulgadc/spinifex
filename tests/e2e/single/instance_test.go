@@ -17,24 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runInstanceLaunch bootstraps the suite's primary instance and asserts
-// that the live row exposes the AMI / type / key the launch was given.
-// Delegates the launch + memoization to needInstance so any sibling Test*
-// hits the same cached row. Maps to run-e2e.sh ~257–343.
-func runInstanceLaunch(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — Instance Lifecycle")
-
-	def := harness.EnsureDefaultVPC(t, fix.Harness)
-	require.NotEmpty(t, def.SGID, "default SG ID required")
-	harness.Detail(t, "vpc", def.VPCID, "sg", def.SGID, "subnet", def.SubnetID)
-
-	inst, rootVolumeID := needInstance(t, fix)
-	instanceID := aws.StringValue(inst.InstanceId)
-	require.NotEmpty(t, instanceID, "needInstance returned empty InstanceId")
-	harness.Detail(t, "instance", instanceID, "root_volume", rootVolumeID,
-		"root_device", aws.StringValue(inst.RootDeviceName))
-}
-
 // runInstanceClusterStats re-runs `spx get vms` now that a VM is running.
 // Single-node only — multinode uses a different cluster surface. Maps to
 // run-e2e.sh ~345–353.

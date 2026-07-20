@@ -42,7 +42,7 @@ func needKeyPair(t *testing.T, fix *Fixture) (name, pemPath string) {
 	return harness.EnsureKeyPair(t, fix.Harness, fix.Artifacts)
 }
 
-// Package-scoped trio. runInstanceDistribution launches; downstream tests reuse the same IDs.
+// Package-scoped trio. Whichever Test* runs first triggers the launch; every other caller of needInstanceTrio reuses the same IDs.
 var (
 	trioOnce sync.Once
 	trioIDs  []string

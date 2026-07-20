@@ -19,6 +19,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
 
@@ -26,10 +27,13 @@ import (
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	awssession "github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -48,6 +52,12 @@ const (
 	// spinifex/gateway/auth.go resolveLongLivedAKID).
 	testAccessKeyID     = "AKIAINTEGRATIONTESTR"
 	testSecretAccessKey = "integration-test-root-secret"
+
+	// nodeDiscoverSubject is the fan-out GatewayConfig.DiscoverActiveNodes
+	// publishes to (spinifex/gateway/gateway.go). StartGateway stubs it with
+	// a single-node reply so any call path that triggers node discovery
+	// resolves immediately instead of riding out the fan-out's 500ms timeout.
+	nodeDiscoverSubject = "spinifex.nodes.discover"
 )
 
 // Gateway is a running in-process instance of the real AWS gateway router,
@@ -129,12 +139,18 @@ func StartGateway(t *testing.T, opts ...Option) *Gateway {
 	srv := httptest.NewServer(cfg.SetupRoutes())
 	t.Cleanup(srv.Close)
 
-	return &Gateway{
+	gw := &Gateway{
 		Server:    srv,
 		NATSConn:  nc,
 		AccountID: utils.GlobalAccountID,
 		Config:    cfg,
 	}
+
+	nodeReply, err := json.Marshal(types.NodeDiscoverResponse{Node: "integration-test-node"})
+	require.NoError(t, err)
+	gw.StubSubject(t, nodeDiscoverSubject, nodeReply)
+
+	return gw
 }
 
 // EC2Client returns an aws-sdk-go v1 EC2 client pointed at the gateway's
@@ -143,6 +159,72 @@ func StartGateway(t *testing.T, opts ...Option) *Gateway {
 func (gw *Gateway) EC2Client(t *testing.T) *ec2.EC2 {
 	t.Helper()
 	return ec2.New(gw.session(t))
+}
+
+// IAMClient returns an aws-sdk-go v1 IAM client pointed at the gateway's
+// httptest server, signed with the seeded root credentials.
+func (gw *Gateway) IAMClient(t *testing.T) *iam.IAM {
+	t.Helper()
+	return iam.New(gw.session(t))
+}
+
+// STSClient returns an aws-sdk-go v1 STS client pointed at the gateway's
+// httptest server, signed with the seeded root credentials.
+func (gw *Gateway) STSClient(t *testing.T) *sts.STS {
+	t.Helper()
+	return sts.New(gw.session(t))
+}
+
+// PrincipalClients bundles the SDK service handles an authz test needs to act
+// as a principal other than the harness's seeded root user: an IAM user
+// created within the test, or a role assumed via STS. Populated by
+// ClientsWithCreds / ClientsWithSessionCreds.
+type PrincipalClients struct {
+	EC2 *ec2.EC2
+	IAM *iam.IAM
+	STS *sts.STS
+}
+
+// ClientsWithCreds returns PrincipalClients signed with a static access
+// key/secret and no session token — the long-lived-access-key path (an AKIA
+// key from IAM CreateAccessKey), as opposed to the seeded-root session
+// EC2Client/IAMClient/STSClient use.
+func (gw *Gateway) ClientsWithCreds(t *testing.T, accessKeyID, secretAccessKey string) *PrincipalClients {
+	t.Helper()
+	return gw.principalClients(t, accessKeyID, secretAccessKey, "")
+}
+
+// ClientsWithSessionCreds returns PrincipalClients signed with STS temporary
+// credentials — the assumed-role path (an ASIA key, secret, and session
+// token from STS AssumeRole).
+func (gw *Gateway) ClientsWithSessionCreds(t *testing.T, accessKeyID, secretAccessKey, sessionToken string) *PrincipalClients {
+	t.Helper()
+	return gw.principalClients(t, accessKeyID, secretAccessKey, sessionToken)
+}
+
+// principalClients builds the session backing both ClientsWithCreds and
+// ClientsWithSessionCreds. Passing sessionToken == "" here — the
+// ClientsWithCreds path — must not add an X-Amz-Security-Token header at
+// all: aws-sdk-go's v4 signer only sets the header when SessionToken is
+// non-empty, so a single code path correctly serves both the long-lived-key
+// and assumed-role principals without a conditional.
+func (gw *Gateway) principalClients(t *testing.T, accessKeyID, secretAccessKey, sessionToken string) *PrincipalClients {
+	t.Helper()
+	sess, err := awssession.NewSession(&aws.Config{
+		Region:      aws.String(testRegion),
+		Endpoint:    aws.String(gw.Server.URL),
+		Credentials: awscreds.NewStaticCredentials(accessKeyID, secretAccessKey, sessionToken),
+		DisableSSL:  aws.Bool(true),
+		// Error-path tests assert on the first response; the default retry
+		// loop would mask a deterministic 4xx behind minutes of backoff.
+		MaxRetries: aws.Int(0),
+	})
+	require.NoError(t, err)
+	return &PrincipalClients{
+		EC2: ec2.New(sess),
+		IAM: iam.New(sess),
+		STS: sts.New(sess),
+	}
 }
 
 // session builds the shared aws-sdk-go v1 Session every per-service client

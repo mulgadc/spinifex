@@ -27,11 +27,16 @@ import (
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	awssession "github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
+	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
+	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -58,6 +63,13 @@ const (
 	// a single-node reply so any call path that triggers node discovery
 	// resolves immediately instead of riding out the fan-out's 500ms timeout.
 	nodeDiscoverSubject = "spinifex.nodes.discover"
+
+	// testECRAudience is the audience claim every harness-issued ECR JWT is
+	// minted for and verified against — arbitrary but stable within this tier,
+	// mirroring production's "ecr.<region>.<suffix>" shape without depending on
+	// GatewayConfig.InternalSuffix (unset here; the in-process harness talks to
+	// the gateway's httptest address directly rather than a registry hostname).
+	testECRAudience = "ecr.integration-test"
 )
 
 // Gateway is a running in-process instance of the real AWS gateway router,
@@ -103,7 +115,7 @@ type Option func(*gateway.GatewayConfig)
 func StartGateway(t *testing.T, opts ...Option) *Gateway {
 	t.Helper()
 
-	_, nc, _ := testutil.StartTestJetStream(t)
+	_, nc, js := testutil.StartTestJetStream(t)
 
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
@@ -123,6 +135,12 @@ func StartGateway(t *testing.T, opts ...Option) *Gateway {
 		AccountID:       utils.GlobalAccountID,
 	}))
 
+	// ECR auth bridge signing key: reuses the IAM master key to encrypt the
+	// signing key at rest in the same embedded JetStream KV, matching
+	// production's awsgw-keys wiring (services/awsgw/awsgw.go).
+	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(js, masterKey, 1)
+	require.NoError(t, err)
+
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,
 		NATSConn:       nc,
@@ -131,6 +149,14 @@ func StartGateway(t *testing.T, opts ...Option) *Gateway {
 		AZ:             testAZ,
 		IAMService:     iamSvc,
 		STSService:     stsSvc,
+		// ECRRegistry serves the OCI Distribution v2 (/v2/*) data plane; its
+		// Meta store is a NATS client, so a test that pushes/pulls or manages
+		// repositories must additionally call StartECRDaemonLite to subscribe a
+		// real MetaServiceImpl or every ECR request will time out with no
+		// responder. Blob/manifest bytes are memory-backed: no predastore.
+		ECRRegistry:      gateway_ecr.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewNATSMetaStore(nc), utils.GlobalAccountID),
+		ECRTokenIssuer:   gateway_ecrauth.NewIssuer(signingKey, testECRAudience),
+		ECRTokenVerifier: gateway_ecrauth.NewVerifier(verifyKeys, testECRAudience),
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -175,6 +201,16 @@ func (gw *Gateway) STSClient(t *testing.T) *sts.STS {
 	return sts.New(gw.session(t))
 }
 
+// ECRClient returns an aws-sdk-go v1 ECR client pointed at the gateway's
+// httptest server, signed with the seeded root credentials. Repository and
+// image operations dispatch to ECRRegistry.Meta over NATS, so a test needs
+// StartECRDaemonLite running before calling anything beyond
+// GetAuthorizationToken.
+func (gw *Gateway) ECRClient(t *testing.T) *ecr.ECR {
+	t.Helper()
+	return ecr.New(gw.session(t))
+}
+
 // PrincipalClients bundles the SDK service handles an authz test needs to act
 // as a principal other than the harness's seeded root user: an IAM user
 // created within the test, or a role assumed via STS. Populated by
@@ -183,6 +219,7 @@ type PrincipalClients struct {
 	EC2 *ec2.EC2
 	IAM *iam.IAM
 	STS *sts.STS
+	ECR *ecr.ECR
 }
 
 // ClientsWithCreds returns PrincipalClients signed with a static access
@@ -224,6 +261,7 @@ func (gw *Gateway) principalClients(t *testing.T, accessKeyID, secretAccessKey, 
 		EC2: ec2.New(sess),
 		IAM: iam.New(sess),
 		STS: sts.New(sess),
+		ECR: ecr.New(sess),
 	}
 }
 

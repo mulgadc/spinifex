@@ -12,7 +12,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,11 +24,6 @@ const (
 	// ociManifestMediaType is the content type used for the minimal image
 	// manifests this suite pushes to seed pull fixtures.
 	ociManifestMediaType = "application/vnd.docker.distribution.manifest.v2+json"
-
-	// iamTrustAnyPrincipal lets any authenticated caller in the account assume
-	// the role, matching the pattern used elsewhere in the E2E suite for
-	// roles that only exist to be assumed by the test's own admin credentials.
-	iamTrustAnyPrincipal = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"}]}`
 )
 
 func ociDigest(data []byte) string {
@@ -166,44 +160,6 @@ func TestECRIAMAuthorization_ReadOnly(t *testing.T) {
 
 	status, _, body = harness.OCIRequest(t, cli, http.MethodGet, host, "/v2/"+repo+"/tags/list", bearer, nil)
 	assert.Equal(t, http.StatusOK, status, "tag listing must be allowed under ReadOnly: %s", body)
-}
-
-// TestECRIAMAuthorization_AssumedRolePullOnly proves the same pull-allow /
-// push-deny matrix holds for a token minted from ASIA (assumed-role) session
-// credentials, not just long-lived AKIA users.
-func TestECRIAMAuthorization_AssumedRolePullOnly(t *testing.T) {
-	f := requireECRFixture(t)
-	host := harness.ECRRegistryHost(f.Account)
-	harness.RequireRegistryResolves(t, host)
-
-	repo := uniqueRepo("authz-role-pullonly")
-	manifestDigest := seedOCIRepo(t, f, host, repo)
-
-	roleName := uniqueName("ecr-authz-e2e-role")
-	roleARN := harness.IAMRoleARN(f.Account, roleName)
-	_, err := f.AWS.IAM.CreateRole(&iam.CreateRoleInput{
-		RoleName:                 aws.String(roleName),
-		AssumeRolePolicyDocument: aws.String(iamTrustAnyPrincipal),
-	})
-	require.NoError(t, err, "create-role")
-	t.Cleanup(func() { harness.IAMDeleteRoleAndProfilesBestEffort(f.AWS, roleName, nil, pullOnlyPolicyARN) })
-
-	_, err = f.AWS.IAM.AttachRolePolicy(&iam.AttachRolePolicyInput{
-		RoleName: aws.String(roleName), PolicyArn: aws.String(pullOnlyPolicyARN),
-	})
-	require.NoError(t, err, "attach-role-policy")
-
-	assumed, err := f.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
-		RoleArn:         aws.String(roleARN),
-		RoleSessionName: aws.String(uniqueName("authz-session")),
-	})
-	require.NoError(t, err, "assume-role")
-	creds := assumed.Credentials
-	require.NotNil(t, creds, "AssumeRole returned nil Credentials")
-	cli := harness.NewAWSClientWithSessionCreds(t, f.Env,
-		aws.StringValue(creds.AccessKeyId), aws.StringValue(creds.SecretAccessKey), aws.StringValue(creds.SessionToken))
-
-	assertPullAllowedPushDenied(t, cli, host, repo, manifestDigest)
 }
 
 // TestECRIAMAuthorization_DetachPolicyDeniesImmediately proves a JWT minted

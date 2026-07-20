@@ -37,49 +37,51 @@ env:
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
 jobs:
-  # Shadow-mode suite selector. Computes which suites the diff *would* run and logs it to the job summary.
-  # Does NOT gate or override the real SUITES env yet — it runs alongside the full matrix so we
-  # can compare predicted vs actual before flipping it on.
-  select_suites:
-    name: Select Suites (shadow)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
+  # In-process integration front gate. Provisions nothing -- no tofu, no
+  # docker, no Spinifex daemons, no fixed ports -- so it runs directly on the
+  # runner host rather than inside a provisioned VM, and completes in seconds.
+  #
+  # It runs on ci-single rather than a GitHub-hosted runner so it shares the
+  # toolchain and sibling-repo build of the live suites, and so the run stays
+  # entirely on the LAN that hosts the Elastic sink. Holding a ci-single slot
+  # for seconds is negligible against the 50-minute e2e_single that follows.
+  #
+  # e2e_single and e2e_multi both require this job to succeed, so a red
+  # integration run is caught before either provisions a tofu env or pays the
+  # Spinifex install -- which is the expensive half, not the tofu apply.
+  integration:
+    name: Integration (front gate)
+    runs-on: [self-hosted, ci-single]
+    timeout-minutes: 10
     steps:
+      # This runner is shared with e2e_single, which leaves root-owned tofu and
+      # mount artifacts behind; a plain checkout would fail on them. Unmount
+      # anything still bound under the workspace before wiping it.
+      - name: Clean Workspace
+        run: |
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: false
-      - name: Compute targeted suite selection
-        run: |
-          set -euo pipefail
-          BASE="${{ github.event.before }}"
-          HEAD="${{ github.sha }}"
-          # First push to a branch reports an all-zero before-SHA; fall back to
-          # the first parent so the diff is still meaningful.
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            BASE="${HEAD}~1"
-          fi
-          echo "## Targeted suite selection (shadow)" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "base=$BASE head=$HEAD" >> "$GITHUB_STEP_SUMMARY"
-          go run ./tests/e2e/select-suites/cmd/select-suites \
-            --manifest docs/service-interfaces.yaml \
-            --base-sha "$BASE" --head-sha "$HEAD" --repo-root . \
-            2>>"$GITHUB_STEP_SUMMARY" \
-            | tee -a "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "Shadow only — actual run uses SUITES='${SUITES}'." >> "$GITHUB_STEP_SUMMARY"
+      - name: Run in-process integration tests
+        run: make test-integration
 
   e2e_single:
     name: Single-Node E2E
-    # Skip when the dispatch input requests no in-VM suites (e.g.
-    # suites='e2e-multinode' only). Push triggers and the default SUITES list
-    # both include single/cert/lb so the inputs.suites null-check keeps the
-    # job running on plain PR pushes.
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-iam')
+    needs: [integration]
+    # The integration front gate must be green: a red integration run stops
+    # here, before this job provisions a tofu env or pays the Spinifex install.
+    #
+    # The remainder of this condition is pre-existing: skip when the dispatch
+    # input requests no in-VM suites (e.g. suites='e2e-multinode' only). Push
+    # triggers and the default SUITES list both include single/cert/lb so the
+    # inputs.suites null-check keeps the job running on plain PR pushes.
+    if: needs.integration.result == 'success' && (github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-iam'))
     runs-on: [self-hosted, ci-single]
     timeout-minutes: 50
     env:
@@ -486,7 +488,12 @@ jobs:
 
   e2e_multi:
     name: Multi-Node E2E
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode')
+    needs: [integration]
+    # Gated on the integration front gate for the same reason as e2e_single:
+    # the 3-node env is never stood up if the control plane is already broken.
+    # The dispatch check keeps the multinode env unprovisioned unless the run
+    # actually asked for it.
+    if: needs.integration.result == 'success' && (github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode'))
     runs-on: [self-hosted, ci-multi]
     timeout-minutes: 60
     env:
@@ -911,7 +918,7 @@ jobs:
   e2e_status:
     name: Report E2E Status
     if: always()
-    needs: [e2e_single, e2e_multi]
+    needs: [integration, e2e_single, e2e_multi]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
@@ -920,15 +927,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPORT_SHA: ${{ github.sha }}
         run: |
+          # integration must have actually succeeded -- unlike e2e_single/multi,
+          # "skipped" is never an acceptable result for it (it has no `if:` of
+          # its own), so a red or skipped integration run fails the gate here
+          # even though e2e_single/e2e_multi themselves report "skipped" (their
+          # `if:` never let them start).
+          integration_ok=true
+          case "${{ needs.integration.result }}" in success) ;; *) integration_ok=false ;; esac
           single_ok=true; multi_ok=true
           case "${{ needs.e2e_single.result }}" in success|skipped) ;; *) single_ok=false ;; esac
           case "${{ needs.e2e_multi.result }}" in success|skipped) ;; *) multi_ok=false ;; esac
-          if $single_ok && $multi_ok; then
+          if $integration_ok && $single_ok && $multi_ok; then
             STATE="success"
             DESC="E2E suites passed"
           else
             STATE="failure"
-            DESC="E2E failed: single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_multi.result }}"
+            DESC="E2E failed: integration=${{ needs.integration.result }} single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_multi.result }}"
           fi
           gh api "repos/${{ github.repository }}/statuses/${REPORT_SHA}" \
             -f state="$STATE" \
@@ -945,7 +959,7 @@ jobs:
   # status-report check.
   e2e_es_summary:
     name: ES CI Run Summary
-    needs: [e2e_single, e2e_multi]
+    needs: [integration, e2e_single, e2e_multi]
     if: always()
     runs-on: [self-hosted, ci-single]
     timeout-minutes: 5
@@ -985,6 +999,7 @@ jobs:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           SHA: ${{ github.sha }}
           SERVER_URL: ${{ github.server_url }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
           SINGLE_RESULT: ${{ needs.e2e_single.result }}
           MULTI_RESULT: ${{ needs.e2e_multi.result }}
           SINGLE_DIR: ${{ github.workspace }}/es-summary-single
@@ -1013,15 +1028,20 @@ jobs:
           FAILED_JSON=$(printf '%s' "$FAILED_SUITES" | jq -R -s 'split("\n") | map(select(length > 0))')
           FAILED_COUNT=$(printf '%s' "$FAILED_JSON" | jq 'length')
 
-          # Mirror e2e_status's single_ok/multi_ok logic exactly so the PR
-          # status and this ES doc can never disagree on overall pass/fail.
+          # Mirror e2e_status's integration_ok/single_ok/multi_ok logic exactly
+          # so the PR status and this ES doc can never disagree on overall
+          # pass/fail. Like e2e_status, "skipped" is only acceptable for
+          # single/multi (their `if:` may legitimately not select them); a
+          # skipped or failed integration always fails the gate.
+          integration_ok=true
+          case "$INTEGRATION_RESULT" in success) ;; *) integration_ok=false ;; esac
           single_ok=true
           case "$SINGLE_RESULT" in success | skipped) ;; *) single_ok=false ;; esac
           multi_ok=true
           case "$MULTI_RESULT" in success | skipped) ;; *) multi_ok=false ;; esac
 
           STATE=success
-          if [ "$single_ok" != true ] || [ "$multi_ok" != true ] || [ "$FAILED_COUNT" -gt 0 ]; then
+          if [ "$integration_ok" != true ] || [ "$single_ok" != true ] || [ "$multi_ok" != true ] || [ "$FAILED_COUNT" -gt 0 ]; then
             STATE=failure
           fi
 
@@ -1038,6 +1058,7 @@ jobs:
             --arg sha "${SHA}" \
             --arg run_attempt "${RUN_ATTEMPT}" \
             --arg state "${STATE}" \
+            --arg integration_result "${INTEGRATION_RESULT}" \
             --arg single_result "${SINGLE_RESULT}" \
             --arg multi_result "${MULTI_RESULT}" \
             --argjson duration "${DURATION}" \
@@ -1048,6 +1069,7 @@ jobs:
               labels: { ci_run_id: $run_id },
               ci: { workflow: $workflow, branch: $branch, sha: $sha, run_attempt: $run_attempt },
               state: $state,
+              integration_result: $integration_result,
               single_result: $single_result,
               multi_result: $multi_result,
               failed_suites: $failed_suites,

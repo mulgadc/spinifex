@@ -70,6 +70,13 @@ type Fixture struct {
 	// Close() runs them LIFO. Unused (and untouched) when parent != nil.
 	processMu       sync.Mutex
 	processCleanups []func()
+
+	// volumeGuestBytesMu / volumeGuestBytes back RegisterVolumeGuestBytes
+	// (backend_accounting.go): an optional per-volume guest-written-bytes
+	// baseline that EnsureVolume's teardown byte-accounting check asserts
+	// against when a caller has registered one.
+	volumeGuestBytesMu sync.Mutex
+	volumeGuestBytes   map[string]int64
 }
 
 // Compile-time interface checks.
@@ -683,6 +690,13 @@ func EnsureVolume(t *testing.T, fx *Fixture, az string, sizeGiB int64) string {
 		}
 
 		return volID, func() error {
+			// Snapshot (and, if a guest-bytes baseline was registered, assert)
+			// the backend chunk footprint before it is purged below -- purge
+			// deletes the evidence a post-hoc measurement would need. See
+			// backend_accounting.go for why this lives here rather than in a
+			// dedicated suite: EnsureVolume is the shared teardown path every
+			// live test's volume passes through.
+			snapshotVolumeBackendBytesBeforePurge(t, fx, volID)
 			_, derr := fx.EC2.DeleteVolume(&ec2.DeleteVolumeInput{
 				VolumeId: aws.String(volID),
 			})

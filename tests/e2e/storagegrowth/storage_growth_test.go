@@ -3,6 +3,7 @@
 package storagegrowth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -138,6 +139,37 @@ func TestNPassOverwrite(t *testing.T) {
 
 	harness.Detail(t, "passes_completed", w.Passes, "guest_used_bytes", w.GuestUsedBytes,
 		"guest_used_per_pass", fmt.Sprint(w.GuestUsedPerPass))
+
+	// In-process backend byte accounting, run before any cleanup purges the
+	// volume (createWorkloadVolume's t.Cleanup, registered above, runs after
+	// this test body returns regardless of retain). This is the fail-first
+	// demonstration for the teardown byte-accounting hook in
+	// harness/backend_accounting.go: if superseded chunks from the earlier
+	// passes are never reclaimed, the backend footprint is N times the final
+	// pass's guest-used bytes rather than settling at the erasure floor, and
+	// the assertion below catches that shape without needing vbrefscan's
+	// out-of-band scoring pass. It complements, not replaces, the
+	// RETAIN_VOLUME external-measurement path: that path attributes *which*
+	// chunks are garbage on a volume kept alive for vbrefscan; this one is a
+	// pass/fail gate that runs on every invocation, retained or not.
+	assertNPassBackendByteAccounting(t, fix, volID, w.GuestUsedBytes)
+}
+
+// assertNPassBackendByteAccounting snapshots volID's backend chunk footprint
+// and asserts it against guestWrittenBytes via the shared teardown
+// byte-accounting tolerance (harness.BackendByteAccountingTolerance). Talks
+// to predastore's S3 endpoint directly on fix.Env.WANHost, the same
+// endpoint/credential resolution the harness's other direct-predastore
+// helpers use (see harness/predastore.go).
+func assertNPassBackendByteAccounting(t *testing.T, fix *Fixture, volID string, guestWrittenBytes int64) {
+	t.Helper()
+	bucket := os.Getenv("SPINIFEX_PREDASTORE_BUCKET")
+	if bucket == "" {
+		bucket = "predastore"
+	}
+	snap, err := harness.SnapshotVolumeBackendBytes(context.Background(), fix.Env.WANHost, bucket, volID)
+	require.NoErrorf(t, err, "backend byte accounting: snapshot %s before purge", volID)
+	harness.AssertBackendByteAccounting(t, snap, guestWrittenBytes)
 }
 
 // runNPassOverwrite drives n complete format+write+fsync+detach cycles against

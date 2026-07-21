@@ -431,11 +431,7 @@ func (m *igwManager) RemoveSubnetEgressDrop(ctx context.Context, vpcID, subnetID
 	if vpcID == "" || subnetID == "" {
 		return errors.New("RemoveSubnetEgressDrop: vpcID and subnetID required")
 	}
-	// TEMPORARY mutation-check: no-op to reproduce a795c2b2's "drop gate never
-	// removed" regression via the shared primitive, since both callers
-	// (ensureSubnetEgressAtPriority and the ungate-subnet-egress NATS handler)
-	// route through here. Will be reverted immediately after live verification.
-	return nil
+	return m.routes.DeleteSubnetEgressDrop(ctx, vpcID, subnetID, prefix, m.dropExcludeCIDRs(ctx, vpcID))
 }
 
 func (m *igwManager) ensureSubnetEgressAtPriority(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, priority int, opName string) error {

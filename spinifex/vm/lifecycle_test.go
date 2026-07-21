@@ -122,7 +122,7 @@ func TestBuildDrives(t *testing.T) {
 			},
 			cpuCount: 4,
 			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none"},
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "report", Rerror: "report"},
 			},
 			wantIOThreads: []IOThread{{ID: "ioth-os"}},
 			wantDevices: []Device{
@@ -163,7 +163,7 @@ func TestBuildDrives(t *testing.T) {
 			},
 			cpuCount: 4,
 			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none"},
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "report", Rerror: "report"},
 				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
 			},
 			wantIOThreads: []IOThread{{ID: "ioth-os"}},

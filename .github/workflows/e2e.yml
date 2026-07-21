@@ -64,7 +64,7 @@ jobs:
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false
@@ -137,7 +137,7 @@ jobs:
         with:
           path: spinifex
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: spinifex/go.mod
           cache: false
@@ -557,7 +557,7 @@ jobs:
         with:
           path: spinifex
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: spinifex/go.mod
           cache: false

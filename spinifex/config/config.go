@@ -124,6 +124,13 @@ type ViperblockConfig struct {
 	// EncryptionKeyFile is the path to the shared 32-byte AES-256 master key for viperblock at-rest encryption.
 	// Empty means cleartext. When set, all VB instances must load it via masterkey.LoadShared.
 	EncryptionKeyFile string `json:"EncryptionKeyFile" mapstructure:"encryption_key_file"`
+
+	// GCEnabled turns on viperblock chunk garbage collection (mark-and-sweep,
+	// snapshot-ancestry gated) on every VB this node constructs: the nbdkit
+	// plugin backing a mounted volume, and the short-lived VBs used by the
+	// volume service. Default false when nil so existing deployments keep
+	// today's behavior until explicitly opted in.
+	GCEnabled *bool `json:"GCEnabled" mapstructure:"gc_enabled"`
 }
 
 // VPCDConfig holds the VPC daemon (vpcd) configuration.

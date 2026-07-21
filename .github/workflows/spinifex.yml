@@ -54,7 +54,7 @@ jobs:
           path: predastore
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           cache-dependency-path: "spinifex/go.sum"
           go-version-file: "spinifex/go.mod"
@@ -118,7 +118,7 @@ jobs:
           path: predastore
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           cache-dependency-path: "spinifex/go.sum"
           go-version-file: "spinifex/go.mod"
@@ -161,7 +161,7 @@ jobs:
           path: predastore
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           cache-dependency-path: "spinifex/go.sum"
           go-version-file: "spinifex/go.mod"

@@ -120,6 +120,12 @@ type Config struct {
 	// ShardWAL enables sharded WAL for mounted volumes (default false)
 	ShardWAL bool
 
+	// GCEnabled turns on viperblock chunk garbage collection for every VB this
+	// service constructs: the nbdkit plugin backing each mounted volume, and
+	// the short-lived detached VBs opened for config updates and sealing.
+	// Default false, matching ShardWAL.
+	GCEnabled bool
+
 	// EncryptionKeyFile is the path to the shared AES-256 master key for at-rest
 	// encryption. Empty → cleartext mode (legacy).
 	EncryptionKeyFile string
@@ -208,6 +214,7 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 		VolumeConfig:      viperblock.VolumeConfig{},
 		MasterKey:         cfg.masterKey,
 		EncryptionEnabled: cfg.masterKey != nil,
+		GCEnabled:         cfg.GCEnabled,
 	}
 	vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
 	if err != nil {
@@ -365,7 +372,7 @@ func launchService(cfg *Config) (err error) {
 		slog.Warn("Viperblock at-rest encryption disabled (no EncryptionKeyFile configured)")
 	}
 
-	slog.Info("Viperblock config", "shardwal", cfg.ShardWAL)
+	slog.Info("Viperblock config", "shardwal", cfg.ShardWAL, "gc_enabled", cfg.GCEnabled)
 
 	if cfg.NodeName != "" {
 		slog.Info("Waiting for EBS events", "node", cfg.NodeName)
@@ -854,6 +861,7 @@ func launchService(cfg *Config) (err error) {
 			SecretKey:         cfg.SecretKey,
 			CacheSize:         nbdCacheSize,
 			ShardWAL:          cfg.ShardWAL,
+			GCEnabled:         cfg.GCEnabled,
 			EncryptionKeyFile: cfg.EncryptionKeyFile,
 		}
 

@@ -1124,6 +1124,13 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			drive.ID = "os"
 			drive.Cache = "none"
 
+			// Report backend write errors to the guest rather than letting
+			// QEMU's default werror=enospc pause the VM: when the storage pool
+			// exhausts, the guest fs then returns a clean ENOSPC to userspace
+			// and the VM stays reachable instead of freezing.
+			drive.Werror = "report"
+			drive.Rerror = "report"
+
 			iothreadID := "ioth-os"
 			iothreads = append(iothreads, IOThread{ID: iothreadID})
 			devices = append(devices, BlkDevice(machineType, drive.ID, iothreadID, cpuCount, 1))

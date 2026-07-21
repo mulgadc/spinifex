@@ -30,6 +30,11 @@ type NBDKitConfig struct {
 	// it is forwarded to the viperblock plugin so encrypted volumes open with
 	// matching encryption state. Empty → plugin opens in cleartext mode.
 	EncryptionKeyFile string `json:"encryption_key_file"`
+
+	// GCEnabled forwards spinifex's [viperblock] gc_enabled toggle to the
+	// plugin's gc_enabled param, gating chunk garbage collection on the VB
+	// this nbdkit process constructs. Default false, matching ShardWAL.
+	GCEnabled bool `json:"gc_enabled"`
 }
 
 // buildArgs constructs the nbdkit command-line arguments from the config.
@@ -69,6 +74,7 @@ func (cfg *NBDKitConfig) buildArgs() ([]string, error) {
 		fmt.Sprintf("host=%s", cfg.Host),
 		fmt.Sprintf("cache_size=%d", cfg.CacheSize),
 		fmt.Sprintf("shardwal=%t", cfg.ShardWAL),
+		fmt.Sprintf("gc_enabled=%t", cfg.GCEnabled),
 	}
 	// Only forward the key when configured; an empty value would explicitly
 	// set the plugin to cleartext and override its ENCRYPTION_KEY_FILE fallback.

@@ -18,9 +18,9 @@ SUITE_TAG   ?= $(notdir $(patsubst %/...,%,$(firstword $(PKG))))
 # named suite into BIN_DIR/<suite>.test so CI can ship binaries (not source +
 # go toolchain) to the remote VM.
 BIN_DIR      ?= $(CURDIR)/_bin
-SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode storagegrowth
+SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode storagegrowth memdurability
 
-.PHONY: e2e e2e-cert e2e-lb e2e-eks e2e-ecs e2e-single e2e-iam e2e-ecr e2e-bedrock e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-gpu e2e-natuplink e2e-storagegrowth e2e-all clean e2e-build
+.PHONY: e2e e2e-cert e2e-lb e2e-eks e2e-ecs e2e-single e2e-iam e2e-ecr e2e-bedrock e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-gpu e2e-natuplink e2e-storagegrowth e2e-memdurability e2e-all clean e2e-build
 
 RUN_FLAG = $(if $(RUN),-run '$(RUN)',)
 
@@ -56,6 +56,12 @@ e2e-tofu:       ; $(MAKE) e2e PKG=./tofu/...
 e2e-gpu:        ; $(MAKE) e2e PKG=./gpu/...
 e2e-natuplink:  ; $(MAKE) e2e PKG=./natuplink/...
 e2e-storagegrowth: ; $(MAKE) e2e PKG=./storagegrowth/...
+# e2e-memdurability reproduces a known-open data-loss bug (memory-constrained
+# concurrent-write durability). Not part of e2e-all/the default e2e job: the
+# bug is open, so this suite is expected to fail until it is fixed, and a
+# suite expected to fail must never sit in a path that gates merges. See
+# tests/e2e/memdurability's package doc.
+e2e-memdurability: ; $(MAKE) e2e PKG=./memdurability/...
 e2e-all:        ; $(MAKE) e2e
 
 e2e-build:

@@ -35,6 +35,28 @@ const (
 // Self-bootstrapping: it creates its own role + two profiles under the
 // single-iamprofile- namespace, asserts the EC2 surface, then cleans up so
 // subsequent tests see no residue.
+//
+// Nothing here was ported down to the integration tier: its role/profile
+// create+attach setup (CreateRole, AttachRolePolicy, CreateInstanceProfile x2,
+// AddRoleToInstanceProfile) is scaffolding, not an assertion under test — the
+// same IAM CRUD, including the AdministratorAccess-doesn't-pre-seed wrinkle,
+// is already asserted by tests/integration's TestIAMRolesAndProfiles. The
+// association lifecycle itself (Associate/AlreadyAssociated/Replace/
+// Disassociate/DeleteInstanceProfile-while-bound) is implemented in
+// InstanceServiceImpl (handlers/ec2/instance/service_impl.go) against a real
+// *vm.VM's mutable IamInstanceProfileArn/AssociationId fields — daemon-side
+// state a live guest actually carries. A static stub could only stand in for
+// it by modelling the whole instance lifecycle, which is why this stays live
+// rather than moving down. The pure gateway-side half of that same code path
+// (profile resolution, PassRole enforcement, ID enrichment, NATS error
+// mapping in gateway/ec2/instance/IamInstanceProfileAssociation.go) is
+// already exhaustively unit-tested in
+// IamInstanceProfileAssociation_test.go, and RunInstances' iam:PassRole gate
+// specifically is covered by tests/integration's
+// TestRunInstances_DeniedWithoutPassRole. The `require.Equal(t, "running", …)`
+// singleton guard below is a precondition check, not a wait — nothing here
+// blocks on a state transition that a static stub couldn't already satisfy,
+// so there is no incidental wait to drop.
 func runIAMInstanceProfileAssociation(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — EC2 IAM Instance Profile Association")
 

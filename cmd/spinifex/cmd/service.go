@@ -297,6 +297,14 @@ var viperblockStartCmd = &cobra.Command{
 			shardWAL = *nodeConfig.Viperblock.ShardWAL
 		}
 
+		// Resolve chunk GC setting: default false unless explicitly set to true.
+		// GC is not a per-volume toggle — flipping it on applies to every VB this
+		// node constructs (nbdkit plugin + volume service).
+		gcEnabled := false
+		if nodeConfig.Viperblock.GCEnabled != nil {
+			gcEnabled = *nodeConfig.Viperblock.GCEnabled
+		}
+
 		encryptionKeyFile := nodeConfig.Viperblock.EncryptionKeyFile
 		if envKey := viper.GetString("viperblock-encryption-key-file"); envKey != "" {
 			encryptionKeyFile = envKey
@@ -317,6 +325,7 @@ var viperblockStartCmd = &cobra.Command{
 			BaseDir:           nodeConfig.Predastore.BaseDir,
 			NodeName:          clusterConfig.Node,
 			ShardWAL:          shardWAL,
+			GCEnabled:         gcEnabled,
 			EncryptionKeyFile: encryptionKeyFile,
 		})
 

@@ -95,21 +95,23 @@ func TestLoadBalancer(t *testing.T) {
 	// above). Single-node dev boxes (peer == "") fall through to the serial path below.
 	parallelizeLBs := peer != ""
 
+	// Internet-facing subtests are intentionally NOT run with t.Parallel(), even when the
+	// internal group below is: each one registers a public-LB DNS record and then polls for
+	// it to resolve, and two of these register+resolve windows overlapping at once corrupts
+	// the record (the second registration clobbers the first, so neither ever resolves).
+	// Running them serially here means each one's record is fully registered and resolved
+	// before the next is created, so they never share an overlapping window with each other.
+	// They may still run concurrently with the internal group, which uses internal (not
+	// public) DNS and doesn't hit this.
 	t.Run("InternetFacing_ALB", func(t *testing.T) {
 		if peer == "" {
 			t.Skip("no peer node available")
-		}
-		if parallelizeLBs {
-			t.Parallel()
 		}
 		runLBSuite(t, client, fixture, kindALB, "internet-facing", ssh, peer)
 	})
 	t.Run("InternetFacing_NLB", func(t *testing.T) {
 		if peer == "" {
 			t.Skip("no peer node available")
-		}
-		if parallelizeLBs {
-			t.Parallel()
 		}
 		runLBSuite(t, client, fixture, kindNLB, "internet-facing", ssh, peer)
 	})
@@ -119,9 +121,6 @@ func TestLoadBalancer(t *testing.T) {
 			// public IP; gate on the same peer-available signal the sibling
 			// internet-facing subtests use, where driver→LB reachability holds.
 			t.Skip("no peer node available")
-		}
-		if parallelizeLBs {
-			t.Parallel()
 		}
 		runHTTPSCertSuite(t, client, fixture)
 	})

@@ -109,7 +109,7 @@ func guestTarget(t *testing.T, fix *Fixture, instanceID, pemPath string) harness
 			harness.VPCDiagnosticsOpts{
 				ExternalIP:  host,
 				LogicalIP:   privIP,
-				ArtifactDir: fix.Artifacts,
+				ArtifactDir: fix.ArtifactDir(t),
 			})
 		t.Fatalf("guest %s SSH %s:%d never became reachable within 2min (see diagnostics above)",
 			instanceID, host, port)

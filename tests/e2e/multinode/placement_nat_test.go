@@ -777,21 +777,22 @@ func waitForNATGatewayStateBest(c *harness.AWSClient, id, target string, timeout
 }
 
 // dumpPlacementNATDiag fans out datapath probes (ARP, xfrm, OVS/OVN state) to every
-// cluster node on failure and writes results under Artifacts. Best-effort: SSH errors
-// are logged but never re-fail the test.
+// cluster node on failure and writes results under t's artifact dir. Best-effort:
+// SSH errors are logged but never re-fail the test.
 func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID string) {
 	t.Helper()
-	if fix.Artifacts == "" {
-		t.Logf("dumpPlacementNATDiag: no artifact dir; skipping")
+	if fix.Env == nil {
+		t.Logf("dumpPlacementNATDiag: no env; skipping")
 		return
 	}
 	if fix.Cluster == nil || len(fix.Cluster.Nodes) == 0 {
 		t.Logf("dumpPlacementNATDiag: no cluster nodes; skipping")
 		return
 	}
+	artifactDir := fix.ArtifactDir(t)
 
 	t.Logf("dumpPlacementNATDiag: bastion=%s eip=%s nodes=%d -> %s",
-		bastionID, bastionPubIP, len(fix.Cluster.Nodes), fix.Artifacts)
+		bastionID, bastionPubIP, len(fix.Cluster.Nodes), artifactDir)
 
 	probes := []struct {
 		name string
@@ -820,7 +821,7 @@ func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID st
 				header += fmt.Sprintf("# (ssh error: %v)\n", err)
 			}
 			name := fmt.Sprintf("diag-%s-%s.log", n.Name, p.name)
-			harness.DumpFile(t, fix.Artifacts, name, append([]byte(header), out...))
+			harness.DumpFile(t, artifactDir, name, append([]byte(header), out...))
 		}
 	}
 
@@ -842,7 +843,7 @@ func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID st
 		if err != nil {
 			header += fmt.Sprintf("(exit error: %v)\n", err)
 		}
-		harness.DumpFile(t, fix.Artifacts, p.name+".log", append([]byte(header), out...))
+		harness.DumpFile(t, artifactDir, p.name+".log", append([]byte(header), out...))
 	}
 }
 

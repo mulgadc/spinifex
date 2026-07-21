@@ -521,10 +521,39 @@ func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
 // is absent from the live-port set. The live set is keyed the same way
 // floatingIPSpecs derives PortName (topology.Port(p.PortID) for auto-assigned ports,
 // e.PortName for user EIPs), so a currently-live auto-assigned EIP is never pruned.
-// Runs only on the prune pass (drift), so an in-flight association whose port event
-// has not converged is never swept.
+//
+// PruneOrphanEIPs lists OVN NAT rows live, but the intent handed to a prune pass is
+// snapshotted at the start of the pass and the apply phase can block for tens of
+// seconds (guest-port datapath waits). A guest launched during that window has a
+// live dnat_and_snat row — created synchronously at launch — that the stale snapshot
+// does not carry, so matching live rows against the snapshot alone sweeps the fresh
+// row and blackholes the guest's public IP. Re-read intent (when a loader is wired)
+// and union its ports into the live set so a mid-pass launch counts as live; skip the
+// prune entirely if the re-read fails rather than risk a false sweep against a snapshot
+// known to be stale.
 func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState) {
 	live := make(map[string]struct{}, len(intent.Ports)+len(intent.EIPs))
+	addLivePorts(live, intent)
+	if r.reloadIntent != nil {
+		fresh, err := r.reloadIntent(ctx)
+		if err != nil {
+			slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan EIP prune", "err", err)
+			return
+		}
+		addLivePorts(live, fresh)
+	}
+	if pruned, err := r.nat.PruneOrphanEIPs(ctx, live); err != nil {
+		slog.Warn("reconcile/apply: orphan EIP prune failed", "err", err)
+	} else if pruned > 0 {
+		slog.Info("reconcile/apply: pruned orphan dnat_and_snat rows", "count", pruned)
+	}
+}
+
+// addLivePorts adds intent's owning-port names — auto-assigned/ELB ports keyed as
+// topology.Port(portID), user EIP ports by their stamped PortName — to live. Keyed
+// identically to floatingIPSpecs and the dnat_and_snat spinifex:logical_port stamp so
+// the orphan prune matches a live row to its owner.
+func addLivePorts(live map[string]struct{}, intent IntentState) {
 	for portID := range intent.Ports {
 		live[topology.Port(portID)] = struct{}{}
 	}
@@ -532,11 +561,6 @@ func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState) {
 		if e.PortName != "" {
 			live[e.PortName] = struct{}{}
 		}
-	}
-	if pruned, err := r.nat.PruneOrphanEIPs(ctx, live); err != nil {
-		slog.Warn("reconcile/apply: orphan EIP prune failed", "err", err)
-	} else if pruned > 0 {
-		slog.Info("reconcile/apply: pruned orphan dnat_and_snat rows", "count", pruned)
 	}
 }
 

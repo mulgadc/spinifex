@@ -648,6 +648,11 @@ func launchService(cfg *Config) error {
 		Chassis:      chassisNames,
 		GatewayClaim: host.NewGatewayClaimProber(cfg.OVNSBAddr),
 		DNSServer:    resolverDNSServer(cfg),
+		// Re-read intent at prune time so a guest launched during a long apply
+		// phase is not mistaken for an orphan and its dnat_and_snat swept.
+		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {
+			return reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)

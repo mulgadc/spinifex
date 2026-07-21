@@ -384,7 +384,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 	daemon := createTestDaemon(t, natsURL)
 
 	// Subscribe to DescribeInstanceTypes (no queue group for fan-out)
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", daemon.handleEC2DescribeInstanceTypes)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", handleNATSRequest(daemon.instanceService.DescribeInstanceTypes))
 	require.NoError(t, err, "Failed to subscribe to ec2.DescribeInstanceTypes")
 	defer sub.Unsubscribe()
 

@@ -77,11 +77,12 @@ jobs:
     # The integration front gate must be green: a red integration run stops
     # here, before this job provisions a tofu env or pays the Spinifex install.
     #
-    # The remainder of this condition is pre-existing: skip when the dispatch
-    # input requests no in-VM suites (e.g. suites='e2e-multinode' only). Push
-    # triggers and the default SUITES list both include single/cert/lb so the
-    # inputs.suites null-check keeps the job running on plain PR pushes.
-    if: needs.integration.result == 'success' && (github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-iam'))
+    # The dispatch check gates on exactly the suites this job's Run step
+    # allow-lists (single|iam|cert|eks|ecs|storagegrowth). Gating on a suite the
+    # job won't run — lb, which only executes in the multinode job — would
+    # provision a tofu VM and pay the Spinifex install only to run nothing and
+    # tear down. Push triggers keep running via the null-check on inputs.suites.
+    if: needs.integration.result == 'success' && (github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth'))
     runs-on: [self-hosted, ci-single]
     timeout-minutes: 50
     env:
@@ -497,9 +498,11 @@ jobs:
     needs: [integration]
     # Gated on the integration front gate for the same reason as e2e_single:
     # the 3-node env is never stood up if the control plane is already broken.
-    # The dispatch check keeps the multinode env unprovisioned unless the run
-    # actually asked for it.
-    if: needs.integration.result == 'success' && (github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode'))
+    # The dispatch check gates on exactly the suites this job's Run step
+    # allow-lists (multinode|lb|cert) so lb — which only runs here — still
+    # provisions the 3-node env when requested on its own, and the env stays
+    # unprovisioned when none of them are asked for.
+    if: needs.integration.result == 'success' && (github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-cert'))
     runs-on: [self-hosted, ci-multi]
     timeout-minutes: 60
     env:

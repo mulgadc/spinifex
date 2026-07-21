@@ -725,7 +725,7 @@ func createHTTPSListener(t *testing.T, c *harness.AWSClient, lbArn string, port 
 // shared VPC default SG) require an explicit dedicated SG here.
 func createScenarioSG(t *testing.T, c *harness.AWSClient, f *sharedFixture, name string, ports ...int64) string {
 	t.Helper()
-	out, err := c.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+	out, err := c.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{ // e2e:allow-create — a dedicated per-scenario LB SG is the isolation under test; a shared Ensure* fixture would defeat it.
 		VpcId:       aws.String(f.VPCID),
 		GroupName:   aws.String(name),
 		Description: aws.String("lb-e2e dedicated LB-facing security group"),

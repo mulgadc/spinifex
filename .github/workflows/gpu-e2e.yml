@@ -131,7 +131,7 @@ jobs:
       - uses: actions/checkout@v7
         if: steps.gate.outputs.paused != 'true'
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         if: steps.gate.outputs.paused != 'true'
         with:
           go-version-file: go.mod

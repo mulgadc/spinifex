@@ -50,9 +50,19 @@ const (
 	kindNLB lbKind = "NLB"
 )
 
-// TestLoadBalancer runs 4 LB variants (ALB/NLB × internet-facing/internal) as sequential
-// subtests, each with its own LB + listener + TG. Sequential scheduling keeps peak instance
-// count low (≤4) so the suite passes on capacity-constrained dev nodes.
+// TestLoadBalancer runs 8 LB scenarios (ALB/NLB × internet-facing/internal, plus
+// HTTPS/UDP/ModifyListener/ListenerRules variants) against a shared VPC and app-instance
+// fixture. Each scenario stands up its own dedicated LB (+ target group) — never shared
+// across scenarios, since ModifyListener and ListenerRules mutate their LB's listener/rules
+// in place and must not race a sibling reading the same LB.
+//
+// On multinode clusters (peer != "", i.e. the cluster has the node2 the internet-facing
+// scenarios drive traffic from — this suite's multinode target is a 3-node cluster) there is
+// enough spare capacity to stand up every scenario's dedicated LB at once, so subtests run
+// concurrently via t.Parallel() instead of serially tearing one LB down before the next is
+// created. Single-node dev boxes lack that headroom and keep the original serial
+// create -> verify -> teardown path, where createActiveLB's retry/backoff absorbs the wait
+// for the previous LB's sys.micro slot to be reclaimed.
 func TestLoadBalancer(t *testing.T) {
 	env := harness.LoadEnv(t)
 	skipIfDevNetworking(t, env)
@@ -80,15 +90,26 @@ func TestLoadBalancer(t *testing.T) {
 	client := harness.NewAWSClient(t, env)
 	fixture := setupSharedFixture(t, client, artifacts)
 
+	// A live peer implies the 3-node multinode cluster this restructure targets, which has
+	// the spare capacity to stand up every scenario's LB concurrently (see doc comment
+	// above). Single-node dev boxes (peer == "") fall through to the serial path below.
+	parallelizeLBs := peer != ""
+
 	t.Run("InternetFacing_ALB", func(t *testing.T) {
 		if peer == "" {
 			t.Skip("no peer node available")
+		}
+		if parallelizeLBs {
+			t.Parallel()
 		}
 		runLBSuite(t, client, fixture, kindALB, "internet-facing", ssh, peer)
 	})
 	t.Run("InternetFacing_NLB", func(t *testing.T) {
 		if peer == "" {
 			t.Skip("no peer node available")
+		}
+		if parallelizeLBs {
+			t.Parallel()
 		}
 		runLBSuite(t, client, fixture, kindNLB, "internet-facing", ssh, peer)
 	})
@@ -99,10 +120,46 @@ func TestLoadBalancer(t *testing.T) {
 			// internet-facing subtests use, where driver→LB reachability holds.
 			t.Skip("no peer node available")
 		}
+		if parallelizeLBs {
+			t.Parallel()
+		}
 		runHTTPSCertSuite(t, client, fixture)
 	})
-	// Gate remaining internal subtests on Internal_ALB: if the LB never reaches active,
-	// the rest will time out identically — fail fast instead of burning ~5min each.
+
+	if parallelizeLBs {
+		// Multinode: each internal subtest stands up its own independent LB and all five
+		// start together, so there is no serial queue for one stuck LB to back up behind.
+		// A single LB never reaching active only fails that one subtest — it can no longer
+		// cascade into 5x sequential 5-minute timeouts, so the serial path's fail-fast gate
+		// (below) is unnecessary here: concurrency itself bounds the worst-case wall time to
+		// one timeout window instead of five.
+		t.Run("Internal_ALB", func(t *testing.T) {
+			t.Parallel()
+			runLBSuite(t, client, fixture, kindALB, "internal", nil, "")
+		})
+		t.Run("Internal_NLB", func(t *testing.T) {
+			t.Parallel()
+			runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
+		})
+		t.Run("Internal_NLB_UDP", func(t *testing.T) {
+			t.Parallel()
+			runUDPNLBSuite(t, client, fixture)
+		})
+		t.Run("Internal_ALB_ModifyListener", func(t *testing.T) {
+			t.Parallel()
+			runModifyListenerSuite(t, client, fixture)
+		})
+		t.Run("Internal_ALB_ListenerRules", func(t *testing.T) {
+			t.Parallel()
+			runListenerRulesSuite(t, client, fixture)
+		})
+		return
+	}
+
+	// Single-node: gate remaining internal subtests on Internal_ALB — if the LB never
+	// reaches active, the rest will time out identically, so fail fast instead of burning
+	// ~5min each. No fixed inter-subtest sleeps: createActiveLB retries with backoff when
+	// the previous LB's sys.micro slot is still being reclaimed.
 	albOK := t.Run("Internal_ALB", func(t *testing.T) {
 		runLBSuite(t, client, fixture, kindALB, "internal", nil, "")
 	})
@@ -111,8 +168,6 @@ func TestLoadBalancer(t *testing.T) {
 			t.Skip("Internal_ALB failed (LB never reached active) — skipping remaining internal subtests to fail fast")
 		}
 	}
-	// No fixed inter-subtest sleeps: createActiveLB retries with backoff when
-	// the previous LB's sys.micro slot is still being reclaimed.
 	t.Run("Internal_NLB", func(t *testing.T) {
 		skipIfInternalBroken(t)
 		runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
@@ -847,14 +902,18 @@ func createLB(t *testing.T, c *harness.AWSClient, f *sharedFixture, name, lbType
 	return info
 }
 
-// lbCreateAttempts bounds retries when an LB lands in terminal state failed
-// because the previous suite's sys.micro VM has not been deallocated yet.
+// lbCreateAttempts bounds retries when an LB lands in terminal state failed.
+// On single-node dev boxes (serial subtests, one LB torn down before the next
+// is created) this is usually the previous suite's sys.micro VM still being
+// deallocated. On multinode clusters (subtests run concurrently, each owning
+// an independent LB — see TestLoadBalancer) there is no such reclaim wait, so
+// a terminal failure here reflects a genuine transient issue; the same retry
+// serves as a defensive fallback either way.
 const lbCreateAttempts = 3
 
 // createActiveLB creates an LB (plus a listener when proto is non-empty) and
-// waits for state=active. Terminal state failed on capacity-tight single nodes
-// means the previous LB's sys.micro slot is still being reclaimed — tear down
-// and retry with backoff instead of failing the suite outright. Cleanups for
+// waits for state=active. A terminal state failed is retried with backoff
+// (see lbCreateAttempts) rather than failing the suite outright. Cleanups for
 // the surviving LB/listener are registered on success.
 func createActiveLB(t *testing.T, c *harness.AWSClient, f *sharedFixture, name, lbType, scheme, proto string, port int64, tgArn, label string) (lbInfo, string) {
 	t.Helper()
@@ -862,7 +921,7 @@ func createActiveLB(t *testing.T, c *harness.AWSClient, f *sharedFixture, name, 
 	for attempt := 1; attempt <= lbCreateAttempts; attempt++ {
 		if attempt > 1 {
 			wait := time.Duration(attempt-1) * 15 * time.Second
-			t.Logf("%s: waiting %s for sys.micro capacity reclaim before retry", label, wait)
+			t.Logf("%s: waiting %s before retry (serial-mode capacity reclaim, or a transient failure)", label, wait)
 			time.Sleep(wait)
 		}
 		lb := createLB(t, c, f, name, lbType, scheme)

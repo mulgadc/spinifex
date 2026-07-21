@@ -5,6 +5,7 @@ After=spinifex-nats.service spinifex-predastore.service
 Wants=spinifex-predastore.service
 
 [Service]
+EnvironmentFile=-/etc/spinifex/telemetry.env
 Type=simple
 Slice=spinifex-system.slice
 User=spinifex-northstar

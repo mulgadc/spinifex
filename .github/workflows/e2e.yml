@@ -935,3 +935,136 @@ jobs:
             -f context=e2e \
             -f description="$DESC" \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  # Emits one summary doc per run to the central Elastic sink, keyed by
+  # labels.ci_run_id, so Kibana can list "did run X pass, and where are its
+  # artifacts" without hand-aggregating traces-apm*/logs-apm.error*. This is
+  # a separate self-hosted job (not a step on e2e_status) because e2e_status
+  # runs on GitHub-hosted ubuntu-26.04, which has no route to the private
+  # 192.168.1.13 sink, and moving e2e_status off GH-hosted would risk the PR
+  # status-report check.
+  e2e_es_summary:
+    name: ES CI Run Summary
+    needs: [e2e_single, e2e_multi]
+    if: always()
+    runs-on: [self-hosted, ci-single]
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    env:
+      # Repo var overrides; defaults to the LAN Elastic sink reachable from
+      # ci-single/ci-multi runners. Anonymous ES requests are superuser on
+      # this host, so no credentials are needed for the POST.
+      MULGA_ES_SINK: ${{ vars.MULGA_ES_SINK || '192.168.1.13:9200' }}
+    steps:
+      # Either leg may not have run (e.g. a workflow_dispatch that only
+      # requested single-node suites), so a missing artifact is tolerated —
+      # the aggregation script below treats an absent suite-status.txt as
+      # "no failures from that leg".
+      - name: Download single-node artifacts
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: e2e-artifacts-${{ github.run_id }}
+          path: ${{ github.workspace }}/es-summary-single
+
+      - name: Download multi-node artifacts
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: e2e-multi-artifacts-${{ github.run_id }}
+          path: ${{ github.workspace }}/es-summary-multi
+
+      - name: Build and post CI run summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW: ${{ github.workflow }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          SHA: ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
+          SINGLE_RESULT: ${{ needs.e2e_single.result }}
+          MULTI_RESULT: ${{ needs.e2e_multi.result }}
+          SINGLE_DIR: ${{ github.workspace }}/es-summary-single
+          MULTI_DIR: ${{ github.workspace }}/es-summary-multi
+        run: |
+          set -euo pipefail
+
+          SINGLE_STATUS="${SINGLE_DIR}/suite-status.txt"
+          MULTI_STATUS="${MULTI_DIR}/suite-status.txt"
+
+          # Collect "<suite>: FAILED" lines from both legs' suite-status.txt
+          # (either may be absent — a leg that didn't run, or a passing leg
+          # that never wrote the file). Accumulate as newline-separated text
+          # rather than a bash array so this stays correct under `set -u`
+          # even when nothing failed.
+          FAILED_SUITES=""
+          for f in "$SINGLE_STATUS" "$MULTI_STATUS"; do
+            [ -f "$f" ] || continue
+            while IFS= read -r line; do
+              case "$line" in
+                *": FAILED") FAILED_SUITES="${FAILED_SUITES}${line%: FAILED}"$'\n' ;;
+              esac
+            done < "$f"
+          done
+
+          FAILED_JSON=$(printf '%s' "$FAILED_SUITES" | jq -R -s 'split("\n") | map(select(length > 0))')
+          FAILED_COUNT=$(printf '%s' "$FAILED_JSON" | jq 'length')
+
+          # Mirror e2e_status's single_ok/multi_ok logic exactly so the PR
+          # status and this ES doc can never disagree on overall pass/fail.
+          single_ok=true
+          case "$SINGLE_RESULT" in success | skipped) ;; *) single_ok=false ;; esac
+          multi_ok=true
+          case "$MULTI_RESULT" in success | skipped) ;; *) multi_ok=false ;; esac
+
+          STATE=success
+          if [ "$single_ok" != true ] || [ "$multi_ok" != true ] || [ "$FAILED_COUNT" -gt 0 ]; then
+            STATE=failure
+          fi
+
+          RUN_STARTED_AT=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" --jq .run_started_at)
+          START_EPOCH=$(date -u -d "${RUN_STARTED_AT}" +%s)
+          NOW_EPOCH=$(date -u +%s)
+          DURATION=$((NOW_EPOCH - START_EPOCH))
+
+          DOC=$(jq -n \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg run_id "${RUN_ID}" \
+            --arg workflow "${WORKFLOW}" \
+            --arg branch "${BRANCH}" \
+            --arg sha "${SHA}" \
+            --arg run_attempt "${RUN_ATTEMPT}" \
+            --arg state "${STATE}" \
+            --arg single_result "${SINGLE_RESULT}" \
+            --arg multi_result "${MULTI_RESULT}" \
+            --argjson duration "${DURATION}" \
+            --arg artifact_url "${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}" \
+            --argjson failed_suites "${FAILED_JSON}" \
+            '{
+              "@timestamp": $ts,
+              labels: { ci_run_id: $run_id },
+              ci: { workflow: $workflow, branch: $branch, sha: $sha, run_attempt: $run_attempt },
+              state: $state,
+              single_result: $single_result,
+              multi_result: $multi_result,
+              failed_suites: $failed_suites,
+              duration_seconds: $duration,
+              artifact_url: $artifact_url
+            }')
+
+          echo "$DOC" | jq .
+
+          HTTP_CODE=$(curl -sS -o /tmp/es-summary-resp.json -w '%{http_code}' \
+            -X POST "http://${MULGA_ES_SINK}/mulga-ci-runs/_doc" \
+            -H 'Content-Type: application/json' \
+            -d "${DOC}")
+
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "::error::ES POST to ${MULGA_ES_SINK}/mulga-ci-runs failed (HTTP ${HTTP_CODE})"
+            cat /tmp/es-summary-resp.json
+            exit 1
+          fi
+          echo "CI run summary doc posted to ${MULGA_ES_SINK}/mulga-ci-runs (HTTP ${HTTP_CODE})"

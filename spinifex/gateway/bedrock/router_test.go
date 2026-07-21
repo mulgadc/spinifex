@@ -92,6 +92,54 @@ func TestConverse_PackageEntryPoint_UnknownModel(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 }
 
+func converseStreamInput() *bedrockruntime.ConverseStreamInput {
+	return &bedrockruntime.ConverseStreamInput{
+		Messages: []*bedrockruntime.Message{
+			{Role: aws.String(bedrockruntime.ConversationRoleUser), Content: []*bedrockruntime.ContentBlock{{Text: aws.String("hello")}}},
+		},
+	}
+}
+
+func TestRouter_ConverseStream_SelfHostSuccess(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(vllmStreamFixture))
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-70b-instruct-v1:0"
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+
+	src, err := rt.ConverseStream(context.Background(), "000000000001", modelID, converseStreamInput())
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	events := drainConverseStream(t, src)
+	assert.Equal(t, converseStreamEventMessageStart, events[0].Kind)
+}
+
+func TestRouter_ConverseStream_UnknownModelReturnsResourceNotFound(t *testing.T) {
+	rt := NewRouter(nil, nil)
+	_, err := rt.ConverseStream(context.Background(), "000000000001", "does.not-exist-v1:0", converseStreamInput())
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+}
+
+func TestRouter_ConverseStream_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
+	rt := NewRouter(stubCredentialResolver{ok: false}, nil)
+	_, err := rt.ConverseStream(context.Background(), "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0", converseStreamInput())
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDeniedException, err.Error())
+}
+
+func TestRouter_ConverseStream_SelfHostNoEndpointReturnsModelNotReady(t *testing.T) {
+	rt := NewRouter(nil, nil)
+	_, err := rt.ConverseStream(context.Background(), "000000000001", "meta.llama3-70b-instruct-v1:0", converseStreamInput())
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
 func TestNewRouter_NilArgumentsFallBackToNoops(t *testing.T) {
 	rt := NewRouter(nil, nil)
 	require.NotNil(t, rt)

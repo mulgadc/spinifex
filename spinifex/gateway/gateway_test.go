@@ -459,7 +459,8 @@ func TestGetService(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ctxVal    any // value to set in ctxService, nil means no value
+		ctxVal    any    // value to set in ctxService, nil means no value
+		path      string // request path, empty means "/"
 		wantSvc   string
 		wantError string
 	}{
@@ -493,11 +494,43 @@ func TestGetService(t *testing.T) {
 			ctxVal:  "tagging",
 			wantSvc: "tagging",
 		},
+		{
+			// bedrock and bedrock-runtime share the SigV4 signing name
+			// "bedrock"; a /model/ path is data-plane-exclusive, so it must
+			// resolve to bedrock-runtime even though the scope reads "bedrock".
+			name:    "bedrock scope on data-plane path resolves to bedrock-runtime",
+			ctxVal:  "bedrock",
+			path:    "/model/meta.llama3-70b-instruct-v1:0/converse",
+			wantSvc: "bedrock-runtime",
+		},
+		{
+			name:    "bedrock scope on streaming data-plane path resolves to bedrock-runtime",
+			ctxVal:  "bedrock",
+			path:    "/model/meta.llama3-70b-instruct-v1:0/converse-stream",
+			wantSvc: "bedrock-runtime",
+		},
+		{
+			name:    "bedrock scope on control-plane path stays bedrock",
+			ctxVal:  "bedrock",
+			path:    "/foundation-models",
+			wantSvc: "bedrock",
+		},
+		{
+			// A native bedrock-runtime scope is left untouched by the path check.
+			name:    "bedrock-runtime scope on data-plane path stays bedrock-runtime",
+			ctxVal:  "bedrock-runtime",
+			path:    "/model/meta.llama3-70b-instruct-v1:0/invoke",
+			wantSvc: "bedrock-runtime",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			path := tc.path
+			if path == "" {
+				path = "/"
+			}
+			req := httptest.NewRequest(http.MethodPost, path, nil)
 			if tc.ctxVal != nil {
 				ctx := context.WithValue(req.Context(), ctxService, tc.ctxVal)
 				req = req.WithContext(ctx)

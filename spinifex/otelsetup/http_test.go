@@ -23,6 +23,33 @@ func withRecorder(t *testing.T) *tracetest.SpanRecorder {
 	return sr
 }
 
+// flusherSpy records whether Flush was called, satisfying http.Flusher so a
+// statusRecorder wrapping it can prove the flush chain reaches it.
+type flusherSpy struct {
+	http.ResponseWriter
+
+	flushed bool
+}
+
+func (f *flusherSpy) Flush() { f.flushed = true }
+
+// TestStatusRecorderFlushReachesUnderlyingFlusher guards the §0 fix: before
+// Unwrap()/Flush() were added, http.NewResponseController(rec).Flush() would
+// fail with ErrNotSupported (or, via a Flusher-only outer wrapper such as
+// chi's WrapResponseWriter, silently no-op) because statusRecorder itself was
+// not a Flusher and exposed no way to reach the one it wraps.
+func TestStatusRecorderFlushReachesUnderlyingFlusher(t *testing.T) {
+	spy := &flusherSpy{ResponseWriter: httptest.NewRecorder()}
+	rec := &statusRecorder{ResponseWriter: spy, status: http.StatusOK}
+
+	if err := http.NewResponseController(rec).Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if !spy.flushed {
+		t.Error("flush did not reach the underlying Flusher spy")
+	}
+}
+
 func TestHTTPMiddlewareSpanPerRequest(t *testing.T) {
 	sr := withRecorder(t)
 

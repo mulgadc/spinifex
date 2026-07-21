@@ -233,6 +233,40 @@ func TestCreateVolume_PassesValidation(t *testing.T) {
 	}
 }
 
+// TestCreateVolume_BuildVBConfig_GCEnabled asserts that CreateVolume's
+// viperblock config carries GCEnabled through from spinifex.toml's
+// [viperblock] gc_enabled key (config.Config.Viperblock.GCEnabled). This is
+// the config-level seam: GCEnabled isn't part of viperblock.VBState, so it
+// never persists to config.json and can't be observed by reading a created
+// volume back — the only place it's checkable is the config CreateVolume
+// hands to viperblock.New, before construction ever reaches the backend.
+// A regression that unwires GC in buildVBConfig, or a future refactor of
+// CreateVolume that stops routing through buildVBConfig, fails this test.
+func TestCreateVolume_BuildVBConfig_GCEnabled(t *testing.T) {
+	tests := []struct {
+		name      string
+		gcEnabled *bool
+		want      bool
+	}{
+		{name: "NilDefaultsToDisabled", gcEnabled: nil, want: false},
+		{name: "ExplicitFalse", gcEnabled: aws.Bool(false), want: false},
+		{name: "ExplicitTrue", gcEnabled: aws.Bool(true), want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestVolumeService("ap-southeast-2a")
+			svc.config.Viperblock.GCEnabled = tt.gcEnabled
+
+			vbconfig := svc.buildVBConfig("vol-gc-test", 10*1024*1024*1024,
+				viperblock.VolumeConfig{}, nil, "", "")
+
+			assert.Equal(t, tt.want, vbconfig.GCEnabled,
+				"buildVBConfig GCEnabled must follow config.Viperblock.GCEnabled")
+		})
+	}
+}
+
 func TestDeleteVolume_Validation(t *testing.T) {
 	tests := []struct {
 		name    string

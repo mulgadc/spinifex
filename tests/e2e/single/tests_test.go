@@ -106,6 +106,14 @@ func TestAttachToStoppedError(t *testing.T) {
 	runAttachToStoppedError(t, requireSingleNodeFixture(t))
 }
 
+// TestSpotInstanceLifecycle drives the two spot terminal transitions that need
+// a real backing VM: cancel-keeps-running and terminate-drives-the-real-close
+// chain. Sequential: it consumes node capacity for its own short-lived VMs
+// like the other singleton-lifecycle tests.
+func TestSpotInstanceLifecycle(t *testing.T) {
+	runSpotInstanceLifecycle(t, requireSingleNodeFixture(t))
+}
+
 // --- Sequential: shared-state / sub-test-parallel Tests ---
 
 func TestNegativeErrorPaths(t *testing.T) {

@@ -11,7 +11,7 @@ import "testing"
 // Parallel bucket (t.Parallel): read-only or own-everything tests that never
 // mutate the singleton instance, default VPC, or default SG.
 // Sequential: tests that boot, mutate, or snapshot the singleton VM; IAM tests
-// that share package-scoped IAM state; TestFinalClusterStats (last gate).
+// that share package-scoped IAM state.
 
 // --- Bucket #1: parallel-safe ---
 
@@ -25,53 +25,9 @@ func TestDiscovery(t *testing.T) {
 	runDiscovery(t, requireSingleNodeFixture(t))
 }
 
-func TestSerialConsoleAccess(t *testing.T) {
-	t.Parallel()
-	runSerialConsoleAccess(t, requireSingleNodeFixture(t))
-}
-
-func TestKeyPairs(t *testing.T) {
-	t.Parallel()
-	runKeyPairs(t, requireSingleNodeFixture(t))
-}
-
-func TestImage(t *testing.T) {
-	t.Parallel()
-	runImage(t, requireSingleNodeFixture(t))
-}
-
-func TestTagManagement(t *testing.T) {
-	t.Parallel()
-	runTagManagement(t, requireSingleNodeFixture(t))
-}
-
 func TestAccountScoping(t *testing.T) {
 	t.Parallel()
 	runAccountScoping(t, requireSingleNodeFixture(t))
-}
-
-// TestPredastoreObjectLifecycle owns a dedicated bucket and never touches the
-// singleton VM or default VPC/SG, so it is parallel-safe.
-func TestPredastoreObjectLifecycle(t *testing.T) {
-	t.Parallel()
-	runPredastoreObjectLifecycle(t, requireSingleNodeFixture(t))
-}
-
-func TestVPCSubnetE2E(t *testing.T) {
-	t.Parallel()
-	runVPCSubnetE2E(t, requireSingleNodeFixture(t))
-}
-
-func TestRouteTableValidation(t *testing.T) {
-	t.Parallel()
-	runRouteTableValidation(t, requireSingleNodeFixture(t))
-}
-
-// TestReplaceRouteConvergence owns its own scratch VPCs/IGWs end to end and
-// never touches the singleton or default VPC, so it is parallel-safe.
-func TestReplaceRouteConvergence(t *testing.T) {
-	t.Parallel()
-	runReplaceRouteConvergence(t, requireSingleNodeFixture(t))
 }
 
 // --- Sequential: singleton VM lifecycle ---
@@ -82,26 +38,22 @@ func TestClusterStatsCLI(t *testing.T) {
 	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
 
-// TestDefaultSGReachabilityBaseline, TestNewVPCEgressBaseline, and TestSameSGComms
-// own all mutable resources and run before the singleton launch.
-func TestDefaultSGReachabilityBaseline(t *testing.T) {
-	runDefaultSGReachabilityBaseline(t, requireSingleNodeFixture(t))
+// TestSGReachabilityPolicy and TestVPCEgressPaths own all mutable resources
+// and run before the singleton launch.
+//
+// TestSGReachabilityPolicy merges the former TestDefaultSGReachabilityBaseline,
+// TestGuestDNSResolution, and TestSecurityGroupEgress around one shared guest
+// (see runSGReachabilityPolicy for the stage breakdown and gating rationale).
+func TestSGReachabilityPolicy(t *testing.T) {
+	runSGReachabilityPolicy(t, requireSingleNodeFixture(t))
 }
 
-func TestNewVPCEgressBaseline(t *testing.T) {
-	runNewVPCEgressBaseline(t, requireSingleNodeFixture(t))
-}
-
-func TestSameSGComms(t *testing.T) {
-	runSameSGComms(t, requireSingleNodeFixture(t))
-}
-
-func TestGuestDNSResolution(t *testing.T) {
-	runGuestDNSResolution(t, requireSingleNodeFixture(t))
-}
-
-func TestInstanceLaunch(t *testing.T) {
-	runInstanceLaunch(t, requireSingleNodeFixture(t))
+// TestVPCEgressPaths merges the former TestVPCSubnetE2E,
+// TestNewVPCEgressBaseline, TestNATGateway, and TestInstanceEIP around one
+// scenario-owned VPC and its two guests (see runVPCEgressPaths for the stage
+// breakdown and gating rationale).
+func TestVPCEgressPaths(t *testing.T) {
+	runVPCEgressPaths(t, requireSingleNodeFixture(t))
 }
 
 func TestInstanceClusterStats(t *testing.T) {
@@ -112,27 +64,8 @@ func TestInstanceMetadata(t *testing.T) {
 	runInstanceMetadata(t, requireSingleNodeFixture(t))
 }
 
-func TestSSHProbe(t *testing.T) {
-	runSSHProbe(t, requireSingleNodeFixture(t))
-}
-
 func TestConsoleOutput(t *testing.T) {
 	runConsoleOutput(t, requireSingleNodeFixture(t))
-}
-
-// TestENIHotplug hot-plugs a secondary ENI onto the freshly-booted singleton
-// and asserts the NIC reaches the guest, then restores it. Placed before the
-// stop/start churn so the singleton is known running + SSH-healthy.
-func TestENIHotplug(t *testing.T) {
-	runENIHotplug(t, requireSingleNodeFixture(t))
-}
-
-// TestENIHotplugReconcile attaches a secondary ENI, restarts spinifex-daemon,
-// and asserts the hot-plug reconciler keeps the ENI attached + manageable
-// (detach succeeds) across the restart. Runs after TestENIHotplug so the
-// singleton is known running + SSH-healthy.
-func TestENIHotplugReconcile(t *testing.T) {
-	runENIHotplugReconcile(t, requireSingleNodeFixture(t))
 }
 
 func TestVolumeLifecycle(t *testing.T) {
@@ -143,9 +76,14 @@ func TestVolumeStatus(t *testing.T) {
 	runVolumeStatus(t, requireSingleNodeFixture(t))
 }
 
-// TestVolumeDurability stops/starts the singleton; sequential, leaves it running.
-func TestVolumeDurability(t *testing.T) {
-	runVolumeDurability(t, requireSingleNodeFixture(t))
+// TestGuestChurnDurability merges the former TestSSHProbe, TestENIHotplug,
+// TestENIHotplugReconcile, TestVolumeDurability, TestModifyInstanceAttribute,
+// and TestRebootInstance around one shared guest and one shared
+// data-integrity sentinel (see runGuestChurnDurability for the stage
+// breakdown and gating rationale). Sequential: it stops/starts and reboots
+// the singleton, leaving it running.
+func TestGuestChurnDurability(t *testing.T) {
+	runGuestChurnDurability(t, requireSingleNodeFixture(t))
 }
 
 func TestSnapshotLifecycle(t *testing.T) {
@@ -160,10 +98,6 @@ func TestCreateImage(t *testing.T) {
 	runCreateImage(t, requireSingleNodeFixture(t))
 }
 
-func TestSecurityGroupEgress(t *testing.T) {
-	runSecurityGroupEgress(t, requireSingleNodeFixture(t))
-}
-
 func TestStopStart(t *testing.T) {
 	runStopStart(t, requireSingleNodeFixture(t))
 }
@@ -172,27 +106,10 @@ func TestAttachToStoppedError(t *testing.T) {
 	runAttachToStoppedError(t, requireSingleNodeFixture(t))
 }
 
-func TestModifyInstanceAttribute(t *testing.T) {
-	runModifyInstanceAttribute(t, requireSingleNodeFixture(t))
-}
-
-func TestRebootInstance(t *testing.T) {
-	runRebootInstance(t, requireSingleNodeFixture(t))
-}
-
-func TestRunInstancesMultiCount(t *testing.T) {
-	runRunInstancesMultiCount(t, requireSingleNodeFixture(t))
-}
-
-// TestLaunchTemplates launches a throwaway VM to verify the referenced
-// template's effective image and instance type, so it runs sequentially.
-func TestLaunchTemplates(t *testing.T) {
-	runLaunchTemplates(t, requireSingleNodeFixture(t))
-}
-
-// TestSpotInstanceLifecycle drives the Spot Instance Request mock: request ->
-// fulfilled -> running -> cancel/terminate terminal transitions. Sequential: it
-// consumes node capacity for its own short-lived VMs like the multi-count test.
+// TestSpotInstanceLifecycle drives the two spot terminal transitions that need
+// a real backing VM: cancel-keeps-running and terminate-drives-the-real-close
+// chain. Sequential: it consumes node capacity for its own short-lived VMs
+// like the other singleton-lifecycle tests.
 func TestSpotInstanceLifecycle(t *testing.T) {
 	runSpotInstanceLifecycle(t, requireSingleNodeFixture(t))
 }
@@ -203,22 +120,9 @@ func TestNegativeErrorPaths(t *testing.T) {
 	runNegativeErrorPaths(t, requireSingleNodeFixture(t))
 }
 
-func TestNATGateway(t *testing.T) {
-	runNATGateway(t, requireSingleNodeFixture(t))
-}
-
-// TestInstanceEIP allocates an Elastic IP, associates it to a throwaway VM,
-// and asserts the EIP datapath flips on/off with the association. Sequential:
-// it authorizes ingress on the shared default SG.
-func TestInstanceEIP(t *testing.T) {
-	runInstanceEIP(t, requireSingleNodeFixture(t))
-}
-
-func TestSGToSGDatapath(t *testing.T) {
-	runSGToSGDatapath(t, requireSingleNodeFixture(t))
-}
-
-// TestFinalClusterStats runs as the last sequential test.
-func TestFinalClusterStats(t *testing.T) {
-	runFinalClusterStats(t, requireSingleNodeFixture(t))
+// TestSGPolicyDatapath merges the former TestSameSGComms and
+// TestSGToSGDatapath around one shared client/target pair (see
+// runSGPolicyDatapath for the stage breakdown and gating rationale).
+func TestSGPolicyDatapath(t *testing.T) {
+	runSGPolicyDatapath(t, requireSingleNodeFixture(t))
 }

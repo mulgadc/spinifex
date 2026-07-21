@@ -15,16 +15,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// Fresh-install reachability baselines. Tests #1 and #2 pin two independent
-// barriers a user hits on a fresh cluster:
-//
-//  1. SG barrier: default-SG only admits same-SG members; routes are fine.
-//  2. Route/egress gap: 0.0.0.0/0 added to the main RT before the subnet
-//     exists; CreateSubnet doesn't recompute the per-subnet OVN egress LRP.
+// Shared reachability-probe helpers used by the merged single-node
+// scenarios: tcpReachable/pingConverged/sshCapture for raw datapath probes,
+// launchBaselineInstance/instancePublicIP/instancePrivateIP for launching and
+// describing a scenario-owned guest, and mainRouteTableID for resolving a
+// VPC's implicitly-associated route table.
 
 // tcpReachable reports whether a TCP connect to host:port succeeds within
 // timeout. An OVN ACL drop yields a dial timeout (no RST); a reject yields
@@ -133,49 +131,6 @@ func instancePublicIP(t *testing.T, fix *Fixture, instanceID string) string {
 	return ip
 }
 
-// runDefaultSGReachabilityBaseline launches an instance into the default
-// subnet behind a dedicated default-deny SG, asserts it is unreachable from
-// the runner, then opens tcp/22 and asserts it becomes reachable. Confirms
-// the SG — not routing — gates a fresh default-config instance.
-func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — Baseline: default-SG blocks external reach until authorized")
-
-	vpcID, _, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
-	ami := needAMI(t, fix)
-
-	// No ingress rules; egress is allow-all by default so only inbound is gated.
-	sgID := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-denysg")
-	harness.Detail(t, "vpc", vpcID, "subnet", subnetID, "sg", sgID)
-
-	instanceID := launchBaselineInstance(t, fix, ami, instType, keyName, subnetID, []string{sgID})
-
-	pubIP := instancePublicIP(t, fix, instanceID)
-	harness.Detail(t, "instance", instanceID, "public_ip", pubIP)
-
-	// Probe a short window to confirm the default-deny ACL is applied and stable.
-	// This overlaps guest boot, and the positive phase below still pays the full
-	// boot wait via trySSHReady, so a longer window buys little extra coverage.
-	harness.Step(t, "asserting tcp/22 stays blocked under default-deny SG")
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		require.Falsef(t, tcpReachable(pubIP, 22, 3*time.Second),
-			"tcp/22 to %s connected with NO ingress rule — default SG must deny external traffic", pubIP)
-		time.Sleep(3 * time.Second)
-	}
-
-	harness.Step(t, "authorizing tcp/22 ingress, expecting reachability")
-	harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-	require.Truef(t, trySSHReady(pubIP, 22, keyPath, sshReadyBudget),
-		"tcp/22 to %s never became reachable after authorizing ingress — "+
-			"default subnet egress/IGW datapath is broken", pubIP)
-
-	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
-	idOut := runSSH(t, tgt, "id")
-	assert.Containsf(t, idOut, "ubuntu", "ssh id after authorize\n%s", idOut)
-}
-
 // mainRouteTableID returns the main (implicitly-associated) route table for
 // vpcID — the one a subnet joins when it has no explicit RT association.
 func mainRouteTableID(t *testing.T, c *harness.AWSClient, vpcID string) string {
@@ -193,147 +148,7 @@ func mainRouteTableID(t *testing.T, c *harness.AWSClient, vpcID string) string {
 	return id
 }
 
-// runNewVPCEgressBaseline reproduces the IGW egress gap when a 0.0.0.0/0 route
-// is added to the main RT before the subnet is created. The subnet implicitly
-// joins the RT but CreateSubnet doesn't install the per-subnet OVN egress LRP,
-// leaving the instance with no datapath to the IGW. Pool-mode gated.
-func runNewVPCEgressBaseline(t *testing.T, fix *Fixture) {
-	if !fix.PoolMode {
-		t.Skip("fresh-VPC egress baseline requires pool-mode networking")
-	}
-	harness.Phase(t, "Single — Baseline: fresh VPC main-RT IGW egress (route before subnet)")
-
-	c := fix.AWS
-	az := needAZ(t, fix)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
-	ami := needAMI(t, fix)
-
-	const vpcCIDR = "10.231.0.0/16"
-	const subnetCIDR = "10.231.1.0/24"
-
-	// --- VPC ---
-	vpcOut, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(vpcCIDR)})
-	require.NoError(t, err, "create-vpc")
-	require.NotNil(t, vpcOut.Vpc, "create-vpc returned nil Vpc")
-	vpcID := aws.StringValue(vpcOut.Vpc.VpcId)
-	require.NotEmpty(t, vpcID, "VpcId empty")
-	t.Cleanup(func() { _, _ = c.EC2.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}) })
-
-	// --- IGW + attach ---
-	igwOut, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
-	require.NoError(t, err, "create-internet-gateway")
-	require.NotNil(t, igwOut.InternetGateway, "create-internet-gateway returned nil InternetGateway")
-	igwID := aws.StringValue(igwOut.InternetGateway.InternetGatewayId)
-	require.NotEmpty(t, igwID, "InternetGatewayId empty")
-	t.Cleanup(func() {
-		_, _ = c.EC2.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
-			InternetGatewayId: aws.String(igwID), VpcId: aws.String(vpcID),
-		})
-		_, _ = c.EC2.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
-			InternetGatewayId: aws.String(igwID),
-		})
-	})
-	_, err = c.EC2.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
-		InternetGatewayId: aws.String(igwID), VpcId: aws.String(vpcID),
-	})
-	require.NoError(t, err, "attach-internet-gateway")
-
-	mainRT := mainRouteTableID(t, c, vpcID)
-	harness.Detail(t, "vpc", vpcID, "igw", igwID, "main_rtb", mainRT)
-
-	// --- Route FIRST, on the main RT, before the subnet exists ---
-	harness.Step(t, "create-route 0.0.0.0/0 -> %s on main RT %s (before subnet)", igwID, mainRT)
-	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
-		RouteTableId:         aws.String(mainRT),
-		DestinationCidrBlock: aws.String("0.0.0.0/0"),
-		GatewayId:            aws.String(igwID),
-	})
-	require.NoError(t, err, "create-route 0.0.0.0/0 -> IGW on main RT")
-	t.Cleanup(func() {
-		_, _ = c.EC2.DeleteRoute(&ec2.DeleteRouteInput{
-			RouteTableId:         aws.String(mainRT),
-			DestinationCidrBlock: aws.String("0.0.0.0/0"),
-		})
-	})
-
-	// --- Subnet AFTER the route (implicit main-RT membership) ---
-	harness.Step(t, "create-subnet %s (implicit main RT, after IGW route)", subnetCIDR)
-	subOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{
-		VpcId:            aws.String(vpcID),
-		CidrBlock:        aws.String(subnetCIDR),
-		AvailabilityZone: aws.String(az),
-	})
-	require.NoError(t, err, "create-subnet")
-	require.NotNil(t, subOut.Subnet, "create-subnet returned nil Subnet")
-	subnetID := aws.StringValue(subOut.Subnet.SubnetId)
-	require.NotEmpty(t, subnetID, "SubnetId empty")
-	t.Cleanup(func() { _, _ = c.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}) })
-
-	_, err = c.EC2.ModifySubnetAttribute(&ec2.ModifySubnetAttributeInput{
-		SubnetId:            aws.String(subnetID),
-		MapPublicIpOnLaunch: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
-	})
-	require.NoError(t, err, "modify-subnet-attribute MapPublicIpOnLaunch on %s", subnetID)
-
-	// --- Open SG so routing is provably the only barrier ---
-	sgID := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-newvpc-opensg")
-	harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-	harness.Detail(t, "subnet", subnetID, "cidr", subnetCIDR, "sg", sgID)
-
-	instanceID := launchBaselineInstance(t, fix, ami, instType, keyName, subnetID, []string{sgID})
-	pubIP := instancePublicIP(t, fix, instanceID)
-	harness.Detail(t, "instance", instanceID, "public_ip", pubIP)
-
-	harness.Step(t, "expecting external SSH to instance in fresh-VPC public subnet")
-	if !trySSHReady(pubIP, 22, keyPath, sshReadyBudget) {
-		harness.DumpVPCFlowDiagnostics(t, c, instanceID,
-			fmt.Sprintf("fresh-VPC egress baseline SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP),
-			harness.VPCDiagnosticsOpts{
-				ExternalIP:  pubIP,
-				LogicalIP:   instancePrivateIP(t, fix, instanceID),
-				ArtifactDir: fix.ArtifactDir(t),
-			})
-		t.Fatalf("tcp/22 to %s in fresh-VPC subnet %s never became reachable — the "+
-			"per-subnet IGW egress policy was not installed for a subnet created "+
-			"after the main-RT IGW route existed", pubIP, subnetID)
-	}
-
-	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
-	idOut := runSSH(t, tgt, "id")
-	assert.Containsf(t, idOut, "ubuntu", "ssh id in fresh-VPC subnet\n%s", idOut)
-}
-
-// runSameSGComms verifies that two instances in the default SG can ICMP-ping
-// each other (permitted by the default SG's self-reference rule) while a
-// separate runner SG handles tcp/22 from outside. No default resource mutated.
-func runSameSGComms(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — Baseline: same default-SG instances communicate")
-
-	vpcID, defSGID, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
-	ami := needAMI(t, fix)
-
-	runnerSG := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-runnersg")
-	harness.AuthorizeSSHIngress(t, fix.AWS, runnerSG)
-	harness.Detail(t, "vpc", vpcID, "default_sg", defSGID, "runner_sg", runnerSG)
-
-	srcID := launchBaselineInstance(t, fix, ami, instType, keyName, subnetID, []string{defSGID, runnerSG})
-	dstID := launchBaselineInstance(t, fix, ami, instType, keyName, subnetID, []string{defSGID, runnerSG})
-
-	dstPriv := instancePrivateIP(t, fix, dstID)
-
-	srcInst := harness.WaitForInstanceState(t, fix.AWS, srcID, "running")
-	host, port := harness.InstancePublicSSHHost(t, srcInst)
-	harness.Detail(t, "src", srcID, "dst", dstID, "dst_private_ip", dstPriv, "ssh_host", host)
-	waitForSSHHandshake(t, host, port, keyPath)
-
-	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
-	harness.Step(t, "ping %s (%s) from %s via default-SG self-ingress", dstID, dstPriv, srcID)
-	out, converged := pingConverged(tgt, dstPriv, 45*time.Second)
-	require.Truef(t, converged,
-		"intra-default-SG east-west %s -> %s never reached 0%% loss within 45s; "+
-			"ARP/L2 datapath unreachable across the default-SG self-ingress\n%s",
-		srcID, dstID, out)
-}
+// The route-before-subnet ordering regression guard that used to live here
+// (runNewVPCEgressBaseline) now runs as the RouteBeforeSubnet stage of
+// runVPCEgressPaths (vpcegress_test.go), which is the sole remaining caller
+// of mainRouteTableID above.

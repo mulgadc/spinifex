@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"net"
 	"net/netip"
@@ -602,6 +603,83 @@ func TestReconcile_PruneOrphanEIPs_SweepsAbsentOwners(t *testing.T) {
 	}
 	if findNATByExternal(m, "dnat_and_snat", "192.168.1.11") != nil {
 		t.Errorf("orphan EIP row must be pruned")
+	}
+}
+
+// A guest launched during a long apply phase has a live dnat_and_snat row that the
+// start-of-pass snapshot does not carry. When a fresh-intent loader is wired, the
+// prune must union its ports and spare that row, while still sweeping a genuine orphan.
+func TestReconcile_PruneOrphanEIPs_SparesMidPassLaunch(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: topology.VPCRouter("vpc-a")}); err != nil {
+		t.Fatalf("CreateLogicalRouter live: %v", err)
+	}
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: topology.VPCRouter("vpc-dead")}); err != nil {
+		t.Fatalf("CreateLogicalRouter dead: %v", err)
+	}
+	// Row for a guest launched after the snapshot: absent from the passed intent,
+	// present only in the fresh re-read.
+	if err := m.AddNAT(ctx, topology.VPCRouter("vpc-a"), &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.1.20", LogicalIP: "10.0.1.20",
+		ExternalIDs: map[string]string{"spinifex:logical_port": topology.Port("eni-fresh")},
+	}); err != nil {
+		t.Fatalf("AddNAT fresh: %v", err)
+	}
+	// Genuine orphan: absent from both the snapshot and the fresh re-read.
+	if err := m.AddNAT(ctx, topology.VPCRouter("vpc-dead"), &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.1.11", LogicalIP: "172.31.0.4",
+		ExternalIDs: map[string]string{"spinifex:logical_port": topology.Port("eni-dead")},
+	}); err != nil {
+		t.Fatalf("AddNAT orphan: %v", err)
+	}
+
+	// The passed intent (start-of-pass snapshot) predates the launch: eni-a only.
+	snapshot := freshIntent(t)
+	// The fresh re-read sees the mid-pass launch.
+	r.reloadIntent = func(context.Context) (IntentState, error) {
+		fresh := freshIntent(t)
+		fresh.Ports["eni-fresh"] = topology.PortSpec{
+			PortID: "eni-fresh", SubnetID: "subnet-a", VPCID: "vpc-a",
+			PrivateIP: netip.MustParseAddr("10.0.1.20"),
+		}
+		return fresh, nil
+	}
+
+	r.pruneOrphanEIPs(ctx, snapshot)
+
+	if findNATByExternal(m, "dnat_and_snat", "192.168.1.20") == nil {
+		t.Errorf("mid-pass launch row must survive the prune via the fresh re-read")
+	}
+	if findNATByExternal(m, "dnat_and_snat", "192.168.1.11") != nil {
+		t.Errorf("genuine orphan row must still be pruned")
+	}
+}
+
+// When the fresh-intent re-read fails, the prune is skipped wholesale rather than
+// risk sweeping a live row against a snapshot known to be stale.
+func TestReconcile_PruneOrphanEIPs_SkipsOnReloadError(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: topology.VPCRouter("vpc-dead")}); err != nil {
+		t.Fatalf("CreateLogicalRouter dead: %v", err)
+	}
+	if err := m.AddNAT(ctx, topology.VPCRouter("vpc-dead"), &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.1.11", LogicalIP: "172.31.0.4",
+		ExternalIDs: map[string]string{"spinifex:logical_port": topology.Port("eni-dead")},
+	}); err != nil {
+		t.Fatalf("AddNAT orphan: %v", err)
+	}
+
+	r.reloadIntent = func(context.Context) (IntentState, error) {
+		return IntentState{}, errors.New("kv unavailable")
+	}
+	r.pruneOrphanEIPs(ctx, freshIntent(t))
+
+	if findNATByExternal(m, "dnat_and_snat", "192.168.1.11") == nil {
+		t.Errorf("prune must be skipped when the fresh re-read fails")
 	}
 }
 

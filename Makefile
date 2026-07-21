@@ -123,7 +123,7 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 # Preflight — runs the same checks as GitHub Actions (lint + vuln + tests).
 # Use this before committing to catch CI failures locally.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness test-integration
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
@@ -132,6 +132,18 @@ preflight:
 test-harness:
 	@echo -e "\n....Running e2e harness unit tests...."
 	$(_Q)LOG_IGNORE=1 go test -tags=e2e -timeout 60s ./tests/e2e/harness/... $(_RACEQ)
+
+# In-process integration tier: the real gateway router against embedded NATS
+# JetStream, with only the daemon-side NATS subjects stubbed. Build-tagged
+# `integration` so it's skipped by the default `go test ./spinifex/...` and by
+# `test-cover`/`test-race`. Nothing provisioned — no tofu, no docker, no
+# Spinifex daemons, so the whole package runs in well under a minute — part
+# of `preflight` (and its own PR-blocking CI step) rather than the
+# self-hosted, push-triggered live e2e tiers, so a regression here is caught
+# before it can be merged, not just after.
+test-integration:
+	@echo -e "\n....Running in-process integration tests...."
+	$(_Q)LOG_IGNORE=1 go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
 
 # Validate docs/service-interfaces.yaml. Schema check + cross-reference
 # of services/suites/fixtures + on-disk path existence. Subject content
@@ -297,7 +309,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check manifest-lint manifest-lint-update \
+.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness test-integration manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

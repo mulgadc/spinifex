@@ -35,14 +35,17 @@ func needAMI(t *testing.T, fix *Fixture, arch string) string {
 	return harness.DiscoverUbuntuAMI(t, fix.Harness, arch)
 }
 
-// needKeyPair ensures a test-scoped EC2 key pair and returns its name and PEM path.
-// Memoized on the harness fixture so all tests share one key.
+// needKeyPair ensures a package-scoped EC2 key pair and returns its name and
+// PEM path. Memoized on the harness fixture so all tests share one key. The
+// pem is written under fix.TmpDir — not a per-test artifact dir — since it
+// must stay on disk for every Test* in the package, and a per-test dir gets
+// pruned by t.Cleanup as soon as whichever test first calls this one passes.
 func needKeyPair(t *testing.T, fix *Fixture) (name, pemPath string) {
 	t.Helper()
-	return harness.EnsureKeyPair(t, fix.Harness, fix.Artifacts)
+	return harness.EnsureKeyPair(t, fix.Harness, fix.TmpDir)
 }
 
-// Package-scoped trio. runInstanceDistribution launches; downstream tests reuse the same IDs.
+// Package-scoped trio. Whichever Test* runs first triggers the launch; every other caller of needInstanceTrio reuses the same IDs.
 var (
 	trioOnce sync.Once
 	trioIDs  []string

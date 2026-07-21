@@ -91,20 +91,31 @@ type Config struct {
 	// "{a, b}"). Empty falls back to the topology default to keep both code
 	// paths in sync.
 	DNSServer string
+	// FreshIntent re-reads intent from the control-plane store on demand.
+	// pruneOrphanEIPs uses it to refresh its live-port view at prune time: a
+	// prune pass lists OVN NAT rows live but is otherwise driven by the intent
+	// snapshot captured at the start of the pass, and the apply phase can block
+	// for tens of seconds, so a guest launched mid-pass has a live dnat_and_snat
+	// row that the stale snapshot does not know about. Matching that live row
+	// against the snapshot alone sweeps it and blackholes the guest's public IP.
+	// Optional: nil leaves the start-of-pass snapshot as the sole liveness source
+	// (unit tests, or callers with no store).
+	FreshIntent func(ctx context.Context) (IntentState, error)
 }
 
 type reconciler struct {
-	ovn       ovn.Client
-	sg        policy.SecurityGroupManager
-	nat       policy.NATManager
-	routes    policy.RouteManager
-	igw       external.IGWManager
-	topology  topology.Manager
-	localAZ   string
-	host      string
-	chassis   []string
-	gwClaim   GatewayClaimVerifier
-	dnsServer string
+	ovn          ovn.Client
+	sg           policy.SecurityGroupManager
+	nat          policy.NATManager
+	routes       policy.RouteManager
+	igw          external.IGWManager
+	topology     topology.Manager
+	localAZ      string
+	host         string
+	chassis      []string
+	gwClaim      GatewayClaimVerifier
+	dnsServer    string
+	reloadIntent func(ctx context.Context) (IntentState, error)
 }
 
 var _ Reconciler = (*reconciler)(nil)
@@ -133,17 +144,18 @@ func New(cfg Config) (Reconciler, error) {
 		dnsServer = topology.FormatDNSServerList(nil)
 	}
 	return &reconciler{
-		ovn:       cfg.OVN,
-		sg:        cfg.SG,
-		nat:       cfg.NAT,
-		routes:    cfg.Routes,
-		igw:       cfg.IGW,
-		topology:  cfg.Topology,
-		localAZ:   cfg.LocalAZ,
-		host:      cfg.NodeHostname,
-		chassis:   cfg.Chassis,
-		gwClaim:   cfg.GatewayClaim,
-		dnsServer: dnsServer,
+		ovn:          cfg.OVN,
+		sg:           cfg.SG,
+		nat:          cfg.NAT,
+		routes:       cfg.Routes,
+		igw:          cfg.IGW,
+		topology:     cfg.Topology,
+		localAZ:      cfg.LocalAZ,
+		host:         cfg.NodeHostname,
+		chassis:      cfg.Chassis,
+		gwClaim:      cfg.GatewayClaim,
+		dnsServer:    dnsServer,
+		reloadIntent: cfg.FreshIntent,
 	}, nil
 }
 

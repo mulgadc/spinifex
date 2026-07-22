@@ -48,28 +48,10 @@ on:
     branches:
       - main
       - dev
-    paths: &gpu_paths
-      - "spinifex/gpu/**"
-      - "spinifex/instancetypes/**"
-      - "spinifex/daemon/gpu_adapter.go"
-      - "spinifex/daemon/gpu_pool_reconciler.go"
-      - "spinifex/handlers/ecs/gpu_report.go"
-      - "spinifex/handlers/eks/nodegroup.go"
-      - "spinifex/handlers/eks/nodegroup_userdata.go"
-      - "spinifex/vm/vm.go"
-      - "spinifex/vm/lifecycle.go"
-      - "cmd/ecs-agent/gpu_discovery.go"
-      - "cmd/ecs-agent/gpu_ledger.go"
-      - "cmd/spinifex/cmd/admin_gpu.go"
-      - "tests/e2e/gpu/**"
-      - "scripts/images/eks-node-gpu/**"
-      - "scripts/images/ecs-agent-gpu/**"
-      - ".github/workflows/gpu-e2e.yml"
   pull_request:
     branches:
       - main
       - dev
-    paths: *gpu_paths
 
 permissions:
   contents: read

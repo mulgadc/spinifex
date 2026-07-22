@@ -57,6 +57,29 @@ type DaemonLite struct {
 	MemStore *objectstore.MemoryObjectStore
 }
 
+// daemonLiteOpts records which of StartDaemonLite's defaults a caller has
+// turned off.
+type daemonLiteOpts struct {
+	// stubVPCD installs the canned vpc.create-sg/vpc.delete-sg acks. On by
+	// default; StartVPCDLite is the only reason to turn it off.
+	stubVPCD bool
+}
+
+// DaemonLiteOption customises what StartDaemonLite wires.
+type DaemonLiteOption func(*daemonLiteOpts)
+
+// WithRealVPCD suppresses the canned vpc.create-sg/vpc.delete-sg acks so a
+// real subscriber wired by StartVPCDLite answers them instead. Without it the
+// stub and the subscriber both reply to the same request and whichever lands
+// first wins, so a test would be racing its own fake.
+//
+// StartVPCDLite must run BEFORE the StartDaemonLite it is paired with:
+// StartDaemonLite calls EnsureDefaultVPC, which requests vpc.create-sg
+// synchronously and would time out with nothing subscribed.
+func WithRealVPCD() DaemonLiteOption {
+	return func(o *daemonLiteOpts) { o.stubVPCD = false }
+}
+
 // StartDaemonLite constructs the in-scope service impls against gw.NATSConn
 // (memory-backed for key/tags, embedded-JetStream-backed for VPC/route
 // table/IGW — the same wiring pattern as
@@ -69,8 +92,13 @@ type DaemonLite struct {
 // StubSubject and StartDaemonLite must never cover the same subject in one
 // test, since NATS would deliver the request to both plain subscribers and
 // whichever responds first wins the race.
-func StartDaemonLite(t *testing.T, gw *Gateway) *DaemonLite {
+func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *DaemonLite {
 	t.Helper()
+
+	o := daemonLiteOpts{stubVPCD: true}
+	for _, apply := range opts {
+		apply(&o)
+	}
 
 	nc := gw.NATSConn
 	memStore := objectstore.NewMemoryObjectStore()
@@ -122,8 +150,13 @@ func StartDaemonLite(t *testing.T, gw *Gateway) *DaemonLite {
 	// stubbing the vpcd ack never substitutes for in-scope logic under test —
 	// it only unblocks the synchronous call so CreateVpc/DeleteVpc can
 	// complete instead of failing with ServerInternal on every VPC creation.
-	gw.StubSubject(t, "vpc.create-sg", []byte(`{"success":true}`))
-	gw.StubSubject(t, "vpc.delete-sg", []byte(`{"success":true}`))
+	//
+	// WithRealVPCD skips both, for the tests that wire a genuine subscriber
+	// over a real OVN NB DB (StartVPCDLite) and assert on the rows it writes.
+	if o.stubVPCD {
+		gw.StubSubject(t, "vpc.create-sg", []byte(`{"success":true}`))
+		gw.StubSubject(t, "vpc.delete-sg", []byte(`{"success":true}`))
+	}
 
 	// A live daemon creates the account's default VPC by reacting to the
 	// "iam.account.created" event SeedBootstrap publishes at gateway startup

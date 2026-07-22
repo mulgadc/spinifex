@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -155,10 +156,17 @@ func (a *accountAuthenticator) accountFor(name string) (*server.Account, error) 
 // path with "/", and some test names contain spaces).
 var accountNameReplacer = strings.NewReplacer("/", "_", " ", "_")
 
-// accountNameFor derives a unique NATS account name for t. Go guarantees
-// t.Name() is unique among tests running in the same binary (subtests that
-// share a literal name get a "#NN" suffix), so it doubles as the account
-// key without needing a separate counter.
+// accountSeq disambiguates repeat runs of one test. t.Name() is unique among
+// tests in a binary but NOT across passes: -count=N replays identical names
+// inside the same TestMain, so a name-only account key hands the second pass
+// the first pass's JetStream namespace. That namespace still holds an ECR
+// signing key sealed with the first pass's master key, which StartGateway
+// regenerates per call — so the reused key failed to decrypt and took down
+// every gateway-starting test on the second pass.
+var accountSeq atomic.Uint64
+
+// accountNameFor derives a fresh NATS account name for t, so each gateway gets
+// an empty JetStream namespace no matter how often the test is replayed.
 func accountNameFor(t *testing.T) string {
-	return accountNameReplacer.Replace(t.Name())
+	return fmt.Sprintf("%s_%d", accountNameReplacer.Replace(t.Name()), accountSeq.Add(1))
 }

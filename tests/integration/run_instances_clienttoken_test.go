@@ -14,6 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// clientTokenRun numbers each invocation of the test below so its ClientToken
+// values are fresh on every pass; see the test's doc comment.
+var clientTokenRun atomic.Int64
+
 // TestRunInstances_ClientTokenIdempotency proves ClientToken dedup
 // (gateway/ec2/instance/RunInstances.go's ClientTokenStore wrapping) runs for
 // real through the full gateway: a replayed token must not reach the daemon a
@@ -22,12 +26,16 @@ import (
 // getClientTokenStore (clienttoken.go) binds its JetStream KV bucket via a
 // process-wide sync.Once, so the very first test in this package's binary
 // that supplies a ClientToken permanently decides which test's NATS account
-// backs the store for the rest of the run. That is harmless here because
-// every key is namespaced by accountID+token and this test uses ClientToken
-// values that appear nowhere else in the suite, so no other test's launch can
-// collide with this one's regardless of run order (including -shuffle).
+// backs the store for the rest of the run. No other test can collide with
+// this one — every key is namespaced by accountID+token, and these token
+// values appear nowhere else in the suite — but THIS test collides with
+// itself under -count=N: the store outlives each pass, so a fixed token would
+// make the second pass's opening launch look like a replay of the first
+// pass's. Hence the per-invocation suffix.
 func TestRunInstances_ClientTokenIdempotency(t *testing.T) {
 	gw := StartGateway(t)
+
+	run := clientTokenRun.Add(1)
 
 	const (
 		instanceType = "t3.micro"
@@ -69,7 +77,7 @@ func TestRunInstances_ClientTokenIdempotency(t *testing.T) {
 		}
 	}
 
-	const tokenA = "integration-test-clienttoken-a"
+	tokenA := fmt.Sprintf("integration-test-clienttoken-a-%d", run)
 	res1, err := gw.EC2Client(t).RunInstances(baseInput(tokenA))
 	require.NoError(t, err, "first launch with token A")
 	require.Len(t, res1.Instances, 1)
@@ -87,7 +95,7 @@ func TestRunInstances_ClientTokenIdempotency(t *testing.T) {
 	require.Equal(t, firstInstanceID, aws.StringValue(res2.Instances[0].InstanceId), "replay must return the original instance")
 
 	// A different token for the same account must launch again, independently.
-	const tokenB = "integration-test-clienttoken-b"
+	tokenB := fmt.Sprintf("integration-test-clienttoken-b-%d", run)
 	res3, err := gw.EC2Client(t).RunInstances(baseInput(tokenB))
 	require.NoError(t, err, "launch with token B")
 	require.Equal(t, int64(2), dispatchCount.Load(), "a different token must dispatch a fresh launch")

@@ -64,6 +64,13 @@ jobs:
       matrix: ${{ steps.suites.outputs.matrix }}
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
+      # This job (not single_suite) is where "Bootstrap via Binary Install"
+      # bakes SPINIFEX_OTEL_ATTRS into the VM's telemetry.env, before the
+      # suite matrix even exists — single_suite's legs share this one
+      # already-booted VM, so daemon telemetry can't be scoped any finer
+      # than "single env" per suite leg. ci.cell=single distinguishes it
+      # from multi_provision's VMs within the same run id.
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=single
     steps:
       - name: Reap Orphan Procs
         run: |
@@ -499,6 +506,9 @@ jobs:
       nodes_csv: ${{ steps.cluster.outputs.nodes_csv }}
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
+      # See single_provision above — daemon telemetry is baked in here, at
+      # provision time, before the multi_suite matrix exists.
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=multi
     steps:
       - name: Reap Orphan Procs
         run: |

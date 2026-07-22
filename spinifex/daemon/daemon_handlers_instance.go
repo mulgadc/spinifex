@@ -478,16 +478,6 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 	slog.Info("handleEC2DescribeInstances completed", "count", len(reservations))
 }
 
-// handleEC2DescribeInstanceTypes responds with instance types provisionable on this node.
-func (d *Daemon) handleEC2DescribeInstanceTypes(msg *nats.Msg) {
-	handleNATSRequest(msg, d.instanceService.DescribeInstanceTypes)
-}
-
-// handleEC2DescribeInstanceStatus responds with status entries for VMs on this node visible to the caller.
-func (d *Daemon) handleEC2DescribeInstanceStatus(msg *nats.Msg) {
-	handleNATSRequest(msg, d.instanceService.DescribeInstanceStatus)
-}
-
 // handleEC2StartStoppedInstance handles the generic ec2.start queue-group topic.
 // It reads the stopped instance's LastNode from shared KV and forwards the
 // request to ec2.start.{lastNode} to keep instances on their original node.
@@ -504,7 +494,7 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 	if err := json.Unmarshal(msg.Data, &peek); err != nil || peek.InstanceID == "" {
 		// Can't determine target node — fall through to local start which will
 		// return the appropriate error (missing parameter / unmarshal failure).
-		handleNATSRequest(msg, d.instanceService.StartStoppedInstance)
+		handleNATSRequest(d.instanceService.StartStoppedInstance)(msg)
 		return
 	}
 
@@ -550,19 +540,7 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 		}
 	}
 
-	handleNATSRequest(msg, d.instanceService.StartStoppedInstance)
-}
-
-// handleEC2StartStoppedInstanceDirect handles ec2.start.{nodeId} — the
-// node-targeted topic used by handleEC2StartStoppedInstance to forward start
-// requests back to the original node. Always starts locally; never forwards
-// further, preventing routing loops.
-func (d *Daemon) handleEC2StartStoppedInstanceDirect(msg *nats.Msg) {
-	handleNATSRequest(msg, d.instanceService.StartStoppedInstance)
-}
-
-func (d *Daemon) handleEC2TerminateStoppedInstance(msg *nats.Msg) {
-	handleNATSRequest(msg, d.instanceService.TerminateStoppedInstance)
+	handleNATSRequest(d.instanceService.StartStoppedInstance)(msg)
 }
 
 // handleEC2DescribeStoppedInstances returns stopped instances from shared KV.
@@ -683,17 +661,4 @@ func (d *Daemon) describeInstancesFromKV(msg *nats.Msg, listFn func() ([]*vm.VM,
 
 	respondWithJSON(msg, &ec2.DescribeInstancesOutput{Reservations: reservations})
 	slog.Info(handlerName+" completed", "count", len(reservations))
-}
-
-func (d *Daemon) handleEC2ModifyInstanceAttribute(msg *nats.Msg) {
-	handleNATSRequest(msg, d.instanceService.ModifyInstanceAttribute)
-}
-
-func (d *Daemon) handleEC2ModifyInstanceMetadataOptions(msg *nats.Msg) {
-	handleNATSRequest(msg, d.instanceService.ModifyInstanceMetadataOptions)
-}
-
-// handleEC2DescribeInstanceAttribute returns a single requested attribute for an instance.
-func (d *Daemon) handleEC2DescribeInstanceAttribute(msg *nats.Msg) {
-	handleNATSRequest(msg, d.instanceService.DescribeInstanceAttribute)
 }

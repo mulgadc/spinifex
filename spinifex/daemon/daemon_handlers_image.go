@@ -14,34 +14,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func (d *Daemon) handleEC2DescribeImages(msg *nats.Msg) {
-	handleNATSRequest(msg, d.imageService.DescribeImages)
-}
-
-func (d *Daemon) handleEC2DeregisterImage(msg *nats.Msg) {
-	handleNATSRequest(msg, d.imageService.DeregisterImage)
-}
-
-func (d *Daemon) handleEC2RegisterImage(msg *nats.Msg) {
-	handleNATSRequest(msg, d.imageService.RegisterImage)
-}
-
-func (d *Daemon) handleEC2CopyImage(msg *nats.Msg) {
-	handleNATSRequest(msg, d.imageService.CopyImage)
-}
-
-func (d *Daemon) handleEC2DescribeImageAttribute(msg *nats.Msg) {
-	handleNATSRequest(msg, d.imageService.DescribeImageAttribute)
-}
-
-func (d *Daemon) handleEC2ModifyImageAttribute(msg *nats.Msg) {
-	handleNATSRequest(msg, d.imageService.ModifyImageAttribute)
-}
-
-func (d *Daemon) handleEC2ResetImageAttribute(msg *nats.Msg) {
-	handleNATSRequest(msg, d.imageService.ResetImageAttribute)
-}
-
 func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) {
 	promoteImage := func(_ context.Context, input *admin.PromoteImageOpts, _ string) (*admin.PromoteImageResult, error) {
 		store := objectstore.NewS3ObjectStoreFromConfig(
@@ -52,7 +24,7 @@ func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) {
 		)
 		return admin.PromoteSystemImage(store, d.config.Predastore.Bucket, *input)
 	}
-	handleNATSRequest(msg, promoteImage)
+	handleNATSRequest(promoteImage)(msg)
 }
 
 // handleEC2CreateImage is a stateful handler that extracts instance context

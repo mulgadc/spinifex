@@ -160,22 +160,6 @@ func attachDetachErrorCode(err error) string {
 	}
 }
 
-func (d *Daemon) handleEC2CreateVolume(msg *nats.Msg) {
-	handleNATSRequest(msg, d.volumeService.CreateVolume)
-}
-
-func (d *Daemon) handleEC2DescribeVolumes(msg *nats.Msg) {
-	handleNATSRequest(msg, d.volumeService.DescribeVolumes)
-}
-
-func (d *Daemon) handleEC2DescribeVolumeStatus(msg *nats.Msg) {
-	handleNATSRequest(msg, d.volumeService.DescribeVolumeStatus)
-}
-
-func (d *Daemon) handleEC2DescribeVolumesModifications(msg *nats.Msg) {
-	handleNATSRequest(msg, d.volumeService.DescribeVolumesModifications)
-}
-
 // handleEC2ModifyVolume processes incoming EC2 ModifyVolume requests.
 func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
 	ctx, span := utils.StartConsumerSpan(msg)
@@ -226,8 +210,4 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
 	}
 
 	slog.InfoContext(ctx, "handleEC2ModifyVolume completed", "volumeId", modifyVolumeInput.VolumeId)
-}
-
-func (d *Daemon) handleEC2DeleteVolume(msg *nats.Msg) {
-	handleNATSRequest(msg, d.volumeService.DeleteVolume)
 }

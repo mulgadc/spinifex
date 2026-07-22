@@ -21,8 +21,8 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.72
 	github.com/mulgadc/northstar v1.13.0
-	github.com/mulgadc/predastore v1.13.0
-	github.com/mulgadc/viperblock v1.13.0
+	github.com/mulgadc/predastore v1.13.1-0.20260722023246-c0a90d23b3a0
+	github.com/mulgadc/viperblock v1.13.1-0.20260722023228-f8cfd7740bf4
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/runtime-spec v1.3.0

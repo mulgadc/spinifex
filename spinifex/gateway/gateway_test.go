@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -417,7 +418,7 @@ func TestParseAWSQueryArgs(t *testing.T) {
 		{
 			name:     "empty string",
 			query:    "",
-			expected: map[string]string{"": ""},
+			expected: map[string]string{},
 		},
 		{
 			name:  "multiple parameters",
@@ -445,6 +446,51 @@ func TestParseAWSQueryArgs(t *testing.T) {
 				"Tag.Name": "my tag",
 			},
 		},
+		{
+			name:  "plus decodes to space",
+			query: "Name=my+volume&Description=a+b+c",
+			expected: map[string]string{
+				"Name":        "my volume",
+				"Description": "a b c",
+			},
+		},
+		{
+			name:  "duplicate key takes the last value",
+			query: "Action=DescribeInstances&Action=RunInstances",
+			expected: map[string]string{
+				"Action": "RunInstances",
+			},
+		},
+		{
+			name:  "empty value",
+			query: "Action=DescribeVolumes&NextToken=",
+			expected: map[string]string{
+				"Action":    "DescribeVolumes",
+				"NextToken": "",
+			},
+		},
+		{
+			name:  "empty segments are skipped",
+			query: "Action=DescribeInstances&&Version=2016-11-15&",
+			expected: map[string]string{
+				"Action":  "DescribeInstances",
+				"Version": "2016-11-15",
+			},
+		},
+		{
+			name:  "encoded reserved characters in a value",
+			query: "Filter.1.Value.1=a%3Bb%26c%3Dd",
+			expected: map[string]string{
+				"Filter.1.Value.1": "a;b&c=d",
+			},
+		},
+		{
+			name:  "base64 user data round-trips",
+			query: "UserData=IyEvYmluL2Jhc2gKZWNobyAiaGVsbG8i%0A",
+			expected: map[string]string{
+				"UserData": "IyEvYmluL2Jhc2gKZWNobyAiaGVsbG8i\n",
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -466,13 +512,46 @@ func TestParseAWSQueryArgs_MalformedURLEncoding(t *testing.T) {
 		{"bad value encoding", "Action=DescribeInstances&Name=%ZZ"},
 		{"bad key encoding", "Bad%ZZKey=value"},
 		{"bad lone key encoding", "Lone%ZZ"},
+		{"truncated escape", "Action=DescribeInstances&Name=%A"},
+		// url.ParseQuery rejects a raw ";" as an ambiguous separator. Every AWS
+		// SDK and the CLI send it as %3B, so only a non-conforming client sees this.
+		{"raw semicolon separator", "Action=DescribeInstances;Version=2016-11-15"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseAWSQueryArgs(tc.query)
+			args, err := ParseAWSQueryArgs(tc.query)
 			require.Error(t, err)
+			// Callers must not act on a partially decoded request.
+			assert.Nil(t, args)
 		})
 	}
+}
+
+// Every AWS SDK and the CLI build the query body the way url.Values.Encode does,
+// so whatever they can put in a parameter must survive the parser byte for byte.
+func TestParseAWSQueryArgs_SDKEncodedRoundTrip(t *testing.T) {
+	params := map[string]string{
+		"Action":                          "RunInstances",
+		"Version":                         "2016-11-15",
+		"ImageId":                         "ami-0abc123",
+		"BlockDeviceMapping.1.DeviceName": "/dev/sda1",
+		"TagSpecification.1.Tag.1.Key":    "Name",
+		"TagSpecification.1.Tag.1.Value":  "prod; web+api = 100%",
+		"Filter.1.Name":                   "tag:Environment",
+		"Filter.1.Value.1":                "staging & dev",
+		"UserData":                        "#!/bin/bash\necho \"hello world\"\n",
+		"PolicyDocument":                  `{"Version":"2012-10-17","Statement":[{"Effect":"Allow"}]}`,
+		"Description":                     "unicode: 日本語 — emoji 🚀",
+	}
+
+	form := url.Values{}
+	for k, v := range params {
+		form.Set(k, v)
+	}
+
+	parsed, err := ParseAWSQueryArgs(form.Encode())
+	require.NoError(t, err)
+	assert.Equal(t, params, parsed)
 }
 
 func TestGetService(t *testing.T) {

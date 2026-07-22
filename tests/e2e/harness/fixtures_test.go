@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	"github.com/aws/aws-sdk-go/service/elbv2/elbv2iface"
@@ -60,6 +61,12 @@ func (f *fakeEC2) DetachVolume(*ec2.DetachVolumeInput) (*ec2.VolumeAttachment, e
 	defer f.volMu.Unlock()
 	f.volState = ec2.VolumeStateAvailable
 	return &ec2.VolumeAttachment{}, nil
+}
+
+// DetachVolumeWithContext is what teardownVolume actually calls (bounded by
+// the teardown deadline); it shares DetachVolume's behaviour and ignores ctx.
+func (f *fakeEC2) DetachVolumeWithContext(_ aws.Context, in *ec2.DetachVolumeInput, _ ...request.Option) (*ec2.VolumeAttachment, error) {
+	return f.DetachVolume(in)
 }
 
 func (f *fakeEC2) DeleteVolume(*ec2.DeleteVolumeInput) (*ec2.DeleteVolumeOutput, error) {

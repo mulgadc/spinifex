@@ -290,14 +290,15 @@ func (m *Manager) startQEMU(instance *VM) error {
 		m.initENIRequests(instance)
 
 		instance.EBSRequests.Mu.Lock()
-		drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
+		driveCfg, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
 		instance.EBSRequests.Mu.Unlock()
 		if err != nil {
 			return err
 		}
-		instance.Config.Drives = append(instance.Config.Drives, drives...)
-		instance.Config.IOThreads = append(instance.Config.IOThreads, iothreads...)
-		instance.Config.Devices = append(instance.Config.Devices, devices...)
+		instance.Config.Drives = append(instance.Config.Drives, driveCfg.Drives...)
+		instance.Config.IOThreads = append(instance.Config.IOThreads, driveCfg.IOThreads...)
+		instance.Config.Devices = append(instance.Config.Devices, driveCfg.Devices...)
+		instance.Config.Blockdevs = append(instance.Config.Blockdevs, driveCfg.Blockdevs...)
 	}
 
 	if instance.DirectBoot {
@@ -1102,49 +1103,115 @@ func (m *Manager) initENIRequests(instance *VM) {
 	}
 }
 
-// buildDrives converts EBS requests into QEMU drive/iothread/device configs.
-// Returns an error if any volume is missing its NBDURI. EFI volumes emit
-// pflash unit=1; the readonly CODE blob (unit=0) is added by Config.Execute.
-func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) ([]Drive, []IOThread, []Device, error) {
-	var drives []Drive
-	var iothreads []IOThread
-	var devices []Device
+// driveConfig is buildDrives' output: the QEMU drive/iothread/device/blockdev
+// entries derived from one instance's EBS requests.
+type driveConfig struct {
+	Drives    []Drive
+	IOThreads []IOThread
+	Devices   []Device
+	Blockdevs []Blockdev
+}
 
-	for _, v := range requests {
+// buildDrives converts EBS requests into QEMU drive/iothread/device/blockdev
+// configs. Returns an error if any volume is missing its NBDURI, or if the
+// EBS hot-plug port pool is exhausted while allocating one for a data volume.
+//
+// Boot volumes keep the existing anonymous if=none -drive shape exactly as
+// before — they are not detachable (see ErrVolumeNotDetachable), so the
+// anonymous-node problem this function otherwise fixes does not apply, and
+// changing the boot drive risks boot order. EFI volumes emit pflash unit=1;
+// the readonly CODE blob (unit=0) is added by Config.Execute.
+//
+// Every other (data) volume is given the same named node-name/device-id/
+// iothread-id shape AttachVolume's hot-plug path uses, via a -blockdev entry
+// and a matching -device, instead of the old bare -drive with no id and no
+// node-name. Without this a relaunched (stop/start, reboot, resize) data
+// volume was undetachable: device_del/blockdev-del had nothing to address,
+// so DetachVolume could never complete and the NBD socket stayed open until
+// the unmount burned its full kill grace.
+//
+// requests is mutated in place: a data volume with no persisted HotplugPort
+// (state written before hot-plug port accounting existed, or a volume
+// attached at RunInstances time) gets one allocated and written back, so a
+// later relaunch reuses the same port instead of reallocating it.
+func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) (driveConfig, error) {
+	var cfg driveConfig
+
+	for i := range requests {
+		v := &requests[i]
 		if v.NBDURI == "" {
-			return nil, nil, nil, fmt.Errorf("NBDURI not set for volume %s - was volume mounted?", v.Name)
+			return driveConfig{}, fmt.Errorf("NBDURI not set for volume %s - was volume mounted?", v.Name)
 		}
 
-		drive := Drive{File: v.NBDURI}
+		switch {
+		case v.Boot:
+			drive := Drive{
+				File:   v.NBDURI,
+				Format: "raw",
+				If:     "none",
+				Media:  "disk",
+				ID:     "os",
+				Cache:  "none",
 
-		if v.Boot {
-			drive.Format = "raw"
-			drive.If = "none"
-			drive.Media = "disk"
-			drive.ID = "os"
-			drive.Cache = "none"
-
-			// Report backend write errors to the guest rather than letting
-			// QEMU's default werror=enospc pause the VM: when the storage pool
-			// exhausts, the guest fs then returns a clean ENOSPC to userspace
-			// and the VM stays reachable instead of freezing.
-			drive.Werror = "report"
-			drive.Rerror = "report"
+				// Report backend write errors to the guest rather than letting
+				// QEMU's default werror=enospc pause the VM: when the storage
+				// pool exhausts, the guest fs then returns a clean ENOSPC to
+				// userspace and the VM stays reachable instead of freezing.
+				Werror: "report",
+				Rerror: "report",
+			}
 
 			iothreadID := "ioth-os"
-			iothreads = append(iothreads, IOThread{ID: iothreadID})
-			devices = append(devices, BlkDevice(machineType, drive.ID, iothreadID, cpuCount, 1))
-		}
+			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
+			cfg.Devices = append(cfg.Devices, BlkDevice(machineType, drive.ID, iothreadID, cpuCount, 1))
+			cfg.Drives = append(cfg.Drives, drive)
 
-		if v.EFI {
-			drive.Format = "raw"
-			drive.If = "pflash"
-			drive.Unit = 1
+		case v.EFI:
+			cfg.Drives = append(cfg.Drives, Drive{
+				File:   v.NBDURI,
+				Format: "raw",
+				If:     "pflash",
+				Unit:   1,
+			})
+
+		default:
+			// A data (non-boot, non-EFI) volume. Allocate a stable hot-plug
+			// port when the persisted state predates port accounting, or the
+			// volume was attached at RunInstances time without one;
+			// freeHotplugEBSPort re-scans requests as mutated so far in this
+			// loop, so two unset data volumes in one call cannot collide.
+			if v.HotplugPort == 0 {
+				port := freeHotplugEBSPort(requests)
+				if port == 0 {
+					return driveConfig{}, fmt.Errorf("no free EBS hot-plug port for volume %s", v.Name)
+				}
+				v.HotplugPort = port
+			}
+
+			serverType, socketPath, nbdHost, nbdPort, err := utils.ParseNBDURI(v.NBDURI)
+			if err != nil {
+				return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
+			}
+
+			nodeName := VolumeNodeName(v.Name)
+			iothreadID := VolumeIOThreadID(v.Name)
+			bus := HotplugEBSBus(v.HotplugPort)
+
+			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
+			cfg.Blockdevs = append(cfg.Blockdevs, VolumeBlockdev(nodeName, NBDServerOpts{
+				Type: serverType,
+				Path: socketPath,
+				Host: nbdHost,
+				Port: nbdPort,
+			}))
+			cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, bus))
+			// Deliberately no entry in cfg.Drives: the bare anonymous -drive
+			// this case used to emit (no id=, no node-name=) is exactly what
+			// left the volume undetachable.
 		}
 
 		slog.Info("Using NBD URI for drive", "volume", v.Name, "uri", v.NBDURI)
-		drives = append(drives, drive)
 	}
 
-	return drives, iothreads, devices, nil
+	return cfg, nil
 }

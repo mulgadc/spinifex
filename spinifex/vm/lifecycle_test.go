@@ -113,7 +113,12 @@ func TestBuildDrives(t *testing.T) {
 		wantDrives    []Drive
 		wantIOThreads []IOThread
 		wantDevices   []Device
-		wantErr       string
+		wantBlockdevs []Blockdev
+		// wantHotplugPorts, when non-nil, asserts requests[i].HotplugPort
+		// after the call — pinning both the "already recorded, left alone"
+		// and "unset, allocated and written back" behaviours.
+		wantHotplugPorts []int
+		wantErr          string
 	}{
 		{
 			name: "boot volume",
@@ -156,20 +161,95 @@ func TestBuildDrives(t *testing.T) {
 			wantErr:  "NBDURI not set for volume vol-efi-bad",
 		},
 		{
-			name: "mixed boot + EFI",
+			name: "data volume with a recorded HotplugPort keeps it and emits a named blockdev+device",
+			requests: []types.EBSRequest{
+				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock", HotplugPort: 3},
+			},
+			cpuCount:      2,
+			wantIOThreads: []IOThread{{ID: "ioth-vol-data-a"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export="},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3"},
+			},
+			wantHotplugPorts: []int{3},
+		},
+		{
+			name: "data volume with HotplugPort unset gets the lowest free port allocated and written back",
+			requests: []types.EBSRequest{
+				{Name: "vol-data-b", NBDURI: "nbd:unix:/tmp/data-b.sock"},
+			},
+			cpuCount:      2,
+			wantIOThreads: []IOThread{{ID: "ioth-vol-data-b"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=nbd,node-name=nbd-vol-data-b,server.type=unix,server.path=/tmp/data-b.sock,export="},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-b,drive=nbd-vol-data-b,iothread=ioth-vol-data-b,serial=voldatab,bus=hotplug-ebs1"},
+			},
+			wantHotplugPorts: []int{1},
+		},
+		{
+			name: "two data volumes with HotplugPort unset in one call get distinct ports",
+			requests: []types.EBSRequest{
+				{Name: "vol-data-c", NBDURI: "nbd:unix:/tmp/data-c.sock"},
+				{Name: "vol-data-d", NBDURI: "nbd:unix:/tmp/data-d.sock"},
+			},
+			cpuCount: 2,
+			wantIOThreads: []IOThread{
+				{ID: "ioth-vol-data-c"},
+				{ID: "ioth-vol-data-d"},
+			},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=nbd,node-name=nbd-vol-data-c,server.type=unix,server.path=/tmp/data-c.sock,export="},
+				{Value: "driver=nbd,node-name=nbd-vol-data-d,server.type=unix,server.path=/tmp/data-d.sock,export="},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-c,drive=nbd-vol-data-c,iothread=ioth-vol-data-c,serial=voldatac,bus=hotplug-ebs1"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-d,drive=nbd-vol-data-d,iothread=ioth-vol-data-d,serial=voldatad,bus=hotplug-ebs2"},
+			},
+			wantHotplugPorts: []int{1, 2},
+		},
+		{
+			name: "data volume errors when the hot-plug port pool is exhausted",
+			requests: func() []types.EBSRequest {
+				reqs := make([]types.EBSRequest, 0, EBSHotPlugSlotCount+1)
+				for i := 1; i <= EBSHotPlugSlotCount; i++ {
+					reqs = append(reqs, types.EBSRequest{
+						Name: fmt.Sprintf("vol-filler-%d", i), NBDURI: "nbd:unix:/tmp/filler.sock", HotplugPort: i,
+					})
+				}
+				reqs = append(reqs, types.EBSRequest{Name: "vol-overflow", NBDURI: "nbd:unix:/tmp/overflow.sock"})
+				return reqs
+			}(),
+			cpuCount: 2,
+			wantErr:  "no free EBS hot-plug port for volume vol-overflow",
+		},
+		{
+			name: "mixed boot + EFI + data: boot and EFI stay byte-identical to the legacy shape",
 			requests: []types.EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
+				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock", HotplugPort: 3},
 			},
 			cpuCount: 4,
 			wantDrives: []Drive{
 				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "report", Rerror: "report"},
 				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
 			},
-			wantIOThreads: []IOThread{{ID: "ioth-os"}},
+			wantIOThreads: []IOThread{
+				{ID: "ioth-os"},
+				{ID: "ioth-vol-data-a"},
+			},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export="},
+			},
 			wantDevices: []Device{
 				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3"},
 			},
+			wantHotplugPorts: []int{0, 0, 3},
 		},
 		{
 			name:     "empty requests",
@@ -184,7 +264,7 @@ func TestBuildDrives(t *testing.T) {
 			if machineType == "" {
 				machineType = "q35"
 			}
-			drives, iothreads, devices, err := buildDrives(tt.requests, tt.cpuCount, machineType)
+			cfg, err := buildDrives(tt.requests, tt.cpuCount, machineType)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)
@@ -193,9 +273,18 @@ func TestBuildDrives(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantDrives, drives)
-			assert.Equal(t, tt.wantIOThreads, iothreads)
-			assert.Equal(t, tt.wantDevices, devices)
+			assert.Equal(t, tt.wantDrives, cfg.Drives)
+			assert.Equal(t, tt.wantIOThreads, cfg.IOThreads)
+			assert.Equal(t, tt.wantDevices, cfg.Devices)
+			assert.Equal(t, tt.wantBlockdevs, cfg.Blockdevs)
+
+			if tt.wantHotplugPorts != nil {
+				require.Len(t, tt.requests, len(tt.wantHotplugPorts))
+				for i, want := range tt.wantHotplugPorts {
+					assert.Equal(t, want, tt.requests[i].HotplugPort,
+						"request %d (%s) HotplugPort", i, tt.requests[i].Name)
+				}
+			}
 		})
 	}
 }

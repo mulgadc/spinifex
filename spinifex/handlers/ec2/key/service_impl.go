@@ -3,10 +3,6 @@ package handlers_ec2_key
 import (
 	"bytes"
 	"context"
-	"crypto/md5" //#nosec G501 - need md5 for AWS compatibility
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"golang.org/x/crypto/ssh"
 )
 
 // Ensure KeyServiceImpl implements KeyService.
@@ -145,12 +142,14 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Calculate fingerprint based on key type
-	fingerprint, err := s.calculateFingerprint(publicKeyData, keyType)
+	// Fingerprint the key we just generated; the digest algorithm follows the
+	// key algorithm, so it is derived from the parsed key rather than keyType.
+	publicKey, _, _, _, err := ssh.ParseAuthorizedKey(publicKeyData)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to calculate fingerprint", "err", err)
+		slog.ErrorContext(ctx, "Failed to parse generated public key", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	fingerprint := keyFingerprint(publicKey)
 
 	// Upload public key to S3
 	_, err = s.store.PutObject(ctx, &s3.PutObjectInput{
@@ -198,43 +197,28 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	return output, nil
 }
 
-// calculateFingerprint computes the SSH key fingerprint
-// - For RSA: SHA-1 hash of public key (MD5 for older format)
-// - For ED25519: SHA-256 hash of public key.
-func (s *KeyServiceImpl) calculateFingerprint(publicKeyData []byte, keyType string) (string, error) {
-	// Parse the public key to extract the key data
-	// Format: "ssh-ed25519 AAAAC3Nza... comment"
-	parts := strings.Fields(string(publicKeyData))
-	if len(parts) < 2 {
-		return "", fmt.Errorf("invalid public key format")
+// keyFingerprint returns the fingerprint AWS reports for a key pair: the
+// OpenSSH SHA256 digest (SHA256:<base64>) for ED25519 keys, and the legacy
+// colon-separated MD5 digest for RSA and ECDSA keys.
+func keyFingerprint(publicKey ssh.PublicKey) string {
+	if publicKey.Type() == ssh.KeyAlgoED25519 {
+		return ssh.FingerprintSHA256(publicKey)
 	}
-
-	// Decode base64 key data
-	keyData, err := base64.StdEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", fmt.Errorf("failed to decode public key: %w", err)
-	}
-
-	if keyType == "ed25519" {
-		// ED25519 uses SHA-256 fingerprint
-		hash := sha256.Sum256(keyData)
-		return formatFingerprint(hash[:], "SHA256"), nil
-	} else {
-		// RSA uses SHA-1 or MD5 fingerprint
-		// AWS uses MD5 for RSA keys for backward compatibility
-		hash := md5.Sum(keyData) //#nosec G401 - need md5 for AWS compatibility
-		return formatFingerprint(hash[:], "MD5"), nil
-	}
+	return ssh.FingerprintLegacyMD5(publicKey)
 }
 
-// formatFingerprint formats the hash as a colon-separated hex string.
-func formatFingerprint(hash []byte, algorithm string) string {
-	if algorithm == "MD5" {
-		// MD5 format: aa:bb:cc:dd:...
-		return strings.ToLower(hex.EncodeToString(hash))
-	} else {
-		// SHA256 format: SHA256:base64encodedstring
-		return fmt.Sprintf("SHA256:%s", base64.RawStdEncoding.EncodeToString(hash))
+// keyPairType maps an SSH public key algorithm to the EC2 key type string,
+// rejecting algorithms EC2 does not accept (notably ssh-dss).
+func keyPairType(publicKey ssh.PublicKey) (string, error) {
+	switch publicKey.Type() {
+	case ssh.KeyAlgoED25519:
+		return "ed25519", nil
+	case ssh.KeyAlgoRSA:
+		return "rsa", nil
+	case ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521:
+		return "ecdsa", nil
+	default:
+		return "", fmt.Errorf("unsupported key algorithm %q", publicKey.Type())
 	}
 }
 
@@ -710,45 +694,22 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 		return nil, errors.New(awserrors.ErrorInvalidKeyPairDuplicate)
 	}
 
-	// Parse the public key material to extract key data and determine type
+	// Parse the authorized-key line ("ssh-rsa AAAAB... comment"), which also
+	// validates the base64 body against the algorithm's wire encoding.
 	publicKeyData := input.PublicKeyMaterial
-	publicKeyString := string(publicKeyData)
-
-	// Parse the public key format: "ssh-rsa AAAAB..." or "ssh-ed25519 AAAAC..."
-	parts := strings.Fields(publicKeyString)
-	if len(parts) < 2 {
-		slog.ErrorContext(ctx, "Invalid public key format", "keyName", keyName)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
-	}
-
-	// Determine key type from algorithm prefix
-	var keyType string
-	algorithmPrefix := parts[0]
-	switch {
-	case strings.HasPrefix(algorithmPrefix, "ssh-ed25519"):
-		keyType = "ed25519"
-	case strings.HasPrefix(algorithmPrefix, "ssh-rsa"):
-		keyType = "rsa"
-	case strings.HasPrefix(algorithmPrefix, "ecdsa-sha2-"):
-		// ECDSA keys are also supported but less common
-		keyType = "ecdsa"
-	default:
-		slog.ErrorContext(ctx, "Unsupported key type", "algorithm", algorithmPrefix, "keyName", keyName)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
-	}
-
-	// Validate that the key data is valid base64
-	if _, err := base64.StdEncoding.DecodeString(parts[1]); err != nil {
-		slog.ErrorContext(ctx, "Invalid base64 in public key material", "keyName", keyName, "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
-	}
-
-	// Calculate fingerprint from the imported public key
-	fingerprint, err := s.calculateFingerprint(publicKeyData, keyType)
+	publicKey, _, _, _, err := ssh.ParseAuthorizedKey(publicKeyData)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to calculate fingerprint", "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		slog.ErrorContext(ctx, "Invalid public key format", "keyName", keyName, "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
 	}
+
+	keyType, err := keyPairType(publicKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Unsupported key type", "algorithm", publicKey.Type(), "keyName", keyName, "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+	}
+
+	fingerprint := keyFingerprint(publicKey)
 
 	// Upload public key to S3
 	_, err = s.store.PutObject(ctx, &s3.PutObjectInput{

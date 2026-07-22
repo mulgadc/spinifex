@@ -2802,15 +2802,9 @@ func instanceStatusMatchesFilters(v *vm.VM, is *ec2.InstanceStatus, filters map[
 func (s *InstanceServiceImpl) DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, accountID string) (*ec2.DescribeInstanceStatusOutput, error) {
 	slog.InfoContext(ctx, "Processing DescribeInstanceStatus request from this node", "accountID", accountID)
 
-	instanceIDFilter := make(map[string]bool)
-	for _, id := range input.InstanceIds {
-		if id == nil || *id == "" {
-			continue
-		}
-		if !strings.HasPrefix(*id, "i-") {
-			return nil, errors.New(awserrors.ErrorInvalidInstanceIDMalformed)
-		}
-		instanceIDFilter[*id] = true
+	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
+	if err != nil {
+		return nil, err
 	}
 
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, DescribeInstanceStatusValidFilters)

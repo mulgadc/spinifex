@@ -11,6 +11,10 @@ on:
 
 permissions:
   contents: read
+  # actions: read lets the "Resolve CI job id" step below look up this job's
+  # numeric id via the Actions API — github.job is only the YAML key, no
+  # context exposes the id itself.
+  actions: read
 
 # Scheduled runs are loaded from the default branch (main), so the schedule
 # trigger must stay in sync on main for cron to fire.
@@ -46,6 +50,11 @@ jobs:
     env:
       TOFU_LOG: /tmp/e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}
+      # Job-level env wins over the workflow-level default above, so telemetry
+      # from this cell carries ci.cell/ci.matrix. Nine cells run under one
+      # run id and every cell names its hosts node1/node2/node3, so without
+      # this every cell's telemetry collapses into one unattributable bucket.
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=${{ matrix.cell }},ci.matrix=${{ matrix.topo }}/${{ matrix.net }}/${{ matrix.host }}
 
     steps:
       # blank or scheduled run = full matrix.
@@ -63,6 +72,29 @@ jobs:
             echo "selected=false" >> "$GITHUB_OUTPUT"
             echo "cell ${CELL} not in '${CELLS}' — subsequent steps will skip"
           fi
+
+      # Best-effort: github.job is this job's YAML key ("matrix"), not its
+      # numeric id, and no context exposes the id directly, so look it up by
+      # rendered job name via the Actions API before Bootstrap bakes
+      # SPINIFEX_OTEL_ATTRS into the VM's telemetry.env. Must never fail the
+      # job — on any lookup error or name mismatch, ci.job_id is simply
+      # omitted and the run proceeds with ci.cell alone.
+      - name: Resolve CI job id (best-effort)
+        if: steps.gate.outputs.selected == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_NAME: "cell-${{ matrix.cell }} (${{ matrix.topo }}/${{ matrix.net }}/${{ matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
+        run: |
+          set +e
+          JOB_ID=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate \
+            --jq ".jobs[] | select(.name == \"${JOB_NAME}\") | .id" 2>/dev/null | head -n1)
+          if [ -n "$JOB_ID" ]; then
+            echo "SPINIFEX_OTEL_ATTRS=${SPINIFEX_OTEL_ATTRS},ci.job_id=${JOB_ID}" >> "$GITHUB_ENV"
+            echo "resolved ci.job_id=${JOB_ID} for job '${JOB_NAME}'"
+          else
+            echo "::warning::could not resolve numeric job id for '${JOB_NAME}' — continuing without ci.job_id"
+          fi
+          exit 0
 
       - name: Clean Workspace
         if: steps.gate.outputs.selected == 'true'
@@ -373,4 +405,8 @@ jobs:
     uses: ./.github/workflows/e2e-baremetal.yml
     with:
       ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+      # A reusable-workflow call gets none of this workflow's context (env:
+      # above, matrix.cell) for free — cell-20 needs its own attrs string.
+      # There's no matrix leg here, just the one fixed baremetal cell.
+      otel-attrs: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=20,ci.matrix=baremetal/pxe/real-hw
     secrets: inherit

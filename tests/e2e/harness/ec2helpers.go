@@ -4,6 +4,7 @@ package harness
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -327,11 +328,24 @@ func teardownVolume(ec2c ec2iface.EC2API, volID string) error {
 			// terminating and there is nothing left to acknowledge a graceful
 			// detach. Issued once, then we wait for the state to settle.
 			if !forced {
-				_, _ = ec2c.DetachVolume(&ec2.DetachVolumeInput{
+				// Bound the call itself: the SDK's built-in retry (4 attempts
+				// against the gateway's 30s NATS budget) can burn ~119s on a
+				// slow detach, more than the whole deadline, leaving no time
+				// for the state poll below and misreporting a slow detach as
+				// an unexplained leak. Deriving the context from the same
+				// deadline this loop already honours means a bounded-out
+				// detach still leaves the poll loop below a chance to observe
+				// the volume settle.
+				detachCtx, cancel := context.WithDeadline(context.Background(), deadline)
+				_, _ = ec2c.DetachVolumeWithContext(detachCtx, &ec2.DetachVolumeInput{
 					VolumeId: aws.String(volID),
 					Force:    aws.Bool(true),
 				})
+				cancel()
 				forced = true
+				if time.Now().After(deadline) {
+					return fmt.Errorf("volume %s still %s after %s, not deleted", volID, state, volumeTeardownTimeout)
+				}
 				continue
 			}
 			if time.Now().After(deadline) {

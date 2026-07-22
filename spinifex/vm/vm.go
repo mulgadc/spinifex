@@ -224,6 +224,16 @@ type IOThread struct {
 	ID string `json:"id"`
 }
 
+// Blockdev is a QEMU -blockdev entry: the command-line equivalent of the
+// blockdev-add QMP command. Unlike a -drive with if=none, it produces a
+// monitor-owned node addressable by node-name, which is what makes
+// blockdev-del able to remove it later. Used for data (non-boot, non-EFI)
+// volumes so a cold-booted one has the same detachable block-graph shape as
+// a hot-attached one; boot/EFI volumes keep the legacy -drive shape.
+type Blockdev struct {
+	Value string `json:"value"`
+}
+
 type Config struct {
 	Name      string `json:"name"`
 	PIDFile   string `json:"pid_file"`
@@ -243,6 +253,9 @@ type Config struct {
 
 	Drives    []Drive    `json:"drives"`
 	IOThreads []IOThread `json:"io_threads,omitempty"`
+	// Blockdevs are rendered as -blockdev, before Devices, so a -device's
+	// drive= reference resolves against an already-declared node.
+	Blockdevs []Blockdev `json:"blockdevs,omitempty"`
 
 	Devices []Device `json:"devices"`
 	NetDevs []NetDev `json:"net_devs"`
@@ -415,6 +428,13 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		}
 
 		args = append(args, "-drive", strings.Join(opts, ","))
+	}
+
+	// -blockdev entries must precede the -device entries that reference them
+	// via drive= so QEMU resolves the node on first pass (QEMU itself
+	// tolerates either order; this just matches how the file already reads).
+	for _, blockdev := range cfg.Blockdevs {
+		args = append(args, "-blockdev", blockdev.Value)
 	}
 
 	for _, device := range cfg.Devices {

@@ -91,9 +91,12 @@ type volumeMounterAdapter struct {
 var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
 
 // unmountSealTimeout bounds the ebs.unmount NATS request. The handler now drives
-// a synchronous block-map seal to predastore (S3 I/O), so it matches
-// viperblockd's 120s KillProcess wait rather than a bare RPC budget.
-const unmountSealTimeout = 120 * time.Second
+// a synchronous block-map seal to predastore (S3 I/O), which runs AFTER
+// viperblockd's SIGKILL once its 120s KillProcess grace elapses — so this
+// must strictly exceed that grace plus a seal allowance, never merely match
+// it: an unmount that consumes the whole grace could otherwise never be
+// observed as successful.
+const unmountSealTimeout = 180 * time.Second
 
 func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
 	return &volumeMounterAdapter{nc: nc, node: node, volState: volState}

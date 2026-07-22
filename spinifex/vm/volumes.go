@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -100,17 +99,13 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		m.rollbackUnmount(ebsRequest)
 		return "", fmt.Errorf("parse NBDURI: %w", err)
 	}
+	serverArg := NBDServerOpts{Type: serverType, Path: socketPath, Host: nbdHost, Port: nbdPort}.QMPArg()
 
-	var serverArg map[string]any
-	if serverType == "unix" {
-		serverArg = map[string]any{"type": "unix", "path": socketPath}
-	} else {
-		serverArg = map[string]any{"type": "inet", "host": nbdHost, "port": strconv.Itoa(nbdPort)}
-	}
-
-	nodeName := fmt.Sprintf("nbd-%s", volumeID)
-	deviceID := fmt.Sprintf("vdisk-%s", volumeID)
-	iothreadID := fmt.Sprintf("ioth-%s", volumeID)
+	// Shared with buildDrives' cold-boot path so a relaunched volume's block
+	// graph uses exactly the same names DetachVolume addresses.
+	nodeName := VolumeNodeName(volumeID)
+	deviceID := VolumeDeviceID(volumeID)
+	iothreadID := VolumeIOThreadID(volumeID)
 
 	// Allocate the PCIe hot-plug port from in-memory accounting. QEMU reports
 	// block devices by id (/machine/peripheral/<id>/virtio-backend), not by bus,
@@ -160,20 +155,13 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	// The virtio-blk-pci device must land on a free hot-plug PCIe root port
 	// (hotplug-ebs{N}); pcie.0 rejects hot-plug. The port is allocated from
 	// live QEMU state above, independent of the AWS device name.
-	hotplugBus := fmt.Sprintf("hotplug-ebs%d", hotplugPort)
+	hotplugBus := HotplugEBSBus(hotplugPort)
 
-	// serial is the volume-id with dashes stripped ("vol" + 17 hex = 20 bytes,
-	// the virtio-blk serial limit). It surfaces in-guest as the block device
-	// serial so the EBS CSI node plugin can locate /dev/disk/by-id and match
-	// `lsblk -o SERIAL` against the volume-id.
-	deviceAddArgs := map[string]any{
-		"driver":   "virtio-blk-pci",
-		"id":       deviceID,
-		"drive":    nodeName,
-		"iothread": iothreadID,
-		"serial":   strings.ReplaceAll(volumeID, "-", ""),
-		"bus":      hotplugBus,
-	}
+	// serial surfaces in-guest as the block device serial so the EBS CSI node
+	// plugin can locate /dev/disk/by-id and match `lsblk -o SERIAL` against
+	// the volume-id. Shared with buildDrives so a relaunched volume keeps the
+	// same serial.
+	deviceAddArgs := VolumeBlkDeviceQMPArgs(volumeID, nodeName, iothreadID, hotplugBus)
 
 	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute:   "device_add",
@@ -316,9 +304,12 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 			ErrVolumeDeviceMismatch, device, ebsReq.DeviceName)
 	}
 
-	deviceID := fmt.Sprintf("vdisk-%s", volumeID)
-	nodeName := fmt.Sprintf("nbd-%s", volumeID)
-	iothreadID := fmt.Sprintf("ioth-%s", volumeID)
+	// Shared with buildDrives' cold-boot path: a relaunched data volume gets
+	// exactly these names, so these addresses resolve whether the volume was
+	// hot-attached or cold-booted.
+	deviceID := VolumeDeviceID(volumeID)
+	nodeName := VolumeNodeName(volumeID)
+	iothreadID := VolumeIOThreadID(volumeID)
 
 	// device_del is idempotent on DeviceNotFound so a second AWS-CLI
 	// retry can drive blockdev-del to completion when a prior detach left

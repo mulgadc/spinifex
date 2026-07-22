@@ -3,8 +3,11 @@ package handlers_ec2_key
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"os/exec"
 	"strings"
 	"testing"
@@ -38,9 +41,16 @@ const testECDSAPubKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAA
 const testDSAPubKey = "ssh-dss AAAAB3NzaC1kc3MAAACBAMfooAGeGkAp6syFsxNueaASpwMr5t+BiLTxAmf9grlH/7MPhXHxxtrrzEdq4bK0mheLl4irAtardgR5ghOVxKXqz4dLlcEyv3H3tOY8Hq+JT/6w9j4FLjen4obXcilh7vfRPdL/A7Dk3Th9NSkrp43FmXUL4EyuMbqi7LcQYpMpAAAAFQDpwLJZvztWN3pEeT/MMLsVSmJedwAAAIBZjhEyHHk1iomvueP6GkmdrXt4V9+6BHjG/rHzQRlO79muU5ImX/BFALCc0RjaPNAoo0lF6ptaPf2HPeu3dtEAWM9iXH8SLqcAVX7B5FUYKFb7zsyQmlT3pKo21V3mCakKHDma8kbHSC2sysl1NOD4IkGTQalP4MuzIvCXNKbCdAAAAIEAl7OdP7hBngX0CuM0+cJXonZvnvIo1NOWGVu+dCn93mvoGjKFyZmLSEMIfFbmckQF2J4F9cM9aU6ht76k73DFnnA/F7WiJ+hIKLhL7Y8F0eDtWkawswvwxvHB+C7drrqezD6t5INX4CYlNQD4zqhgWKBSKVn3sQzQI95gFE51rKE="
 
 const (
-	// The OpenSSH SHA256 rendering, as reported by `ssh-keygen -lf`. This is not
-	// the value AWS returns: AWS drops the "SHA256:" prefix and pads the base64.
-	testED25519Fingerprint = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
+	// The SHA256 digest `ssh-keygen -lf` reports for testED25519PubKey, rendered
+	// as AWS renders it: no "SHA256:" prefix and the base64 padded. Derived from
+	// the fixture rather than captured, since the ED25519 key pairs AWS was
+	// sampled against have been deleted; the AWS captures pin the rendering in
+	// metadata_test.go instead, where no key material is needed.
+	testED25519Fingerprint = "+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU="
+
+	// The same digest as records already in the object store still spell it: the
+	// OpenSSH rendering `ssh.FingerprintSHA256` produced.
+	testLegacyED25519Fingerprint = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
 
 	// Recorded from real AWS: the value ImportKeyPair returned for testRSAPubKey
 	// above. Reproducible with
@@ -96,6 +106,32 @@ func newTestKeyService() (*KeyServiceImpl, *objectstore.MemoryObjectStore) {
 	return svc, store
 }
 
+// readStoredObject returns the body of an object the test asserts is present.
+func readStoredObject(t *testing.T, store objectstore.ObjectStore, key string) []byte {
+	t.Helper()
+	result, err := store.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String(key),
+	})
+	require.NoError(t, err)
+	defer result.Body.Close()
+	body, err := io.ReadAll(result.Body)
+	require.NoError(t, err)
+	return body
+}
+
+// putStoredObject writes a body verbatim, for seeding records in a form the
+// service no longer writes itself.
+func putStoredObject(t *testing.T, store objectstore.ObjectStore, key, body string) {
+	t.Helper()
+	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String(key),
+		Body:   strings.NewReader(body),
+	})
+	require.NoError(t, err)
+}
+
 // requireSSHKeygen skips the test if ssh-keygen is not available.
 func requireSSHKeygen(t *testing.T) {
 	t.Helper()
@@ -133,28 +169,22 @@ func TestCreateKeyPair_ED25519(t *testing.T) {
 	assert.Equal(t, "my-ed25519-key", *out.KeyName)
 	assert.NotEmpty(t, *out.KeyPairId)
 	assert.True(t, strings.HasPrefix(*out.KeyPairId, "key-"))
-	assert.NotEmpty(t, *out.KeyFingerprint)
-	assert.True(t, strings.HasPrefix(*out.KeyFingerprint, "SHA256:"), "ed25519 fingerprint should be SHA256 format")
 	assert.NotEmpty(t, *out.KeyMaterial)
 	assert.Contains(t, *out.KeyMaterial, "PRIVATE KEY")
 
 	// Verify public key stored in S3
 	keyPath := "keys/" + testAccountID + "/my-ed25519-key"
-	getOut, err := store.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String(keyPath),
-	})
-	require.NoError(t, err)
-	assert.NotNil(t, getOut)
+	publicKeyData := readStoredObject(t, store, keyPath)
 
-	// Verify metadata stored in S3
+	// The key is generated per-run, so the digest is not knowable in advance.
+	// Recompute it from the stored public key: that pins the rendering to an
+	// independent computation rather than to the shape of the string.
+	sum := sha256.Sum256(parseTestPubKey(t, string(publicKeyData)).Marshal())
+	assert.Equal(t, base64.StdEncoding.EncodeToString(sum[:]), *out.KeyFingerprint)
+
+	// Verify metadata stored in S3, carrying the key type it was created with.
 	metaPath := "keys/" + testAccountID + "/" + *out.KeyPairId + ".json"
-	metaOut, err := store.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String(metaPath),
-	})
-	require.NoError(t, err)
-	assert.NotNil(t, metaOut)
+	assert.Contains(t, string(readStoredObject(t, store, metaPath)), `"KeyType":"ed25519"`)
 }
 
 func TestCreateKeyPair_RSA(t *testing.T) {
@@ -263,21 +293,11 @@ func TestImportKeyPair_Success_ED25519(t *testing.T) {
 
 	// Verify public key stored in S3
 	keyPath := "keys/" + testAccountID + "/imported-ed25519"
-	getOut, err := store.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String(keyPath),
-	})
-	require.NoError(t, err)
-	assert.NotNil(t, getOut)
+	assert.Equal(t, testED25519PubKey, string(readStoredObject(t, store, keyPath)))
 
-	// Verify metadata stored in S3
+	// Verify metadata stored in S3, carrying the key type it was imported as.
 	metaPath := "keys/" + testAccountID + "/" + *out.KeyPairId + ".json"
-	metaOut, err := store.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String(metaPath),
-	})
-	require.NoError(t, err)
-	assert.NotNil(t, metaOut)
+	assert.Contains(t, string(readStoredObject(t, store, metaPath)), `"KeyType":"ed25519"`)
 }
 
 func TestImportKeyPair_Success_RSA(t *testing.T) {
@@ -571,23 +591,27 @@ func TestDescribeKeyPairs_AllKeys(t *testing.T) {
 	assert.True(t, names["key-beta"])
 }
 
-// KeyType is inferred from the stored fingerprint's shape, so it has to survive
-// RSA reporting two different digest widths: 16 bytes when imported, 20 when EC2
-// generated the key. Only ED25519 carries the "SHA256:" prefix that marks it.
-func TestDescribeKeyPairs_KeyTypeInference(t *testing.T) {
+// KeyType is now read back from the record rather than guessed at, across every
+// combination of path and algorithm that writes one.
+func TestDescribeKeyPairs_KeyType(t *testing.T) {
 	requireSSHKeygen(t)
 	svc, _ := newTestKeyService()
 
-	importTestKey(t, svc, "inferred-ed25519")
+	importTestKey(t, svc, "ed25519-imported")
 
 	_, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
-		KeyName:           aws.String("inferred-rsa-imported"),
+		KeyName:           aws.String("rsa-imported"),
 		PublicKeyMaterial: []byte(testRSAPubKey),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	_, err = svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
-		KeyName: aws.String("inferred-rsa-created"),
+		KeyName: aws.String("ed25519-created"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+		KeyName: aws.String("rsa-created"),
 		KeyType: aws.String("rsa"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -600,10 +624,33 @@ func TestDescribeKeyPairs_KeyTypeInference(t *testing.T) {
 		keyTypes[*kp.KeyName] = *kp.KeyType
 	}
 	assert.Equal(t, map[string]string{
-		"inferred-ed25519":      "ed25519",
-		"inferred-rsa-imported": "rsa",
-		"inferred-rsa-created":  "rsa",
+		"ed25519-imported": "ed25519",
+		"ed25519-created":  "ed25519",
+		"rsa-imported":     "rsa",
+		"rsa-created":      "rsa",
 	}, keyTypes)
+}
+
+// A record written before KeyType was persisted still has to describe as
+// ed25519, and its fingerprint has to reach the client in the AWS spelling. This
+// is the case the removal of the "SHA256:" prefix would otherwise have broken.
+func TestDescribeKeyPairs_LegacyED25519Record(t *testing.T) {
+	svc, store := newTestKeyService()
+
+	putStoredObject(t, store, "keys/"+testAccountID+"/key-legacy1.json",
+		`{"KeyFingerprint":"`+testLegacyED25519Fingerprint+`","KeyName":"legacy-ed25519","KeyPairId":"key-legacy1","Tags":null}`)
+
+	out, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.KeyPairs, 1)
+
+	assert.Equal(t, "ed25519", *out.KeyPairs[0].KeyType)
+	assert.Equal(t, testED25519Fingerprint, *out.KeyPairs[0].KeyFingerprint)
+
+	// Describing normalises the response only: a list must not become a write
+	// per key pair.
+	assert.Contains(t, string(readStoredObject(t, store, "keys/"+testAccountID+"/key-legacy1.json")),
+		testLegacyED25519Fingerprint)
 }
 
 func TestDescribeKeyPairs_FilterByKeyName(t *testing.T) {
@@ -818,8 +865,7 @@ func TestImportedKeyFingerprint(t *testing.T) {
 		pubKey   string
 		expected string
 	}{
-		// The OpenSSH rendering of the SHA256 digest, which is not what AWS
-		// returns -- AWS drops the prefix and pads the base64.
+		// The SHA256 of the SSH wire blob, in AWS's bare padded base64.
 		{name: "ED25519", pubKey: testED25519PubKey, expected: testED25519Fingerprint},
 		// The MD5 of the DER SubjectPublicKeyInfo, matching AWS.
 		{name: "RSA", pubKey: testRSAPubKey, expected: testRSAImportedFingerprint},
@@ -874,8 +920,8 @@ func TestCreatedKeyFingerprint_RSA(t *testing.T) {
 }
 
 // ED25519 hashes the public key on both paths, so the created value matches the
-// imported one -- and diverges from AWS the same way. The private key is passed
-// deliberately mismatched: this branch must not read it at all.
+// imported one. The private key is passed deliberately mismatched: this branch
+// must not read it at all.
 func TestCreatedKeyFingerprint_ED25519(t *testing.T) {
 	fingerprint, err := createdKeyFingerprint([]byte(testRSAPrivKey), parseTestPubKey(t, testED25519PubKey))
 	require.NoError(t, err)

@@ -28,7 +28,8 @@ const testED25519PubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6U
 // Valid RSA public key for import tests (generated locally, 2048-bit).
 const testRSAPubKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDP9LrByKWpgbX+prxBwnlf7lrmI5AfDwuiCofuvOAzt9/PwIDMMIAhlvlpm09jjOuuH/MRQApJB5A714Auv+hBKVK0lCq9KcTrnKZOpRj2aGgIZgaoO6P/POoZc+kBf9Y/GP18DCKc4y/XyBsp69dPP6XRdYBlEdeIeVZdgCPYrM7s5FjT7aML2ba2Y2EvH116hPxv+nJZGwM6yqWxWRyTOoNMMTAfNYmoKkNy2zC1FARUyqDwumJ2z5Fvo4ZdN1qoFPOsfPc3iB0NUtSZbLU1awScvHb0rwR5PRnelTZ3Nbkw8I8A0IAhBTE5veW9D38hDIJhRd4nW73BUhgmzDL7"
 
-// Valid ECDSA (nistp256) public key — EC2 accepts these on import only.
+// Well-formed ECDSA (nistp256) public key: parseable by x/crypto/ssh, but EC2
+// key pairs are RSA or ED25519 only, so import must reject it.
 const testECDSAPubKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBMZBEqs7mTlkOKGPSYp+tc5lZadVp9C2vCzIWZFTdnO1e3a8X59SdBWXiccQXjK1jxj+KLuQAEJY38kKqIUe/no="
 
 // Well-formed DSA public key: parseable by x/crypto/ssh but not a key type EC2 accepts.
@@ -234,20 +235,6 @@ func TestImportKeyPair_Success_RSA(t *testing.T) {
 	assert.Equal(t, testRSAFingerprint, *out.KeyFingerprint)
 }
 
-func TestImportKeyPair_Success_ECDSA(t *testing.T) {
-	svc, _ := newTestKeyService()
-
-	out, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
-		KeyName:           aws.String("imported-ecdsa"),
-		PublicKeyMaterial: []byte(testECDSAPubKey),
-	}, testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, out)
-
-	assert.Equal(t, "imported-ecdsa", *out.KeyName)
-	assert.NotEmpty(t, *out.KeyFingerprint)
-}
-
 // A trailing comment is accepted and preserved, and surrounding whitespace is
 // stripped, so what the guest is served is exactly the key the fingerprint
 // covers.
@@ -316,8 +303,14 @@ func TestImportKeyPairInvalidKeyFormat(t *testing.T) {
 		},
 		{
 			// Parses cleanly, but DSA is not a key type EC2 accepts.
-			name:           "UnsupportedAlgorithm",
+			name:           "UnsupportedAlgorithmDSA",
 			publicKey:      testDSAPubKey,
+			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
+		},
+		{
+			// Likewise ECDSA: EC2 key pairs are RSA or ED25519 only.
+			name:           "UnsupportedAlgorithmECDSA",
+			publicKey:      testECDSAPubKey,
 			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
 		},
 		{
@@ -750,7 +743,7 @@ func TestKeyPairType(t *testing.T) {
 	}{
 		{name: "ED25519", pubKey: testED25519PubKey, expected: "ed25519"},
 		{name: "RSA", pubKey: testRSAPubKey, expected: "rsa"},
-		{name: "ECDSA", pubKey: testECDSAPubKey, expected: "ecdsa"},
+		{name: "ECDSAUnsupported", pubKey: testECDSAPubKey, expectErr: true},
 		{name: "DSAUnsupported", pubKey: testDSAPubKey, expectErr: true},
 	}
 

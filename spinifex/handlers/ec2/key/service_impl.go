@@ -197,9 +197,11 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	return output, nil
 }
 
-// keyFingerprint returns the fingerprint AWS reports for a key pair: the
-// OpenSSH SHA256 digest (SHA256:<base64>) for ED25519 keys, and the legacy
-// colon-separated MD5 digest for RSA and ECDSA keys.
+// keyFingerprint returns the OpenSSH fingerprint of a public key: the base64
+// SHA256 digest (SHA256:<base64>) for ED25519 keys, and the RFC 4716 section 4
+// colon-separated MD5 digest for RSA. That is what AWS reports for an imported
+// key pair. For a key pair EC2 generated itself, AWS reports the SHA-1 digest of
+// the DER private key instead, which cannot be derived from a public key alone.
 func keyFingerprint(publicKey ssh.PublicKey) string {
 	if publicKey.Type() == ssh.KeyAlgoED25519 {
 		return ssh.FingerprintSHA256(publicKey)
@@ -207,16 +209,16 @@ func keyFingerprint(publicKey ssh.PublicKey) string {
 	return ssh.FingerprintLegacyMD5(publicKey)
 }
 
-// keyPairType maps an SSH public key algorithm to the EC2 key type string,
-// rejecting algorithms EC2 does not accept (notably ssh-dss).
+// keyPairType maps an SSH public key algorithm to the EC2 key type string. EC2
+// key pairs are RSA or ED25519 only, so every other algorithm -- ECDSA and
+// ssh-dss included -- is rejected rather than stored under a type the API has no
+// way to report back.
 func keyPairType(publicKey ssh.PublicKey) (string, error) {
 	switch publicKey.Type() {
 	case ssh.KeyAlgoED25519:
 		return "ed25519", nil
 	case ssh.KeyAlgoRSA:
 		return "rsa", nil
-	case ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521:
-		return "ecdsa", nil
 	default:
 		return "", fmt.Errorf("unsupported key algorithm %q", publicKey.Type())
 	}

@@ -29,7 +29,7 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam' }}
+  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam e2e-partialblock' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
   # OTLP export to the central Elastic sink (wattle). Repo variable overrides;
   # empty string disables telemetry entirely.
@@ -320,11 +320,11 @@ jobs:
           # silently fan a newly added suite out to every job, which is how lb ended up
           # running twice per e2e run.
           #
-          # partialblock is dispatchable but not yet in the default SUITES: it is
-          # a new regression test for an already-fixed bug, so it is expected to
-          # pass, and it should earn a place in the merge-gating set by first
-          # showing a green run and a demonstrated fail-first against a pre-fix
-          # viperblock rather than on the strength of being newly written.
+          # partialblock gates merges because it earned it, not because it is
+          # new: on one node, same binary and workload, it fails against the
+          # pre-fix engine (1758 of 8192 halves reverted a generation) and
+          # passes against the fixed one (0 of 8192). A suite that has never
+          # been shown to go red for the reason it claims does not belong here.
           SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE 'single|iam|cert|eks|ecs|storagegrowth|partialblock' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no in-VM suites requested (SUITES=${SUITES}); skipping"

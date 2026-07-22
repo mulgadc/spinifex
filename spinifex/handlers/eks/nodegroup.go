@@ -434,9 +434,23 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 	// merely on RunInstances success — a worker that boots but never joins must
 	// surface CREATE_FAILED, not falsely ACTIVE. Scoped to THIS nodegroup so
 	// another nodegroup's Ready workers can never mask this one's shortfall.
-	// Baseline is the create-time count for this nodegroup; the workers add
-	// lc.desired Ready nodes.
-	if err := s.waitWorkersReady(acctKV, cluster, ng, meta.NodegroupNodeCounts[ng], lc.desired); err != nil {
+	// Baseline is 0, NOT the create-time count for this nodegroup name.
+	//
+	// A create means every worker under this name is new, so the gate is simply
+	// "lc.desired Ready nodes carrying this nodegroup label". Baselining on the
+	// live count breaks re-creating a nodegroup of the same name — which is what
+	// a terraform replace does after a CREATE_FAILED. There the previous
+	// incarnation's workers are still Ready when the create starts, so the
+	// baseline captures them and the target becomes old+new; the old ones are
+	// then terminated, the count falls, and the target can never be reached. The
+	// gate fails a cluster whose new workers all joined perfectly, and the retry
+	// fails the same way with a larger baseline each round.
+	//
+	// Trade-off, stated plainly: a stale incarnation's Ready nodes can briefly
+	// inflate the count and satisfy the gate early. They go NotReady within
+	// about a minute of termination, whereas baselining on them fails every
+	// replacement permanently.
+	if err := s.waitWorkersReady(acctKV, cluster, ng, 0, lc.desired); err != nil {
 		rec.Status = eks.NodegroupStatusCreateFailed
 		rec.StatusReason = "workers did not become Ready: " + err.Error()
 		rec.ModifiedAt = time.Now().UTC()

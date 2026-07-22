@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
@@ -201,16 +199,11 @@ func TestPartialBlockConcurrentWriteDurability(t *testing.T) {
 	harness.AttachVolumeWait(t, fix.AWS, volID, instanceID, partialBlockDevice)
 	dev := harness.WaitForNewGuestDisk(t, tgt, before, 90*time.Second)
 
-	// Release the working-set volume rather than leaving it for the run's
-	// generic teardown. Backend reclaim is asynchronous — the segments behind a
-	// deleted volume are only dropped by a later compaction pass — so the
-	// sooner the delete is issued, the sooner that reclaim can start.
-	t.Cleanup(func() {
-		harness.DetachVolumeWait(t, fix.AWS, volID)
-		if _, err := fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{VolumeId: aws.String(volID)}); err != nil {
-			t.Logf("cleanup: DeleteVolume(%s): %v", volID, err)
-		}
-	})
+	// Detach before the fixture's own cleanup deletes the volume. DeleteVolume
+	// against a still-attached volume is what leaks volumes on teardown, and
+	// the delete itself is left to the fixture so the volume is released
+	// exactly once.
+	t.Cleanup(func() { harness.DetachVolumeWait(t, fix.AWS, volID) })
 
 	installDriver(t, tgt)
 

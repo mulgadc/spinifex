@@ -99,6 +99,18 @@ done`
 		setupOVN = `echo "[firstboot] setup-ovn deferred to provisioning controller"`
 	}
 
+	// Host DNS runs after formation, which writes northstar.toml (the config the
+	// resolved stage reads for the :53 listener and zones). NORTHSTAR_REQUIRED=1
+	// makes the stage fail loudly if that config or a resolver manager is missing
+	// here — after `spx admin init` it must exist, so its absence is a real error,
+	// not a defer that would let firstboot report success with broken host DNS.
+	// When a provisioning controller owns formation it writes northstar.toml later
+	// and runs this stage itself, so firstboot leaves it deferred instead.
+	hostDNS := "NORTHSTAR_REQUIRED=1 SETUP_STAGES=resolved /usr/local/share/spinifex/setup.sh"
+	if cfg.SkipFormation {
+		hostDNS = `echo "[firstboot] host DNS deferred to provisioning controller"`
+	}
+
 	callbackBlock := ""
 	if cfg.InstallCallback != "" {
 		callbackBlock = fmt.Sprintf(
@@ -160,6 +172,11 @@ SETUP_STAGES=fixown /usr/local/share/spinifex/setup.sh
 # The /var/lib/spinifex/awsgw/config symlink was created at build time by
 # setup.sh's create_directories — it resolves to /etc/spinifex, so
 # {BaseDir}/config/master.key automatically points at /etc/spinifex/master.key.
+
+# Point the host resolver at the node-local Northstar listener now that
+# formation has written northstar.toml, so kubectl and the AWS SDK resolve the
+# Spinifex zones (e.g. an EKS Northstar DNS endpoint) from this host.
+%s
 
 # Bootstrap the spinifex user's SSH directory with a generated key pair so
 # ~/.ssh exists and the operator can immediately use ssh-keygen / ssh-copy-id
@@ -223,7 +240,7 @@ if grep -q 'external_mode.*pool' /etc/spinifex/spinifex.toml 2>/dev/null; then
         echo "[firstboot] warning: br-ext not up after 30s — external networking may be delayed"
     fi
 fi
-`, cfg.Hostname, ovnPrestart, setupOVN, clusterCmd, callbackBlock)
+`, cfg.Hostname, ovnPrestart, setupOVN, clusterCmd, hostDNS, callbackBlock)
 
 	path := filepath.Join(root, "usr/local/bin/spinifex-firstboot.sh")
 	return os.WriteFile(path, []byte(script), 0o755)

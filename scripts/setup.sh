@@ -794,77 +794,203 @@ EOF
     info "Swap enabled: $swapfile (${size_mb}MiB), vm.swappiness=10"
 }
 
-# --- Configure host split DNS for Spinifex zones (systemd-resolved) ---
-# When systemd-resolved manages the host resolver, route the Spinifex
-# authoritative zones (default_domain + compute.internal) to the local northstar
-# resolver on the node WAN IP, while every other name keeps using the existing
-# link/DHCP DNS. The "~" routing-domain prefix restricts the DNS= server to
-# exactly those zones (resolved.conf(5)). northstar binds <wan>:53 (not
-# 127.0.0.1), so DNS= must be the WAN IP. Idempotent; no-op without resolved.
-setup_resolved_dns() {
-    stage "configuring systemd-resolved split DNS for Spinifex zones"
+# --- Parse the northstar.toml :53 listener host ---
+# northstar.toml's `listen` is a comma-separated host:port list (e.g.
+# "0.0.0.0:5300,10.0.0.5:53"). The ":53" entry is the address Northstar actually
+# binds for the authoritative service — the rendered AdvertiseIP — so host DNS
+# reads it here instead of independently re-detecting the WAN IP. Prints the host
+# and returns 0 on success, or returns 1 when the value is malformed or has no
+# ":53" endpoint — `sed -n .../p` prints nothing on a non-match (e.g. an unquoted
+# value) so garbage never masquerades as a parsed address.
+northstar_listen_ip() {
+    local toml="$1" listen_val entry
+    listen_val=$($SUDO grep -E '^[[:space:]]*listen[[:space:]]*=' "$toml" 2>/dev/null \
+        | head -1 | sed -nE 's/.*=[[:space:]]*"([^"]*)".*/\1/p' | tr -d '[:space:]')
+    local IFS=','
+    for entry in $listen_val; do
+        case "$entry" in
+            *:53) printf '%s' "${entry%:53}"; return 0 ;;
+        esac
+    done
+    return 1
+}
 
-    # ISO chroot has no live resolver to reconfigure; firstboot handles it.
-    if [ "${ISO_BUILD:-0}" = "1" ]; then
-        info "Resolved split DNS skipped (ISO_BUILD=1; firstboot configures it)"
-        return
-    fi
+# --- Read a quoted string value from a TOML file ---
+# Matches `key = "value"`, tolerating leading whitespace and trailing comments.
+# `sed -n .../p` prints nothing when the line is not a quoted assignment, so an
+# empty or malformed value yields empty (callers fall back to a default) rather
+# than the whole input line echoed back as garbage.
+northstar_toml_string() {
+    local key="$1" toml="$2"
+    $SUDO grep -E "^[[:space:]]*$key[[:space:]]*=" "$toml" 2>/dev/null \
+        | head -1 | sed -nE 's/.*=[[:space:]]*"([^"]*)".*/\1/p'
+}
 
-    # Only act when systemd-resolved is the active resolver; otherwise the
-    # operator must point their resolver at the node :53 manually.
-    if ! $SUDO systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        info "systemd-resolved not active — skipping host split DNS"
-        info "  To resolve the Spinifex zones, forward them to the node WAN IP on :53"
-        return
-    fi
+# --- Confirm systemd-resolved is serving the Spinifex zones via Northstar ---
+# `resolvectl status` reports the effective global DNS server and routing domains
+# once the drop-in is loaded, so this catches a restart that silently failed to
+# apply the config. Returns non-zero when any expected value is missing.
+resolved_state_current() {
+    local ns_ip="$1" base_domain="$2" internal_domain="$3" status
+    status=$($SUDO resolvectl status 2>/dev/null) || return 1
+    printf '%s\n' "$status" | grep -qF "$ns_ip" || return 1
+    printf '%s\n' "$status" | grep -qF "$base_domain" || return 1
+    printf '%s\n' "$status" | grep -qF "$internal_domain" || return 1
+    return 0
+}
 
-    # northstar binds :53 on the node WAN IP. Detect the default-route source.
-    local wan_ip
-    wan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}')
-    [ -z "$wan_ip" ] && wan_ip=$(ip -4 route show default 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}')
-    if [ -z "$wan_ip" ]; then
-        warn "Could not detect a WAN IP — skipping resolved split DNS"
-        warn "  Re-run once the WAN is up: sudo SETUP_STAGES=resolved $0"
-        return
-    fi
+# --- Confirm resolvconf placed Northstar first in the generated resolv.conf ---
+# Local-first ordering means Northstar must be the first `nameserver` line; the
+# retained upstream fallbacks follow it. Returns non-zero when Northstar is not
+# first or the Spinifex search domain is missing.
+resolvconf_state_current() {
+    local ns_ip="$1" base_domain="$2" resolv_conf="$3" first
+    $SUDO test -f "$resolv_conf" || return 1
+    first=$($SUDO grep -E '^[[:space:]]*nameserver[[:space:]]+' "$resolv_conf" 2>/dev/null \
+        | head -1 | awk '{print $2}')
+    [ "$first" = "$ns_ip" ] || return 1
+    $SUDO grep -qF "$base_domain" "$resolv_conf" || return 1
+    return 0
+}
 
-    # Default zones match `spx admin init` defaults; honour a custom
-    # default_domain if northstar.toml already exists (post-init re-run).
-    local base_domain="spx3.net" internal_domain="compute.internal"
-    local ns_toml=/etc/spinifex/northstar/northstar.toml
-    if $SUDO test -f "$ns_toml"; then
-        local cfg_domain
-        cfg_domain=$($SUDO grep -E '^[[:space:]]*default_domain[[:space:]]*=' "$ns_toml" 2>/dev/null \
-            | head -1 | sed -E 's/.*=[[:space:]]*"?([^"#]*[^"# ])"?.*/\1/')
-        [ -n "$cfg_domain" ] && base_domain="$cfg_domain"
-    fi
-
-    local dropin_dir=/etc/systemd/resolved.conf.d
+# --- Route the Spinifex zones through systemd-resolved ---
+# The "~" routing-domain prefix restricts the DNS= server to exactly the Spinifex
+# zones (resolved.conf(5)); every other name keeps using the link/DHCP DNS.
+# Idempotent, and verifies the running resolver before reporting success.
+setup_host_dns_resolved() {
+    local ns_ip="$1" base_domain="$2" internal_domain="$3"
+    local dropin_dir="${RESOLVED_DROPIN_DIR:-/etc/systemd/resolved.conf.d}"
     local dropin="$dropin_dir/spinifex-dns.conf"
+
     local tmp
     tmp=$(mktemp)
     cat > "$tmp" << EOF
 # Generated by setup.sh — route the Spinifex authoritative zones to the local
-# northstar resolver on the node WAN IP. The "~" routing-domain prefix restricts
-# this DNS= server to exactly these zones; all other names use the link DNS.
-# northstar binds <wan>:53 (not 127.0.0.1), so DNS= is the WAN IP.
+# Northstar resolver. The "~" routing-domain prefix restricts this DNS= server to
+# exactly these zones; all other names use the link DNS. The address is the ":53"
+# listener from northstar.toml (the rendered AdvertiseIP).
 [Resolve]
-DNS=${wan_ip}
+DNS=${ns_ip}
 Domains=~${base_domain} ~${internal_domain}
 EOF
 
-    # Skip the resolved restart when nothing changed (idempotent re-runs).
-    if $SUDO test -f "$dropin" && $SUDO cmp -s "$tmp" "$dropin"; then
+    # Skip the restart when the drop-in is unchanged and the resolver already
+    # reflects it (idempotent re-runs).
+    if $SUDO test -f "$dropin" && $SUDO cmp -s "$tmp" "$dropin" \
+        && resolved_state_current "$ns_ip" "$base_domain" "$internal_domain"; then
         rm -f "$tmp"
-        info "Host split DNS already current: ${base_domain} + ${internal_domain} -> ${wan_ip}:53"
+        info "Host DNS already current: ${base_domain} + ${internal_domain} -> ${ns_ip}:53 (systemd-resolved)"
         return
     fi
 
     $SUDO mkdir -p "$dropin_dir"
     $SUDO install -m 0644 "$tmp" "$dropin"
     rm -f "$tmp"
-    $SUDO systemctl restart systemd-resolved 2>/dev/null || true
-    info "Host split DNS: ${base_domain} + ${internal_domain} -> ${wan_ip}:53 (northstar)"
+    $SUDO systemctl restart systemd-resolved \
+        || fatal "systemd-resolved restart failed — host DNS not applied"
+
+    resolved_state_current "$ns_ip" "$base_domain" "$internal_domain" \
+        || fatal "systemd-resolved did not apply the Spinifex zones (${base_domain}, ${internal_domain} -> ${ns_ip})"
+    info "Host DNS: ${base_domain} + ${internal_domain} -> ${ns_ip}:53 (systemd-resolved)"
+}
+
+# --- Make Northstar the first resolver via resolvconf ---
+# resolvconf assembles /etc/resolv.conf head-first, so writing Northstar to the
+# head fragment puts it ahead of the retained upstream fallbacks (resolv.conf.d/
+# base and any DHCP-supplied servers). Northstar forwards or REFUSEs
+# non-authoritative names, so glibc falls through to those fallbacks. Idempotent,
+# and verifies the regenerated resolv.conf before reporting success.
+setup_host_dns_resolvconf() {
+    local ns_ip="$1" base_domain="$2" internal_domain="$3"
+    local head="${RESOLVCONF_HEAD:-/etc/resolvconf/resolv.conf.d/head}"
+    local resolv_conf="${RESOLV_CONF:-/etc/resolv.conf}"
+
+    local tmp
+    tmp=$(mktemp)
+    cat > "$tmp" << EOF
+# Generated by setup.sh — Northstar is the first host resolver so the Spinifex
+# zones resolve locally. The retained upstream nameservers (resolv.conf.d/base
+# and DHCP) stay in place as fallbacks for names Northstar forwards or REFUSEs.
+nameserver ${ns_ip}
+search ${base_domain} ${internal_domain}
+EOF
+
+    if $SUDO test -f "$head" && $SUDO cmp -s "$tmp" "$head" \
+        && resolvconf_state_current "$ns_ip" "$base_domain" "$resolv_conf"; then
+        rm -f "$tmp"
+        info "Host DNS already current: Northstar ${ns_ip} first in ${resolv_conf} (resolvconf)"
+        return
+    fi
+
+    $SUDO mkdir -p "$(dirname "$head")"
+    $SUDO install -m 0644 "$tmp" "$head"
+    rm -f "$tmp"
+    $SUDO resolvconf -u || fatal "resolvconf -u failed — host DNS not applied"
+
+    resolvconf_state_current "$ns_ip" "$base_domain" "$resolv_conf" \
+        || fatal "resolvconf did not place Northstar (${ns_ip}) first in ${resolv_conf}"
+    info "Host DNS: Northstar ${ns_ip} first in ${resolv_conf}, upstream retained (resolvconf)"
+}
+
+# --- Configure host DNS to reach the local Northstar resolver ---
+# Points the host resolver at the node-local Northstar listener so `kubectl`, the
+# AWS SDK and other host tooling can resolve the Spinifex authoritative zones. The
+# listener address and zones come from the rendered northstar.toml, so this stage
+# requires it — without the config (pre-init, or controller-owned formation) host
+# DNS is deferred until it exists. systemd-resolved gets route-only zones;
+# resolvconf hosts get Northstar as the first resolver. Failures are surfaced,
+# not suppressed. NORTHSTAR_REQUIRED=1 marks the caller that has already run
+# formation (firstboot owning `spx admin init`): for it, a missing config or a
+# host with no resolver manager is a hard error rather than a benign defer, since
+# both would leave the node with broken host DNS while reporting success.
+setup_host_dns() {
+    stage "configuring host DNS for the Spinifex zones"
+
+    # ISO chroot has no live resolver to reconfigure; firstboot runs this stage
+    # after formation writes northstar.toml.
+    if [ "${ISO_BUILD:-0}" = "1" ]; then
+        info "Host DNS skipped (ISO_BUILD=1; firstboot configures it after formation)"
+        return
+    fi
+
+    local ns_toml="${NORTHSTAR_TOML:-/etc/spinifex/northstar/northstar.toml}"
+    if ! $SUDO test -f "$ns_toml"; then
+        [ "${NORTHSTAR_REQUIRED:-0}" = "1" ] \
+            && fatal "northstar.toml not found at $ns_toml after formation — host DNS not configured"
+        info "northstar.toml not found — deferring host DNS until after cluster formation"
+        info "  Re-run once Northstar is configured: sudo SETUP_STAGES=resolved $0"
+        return
+    fi
+
+    # The ":53" listener is the address Northstar binds (the rendered
+    # AdvertiseIP); use it rather than re-detecting the WAN IP.
+    local ns_ip
+    ns_ip=$(northstar_listen_ip "$ns_toml") \
+        || fatal "Could not parse a :53 listener from $ns_toml — host DNS not configured"
+
+    # Zones Northstar is authoritative for; fall back to the `spx admin init`
+    # defaults if the keys are somehow absent.
+    local base_domain internal_domain
+    base_domain=$(northstar_toml_string default_domain "$ns_toml")
+    internal_domain=$(northstar_toml_string internal_domain "$ns_toml")
+    [ -z "$base_domain" ] && base_domain="spx3.net"
+    [ -z "$internal_domain" ] && internal_domain="compute.internal"
+
+    # systemd-resolved is preferred when active; otherwise fall back to
+    # resolvconf, the manager the ISO ships. A host with neither must be pointed
+    # at the node :53 by hand — surface that rather than skipping silently.
+    if $SUDO systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        setup_host_dns_resolved "$ns_ip" "$base_domain" "$internal_domain"
+    elif command -v resolvconf >/dev/null 2>&1; then
+        setup_host_dns_resolvconf "$ns_ip" "$base_domain" "$internal_domain"
+    else
+        # The ISO ships resolvconf, so the firstboot-owned path should never land
+        # here; if it does the image is broken and must fail loudly.
+        [ "${NORTHSTAR_REQUIRED:-0}" = "1" ] \
+            && fatal "No supported resolver manager (systemd-resolved or resolvconf) — host DNS not configured"
+        warn "No supported resolver manager (systemd-resolved or resolvconf) — host DNS not configured"
+        warn "  Forward ${base_domain} and ${internal_domain} to ${ns_ip}:53 on this host manually"
+    fi
 }
 
 # --- Main ---
@@ -903,7 +1029,7 @@ main() {
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
     stage_enabled swap       && setup_swap
-    stage_enabled resolved   && setup_resolved_dns
+    stage_enabled resolved   && setup_host_dns
 
     # Migrations are only safe on a live system (need a running NATS and a
     # persisted config file). Skip under ISO_BUILD and under any explicit

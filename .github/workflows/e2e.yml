@@ -26,6 +26,9 @@ on:
 permissions:
   contents: read
   statuses: write
+  # actions: read lets the otel-job-id action look up a job's numeric id via
+  # the Actions API — github.job is only the YAML key, no context exposes it.
+  actions: read
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
@@ -78,10 +81,12 @@ jobs:
     # here, before this job provisions a tofu env or pays the Spinifex install.
     #
     # The dispatch check gates on exactly the suites this job's Run step
-    # allow-lists (single|iam|cert|eks|ecs|storagegrowth|partialblock). Gating
-    # on a suite the job won't run — lb, which only executes in the multinode
-    # job — would provision a tofu VM and pay the Spinifex install only to run
-    # nothing and tear down. Push triggers keep running via the null-check on
+    # allow-lists, i.e. E2E_SUITES_SINGLE in .github/scripts/suite-sets.sh —
+    # an `if:` expression cannot source that file, so this one list is
+    # hand-mirrored and must be updated with it. Gating on a suite the job
+    # won't run — lb, which only executes in the multinode job — would
+    # provision a tofu VM and pay the Spinifex install only to run nothing and
+    # tear down. Push triggers keep running via the null-check on
     # inputs.suites.
     if: needs.integration.result == 'success' && (github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth') || contains(github.event.inputs.suites, 'e2e-partialblock'))
     runs-on: [self-hosted, ci-single]
@@ -89,6 +94,12 @@ jobs:
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}
+      # Job-level env wins over the workflow-level default. This job and
+      # e2e_multi share one run id and both name their hosts node1/node2/node3,
+      # so without ci.cell their telemetry collapses into one bucket. This job
+      # is where "Bootstrap via Binary Install" bakes SPINIFEX_OTEL_ATTRS into
+      # the VM's telemetry.env, so the label has to be set here.
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=single
     steps:
       - name: Reap Orphan Procs
         run: |
@@ -152,6 +163,13 @@ jobs:
           docker image prune -f || true
           docker buildx prune -af --filter "until=24h" || true
           docker system df || true
+
+      # Adds ci.job_id alongside ci.cell, before Bootstrap bakes the attrs into
+      # the VM, so a telemetry doc points back at this job's log directly.
+      - name: Resolve CI job id
+        uses: ./spinifex/.github/actions/otel-job-id
+        with:
+          job-name: Single-Node E2E
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
@@ -318,14 +336,11 @@ jobs:
           set +e
           # Allow-list, not a deny-list: a suite runs here only if named. Deny-lists
           # silently fan a newly added suite out to every job, which is how lb ended up
-          # running twice per e2e run.
-          #
-          # partialblock gates merges because it earned it, not because it is
-          # new: on one node, same binary and workload, it fails against the
-          # pre-fix engine (1758 of 8192 halves reverted a generation) and
-          # passes against the fixed one (0 of 8192). A suite that has never
-          # been shown to go red for the reason it claims does not belong here.
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE 'single|iam|cert|eks|ecs|storagegrowth|partialblock' | tr '\n' ' ')
+          # running twice per e2e run. The allow-list itself is shared with the other
+          # e2e workflows so the three cannot disagree about what a topology can run;
+          # suite-sets.sh also carries the per-suite rationale.
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE "${E2E_SUITES_SINGLE_RE}" | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no in-VM suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"
@@ -515,6 +530,9 @@ jobs:
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-multi-artifacts-${{ github.run_id }}
+      # See the matching note on e2e_single: ci.cell is what separates this
+      # job's 3-node telemetry from the single-node job's under one run id.
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=multi
     steps:
       - name: Reap Orphan Procs
         run: |
@@ -578,6 +596,12 @@ jobs:
           docker image prune -f || true
           docker buildx prune -af --filter "until=24h" || true
           docker system df || true
+
+      # See the matching note on e2e_single.
+      - name: Resolve CI job id
+        uses: ./spinifex/.github/actions/otel-job-id
+        with:
+          job-name: Multi-Node E2E
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
@@ -721,7 +745,8 @@ jobs:
         run: |
           set +e
           # Allow-list, not a deny-list — see the single-node job for why.
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE 'multinode|lb|cert' | tr '\n' ' ')
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE "${E2E_SUITES_MULTI_RE}" | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"

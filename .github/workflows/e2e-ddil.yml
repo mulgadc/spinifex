@@ -13,6 +13,9 @@ on:
 
 permissions:
   contents: read
+  # actions: read lets the otel-job-id action look up this job's numeric id via
+  # the Actions API — github.job is only the YAML key, no context exposes it.
+  actions: read
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
@@ -28,6 +31,10 @@ jobs:
     timeout-minutes: 60
     env:
       TOFU_LOG: /tmp/e2e-tofu-ddil-${{ github.run_id }}.log
+      # Job-level env wins over the workflow-level default. ci.cell=ddil marks
+      # this workflow's telemetry so a DDIL run's partition-induced errors are
+      # never mistaken for a healthy multi-node run's in the sink.
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=ddil
     steps:
       - name: Clean Workspace
         run: sudo rm -rf "$GITHUB_WORKSPACE"/*
@@ -71,6 +78,13 @@ jobs:
           fi
           echo "${BIN_DIR}" >> "${GITHUB_PATH}"
           "${BIN_DIR}/gotestsum" --version
+
+      # Adds ci.job_id alongside ci.cell, before Bootstrap bakes the attrs into
+      # the VMs, so a telemetry doc points back at this job's log directly.
+      - name: Resolve CI job id
+        uses: ./spinifex/.github/actions/otel-job-id
+        with:
+          job-name: DDIL Real Multi-Node
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster

@@ -142,4 +142,16 @@ if ! grep -qxF 'noipv4ll' /etc/dhcpcd.conf 2>/dev/null; then
     echo 'noipv4ll' >> /etc/dhcpcd.conf
 fi
 
+# Ignore the DHCP MTU (option 26). dhcpcd honours it by stamping the advertised
+# value onto every route it installs, and Linux prefers a route's MTU metric over
+# the device MTU — so the subnet's advertised MTU wins over the link MTU that
+# mulga-vpc-mtu pins, and the node advertises an MSS too large for the real path.
+# Large inbound segments then blackhole in the host netns (image pulls fail with
+# `TLS handshake timeout`) while pod traffic, sized off cni0, is unaffected.
+# mulga-vpc-mtu is the single source of truth for this node's MTU; this stops
+# dhcpcd re-stamping a different one on every lease renewal.
+if ! grep -qxF 'nooption interface_mtu' /etc/dhcpcd.conf 2>/dev/null; then
+    echo 'nooption interface_mtu' >> /etc/dhcpcd.conf
+fi
+
 echo "[eks-node-setup] done"

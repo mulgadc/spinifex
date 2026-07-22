@@ -33,6 +33,23 @@ func NewNClient4(timeout time.Duration) *NClient4Client {
 	return &NClient4Client{timeout: timeout}
 }
 
+// socketTimeout is the read deadline handed to nclient4 for one DORA. It must
+// track the caller's deadline: nclient4 races its own deadline against ctx and
+// the shorter one ends the attempt, so a fixed value below the caller's budget
+// silently truncates every window in Manager's retransmission schedule.
+func (c *NClient4Client) socketTimeout(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return c.timeout
+	}
+	// A deadline already in the past is left to ctx.Done(); nclient4 rejects a
+	// non-positive timeout, so keep the fallback rather than pass it through.
+	if remaining := time.Until(deadline); remaining > 0 {
+		return remaining
+	}
+	return c.timeout
+}
+
 func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Lease, error) {
 	if req.Bridge == "" {
 		return nil, fmt.Errorf("dhcp acquire: bridge is required")
@@ -73,7 +90,7 @@ func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Leas
 
 	client, err := nclient4.New(req.Bridge,
 		nclient4.WithHWAddr(req.HWAddr),
-		nclient4.WithTimeout(c.timeout),
+		nclient4.WithTimeout(c.socketTimeout(ctx)),
 		nclient4.WithRetry(nclient4Retries),
 	)
 	if err != nil {
@@ -113,7 +130,7 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 
 	client, err := nclient4.New(lease.Bridge,
 		nclient4.WithHWAddr(lease.HWAddr),
-		nclient4.WithTimeout(c.timeout),
+		nclient4.WithTimeout(c.socketTimeout(ctx)),
 		nclient4.WithRetry(nclient4Retries),
 	)
 	if err != nil {

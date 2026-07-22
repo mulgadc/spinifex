@@ -78,11 +78,12 @@ jobs:
     # here, before this job provisions a tofu env or pays the Spinifex install.
     #
     # The dispatch check gates on exactly the suites this job's Run step
-    # allow-lists (single|iam|cert|eks|ecs|storagegrowth). Gating on a suite the
-    # job won't run — lb, which only executes in the multinode job — would
-    # provision a tofu VM and pay the Spinifex install only to run nothing and
-    # tear down. Push triggers keep running via the null-check on inputs.suites.
-    if: needs.integration.result == 'success' && (github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth'))
+    # allow-lists (single|iam|cert|eks|ecs|storagegrowth|partialblock). Gating
+    # on a suite the job won't run — lb, which only executes in the multinode
+    # job — would provision a tofu VM and pay the Spinifex install only to run
+    # nothing and tear down. Push triggers keep running via the null-check on
+    # inputs.suites.
+    if: needs.integration.result == 'success' && (github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth') || contains(github.event.inputs.suites, 'e2e-partialblock'))
     runs-on: [self-hosted, ci-single]
     timeout-minutes: 50
     env:
@@ -318,7 +319,13 @@ jobs:
           # Allow-list, not a deny-list: a suite runs here only if named. Deny-lists
           # silently fan a newly added suite out to every job, which is how lb ended up
           # running twice per e2e run.
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE 'single|iam|cert|eks|ecs|storagegrowth' | tr '\n' ' ')
+          #
+          # partialblock is dispatchable but not yet in the default SUITES: it is
+          # a new regression test for an already-fixed bug, so it is expected to
+          # pass, and it should earn a place in the merge-gating set by first
+          # showing a green run and a demonstrated fail-first against a pre-fix
+          # viperblock rather than on the strength of being newly written.
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE 'single|iam|cert|eks|ecs|storagegrowth|partialblock' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no in-VM suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"

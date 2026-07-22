@@ -799,11 +799,13 @@ EOF
 # "0.0.0.0:5300,10.0.0.5:53"). The ":53" entry is the address Northstar actually
 # binds for the authoritative service — the rendered AdvertiseIP — so host DNS
 # reads it here instead of independently re-detecting the WAN IP. Prints the host
-# and returns 0 on success, or returns 1 when no ":53" endpoint is present.
+# and returns 0 on success, or returns 1 when the value is malformed or has no
+# ":53" endpoint — `sed -n .../p` prints nothing on a non-match (e.g. an unquoted
+# value) so garbage never masquerades as a parsed address.
 northstar_listen_ip() {
     local toml="$1" listen_val entry
     listen_val=$($SUDO grep -E '^[[:space:]]*listen[[:space:]]*=' "$toml" 2>/dev/null \
-        | head -1 | sed -E 's/.*=[[:space:]]*"([^"]*)".*/\1/' | tr -d '[:space:]')
+        | head -1 | sed -nE 's/.*=[[:space:]]*"([^"]*)".*/\1/p' | tr -d '[:space:]')
     local IFS=','
     for entry in $listen_val; do
         case "$entry" in
@@ -815,10 +817,13 @@ northstar_listen_ip() {
 
 # --- Read a quoted string value from a TOML file ---
 # Matches `key = "value"`, tolerating leading whitespace and trailing comments.
+# `sed -n .../p` prints nothing when the line is not a quoted assignment, so an
+# empty or malformed value yields empty (callers fall back to a default) rather
+# than the whole input line echoed back as garbage.
 northstar_toml_string() {
     local key="$1" toml="$2"
     $SUDO grep -E "^[[:space:]]*$key[[:space:]]*=" "$toml" 2>/dev/null \
-        | head -1 | sed -E 's/.*=[[:space:]]*"?([^"#]*[^"# ])"?.*/\1/'
+        | head -1 | sed -nE 's/.*=[[:space:]]*"([^"]*)".*/\1/p'
 }
 
 # --- Confirm systemd-resolved is serving the Spinifex zones via Northstar ---
@@ -934,7 +939,10 @@ EOF
 # requires it — without the config (pre-init, or controller-owned formation) host
 # DNS is deferred until it exists. systemd-resolved gets route-only zones;
 # resolvconf hosts get Northstar as the first resolver. Failures are surfaced,
-# not suppressed.
+# not suppressed. NORTHSTAR_REQUIRED=1 marks the caller that has already run
+# formation (firstboot owning `spx admin init`): for it, a missing config or a
+# host with no resolver manager is a hard error rather than a benign defer, since
+# both would leave the node with broken host DNS while reporting success.
 setup_host_dns() {
     stage "configuring host DNS for the Spinifex zones"
 
@@ -947,6 +955,8 @@ setup_host_dns() {
 
     local ns_toml="${NORTHSTAR_TOML:-/etc/spinifex/northstar/northstar.toml}"
     if ! $SUDO test -f "$ns_toml"; then
+        [ "${NORTHSTAR_REQUIRED:-0}" = "1" ] \
+            && fatal "northstar.toml not found at $ns_toml after formation — host DNS not configured"
         info "northstar.toml not found — deferring host DNS until after cluster formation"
         info "  Re-run once Northstar is configured: sudo SETUP_STAGES=resolved $0"
         return
@@ -974,6 +984,10 @@ setup_host_dns() {
     elif command -v resolvconf >/dev/null 2>&1; then
         setup_host_dns_resolvconf "$ns_ip" "$base_domain" "$internal_domain"
     else
+        # The ISO ships resolvconf, so the firstboot-owned path should never land
+        # here; if it does the image is broken and must fail loudly.
+        [ "${NORTHSTAR_REQUIRED:-0}" = "1" ] \
+            && fatal "No supported resolver manager (systemd-resolved or resolvconf) — host DNS not configured"
         warn "No supported resolver manager (systemd-resolved or resolvconf) — host DNS not configured"
         warn "  Forward ${base_domain} and ${internal_domain} to ${ns_ip}:53 on this host manually"
     fi

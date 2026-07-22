@@ -100,11 +100,13 @@ done`
 	}
 
 	// Host DNS runs after formation, which writes northstar.toml (the config the
-	// resolved stage reads for the :53 listener and zones). When a provisioning
-	// controller owns formation, it writes northstar.toml later and runs this
-	// stage itself, so firstboot must leave it deferred rather than run it
-	// against a missing config.
-	hostDNS := "SETUP_STAGES=resolved /usr/local/share/spinifex/setup.sh"
+	// resolved stage reads for the :53 listener and zones). NORTHSTAR_REQUIRED=1
+	// makes the stage fail loudly if that config or a resolver manager is missing
+	// here — after `spx admin init` it must exist, so its absence is a real error,
+	// not a defer that would let firstboot report success with broken host DNS.
+	// When a provisioning controller owns formation it writes northstar.toml later
+	// and runs this stage itself, so firstboot leaves it deferred instead.
+	hostDNS := "NORTHSTAR_REQUIRED=1 SETUP_STAGES=resolved /usr/local/share/spinifex/setup.sh"
 	if cfg.SkipFormation {
 		hostDNS = `echo "[firstboot] host DNS deferred to provisioning controller"`
 	}

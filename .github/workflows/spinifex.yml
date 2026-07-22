@@ -68,15 +68,6 @@ jobs:
       - name: Manifest check + drift lint
         run: make -C spinifex manifest-check manifest-lint
 
-      # In-process integration tier (gateway.SetupRoutes over embedded NATS
-      # JetStream). Runs here, on every PR, rather than only relying on
-      # e2e.yml's "Integration (front gate)" job: that job is push-triggered
-      # against main/dev on a self-hosted runner, so it never blocks a PR
-      # before merge. This step provisions nothing and completes in seconds,
-      # so it belongs as an ordinary required PR check, not a separate job.
-      - name: Run Integration Tests
-        run: make -C spinifex test-integration
-
       - name: Run Tests with Coverage
         run: make -C spinifex test-cover
 
@@ -85,6 +76,55 @@ jobs:
 
       - name: Check Diff Coverage
         run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
+
+  # In-process integration tier (gateway.SetupRoutes over embedded NATS
+  # JetStream). Its own job so it runs in parallel with the unit tiers rather
+  # than adding to their wall time, and it still blocks a PR — unlike e2e.yml's
+  # "Integration (front gate)" job, which is push-triggered against main/dev on
+  # a self-hosted runner and so never gates a PR before merge.
+  integration_tests:
+    name: Integration Tests
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7
+        with:
+          path: spinifex
+          fetch-depth: 2
+
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: spinifex
+
+      - name: Checkout Viperblock
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/viperblock
+          ref: ${{ steps.siblings.outputs.viperblock }}
+          path: viperblock
+
+      - name: Checkout Predastore
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: predastore
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          cache-dependency-path: "spinifex/go.sum"
+          go-version-file: "spinifex/go.mod"
+
+      - name: Setup Go Workspace
+        run: go work init ./spinifex ./viperblock ./predastore
+
+      - name: Run Integration Tests
+        run: make -C spinifex test-integration
 
   race_detection:
     name: Race Detection

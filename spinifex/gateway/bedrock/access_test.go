@@ -181,3 +181,63 @@ func TestGrantedCatalogEntry_ErrorClasses(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, selfHostTestModel, entry.ModelID)
 }
+
+// TestSeedAccountGrants_SeedsOnceThenRespectsRevoke is the whole point of the
+// seed marker: a fresh install gets a usable operator account, but an operator
+// who then revokes a grant does not have it restored by the next restart.
+func TestSeedAccountGrants_SeedsOnceThenRespectsRevoke(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	store := NewModelAccessStore(js, 1)
+	ctx := context.Background()
+	const account = "000000000001"
+
+	seeded, err := store.SeedAccountGrants(ctx, account, CatalogModelIDs())
+	require.NoError(t, err)
+	assert.True(t, seeded, "first call must seed")
+
+	models, err := store.List(ctx, account)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, CatalogModelIDs(), models)
+
+	require.NoError(t, store.Revoke(ctx, account, selfHostTestModel))
+
+	// A restart re-runs the seed; the marker must make it a no-op.
+	seeded, err = store.SeedAccountGrants(ctx, account, CatalogModelIDs())
+	require.NoError(t, err)
+	assert.False(t, seeded, "second call must not re-seed")
+
+	granted, err := store.Granted(ctx, account, selfHostTestModel)
+	require.NoError(t, err)
+	assert.False(t, granted, "a revoked grant must stay revoked across restarts")
+}
+
+// TestSeedAccountGrants_LeavesOtherAccountsDenied keeps the seed narrow: it is
+// a bootstrap convenience for the operator's account, not a way for every
+// account to end up with the catalog.
+func TestSeedAccountGrants_LeavesOtherAccountsDenied(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	store := NewModelAccessStore(js, 1)
+	ctx := context.Background()
+
+	_, err := store.SeedAccountGrants(ctx, "000000000001", CatalogModelIDs())
+	require.NoError(t, err)
+
+	granted, err := store.Granted(ctx, "000000000002", selfHostTestModel)
+	require.NoError(t, err)
+	assert.False(t, granted, "seeding the admin account must not grant a tenant account")
+}
+
+// TestSeedAccountGrants_MarkerIsNotAGrant guards the key namespaces: a marker
+// read back as a grant would show up as a bogus model ID in List.
+func TestSeedAccountGrants_MarkerIsNotAGrant(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	store := NewModelAccessStore(js, 1)
+	ctx := context.Background()
+
+	_, err := store.SeedAccountGrants(ctx, "000000000001", nil)
+	require.NoError(t, err)
+
+	models, err := store.List(ctx, "000000000001")
+	require.NoError(t, err)
+	assert.Empty(t, models, "the seed marker must not be listed as a grant")
+}

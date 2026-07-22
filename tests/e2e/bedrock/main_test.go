@@ -9,9 +9,10 @@
 //
 // Model access is deny-by-default, so the cluster's test account must hold
 // grants or every assertion here reduces to "empty catalog, access denied".
-// The bootstrap provisioning grants the admin account the full catalog; a
-// cluster brought up by hand needs
-// `spx admin ochre access grant --account-id <id> --all-models`.
+// awsgw seeds the platform admin account with the full catalog on first
+// start, so a suite running as that account needs no setup; running as a
+// tenant account needs
+// `spx admin ochre access grant --account-id <id> --all-models` first.
 package bedrock
 
 import (

@@ -40,6 +40,10 @@ on:
 
 permissions:
   contents: read
+  # actions: read lets the otel-job-id action look up a provision job's numeric
+  # id via the Actions API — github.job is only the YAML key, no context
+  # exposes it.
+  actions: read
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
@@ -136,6 +140,14 @@ jobs:
           docker image prune -f || true
           docker buildx prune -af --filter "until=24h" || true
           docker system df || true
+
+      # ci.job_id names the provision job, not the suite job that later drives
+      # the env: the suite legs share this env and its baked telemetry.env, so
+      # the provisioner is the only job the daemon telemetry can belong to.
+      - name: Resolve CI job id
+        uses: ./spinifex/.github/actions/otel-job-id
+        with:
+          job-name: Single env · provision
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
@@ -563,6 +575,12 @@ jobs:
           docker image prune -f || true
           docker buildx prune -af --filter "until=24h" || true
           docker system df || true
+
+      # See the matching note on single_provision.
+      - name: Resolve CI job id
+        uses: ./spinifex/.github/actions/otel-job-id
+        with:
+          job-name: Multi env · provision
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster

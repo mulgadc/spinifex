@@ -26,6 +26,9 @@ on:
 permissions:
   contents: read
   statuses: write
+  # actions: read lets the otel-job-id action look up a job's numeric id via
+  # the Actions API — github.job is only the YAML key, no context exposes it.
+  actions: read
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
@@ -89,6 +92,12 @@ jobs:
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}
+      # Job-level env wins over the workflow-level default. This job and
+      # e2e_multi share one run id and both name their hosts node1/node2/node3,
+      # so without ci.cell their telemetry collapses into one bucket. This job
+      # is where "Bootstrap via Binary Install" bakes SPINIFEX_OTEL_ATTRS into
+      # the VM's telemetry.env, so the label has to be set here.
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=single
     steps:
       - name: Reap Orphan Procs
         run: |
@@ -152,6 +161,13 @@ jobs:
           docker image prune -f || true
           docker buildx prune -af --filter "until=24h" || true
           docker system df || true
+
+      # Adds ci.job_id alongside ci.cell, before Bootstrap bakes the attrs into
+      # the VM, so a telemetry doc points back at this job's log directly.
+      - name: Resolve CI job id
+        uses: ./spinifex/.github/actions/otel-job-id
+        with:
+          job-name: Single-Node E2E
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
@@ -515,6 +531,9 @@ jobs:
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-multi-artifacts-${{ github.run_id }}
+      # See the matching note on e2e_single: ci.cell is what separates this
+      # job's 3-node telemetry from the single-node job's under one run id.
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=multi
     steps:
       - name: Reap Orphan Procs
         run: |
@@ -578,6 +597,12 @@ jobs:
           docker image prune -f || true
           docker buildx prune -af --filter "until=24h" || true
           docker system df || true
+
+      # See the matching note on e2e_single.
+      - name: Resolve CI job id
+        uses: ./spinifex/.github/actions/otel-job-id
+        with:
+          job-name: Multi-Node E2E
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster

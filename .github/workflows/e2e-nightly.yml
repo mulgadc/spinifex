@@ -73,29 +73,6 @@ jobs:
             echo "cell ${CELL} not in '${CELLS}' — subsequent steps will skip"
           fi
 
-      # Best-effort: github.job is this job's YAML key ("matrix"), not its
-      # numeric id, and no context exposes the id directly, so look it up by
-      # rendered job name via the Actions API before Bootstrap bakes
-      # SPINIFEX_OTEL_ATTRS into the VM's telemetry.env. Must never fail the
-      # job — on any lookup error or name mismatch, ci.job_id is simply
-      # omitted and the run proceeds with ci.cell alone.
-      - name: Resolve CI job id (best-effort)
-        if: steps.gate.outputs.selected == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          JOB_NAME: "cell-${{ matrix.cell }} (${{ matrix.topo }}/${{ matrix.net }}/${{ matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
-        run: |
-          set +e
-          JOB_ID=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate \
-            --jq ".jobs[] | select(.name == \"${JOB_NAME}\") | .id" 2>/dev/null | head -n1)
-          if [ -n "$JOB_ID" ]; then
-            echo "SPINIFEX_OTEL_ATTRS=${SPINIFEX_OTEL_ATTRS},ci.job_id=${JOB_ID}" >> "$GITHUB_ENV"
-            echo "resolved ci.job_id=${JOB_ID} for job '${JOB_NAME}'"
-          else
-            echo "::warning::could not resolve numeric job id for '${JOB_NAME}' — continuing without ci.job_id"
-          fi
-          exit 0
-
       - name: Clean Workspace
         if: steps.gate.outputs.selected == 'true'
         run: |
@@ -123,6 +100,16 @@ jobs:
         if: steps.gate.outputs.selected == 'true'
         with:
           path: spinifex
+
+      # Nine cells share one run id and every cell names its hosts
+      # node1/node2/node3, so ci.cell above separates them and ci.job_id here
+      # links each cell's telemetry to the job log that produced it. Runs
+      # before Bootstrap bakes SPINIFEX_OTEL_ATTRS into the VM's telemetry.env.
+      - name: Resolve CI job id
+        if: steps.gate.outputs.selected == 'true'
+        uses: ./spinifex/.github/actions/otel-job-id
+        with:
+          job-name: "cell-${{ matrix.cell }} (${{ matrix.topo }}/${{ matrix.net }}/${{ matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
 
       - name: Build Install Artifacts
         if: steps.gate.outputs.selected == 'true'

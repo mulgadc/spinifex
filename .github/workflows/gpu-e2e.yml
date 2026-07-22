@@ -88,7 +88,11 @@ env:
   # the GPU suite's own daemon-side spans are emitted by wattle's already-
   # configured obs-agent, not by this job.
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
-  SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
+  # ci.cell=gpu keeps this workflow's telemetry separable from the tofu-env
+  # workflows'. Nothing in this job bakes these attrs into a daemon (see the
+  # note above), so the label only takes effect once wattle's obs-agent is
+  # given them; there is deliberately no ci.job_id lookup for the same reason.
+  SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=gpu
   WATTLE_SSH_HOST: ${{ vars.WATTLE_SSH_HOST || '192.168.1.13' }}
   WATTLE_SSH_USER: ${{ vars.WATTLE_SSH_USER || 'tf-user' }}
   TEST_RUN: ${{ inputs.test_run || '' }}

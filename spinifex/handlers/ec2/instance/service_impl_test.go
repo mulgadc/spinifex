@@ -956,6 +956,27 @@ func TestDescribeInstances_FilterByInstanceID(t *testing.T) {
 	assert.Equal(t, "i-keep", *out.Reservations[0].Instances[0].InstanceId)
 }
 
+func TestDescribeInstances_ReservationGrouping(t *testing.T) {
+	reservation := &ec2.Reservation{ReservationId: aws.String("r-shared")}
+	instances := map[string]*vm.VM{
+		"i-first": {
+			ID: "i-first", Reservation: reservation,
+			Instance: &ec2.Instance{InstanceId: aws.String("i-first")},
+		},
+		"i-second": {
+			ID: "i-second", Reservation: reservation,
+			Instance: &ec2.Instance{InstanceId: aws.String("i-second")},
+		},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(instances), config: &config.Config{}}
+
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "r-shared", aws.StringValue(out.Reservations[0].ReservationId))
+	assert.Len(t, out.Reservations[0].Instances, 2)
+}
+
 func TestDescribeInstanceAttribute_MissingInstanceID(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
 	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
@@ -1227,6 +1248,57 @@ func TestDescribeTerminatedInstances_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-term1", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeKVInstances_FilteringGroupingAndIsolation(t *testing.T) {
+	owner := "111122223333"
+	reservation := &ec2.Reservation{ReservationId: aws.String("r-shared")}
+	first := &vm.VM{
+		ID: "i-first", AccountID: owner, Reservation: reservation,
+		Instance: &ec2.Instance{InstanceId: aws.String("i-first")},
+	}
+	second := &vm.VM{
+		ID: "i-second", AccountID: owner, Reservation: reservation,
+		Instance: &ec2.Instance{InstanceId: aws.String("i-second")},
+	}
+	other := &vm.VM{
+		ID: "i-other", AccountID: "999988887777",
+		Reservation: &ec2.Reservation{ReservationId: aws.String("r-other")},
+		Instance:    &ec2.Instance{InstanceId: aws.String("i-other")},
+	}
+	store := &fakeStoppedStore{
+		stopped:    []*vm.VM{first, second, other},
+		terminated: []*vm.VM{first, second, other},
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+
+	tests := []struct {
+		name string
+		call func(*ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error)
+	}{
+		{"stopped", func(input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
+			return svc.DescribeStoppedInstances(context.Background(), input, owner)
+		}},
+		{"terminated", func(input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
+			return svc.DescribeTerminatedInstances(context.Background(), input, owner)
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := tt.call(&ec2.DescribeInstancesInput{})
+			require.NoError(t, err)
+			require.Len(t, out.Reservations, 1)
+			assert.Equal(t, "r-shared", aws.StringValue(out.Reservations[0].ReservationId))
+			assert.Len(t, out.Reservations[0].Instances, 2)
+
+			out, err = tt.call(&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-second")}})
+			require.NoError(t, err)
+			require.Len(t, out.Reservations, 1)
+			require.Len(t, out.Reservations[0].Instances, 1)
+			assert.Equal(t, "i-second", aws.StringValue(out.Reservations[0].Instances[0].InstanceId))
+		})
+	}
 }
 
 func TestIsInstanceVisible(t *testing.T) {

@@ -1683,6 +1683,7 @@ func IsInstanceVisible(callerAccountID, ownerAccountID string) bool {
 func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
+			// tag:Key filters are handled after all field filters.
 			continue
 		}
 
@@ -1715,6 +1716,8 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 			}
 			continue
 		default:
+			// Filter name passed ParseFilters but has no case — treat as non-match
+			// to avoid silently ignoring it.
 			return false
 		}
 
@@ -1723,10 +1726,12 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 		}
 	}
 
+	// Check tag:Key filters via the instance's Tag slice.
 	tags := filterutil.EC2TagsToMap(ic.Tags)
 	return filterutil.MatchesTags(filters, tags)
 }
 
+// matchTagKey returns true if any tag key on the resource matches any of the filter values.
 func matchTagKey(tags []*ec2.Tag, values []string) bool {
 	for _, t := range tags {
 		if t.Key != nil && filterutil.MatchesAny(values, *t.Key) {
@@ -1736,6 +1741,7 @@ func matchTagKey(tags []*ec2.Tag, values []string) bool {
 	return false
 }
 
+// matchTagValue returns true if any tag value on the resource matches any of the filter values.
 func matchTagValue(tags []*ec2.Tag, values []string) bool {
 	for _, t := range tags {
 		if t.Value != nil && filterutil.MatchesAny(values, *t.Value) {

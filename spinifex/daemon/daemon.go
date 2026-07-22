@@ -868,12 +868,12 @@ func (d *Daemon) subscribeAll() error {
 		// and never re-forwards, so it goes straight to the service (no routing loop).
 		{fmt.Sprintf("ec2.start.%s", d.node), handleNATSRequest(d.instanceService.StartStoppedInstance), ""},
 		{"ec2.terminate", handleNATSRequest(d.instanceService.TerminateStoppedInstance), "spinifex-workers"},
-		{"ec2.DescribeStoppedInstances", d.handleEC2DescribeStoppedInstances, "spinifex-workers"},
-		{"ec2.DescribeTerminatedInstances", d.handleEC2DescribeTerminatedInstances, "spinifex-workers"},
+		{"ec2.DescribeStoppedInstances", handleNATSRequest(d.instanceService.DescribeStoppedInstances), "spinifex-workers"},
+		{"ec2.DescribeTerminatedInstances", handleNATSRequest(d.instanceService.DescribeTerminatedInstances), "spinifex-workers"},
 		// these fan out to all nodes and gateway aggregates the results. The
 		// handler only sees per-daemon local state (vmMgr/stoppedStore), so
 		// any queue-grouped routing produces 1/N false NotFound responses.
-		{"ec2.DescribeInstances", d.handleEC2DescribeInstances, ""},
+		{"ec2.DescribeInstances", handleNATSRequest(d.instanceService.DescribeInstances), ""},
 		{"ec2.DescribeInstanceStatus", handleNATSRequest(d.instanceService.DescribeInstanceStatus), ""},
 		{"ec2.DescribeInstanceTypes", handleNATSRequest(d.instanceService.DescribeInstanceTypes), ""},
 		{"ec2.DescribeInstanceAttribute", handleNATSRequest(d.instanceService.DescribeInstanceAttribute), ""},

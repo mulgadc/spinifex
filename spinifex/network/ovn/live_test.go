@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
+	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 )
 
 func ptr(s string) *string { return &s }
@@ -61,6 +62,36 @@ func TestNamedUUID(t *testing.T) {
 			got := namedUUID(tt.prefix, tt.input)
 			if got != tt.expected {
 				t.Errorf("namedUUID(%q, %q) = %q, want %q", tt.prefix, tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsEnsureProbeTimeout pins which failed transaction results are the
+// idempotent ensure path rather than a fault, since only the former is
+// downgraded out of the ERROR log.
+func TestIsEnsureProbeTimeout(t *testing.T) {
+	ops := []ovsdb.Operation{
+		{Op: ovsdb.OperationWait, Table: "Logical_Router"},
+		{Op: ovsdb.OperationInsert, Table: "Logical_Router"},
+	}
+
+	tests := []struct {
+		name      string
+		index     int
+		resultErr string
+		want      bool
+	}{
+		{"ensure probe found existing row", 0, "timed out", true},
+		{"wait op failed for another reason", 0, "constraint violation", false},
+		{"insert op timed out", 1, "timed out", false},
+		{"index past the op list", 5, "timed out", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isEnsureProbeTimeout(ops, tt.index, tt.resultErr); got != tt.want {
+				t.Errorf("isEnsureProbeTimeout(ops, %d, %q) = %v, want %v", tt.index, tt.resultErr, got, tt.want)
 			}
 		})
 	}

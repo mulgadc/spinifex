@@ -57,6 +57,10 @@ func (c *LiveClient) ensureNamedRowOps(table, name string, createObj model.Model
 	return append([]ovsdb.Operation{waitOp}, createOps...), nil
 }
 
+// waitTimedOutError is the result ovsdb reports for a wait-op whose condition
+// was not met within its timeout.
+const waitTimedOutError = "timed out"
+
 // transactOps runs ops as one transaction and checks per-op results.
 func (c *LiveClient) transactOps(ctx context.Context, ops []ovsdb.Operation) error {
 	results, err := c.client.Transact(ctx, ops...)
@@ -66,16 +70,31 @@ func (c *LiveClient) transactOps(ctx context.Context, ops []ovsdb.Operation) err
 	_, err = ovsdb.CheckOperationResults(results, ops)
 	if err != nil {
 		for i, r := range results {
-			if r.Error != "" {
-				opTable := ""
-				if i < len(ops) {
-					opTable = fmt.Sprintf("%s on %s", ops[i].Op, ops[i].Table)
-				}
-				slog.Error("OVSDB operation failed", "index", i, "op", opTable, "error", r.Error, "details", r.Details)
+			if r.Error == "" {
+				continue
 			}
+			opTable := ""
+			if i < len(ops) {
+				opTable = fmt.Sprintf("%s on %s", ops[i].Op, ops[i].Table)
+			}
+			// ensureNamedRowOps' probe times out precisely when the row it
+			// guards already exists, which is the common idempotent path — the
+			// caller handles it by reusing the existing row. Logging that at
+			// ERROR made every re-ensure look like a fault.
+			if isEnsureProbeTimeout(ops, i, r.Error) {
+				slog.Debug("OVSDB ensure probe found existing row", "index", i, "op", opTable)
+				continue
+			}
+			slog.Error("OVSDB operation failed", "index", i, "op", opTable, "error", r.Error, "details", r.Details)
 		}
 	}
 	return err
+}
+
+// isEnsureProbeTimeout reports whether results[i] is ensureNamedRowOps' wait-op
+// failing because the named row is already present.
+func isEnsureProbeTimeout(ops []ovsdb.Operation, i int, resultErr string) bool {
+	return i < len(ops) && ops[i].Op == ovsdb.OperationWait && resultErr == waitTimedOutError
 }
 
 // namedUUID builds a valid OVSDB named-uuid by replacing non-[_a-zA-Z0-9]

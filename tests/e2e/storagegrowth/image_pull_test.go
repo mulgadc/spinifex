@@ -1184,13 +1184,8 @@ func captureImagePullSample(t *testing.T, tgt harness.SSHTarget, ssh *harness.Pe
 		s.GuestUsedBytes = v
 	}
 
-	duCtx, duCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	duOut, duErr := ssh.Run(duCtx, wanHost, fmt.Sprintf("sudo du -s --block-size=1 %s 2>/dev/null | cut -f1", predastoreBaseDir))
-	duCancel()
-	if duErr != nil {
-		t.Logf("storagegrowth: host du via PeerSSH on %s: %v", wanHost, duErr)
-	} else if v, perr := parseLastIntField(string(duOut)); perr != nil {
-		t.Logf("storagegrowth: parse host du output %q: %v", duOut, perr)
+	if v, err := hostPredastoreAllocatedBytes(ssh, wanHost); err != nil {
+		t.Logf("storagegrowth: host du via PeerSSH on %s: %v", wanHost, err)
 	} else {
 		s.HostAllocatedBytes = v
 	}
@@ -1314,6 +1309,32 @@ func parseLastIntField(out string) (int64, error) {
 		return 0, fmt.Errorf("no output")
 	}
 	return strconv.ParseInt(fields[len(fields)-1], 10, 64)
+}
+
+// hostPredastoreAllocatedBytes reads predastoreBaseDir's total allocated
+// bytes on the node at wanHost, over PeerSSH. This is the one measurement
+// that actually works against a live deployment: it needs no S3 credential
+// at all, only SSH access to the node, unlike a per-volume S3 listing of the
+// backend bucket (see assertNPassBackendByteDelta in storage_growth_test.go
+// for why that path is unusable here).
+//
+// The number returned is NODE-WIDE, not attributable to any single volume --
+// du has no concept of which volume a chunk object belongs to, it only sees
+// bytes on disk. Callers that need a per-workload signal must take two
+// readings and use the delta, and must be able to argue nothing else was
+// writing to the node in between.
+func hostPredastoreAllocatedBytes(ssh *harness.PeerSSH, wanHost string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := ssh.Run(ctx, wanHost, fmt.Sprintf("sudo du -s --block-size=1 %s 2>/dev/null | cut -f1", predastoreBaseDir))
+	if err != nil {
+		return 0, fmt.Errorf("du %s via PeerSSH: %w", predastoreBaseDir, err)
+	}
+	v, perr := parseLastIntField(string(out))
+	if perr != nil {
+		return 0, fmt.Errorf("parse du output %q: %w", out, perr)
+	}
+	return v, nil
 }
 
 // writeImagePullResult persists the workload record at the path named by

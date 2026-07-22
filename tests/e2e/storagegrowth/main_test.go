@@ -15,21 +15,40 @@
 //
 // That is a different fault from the *overwrite-orphan* leak, where a key is
 // rewritten in place and the superseded extent is never tombstoned, so
-// compaction can never find it. Keeping the two apart is the whole point, and
-// it is why this package does not measure. The two leaks are distinguished
-// precisely by predastore's own live-versus-dead split: unreferenced-live bytes
-// inflate live totals, overwrite-orphan bytes inflate dead totals. A host-side
-// `du` reports one number that mixes them, which cannot separate the target from
-// the confound — and this workload drives both at once, because the drain each
-// pass forces also rewrites the checkpoint map in place. So the backend is
-// measured out of band by a tool that reads predastore's accounting directly.
-// That tool does not exist in a standalone spinifex checkout, and depending on
-// it here would break this suite's CI.
+// compaction can never find it. Keeping the two apart matters for attributing
+// blame within a leak, and that attribution is why this package's own
+// in-process check stops at a coarse pass/fail gate rather than a full
+// breakdown. The two leaks are distinguished precisely by predastore's own
+// live-versus-dead split: unreferenced-live bytes inflate live totals,
+// overwrite-orphan bytes inflate dead totals. A host-side `du` reports one
+// number that mixes them, which cannot separate the target from the confound
+// — and this workload drives both at once, because the drain each pass
+// forces also rewrites the checkpoint map in place. Splitting that mix
+// requires a tool that reads predastore's live-versus-dead accounting
+// directly; that tool does not exist in a standalone spinifex checkout, and
+// depending on it here would break this suite's CI.
 //
-// The division of labour: this package drives the guest and reports what it did
-// (see npassWorkload); the measurement step reads that record for the measured
-// denominator and supplies the backend numbers. Run standalone, the workload
-// still asserts the guest-side invariants it can see on its own.
+// What this package's own tests DO assert on, in-process, is the coarser
+// signal a node-wide `du` delta across the workload can still catch: the
+// combined live+dead footprint growing well beyond the RS-erasure floor
+// (see assertNPassBackendByteDelta in storage_growth_test.go). A per-volume
+// S3 listing of the volume's own chunk prefix — what this suite originally
+// used, and what the external tool below also reads — turned out to be
+// unusable against a live deployment: the internal chunk bucket is owned by
+// a system account distinct from the tenant-scoped identity this harness
+// authenticates as, and predastore's same-account bucket-ownership check has
+// no cross-account bucket-policy escape hatch, so every such listing fails
+// closed with AccessDenied regardless of IAM grants. `du` needs no S3
+// credential at all, only SSH to the node, which is why it is what this
+// package can actually run itself.
+//
+// The division of labour: this package drives the guest, runs its own
+// coarse node-wide gate, and reports what it did (see npassWorkload); an
+// external measurement step reads that record for the measured denominator
+// and supplies the fine-grained live-versus-dead backend breakdown this
+// package cannot produce on its own. Run standalone, the workload still
+// asserts every guest-side invariant, and the coarse gate, that it can see
+// on its own.
 //
 // This is its own package rather than living in single/ or multinode/:
 // single/ shares one singleton instance across the whole package that a

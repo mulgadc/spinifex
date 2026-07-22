@@ -3,7 +3,6 @@
 package storagegrowth
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -55,18 +54,63 @@ const (
 	// test PASS. A handoff written there would exist only for runs that failed
 	// — precisely inverted from what a measurement step needs.
 	npassResultPathEnv = "SPINIFEX_STORAGEGROWTH_RESULT_PATH"
+
+	// npassBackendByteAccountingTolerance is the ceiling ratio of node-wide
+	// predastore-allocated-byte growth to guest-written logical bytes a
+	// healthy N-pass run may show.
+	//
+	// The floor is viperblock's own encoding overhead, not slack for a leak:
+	// chunks are written under Reed-Solomon 2+1 erasure coding, which splits
+	// each object into two data shards plus one parity shard of the same
+	// size -- 1.5x the logical payload, not 3x replication -- and every
+	// block is additionally framed with a 16-byte AES-GCM tag.
+	//
+	// That 1.5x floor is a precondition, not a universal constant. It holds
+	// because this suite provisions RS(2,1): cmd/spinifex/cmd/templates/
+	// predastore.toml's [rs] block defaults to data=2, parity=1. The same
+	// template documents RS(3,2) as the production recommendation, whose
+	// floor is 5/3 = ~1.667x and would leave only ~12% headroom under the
+	// ceiling below instead of the ~25% intended. Recompute this value if the
+	// suite is ever pointed at a different RS profile rather than assuming
+	// the band still holds.
+	//
+	// A healthy, fully-GC'd volume settles at ~1.5x and does not go
+	// materially above it. The tolerance widens that floor by 25% (to 1.875x) to
+	// absorb two effects that are real but not leaks: every chunk pays a
+	// fixed header regardless of how many blocks it packs (pulling a
+	// sparse volume's ratio up), and the tail chunk of any write run is
+	// under-packed by construction (a chunk flushes on full or on drain,
+	// so the last one of a run is real, unavoidable overhead). Both shrink
+	// as a proportion of the total as the workload's footprint grows, so a
+	// large workload should sit close to the bare floor and a small one
+	// gets the extra headroom it actually needs.
+	//
+	// This does not attempt to catch the slow, bounded residual that a
+	// future partial-chunk compaction pass would close -- only the
+	// unbounded-growth shape the storage-growth incident produced, where
+	// a leak multiplies with every overwrite pass instead of settling.
+	//
+	// Applying this floor to a node-wide `du` delta (rather than a per-volume
+	// S3 listing, see assertNPassBackendByteDelta) is only sound because the
+	// delta is measured tightly around this workload's own passes on a
+	// dedicated, single-volume, serial environment -- nothing else on the
+	// node is expected to write to predastore's store in that window. Any
+	// concurrent writer (another suite, another volume, a background GC/
+	// compaction pass) would inflate or shrink the delta for reasons that
+	// have nothing to do with this workload, and the ratio below would no
+	// longer mean what it claims to.
+	npassBackendByteAccountingTolerance = 1.875
 )
 
 // npassWorkload records what one invocation of the N-pass workload did. It is
-// the whole contract with whatever measures the backing store afterwards.
+// the whole contract with whatever measures the backing store afterwards,
+// beyond this suite's own coarse in-process gate (assertNPassBackendByteDelta).
 //
-// This suite deliberately reports rather than measures. The guest-side
-// quantities below are the ones only a guest can know; the backend's byte
-// cost is measured out of band by a tool that can read predastore's own
-// live-versus-dead accounting, which is a distinction no host-side `du` can
-// make and which is the entire point of the exercise. Coupling this test to
-// that tool would also break a standalone spinifex checkout, where it does
-// not exist.
+// The guest-side quantities below are the ones only a guest can know; a
+// live-versus-dead breakdown of the backend's byte cost -- a distinction no
+// host-side `du` can make -- is measured out of band by a tool that can read
+// predastore's own accounting directly. Coupling this test to that tool would
+// also break a standalone spinifex checkout, where it does not exist.
 //
 // GuestUsedBytes is measured, never inferred. It is the filesystem's own
 // used-bytes count after the write, so it includes ext4 metadata as well as
@@ -133,6 +177,16 @@ func TestNPassOverwrite(t *testing.T) {
 	harness.Detail(t, "passes", passes, "extent_mib", extentMiB, "instance", instanceID,
 		"volume", volID, "retain_volume", retain)
 
+	// Baseline predastore's node-wide allocated bytes immediately before the
+	// passes start, and read it again immediately after they finish, so the
+	// delta below brackets this workload's own writes as tightly as
+	// possible. See assertNPassBackendByteDelta for why this must be a
+	// delta rather than an absolute snapshot, and why the window must stay
+	// tight.
+	ssh := harness.NewPeerSSH()
+	before, err := hostPredastoreAllocatedBytes(ssh, fix.Env.WANHost)
+	require.NoErrorf(t, err, "backend byte accounting: baseline node du before passes")
+
 	w := runNPassOverwrite(t, fix, tgt, instanceID, volID, passes, extentMiB)
 	w.Retained = retain
 	writeNPassResult(t, w)
@@ -140,36 +194,64 @@ func TestNPassOverwrite(t *testing.T) {
 	harness.Detail(t, "passes_completed", w.Passes, "guest_used_bytes", w.GuestUsedBytes,
 		"guest_used_per_pass", fmt.Sprint(w.GuestUsedPerPass))
 
-	// In-process backend byte accounting, run before any cleanup purges the
-	// volume (createWorkloadVolume's t.Cleanup, registered above, runs after
-	// this test body returns regardless of retain). This is the fail-first
-	// demonstration for the teardown byte-accounting hook in
-	// harness/backend_accounting.go: if superseded chunks from the earlier
-	// passes are never reclaimed, the backend footprint is N times the final
-	// pass's guest-used bytes rather than settling at the erasure floor, and
-	// the assertion below catches that shape without needing vbrefscan's
-	// out-of-band scoring pass. It complements, not replaces, the
-	// RETAIN_VOLUME external-measurement path: that path attributes *which*
-	// chunks are garbage on a volume kept alive for vbrefscan; this one is a
-	// pass/fail gate that runs on every invocation, retained or not.
-	assertNPassBackendByteAccounting(t, fix, volID, w.GuestUsedBytes)
+	after, err := hostPredastoreAllocatedBytes(ssh, fix.Env.WANHost)
+	require.NoErrorf(t, err, "backend byte accounting: node du after passes")
+
+	// This is the fail-first demonstration for the storage-growth leak: if
+	// superseded chunks from the earlier passes are never reclaimed, the
+	// backend footprint grows by N times the final pass's guest-used bytes
+	// rather than settling at the erasure floor, and the delta below catches
+	// that shape without needing vbrefscan's out-of-band scoring pass. It
+	// complements, not replaces, the RETAIN_VOLUME external-measurement
+	// path: that path attributes *which* chunks are garbage on a volume kept
+	// alive for vbrefscan; this one is a pass/fail gate that runs on every
+	// invocation, retained or not.
+	assertNPassBackendByteDelta(t, before, after, w.GuestUsedBytes)
 }
 
-// assertNPassBackendByteAccounting snapshots volID's backend chunk footprint
-// and asserts it against guestWrittenBytes via the shared teardown
-// byte-accounting tolerance (harness.BackendByteAccountingTolerance). Talks
-// to predastore's S3 endpoint directly on fix.Env.WANHost, the same
-// endpoint/credential resolution the harness's other direct-predastore
-// helpers use (see harness/predastore.go).
-func assertNPassBackendByteAccounting(t *testing.T, fix *Fixture, volID string, guestWrittenBytes int64) {
+// assertNPassBackendByteDelta asserts that predastore's node-wide allocated
+// bytes grew, across the N-pass workload, by no more than
+// npassBackendByteAccountingTolerance times guestWrittenBytes.
+//
+// This measures via `du` on the node (hostPredastoreAllocatedBytes) rather
+// than listing the volume's own S3 chunk prefix. A per-volume S3 listing is
+// what this suite originally used and is what vbrefscan itself reads, but it
+// is not usable here: the internal bucket EBS volume chunks live under is
+// owned by a system account distinct from the tenant-scoped identity this
+// harness authenticates as, predastore enforces a same-account
+// bucket-ownership check independent of and on top of any IAM policy grant,
+// and cross-account bucket-policy or ACL grants are not implemented -- every
+// listing attempt fails with AccessDenied regardless of what IAM policy the
+// caller holds. There is also no usable filesystem fallback: predastore's
+// distributed backend stores objects in badger plus shard nodes, not a tree
+// keyed by object name, so there is nothing under predastoreBaseDir to
+// attribute to a single volume by path.
+//
+// `du` over predastoreBaseDir is therefore the finest-grained measurement
+// actually available, and it is NODE-WIDE: it cannot distinguish this
+// volume's bytes from any other write happening on the same node. The before/
+// after delta (rather than an absolute reading) is what makes the number
+// mean anything at all, and even the delta is only valid because this
+// workload runs serially against a single volume on a dedicated environment
+// -- nothing else is expected to write to predastore's store in the window
+// between the two samples. This approach would be invalid under concurrency:
+// a second suite or a background compaction pass writing to the same node in
+// that window would be silently attributed to this workload's ratio.
+func assertNPassBackendByteDelta(t *testing.T, before, after, guestWrittenBytes int64) {
 	t.Helper()
-	bucket := os.Getenv("SPINIFEX_PREDASTORE_BUCKET")
-	if bucket == "" {
-		bucket = "predastore"
-	}
-	snap, err := harness.SnapshotVolumeBackendBytes(context.Background(), fix.Env.WANHost, bucket, volID)
-	require.NoErrorf(t, err, "backend byte accounting: snapshot %s before purge", volID)
-	harness.AssertBackendByteAccounting(t, snap, guestWrittenBytes)
+	require.Positivef(t, guestWrittenBytes,
+		"backend byte accounting: guestWrittenBytes must be positive, got %d -- the denominator every ratio divides by is unusable",
+		guestWrittenBytes)
+
+	delta := after - before
+	ratio := float64(delta) / float64(guestWrittenBytes)
+	harness.Detail(t, "backend_allocated_bytes_before", before, "backend_allocated_bytes_after", after,
+		"backend_allocated_bytes_delta", delta, "guest_written_bytes", guestWrittenBytes,
+		"ratio", fmt.Sprintf("%.3f", ratio))
+
+	require.LessOrEqualf(t, ratio, npassBackendByteAccountingTolerance,
+		"backend byte accounting: node predastore allocated bytes grew %d across the N-pass workload, %.2fx guest-written %d bytes -- exceeds the %.3fx RS-erasure-floor tolerance; backend growth looks unbounded, not settled at the floor",
+		delta, ratio, guestWrittenBytes, npassBackendByteAccountingTolerance)
 }
 
 // runNPassOverwrite drives n complete format+write+fsync+detach cycles against

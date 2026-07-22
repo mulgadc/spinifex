@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -26,6 +27,20 @@ const testED25519PubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6U
 
 // Valid RSA public key for import tests (generated locally, 2048-bit).
 const testRSAPubKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDP9LrByKWpgbX+prxBwnlf7lrmI5AfDwuiCofuvOAzt9/PwIDMMIAhlvlpm09jjOuuH/MRQApJB5A714Auv+hBKVK0lCq9KcTrnKZOpRj2aGgIZgaoO6P/POoZc+kBf9Y/GP18DCKc4y/XyBsp69dPP6XRdYBlEdeIeVZdgCPYrM7s5FjT7aML2ba2Y2EvH116hPxv+nJZGwM6yqWxWRyTOoNMMTAfNYmoKkNy2zC1FARUyqDwumJ2z5Fvo4ZdN1qoFPOsfPc3iB0NUtSZbLU1awScvHb0rwR5PRnelTZ3Nbkw8I8A0IAhBTE5veW9D38hDIJhRd4nW73BUhgmzDL7"
+
+// Well-formed ECDSA (nistp256) public key: parseable by x/crypto/ssh, but EC2
+// key pairs are RSA or ED25519 only, so import must reject it.
+const testECDSAPubKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBMZBEqs7mTlkOKGPSYp+tc5lZadVp9C2vCzIWZFTdnO1e3a8X59SdBWXiccQXjK1jxj+KLuQAEJY38kKqIUe/no="
+
+// Well-formed DSA public key: parseable by x/crypto/ssh but not a key type EC2 accepts.
+const testDSAPubKey = "ssh-dss AAAAB3NzaC1kc3MAAACBAMfooAGeGkAp6syFsxNueaASpwMr5t+BiLTxAmf9grlH/7MPhXHxxtrrzEdq4bK0mheLl4irAtardgR5ghOVxKXqz4dLlcEyv3H3tOY8Hq+JT/6w9j4FLjen4obXcilh7vfRPdL/A7Dk3Th9NSkrp43FmXUL4EyuMbqi7LcQYpMpAAAAFQDpwLJZvztWN3pEeT/MMLsVSmJedwAAAIBZjhEyHHk1iomvueP6GkmdrXt4V9+6BHjG/rHzQRlO79muU5ImX/BFALCc0RjaPNAoo0lF6ptaPf2HPeu3dtEAWM9iXH8SLqcAVX7B5FUYKFb7zsyQmlT3pKo21V3mCakKHDma8kbHSC2sysl1NOD4IkGTQalP4MuzIvCXNKbCdAAAAIEAl7OdP7hBngX0CuM0+cJXonZvnvIo1NOWGVu+dCn93mvoGjKFyZmLSEMIfFbmckQF2J4F9cM9aU6ht76k73DFnnA/F7WiJ+hIKLhL7Y8F0eDtWkawswvwxvHB+C7drrqezD6t5INX4CYlNQD4zqhgWKBSKVn3sQzQI95gFE51rKE="
+
+// Fingerprints as reported by `ssh-keygen -lf` (SHA256) and `ssh-keygen -l -E md5 -f`
+// (MD5, minus its "MD5:" prefix) for the keys above.
+const (
+	testED25519Fingerprint = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
+	testRSAFingerprint     = "35:76:17:80:c5:ca:87:56:ff:db:4b:0e:9c:76:63:6b"
+)
 
 func newTestKeyService() (*KeyServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
@@ -106,9 +121,8 @@ func TestCreateKeyPair_RSA(t *testing.T) {
 	require.NotNil(t, out)
 
 	assert.Equal(t, "my-rsa-key", *out.KeyName)
-	assert.NotEmpty(t, *out.KeyFingerprint)
-	// RSA fingerprint is MD5 hex (no "SHA256:" prefix, no colons in our format)
-	assert.False(t, strings.HasPrefix(*out.KeyFingerprint, "SHA256:"), "RSA fingerprint should not be SHA256 format")
+	// RSA fingerprint is the legacy colon-separated MD5 digest: 16 hex pairs.
+	assert.Regexp(t, `^([0-9a-f]{2}:){15}[0-9a-f]{2}$`, *out.KeyFingerprint)
 }
 
 func TestCreateKeyPair_NilInput(t *testing.T) {
@@ -186,8 +200,7 @@ func TestImportKeyPair_Success_ED25519(t *testing.T) {
 	assert.Equal(t, "imported-ed25519", *out.KeyName)
 	assert.NotEmpty(t, *out.KeyPairId)
 	assert.True(t, strings.HasPrefix(*out.KeyPairId, "key-"))
-	assert.NotEmpty(t, *out.KeyFingerprint)
-	assert.True(t, strings.HasPrefix(*out.KeyFingerprint, "SHA256:"))
+	assert.Equal(t, testED25519Fingerprint, *out.KeyFingerprint)
 
 	// Verify public key stored in S3
 	keyPath := "keys/" + testAccountID + "/imported-ed25519"
@@ -219,8 +232,25 @@ func TestImportKeyPair_Success_RSA(t *testing.T) {
 	require.NotNil(t, out)
 
 	assert.Equal(t, "imported-rsa", *out.KeyName)
-	assert.NotEmpty(t, *out.KeyFingerprint)
-	assert.False(t, strings.HasPrefix(*out.KeyFingerprint, "SHA256:"), "RSA fingerprint should be MD5 format")
+	assert.Equal(t, testRSAFingerprint, *out.KeyFingerprint)
+}
+
+// A trailing comment is accepted and preserved, and surrounding whitespace is
+// stripped, so what the guest is served is exactly the key the fingerprint
+// covers.
+func TestImportKeyPair_KeyWithComment(t *testing.T) {
+	svc, _ := newTestKeyService()
+
+	out, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
+		KeyName:           aws.String("imported-commented"),
+		PublicKeyMaterial: []byte(testED25519PubKey + " user@laptop\n"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, testED25519Fingerprint, *out.KeyFingerprint)
+
+	material, err := svc.GetPublicKeyMaterial(testAccountID, "imported-commented")
+	require.NoError(t, err)
+	assert.Equal(t, testED25519PubKey+" user@laptop", material)
 }
 
 func TestImportKeyPair_Duplicate(t *testing.T) {
@@ -267,8 +297,20 @@ func TestImportKeyPairInvalidKeyFormat(t *testing.T) {
 			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
 		},
 		{
-			name:           "UnsupportedAlgorithm",
+			name:           "TruncatedAlgorithmBody",
 			publicKey:      "ssh-dss AAAAB3NzaC1kc3MAAACB",
+			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
+		},
+		{
+			// Parses cleanly, but DSA is not a key type EC2 accepts.
+			name:           "UnsupportedAlgorithmDSA",
+			publicKey:      testDSAPubKey,
+			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
+		},
+		{
+			// Likewise ECDSA: EC2 key pairs are RSA or ED25519 only.
+			name:           "UnsupportedAlgorithmECDSA",
+			publicKey:      testECDSAPubKey,
 			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
 		},
 		{
@@ -281,16 +323,47 @@ func TestImportKeyPairInvalidKeyFormat(t *testing.T) {
 			publicKey:      "ssh-ed25519 ",
 			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
 		},
+		{
+			// An option prefix parses, but sshd would honour it on every login
+			// while the fingerprint reports only the bare key.
+			name:           "AuthorizedKeysOptions",
+			publicKey:      `command="/bin/false",no-pty ` + testED25519PubKey,
+			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
+		},
+		{
+			// Only the first key would be validated and fingerprinted, yet both
+			// would be installed on the guest.
+			name:           "MultipleKeys",
+			publicKey:      testED25519PubKey + "\n" + testRSAPubKey,
+			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
+		},
+		{
+			// ParseAuthorizedKey skips leading junk, so the blob must be rejected
+			// before it reaches the parser.
+			name:           "LeadingCommentLine",
+			publicKey:      "# my key\n" + testED25519PubKey,
+			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// A name per case: a case that regressed into acceptance would
+			// otherwise store an object and fail every later case with
+			// Duplicate, pointing the failure at the wrong input.
+			keyName := "test-key-" + tt.name
 			_, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
-				KeyName:           aws.String("test-key"),
+				KeyName:           aws.String(keyName),
 				PublicKeyMaterial: []byte(tt.publicKey),
 			}, testAccountID)
 			require.Error(t, err)
 			assert.Equal(t, tt.expectedErrMsg, err.Error())
+
+			// Rejection must precede the upload, or the guest is served material
+			// the API refused.
+			_, err = svc.GetPublicKeyMaterial(testAccountID, keyName)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
 		})
 	}
 }
@@ -571,10 +644,6 @@ func TestGetPublicKeyMaterial_EmptyObject(t *testing.T) {
 }
 
 // ============================================================
-// formatFingerprint Tests
-// ============================================================
-
-// ============================================================
 // getKeyNameFromKeyPairId Tests
 // ============================================================
 
@@ -638,82 +707,67 @@ func TestGetKeyNameFromKeyPairId_Success(t *testing.T) {
 }
 
 // ============================================================
-// formatFingerprint Tests
+// keyFingerprint / keyPairType Tests
 // ============================================================
 
-func TestFormatFingerprint_MD5(t *testing.T) {
-	hash := []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99}
-	result := formatFingerprint(hash, "MD5")
-	assert.Equal(t, "aabbccddeeff00112233445566778899", result)
-	// Should be lowercase hex, no colons
-	assert.NotContains(t, result, ":")
-	assert.Equal(t, strings.ToLower(result), result)
-}
-
-func TestFormatFingerprint_SHA256(t *testing.T) {
-	hash := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
-	result := formatFingerprint(hash, "SHA256")
-	assert.True(t, strings.HasPrefix(result, "SHA256:"))
-	// Should be raw base64 (no padding)
-	assert.False(t, strings.HasSuffix(result, "="))
-}
-
-func TestFormatFingerprint_EmptyHash(t *testing.T) {
-	result := formatFingerprint([]byte{}, "MD5")
-	assert.Empty(t, result)
-
-	result = formatFingerprint([]byte{}, "SHA256")
-	assert.Equal(t, "SHA256:", result)
-}
-
-// ============================================================
-// calculateFingerprint Tests
-// ============================================================
-
-func TestCalculateFingerprint_ED25519(t *testing.T) {
-	svc, _ := newTestKeyService()
-
-	fp, err := svc.calculateFingerprint([]byte(testED25519PubKey), "ed25519")
+// parseTestPubKey parses an authorized-key line that the test asserts is valid.
+func parseTestPubKey(t *testing.T, material string) ssh.PublicKey {
+	t.Helper()
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(material))
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(fp, "SHA256:"), "ed25519 should use SHA256 fingerprint")
-	assert.NotEqual(t, "SHA256:", fp, "fingerprint should have content after prefix")
+	return pubKey
 }
 
-func TestCalculateFingerprint_RSA(t *testing.T) {
-	svc, _ := newTestKeyService()
+func TestKeyFingerprint(t *testing.T) {
+	tests := []struct {
+		name     string
+		pubKey   string
+		expected string
+	}{
+		// ED25519 keys report the OpenSSH SHA256 digest.
+		{name: "ED25519", pubKey: testED25519PubKey, expected: testED25519Fingerprint},
+		// RSA keys report the legacy colon-separated MD5 digest, as AWS does.
+		{name: "RSA", pubKey: testRSAPubKey, expected: testRSAFingerprint},
+	}
 
-	fp, err := svc.calculateFingerprint([]byte(testRSAPubKey), "rsa")
-	require.NoError(t, err)
-	assert.False(t, strings.HasPrefix(fp, "SHA256:"), "RSA should use MD5 fingerprint")
-	assert.NotEmpty(t, fp)
-	// MD5 of RSA key data = 32 hex chars
-	assert.Len(t, fp, 32)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, keyFingerprint(parseTestPubKey(t, tt.pubKey)))
+		})
+	}
 }
 
-func TestCalculateFingerprint_Deterministic(t *testing.T) {
-	svc, _ := newTestKeyService()
-
-	fp1, err := svc.calculateFingerprint([]byte(testED25519PubKey), "ed25519")
-	require.NoError(t, err)
-	fp2, err := svc.calculateFingerprint([]byte(testED25519PubKey), "ed25519")
-	require.NoError(t, err)
-	assert.Equal(t, fp1, fp2, "same key should produce same fingerprint")
+// A comment or surrounding whitespace is not part of the key, so it must not
+// move the fingerprint.
+func TestKeyFingerprint_IgnoresComment(t *testing.T) {
+	withComment := parseTestPubKey(t, testED25519PubKey+" user@host\n")
+	assert.Equal(t, testED25519Fingerprint, keyFingerprint(withComment))
 }
 
-func TestCalculateFingerprint_InvalidFormat(t *testing.T) {
-	svc, _ := newTestKeyService()
+func TestKeyPairType(t *testing.T) {
+	tests := []struct {
+		name      string
+		pubKey    string
+		expected  string
+		expectErr bool
+	}{
+		{name: "ED25519", pubKey: testED25519PubKey, expected: "ed25519"},
+		{name: "RSA", pubKey: testRSAPubKey, expected: "rsa"},
+		{name: "ECDSAUnsupported", pubKey: testECDSAPubKey, expectErr: true},
+		{name: "DSAUnsupported", pubKey: testDSAPubKey, expectErr: true},
+	}
 
-	_, err := svc.calculateFingerprint([]byte("no-space-here"), "ed25519")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid public key format")
-}
-
-func TestCalculateFingerprint_InvalidBase64(t *testing.T) {
-	svc, _ := newTestKeyService()
-
-	_, err := svc.calculateFingerprint([]byte("ssh-ed25519 !!!not-base64!!!"), "ed25519")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to decode public key")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyType, err := keyPairType(parseTestPubKey(t, tt.pubKey))
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, keyType)
+		})
+	}
 }
 
 // --- DescribeKeyPairs AWS filter tests ---

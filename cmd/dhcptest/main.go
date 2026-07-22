@@ -6,7 +6,7 @@
 // Usage (must run as root — needs AF_PACKET):
 //
 //	sudo dhcptest --iface=br-wan
-//	sudo dhcptest --iface=br-wan --mac=02:00:00:7c:b7:b9 --promisc
+//	sudo dhcptest --iface=br-wan --mac=02:54:df:71:22:5c --promisc
 //	sudo dhcptest --iface=br-wan --spinifex-id=gateway-wan1
 package main
 
@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
+	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 )
 
 func main() {
@@ -44,9 +44,11 @@ func main() {
 
 	switch {
 	case *spinifexID != "":
-		hwAddr, err = net.ParseMAC(generateMAC(*spinifexID))
+		// vpcd's own derivation, so the probe leases under the MAC the daemon
+		// would have used for this id.
+		hwAddr, err = dhcp.DeriveMAC(*spinifexID)
 		if err != nil {
-			slog.Error("Could not parse generated MAC", "spinifex-id", *spinifexID, "error", err)
+			slog.Error("Could not derive MAC", "spinifex-id", *spinifexID, "error", err)
 			os.Exit(1)
 		}
 		fmt.Printf("spinifex virtual MAC for %q: %s\n", *spinifexID, hwAddr)
@@ -109,17 +111,9 @@ func main() {
 	}
 	defer client.Close()
 
-	// Identity modifiers — client-id / hostname / vendor-class for upstream lease tagging.
-	var mods []dhcpv4.Modifier
-	if cid != "" {
-		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptClientIdentifier([]byte(cid))))
-	}
-	if *hostname != "" {
-		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptHostName(*hostname)))
-	}
-	if *vendorClass != "" {
-		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptClassIdentifier(*vendorClass)))
-	}
+	// Identity modifiers — client-id / hostname / vendor-class for upstream lease
+	// tagging. Built by the vpcd code path so the probe cannot drift from it.
+	mods := dhcp.IdentityModifiers(cid, *hostname, *vendorClass, hwAddr)
 
 	fmt.Println("Sending DHCP Discover...")
 	start := time.Now()
@@ -151,16 +145,6 @@ type slogPrintfer struct{}
 
 func (slogPrintfer) Printf(format string, v ...any) {
 	slog.Info(fmt.Sprintf(format, v...), "component", "nclient4")
-}
-
-// generateMAC is the same deterministic hash used by vpcd's topology.go.
-// It produces a locally-administered MAC (02:00:00:xx:xx:xx) from a resource ID.
-func generateMAC(resourceID string) string {
-	h := uint32(0)
-	for _, c := range resourceID {
-		h = h*31 + uint32(c)
-	}
-	return fmt.Sprintf("02:00:00:%02x:%02x:%02x", (h>>16)&0xff, (h>>8)&0xff, h&0xff)
 }
 
 func ifaceMAC(name string) (net.HardwareAddr, error) {

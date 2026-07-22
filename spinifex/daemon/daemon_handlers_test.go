@@ -1245,7 +1245,7 @@ func TestHandleEC2DescribeStoppedInstances_ReturnsStoppedInstances(t *testing.T)
 	err := daemon.jsManager.WriteStoppedInstance(stoppedVM.ID, stoppedVM)
 	require.NoError(t, err)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", daemon.handleEC2DescribeStoppedInstances)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeStoppedInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1299,7 +1299,7 @@ func TestHandleEC2DescribeStoppedInstances_WithFilter(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", daemon.handleEC2DescribeStoppedInstances)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeStoppedInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3340,7 +3340,7 @@ func TestHandleEC2RunInstances_MalformedInput(t *testing.T) {
 func TestHandleEC2DescribeInstances_MalformedInstanceID(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances.malformed", daemon.handleEC2DescribeInstances)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances.malformed", handleNATSRequest(daemon.instanceService.DescribeInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3433,7 +3433,7 @@ func TestHandleEC2DescribeTerminatedInstances_ReturnsTerminatedInstances(t *test
 	err := daemon.jsManager.WriteTerminatedInstance(terminatedVM.ID, terminatedVM)
 	require.NoError(t, err)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeTerminatedInstances", "spinifex-workers", daemon.handleEC2DescribeTerminatedInstances)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeTerminatedInstances", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeTerminatedInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3482,7 +3482,7 @@ func TestHandleEC2DescribeTerminatedInstances_WithFilter(t *testing.T) {
 		require.NoError(t, daemon.jsManager.WriteTerminatedInstance(v.ID, v))
 	}
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeTerminatedInstances", "spinifex-workers", daemon.handleEC2DescribeTerminatedInstances)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeTerminatedInstances", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeTerminatedInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 

@@ -32,15 +32,6 @@ func checkInstanceOwnership(msg *nats.Msg, instanceID, ownerAccountID string) bo
 	return true
 }
 
-// isInstanceVisible reports whether the caller may see this instance.
-// Empty ownerAccountID is root-only.
-func isInstanceVisible(callerAccountID, ownerAccountID string) bool {
-	if ownerAccountID == "" {
-		return callerAccountID == utils.GlobalAccountID
-	}
-	return callerAccountID == ownerAccountID
-}
-
 // volumeVisibleTo reports whether callerAccountID may access a volume.
 // Empty tenantID is root-only to prevent untenanted volumes from leaking.
 func volumeVisibleTo(tenantID, callerAccountID string) bool {

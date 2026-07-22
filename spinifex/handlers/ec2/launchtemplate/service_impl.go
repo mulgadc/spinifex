@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -184,11 +185,7 @@ func (s *LaunchTemplateServiceImpl) listVersionNumbers(accountID, ltID string) (
 		}
 		nums = append(nums, n)
 	}
-	for i := 1; i < len(nums); i++ {
-		for j := i; j > 0 && nums[j-1] > nums[j]; j-- {
-			nums[j-1], nums[j] = nums[j], nums[j-1]
-		}
-	}
+	slices.Sort(nums)
 	return nums, nil
 }
 

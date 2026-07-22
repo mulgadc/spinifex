@@ -1,6 +1,7 @@
 package handlers_ec2_vpc
 
 import (
+	"net"
 	"strconv"
 	"testing"
 
@@ -191,8 +192,10 @@ func TestIPAM_InvalidCIDR(t *testing.T) {
 	assert.Contains(t, err.Error(), "parse CIDR")
 }
 
-func TestIPAM_IpToIntNil(t *testing.T) {
-	assert.Equal(t, uint32(0), ipToInt(nil))
+func TestCompareIPs_NilSortsFirst(t *testing.T) {
+	assert.Negative(t, compareIPs(nil, net.ParseIP("10.0.0.1")))
+	assert.Zero(t, compareIPs(net.ParseIP("10.0.0.1"), net.ParseIP("10.0.0.1")))
+	assert.Positive(t, compareIPs(net.ParseIP("10.0.0.2"), net.ParseIP("10.0.0.1")))
 }
 
 func itoa(i int) string {

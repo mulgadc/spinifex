@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -168,12 +169,12 @@ func (s *EKSServiceImpl) ListStagedAddonManifests(ctx context.Context, input *Li
 	return &ListStagedAddonManifestsOutput{Manifests: out}, nil
 }
 
+// sortStagedManifests orders manifests by add-on name. One manifest is staged
+// per add-on name, so the ordering is total and an unstable sort suffices.
 func sortStagedManifests(m []StagedAddonManifest) {
-	for i := 1; i < len(m); i++ {
-		for j := i; j > 0 && m[j-1].AddonName > m[j].AddonName; j-- {
-			m[j-1], m[j] = m[j], m[j-1]
-		}
-	}
+	slices.SortFunc(m, func(a, b StagedAddonManifest) int {
+		return strings.Compare(a.AddonName, b.AddonName)
+	})
 }
 
 // DescribeAddon returns one installed add-on's record.

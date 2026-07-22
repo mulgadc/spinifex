@@ -1,7 +1,6 @@
 package handlers_ec2_vpc
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -227,6 +226,10 @@ func ValidatePoolConfig(pool external.ExternalPoolConfig) error {
 	return nil
 }
 
+// compareIPs orders two addresses. Callers parse both first, so an invalid Addr
+// only arises from a nil net.IP and sorts before every valid address.
 func compareIPs(a, b net.IP) int {
-	return cmp.Compare(ipToInt(a), ipToInt(b))
+	x, _ := netip.AddrFromSlice(a)
+	y, _ := netip.AddrFromSlice(b)
+	return x.Unmap().Compare(y.Unmap())
 }

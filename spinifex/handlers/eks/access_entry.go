@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -166,12 +167,12 @@ func casUpdateAccessEntry(kv nats.KeyValue, cluster, principalARN string, mutate
 	return nil, fmt.Errorf("eks: casUpdateAccessEntry %s exhausted CAS retries", principalARN)
 }
 
+// sortAccessEntries orders entries by principal ARN. One record exists per
+// principal, so the ordering is total and an unstable sort suffices.
 func sortAccessEntries(recs []*AccessEntryRecord) {
-	for i := 1; i < len(recs); i++ {
-		for j := i; j > 0 && recs[j-1].PrincipalARN > recs[j].PrincipalARN; j-- {
-			recs[j-1], recs[j] = recs[j], recs[j-1]
-		}
-	}
+	slices.SortFunc(recs, func(a, b *AccessEntryRecord) int {
+		return strings.Compare(a.PrincipalARN, b.PrincipalARN)
+	})
 }
 
 // validateAccessScope validates an AccessScope: type must be "cluster" or

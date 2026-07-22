@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -179,10 +180,10 @@ func casUpdateAddon(kv nats.KeyValue, cluster, addon string, mutate func(*AddonR
 	return nil, fmt.Errorf("eks: casUpdateAddon %s exhausted CAS retries", addon)
 }
 
+// sortAddonRecords orders records by add-on name. One record exists per add-on
+// name, so the ordering is total and an unstable sort suffices.
 func sortAddonRecords(recs []*AddonRecord) {
-	for i := 1; i < len(recs); i++ {
-		for j := i; j > 0 && recs[j-1].AddonName > recs[j].AddonName; j-- {
-			recs[j-1], recs[j] = recs[j], recs[j-1]
-		}
-	}
+	slices.SortFunc(recs, func(a, b *AddonRecord) int {
+		return strings.Compare(a.AddonName, b.AddonName)
+	})
 }

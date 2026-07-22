@@ -1,12 +1,11 @@
 package handlers_ec2_vpc
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
+	"net/netip"
 
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -177,7 +176,7 @@ func (m *IPAM) getRecord(subnetId string) (*IPAMRecord, uint64, error) {
 
 // nextAvailableIP finds the next available IP in the subnet, skipping reserved addresses.
 func (m *IPAM) nextAvailableIP(record *IPAMRecord) (string, error) {
-	_, ipNet, err := net.ParseCIDR(record.CidrBlock)
+	prefix, err := netip.ParsePrefix(record.CidrBlock)
 	if err != nil {
 		return "", fmt.Errorf("parse CIDR %q: %w", record.CidrBlock, err)
 	}
@@ -187,35 +186,22 @@ func (m *IPAM) nextAvailableIP(record *IPAMRecord) (string, error) {
 		allocated[entry.IP] = true
 	}
 
-	ones, bits := ipNet.Mask.Size()
-	hostBits := bits - ones           // 0-32 for IPv4 CIDRs
-	totalIPs := uint64(1) << hostBits // fits uint64 (max 2^32)
+	// Start at offset 4 (.0=network, .1=gateway, .2=DNS, .3=reserved). Masked()
+	// normalises a CIDR written with host bits set, e.g. 10.0.1.7/24.
+	addr := prefix.Masked().Addr()
+	for range 4 {
+		addr = addr.Next()
+	}
 
-	// Start at offset 4 (.0=network, .1=gateway, .2=DNS, .3=reserved)
-	networkIP := ipToInt(ipNet.IP)
-
-	for offset := uint64(4); offset < totalIPs-1; offset++ { // -1 for broadcast
-		candidate := intToIP(networkIP + uint32(offset)).String()
+	// Walk until the successor leaves the prefix, which reserves the broadcast
+	// address. Subnets too small to hold the reserved head (/30 and narrower)
+	// start already outside the prefix and fall straight through to exhausted.
+	for ; prefix.Contains(addr.Next()); addr = addr.Next() {
+		candidate := addr.String()
 		if !allocated[candidate] {
 			return candidate, nil
 		}
 	}
 
 	return "", fmt.Errorf("subnet %s exhausted, no IPs available", record.CidrBlock)
-}
-
-// ipToInt converts an IPv4 net.IP to its uint32 representation.
-func ipToInt(ip net.IP) uint32 {
-	ip = ip.To4()
-	if ip == nil {
-		return 0
-	}
-	return binary.BigEndian.Uint32(ip)
-}
-
-// intToIP converts a uint32 back to an IPv4 net.IP.
-func intToIP(n uint32) net.IP {
-	ip := make(net.IP, net.IPv4len)
-	binary.BigEndian.PutUint32(ip, n)
-	return ip
 }

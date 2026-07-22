@@ -90,7 +90,11 @@ func TestNATUplink(t *testing.T) {
 	awsCli := harness.NewAWSClient(t, env)
 	hfx, err := harness.NewProcessFixture(awsCli)
 	require.NoError(t, err, "harness fixture init")
-	t.Cleanup(hfx.Close)
+	t.Cleanup(func() {
+		if err := hfx.Close(); err != nil {
+			t.Errorf("e2e teardown: %v", err)
+		}
+	})
 
 	fix := &fixture{
 		env:        env,

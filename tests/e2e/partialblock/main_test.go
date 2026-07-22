@@ -20,6 +20,7 @@ package partialblock
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,12 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	if pkgFix != nil {
 		if pkgFix.Harness != nil {
-			pkgFix.Harness.Close()
+			// A leaked resource fails the run: the suite may have passed, but it
+			// left state on the node that the next run will trip over.
+			if err := pkgFix.Harness.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "e2e teardown: %v\n", err)
+				code = 1
+			}
 		}
 		if pkgFix.TmpDir != "" {
 			_ = os.RemoveAll(pkgFix.TmpDir)

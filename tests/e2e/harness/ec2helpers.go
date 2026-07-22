@@ -4,6 +4,7 @@ package harness
 
 import (
 	"bytes"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 )
 
 // SSHTarget is the minimal addressing tuple used by LsblkRootGiB. Unlike
@@ -261,31 +263,130 @@ func DetachVolumeWait(t *testing.T, c *AWSClient, volID string) {
 	WaitForVolumeState(t, c, volID, "available", WithPoll(500*time.Millisecond))
 }
 
-// RegisterVolumeTeardown best-effort force-detaches then deletes volID at test
-// end. Non-fatal — it polls for "available" within a bounded window and never
-// calls t.Fatal so a cleanup hiccup doesn't mask the test's real result.
+// RegisterVolumeTeardown force-detaches then deletes volID at test end. It does
+// not call t.Fatal, so a cleanup hiccup can't mask the test's real result, but a
+// teardown that actually leaves the volume behind fails the test — a silent leak
+// is worse than a noisy one.
 func RegisterVolumeTeardown(t *testing.T, c *AWSClient, volID string) {
 	t.Helper()
 	t.Cleanup(func() {
-		_, _ = c.EC2.DetachVolume(&ec2.DetachVolumeInput{
-			VolumeId: aws.String(volID),
-			Force:    aws.Bool(true),
-		})
-		deadline := time.Now().Add(90 * time.Second)
-		for time.Now().Before(deadline) {
-			out, err := c.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
-				VolumeIds: []*string{aws.String(volID)},
-			})
-			if err != nil || len(out.Volumes) == 0 {
-				return
-			}
-			if aws.StringValue(out.Volumes[0].State) == "available" {
-				break
-			}
-			time.Sleep(2 * time.Second)
+		if err := teardownVolume(c.EC2, volID); err != nil {
+			t.Errorf("LEAKED volume %s: %v", volID, err)
 		}
-		_, _ = c.EC2.DeleteVolume(&ec2.DeleteVolumeInput{VolumeId: aws.String(volID)})
 	})
+}
+
+// Teardown windows. Detach and terminate are both asynchronous, and a volume is
+// only released once the guest holding it is down, so these have to outlast a
+// slow QEMU shutdown rather than a single API round trip.
+const (
+	volumeTeardownTimeout   = 90 * time.Second
+	instanceTeardownTimeout = 3 * time.Minute
+	teardownPollInterval    = 2 * time.Second
+)
+
+// teardownVolume force-detaches volID if it is still attached, waits for it to
+// reach "available", then deletes it. It returns an error only when the volume
+// is still present afterwards — that is, only when it has genuinely leaked.
+//
+// Deletion has to be self-sufficient rather than rely on teardown ordering.
+// Fixture cleanups drain LIFO, so a suite that creates its instance before its
+// volume tears the volume down first, while it is still attached: DeleteVolume
+// answers VolumeInUse and the volume is stranded. Registration order cannot
+// express that dependency, so the teardown resolves it itself and works for any
+// creation order.
+func teardownVolume(ec2c ec2iface.EC2API, volID string) error {
+	forced := false
+	deadline := time.Now().Add(volumeTeardownTimeout)
+	for {
+		out, err := ec2c.DescribeVolumes(&ec2.DescribeVolumesInput{
+			VolumeIds: []*string{aws.String(volID)},
+		})
+		if err != nil {
+			if volumeGone(err) {
+				return nil
+			}
+			return fmt.Errorf("describe volume %s: %w", volID, err)
+		}
+		if len(out.Volumes) == 0 {
+			return nil
+		}
+
+		switch state := aws.StringValue(out.Volumes[0].State); state {
+		case ec2.VolumeStateDeleting, ec2.VolumeStateDeleted:
+			return nil
+		case ec2.VolumeStateAvailable:
+			if _, err := ec2c.DeleteVolume(&ec2.DeleteVolumeInput{
+				VolumeId: aws.String(volID),
+			}); err != nil && !volumeGone(err) {
+				return fmt.Errorf("delete volume %s: %w", volID, err)
+			}
+			return nil
+		default:
+			// Force, because by teardown the attaching guest is usually already
+			// terminating and there is nothing left to acknowledge a graceful
+			// detach. Issued once, then we wait for the state to settle.
+			if !forced {
+				_, _ = ec2c.DetachVolume(&ec2.DetachVolumeInput{
+					VolumeId: aws.String(volID),
+					Force:    aws.Bool(true),
+				})
+				forced = true
+				continue
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("volume %s still %s after %s, not deleted", volID, state, volumeTeardownTimeout)
+			}
+		}
+		time.Sleep(teardownPollInterval)
+	}
+}
+
+// teardownInstance terminates instID and waits until it reports "terminated".
+// The wait is the point: TerminateInstances returns as soon as the request is
+// accepted, so a volume teardown running straight afterwards would still find
+// its volume attached to a guest that has not gone away yet.
+func teardownInstance(ec2c ec2iface.EC2API, instID string) error {
+	if _, err := ec2c.TerminateInstances(&ec2.TerminateInstancesInput{
+		InstanceIds: []*string{aws.String(instID)},
+	}); err != nil && !instanceGone(err) {
+		return fmt.Errorf("terminate instance %s: %w", instID, err)
+	}
+
+	deadline := time.Now().Add(instanceTeardownTimeout)
+	for {
+		out, err := ec2c.DescribeInstances(&ec2.DescribeInstancesInput{
+			InstanceIds: []*string{aws.String(instID)},
+		})
+		if err != nil {
+			if instanceGone(err) {
+				return nil
+			}
+			return fmt.Errorf("describe instance %s: %w", instID, err)
+		}
+		if len(out.Reservations) == 0 || len(out.Reservations[0].Instances) == 0 {
+			return nil
+		}
+		state := aws.StringValue(out.Reservations[0].Instances[0].State.Name)
+		if state == ec2.InstanceStateNameTerminated {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("instance %s still %s after %s", instID, state, instanceTeardownTimeout)
+		}
+		time.Sleep(teardownPollInterval)
+	}
+}
+
+// volumeGone and instanceGone report whether err is the API's way of saying the
+// resource no longer exists, which is success for a teardown.
+func volumeGone(err error) bool { return errCodeIs(err, "InvalidVolume.NotFound") }
+
+func instanceGone(err error) bool { return errCodeIs(err, "InvalidInstanceID.NotFound") }
+
+func errCodeIs(err error, code string) bool {
+	var ae awserr.Error
+	return asErr(err, &ae) && ae.Code() == code
 }
 
 // asErr is a thin errors.As that lets the helper stay testify-free.

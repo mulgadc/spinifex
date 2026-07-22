@@ -91,12 +91,12 @@ type converseStreamSource interface {
 
 // ConverseStream is the bedrock-runtime ConverseStream entry point used by
 // the gateway route table. Unlike the JSON-dispatch handlers it owns w
-// directly: a pre-stream failure (unknown model, unresolved credential,
-// upstream connect error) returns an awserrors code for the normal
+// directly: a pre-stream failure (unknown model, ungranted model, unresolved
+// credential, upstream connect error) returns an awserrors code for the normal
 // ErrorHandler envelope. Once the first frame is written it always returns
 // nil — any later failure is an in-band exception event, since the HTTP
 // status can no longer change.
-func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver) error {
+func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver) error {
 	input := new(bedrockruntime.ConverseStreamInput)
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, input); err != nil {
@@ -104,7 +104,7 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 		}
 	}
 
-	src, err := NewRouter(resolver, endpointResolver).ConverseStream(ctx, accountID, modelID, input)
+	src, err := NewRouter(resolver, endpointResolver, access).ConverseStream(ctx, accountID, modelID, input)
 	if err != nil {
 		return err
 	}

@@ -52,10 +52,19 @@ func newLlamaCompletionsStub(t *testing.T) *httptest.Server {
 	return ts
 }
 
+// grantAllModels is an AccessResolver that grants every model, standing in for
+// a provisioned grant store in tests whose subject is routing rather than
+// access control.
+type grantAllModels struct{}
+
+func (grantAllModels) Granted(_ context.Context, _, _ string) (bool, error) { return true, nil }
+
 // newBedrockRequestGateway builds a GatewayConfig with a real NATS connection
 // (satisfying Bedrock_Request/BedrockRuntime_Request's nil-check only — no
 // NATS subject handling is required for these routes), no IAMService (so
-// checkPolicy is a no-op), and BedrockEndpoints pinned at the given vLLM stub.
+// checkPolicy is a no-op), BedrockEndpoints pinned at the given vLLM stub, and
+// every model granted — access is deny-by-default, so without a resolver these
+// routes would all return before reaching the code under test.
 func newBedrockRequestGateway(t *testing.T, vllmURL string) *GatewayConfig {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -65,6 +74,7 @@ func newBedrockRequestGateway(t *testing.T, vllmURL string) *GatewayConfig {
 		BedrockEndpoints: map[string]string{
 			bedrockTestLlamaModelID: vllmURL,
 		},
+		BedrockAccess: grantAllModels{},
 	}
 }
 
@@ -72,6 +82,54 @@ func bedrockRequestWithAccount(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxAccountID, bedrockTestAccount)
 	return req.WithContext(ctx)
+}
+
+// TestBedrockRequest_DenyByDefault covers the whole gateway path with no
+// access resolver configured, which is what a deployment that has granted
+// nothing looks like: the catalog is empty and every runtime route refuses.
+// This is the end-to-end guard on deny-by-default, one layer above the
+// per-function access tests in gateway/bedrock.
+func TestBedrockRequest_DenyByDefault(t *testing.T) {
+	ts := newVLLMStub(t)
+	gw := newBedrockRequestGateway(t, ts.URL)
+	gw.BedrockAccess = nil // no grant store configured
+
+	t.Run("list is empty", func(t *testing.T) {
+		req := bedrockRequestWithAccount(http.MethodGet, "/foundation-models", "")
+		w := httptest.NewRecorder()
+		require.NoError(t, gw.Bedrock_Request(w, req))
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var out bedrock.ListFoundationModelsOutput
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+		assert.Empty(t, out.ModelSummaries)
+	})
+
+	t.Run("describe reports not found", func(t *testing.T) {
+		req := bedrockRequestWithAccount(http.MethodGet, "/foundation-models/"+bedrockTestLlamaModelID, "")
+		w := httptest.NewRecorder()
+		err := gw.Bedrock_Request(w, req)
+		require.Error(t, err)
+		assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	})
+
+	// Every runtime verb must refuse, not just the one that happens to be
+	// checked first — guessing a modelId must gain nothing on any path.
+	runtimeCases := []struct{ name, path, body string }{
+		{"converse", "/model/" + bedrockTestLlamaModelID + "/converse", `{"messages":[]}`},
+		{"invoke", "/model/" + bedrockTestLlamaModelID + "/invoke", `{"prompt":"hi"}`},
+		{"converse-stream", "/model/" + bedrockTestLlamaModelID + "/converse-stream", `{"messages":[]}`},
+		{"invoke-with-response-stream", "/model/" + bedrockTestLlamaModelID + "/invoke-with-response-stream", `{"prompt":"hi"}`},
+	}
+	for _, tc := range runtimeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := bedrockRequestWithAccount(http.MethodPost, tc.path, tc.body)
+			w := httptest.NewRecorder()
+			err := gw.BedrockRuntime_Request(w, req)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorAccessDeniedException, err.Error())
+		})
+	}
 }
 
 func TestBedrockRequest_ListFoundationModels(t *testing.T) {

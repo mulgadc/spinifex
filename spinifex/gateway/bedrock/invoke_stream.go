@@ -19,13 +19,13 @@ type invokeStreamSource interface {
 // InvokeModelWithResponseStream is the bedrock-runtime
 // InvokeModelWithResponseStream entry point used by the gateway route table.
 // Unlike the JSON-dispatch handlers it owns w directly: a pre-stream failure
-// (unknown model, unresolved credential, upstream connect error) returns an
-// awserrors code for the normal ErrorHandler envelope. Once the first frame
-// is written it always returns nil — any later failure is an in-band
-// exception event, since the HTTP status can no longer change.
+// (unknown model, ungranted model, unresolved credential, upstream connect
+// error) returns an awserrors code for the normal ErrorHandler envelope. Once
+// the first frame is written it always returns nil — any later failure is an
+// in-band exception event, since the HTTP status can no longer change.
 // requestContentType is the client's declared Content-Type, logged only.
-func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, requestContentType string) error {
-	src, err := NewInvokeStreamRouter(resolver, endpointResolver).InvokeModelWithResponseStream(ctx, accountID, modelID, body)
+func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver, requestContentType string) error {
+	src, err := NewInvokeStreamRouter(resolver, endpointResolver, access).InvokeModelWithResponseStream(ctx, accountID, modelID, body)
 	if err != nil {
 		return err
 	}

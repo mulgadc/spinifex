@@ -124,6 +124,15 @@ type GatewayConfig struct {
 	// config; a later phase backs it with the daemon's dynamic endpoint
 	// registry. Nil/empty means no self-hosted models are reachable.
 	BedrockEndpoints map[string]string
+	// BedrockAccess resolves per-account model-access grants. Access is
+	// deny-by-default, so nil means no account may list or invoke any model.
+	// It is the AccessResolver interface rather than the concrete store so a
+	// test can inject a fixed grant set without standing up JetStream.
+	BedrockAccess gateway_bedrock.AccessResolver
+	// BedrockAccessAdmin is the writable side of the same grant store, used by
+	// the spinifex admin actions. Nil disables grant administration, which is
+	// how a gateway with an injected read-only resolver behaves.
+	BedrockAccessAdmin *gateway_bedrock.ModelAccessStore
 }
 
 var supportedServices = map[string]bool{

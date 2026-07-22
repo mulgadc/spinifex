@@ -25,20 +25,21 @@ type bedrockRoute struct {
 // bedrockRouteHandler invokes a per-action bedrock (control-plane) gateway
 // function. params holds the regex capture groups, PathUnescape'd. resolver
 // is gw.bedrockResolver(): the configured credential store, or a no-op
-// fallback.
-type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver) (any, error)
+// fallback. access is gw.bedrockAccessResolver(): the configured grant store,
+// or a deny-all fallback.
+type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, access gateway_bedrock.AccessResolver) (any, error)
 
 // bedrockRoutes is the dispatch table. More-specific paths must precede
 // less-specific ones with the same prefix so the regex matcher picks the
 // deeper route first.
 var bedrockRoutes = []bedrockRoute{
 	{"GET", regexp.MustCompile(`^/foundation-models$`), "ListFoundationModels",
-		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver) (any, error) {
-			return gateway_bedrock.ListFoundationModels(ctx, acct, resolver, new(bedrock.ListFoundationModelsInput))
+		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, access gateway_bedrock.AccessResolver) (any, error) {
+			return gateway_bedrock.ListFoundationModels(ctx, acct, resolver, access, new(bedrock.ListFoundationModelsInput))
 		}},
 	{"GET", regexp.MustCompile(`^/foundation-models/([^/]+)$`), "GetFoundationModel",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver) (any, error) {
-			return gateway_bedrock.GetFoundationModel(ctx, acct, p[0])
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, access gateway_bedrock.AccessResolver) (any, error) {
+			return gateway_bedrock.GetFoundationModel(ctx, acct, p[0], access)
 		}},
 }
 
@@ -102,7 +103,7 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver())
+	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockAccessResolver())
 	if err != nil {
 		return err
 	}
@@ -118,6 +119,17 @@ func (gw *GatewayConfig) bedrockResolver() gateway_bedrock.CredentialResolver {
 		return gw.BedrockCredentials
 	}
 	return gateway_bedrock.NoopCredentialResolver
+}
+
+// bedrockAccessResolver returns gw.BedrockAccess as an AccessResolver, or the
+// deny-all fallback when no grant store is configured. Model access is
+// deny-by-default, so an unconfigured gateway advertises and serves no models
+// rather than all of them.
+func (gw *GatewayConfig) bedrockAccessResolver() gateway_bedrock.AccessResolver {
+	if gw.BedrockAccess != nil {
+		return gw.BedrockAccess
+	}
+	return gateway_bedrock.DenyAllAccessResolver
 }
 
 // bedrockEndpointResolver returns an EndpointResolver over the configured

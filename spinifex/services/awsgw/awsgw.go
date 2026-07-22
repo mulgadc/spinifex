@@ -293,6 +293,11 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	bedrockCredentials := gateway_bedrock.NewCredentialStore(js, masterKey, len(config.Nodes), bedrockPlatformDefaults)
 
+	// Bedrock model access: grants live in the bedrock-model-access KV bucket
+	// and are deny-by-default, so a fresh deployment serves no models until an
+	// operator grants them (spx bedrock grant-model-access).
+	bedrockAccess := gateway_bedrock.NewModelAccessStore(js, len(config.Nodes))
+
 	// Bedrock self-host endpoints: Phase 1 models are pinned, so their
 	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
 	// is a comma-separated list of modelId=baseURL pairs.
@@ -318,6 +323,8 @@ func launchService(config *config.ClusterConfig) error {
 		ECRTokenVerifier:   gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
 		BedrockCredentials: bedrockCredentials,
 		BedrockEndpoints:   bedrockEndpoints,
+		BedrockAccess:      bedrockAccess,
+		BedrockAccessAdmin: bedrockAccess,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

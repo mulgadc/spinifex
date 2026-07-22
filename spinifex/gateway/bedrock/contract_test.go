@@ -56,7 +56,7 @@ func TestContract_ConverseStream_SelfHost_RealSDKConsumerDecodesFrames(t *testin
 		if !assert.NoError(t, err) {
 			return
 		}
-		err = ConverseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints)
+		err = ConverseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints, grantAll{})
 		assert.NoError(t, err)
 	})
 
@@ -200,7 +200,7 @@ func TestContract_InvokeModelWithResponseStream_SelfHost_RealSDKConsumerDecodesF
 		if !assert.NoError(t, err) {
 			return
 		}
-		err = InvokeModelWithResponseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints, r.Header.Get("Content-Type"))
+		err = InvokeModelWithResponseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints, grantAll{}, r.Header.Get("Content-Type"))
 		assert.NoError(t, err)
 	})
 

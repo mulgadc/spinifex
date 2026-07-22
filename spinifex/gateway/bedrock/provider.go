@@ -29,28 +29,34 @@ type Provider interface {
 type Router struct {
 	resolver         CredentialResolver
 	endpointResolver EndpointResolver
+	access           AccessResolver
 }
 
 // NewRouter constructs a Router. A nil resolver or endpointResolver falls
-// back to a resolver/resolver that finds nothing, so a Router is always safe
-// to use even before the real stores are wired in.
-func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver) *Router {
+// back to a resolver/resolver that finds nothing, and a nil access falls back
+// to denying every model, so a Router is always safe to use even before the
+// real stores are wired in.
+func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver) *Router {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
 	if endpointResolver == nil {
 		endpointResolver = NewStaticEndpointResolver(nil)
 	}
-	return &Router{resolver: resolver, endpointResolver: endpointResolver}
+	if access == nil {
+		access = DenyAllAccessResolver
+	}
+	return &Router{resolver: resolver, endpointResolver: endpointResolver, access: access}
 }
 
 // Converse routes modelID to its provider via the catalog. Unknown modelIds
-// and unresolvable vendors return ResourceNotFoundException; a vendor with no
-// resolvable credential returns AccessDeniedException.
+// and unresolvable vendors return ResourceNotFoundException; an ungranted
+// model, or a vendor with no resolvable credential, returns
+// AccessDeniedException.
 func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
-	entry, ok := lookupCatalogEntry(modelID)
-	if !ok {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
+	if err != nil {
+		return nil, err
 	}
 
 	var p Provider
@@ -79,10 +85,10 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 }
 
 // Converse is the bedrock-runtime Converse entry point used by the gateway
-// route table. resolver and endpointResolver may be nil; NewRouter supplies
-// no-op fallbacks.
-func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver) (*bedrockruntime.ConverseOutput, error) {
-	return NewRouter(resolver, endpointResolver).Converse(ctx, accountID, modelID, input)
+// route table. resolver, endpointResolver and access may be nil; NewRouter
+// supplies no-op (and, for access, deny-all) fallbacks.
+func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver) (*bedrockruntime.ConverseOutput, error) {
+	return NewRouter(resolver, endpointResolver, access).Converse(ctx, accountID, modelID, input)
 }
 
 // ConverseStreamProvider is the optional streaming capability a Provider may
@@ -110,9 +116,9 @@ func converseStreamToConverseInput(input *bedrockruntime.ConverseStreamInput) *b
 // Converse, then requires the resolved provider to also implement
 // ConverseStreamProvider.
 func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseStreamInput) (converseStreamSource, error) {
-	entry, ok := lookupCatalogEntry(modelID)
-	if !ok {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
+	if err != nil {
+		return nil, err
 	}
 
 	var p Provider

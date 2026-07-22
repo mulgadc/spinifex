@@ -70,7 +70,7 @@ func TestPumpInvokeStream_NonFaultErrorUsesInternalServerException(t *testing.T)
 
 func TestInvokeModelWithResponseStream_UnknownModelReturnsResourceNotFoundPreHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
-	err := InvokeModelWithResponseStream(context.Background(), rec, "000000000001", "does.not-exist-v1:0", []byte(`{}`), nil, nil, "application/json")
+	err := InvokeModelWithResponseStream(context.Background(), rec, "000000000001", "does.not-exist-v1:0", []byte(`{}`), nil, nil, grantAll{}, "application/json")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 	assert.Equal(t, 0, rec.Body.Len())
@@ -88,7 +88,7 @@ func TestInvokeModelWithResponseStream_SelfHostHappyPath_WritesChunkFrames(t *te
 	rec := httptest.NewRecorder()
 	body := []byte(`{"prompt":"hello","max_gen_len":128}`)
 
-	err := InvokeModelWithResponseStream(context.Background(), rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), "application/json")
+	err := InvokeModelWithResponseStream(context.Background(), rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, "application/json")
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -113,7 +113,7 @@ func TestInvokeModelWithResponseStream_NonFlusherWriter_ReturnsPreHeaderError(t 
 	w := &nonFlusherWriter{}
 	body := []byte(`{"prompt":"hello"}`)
 
-	err := InvokeModelWithResponseStream(context.Background(), w, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), "application/json")
+	err := InvokeModelWithResponseStream(context.Background(), w, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, "application/json")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.False(t, w.wroteHeader)

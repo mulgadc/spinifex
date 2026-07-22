@@ -60,6 +60,18 @@ var catalog = []catalogEntry{
 	},
 }
 
+// CatalogModelIDs returns every model ID the platform knows about, ignoring
+// grants and credential tiering. It exists for administration — granting an
+// account the whole catalog — and must not be used to answer an account's own
+// ListFoundationModels, which is grant-filtered.
+func CatalogModelIDs() []string {
+	ids := make([]string, 0, len(catalog))
+	for _, entry := range catalog {
+		ids = append(ids, entry.ModelID)
+	}
+	return ids
+}
+
 // CredentialResolver resolves accountID's usable provider credential for
 // vendor: a per-account key, else an optional platform default. key is only
 // meaningful when ok is true.
@@ -67,11 +79,18 @@ type CredentialResolver interface {
 	Resolve(ctx context.Context, accountID, vendor string) (key string, ok bool, err error)
 }
 
-// tieredCatalog returns the catalog entries advertised to accountID: self-host
-// entries always, provider entries only when resolver finds a usable credential.
-func tieredCatalog(ctx context.Context, accountID string, resolver CredentialResolver) []catalogEntry {
+// tieredCatalog returns the catalog entries advertised to accountID: those the
+// account holds a grant on, and among those, provider entries only where
+// resolver finds a usable credential. Access is checked first, so a model the
+// account was never granted stays hidden even when a platform-default
+// credential would otherwise serve it.
+func tieredCatalog(ctx context.Context, accountID string, resolver CredentialResolver, access AccessResolver) []catalogEntry {
 	var out []catalogEntry
 	for _, entry := range catalog {
+		granted, err := access.Granted(ctx, accountID, entry.ModelID)
+		if err != nil || !granted {
+			continue
+		}
 		if entry.Provider == tierSelfHost {
 			out = append(out, entry)
 			continue
@@ -121,8 +140,9 @@ func modelARN(modelID string) string {
 	return fmt.Sprintf(modelARNFormat, modelID)
 }
 
-// lookupCatalogEntry finds a catalog entry by exact modelId, ignoring tier
-// gating (used by the runtime router, which returns its own error class).
+// lookupCatalogEntry finds a catalog entry by exact modelId, ignoring both
+// tier gating and access grants. Callers on a request path must use
+// grantedCatalogEntry instead; this is the raw table lookup underneath it.
 func lookupCatalogEntry(modelID string) (catalogEntry, bool) {
 	for _, entry := range catalog {
 		if entry.ModelID == modelID {
@@ -132,10 +152,35 @@ func lookupCatalogEntry(modelID string) (catalogEntry, bool) {
 	return catalogEntry{}, false
 }
 
-// ListFoundationModels returns the deployment-tiered catalog: self-host
-// entries always, provider entries only where a credential resolves.
-func ListFoundationModels(ctx context.Context, accountID string, resolver CredentialResolver, _ *bedrock.ListFoundationModelsInput) (*bedrock.ListFoundationModelsOutput, error) {
-	entries := tieredCatalog(ctx, accountID, resolver)
+// grantedCatalogEntry resolves modelID to its catalog entry and checks
+// accountID's grant on it. Every runtime path shares this one gate so the four
+// routers cannot drift apart on who may invoke what.
+//
+// An unknown model and an ungranted one are deliberately distinguishable here
+// (ResourceNotFoundException vs AccessDeniedException) because the caller has
+// already been told the model exists by its own catalog listing; the describe
+// path collapses both to ResourceNotFoundException instead, where that is not
+// true.
+func grantedCatalogEntry(ctx context.Context, accountID, modelID string, access AccessResolver) (catalogEntry, error) {
+	entry, ok := lookupCatalogEntry(modelID)
+	if !ok {
+		return catalogEntry{}, errors.New(awserrors.ErrorResourceNotFoundException)
+	}
+	granted, err := access.Granted(ctx, accountID, modelID)
+	if err != nil {
+		return catalogEntry{}, err
+	}
+	if !granted {
+		return catalogEntry{}, errors.New(awserrors.ErrorAccessDeniedException)
+	}
+	return entry, nil
+}
+
+// ListFoundationModels returns the catalog visible to accountID: models it
+// holds a grant on, with provider entries further filtered to those whose
+// credential resolves.
+func ListFoundationModels(ctx context.Context, accountID string, resolver CredentialResolver, access AccessResolver, _ *bedrock.ListFoundationModelsInput) (*bedrock.ListFoundationModelsOutput, error) {
+	entries := tieredCatalog(ctx, accountID, resolver, access)
 	summaries := make([]*bedrock.FoundationModelSummary, 0, len(entries))
 	for _, entry := range entries {
 		summaries = append(summaries, entry.toSummary())
@@ -143,11 +188,21 @@ func ListFoundationModels(ctx context.Context, accountID string, resolver Creden
 	return &bedrock.ListFoundationModelsOutput{ModelSummaries: summaries}, nil
 }
 
-// GetFoundationModel looks up a single model by exact modelId, independent of
-// tiering. Unknown models return ResourceNotFoundException.
-func GetFoundationModel(_ context.Context, _ string, modelID string) (*bedrock.GetFoundationModelOutput, error) {
+// GetFoundationModel looks up a single model by exact modelId, gated by the
+// caller's grant. An ungranted model is reported as ResourceNotFoundException
+// rather than AccessDeniedException so describe agrees with list: a model the
+// account cannot see does not exist as far as this API is concerned, and the
+// error does not confirm the model's existence to an account probing for it.
+func GetFoundationModel(ctx context.Context, accountID string, modelID string, access AccessResolver) (*bedrock.GetFoundationModelOutput, error) {
 	entry, ok := lookupCatalogEntry(modelID)
 	if !ok {
+		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	}
+	granted, err := access.Granted(ctx, accountID, modelID)
+	if err != nil {
+		return nil, err
+	}
+	if !granted {
 		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
 	return &bedrock.GetFoundationModelOutput{ModelDetails: entry.toDetails()}, nil

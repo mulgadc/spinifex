@@ -30,33 +30,77 @@ func modelIDs(out *bedrock.ListFoundationModelsOutput) []string {
 	return ids
 }
 
-func TestListFoundationModels_SelfHostAlwaysIncluded(t *testing.T) {
-	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}}, &bedrock.ListFoundationModelsInput{})
+func TestListFoundationModels_SelfHostIncludedWhenGranted(t *testing.T) {
+	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}},
+		grantSet{selfHostTestModel: true}, &bedrock.ListFoundationModelsInput{})
 	require.NoError(t, err)
-	assert.Contains(t, modelIDs(out), "meta.llama3-70b-instruct-v1:0")
+	assert.Contains(t, modelIDs(out), selfHostTestModel)
 }
 
-func TestListFoundationModels_ProviderIncludedWhenResolvable(t *testing.T) {
-	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{"anthropic": true}}, &bedrock.ListFoundationModelsInput{})
+// TestListFoundationModels_SelfHostExcludedWhenUngranted is the behaviour
+// change: self-host entries used to be advertised to every account
+// unconditionally, so this is the regression guard for that.
+func TestListFoundationModels_SelfHostExcludedWhenUngranted(t *testing.T) {
+	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}},
+		grantSet{}, &bedrock.ListFoundationModelsInput{})
 	require.NoError(t, err)
-	assert.Contains(t, modelIDs(out), "anthropic.claude-3-5-sonnet-20240620-v1:0")
+	assert.NotContains(t, modelIDs(out), selfHostTestModel)
+	assert.Empty(t, modelIDs(out), "an account with no grants must see an empty catalog")
+}
+
+func TestListFoundationModels_ProviderIncludedWhenGrantedAndResolvable(t *testing.T) {
+	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{"anthropic": true}},
+		grantSet{anthropicTestModel: true}, &bedrock.ListFoundationModelsInput{})
+	require.NoError(t, err)
+	assert.Contains(t, modelIDs(out), anthropicTestModel)
 }
 
 func TestListFoundationModels_ProviderExcludedWhenUnresolvable(t *testing.T) {
-	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}}, &bedrock.ListFoundationModelsInput{})
+	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}},
+		grantSet{anthropicTestModel: true}, &bedrock.ListFoundationModelsInput{})
 	require.NoError(t, err)
-	assert.NotContains(t, modelIDs(out), "anthropic.claude-3-5-sonnet-20240620-v1:0")
+	assert.NotContains(t, modelIDs(out), anthropicTestModel)
 }
 
-func TestGetFoundationModel_KnownModel(t *testing.T) {
-	out, err := GetFoundationModel(context.Background(), "000000000001", "meta.llama3-70b-instruct-v1:0")
+// TestListFoundationModels_GrantDoesNotOverrideCredentialTier keeps the two
+// filters independent: a grant says the account may use the model, not that
+// the platform can reach it.
+func TestListFoundationModels_ProviderExcludedWhenUngrantedButResolvable(t *testing.T) {
+	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{"anthropic": true}},
+		grantSet{}, &bedrock.ListFoundationModelsInput{})
+	require.NoError(t, err)
+	assert.NotContains(t, modelIDs(out), anthropicTestModel,
+		"a platform-default credential must not advertise a model the account was never granted")
+}
+
+// TestCatalogModelIDs_CoversWholeCatalog keeps the admin-facing listing in step
+// with the catalog: a model missing here would be ungrantable via --all-models
+// and so invisible to every account.
+func TestCatalogModelIDs_CoversWholeCatalog(t *testing.T) {
+	ids := CatalogModelIDs()
+	require.Len(t, ids, len(catalog))
+	assert.Contains(t, ids, selfHostTestModel)
+	assert.Contains(t, ids, anthropicTestModel)
+}
+
+func TestGetFoundationModel_KnownGrantedModel(t *testing.T) {
+	out, err := GetFoundationModel(context.Background(), "000000000001", selfHostTestModel, grantSet{selfHostTestModel: true})
 	require.NoError(t, err)
 	require.NotNil(t, out.ModelDetails)
-	assert.Equal(t, "meta.llama3-70b-instruct-v1:0", *out.ModelDetails.ModelId)
+	assert.Equal(t, selfHostTestModel, *out.ModelDetails.ModelId)
 }
 
 func TestGetFoundationModel_UnknownModelReturnsNotFound(t *testing.T) {
-	_, err := GetFoundationModel(context.Background(), "000000000001", "does-not-exist")
+	_, err := GetFoundationModel(context.Background(), "000000000001", "does-not-exist", grantAll{})
+	require.Error(t, err)
+	assert.Equal(t, "ResourceNotFoundException", err.Error())
+}
+
+// TestGetFoundationModel_UngrantedModelReturnsNotFound pins describe to the
+// same answer as list: an ungranted model is reported as absent rather than
+// forbidden, so the error cannot be used to confirm the model exists.
+func TestGetFoundationModel_UngrantedModelReturnsNotFound(t *testing.T) {
+	_, err := GetFoundationModel(context.Background(), "000000000001", selfHostTestModel, grantSet{})
 	require.Error(t, err)
 	assert.Equal(t, "ResourceNotFoundException", err.Error())
 }

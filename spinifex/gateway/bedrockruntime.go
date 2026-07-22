@@ -26,22 +26,23 @@ type bedrockRuntimeRoute struct {
 // bedrockRuntimeRouteHandler invokes a per-action bedrock-runtime (data-plane)
 // gateway function. params holds the regex capture groups, PathUnescape'd.
 // resolver is gw.bedrockResolver() (credential store or no-op); endpoints is
-// gw.bedrockEndpointResolver() over the configured pinned self-host endpoints.
-type bedrockRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver) (any, error)
+// gw.bedrockEndpointResolver() over the configured pinned self-host endpoints;
+// access is gw.bedrockAccessResolver() (grant store or deny-all).
+type bedrockRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, access gateway_bedrock.AccessResolver) (any, error)
 
 // bedrockRuntimeRoutes is the dispatch table. InvokeModel has no handler
 // function here: BedrockRuntime_Request special-cases its action to bypass
 // the JSON-marshaling dispatch below, since its response is raw bytes.
 var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/converse$`), "Converse",
-		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, access gateway_bedrock.AccessResolver) (any, error) {
 			input := new(bedrockruntime.ConverseInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
 					return nil, errors.New(awserrors.ErrorValidationException)
 				}
 			}
-			return gateway_bedrock.Converse(ctx, acct, p[0], input, resolver, endpoints)
+			return gateway_bedrock.Converse(ctx, acct, p[0], input, resolver, endpoints, access)
 		}},
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/invoke$`), "InvokeModel", nil},
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/converse-stream$`), "ConverseStream", nil},
@@ -111,7 +112,7 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	// InvokeModel returns provider-native bytes, not a struct WriteJSONResponse
 	// could marshal, so it writes its own response body directly.
 	if action == "InvokeModel" {
-		respBody, contentType, err := gateway_bedrock.InvokeModel(r.Context(), accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver())
+		respBody, contentType, err := gateway_bedrock.InvokeModel(r.Context(), accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockAccessResolver())
 		if err != nil {
 			return err
 		}
@@ -126,13 +127,13 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	// (-> ErrorHandler); once streaming starts they always return nil,
 	// surfacing any further failure as an in-band exception event.
 	if action == "ConverseStream" {
-		return gateway_bedrock.ConverseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver())
+		return gateway_bedrock.ConverseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockAccessResolver())
 	}
 	if action == "InvokeModelWithResponseStream" {
-		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"))
+		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockAccessResolver(), r.Header.Get("Content-Type"))
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver())
+	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockAccessResolver())
 	if err != nil {
 		return err
 	}

@@ -46,7 +46,7 @@ func TestRouter_Converse_SelfHostSuccess(t *testing.T) {
 	defer ts.Close()
 
 	modelID := "meta.llama3-70b-instruct-v1:0"
-	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{})
 
 	out, err := rt.Converse(context.Background(), "000000000001", modelID, converseInput())
 	require.NoError(t, err)
@@ -55,14 +55,14 @@ func TestRouter_Converse_SelfHostSuccess(t *testing.T) {
 }
 
 func TestRouter_Converse_UnknownModelReturnsResourceNotFound(t *testing.T) {
-	rt := NewRouter(nil, nil)
+	rt := NewRouter(nil, nil, grantAll{})
 	_, err := rt.Converse(context.Background(), "000000000001", "does.not-exist-v1:0", converseInput())
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 }
 
 func TestRouter_Converse_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
-	rt := NewRouter(stubCredentialResolver{ok: false}, nil)
+	rt := NewRouter(stubCredentialResolver{ok: false}, nil, grantAll{})
 	_, err := rt.Converse(context.Background(), "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0", converseInput())
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDeniedException, err.Error())
@@ -80,14 +80,14 @@ func TestConverse_PackageEntryPoint_SelfHostSuccess(t *testing.T) {
 	defer ts.Close()
 
 	modelID := "meta.llama3-70b-instruct-v1:0"
-	out, err := Converse(context.Background(), "000000000001", modelID, converseInput(), nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	out, err := Converse(context.Background(), "000000000001", modelID, converseInput(), nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{})
 	require.NoError(t, err)
 	require.NotNil(t, out.Output.Message)
 	assert.Equal(t, "via package Converse", *out.Output.Message.Content[0].Text)
 }
 
 func TestConverse_PackageEntryPoint_UnknownModel(t *testing.T) {
-	_, err := Converse(context.Background(), "000000000001", "does.not-exist-v1:0", converseInput(), nil, nil)
+	_, err := Converse(context.Background(), "000000000001", "does.not-exist-v1:0", converseInput(), nil, nil, grantAll{})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 }
@@ -109,7 +109,7 @@ func TestRouter_ConverseStream_SelfHostSuccess(t *testing.T) {
 	defer ts.Close()
 
 	modelID := "meta.llama3-70b-instruct-v1:0"
-	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{})
 
 	src, err := rt.ConverseStream(context.Background(), "000000000001", modelID, converseStreamInput())
 	require.NoError(t, err)
@@ -120,28 +120,28 @@ func TestRouter_ConverseStream_SelfHostSuccess(t *testing.T) {
 }
 
 func TestRouter_ConverseStream_UnknownModelReturnsResourceNotFound(t *testing.T) {
-	rt := NewRouter(nil, nil)
+	rt := NewRouter(nil, nil, grantAll{})
 	_, err := rt.ConverseStream(context.Background(), "000000000001", "does.not-exist-v1:0", converseStreamInput())
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 }
 
 func TestRouter_ConverseStream_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
-	rt := NewRouter(stubCredentialResolver{ok: false}, nil)
+	rt := NewRouter(stubCredentialResolver{ok: false}, nil, grantAll{})
 	_, err := rt.ConverseStream(context.Background(), "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0", converseStreamInput())
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDeniedException, err.Error())
 }
 
 func TestRouter_ConverseStream_SelfHostNoEndpointReturnsModelNotReady(t *testing.T) {
-	rt := NewRouter(nil, nil)
+	rt := NewRouter(nil, nil, grantAll{})
 	_, err := rt.ConverseStream(context.Background(), "000000000001", "meta.llama3-70b-instruct-v1:0", converseStreamInput())
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
 
 func TestNewRouter_NilArgumentsFallBackToNoops(t *testing.T) {
-	rt := NewRouter(nil, nil)
+	rt := NewRouter(nil, nil, grantAll{})
 	require.NotNil(t, rt)
 
 	// Self-host model with no endpoint resolver configured resolves nothing,

@@ -545,6 +545,32 @@ func TestSpinifexTomlTemplate_EncryptionKeyFile(t *testing.T) {
 	assert.NotContains(t, string(data2), "encryption_key_file", "blank key must omit the field")
 }
 
+// A rendered node config must turn chunk GC on. Asserting the template text
+// alone is not enough: the value has to survive parsing into a non-nil true
+// pointer, because every consumer treats nil as off. Rendering and loading
+// together is the only check that covers the whole path.
+func TestSpinifexTomlTemplate_GCEnabled(t *testing.T) {
+	dir := t.TempDir()
+	settings := admin.ConfigSettings{
+		Node: "node1", Az: "ap-southeast-2a", Port: "4432", Region: "ap-southeast-2",
+		BindIP: "0.0.0.0", AccessKey: "AKIATEST", SecretKey: "SECRET",
+		AccountID: "123456789012", NatsToken: "token",
+		OVNNBAddr: "tcp:127.0.0.1:6641", OVNSBAddr: "tcp:127.0.0.1:6642",
+		ConfigDir: dir,
+	}
+
+	path := filepath.Join(dir, "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	cfg, err := config.LoadConfig(path)
+	require.NoError(t, err)
+
+	node, ok := cfg.Nodes["node1"]
+	require.True(t, ok, "rendered config must define the node")
+	require.NotNil(t, node.Viperblock.GCEnabled, "gc_enabled must be rendered; nil leaves chunk GC off on every deployed node")
+	assert.True(t, *node.Viperblock.GCEnabled, "chunk GC must be enabled in a freshly rendered node config")
+}
+
 // Joiners run `spx admin join` against a configDir that doesn't yet contain
 // a predastore/ subdir. The helper must create it (predastore subdir is
 // owned by spinifex-storage in prod, but the helper just needs the dir to

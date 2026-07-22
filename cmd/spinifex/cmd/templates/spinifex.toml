@@ -106,6 +106,7 @@ token = "{{.NatsToken}}"
 
 [nodes.{{.Node}}.viperblock]
 shardwal = false
+gc_enabled = true
 {{- if .EncryptionKeyFile}}
 encryption_key_file = "{{.EncryptionKeyFile}}"
 {{- end}}

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -82,6 +83,50 @@ func TestWaitForSystemInstance_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// verifySystemInstanceLaunched
+// ---------------------------------------------------------------------------
+
+func TestVerifySystemInstanceLaunched_Running(t *testing.T) {
+	inst := &vm.VM{ID: "i-up", Status: vm.StateRunning}
+	d := newDaemonWithVMs(inst)
+
+	require.NoError(t, d.verifySystemInstanceLaunched(inst))
+}
+
+// LaunchRunInstances swallows launch errors and leaves the instance in a
+// cleanup state, so every non-running state must surface as a launch failure —
+// a GPU claim failure marks the VM shutting-down via MarkFailed.
+func TestVerifySystemInstanceLaunched_NonRunningStatesFail(t *testing.T) {
+	for _, status := range []vm.InstanceState{
+		vm.StateShuttingDown,
+		vm.StateError,
+		vm.StateTerminated,
+		vm.StatePending,
+		vm.StateProvisioning,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			inst := &vm.VM{ID: "i-down", Status: status}
+			d := newDaemonWithVMs(inst)
+
+			err := d.verifySystemInstanceLaunched(inst)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "i-down")
+			assert.Contains(t, err.Error(), string(status))
+		})
+	}
+}
+
+// MarkFailed transitions synchronously before running its cleanup goroutine, so
+// the check sees the failure without racing the teardown.
+func TestVerifySystemInstanceLaunched_AfterMarkFailedIsAnError(t *testing.T) {
+	inst := &vm.VM{ID: "i-gpu-claim-failed", Status: vm.StateProvisioning}
+	d := newDaemonWithVMs(inst)
+	d.vmMgr.MarkFailed(context.Background(), inst, "gpu_claim_failed")
+
+	require.Error(t, d.verifySystemInstanceLaunched(inst))
 }
 
 // ---------------------------------------------------------------------------

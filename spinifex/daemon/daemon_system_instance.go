@@ -418,6 +418,11 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 // right NIC for the Ec2 datasource on its own. The instance is owned by
 // input.AccountID (the account its pre-created ENI lives in) and tagged
 // input.ManagedBy so customer listings hide it.
+//
+// Sharing the Prepare/Launch pair with RunInstances means a GPU instance type
+// gets the same admission, GPU claim and teardown-time release as a customer
+// VM: PrepareRunInstances gates on a free GPU slot, LaunchRunInstances claims
+// the device, and vm.Manager's cleanup chain releases it.
 func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
 	if d.instanceService == nil {
 		return nil, errors.New("sysinstance: instance service not initialized")
@@ -499,6 +504,10 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 
 	d.instanceService.LaunchRunInstances(context.Background(), instances, runInput, instanceType)
 
+	if err := d.verifySystemInstanceLaunched(inst); err != nil {
+		return nil, err
+	}
+
 	privateIP := input.ENIIP
 	if privateIP == "" && inst.Instance != nil {
 		privateIP = aws.StringValue(inst.Instance.PrivateIpAddress)
@@ -515,6 +524,21 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		PrivateIP:  privateIP,
 		MgmtIP:     inst.MgmtIP,
 	}, nil
+}
+
+// verifySystemInstanceLaunched checks that inst actually reached running state
+// after LaunchRunInstances. That call is a best-effort batch launcher: volume
+// preparation, GPU claim and vmMgr.Run failures each mark the instance failed
+// and return nothing, so the outcome is only visible in the VM's state. Without
+// this check a system-instance caller (EKS control plane, ELB, Bedrock serving
+// VM) receives an instance ID for a VM already being torn down and waits on an
+// endpoint that will never answer. Cleanup is left to the MarkFailed chain
+// LaunchRunInstances already ran.
+func (d *Daemon) verifySystemInstanceLaunched(inst *vm.VM) error {
+	if status := d.vmMgr.Status(inst); status != vm.StateRunning {
+		return fmt.Errorf("sysinstance: instance %s did not reach running state (status %q)", inst.ID, status)
+	}
+	return nil
 }
 
 // attachSystemMgmtNIC allocates a management-bridge IP + MAC for a system VM and

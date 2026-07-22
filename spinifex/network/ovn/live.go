@@ -78,9 +78,11 @@ func (c *LiveClient) transactOps(ctx context.Context, ops []ovsdb.Operation) err
 				opTable = fmt.Sprintf("%s on %s", ops[i].Op, ops[i].Table)
 			}
 			// ensureNamedRowOps' probe times out precisely when the row it
-			// guards already exists, which is the common idempotent path — the
-			// caller handles it by reusing the existing row. Logging that at
-			// ERROR made every re-ensure look like a fault.
+			// guards already exists — a re-ensure that got past the cache
+			// lookup because another writer, or this client moments earlier,
+			// created the row before the monitor caught up. The caller handles
+			// it by reusing the existing row, so reporting it as a failure
+			// made an ordinary idempotent write look like a fault.
 			if isEnsureProbeTimeout(ops, i, r.Error) {
 				slog.Debug("OVSDB ensure probe found existing row", "index", i, "op", opTable)
 				continue

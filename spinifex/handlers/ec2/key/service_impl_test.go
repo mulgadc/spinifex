@@ -248,8 +248,9 @@ func TestImportKeyPair_Success_ECDSA(t *testing.T) {
 	assert.NotEmpty(t, *out.KeyFingerprint)
 }
 
-// A trailing comment is accepted, and the stored material is what the caller
-// supplied — the fingerprint covers the key alone.
+// A trailing comment is accepted and preserved, and surrounding whitespace is
+// stripped, so what the guest is served is exactly the key the fingerprint
+// covers.
 func TestImportKeyPair_KeyWithComment(t *testing.T) {
 	svc, _ := newTestKeyService()
 
@@ -259,6 +260,10 @@ func TestImportKeyPair_KeyWithComment(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, testED25519Fingerprint, *out.KeyFingerprint)
+
+	material, err := svc.GetPublicKeyMaterial(testAccountID, "imported-commented")
+	require.NoError(t, err)
+	assert.Equal(t, testED25519PubKey+" user@laptop", material)
 }
 
 func TestImportKeyPair_Duplicate(t *testing.T) {
@@ -323,6 +328,27 @@ func TestImportKeyPairInvalidKeyFormat(t *testing.T) {
 		{
 			name:           "EmptyKeyData",
 			publicKey:      "ssh-ed25519 ",
+			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
+		},
+		{
+			// An option prefix parses, but sshd would honour it on every login
+			// while the fingerprint reports only the bare key.
+			name:           "AuthorizedKeysOptions",
+			publicKey:      `command="/bin/false",no-pty ` + testED25519PubKey,
+			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
+		},
+		{
+			// Only the first key would be validated and fingerprinted, yet both
+			// would be installed on the guest.
+			name:           "MultipleKeys",
+			publicKey:      testED25519PubKey + "\n" + testRSAPubKey,
+			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
+		},
+		{
+			// ParseAuthorizedKey skips leading junk, so the blob must be rejected
+			// before it reaches the parser.
+			name:           "LeadingCommentLine",
+			publicKey:      "# my key\n" + testED25519PubKey,
 			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
 		},
 	}

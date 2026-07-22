@@ -694,12 +694,33 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 		return nil, errors.New(awserrors.ErrorInvalidKeyPairDuplicate)
 	}
 
+	// The material is stored verbatim and later served to instances as their
+	// authorized_keys, so it must hold exactly the one key the returned
+	// fingerprint describes. ParseAuthorizedKey skips leading comment and junk
+	// lines and stops at the first key, so a multi-line blob would otherwise be
+	// stored -- and trusted by the guest -- in full while only its first key was
+	// validated. Requiring a single line is how that rule is enforced; RFC 4716
+	// material is multi-line and would need normalising to an OpenSSH line
+	// before it reached here.
+	publicKeyData := bytes.TrimSpace(input.PublicKeyMaterial)
+	if bytes.ContainsAny(publicKeyData, "\r\n") {
+		slog.ErrorContext(ctx, "Public key material is not a single key", "keyName", keyName)
+		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+	}
+
 	// Parse the authorized-key line ("ssh-rsa AAAAB... comment"), which also
 	// validates the base64 body against the algorithm's wire encoding.
-	publicKeyData := input.PublicKeyMaterial
-	publicKey, _, _, _, err := ssh.ParseAuthorizedKey(publicKeyData)
+	publicKey, _, options, _, err := ssh.ParseAuthorizedKey(publicKeyData)
 	if err != nil {
 		slog.ErrorContext(ctx, "Invalid public key format", "keyName", keyName, "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+	}
+
+	// An option prefix ("command=...", "from=...") is not covered by the
+	// fingerprint, yet sshd would apply it to every login on every instance
+	// launched with this key pair. Refuse to import access the API cannot report.
+	if len(options) > 0 {
+		slog.ErrorContext(ctx, "Public key material carries authorized_keys options", "keyName", keyName, "options", options)
 		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
 	}
 

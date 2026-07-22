@@ -33,6 +33,13 @@ func NewNClient4(timeout time.Duration) *NClient4Client {
 	return &NClient4Client{timeout: timeout}
 }
 
+// socketTimeoutGrace keeps the socket deadline strictly behind the caller's, so
+// ctx.Done() is what ends a timed-out attempt. Matching the two exactly makes
+// them expire together and the reported error becomes a coin toss between
+// context.DeadlineExceeded and nclient4's ErrNoResponse, which reads as a
+// packet-matching fault rather than the plain timeout it is.
+const socketTimeoutGrace = time.Second
+
 // socketTimeout is the read deadline handed to nclient4 for one DORA. It must
 // track the caller's deadline: nclient4 races its own deadline against ctx and
 // the shorter one ends the attempt, so a fixed value below the caller's budget
@@ -45,7 +52,7 @@ func (c *NClient4Client) socketTimeout(ctx context.Context) time.Duration {
 	// A deadline already in the past is left to ctx.Done(); nclient4 rejects a
 	// non-positive timeout, so keep the fallback rather than pass it through.
 	if remaining := time.Until(deadline); remaining > 0 {
-		return remaining
+		return remaining + socketTimeoutGrace
 	}
 	return c.timeout
 }

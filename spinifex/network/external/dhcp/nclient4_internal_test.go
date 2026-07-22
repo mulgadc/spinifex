@@ -24,16 +24,18 @@ func TestSocketTimeoutTracksContextDeadline(t *testing.T) {
 		if got <= 5*time.Second {
 			t.Fatalf("socketTimeout = %v, want the remaining ~32s, not the 5s fallback", got)
 		}
-		if got > 32*time.Second {
-			t.Fatalf("socketTimeout = %v, want at most the remaining 32s", got)
+		// Strictly beyond the caller's deadline so ctx.Done() reports the timeout.
+		if got <= 32*time.Second {
+			t.Fatalf("socketTimeout = %v, want more than the remaining 32s", got)
 		}
 	})
 
 	t.Run("shorter deadline shortens the read", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		if got := c.socketTimeout(ctx); got <= 0 || got > time.Second {
-			t.Fatalf("socketTimeout = %v, want (0, 1s]", got)
+		got := c.socketTimeout(ctx)
+		if got <= time.Second || got > 2*time.Second {
+			t.Fatalf("socketTimeout = %v, want just beyond the remaining 1s", got)
 		}
 	})
 

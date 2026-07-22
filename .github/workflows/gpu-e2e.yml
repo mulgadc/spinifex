@@ -44,14 +44,6 @@ on:
         description: "Optional -test.run regex scoped to tests/e2e/gpu (empty = run all GPU tests)"
         required: false
         default: ""
-  push:
-    branches:
-      - main
-      - dev
-  pull_request:
-    branches:
-      - main
-      - dev
 
 permissions:
   contents: read

@@ -107,7 +107,7 @@ func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Leas
 
 	// Broadcast flag forces ff:ff:ff:ff:ff:ff destination — without it the
 	// server unicasts to the derived chaddr MAC which the NIC drops in hw.
-	mods := append(identityModifiers(req.ClientID, req.Hostname, req.VendorClass), dhcpv4.WithBroadcast(true))
+	mods := append(IdentityModifiers(req.ClientID, req.Hostname, req.VendorClass, req.HWAddr), dhcpv4.WithBroadcast(true))
 	lease, err := client.Request(ctx, mods...)
 	if err != nil {
 		return nil, fmt.Errorf("dhcp DORA on %s (client=%s): %w", req.Bridge, req.ClientID, err)
@@ -146,7 +146,7 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 	defer func() { _ = client.Close() }()
 
 	renewed, err := client.Renew(ctx, nclient4Lease,
-		identityModifiers(lease.ClientID, lease.Hostname, lease.VendorClass)...)
+		IdentityModifiers(lease.ClientID, lease.Hostname, lease.VendorClass, lease.HWAddr)...)
 	if err != nil {
 		return nil, fmt.Errorf("dhcp renew on %s (client=%s): %w", lease.Bridge, lease.ClientID, err)
 	}
@@ -190,8 +190,10 @@ func (c *NClient4Client) Release(_ context.Context, lease *Lease) error {
 	}
 	defer func() { _ = client.Close() }()
 
+	// The server matches a RELEASE to a lease by client-id, so this must encode
+	// identically to the DISCOVER/REQUEST that took the lease out.
 	if err := client.Release(nclient4Lease,
-		dhcpv4.WithOption(dhcpv4.OptClientIdentifier([]byte(lease.ClientID)))); err != nil {
+		dhcpv4.WithOption(clientIDOption(lease.ClientID, lease.HWAddr))); err != nil {
 		return fmt.Errorf("dhcp release on %s (client=%s): %w", lease.Bridge, lease.ClientID, err)
 	}
 	return nil
@@ -208,20 +210,49 @@ func DeriveMAC(clientID string) (net.HardwareAddr, error) {
 	return hw, nil
 }
 
-// identityModifiers builds the three identifying DHCP options set on every
+// defaultVendorClass marks a lease as ours in the upstream lease table when the
+// caller supplies nothing more specific.
+const defaultVendorClass = "mulga-spinifex"
+
+// clientIDOption encodes option 61 as RFC 2132 §9.14 requires: a type byte
+// followed by the identifier. Ethernet (type 1) paired with the chaddr lets the
+// server bind the lease to a hardware address, so it lists with a real MAC.
+//
+// Sending a bare string instead makes the server read its first byte as the
+// hardware type — "dhcp-gw-lrp-vpc-x" arrives as hardware-type 100 ('d') with
+// the identifier truncated to "hcp-gw-lrp-vpc-x" — and since that is not
+// Ethernet, no hardware address is recorded against the lease at all.
+func clientIDOption(clientID string, hwAddr net.HardwareAddr) dhcpv4.Option {
+	if len(hwAddr) == 6 {
+		return dhcpv4.OptClientIdentifier(append([]byte{0x01}, hwAddr...))
+	}
+	// Type 0 marks an identifier that is not a hardware address (RFC 4361 §6.1).
+	return dhcpv4.OptClientIdentifier(append([]byte{0x00}, clientID...))
+}
+
+// IdentityModifiers builds the three identifying DHCP options set on every
 // outbound message: option 61 (client-id), option 12 (hostname), option 60
-// (vendor class).
-func identityModifiers(clientID, hostname, vendorClass string) []dhcpv4.Modifier {
+// (vendor class). Hostname and vendor class carry the human-readable identity,
+// since option 61 encodes the chaddr rather than the client-id string; without
+// them a lease is unattributable in the upstream table.
+//
+// Exported so the dhcptest probe puts the same bytes on the wire as vpcd does;
+// a probe that builds its own options can only confirm its own behaviour.
+func IdentityModifiers(clientID, hostname, vendorClass string, hwAddr net.HardwareAddr) []dhcpv4.Modifier {
 	var mods []dhcpv4.Modifier
 	if clientID != "" {
-		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptClientIdentifier([]byte(clientID))))
+		mods = append(mods, dhcpv4.WithOption(clientIDOption(clientID, hwAddr)))
+	}
+	if hostname == "" {
+		hostname = clientID
 	}
 	if hostname != "" {
 		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptHostName(hostname)))
 	}
-	if vendorClass != "" {
-		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptClassIdentifier(vendorClass)))
+	if vendorClass == "" {
+		vendorClass = defaultVendorClass
 	}
+	mods = append(mods, dhcpv4.WithOption(dhcpv4.OptClassIdentifier(vendorClass)))
 	return mods
 }
 

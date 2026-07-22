@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
+	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 )
 
 func main() {
@@ -109,17 +109,9 @@ func main() {
 	}
 	defer client.Close()
 
-	// Identity modifiers — client-id / hostname / vendor-class for upstream lease tagging.
-	var mods []dhcpv4.Modifier
-	if cid != "" {
-		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptClientIdentifier([]byte(cid))))
-	}
-	if *hostname != "" {
-		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptHostName(*hostname)))
-	}
-	if *vendorClass != "" {
-		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptClassIdentifier(*vendorClass)))
-	}
+	// Identity modifiers — client-id / hostname / vendor-class for upstream lease
+	// tagging. Built by the vpcd code path so the probe cannot drift from it.
+	mods := dhcp.IdentityModifiers(cid, *hostname, *vendorClass, hwAddr)
 
 	fmt.Println("Sending DHCP Discover...")
 	start := time.Now()

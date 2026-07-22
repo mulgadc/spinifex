@@ -161,6 +161,18 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// From here keyType describes the key that exists rather than the one that
+	// was asked for, so that the type stored alongside the fingerprint is read
+	// off the same key the fingerprint was taken from. The import path types its
+	// keys the same way. createdKeyFingerprint has already rejected every
+	// algorithm this can refuse, so the error is unreachable and stated only so
+	// an unsupported key can never be stored under a type EC2 cannot report.
+	keyType, err = keyPairType(publicKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Generated key has an unsupported algorithm", "algorithm", publicKey.Type(), "keyName", keyName, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	// Upload public key to S3
 	_, err = s.store.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucketName),

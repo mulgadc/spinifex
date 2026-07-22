@@ -88,13 +88,25 @@ func TestDecodeKeyPairMetadata_LegacyRSA(t *testing.T) {
 	}
 }
 
-// A prefixed value whose body is not base64 is corruption, not a legacy
-// rendering. It is reported back verbatim so the corruption stays visible.
-func TestDecodeKeyPairMetadata_UndecodableFingerprint(t *testing.T) {
-	metadata, err := decodeKeyPairMetadata([]byte(`{"KeyFingerprint":"SHA256:not valid base64!","KeyName":"k","KeyPairId":"key-1"}`))
-	require.NoError(t, err)
-	assert.Equal(t, "ed25519", metadata.KeyType)
-	assert.Equal(t, "SHA256:not valid base64!", *metadata.KeyFingerprint)
+// A prefixed value that is not a SHA-256 digest is corruption, not a legacy
+// rendering, and is reported back verbatim so the corruption stays visible. The
+// truncated cases are the ones that matter: they decode cleanly, so nothing but
+// the digest length distinguishes them from a value worth re-rendering, and
+// re-rendering them would persist the mangled result on the next tag write.
+func TestDecodeKeyPairMetadata_CorruptFingerprint(t *testing.T) {
+	for name, fingerprint := range map[string]string{
+		"NotBase64":     "SHA256:not valid base64!",
+		"AlreadyPadded": openSSHSHA256Prefix + testED25519Fingerprint,
+		"EmptyBody":     openSSHSHA256Prefix,
+		"TruncatedBody": "SHA256:+DiY3wvv",
+	} {
+		t.Run(name, func(t *testing.T) {
+			metadata, err := decodeKeyPairMetadata([]byte(`{"KeyFingerprint":"` + fingerprint + `","KeyName":"k","KeyPairId":"key-1"}`))
+			require.NoError(t, err)
+			assert.Equal(t, "ed25519", metadata.KeyType)
+			assert.Equal(t, fingerprint, *metadata.KeyFingerprint)
+		})
+	}
 }
 
 // A record with no fingerprint at all must not be dereferenced on the way to a

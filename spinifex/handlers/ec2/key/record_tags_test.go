@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,15 +26,7 @@ func readKeyPairTags(t *testing.T, svc *KeyServiceImpl, accountID, keyPairID str
 // readKeyPairRecord returns the stored metadata object verbatim.
 func readKeyPairRecord(t *testing.T, svc *KeyServiceImpl, accountID, keyPairID string) []byte {
 	t.Helper()
-	result, err := svc.store.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String(fmt.Sprintf("keys/%s/%s.json", accountID, keyPairID)),
-	})
-	require.NoError(t, err)
-	defer result.Body.Close()
-	body, err := io.ReadAll(result.Body)
-	require.NoError(t, err)
-	return body
+	return readStoredObject(t, svc.store, fmt.Sprintf("keys/%s/%s.json", accountID, keyPairID))
 }
 
 func TestKeyPairRecordTagsMirror(t *testing.T) {

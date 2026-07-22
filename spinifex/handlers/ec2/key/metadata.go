@@ -1,6 +1,7 @@
 package handlers_ec2_key
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -59,11 +60,15 @@ func decodeKeyPairMetadata(body []byte) (*keyPairMetadata, error) {
 
 // awsFingerprint re-renders an OpenSSH SHA-256 fingerprint the way EC2 spells
 // it: the "SHA256:" prefix dropped and the base64 padding OpenSSH omits
-// restored. A body that is not raw base64 is corruption rather than a legacy
-// rendering, so it is returned verbatim instead of guessed at.
+// restored. Anything that is not a raw base64 SHA-256 digest is corruption
+// rather than a legacy rendering, and is returned verbatim instead of guessed
+// at. The length check is what makes that true of a truncated value: a short
+// body still decodes cleanly, so without it a record holding "SHA256:" alone
+// would re-render as the empty string and the next write would persist that
+// over the stored value.
 func awsFingerprint(fingerprint string) string {
 	digest, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(fingerprint, openSSHSHA256Prefix))
-	if err != nil {
+	if err != nil || len(digest) != sha256.Size {
 		return fingerprint
 	}
 	return base64.StdEncoding.EncodeToString(digest)

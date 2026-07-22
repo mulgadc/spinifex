@@ -25,13 +25,14 @@ type InvokeRouter struct {
 	resolver         CredentialResolver
 	endpointResolver EndpointResolver
 	recorder         Recorder
+	access           AccessResolver
 }
 
-// NewInvokeRouter constructs an InvokeRouter. A nil resolver,
-// endpointResolver, or recorder falls back to a no-op implementation, so an
-// InvokeRouter is always safe to use even before the real stores are wired
-// in.
-func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder) *InvokeRouter {
+// NewInvokeRouter constructs an InvokeRouter. A nil resolver, endpointResolver,
+// or recorder falls back to a no-op implementation, and a nil access falls back
+// to denying every model, so an InvokeRouter is always safe to use even before
+// the real stores are wired in.
+func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver) *InvokeRouter {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
@@ -41,13 +42,17 @@ func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResol
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
-	return &InvokeRouter{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder}
+	if access == nil {
+		access = DenyAllAccessResolver
+	}
+	return &InvokeRouter{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access}
 }
 
 // InvokeModel routes modelID to its family adapter via the catalog. Unknown
-// modelIds and unresolvable vendors return ResourceNotFoundException; a
-// vendor with no resolvable credential returns AccessDeniedException. Every
-// exit records an InvocationRecord via the deferred closure.
+// modelIds and unresolvable vendors return ResourceNotFoundException; an
+// ungranted model, or a vendor with no resolvable credential, returns
+// AccessDeniedException. Every exit records an InvocationRecord via the
+// deferred closure.
 func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID string, body []byte) (respBody []byte, contentType string, err error) {
 	requestID := uuid.NewString()
 	start := time.Now()
@@ -71,9 +76,10 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 		})
 	}()
 
-	entry, ok := lookupCatalogEntry(modelID)
-	if !ok {
-		err = errors.New(awserrors.ErrorResourceNotFoundException)
+	// Assigns the named err, so the deferred closure records a denied
+	// invocation the same as any other failed one.
+	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
+	if err != nil {
 		return nil, "", err
 	}
 	backend = entry.Provider
@@ -110,10 +116,10 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 }
 
 // InvokeModel is the bedrock-runtime InvokeModel entry point used by the
-// gateway route table. resolver, endpointResolver, and recorder may be nil;
-// NewInvokeRouter supplies no-op fallbacks.
-func InvokeModel(ctx context.Context, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder) ([]byte, string, error) {
-	return NewInvokeRouter(resolver, endpointResolver, recorder).InvokeModel(ctx, accountID, modelID, body)
+// gateway route table. resolver, endpointResolver, recorder and access may be
+// nil; NewInvokeRouter supplies no-op (and, for access, deny-all) fallbacks.
+func InvokeModel(ctx context.Context, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver) ([]byte, string, error) {
+	return NewInvokeRouter(resolver, endpointResolver, recorder, access).InvokeModel(ctx, accountID, modelID, body)
 }
 
 // InvokeStreamAdapter is the optional streaming capability an InvokeAdapter
@@ -130,29 +136,33 @@ type InvokeStreamAdapter interface {
 type InvokeStreamRouter struct {
 	resolver         CredentialResolver
 	endpointResolver EndpointResolver
+	access           AccessResolver
 }
 
 // NewInvokeStreamRouter constructs an InvokeStreamRouter. A nil resolver or
-// endpointResolver falls back to a resolver/resolver that finds nothing, so
-// an InvokeStreamRouter is always safe to use even before the real stores
-// are wired in.
-func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver EndpointResolver) *InvokeStreamRouter {
+// endpointResolver falls back to a resolver/resolver that finds nothing, and a
+// nil access falls back to denying every model, so an InvokeStreamRouter is
+// always safe to use even before the real stores are wired in.
+func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver) *InvokeStreamRouter {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
 	if endpointResolver == nil {
 		endpointResolver = NewStaticEndpointResolver(nil)
 	}
-	return &InvokeStreamRouter{resolver: resolver, endpointResolver: endpointResolver}
+	if access == nil {
+		access = DenyAllAccessResolver
+	}
+	return &InvokeStreamRouter{resolver: resolver, endpointResolver: endpointResolver, access: access}
 }
 
 // InvokeModelWithResponseStream routes modelID to its family adapter via the
 // catalog, exactly like InvokeRouter.InvokeModel, then requires the resolved
 // adapter to also implement InvokeStreamAdapter.
 func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context, accountID, modelID string, body []byte) (invokeStreamSource, error) {
-	entry, ok := lookupCatalogEntry(modelID)
-	if !ok {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
+	if err != nil {
+		return nil, err
 	}
 
 	var a InvokeAdapter

@@ -308,6 +308,11 @@ func launchService(config *config.ClusterConfig) error {
 	// are called from gateway/bedrock.go's fixed-arity route table.
 	gateway_bedrock.SetWeightsResolver(gateway_bedrock.NewWeightsStore(js, len(config.Nodes)))
 
+	// Bedrock model access: grants live in the bedrock-model-access KV bucket
+	// and are deny-by-default, so a fresh deployment serves no models until an
+	// operator grants them (spx bedrock grant-model-access).
+	bedrockAccess := gateway_bedrock.NewModelAccessStore(js, len(config.Nodes))
+
 	// Bedrock self-host endpoints are pinned, so their
 	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
 	// is a comma-separated list of modelId=baseURL pairs.
@@ -364,6 +369,8 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockEndpoints:     bedrockEndpoints,
 		BedrockLoggingConfig: bedrockLoggingConfig,
 		BedrockRecorder:      bedrockRecorder,
+		BedrockAccess:        bedrockAccess,
+		BedrockAccessAdmin:   bedrockAccess,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

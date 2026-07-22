@@ -33,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
@@ -157,6 +158,8 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey, 1)
 	require.NoError(t, err)
 
+	bedrockAccess := gateway_bedrock.NewModelAccessStore(js, 1)
+
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,
 		NATSConn:       nc,
@@ -173,6 +176,13 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		ECRRegistry:      gateway_ecr.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewNATSMetaStore(nc), utils.GlobalAccountID),
 		ECRTokenIssuer:   gateway_ecrauth.NewIssuer(signingKey, testECRAudience),
 		ECRTokenVerifier: gateway_ecrauth.NewVerifier(verifyKeys, testECRAudience),
+		// Ochre model access is deny-by-default, so without a grant store every
+		// bedrock route refuses. Tests sign as the system account, which the
+		// store exempts from grants exactly as it does in production, so the
+		// catalog is visible here without provisioning grants per test; a test
+		// signing as a tenant account would have to grant first.
+		BedrockAccess:      bedrockAccess,
+		BedrockAccessAdmin: bedrockAccess,
 	}
 	for _, opt := range opts {
 		opt(cfg)

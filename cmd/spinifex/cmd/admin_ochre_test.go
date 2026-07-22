@@ -1000,3 +1000,41 @@ func TestRegisterWeightsSnapshot_WriteFailureSurfaces(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "register snapshot metadata")
 }
+
+// ochreFlagCmd builds a bare command carrying the model-selection flags, so
+// the resolver can be exercised without the cluster connection the real
+// subcommands make.
+func ochreFlagCmd(t *testing.T, modelID string, allModels bool) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{}
+	cmd.Flags().String("model-id", modelID, "")
+	cmd.Flags().Bool("all-models", allModels, "")
+	return cmd
+}
+
+func TestOchreTargetModels_SingleModel(t *testing.T) {
+	models, err := ochreTargetModels(ochreFlagCmd(t, selfHostModelID, false))
+	require.NoError(t, err)
+	assert.Equal(t, []string{selfHostModelID}, models)
+}
+
+func TestOchreTargetModels_AllModels(t *testing.T) {
+	models, err := ochreTargetModels(ochreFlagCmd(t, "", true))
+	require.NoError(t, err)
+	assert.Equal(t, gateway_bedrock.CatalogModelIDs(), models)
+	assert.NotEmpty(t, models)
+}
+
+// TestOchreTargetModels_NeitherFlag pins the refusal to guess: silently
+// defaulting to the whole catalog would over-grant on a typo.
+func TestOchreTargetModels_NeitherFlag(t *testing.T) {
+	_, err := ochreTargetModels(ochreFlagCmd(t, "", false))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--model-id or --all-models")
+}
+
+func TestOchreTargetModels_BothFlags(t *testing.T) {
+	_, err := ochreTargetModels(ochreFlagCmd(t, selfHostModelID, true))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}

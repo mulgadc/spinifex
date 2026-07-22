@@ -6,6 +6,12 @@
 // ListFoundationModels/GetFoundationModel against any running cluster and
 // gates real Converse calls on backend availability (self-host GPU or a live
 // Anthropic key), so CI parity holds without requiring either to be present.
+//
+// Model access is deny-by-default, so the cluster's test account must hold
+// grants or every assertion here reduces to "empty catalog, access denied".
+// The bootstrap provisioning grants the admin account the full catalog; a
+// cluster brought up by hand needs
+// `spx admin ochre access grant --account-id <id> --all-models`.
 package bedrock
 
 import (

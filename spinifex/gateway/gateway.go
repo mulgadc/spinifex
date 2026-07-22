@@ -132,6 +132,15 @@ type GatewayConfig struct {
 	// to a no-op recorder, so routes stay safe to exercise before the
 	// invocation stream is wired in (e.g. unit tests of unrelated routes).
 	BedrockRecorder gateway_bedrock.Recorder
+	// BedrockAccess resolves per-account model-access grants. Access is
+	// deny-by-default, so nil means no account may list or invoke any model.
+	// It is the AccessResolver interface rather than the concrete store so a
+	// test can inject a fixed grant set without standing up JetStream.
+	BedrockAccess gateway_bedrock.AccessResolver
+	// BedrockAccessAdmin is the writable side of the same grant store, used by
+	// the spinifex admin actions. Nil disables grant administration, which is
+	// how a gateway with an injected read-only resolver behaves.
+	BedrockAccessAdmin *gateway_bedrock.ModelAccessStore
 }
 
 var supportedServices = map[string]bool{

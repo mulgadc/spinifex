@@ -437,11 +437,11 @@ func extractClientError(results []nodeLaunchResult) error {
 		if r.Err == nil {
 			continue
 		}
-		inner := errors.Unwrap(r.Err)
-		if inner == nil {
+		code, ok := awserrors.ResolveErrorCode(r.Err)
+		if !ok {
 			continue
 		}
-		switch inner.Error() {
+		switch code {
 		case awserrors.ErrorInsufficientInstanceCapacity,
 			awserrors.ErrorInvalidAMIIDNotFound,
 			awserrors.ErrorInvalidAMIIDMalformed,
@@ -451,7 +451,7 @@ func extractClientError(results []nodeLaunchResult) error {
 			awserrors.ErrorInvalidGroupNotFound,
 			awserrors.ErrorInvalidParameterValue,
 			awserrors.ErrorSecurityGroupsPerInterfaceLimitExceeded:
-			return inner
+			return errors.New(code)
 		}
 	}
 	return nil

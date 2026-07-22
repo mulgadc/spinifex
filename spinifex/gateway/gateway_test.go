@@ -199,6 +199,27 @@ func TestErrorHandler_UnknownError(t *testing.T) {
 	assert.Contains(t, xmlStr, "<Errors>")
 }
 
+func TestErrorHandler_WrappedErrorCode(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), ctxService, "ec2")
+		r = r.WithContext(ctx)
+		cause := errors.New(awserrors.ErrorInsufficientAddressCapacity)
+		gw.ErrorHandler(w, r, fmt.Errorf("launch on node-1: %w", fmt.Errorf("allocate address: %w", cause)))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := doRequest(handler, req)
+	assert.Equal(t, 503, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	xmlStr := string(body)
+	assert.Contains(t, xmlStr, "<Code>"+awserrors.ErrorInsufficientAddressCapacity+"</Code>")
+	assert.Contains(t, xmlStr, awserrors.ErrorLookup[awserrors.ErrorInsufficientAddressCapacity].Message)
+	assert.NotContains(t, xmlStr, "launch on node-1")
+}
+
 func TestErrorHandler_ELBv2Service(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 

@@ -550,15 +550,13 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	slog.Debug("ErrorHandler", "service", svc, "error", err.Error())
 
 	var requestId = uuid.NewString()
-	var errorMsg = awserrors.ErrorMessage{}
-
-	if _, exists := awserrors.ErrorLookup[err.Error()]; !exists {
+	code, exists := awserrors.ResolveErrorCode(err)
+	if !exists {
 		slog.Warn("Unknown error code", "error", err.Error())
-		err = errors.New(awserrors.ErrorInternalError)
+		code = awserrors.ErrorInternalError
 	}
 
-	errorMsg = awserrors.ErrorLookup[err.Error()]
-
+	errorMsg := awserrors.ErrorLookup[code]
 	if errorMsg.HTTPCode == 0 {
 		errorMsg.HTTPCode = 500
 	}
@@ -566,8 +564,8 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	// EKS, ECR, ACM, ECS, tagging, and bedrock/bedrock-runtime use AWS JSON 1.1;
 	// query/XML services fall through.
 	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" || svc == "bedrock" || svc == "bedrock-runtime" {
-		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
-		slog.Debug("Generated JSON error response", "service", svc, "error", err.Error(), "json", string(body), "requestId", requestId)
+		body := GenerateEKSErrorResponse(code, errorMsg.Message, requestId)
+		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {
@@ -578,12 +576,12 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 
 	var xmlError []byte
 	if svc == "iam" || svc == "sts" || svc == "elasticloadbalancing" {
-		xmlError = GenerateIAMErrorResponse(err.Error(), errorMsg.Message, requestId)
+		xmlError = GenerateIAMErrorResponse(code, errorMsg.Message, requestId)
 	} else {
-		xmlError = GenerateEC2ErrorResponse(err.Error(), errorMsg.Message, requestId)
+		xmlError = GenerateEC2ErrorResponse(code, errorMsg.Message, requestId)
 	}
 
-	slog.Debug("Generated error response", "error", err.Error(), "xml", string(xmlError), "requestId", requestId)
+	slog.Debug("Generated error response", "error", err, "code", code, "xml", string(xmlError), "requestId", requestId)
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(errorMsg.HTTPCode)

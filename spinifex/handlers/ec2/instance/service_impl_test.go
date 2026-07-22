@@ -3154,6 +3154,23 @@ func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
 	require.Len(t, prov.deallocated, 1, "ENI failure must trigger deallocate")
 }
 
+func TestPrepareRunInstances_WrappedENICreateErrorPreservesCode(t *testing.T) {
+	cause := errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+	eni := &fakeENICreator{createErr: fmt.Errorf("create primary ENI: %w", cause)}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-missing"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+
+	require.EqualError(t, err, awserrors.ErrorInvalidSubnetIDNotFound)
+	require.Len(t, prov.deallocated, 1)
+}
+
 // TestPrepareRunInstances_ENIAttachFailureRollsBack verifies that an AttachENI
 // failure deletes the auto-created ENI, deallocates capacity, and drops the
 // instance from the reservation.

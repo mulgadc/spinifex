@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -111,7 +112,10 @@ func TestStaticPool_Exhaustion(t *testing.T) {
 	_, err = a.Allocate(ctx, AllocateRequest{PoolName: "tiny"})
 	require.NoError(t, err)
 	_, err = a.Allocate(ctx, AllocateRequest{PoolName: "tiny"})
-	assert.ErrorContains(t, err, "InsufficientAddressCapacity")
+	assert.ErrorContains(t, err, "pool tiny exhausted")
+	code, ok := awserrors.ResolveErrorCode(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, code)
 }
 
 func TestStaticPool_CASConflict(t *testing.T) {

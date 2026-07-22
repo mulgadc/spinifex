@@ -522,6 +522,38 @@ func ValidErrorCode(code string) string {
 	return ErrorServerInternal
 }
 
+// ResolveErrorCode returns the first registered AWS error code in err's unwrap tree.
+func ResolveErrorCode(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	code := err.Error()
+	if _, ok := ErrorLookup[code]; ok {
+		return code, true
+	}
+
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, inner := range joined.Unwrap() {
+			if code, found := ResolveErrorCode(inner); found {
+				return code, true
+			}
+		}
+		return "", false
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return ResolveErrorCode(wrapped.Unwrap())
+	}
+	return "", false
+}
+
+// ValidErrorCodeFromError resolves err or returns ErrorServerInternal.
+func ValidErrorCodeFromError(err error) string {
+	if code, ok := ResolveErrorCode(err); ok {
+		return code
+	}
+	return ErrorServerInternal
+}
+
 // HasErrorCode reports whether s is exactly a registered AWS error code.
 // Use it to decide whether an error string may be surfaced to clients verbatim
 // (mapped to its real HTTP status) rather than wrapped/sanitized to 500.

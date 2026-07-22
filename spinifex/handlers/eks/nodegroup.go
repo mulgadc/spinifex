@@ -931,7 +931,7 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV nats.KeyVa
 			// Surface a client-facing code (e.g. InsufficientInstanceCapacity)
 			// verbatim so the gateway maps its real status; wrap only opaque
 			// internal failures, which stay 500.
-			if awserrors.HasErrorCode(err.Error()) {
+			if _, ok := awserrors.ResolveErrorCode(err); ok {
 				return nil, err
 			}
 			return nil, fmt.Errorf("launch workers: %w", err)

@@ -39,7 +39,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	record, err := d.vpcService.GetENIRecord(accountID, eniID)
 	if err != nil {
-		respondWithError(msg, errorCodeFor(err))
+		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 		return
 	}
 	if record.Status == "in-use" && record.InstanceId != instance.ID {
@@ -49,7 +49,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	attachmentID, err := d.vpcService.AttachENI(accountID, eniID, instance.ID, deviceIndex)
 	if err != nil {
-		respondWithError(msg, errorCodeFor(err))
+		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 		return
 	}
 	if err := d.vpcService.UpdateENI(accountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
@@ -117,7 +117,7 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	record, err := d.vpcService.FindENIByAttachment(accountID, attachmentID)
 	if err != nil {
-		respondWithError(msg, errorCodeFor(err))
+		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 		return
 	}
 	if record.InstanceId != instance.ID {
@@ -189,15 +189,6 @@ func eniHotplugErrorCode(err error) string {
 	default:
 		return awserrors.ErrorServerInternal
 	}
-}
-
-// errorCodeFor passes through errors whose message is already a valid AWS
-// code (the convention VPCServiceImpl uses for its sentinel errors).
-func errorCodeFor(err error) string {
-	if err == nil {
-		return ""
-	}
-	return awserrors.ValidErrorCode(err.Error())
 }
 
 // publishENIHotplugEvent emits the per-instance NATS event on best-effort

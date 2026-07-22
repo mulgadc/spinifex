@@ -3,6 +3,7 @@ package handlers_eks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -844,6 +845,15 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 		err := scaleUpWithRunErr(t, errors.New(awserrors.ErrorInsufficientInstanceCapacity))
 		require.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
 		assert.True(t, awserrors.HasErrorCode(err.Error()))
+	})
+
+	t.Run("wrapped capacity code preserved", func(t *testing.T) {
+		wrapped := fmt.Errorf("launch on node-1: %w", errors.New(awserrors.ErrorInsufficientInstanceCapacity))
+		err := scaleUpWithRunErr(t, wrapped)
+		require.EqualError(t, err, wrapped.Error())
+		code, ok := awserrors.ResolveErrorCode(err)
+		assert.True(t, ok)
+		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, code)
 	})
 
 	t.Run("opaque error wrapped", func(t *testing.T) {

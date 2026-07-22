@@ -91,7 +91,7 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 			// in the journal too.
 			slog.ErrorContext(ctx, "handleNATSRequest: service call failed", "subject", msg.Subject, "err", err)
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 			return
 		}
 		respondWithJSON(msg, output)
@@ -120,7 +120,7 @@ func handleNATSRequestWithPrincipal[I any, O any](serviceFn func(context.Context
 		output, err := serviceFn(ctx, input, accountID, principalARN)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 			return
 		}
 		respondWithJSON(msg, output)
@@ -176,7 +176,7 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		endOpSpan(opSpan, err)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 			return
 		}
 		if err := msg.Respond(fmt.Appendf(nil, `{"status":"running","instanceId":"%s"}`, instance.ID)); err != nil {
@@ -188,7 +188,7 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		endOpSpan(opSpan, err)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 			return
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {
@@ -204,7 +204,7 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		endOpSpan(opSpan, err)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 			return
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {

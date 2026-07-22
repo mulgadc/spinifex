@@ -48,7 +48,7 @@ func handleEKSTokenVerify(verifier presignedVerifier) nats.MsgHandler {
 			// A verify failure is the common, expected case for a forged/replayed
 			// token — log at debug so a port-scan does not flood the error log.
 			slog.Debug("EKS token verify rejected", "cluster", req.ClusterName, "err", err)
-			respondTokenVerifyErr(msg, awserrors.ValidErrorCode(err.Error()))
+			respondTokenVerifyErr(msg, awserrors.ValidErrorCodeFromError(err))
 			return
 		}
 

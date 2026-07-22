@@ -371,6 +371,27 @@ func TestExtractClientError_AMINotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
 
+func TestExtractClientError_NestedWrappedCode(t *testing.T) {
+	inner := errors.New(awserrors.ErrorInvalidParameterValue)
+	wrapped := fmt.Errorf("launch on node-1: %w", fmt.Errorf("prepare instance: %w", inner))
+	results := []nodeLaunchResult{
+		{NodeID: "node-1", Err: wrapped},
+	}
+
+	err := extractClientError(results)
+	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestExtractClientError_JoinedCode(t *testing.T) {
+	joined := errors.Join(assert.AnError, errors.New(awserrors.ErrorInvalidGroupNotFound))
+	results := []nodeLaunchResult{
+		{NodeID: "node-1", Err: fmt.Errorf("launch on node-1: %w", joined)},
+	}
+
+	err := extractClientError(results)
+	require.EqualError(t, err, awserrors.ErrorInvalidGroupNotFound)
+}
+
 func TestExtractClientError_KeyPairNotFound(t *testing.T) {
 	inner := errors.New(awserrors.ErrorInvalidKeyPairNotFound)
 	wrapped := fmt.Errorf("launch on node-1: %w", inner)

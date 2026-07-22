@@ -71,7 +71,7 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 		return true
 	})
 	if err != nil {
-		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 		return
 	}
 	if !found {
@@ -119,7 +119,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 	if reservationID != "" {
 		if it, ok := d.resourceMgr.instanceTypes[aws.StringValue(input.InstanceType)]; ok {
 			if vErr := d.resourceMgr.ValidateReservationTarget(reservationID, accountID, it); vErr != nil {
-				respondWithError(msg, awserrors.ValidErrorCode(vErr.Error()))
+				respondWithError(msg, awserrors.ValidErrorCodeFromError(vErr))
 				return
 			}
 		}
@@ -129,7 +129,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(ctx, input, accountID, reservationID)
 	endOpSpan(prepSpan, err)
 	if err != nil {
-		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 		return
 	}
 

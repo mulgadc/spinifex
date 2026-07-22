@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/nats-io/nats.go"
@@ -82,7 +83,7 @@ func (m *ExternalIPAM) EnableDHCP(client *dhcp.NATSClient) error {
 func (m *ExternalIPAM) AllocateIP(ctx context.Context, region, az, purpose, allocID, eniID, instanceID string) (string, string, error) {
 	pool := m.findPool(region, az)
 	if pool == nil {
-		return "", "", fmt.Errorf("InsufficientAddressCapacity: no external pool available for region=%q az=%q", region, az)
+		return "", "", fmt.Errorf("no external pool available for region=%q az=%q: %w", region, az, errors.New(awserrors.ErrorInsufficientAddressCapacity))
 	}
 	ip, err := m.AllocateFromPool(ctx, pool.Name, purpose, allocID, eniID, instanceID)
 	if err != nil {

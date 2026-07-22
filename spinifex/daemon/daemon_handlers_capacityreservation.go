@@ -58,7 +58,7 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) {
 	}
 
 	if err := d.resourceMgr.CreateReservation(rec); err != nil {
-		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 		return
 	}
 

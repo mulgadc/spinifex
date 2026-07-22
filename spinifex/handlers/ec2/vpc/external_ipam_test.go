@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
@@ -380,7 +381,10 @@ func TestExternalIPAM_NoPoolAvailable(t *testing.T) {
 
 	// No pool matches eu-west
 	_, _, err := ipam.AllocateIP(context.Background(), "eu-west-1", "eu-west-1a", PurposeENIPublic, "", "eni-1", "i-1")
-	assert.ErrorContains(t, err, "InsufficientAddressCapacity")
+	assert.ErrorContains(t, err, `region="eu-west-1" az="eu-west-1a"`)
+	code, ok := awserrors.ResolveErrorCode(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, code)
 }
 
 func TestExternalIPAM_FindPoolByName_NotFound(t *testing.T) {

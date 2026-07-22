@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -220,6 +221,30 @@ func TestHandleNATSRequest_ServiceError(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
+}
+
+func TestHandleNATSRequest_WrappedAWSServiceError(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	serviceFn := func(_ context.Context, _ *testInput, _ string) (*testOutput, error) {
+		cause := errors.New(awserrors.ErrorInsufficientAddressCapacity)
+		return nil, fmt.Errorf("allocate public address: %w", cause)
+	}
+
+	sub, err := nc.Subscribe("test.err.wrapped", handleNATSRequest(serviceFn))
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	reqData, err := json.Marshal(testInput{Name: "world"})
+	require.NoError(t, err)
+	reply, err := nc.Request("test.err.wrapped", reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	var errResp map[string]any
+	require.NoError(t, json.Unmarshal(reply.Data, &errResp))
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, errResp["Code"])
 }
 
 // --- Handler wrapper tests (representative set via NATS round-trip) ---

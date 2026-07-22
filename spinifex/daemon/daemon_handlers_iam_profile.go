@@ -15,7 +15,7 @@ import (
 func (d *Daemon) handleAssociateIamInstanceProfile(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
 	result, err := d.instanceService.AssociateIamInstanceProfile(ctx, instance, command)
 	if err != nil {
-		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
 		return
 	}
 	respondWithJSON(msg, result)

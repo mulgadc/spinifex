@@ -748,12 +748,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
 			}
 		}
-		errCode := awserrors.ErrorServerInternal
-		if lastRunErr != nil {
-			if _, ok := awserrors.ErrorLookup[lastRunErr.Error()]; ok {
-				errCode = lastRunErr.Error()
-			}
-		}
+		errCode := awserrors.ValidErrorCodeFromError(lastRunErr)
 		slog.ErrorContext(ctx, "PrepareRunInstances: failed to create minimum instances", "created", len(instances), "minCount", minCount, "err", errCode)
 		return nil, nil, nil, errors.New(errCode)
 	}

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -339,5 +340,5 @@ func nextAvailableIP(record *PoolRecord) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("InsufficientAddressCapacity: pool %s exhausted", record.PoolName)
+	return "", fmt.Errorf("pool %s exhausted: %w", record.PoolName, errors.New(awserrors.ErrorInsufficientAddressCapacity))
 }

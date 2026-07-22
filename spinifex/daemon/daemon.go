@@ -1615,8 +1615,13 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("restore instances: %w", err)
 	}
 
-	// Rebuild mgmt IP allocator so already-allocated IPs aren't reused.
-	if d.mgmtIPAllocator != nil {
+	// Bind the mgmt IP allocator to cluster KV now that JetStream is up (DDIL
+	// §1e-audit: startLocal built it KV-less). Rebuild then reconciles this
+	// node's already-running VMs into the cluster-wide record instead of
+	// just refreshing the local cache, so already-allocated IPs aren't
+	// reused by another node either.
+	if d.mgmtIPAllocator != nil && d.jsManager != nil {
+		d.mgmtIPAllocator.BindKV(d.jsManager, d.node)
 		d.mgmtIPAllocator.Rebuild(d.vmMgr.SnapshotMap())
 		slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
 	}

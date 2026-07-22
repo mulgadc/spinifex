@@ -1634,3 +1634,90 @@ func TestJetStreamManager_BestEffort_NilObserver_NoPanic(t *testing.T) {
 	// No observer set — must not panic on success or failure paths.
 	jsm.WriteStateBytesBestEffort("obs-nil", []byte(`{"vms":{}}`), 5*time.Second)
 }
+
+// --- UpdateMgmtIPAM CAS tests ---
+
+// TestJetStreamManager_UpdateMgmtIPAM_ConflictRetry locks the CAS contract
+// for mgmt-ipam records: a concurrent writer landing between Get and Update
+// must be detected via a revision conflict and retried, and both the
+// injected concurrent write and the retried write must land — mirroring
+// UpdateStoppedInstance/UpdateTerminatedInstance's conflict-retry tests,
+// applied to the allocator's backing store (mulga-f3j2x).
+func TestJetStreamManager_UpdateMgmtIPAM_ConflictRetry(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitClusterStateBucket())
+
+	const subnet = "10.99.8.0/24"
+	defer func() { _ = jsm.clusterKV.Delete(mgmtIPAMKeyPrefix + subnet) }()
+
+	_, err = jsm.UpdateMgmtIPAM(subnet, func(r *MgmtIPRecord) {
+		r.Subnet = subnet
+		r.Allocated = append(r.Allocated, MgmtIPEntry{IP: "10.99.8.10", InstanceID: "i-seed", Node: "node-seed"})
+	}, true)
+	require.NoError(t, err)
+
+	var attempts int
+	var injectOnce sync.Once
+	updated, err := jsm.UpdateMgmtIPAM(subnet, func(r *MgmtIPRecord) {
+		attempts++
+		r.Allocated = append(r.Allocated, MgmtIPEntry{IP: "10.99.8.11", InstanceID: "i-retried", Node: "node-a"})
+
+		// Simulate a concurrent writer landing between our Get and Update on
+		// the first attempt only, forcing exactly one revision conflict.
+		injectOnce.Do(func() {
+			_, cerr := jsm.UpdateMgmtIPAM(subnet, func(cr *MgmtIPRecord) {
+				cr.Allocated = append(cr.Allocated, MgmtIPEntry{IP: "10.99.8.12", InstanceID: "i-concurrent", Node: "node-b"})
+			}, true)
+			require.NoError(t, cerr)
+		})
+	}, true)
+	require.NoError(t, err, "the retried Update must eventually succeed against the fresh revision")
+	require.NotNil(t, updated)
+	assert.Equal(t, 2, attempts, "the injected concurrent write must force exactly one retry")
+
+	ids := make(map[string]bool, len(updated.Allocated))
+	for _, e := range updated.Allocated {
+		ids[e.InstanceID] = true
+	}
+	assert.True(t, ids["i-seed"], "the original entry must survive")
+	assert.True(t, ids["i-concurrent"], "the concurrent writer's entry must survive, not be clobbered")
+	assert.True(t, ids["i-retried"], "the retried update must also land")
+}
+
+// TestJetStreamManager_UpdateMgmtIPAM_NotFound verifies createIfAbsent=false
+// surfaces nats.ErrKeyNotFound instead of silently creating a record —
+// MgmtIPAllocator.Release relies on this to no-op cleanly when there is
+// nothing to release.
+func TestJetStreamManager_UpdateMgmtIPAM_NotFound(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitClusterStateBucket())
+
+	_, err = jsm.UpdateMgmtIPAM("10.98.8.0/24-nonexistent", func(r *MgmtIPRecord) {}, false)
+	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
+}
+
+// TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized tests error
+// handling when the cluster-state KV bucket has not been initialized.
+func TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	// Don't call InitClusterStateBucket
+
+	_, err = jsm.UpdateMgmtIPAM("10.97.8.0/24", func(r *MgmtIPRecord) {}, true)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "cluster state KV not initialized")
+}

@@ -478,6 +478,22 @@ func (m *JetStreamManager) UpdateClusterShutdown(mutate func(*ClusterShutdownSta
 	return casUpdate(m.clusterKV, "cluster.shutdown", mutate, false)
 }
 
+// UpdateMgmtIPAM atomically applies mutate to the mgmt-ipam record for
+// subnet and writes it back with optimistic concurrency, retrying on a
+// concurrent writer's revision conflict. createIfAbsent lets the first
+// allocation for a subnet create its record; releases pass false so a
+// release of an instance nobody holds an address for does not conjure an
+// empty record into existence. Every node sharing the management bridge's
+// L2 segment reads and writes the same record, keyed by subnet, which is
+// what makes mgmt IP allocation safe across the whole cluster rather than
+// just this process (mulga-f3j2x).
+func (m *JetStreamManager) UpdateMgmtIPAM(subnet string, mutate func(*MgmtIPRecord), createIfAbsent bool) (*MgmtIPRecord, error) {
+	if m.clusterKV == nil {
+		return nil, errors.New("cluster state KV not initialized")
+	}
+	return casUpdate(m.clusterKV, mgmtIPAMKeyPrefix+subnet, mutate, createIfAbsent)
+}
+
 // ReadClusterShutdown reads the cluster shutdown state from KV.
 func (m *JetStreamManager) ReadClusterShutdown() (*ClusterShutdownState, error) {
 	if m.clusterKV == nil {

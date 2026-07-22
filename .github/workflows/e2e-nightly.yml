@@ -166,13 +166,20 @@ jobs:
         if: steps.gate.outputs.selected == 'true' && matrix.topo == 'single' && matrix.extra == ''
         working-directory: mulga/scripts/tofu-cluster
         run: |
+          set -euo pipefail
+          # Nightly runs a documented subset of the single-node set; the assert
+          # fails the cell if that subset ever names a suite this topology
+          # cannot fully exercise.
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          e2e_suites_assert_subset "e2e-nightly single" "${E2E_SUITES_NIGHTLY_SINGLE}" "${E2E_SUITES_SINGLE}"
+
           INVENTORY=$(tofu output -json inventory)
           WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
           ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
             "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; FAIL=0; \
-             for SUITE in single cert lb; do \
+             for SUITE in ${E2E_SUITES_NIGHTLY_SINGLE}; do \
                echo \"::group::suite \$SUITE\"; \
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
                GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
@@ -209,6 +216,11 @@ jobs:
         if: steps.gate.outputs.selected == 'true' && matrix.topo == 'real-multi'
         working-directory: mulga/scripts/tofu-cluster
         run: |
+          set -euo pipefail
+          # See the single-node step: same subset guard, multi-node set.
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          e2e_suites_assert_subset "e2e-nightly multi" "${E2E_SUITES_NIGHTLY_MULTI}" "${E2E_SUITES_MULTI}"
+
           INVENTORY=$(tofu output -json inventory)
           NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
@@ -223,7 +235,7 @@ jobs:
 
           ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${NODE1_IP} \
             "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; FAIL=0; \
-             for SUITE in multinode cert lb; do \
+             for SUITE in ${E2E_SUITES_NIGHTLY_MULTI}; do \
                echo \"::group::suite \$SUITE\"; \
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
                GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \

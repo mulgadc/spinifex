@@ -3,10 +3,13 @@
 # Restructures the looped e2e.yml into env-grouped job blocks so each suite
 # surfaces as its own node in the Actions graph (mulga-siv-283):
 #
-#   single_provision ─┬─ single_suite (matrix: single, cert, lb, eks, iam)
+#   single_provision ─┬─ single_suite (matrix: the single-node-eligible suites)
 #                     └─ single_teardown (if: always)
-#   multi_provision  ─┬─ multi_suite  (matrix: multinode)
+#   multi_provision  ─┬─ multi_suite  (matrix: the multi-node-eligible suites)
 #                     └─ multi_teardown (if: always)
+#
+# Both matrices come from .github/scripts/suite-sets.sh, the one definition of
+# which suites a topology can run, shared with e2e.yml and e2e-nightly.yml.
 #
 # Constraint: tofu state is runner-filesystem-local, so *_provision and
 # *_teardown must execute on the same self-hosted runner (one runner per label
@@ -25,9 +28,13 @@ on:
   workflow_dispatch:
     inputs:
       single_suites:
-        description: "Single-node suites to run as matrix legs"
+        description: "Single-node suites to run as matrix legs (empty = every single-node-eligible suite, per .github/scripts/suite-sets.sh)"
         required: false
-        default: "single cert lb eks iam"
+        default: ""
+      multi_suites:
+        description: "Multi-node suites to run as matrix legs (empty = every multi-node-eligible suite, per .github/scripts/suite-sets.sh)"
+        required: false
+        default: ""
       run_multinode:
         description: "Also run the multinode env block"
         type: boolean
@@ -126,12 +133,22 @@ jobs:
       - name: Re-enable Go toolchain auto-download
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
+      # Default and allow-list both come from the shared definition, so this
+      # workflow cannot drift from e2e.yml about what a single node can run.
       - name: Compute suite matrix
         id: suites
+        env:
+          REQUESTED: ${{ inputs.single_suites }}
         run: |
-          LIST="${{ inputs.single_suites || 'single cert lb eks iam' }}"
+          set -euo pipefail
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          LIST="${REQUESTED:-${E2E_SUITES_SINGLE}}"
+          e2e_suites_assert_subset "single_suites" "${LIST}" "${E2E_SUITES_SINGLE}"
           echo "list=${LIST}" >> "$GITHUB_OUTPUT"
-          JSON=$(printf '%s\n' $LIST | jq -R . | jq -cs .)
+          # Unquoted on purpose: the space-separated list must word-split into
+          # one JSON element per suite.
+          # shellcheck disable=SC2086
+          JSON=$(printf '%s\n' ${LIST} | jq -R . | jq -cs .)
           echo "matrix=${JSON}" >> "$GITHUB_OUTPUT"
 
       - name: Reclaim docker build cache
@@ -516,6 +533,8 @@ jobs:
       node1_ip: ${{ steps.cluster.outputs.node1_ip }}
       ssh_key: ${{ steps.cluster.outputs.ssh_key }}
       nodes_csv: ${{ steps.cluster.outputs.nodes_csv }}
+      suites: ${{ steps.suites.outputs.list }}
+      matrix: ${{ steps.suites.outputs.matrix }}
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
       # See single_provision above — daemon telemetry is baked in here, at
@@ -629,14 +648,36 @@ jobs:
           echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
           echo "nodes_csv=${NODES_CSV}" >> "$GITHUB_OUTPUT"
 
-      - name: Build multinode binary on runner
+      # Mirrors single_provision's step: the multi leg previously ran multinode
+      # alone, silently dropping the lb and cert coverage that only a
+      # multi-node env can complete.
+      - name: Compute suite matrix
+        id: suites
+        env:
+          REQUESTED: ${{ inputs.multi_suites }}
+        run: |
+          set -euo pipefail
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          LIST="${REQUESTED:-${E2E_SUITES_MULTI}}"
+          e2e_suites_assert_subset "multi_suites" "${LIST}" "${E2E_SUITES_MULTI}"
+          echo "list=${LIST}" >> "$GITHUB_OUTPUT"
+          # Unquoted on purpose: the space-separated list must word-split into
+          # one JSON element per suite.
+          # shellcheck disable=SC2086
+          JSON=$(printf '%s\n' ${LIST} | jq -R . | jq -cs .)
+          echo "matrix=${JSON}" >> "$GITHUB_OUTPUT"
+
+      - name: Build multinode binaries on runner
         working-directory: spinifex/tests/e2e
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          banner "build multinode, teardown"
+          # teardown always builds: the run-scoped sweep binary runs in the
+          # teardown job, it is never a selectable suite leg.
+          SUITES_BUILD="${{ steps.suites.outputs.list }} teardown"
+          banner "build ${SUITES_BUILD// /, }"
           group_open "go test -c"
-          make e2e-build SUITES_BUILD="multinode teardown"
+          make e2e-build SUITES_BUILD="${SUITES_BUILD}"
           group_close
           ok "$(basename _bin/multinode.test) $(stat -c '%s' _bin/multinode.test | numfmt --to=iec)"
 
@@ -680,7 +721,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [multinode]
+        suite: ${{ fromJSON(needs.multi_provision.outputs.matrix) }}
     env:
       NODE1_IP: ${{ needs.multi_provision.outputs.node1_ip }}
       SSH_KEY: ${{ needs.multi_provision.outputs.ssh_key }}

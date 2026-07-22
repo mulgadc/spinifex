@@ -5,9 +5,7 @@ import (
 	"crypto/sha1"
 	"crypto/x509"
 	"encoding/json"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,7 +81,14 @@ YCgXE9CeVzlPlMA2IBLqfA8/DZx+CiyVJAqfpRvbwgSMAV8zlxFL
 -----END RSA PRIVATE KEY-----
 `
 
-const testRSACreatedFingerprint = "2b:c7:d0:bc:45:a8:4b:dc:2a:8f:0e:9b:70:db:66:a6:b8:67:84:28"
+const (
+	testRSACreatedFingerprint = "2b:c7:d0:bc:45:a8:4b:dc:2a:8f:0e:9b:70:db:66:a6:b8:67:84:28"
+
+	// The same fixture down the import path instead, from
+	// `ssh-keygen -y -f k | ssh-keygen -f /dev/stdin -e -m PKCS8 | openssl pkey -pubin -outform DER | openssl md5 -c`.
+	// One key, two unrelated digests, because the two paths hash different things.
+	testRSAPrivKeyImportedFingerprint = "66:81:50:28:0a:74:9e:48:9f:d8:79:da:27:86:22:79"
+)
 
 func newTestKeyService() (*KeyServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
@@ -850,45 +855,31 @@ func TestImportedKeyFingerprint_IgnoresComment(t *testing.T) {
 	assert.Equal(t, testED25519Fingerprint, fingerprint)
 }
 
-// The created path hashes the private key, so the same public key that imports
-// as testRSAImportedFingerprint must fingerprint differently here.
+// One RSA key, fingerprinted down both paths. The digests share no bytes because
+// the paths hash different things -- the private key on create, the public key on
+// import -- which is the divergence that made this two fixes rather than one. A
+// created fingerprint that ever equals the imported one has regressed to hashing
+// the public key.
 func TestCreatedKeyFingerprint_RSA(t *testing.T) {
 	signer, err := ssh.ParsePrivateKey([]byte(testRSAPrivKey))
 	require.NoError(t, err)
 
-	fingerprint, err := createdKeyFingerprint([]byte(testRSAPrivKey), signer.PublicKey())
+	created, err := createdKeyFingerprint([]byte(testRSAPrivKey), signer.PublicKey())
 	require.NoError(t, err)
-	assert.Equal(t, testRSACreatedFingerprint, fingerprint)
+	assert.Equal(t, testRSACreatedFingerprint, created)
+
+	imported, err := importedKeyFingerprint(signer.PublicKey())
+	require.NoError(t, err)
+	assert.Equal(t, testRSAPrivKeyImportedFingerprint, imported)
 }
 
 // ED25519 hashes the public key on both paths, so the created value matches the
-// imported one -- and diverges from AWS the same way.
+// imported one -- and diverges from AWS the same way. The private key is passed
+// deliberately mismatched: this branch must not read it at all.
 func TestCreatedKeyFingerprint_ED25519(t *testing.T) {
-	requireSSHKeygen(t)
-
-	privateKeyPEM, publicKey := generateTestKeyPair(t, "ed25519")
-	fingerprint, err := createdKeyFingerprint(privateKeyPEM, publicKey)
+	fingerprint, err := createdKeyFingerprint([]byte(testRSAPrivKey), parseTestPubKey(t, testED25519PubKey))
 	require.NoError(t, err)
-
-	assert.Equal(t, ssh.FingerprintSHA256(publicKey), fingerprint)
-}
-
-// generateTestKeyPair runs ssh-keygen the way CreateKeyPair does, so the
-// fingerprint helpers are exercised against the OpenSSH private key format
-// rather than only the PEM fixture.
-func generateTestKeyPair(t *testing.T, keyType string) ([]byte, ssh.PublicKey) {
-	t.Helper()
-
-	privateKeyPath := filepath.Join(t.TempDir(), "id_key")
-	cmd := exec.Command("ssh-keygen", "-t", keyType, "-f", privateKeyPath, "-N", "", "-C", "")
-	require.NoError(t, cmd.Run())
-
-	privateKeyPEM, err := os.ReadFile(privateKeyPath)
-	require.NoError(t, err)
-	publicKeyData, err := os.ReadFile(privateKeyPath + ".pub")
-	require.NoError(t, err)
-
-	return privateKeyPEM, parseTestPubKey(t, string(publicKeyData))
+	assert.Equal(t, testED25519Fingerprint, fingerprint)
 }
 
 func TestColonHex(t *testing.T) {

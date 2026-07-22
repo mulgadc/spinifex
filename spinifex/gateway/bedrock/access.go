@@ -33,6 +33,15 @@ func accessKey(accountID, modelID string) string {
 	return fmt.Sprintf("%s/%s/%s", modelAccessPrefix, accountID, base64.RawURLEncoding.EncodeToString([]byte(modelID)))
 }
 
+// modelAccessSeedPrefix namespaces the one-shot seeding markers. It is kept
+// out of modelAccessPrefix so a marker can never be read back as a grant.
+const modelAccessSeedPrefix = "seeded"
+
+// accessSeedKey returns the key marking accountID's initial grants as seeded.
+func accessSeedKey(accountID string) string {
+	return fmt.Sprintf("%s/%s", modelAccessSeedPrefix, accountID)
+}
+
 // accountGrantPrefix returns the key prefix covering every grant held by
 // accountID.
 func accountGrantPrefix(accountID string) string {
@@ -131,6 +140,43 @@ func (s *ModelAccessStore) Revoke(_ context.Context, accountID, modelID string) 
 		return fmt.Errorf("kv delete grant for %s/%s: %w", accountID, modelID, err)
 	}
 	return nil
+}
+
+// SeedAccountGrants grants accountID every model in modelIDs, once per
+// deployment, and reports whether it did. It exists so a fresh install has a
+// working operator account without the deny-by-default rule being softened:
+// only the account named here is seeded, and only until an operator changes
+// it, since the marker means a later revoke is never undone by a restart.
+//
+// Grants are written before the marker, so a crash midway leaves the marker
+// absent and the next start repeats the (idempotent) grants rather than
+// leaving a half-seeded account. The marker itself is a conditional create:
+// every node runs this at startup and only the first need win.
+func (s *ModelAccessStore) SeedAccountGrants(ctx context.Context, accountID string, modelIDs []string) (bool, error) {
+	kv, err := s.bucket()
+	if err != nil {
+		return false, err
+	}
+
+	switch _, err := kv.Get(accessSeedKey(accountID)); {
+	case err == nil:
+		return false, nil
+	case errors.Is(err, nats.ErrKeyNotFound):
+		// Not seeded yet — fall through and seed.
+	default:
+		return false, fmt.Errorf("kv get seed marker for %s: %w", accountID, err)
+	}
+
+	for _, modelID := range modelIDs {
+		if err := s.Grant(ctx, accountID, modelID); err != nil {
+			return false, err
+		}
+	}
+
+	if _, err := kv.Create(accessSeedKey(accountID), nil); err != nil && !errors.Is(err, nats.ErrKeyExists) {
+		return false, fmt.Errorf("kv create seed marker for %s: %w", accountID, err)
+	}
+	return true, nil
 }
 
 // List returns the model IDs accountID holds grants on, in no particular

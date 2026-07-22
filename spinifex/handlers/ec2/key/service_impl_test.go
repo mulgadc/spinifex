@@ -2,6 +2,8 @@ package handlers_ec2_key
 
 import (
 	"context"
+	"crypto/sha1"
+	"crypto/x509"
 	"encoding/json"
 	"os/exec"
 	"strings"
@@ -35,11 +37,57 @@ const testECDSAPubKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAA
 // Well-formed DSA public key: parseable by x/crypto/ssh but not a key type EC2 accepts.
 const testDSAPubKey = "ssh-dss AAAAB3NzaC1kc3MAAACBAMfooAGeGkAp6syFsxNueaASpwMr5t+BiLTxAmf9grlH/7MPhXHxxtrrzEdq4bK0mheLl4irAtardgR5ghOVxKXqz4dLlcEyv3H3tOY8Hq+JT/6w9j4FLjen4obXcilh7vfRPdL/A7Dk3Th9NSkrp43FmXUL4EyuMbqi7LcQYpMpAAAAFQDpwLJZvztWN3pEeT/MMLsVSmJedwAAAIBZjhEyHHk1iomvueP6GkmdrXt4V9+6BHjG/rHzQRlO79muU5ImX/BFALCc0RjaPNAoo0lF6ptaPf2HPeu3dtEAWM9iXH8SLqcAVX7B5FUYKFb7zsyQmlT3pKo21V3mCakKHDma8kbHSC2sysl1NOD4IkGTQalP4MuzIvCXNKbCdAAAAIEAl7OdP7hBngX0CuM0+cJXonZvnvIo1NOWGVu+dCn93mvoGjKFyZmLSEMIfFbmckQF2J4F9cM9aU6ht76k73DFnnA/F7WiJ+hIKLhL7Y8F0eDtWkawswvwxvHB+C7drrqezD6t5INX4CYlNQD4zqhgWKBSKVn3sQzQI95gFE51rKE="
 
-// Fingerprints as reported by `ssh-keygen -lf` (SHA256) and `ssh-keygen -l -E md5 -f`
-// (MD5, minus its "MD5:" prefix) for the keys above.
 const (
+	// The OpenSSH SHA256 rendering, as reported by `ssh-keygen -lf`. This is not
+	// the value AWS returns: AWS drops the "SHA256:" prefix and pads the base64.
 	testED25519Fingerprint = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
-	testRSAFingerprint     = "35:76:17:80:c5:ca:87:56:ff:db:4b:0e:9c:76:63:6b"
+
+	// Recorded from real AWS: the value ImportKeyPair returned for testRSAPubKey
+	// above. Reproducible with
+	// `ssh-keygen -f k.pub -e -m PKCS8 | openssl pkey -pubin -outform DER | openssl md5 -c`.
+	testRSAImportedFingerprint = "ad:57:77:5e:13:5f:87:5d:e8:95:46:cb:3c:92:a1:be"
+)
+
+// A fixed RSA private key, so one created-path assertion is a golden value that
+// does not depend on the generator. Its fingerprint below comes from
+// `openssl pkcs8 -topk8 -nocrypt -in k -outform DER | openssl sha1 -c`, the
+// command AWS documents for verifying a key pair EC2 generated.
+const testRSAPrivKey = `-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEApFkPvNAcoePF248Sb6x3k+IEW4WC0n7J95J59J8qYziNTgsn
+6NxKAqOeDRaUc5pzPcJA28iJaW7FjH3Z9o6VSt0jJPqp4la1XqpBL7hQnta1adWl
+VLAQry/Va9K8suoqcX0jbJ+wQzz3gv+HzfCPVGJMuqG6Mms0HL6G5m0AYRhVsQhU
+QGc3rPZ2wlO2XJMWDop1BpY+oN+K/wcYTevwgD49TG1PkiIGU4txqcDxUdljw+/8
+ihRHb8YzVeQEtTt6FEDH0n/0P+3WTZRX1JCJc567eg167sGEhJ8J2RL5osIoqJoy
+y5hT5er/A07UVaaZ0NtsY36ln5fusWEA98aoJQIDAQABAoIBABe3Jlc3rLoLtTRu
+m9lziLnVRo2yYWNgmmJYR7Lt+N7ifTmC0JqAl0l0NM1ssbVQ10pVKqjMck+9hVI1
+ous6Pf7UlEq0xSj9HCTx6oApV7DkCL+h7b6fvXiaLXDmswYaVk+UIDV/gZ7iQFEt
+8HneOcCSgsH3rneyEo4HTE4Z8pEQB6ZY3xNceYbiM5/GWOfuuhF7YbxrkApHKvVS
+Q8zr/fXXNQUbaqYKQX+KppdlsZkXwUjR2h0xhbp8/B7Dv42cS3E6oeeng0jTB4ix
+Co9juenwTQf1YYWiF0sRv4cg6CwiALKYuUiAByC5a2ZHXOZdnlYjbRLhIEBZnVBz
+yVuZ5cECgYEA1aNG9elohFw6ysAbSSWE4J13iD9iDK/MX9hzxojDpT8hOuv08QDc
+H6N9I/tlsqNzKNzGGfXYxCPAG/Sv3d+bI3F8r/z8E7ILdI/GpzIfWeNKc31YGLWR
+YNU/19WlpYMujh93t7m3U+xcIRtwa9MHdhklik+urWwpmPCMIa1toDUCgYEAxO+4
+gVW8HI2svh57bumzHlhtmmjpTqrLuYZshmOTd4Sl7r4exlBjm/r0SSHNQ2ycJKLO
+9YbXvEByFW/8yQAhUzX4VZmLRNbNVrtFOUx8ymK17FJK2cN/pUqW6oZu/7D22LLy
+PtVQrFzV7ARvF40xIrIPLlM0ZTLP4HwSPqyaxjECgYAvffmjZzzl1772HZizPRT5
+/ed5sWVxno8Xa33pT7P2gz824wdzoBZPLj/+hL+J484Q8mtTkBSdHblyPYXvE+tg
+CLWIRfwfwL/NLL0jo//WMrH1VJMGAy8LULy9lXAaiDwMOjCZ9j4r+OpOLdRjE+mf
+tl1jDu2s/dONfUQZpH0vVQKBgGuxI1Ymig2bM8FrbdhDF94aQSVVBXAtWeaEKch7
+n2KWOR8K/E06HJ5pZziusU6Tj/dAyKffKw4Yt8odSUCpP4//TWOR6WSlifhJxBsH
+Rp5tyEoI3kGi9KRw24I4LW7JWNM7V9kgUVNQGPNNoWphnWL5t+9/NIG6fY6miluX
+i7OhAoGBAMvVHgBWR9vcgC3Ii1u0r+sBJyiQ7v1Nrog89/6ufA5HR0UQ29lHJM+K
+YpmMAcq6NBl+N1yo0zq59Rs2ueoCwhiNSYzJ7L6qB8jru3mIXKug6kxlEmmq9lmq
+YCgXE9CeVzlPlMA2IBLqfA8/DZx+CiyVJAqfpRvbwgSMAV8zlxFL
+-----END RSA PRIVATE KEY-----
+`
+
+const (
+	testRSACreatedFingerprint = "2b:c7:d0:bc:45:a8:4b:dc:2a:8f:0e:9b:70:db:66:a6:b8:67:84:28"
+
+	// The same fixture down the import path instead, from
+	// `ssh-keygen -y -f k | ssh-keygen -f /dev/stdin -e -m PKCS8 | openssl pkey -pubin -outform DER | openssl md5 -c`.
+	// One key, two unrelated digests, because the two paths hash different things.
+	testRSAPrivKeyImportedFingerprint = "66:81:50:28:0a:74:9e:48:9f:d8:79:da:27:86:22:79"
 )
 
 func newTestKeyService() (*KeyServiceImpl, *objectstore.MemoryObjectStore) {
@@ -121,8 +169,19 @@ func TestCreateKeyPair_RSA(t *testing.T) {
 	require.NotNil(t, out)
 
 	assert.Equal(t, "my-rsa-key", *out.KeyName)
-	// RSA fingerprint is the legacy colon-separated MD5 digest: 16 hex pairs.
-	assert.Regexp(t, `^([0-9a-f]{2}:){15}[0-9a-f]{2}$`, *out.KeyFingerprint)
+
+	// The key is generated per-run, so the digest is not knowable in advance.
+	// Recompute it from the private key the caller was handed: that is what pins
+	// the fingerprint to the private key rather than to the public one.
+	rawKey, err := ssh.ParseRawPrivateKey([]byte(*out.KeyMaterial))
+	require.NoError(t, err)
+	der, err := x509.MarshalPKCS8PrivateKey(rawKey)
+	require.NoError(t, err)
+	sum := sha1.Sum(der)
+
+	assert.Equal(t, colonHex(sum[:]), *out.KeyFingerprint)
+	// 20 hex pairs -- a SHA-1, not the 16-pair MD5 this used to return.
+	assert.Regexp(t, `^([0-9a-f]{2}:){19}[0-9a-f]{2}$`, *out.KeyFingerprint)
 }
 
 func TestCreateKeyPair_NilInput(t *testing.T) {
@@ -232,7 +291,7 @@ func TestImportKeyPair_Success_RSA(t *testing.T) {
 	require.NotNil(t, out)
 
 	assert.Equal(t, "imported-rsa", *out.KeyName)
-	assert.Equal(t, testRSAFingerprint, *out.KeyFingerprint)
+	assert.Equal(t, testRSAImportedFingerprint, *out.KeyFingerprint)
 }
 
 // A trailing comment is accepted and preserved, and surrounding whitespace is
@@ -512,6 +571,41 @@ func TestDescribeKeyPairs_AllKeys(t *testing.T) {
 	assert.True(t, names["key-beta"])
 }
 
+// KeyType is inferred from the stored fingerprint's shape, so it has to survive
+// RSA reporting two different digest widths: 16 bytes when imported, 20 when EC2
+// generated the key. Only ED25519 carries the "SHA256:" prefix that marks it.
+func TestDescribeKeyPairs_KeyTypeInference(t *testing.T) {
+	requireSSHKeygen(t)
+	svc, _ := newTestKeyService()
+
+	importTestKey(t, svc, "inferred-ed25519")
+
+	_, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
+		KeyName:           aws.String("inferred-rsa-imported"),
+		PublicKeyMaterial: []byte(testRSAPubKey),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+		KeyName: aws.String("inferred-rsa-created"),
+		KeyType: aws.String("rsa"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{}, testAccountID)
+	require.NoError(t, err)
+
+	keyTypes := make(map[string]string, len(out.KeyPairs))
+	for _, kp := range out.KeyPairs {
+		keyTypes[*kp.KeyName] = *kp.KeyType
+	}
+	assert.Equal(t, map[string]string{
+		"inferred-ed25519":      "ed25519",
+		"inferred-rsa-imported": "rsa",
+		"inferred-rsa-created":  "rsa",
+	}, keyTypes)
+}
+
 func TestDescribeKeyPairs_FilterByKeyName(t *testing.T) {
 	svc, _ := newTestKeyService()
 
@@ -707,7 +801,7 @@ func TestGetKeyNameFromKeyPairId_Success(t *testing.T) {
 }
 
 // ============================================================
-// keyFingerprint / keyPairType Tests
+// Fingerprint / keyPairType Tests
 // ============================================================
 
 // parseTestPubKey parses an authorized-key line that the test asserts is valid.
@@ -718,30 +812,79 @@ func parseTestPubKey(t *testing.T, material string) ssh.PublicKey {
 	return pubKey
 }
 
-func TestKeyFingerprint(t *testing.T) {
+func TestImportedKeyFingerprint(t *testing.T) {
 	tests := []struct {
 		name     string
 		pubKey   string
 		expected string
 	}{
-		// ED25519 keys report the OpenSSH SHA256 digest.
+		// The OpenSSH rendering of the SHA256 digest, which is not what AWS
+		// returns -- AWS drops the prefix and pads the base64.
 		{name: "ED25519", pubKey: testED25519PubKey, expected: testED25519Fingerprint},
-		// RSA keys report the legacy colon-separated MD5 digest, as AWS does.
-		{name: "RSA", pubKey: testRSAPubKey, expected: testRSAFingerprint},
+		// The MD5 of the DER SubjectPublicKeyInfo, matching AWS.
+		{name: "RSA", pubKey: testRSAPubKey, expected: testRSAImportedFingerprint},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, keyFingerprint(parseTestPubKey(t, tt.pubKey)))
+			fingerprint, err := importedKeyFingerprint(parseTestPubKey(t, tt.pubKey))
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, fingerprint)
+		})
+	}
+}
+
+// keyPairType rejects these before import reaches the fingerprint, but the two
+// guards must not drift: an algorithm that slips past must error rather than
+// yield a digest AWS would never produce. ECDSA is the case that matters --
+// x509.MarshalPKIXPublicKey marshals it happily, so nothing else would stop it.
+func TestImportedKeyFingerprint_UnsupportedAlgorithm(t *testing.T) {
+	for name, pubKey := range map[string]string{"ECDSA": testECDSAPubKey, "DSA": testDSAPubKey} {
+		t.Run(name, func(t *testing.T) {
+			_, err := importedKeyFingerprint(parseTestPubKey(t, pubKey))
+			require.Error(t, err)
 		})
 	}
 }
 
 // A comment or surrounding whitespace is not part of the key, so it must not
 // move the fingerprint.
-func TestKeyFingerprint_IgnoresComment(t *testing.T) {
-	withComment := parseTestPubKey(t, testED25519PubKey+" user@host\n")
-	assert.Equal(t, testED25519Fingerprint, keyFingerprint(withComment))
+func TestImportedKeyFingerprint_IgnoresComment(t *testing.T) {
+	fingerprint, err := importedKeyFingerprint(parseTestPubKey(t, testED25519PubKey+" user@host\n"))
+	require.NoError(t, err)
+	assert.Equal(t, testED25519Fingerprint, fingerprint)
+}
+
+// One RSA key, fingerprinted down both paths. The digests share no bytes because
+// the paths hash different things -- the private key on create, the public key on
+// import -- which is the divergence that made this two fixes rather than one. A
+// created fingerprint that ever equals the imported one has regressed to hashing
+// the public key.
+func TestCreatedKeyFingerprint_RSA(t *testing.T) {
+	signer, err := ssh.ParsePrivateKey([]byte(testRSAPrivKey))
+	require.NoError(t, err)
+
+	created, err := createdKeyFingerprint([]byte(testRSAPrivKey), signer.PublicKey())
+	require.NoError(t, err)
+	assert.Equal(t, testRSACreatedFingerprint, created)
+
+	imported, err := importedKeyFingerprint(signer.PublicKey())
+	require.NoError(t, err)
+	assert.Equal(t, testRSAPrivKeyImportedFingerprint, imported)
+}
+
+// ED25519 hashes the public key on both paths, so the created value matches the
+// imported one -- and diverges from AWS the same way. The private key is passed
+// deliberately mismatched: this branch must not read it at all.
+func TestCreatedKeyFingerprint_ED25519(t *testing.T) {
+	fingerprint, err := createdKeyFingerprint([]byte(testRSAPrivKey), parseTestPubKey(t, testED25519PubKey))
+	require.NoError(t, err)
+	assert.Equal(t, testED25519Fingerprint, fingerprint)
+}
+
+func TestColonHex(t *testing.T) {
+	assert.Equal(t, "00:0f:a0:ff", colonHex([]byte{0x00, 0x0f, 0xa0, 0xff}))
+	assert.Empty(t, colonHex(nil))
 }
 
 func TestKeyPairType(t *testing.T) {

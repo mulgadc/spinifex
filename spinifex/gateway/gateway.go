@@ -606,23 +606,17 @@ func readQueryArgs(r *http.Request) (map[string]string, error) {
 // ParseAWSQueryArgs parses an AWS query-protocol body. Returns an error on
 // invalid percent-encoding so callers can surface MalformedQueryString.
 func ParseAWSQueryArgs(query string) (map[string]string, error) {
-	params := make(map[string]string)
-	pairs := strings.SplitSeq(query, "&")
-	for pair := range pairs {
-		kv := strings.SplitN(pair, "=", 2)
-		key, err := url.QueryUnescape(kv[0])
-		if err != nil {
-			return nil, fmt.Errorf("invalid URL encoding in parameter name: %w", err)
-		}
-		if len(kv) == 2 {
-			value, err := url.QueryUnescape(kv[1])
-			if err != nil {
-				return nil, fmt.Errorf("invalid URL encoding in value for %q: %w", key, err)
-			}
-			params[key] = value
-		} else {
-			params[key] = ""
-		}
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return nil, fmt.Errorf("invalid AWS query string: %w", err)
+	}
+
+	params := make(map[string]string, len(values))
+	for key, vs := range values {
+		// The query protocol indexes repeated parameters (Filter.1.Value.1), so a
+		// bare duplicate key only arrives from a non-conforming client. Take the
+		// last occurrence.
+		params[key] = vs[len(vs)-1]
 	}
 	return params, nil
 }

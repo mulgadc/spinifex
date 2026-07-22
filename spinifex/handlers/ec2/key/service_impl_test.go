@@ -348,12 +348,22 @@ func TestImportKeyPairInvalidKeyFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// A name per case: a case that regressed into acceptance would
+			// otherwise store an object and fail every later case with
+			// Duplicate, pointing the failure at the wrong input.
+			keyName := "test-key-" + tt.name
 			_, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
-				KeyName:           aws.String("test-key"),
+				KeyName:           aws.String(keyName),
 				PublicKeyMaterial: []byte(tt.publicKey),
 			}, testAccountID)
 			require.Error(t, err)
 			assert.Equal(t, tt.expectedErrMsg, err.Error())
+
+			// Rejection must precede the upload, or the guest is served material
+			// the API refused.
+			_, err = svc.GetPublicKeyMaterial(testAccountID, keyName)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
 		})
 	}
 }

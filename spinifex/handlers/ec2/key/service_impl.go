@@ -198,10 +198,18 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 }
 
 // keyFingerprint returns the OpenSSH fingerprint of a public key: the base64
-// SHA256 digest (SHA256:<base64>) for ED25519 keys, and the RFC 4716 section 4
-// colon-separated MD5 digest for RSA. That is what AWS reports for an imported
-// key pair. For a key pair EC2 generated itself, AWS reports the SHA-1 digest of
-// the DER private key instead, which cannot be derived from a public key alone.
+// SHA256 digest (SHA256:<base64>) for ED25519 keys, and the colon-separated MD5
+// digest of the SSH wire blob for RSA.
+//
+// ED25519 matches AWS. RSA does not, on either path. AWS hashes the DER
+// SubjectPublicKeyInfo encoding for an imported key, and the SHA-1 of the DER
+// PKCS#8 private key for one EC2 generated itself, so both differ from the value
+// returned here. AWS's own docs disagree on this -- the ImportKeyPair reference
+// cites RFC 4716 section 4, which is what this implements, while the fingerprint
+// verification guide gives the DER encoding -- and the verification guide is the
+// one that matches observed behaviour. Correcting it is deliberately out of
+// scope for the parse refactor because it changes a persisted, client-visible
+// value; do not "fix" the rendering here in isolation.
 func keyFingerprint(publicKey ssh.PublicKey) string {
 	if publicKey.Type() == ssh.KeyAlgoED25519 {
 		return ssh.FingerprintSHA256(publicKey)
@@ -704,6 +712,10 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	// validated. Requiring a single line is how that rule is enforced; RFC 4716
 	// material is multi-line and would need normalising to an OpenSSH line
 	// before it reached here.
+	//
+	// This binds new imports only. Records written before the check exists are
+	// never revalidated, so material already in the object store may still be
+	// multi-line or option-prefixed and is still served to guests as-is.
 	publicKeyData := bytes.TrimSpace(input.PublicKeyMaterial)
 	if bytes.ContainsAny(publicKeyData, "\r\n") {
 		slog.ErrorContext(ctx, "Public key material is not a single key", "keyName", keyName)

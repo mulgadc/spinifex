@@ -3,6 +3,10 @@ package handlers_ec2_key
 import (
 	"bytes"
 	"context"
+	"crypto/md5"  //nolint:gosec // G501: MD5 is the digest EC2 puts on the wire, not a security choice
+	"crypto/sha1" //nolint:gosec // G505: SHA-1 is the digest EC2 puts on the wire, not a security choice
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,7 +153,11 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		slog.ErrorContext(ctx, "Failed to parse generated public key", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	fingerprint := keyFingerprint(publicKey)
+	fingerprint, err := createdKeyFingerprint(privateKeyData, publicKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to fingerprint generated key pair", "keyName", keyName, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 
 	// Upload public key to S3
 	_, err = s.store.PutObject(ctx, &s3.PutObjectInput{
@@ -197,24 +205,78 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	return output, nil
 }
 
-// keyFingerprint returns the OpenSSH fingerprint of a public key: the base64
-// SHA256 digest (SHA256:<base64>) for ED25519 keys, and the colon-separated MD5
-// digest of the SSH wire blob for RSA.
-//
-// ED25519 matches AWS. RSA does not, on either path. AWS hashes the DER
-// SubjectPublicKeyInfo encoding for an imported key, and the SHA-1 of the DER
-// PKCS#8 private key for one EC2 generated itself, so both differ from the value
-// returned here. AWS's own docs disagree on this -- the ImportKeyPair reference
-// cites RFC 4716 section 4, which is what this implements, while the fingerprint
-// verification guide gives the DER encoding -- and the verification guide is the
-// one that matches observed behaviour. Correcting it is deliberately out of
-// scope for the parse refactor because it changes a persisted, client-visible
-// value; do not "fix" the rendering here in isolation.
-func keyFingerprint(publicKey ssh.PublicKey) string {
-	if publicKey.Type() == ssh.KeyAlgoED25519 {
-		return ssh.FingerprintSHA256(publicKey)
+// importedKeyFingerprint fingerprints a key supplied to ImportKeyPair: the MD5
+// of the DER SubjectPublicKeyInfo for RSA, matching AWS, and the OpenSSH SHA-256
+// rendering for ED25519, which does not -- AWS omits the "SHA256:" prefix and
+// pads the base64.
+func importedKeyFingerprint(publicKey ssh.PublicKey) (string, error) {
+	switch publicKey.Type() {
+	case ssh.KeyAlgoED25519:
+		return ssh.FingerprintSHA256(publicKey), nil
+
+	case ssh.KeyAlgoRSA:
+		// AWS hashes the DER SubjectPublicKeyInfo, not the RFC 4253 wire blob
+		// that ssh.FingerprintLegacyMD5 uses, so unwrap to the crypto key and
+		// re-encode.
+		cryptoKey, ok := publicKey.(ssh.CryptoPublicKey)
+		if !ok {
+			return "", fmt.Errorf("key algorithm %q exposes no crypto public key", publicKey.Type())
+		}
+		der, err := x509.MarshalPKIXPublicKey(cryptoKey.CryptoPublicKey())
+		if err != nil {
+			return "", fmt.Errorf("marshal public key: %w", err)
+		}
+
+		sum := md5.Sum(der) //nolint:gosec // G401: MD5 is the digest EC2 puts on the wire, not a security choice
+		return colonHex(sum[:]), nil
+
+	default:
+		// keyPairType rejects these first, so this is unreachable in the import
+		// path. It is stated rather than left to x509, which happily marshals an
+		// ECDSA key and would hand back a digest AWS has no counterpart for.
+		return "", fmt.Errorf("unsupported key algorithm %q", publicKey.Type())
 	}
-	return ssh.FingerprintLegacyMD5(publicKey)
+}
+
+// createdKeyFingerprint fingerprints a key EC2 generated itself. For RSA that is
+// the SHA-1 of the DER PKCS#8 private key, a 20-byte digest over material the
+// caller receives once and the store never keeps. ED25519 hashes the public key,
+// exactly as the import path does, and shares its divergence from AWS.
+func createdKeyFingerprint(privateKeyPEM []byte, publicKey ssh.PublicKey) (string, error) {
+	switch publicKey.Type() {
+	// Matched ahead of the PKCS#8 path deliberately: ParseRawPrivateKey hands
+	// back *ed25519.PrivateKey, a pointer type MarshalPKCS8PrivateKey rejects,
+	// so an ED25519 key reaching that path would fail at runtime.
+	case ssh.KeyAlgoED25519:
+		return ssh.FingerprintSHA256(publicKey), nil
+
+	case ssh.KeyAlgoRSA:
+		rawKey, err := ssh.ParseRawPrivateKey(privateKeyPEM)
+		if err != nil {
+			return "", fmt.Errorf("parse generated private key: %w", err)
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(rawKey)
+		if err != nil {
+			return "", fmt.Errorf("marshal private key: %w", err)
+		}
+
+		sum := sha1.Sum(der) //nolint:gosec // G401: SHA-1 is the digest EC2 puts on the wire, not a security choice
+		return colonHex(sum[:]), nil
+
+	default:
+		return "", fmt.Errorf("unsupported key algorithm %q", publicKey.Type())
+	}
+}
+
+// colonHex renders digest bytes the way EC2 spells a fingerprint: lowercase hex
+// byte pairs joined by colons.
+func colonHex(digest []byte) string {
+	encoded := hex.EncodeToString(digest)
+	pairs := make([]string, 0, len(digest))
+	for i := 0; i < len(encoded); i += 2 {
+		pairs = append(pairs, encoded[i:i+2])
+	}
+	return strings.Join(pairs, ":")
 }
 
 // keyPairType maps an SSH public key algorithm to the EC2 key type string. EC2
@@ -744,7 +806,11 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
 	}
 
-	fingerprint := keyFingerprint(publicKey)
+	fingerprint, err := importedKeyFingerprint(publicKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to fingerprint imported key", "keyName", keyName, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 
 	// Upload public key to S3
 	_, err = s.store.PutObject(ctx, &s3.PutObjectInput{

@@ -13,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -313,18 +312,12 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 
 	slog.Info("Processing DescribeInstances request from this node", "accountID", accountID)
 
-	// Validate and filter instances if specific instance IDs were requested
-	instanceIDFilter := make(map[string]bool)
-	if len(describeInstancesInput.InstanceIds) > 0 {
-		for _, id := range describeInstancesInput.InstanceIds {
-			if id != nil && *id != "" {
-				if !strings.HasPrefix(*id, "i-") {
-					respondWithError(msg, awserrors.ErrorInvalidInstanceIDMalformed)
-					return
-				}
-				instanceIDFilter[*id] = true
-			}
-		}
+	// Validate the requested instance IDs, rejecting malformed ones so this path
+	// and the stopped/terminated path below enforce the same rule.
+	instanceIDFilter, err := handlers_ec2_instance.ParseInstanceIDFilter(describeInstancesInput.InstanceIds)
+	if err != nil {
+		respondWithError(msg, awserrors.ErrorInvalidInstanceIDMalformed)
+		return
 	}
 
 	// Parse filters (returns error for unknown filter names)
@@ -373,92 +366,32 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 					reservationMap[resID] = reservation
 				}
 
-				// Update the instance state to current state
-				instanceCopy := *instance.Instance
-				instanceCopy.State = &ec2.InstanceState{}
-
-				// Populate PublicIpAddress from VM if stored
-				if instance.PublicIP != "" && instanceCopy.PublicIpAddress == nil {
-					instanceCopy.PublicIpAddress = aws.String(instance.PublicIP)
-				}
-
-				// Project the AWS-shaped DNS names from the current IPs, the same
-				// way PublicIpAddress/State are derived here. Mirrors the records
-				// the control-plane writer publishes to northstar.
-				publicDNS, privateDNS := handlers_dns.EC2DNSNames(
-					d.config.Region, d.dnsBaseDomain, d.dnsInternalDomain,
-					aws.StringValue(instanceCopy.PublicIpAddress), aws.StringValue(instanceCopy.PrivateIpAddress),
-				)
-				if publicDNS != "" {
-					instanceCopy.PublicDnsName = aws.String(publicDNS)
-				}
-				if privateDNS != "" {
-					instanceCopy.PrivateDnsName = aws.String(privateDNS)
-				}
-
-				// Map internal status to AWS state, projecting Spinifex-only states
-				// (e.g. error -> stopped) so SDK/UI clients see a valid label.
-				if info, ok := vm.EC2APIState(instance.Status); ok {
-					instanceCopy.State.SetCode(info.Code)
-					instanceCopy.State.SetName(info.Name)
-				} else {
+				// Project every vm.VM-sourced field onto an API-shaped copy via the
+				// shared projection, so this path and the stopped/terminated path
+				// below define the field set exactly once and cannot drift. Running
+				// instances carry their runtime network (public IP, DNS) and
+				// capacity reservation; an unmapped status falls back to pending/0.
+				projected, stateMapped := handlers_ec2_instance.ProjectInstance(instance, handlers_ec2_instance.InstanceProjection{
+					Region:                d.config.Region,
+					DNSBaseDomain:         d.dnsBaseDomain,
+					DNSInternalDomain:     d.dnsInternalDomain,
+					AZ:                    d.config.AZ,
+					IncludeRuntimeNetwork: true,
+					FallbackStateCode:     0,
+					FallbackStateName:     "pending",
+				})
+				if !stateMapped {
 					slog.Warn("Instance has unmapped status, reporting as pending",
 						"instanceId", instance.ID, "status", string(instance.Status))
-					instanceCopy.State.SetCode(0)
-					instanceCopy.State.SetName("pending")
-				}
-
-				// Project IamInstanceProfile from vm.VM (single source of truth
-				// across Associate/Disassociate/Replace lifecycle). Id is left
-				// nil — the gateway resolves it via IAMService post-aggregation
-				// since daemons have no IAM access. Empty Arn clears any stale
-				// reference left on stored instance.Instance (e.g. after
-				// Disassociate or auto-clear on terminate).
-				if instance.IamInstanceProfileArn != "" {
-					instanceCopy.IamInstanceProfile = &ec2.IamInstanceProfile{
-						Arn: aws.String(instance.IamInstanceProfileArn),
-					}
-				} else {
-					instanceCopy.IamInstanceProfile = nil
-				}
-
-				// Populate Placement if instance belongs to a placement group
-				if instance.PlacementGroupName != "" {
-					instanceCopy.Placement = &ec2.Placement{
-						GroupName:        aws.String(instance.PlacementGroupName),
-						AvailabilityZone: aws.String(d.config.AZ),
-					}
-				}
-
-				// Echo the consumed capacity reservation so targeted-launch
-				// Terraform converges — without it the instance reports no
-				// reservation and the plan never settles.
-				if instance.CapacityReservationId != "" {
-					instanceCopy.CapacityReservationId = aws.String(instance.CapacityReservationId)
-					instanceCopy.CapacityReservationSpecification = &ec2.CapacityReservationSpecificationResponse{
-						CapacityReservationPreference: aws.String(ec2.CapacityReservationPreferenceOpen),
-						CapacityReservationTarget: &ec2.CapacityReservationTargetResponse{
-							CapacityReservationId: aws.String(instance.CapacityReservationId),
-						},
-					}
-				}
-
-				// Project spot lineage stamped by the post-launch write-back.
-				// Both empty for on-demand, so the fields stay absent there.
-				if instance.InstanceLifecycle != "" {
-					instanceCopy.InstanceLifecycle = aws.String(instance.InstanceLifecycle)
-				}
-				if instance.SpotInstanceRequestId != "" {
-					instanceCopy.SpotInstanceRequestId = aws.String(instance.SpotInstanceRequestId)
 				}
 
 				// Apply filters against the fully-built instance copy
-				if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, &instanceCopy, parsedFilters) {
+				if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
 					continue
 				}
 
 				// Add instance to its reservation
-				reservationMap[resID].Instances = append(reservationMap[resID].Instances, &instanceCopy)
+				reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
 			}
 		}
 	})
@@ -576,11 +509,12 @@ func (d *Daemon) describeInstancesFromKV(msg *nats.Msg, listFn func() ([]*vm.VM,
 		}
 	}
 
-	instanceIDFilter := make(map[string]bool)
-	for _, id := range describeInput.InstanceIds {
-		if id != nil {
-			instanceIDFilter[*id] = true
-		}
+	// Validate instance IDs identically to the running path — the gateway fans
+	// out to both, so a malformed ID must fail the same way whichever responds.
+	instanceIDFilter, err := handlers_ec2_instance.ParseInstanceIDFilter(describeInput.InstanceIds)
+	if err != nil {
+		respondWithError(msg, awserrors.ErrorInvalidInstanceIDMalformed)
+		return
 	}
 
 	parsedFilters, filterErr := filterutil.ParseFilters(describeInput.Filters, describeInstancesValidFilters)
@@ -627,31 +561,23 @@ func (d *Daemon) describeInstancesFromKV(msg *nats.Msg, listFn func() ([]*vm.VM,
 			reservationMap[resID] = reservation
 		}
 
-		instanceCopy := *instance.Instance
-		instanceCopy.State = &ec2.InstanceState{}
-		if info, ok := vm.EC2APIState(instance.Status); ok {
-			instanceCopy.State.SetCode(info.Code)
-			instanceCopy.State.SetName(info.Name)
-		} else {
-			instanceCopy.State.SetCode(fallbackCode)
-			instanceCopy.State.SetName(fallbackName)
-		}
+		// Reuse the shared projection so stopped/terminated instances carry the
+		// same vm.VM-sourced fields as the running path — this is the fix for the
+		// dropped Placement/Spot lineage. Runtime network (public IP, DNS) and the
+		// capacity reservation are released on stop, so IncludeRuntimeNetwork stays
+		// false and they remain absent. The caller's fallback labels the state when
+		// a stored status has no EC2 mapping.
+		projected, _ := handlers_ec2_instance.ProjectInstance(instance, handlers_ec2_instance.InstanceProjection{
+			AZ:                d.config.AZ,
+			FallbackStateCode: fallbackCode,
+			FallbackStateName: fallbackName,
+		})
 
-		// Project IamInstanceProfile from vm.VM (cleared on terminate;
-		// preserved across stop/start). Mirrors handleEC2DescribeInstances.
-		if instance.IamInstanceProfileArn != "" {
-			instanceCopy.IamInstanceProfile = &ec2.IamInstanceProfile{
-				Arn: aws.String(instance.IamInstanceProfileArn),
-			}
-		} else {
-			instanceCopy.IamInstanceProfile = nil
-		}
-
-		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, &instanceCopy, parsedFilters) {
+		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
 			continue
 		}
 
-		reservationMap[resID].Instances = append(reservationMap[resID].Instances, &instanceCopy)
+		reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
 	}
 
 	reservations := make([]*ec2.Reservation, 0, len(reservationMap))

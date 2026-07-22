@@ -828,7 +828,7 @@ func TestDescribeInstances_OneVisibleInstance(t *testing.T) {
 		},
 		Instance: &ec2.Instance{InstanceId: aws.String(id), InstanceType: aws.String("t3.micro")},
 	}
-	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v}), config: &config.Config{}}
 
 	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
@@ -889,7 +889,7 @@ func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
 		},
 		Instance: &ec2.Instance{InstanceId: aws.String("i-lb")},
 	}
-	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v}), config: &config.Config{}}
 
 	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
 	require.NoError(t, err)
@@ -911,7 +911,7 @@ func TestDescribeInstances_CustomerWorkloadStaysVisible(t *testing.T) {
 		},
 		Instance: &ec2.Instance{InstanceId: aws.String("i-worker")},
 	}
-	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v}), config: &config.Config{}}
 
 	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
@@ -947,7 +947,7 @@ func TestDescribeInstances_FilterByInstanceID(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{
 		keep.ID: keep,
 		drop.ID: drop,
-	})}
+	}), config: &config.Config{}}
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-keep")}}
 	out, err := svc.DescribeInstances(context.Background(), input, utils.GlobalAccountID)
@@ -1191,7 +1191,7 @@ func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
 			},
 		},
 	}
-	svc := &InstanceServiceImpl{stoppedStore: store}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
 
 	out, err := svc.DescribeStoppedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
@@ -1221,7 +1221,7 @@ func TestDescribeTerminatedInstances_HappyPath(t *testing.T) {
 			},
 		},
 	}
-	svc := &InstanceServiceImpl{stoppedStore: store}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
 
 	out, err := svc.DescribeTerminatedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)

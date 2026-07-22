@@ -1754,14 +1754,9 @@ func matchTagValue(tags []*ec2.Tag, values []string) bool {
 func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
 	slog.InfoContext(ctx, "Processing DescribeInstances request from this node", "accountID", accountID)
 
-	instanceIDFilter := make(map[string]bool)
-	for _, id := range input.InstanceIds {
-		if id != nil && *id != "" {
-			if !strings.HasPrefix(*id, "i-") {
-				return nil, errors.New(awserrors.ErrorInvalidInstanceIDMalformed)
-			}
-			instanceIDFilter[*id] = true
-		}
+	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
+	if err != nil {
+		return nil, err
 	}
 
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
@@ -1807,35 +1802,29 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 				reservationMap[resID] = reservation
 			}
 
-			instanceCopy := *instance.Instance
-			instanceCopy.State = &ec2.InstanceState{}
-
-			if instance.PublicIP != "" && instanceCopy.PublicIpAddress == nil {
-				instanceCopy.PublicIpAddress = aws.String(instance.PublicIP)
-			}
-
-			if info, ok := vm.EC2APIState(instance.Status); ok {
-				instanceCopy.State.SetCode(info.Code)
-				instanceCopy.State.SetName(info.Name)
-			} else {
+			// Project every vm.VM-sourced field via the shared projection, the
+			// same call the daemon's running path makes, so both define the field
+			// set once. Running instances include their runtime network and
+			// capacity reservation; an unmapped status falls back to pending/0.
+			projected, stateMapped := ProjectInstance(instance, InstanceProjection{
+				Region:                s.config.Region,
+				DNSBaseDomain:         s.dnsBaseDomain,
+				DNSInternalDomain:     s.dnsInternalDomain,
+				AZ:                    s.config.AZ,
+				IncludeRuntimeNetwork: true,
+				FallbackStateCode:     0,
+				FallbackStateName:     "pending",
+			})
+			if !stateMapped {
 				slog.WarnContext(ctx, "Instance has unmapped status, reporting as pending",
 					"instanceId", instance.ID, "status", string(instance.Status))
-				instanceCopy.State.SetCode(0)
-				instanceCopy.State.SetName("pending")
 			}
 
-			if instance.PlacementGroupName != "" {
-				instanceCopy.Placement = &ec2.Placement{
-					GroupName:        aws.String(instance.PlacementGroupName),
-					AvailabilityZone: aws.String(s.config.AZ),
-				}
-			}
-
-			if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, &instanceCopy, parsedFilters) {
+			if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
 				continue
 			}
 
-			reservationMap[resID].Instances = append(reservationMap[resID].Instances, &instanceCopy)
+			reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
 		}
 	})
 
@@ -1897,11 +1886,9 @@ func (s *InstanceServiceImpl) DescribeTerminatedInstances(ctx context.Context, i
 }
 
 func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string) (*ec2.DescribeInstancesOutput, error) {
-	instanceIDFilter := make(map[string]bool)
-	for _, id := range input.InstanceIds {
-		if id != nil {
-			instanceIDFilter[*id] = true
-		}
+	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
+	if err != nil {
+		return nil, err
 	}
 
 	parsedFilters, filterErr := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
@@ -1946,21 +1933,22 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 			reservationMap[resID] = reservation
 		}
 
-		instanceCopy := *instance.Instance
-		instanceCopy.State = &ec2.InstanceState{}
-		if info, ok := vm.EC2APIState(instance.Status); ok {
-			instanceCopy.State.SetCode(info.Code)
-			instanceCopy.State.SetName(info.Name)
-		} else {
-			instanceCopy.State.SetCode(fallbackCode)
-			instanceCopy.State.SetName(fallbackName)
-		}
+		// Reuse the shared projection so stopped/terminated instances carry the
+		// same fields as the running path. Runtime network and the capacity
+		// reservation are released on stop, so IncludeRuntimeNetwork stays false;
+		// Placement and Spot lineage survive and are projected. The caller's
+		// fallback labels the state when a stored status has no EC2 mapping.
+		projected, _ := ProjectInstance(instance, InstanceProjection{
+			AZ:                s.config.AZ,
+			FallbackStateCode: fallbackCode,
+			FallbackStateName: fallbackName,
+		})
 
-		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, &instanceCopy, parsedFilters) {
+		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
 			continue
 		}
 
-		reservationMap[resID].Instances = append(reservationMap[resID].Instances, &instanceCopy)
+		reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
 	}
 
 	reservations := make([]*ec2.Reservation, 0, len(reservationMap))
@@ -2814,15 +2802,9 @@ func instanceStatusMatchesFilters(v *vm.VM, is *ec2.InstanceStatus, filters map[
 func (s *InstanceServiceImpl) DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, accountID string) (*ec2.DescribeInstanceStatusOutput, error) {
 	slog.InfoContext(ctx, "Processing DescribeInstanceStatus request from this node", "accountID", accountID)
 
-	instanceIDFilter := make(map[string]bool)
-	for _, id := range input.InstanceIds {
-		if id == nil || *id == "" {
-			continue
-		}
-		if !strings.HasPrefix(*id, "i-") {
-			return nil, errors.New(awserrors.ErrorInvalidInstanceIDMalformed)
-		}
-		instanceIDFilter[*id] = true
+	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
+	if err != nil {
+		return nil, err
 	}
 
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, DescribeInstanceStatusValidFilters)

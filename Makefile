@@ -120,10 +120,15 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/vmlinuz
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/initramfs.cpio.gz
 
-# Preflight — runs the same checks as GitHub Actions (lint + vuln + tests).
-# Use this before committing to catch CI failures locally.
+# Preflight — the pre-commit gate: manifest checks, lint, vuln, and the unit,
+# race and e2e-harness tiers.
+#
+# The integration tier is deliberately NOT here. CI runs it as its own parallel
+# job, so it is still gated before merge, and keeping it out leaves preflight
+# the fast common-path check — run `make test-integration` directly when a
+# change touches the gateway router or the NATS subjects it drives.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness test-integration
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
@@ -137,10 +142,10 @@ test-harness:
 # JetStream, with only the daemon-side NATS subjects stubbed. Build-tagged
 # `integration` so it's skipped by the default `go test ./spinifex/...` and by
 # `test-cover`/`test-race`. Nothing provisioned — no tofu, no docker, no
-# Spinifex daemons, so the whole package runs in well under a minute — part
-# of `preflight` (and its own PR-blocking CI step) rather than the
-# self-hosted, push-triggered live e2e tiers, so a regression here is caught
-# before it can be merged, not just after.
+# Spinifex daemons, so the whole package runs in well under a minute. It gets
+# its own PR-blocking CI job rather than the self-hosted, push-triggered live
+# e2e tiers, so a regression here is caught before it can be merged, not just
+# after.
 test-integration:
 	@echo -e "\n....Running in-process integration tests...."
 	$(_Q)LOG_IGNORE=1 go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)

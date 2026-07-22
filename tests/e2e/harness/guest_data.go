@@ -22,19 +22,35 @@ import (
 // guestSentinelFile is the file written into a freshly formatted data volume.
 const guestSentinelFile = "e2e-sentinel.bin"
 
-// guestExecTimeout bounds a single guest command (mkfs/dd are sub-second on the
-// small payloads used here; the ceiling only guards against a hung SSH).
+// guestExecTimeout bounds a single guest command by default (mkfs/dd are
+// sub-second on the small payloads most callers use; the ceiling only guards
+// against a hung SSH). Callers driving a larger payload — enough data that
+// sustaining it within this ceiling would require an unrealistic transfer
+// rate — must use GuestExecTimeout with a budget sized to their own payload
+// instead of assuming this default is high enough.
 const guestExecTimeout = 2 * time.Minute
 
 // sha256RE matches a bare sha256 digest so the checksum can be lifted out of
 // command output that may also carry the file path (`<sha>␠␠<path>`).
 var sha256RE = regexp.MustCompile(`\b[0-9a-f]{64}\b`)
 
-// GuestExec runs cmd over SSH against tgt and returns combined stdout+stderr
-// plus the run error. It never calls t.Fatal, so callers can branch on an
-// expected non-zero exit.
+// GuestExec runs cmd over SSH against tgt with the default guestExecTimeout
+// budget and returns combined stdout+stderr plus the run error. It never
+// calls t.Fatal, so callers can branch on an expected non-zero exit.
 func GuestExec(tgt SSHTarget, cmd string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), guestExecTimeout)
+	return GuestExecTimeout(tgt, cmd, guestExecTimeout)
+}
+
+// GuestExecTimeout is GuestExec with a caller-supplied timeout, for commands
+// whose payload size makes the default guestExecTimeout unrealistic (e.g. a
+// multi-gigabyte write against a network-backed volume). If the command is
+// still running when timeout elapses, the returned error is wrapped with
+// context.DeadlineExceeded so callers can distinguish "the command ran and
+// failed" from "the command never got the chance to finish" via errors.Is —
+// a distinction that matters wherever the two would otherwise look like the
+// same red test for different reasons.
+func GuestExecTimeout(tgt SSHTarget, cmd string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	args := []string{
 		"-o", "StrictHostKeyChecking=no",
@@ -48,6 +64,9 @@ func GuestExec(tgt SSHTarget, cmd string) (string, error) {
 		cmd,
 	}
 	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("guest command exceeded its %s timeout (still running when the deadline hit): %w: %w", timeout, context.DeadlineExceeded, err)
+	}
 	return string(out), err
 }
 

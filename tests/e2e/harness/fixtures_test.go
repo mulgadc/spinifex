@@ -5,12 +5,14 @@ package harness
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	"github.com/aws/aws-sdk-go/service/elbv2/elbv2iface"
@@ -28,6 +30,56 @@ type fakeEC2 struct {
 	// holdCreate, when non-nil, blocks CreateKeyPair until closed. Drives
 	// the concurrent-callers test deterministically.
 	holdCreate chan struct{}
+
+	// Volume teardown state. volState is what DescribeVolumes reports;
+	// DetachVolume flips it to "available", modelling a node that releases the
+	// volume once the attachment is forced off. deleteVolumeErr, when set, is
+	// what DeleteVolume returns — used to drive the leak-reporting path.
+	volMu           sync.Mutex
+	volState        string
+	detachVolume    atomic.Int64
+	deleteVolume    atomic.Int64
+	deleteVolumeErr error
+}
+
+func (f *fakeEC2) CreateVolume(*ec2.CreateVolumeInput) (*ec2.Volume, error) {
+	return &ec2.Volume{VolumeId: aws.String("vol-fake")}, nil
+}
+
+func (f *fakeEC2) DescribeVolumes(*ec2.DescribeVolumesInput) (*ec2.DescribeVolumesOutput, error) {
+	f.volMu.Lock()
+	defer f.volMu.Unlock()
+	return &ec2.DescribeVolumesOutput{
+		Volumes: []*ec2.Volume{{VolumeId: aws.String("vol-fake"), State: aws.String(f.volState)}},
+	}, nil
+}
+
+func (f *fakeEC2) DetachVolume(*ec2.DetachVolumeInput) (*ec2.VolumeAttachment, error) {
+	f.detachVolume.Add(1)
+	f.volMu.Lock()
+	defer f.volMu.Unlock()
+	f.volState = ec2.VolumeStateAvailable
+	return &ec2.VolumeAttachment{}, nil
+}
+
+func (f *fakeEC2) DeleteVolume(*ec2.DeleteVolumeInput) (*ec2.DeleteVolumeOutput, error) {
+	f.deleteVolume.Add(1)
+	if f.deleteVolumeErr != nil {
+		return nil, f.deleteVolumeErr
+	}
+	// The refusal the real API gives, and the whole reason teardown has to
+	// detach first: an attached volume cannot be deleted.
+	f.volMu.Lock()
+	defer f.volMu.Unlock()
+	if f.volState != ec2.VolumeStateAvailable {
+		return nil, awserr.New("VolumeInUse",
+			"The specified Amazon EBS volume is attached to an instance.", nil)
+	}
+	return &ec2.DeleteVolumeOutput{}, nil
+}
+
+func (f *fakeEC2) CreateTags(*ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
+	return &ec2.CreateTagsOutput{}, nil
 }
 
 func (f *fakeEC2) CreateKeyPair(in *ec2.CreateKeyPairInput) (*ec2.CreateKeyPairOutput, error) {
@@ -151,7 +203,9 @@ func TestProcessFixture_CloseRunsCleanupsLIFO(t *testing.T) {
 	fx.RegisterCleanup(func() { order = append(order, 2) })
 	fx.RegisterCleanup(func() { order = append(order, 3) })
 
-	fx.Close()
+	if err := fx.Close(); err != nil {
+		t.Fatalf("Close err = %v, want nil", err)
+	}
 	want := []int{3, 2, 1}
 	if len(order) != len(want) {
 		t.Fatalf("cleanup count = %d, want %d", len(order), len(want))
@@ -163,9 +217,113 @@ func TestProcessFixture_CloseRunsCleanupsLIFO(t *testing.T) {
 	}
 
 	// Second Close is a no-op — no duplicate firings, no panic.
-	fx.Close()
+	if err := fx.Close(); err != nil {
+		t.Fatalf("second Close err = %v, want nil", err)
+	}
 	if len(order) != len(want) {
 		t.Fatalf("second Close re-fired callbacks: order=%v", order)
+	}
+}
+
+// newProcessFakeFixture builds a process-mode fixture (parent == nil) over the
+// fake EC2, which is the mode whose teardown failures surface through Close().
+func newProcessFakeFixture() (*Fixture, *fakeEC2) {
+	ec2c := &fakeEC2{}
+	return &Fixture{
+		EC2:      ec2c,
+		ELBv2:    &fakeELB{},
+		scratch:  "test",
+		memo:     map[string]string{},
+		cleanups: map[string]struct{}{},
+	}, ec2c
+}
+
+// TestTeardownVolume_DetachesBeforeDeleting covers the ordering gap: fixture
+// cleanups drain LIFO, so a volume created after its instance is torn down
+// while still attached. Teardown must release it rather than let DeleteVolume
+// fail with VolumeInUse and strand it.
+func TestTeardownVolume_DetachesBeforeDeleting(t *testing.T) {
+	ec2c := &fakeEC2{volState: ec2.VolumeStateInUse}
+
+	if err := teardownVolume(ec2c, "vol-fake"); err != nil {
+		t.Fatalf("teardownVolume err = %v, want nil", err)
+	}
+	if got := ec2c.detachVolume.Load(); got != 1 {
+		t.Fatalf("DetachVolume calls = %d, want 1 (attached volume was not released)", got)
+	}
+	if got := ec2c.deleteVolume.Load(); got != 1 {
+		t.Fatalf("DeleteVolume calls = %d, want 1", got)
+	}
+}
+
+// TestTeardownVolume_AvailableSkipsDetach verifies the common case costs no
+// extra API calls: an already-available volume is deleted directly.
+func TestTeardownVolume_AvailableSkipsDetach(t *testing.T) {
+	ec2c := &fakeEC2{volState: ec2.VolumeStateAvailable}
+
+	if err := teardownVolume(ec2c, "vol-fake"); err != nil {
+		t.Fatalf("teardownVolume err = %v, want nil", err)
+	}
+	if got := ec2c.detachVolume.Load(); got != 0 {
+		t.Fatalf("DetachVolume calls = %d, want 0 for an available volume", got)
+	}
+}
+
+// TestEnsureVolume_CleanupReleasesAttachedVolume is the regression test for the
+// leak itself: the volume is created available, then attached, and teardown has
+// to cope. This is exactly the shape of a suite that calls EnsureInstance before
+// EnsureVolume, since the LIFO chain tears the volume down first.
+func TestEnsureVolume_CleanupReleasesAttachedVolume(t *testing.T) {
+	fx, ec2c := newProcessFakeFixture()
+	ec2c.volState = ec2.VolumeStateAvailable
+
+	_ = EnsureVolume(t, fx, "ap-southeast-2a", 10)
+	ec2c.volState = ec2.VolumeStateInUse
+
+	if err := fx.Close(); err != nil {
+		t.Fatalf("Close err = %v, want nil (attached volume was not released and is leaked)", err)
+	}
+	if got := ec2c.detachVolume.Load(); got != 1 {
+		t.Fatalf("DetachVolume calls = %d, want 1", got)
+	}
+}
+
+// TestFixtureClose_ReportsLeak verifies a teardown that fails is reported as a
+// leak rather than logged and forgotten. Before this, a failing cleanup left a
+// real volume on the node and the run still went green.
+func TestFixtureClose_ReportsLeak(t *testing.T) {
+	fx, ec2c := newProcessFakeFixture()
+	ec2c.volState = ec2.VolumeStateAvailable
+	ec2c.deleteVolumeErr = errors.New("boom")
+
+	_ = EnsureVolume(t, fx, "ap-southeast-2a", 10)
+
+	err := fx.Close()
+	if err == nil {
+		t.Fatalf("Close err = nil, want a leak report for the failed volume delete")
+	}
+	if !strings.Contains(err.Error(), "vol-fake") {
+		t.Fatalf("leak report %q does not name the leaked volume", err)
+	}
+}
+
+// TestFixtureClose_PanicDoesNotStrandRest verifies one bad teardown cannot
+// abort the chain. An aborted chain strands every resource registered before
+// the panic, which is how a whole instance has previously been left running.
+func TestFixtureClose_PanicDoesNotStrandRest(t *testing.T) {
+	fx, _ := newProcessFakeFixture()
+
+	var ran []int
+	fx.RegisterCleanup(func() { ran = append(ran, 1) })
+	fx.RegisterCleanup(func() { panic("teardown blew up") })
+	fx.RegisterCleanup(func() { ran = append(ran, 3) })
+
+	err := fx.Close()
+	if len(ran) != 2 {
+		t.Fatalf("cleanups run = %v, want both non-panicking callbacks", ran)
+	}
+	if err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("Close err = %v, want a report naming the panic", err)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
@@ -202,29 +203,9 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// GCEnabled: default false unless explicitly set to true, matching the
-	// nbdkit plugin and viperblockd resolution of the same config field.
-	gcEnabled := s.config.Viperblock.GCEnabled != nil && *s.config.Viperblock.GCEnabled
+	vbconfig := s.buildVBConfig(volumeID, volumeSizeBytes, volumeConfig, mkey, snapshotID, sourceVolumeName)
 
-	vbconfig := viperblock.VB{
-		VolumeName:        volumeID,
-		VolumeSize:        volumeSizeBytes,
-		BaseDir:           s.config.WalDir,
-		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
-		VolumeConfig:      volumeConfig,
-		MasterKey:         mkey,
-		EncryptionEnabled: mkey != nil,
-		GCEnabled:         gcEnabled,
-	}
-
-	// If created from a snapshot, set the snapshot fields so viperblock's
-	// LoadState will call OpenFromSnapshot to load the base block map.
-	if snapshotID != "" {
-		vbconfig.SnapshotID = snapshotID
-		vbconfig.SourceVolumeName = sourceVolumeName
-	}
-
-	vb, err := viperblock.New(&vbconfig, "s3", cfg)
+	vb, err := viperblock.New(vbconfig, "s3", cfg)
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateVolume failed to create viperblock instance", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -267,6 +248,36 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	}
 
 	return vol, nil
+}
+
+// buildVBConfig assembles the viperblock.VB config CreateVolume hands to
+// viperblock.New. Split out from CreateVolume so the GC-enablement wiring can
+// be asserted directly against the returned config, without needing a live
+// viperblock/S3 backend to observe it: GCEnabled is not part of
+// viperblock.VBState, so it never round-trips through a saved config.json and
+// can't be checked by reading volume state back.
+func (s *VolumeServiceImpl) buildVBConfig(volumeID string, volumeSizeBytes uint64, volumeConfig viperblock.VolumeConfig, mkey *masterkey.Key, snapshotID, sourceVolumeName string) *viperblock.VB {
+	vbconfig := &viperblock.VB{
+		VolumeName:        volumeID,
+		VolumeSize:        volumeSizeBytes,
+		BaseDir:           s.config.WalDir,
+		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
+		VolumeConfig:      volumeConfig,
+		MasterKey:         mkey,
+		EncryptionEnabled: mkey != nil,
+		// GCEnabled: default false unless explicitly set to true, matching the
+		// nbdkit plugin and viperblockd resolution of the same config field.
+		GCEnabled: s.config.Viperblock.GCEnabled != nil && *s.config.Viperblock.GCEnabled,
+	}
+
+	// If created from a snapshot, set the snapshot fields so viperblock's
+	// LoadState will call OpenFromSnapshot to load the base block map.
+	if snapshotID != "" {
+		vbconfig.SnapshotID = snapshotID
+		vbconfig.SourceVolumeName = sourceVolumeName
+	}
+
+	return vbconfig
 }
 
 // describeVolumesValidFilters defines the set of filter names accepted by DescribeVolumes.

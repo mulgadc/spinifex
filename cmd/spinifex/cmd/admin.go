@@ -708,31 +708,17 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	bakeCACertIntoImage(extractedImagePath, filepath.Join(baseDir, "config", "ca.pem"))
 
 	// Render the flush bar here rather than inside viperblock, which stays a
-	// pure storage library. The callback is created lazily on the first update
-	// so the total (image size in bytes) is known, and viperblock throttles it
-	// to ≤101 invocations — so the bar renders human-readable sizes in its title
-	// without the render-frequency regression a per-block update would cause.
+	// pure storage library. The bar is built lazily on the first update so it is
+	// never drawn if the import fails before any bytes flush; viperblock
+	// throttles the callback to ≤101 invocations, so the human-readable title
+	// renders without the per-block render-frequency regression.
 	var flushBar *pterm.ProgressbarPrinter
-	var flushTotalHuman string
+	var flushUpdate func(current uint64)
 	progress := func(current, total uint64) {
 		if flushBar == nil {
-			flushTotalHuman = utils.HumanBytes(total)
-			// pterm's elapsed-time display normally spawns a background goroutine
-			// that re-renders every second with no lock, interleaving with our
-			// own low-frequency renders and tearing the line. Start with it off
-			// so no timer is spawned, then flip the flag on — pterm still appends
-			// its own elapsed time, now emitted only on our (single) renders.
-			flushBar, _ = pterm.DefaultProgressbar.
-				WithTitle("Flushing image to storage").
-				WithTotal(utils.SafeUint64ToInt(total)).
-				WithShowCount(false).       // hide raw ints; the size goes in the title
-				WithShowElapsedTime(false). // suppress the async re-render (see above)
-				Start()
-			flushBar.ShowElapsedTime = true // keep pterm's elapsed, rendered only by us
+			flushBar, flushUpdate = utils.NewByteProgressBar("Flushing image to storage", total)
 		}
-		flushBar.Current = utils.SafeUint64ToInt(current) // drives fill + percentage
-		// UpdateTitle performs the single render for this step.
-		flushBar.UpdateTitle(fmt.Sprintf("Flushing image to storage — %s / %s", utils.HumanBytes(current), flushTotalHuman))
+		flushUpdate(current)
 	}
 
 	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath, progress)

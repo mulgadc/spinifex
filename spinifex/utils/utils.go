@@ -204,24 +204,11 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 
 	if cl > 0 {
 		total := SafeInt64ToUint64(cl)
-		totalHuman := HumanBytes(total)
-		// pterm's elapsed-time display normally spawns a background goroutine
-		// that re-renders every second with no lock; at our once-per-percent
-		// cadence that async write interleaves with ours and tears the line.
-		// Start with it off so no timer is spawned, then flip the flag on — pterm
-		// still appends its own "| 9s", now emitted only on our (single) renders.
-		bar, _ := pterm.DefaultProgressbar.
-			WithTitle(fmt.Sprintf("Downloading %s", name)).
-			WithTotal(SafeUint64ToInt(total)).
-			WithShowCount(false).       // hide raw ints; the size goes in the title
-			WithShowElapsedTime(false). // suppress the async re-render (see above)
-			Start()
-		bar.ShowElapsedTime = true // keep pterm's elapsed, rendered only by us
+		bar, update := NewByteProgressBar(fmt.Sprintf("Downloading %s", name), total)
 
 		// io.Copy writes ~32 KiB per TeeReader call, so gate rendering on
-		// integer-percentage change to cap the bar at ≤101 renders — matching
-		// the flush bar's convention instead of re-rendering tens of thousands
-		// of times.
+		// integer-percentage change to cap the bar at ≤101 renders instead of
+		// re-rendering tens of thousands of times.
 		var current uint64
 		lastPct := -1
 		reader := io.TeeReader(resp.Body, progressWriter(func(n int) {
@@ -229,8 +216,7 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 			pct := SafeUint64ToInt(current * 100 / total)
 			if pct > lastPct {
 				lastPct = pct
-				bar.Current = SafeUint64ToInt(current)
-				bar.UpdateTitle(fmt.Sprintf("Downloading %s — %s / %s", name, HumanBytes(current), totalHuman))
+				update(current)
 			}
 		}))
 
@@ -266,6 +252,35 @@ type progressWriter func(n int)
 func (pw progressWriter) Write(p []byte) (int, error) {
 	pw(len(p))
 	return len(p), nil
+}
+
+// NewByteProgressBar starts a pterm progress bar that renders human-readable
+// sizes in its title instead of raw byte counts, and returns an update func
+// that performs one render per call. Callers must invoke update at a throttled
+// cadence (integer-percentage change) — the render itself is expensive, so an
+// unthrottled per-write call regresses throughput.
+//
+// pterm's elapsed-time display normally spawns a background goroutine that
+// re-renders every second with no lock, tearing the line against our own
+// low-frequency renders. Starting with it off means no timer is spawned; the
+// flag is then set on the returned bar so pterm still appends its "| 9s"
+// suffix, now emitted only on our (single) renders.
+func NewByteProgressBar(title string, total uint64) (*pterm.ProgressbarPrinter, func(current uint64)) {
+	totalHuman := HumanBytes(total)
+	bar, _ := pterm.DefaultProgressbar.
+		WithTitle(title).
+		WithTotal(SafeUint64ToInt(total)).
+		WithShowCount(false).       // hide raw ints; the size goes in the title
+		WithShowElapsedTime(false). // suppress the async re-render (see above)
+		Start()
+	bar.ShowElapsedTime = true // keep pterm's elapsed, rendered only by us
+
+	update := func(current uint64) {
+		bar.Current = SafeUint64ToInt(current) // drives fill + percentage
+		// UpdateTitle performs the single render for this step.
+		bar.UpdateTitle(fmt.Sprintf("%s — %s / %s", title, HumanBytes(current), totalHuman))
+	}
+	return bar, update
 }
 
 // HumanBytes formats a byte count using IEC binary suffixes (KiB, MiB, ...).

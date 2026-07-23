@@ -400,7 +400,7 @@ func launchService(cfg *Config) (err error) {
 	if _, err := nc.QueueSubscribe("ebs.delete", "spinifex-workers", func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
-		slog.InfoContext(ctx, "Received ebs.delete message", "data", string(msg.Data))
+		slog.InfoContext(ctx, "Received ebs.delete message")
 
 		var ebsRequest types.EBSDeleteRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
@@ -475,7 +475,7 @@ func launchService(cfg *Config) (err error) {
 	if _, err := unmountSubscribe(unmountTopic, func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
-		slog.InfoContext(ctx, "Received message", "data", string(msg.Data))
+		slog.InfoContext(ctx, "Received message")
 
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
@@ -588,7 +588,7 @@ func launchService(cfg *Config) (err error) {
 	if _, err := nc.QueueSubscribe("ebs.sync", "spinifex-workers", func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
-		slog.InfoContext(ctx, "Received ebs.sync message", "data", string(msg.Data))
+		slog.InfoContext(ctx, "Received ebs.sync message")
 
 		var syncRequest types.EBSSyncRequest
 		if err := json.Unmarshal(msg.Data, &syncRequest); err != nil {
@@ -713,7 +713,7 @@ func launchService(cfg *Config) (err error) {
 	if _, err := mountSubscribe(mountTopic, func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
-		slog.InfoContext(ctx, "Received message:", "data", string(msg.Data))
+		slog.InfoContext(ctx, "Received message:")
 
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {

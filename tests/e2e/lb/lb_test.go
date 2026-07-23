@@ -1822,10 +1822,13 @@ func dumpDaemonLogs(t *testing.T, dir, label string) {
 // IMDS-served instance-role credentials rather than baked static keys. The LB VM
 // is a system-account instance plugged into a customer-account ENI, so it is
 // invisible to the customer AWS API; the gateway journal on the cluster nodes is
-// the only surface that observes its principal. A recent assumed-role (ASIA)
-// auth proves the cred type is an instance role — a regression to the three
-// boot-path defects strands the agent on an empty role list, so no recent
-// assumed-role auth appears and this fails. Skips when no node is SSH-reachable.
+// the only surface that observes its principal. The awsgw hosts the in-process
+// IMDS STS responder, which logs "AssumeRoleForInstance success" at INFO when the
+// LB VM's IMDS request mints assumed-role (ASIA) creds for the spinifex-lb-agent
+// role — a regression to the three boot-path defects strands the agent on an
+// empty role list, so no recent mint appears and this fails. Keying on that INFO
+// line, not the gateway's per-request SigV4 debug log, keeps the check
+// independent of the awsgw debug level. Skips when no node is SSH-reachable.
 //
 // The window is time-bounded on purpose: console logs accumulate across every VM
 // the node has ever run (including pre-fix failures), so a flat-file scan for the
@@ -1845,7 +1848,7 @@ func assertLBAgentAuthViaIMDS(t *testing.T) {
 	for _, ip := range env.NodeIPs {
 		gw, err := ssh.Run(ctx, ip,
 			"sudo journalctl -u spinifex-awsgw --no-pager --since '5 minutes ago' 2>/dev/null | "+
-				`grep -F '"principalType":"assumed-role"' | grep -F '"accessKey":"ASIA' | tail -1`)
+				`grep -F 'AssumeRoleForInstance success' | grep -F 'role/spinifex-lb-agent' | grep -F '"akid":"ASIA' | tail -1`)
 		if err != nil {
 			continue // node unreachable; another node carries the heartbeat
 		}

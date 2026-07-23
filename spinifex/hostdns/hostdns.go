@@ -22,14 +22,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Host paths the resolver managers read. Joined onto configurator.root, which is
 // empty in production and a temp dir under test.
 const (
-	resolvedDropinPath = "/etc/systemd/resolved.conf.d/spinifex-dns.conf"
-	resolvconfHeadPath = "/etc/resolvconf/resolv.conf.d/head"
-	resolvConfPath     = "/etc/resolv.conf"
+	resolvedDropinPath     = "/etc/systemd/resolved.conf.d/spinifex-dns.conf"
+	resolvconfHeadPath     = "/etc/resolvconf/resolv.conf.d/head"
+	resolvConfPath         = "/etc/resolv.conf"
+	resolverCommandTimeout = 30 * time.Second
 )
 
 // Params carries the node-local resolver target and the two Spinifex zones that
@@ -93,21 +97,23 @@ type configurator struct {
 func newConfigurator() *configurator {
 	return &configurator{
 		resolvedActive: func() bool {
-			return exec.Command("systemctl", "is-active", "--quiet", "systemd-resolved").Run() == nil
+			_, err := utils.RunCommandWithTimeout(resolverCommandTimeout, "systemctl", "is-active", "--quiet", "systemd-resolved")
+			return err == nil
 		},
 		hasResolvconf: func() bool {
 			_, err := exec.LookPath("resolvconf")
 			return err == nil
 		},
 		restartResolved: func() error {
-			return exec.Command("systemctl", "restart", "systemd-resolved").Run()
+			_, err := utils.RunCommandWithTimeout(resolverCommandTimeout, "systemctl", "restart", "systemd-resolved")
+			return err
 		},
 		updateResolvconf: func() error {
-			return exec.Command("resolvconf", "-u").Run()
+			_, err := utils.RunCommandWithTimeout(resolverCommandTimeout, "resolvconf", "-u")
+			return err
 		},
 		resolvedStatus: func() (string, error) {
-			out, err := exec.Command("resolvectl", "status").CombinedOutput()
-			return string(out), err
+			return utils.RunCommandWithTimeout(resolverCommandTimeout, "resolvectl", "status")
 		},
 	}
 }

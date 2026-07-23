@@ -1084,9 +1084,63 @@ func TestAdminInitFlag_CompactionIntervalReachesRenderedConfig(t *testing.T) {
 	assert.Contains(t, out, "interval_seconds = 45")
 }
 
-// The image is written into a root volume of exactly the size this returns, so
-// anything less than the image size truncates the image and the guest never
-// finds its root. The old flooring conversion undersized every non-round image.
+func TestFilterDNSServersExcludesLocalNorthstar(t *testing.T) {
+	servers := []string{
+		"10.0.0.5",
+		"127.0.0.53",
+		"1.1.1.1",
+		"1.1.1.1",
+		"not-an-ip",
+		"2001:0db8::1",
+		"8.8.8.8",
+		"9.9.9.9",
+		"4.4.4.4",
+	}
+
+	got := filterDNSServers(servers, "10.0.0.5", "2001:db8::1")
+	assert.Equal(t, []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"}, got)
+}
+
+func TestDetectDNSServersContinuesAfterExcludedSource(t *testing.T) {
+	var queries []string
+	sources := dnsDetectionSources{
+		queryResolvectl: func(args ...string) (string, error) {
+			query := strings.Join(args, " ")
+			queries = append(queries, query)
+			switch query {
+			case "dns br-wan":
+				return "Link 2 (br-wan): 10.0.0.5 127.0.0.53\n", nil
+			case "dns":
+				return "Global: 10.0.0.5 10.0.0.5 127.0.0.53 10.20.0.53 8.8.8.8\n", nil
+			default:
+				return "", fmt.Errorf("unexpected query %q", query)
+			}
+		},
+		readResolvConf: func() (string, error) {
+			t.Fatal("resolv.conf read despite usable global resolvers")
+			return "", nil
+		},
+	}
+
+	got := detectDNSServersWithSources("br-wan", []string{"10.0.0.5"}, sources)
+	assert.Equal(t, []string{"10.20.0.53", "8.8.8.8"}, got)
+	assert.Equal(t, []string{"dns br-wan", "dns"}, queries)
+}
+
+func TestDetectDNSServersFallsBackToResolvConf(t *testing.T) {
+	sources := dnsDetectionSources{
+		queryResolvectl: func(_ ...string) (string, error) {
+			return "", errors.New("resolver manager unavailable")
+		},
+		readResolvConf: func() (string, error) {
+			return "nameserver 10.0.0.5\nnameserver 10.20.0.53\n", nil
+		},
+	}
+
+	got := detectDNSServersWithSources("br-wan", []string{"10.0.0.5"}, sources)
+	assert.Equal(t, []string{"10.20.0.53"}, got)
+}
+
 func TestHostDNSParams(t *testing.T) {
 	// northstarEnabled requires both credentials; the zones and IPs mirror what
 	// admin init/join hold in memory after rendering northstar.toml.
@@ -1159,6 +1213,9 @@ func TestHostDNSParams(t *testing.T) {
 	}
 }
 
+// The image is written into a root volume of exactly the size this returns, so
+// anything less than the image size truncates the image and the guest never
+// finds its root. The old flooring conversion undersized every non-round image.
 func TestAMIVolumeSizeGiB(t *testing.T) {
 	const giB int64 = 1024 * 1024 * 1024
 

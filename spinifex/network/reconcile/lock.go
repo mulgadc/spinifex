@@ -27,12 +27,14 @@ var (
 // gateway quota reconcile must not block vpcd's network reconcile, and vice
 // versa.
 func AcquireLeader(nc *nats.Conn, bucket, holder string) (func(), bool) {
-	js, _ := nc.JetStream()
+	js, err := nc.JetStream()
+	if err != nil {
+		slog.Error("reconcile/lock: JetStream unavailable, skipping reconcile",
+			"holder", holder, "bucket", bucket, "err", err)
+		return nil, false
+	}
 
-	var (
-		kv  nats.KeyValue
-		err error
-	)
+	var kv nats.KeyValue
 	deadline := time.Now().Add(leaderRetryFor)
 	for {
 		// Get-or-create: CreateKeyValue returns "stream name already in use" if

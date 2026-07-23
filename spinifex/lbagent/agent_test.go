@@ -1,12 +1,15 @@
 package lbagent
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -645,5 +648,98 @@ func TestFetchConfig_WriteError(t *testing.T) {
 
 	if agent.localConfigHash != "" {
 		t.Errorf("localConfigHash should be empty after write failure, got %q", agent.localConfigHash)
+	}
+}
+
+// notFoundGateway returns 400 LoadBalancerNotFound for every heartbeat, the
+// shape a freshly launched LB sees while its record replicates to the gateway
+// node fielding the first heartbeat.
+func notFoundGateway(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `<ErrorResponse><Error><Type>Sender</Type><Code>LoadBalancerNotFound</Code><Message>One or more load balancers not found.</Message></Error></ErrorResponse>`)
+	}))
+}
+
+// captureSlog redirects the default logger to a buffer for the duration of the
+// test and returns an accessor for the accumulated output.
+func captureSlog(t *testing.T) func() string {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf.String
+}
+
+func TestHeartbeat_StartupFailureLogsBelowError(t *testing.T) {
+	gw := notFoundGateway(t)
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+	logs := captureSlog(t)
+
+	// Fresh agent, inside the grace window and never yet successful: a
+	// LoadBalancerNotFound is a startup race, not an error.
+	agent.tick()
+
+	out := logs()
+	if strings.Contains(out, "level=ERROR") {
+		t.Errorf("startup heartbeat failure logged at ERROR within grace window:\n%s", out)
+	}
+	if !strings.Contains(out, "Heartbeat pending during startup") {
+		t.Errorf("expected startup-pending log line, got:\n%s", out)
+	}
+}
+
+func TestHeartbeat_FailureAfterGraceLogsError(t *testing.T) {
+	gw := notFoundGateway(t)
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+	logs := captureSlog(t)
+
+	// Past the grace window with no prior success — the blackhole fingerprint —
+	// must escalate so the console telemetry catches it.
+	agent.startedAt = time.Now().Add(-2 * registrationGrace)
+	agent.tick()
+
+	out := logs()
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "Heartbeat failed") {
+		t.Errorf("post-grace heartbeat failure did not escalate to ERROR:\n%s", out)
+	}
+}
+
+func TestHeartbeat_FailureAfterFirstSuccessLogsError(t *testing.T) {
+	// A gateway that answers healthily once, then only ever 400s.
+	var beats atomic.Int32
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		if beats.Add(1) == 1 {
+			fmt.Fprint(w, `<LBAgentHeartbeatResponse><LBAgentHeartbeatResult><Status>active</Status><ConfigHash></ConfigHash></LBAgentHeartbeatResult></LBAgentHeartbeatResponse>`)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `<ErrorResponse><Error><Code>LoadBalancerNotFound</Code></Error></ErrorResponse>`)
+	}))
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+	logs := captureSlog(t)
+
+	// First tick succeeds (still inside grace); the next failure must be ERROR
+	// regardless of the window, because the agent has proven it can reach the
+	// gateway, so any later failure is real.
+	agent.tick()
+	agent.tick()
+
+	out := logs()
+	if !agent.firstHeartbeatOK {
+		t.Fatal("firstHeartbeatOK not set after a successful heartbeat")
+	}
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "Heartbeat failed") {
+		t.Errorf("post-success heartbeat failure did not log ERROR:\n%s", out)
 	}
 }

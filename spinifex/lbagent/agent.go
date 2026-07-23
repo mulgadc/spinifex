@@ -43,6 +43,15 @@ const (
 
 	// pollInterval is how often the agent sends a heartbeat.
 	pollInterval = 5 * time.Second
+
+	// registrationGrace bounds how long startup heartbeat failures are logged
+	// below ERROR. A freshly launched LB races its own record's replication to
+	// the gateway node that fields the first heartbeat, so early failures
+	// (LoadBalancerNotFound, IMDS credentials not yet warm) are expected and
+	// self-heal within a few ticks. Past this window with no success — the
+	// fingerprint of a genuinely network-blackholed agent — failures escalate
+	// to ERROR so the serial-console telemetry still surfaces them.
+	registrationGrace = 60 * time.Second
 )
 
 // Data-plane engine names (duplicated from handlers/elbv2 to avoid an import cycle).
@@ -68,6 +77,12 @@ type Agent struct {
 	engine          string         // data-plane engine of the last applied config
 	healthTargets   []HealthTarget // active probe targets (nginx/NLB only)
 	stopCh          chan struct{}
+
+	// startedAt anchors the registration grace window; firstHeartbeatOK
+	// records whether any heartbeat has ever succeeded. Both are touched only
+	// from the single poll goroutine (Start -> tick), so they need no lock.
+	startedAt        time.Time
+	firstHeartbeatOK bool
 
 	// For testing: override the reload functions (HAProxy / nginx).
 	reloadFn      func(configPath, pidPath string) error
@@ -127,6 +142,7 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		signer:        signer,
 		client:        client,
 		stopCh:        make(chan struct{}),
+		startedAt:     time.Now(),
 		reloadFn:      reloadHAProxy,
 		reloadNginxFn: reloadNginx,
 		statsFn:       queryHAProxyStats,
@@ -184,9 +200,21 @@ func (a *Agent) tick() {
 		// Include the dial target so the serial console disambiguates a
 		// transport failure (never reached AWSGW — "send request: dial ...")
 		// from an HTTP-level rejection ("gateway returned NNN: ...").
+		//
+		// Before the first successful heartbeat, and only within the grace
+		// window, a failure is an expected startup race (record not yet
+		// replicated, credentials not yet warm) and logs at INFO. Past the
+		// window, or once any heartbeat has succeeded, a failure is real and
+		// logs at ERROR so the console telemetry still catches a blackhole.
+		if !a.firstHeartbeatOK && time.Since(a.startedAt) < registrationGrace {
+			slog.Info("Heartbeat pending during startup", "err", err,
+				"gateway", a.gatewayURL, "elapsed", time.Since(a.startedAt).Round(time.Second))
+			return
+		}
 		slog.Error("Heartbeat failed", "err", err, "gateway", a.gatewayURL, "region", a.region)
 		return
 	}
+	a.firstHeartbeatOK = true
 
 	slog.Debug("Heartbeat OK", "status", resp.Status, "configHash", resp.ConfigHash)
 

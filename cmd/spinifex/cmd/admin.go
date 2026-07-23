@@ -717,11 +717,18 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	progress := func(current, total uint64) {
 		if flushBar == nil {
 			flushTotalHuman = utils.HumanBytes(total)
+			// pterm's elapsed-time display normally spawns a background goroutine
+			// that re-renders every second with no lock, interleaving with our
+			// own low-frequency renders and tearing the line. Start with it off
+			// so no timer is spawned, then flip the flag on — pterm still appends
+			// its own elapsed time, now emitted only on our (single) renders.
 			flushBar, _ = pterm.DefaultProgressbar.
 				WithTitle("Flushing image to storage").
 				WithTotal(utils.SafeUint64ToInt(total)).
-				WithShowCount(false). // hide raw ints; the size goes in the title
+				WithShowCount(false).       // hide raw ints; the size goes in the title
+				WithShowElapsedTime(false). // suppress the async re-render (see above)
 				Start()
+			flushBar.ShowElapsedTime = true // keep pterm's elapsed, rendered only by us
 		}
 		flushBar.Current = utils.SafeUint64ToInt(current) // drives fill + percentage
 		// UpdateTitle performs the single render for this step.

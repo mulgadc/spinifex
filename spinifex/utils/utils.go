@@ -205,11 +205,18 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 	if cl > 0 {
 		total := SafeInt64ToUint64(cl)
 		totalHuman := HumanBytes(total)
+		// pterm's elapsed-time display normally spawns a background goroutine
+		// that re-renders every second with no lock; at our once-per-percent
+		// cadence that async write interleaves with ours and tears the line.
+		// Start with it off so no timer is spawned, then flip the flag on — pterm
+		// still appends its own "| 9s", now emitted only on our (single) renders.
 		bar, _ := pterm.DefaultProgressbar.
 			WithTitle(fmt.Sprintf("Downloading %s", name)).
 			WithTotal(SafeUint64ToInt(total)).
-			WithShowCount(false). // hide raw ints; the size goes in the title
+			WithShowCount(false).       // hide raw ints; the size goes in the title
+			WithShowElapsedTime(false). // suppress the async re-render (see above)
 			Start()
+		bar.ShowElapsedTime = true // keep pterm's elapsed, rendered only by us
 
 		// io.Copy writes ~32 KiB per TeeReader call, so gate rendering on
 		// integer-percentage change to cap the bar at ≤101 renders — matching

@@ -132,7 +132,24 @@ type Config struct {
 
 	masterKey *masterkey.Key
 
+	// sealVolume overrides how a detached volume is sealed to predastore.
+	// Nil means sealVolumeVB, the real seal. Tests that need a seal to FAIL
+	// inject here rather than pointing S3Host at an unreachable endpoint: the
+	// real failure only arrives once the S3 client exhausts its jittered
+	// backoff, which takes anywhere from one to five seconds and so decides the
+	// test on where the dice land relative to the caller's deadline.
+	sealVolume func(volumeName string) error
+
 	mu sync.Mutex
+}
+
+// seal persists volumeName's block map to predastore, honouring a test's
+// injected seal if there is one.
+func (cfg *Config) seal(volumeName string) error {
+	if cfg.sealVolume != nil {
+		return cfg.sealVolume(volumeName)
+	}
+	return sealVolumeVB(cfg, volumeName)
 }
 
 type Service struct {
@@ -516,7 +533,7 @@ func launchService(cfg *Config) (err error) {
 			// the block map to predastore for volumes that hold local state to
 			// flush (see volumeNeedsSeal).
 			if volumeNeedsSeal(matched.Name, cfg.BaseDir) {
-				if err := sealVolumeVB(cfg, matched.Name); err != nil {
+				if err := cfg.seal(matched.Name); err != nil {
 					slog.ErrorContext(ctx, "ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
 					ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
 				} else {

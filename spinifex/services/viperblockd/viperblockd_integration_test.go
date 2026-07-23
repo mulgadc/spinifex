@@ -6,8 +6,10 @@ package viperblockd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -361,9 +363,16 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 	defer ns.Shutdown()
 
 	cfg := setupTestConfig(t, natsURL)
-	// A local WAL directory makes volumeNeedsSeal true; the configured S3 host
-	// is an unreachable mock endpoint, so sealVolumeVB's LoadState fails.
+	// A local WAL directory makes volumeNeedsSeal true, and the injected seal
+	// then fails immediately. Letting the real seal fail against the mock S3
+	// host works too, but only after seconds of jittered client backoff, which
+	// is what put this test's outcome inside the tail of the 5s deadline below.
 	createMockVolumeState(t, cfg.BaseDir, "vol-seal-fail")
+	var sealCalls atomic.Int32
+	cfg.sealVolume = func(volumeName string) error {
+		sealCalls.Add(1)
+		return fmt.Errorf("seal %s: injected backend failure", volumeName)
+	}
 	cfg.MountedVolumes = []MountedVolume{
 		{Name: "vol-seal-fail", PID: 99999},
 	}
@@ -385,6 +394,9 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.NotEmpty(t, resp.Error, "a seal failure must surface as an error, not a silent success")
 	assert.False(t, resp.NotFound, "a failed seal must not report NotFound")
+	// Guards the injection itself: a handler that stopped sealing altogether
+	// would otherwise satisfy every assertion below.
+	assert.Equal(t, int32(1), sealCalls.Load(), "the unmount handler must have attempted the seal")
 
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()

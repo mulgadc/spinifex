@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
@@ -622,10 +621,34 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 			continue
 		}
 
-		// User-visible volumes: only delete when DeleteOnTermination is set.
+		// User-visible volumes: DeleteOnTermination=false survives terminate,
+		// but terminate still implies detach (AWS semantics). Only the Boot
+		// volume can still be attached here — shutdownAndUnmount's Unmount
+		// clears every non-Boot volume's attachment already, so a non-Boot
+		// DoT=false volume is genuinely a no-op skip. A DoT=false Boot volume
+		// is never touched by Unmount, so without this it would strand
+		// attached to the now-terminated instance forever.
 		if !ebsRequest.DeleteOnTermination {
-			slog.Info("Volume has DeleteOnTermination=false, skipping deletion",
+			if !ebsRequest.Boot {
+				slog.Info("Volume has DeleteOnTermination=false, skipping deletion",
+					"name", ebsRequest.Name, "id", instance.ID)
+				continue
+			}
+			slog.Info("Boot volume has DeleteOnTermination=false, detaching without deleting",
 				"name", ebsRequest.Name, "id", instance.ID)
+			if a.d.volumeService == nil {
+				slog.Warn("Volume service not configured, cannot detach volume",
+					"name", ebsRequest.Name, "id", instance.ID)
+				continue
+			}
+			if err := a.d.volumeService.DetachVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
+				slog.Error("Failed to detach volume on termination",
+					"name", ebsRequest.Name, "id", instance.ID, "err", err)
+				firstErr = cmp.Or(firstErr, err)
+			} else {
+				slog.Info("Detached volume on termination",
+					"name", ebsRequest.Name, "id", instance.ID)
+			}
 			continue
 		}
 
@@ -636,9 +659,12 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 				"name", ebsRequest.Name, "id", instance.ID)
 			continue
 		}
-		if _, err := a.d.volumeService.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
-			VolumeId: &ebsRequest.Name,
-		}, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
+		// Terminate implies detach: DeleteVolumeOnTerminate clears the stale
+		// AttachedInstance before deleting. shutdownAndUnmount's Unmount
+		// (above, via terminateCleanup) deliberately never clears a Boot
+		// volume's attachment, so without this the root volume still hits
+		// DeleteVolume's in-use guard here.
+		if err := a.d.volumeService.DeleteVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
 			slog.Error("Failed to delete volume on termination",
 				"name", ebsRequest.Name, "id", instance.ID, "err", err)
 			firstErr = cmp.Or(firstErr, err)

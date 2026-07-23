@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -44,6 +45,11 @@ var _ VolumeService = (*VolumeServiceImpl)(nil)
 // Ensure VolumeServiceImpl satisfies vm.VolumeStateUpdater so the manager
 // can call UpdateVolumeState directly without a daemon-side adapter.
 var _ vm.VolumeStateUpdater = (*VolumeServiceImpl)(nil)
+
+// Ensure VolumeServiceImpl satisfies handlers/ec2/instance's VolumeDeleter so
+// InstanceServiceImpl can call DeleteVolume/DeleteVolumeOnTerminate through
+// the dependency wired via SetTerminationDeps.
+var _ handlers_ec2_instance.VolumeDeleter = (*VolumeServiceImpl)(nil)
 
 // VolumeServiceImpl handles EBS volume operations with S3 storage.
 type VolumeServiceImpl struct {
@@ -1487,6 +1493,36 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 	return &ec2.ModifyVolumeOutput{
 		VolumeModification: modification,
 	}, nil
+}
+
+// DeleteVolumeOnTerminate deletes a DeleteOnTermination volume as part of an
+// instance terminate: terminate implies detach, so this clears any stale
+// attachment via UpdateVolumeState before calling DeleteVolume. Both the
+// stopped-instance path (Stop's Unmount deliberately never clears a Boot
+// volume, vm_adapters.go's volumeMounterAdapter.Unmount) and the
+// running-instance path (terminateCleanup runs after shutdownAndUnmount,
+// which has the same Boot-volume carve-out) would otherwise still have
+// AttachedInstance set and hit DeleteVolume's in-use guard. There is no live
+// QEMU to hot-unplug on either path — a stopped instance has none, and a
+// terminating instance's QEMU has already been asked to shut down — so this
+// is always a metadata-only clear, never a QMP call. Errors from either step
+// are returned, not swallowed.
+func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error {
+	if err := s.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
+		return fmt.Errorf("clear attachment before terminate delete: %w", err)
+	}
+	_, err := s.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: &volumeID}, accountID)
+	return err
+}
+
+// DetachVolumeOnTerminate clears a volume's attachment on instance terminate
+// without deleting it, matching AWS semantics for a DeleteOnTermination=false
+// volume: terminate still implies detach, it just leaves the volume behind as
+// available rather than deleting it. Metadata-only, no QMP — same rationale
+// as DeleteVolumeOnTerminate: there is no live QEMU to hot-unplug on either
+// terminate path.
+func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+	return s.UpdateVolumeState(volumeID, "available", "", "")
 }
 
 // DeleteVolume deletes an EBS volume: validates state, notifies viperblockd, and removes S3 data.

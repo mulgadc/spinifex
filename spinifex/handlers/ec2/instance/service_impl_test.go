@@ -1661,9 +1661,10 @@ func TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect(t *testing.T) {
 // --- TerminateStoppedInstance tests ---
 
 type fakeVolumeDeleter struct {
-	calls   []string
-	deleted []string
-	err     error
+	calls    []string
+	deleted  []string
+	detached []string
+	err      error
 }
 
 func (f *fakeVolumeDeleter) DeleteVolume(_ context.Context, input *ec2.DeleteVolumeInput, _ string) (*ec2.DeleteVolumeOutput, error) {
@@ -1674,6 +1675,29 @@ func (f *fakeVolumeDeleter) DeleteVolume(_ context.Context, input *ec2.DeleteVol
 	}
 	f.deleted = append(f.deleted, id)
 	return &ec2.DeleteVolumeOutput{}, nil
+}
+
+// DeleteVolumeOnTerminate mirrors DeleteVolume's call/error bookkeeping; the
+// stopped-instance terminate path calls this instead of DeleteVolume.
+func (f *fakeVolumeDeleter) DeleteVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+	f.calls = append(f.calls, volumeID)
+	if f.err != nil {
+		return f.err
+	}
+	f.deleted = append(f.deleted, volumeID)
+	return nil
+}
+
+// DetachVolumeOnTerminate mirrors DeleteVolumeOnTerminate's call/error
+// bookkeeping but records into detached instead of deleted; the non-DoT
+// Boot-volume branch calls this instead of deleting.
+func (f *fakeVolumeDeleter) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+	f.calls = append(f.calls, volumeID)
+	if f.err != nil {
+		return f.err
+	}
+	f.detached = append(f.detached, volumeID)
+	return nil
 }
 
 type fakeENIDeleter struct {
@@ -1913,6 +1937,80 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"vol-user-001"}, vd.calls, "only DeleteOnTermination=true volumes deleted")
 	assert.Equal(t, []string{"vol-user-001"}, vd.deleted)
+}
+
+// TestTerminateStoppedInstance_StampsTeardownVolumesDone locks the mulga-1dzx9
+// fix: TerminateStoppedInstance must stamp Teardown[vm.TeardownVolumes] on
+// success, mirroring the running-instance path's markTeardownResult
+// (vm/shutdown.go). Without this, daemon.leakedVolumeInstances() and
+// VolumeLeakReaper can never see a stopped-path leak because
+// TerminateStoppedInstance previously never touched Teardown at all.
+func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
+	id := "i-teardown-done"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-root-001", Boot: true, DeleteOnTermination: true},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	require.NotNil(t, store.wroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.wroteTerminated[id].Teardown[vm.TeardownVolumes],
+		"ADR-0003 §1 semantics: a successful volume delete must stamp Teardown[volumes]=done")
+	assert.Equal(t, []string{"vol-root-001"}, vd.deleted, "the still-attached root volume must actually be deleted")
+}
+
+// TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError locks
+// the "do not swallow" half of the fix: a DeleteVolumeOnTerminate failure must
+// surface as Teardown[vm.TeardownVolumes]=failed (picked up by
+// daemon.leakedVolumeInstances() / VolumeLeakReaper) rather than being merely
+// logged and forgotten.
+func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *testing.T) {
+	id := "i-teardown-failed"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-root-002", Boot: true, DeleteOnTermination: true},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{err: errors.New("delete forced failure")}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err, "terminate itself stays best-effort; the failure is tracked via Teardown, not returned")
+
+	require.NotNil(t, store.wroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownFailed), store.wroteTerminated[id].Teardown[vm.TeardownVolumes],
+		"a DeleteVolumeOnTerminate failure must be surfaced via Teardown, not silently swallowed")
+	assert.Empty(t, vd.deleted, "the forced failure must mean nothing was actually deleted")
+}
+
+// TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted locks the
+// second half of the terminate-implies-detach fix: a DeleteOnTermination=false
+// Boot volume is never cleared by Stop's Unmount (daemon/vm_adapters.go), so
+// without this it would strand attached to the now-gone instance forever.
+// Terminate must still detach it (AWS semantics: it survives as available,
+// it just isn't deleted).
+func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.T) {
+	id := "i-nondot-boot"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-root-nondot", Boot: true, DeleteOnTermination: false},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"vol-root-nondot"}, vd.detached, "the still-attached non-DoT boot volume must be detached")
+	assert.Empty(t, vd.deleted, "a DeleteOnTermination=false volume must never be deleted")
+	require.NotNil(t, store.wroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.wroteTerminated[id].Teardown[vm.TeardownVolumes])
 }
 
 func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {

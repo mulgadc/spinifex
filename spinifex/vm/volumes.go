@@ -22,6 +22,14 @@ import (
 // DetachDelay. 20 × DetachDelay (default 1s) gives a 20s budget.
 const blockdevDelMaxAttempts = 20
 
+// detachAggregateTimeout bounds the ctx-driven portion of DetachVolume's
+// hot-unplug chain (the QMP device_del / DEVICE_DELETED wait / blockdev-del /
+// object-del steps), so a wedged-but-responsive QEMU cannot stack per-step
+// timeouts into an effectively unbounded hang. It comfortably covers those
+// steps' own budgets (qmpCommandTimeout + the bounded blockdev-del retry) plus
+// margin; the ebs.unmount seal keeps its separate unmountSealTimeout.
+const detachAggregateTimeout = 3 * time.Minute
+
 // rollbackUnmount best-effort unmounts a volume while unwinding a failed
 // AttachVolume. The volume never took guest writes, so the unmount seal is a
 // no-op; a failure is logged and tolerated rather than masking the attach error.
@@ -304,6 +312,14 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 			ErrVolumeDeviceMismatch, device, ebsReq.DeviceName)
 	}
 
+	// Bound the ctx-driven portion of the hot-unplug chain so a wedged-but-
+	// responsive QEMU cannot stack per-step QMP timeouts into an unbounded hang
+	// that pins attachMu forever. The ebs.unmount seal below keeps its own
+	// unmountSealTimeout. This deadline cannot preempt a plain-mutex QMP call,
+	// which is why a fully dead QEMU is short-circuited outright below.
+	ctx, cancel := context.WithTimeout(ctx, detachAggregateTimeout)
+	defer cancel()
+
 	// Shared with buildDrives' cold-boot path: a relaunched data volume gets
 	// exactly these names, so these addresses resolve whether the volume was
 	// hot-attached or cold-booted.
@@ -311,57 +327,69 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 	nodeName := VolumeNodeName(volumeID)
 	iothreadID := VolumeIOThreadID(volumeID)
 
-	// device_del is idempotent on DeviceNotFound so a second AWS-CLI
-	// retry can drive blockdev-del to completion when a prior detach left
-	// the guest device gone but the block node intact.
-	deviceDelIssued := false
-	_, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
-		Execute:   "device_del",
-		Arguments: map[string]any{"id": deviceID},
-	}, instance.ID)
-	switch {
-	case err == nil:
-		deviceDelIssued = true
-	case isQMPDeviceNotFound(err):
-		slog.InfoContext(ctx, "DetachVolume: guest device already removed (resuming detach)",
-			"volumeId", volumeID, "err", err)
-	case force:
-		slog.WarnContext(ctx, "DetachVolume: QMP device_del failed (force=true, continuing)",
-			"volumeId", volumeID, "err", err)
-	default:
-		slog.ErrorContext(ctx, "DetachVolume: QMP device_del failed", "volumeId", volumeID, "err", err)
-		return "", fmt.Errorf("QMP device_del: %w", err)
-	}
-
-	// device_del only requests the unplug; QEMU frees the block node once the
-	// guest ACKs it (DEVICE_DELETED). Wait for that real completion signal
-	// instead of blindly sleeping, so blockdev-del isn't attempted while the
-	// node still has a user. A miss (timeout, event drained by a racing read,
-	// or a resumed/forced detach with no fresh unplug in flight) falls
-	// through to the bounded retry below unchanged.
-	if deviceDelIssued && m.deps.DeviceDeletedTimeout > 0 {
-		if waitErr := waitForDeviceDeletedEvent(ctx, instance.QMPClient, deviceID, m.deps.DeviceDeletedTimeout, instance.ID); waitErr != nil {
-			slog.DebugContext(ctx, "DetachVolume: DEVICE_DELETED not observed, falling back to blockdev-del retry",
-				"volumeId", volumeID, "err", waitErr)
+	// A confirmed-dead QEMU took every block node and guest device down with it,
+	// so the QMP unplug steps are moot — and worse, issuing them only risks
+	// hanging on the wedged process. Skip straight to the ebs.unmount seal and
+	// the attachment clear. This is the detach-wedges-when-QEMU-dies fix: the
+	// context deadline above cannot interrupt a plain-mutex QMP path, so a
+	// provably-gone process must bypass it rather than wait on it. A missing PID
+	// file is ambiguous (not provably dead), so the normal QMP path still runs.
+	if !qemuConfirmedDead(instance.ID) {
+		// device_del is idempotent on DeviceNotFound so a second AWS-CLI
+		// retry can drive blockdev-del to completion when a prior detach left
+		// the guest device gone but the block node intact.
+		deviceDelIssued := false
+		_, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
+			Execute:   "device_del",
+			Arguments: map[string]any{"id": deviceID},
+		}, instance.ID)
+		switch {
+		case err == nil:
+			deviceDelIssued = true
+		case isQMPDeviceNotFound(err):
+			slog.InfoContext(ctx, "DetachVolume: guest device already removed (resuming detach)",
+				"volumeId", volumeID, "err", err)
+		case force:
+			slog.WarnContext(ctx, "DetachVolume: QMP device_del failed (force=true, continuing)",
+				"volumeId", volumeID, "err", err)
+		default:
+			slog.ErrorContext(ctx, "DetachVolume: QMP device_del failed", "volumeId", volumeID, "err", err)
+			return "", fmt.Errorf("QMP device_del: %w", err)
 		}
-	} else if m.deps.DetachDelay > 0 {
-		time.Sleep(m.deps.DetachDelay)
-	}
 
-	// blockdev-del with bounded retry on "node is in use".
-	if blockdevErr := m.tryBlockdevDel(ctx, instance, nodeName); blockdevErr != nil {
-		slog.ErrorContext(ctx, "DetachVolume: QMP blockdev-del failed, leaving volume state intact",
-			"volumeId", volumeID, "err", blockdevErr)
-		return "", fmt.Errorf("QMP blockdev-del: %w", blockdevErr)
-	}
+		// device_del only requests the unplug; QEMU frees the block node once the
+		// guest ACKs it (DEVICE_DELETED). Wait for that real completion signal
+		// instead of blindly sleeping, so blockdev-del isn't attempted while the
+		// node still has a user. A miss (timeout, event drained by a racing read,
+		// or a resumed/forced detach with no fresh unplug in flight) falls
+		// through to the bounded retry below unchanged.
+		if deviceDelIssued && m.deps.DeviceDeletedTimeout > 0 {
+			if waitErr := waitForDeviceDeletedEvent(ctx, instance.QMPClient, deviceID, m.deps.DeviceDeletedTimeout, instance.ID); waitErr != nil {
+				slog.DebugContext(ctx, "DetachVolume: DEVICE_DELETED not observed, falling back to blockdev-del retry",
+					"volumeId", volumeID, "err", waitErr)
+			}
+		} else if m.deps.DetachDelay > 0 {
+			time.Sleep(m.deps.DetachDelay)
+		}
 
-	// object-del (best-effort).
-	if _, iothreadErr := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
-		Execute:   "object-del",
-		Arguments: map[string]any{"id": iothreadID},
-	}, instance.ID); iothreadErr != nil {
-		slog.WarnContext(ctx, "DetachVolume: QMP object-del iothread failed (non-fatal)",
-			"volumeId", volumeID, "err", iothreadErr)
+		// blockdev-del with bounded retry on "node is in use".
+		if blockdevErr := m.tryBlockdevDel(ctx, instance, nodeName); blockdevErr != nil {
+			slog.ErrorContext(ctx, "DetachVolume: QMP blockdev-del failed, leaving volume state intact",
+				"volumeId", volumeID, "err", blockdevErr)
+			return "", fmt.Errorf("QMP blockdev-del: %w", blockdevErr)
+		}
+
+		// object-del (best-effort).
+		if _, iothreadErr := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
+			Execute:   "object-del",
+			Arguments: map[string]any{"id": iothreadID},
+		}, instance.ID); iothreadErr != nil {
+			slog.WarnContext(ctx, "DetachVolume: QMP object-del iothread failed (non-fatal)",
+				"volumeId", volumeID, "err", iothreadErr)
+		}
+	} else {
+		slog.WarnContext(ctx, "DetachVolume: QEMU process gone, skipping QMP unplug and sealing directly",
+			"volumeId", volumeID, "instanceId", instance.ID)
 	}
 
 	// ebs.unmount drives the synchronous block-map seal to predastore. On

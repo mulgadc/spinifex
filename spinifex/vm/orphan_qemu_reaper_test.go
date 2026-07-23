@@ -83,4 +83,51 @@ func TestOrphanQEMUReaper(t *testing.T) {
 		assert.Zero(t, reaped, "only terminated instances are candidates")
 		assert.True(t, utils.ProcessAlive(pid), "a non-terminated instance's process must survive")
 	})
+
+	t.Run("reconciles a wedged shutting-down instance whose QEMU vanished", func(t *testing.T) {
+		reaper, store := newOrphanReaperManager(t)
+		m := reaper.m
+
+		const id = "i-wedged"
+		// A terminate transitioned it to shutting-down then wedged; QEMU is gone
+		// (no PID file), and it never migrated to the terminated bucket.
+		m.InsertIfAbsent(&VM{ID: id, Status: StateShuttingDown, ENIId: "eni-1"})
+
+		reaped, err := reaper.Sweep(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, 1, reaped, "a wedged shutting-down instance with a dead QEMU must be finalized")
+
+		_, ok := m.Get(id)
+		assert.False(t, ok, "the reconciled instance must leave the local running map")
+
+		term, ok := store.terminated[id]
+		require.True(t, ok, "the instance must be written to the terminated bucket")
+		assert.Equal(t, StateTerminated, term.Status, "it must be finalized to terminated")
+		assert.Equal(t, string(TeardownDone), term.Teardown[TeardownQEMU],
+			"QEMU is confirmed gone, so its teardown is done")
+		assert.Equal(t, string(TeardownFailed), term.Teardown[TeardownVolumes],
+			"outstanding volume teardown must be handed to TerminatedTeardownReaper")
+		assert.Equal(t, string(TeardownFailed), term.Teardown[TeardownENI],
+			"the instance's ENI teardown must be handed off too")
+	})
+
+	t.Run("a shutting-down instance with a live QEMU is left to finish terminating", func(t *testing.T) {
+		reaper, _ := newOrphanReaperManager(t)
+		m := reaper.m
+
+		cmd := exec.Command("sleep", "60")
+		require.NoError(t, cmd.Start())
+		pid := cmd.Process.Pid
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+
+		const id = "i-terminating"
+		m.InsertIfAbsent(&VM{ID: id, Status: StateShuttingDown})
+		require.NoError(t, utils.WritePidFile(id, pid))
+
+		reaped, err := reaper.Sweep(context.Background())
+		require.NoError(t, err)
+		assert.Zero(t, reaped, "a live in-progress terminate must not be reconciled")
+		_, ok := m.Get(id)
+		assert.True(t, ok, "the instance must stay in the running map for its own terminate to finish")
+	})
 }

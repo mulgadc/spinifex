@@ -155,6 +155,11 @@ type VM struct {
 	// 1h TTL bounds visibility regardless.
 	TerminatedAt time.Time `json:"terminated_at,omitzero"`
 
+	// ShuttingDownAt is when the instance entered StateShuttingDown, stamped once
+	// on the transition. The stuck-terminate backstop uses it to bound how long a
+	// terminate may wedge before being force-completed.
+	ShuttingDownAt time.Time `json:"shutting_down_at,omitzero"`
+
 	// CapacityReservationId is the On-Demand Capacity Reservation this instance
 	// was launched into (targeted launch). Empty for instances on general
 	// capacity. Drives slot restore to the reservation on stop/terminate.

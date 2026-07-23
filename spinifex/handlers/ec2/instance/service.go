@@ -116,6 +116,12 @@ type VolumeDeleter interface {
 	// implies detach) before deleting, so a still-attached boot volume left
 	// over from Stop is not rejected by DeleteVolume's in-use guard.
 	DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error
+
+	// DetachVolumeOnTerminate clears a still-attached volume's attachment on
+	// terminate without deleting it, matching AWS semantics for a
+	// DeleteOnTermination=false volume: terminate still implies detach, it
+	// just leaves the volume behind as available rather than deleting it.
+	DetachVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error
 }
 
 // ENIDeleter deletes ENIs. Implemented by handlers/ec2/vpc's VPCServiceImpl.

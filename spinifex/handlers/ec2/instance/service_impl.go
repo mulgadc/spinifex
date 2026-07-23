@@ -2436,9 +2436,28 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 			continue
 		}
 
-		// User-visible volumes: respect DeleteOnTermination.
+		// User-visible volumes: DeleteOnTermination=false survives terminate,
+		// but terminate still implies detach (AWS semantics). Only the Boot
+		// volume can still be attached here — Stop's Unmount (daemon/vm_adapters.go)
+		// clears every non-Boot volume's attachment already, so a non-Boot
+		// DoT=false volume is genuinely a no-op skip. A DoT=false Boot volume
+		// is never touched by Unmount, so without this it would strand
+		// attached to the now-terminated instance forever.
 		if !ebsRequest.DeleteOnTermination {
-			slog.InfoContext(ctx, "TerminateStoppedInstance: volume has DeleteOnTermination=false, skipping", "name", ebsRequest.Name)
+			if !ebsRequest.Boot {
+				slog.InfoContext(ctx, "TerminateStoppedInstance: volume has DeleteOnTermination=false, skipping", "name", ebsRequest.Name)
+				continue
+			}
+			slog.InfoContext(ctx, "TerminateStoppedInstance: boot volume has DeleteOnTermination=false, detaching without deleting", "name", ebsRequest.Name)
+			if s.volumeDeleter == nil {
+				slog.WarnContext(ctx, "TerminateStoppedInstance: volume deleter not configured, skipping detach", "name", ebsRequest.Name)
+				lastErr = errors.New("volume deleter not configured")
+				continue
+			}
+			if err := s.volumeDeleter.DetachVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID); err != nil {
+				slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to detach volume", "name", ebsRequest.Name, "err", err)
+				lastErr = err
+			}
 			continue
 		}
 

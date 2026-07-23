@@ -1515,6 +1515,16 @@ func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeI
 	return err
 }
 
+// DetachVolumeOnTerminate clears a volume's attachment on instance terminate
+// without deleting it, matching AWS semantics for a DeleteOnTermination=false
+// volume: terminate still implies detach, it just leaves the volume behind as
+// available rather than deleting it. Metadata-only, no QMP — same rationale
+// as DeleteVolumeOnTerminate: there is no live QEMU to hot-unplug on either
+// terminate path.
+func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+	return s.UpdateVolumeState(volumeID, "available", "", "")
+}
+
 // DeleteVolume deletes an EBS volume: validates state, notifies viperblockd, and removes S3 data.
 func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error) {
 	if input == nil || input.VolumeId == nil || *input.VolumeId == "" {

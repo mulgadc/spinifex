@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -1598,6 +1599,119 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	_, err = daemon.volumeService.GetVolumeConfig(volumeID)
 	require.Error(t, err, "the volume must actually be deleted")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
+}
+
+// TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
+// locks the running-path half of the terminate-implies-detach fix for a
+// DeleteOnTermination=false root volume: shutdownAndUnmount's Unmount
+// (daemon/vm_adapters.go) deliberately never clears a Boot volume's
+// attachment, so without this it would strand attached to the now-terminated
+// instance forever. Terminate must still detach it (AWS semantics: it
+// survives as available, it just isn't deleted).
+func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	volumeID := "vol-root-nondot-attached"
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		TenantID:         testAccountID,
+		SizeGiB:          10,
+		State:            "available",
+		AttachedInstance: "i-test-boot-detach", // stale: never cleared by Unmount's Boot carve-out
+	})
+
+	instance := &vm.VM{
+		ID:        "i-test-boot-detach",
+		AccountID: testAccountID,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: volumeID, Boot: true, DeleteOnTermination: false},
+			},
+		},
+	}
+
+	cleaner := newInstanceCleanerAdapter(daemon)
+	err := cleaner.DeleteVolumes(instance)
+	require.NoError(t, err)
+
+	cfg, err := daemon.volumeService.GetVolumeConfig(volumeID)
+	require.NoError(t, err, "a DeleteOnTermination=false volume must survive terminate")
+	assert.Equal(t, "available", cfg.VolumeMetadata.State)
+	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "terminate must still detach it")
+}
+
+// TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown proves the
+// go-forward self-heal: a stopped-terminate that stamped
+// Teardown[volumes]=failed on a transient error (deleteInstanceVolumes,
+// handlers/ec2/instance/service_impl.go) is retried by
+// TerminatedTeardownReaper.Sweep (vm/teardown_reaper.go) through the real
+// instanceCleanerAdapter, which stage 1 rerouted through
+// DeleteVolumeOnTerminate. The retry clears the stale attachment, the delete
+// now succeeds, and the mark flips to done — without abandoning the record.
+func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedJSNATSURL)
+
+	// A real terminated-instance KV, so Sweep can list/update/(not yet)purge
+	// the record exactly as production does.
+	jsManager, err := NewJetStreamManager(daemon.natsConn, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsManager.InitTerminatedInstanceBucket())
+	daemon.stateStore = newStateStoreAdapter(jsManager)
+
+	// DeleteVolume's snapshot-reference guard requires a non-nil snapshotKV.
+	js, err := daemon.natsConn.JetStream()
+	require.NoError(t, err)
+	snapKV, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
+	})
+	require.NoError(t, err)
+	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+
+	volumeID := "vol-root-self-heal"
+	instanceID := "i-self-heal"
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		TenantID:         testAccountID,
+		SizeGiB:          10,
+		State:            "available",
+		AttachedInstance: instanceID, // stale, left by the earlier failed terminate
+	})
+
+	instance := &vm.VM{
+		ID:           instanceID,
+		AccountID:    testAccountID,
+		Status:       vm.StateTerminated,
+		LastNode:     daemon.node,
+		TerminatedAt: time.Now(), // inside the visibility window: Sweep must not purge yet
+		Teardown: map[string]string{
+			vm.TeardownVolumes: string(vm.TeardownFailed),
+		},
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: volumeID, Boot: true, DeleteOnTermination: true},
+			},
+		},
+	}
+	require.NoError(t, daemon.stateStore.WriteTerminatedInstance(instance.ID, instance))
+
+	reaper := vm.NewManagerWithDeps(vm.Deps{
+		NodeID:          daemon.node,
+		StateStore:      daemon.stateStore,
+		InstanceCleaner: newInstanceCleanerAdapter(daemon),
+	}).NewTerminatedTeardownReaper()
+
+	_, err = reaper.Sweep(context.Background())
+	require.NoError(t, err)
+
+	_, err = daemon.volumeService.GetVolumeConfig(volumeID)
+	require.Error(t, err, "the retried delete must actually remove the volume")
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
+
+	remaining, err := daemon.stateStore.ListTerminatedInstances()
+	require.NoError(t, err)
+	require.Len(t, remaining, 1, "still within the visibility window: not purged yet")
+	assert.Equal(t, string(vm.TeardownDone), remaining[0].Teardown[vm.TeardownVolumes],
+		"a retry that now succeeds must flip the mark from failed to done")
 }
 
 // TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events.

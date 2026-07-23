@@ -707,7 +707,25 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// command, which would collapse the path to a relative config/ca.pem.
 	bakeCACertIntoImage(extractedImagePath, filepath.Join(baseDir, "config", "ca.pem"))
 
-	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath)
+	// Render the flush bar here rather than inside viperblock, which stays a
+	// pure storage library. The bar is built lazily on the first update so it is
+	// never drawn if the import fails before any bytes flush; viperblock
+	// throttles the callback to ≤101 invocations, so the human-readable title
+	// renders without the per-block render-frequency regression.
+	var flushBar *pterm.ProgressbarPrinter
+	var flushUpdate func(current uint64)
+	progress := func(current, total uint64) {
+		if flushBar == nil {
+			flushBar, flushUpdate = utils.NewByteProgressBar("Flushing image to storage", total)
+		}
+		flushUpdate(current)
+	}
+
+	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath, progress)
+
+	if flushBar != nil {
+		_, _ = flushBar.Stop()
+	}
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Could not import image to predastore: %v\n", err)

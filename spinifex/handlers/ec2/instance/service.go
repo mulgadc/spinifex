@@ -110,6 +110,12 @@ type InstanceTagWriter interface {
 // VolumeServiceImpl (used by the daemon).
 type VolumeDeleter interface {
 	DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error)
+
+	// DeleteVolumeOnTerminate deletes a DeleteOnTermination volume as part of
+	// an instance terminate: it clears any stale attachment (terminate
+	// implies detach) before deleting, so a still-attached boot volume left
+	// over from Stop is not rejected by DeleteVolume's in-use guard.
+	DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error
 }
 
 // ENIDeleter deletes ENIs. Implemented by handlers/ec2/vpc's VPCServiceImpl.

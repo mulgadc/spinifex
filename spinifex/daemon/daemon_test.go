@@ -51,6 +51,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1545,6 +1546,58 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 
 	// Root volume with DeleteOnTermination=false should NOT receive ebs.delete
 	assert.False(t, ebsDeletedVolumes["vol-keep"], "Root volume with DeleteOnTermination=false should NOT be deleted")
+}
+
+// TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear
+// locks the mulga-1dzx9 fix on the running-instance terminate path: a Boot,
+// DeleteOnTermination root volume left attached (terminateCleanup's
+// shutdownAndUnmount runs Unmount, which deliberately never clears a Boot
+// volume's AttachedInstance) previously hit DeleteVolume's in-use guard
+// directly. DeleteVolumes must now call DeleteVolumeOnTerminate, which clears
+// the stale attachment first, so the delete actually succeeds.
+func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	// DeleteVolume's snapshot-reference guard requires a non-nil snapshotKV;
+	// wire a JetStream-backed one (no snapshot refs recorded) so the delete
+	// reaches the S3 cleanup step instead of failing closed on a nil KV.
+	jsConn, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { jsConn.Close() })
+	js, err := jsConn.JetStream()
+	require.NoError(t, err)
+	snapKV, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
+	})
+	require.NoError(t, err)
+	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+
+	volumeID := "vol-root-attached"
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		TenantID:         testAccountID,
+		SizeGiB:          10,
+		State:            "available",
+		AttachedInstance: "i-test-boot-delete", // stale: never cleared by Stop/shutdownAndUnmount's Boot carve-out
+	})
+
+	instance := &vm.VM{
+		ID:        "i-test-boot-delete",
+		AccountID: testAccountID,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: volumeID, Boot: true, DeleteOnTermination: true},
+			},
+		},
+	}
+
+	cleaner := newInstanceCleanerAdapter(daemon)
+	err = cleaner.DeleteVolumes(instance)
+	require.NoError(t, err, "the still-attached boot volume must be deleted, not rejected as VolumeInUse")
+
+	_, err = daemon.volumeService.GetVolumeConfig(volumeID)
+	require.Error(t, err, "the volume must actually be deleted")
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 }
 
 // TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events.

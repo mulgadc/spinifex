@@ -2409,6 +2409,16 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instance *vm.VM, instanceID string) {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
+
+	// Tracks whether every DeleteOnTermination volume was actually deleted, so
+	// Teardown[vm.TeardownVolumes] below mirrors markTeardownResult's
+	// done/failed semantics (vm/teardown.go) — the same mark the
+	// running-instance path already stamps via terminateCleanup. Without this,
+	// TerminateStoppedInstance never touches Teardown at all, so
+	// daemon.leakedVolumeInstances() and VolumeLeakReaper can never see a
+	// stopped-path delete failure.
+	var lastErr error
+
 	for _, ebsRequest := range instance.EBSRequests.Requests {
 		// Internal volumes (EFI) are always cleaned up via ebs.delete.
 		if ebsRequest.EFI {
@@ -2435,14 +2445,28 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 		slog.InfoContext(ctx, "TerminateStoppedInstance: deleting volume with DeleteOnTermination=true", "name", ebsRequest.Name)
 		if s.volumeDeleter == nil {
 			slog.WarnContext(ctx, "TerminateStoppedInstance: volume deleter not configured, skipping", "name", ebsRequest.Name)
+			lastErr = errors.New("volume deleter not configured")
 			continue
 		}
-		if _, err := s.volumeDeleter.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
-			VolumeId: &ebsRequest.Name,
-		}, instance.AccountID); err != nil {
+		// Terminate implies detach: DeleteVolumeOnTerminate clears the stale
+		// AttachedInstance left over from Stop (Unmount deliberately never
+		// clears a Boot volume, daemon/vm_adapters.go) before deleting, so
+		// DeleteVolume's in-use guard does not reject an otherwise-legitimate
+		// delete. The resulting error is surfaced into lastErr, not swallowed.
+		if err := s.volumeDeleter.DeleteVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID); err != nil {
 			slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to delete volume", "name", ebsRequest.Name, "err", err)
+			lastErr = err
 		}
 	}
+
+	if instance.Teardown == nil {
+		instance.Teardown = make(map[string]string)
+	}
+	instance.Teardown[vm.TeardownVolumes] = string(vm.TeardownDone)
+	if lastErr != nil {
+		instance.Teardown[vm.TeardownVolumes] = string(vm.TeardownFailed)
+	}
+
 	_ = instanceID
 }
 

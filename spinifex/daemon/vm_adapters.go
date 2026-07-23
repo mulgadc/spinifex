@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
@@ -636,9 +635,12 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 				"name", ebsRequest.Name, "id", instance.ID)
 			continue
 		}
-		if _, err := a.d.volumeService.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
-			VolumeId: &ebsRequest.Name,
-		}, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
+		// Terminate implies detach: DeleteVolumeOnTerminate clears the stale
+		// AttachedInstance before deleting. shutdownAndUnmount's Unmount
+		// (above, via terminateCleanup) deliberately never clears a Boot
+		// volume's attachment, so without this the root volume still hits
+		// DeleteVolume's in-use guard here.
+		if err := a.d.volumeService.DeleteVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
 			slog.Error("Failed to delete volume on termination",
 				"name", ebsRequest.Name, "id", instance.ID, "err", err)
 			firstErr = cmp.Or(firstErr, err)

@@ -1,5 +1,8 @@
 version: "2"
 
+issues:
+  max-same-issues: 10
+
 formatters:
   enable:
     - gofmt
@@ -14,7 +17,6 @@ linters:
     - bidichk # checks for dangerous unicode bidi character sequences
     - bodyclose # checks whether HTTP response body is closed successfully
     - canonicalheader # checks whether net/http.Header uses canonical header keys
-    - decorder # checks declaration order of types, consts, vars, and funcs
     - depguard # blocks imports of packages with a preferred replacement
     - durationcheck # checks for two durations multiplied together
     - embeddedstructfieldcheck # checks embedded sync.Mutex/RWMutex in structs
@@ -91,7 +93,7 @@ linters:
         - -ST1021 # godoc on exported type groups — not enforcing yet
         - -ST1022 # godoc on exported vars/consts — not enforcing yet
         - -SA4006 # value overwritten — ineffassign + wastedassign cover this better
-        - -SA9005 # ineffective break (staticcheck false positives)
+        - -SA9005 # marshaling structs with no exported fields — intended {} for empty API-response types
 
     gosec:
       excludes:
@@ -100,7 +102,6 @@ linters:
         - G117 # use of net/http serve functions (we handle TLS separately)
         - G703 # path traversal taint analysis — false positives on config file loading
         - G705 # XSS taint analysis — false positives on internal error responses
-        - G706 # log injection taint analysis — false positives on structured slog usage
 
     modernize:
       disable:

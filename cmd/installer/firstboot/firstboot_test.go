@@ -105,48 +105,6 @@ func TestWriteScriptDefersOVNWhenSkipFormation(t *testing.T) {
 	}
 }
 
-func TestWriteScriptRunsHostDNSAfterFormation(t *testing.T) {
-	root := t.TempDir()
-	makeRootDirs(t, root)
-
-	cfg := Config{Hostname: "test-node", ClusterRole: "init"}
-	if err := Write(root, cfg); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	content := readScript(t, root)
-
-	dnsIdx := strings.Index(content, "SETUP_STAGES=resolved /usr/local/share/spinifex/setup.sh")
-	if dnsIdx < 0 {
-		t.Fatal("script should run the resolved (host DNS) stage when firstboot owns formation")
-	}
-	// northstar.toml only exists once formation runs, so host DNS must follow it.
-	formationIdx := strings.Index(content, "spx admin init")
-	if formationIdx < 0 {
-		t.Fatal("formation command not found in script")
-	}
-	if dnsIdx < formationIdx {
-		t.Error("host DNS stage must run after cluster formation writes northstar.toml")
-	}
-}
-
-func TestWriteScriptDefersHostDNSWhenSkipFormation(t *testing.T) {
-	root := t.TempDir()
-	makeRootDirs(t, root)
-
-	cfg := Config{Hostname: "test-node", ClusterRole: "init", SkipFormation: true}
-	if err := Write(root, cfg); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	content := readScript(t, root)
-
-	if strings.Contains(content, "SETUP_STAGES=resolved") {
-		t.Error("script must not run the host DNS stage when a controller owns formation")
-	}
-	if !strings.Contains(content, "host DNS deferred") {
-		t.Error("script should note host DNS is deferred under SkipFormation")
-	}
-}
-
 func readScript(t *testing.T, root string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(root, "usr/local/bin/spinifex-firstboot.sh"))

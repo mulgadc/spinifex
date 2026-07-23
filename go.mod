@@ -22,7 +22,7 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/mulgadc/northstar v1.13.0
 	github.com/mulgadc/predastore v1.13.1-0.20260722023246-c0a90d23b3a0
-	github.com/mulgadc/viperblock v1.13.1-0.20260723013739-3dcfbb7f9d55
+	github.com/mulgadc/viperblock v1.13.1-0.20260723031009-8a2df5653734
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/runtime-spec v1.3.0

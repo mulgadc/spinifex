@@ -92,7 +92,7 @@ gpu_passthrough = true
 host = "{{.BindIP}}:9999"
 tlskey = "config/server.key"
 tlscert = "config/server.pem"
-debug = true
+debug = false
 config = "awsgw/awsgw.toml"
 
 [nodes.{{.Node}}.nats]

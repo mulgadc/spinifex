@@ -1812,6 +1812,8 @@ go.uber.org/multierr v1.1.0/go.mod h1:wR5kodmAFQ0UK8QlbwjlSNy0Z68gJhDJUG5sjR94q/
 go.uber.org/multierr v1.3.0/go.mod h1:VgVr7evmIr6uPjLBxg28wmKNXyqE9akIJ5XnfpiKl+4=
 go.uber.org/multierr v1.5.0/go.mod h1:FeouvMocqHpRaaGuG9EjoKcStLC43Zu/fmqdUMPcKYU=
 go.uber.org/multierr v1.6.0/go.mod h1:cdWPpRnG4AhwMwsgIHip0KRBQjJy5kYEpYjJxpXp9iU=
+go.uber.org/nilaway v0.0.0-20260721205819-4a0f7653488a h1:CsRd824LAzMmlpu9nYv2PHOqPQYv4Zjd4kGM+g0ahS0=
+go.uber.org/nilaway v0.0.0-20260721205819-4a0f7653488a/go.mod h1:i9Hi8GeZFLBtUCXP73ZNSHKZ4K2JtxT0pLmo3sbJzlo=
 go.uber.org/tools v0.0.0-20190618225709-2cfd321de3ee/go.mod h1:vJERXedbb3MVM5f9Ejo0C68/HhF8uaILCdgjnY+goOA=
 go.uber.org/zap v1.10.0/go.mod h1:vwi/ZaCAaUcBkycHslxD9B2zi4UTXhF60s6SWpuDF0Q=
 go.uber.org/zap v1.13.0/go.mod h1:zwrFLgMcdUuIBviXEYEH1YKNaOBnKXsx2IPda5bBwHM=
@@ -1911,6 +1913,8 @@ golang.org/x/exp/shiny v0.0.0-20230801115018-d63ba01acd4b/go.mod h1:UH99kUObWAZk
 golang.org/x/exp/shiny v0.0.0-20230817173708-d852ddb80c63/go.mod h1:UH99kUObWAZkDnWqppdQe5ZhPYESUw8I0zVV1uWBR+0=
 golang.org/x/exp/shiny v0.0.0-20240707233637-46b078467d37/go.mod h1:3F+MieQB7dRYLTmnncoFbb1crS5lfQoTfDgQy6K4N0o=
 golang.org/x/exp/shiny v0.0.0-20241009180824-f66d83c29e7c/go.mod h1:3F+MieQB7dRYLTmnncoFbb1crS5lfQoTfDgQy6K4N0o=
+golang.org/x/exp/typeparams v0.0.0-20260611194520-c48552f49976 h1:GTD/WuaexTazIG/SxLOz4rEKZPDVilmVVC2nz4xhwfE=
+golang.org/x/exp/typeparams v0.0.0-20260611194520-c48552f49976/go.mod h1:PqrXSW65cXDZH0k4IeUbhmg/bcAZDbzNz3byBpKCsXo=
 golang.org/x/image v0.0.0-20180708004352-c73c2afc3b81/go.mod h1:ux5Hcp/YLpHSI86hEcLt0YII63i6oz57MZXIpbrjZUs=
 golang.org/x/image v0.0.0-20190227222117-0694c2d4d067/go.mod h1:kZ7UVZpmo3dzQBMxlp+ypCbDeSB+sBbTgSJuh5dn5js=
 golang.org/x/image v0.0.0-20190802002840-cff245a6509b/go.mod h1:FeLwcggjj3mMvU+oOTbSwawSJRM1uh48EjtB4UJZlP0=

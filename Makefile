@@ -271,6 +271,13 @@ govulncheck:
 	$(_Q)go tool govulncheck ./...
 	@echo "  govulncheck ok"
 
+# NilAway — advisory nil-panic analysis. Not in preflight: it has a known
+# false-positive rate, so findings are triaged by hand rather than gating commits.
+nilaway:
+	@echo "Running nilaway..."
+	$(_Q)go tool nilaway -include-pkgs=github.com/mulgadc/spinifex -exclude-test-files ./...
+	@echo "  nilaway ok"
+
 # Build release tarballs — use distro-ARCH for single arch, distro for both
 distro: distro-amd64 distro-arm64
 	@echo ""
@@ -317,5 +324,5 @@ distro-clean:
 .PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness test-integration manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
-	lint fix govulncheck \
+	lint fix govulncheck nilaway \
 	distro distro-amd64 distro-arm64 distro-clean

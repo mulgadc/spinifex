@@ -71,7 +71,7 @@ func TestHTTPMiddlewareSpanPerRequest(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, kv := range span.Attributes() {
-		got[string(kv.Key)] = kv.Value.Emit()
+		got[string(kv.Key)] = kv.Value.String()
 	}
 	if got["http.response.status_code"] != "418" {
 		t.Errorf("status attr = %q, want 418", got["http.response.status_code"])

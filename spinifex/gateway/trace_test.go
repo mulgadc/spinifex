@@ -44,7 +44,7 @@ func TestTraceActionEnricher(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, kv := range span.Attributes() {
-		got[string(kv.Key)] = kv.Value.Emit()
+		got[string(kv.Key)] = kv.Value.String()
 	}
 	for key, want := range map[string]string{
 		"aws.action":     "RunInstances",

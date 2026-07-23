@@ -108,7 +108,7 @@ func TestNewResourceAttributes(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, kv := range res.Attributes() {
-		got[string(kv.Key)] = kv.Value.Emit()
+		got[string(kv.Key)] = kv.Value.String()
 	}
 	for key, want := range map[string]string{
 		"service.name": "test-svc",
@@ -306,7 +306,7 @@ func TestLogRecordCarriesResourceAndTraceID(t *testing.T) {
 
 	attrs := map[string]string{}
 	for _, kv := range rec.Resource().Attributes() {
-		attrs[string(kv.Key)] = kv.Value.Emit()
+		attrs[string(kv.Key)] = kv.Value.String()
 	}
 	if attrs["ci.run_id"] != "TESTRUN" {
 		t.Errorf("resource ci.run_id = %q, want TESTRUN", attrs["ci.run_id"])

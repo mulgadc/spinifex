@@ -90,7 +90,6 @@ linters:
         - -ST1020 # godoc on exported types — not enforcing yet
         - -ST1021 # godoc on exported type groups — not enforcing yet
         - -ST1022 # godoc on exported vars/consts — not enforcing yet
-        - -SA1019 # deprecated usage (handle separately)
         - -SA4006 # value overwritten — ineffassign + wastedassign cover this better
         - -SA9005 # ineffective break (staticcheck false positives)
 
@@ -153,3 +152,8 @@ linters:
         linters: [gosec] # subprocess execution — legitimate in VM orchestration
       - text: "G304"
         linters: [gosec] # file path from variable — necessary for config loading
+
+      # aws-sdk-go v1 is deprecated wholesale (EOL 2025-07-31); the v1->v2
+      # migration is tracked separately, so suppress its SA1019 noise for now.
+      - text: "aws-sdk-go is deprecated"
+        linters: [staticcheck]

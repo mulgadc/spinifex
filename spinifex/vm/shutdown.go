@@ -279,6 +279,54 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 	return nil
 }
 
+// reconcileVanishedQEMU finalizes a shutting-down instance whose QEMU process
+// has vanished. The terminate that transitioned it to shutting-down wedged
+// downstream (a dead nbdkit stalling the unmount seal, say) and never reached
+// finalizeTerminated. QEMU is confirmed gone, so the guest holds nothing open:
+// drive the record to terminated and stamp every still-outstanding teardown
+// dependent failed, so TerminatedTeardownReaper re-drives each through the
+// idempotent cleaner (volume detach+delete, ENI, NAT, placement) on its next
+// sweep. Should the original terminate goroutine later unblock, its own
+// finalizeTerminated is a no-op — the shutting-down → terminated transition is
+// already spent and terminated is terminal.
+func (m *Manager) reconcileVanishedQEMU(instance *VM) error {
+	m.markTeardown(instance, TeardownQEMU, TeardownDone)
+	m.stampOutstandingTeardownFailed(instance)
+	return m.finalizeTerminated(instance)
+}
+
+// stampOutstandingTeardownFailed marks every teardown dependent that applies to
+// this instance and is not already done as failed, so a terminated record left
+// by reconcileVanishedQEMU carries the outstanding work for TerminatedTeardownReaper
+// to complete. Over-marking a dependent the wedged goroutine had actually
+// finished is harmless: the reaper re-drives it through the idempotent cleaner.
+func (m *Manager) stampOutstandingTeardownFailed(instance *VM) {
+	m.Inspect(instance, func(v *VM) {
+		if v.Teardown == nil {
+			v.Teardown = make(map[string]string)
+		}
+		markFailed := func(dep string) {
+			if TeardownState(v.Teardown[dep]) != TeardownDone {
+				v.Teardown[dep] = string(TeardownFailed)
+			}
+		}
+		markFailed(TeardownVolumes) // volumes always apply
+		if v.PublicIP != "" {
+			markFailed(TeardownNAT)
+		}
+		if v.ENIId != "" {
+			markFailed(TeardownENI)
+			markFailed(TeardownOVN)
+		}
+		if len(v.GPUAttachments) > 0 {
+			markFailed(TeardownGPU)
+		}
+		if v.PlacementGroupName != "" {
+			markFailed(TeardownPlacement)
+		}
+	})
+}
+
 // stopCleanup performs the per-instance teardown shared by Stop and the
 // initial section of Terminate: graceful QMP shutdown, PID-file wait,
 // volume unmount, tap teardown (main + extra ENI + mgmt), resource

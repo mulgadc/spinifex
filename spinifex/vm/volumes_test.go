@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1252,6 +1253,47 @@ func TestDetachVolume_DeviceDeletedTimeout_FallsBackToRetry(t *testing.T) {
 	assert.Equal(t, "/dev/sdf", device)
 	assert.Equal(t, int32(2), blockdevAttempts.Load(),
 		"a missed DEVICE_DELETED event must still resolve via the bounded blockdev-del retry")
+}
+
+// TestDetachVolume_ConfirmedDeadQEMU_SkipsQMPAndSeals proves the
+// detach-wedges-when-QEMU-dies fix: when QEMU is provably gone (PID file
+// present, process dead), DetachVolume issues no QMP command — those steps
+// would only hang on the wedged process — and proceeds straight to the
+// ebs.unmount seal and the attachment clear.
+func TestDetachVolume_ConfirmedDeadQEMU_SkipsQMPAndSeals(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	var qmpCalled atomic.Bool
+	qmpClient, cancel := newMockQMPClientWithEvents(t, func(cmd qmp.QMPCommand, srv *mockQMPServer) map[string]any {
+		qmpCalled.Store(true)
+		return nil
+	})
+	defer cancel()
+
+	const id = "i-1"
+	require.NoError(t, utils.WritePidFile(id, 999999)) // PID file present but process dead
+
+	mounter := &fakeVolumeMounter{}
+	updater := &fakeVolumeStateUpdater{}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: updater})
+	m.Insert(&VM{
+		ID:        id,
+		Status:    StateRunning,
+		Instance:  &ec2.Instance{},
+		QMPClient: qmpClient,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		},
+	})
+
+	device, err := m.DetachVolume(t.Context(), id, "vol-1", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "/dev/sdf", device)
+	assert.False(t, qmpCalled.Load(), "a confirmed-dead QEMU must receive no QMP command")
+	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne, "the ebs.unmount seal must still run")
+	calls := updater.snapshot()
+	require.Len(t, calls, 1, "the stale attachment must be cleared exactly once")
+	assert.Equal(t, "available", calls[0].State, "the volume must be returned to available")
 }
 
 // TestDetachVolume_BlockdevDelAlreadyRemoved_IdempotentSuccess covers the

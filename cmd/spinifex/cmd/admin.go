@@ -707,7 +707,32 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// command, which would collapse the path to a relative config/ca.pem.
 	bakeCACertIntoImage(extractedImagePath, filepath.Join(baseDir, "config", "ca.pem"))
 
-	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath)
+	// Render the flush bar here rather than inside viperblock, which stays a
+	// pure storage library. The callback is created lazily on the first update
+	// so the total (image size in bytes) is known, and viperblock throttles it
+	// to ≤101 invocations — so the bar renders human-readable sizes in its title
+	// without the render-frequency regression a per-block update would cause.
+	var flushBar *pterm.ProgressbarPrinter
+	var flushTotalHuman string
+	progress := func(current, total uint64) {
+		if flushBar == nil {
+			flushTotalHuman = utils.HumanBytes(total)
+			flushBar, _ = pterm.DefaultProgressbar.
+				WithTitle("Flushing image to storage").
+				WithTotal(utils.SafeUint64ToInt(total)).
+				WithShowCount(false). // hide raw ints; the size goes in the title
+				Start()
+		}
+		flushBar.Current = utils.SafeUint64ToInt(current) // drives fill + percentage
+		// UpdateTitle performs the single render for this step.
+		flushBar.UpdateTitle(fmt.Sprintf("Flushing image to storage — %s / %s", utils.HumanBytes(current), flushTotalHuman))
+	}
+
+	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath, progress)
+
+	if flushBar != nil {
+		_, _ = flushBar.Stop()
+	}
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Could not import image to predastore: %v\n", err)

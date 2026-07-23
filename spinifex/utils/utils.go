@@ -203,13 +203,28 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 	cl := resp.ContentLength
 
 	if cl > 0 {
+		total := SafeInt64ToUint64(cl)
+		totalHuman := HumanBytes(total)
 		bar, _ := pterm.DefaultProgressbar.
 			WithTitle(fmt.Sprintf("Downloading %s", name)).
-			WithTotal(int(cl)).
+			WithTotal(SafeUint64ToInt(total)).
+			WithShowCount(false). // hide raw ints; the size goes in the title
 			Start()
 
+		// io.Copy writes ~32 KiB per TeeReader call, so gate rendering on
+		// integer-percentage change to cap the bar at ≤101 renders — matching
+		// the flush bar's convention instead of re-rendering tens of thousands
+		// of times.
+		var current uint64
+		lastPct := -1
 		reader := io.TeeReader(resp.Body, progressWriter(func(n int) {
-			bar.Add(n)
+			current += SafeIntToUint64(n)
+			pct := SafeUint64ToInt(current * 100 / total)
+			if pct > lastPct {
+				lastPct = pct
+				bar.Current = SafeUint64ToInt(current)
+				bar.UpdateTitle(fmt.Sprintf("Downloading %s — %s / %s", name, HumanBytes(current), totalHuman))
+			}
 		}))
 
 		_, err = io.Copy(f, reader)

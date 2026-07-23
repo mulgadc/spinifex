@@ -34,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/hostdns"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -339,6 +340,7 @@ func init() {
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
 	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
+	adminInitCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
 
 	// Flags for admin join
 	adminJoinCmd.Flags().String("region", "ap-southeast-2", "Region for this node")
@@ -355,6 +357,7 @@ func init() {
 	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
 	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
 	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
+	adminJoinCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
 	adminJoinCmd.Flags().Int("predastore-compaction-interval", 0, "Predastore compactor interval in seconds (0 = unset, uses built-in default). Test clusters set a short interval.")
 	adminJoinCmd.MarkFlagRequired("node")
 	adminJoinCmd.MarkFlagRequired("host")
@@ -1651,6 +1654,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
 
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
+
 	// Write node.conf so spx admin banner works on source installs (not just ISO).
 	nodeHostname, _ := os.Hostname()
 	if nodeHostname == "" {
@@ -1894,6 +1900,9 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	}
 
 	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
+
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
 
 	// Keep formation server running briefly so joining nodes can fetch complete status
 	fmt.Println("\n⏳ Waiting for joining nodes to fetch cluster data...")
@@ -2362,6 +2371,9 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 
 	finalizeNodeSetup(dataDir, caCertPath, creds.AdminAccessKey, creds.AdminSecretKey, creds.Region, bindIP)
 
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
+
 	// Print cluster summary
 	fmt.Println("\n🎉 Node successfully joined cluster!")
 	fmt.Printf("   Cluster: %s (%d nodes)\n", creds.ClusterName, len(statusResp.Nodes))
@@ -2720,6 +2732,45 @@ func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings 
 		})
 	}
 	return admin.GenerateConfigFiles(configs, settings)
+}
+
+// hostDNSParams derives the resolver target from the settings just rendered into
+// northstar.toml and reports whether host DNS should be configured at all. Host
+// DNS is pointed at the node's own northstar only when a northstar config was
+// rendered (scoped DNS credentials present) and the operator did not opt out.
+// The resolver is the node AdvertiseIP, falling back to BindIP.
+func hostDNSParams(settings admin.ConfigSettings, skip bool) (hostdns.Params, bool) {
+	northstarEnabled := settings.NorthstarAccessKey != "" && settings.NorthstarSecretKey != ""
+	if !northstarEnabled || skip {
+		return hostdns.Params{}, false
+	}
+	resolverIP := settings.AdvertiseIP
+	if resolverIP == "" {
+		resolverIP = settings.BindIP
+	}
+	return hostdns.Params{
+		ResolverIP:     resolverIP,
+		BaseDomain:     settings.NorthstarDefaultDomain,
+		InternalDomain: settings.NorthstarInternalDomain,
+	}, true
+}
+
+// configureHostDNS points this node's host resolver at its own northstar so the
+// Spinifex authoritative zones (ELB/EKS names) resolve from the node itself on
+// every install path. Failures are surfaced loudly but never abort a formed
+// cluster, mirroring installCACertificate.
+func configureHostDNS(settings admin.ConfigSettings, skip bool) {
+	params, ok := hostDNSParams(settings, skip)
+	if !ok {
+		return
+	}
+	fmt.Println("\n🔧 Configuring host DNS for Spinifex zones...")
+	if err := hostdns.Configure(params); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not configure host DNS: %v\n", err)
+		fmt.Fprintf(os.Stderr, "    LB/EKS names may not resolve from this node until the host resolver points at %s:53.\n", params.ResolverIP)
+		return
+	}
+	fmt.Printf("✅ Host DNS: %s + %s -> %s:53 (northstar)\n", params.BaseDomain, params.InternalDomain, params.ResolverIP)
 }
 
 // finalizeNodeSetup configures AWS credentials, creates service directories,

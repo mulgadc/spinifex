@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/hostdns"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
@@ -1086,6 +1087,78 @@ func TestAdminInitFlag_CompactionIntervalReachesRenderedConfig(t *testing.T) {
 // The image is written into a root volume of exactly the size this returns, so
 // anything less than the image size truncates the image and the guest never
 // finds its root. The old flooring conversion undersized every non-round image.
+func TestHostDNSParams(t *testing.T) {
+	// northstarEnabled requires both credentials; the zones and IPs mirror what
+	// admin init/join hold in memory after rendering northstar.toml.
+	enabled := admin.ConfigSettings{
+		NorthstarAccessKey:      "AK",
+		NorthstarSecretKey:      "SK",
+		NorthstarDefaultDomain:  "spx3.net",
+		NorthstarInternalDomain: "compute.internal",
+		AdvertiseIP:             "10.0.0.5",
+		BindIP:                  "0.0.0.0",
+	}
+
+	tests := []struct {
+		name       string
+		settings   admin.ConfigSettings
+		skip       bool
+		wantOK     bool
+		wantParams hostdns.Params
+	}{
+		{
+			name:     "enabled selects AdvertiseIP over BindIP",
+			settings: enabled,
+			wantOK:   true,
+			wantParams: hostdns.Params{
+				ResolverIP:     "10.0.0.5",
+				BaseDomain:     "spx3.net",
+				InternalDomain: "compute.internal",
+			},
+		},
+		{
+			name: "falls back to BindIP when AdvertiseIP is unset",
+			settings: func() admin.ConfigSettings {
+				s := enabled
+				s.AdvertiseIP = ""
+				s.BindIP = "10.0.0.9"
+				return s
+			}(),
+			wantOK: true,
+			wantParams: hostdns.Params{
+				ResolverIP:     "10.0.0.9",
+				BaseDomain:     "spx3.net",
+				InternalDomain: "compute.internal",
+			},
+		},
+		{
+			name:     "opt-out skips even when enabled",
+			settings: enabled,
+			skip:     true,
+			wantOK:   false,
+		},
+		{
+			name: "northstar disabled skips",
+			settings: func() admin.ConfigSettings {
+				s := enabled
+				s.NorthstarSecretKey = ""
+				return s
+			}(),
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := hostDNSParams(tt.settings, tt.skip)
+			assert.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				assert.Equal(t, tt.wantParams, got)
+			}
+		})
+	}
+}
+
 func TestAMIVolumeSizeGiB(t *testing.T) {
 	const giB int64 = 1024 * 1024 * 1024
 

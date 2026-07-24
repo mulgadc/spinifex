@@ -110,7 +110,7 @@ var ec2Actions = map[string]EC2Handler{
 			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
 		}
 		launchQuotaCheck := func() error {
-			return gw.Quota.EnforceLaunch(accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
+			return gw.Quota.EnforceLaunch(ctx, accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
 		}
 		reservation, err := gateway_ec2_instance.RunInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
 		if err != nil {
@@ -118,7 +118,7 @@ var ec2Actions = map[string]EC2Handler{
 		}
 		// Charge the actual launched vCPUs; a counter write failure is drift for
 		// reconcile to correct, so it must not fail the already-successful launch.
-		if err := gw.Quota.ChargeLaunch(accountID, &reservation); err != nil {
+		if err := gw.Quota.ChargeLaunch(ctx, accountID, &reservation); err != nil {
 			slog.WarnContext(ctx, "RunInstances: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
 		}
 		return reservation, nil
@@ -166,7 +166,7 @@ var ec2Actions = map[string]EC2Handler{
 		var delta int
 		if input.InstanceType != nil {
 			resolve := handlers_quota.NATSInstanceTypeResolver(gw.NATSConn, func() int { return gw.ExpectedNodes })
-			d, err := gw.Quota.EnforceRetype(resolve, accountID, aws.StringValue(input.InstanceId), aws.StringValue(input.InstanceType.Value))
+			d, err := gw.Quota.EnforceRetype(ctx, resolve, accountID, aws.StringValue(input.InstanceId), aws.StringValue(input.InstanceType.Value))
 			if err != nil {
 				return nil, err
 			}
@@ -178,7 +178,7 @@ var ec2Actions = map[string]EC2Handler{
 		}
 		// Charge the retype's vCPU growth; a counter write failure is drift for
 		// reconcile to correct, so it must not fail the applied retype.
-		if err := gw.Quota.AddVCPU(accountID, delta); err != nil {
+		if err := gw.Quota.AddVCPU(ctx, accountID, delta); err != nil {
 			slog.WarnContext(ctx, "ModifyInstanceAttribute: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
 		}
 		return out, nil

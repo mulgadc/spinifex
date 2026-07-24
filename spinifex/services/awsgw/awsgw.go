@@ -3,7 +3,6 @@ package awsgw
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -25,6 +24,7 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -117,24 +117,9 @@ func loadAWSGWConfig(path string) (awsgwTOML, error) {
 
 // openAccountUsageBucket opens (or idempotently creates) the gateway-owned
 // per-account vCPU usage bucket. History is 1: each account key holds a single
-// CAS-updated integer counter. It attaches first and creates only when the bucket
-// is genuinely absent, so a transient create error is not masked by the fallback.
-func openAccountUsageBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
-	if replicas < 1 {
-		replicas = 1
-	}
-	kv, err := js.KeyValue(handlers_quota.KVBucketAccountUsage)
-	if errors.Is(err, nats.ErrBucketNotFound) {
-		kv, err = js.CreateKeyValue(&nats.KeyValueConfig{
-			Bucket:   handlers_quota.KVBucketAccountUsage,
-			History:  1,
-			Replicas: replicas,
-		})
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open account usage bucket: %w", err)
-	}
-	return kv, nil
+// CAS-updated integer counter, so no revision beyond the latest is worth keeping.
+func openAccountUsageBucket(ctx context.Context, js jetstream.KeyValueManager, replicas int) (jetstream.KeyValue, error) {
+	return kvutil.GetOrCreateBucketWithReplicas(ctx, js, handlers_quota.KVBucketAccountUsage, 1, replicas)
 }
 
 func launchService(config *config.ClusterConfig) error {
@@ -257,19 +242,13 @@ func launchService(config *config.ClusterConfig) error {
 
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the
 	// cluster-replicated awsgw-keys KV bucket, then build the token issuer
-	// (GetAuthorizationToken) and verifier (/v2 Authorization).
-	js, err := natsConn.JetStream()
+	// (GetAuthorizationToken) and verifier (/v2 Authorization). The bridge reads
+	// and rotates its keys under the janitor lifetime context.
+	js, err := jetstream.New(natsConn)
 	if err != nil {
-		return fmt.Errorf("JetStream context: %w", err)
+		return fmt.Errorf("jetstream client: %w", err)
 	}
-
-	// The auth bridge reads and rotates its keys under the janitor lifetime
-	// context; js above still serves the bedrock and quota buckets.
-	authJS, err := jetstream.New(natsConn)
-	if err != nil {
-		return fmt.Errorf("ECR auth bridge: jetstream client: %w", err)
-	}
-	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(janitorCtx, authJS, masterKey, len(config.Nodes))
+	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(janitorCtx, js, masterKey, len(config.Nodes))
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: load signing key: %w", err)
 	}
@@ -299,7 +278,11 @@ func launchService(config *config.ClusterConfig) error {
 	if key := os.Getenv("OCHRE_ANTHROPIC_API_KEY"); key != "" {
 		bedrockPlatformDefaults["anthropic"] = key
 	}
-	bedrockCredentials := gateway_bedrock.NewCredentialStore(js, masterKey, len(config.Nodes), bedrockPlatformDefaults)
+	bedrockJS, err := natsConn.JetStream()
+	if err != nil {
+		return fmt.Errorf("bedrock credentials: JetStream context: %w", err)
+	}
+	bedrockCredentials := gateway_bedrock.NewCredentialStore(bedrockJS, masterKey, len(config.Nodes), bedrockPlatformDefaults)
 
 	// Bedrock self-host endpoints: Phase 1 models are pinned, so their
 	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
@@ -331,7 +314,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
-	keyRotator, err := gateway_ecrauth.NewRotator(janitorCtx, authJS, masterKey, len(config.Nodes), gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	keyRotator, err := gateway_ecrauth.NewRotator(janitorCtx, js, masterKey, len(config.Nodes), gw.ECRTokenIssuer, gw.ECRTokenVerifier)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
 	}
@@ -345,9 +328,9 @@ func launchService(config *config.ClusterConfig) error {
 	// Per-account service quotas. Only the enabled path opens the gateway-owned
 	// usage KV bucket, leaving existing default-off gateways untouched; a disabled
 	// config builds a no-op Service whose Exempt short-circuits every check.
-	var usageBucket nats.KeyValue
+	var usageBucket jetstream.KeyValue
 	if quotaCfg.Enabled {
-		usageBucket, err = openAccountUsageBucket(js, max(len(config.Nodes), 1))
+		usageBucket, err = openAccountUsageBucket(janitorCtx, js, len(config.Nodes))
 		if err != nil {
 			return fmt.Errorf("init account usage bucket: %w", err)
 		}

@@ -44,11 +44,11 @@ func TestEnforceLaunch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.reserve > 0 {
-				if err := s.AddVCPU(tt.account, tt.reserve); err != nil {
+				if err := s.AddVCPU(t.Context(), tt.account, tt.reserve); err != nil {
 					t.Fatalf("AddVCPU(%d): %v", tt.reserve, err)
 				}
 			}
-			err := s.EnforceLaunch(tt.account, tt.instanceType, tt.maxCount)
+			err := s.EnforceLaunch(t.Context(), tt.account, tt.instanceType, tt.maxCount)
 			switch {
 			case tt.wantErr == "" && err != nil:
 				t.Fatalf("EnforceLaunch(%s, %d) = %v, want nil", tt.instanceType, tt.maxCount, err)
@@ -65,14 +65,14 @@ func TestEnforceLaunch(t *testing.T) {
 func TestChargeLaunchActual(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 
-	if err := s.EnforceLaunch(testAccount, "t3.micro", 4); err != nil {
+	if err := s.EnforceLaunch(t.Context(), testAccount, "t3.micro", 4); err != nil {
 		t.Fatalf("EnforceLaunch = %v, want nil", err)
 	}
 	// Daemon launched only 2; charge the actual 4 vCPUs, not the checked 8.
-	if err := s.ChargeLaunch(testAccount, reservationOf("t3.micro", 2)); err != nil {
+	if err := s.ChargeLaunch(t.Context(), testAccount, reservationOf("t3.micro", 2)); err != nil {
 		t.Fatalf("ChargeLaunch = %v", err)
 	}
-	got, _, err := s.readVCPU(testAccount)
+	got, _, err := s.readVCPU(t.Context(), testAccount)
 	if err != nil {
 		t.Fatalf("readVCPU: %v", err)
 	}
@@ -89,26 +89,26 @@ func TestLaunchSoftCapBounded(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 
 	// Pre-charge to 6/8 so each 2-vCPU launch individually fits the headroom.
-	if err := s.AddVCPU(testAccount, 6); err != nil {
+	if err := s.AddVCPU(t.Context(), testAccount, 6); err != nil {
 		t.Fatalf("AddVCPU(6): %v", err)
 	}
 
 	// Two launches enter the gate before either charges: both read 6/8 and pass.
-	if err := s.EnforceLaunch(testAccount, "t3.micro", 1); err != nil {
+	if err := s.EnforceLaunch(t.Context(), testAccount, "t3.micro", 1); err != nil {
 		t.Fatalf("first EnforceLaunch = %v, want nil in soft-cap window", err)
 	}
-	if err := s.EnforceLaunch(testAccount, "t3.micro", 1); err != nil {
+	if err := s.EnforceLaunch(t.Context(), testAccount, "t3.micro", 1); err != nil {
 		t.Fatalf("second EnforceLaunch = %v, want nil in soft-cap window", err)
 	}
 
 	// Both charges then land under CAS without losing an update.
 	for range 2 {
-		if err := s.ChargeLaunch(testAccount, reservationOf("t3.micro", 1)); err != nil {
+		if err := s.ChargeLaunch(t.Context(), testAccount, reservationOf("t3.micro", 1)); err != nil {
 			t.Fatalf("ChargeLaunch = %v", err)
 		}
 	}
 
-	got, _, err := s.readVCPU(testAccount)
+	got, _, err := s.readVCPU(t.Context(), testAccount)
 	if err != nil {
 		t.Fatalf("readVCPU: %v", err)
 	}
@@ -128,10 +128,12 @@ func TestLaunchExemptShortCircuits(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"enforce disabled", func() error { return disabled.EnforceLaunch(testAccount, "t3.micro", 1000) }},
-		{"charge disabled", func() error { return disabled.ChargeLaunch(testAccount, reservationOf("t3.micro", 1000)) }},
-		{"enforce system account", func() error { return enabled.EnforceLaunch(utils.GlobalAccountID, "t3.micro", 1000) }},
-		{"charge system account", func() error { return enabled.ChargeLaunch(utils.GlobalAccountID, reservationOf("t3.micro", 1000)) }},
+		{"enforce disabled", func() error { return disabled.EnforceLaunch(t.Context(), testAccount, "t3.micro", 1000) }},
+		{"charge disabled", func() error { return disabled.ChargeLaunch(t.Context(), testAccount, reservationOf("t3.micro", 1000)) }},
+		{"enforce system account", func() error { return enabled.EnforceLaunch(t.Context(), utils.GlobalAccountID, "t3.micro", 1000) }},
+		{"charge system account", func() error {
+			return enabled.ChargeLaunch(t.Context(), utils.GlobalAccountID, reservationOf("t3.micro", 1000))
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

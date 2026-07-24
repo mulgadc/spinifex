@@ -511,6 +511,7 @@ func launchService(cfg *Config) error {
 		return live, nil
 	}
 	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
+		ctx,
 		nc,
 		handlers_imds.NewNATSSTSAssumer(nc),
 		handlers_imds.NewNATSProfileLookup(nc),

@@ -76,7 +76,7 @@ func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesIn
 	// Gate on the per-account vCPU cap exactly like the on-demand path; spot
 	// launches are real VMs and must not slip past the quota.
 	launchQuotaCheck := func() error {
-		return quota.EnforceLaunch(accountID, aws.StringValue(runInput.InstanceType), int(count))
+		return quota.EnforceLaunch(ctx, accountID, aws.StringValue(runInput.InstanceType), int(count))
 	}
 
 	// RunInstances normalises runInput in place (e.g. instance profile to ARN),
@@ -88,7 +88,7 @@ func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesIn
 
 	// Charge the actual launched vCPUs; a counter write failure is drift for
 	// reconcile to correct, so it must not fail the already-successful launch.
-	if err := quota.ChargeLaunch(accountID, &reservation); err != nil {
+	if err := quota.ChargeLaunch(ctx, accountID, &reservation); err != nil {
 		slog.WarnContext(ctx, "RequestSpotInstances: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
 	}
 
